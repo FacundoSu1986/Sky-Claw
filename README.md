@@ -30,6 +30,9 @@ y gates humanos en las operaciones que los requieren. Su norte es una
 - **Asistente de Inicio**: Configuración guiada automática con `local_scripts/scripts/first_run.py`.
 - **Seguridad HITL**: Aprobación interactiva en los handlers y rituales que
   cablean un gate humano.
+- **[Community Shaders](docs/user/community_shaders.md)**: Instalación opt-in de
+  Community Shaders y sus dependencias, con los requisitos del entorno verificados antes
+  de descargar nada.
 
 ---
 

@@ -9,7 +9,8 @@
 > `sky_claw/app/orchestrator/tool_strategies/` y
 > `sky_claw/local/tools/tool_result.py`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
+> `e8427063`.
 
 ## Ruta LLM
 
@@ -24,6 +25,16 @@ JSON Schema y ejecuta handlers async. Su inventario incorporado verificado es:
 `close_game` y `setup_tools`.
 
 La allowlist de sesión filtra tanto la enumeración visible como la ejecución.
+
+`setup_tools` acepta `loot`, `xedit`, `pandora`, `bodyslide`, `ngio` y
+`community_shaders`. Su lista por defecto contiene los cinco primeros:
+`community_shaders` queda fuera a propósito y sólo se despacha por nombre explícito,
+porque sus prerrequisitos de host no los puede satisfacer Sky-Claw. Ver
+[Community Shaders](../user/community_shaders.md).
+
+`ensure_skse` **no** está en esta ruta: sólo se alcanza desde la GUI, porque escribe
+ejecutables en el directorio del juego y la aprobación debe ser la del operador. El
+recorte está congelado por igualdad literal en `tests/test_ritual_install.py`.
 
 ## Ruta de orquestación
 

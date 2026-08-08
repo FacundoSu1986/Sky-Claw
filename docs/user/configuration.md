@@ -8,7 +8,8 @@
 > `sky_claw/app/core/path_resolver.py` y
 > `local_scripts/scripts/first_run.py`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
+> `e8427063`.
 
 ## Archivo y precedencia
 
@@ -34,6 +35,23 @@ extraído de esas secciones.
 
 `llm_model` es una clave legacy: se copia en memoria al campo del proveedor
 activo cuando éste está vacío; el archivo no se reescribe por esa migración.
+
+## Estado administrado
+
+Estas claves las escribe Sky-Claw al terminar una instalación y no deben editarse a
+mano. No son defaults del código: aparecen en el archivo recién cuando la operación que
+las produce se completa.
+
+| Clave | Significado |
+|---|---|
+| `ngio_mods` | Nombres de los mods MO2 instalados para el precache de grass |
+| `community_shaders_mods` | Nombres de los mods MO2 instalados por la operación de [Community Shaders](community_shaders.md) |
+
+Ambas existen porque esos componentes no tienen ejecutable propio: el orquestador
+necesita sus nombres para activarlos en `modlist.txt`. Editarlas o borrarlas rompe esa
+activación sin producir ningún error visible. Si una instalación informa que los mods
+quedaron en disco pero la configuración no se pudo guardar, la clave falta: repetir la
+instalación, no escribirla a mano.
 
 ## Secretos
 
