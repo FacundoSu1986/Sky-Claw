@@ -95,3 +95,34 @@ def test_con_keyring_disponible_el_secreto_se_scrubea_del_toml(tmp_path: pathlib
     crudo = config_path.read_text(encoding="utf-8")
     assert "clave-del-usuario" not in crudo
     assert almacen["nexus_api_key"] == "clave-del-usuario"
+
+
+def test_secreto_escrito_en_disco_por_otra_superficie_sobrevive_si_el_keyring_falla(
+    tmp_path: pathlib.Path, _keyring_caido: None
+) -> None:
+    """Variante F1 (review CodeRabbit): el plaintext NO lo escribió ESTE objeto —
+    apareció en el archivo DESPUÉS de su construcción (otra superficie o la mano
+    del usuario en el TOML). Con el keyring caído, el ``pop`` incondicional del
+    scrub lo sacaba de ``save_data`` y ``_secretos_solo_en_archivo`` no tenía
+    entrada para restaurarlo (sólo se puebla al construir): el ÚNICO ejemplar
+    del secreto se destruía en el mismo save que decía proteger secretos. La
+    fuente de restauración es lo que HAY en el archivo en el momento del save,
+    con fallback al registro de la construcción.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+
+    cfg = Config(config_path)
+    # Otra superficie (o el usuario a mano) escribe el secreto al archivo.
+    config_path.write_text(
+        'llm_provider = "anthropic"\nnexus_api_key = "clave-escrita-por-otro"\n',
+        encoding="utf-8",
+    )
+
+    cfg._data["community_shaders_mods"] = ["Community Shaders"]
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["nexus_api_key"] == "clave-escrita-por-otro"
+    assert en_disco["community_shaders_mods"] == ["Community Shaders"]
+    assert en_disco["llm_provider"] == "anthropic"

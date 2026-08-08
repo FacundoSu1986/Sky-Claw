@@ -222,7 +222,7 @@ def test_guardar_config_no_deja_temporales_huerfanos_tras_un_save_exitoso(tmp_pa
 # tomado al construir el objeto (ver `sky_claw/config.py`): cada `save()` relee
 # el disco bajo el threading.Lock de save, aplica SOLO los campos que ESTE
 # objeto cambió, y recién después scrubea secretos y escribe atómicamente. Un
-# `Config` long-lived ya no puede borrar campos que never vio — la frontera que
+# `Config` long-lived ya no puede borrar campos que nunca vio — la frontera que
 # antes documentaba `test_limite_conocido_...` ahora es garantía, y los tests
 # de abajo la anclan sobre campos que SÍ vienen de `_load_defaults()` (un test
 # sobre campos sin default pasaría incluso con la unión ingenua).
@@ -371,6 +371,62 @@ async def test_un_config_vivo_no_pisa_campos_frescos_que_vienen_de_defaults(
     assert en_disco["loot_exe"] == "D:/Tools/LOOT/LOOT.exe"
     # Invariante para TODOS los casos: un campo que nadie tocó permanece.
     assert en_disco["xedit_exe"] == "D:/Tools/xEdit/SSEEdit.exe"
+
+
+def test_save_con_archivo_corrupto_aborta_sin_escribir(tmp_path: pathlib.Path) -> None:
+    """Contrato fail-closed declarado del merge-on-save (review CodeRabbit): si
+    el archivo se corrompió DESPUÉS de la construcción del objeto, ``save()``
+    aborta con el error del parser y NO escribe — no se mergea sobre lo que no
+    se puede leer. El archivo queda exactamente como estaba."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+    escribir_campo(cfg, "loot_exe", "D:/Tools/LOOT/LOOT.exe")
+    config_path.write_text("esto no es TOML = = [", encoding="utf-8")
+
+    with pytest.raises(tomllib.TOMLDecodeError):
+        cfg.save()
+
+    assert config_path.read_text(encoding="utf-8") == "esto no es TOML = = ["
+
+
+async def test_intercalacion_gui_lee_agente_escribe_gui_reemplaza_no_pierde_nada(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El interleaving que pidió verificar la review de CodeRabbit: la GUI LEE
+    el archivo (construye su propio ``Config``), el agente persiste su diff
+    DIRECTO —``cfg.save()``, sin pasar por el lock asyncio de los wrappers— y
+    recién entonces la GUI reemplaza. Nada se pierde: la escritura de la GUI
+    TAMBIÉN es un merge-on-save con lectura fresca, y todas las mutaciones del
+    archivo (las de ``persistir_campo`` y las de cualquier ``.save()`` directo)
+    corren bajo el MISMO ``threading.Lock`` por path dentro de
+    ``Config.save()``: el coordinador del archivo vive en el mecanismo, no en
+    ninguno de los dos locks por separado.
+
+    El orden se fuerza de forma explícita (lectura GUI → save del agente →
+    reemplazo GUI) en vez de dormir threads: la propiedad debe valer para
+    cualquier orden, así que se ancla el peor orden conocido.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+
+    cfg_agente = Config(config_path)
+    escribir_campo(cfg_agente, "community_shaders_mods", ["Community Shaders"])
+
+    # t1: la GUI lee el archivo (construye su propio Config, lectura fresca).
+    cfg_gui = abrir_config_para_persistir(config_path)
+
+    # t2: el agente persiste directo, sin el lock asyncio de los wrappers.
+    cfg_agente.save()
+
+    # t3: la GUI escribe su campo y persiste con el objeto construido en t1.
+    escribir_campo(cfg_gui, "ngio_mods", ["NGIO-NG"])
+    guardar_config(cfg_gui, config_path)
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["community_shaders_mods"] == ["Community Shaders"]
+    assert en_disco["ngio_mods"] == ["NGIO-NG"]
+    assert en_disco["llm_provider"] == "anthropic"
 
 
 # ── Ancla: las DOS clases reales de config, no una muestra ──────────────────────
@@ -568,27 +624,49 @@ ESCRITORES_TOML_PERMITIDOS = {
 }
 
 
-def _escritores_de_toml() -> set[str]:
-    """Módulos bajo ``sky_claw/`` que llaman ``tomli_w.dump`` (la primitiva que
-    serializa config TOML). Detecta el atributo ``dump`` sobre el nombre
-    ``tomli_w``, venga el módulo importado como sea (``import tomli_w`` o un
-    from-import no aplica: dump se invoca siempre vía atributo).
+def _usa_tomli_w_dump(arbol: ast.AST) -> bool:
+    """True si el módulo llama ``tomli_w.dump`` en CUALQUIERA de sus formas:
+    atributo sobre el módulo (``import tomli_w`` o ``import tomli_w as alias``)
+    y nombre importado directo (``from tomli_w import dump``, con o sin alias).
+    El detector original solo matcheaba ``Name("tomli_w").dump`` y se evadía con
+    un alias (review de CodeRabbit).
     """
+    nombres_modulo: set[str] = set()
+    nombres_dump: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            for alias in nodo.names:
+                if alias.name == "tomli_w":
+                    nombres_modulo.add(alias.asname or alias.name)
+        elif isinstance(nodo, ast.ImportFrom) and nodo.level == 0 and nodo.module == "tomli_w":
+            for alias in nodo.names:
+                if alias.name == "dump":
+                    nombres_dump.add(alias.asname or alias.name)
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        func = nodo.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "dump"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in nombres_modulo
+        ):
+            return True
+        if isinstance(func, ast.Name) and func.id in nombres_dump:
+            return True
+    return False
+
+
+def _escritores_de_toml() -> set[str]:
+    """Módulos bajo ``sky_claw/`` que llaman ``tomli_w.dump``, la primitiva que
+    serializa config TOML, en cualquiera de las formas que detecta
+    :func:`_usa_tomli_w_dump`."""
     encontrados: set[str] = set()
     for archivo in PAQUETE.rglob("*.py"):
         arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
-        for nodo in ast.walk(arbol):
-            if not isinstance(nodo, ast.Call):
-                continue
-            func = nodo.func
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr == "dump"
-                and isinstance(func.value, ast.Name)
-                and func.value.id == "tomli_w"
-            ):
-                encontrados.add(archivo.relative_to(RAIZ).as_posix())
-                break
+        if _usa_tomli_w_dump(arbol):
+            encontrados.add(archivo.relative_to(RAIZ).as_posix())
     return encontrados
 
 
@@ -597,3 +675,23 @@ def test_ancla_de_escritores_de_toml_de_config() -> None:
     si participa del merge de `Config.save()` o es otra exención deliberada.
     """
     assert _escritores_de_toml() == ESCRITORES_TOML_PERMITIDOS
+
+
+def test_ancla_detecta_todas_las_formas_de_llamar_tomli_w_dump() -> None:
+    """El detector no se evade con aliases ni from-imports: la garantía del
+    merge vive en `Config.save()`, así que cualquier serializador que la
+    esquive tiene que romper el ancla primero (review de CodeRabbit).
+    """
+    forma_plain = "import tomli_w\n\ntomli_w.dump({}, f)\n"
+    forma_alias = "import tomli_w as escritor\n\nescritor.dump({}, f)\n"
+    forma_from = "from tomli_w import dump\n\ndump({}, f)\n"
+    forma_from_alias = "from tomli_w import dump as volcar\n\nvolcar({}, f)\n"
+    forma_inocua = "import tomli_w\n\ntomli_w.loads(x)\n"
+    forma_modulo_distinto = "import otro_modulo as tw\n\ntw.dump({}, f)\n"
+
+    assert _usa_tomli_w_dump(ast.parse(forma_plain)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_alias)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_from)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_from_alias)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_inocua)) is False
+    assert _usa_tomli_w_dump(ast.parse(forma_modulo_distinto)) is False

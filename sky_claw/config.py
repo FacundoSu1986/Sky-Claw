@@ -219,7 +219,13 @@ class Config:
             try:
                 self.save()
                 logger.info("Migrated sensitive keys to keyring and scrubbed plaintext from TOML.")
-            except OSError as exc:
+            except (OSError, ValueError, UnicodeDecodeError) as exc:
+                # Desde F1 `save()` LEE el archivo (merge-on-save), así que puede
+                # abortar fail-closed con el error del parser (`TOMLDecodeError`
+                # es subclase de `ValueError`) o de lectura: ese fallo no puede
+                # tumbar la construcción del objeto — se degrada a log crítico,
+                # igual que antes se degradaba el fallo de escritura (review de
+                # CodeRabbit sobre el contrato de error).
                 logger.critical(
                     "Failed to scrub plaintext secrets from TOML after keyring migration: %s. "
                     "Sensitive data may remain on disk at %s.",
@@ -293,6 +299,13 @@ class Config:
 
         Todo escritor de Config participa por construcción: el merge vive acá,
         no en un wrapper. Anclas en ``tests/test_local_config_persistencia.py``.
+
+        Raises:
+            tomllib.TOMLDecodeError | UnicodeDecodeError | OSError: El archivo
+                existe y no se pudo leer/parsear. Fail-closed declarado: no se
+                mergea —y por tanto no se escribe— sobre lo que no se puede
+                leer; el archivo queda intacto y el llamador decide (misma
+                doctrina que ``local_config.abrir_config_para_persistir``).
         """
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         import tomli_w
@@ -344,14 +357,20 @@ class Config:
                         )
                         # Fail-closed en las DOS direcciones. No se escribe plaintext
                         # NUEVO en el archivo (la política de secretos no se degrada
-                        # porque el keyring falle), pero tampoco se BORRA el que el
-                        # usuario ya tenía ahí: el `pop` de arriba es incondicional, así
-                        # que sin esto un keyring caído destruía el único ejemplar del
-                        # secreto en el mismo save() que decía estar protegiéndolo — y
-                        # no hay backup ni escritura atómica para recuperarlo. Se
-                        # restaura el valor QUE ESTABA EN EL ARCHIVO, nunca el de
-                        # memoria: un secreto recién tipeado no baja a disco en claro.
-                        anterior = self._secretos_solo_en_archivo.get(key)
+                        # porque el keyring falle), pero tampoco se BORRA el que ya
+                        # estaba en el archivo: el `pop` de arriba es incondicional,
+                        # así que sin esto un keyring caído destruía el único
+                        # ejemplar del secreto en el mismo save() que decía estar
+                        # protegiéndolo. La fuente de restauración es lo que HAY en
+                        # el archivo en este momento (`fresco`): desde F1 otra
+                        # superficie puede haber escrito el secreto DESPUÉS de la
+                        # construcción de este objeto, y `_secretos_solo_en_archivo`
+                        # solo conoce lo que ESTE objeto leyó al construirse — sin el
+                        # fresco, ese caso nuevo (secreto escrito por otro) se caía
+                        # del mapa y el único ejemplar se destruía (review de
+                        # CodeRabbit). Nunca se restaura el valor de memoria: un
+                        # secreto recién tipeado no baja a disco en claro.
+                        anterior = fresco.get(key) or self._secretos_solo_en_archivo.get(key)
                         if anterior:
                             save_data[key] = anterior
                     else:

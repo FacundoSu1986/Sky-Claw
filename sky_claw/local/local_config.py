@@ -344,9 +344,14 @@ def persistir_campo(path: pathlib.Path, campo: str, valor: Any) -> None:
 # Es además un lock de PROCESO (vale para GUI+agente conviviendo en la misma
 # instancia de Sky-Claw), no de archivo: no protege contra otro proceso
 # tocando el mismo config.toml (p.ej. dos instancias corriendo a la vez), que
-# es un escenario no soportado en otras partes del código tampoco. El
-# threading.Lock per-path de `Config.save()` cubre además a los llamadores
-# directos de `.save()` que no pasan por este lock asyncio.
+# es un escenario no soportado en otras partes del código tampoco. Los dos
+# locks no son redundantes: el threading.Lock por path de `Config.save()` es
+# el coordinador del ARCHIVO — toda mutación del TOML pasa por él con lectura
+# fresca, incluido el ciclo de `persistir_campo`, cuya escritura final también
+# es un merge-on-save (los llamadores directos de `.save()` que se saltean
+# este lock asyncio quedan cubiertos igual); el de este módulo además
+# serializa los ciclos de los wrappers. Ancla del interleaving "GUI lee →
+# agente escribe → GUI reemplaza": `tests/test_local_config_persistencia.py`.
 _lock_de_escritura: asyncio.Lock | None = None
 _loop_del_lock: asyncio.AbstractEventLoop | None = None
 

@@ -141,7 +141,13 @@ El lock evita que dos escrituras concurrentes intercalen sus `os.replace`
 `Config.save()` hace merge-on-save — relee el disco bajo un threading.Lock por
 path y aplica solo el diff del objeto contra su baseline (snapshot al
 construir / tras cada save), así que un objeto `Config` de vida larga ya no
-puede pisar un campo que otro camino escribió con lectura fresca. Los borrados
+puede pisar un campo que otro camino escribió con lectura fresca. Los dos
+locks no son redundantes: el threading.Lock por path dentro de `Config.save()`
+es el coordinador del ARCHIVO — toda mutación del TOML pasa por ahí con
+lectura fresca, sea `persistir_campo` o un `.save()` directo que se saltea el
+lock asyncio — y el lock asyncio además serializa los ciclos de los wrappers
+(ambos locks se anclan con el interleaving "GUI lee → agente escribe → GUI
+reemplaza" en los tests de carrera). Los borrados
 (secretos, secciones legacy) van DESPUÉS del merge para no resucitar. Anclas:
 tests de la sección "Carrera GUI ↔ agente LLM" en
 `tests/test_local_config_persistencia.py` (cierre paramétrico sobre campos que
