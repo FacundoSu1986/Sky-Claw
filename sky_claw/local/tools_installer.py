@@ -2069,6 +2069,12 @@ class ToolsInstaller:
                 # El file MAIN de EF (verificado en el archive real de Nexus) es un
                 # FOMOD con ramas SE/AE: se resuelve a la rama de la edición.
                 post_extract=lambda mod_dir: _transform_fomod_engine_fixes(mod_dir, edition),
+                # La idempotencia exige la config, igual que el fresh install:
+                # _transform_fomod_engine_fixes es fail-closed ante un FOMOD sin
+                # Required/SKSE (un EF sin EngineFixes.toml arranca con defaults
+                # incorrectos), así que un mod ya instalado sin el toml está ROTO
+                # y se re-instala en vez de reportarse listo (review de #442).
+                required_files=("SKSE/Plugins/EngineFixes.toml",),
             ),
             await self._ensure_github_mod(
                 mods_dir,
@@ -2095,17 +2101,23 @@ class ToolsInstaller:
         mod_name: str,
         sentinel_glob: str,
         required_rel: tuple[str, ...] = (),
+        required_files: tuple[str, ...] = (),
     ) -> ModInstallResult | None:
         """Idempotencia: mod con sentinel presente → resultado sin HITL ni red.
 
-        *required_rel* se re-verifica en el camino ya-instalado: un mod con el
-        DLL pero sin los directorios requeridos (p.ej. CS 1.8.0 con el bug real
-        "AIO zip missing feature files" — Shaders/ ausente) NO es
-        ``already_existed``: se re-instala en vez de reportar un mod roto como
-        instalado.
+        *required_rel* y *required_files* se re-verifican en el camino
+        ya-instalado: un mod con el DLL pero sin los directorios/archivos
+        requeridos NO es ``already_existed``: se re-instala en vez de reportar
+        un mod roto como instalado. Ejemplos reales: CS 1.8.0 con el bug
+        "AIO zip missing feature files" (Shaders/ ausente) y SSE Engine Fixes
+        sin ``EngineFixes.toml`` (el plugin arrancaría con defaults
+        incorrectos; el fresh install es fail-closed ante eso, la
+        idempotencia no puede ser más laxa).
         """
-        if any((mod_dir / "SKSE" / "Plugins").glob(sentinel_glob)) and all(
-            (mod_dir / rel).is_dir() for rel in required_rel
+        if (
+            any((mod_dir / "SKSE" / "Plugins").glob(sentinel_glob))
+            and all((mod_dir / rel).is_dir() for rel in required_rel)
+            and all((mod_dir / rel).is_file() for rel in required_files)
         ):
             logger.info("%s ya instalado en %s", mod_name, mod_dir)
             return ModInstallResult(
@@ -2122,13 +2134,16 @@ class ToolsInstaller:
         mod_name: str,
         sentinel_glob: str,
         required_rel: tuple[str, ...] = (),
+        required_files: tuple[str, ...] = (),
     ) -> None:
         """Fail-closed si el archive no trajo el payload esperado.
 
         *sentinel_glob* verifica ``SKSE/Plugins/``; *required_rel* exige además
-        directorios relativos a la raíz del mod (verificación compuesta contra
-        zips incompletos del upstream — p.ej. el bug real de Community Shaders
-        "AIO zip missing feature files", 1.8.0 #2588).
+        directorios relativos a la raíz del mod y *required_files* archivos
+        relativos a la raíz (verificación compuesta contra zips incompletos del
+        upstream — p.ej. el bug real de Community Shaders "AIO zip missing
+        feature files", 1.8.0 #2588, y un SSE Engine Fixes sin su
+        ``EngineFixes.toml``).
         """
         if not any((mod_dir / "SKSE" / "Plugins").glob(sentinel_glob)):
             raise ToolInstallError(
@@ -2139,6 +2154,12 @@ class ToolsInstaller:
             if not (mod_dir / rel).is_dir():
                 raise ToolInstallError(
                     f"La extracción de {mod_name} terminó pero falta el directorio "
+                    f"requerido {rel!r} — archive incompleto del upstream."
+                )
+        for rel in required_files:
+            if not (mod_dir / rel).is_file():
+                raise ToolInstallError(
+                    f"La extracción de {mod_name} terminó pero falta el archivo "
                     f"requerido {rel!r} — archive incompleto del upstream."
                 )
 
@@ -2155,6 +2176,7 @@ class ToolsInstaller:
         request_slug: str,
         source_hint: str,
         required_rel: tuple[str, ...] = (),
+        required_files: tuple[str, ...] = (),
         clean_on_fail: bool = True,
         install_comment: str | None = None,
     ) -> ModInstallResult:
@@ -2163,11 +2185,11 @@ class ToolsInstaller:
         Con *asset_select* elige el asset por criterio (p.ej. edición, cuando el
         release trae varios builds); si no, usa *keyword*.
 
-        *required_rel*: verificación compuesta del payload (ver
-        :meth:`_verify_mod_payload`). *clean_on_fail*: ante un fallo post-HITL
-        (descarga/extracción/verificación) se elimina el ``mod_dir`` parcial con
-        ``rmtree_link_aware(..., limpiar_readonly=True)`` — NUNCA si el
-        directorio ya tenía contenido antes de esta invocación, NUNCA en
+        *required_rel* / *required_files*: verificación compuesta del payload
+        (ver :meth:`_verify_mod_payload`). *clean_on_fail*: ante un fallo
+        post-HITL (descarga/extracción/verificación) se elimina el ``mod_dir``
+        parcial con ``rmtree_link_aware(..., limpiar_readonly=True)`` — NUNCA si
+        el directorio ya tenía contenido antes de esta invocación, NUNCA en
         denegación HITL, NUNCA en ``CancelledError`` (``except Exception`` no
         captura ``BaseException``). *install_comment*: comentario del
         ``meta.ini``; ``None`` → genérico.
@@ -2181,7 +2203,7 @@ class ToolsInstaller:
             _install_lock_resource_id(mod_dir),
             ttl=self._install_ttl,
         ):
-            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob, required_rel)
+            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob, required_rel, required_files)
             if existing is not None:
                 return existing
 
@@ -2202,14 +2224,25 @@ class ToolsInstaller:
             # Un dir que YA tenía contenido antes de esta invocación jamás se
             # borra: podría ser un mod ajeno o un intento previo del usuario.
             preexistia = mod_dir.exists() and any(mod_dir.iterdir())
-            # Staging SEPARADO de mod_dir (mo2_root/.skyclaw-dl): un zip
-            # stale/parcial jamás vive dentro del mod — ni bloquea el flatten,
-            # ni envenena `preexistia`, ni es visible en MO2. Hermano Nexus
-            # (staging propio) alineado. Se VALIDA contra el PathValidator
-            # antes del mkdir: `mods_dir.parent` deriva de configuración del
-            # usuario y "dentro de los roots" no puede quedar en el comentario
-            # (mismo patrón que el staging de ensure_skse).
-            staging = mods_dir.parent / ".skyclaw-dl"
+            # Staging SEPARADO de mod_dir y POR MOD (mo2_root/.skyclaw-dl/<mod>):
+            # un zip stale/parcial jamás vive dentro del mod — ni bloquea el
+            # flatten, ni envenena `preexistia`, ni es visible en MO2. Hermano
+            # Nexus (staging propio) alineado. El subdirectorio por mod es la
+            # garantía de concurrencia: dos instalaciones de mods DISTINTOS
+            # corren en paralelo (locks per-mod_dir, no globales) y con un
+            # staging único el ``rmdir()`` del finally de la que terminaba podía
+            # borrarle el directorio a la que seguía descargando → el ``open``
+            # del destino moría con FileNotFoundError. Se keyea por ``mod_dir.name``
+            # —la MISMA identidad que el lock de instalación— y no por
+            # ``request_slug``: el lock lo deriva el caller de ``mod_dir``, así que
+            # mismo staging ⟺ mismo mod_dir ⟺ mismo lock ⟺ serializadas. Keyear
+            # por slug dejaba la garantía en la disciplina del caller: un slug
+            # repetido entre dos mods distintos tendría locks distintos sobre el
+            # MISMO staging y reintroduciría la carrera (review Codex). Se VALIDA
+            # contra el PathValidator antes del mkdir: `mods_dir.parent` deriva de
+            # configuración del usuario y "dentro de los roots" no puede quedar en
+            # el comentario (mismo patrón que ensure_skse).
+            staging = mods_dir.parent / ".skyclaw-dl" / mod_dir.name
             self._validator.validate(staging)
             staging.mkdir(parents=True, exist_ok=True)
             try:
@@ -2235,7 +2268,7 @@ class ToolsInstaller:
                     # de clean_on_fail borró un mod VÁLIDO).
                     logger.warning("No se pudo borrar el archive temporal %s (lock transitorio)", archive)
                 _flatten_single_root(mod_dir)
-                self._verify_mod_payload(mod_dir, mod_name, sentinel_glob, required_rel)
+                self._verify_mod_payload(mod_dir, mod_name, sentinel_glob, required_rel, required_files)
                 _write_mod_meta_ini(mod_dir, mod_name, version, comment=install_comment)
             except Exception:
                 if clean_on_fail and not preexistia:
@@ -2263,6 +2296,7 @@ class ToolsInstaller:
         request_slug: str,
         select_file: Callable[[list[dict[str, Any]]], int] | None = None,
         required_rel: tuple[str, ...] = (),
+        required_files: tuple[str, ...] = (),
         clean_on_fail: bool = True,
         install_comment: str | None = None,
         post_extract: Callable[[pathlib.Path], None] | None = None,
@@ -2273,11 +2307,12 @@ class ToolsInstaller:
         ``list_files`` (p.ej. Address Library SE vs AE); sin él se usa el
         file primary de :meth:`NexusDownloader.get_file_info`.
 
-        *required_rel*, *clean_on_fail* e *install_comment*: mismo contrato que
-        :meth:`_ensure_github_mod` (los dos hermanos comparten las tres
-        invariantes de limpieza). *post_extract*: transform del layout extraído
-        antes de la verificación (p.ej. resolver un FOMOD a la rama de la
-        edición — ver :func:`_transform_fomod_engine_fixes`).
+        *required_rel*, *required_files*, *clean_on_fail* e *install_comment*:
+        mismo contrato que :meth:`_ensure_github_mod` (los dos hermanos
+        comparten las tres invariantes de limpieza y la verificación
+        compuesta). *post_extract*: transform del layout extraído antes de la
+        verificación (p.ej. resolver un FOMOD a la rama de la edición — ver
+        :func:`_transform_fomod_engine_fixes`).
         """
         mod_dir = mods_dir / mod_name
         # Lock por mod_dir, NO global; reentrante via ContextVar (idem _ensure_github_mod).
@@ -2286,7 +2321,7 @@ class ToolsInstaller:
             _install_lock_resource_id(mod_dir),
             ttl=self._install_ttl,
         ):
-            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob, required_rel)
+            existing = self._existing_mod_result(mod_dir, mod_name, sentinel_glob, required_rel, required_files)
             if existing is not None:
                 return existing
 
@@ -2344,7 +2379,7 @@ class ToolsInstaller:
                     # congelaba el loop principal (hang visible en NiceGUI).
                     await _esperar_hilo_ininterrumpible(post_extract, mod_dir)
                 _flatten_single_root(mod_dir)
-                self._verify_mod_payload(mod_dir, mod_name, sentinel_glob, required_rel)
+                self._verify_mod_payload(mod_dir, mod_name, sentinel_glob, required_rel, required_files)
                 _write_mod_meta_ini(mod_dir, mod_name, file_info.file_name, comment=install_comment)
             except Exception:
                 if clean_on_fail and not preexistia:

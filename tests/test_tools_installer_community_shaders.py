@@ -354,7 +354,10 @@ def _mods_sin_payload(mods_dir: pathlib.Path) -> None:
     """Mods instalados con sentinel + estructura válida → el flujo debe ser idempotente.
 
     CS incluye ``Shaders/``: con T4, un CS con DLL pero sin Shaders/ (bug real
-    1.8.0) NO cuenta como already_existed — se re-instala por diseño.
+    1.8.0) NO cuenta como already_existed — se re-instala por diseño. EF incluye
+    ``EngineFixes.toml``: con ``required_files``, un EF con el DLL pero sin su
+    config NO cuenta como already_existed (el fresh install es fail-closed ante
+    eso; la idempotencia no puede ser más laxa).
     """
     for nombre, payload in (
         (ti_mod.ADDRESS_LIBRARY_MOD_NAME, "version-1-5-97-0.bin"),
@@ -364,6 +367,9 @@ def _mods_sin_payload(mods_dir: pathlib.Path) -> None:
         plugins = mods_dir / nombre / "SKSE" / "Plugins"
         plugins.mkdir(parents=True)
         (plugins / payload).write_text("fake", encoding="utf-8")
+    (mods_dir / ti_mod.SSE_ENGINE_FIXES_MOD_NAME / "SKSE" / "Plugins" / "EngineFixes.toml").write_text(
+        "toml", encoding="utf-8"
+    )
     (mods_dir / ti_mod.COMMUNITY_SHADERS_MOD_NAME / "Shaders").mkdir()
 
 
@@ -975,6 +981,11 @@ class TestEnsureCommunityShadersInstalacion:
             plugins = mods_dir / nombre / "SKSE" / "Plugins"
             plugins.mkdir(parents=True)
             (plugins / payload).write_text("fake", encoding="utf-8")
+        # EF idempotente exige su config (required_files): sin el toml NO sería
+        # already_existed y este test mediría otra cosa.
+        (mods_dir / ti_mod.SSE_ENGINE_FIXES_MOD_NAME / "SKSE" / "Plugins" / "EngineFixes.toml").write_text(
+            "toml", encoding="utf-8"
+        )
         cs_dir = mods_dir / ti_mod.COMMUNITY_SHADERS_MOD_NAME
         plugins = cs_dir / "SKSE" / "Plugins"
         plugins.mkdir(parents=True)
@@ -1001,6 +1012,57 @@ class TestEnsureCommunityShadersInstalacion:
         assert resultados[1].already_existed is True  # SSE Engine Fixes
         assert resultados[2].already_existed is False  # CS roto → se re-instaló
         assert (mods_dir / ti_mod.COMMUNITY_SHADERS_MOD_NAME / "Shaders").is_dir()
+
+    async def test_engine_fixes_sin_toml_no_es_already_existed(
+        self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        """EF con el DLL pero SIN ``EngineFixes.toml`` NO cuenta como instalado.
+
+        La instalación nueva es fail-closed ante un FOMOD sin ``Required/SKSE``
+        (dejaría el plugin arrancando con defaults incorrectos), pero el camino
+        idempotente aceptaba ese mismo mod roto con solo el sentinel del DLL:
+        el fresh install era más estricto que el ``already_existed``
+        (inconsistencia cazada en la revisión de #442). ``required_files`` cierra
+        la brecha en AMBOS caminos: el mod se re-instala (reparándolo) en vez de
+        reportarse listo.
+        """
+        # Árbol propio: Address Library + CS idempotentes; EF con DLL pero SIN toml.
+        for nombre, payload in (
+            (ti_mod.ADDRESS_LIBRARY_MOD_NAME, "version-1-5-97-0.bin"),
+            (ti_mod.SSE_ENGINE_FIXES_MOD_NAME, "EngineFixes.dll"),
+        ):
+            plugins = mods_dir / nombre / "SKSE" / "Plugins"
+            plugins.mkdir(parents=True)
+            (plugins / payload).write_text("fake", encoding="utf-8")
+        ef_plugins = mods_dir / ti_mod.SSE_ENGINE_FIXES_MOD_NAME / "SKSE" / "Plugins"
+        assert not (ef_plugins / "EngineFixes.toml").exists()
+        cs_dir = mods_dir / ti_mod.COMMUNITY_SHADERS_MOD_NAME
+        plugins = cs_dir / "SKSE" / "Plugins"
+        plugins.mkdir(parents=True)
+        (plugins / "CommunityShaders.dll").write_text("x", encoding="utf-8")
+        (cs_dir / "Shaders").mkdir()
+
+        _mock_gateway_github_cs(installer, _ZIP_CS)
+        _aprobar_todo(installer)
+        downloader = _downloader_completo(tmp_path)
+        session = MagicMock(spec=aiohttp.ClientSession)
+        game_dir = tmp_path / "game"
+        _juego_valido(game_dir)
+
+        resultados = await installer.ensure_community_shaders(
+            mods_dir,
+            session,
+            downloader,
+            edition=SkyrimEdition.SE,
+            game_version="1.5.97",
+            game_dir=game_dir,
+        )
+
+        assert resultados[0].already_existed is True  # Address Library
+        assert resultados[1].already_existed is False  # EF roto → se re-instaló
+        assert resultados[2].already_existed is True  # CS
+        # La reparación trajo la config: el FOMOD resuelto incluye EngineFixes.toml.
+        assert (ef_plugins / "EngineFixes.toml").is_file()
 
     async def test_denegacion_a_mitad_aborta_el_resto_y_conserva_lo_instalado(
         self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
@@ -1288,9 +1350,11 @@ class TestCleanOnFailInvariantes:
         assert (mods_dir / ti_mod.COMMUNITY_SHADERS_MOD_NAME / "Shaders").is_dir()
         # El zip stale (unlink fallido) quedó en el staging, NUNCA dentro del mod:
         # ni visible en MO2, ni bloquea el flatten, ni envenena preexistia.
+        # Desde F4 el staging se keyea por ``mod_dir.name`` (la identidad del
+        # lock de instalación), no por el request_slug.
         assert list((mods_dir / ti_mod.COMMUNITY_SHADERS_MOD_NAME).rglob("*.zip")) == []
         assert list((mods_dir / ti_mod.SSE_ENGINE_FIXES_MOD_NAME).rglob("*.zip")) == []
-        stale = tmp_path / ".skyclaw-dl" / _CS_ASSET_CORE
+        stale = tmp_path / ".skyclaw-dl" / ti_mod.COMMUNITY_SHADERS_MOD_NAME / _CS_ASSET_CORE
         assert stale.exists(), "el zip stale debe quedar en el staging, fuera del mod"
 
 
