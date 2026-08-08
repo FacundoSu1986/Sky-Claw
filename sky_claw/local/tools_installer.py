@@ -2339,7 +2339,10 @@ class ToolsInstaller:
                 if post_extract is not None:
                     # Antes del flatten: el transform resuelve layouts no planos
                     # (p.ej. el FOMOD de EF) sin depender de renames frágiles.
-                    post_extract(mod_dir)
+                    # F5: es I/O pesado (copytree/copy2/rmtree del FOMOD de EF) —
+                    # fuera del event loop, igual que la extracción; inline
+                    # congelaba el loop principal (hang visible en NiceGUI).
+                    await _esperar_hilo_ininterrumpible(post_extract, mod_dir)
                 _flatten_single_root(mod_dir)
                 self._verify_mod_payload(mod_dir, mod_name, sentinel_glob, required_rel)
                 _write_mod_meta_ini(mod_dir, mod_name, file_info.file_name, comment=install_comment)
