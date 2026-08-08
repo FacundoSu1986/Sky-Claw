@@ -1288,9 +1288,10 @@ class TestCleanOnFailInvariantes:
         assert (mods_dir / ti_mod.COMMUNITY_SHADERS_MOD_NAME / "Shaders").is_dir()
         # El zip stale (unlink fallido) quedó en el staging, NUNCA dentro del mod:
         # ni visible en MO2, ni bloquea el flatten, ni envenena preexistia.
+        # Staging por slug desde F4 (carrera entre instalaciones concurrentes).
         assert list((mods_dir / ti_mod.COMMUNITY_SHADERS_MOD_NAME).rglob("*.zip")) == []
         assert list((mods_dir / ti_mod.SSE_ENGINE_FIXES_MOD_NAME).rglob("*.zip")) == []
-        stale = tmp_path / ".skyclaw-dl" / _CS_ASSET_CORE
+        stale = tmp_path / ".skyclaw-dl" / "community-shaders" / _CS_ASSET_CORE
         assert stale.exists(), "el zip stale debe quedar en el staging, fuera del mod"
 
 

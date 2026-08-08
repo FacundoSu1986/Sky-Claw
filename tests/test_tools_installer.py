@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import pathlib
 import tempfile
@@ -2139,9 +2140,107 @@ class TestHelpersCompartidosBlueprint:
 
         # El staging COMO TAL es lo único validado: si la validación viniera de
         # adentro de la descarga, la lista tendría el destino (<staging>/mod.zip).
-        assert validados == [tmp_path.parent / ".skyclaw-dl"]
-        assert not (tmp_path.parent / ".skyclaw-dl").exists()
+        # Staging por slug desde F4 (carrera entre instalaciones concurrentes).
+        assert validados == [tmp_path.parent / ".skyclaw-dl" / "mod-ficticio"]
+        assert not (tmp_path.parent / ".skyclaw-dl" / "mod-ficticio").exists()
         assert installer._gateway.request.await_count == 0
+
+    async def test_dos_instalaciones_github_concurrentes_no_se_pisan_el_staging(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Carrera F4: dos ``_ensure_github_mod`` concurrentes (mods DISTINTOS → locks
+        per-mod_dir distintos) compartían UN único staging ``.skyclaw-dl``. El mod que
+        terminaba hacía ``rmdir()`` mientras el otro seguía descargando (entre el mkdir
+        y el ``open`` de su archivo, en el ``await`` al gateway) y le borraba el directorio
+        en uso, haciéndolo fallar con ``FileNotFoundError``. El staging por mod
+        (``.skyclaw-dl/<slug>``) hace que cada instalación limpie SOLO lo propio.
+
+        El interleaving es determinista: A bloquea su descarga (señalando que ya hizo el
+        mkdir de staging pero aún no escribió el archivo), B corre COMPLETA — su ``finally``
+        ``rmdir()`` es el que, con staging compartido, elimina el directorio de A — y solo
+        entonces se libera A. Antes del fix, A muere al abrir su destino.
+        """
+        mods_dir = tmp_path / "mods"
+        mods_dir.mkdir()
+
+        # Payload mínimo válido: sentinel ``*.dll`` bajo SKSE/Plugins para ambos mods.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("SKSE/Plugins/tool.dll", "x")
+        payload = buf.getvalue()
+
+        en_descarga_a = asyncio.Event()
+        liberar_a = asyncio.Event()
+
+        asset_a = ReleaseAsset(
+            name="a.zip",
+            size=len(payload),
+            download_url="https://api.github.com/repos/x/a/releases/assets/1",
+            browser_download_url="https://github.com/x/a/a.zip",
+        )
+        asset_b = ReleaseAsset(
+            name="b.zip",
+            size=len(payload),
+            download_url="https://api.github.com/repos/x/b/releases/assets/2",
+            browser_download_url="https://github.com/x/b/b.zip",
+        )
+
+        async def _find_asset(session: Any, releases_url: str, *, keyword: Any = None, select: Any = None) -> Any:
+            return (asset_a if "/a/" in releases_url else asset_b, "1.0.0")
+
+        installer._find_github_asset = AsyncMock(side_effect=_find_asset)  # type: ignore[method-assign]
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        def _stream_response() -> MagicMock:
+            async def _chunks(_n: int) -> AsyncIterator[bytes]:
+                yield payload
+
+            resp = MagicMock()
+            resp.status = 200
+            resp.raise_for_status = MagicMock()
+            resp.release = MagicMock()
+            resp.content = MagicMock()
+            resp.content.iter_chunked = _chunks
+            return resp
+
+        async def _gateway_request(method: str, url: str, session: Any, **kwargs: Any) -> MagicMock:
+            if "/a/" in url:
+                en_descarga_a.set()  # A ya hizo mkdir de staging, aún no escribió a.zip
+                await liberar_a.wait()
+            return _stream_response()
+
+        installer._gateway.request = AsyncMock(side_effect=_gateway_request)  # type: ignore[method-assign]
+
+        comun = dict(sentinel_glob="*.dll", source_hint="GitHub x/x releases")
+        task_a = asyncio.create_task(
+            installer._ensure_github_mod(
+                mods_dir,
+                MagicMock(spec=aiohttp.ClientSession),
+                mod_name="ModA",
+                releases_url="https://api.github.com/repos/x/a/releases",
+                request_slug="mod-a",
+                **comun,
+            )
+        )
+        await en_descarga_a.wait()  # A está entre el mkdir y el open, esperando el gateway
+
+        # B corre completa; su ``finally`` rmdir() es el que pisaría el staging de A.
+        resultado_b = await installer._ensure_github_mod(
+            mods_dir,
+            MagicMock(spec=aiohttp.ClientSession),
+            mod_name="ModB",
+            releases_url="https://api.github.com/repos/x/b/releases",
+            request_slug="mod-b",
+            **comun,
+        )
+
+        liberar_a.set()
+        resultado_a = await task_a
+
+        assert resultado_b.already_existed is False
+        assert resultado_a.already_existed is False
+        assert (mods_dir / "ModA" / "SKSE" / "Plugins" / "tool.dll").is_file()
+        assert (mods_dir / "ModB" / "SKSE" / "Plugins" / "tool.dll").is_file()
 
     def test_verify_mod_payload_requiere_dirs_relativos(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path

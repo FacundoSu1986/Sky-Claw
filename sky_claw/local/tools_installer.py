@@ -2202,14 +2202,21 @@ class ToolsInstaller:
             # Un dir que YA tenía contenido antes de esta invocación jamás se
             # borra: podría ser un mod ajeno o un intento previo del usuario.
             preexistia = mod_dir.exists() and any(mod_dir.iterdir())
-            # Staging SEPARADO de mod_dir (mo2_root/.skyclaw-dl): un zip
-            # stale/parcial jamás vive dentro del mod — ni bloquea el flatten,
-            # ni envenena `preexistia`, ni es visible en MO2. Hermano Nexus
-            # (staging propio) alineado. Se VALIDA contra el PathValidator
-            # antes del mkdir: `mods_dir.parent` deriva de configuración del
-            # usuario y "dentro de los roots" no puede quedar en el comentario
-            # (mismo patrón que el staging de ensure_skse).
-            staging = mods_dir.parent / ".skyclaw-dl"
+            # Staging SEPARADO de mod_dir y POR MOD (mo2_root/.skyclaw-dl/<slug>):
+            # un zip stale/parcial jamás vive dentro del mod — ni bloquea el
+            # flatten, ni envenena `preexistia`, ni es visible en MO2. Hermano
+            # Nexus (staging propio) alineado. El subdirectorio por slug es la
+            # garantía de concurrencia: dos instalaciones de mods DISTINTOS
+            # corren en paralelo (locks per-mod_dir, no globales) y con un
+            # staging único el ``rmdir()`` del finally de la que terminaba podía
+            # borrarle el directorio a la que seguía descargando → el ``open``
+            # del destino moría con FileNotFoundError. El slug es estable y
+            # seguro para paths (literal del caller, validado abajo); dos
+            # instalaciones del MISMO mod ya se serializan por el lock. Se
+            # VALIDA contra el PathValidator antes del mkdir: `mods_dir.parent`
+            # deriva de configuración del usuario y "dentro de los roots" no
+            # puede quedar en el comentario (mismo patrón que ensure_skse).
+            staging = mods_dir.parent / ".skyclaw-dl" / request_slug
             self._validator.validate(staging)
             staging.mkdir(parents=True, exist_ok=True)
             try:
