@@ -2140,9 +2140,10 @@ class TestHelpersCompartidosBlueprint:
 
         # El staging COMO TAL es lo único validado: si la validación viniera de
         # adentro de la descarga, la lista tendría el destino (<staging>/mod.zip).
-        # Staging por slug desde F4 (carrera entre instalaciones concurrentes).
-        assert validados == [tmp_path.parent / ".skyclaw-dl" / "mod-ficticio"]
-        assert not (tmp_path.parent / ".skyclaw-dl" / "mod-ficticio").exists()
+        # Desde F4 el staging vive en .skyclaw-dl/<mod_dir.name> (la identidad
+        # del lock), no en la raíz compartida de antes ni bajo el slug.
+        assert validados == [tmp_path.parent / ".skyclaw-dl" / "ModFicticio"]
+        assert not (tmp_path.parent / ".skyclaw-dl" / "ModFicticio").exists()
         assert installer._gateway.request.await_count == 0
 
     async def test_dos_instalaciones_github_concurrentes_no_se_pisan_el_staging(
@@ -2153,12 +2154,16 @@ class TestHelpersCompartidosBlueprint:
         terminaba hacía ``rmdir()`` mientras el otro seguía descargando (entre el mkdir
         y el ``open`` de su archivo, en el ``await`` al gateway) y le borraba el directorio
         en uso, haciéndolo fallar con ``FileNotFoundError``. El staging por mod
-        (``.skyclaw-dl/<slug>``) hace que cada instalación limpie SOLO lo propio.
+        (``.skyclaw-dl/<mod_dir.name>``) hace que cada instalación limpie SOLO lo propio.
 
         El interleaving es determinista: A bloquea su descarga (señalando que ya hizo el
         mkdir de staging pero aún no escribió el archivo), B corre COMPLETA — su ``finally``
         ``rmdir()`` es el que, con staging compartido, elimina el directorio de A — y solo
         entonces se libera A. Antes del fix, A muere al abrir su destino.
+
+        El staging se keyea por ``mod_dir.name`` —la MISMA identidad que el lock de
+        instalación— y no por ``request_slug``: dos mods que reutilizaran un slug quedan
+        igualmente aislados (ver el ``request_slug`` repetido abajo). Review de Codex.
         """
         mods_dir = tmp_path / "mods"
         mods_dir.mkdir()
@@ -2212,13 +2217,18 @@ class TestHelpersCompartidosBlueprint:
         installer._gateway.request = AsyncMock(side_effect=_gateway_request)  # type: ignore[method-assign]
 
         comun = dict(sentinel_glob="*.dll", source_hint="GitHub x/x releases")
+        # Los DOS usan el MISMO request_slug a propósito: ancla la regresión que
+        # señaló la review de Codex — si el staging se keyeara por slug, dos mods
+        # distintos con un slug repetido tendrían locks distintos sobre el MISMO
+        # staging y la carrera reaparecería. El staging keyeado por mod_dir.name
+        # lo hace estructuralmente imposible aunque el slug se repita.
         task_a = asyncio.create_task(
             installer._ensure_github_mod(
                 mods_dir,
                 MagicMock(spec=aiohttp.ClientSession),
                 mod_name="ModA",
                 releases_url="https://api.github.com/repos/x/a/releases",
-                request_slug="mod-a",
+                request_slug="slug-compartido",
                 **comun,
             )
         )
@@ -2230,7 +2240,7 @@ class TestHelpersCompartidosBlueprint:
             MagicMock(spec=aiohttp.ClientSession),
             mod_name="ModB",
             releases_url="https://api.github.com/repos/x/b/releases",
-            request_slug="mod-b",
+            request_slug="slug-compartido",
             **comun,
         )
 
