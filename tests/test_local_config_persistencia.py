@@ -431,6 +431,32 @@ def test_intercalacion_gui_lee_agente_escribe_gui_reemplaza_no_pierde_nada(
     assert en_disco["llm_provider"] == "anthropic"
 
 
+def test_save_refresca_la_redaccion_desde_el_estado_fusionado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El contexto de logs debe reflejar el chat id que realmente quedó en disco."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'llm_provider = "anthropic"\ntelegram_chat_id = "chat-antiguo"\n',
+        encoding="utf-8",
+    )
+    cfg = Config(config_path)
+    config_path.write_text(
+        'llm_provider = "anthropic"\ntelegram_chat_id = "chat-actualizado"\n',
+        encoding="utf-8",
+    )
+    contextos: list[dict[str, str]] = []
+
+    from sky_claw import logging_config
+
+    monkeypatch.setattr(logging_config, "update_logging_redaction_context", lambda **kw: contextos.append(kw))
+
+    cfg._data["loot_exe"] = "D:/LOOT"
+    cfg.save()
+
+    assert contextos[-1]["telegram_chat_id"] == "chat-actualizado"
+
+
 async def test_una_asignacion_explicita_del_valor_del_baseline_se_persiste_igual(
     tmp_path: pathlib.Path,
 ) -> None:

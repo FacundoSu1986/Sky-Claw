@@ -304,6 +304,10 @@ class Config:
         # operator is aware that plaintext secrets remain on disk.
         if migrated:
             try:
+                # Las asignaciones anteriores hidratan estado interno; no son
+                # intención explícita del usuario. Baselinarlas antes del scrub
+                # obliga a consultar otra vez el keyring vivo durante save().
+                self._baseline = self._data.snapshot()
                 self.save()
                 logger.info("Migrated sensitive keys to keyring and scrubbed plaintext from TOML.")
             except (OSError, ValueError, UnicodeDecodeError) as exc:
@@ -442,6 +446,11 @@ class Config:
                 save_data.pop(key, None)
                 escritura_explicita = key in claves_mutadas or key in self._secretos_pendientes
 
+                if key not in snapshot and not val_archivo and not escritura_explicita:
+                    # No hay estado que reconciliar: evita consultar backends
+                    # de keyring para claves que este Config nunca conoció.
+                    continue
+
                 if escritura_explicita and val_objeto:
                     try:
                         keyring.set_password("sky_claw", key, str(val_objeto))
@@ -519,7 +528,7 @@ class Config:
         from sky_claw.logging_config import update_logging_redaction_context
 
         update_logging_redaction_context(
-            telegram_chat_id=str(self._data.get("telegram_chat_id") or ""),
+            telegram_chat_id=str(save_data.get("telegram_chat_id") or ""),
         )
 
     @property

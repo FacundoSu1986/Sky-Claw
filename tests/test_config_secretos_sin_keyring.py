@@ -200,6 +200,37 @@ def test_migracion_de_secreto_en_constructor_no_reaplica_el_snapshot_completo(
     assert almacen["nexus_api_key"] == "clave-a-migrar"
 
 
+def test_hidratacion_del_keyring_no_se_confunde_con_una_escritura_explicita(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Migrar un secreto B no puede reescribir una versión obsoleta de A."""
+    almacen = {
+        "llm_api_key": "llm-v1-leida",
+        "ws_auth_token": "token-ws-existente",
+    }
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'llm_provider = "anthropic"\nnexus_api_key = "nexus-a-migrar"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(keyring, "get_password", lambda _s, k: almacen.get(k))
+
+    def _guardar(_servicio: str, clave: str, valor: str) -> None:
+        almacen[clave] = valor
+        if clave == "nexus_api_key":
+            # Otra superficie rota A después de que este constructor leyó v1.
+            almacen["llm_api_key"] = "llm-v2-rotada"
+
+    monkeypatch.setattr(keyring, "set_password", _guardar)
+
+    Config(config_path)
+
+    assert almacen["llm_api_key"] == "llm-v2-rotada"
+    assert almacen["nexus_api_key"] == "nexus-a-migrar"
+    assert "nexus_api_key" not in tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+
 def test_un_config_long_lived_no_pisa_un_keyring_actualizado_despues_de_construirse(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
