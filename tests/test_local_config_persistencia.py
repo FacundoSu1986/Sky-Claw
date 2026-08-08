@@ -475,6 +475,22 @@ def test_reasignacion_explicita_repetida_tras_un_save_se_persiste(tmp_path: path
     assert en_disco["loot_exe"] == "D:/LOOT"
 
 
+def test_borrado_explicito_usa_tombstone_aunque_la_clave_no_estuviera_en_el_baseline(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Agregar y borrar localmente una clave debe vencer una adición externa anterior."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+
+    persistir_campo(config_path, "campo_nuevo", "valor-externo")
+    cfg._data["campo_nuevo"] = "valor-temporal"
+    del cfg._data["campo_nuevo"]
+    cfg.save()
+
+    assert "campo_nuevo" not in tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+
 def test_datos_config_enumera_mutadores_y_preserva_generaciones_en_copias() -> None:
     """Todo mutador público del dict participa del contrato de generaciones."""
     datos = _DatosConfig({"para_del": 1, "para_pop": 2})

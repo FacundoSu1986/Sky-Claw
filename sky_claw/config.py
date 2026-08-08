@@ -430,7 +430,7 @@ class Config:
             diff: dict[str, Any] = {
                 k: v for k, v in snapshot.items() if k in claves_mutadas or k not in baseline or baseline[k] != v
             }
-            borrados = set(baseline) - set(snapshot)
+            borrados = (set(baseline) | claves_mutadas) - set(snapshot)
 
             save_data = {**fresco, **diff}
             for key in borrados:
