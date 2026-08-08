@@ -4,7 +4,7 @@
 >
 > **Audiencia:** desarrolladores, reviewers y agentes.
 >
-> **Fuente canónica:** archivos bajo `specs/` y `plans/`.
+> **Fuente canónica del diseño acordado:** archivos bajo `specs/` y `plans/`.
 >
 > **Última verificación del índice:** 2026-08-08 sobre `origin/main` `01faebd3`.
 
