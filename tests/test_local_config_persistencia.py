@@ -26,13 +26,15 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import json
 import pathlib
+import threading
 import tomllib
 
 import pytest
 
-from sky_claw.config import Config
+from sky_claw.config import Config, _DatosConfig
 from sky_claw.local.local_config import (
     LocalConfig,
     abrir_config_para_persistir,
@@ -454,6 +456,101 @@ async def test_una_asignacion_explicita_del_valor_del_baseline_se_persiste_igual
     en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert en_disco["loot_exe"] == "D:/LOOT"
     assert en_disco["llm_provider"] == "anthropic"
+
+
+def test_reasignacion_explicita_repetida_tras_un_save_se_persiste(tmp_path: pathlib.Path) -> None:
+    """Cada asignación expresa una intención nueva, incluso tras actualizar el baseline."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\nloot_exe = "D:/LOOT"\n', encoding="utf-8")
+    cfg = Config(config_path)
+
+    cfg._data["loot_exe"] = "D:/LOOT"
+    cfg.save()
+
+    persistir_campo(config_path, "loot_exe", "D:/Otro")
+    cfg._data["loot_exe"] = "D:/LOOT"
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["loot_exe"] == "D:/LOOT"
+
+
+def test_datos_config_enumera_mutadores_y_preserva_generaciones_en_copias() -> None:
+    """Todo mutador público del dict participa del contrato de generaciones."""
+    datos = _DatosConfig({"para_del": 1, "para_pop": 2})
+    generaciones: list[int] = []
+
+    datos["setitem"] = 1
+    generaciones.append(datos.generaciones["setitem"])
+    datos.update({"update": 2})
+    generaciones.append(datos.generaciones["update"])
+    datos.setdefault("setdefault", 3)
+    generaciones.append(datos.generaciones["setdefault"])
+    datos |= {"ior": 4}
+    generaciones.append(datos.generaciones["ior"])
+    del datos["para_del"]
+    generaciones.append(datos.generaciones["para_del"])
+    datos.pop("para_pop")
+    generaciones.append(datos.generaciones["para_pop"])
+    datos["para_popitem"] = 5
+    datos.popitem()
+    generaciones.append(datos.generaciones["para_popitem"])
+
+    snapshot = datos.snapshot()
+    copia = datos.copy()
+    copia_profunda = copy.deepcopy(datos)
+    datos["posterior"] = 6
+
+    assert generaciones == sorted(generaciones)
+    assert len(generaciones) == len(set(generaciones))
+    assert snapshot.generaciones == copia.generaciones == copia_profunda.generaciones
+    assert "posterior" not in snapshot
+
+    claves_antes_de_clear = set(datos)
+    datos.clear()
+    assert not datos
+    assert claves_antes_de_clear <= datos.generaciones.keys()
+
+
+def test_snapshot_tolera_una_mutacion_concurrente_de_data(tmp_path: pathlib.Path) -> None:
+    """El snapshot debe ser coherente aunque otro thread escriba durante la copia."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+    copia_iniciada = threading.Event()
+    mutacion_terminada = threading.Event()
+
+    class _ValorQueAbreLaCarrera:
+        def __init__(self) -> None:
+            self._primera_copia = True
+
+        def __deepcopy__(self, _memo: dict[int, object]) -> str:
+            if self._primera_copia:
+                self._primera_copia = False
+                copia_iniciada.set()
+                assert not mutacion_terminada.wait(timeout=0.05)
+            return "copiado"
+
+    cfg._data["campo_para_snapshot"] = _ValorQueAbreLaCarrera()
+
+    def _mutar_durante_la_copia() -> None:
+        assert copia_iniciada.wait(timeout=1)
+        cfg._data["campo_concurrente"] = "valor-concurrente"
+        mutacion_terminada.set()
+
+    escritor = threading.Thread(target=_mutar_durante_la_copia)
+    escritor.start()
+    cfg.save()
+    escritor.join(timeout=1)
+    assert not escritor.is_alive()
+
+    # La escritura concurrente puede quedar fuera de este snapshot, pero debe
+    # conservar su generación pendiente para el save siguiente.
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["campo_para_snapshot"] == "copiado"
+    assert en_disco["campo_concurrente"] == "valor-concurrente"
 
 
 def test_mutacion_concurrente_durante_el_save_no_se_da_por_persistida(

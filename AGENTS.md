@@ -139,9 +139,9 @@ crudo desde cualquier código nuevo que persista sobre el mismo `config.toml`.
 El lock evita que dos escrituras concurrentes intercalen sus `os.replace`
 (archivo corrupto). Desde **F1**, el contenido tampoco se pierde:
 `Config.save()` hace merge-on-save — relee el disco bajo un threading.Lock por
-path y aplica solo el diff del objeto contra su baseline (snapshot al
-construir / tras cada save), así que un objeto `Config` de vida larga ya no
-puede pisar un campo que otro camino escribió con lectura fresca. Los dos
+path y aplica solo las generaciones que cambiaron contra su baseline (snapshot
+sincronizado al construir / tras cada save), así que un objeto `Config` de vida
+larga ya no puede pisar un campo que otro camino escribió con lectura fresca. Los dos
 locks no son redundantes: el threading.Lock por path dentro de `Config.save()`
 es el coordinador del ARCHIVO — toda mutación del TOML pasa por ahí con
 lectura fresca, sea `persistir_campo` o un `.save()` directo que se saltea el
@@ -160,7 +160,9 @@ AST se rompe a propósito: decidí si participa del merge o es una exención.
 **Secretos en `Config.save()`.** Fail-closed en las **dos** direcciones: no baja
 plaintext nuevo al TOML si el keyring falla, y tampoco borra el secreto que ya
 estaba en el archivo cuando no lo pudo mover (perder la key es tan malo como
-filtrarla, y no hay backup ni escritura atómica). Ancla:
+filtrarla, y no hay backup ni escritura atómica). Sin una escritura explícita,
+el valor vivo del keyring prevalece sobre memoria o plaintext obsoletos; una
+escritura rechazada queda pendiente para reintento. Ancla:
 `tests/test_config_secretos_sin_keyring.py`.
 
 ## Pendientes conocidos

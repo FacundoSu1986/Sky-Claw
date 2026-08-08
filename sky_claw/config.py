@@ -17,6 +17,17 @@ import keyring.errors
 
 logger = logging.getLogger(__name__)
 
+_CLAVES_SENSIBLES = (
+    "llm_api_key",
+    "openai_api_key",
+    "anthropic_api_key",
+    "deepseek_api_key",
+    "nexus_api_key",
+    "search_api_key",
+    "telegram_bot_token",
+    "ws_auth_token",
+)
+
 
 # ----------------------------------------------------------------------------
 # Lock de PROCESO para el ciclo leer-mergear-escribir de `Config.save()`
@@ -125,42 +136,93 @@ class SystemPaths:
 
 
 class _DatosConfig(dict[str, Any]):
-    """El estado de ``Config``, con registro de escrituras explícitas.
+    """Estado sincronizado de ``Config`` con generaciones por clave.
 
-    El diff de ``Config.save()`` no puede depender SOLO de comparar valores:
-    una asignación explícita del valor que ya estaba en el baseline
-    (``setup_tools`` que re-descubre el mismo exe path que el objeto
-    long-lived ya tenía) sigue siendo una declaración de intención y debe
-    persistirse — la comparación no distingue "sin tocar" de "reasigné lo que
-    ya estaba" (review de qodo, P2). ``escribir_campo`` y las asignaciones
-    directas ``_data[k] = v`` (``app_context``, ``frontend_bridge``) pasan en
-    masa por ``__setitem__``: ningún caller cambia nada.
+    Cada operación mutante avanza una secuencia monotónica. Así una
+    reasignación explícita sigue expresando intención aunque repita el valor y
+    ocurra después de haber actualizado el baseline.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        #: Claves escritas explícitamente desde la construcción. El diff de
-        #: save() las suma a la comparación de valores; el deepcopy del
-        #: snapshot arrastra su propia copia (comparada contra la del baseline
-        #: para saber qué se escribió DESDE el último save).
-        self.dirty: set[str] = set()
+        self._lock = threading.RLock()
+        self._secuencia = 0
+        self.generaciones: dict[str, int] = {}
+
+    def _marcar_mutacion(self, key: str) -> None:
+        self._secuencia += 1
+        self.generaciones[key] = self._secuencia
 
     def __setitem__(self, key: str, value: Any) -> None:
-        super().__setitem__(key, value)
-        self.dirty.add(key)
+        with self._lock:
+            dict.__setitem__(self, key, value)
+            self._marcar_mutacion(key)
+
+    def __delitem__(self, key: str) -> None:
+        with self._lock:
+            dict.__delitem__(self, key)
+            self._marcar_mutacion(key)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        nuevos = dict(*args, **kwargs)
+        with self._lock:
+            for key, value in nuevos.items():
+                dict.__setitem__(self, key, value)
+                self._marcar_mutacion(key)
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            if key in self:
+                return dict.__getitem__(self, key)
+            dict.__setitem__(self, key, default)
+            self._marcar_mutacion(key)
+            return default
+
+    def __ior__(self, other: Any) -> _DatosConfig:
+        self.update(other)
+        return self
+
+    def pop(self, key: str, *args: Any) -> Any:
+        with self._lock:
+            presente = key in self
+            valor = dict.pop(self, key, *args)
+            if presente:
+                self._marcar_mutacion(key)
+            return valor
+
+    def popitem(self) -> tuple[str, Any]:
+        with self._lock:
+            key, value = dict.popitem(self)
+            self._marcar_mutacion(key)
+            return key, value
+
+    def clear(self) -> None:
+        with self._lock:
+            claves = tuple(dict.keys(self))
+            dict.clear(self)
+            for key in claves:
+                self._marcar_mutacion(key)
+
+    def snapshot(self, memo: dict[int, Any] | None = None) -> _DatosConfig:
+        """Copia coherente del estado sin retener el lock durante I/O."""
+        memo = {} if memo is None else memo
+        with self._lock:
+            nuevo = _DatosConfig()
+            memo[id(self)] = nuevo
+            for clave, valor in dict.items(self):
+                dict.__setitem__(nuevo, clave, copy.deepcopy(valor, memo))
+            nuevo._secuencia = self._secuencia
+            nuevo.generaciones = copy.deepcopy(self.generaciones, memo)
+            return nuevo
+
+    def copy(self) -> _DatosConfig:
+        return self.snapshot()
+
+    def __copy__(self) -> _DatosConfig:
+        return self.copy()
 
     def __deepcopy__(self, memo: dict[int, Any]) -> _DatosConfig:
-        # Sin esto, `copy.deepcopy` reconstruye la subclase vía protocolo de
-        # pickle usando `__setitem__` por clave: la copia arrancaría con TODO
-        # marcado dirty, el diff `snapshot.dirty - baseline.dirty` se anulaba
-        # entre copias y la señal de escrituras explícitas se perdía (el test
-        # de reasignación explícita fallaba exactamente así).
-        nuevo = _DatosConfig()
-        memo[id(self)] = nuevo
-        for clave, valor in self.items():
-            nuevo[clave] = copy.deepcopy(valor, memo)
-        nuevo.dirty = copy.deepcopy(self.dirty, memo)
-        return nuevo
+        return self.snapshot(memo)
 
 
 class Config:
@@ -187,19 +249,16 @@ class Config:
         #: comportamiento histórico, correcto para ese único save de arranque
         #: que migra/scrubea secretos recién leídos.
         self._baseline: _DatosConfig | None = None
-        #: Secretos cuyo ÚNICO ejemplar es el archivo: estaban en plaintext en el
-        #: TOML y no se pudieron mover al keyring. `save()` los conserva en vez de
-        #: borrarlos (ver el bloque de secretos ahí). Se vacía en cuanto el
-        #: keyring acepta el secreto: a partir de ahí el archivo ya no es el único
-        #: ejemplar y preservar el plaintext sería deshacer la migración.
-        self._secretos_solo_en_archivo: dict[str, str] = {}
+        #: Escrituras explícitas de secretos que el keyring rechazó. Persisten
+        #: como intención hasta que un save posterior pueda completarlas.
+        self._secretos_pendientes: set[str] = set()
         self._load_from_file()
         self._migrate_llm_model()
         self._load_from_keyring()
         # El snapshot va AL FINAL: `_load_from_keyring` muta `_data` (secretos
         # desde el keyring) y puede llamar `save()`; todo eso es estado "visto al
         # construir", no un cambio del objeto.
-        self._baseline = copy.deepcopy(self._data)
+        self._baseline = self._data.snapshot()
 
     def _migrate_llm_model(self) -> None:
         """One-time, in-memory migration of the legacy global ``llm_model``.
@@ -219,18 +278,8 @@ class Config:
             self._data[slot] = legacy
 
     def _load_from_keyring(self) -> None:
-        sensitive_keys = [
-            "llm_api_key",
-            "openai_api_key",
-            "anthropic_api_key",
-            "deepseek_api_key",
-            "nexus_api_key",
-            "search_api_key",
-            "telegram_bot_token",
-            "ws_auth_token",
-        ]
         migrated = False
-        for key in sensitive_keys:
+        for key in _CLAVES_SENSIBLES:
             plaintext = self._data.get(key)
             try:
                 stored = keyring.get_password("sky_claw", key)
@@ -246,10 +295,9 @@ class Config:
                     keyring.set_password("sky_claw", key, plaintext)
                     migrated = True
                 except (keyring.errors.KeyringError, OSError):
-                    # El keyring no lo aceptó: el archivo sigue siendo el único
-                    # ejemplar de este secreto. Registrarlo para que `save()` no
-                    # lo borre al reintentar la migración y volver a fallar.
-                    self._secretos_solo_en_archivo[key] = str(plaintext)
+                    # El archivo sigue siendo el único ejemplar. Un save futuro
+                    # volverá a consultar el keyring vivo antes de migrarlo.
+                    pass
 
         # S3-FIX: If we migrated secrets to keyring, scrub them from the TOML on disk.
         # Verify the save succeeds; if it fails, log a critical warning so the
@@ -329,7 +377,7 @@ class Config:
            de ``local_config.py``) tendrían TOCTOU;
         2. aplica al estado fresco SOLO los campos que ESTE objeto cambió
            (snapshot de `_data` ANTES del diff, reutilizado como nuevo
-           baseline; dirty-keys + comparación de valores contra el baseline
+           baseline; generaciones + comparación de valores contra el baseline
            anterior) — un objeto desactualizado ya no puede borrar lo que
            nunca vio;
         3. hace los borrados DESPUÉS del merge: el scrub de secretos y el drop
@@ -368,7 +416,7 @@ class Config:
             # persistida — pérdida silenciosa (review de qodo, P1). El mismo
             # snapshot se reutiliza como nuevo baseline: lo persistido y la
             # base del próximo diff son exactamente el mismo estado.
-            snapshot = copy.deepcopy(self._data)
+            snapshot = self._data.snapshot()
 
             baseline = self._baseline
             if baseline is None:
@@ -377,17 +425,20 @@ class Config:
                 # vuelca el estado entero, el comportamiento histórico.
                 diff: dict[str, Any] = dict(snapshot)
                 borrados: set[str] = set()
+                claves_mutadas: set[str] = set()
             else:
                 # Claves escritas explícitamente desde el último baseline: la
                 # comparación de valores sola no detecta la reasignación
                 # explícita de un valor igual al baseline (`setup_tools` que
                 # re-descubre el mismo path), y el merge conservaría lo que
                 # otra superficie escribió encima (review de qodo, P2).
-                dirty_desde_baseline = snapshot.dirty - baseline.dirty
+                claves_mutadas = {
+                    key
+                    for key, generacion in snapshot.generaciones.items()
+                    if generacion != baseline.generaciones.get(key)
+                }
                 diff = {
-                    k: v
-                    for k, v in snapshot.items()
-                    if k in dirty_desde_baseline or k not in baseline or baseline[k] != v
+                    k: v for k, v in snapshot.items() if k in claves_mutadas or k not in baseline or baseline[k] != v
                 }
                 borrados = set(baseline) - set(snapshot)
 
@@ -395,34 +446,17 @@ class Config:
             for key in borrados:
                 save_data.pop(key, None)
 
-            sensitive_keys = [
-                "llm_api_key",
-                "openai_api_key",
-                "anthropic_api_key",
-                "deepseek_api_key",
-                "nexus_api_key",
-                "search_api_key",
-                "telegram_bot_token",
-            ]
-
-            for key in sensitive_keys:
-                # Autoridad del keyring (review de qodo, P1): el candidato a
-                # persistir en el keyring es el valor del OBJETO —resuelto
-                # contra el keyring en la construcción, o recién tipeado—
-                # cuando existe; el plaintext del archivo rige SOLO si el
-                # objeto no conoce el secreto. Pasar sin más el valor de la
-                # lectura fresca sobrescribía una credencial del keyring MÁS
-                # NUEVA con el plaintext obsoleto del TOML cuando el secreto
-                # no formaba parte del diff: se rompía la autenticación y se
-                # destruía la única credencial vigente.
+            for key in _CLAVES_SENSIBLES:
                 val_objeto = snapshot.get(key) or ""
                 val_archivo = fresco.get(key) or ""
                 save_data.pop(key, None)
-                candidato = val_objeto or val_archivo
-                if candidato:
+                escritura_explicita = key in claves_mutadas or key in self._secretos_pendientes
+
+                if escritura_explicita and val_objeto:
                     try:
-                        keyring.set_password("sky_claw", key, str(candidato))
+                        keyring.set_password("sky_claw", key, str(val_objeto))
                     except (keyring.errors.KeyringError, OSError) as exc:
+                        self._secretos_pendientes.add(key)
                         logger.warning(
                             "Could not store '%s' in keyring: %s. "
                             "Secret will NOT be persisted — configure a keyring backend.",
@@ -432,7 +466,7 @@ class Config:
                         # Fail-closed en las DOS direcciones. No se escribe
                         # plaintext NUEVO en el archivo (la política de
                         # secretos no se degrada porque el keyring falle): si
-                        # el candidato era un secreto recién tipeado que no
+                        # el objeto tenía un secreto recién tipeado que no
                         # estaba en disco, `val_archivo` es vacío y no se
                         # restaura nada. Pero tampoco se DESTRUYE el único
                         # ejemplar: si el secreto SÍ estaba en el archivo, se
@@ -442,9 +476,26 @@ class Config:
                         if val_archivo:
                             save_data[key] = val_archivo
                     else:
-                        # El keyring lo tiene: el archivo deja de ser el único ejemplar
-                        # y el scrub del plaintext procede de forma definitiva.
-                        self._secretos_solo_en_archivo.pop(key, None)
+                        self._secretos_pendientes.discard(key)
+                elif escritura_explicita:
+                    self._secretos_pendientes.discard(key)
+                else:
+                    try:
+                        valor_vivo = keyring.get_password("sky_claw", key)
+                    except (keyring.errors.KeyringError, OSError) as exc:
+                        logger.warning("Could not read '%s' from keyring: %s.", key, type(exc).__name__)
+                        if val_archivo:
+                            save_data[key] = val_archivo
+                    else:
+                        # Sin una escritura explícita, el keyring vivo es la
+                        # autoridad. El plaintext fresco sólo se migra si aún
+                        # no existe un valor vigente en el backend.
+                        if not valor_vivo and val_archivo:
+                            try:
+                                keyring.set_password("sky_claw", key, str(val_archivo))
+                            except (keyring.errors.KeyringError, OSError) as exc:
+                                logger.warning("Could not migrate '%s' to keyring: %s.", key, type(exc).__name__)
+                                save_data[key] = val_archivo
 
             # Escritura atómica: `open(path, "wb")` trunca el archivo ANTES de
             # escribir el contenido nuevo. Un fallo a mitad de la serialización
@@ -483,7 +534,7 @@ class Config:
 
     @property
     def as_dict(self) -> dict[str, Any]:
-        return dict(self._data)
+        return dict(self._data.snapshot())
 
 
 # ── Backward Compatibility ──────────────────────────────────────────

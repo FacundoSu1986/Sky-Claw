@@ -165,3 +165,77 @@ def test_un_keyring_con_valor_mas_nuevo_no_se_pisa_con_el_plaintext_viejo_del_ar
     assert "credential-vieja-del-archivo" not in crudo
     assert "credential-nueva-del-keyring" not in crudo
     assert tomllib.loads(crudo)["community_shaders_mods"] == ["Community Shaders"]
+
+
+def test_un_config_long_lived_no_pisa_un_keyring_actualizado_despues_de_construirse(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sin intención explícita, el keyring vivo prevalece sobre la memoria vieja."""
+    almacen: dict[str, str] = {"nexus_api_key": "clave-al-construir"}
+    monkeypatch.setattr(keyring, "get_password", lambda _s, k: almacen.get(k))
+    monkeypatch.setattr(keyring, "set_password", lambda _s, k, v: almacen.__setitem__(k, v))
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+
+    almacen["nexus_api_key"] = "clave-actualizada"
+    cfg._data["community_shaders_mods"] = ["Community Shaders"]
+    cfg.save()
+
+    assert almacen["nexus_api_key"] == "clave-actualizada"
+    assert "nexus_api_key" not in tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+
+def test_keyring_vivo_prevalece_sobre_plaintext_fresco_si_no_hubo_escritura_explicita(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El plaintext fresco sólo se migra cuando el keyring todavía está vacío."""
+    almacen: dict[str, str] = {}
+    monkeypatch.setattr(keyring, "get_password", lambda _s, k: almacen.get(k))
+    monkeypatch.setattr(keyring, "set_password", lambda _s, k, v: almacen.__setitem__(k, v))
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+
+    almacen["nexus_api_key"] = "clave-viva-del-keyring"
+    config_path.write_text(
+        'llm_provider = "anthropic"\nnexus_api_key = "plaintext-obsoleto"\n',
+        encoding="utf-8",
+    )
+    cfg._data["community_shaders_mods"] = ["Community Shaders"]
+    cfg.save()
+
+    assert almacen["nexus_api_key"] == "clave-viva-del-keyring"
+    crudo = config_path.read_text(encoding="utf-8")
+    assert "plaintext-obsoleto" not in crudo
+    assert "clave-viva-del-keyring" not in crudo
+
+
+def test_secreto_nuevo_fallido_queda_pendiente_y_se_reintenta(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un fallo conserva la intención para el próximo save sin bajar plaintext."""
+    almacen: dict[str, str] = {}
+    keyring_caido = True
+
+    monkeypatch.setattr(keyring, "get_password", lambda _s, k: almacen.get(k))
+
+    def _guardar(_servicio: str, clave: str, valor: str) -> None:
+        if keyring_caido:
+            raise keyring.errors.KeyringError("fallo transitorio")
+        almacen[clave] = valor
+
+    monkeypatch.setattr(keyring, "set_password", _guardar)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+    cfg._data["nexus_api_key"] = "clave-nueva"
+
+    cfg.save()
+    assert "clave-nueva" not in config_path.read_text(encoding="utf-8")
+
+    keyring_caido = False
+    cfg.save()
+
+    assert almacen["nexus_api_key"] == "clave-nueva"
+    assert "nexus_api_key" not in tomllib.loads(config_path.read_text(encoding="utf-8"))

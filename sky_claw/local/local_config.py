@@ -332,14 +332,14 @@ def persistir_campo(path: pathlib.Path, campo: str, valor: Any) -> None:
 # LO QUE GARANTIZA EL CONJUNTO: el archivo nunca queda corrupto ni a medio
 # escribir — un `save()` completo siempre corre antes de que el otro empiece —
 # y DESDE F1 TAMPOCO se pierde contenido: `Config.save()` hace merge-on-save
-# (relee el disco bajo su threading.Lock por path y aplica solo el diff del
-# objeto contra su baseline — ver `sky_claw/config.py`), así que un `Config`
-# long-lived (el `local_cfg` que `AppContext` construye una vez por sesión) ya
+# (relee el disco bajo su threading.Lock por path y aplica las generaciones
+# cambiadas contra un snapshot sincronizado — ver `sky_claw/config.py`), así
+# que un `Config` long-lived (el `local_cfg` que `AppContext` construye una vez por sesión) ya
 # no puede pisar con su próximo `save()` un campo que otro camino escribió con
 # lectura fresca. La frontera está anclada en
 # `tests/test_local_config_persistencia.py` (sección "Carrera GUI ↔ agente
 # LLM", cerrada por F1) y en `tests/test_config_secretos_sin_keyring.py`
-# (los borrados de secretos van DESPUÉS del merge y no pueden resucitar).
+# (los secretos consultan el keyring vivo y los borrados van DESPUÉS del merge).
 #
 # Es además un lock de PROCESO (vale para GUI+agente conviviendo en la misma
 # instancia de Sky-Claw), no de archivo: no protege contra otro proceso
