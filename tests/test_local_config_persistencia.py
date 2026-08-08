@@ -211,25 +211,21 @@ def test_guardar_config_no_deja_temporales_huerfanos_tras_un_save_exitoso(tmp_pa
 
 # ── Carrera GUI ↔ agente LLM: los dos escritores del mismo config.toml ──────────
 #
-# El lock (`_CONFIG_WRITE_LOCK`) da UNA garantía: el ciclo leer-modificar-escribir
-# de cada escritor corre de punta a punta sin que el otro empiece en el medio.
-# Eso alcanza para que el archivo NUNCA quede corrupto ni con una escritura a
-# medio hacer. Lo que el lock NO puede dar es "el escritor que iba último no
-# pise lo que el otro acaba de guardar": eso depende de si ESE escritor tenía
-# una vista actualizada del archivo al momento de empezar a escribir.
+# El lock (`_obtener_lock_de_escritura`) da UNA garantía: el ciclo
+# leer-modificar-escribir de cada escritor corre de punta a punta sin que el
+# otro empiece en el medio. Eso alcanza para que el archivo NUNCA quede
+# corrupto ni con una escritura a medio hacer.
 #
-# `persistir_campo` (GUI) siempre relee el archivo antes de escribir — dentro
-# del lock, así que ve el estado más reciente posible. `guardar_config` sobre
-# un `Config` (agente LLM) escribe el `_data` en MEMORIA de un objeto que
-# `AppContext` construye UNA vez y mantiene vivo toda la sesión: si ese objeto
-# nunca releyó el campo que el otro camino acaba de escribir, su próximo
-# `save()` lo pisa igual, lock o no lock — es el modelo de "el objeto entero
-# es la fuente de verdad" de `Config`, no algo que un lock de escritura
-# resuelva. Esto es preexistente a este PR (todo `.save()` de `Config` en el
-# árbol comparte el mismo modelo) y una solución completa (merge por campo en
-# vez de reemplazo del objeto entero) es un cambio de arquitectura aparte —
-# los dos tests de abajo documentan la frontera exacta en vez de afirmar más
-# de lo que el lock realmente garantiza.
+# La garantía de CONTENIDO (que el escritor con objeto desactualizado no pise
+# lo que el otro camino acaba de guardar) NO la da el lock: la da
+# `Config.save()` desde F1, que hace merge-on-save con diff contra un baseline
+# tomado al construir el objeto (ver `sky_claw/config.py`): cada `save()` relee
+# el disco bajo el threading.Lock de save, aplica SOLO los campos que ESTE
+# objeto cambió, y recién después scrubea secretos y escribe atómicamente. Un
+# `Config` long-lived ya no puede borrar campos que never vio — la frontera que
+# antes documentaba `test_limite_conocido_...` ahora es garantía, y los tests
+# de abajo la anclan sobre campos que SÍ vienen de `_load_defaults()` (un test
+# sobre campos sin default pasaría incluso con la unión ingenua).
 async def test_lock_evita_la_escritura_entrelazada_y_corrupta(tmp_path: pathlib.Path) -> None:
     """Garantía real del lock: el archivo nunca queda a medio escribir.
 
@@ -295,18 +291,17 @@ async def test_el_escritor_con_lectura_fresca_no_pierde_lo_que_el_otro_ya_guardo
     assert en_disco["mo2_root"] == "D:/MO2"
 
 
-async def test_limite_conocido_un_config_vivo_pisa_lo_que_el_otro_camino_guardo(
+async def test_el_merge_on_save_conserva_lo_que_el_otro_camino_guardo(
     tmp_path: pathlib.Path,
 ) -> None:
-    """El caso que el lock NO resuelve, documentado a propósito: si el objeto
+    """F1 cerró el límite que este test documentaba al revés: si el objeto
     `Config` de larga vida del agente ya existía ANTES de que la GUI guardara
-    `ngio_mods`, el `save()` del agente —posterior, y sin corrupción, el lock
-    funcionó— reemplaza el archivo entero con su propio `_data`, que nunca vio
-    ese campo. Se pierde igual que antes de este PR: el lock serializa el
-    ACCESO, no fusiona el CONTENIDO. Este test existe para que ese límite no se
-    reintroduzca como "ya arreglado" sin que alguien lo note — si algún día se
-    agrega merge-on-save, este test debe empezar a fallar y hay que
-    actualizarlo, no borrarlo en silencio.
+    `ngio_mods`, el `save()` del agente —posterior— releía el disco bajo el
+    lock de save y aplicaba SOLO lo que ESTE objeto cambió (diff contra el
+    baseline tomado al construirlo). El campo que la GUI escribió sobrevive.
+
+    El test se conserva (invertido) en vez de borrarse: es la historia del
+    límite y la ancla de que no regrese. Ver el comentario de la sección.
     """
     config_path = tmp_path / "config.toml"
     config_path.write_text('llm_provider = "anthropic"\nmo2_root = "D:/MO2"\n', encoding="utf-8")
@@ -324,11 +319,58 @@ async def test_limite_conocido_un_config_vivo_pisa_lo_que_el_otro_camino_guardo(
     await asyncio.gather(_gui_primera(), _agente_segundo_con_objeto_desactualizado())
 
     en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    # El archivo sigue siendo TOML válido y completo (no corrupto) — pero el
-    # campo que la GUI escribió desapareció: el `_data` del agente no lo tenía.
-    assert "ngio_mods" not in en_disco
+    # El archivo es TOML válido y completo, y el campo que la GUI escribió
+    # SOBREVIVE al save del objeto desactualizado — eso es F1.
+    assert en_disco["ngio_mods"] == ["NGIO-NG"]
     assert en_disco["community_shaders_mods"] == ["Community Shaders"]
     assert en_disco["mo2_root"] == "D:/MO2"
+
+
+@pytest.mark.parametrize(
+    ("campo", "valor_fresco"),
+    [
+        ("mo2_root", "D:/Otro/MO2"),
+        ("telegram_chat_id", "-1001234567890"),
+        ("llm_provider", "openai"),
+        ("anthropic_model", "claude-sonnet-5"),
+        ("install_dir", "D:/Otro/Tools"),
+        ("first_run", False),
+    ],
+)
+async def test_un_config_vivo_no_pisa_campos_frescos_que_vienen_de_defaults(
+    tmp_path: pathlib.Path, campo: str, valor_fresco: object
+) -> None:
+    """Cierre de CLASE de F1, no de la instancia.
+
+    El objeto del agente se construye cuando el campo todavía NO está en disco:
+    su `_data` queda con el DEFAULT (o el valor de arranque) del campo. La GUI
+    lo escribe después con lectura fresca, y el agente salva otro campo con el
+    objeto desactualizado. El campo fresco tiene que sobrevivir.
+
+    Se parametriza sobre campos que SÍ están en `_load_defaults()`: un test
+    sobre `community_shaders_mods`/`ngio_mods` (sin default) pasaría incluso
+    con la unión ingenua de "releer disco + aplicar `_data` encima", porque
+    esos campos no tienen entrada default que los pise — es exactamente la
+    trampa que señaló la review de diseño.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'llm_provider = "anthropic"\nmo2_root = "D:/MO2"\nxedit_exe = "D:/Tools/xEdit/SSEEdit.exe"\n',
+        encoding="utf-8",
+    )
+    cfg_del_agente = Config(config_path)
+
+    await persistir_campo_bloqueante(config_path, campo, valor_fresco)
+
+    # El agente toca OTRO campo y salva con el objeto que no vio el fresco.
+    escribir_campo(cfg_del_agente, "loot_exe", "D:/Tools/LOOT/LOOT.exe")
+    cfg_del_agente.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco[campo] == valor_fresco, "el objeto desactualizado pisó con su default un campo fresco"
+    assert en_disco["loot_exe"] == "D:/Tools/LOOT/LOOT.exe"
+    # Invariante para TODOS los casos: un campo que nadie tocó permanece.
+    assert en_disco["xedit_exe"] == "D:/Tools/xEdit/SSEEdit.exe"
 
 
 # ── Ancla: las DOS clases reales de config, no una muestra ──────────────────────
@@ -512,3 +554,46 @@ def test_ancla_de_asignaciones_crudas_sobre_la_config() -> None:
     set de nombres pasaría sin romper nada.
     """
     assert _asignaciones_crudas() == ASIGNACIONES_CRUDAS_PERMITIDAS
+
+
+# ── Ancla por AST: quién serializa TOML de config ──────────────────────────────
+# F1 mueve el merge-on-save DENTRO de `Config.save()`: la garantía "todo
+# escritor de Config participa" es una propiedad del mecanismo (AGENTS.md), y
+# su vía de escape es que alguien vuelva a serializar el TOML por fuera —
+# un `tomli_w.dump` nuevo que reescriba el archivo entero sin el merge. Se
+# congela el conjunto de módulos que lo llaman, en vez de muestrear.
+ESCRITORES_TOML_PERMITIDOS = {
+    # El dueño del formato TOML de config; el merge vive en su `save()`.
+    "sky_claw/config.py",
+}
+
+
+def _escritores_de_toml() -> set[str]:
+    """Módulos bajo ``sky_claw/`` que llaman ``tomli_w.dump`` (la primitiva que
+    serializa config TOML). Detecta el atributo ``dump`` sobre el nombre
+    ``tomli_w``, venga el módulo importado como sea (``import tomli_w`` o un
+    from-import no aplica: dump se invoca siempre vía atributo).
+    """
+    encontrados: set[str] = set()
+    for archivo in PAQUETE.rglob("*.py"):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call):
+                continue
+            func = nodo.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "dump"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "tomli_w"
+            ):
+                encontrados.add(archivo.relative_to(RAIZ).as_posix())
+                break
+    return encontrados
+
+
+def test_ancla_de_escritores_de_toml_de_config() -> None:
+    """Igualdad literal: un serializador TOML nuevo rompe hasta que se decida
+    si participa del merge de `Config.save()` o es otra exención deliberada.
+    """
+    assert _escritores_de_toml() == ESCRITORES_TOML_PERMITIDOS

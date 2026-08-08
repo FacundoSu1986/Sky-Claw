@@ -329,29 +329,24 @@ def persistir_campo(path: pathlib.Path, campo: str, valor: Any) -> None:
 # archivo que el otro escritor está a punto de sobreescribir con datos más
 # viejos que los que ya están en disco.
 #
-# LO QUE EL LOCK GARANTIZA: el archivo nunca queda corrupto ni a medio escribir
-# — un `save()` completo siempre corre antes de que el otro empiece.
-# LO QUE EL LOCK **NO** GARANTIZA: que el que escribe último no pise un campo
-# que el otro acaba de guardar. Eso depende de si el ESCRITOR tenía una vista
-# actualizada del archivo. `persistir_campo` siempre relee antes de escribir
-# (dentro del lock), así que ese lado está cubierto. `guardar_config` sobre un
-# `Config` reescribe el `_data` EN MEMORIA de un objeto que puede ser
-# long-lived (el `local_cfg` que `AppContext` construye una sola vez para toda
-# la sesión del agente): si ese objeto nunca releyó el campo que el otro
-# camino escribió, su próximo `save()` lo pisa igual — el lock serializa el
-# ACCESO, no fusiona el CONTENIDO. Es el modelo de "el objeto entero es la
-# fuente de verdad" de `Config`, preexistente a este módulo (todo `.save()` de
-# `Config` en el árbol lo comparte); resolverlo del todo requiere merge por
-# campo en vez de reemplazo del objeto entero, que es un cambio de arquitectura
-# aparte. La frontera exacta está documentada y anclada en
-# `tests/test_local_config_persistencia.py` (los tres tests de la sección
-# "Carrera GUI ↔ agente LLM"), incluido el límite conocido — a propósito, para
-# que no se lo declare "arreglado" sin que alguien lo note.
+# LO QUE GARANTIZA EL CONJUNTO: el archivo nunca queda corrupto ni a medio
+# escribir — un `save()` completo siempre corre antes de que el otro empiece —
+# y DESDE F1 TAMPOCO se pierde contenido: `Config.save()` hace merge-on-save
+# (relee el disco bajo su threading.Lock por path y aplica solo el diff del
+# objeto contra su baseline — ver `sky_claw/config.py`), así que un `Config`
+# long-lived (el `local_cfg` que `AppContext` construye una vez por sesión) ya
+# no puede pisar con su próximo `save()` un campo que otro camino escribió con
+# lectura fresca. La frontera está anclada en
+# `tests/test_local_config_persistencia.py` (sección "Carrera GUI ↔ agente
+# LLM", cerrada por F1) y en `tests/test_config_secretos_sin_keyring.py`
+# (los borrados de secretos van DESPUÉS del merge y no pueden resucitar).
 #
 # Es además un lock de PROCESO (vale para GUI+agente conviviendo en la misma
 # instancia de Sky-Claw), no de archivo: no protege contra otro proceso
 # tocando el mismo config.toml (p.ej. dos instancias corriendo a la vez), que
-# es un escenario no soportado en otras partes del código tampoco.
+# es un escenario no soportado en otras partes del código tampoco. El
+# threading.Lock per-path de `Config.save()` cubre además a los llamadores
+# directos de `.save()` que no pasan por este lock asyncio.
 _lock_de_escritura: asyncio.Lock | None = None
 _loop_del_lock: asyncio.AbstractEventLoop | None = None
 

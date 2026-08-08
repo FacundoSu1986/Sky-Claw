@@ -137,13 +137,19 @@ compartido de proceso (`sky_claw/local/local_config.py`,
 `_obtener_lock_de_escritura`) — usalos en vez de las variantes sync + `to_thread`
 crudo desde cualquier código nuevo que persista sobre el mismo `config.toml`.
 El lock evita que dos escrituras concurrentes intercalen sus `os.replace`
-(archivo corrupto), **no** que un objeto `Config` de vida larga (como
-`AppContext.local_cfg`, construido una vez por sesión) pise con su próximo
-`save()` un campo que otro camino escribió con lectura fresca después de que
-ese objeto se construyó — eso requeriría merge por campo en vez de reemplazo
-del objeto entero, un cambio de arquitectura aparte, documentado como límite
-conocido y anclado a propósito (no accidentalmente) en los tests de la sección
-"Carrera GUI ↔ agente LLM".
+(archivo corrupto). Desde **F1**, el contenido tampoco se pierde:
+`Config.save()` hace merge-on-save — relee el disco bajo un threading.Lock por
+path y aplica solo el diff del objeto contra su baseline (snapshot al
+construir / tras cada save), así que un objeto `Config` de vida larga ya no
+puede pisar un campo que otro camino escribió con lectura fresca. Los borrados
+(secretos, secciones legacy) van DESPUÉS del merge para no resucitar. Anclas:
+tests de la sección "Carrera GUI ↔ agente LLM" en
+`tests/test_local_config_persistencia.py` (cierre paramétrico sobre campos que
+SÍ vienen de `_load_defaults()` + ancla AST de serializadores TOML) y
+`tests/test_config_secretos_sin_keyring.py`. Todo escritor nuevo de config
+participa por construcción porque el merge vive en `Config.save()`, no en un
+wrapper — si agregás un serializador que escriba el TOML por fuera, el ancla
+AST se rompe a propósito: decidí si participa del merge o es una exención.
 
 **Secretos en `Config.save()`.** Fail-closed en las **dos** direcciones: no baja
 plaintext nuevo al TOML si el keyring falla, y tampoco borra el secreto que ya
