@@ -405,19 +405,39 @@ _MODULO = "sky_claw.local.local_config"
 _CRUDOS = {"load", "save"}
 
 
+def _nombres_crudos_de(arbol: ast.AST) -> set[str]:
+    """Nombres crudos (``load``/``save``) importados de ``local_config``.
+
+    Detecta la forma ABSOLUTA (``from sky_claw.local.local_config import save``)
+    y la RELATIVA (``from .local_config import save``,
+    ``from ..local.local_config import load``). La relativa es la natural para
+    un hermano de ``sky_claw/local/`` — donde vive ``tools_installer.py`` — y
+    si el detector solo matcheara el string absoluto del módulo, esa copia-pega
+    se saltea el ancla sin romper nada. El escaneo corre solo sobre ``sky_claw/``,
+    donde ``local_config`` es único: un homónimo en otro paquete no es riesgo.
+    """
+    nombres: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.ImportFrom):
+            continue
+        if nodo.level == 0:
+            if nodo.module != _MODULO:
+                continue
+        else:
+            modulo = nodo.module or ""
+            if not (modulo == "local_config" or modulo.endswith(".local_config")):
+                continue
+        nombres.update(alias.name for alias in nodo.names if alias.name in _CRUDOS)
+    return nombres
+
+
 def _importadores_crudos() -> dict[str, set[str]]:
     encontrados: dict[str, set[str]] = {}
     for archivo in PAQUETE.rglob("*.py"):
         if archivo.name == "local_config.py":
             continue  # el dueño del formato
         arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
-        nombres = {
-            alias.name
-            for nodo in ast.walk(arbol)
-            if isinstance(nodo, ast.ImportFrom) and nodo.module == _MODULO
-            for alias in nodo.names
-            if alias.name in _CRUDOS
-        }
+        nombres = _nombres_crudos_de(arbol)
         if nombres:
             encontrados[archivo.relative_to(RAIZ).as_posix()] = nombres
     return encontrados
@@ -428,6 +448,24 @@ def test_ancla_de_importadores_del_save_json_crudo() -> None:
     decida si va por `persistir_campo`/`guardar_config` o es otra exención.
     """
     assert _importadores_crudos() == IMPORTADORES_PERMITIDOS
+
+
+def test_ancla_detecta_import_relativo_del_save_crudo() -> None:
+    """La forma relativa es la que alcanza natural un módulo hermano de
+    ``sky_claw/local/`` (donde vive ``tools_installer.py``): si el detector
+    solo matcheara el string absoluto del módulo, ``from .local_config import
+    save`` se saltea la igualdad literal de arriba sin romper nada — y el
+    ancla existe para enumerar, no para muestrear (AGENTS.md).
+    """
+    fuente_absoluta = "from sky_claw.local.local_config import save\n"
+    fuente_rel_un_nivel = "from .local_config import save\n"
+    fuente_rel_dos_niveles = "from ..local.local_config import load, save\n"
+    fuente_inocua = "from .otro_modulo import save\n"
+
+    assert _nombres_crudos_de(ast.parse(fuente_absoluta)) == {"save"}
+    assert _nombres_crudos_de(ast.parse(fuente_rel_un_nivel)) == {"save"}
+    assert _nombres_crudos_de(ast.parse(fuente_rel_dos_niveles)) == {"load", "save"}
+    assert _nombres_crudos_de(ast.parse(fuente_inocua)) == set()
 
 
 # ── Ancla por AST: nadie escribe campos con `setattr` crudo sobre la config ─────

@@ -37,6 +37,15 @@ logger = logging.getLogger(__name__)
 
 _NEXUS_API_BASE = "https://api.nexusmods.com/v1"
 
+#: Techo absoluto de respaldo para :meth:`NexusDownloader.download` cuando la
+#: API no publicó ``size_bytes`` (0): sin él, metadata rota = streaming sin
+#: límite hasta el timeout total (600 s), llenando el disco de staging. Es el
+#: hermano de ``tools_installer._GITHUB_ASSET_MAX_BYTES``; cuando el size SÍ
+#: está publicado rige el declarado (más estricto) y este techo nunca aplica.
+#: Nexus sirve files de varios GB legítimos: 4 GiB solo muerde cuerpos sin
+#: tamaño declarado (metadata rota), no archivos grandes con metadata sana.
+_NEXUS_FALLBACK_MAX_BYTES = 4 * 1024 * 1024 * 1024
+
 ProgressCallback = Callable[["DownloadProgress"], Awaitable[None]] | None
 
 
@@ -55,6 +64,21 @@ MD5ValidationError = HashValidationError
 
 
 class PremiumRequiredError(DownloadError):
+    pass
+
+
+class DownloadSizeLimitError(DownloadError):
+    """La descarga excedió un límite de bytes (size declarado o techo de respaldo).
+
+    Se clasifica por TIPO en :func:`_should_retry_nexus`, nunca parseando el
+    texto del mensaje: el mensaje inserta el ``file_name`` externo (validado
+    solo como componente de ruta seguro), e inferir reintentabilidad del
+    string hacía que un nombre legítimo con ``429``/``502``/``503``/``timeout``
+    convirtiera este abort no recuperable en hasta 5 intentos del mismo
+    tráfico descontrolado (review del PR #445). Un techo excedido no se
+    arregla reintentando.
+    """
+
     pass
 
 
@@ -141,7 +165,16 @@ def _quote_path_preservando_escapes(path: str) -> str:
 
 
 def _should_retry_nexus(exc: BaseException) -> bool:
-    """Determina si la excepción justifica un reintento (Network drop, 429, Hash mismatch)."""
+    """Determina si la excepción justifica un reintento (Network drop, 429, Hash mismatch).
+
+    Un exceso de tamaño (declarado o techo de respaldo) NUNCA se reintenta: se
+    clasifica por tipo antes que el parseo de texto de ``DownloadError``,
+    porque el mensaje inserta el ``file_name`` externo y un nombre legítimo
+    con ``429``/``502``/``503``/``timeout`` lo habría hecho parecer
+    transitorio (review del PR #445).
+    """
+    if isinstance(exc, DownloadSizeLimitError):
+        return False
     if isinstance(
         exc,
         (
@@ -449,15 +482,31 @@ class NexusDownloader:
                                 # el disco. Peor, el OSError de disco lleno SÍ es
                                 # reintentable y la pasada se repetía 5 veces. Se aborta
                                 # apenas se excede, sin escribir el chunk que excede, y
-                                # con un DownloadError que `_should_retry_nexus` no
-                                # reintenta. `size_bytes == 0` es "no declarado": sin
-                                # techo, igual que el hermano (no se usa Content-Length,
-                                # que lo elige el mismo servidor cuyo cuerpo se acota).
+                                # con un `DownloadSizeLimitError` que
+                                # `_should_retry_nexus` no reintenta — clasificado por
+                                # TIPO, no por texto del mensaje: el mensaje inserta el
+                                # file_name externo y un nombre con 429/502/503/timeout
+                                # habría parecido transitorio (review del PR #445). Con
+                                # size publicado rige el declarado; con
+                                # `size_bytes == 0` ("no declarado") rige el techo
+                                # absoluto de respaldo (`_NEXUS_FALLBACK_MAX_BYTES`), la
+                                # paridad real con el hermano GitHub y su
+                                # `_GITHUB_ASSET_MAX_BYTES` (antes no había ninguno:
+                                # metadata rota = streaming sin límite). No se usa
+                                # Content-Length, que lo elige el mismo servidor cuyo
+                                # cuerpo se acota.
                                 progress.downloaded_bytes += len(chunk)
-                                if 0 < file_info.size_bytes < progress.downloaded_bytes:
-                                    raise DownloadError(
-                                        f"El cuerpo de {file_info.file_name!r} excede el tamaño declarado "
-                                        f"({file_info.size_bytes} bytes) — descarga abortada."
+                                techo = file_info.size_bytes if file_info.size_bytes > 0 else _NEXUS_FALLBACK_MAX_BYTES
+                                if progress.downloaded_bytes > techo:
+                                    if file_info.size_bytes > 0:
+                                        raise DownloadSizeLimitError(
+                                            f"El cuerpo de {file_info.file_name!r} excede el tamaño declarado "
+                                            f"({file_info.size_bytes} bytes) — descarga abortada."
+                                        )
+                                    raise DownloadSizeLimitError(
+                                        f"El cuerpo de {file_info.file_name!r} excede el techo absoluto de respaldo "
+                                        f"({_NEXUS_FALLBACK_MAX_BYTES // (1024 * 1024 * 1024)} GiB): la API de Nexus "
+                                        "no publicó size — descarga abortada."
                                     )
                                 await fh.write(chunk)
                                 # Actualizar ambos hashes por chunk
