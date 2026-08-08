@@ -431,6 +431,33 @@ def test_intercalacion_gui_lee_agente_escribe_gui_reemplaza_no_pierde_nada(
     assert en_disco["llm_provider"] == "anthropic"
 
 
+def test_mutacion_anidada_sin_reasignacion_no_pisa_un_valor_fresco(
+    tmp_path: pathlib.Path,
+) -> None:
+    """La intención persistible exige pasar por un mutador de ``_DatosConfig``.
+
+    Un valor mutable devuelto por ``Config`` no puede registrar por sí solo qué
+    parte cambió ni reconciliarla con una versión fresca escrita por otro
+    objeto. Tratar su diferencia contra el baseline como una escritura completa
+    perdería los elementos que este objeto nunca vio.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('community_shaders_mods = ["A"]\n', encoding="utf-8")
+    cfg_desactualizado = Config(config_path)
+
+    cfg_fresco = Config(config_path)
+    escribir_campo(cfg_fresco, "community_shaders_mods", ["A", "B"])
+    cfg_fresco.save()
+
+    cfg_desactualizado.community_shaders_mods.append("C")
+    escribir_campo(cfg_desactualizado, "loot_exe", "D:/Tools/LOOT/LOOT.exe")
+    cfg_desactualizado.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["community_shaders_mods"] == ["A", "B"]
+    assert en_disco["loot_exe"] == "D:/Tools/LOOT/LOOT.exe"
+
+
 def test_save_refresca_la_redaccion_desde_el_estado_fusionado(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

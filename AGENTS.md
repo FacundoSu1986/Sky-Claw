@@ -141,7 +141,10 @@ El lock evita que dos escrituras concurrentes intercalen sus `os.replace`
 `Config.save()` hace merge-on-save — relee el disco bajo un threading.Lock por
 path y aplica solo las generaciones que cambiaron contra su baseline (snapshot
 sincronizado al construir / tras cada save), así que un objeto `Config` de vida
-larga ya no puede pisar un campo que otro camino escribió con lectura fresca. Los dos
+larga ya no puede pisar un campo que otro camino escribió con lectura fresca.
+Para valores mutables, la intención se expresa reasignando la clave completa
+(`cfg._data[campo] = valor` / `escribir_campo`): mutar una lista o dict *in-place*
+no avanza su generación y no se persiste. Los dos
 locks no son redundantes: el threading.Lock por path dentro de `Config.save()`
 es el coordinador del ARCHIVO — toda mutación del TOML pasa por ahí con
 lectura fresca, sea `persistir_campo` o un `.save()` directo que se saltea el

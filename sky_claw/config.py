@@ -381,9 +381,10 @@ class Config:
            de ``local_config.py``) tendrían TOCTOU;
         2. aplica al estado fresco SOLO los campos que ESTE objeto cambió
            (snapshot de `_data` ANTES del diff, reutilizado como nuevo
-           baseline; generaciones + comparación de valores contra el baseline
-           anterior) — un objeto desactualizado ya no puede borrar lo que
-           nunca vio;
+           baseline; generaciones contra el baseline anterior) — un objeto
+           desactualizado ya no puede borrar lo que nunca vio. Los valores
+           mutables deben reasignarse tras modificarlos: una mutación anidada
+           no expresa una escritura completa de la clave;
         3. hace los borrados DESPUÉS del merge: el scrub de secretos y el drop
            de secciones legacy no pueden resucitar vía la lectura fresca (ver
            ``tests/test_config_secretos_sin_keyring.py``, la segunda pasada);
@@ -431,9 +432,11 @@ class Config:
             claves_mutadas = {
                 key for key, generacion in snapshot.generaciones.items() if generacion != baseline.generaciones.get(key)
             }
-            diff: dict[str, Any] = {
-                k: v for k, v in snapshot.items() if k in claves_mutadas or k not in baseline or baseline[k] != v
-            }
+            # Las generaciones son la única declaración de intención. Inferir
+            # una escritura desde una diferencia de valores aceptaría
+            # mutaciones anidadas no rastreadas y permitiría que una lista/dict
+            # obsoleta reemplazara una versión fresca escrita por otro Config.
+            diff: dict[str, Any] = {k: v for k, v in snapshot.items() if k in claves_mutadas}
             borrados = (set(baseline) | claves_mutadas) - set(snapshot)
 
             save_data = {**fresco, **diff}
