@@ -330,7 +330,7 @@ async def test_bridge_parks_download_modal_and_never_auto_approves() -> None:
 
 
 # ── run_ritual_install: rama community_shaders ──────────────────────────────────
-async def test_install_community_shaders_usa_mo2_y_juego_del_snapshot() -> None:
+async def test_install_community_shaders_usa_mo2_y_juego_del_snapshot(tmp_path: pathlib.Path) -> None:
     """La rama GUI de CS resuelve mo2_root/mods + juego del snapshot y despacha con kwargs.
 
     `ensure_community_shaders` NO tiene la firma ensure(install_dir, session): recibe
@@ -343,6 +343,8 @@ async def test_install_community_shaders_usa_mo2_y_juego_del_snapshot() -> None:
 
     mo2_root = pathlib.Path("D:/Modding/MO2")
     game_path = pathlib.Path("D:/Steam/steamapps/common/Skyrim Special Edition")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
     store = ReactiveStore()
     store.set(
         STORE_KEY_ENV,
@@ -362,7 +364,7 @@ async def test_install_community_shaders_usa_mo2_y_juego_del_snapshot() -> None:
     installer = _FakeInstaller(cs_result=mods)
     from types import SimpleNamespace
 
-    ctx = _FakeAppContext(installer, network=SimpleNamespace(downloader="dl"))
+    ctx = _FakeAppContext(installer, network=SimpleNamespace(downloader="dl"), config_path=config_path)
 
     await run_ritual_install("community_shaders", app_context=ctx, store=store)
 
@@ -481,7 +483,11 @@ async def test_install_community_shaders_limpia_el_preflight_stale_de_un_ritual_
         )
     ]
     installer = _FakeInstaller(cs_result=mods)
-    ctx = _FakeAppContext(installer, config_path=None)
+    # Config real: el foco del test es el clear del preflight, no el camino
+    # sin config_path (que tiene su propio test y degrada a warning).
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    ctx = _FakeAppContext(installer, config_path=config_path)
 
     await run_ritual_install("community_shaders", app_context=ctx, store=store)
 
@@ -522,3 +528,33 @@ async def test_install_community_shaders_avisa_si_falla_la_persistencia(tmp_path
     assert "persist" in fb["text"].lower()
     # El fail-closed no reescribió la config corrupta.
     assert config_path.read_text(encoding="utf-8") == "[[[esto no es TOML válido"
+
+
+async def test_install_community_shaders_sin_config_path_degrada_a_warning(tmp_path: pathlib.Path) -> None:
+    """Hermano del caso con excepción (review adversarial del PR #445): sin
+    ``config_path`` (boot incompleto), la persistencia NO puede correr — la
+    operación también es parcial y el feedback debe decirlo. Cubrir solo el
+    camino que lanza dejaba vivo el éxito visual que este fix vino a cerrar.
+    """
+    mo2_root, _game, snap, key_env = _snapshot_cs(tmp_path)
+    from sky_claw.local.tools_installer import ModInstallResult
+
+    store = ReactiveStore()
+    store.set(key_env, snap)
+    mods = [
+        ModInstallResult(
+            mod_name="Community Shaders",
+            mod_dir=mo2_root / "mods" / "Community Shaders",
+            version="v1.8.3",
+            already_existed=False,
+        )
+    ]
+    installer = _FakeInstaller(cs_result=mods)
+    ctx = _FakeAppContext(installer, config_path=None)
+
+    await run_ritual_install("community_shaders", app_context=ctx, store=store)
+
+    fb = store.get("ritual_feedback")
+    assert fb is not None
+    assert fb["type"] == "warning"  # NO "positive": nada se persistió
+    assert "persist" in fb["text"].lower()

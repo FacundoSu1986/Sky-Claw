@@ -577,7 +577,11 @@ async def run_ritual_install(
         mods = list(result) if result is not None else []
         nombres = [m.mod_name for m in mods]
         config_path = getattr(app_context, "config_path", None)
-        persistencia_ok = True
+        # Sin config_path (boot incompleto) la persistencia NO corre: la
+        # operación también es parcial y se degrada igual que en el camino que
+        # lanza — cubrir solo la excepción dejaba vivo el éxito visual que este
+        # bloque vino a cerrar (review adversarial del PR #445).
+        persistencia_ok = config_path is not None
         if config_path is not None:
             try:
                 # `persistir_campo_bloqueante` despacha por el formato REAL del
