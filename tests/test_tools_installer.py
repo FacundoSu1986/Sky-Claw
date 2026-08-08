@@ -8,6 +8,7 @@ import io
 import json
 import pathlib
 import tempfile
+import threading
 import zipfile
 from collections.abc import AsyncIterator
 from typing import Any
@@ -2145,6 +2146,58 @@ class TestHelpersCompartidosBlueprint:
         assert validados == [tmp_path.parent / ".skyclaw-dl" / "ModFicticio"]
         assert not (tmp_path.parent / ".skyclaw-dl" / "ModFicticio").exists()
         assert installer._gateway.request.await_count == 0
+
+    async def test_post_extract_corre_en_un_hilo_no_en_el_event_loop(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """F5: ``post_extract`` hace I/O pesado — el transform del FOMOD de Engine
+        Fixes corre ``shutil.copytree``/``copy2`` y ``rmtree_link_aware``. Llamado
+        inline en ``_ensure_nexus_mod`` congelaba el event loop (en NiceGUI se ve
+        como un hang de la UI). Debe despacharse por ``_esperar_hilo_ininterrumpible``,
+        igual que la extracción: no cambia el orden ni el contrato funcional.
+        """
+        hilo_del_loop = threading.get_ident()
+        hilo_post_extract: list[int] = []
+
+        def _post_extract(mod_dir: pathlib.Path) -> None:
+            hilo_post_extract.append(threading.get_ident())
+            # Arma el payload que el zip no trae: el foco del test es el hilo,
+            # la verificación del sentinel tiene que pasar igual.
+            plugins = mod_dir / "SKSE" / "Plugins"
+            plugins.mkdir(parents=True, exist_ok=True)
+            (plugins / "Tool.dll").write_text("x", encoding="utf-8")
+
+        mods_dir = tmp_path / "mods"
+        mods_dir.mkdir()
+        # Zip mínimo extraíble; el payload real lo aporta post_extract.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("placeholder.txt", "x")
+        archive = tmp_path / "staging" / "tool.zip"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(buf.getvalue())
+
+        file_info = MagicMock(file_id=1, file_name="tool.zip", size_bytes=100)
+        downloader = MagicMock()
+        downloader.get_file_info = AsyncMock(return_value=file_info)
+        downloader.download = AsyncMock(return_value=archive)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        resultado = await installer._ensure_nexus_mod(
+            mods_dir,
+            MagicMock(spec=aiohttp.ClientSession),
+            downloader,
+            mod_name="ModFicticio",
+            nexus_id=99999,
+            sentinel_glob="Tool.dll",
+            request_slug="post-extract-thread",
+            post_extract=_post_extract,
+        )
+
+        assert resultado.already_existed is False
+        assert (mods_dir / "ModFicticio" / "SKSE" / "Plugins" / "Tool.dll").is_file()
+        # El transform corrió en un worker del pool, NUNCA en el hilo del loop.
+        assert hilo_post_extract and hilo_post_extract[0] != hilo_del_loop
 
     async def test_dos_instalaciones_github_concurrentes_no_se_pisan_el_staging(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path
