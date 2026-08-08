@@ -446,7 +446,7 @@ class Config:
                 save_data.pop(key, None)
                 escritura_explicita = key in claves_mutadas or key in self._secretos_pendientes
 
-                if key not in snapshot and not val_archivo and not escritura_explicita:
+                if not val_objeto and not val_archivo and not escritura_explicita:
                     # No hay estado que reconciliar: evita consultar backends
                     # de keyring para claves que este Config nunca conoció.
                     continue

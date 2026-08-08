@@ -231,6 +231,30 @@ def test_hidratacion_del_keyring_no_se_confunde_con_una_escritura_explicita(
     assert "nexus_api_key" not in tomllib.loads(config_path.read_text(encoding="utf-8"))
 
 
+def test_save_no_consulta_keyring_para_secretos_vacios_sin_intencion(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Los defaults vacíos no deben convertir cada save en ocho lecturas externas."""
+    almacen = {"ws_auth_token": "token-ws-existente"}
+    lecturas: list[str] = []
+
+    def _leer(_servicio: str, clave: str) -> str | None:
+        lecturas.append(clave)
+        return almacen.get(clave)
+
+    monkeypatch.setattr(keyring, "get_password", _leer)
+    monkeypatch.setattr(keyring, "set_password", lambda _s, k, v: almacen.__setitem__(k, v))
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+    lecturas.clear()
+
+    cfg._data["loot_exe"] = "D:/LOOT"
+    cfg.save()
+
+    assert lecturas == ["ws_auth_token"]
+
+
 def test_un_config_long_lived_no_pisa_un_keyring_actualizado_despues_de_construirse(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
