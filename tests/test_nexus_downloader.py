@@ -20,6 +20,7 @@ from sky_claw.app.scraper.masterlist import MasterlistClient
 from sky_claw.app.scraper.nexus_downloader import (
     DownloadError,
     DownloadProgress,
+    DownloadSizeLimitError,
     FileInfo,
     HashValidationError,
     MD5ValidationError,  # Alias de compatibilidad hacia atrás
@@ -549,6 +550,57 @@ class TestDownload:
 
         # El parcial se limpia y el abort por respaldo no se reintenta.
         assert not (tmp_path / "staging" / "Sin size gordo.zip").exists()
+        assert gateway.request.await_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("file_name", ["mod-429.zip", "mod-502.zip", "mod-503.zip", "timeout-fix.zip"])
+    async def test_exceso_del_techo_de_respaldo_no_se_reintenta_aunque_el_nombre_parezca_reintentable(
+        self, tmp_path: pathlib.Path, file_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Propiedad anclada contra el caso adversarial (review del PR #445):
+        exceso de techo ⇒ UN único intento, cualquiera sea el file_name.
+
+        `_should_retry_nexus` clasificaba los ``DownloadError`` parseando
+        sustratos del texto, y el mensaje del techo inserta el ``file_name``
+        externo (validado solo como componente de ruta seguro): un nombre
+        legítimo con ``429``/``502``/``503``/``timeout`` convertía un abort
+        no recuperable en hasta 5 intentos del mismo tráfico descontrolado.
+        La clasificación del exceso de tamaño es por TIPO
+        (``DownloadSizeLimitError``), no por texto.
+        """
+        import sky_claw.app.scraper.nexus_downloader as nexus_mod
+
+        monkeypatch.setattr(nexus_mod, "_NEXUS_FALLBACK_MAX_BYTES", 32)
+        resp = _make_aiohttp_response(content=b"r" * 64)
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway, chunk_size=8)
+        fi = _make_file_info(file_name=file_name, size_bytes=0, md5="")
+
+        with pytest.raises(DownloadSizeLimitError):
+            await d.download(fi, session)
+
+        assert gateway.request.await_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("file_name", ["mod-503-fix.zip", "timeout-fix.zip"])
+    async def test_exceso_del_size_declarado_no_se_reintenta_aunque_el_nombre_parezca_reintentable(
+        self, tmp_path: pathlib.Path, file_name: str
+    ) -> None:
+        """El mismo defecto potencial existía en el límite con size declarado:
+        el mensaje también inserta el ``file_name`` externo. Exceso ⇒ 1 intento."""
+        declarado = 16
+        resp = _make_aiohttp_response(content=b"s" * (declarado * 4))
+        gateway = MagicMock()
+        gateway.request = AsyncMock(return_value=resp)
+        session = _make_session(resp)
+        d = _make_downloader(tmp_path, gateway=gateway, chunk_size=8)
+        fi = _make_file_info(file_name=file_name, size_bytes=declarado, md5="")
+
+        with pytest.raises(DownloadSizeLimitError):
+            await d.download(fi, session)
+
         assert gateway.request.await_count == 1
 
     @pytest.mark.asyncio
