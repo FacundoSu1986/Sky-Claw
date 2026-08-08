@@ -82,6 +82,4 @@ def test_release_delimita_evidencia_de_release() -> None:
 
 
 def test_diseno_delimita_evidencia_de_release() -> None:
-    _assert_contrato_release(
-        _leer_documento("docs/superpowers/specs/2026-07-26-crash-logging-review-hardening-design.md")
-    )
+    _assert_contrato_release(_leer_documento("docs/design/specs/2026-07-26-crash-logging-review-hardening-design.md"))

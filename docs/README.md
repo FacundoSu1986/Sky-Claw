@@ -34,7 +34,7 @@
 
 - [ADRs](adr/README.md): decisiones aceptadas y sus consecuencias.
 - [Auditorías](audits/README.md): evidencia fechada, no estado vivo.
-- [Especificaciones](superpowers/README.md): diseños históricos o pendientes.
+- [Diseño](design/README.md): specs y planes de implementación, históricos o pendientes.
 - [Estado OODA](pending_ooda_status.md): snapshot que debe reverificarse.
 
 ## Cómo resolver contradicciones
