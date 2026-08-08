@@ -1,7 +1,5 @@
 # Core Async Critical Remediation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Eliminar la intercalación de transacciones sobre conexiones SQLite compartidas y hacer que `CoreEventBus` drene de forma determinista publicaciones y fallos ya aceptados durante `stop()`/`start()`.
 
 **Architecture:** `DatabaseLifecycleManager` pasa a ser el único dueño del límite transaccional de escritura por ruta, con commit/rollback protegido ante cancelación y observado hasta finalizar. `DatabaseAgent` y `DLQManager` delegan sus escrituras a ese contrato. `CoreEventBus` usa una máquina de estados serializada, un sentinel FIFO y tareas DLQ con referencia fuerte para cerrar sin publicar detrás del sentinel ni perder fallos por `CancelledError`.
@@ -18,7 +16,7 @@
 - Modificar `sky_claw/antigravity/core/database.py`: reemplazar cada `execute()+commit()` de escritura por el límite transaccional del lifecycle.
 - Modificar `sky_claw/antigravity/core/dlq_manager.py`: separar conexión de lectura y transacción de escritura; migrar todo DDL/DML.
 - Modificar `sky_claw/antigravity/core/event_bus.py`: introducir estados, serialización de lifecycle, drenaje por sentinel y persistencia DLQ protegida.
-- Modificar `docs/superpowers/specs/2026-07-18-core-async-critical-remediation-design.md` solamente si la implementación descubre una divergencia contractual; cualquier divergencia debe quedar explicada antes del commit correspondiente.
+- Modificar `docs/design/specs/2026-07-18-core-async-critical-remediation-design.md` solamente si la implementación descubre una divergencia contractual; cualquier divergencia debe quedar explicada antes del commit correspondiente.
 
 ### Task 1: Límite transaccional cancel-safe en `DatabaseLifecycleManager`
 
