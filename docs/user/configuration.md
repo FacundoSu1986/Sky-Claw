@@ -8,8 +8,7 @@
 > `sky_claw/app/core/path_resolver.py` y
 > `local_scripts/scripts/first_run.py`.
 >
-> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
-> `e8427063`.
+> **Última verificación:** 2026-08-09 sobre `origin/main` `272d4953`.
 
 ## Archivo y precedencia
 
@@ -47,11 +46,16 @@ las produce se completa.
 | `ngio_mods` | Nombres de los mods MO2 instalados para el precache de grass |
 | `community_shaders_mods` | Nombres de los mods MO2 instalados por la operación de [Community Shaders](community_shaders.md) |
 
-Ambas existen porque esos componentes no tienen ejecutable propio: el orquestador
-necesita sus nombres para activarlos en `modlist.txt`. Editarlas o borrarlas rompe esa
-activación sin producir ningún error visible. Si una instalación informa que los mods
-quedaron en disco pero la configuración no se pudo guardar, la clave falta: repetir la
-instalación, no escribirla a mano.
+Ambas existen porque esos componentes no tienen ejecutable propio: el escaneo no puede
+deducir qué instaló Sky-Claw, así que se deja constancia del nombre exacto de cada
+directorio bajo `mods/`.
+
+Son **un registro, no un disparador**. Se leen al cargar la configuración y se migran
+desde el formato legacy, pero ninguna ruta de producción las usa para activar mods: la
+activación en `modlist.txt` la sigue haciendo el operador desde MO2. Los comentarios del
+código las describen como insumo de una activación automática; eso es intención de
+diseño, no comportamiento vigente. Escribirlas a mano no activa nada, y que falten no
+impide activar los mods manualmente.
 
 ## Secretos
 

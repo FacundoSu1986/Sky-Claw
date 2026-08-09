@@ -11,8 +11,7 @@
 > `sky_claw/app/gui/views/forge_dashboard.py`,
 > `sky_claw/local/discovery/scanner.py` y `sky_claw/local/local_config.py`.
 >
-> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
-> `e8427063`.
+> **Última verificación:** 2026-08-09 sobre `origin/main` `272d4953`.
 
 ## Objetivo
 
@@ -50,8 +49,9 @@ y descarta el resto.
 
 ## Qué NO hace
 
-- **No activa los mods.** No escribe `modlist.txt`. Sky-Claw persiste los nombres
-  instalados y la activación queda a cargo del orquestador.
+- **No activa los mods.** No escribe `modlist.txt`. Sky-Claw deja constancia de los
+  nombres instalados, pero hoy ninguna ruta de producción los consume: **activar los
+  tres mods en MO2 es un paso manual tuyo**.
 - **No instala SKSE.** Community Shaders es un plugin de SKSE: SKSE tiene que estar antes.
   El panel de la GUI tiene su propio instalador de SKSE.
 - **No instala el preloader de SSE Engine Fixes.** Va en la raíz del juego y es un paso
@@ -106,7 +106,8 @@ que ya se instaló. No hay rollback de los componentes anteriores.
 ## Estado persistido
 
 Los nombres de los tres mods se guardan en `community_shaders_mods`, estado administrado
-por Sky-Claw que no se edita a mano. Su semántica exacta está en
+por Sky-Claw que no se edita a mano. Es un **registro de lo instalado**, no un disparador
+de activación: su semántica exacta y sus límites están en
 [configuración](configuration.md).
 
 ## Detección
@@ -125,24 +126,36 @@ reparación.
 
 | Desenlace | Qué significa | Qué hacer |
 |---|---|---|
-| Instalación completa | Los tres mods en `mods/` y los nombres persistidos | Activarlos en MO2 según la ruta del orquestador |
+| Instalación completa | Los tres mods en `mods/` y los nombres registrados | Activarlos manualmente en MO2 |
 | Componente ya instalado | El sentinel de ese mod ya estaba: no se vuelve a descargar | Nada; la operación es idempotente por componente |
 | Abortado por un requisito | Ningún byte descargado, nada modificado | Resolver el requisito y repetir; ver [diagnóstico](troubleshooting.md) |
 | Denegado a mitad | Lo anterior queda instalado; el resto no se intentó | Repetir cuando se pueda aprobar; los componentes ya instalados se saltan |
-| Instalado con aviso de persistencia | Los mods están en disco pero `community_shaders_mods` no se pudo guardar | El orquestador no podrá activarlos: repetir la instalación (no borrar nada) |
+| Instalado con aviso de persistencia (sólo GUI) | Los mods están en disco pero `community_shaders_mods` no se pudo guardar | Los mods son utilizables: activarlos igual en MO2. Para regenerar el registro hay que pedírselo al agente —la tarjeta ya no ofrece reinstalar— y sólo funciona si el agente tiene la configuración y su ruta; no borrar nada |
+
+El aviso de persistencia lo emite **únicamente la GUI**. Por el agente LLM, un fallo al
+guardar la configuración propaga el error en vez de devolver ese aviso; y si el agente no
+recibió la configuración o su ruta, el guardado se omite sin avisar y el resultado informa
+la instalación como correcta aunque el registro no se haya escrito. En todos los casos los
+mods ya están en disco y se pueden activar a mano.
 
 ## Integridad de las descargas
 
-- Se verifica el SHA-256 cuando el origen lo publica; un desajuste aborta y borra el
-  archivo descargado.
-- Si el origen no publica digest, la descarga se acepta y el hash completo se registra en
-  el log. Es confianza en el primer uso, no verificación.
+- Se verifica el hash cuando el origen lo publica; un desajuste aborta y borra el archivo
+  descargado.
+- En la descarga por streaming (GitHub y Nexus con cuenta premium), si el origen no
+  publica digest la descarga se acepta y el hash completo se registra en el log. Es
+  confianza en el primer uso, no verificación.
+- En el **fallback manual de Nexus**, si Nexus no publica ningún hash utilizable el
+  archivo se acepta **sin validar y sin registrar hash**: sólo queda un aviso en el log
+  de que no se pudo validar. Ese camino no ofrece ninguna evidencia de integridad.
 - Hay un techo de bytes durante el streaming. Excederlo aborta y **no** se reintenta: un
   techo superado no se arregla repitiendo.
 - Si el directorio del mod no existía, Sky-Claw extrae y verifica en un staging propio y
   sólo lo publica al terminar. Un fallo limpia ese payload temporal, nunca un destino que
-  MO2 o el operador haya creado durante la operación. Un mod preexistente se repara in-place
-  pero nunca se borra; una denegación tampoco borra nada.
+  MO2 o el operador haya creado durante la operación.
+- Si el directorio **ya existía**, la reparación escribe directamente sobre él. Sky-Claw
+  nunca lo borra, pero un fallo de extracción o verificación puede dejarlo con contenido
+  a medias: revisar ese directorio antes de reintentar. Una denegación no escribe nada.
 
 ## Fallos y recuperación
 
@@ -152,11 +165,20 @@ evidencia antes de repetir cualquier operación.
 
 ## Límites conocidos
 
+- **La activación no está automatizada.** Sky-Claw registra los nombres instalados, pero
+  ninguna ruta de producción los consume todavía: hay que activar los tres mods en MO2 a
+  mano.
+- **El aviso de persistencia es sólo de la GUI.** El camino del agente LLM no lo emite;
+  ver la tabla de desenlaces.
+- **La GUI no puede reparar el registro.** Una vez que el mod se detecta, su tarjeta pasa
+  a `Instalado` y deja de ofrecer la instalación, así que recuperar
+  `community_shaders_mods` sólo es posible por el agente.
 - **Sin validación en un rig real.** Lo documentado proviene de código y tests con la red
   simulada; ninguna prueba descarga de Nexus o GitHub reales.
-- **Descarga desde Nexus sin cuenta premium:** no verificado. La API solo genera enlaces
-  de descarga directa para cuentas premium; no se comprobó el comportamiento de esta
-  operación por esa vía.
+- **Descarga desde Nexus sin cuenta premium:** la API sólo genera enlaces directos para
+  cuentas premium, así que esa vía cae al fallback manual, donde un file sin hash
+  utilizable se acepta sin validar. El recorrido completo no se comprobó de extremo a
+  extremo.
 - **Sin hashes fijados.** La verificación depende de lo que publique cada origen.
 - El preloader de Engine Fixes se identifica por un nombre de archivo conocido. Si el
   proyecto original lo renombrara, la comprobación fallaría hasta actualizar el código.

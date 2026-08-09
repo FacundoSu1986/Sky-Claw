@@ -8,8 +8,7 @@
 > **Fuentes canónicas:** `sky_claw/__main__.py`,
 > `sky_claw/app/gui/` y `sky_claw/local/AGENTS.md`.
 >
-> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
-> `e8427063`.
+> **Última verificación:** 2026-08-09 sobre `origin/main` `272d4953`.
 
 ## Ruta recomendada
 
