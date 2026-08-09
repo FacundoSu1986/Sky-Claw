@@ -45,6 +45,7 @@ from sky_claw.local.discovery.scanner import (
     skse_dll_game_version,
     skyrim_version_matches,
 )
+from sky_claw.local.thread_bridge import esperar_hilo_ininterrumpible as _esperar_hilo_ininterrumpible
 
 if TYPE_CHECKING:
     from sky_claw.app.scraper.nexus_downloader import NexusDownloader
@@ -243,44 +244,6 @@ async def _mantener_lock_vivo(
                 return
     except asyncio.CancelledError:
         raise
-
-
-async def _esperar_hilo_ininterrumpible(fn: Callable[..., Any], *args: Any) -> Any:
-    """Corre *fn* en un hilo del pool SIN que una cancelación interrumpa la espera.
-
-    ``asyncio.to_thread`` no puede matar un hilo ya lanzado: cancelar el
-    ``await`` deja el hilo vivo mutando el directorio mientras el ``finally``
-    del lock libera la exclusividad — exactamente la corrupción cross-process
-    que T-31 existe para cerrar (un segundo proceso adquiere y pisa una
-    instalación en vuelo). Este helper hace la espera a prueba de cancelación:
-    la ``CancelledError`` pendiente se propaga recién cuando el hilo terminó
-    (o falló), de modo que el release del lock nunca ocurre con una mutación
-    en vuelo.
-
-    El costo es que una cancelación puede postergarse hasta la terminación del
-    hilo — acotada por los timeouts de 7z/extracción
-    (``_SEVENZIP_TIMEOUT_SECONDS``). Liberar el lock antes sería el peor
-    desenlace; esperar es la única opción segura.
-    """
-    loop = asyncio.get_running_loop()
-    fut = loop.run_in_executor(None, fn, *args)
-    cancel_pendiente = False
-    while True:
-        try:
-            resultado = await asyncio.shield(fut)
-            if cancel_pendiente:
-                # El hilo terminó: recién ahora la cancelación se propaga, con la
-                # mutación completa. La CancelledError se relanza para que el
-                # caller vea el aborto y el finally del lock corra con el hilo
-                # fuera de juego.
-                raise asyncio.CancelledError
-            return resultado
-        except asyncio.CancelledError:
-            cancel_pendiente = True
-            if fut.done():
-                raise
-            # El hilo sigue mutando: la cancelación espera a que termine.
-            continue
 
 
 # GitHub API endpoints for official releases.

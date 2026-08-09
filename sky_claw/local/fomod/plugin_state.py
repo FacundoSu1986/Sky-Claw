@@ -72,39 +72,41 @@ class MO2PluginStateProvider:
         # reindexar SOLO los mods afectados (nuevos o mutados) en vez de
         # recorrer todo mods/ en cada cambio.
         self._mod_paths: dict[str, frozenset[str]] = {}
-        self._mod_mtimes: dict[str, int] = {}
+        self._mod_mtimes: dict[str, int | None] = {}
         # El índice se construye una sola vez; el lock protege el doble-chequeo
         # cuando la resolución corre en un hilo (asyncio.to_thread).
         self._index_lock = threading.Lock()
 
     def file_state(self, path: str) -> FileState:
         """Estado del archivo *path* (relativo a ``Data/``)."""
-        if self._estado_cambio():
-            with self._index_lock:
-                if self._estado_cambio():
-                    self._rebuild()
-        key = _normalize(path)
-        if key in self._active_files:
-            return FileState.ACTIVE
-        if key in self._inactive_files:
-            return FileState.INACTIVE
-        return FileState.MISSING
+        with self._index_lock:
+            if self._estado_cambio():
+                self._rebuild()
+            key = _normalize(path)
+            if key in self._active_files:
+                return FileState.ACTIVE
+            if key in self._inactive_files:
+                return FileState.INACTIVE
+            return FileState.MISSING
 
     def _estado_cambio(self) -> bool:
-        """True si modlist.txt o el directorio mods/ cambiaron desde el último índice.
+        """Devuelve True si el estado indexado cambió desde el último índice.
 
         El modlist se compara por CONTENIDO (la activación es la fuente de
-        verdad; inmune a mtimes no refrescados). El rglob solo alcanza a los
-        mods cuyo mtime individual cambió (instalación FOMOD = un mod nuevo,
-        no un barrido completo). Limitación declarada: mutaciones DENTRO de un
-        mod existente sin tocar modlist.txt ni crear/borrar mods no se
-        detectan — el flujo actual (instalar mods) no muta mods existentes.
+        verdad; inmune a mtimes no refrescados). También se comparan los mtimes
+        de cada mod conocido para detectar altas, bajas y mutaciones internas.
         """
         if not self._indexed:
             return True
         if self._modlist_snapshot != self._leer_modlist_crudo():
             return True
-        return self._mods_root_mtime != _mtime_ns(self._mo2_root / "mods")
+        if self._mods_root_mtime != _mtime_ns(self._mo2_root / "mods"):
+            return True
+        enabled_mods, disabled_mods = self._read_modlist()
+        conocidos = enabled_mods | disabled_mods
+        if conocidos != set(self._mod_mtimes):
+            return True
+        return any(self._mod_mtimes[mod_name] != _mtime_ns(self._mod_dir(mod_name)) for mod_name in conocidos)
 
     def _leer_modlist_crudo(self) -> str:
         """Contenido crudo de modlist.txt ("" si ilegible/ausente)."""
@@ -114,7 +116,7 @@ class MO2PluginStateProvider:
             return ""
 
     # ------------------------------------------------------------------
-    # Internals
+    # Implementación interna
     # ------------------------------------------------------------------
 
     def _rebuild(self) -> None:
@@ -130,6 +132,8 @@ class MO2PluginStateProvider:
             mod_dir = self._mod_dir(mod_name)
             mtime = _mtime_ns(mod_dir)
             if mtime is None:
+                self._mod_paths.pop(mod_name, None)
+                self._mod_mtimes[mod_name] = None
                 continue
             if mod_name not in self._mod_mtimes or self._mod_mtimes[mod_name] != mtime:
                 self._mod_paths[mod_name] = self._scan_mod(mod_name)

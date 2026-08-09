@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import pathlib
 import shutil
 import tempfile
+import uuid
 import zipfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -23,19 +25,44 @@ import aiofiles
 import aiofiles.os
 
 from sky_claw.app.security.links import rmtree_link_aware
-from sky_claw.app.security.path_validator import PathValidator, PathViolationError, safe_join
+from sky_claw.app.security.path_validator import (
+    PathValidator,
+    PathViolationError,
+    assert_safe_component,
+    safe_join,
+)
 from sky_claw.local.fomod.models import CompositeDependency
 from sky_claw.local.fomod.parser import FomodParseError, parse_fomod
 from sky_claw.local.fomod.plugin_state import FileStateProvider
 from sky_claw.local.fomod.resolver import FomodResolver
+from sky_claw.local.thread_bridge import esperar_hilo_ininterrumpible
 
 if TYPE_CHECKING:
     from sky_claw.local.fomod.models import FileInstall
 
 
 async def async_copy2(src: pathlib.Path, dst: pathlib.Path) -> None:
-    """Copy src to dst using shutil.copy2 in a thread pool."""
-    await asyncio.to_thread(shutil.copy2, str(src), str(dst))
+    """Copia sin propagar cancelación mientras el hilo siga mutando."""
+    await esperar_hilo_ininterrumpible(shutil.copy2, str(src), str(dst))
+
+
+def _promover_staging(staging: pathlib.Path, destino: pathlib.Path) -> None:
+    """Publica *staging* de forma atómica y restaura el destino si falla."""
+    respaldo = destino.with_name(f".{destino.name}.skyclaw-backup-{uuid.uuid4().hex}")
+    tenia_destino = destino.exists() or destino.is_symlink()
+    if tenia_destino:
+        os.replace(destino, respaldo)
+    try:
+        os.replace(staging, destino)
+    except Exception:
+        if tenia_destino and (respaldo.exists() or respaldo.is_symlink()):
+            os.replace(respaldo, destino)
+        raise
+    if tenia_destino:
+        try:
+            rmtree_link_aware(respaldo, limpiar_readonly=True)
+        except OSError:
+            logger.warning("No se pudo limpiar el respaldo de instalación %s", respaldo, exc_info=True)
 
 
 logger = logging.getLogger(__name__)
@@ -207,7 +234,7 @@ class FomodInstaller:
         mod_name = archive_path.stem
 
         # RND-03: Delegar I/O síncrono (zipfile) a thread pool
-        fomod_xml = await asyncio.to_thread(self._extract_fomod_xml, archive_path)
+        fomod_xml = await asyncio.to_thread(self.read_fomod_xml, archive_path)
         if fomod_xml is None:
             return FomodPreview(mod_name=mod_name, has_fomod=False)
 
@@ -295,7 +322,7 @@ class FomodInstaller:
         try:
             # Extract — RND-03: Delegar extracción síncrona a thread pool
             try:
-                await asyncio.to_thread(extractor, archive_path, tmp_dir)
+                await esperar_hilo_ininterrumpible(extractor, archive_path, tmp_dir)
             except PathViolationError:
                 raise
             except Exception as exc:
@@ -332,11 +359,16 @@ class FomodInstaller:
             # el fallo va dentro de `suppress(OSError)`, sin el flag el tmp
             # quedaba huérfano EN SILENCIO y la fuga de disco crecía por corrida.
             with contextlib.suppress(OSError):
-                await asyncio.to_thread(rmtree_link_aware, tmp_dir, limpiar_readonly=True)
+                await esperar_hilo_ininterrumpible(rmtree_link_aware, tmp_dir, limpiar_readonly=True)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def read_fomod_xml(self, archive_path: pathlib.Path) -> str | None:
+        """Lee ModuleConfig.xml tras validar el archive contra el sandbox."""
+        validated = self._validator.validate(archive_path)
+        return self._extract_fomod_xml(validated)
 
     def _extract_fomod_xml(self, archive_path: pathlib.Path) -> str | None:
         """Try to read fomod/ModuleConfig.xml from archive without full extraction."""
@@ -440,13 +472,13 @@ class FomodInstaller:
                 errors=[f"FOMOD parse error: {exc}"],
             )
 
-        mod_name = config.module_name or fallback_name
+        mod_name = assert_safe_component(config.module_name or fallback_name, field="moduleName")
         resolver = FomodResolver(config, file_state=self.file_state_provider)
         # RND-03: la resolución puede disparar el escaneo lazy del proveedor de
         # estado (rglob sobre mods/) — I/O síncrono fuera del event loop.
         result = await asyncio.to_thread(resolver.resolve, selections)
 
-        if result.pending_decisions and not result.files:
+        if result.pending_decisions:
             return InstallResult(
                 mod_name=mod_name,
                 pending_decisions=result.pending_decisions,
@@ -455,12 +487,28 @@ class FomodInstaller:
         # The FOMOD content root is the parent of the fomod/ directory.
         content_root = fomod_xml_path.parent.parent
 
-        mod_dest = mo2_mods_dir / mod_name
-        copied = await self._copy_resolved_files(
-            content_root,
-            mod_dest,
-            result.files,
-        )
+        mod_dest = safe_join(mo2_mods_dir, mod_name)
+        staging = pathlib.Path(tempfile.mkdtemp(prefix=".skyclaw-staging-", dir=mo2_mods_dir))
+        try:
+            if mod_dest.is_dir():
+                await esperar_hilo_ininterrumpible(
+                    shutil.copytree,
+                    mod_dest,
+                    staging,
+                    dirs_exist_ok=True,
+                    symlinks=True,
+                )
+            copied = await self._copy_resolved_files(
+                content_root,
+                staging,
+                result.files,
+            )
+            if copied:
+                await esperar_hilo_ininterrumpible(_promover_staging, staging, mod_dest)
+        finally:
+            if staging.exists() or staging.is_symlink():
+                with contextlib.suppress(OSError):
+                    await esperar_hilo_ininterrumpible(rmtree_link_aware, staging, limpiar_readonly=True)
 
         return InstallResult(
             mod_name=mod_name,
@@ -484,19 +532,34 @@ class FomodInstaller:
         else:
             content_root = extract_dir
 
-        mod_dest = mo2_mods_dir / mod_name
+        mod_name = assert_safe_component(mod_name, field="mod_name")
+        mod_dest = safe_join(mo2_mods_dir, mod_name)
+        staging = pathlib.Path(tempfile.mkdtemp(prefix=".skyclaw-staging-", dir=mo2_mods_dir))
         copied: list[str] = []
+        try:
+            if mod_dest.is_dir():
+                await esperar_hilo_ininterrumpible(
+                    shutil.copytree,
+                    mod_dest,
+                    staging,
+                    dirs_exist_ok=True,
+                    symlinks=True,
+                )
+            for src_file in content_root.rglob("*"):
+                if src_file.is_dir():
+                    continue
+                rel = src_file.relative_to(content_root)
+                dest_file = safe_join(staging, rel)
 
-        for src_file in content_root.rglob("*"):
-            if src_file.is_dir():
-                continue
-            rel = src_file.relative_to(content_root)
-            dest_file = mod_dest / rel
-
-            await aiofiles.os.makedirs(dest_file.parent, exist_ok=True)
-            # Use asynchronous copy to avoid blocking the event loop
-            await async_copy2(src_file, dest_file)
-            copied.append(str(rel))
+                await aiofiles.os.makedirs(dest_file.parent, exist_ok=True)
+                await async_copy2(src_file, dest_file)
+                copied.append(str(rel))
+            if copied:
+                await esperar_hilo_ininterrumpible(_promover_staging, staging, mod_dest)
+        finally:
+            if staging.exists() or staging.is_symlink():
+                with contextlib.suppress(OSError):
+                    await esperar_hilo_ininterrumpible(rmtree_link_aware, staging, limpiar_readonly=True)
 
         return InstallResult(
             mod_name=mod_name,

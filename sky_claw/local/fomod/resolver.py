@@ -222,10 +222,10 @@ class FomodResolver:
                     if pattern.type is PluginType.COULD_BE_USABLE:
                         return PluginType.OPTIONAL
                     return pattern.type
-            return None
+            return self._normalizar_tipo(plugin.dependency_default_type)
 
         if plugin.dependency is not None and not self._evaluate_conditions(plugin.dependency, flags):
-            return plugin.dependency_default_type
+            return self._normalizar_tipo(plugin.dependency_default_type)
 
         # El tipo estático también puede ser NotUsable/CouldBeUsable: NotUsable
         # es una opción deshabilitada por el autor (nunca elegible);
@@ -235,6 +235,14 @@ class FomodResolver:
         if plugin.type_descriptor is PluginType.COULD_BE_USABLE:
             return PluginType.OPTIONAL
         return plugin.type_descriptor
+
+    @staticmethod
+    def _normalizar_tipo(plugin_type: PluginType | None) -> PluginType | None:
+        if plugin_type is PluginType.NOT_USABLE:
+            return None
+        if plugin_type is PluginType.COULD_BE_USABLE:
+            return PluginType.OPTIONAL
+        return plugin_type
 
     def _evaluate_conditions(
         self,

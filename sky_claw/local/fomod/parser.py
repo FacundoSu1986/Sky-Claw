@@ -238,7 +238,9 @@ def _parse_plugins(element: _stdlib_ET.Element | None) -> list[Plugin]:
                 dep_el = td_el.find("dependencyType")
                 if dep_el is not None:
                     dependency = _parse_composite_dependency(dep_el)
-                    dependency_default_type = _parse_plugin_type_attr(dep_el.get("defaultType"))
+                    default_el = dep_el.find("defaultType")
+                    default_name = default_el.get("name") if default_el is not None else dep_el.get("defaultType")
+                    dependency_default_type = _parse_plugin_type_attr(default_name)
                     dependency_patterns = _parse_dependency_patterns(dep_el)
 
             plugins.append(

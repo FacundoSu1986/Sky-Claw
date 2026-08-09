@@ -9,6 +9,7 @@ el resolver trataba las fileDependency como siempre verdaderas ("optimistic")
 from __future__ import annotations
 
 import pathlib
+import shutil
 import zipfile
 
 from sky_claw.app.security.path_validator import PathValidator
@@ -196,6 +197,32 @@ class TestMO2PluginStateProvider:
         nuevo.mkdir()
         (nuevo / "Nuevo.esp").write_text("esp", encoding="utf-8")
         (mo2_root / "profiles" / "Default" / "modlist.txt").write_text("+ModA\n+ModNuevo\n", encoding="utf-8")
+
+        assert provider.file_state("Nuevo.esp") == FileState.ACTIVE
+
+    def test_elimina_del_cache_un_mod_borrado(self, tmp_path: pathlib.Path) -> None:
+        mo2_root = crear_arbol_mo2(
+            tmp_path,
+            modlist="+ModA\n",
+            mods={"ModA": {"ModA.esp": "esp"}},
+        )
+        provider = MO2PluginStateProvider(mo2_root)
+        assert provider.file_state("ModA.esp") == FileState.ACTIVE
+
+        shutil.rmtree(mo2_root / "mods" / "ModA")
+
+        assert provider.file_state("ModA.esp") == FileState.MISSING
+
+    def test_invalida_cache_si_cambia_un_mod_existente(self, tmp_path: pathlib.Path) -> None:
+        mo2_root = crear_arbol_mo2(
+            tmp_path,
+            modlist="+ModA\n",
+            mods={"ModA": {"ModA.esp": "esp"}},
+        )
+        provider = MO2PluginStateProvider(mo2_root)
+        assert provider.file_state("Nuevo.esp") == FileState.MISSING
+
+        (mo2_root / "mods" / "ModA" / "Nuevo.esp").write_text("esp", encoding="utf-8")
 
         assert provider.file_state("Nuevo.esp") == FileState.ACTIVE
 

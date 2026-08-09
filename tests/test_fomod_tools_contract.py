@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
+import zipfile
 from typing import Any
 
 import pytest
@@ -22,7 +23,8 @@ from sky_claw.app.agent.tools.system_tools import (
     resolve_fomod,
 )
 from sky_claw.app.security.hitl import Decision
-from sky_claw.local.fomod.installer import FomodPreview, InstallResult
+from sky_claw.app.security.path_validator import PathValidator
+from sky_claw.local.fomod.installer import FomodInstaller, FomodPreview, InstallResult
 
 # ---------------------------------------------------------------------------
 # Dobles
@@ -66,7 +68,7 @@ class _FakeFomodInstaller:
             return self._install_result
         return InstallResult(mod_name=archive_path.stem, installed=True)
 
-    def _extract_fomod_xml(self, archive_path: pathlib.Path) -> str | None:
+    def read_fomod_xml(self, archive_path: pathlib.Path) -> str | None:
         return self._fomod_xml
 
 
@@ -333,6 +335,19 @@ class TestResolveFomodContrato:
     async def test_xml_invalido_devuelve_failure(self) -> None:
         installer = _FakeFomodInstaller(fomod_xml="<config><unclosed>")
         payload = _cargar(await resolve_fomod(installer, "C:/mods/Roto.zip"))
+
+        assert payload["success"] is False
+        assert payload["message"] != ""
+
+    async def test_rechaza_archive_fuera_del_sandbox(self, tmp_path: pathlib.Path) -> None:
+        permitido = tmp_path / "permitido"
+        permitido.mkdir()
+        archive = tmp_path / "fuera.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("fomod/ModuleConfig.xml", "<config><moduleName>Fuera</moduleName></config>")
+        installer = FomodInstaller(PathValidator(roots=[permitido]))
+
+        payload = _cargar(await resolve_fomod(installer, str(archive)))
 
         assert payload["success"] is False
         assert payload["message"] != ""

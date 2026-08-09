@@ -346,12 +346,17 @@ FOMOD_DEFAULT_TYPE = """\
                     <plugins order="Explicit">
                         <plugin name="Parche Ligero">
                             <typeDescriptor>
-                                <dependencyType defaultType="Recommended" operator="And">
-                                    <dependencies>
-                                        <fileDependency file="USSEP.esp" state="Active" />
-                                    </dependencies>
+                                <dependencyType>
+                                    <defaultType name="Recommended" />
+                                    <patterns>
+                                        <pattern>
+                                            <dependencies>
+                                                <fileDependency file="USSEP.esp" state="Active" />
+                                            </dependencies>
+                                            <type name="Optional" />
+                                        </pattern>
+                                    </patterns>
                                 </dependencyType>
-                                <type name="Optional" />
                             </typeDescriptor>
                             <files>
                                 <file source="light/light.esp" destination="light.esp" />
@@ -396,23 +401,23 @@ FOMOD_PATTERNS = """\
                     <plugins order="Explicit">
                         <plugin name="ParcheAvanzado">
                             <typeDescriptor>
-                                <dependencyType operator="And">
+                                <dependencyType>
+                                    <defaultType name="NotUsable" />
                                     <patterns>
                                         <pattern>
-                                            <type name="NotUsable" />
                                             <dependencies>
                                                 <fileDependency file="OldMod.esp" state="Active" />
                                             </dependencies>
+                                            <type name="NotUsable" />
                                         </pattern>
                                         <pattern>
-                                            <type name="CouldBeUsable" />
                                             <dependencies>
                                                 <flagDependency flag="modo" value="avanzado" />
                                             </dependencies>
+                                            <type name="CouldBeUsable" />
                                         </pattern>
                                     </patterns>
                                 </dependencyType>
-                                <type name="Optional" />
                             </typeDescriptor>
                             <files>
                                 <file source="compat/av.esp" destination="av.esp" />

@@ -355,12 +355,12 @@ async def resolve_fomod(
     from sky_claw.local.fomod.resolver import FomodResolver
 
     archive = pathlib.Path(archive_path)
-    if not hasattr(fomod_installer, "_extract_fomod_xml"):
-        return json.dumps({"success": False, "message": "FomodInstaller is missing _extract_fomod_xml capability."})
+    if not hasattr(fomod_installer, "read_fomod_xml"):
+        return json.dumps({"success": False, "message": "FomodInstaller is missing read_fomod_xml capability."})
     try:
         # RND-03: la lectura del archive (zip/7z/rar) es I/O síncrono — fuera
         # del event loop.
-        fomod_xml = await asyncio.to_thread(fomod_installer._extract_fomod_xml, archive)
+        fomod_xml = await asyncio.to_thread(fomod_installer.read_fomod_xml, archive)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # frontera deliberada: JSON para el LLM, nunca propagar crudo
