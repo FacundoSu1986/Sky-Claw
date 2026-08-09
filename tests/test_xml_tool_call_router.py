@@ -360,3 +360,70 @@ class TestXmlToolSelfHealing:
         result = await xml_tool_router.chat("Broken call", mock_session, chat_id="h-5")
         assert "Apologies" in result
         assert call_index == 2
+
+    @pytest.mark.asyncio
+    async def test_arguments_falsy_se_reinyecta_como_error_y_recupera(self, xml_tool_router: LLMRouter) -> None:
+        """arguments falsy lanza ValueError; el router lo reinyecta al LLM y se recupera."""
+        feedback_recibido: list[dict[str, Any]] = []
+        responses = [
+            {
+                "stop_reason": "end_turn",
+                "content": [
+                    {"type": "text", "text": '<tool_call>{"name": "search_mod", "arguments": false}</tool_call>'}
+                ],
+            },
+            {
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "Disculpas, corrijo la llamada."}],
+            },
+        ]
+        call_index = 0
+
+        async def fake_chat(**kwargs: Any) -> dict[str, Any]:
+            nonlocal call_index
+            if call_index == 1:
+                feedback_recibido.extend(kwargs.get("messages", []))
+            r = responses[call_index]
+            call_index += 1
+            return r
+
+        xml_tool_router._provider.chat = fake_chat  # type: ignore[method-assign]
+        mock_session = MagicMock(spec=aiohttp.ClientSession)
+
+        with patch.object(xml_tool_router._tools, "execute", new_callable=AsyncMock) as mock_exec:
+            result = await xml_tool_router.chat("Buscar SKSE", mock_session, chat_id="h-6")
+
+        assert "corrijo" in result
+        assert call_index == 2
+        assert mock_exec.call_count == 0
+        feedback = "\n".join(str(m.get("content", "")) for m in feedback_recibido)
+        assert "[Tool Error]" in feedback
+        assert "'arguments' must be a JSON object" in feedback
+
+    @pytest.mark.asyncio
+    async def test_arguments_falsy_persistente_agota_presupuesto_de_parse(self, xml_tool_router: LLMRouter) -> None:
+        """Un modelo que persiste en arguments null agota el presupuesto de parse sin ejecutar tools."""
+        attempt = 0
+
+        async def fake_chat(**kwargs: Any) -> dict[str, Any]:
+            nonlocal attempt
+            attempt += 1
+            return {
+                "stop_reason": "end_turn",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '<tool_call>{"name": "search_mod", "arguments": null}</tool_call>',
+                    }
+                ],
+            }
+
+        xml_tool_router._provider.chat = fake_chat  # type: ignore[method-assign]
+        mock_session = MagicMock(spec=aiohttp.ClientSession)
+
+        with patch.object(xml_tool_router._tools, "execute", new_callable=AsyncMock) as mock_exec:
+            result = await xml_tool_router.chat("Buscar SKSE", mock_session, chat_id="h-7")
+
+        assert "max" in result.lower()
+        assert attempt == MAX_XML_TOOL_RETRIES
+        assert mock_exec.call_count == 0
