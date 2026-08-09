@@ -357,6 +357,15 @@ class TestRegistryFomodCableado:
 
         assert {"preview_mod_installer", "install_mod_from_archive", "resolve_fomod"} <= set(registry.tools)
 
+    def test_ancla_api_publica_de_los_helpers_de_lock(self) -> None:
+        """El agente consume la API pública de la familia de instalación (T-31):
+        si un rename dentro de tools_installer rompe el alias, este test lo
+        atrapa en import time, no en runtime de instalación."""
+        import sky_claw.local.tools_installer as tools_installer
+
+        assert tools_installer.bajo_lock_de_instalacion is tools_installer._bajo_lock_de_instalacion
+        assert tools_installer.install_lock_resource_id is tools_installer._install_lock_resource_id
+
     async def test_ejecuta_preview_con_instalador_cableado(self, fake_mo2: _FakeMO2) -> None:
         preview = FomodPreview(
             mod_name="TestMod",

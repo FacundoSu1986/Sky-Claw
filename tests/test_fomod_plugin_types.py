@@ -447,6 +447,63 @@ class TestParserDependencyTypeExtendido:
 
 
 class TestResolverDependencyTypeExtendido:
+    def test_type_estatico_not_usable_deja_el_plugin_no_elegible(self) -> None:
+        """Un <type name="NotUsable"/> estático (sin dependencyType) es una
+        opción deshabilitada por el autor: no puede instalarse."""
+        xml = """\
+        <config>
+            <installSteps order="Explicit">
+                <installStep name="Compat">
+                    <optionalFileGroups order="Explicit">
+                        <group name="Parches" type="SelectAny">
+                            <plugins order="Explicit">
+                                <plugin name="Roto">
+                                    <typeDescriptor><type name="NotUsable" /></typeDescriptor>
+                                    <files><file source="roto/roto.esp" destination="roto.esp" /></files>
+                                </plugin>
+                            </plugins>
+                        </group>
+                    </optionalFileGroups>
+                </installStep>
+            </installSteps>
+        </config>
+        """
+        resolver = FomodResolver(_configs(xml))
+
+        result = resolver.resolve({"Compat": ["Roto"]})
+
+        sources = [f.source for f in result.files]
+        assert "roto/roto.esp" not in sources
+
+    def test_type_estatico_could_be_usable_se_trata_como_optional(self) -> None:
+        """Fuera de un pattern, CouldBeUsable se comporta como Optional:
+        elegible pero nunca preseleccionado."""
+        xml = """\
+        <config>
+            <installSteps order="Explicit">
+                <installStep name="Compat">
+                    <optionalFileGroups order="Explicit">
+                        <group name="Parches" type="SelectAny">
+                            <plugins order="Explicit">
+                                <plugin name="Opcional">
+                                    <typeDescriptor><type name="CouldBeUsable" /></typeDescriptor>
+                                    <files><file source="opt/opt.esp" destination="opt.esp" /></files>
+                                </plugin>
+                            </plugins>
+                        </group>
+                    </optionalFileGroups>
+                </installStep>
+            </installSteps>
+        </config>
+        """
+        resolver = FomodResolver(_configs(xml))
+
+        sin_seleccion = resolver.resolve({})
+        assert [f.source for f in sin_seleccion.files] == []
+
+        con_seleccion = resolver.resolve({"Compat": ["Opcional"]})
+        assert [f.source for f in con_seleccion.files] == ["opt/opt.esp"]
+
     def test_default_type_se_aplica_cuando_dependencias_no_se_cumplen(self, tmp_path: pathlib.Path) -> None:
         mo2_root = crear_arbol_mo2(
             tmp_path,

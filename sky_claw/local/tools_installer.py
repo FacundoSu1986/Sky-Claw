@@ -191,6 +191,16 @@ async def _bajo_lock_de_instalacion(
             logger.error("Fallo al liberar el lock de instalación '%s': %s", resource_id, exc)
 
 
+# ---------------------------------------------------------------------------
+# API pública de la familia de instalación
+# ---------------------------------------------------------------------------
+# Otros mutadores del mismo recurso (agente LLM → install_mod_from_archive)
+# consumen estos alias en vez de los helpers privados: un rename interno no
+# puede romper la instalación en runtime sin romper el import time del paquete.
+install_lock_resource_id = _install_lock_resource_id
+bajo_lock_de_instalacion = _bajo_lock_de_instalacion
+
+
 async def _mantener_lock_vivo(
     lock_manager: DistributedLockManager,
     resource_id: str,

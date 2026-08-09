@@ -230,6 +230,11 @@ def _parse_plugins(element: _stdlib_ET.Element | None) -> list[Plugin]:
                     except ValueError:
                         logger.warning("Unknown plugin type %r, defaulting to Optional", raw_type)
                         type_desc = PluginType.OPTIONAL
+                    if type_desc is PluginType.COULD_BE_USABLE:
+                        # Fuera de un pattern, CouldBeUsable se comporta como
+                        # Optional (el estándar solo le da sentido dentro de
+                        # <dependencyType><patterns>).
+                        type_desc = PluginType.OPTIONAL
                 dep_el = td_el.find("dependencyType")
                 if dep_el is not None:
                     dependency = _parse_composite_dependency(dep_el)

@@ -63,7 +63,12 @@ class MO2PluginStateProvider:
         self._inactive_files: frozenset[str] = frozenset()
         self._indexed = False
         self._modlist_mtime: int | None = None
-        self._mods_mtime: int | None = None
+        self._mods_root_mtime: int | None = None
+        # Cache por mod: paths ya escaneados y mtime del directorio. Permite
+        # reindexar SOLO los mods afectados (nuevos o mutados) en vez de
+        # recorrer todo mods/ en cada cambio.
+        self._mod_paths: dict[str, frozenset[str]] = {}
+        self._mod_mtimes: dict[str, int] = {}
         # El índice se construye una sola vez; el lock protege el doble-chequeo
         # cuando la resolución corre en un hilo (asyncio.to_thread).
         self._index_lock = threading.Lock()
@@ -73,7 +78,7 @@ class MO2PluginStateProvider:
         if self._estado_cambio():
             with self._index_lock:
                 if self._estado_cambio():
-                    self._build_index()
+                    self._rebuild()
         key = _normalize(path)
         if key in self._active_files:
             return FileState.ACTIVE
@@ -82,34 +87,72 @@ class MO2PluginStateProvider:
         return FileState.MISSING
 
     def _estado_cambio(self) -> bool:
-        """True si modlist.txt o mods/ cambiaron desde el último índice.
+        """True si modlist.txt o el directorio mods/ cambiaron desde el último índice.
 
-        Dos stats baratos por consulta; la reindexación solo ocurre cuando un
-        mutador (instalación, activar/desactivar) tocó el estado de MO2. Sin
-        esto el índice quedaría obsoleto durante la sesión.
+        Dos stats baratos por consulta; el rglob solo alcanza a los mods cuyo
+        mtime individual cambió (instalación FOMOD = un mod nuevo, no un
+        barrido completo). Limitación declarada: mutaciones DENTRO de un mod
+        existente sin tocar modlist.txt ni crear/borrar mods no se detectan —
+        el flujo actual (instalar mods) no muta mods existentes.
         """
         if not self._indexed:
             return True
         return self._modlist_mtime != _mtime_ns(
             self._mo2_root / "profiles" / self._profile / _MODLIST_NAME
-        ) or self._mods_mtime != _mtime_ns(self._mo2_root / "mods")
+        ) or self._mods_root_mtime != _mtime_ns(self._mo2_root / "mods")
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
-    def _build_index(self) -> None:
-        """Indexa ``mods/<nombre>/`` en dos conjuntos: habilitados/deshabilitados."""
+    def _rebuild(self) -> None:
+        """Reconstruye los conjuntos activo/inactivo.
+
+        Escanea SOLO los mods cuyo directorio cambió (nuevos o mutados) y
+        reutiliza el cache de paths para el resto: activar/desactivar un mod
+        re-clasifica sin recorrer archivos.
+        """
+        enabled_mods, disabled_mods = self._read_modlist()
+        conocidos = enabled_mods | disabled_mods
+        for mod_name in conocidos:
+            mod_dir = self._mod_dir(mod_name)
+            mtime = _mtime_ns(mod_dir)
+            if mtime is None:
+                continue
+            if mod_name not in self._mod_mtimes or self._mod_mtimes[mod_name] != mtime:
+                self._mod_paths[mod_name] = self._scan_mod(mod_name)
+                self._mod_mtimes[mod_name] = mtime
+        # Mods removidos del modlist: fuera del estado de MO2.
+        for mod_name in [n for n in self._mod_mtimes if n not in conocidos]:
+            self._mod_mtimes.pop(mod_name, None)
+            self._mod_paths.pop(mod_name, None)
+
         active: set[str] = set()
         inactive: set[str] = set()
-        enabled_mods, disabled_mods = self._read_modlist()
-        self._index_mods(enabled_mods, active)
-        self._index_mods(disabled_mods, inactive)
+        for mod_name in enabled_mods:
+            active.update(self._mod_paths.get(mod_name, ()))
+        for mod_name in disabled_mods:
+            inactive.update(self._mod_paths.get(mod_name, ()))
         self._active_files = frozenset(active)
         self._inactive_files = frozenset(inactive)
         self._modlist_mtime = _mtime_ns(self._mo2_root / "profiles" / self._profile / _MODLIST_NAME)
-        self._mods_mtime = _mtime_ns(self._mo2_root / "mods")
+        self._mods_root_mtime = _mtime_ns(self._mo2_root / "mods")
         self._indexed = True
+
+    def _mod_dir(self, mod_name: str) -> pathlib.Path:
+        return self._mo2_root / "mods" / mod_name
+
+    def _scan_mod(self, mod_name: str) -> frozenset[str]:
+        """Paths relativos (normalizados) de un solo mod."""
+        mod_dir = self._mod_dir(mod_name)
+        paths: set[str] = set()
+        if not mod_dir.is_dir():
+            return frozenset()
+        for file_path in mod_dir.rglob("*"):
+            if file_path.is_file():
+                rel = file_path.relative_to(mod_dir)
+                paths.add(_normalize(rel.as_posix()))
+        return frozenset(paths)
 
     def _read_modlist(self) -> tuple[set[str], set[str]]:
         """Lee ``profiles/<perfil>/modlist.txt`` → (habilitados, deshabilitados).
@@ -139,14 +182,3 @@ class MO2PluginStateProvider:
                 continue
             (enabled if prefix == "+" else disabled).add(name)
         return enabled, disabled
-
-    def _index_mods(self, mod_names: set[str], target: set[str]) -> None:
-        """Agrega los paths relativos de cada mod a *target*."""
-        for mod_name in mod_names:
-            mod_dir = self._mo2_root / "mods" / mod_name
-            if not mod_dir.is_dir():
-                continue
-            for file_path in mod_dir.rglob("*"):
-                if file_path.is_file():
-                    rel = file_path.relative_to(mod_dir)
-                    target.add(_normalize(rel.as_posix()))

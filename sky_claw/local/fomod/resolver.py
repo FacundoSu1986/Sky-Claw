@@ -227,6 +227,13 @@ class FomodResolver:
         if plugin.dependency is not None and not self._evaluate_conditions(plugin.dependency, flags):
             return plugin.dependency_default_type
 
+        # El tipo estático también puede ser NotUsable/CouldBeUsable: NotUsable
+        # es una opción deshabilitada por el autor (nunca elegible);
+        # CouldBeUsable fuera de un pattern se comporta como Optional.
+        if plugin.type_descriptor is PluginType.NOT_USABLE:
+            return None
+        if plugin.type_descriptor is PluginType.COULD_BE_USABLE:
+            return PluginType.OPTIONAL
         return plugin.type_descriptor
 
     def _evaluate_conditions(

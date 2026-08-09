@@ -37,10 +37,18 @@ PREVIEW_XML = """\
                         <plugin name="Parche USSEP">
                             <description>Parche para USSEP</description>
                             <typeDescriptor>
-                                <dependencyType operator="And">
+                                <dependencyType defaultType="Recommended" operator="And">
                                     <dependencies>
                                         <fileDependency file="USSEP.esp" state="Active" />
                                     </dependencies>
+                                    <patterns>
+                                        <pattern>
+                                            <type name="NotUsable" />
+                                            <dependencies>
+                                                <fileDependency file="OldMod.esp" state="Active" />
+                                            </dependencies>
+                                        </pattern>
+                                    </patterns>
                                 </dependencyType>
                                 <type name="Optional" />
                             </typeDescriptor>
@@ -237,6 +245,14 @@ class TestPreviewDetallePlugins:
         assert ussep["type"] == "Optional"
         assert ussep["dependency"]["operator"] == "And"
         assert ussep["dependency"]["file_dependencies"] == [{"file": "USSEP.esp", "state": "Active"}]
+        # El detalle expone la semántica que usa resolve_fomod: default_type y
+        # los patterns (NotUsable/CouldBeUsable) con sus condiciones.
+        assert ussep["default_type"] == "Recommended"
+        assert len(ussep["dependency_patterns"]) == 1
+        assert ussep["dependency_patterns"][0]["type"] == "NotUsable"
+        assert ussep["dependency_patterns"][0]["conditions"]["file_dependencies"] == [
+            {"file": "OldMod.esp", "state": "Active"}
+        ]
 
         # Compat: la lista de nombres se conserva para consumidores previos.
         assert group["options"] == ["HD Textures", "Parche USSEP"]

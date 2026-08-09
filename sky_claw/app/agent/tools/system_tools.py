@@ -256,13 +256,15 @@ async def install_mod_from_archive(
     if fomod_installer is None:
         return json.dumps({"success": False, "message": "FOMOD installer is not configured."})
 
+    mo2_mods_dir = mo2.root / "mods"
     if lock_manager is not None:
-        from sky_claw.local.tools_installer import _bajo_lock_de_instalacion, _install_lock_resource_id
+        # API pública de la familia de instalación (T-31): el mismo recurso que
+        # los autoinstaladores de tools sobre mods/.
+        from sky_claw.local.tools_installer import bajo_lock_de_instalacion, install_lock_resource_id
 
-        mo2_mods_dir = mo2.root / "mods"
-        async with _bajo_lock_de_instalacion(lock_manager, _install_lock_resource_id(mo2_mods_dir)):
-            return await _instalar_con_contrato(mo2, fomod_installer, archive_path, selections)
-    return await _instalar_con_contrato(mo2, fomod_installer, archive_path, selections)
+        async with bajo_lock_de_instalacion(lock_manager, install_lock_resource_id(mo2_mods_dir)):
+            return await _instalar_con_contrato(mo2, fomod_installer, archive_path, selections, mo2_mods_dir)
+    return await _instalar_con_contrato(mo2, fomod_installer, archive_path, selections, mo2_mods_dir)
 
 
 async def _instalar_con_contrato(
@@ -270,6 +272,7 @@ async def _instalar_con_contrato(
     fomod_installer: Any,
     archive_path: str,
     selections: dict[str, list[str]] | None,
+    mo2_mods_dir: pathlib.Path,
 ) -> str:
     """Ejecuta la instalación FOMOD y devuelve el JSON con contrato canónico.
 
@@ -277,7 +280,6 @@ async def _instalar_con_contrato(
     archivo o un mensaje de excepción del sistema puede contener texto no
     confiable).
     """
-    mo2_mods_dir = mo2.root / "mods"
     try:
         result = await fomod_installer.install(
             archive_path=pathlib.Path(archive_path),

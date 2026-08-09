@@ -228,13 +228,25 @@ class FomodInstaller:
                     "options": [p.name for p in group.plugins],
                     # Detalle estructurado para que el agente decida con
                     # descripción, tipo (Required/Recommended/Optional) y
-                    # dependencias de cada opción.
+                    # dependencias de cada opción. Los campos del dependencyType
+                    # (default_type/patterns) exponen la MISMA semántica que
+                    # aplica resolve_fomod, no solo el type estático.
                     "plugin_details": [
                         {
                             "name": p.name,
                             "description": p.description,
                             "image": p.image,
                             "type": p.type_descriptor.value,
+                            "default_type": (
+                                p.dependency_default_type.value if p.dependency_default_type is not None else None
+                            ),
+                            "dependency_patterns": [
+                                {
+                                    "type": pat.type.value,
+                                    "conditions": _serialize_dependency(pat.conditions),
+                                }
+                                for pat in p.dependency_patterns
+                            ],
                             "dependency": _serialize_dependency(p.dependency),
                         }
                         for p in group.plugins
