@@ -82,6 +82,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to the MO2 portable instance",
     )
     parser.add_argument(
+        "--profile",
+        default="",
+        help="MO2 profile for this Sky-Claw session (default: MO2_PROFILE or Default; restart to change)",
+    )
+    parser.add_argument(
         "--skyrim-path",
         type=pathlib.Path,
         default=pathlib.Path(config.skyrim_path) if config.skyrim_path else None,

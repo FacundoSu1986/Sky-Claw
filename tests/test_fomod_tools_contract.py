@@ -86,15 +86,17 @@ class _FakeMO2:
     def __init__(self, root: pathlib.Path) -> None:
         self.root = root
         self.added: list[str] = []
+        self.added_profiles: list[str] = []
         self._fail_modlist = False
 
     def fail_modlist(self) -> None:
         self._fail_modlist = True
 
-    async def add_mod_to_modlist(self, mod_name: str) -> None:
+    async def add_mod_to_modlist(self, mod_name: str, profile: str = "Default") -> None:
         if self._fail_modlist:
             raise OSError("modlist.txt read-only")
         self.added.append(mod_name)
+        self.added_profiles.append(profile)
 
 
 @pytest.fixture()
@@ -238,6 +240,24 @@ class TestInstallModFromArchiveContrato:
         assert payload["success"] is False
         assert payload["message"] != ""
         assert payload["pending_decisions"] == ["Options/Textures: must select exactly one"]
+
+    async def test_instalacion_registra_en_perfil_configurado(self, fake_mo2: _FakeMO2) -> None:
+        installer = _FakeFomodInstaller(
+            install_result=InstallResult(mod_name="TestMod", files_copied=["plugin.esp"], installed=True)
+        )
+
+        payload = _cargar(
+            await install_mod_from_archive(
+                fake_mo2,
+                installer,
+                _FakeHITL(),
+                "C:/mods/TestMod.zip",
+                profile="Requiem",
+            )
+        )
+
+        assert payload["success"] is True
+        assert fake_mo2.added_profiles == ["Requiem"]
 
     async def test_fallo_de_modlist_es_fallo_parcial(self, fake_mo2: _FakeMO2) -> None:
         hitl = _FakeHITL()
@@ -423,6 +443,7 @@ class TestRegistryFomodCableado:
             sync_engine=None,
             hitl=_FakeHITL(),
             fomod_installer=installer,
+            mo2_profile="Requiem",
         )
         archive = pathlib.Path.home() / "Modding" / "TestMod.zip"
 
@@ -432,6 +453,7 @@ class TestRegistryFomodCableado:
         assert install_payload["success"] is True
         assert install_payload["files_copied"] == ["main.esp"]
         assert fake_mo2.added == ["TestMod"]
+        assert fake_mo2.added_profiles == ["Requiem"]
 
         resolve_payload = _cargar(await registry.execute("resolve_fomod", {"archive_path": str(archive)}))
         assert resolve_payload["success"] is True

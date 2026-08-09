@@ -213,6 +213,7 @@ async def install_mod_from_archive(
     archive_path: str,
     selections: dict[str, list[str]] | None = None,
     *,
+    profile: str = "Default",
     lock_manager: Any | None = None,
 ) -> str:
     """Install a mod from archive into MO2 with mandatory HITL approval.
@@ -263,8 +264,15 @@ async def install_mod_from_archive(
         from sky_claw.local.tools_installer import bajo_lock_de_instalacion, install_lock_resource_id
 
         async with bajo_lock_de_instalacion(lock_manager, install_lock_resource_id(mo2_mods_dir)):
-            return await _instalar_con_contrato(mo2, fomod_installer, archive_path, selections, mo2_mods_dir)
-    return await _instalar_con_contrato(mo2, fomod_installer, archive_path, selections, mo2_mods_dir)
+            return await _instalar_con_contrato(
+                mo2,
+                fomod_installer,
+                archive_path,
+                selections,
+                mo2_mods_dir,
+                profile,
+            )
+    return await _instalar_con_contrato(mo2, fomod_installer, archive_path, selections, mo2_mods_dir, profile)
 
 
 async def _instalar_con_contrato(
@@ -273,6 +281,7 @@ async def _instalar_con_contrato(
     archive_path: str,
     selections: dict[str, list[str]] | None,
     mo2_mods_dir: pathlib.Path,
+    profile: str,
 ) -> str:
     """Ejecuta la instalación FOMOD y devuelve el JSON con contrato canónico.
 
@@ -296,7 +305,7 @@ async def _instalar_con_contrato(
 
     if result.installed:
         try:
-            await mo2.add_mod_to_modlist(result.mod_name)
+            await mo2.add_mod_to_modlist(result.mod_name, profile=profile)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -413,9 +413,9 @@ class TestSystemPromptZeroConfig:
         assert "español" in SYSTEM_PROMPT.lower()
 
     def test_system_prompt_default_profile(self) -> None:
-        from sky_claw.app_context import SYSTEM_PROMPT
+        from sky_claw.app_context import _build_system_prompt
 
-        assert "Default" in SYSTEM_PROMPT
+        assert "perfil 'Default'" in _build_system_prompt("Default")
 
     def test_system_prompt_offers_install(self) -> None:
         from sky_claw.app_context import SYSTEM_PROMPT

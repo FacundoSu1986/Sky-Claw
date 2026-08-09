@@ -56,6 +56,10 @@ class TestParseArgs:
         args = _parse_args(["--mo2-root", str(tmp_path)])
         assert args.mo2_root == tmp_path
 
+    def test_profile_explicit(self) -> None:
+        args = _parse_args(["--profile", "Requiem"])
+        assert args.profile == "Requiem"
+
     def test_custom_db_path(self, tmp_path: pathlib.Path) -> None:
         db = tmp_path / "test.db"
         args = _parse_args(["--db-path", str(db)])
