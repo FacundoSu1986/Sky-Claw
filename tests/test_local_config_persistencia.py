@@ -26,13 +26,15 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import json
 import pathlib
+import threading
 import tomllib
 
 import pytest
 
-from sky_claw.config import Config
+from sky_claw.config import Config, _DatosConfig
 from sky_claw.local.local_config import (
     LocalConfig,
     abrir_config_para_persistir,
@@ -211,25 +213,21 @@ def test_guardar_config_no_deja_temporales_huerfanos_tras_un_save_exitoso(tmp_pa
 
 # ── Carrera GUI ↔ agente LLM: los dos escritores del mismo config.toml ──────────
 #
-# El lock (`_CONFIG_WRITE_LOCK`) da UNA garantía: el ciclo leer-modificar-escribir
-# de cada escritor corre de punta a punta sin que el otro empiece en el medio.
-# Eso alcanza para que el archivo NUNCA quede corrupto ni con una escritura a
-# medio hacer. Lo que el lock NO puede dar es "el escritor que iba último no
-# pise lo que el otro acaba de guardar": eso depende de si ESE escritor tenía
-# una vista actualizada del archivo al momento de empezar a escribir.
+# El lock (`_obtener_lock_de_escritura`) da UNA garantía: el ciclo
+# leer-modificar-escribir de cada escritor corre de punta a punta sin que el
+# otro empiece en el medio. Eso alcanza para que el archivo NUNCA quede
+# corrupto ni con una escritura a medio hacer.
 #
-# `persistir_campo` (GUI) siempre relee el archivo antes de escribir — dentro
-# del lock, así que ve el estado más reciente posible. `guardar_config` sobre
-# un `Config` (agente LLM) escribe el `_data` en MEMORIA de un objeto que
-# `AppContext` construye UNA vez y mantiene vivo toda la sesión: si ese objeto
-# nunca releyó el campo que el otro camino acaba de escribir, su próximo
-# `save()` lo pisa igual, lock o no lock — es el modelo de "el objeto entero
-# es la fuente de verdad" de `Config`, no algo que un lock de escritura
-# resuelva. Esto es preexistente a este PR (todo `.save()` de `Config` en el
-# árbol comparte el mismo modelo) y una solución completa (merge por campo en
-# vez de reemplazo del objeto entero) es un cambio de arquitectura aparte —
-# los dos tests de abajo documentan la frontera exacta en vez de afirmar más
-# de lo que el lock realmente garantiza.
+# La garantía de CONTENIDO (que el escritor con objeto desactualizado no pise
+# lo que el otro camino acaba de guardar) NO la da el lock: la da
+# `Config.save()` desde F1, que hace merge-on-save con diff contra un baseline
+# tomado al construir el objeto (ver `sky_claw/config.py`): cada `save()` relee
+# el disco bajo el threading.Lock de save, aplica SOLO los campos que ESTE
+# objeto cambió, y recién después scrubea secretos y escribe atómicamente. Un
+# `Config` long-lived ya no puede borrar campos que nunca vio — la frontera que
+# antes documentaba `test_limite_conocido_...` ahora es garantía, y los tests
+# de abajo la anclan sobre campos que SÍ vienen de `_load_defaults()` (un test
+# sobre campos sin default pasaría incluso con la unión ingenua).
 async def test_lock_evita_la_escritura_entrelazada_y_corrupta(tmp_path: pathlib.Path) -> None:
     """Garantía real del lock: el archivo nunca queda a medio escribir.
 
@@ -295,18 +293,17 @@ async def test_el_escritor_con_lectura_fresca_no_pierde_lo_que_el_otro_ya_guardo
     assert en_disco["mo2_root"] == "D:/MO2"
 
 
-async def test_limite_conocido_un_config_vivo_pisa_lo_que_el_otro_camino_guardo(
+async def test_el_merge_on_save_conserva_lo_que_el_otro_camino_guardo(
     tmp_path: pathlib.Path,
 ) -> None:
-    """El caso que el lock NO resuelve, documentado a propósito: si el objeto
+    """F1 cerró el límite que este test documentaba al revés: si el objeto
     `Config` de larga vida del agente ya existía ANTES de que la GUI guardara
-    `ngio_mods`, el `save()` del agente —posterior, y sin corrupción, el lock
-    funcionó— reemplaza el archivo entero con su propio `_data`, que nunca vio
-    ese campo. Se pierde igual que antes de este PR: el lock serializa el
-    ACCESO, no fusiona el CONTENIDO. Este test existe para que ese límite no se
-    reintroduzca como "ya arreglado" sin que alguien lo note — si algún día se
-    agrega merge-on-save, este test debe empezar a fallar y hay que
-    actualizarlo, no borrarlo en silencio.
+    `ngio_mods`, el `save()` del agente —posterior— releía el disco bajo el
+    lock de save y aplicaba SOLO lo que ESTE objeto cambió (diff contra el
+    baseline tomado al construirlo). El campo que la GUI escribió sobrevive.
+
+    El test se conserva (invertido) en vez de borrarse: es la historia del
+    límite y la ancla de que no regrese. Ver el comentario de la sección.
     """
     config_path = tmp_path / "config.toml"
     config_path.write_text('llm_provider = "anthropic"\nmo2_root = "D:/MO2"\n', encoding="utf-8")
@@ -324,11 +321,347 @@ async def test_limite_conocido_un_config_vivo_pisa_lo_que_el_otro_camino_guardo(
     await asyncio.gather(_gui_primera(), _agente_segundo_con_objeto_desactualizado())
 
     en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    # El archivo sigue siendo TOML válido y completo (no corrupto) — pero el
-    # campo que la GUI escribió desapareció: el `_data` del agente no lo tenía.
-    assert "ngio_mods" not in en_disco
+    # El archivo es TOML válido y completo, y el campo que la GUI escribió
+    # SOBREVIVE al save del objeto desactualizado — eso es F1.
+    assert en_disco["ngio_mods"] == ["NGIO-NG"]
     assert en_disco["community_shaders_mods"] == ["Community Shaders"]
     assert en_disco["mo2_root"] == "D:/MO2"
+
+
+@pytest.mark.parametrize(
+    ("campo", "valor_fresco"),
+    [
+        ("mo2_root", "D:/Otro/MO2"),
+        ("telegram_chat_id", "-1001234567890"),
+        ("llm_provider", "openai"),
+        ("anthropic_model", "claude-sonnet-5"),
+        ("install_dir", "D:/Otro/Tools"),
+        ("first_run", False),
+    ],
+)
+async def test_un_config_vivo_no_pisa_campos_frescos_que_vienen_de_defaults(
+    tmp_path: pathlib.Path, campo: str, valor_fresco: object
+) -> None:
+    """Cierre de CLASE de F1, no de la instancia.
+
+    El objeto del agente se construye cuando el campo todavía NO está en disco:
+    su `_data` queda con el DEFAULT (o el valor de arranque) del campo. La GUI
+    lo escribe después con lectura fresca, y el agente salva otro campo con el
+    objeto desactualizado. El campo fresco tiene que sobrevivir.
+
+    Se parametriza sobre campos que SÍ están en `_load_defaults()`: un test
+    sobre `community_shaders_mods`/`ngio_mods` (sin default) pasaría incluso
+    con la unión ingenua de "releer disco + aplicar `_data` encima", porque
+    esos campos no tienen entrada default que los pise — es exactamente la
+    trampa que señaló la review de diseño.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'llm_provider = "anthropic"\nmo2_root = "D:/MO2"\nxedit_exe = "D:/Tools/xEdit/SSEEdit.exe"\n',
+        encoding="utf-8",
+    )
+    cfg_del_agente = Config(config_path)
+
+    await persistir_campo_bloqueante(config_path, campo, valor_fresco)
+
+    # El agente toca OTRO campo y salva con el objeto que no vio el fresco.
+    escribir_campo(cfg_del_agente, "loot_exe", "D:/Tools/LOOT/LOOT.exe")
+    cfg_del_agente.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco[campo] == valor_fresco, "el objeto desactualizado pisó con su default un campo fresco"
+    assert en_disco["loot_exe"] == "D:/Tools/LOOT/LOOT.exe"
+    # Invariante para TODOS los casos: un campo que nadie tocó permanece.
+    assert en_disco["xedit_exe"] == "D:/Tools/xEdit/SSEEdit.exe"
+
+
+def test_save_con_archivo_corrupto_aborta_sin_escribir(tmp_path: pathlib.Path) -> None:
+    """Contrato fail-closed declarado del merge-on-save (review CodeRabbit): si
+    el archivo se corrompió DESPUÉS de la construcción del objeto, ``save()``
+    aborta con el error del parser y NO escribe — no se mergea sobre lo que no
+    se puede leer. El archivo queda exactamente como estaba."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+    escribir_campo(cfg, "loot_exe", "D:/Tools/LOOT/LOOT.exe")
+    config_path.write_text("esto no es TOML = = [", encoding="utf-8")
+
+    with pytest.raises(tomllib.TOMLDecodeError):
+        cfg.save()
+
+    assert config_path.read_text(encoding="utf-8") == "esto no es TOML = = ["
+
+
+def test_intercalacion_gui_lee_agente_escribe_gui_reemplaza_no_pierde_nada(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El interleaving que pidió verificar la review de CodeRabbit: la GUI LEE
+    el archivo (construye su propio ``Config``), el agente persiste su diff
+    DIRECTO —``cfg.save()``, sin pasar por el lock asyncio de los wrappers— y
+    recién entonces la GUI reemplaza. Nada se pierde: la escritura de la GUI
+    TAMBIÉN es un merge-on-save con lectura fresca, y todas las mutaciones del
+    archivo (las de ``persistir_campo`` y las de cualquier ``.save()`` directo)
+    corren bajo el MISMO ``threading.Lock`` por path dentro de
+    ``Config.save()``: el coordinador del archivo vive en el mecanismo, no en
+    ninguno de los dos locks por separado.
+
+    El orden se fuerza de forma explícita (lectura GUI → save del agente →
+    reemplazo GUI) en vez de dormir threads: la propiedad debe valer para
+    cualquier orden, así que se ancla el peor orden conocido.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+
+    cfg_agente = Config(config_path)
+    escribir_campo(cfg_agente, "community_shaders_mods", ["Community Shaders"])
+
+    # t1: la GUI lee el archivo (construye su propio Config, lectura fresca).
+    cfg_gui = abrir_config_para_persistir(config_path)
+
+    # t2: el agente persiste directo, sin el lock asyncio de los wrappers.
+    cfg_agente.save()
+
+    # t3: la GUI escribe su campo y persiste con el objeto construido en t1.
+    escribir_campo(cfg_gui, "ngio_mods", ["NGIO-NG"])
+    guardar_config(cfg_gui, config_path)
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["community_shaders_mods"] == ["Community Shaders"]
+    assert en_disco["ngio_mods"] == ["NGIO-NG"]
+    assert en_disco["llm_provider"] == "anthropic"
+
+
+def test_mutacion_anidada_sin_reasignacion_no_pisa_un_valor_fresco(
+    tmp_path: pathlib.Path,
+) -> None:
+    """La intención persistible exige pasar por un mutador de ``_DatosConfig``.
+
+    Un valor mutable devuelto por ``Config`` no puede registrar por sí solo qué
+    parte cambió ni reconciliarla con una versión fresca escrita por otro
+    objeto. Tratar su diferencia contra el baseline como una escritura completa
+    perdería los elementos que este objeto nunca vio.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('community_shaders_mods = ["A"]\n', encoding="utf-8")
+    cfg_desactualizado = Config(config_path)
+
+    cfg_fresco = Config(config_path)
+    escribir_campo(cfg_fresco, "community_shaders_mods", ["A", "B"])
+    cfg_fresco.save()
+
+    cfg_desactualizado.community_shaders_mods.append("C")
+    escribir_campo(cfg_desactualizado, "loot_exe", "D:/Tools/LOOT/LOOT.exe")
+    cfg_desactualizado.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["community_shaders_mods"] == ["A", "B"]
+    assert en_disco["loot_exe"] == "D:/Tools/LOOT/LOOT.exe"
+
+
+def test_save_refresca_la_redaccion_desde_el_estado_fusionado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El contexto de logs debe reflejar el chat id que realmente quedó en disco."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'llm_provider = "anthropic"\ntelegram_chat_id = "chat-antiguo"\n',
+        encoding="utf-8",
+    )
+    cfg = Config(config_path)
+    config_path.write_text(
+        'llm_provider = "anthropic"\ntelegram_chat_id = "chat-actualizado"\n',
+        encoding="utf-8",
+    )
+    contextos: list[dict[str, str]] = []
+
+    from sky_claw import logging_config
+
+    monkeypatch.setattr(logging_config, "update_logging_redaction_context", lambda **kw: contextos.append(kw))
+
+    cfg._data["loot_exe"] = "D:/LOOT"
+    cfg.save()
+
+    assert contextos[-1]["telegram_chat_id"] == "chat-actualizado"
+
+
+async def test_una_asignacion_explicita_del_valor_del_baseline_se_persiste_igual(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Reasignar EXPLÍCITAMENTE el valor que ya estaba en el baseline no es
+    "no tocado": es una declaración de intención (``setup_tools`` que
+    re-descubre el mismo exe path que el objeto long-lived ya tenía). La
+    comparación de valores sola no distingue ambas cosas, omitía la escritura
+    y el merge conservaba lo que otra superficie escribió encima — el valor
+    re-descubierto se perdía en silencio (review de qodo, P2). El tracking de
+    claves dirty cierra la detección.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\nloot_exe = "D:/LOOT"\n', encoding="utf-8")
+    cfg = Config(config_path)  # baseline: loot_exe = "D:/LOOT"
+
+    # Otra superficie cambia el campo en el archivo.
+    await persistir_campo_bloqueante(config_path, "loot_exe", "D:/Otro")
+
+    # El agente reasigna explícitamente el valor original (re-descubrimiento).
+    escribir_campo(cfg, "loot_exe", "D:/LOOT")
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["loot_exe"] == "D:/LOOT"
+    assert en_disco["llm_provider"] == "anthropic"
+
+
+def test_reasignacion_explicita_repetida_tras_un_save_se_persiste(tmp_path: pathlib.Path) -> None:
+    """Cada asignación expresa una intención nueva, incluso tras actualizar el baseline."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\nloot_exe = "D:/LOOT"\n', encoding="utf-8")
+    cfg = Config(config_path)
+
+    cfg._data["loot_exe"] = "D:/LOOT"
+    cfg.save()
+
+    persistir_campo(config_path, "loot_exe", "D:/Otro")
+    cfg._data["loot_exe"] = "D:/LOOT"
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["loot_exe"] == "D:/LOOT"
+
+
+def test_borrado_explicito_usa_tombstone_aunque_la_clave_no_estuviera_en_el_baseline(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Agregar y borrar localmente una clave debe vencer una adición externa anterior."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+
+    persistir_campo(config_path, "campo_nuevo", "valor-externo")
+    cfg._data["campo_nuevo"] = "valor-temporal"
+    del cfg._data["campo_nuevo"]
+    cfg.save()
+
+    assert "campo_nuevo" not in tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+
+def test_datos_config_enumera_mutadores_y_preserva_generaciones_en_copias() -> None:
+    """Todo mutador público del dict participa del contrato de generaciones."""
+    datos = _DatosConfig({"para_del": 1, "para_pop": 2})
+    generaciones: list[int] = []
+
+    datos["setitem"] = 1
+    generaciones.append(datos.generaciones["setitem"])
+    datos.update({"update": 2})
+    generaciones.append(datos.generaciones["update"])
+    datos.setdefault("setdefault", 3)
+    generaciones.append(datos.generaciones["setdefault"])
+    datos |= {"ior": 4}
+    generaciones.append(datos.generaciones["ior"])
+    del datos["para_del"]
+    generaciones.append(datos.generaciones["para_del"])
+    datos.pop("para_pop")
+    generaciones.append(datos.generaciones["para_pop"])
+    datos["para_popitem"] = 5
+    datos.popitem()
+    generaciones.append(datos.generaciones["para_popitem"])
+
+    snapshot = datos.snapshot()
+    copia = datos.copy()
+    copia_profunda = copy.deepcopy(datos)
+    datos["posterior"] = 6
+
+    assert generaciones == sorted(generaciones)
+    assert len(generaciones) == len(set(generaciones))
+    assert snapshot.generaciones == copia.generaciones == copia_profunda.generaciones
+    assert "posterior" not in snapshot
+
+    generaciones_antes_de_clear = {clave: datos.generaciones[clave] for clave in datos}
+    datos.clear()
+    assert not datos
+    assert all(
+        datos.generaciones[clave] > generacion_anterior
+        for clave, generacion_anterior in generaciones_antes_de_clear.items()
+    )
+
+
+def test_snapshot_tolera_una_mutacion_concurrente_de_data(tmp_path: pathlib.Path) -> None:
+    """El snapshot debe ser coherente aunque otro thread escriba durante la copia."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+    copia_iniciada = threading.Event()
+    mutacion_terminada = threading.Event()
+
+    class _ValorQueAbreLaCarrera:
+        def __init__(self) -> None:
+            self._primera_copia = True
+
+        def __deepcopy__(self, _memo: dict[int, object]) -> str:
+            if self._primera_copia:
+                self._primera_copia = False
+                copia_iniciada.set()
+                assert not mutacion_terminada.wait(timeout=0.05)
+            return "copiado"
+
+    cfg._data["campo_para_snapshot"] = _ValorQueAbreLaCarrera()
+
+    def _mutar_durante_la_copia() -> None:
+        assert copia_iniciada.wait(timeout=1)
+        cfg._data["campo_concurrente"] = "valor-concurrente"
+        mutacion_terminada.set()
+
+    escritor = threading.Thread(target=_mutar_durante_la_copia)
+    escritor.start()
+    cfg.save()
+    escritor.join(timeout=1)
+    assert not escritor.is_alive()
+
+    # La escritura concurrente puede quedar fuera de este snapshot, pero debe
+    # conservar su generación pendiente para el save siguiente.
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["campo_para_snapshot"] == "copiado"
+    assert en_disco["campo_concurrente"] == "valor-concurrente"
+
+
+def test_mutacion_concurrente_durante_el_save_no_se_da_por_persistida(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La ventana exacta del P1 de qodo: mientras ``save()`` corre (en un
+    thread del pool vía ``guardar_config_bloqueante``), otra invocación
+    concurrente puede mutar el ``local_cfg`` compartido. Si el baseline se
+    deep-copiara del ``_data`` VIVO después de calcular el diff, esa mutación
+    entraría al baseline pero no al diff guardado → los saves siguientes la
+    tratan como ya persistida y el valor se pierde en silencio. El snapshot de
+    ``_data`` va ANTES del diff y ese mismo snapshot es el nuevo baseline.
+    """
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+
+    import tomli_w
+
+    dump_real = tomli_w.dump
+
+    def _dump_que_simula_un_escritor_concurrente(save_data: object, f: object) -> None:
+        # Otra superficie muta el objeto compartido mientras el save está
+        # entre el diff y el refresh del baseline.
+        cfg._data["loot_exe"] = "D:/Tools/LOOT-concurrente.exe"
+        return dump_real(save_data, f)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(tomli_w, "dump", _dump_que_simula_un_escritor_concurrente)
+
+    escribir_campo(cfg, "community_shaders_mods", ["Community Shaders"])
+    cfg.save()
+
+    # La mutación concurrente no pudo formar parte del diff de ESE save — pero
+    # no puede quedar tratada como ya persistida: el próximo save la persiste.
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["loot_exe"] == "D:/Tools/LOOT-concurrente.exe"
+    assert en_disco["community_shaders_mods"] == ["Community Shaders"]
 
 
 # ── Ancla: las DOS clases reales de config, no una muestra ──────────────────────
@@ -512,3 +845,95 @@ def test_ancla_de_asignaciones_crudas_sobre_la_config() -> None:
     set de nombres pasaría sin romper nada.
     """
     assert _asignaciones_crudas() == ASIGNACIONES_CRUDAS_PERMITIDAS
+
+
+# ── Ancla por AST: quién serializa TOML de config ──────────────────────────────
+# F1 mueve el merge-on-save DENTRO de `Config.save()`: la garantía "todo
+# escritor de Config participa" es una propiedad del mecanismo (AGENTS.md), y
+# su vía de escape es que alguien vuelva a serializar el TOML por fuera —
+# un `tomli_w.dump` nuevo que reescriba el archivo entero sin el merge. Se
+# congela el conjunto de módulos que lo llaman, en vez de muestrear.
+ESCRITORES_TOML_PERMITIDOS = {
+    # El dueño del formato TOML de config; el merge vive en su `save()`.
+    "sky_claw/config.py",
+}
+
+
+def _usa_tomli_w_dump(arbol: ast.AST) -> bool:
+    """True si el módulo llama ``tomli_w.dump``/``tomli_w.dumps`` en CUALQUIERA
+    de sus formas: atributo sobre el módulo (``import tomli_w`` o ``import
+    tomli_w as alias``) y nombre importado directo (``from tomli_w import
+    dump``, con o sin alias). ``dumps`` cuenta aunque devuelva str en vez de
+    escribir el fd: quien serializa el TOML de config por fuera de
+    ``Config.save()`` esquiva el merge-on-save igual (review de qodo sobre el
+    detector original, que solo matcheaba ``Name("tomli_w").dump``).
+    """
+    _primitivas = {"dump", "dumps"}
+    nombres_modulo: set[str] = set()
+    nombres_dump: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            for alias in nodo.names:
+                if alias.name == "tomli_w":
+                    nombres_modulo.add(alias.asname or alias.name)
+        elif isinstance(nodo, ast.ImportFrom) and nodo.level == 0 and nodo.module == "tomli_w":
+            for alias in nodo.names:
+                if alias.name in _primitivas:
+                    nombres_dump.add(alias.asname or alias.name)
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        func = nodo.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in _primitivas
+            and isinstance(func.value, ast.Name)
+            and func.value.id in nombres_modulo
+        ):
+            return True
+        if isinstance(func, ast.Name) and func.id in nombres_dump:
+            return True
+    return False
+
+
+def _escritores_de_toml() -> set[str]:
+    """Módulos bajo ``sky_claw/`` que llaman ``tomli_w.dump``, la primitiva que
+    serializa config TOML, en cualquiera de las formas que detecta
+    :func:`_usa_tomli_w_dump`."""
+    encontrados: set[str] = set()
+    for archivo in PAQUETE.rglob("*.py"):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
+        if _usa_tomli_w_dump(arbol):
+            encontrados.add(archivo.relative_to(RAIZ).as_posix())
+    return encontrados
+
+
+def test_ancla_de_escritores_de_toml_de_config() -> None:
+    """Igualdad literal: un serializador TOML nuevo rompe hasta que se decida
+    si participa del merge de `Config.save()` o es otra exención deliberada.
+    """
+    assert _escritores_de_toml() == ESCRITORES_TOML_PERMITIDOS
+
+
+def test_ancla_detecta_todas_las_formas_de_llamar_tomli_w_dump() -> None:
+    """El detector no se evade con aliases ni from-imports: la garantía del
+    merge vive en `Config.save()`, así que cualquier serializador que la
+    esquive tiene que romper el ancla primero (review de CodeRabbit).
+    """
+    forma_plain = "import tomli_w\n\ntomli_w.dump({}, f)\n"
+    forma_alias = "import tomli_w as escritor\n\nescritor.dump({}, f)\n"
+    forma_from = "from tomli_w import dump\n\ndump({}, f)\n"
+    forma_from_alias = "from tomli_w import dump as volcar\n\nvolcar({}, f)\n"
+    forma_dumps = "import tomli_w\n\ncontenido = tomli_w.dumps({})\n"
+    forma_dumps_from = "from tomli_w import dumps\n\ncontenido = dumps({})\n"
+    forma_inocua = "import tomli_w\n\ntomli_w.loads(x)\n"
+    forma_modulo_distinto = "import otro_modulo as tw\n\ntw.dump({}, f)\n"
+
+    assert _usa_tomli_w_dump(ast.parse(forma_plain)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_alias)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_from)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_from_alias)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_dumps)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_dumps_from)) is True
+    assert _usa_tomli_w_dump(ast.parse(forma_inocua)) is False
+    assert _usa_tomli_w_dump(ast.parse(forma_modulo_distinto)) is False

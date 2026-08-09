@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import logging
 import math
 import os
 import pathlib
 import sys
 import tempfile
+import threading
 import tomllib
 from typing import Any
 
@@ -14,6 +16,87 @@ import keyring
 import keyring.errors
 
 logger = logging.getLogger(__name__)
+
+_CLAVES_SENSIBLES = (
+    "llm_api_key",
+    "openai_api_key",
+    "anthropic_api_key",
+    "deepseek_api_key",
+    "nexus_api_key",
+    "search_api_key",
+    "telegram_bot_token",
+    "ws_auth_token",
+)
+
+
+# ----------------------------------------------------------------------------
+# Lock de PROCESO para el ciclo leer-mergear-escribir de `Config.save()`
+# ----------------------------------------------------------------------------
+# `save()` es sync y hay 6 llamadores que la usan directo sin pasar por el lock
+# asyncio de `local_config.py` (`frontend_bridge`, `setup_wizard`,
+# `sky_claw_gui`, dos en `app_context` y uno dentro del propio `__init__` vía
+# `_load_from_keyring`): un `asyncio.Lock` no se puede tomar desde código sync,
+# y desde F1 `save()` LEE el disco antes de escribir (merge-on-save), así que
+# sin lock acá esos 6 caminos quedan con un TOCTOU leer/escribir. GUI y daemon
+# corren en el MISMO proceso (la task `supervisor-daemon` se crea con
+# `create_task`, no hay Popen) y el árbol no tiene filelock/portalocker/msvcrt,
+# así que el alcance correcto es un `threading.Lock` por path normalizado —
+# mismo criterio de identidad que `_install_lock_resource_id`. El orden de
+# adquisición con el lock asyncio de los wrappers bloqueantes es siempre el
+# mismo (asyncio afuera → threading adentro), así que no hay deadlock.
+_LOCKS_DE_CONFIG: dict[str, threading.Lock] = {}
+_GUARDIA_LOCKS_DE_CONFIG = threading.Lock()
+
+
+def _lock_de_config(path: pathlib.Path) -> threading.Lock:
+    """Lock compartido por path real del archivo, cualquiera sea el `Config`
+    que lo guarde: dos objetos sobre el mismo config.toml serializan su
+    leer-mergear-escribir completo."""
+    clave = os.path.normcase(str(path.resolve())).casefold()
+    with _GUARDIA_LOCKS_DE_CONFIG:
+        lock = _LOCKS_DE_CONFIG.get(clave)
+        if lock is None:
+            lock = threading.Lock()
+            _LOCKS_DE_CONFIG[clave] = lock
+        return lock
+
+
+def _parse_toml_de_config_a_plano(texto: str) -> dict[str, Any]:
+    """Parsea el TOML de config y devuelve la vista PLANA.
+
+    Extrae las secciones legacy ``[telegram]``/``[nexus]``/``[paths]`` a sus
+    claves planas y las DESCARTA de la vista, igual que hace la carga: la
+    forma canónica es plana, y si el merge-on-save de `save()` dejara vivas
+    las secciones como dicts, shadowearían esa forma — y un ``[nexus]
+    api_key`` en plaintext reviviría justo el secreto que el scrub quiere
+    afuera (ver `tests/test_config_secretos_sin_keyring.py`).
+
+    Precedencia (Audit #153 / S-3, anclada en
+    `tests/test_config_nested_merge.py`): un override explícito top-level
+    GANA sobre el valor extraído del nested. Por eso la extracción va a un
+    dict aparte y las claves top-level se aplican ENCIMA — si la extracción
+    escribiera sobre ``file_data`` directo, el nested taparía al override.
+    """
+    file_data: dict[str, Any] = tomllib.loads(texto)
+    extraido: dict[str, Any] = {}
+    telegram = file_data.get("telegram")
+    if isinstance(telegram, dict):
+        if "token" in telegram:
+            extraido["telegram_bot_token"] = telegram["token"]
+        if "chat_id" in telegram:
+            extraido["telegram_chat_id"] = telegram["chat_id"]
+    nexus = file_data.get("nexus")
+    if isinstance(nexus, dict) and "api_key" in nexus:
+        extraido["nexus_api_key"] = nexus["api_key"]
+    paths = file_data.get("paths")
+    if isinstance(paths, dict):
+        if "mo2_path" in paths:
+            extraido["mo2_root"] = paths["mo2_path"]
+        if "skyrim_path" in paths:
+            extraido["skyrim_path"] = paths["skyrim_path"]
+    for nested_key in ("telegram", "nexus", "paths"):
+        file_data.pop(nested_key, None)
+    return {**extraido, **file_data}
 
 
 class SystemPaths:
@@ -52,6 +135,96 @@ class SystemPaths:
         return cls.get_base_drive() / "Modding"
 
 
+class _DatosConfig(dict[str, Any]):
+    """Estado sincronizado de ``Config`` con generaciones por clave.
+
+    Cada operación mutante avanza una secuencia monotónica. Así una
+    reasignación explícita sigue expresando intención aunque repita el valor y
+    ocurra después de haber actualizado el baseline.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._lock = threading.RLock()
+        self._secuencia = 0
+        self.generaciones: dict[str, int] = {}
+
+    def _marcar_mutacion(self, key: str) -> None:
+        self._secuencia += 1
+        self.generaciones[key] = self._secuencia
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        with self._lock:
+            dict.__setitem__(self, key, value)
+            self._marcar_mutacion(key)
+
+    def __delitem__(self, key: str) -> None:
+        with self._lock:
+            dict.__delitem__(self, key)
+            self._marcar_mutacion(key)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        nuevos = dict(*args, **kwargs)
+        with self._lock:
+            for key, value in nuevos.items():
+                dict.__setitem__(self, key, value)
+                self._marcar_mutacion(key)
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            if key in self:
+                return dict.__getitem__(self, key)
+            dict.__setitem__(self, key, default)
+            self._marcar_mutacion(key)
+            return default
+
+    def __ior__(self, other: Any) -> _DatosConfig:
+        self.update(other)
+        return self
+
+    def pop(self, key: str, *args: Any) -> Any:
+        with self._lock:
+            presente = key in self
+            valor = dict.pop(self, key, *args)
+            if presente:
+                self._marcar_mutacion(key)
+            return valor
+
+    def popitem(self) -> tuple[str, Any]:
+        with self._lock:
+            key, value = dict.popitem(self)
+            self._marcar_mutacion(key)
+            return key, value
+
+    def clear(self) -> None:
+        with self._lock:
+            claves = tuple(dict.keys(self))
+            dict.clear(self)
+            for key in claves:
+                self._marcar_mutacion(key)
+
+    def snapshot(self, memo: dict[int, Any] | None = None) -> _DatosConfig:
+        """Copia coherente del estado sin retener el lock durante I/O."""
+        memo = {} if memo is None else memo
+        with self._lock:
+            nuevo = _DatosConfig()
+            memo[id(self)] = nuevo
+            for clave, valor in dict.items(self):
+                dict.__setitem__(nuevo, clave, copy.deepcopy(valor, memo))
+            nuevo._secuencia = self._secuencia
+            nuevo.generaciones = copy.deepcopy(self.generaciones, memo)
+            return nuevo
+
+    def copy(self) -> _DatosConfig:
+        return self.snapshot()
+
+    def __copy__(self) -> _DatosConfig:
+        return self.copy()
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> _DatosConfig:
+        return self.snapshot(memo)
+
+
 class Config:
     """Central configuration management for Sky-Claw.
 
@@ -64,16 +237,28 @@ class Config:
 
     def __init__(self, config_path: pathlib.Path | None = None) -> None:
         self._config_path = config_path or self.DEFAULT_CONFIG_FILE
-        self._data: dict[str, Any] = self._load_defaults()
-        #: Secretos cuyo ÚNICO ejemplar es el archivo: estaban en plaintext en el
-        #: TOML y no se pudieron mover al keyring. `save()` los conserva en vez de
-        #: borrarlos (ver el bloque de secretos ahí). Se vacía en cuanto el
-        #: keyring acepta el secreto: a partir de ahí el archivo ya no es el único
-        #: ejemplar y preservar el plaintext sería deshacer la migración.
-        self._secretos_solo_en_archivo: dict[str, str] = {}
+        self._data: _DatosConfig = _DatosConfig(self._load_defaults())
+        #: Baseline para el merge-on-save de `save()`: snapshot de `_data`
+        #: refrescado tras cada `save()` exitoso.
+        #: El diff `_data` vs baseline en save() es lo que ESTE objeto cambió —
+        #: solo eso se aplica sobre la lectura fresca del disco, así que un
+        #: objeto long-lived no puede pisar campos que otro camino escribió
+        #: después de su construcción.
+        self._baseline: _DatosConfig
+        #: Escrituras explícitas de secretos que el keyring rechazó. Persisten
+        #: como intención hasta que un save posterior pueda completarlas.
+        self._secretos_pendientes: set[str] = set()
         self._load_from_file()
         self._migrate_llm_model()
+        # El scrub de secretos puede guardar DURANTE la construcción. Su
+        # baseline debe existir antes para que ese save aplique sólo el cambio
+        # de migración sobre la lectura fresca, no todo el snapshot inicial.
+        self._baseline = self._data.snapshot()
         self._load_from_keyring()
+        # El snapshot va AL FINAL: `_load_from_keyring` muta `_data` (secretos
+        # desde el keyring) y puede llamar `save()`; todo eso es estado "visto al
+        # construir", no un cambio del objeto.
+        self._baseline = self._data.snapshot()
 
     def _migrate_llm_model(self) -> None:
         """One-time, in-memory migration of the legacy global ``llm_model``.
@@ -93,18 +278,8 @@ class Config:
             self._data[slot] = legacy
 
     def _load_from_keyring(self) -> None:
-        sensitive_keys = [
-            "llm_api_key",
-            "openai_api_key",
-            "anthropic_api_key",
-            "deepseek_api_key",
-            "nexus_api_key",
-            "search_api_key",
-            "telegram_bot_token",
-            "ws_auth_token",
-        ]
         migrated = False
-        for key in sensitive_keys:
+        for key in _CLAVES_SENSIBLES:
             plaintext = self._data.get(key)
             try:
                 stored = keyring.get_password("sky_claw", key)
@@ -120,19 +295,28 @@ class Config:
                     keyring.set_password("sky_claw", key, plaintext)
                     migrated = True
                 except (keyring.errors.KeyringError, OSError):
-                    # El keyring no lo aceptó: el archivo sigue siendo el único
-                    # ejemplar de este secreto. Registrarlo para que `save()` no
-                    # lo borre al reintentar la migración y volver a fallar.
-                    self._secretos_solo_en_archivo[key] = str(plaintext)
+                    # El archivo sigue siendo el único ejemplar. Un save futuro
+                    # volverá a consultar el keyring vivo antes de migrarlo.
+                    pass
 
         # S3-FIX: If we migrated secrets to keyring, scrub them from the TOML on disk.
         # Verify the save succeeds; if it fails, log a critical warning so the
         # operator is aware that plaintext secrets remain on disk.
         if migrated:
             try:
+                # Las asignaciones anteriores hidratan estado interno; no son
+                # intención explícita del usuario. Baselinarlas antes del scrub
+                # obliga a consultar otra vez el keyring vivo durante save().
+                self._baseline = self._data.snapshot()
                 self.save()
                 logger.info("Migrated sensitive keys to keyring and scrubbed plaintext from TOML.")
-            except OSError as exc:
+            except (OSError, ValueError, UnicodeDecodeError) as exc:
+                # Desde F1 `save()` LEE el archivo (merge-on-save), así que puede
+                # abortar fail-closed con el error del parser (`TOMLDecodeError`
+                # es subclase de `ValueError`) o de lectura: ese fallo no puede
+                # tumbar la construcción del objeto — se degrada a log crítico,
+                # igual que antes se degradaba el fallo de escritura (review de
+                # CodeRabbit sobre el contrato de error).
                 logger.critical(
                     "Failed to scrub plaintext secrets from TOML after keyring migration: %s. "
                     "Sensitive data may remain on disk at %s.",
@@ -169,41 +353,12 @@ class Config:
     def _load_from_file(self) -> None:
         if self._config_path.exists():
             try:
-                with open(self._config_path, "rb") as f:
-                    file_data = tomllib.load(f)
-
-                    # Support for nested structure [telegram] token, [nexus] api_key, [paths] mo2_path
-                    if "telegram" in file_data:
-                        t = file_data["telegram"]
-                        if "token" in t:
-                            self._data["telegram_bot_token"] = t["token"]
-                        if "chat_id" in t:
-                            self._data["telegram_chat_id"] = t["chat_id"]
-
-                    if "nexus" in file_data:
-                        n = file_data["nexus"]
-                        if "api_key" in n:
-                            self._data["nexus_api_key"] = n["api_key"]
-
-                    if "paths" in file_data:
-                        p = file_data["paths"]
-                        if "mo2_path" in p:
-                            self._data["mo2_root"] = p["mo2_path"]
-                        if "skyrim_path" in p:
-                            self._data["skyrim_path"] = p["skyrim_path"]
-
-                    # Audit S-3: drop the nested sections we already extracted
-                    # to flat keys so update() doesn't re-introduce them as raw
-                    # dicts (which would shadow the canonical flat form and
-                    # confuse downstream precedence).  The remaining update()
-                    # only carries genuinely top-level keys; if a top-level
-                    # explicit override is present (e.g. ``telegram_bot_token =
-                    # "Y"``) it wins over the nested-extracted value, which is
-                    # the documented precedence for the dual-format support.
-                    for nested_key in ("telegram", "nexus", "paths"):
-                        file_data.pop(nested_key, None)
-                    self._data.update(file_data)
-            except (tomllib.TOMLDecodeError, OSError, ValueError) as exc:
+                texto = self._config_path.read_text(encoding="utf-8")
+                # El parseo compartido (extracción de secciones legacy + drop) es
+                # el MISMO que usa el merge-on-save de `save()`: carga y merge
+                # no pueden divergir en qué es la vista plana del archivo.
+                self._data.update(_parse_toml_de_config_a_plano(texto))
+            except (tomllib.TOMLDecodeError, OSError, ValueError, UnicodeDecodeError) as exc:
                 logger.warning("Failed to load config.toml: %s", exc)
 
     def __getattr__(self, name: str) -> Any:
@@ -212,81 +367,176 @@ class Config:
         raise AttributeError(f"'Config' object has no attribute '{name}'")
 
     def save(self) -> None:
-        """Persist current configuration to TOML."""
+        """Persiste la configuración actual a TOML con merge-on-save (F1).
+
+        El modelo viejo —reemplazar el archivo entero con ``_data``— perdía
+        campos: un ``Config`` long-lived (``AppContext`` construye uno por
+        sesión) pisaba en su próximo ``save()`` TODO lo que otra superficie
+        hubiera escrito con lectura fresca después de su construcción. Desde
+        F1 ``save()``:
+
+        1. relee el disco bajo el lock por path (:func:`_lock_de_config`) —
+           leer y escribir son una unidad indivisible: sin lock, los 6
+           llamadores directos de ``save()`` (que no pasan por el lock asyncio
+           de ``local_config.py``) tendrían TOCTOU;
+        2. aplica al estado fresco SOLO los campos que ESTE objeto cambió
+           (snapshot de `_data` ANTES del diff, reutilizado como nuevo
+           baseline; generaciones contra el baseline anterior) — un objeto
+           desactualizado ya no puede borrar lo que nunca vio. Los valores
+           mutables deben reasignarse tras modificarlos: una mutación anidada
+           no expresa una escritura completa de la clave;
+        3. hace los borrados DESPUÉS del merge: el scrub de secretos y el drop
+           de secciones legacy no pueden resucitar vía la lectura fresca (ver
+           ``tests/test_config_secretos_sin_keyring.py``, la segunda pasada);
+        4. escribe atómicamente (temporal + ``os.replace``) y recién tras el
+           replace exitoso refresca el baseline.
+
+        Todo escritor de Config participa por construcción: el merge vive acá,
+        no en un wrapper. Anclas en ``tests/test_local_config_persistencia.py``.
+
+        Raises:
+            tomllib.TOMLDecodeError | UnicodeDecodeError | OSError: El archivo
+                existe y no se pudo leer/parsear. Fail-closed declarado: no se
+                mergea —y por tanto no se escribe— sobre lo que no se puede
+                leer; el archivo queda intacto y el llamador decide (misma
+                doctrina que ``local_config.abrir_config_para_persistir``).
+        """
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         import tomli_w
 
-        sensitive_keys = [
-            "llm_api_key",
-            "openai_api_key",
-            "anthropic_api_key",
-            "deepseek_api_key",
-            "nexus_api_key",
-            "search_api_key",
-            "telegram_bot_token",
-        ]
+        with _lock_de_config(self._config_path):
+            fresco: dict[str, Any] = {}
+            if self._config_path.exists():
+                # Fail-closed, misma doctrina que
+                # `local_config.abrir_config_para_persistir`: no se mergea —y
+                # por tanto no se escribe— sobre lo que no se pudo leer.
+                fresco = _parse_toml_de_config_a_plano(self._config_path.read_text(encoding="utf-8"))
 
-        save_data = dict(self._data)
-        for key in sensitive_keys:
-            val = save_data.pop(key, None)
-            if val:
-                try:
-                    keyring.set_password("sky_claw", key, str(val))
-                except (keyring.errors.KeyringError, OSError) as exc:
-                    logger.warning(
-                        "Could not store '%s' in keyring: %s. "
-                        "Secret will NOT be persisted — configure a keyring backend.",
-                        key,
-                        type(exc).__name__,
-                    )
-                    # Fail-closed en las DOS direcciones. No se escribe plaintext
-                    # NUEVO en el archivo (la política de secretos no se degrada
-                    # porque el keyring falle), pero tampoco se BORRA el que el
-                    # usuario ya tenía ahí: el `pop` de arriba es incondicional, así
-                    # que sin esto un keyring caído destruía el único ejemplar del
-                    # secreto en el mismo save() que decía estar protegiéndolo — y
-                    # no hay backup ni escritura atómica para recuperarlo. Se
-                    # restaura el valor QUE ESTABA EN EL ARCHIVO, nunca el de
-                    # memoria: un secreto recién tipeado no baja a disco en claro.
-                    anterior = self._secretos_solo_en_archivo.get(key)
-                    if anterior:
-                        save_data[key] = anterior
+            # Snapshot ANTES del diff: mientras save() corre en un thread del
+            # pool (vía `guardar_config_bloqueante`), otra invocación
+            # concurrente puede mutar el objeto compartido (dos `setup_tools`
+            # sobre el mismo `local_cfg`). Si el baseline se copiara del
+            # `_data` VIVO al final, esa mutación entraría al baseline pero no
+            # al diff guardado, y los saves siguientes la tratarían como ya
+            # persistida — pérdida silenciosa (review de qodo, P1). El mismo
+            # snapshot se reutiliza como nuevo baseline: lo persistido y la
+            # base del próximo diff son exactamente el mismo estado.
+            snapshot = self._data.snapshot()
+
+            baseline = self._baseline
+            # Claves escritas explícitamente desde el último baseline: la
+            # comparación de valores sola no detecta la reasignación
+            # explícita de un valor igual al baseline (`setup_tools` que
+            # re-descubre el mismo path), y el merge conservaría lo que
+            # otra superficie escribió encima (review de qodo, P2).
+            claves_mutadas = {
+                key for key, generacion in snapshot.generaciones.items() if generacion != baseline.generaciones.get(key)
+            }
+            # Las generaciones son la única declaración de intención. Inferir
+            # una escritura desde una diferencia de valores aceptaría
+            # mutaciones anidadas no rastreadas y permitiría que una lista/dict
+            # obsoleta reemplazara una versión fresca escrita por otro Config.
+            diff: dict[str, Any] = {k: v for k, v in snapshot.items() if k in claves_mutadas}
+            borrados = (set(baseline) | claves_mutadas) - set(snapshot)
+
+            save_data = {**fresco, **diff}
+            for key in borrados:
+                save_data.pop(key, None)
+
+            for key in _CLAVES_SENSIBLES:
+                val_objeto = snapshot.get(key) or ""
+                val_archivo = fresco.get(key) or ""
+                save_data.pop(key, None)
+                escritura_explicita = key in claves_mutadas or key in self._secretos_pendientes
+
+                if not val_objeto and not val_archivo and not escritura_explicita:
+                    # No hay estado que reconciliar: evita consultar backends
+                    # de keyring para claves que este Config nunca conoció.
+                    continue
+
+                if escritura_explicita and val_objeto:
+                    try:
+                        keyring.set_password("sky_claw", key, str(val_objeto))
+                    except (keyring.errors.KeyringError, OSError) as exc:
+                        self._secretos_pendientes.add(key)
+                        logger.warning(
+                            "Could not store '%s' in keyring: %s. "
+                            "Secret will NOT be persisted — configure a keyring backend.",
+                            key,
+                            type(exc).__name__,
+                        )
+                        # Fail-closed en las DOS direcciones. No se escribe
+                        # plaintext NUEVO en el archivo (la política de
+                        # secretos no se degrada porque el keyring falle): si
+                        # el objeto tenía un secreto recién tipeado que no
+                        # estaba en disco, `val_archivo` es vacío y no se
+                        # restaura nada. Pero tampoco se DESTRUYE el único
+                        # ejemplar: si el secreto SÍ estaba en el archivo, se
+                        # conserva exactamente lo que hay en disco (review de
+                        # CodeRabbit: el snapshot de construcción no alcanza,
+                        # otra superficie puede haberlo escrito después).
+                        if val_archivo:
+                            save_data[key] = val_archivo
+                    else:
+                        self._secretos_pendientes.discard(key)
+                elif escritura_explicita:
+                    self._secretos_pendientes.discard(key)
                 else:
-                    # El keyring lo tiene: el archivo deja de ser el único ejemplar
-                    # y el scrub del plaintext procede de forma definitiva.
-                    self._secretos_solo_en_archivo.pop(key, None)
+                    try:
+                        valor_vivo = keyring.get_password("sky_claw", key)
+                    except (keyring.errors.KeyringError, OSError) as exc:
+                        logger.warning("Could not read '%s' from keyring: %s.", key, type(exc).__name__)
+                        if val_archivo:
+                            save_data[key] = val_archivo
+                    else:
+                        # Sin una escritura explícita, el keyring vivo es la
+                        # autoridad. El plaintext fresco sólo se migra si aún
+                        # no existe un valor vigente en el backend.
+                        if not valor_vivo and val_archivo:
+                            try:
+                                keyring.set_password("sky_claw", key, str(val_archivo))
+                            except (keyring.errors.KeyringError, OSError) as exc:
+                                logger.warning("Could not migrate '%s' to keyring: %s.", key, type(exc).__name__)
+                                save_data[key] = val_archivo
 
-        # Escritura atómica: `open(path, "wb")` trunca el archivo ANTES de
-        # escribir el contenido nuevo. Un fallo a mitad de la serialización
-        # (disco lleno, OSError transitorio en Windows, el proceso matado)
-        # dejaba el TOML en 0 bytes — la config anterior, completa y válida,
-        # desaparecía por un fallo que no tenía nada que ver con ella. El
-        # temporal vive en el mismo directorio que el destino (mismo
-        # filesystem, condición de `os.replace` para ser atómico en
-        # POSIX/NTFS) y se limpia si algo falla antes del replace.
-        tmp_fd, tmp_name = tempfile.mkstemp(
-            dir=self._config_path.parent, prefix=".sky_claw_config_", suffix=".toml.tmp"
-        )
-        try:
-            with os.fdopen(tmp_fd, "wb") as f:
-                tomli_w.dump(save_data, f)
-            os.replace(tmp_name, self._config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-            raise
+            # Escritura atómica: `open(path, "wb")` trunca el archivo ANTES de
+            # escribir el contenido nuevo. Un fallo a mitad de la serialización
+            # (disco lleno, OSError transitorio en Windows, el proceso matado)
+            # dejaba el TOML en 0 bytes — la config anterior, completa y válida,
+            # desaparecía por un fallo que no tenía nada que ver con ella. El
+            # temporal vive en el mismo directorio que el destino (mismo
+            # filesystem, condición de `os.replace` para ser atómico en
+            # POSIX/NTFS) y se limpia si algo falla antes del replace.
+            tmp_fd, tmp_name = tempfile.mkstemp(
+                dir=self._config_path.parent, prefix=".sky_claw_config_", suffix=".toml.tmp"
+            )
+            try:
+                with os.fdopen(tmp_fd, "wb") as f:
+                    tomli_w.dump(save_data, f)
+                os.replace(tmp_name, self._config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_name)
+                raise
+
+            # Recién tras el replace exitoso: si la escritura falló, el próximo
+            # save reintenta el MISMO diff en vez de dárselo por aplicado. EL
+            # MISMO snapshot del diff (no un deepcopy fresco del `_data` vivo):
+            # una mutación concurrente durante la escritura no puede quedar
+            # tratada como ya persistida (review de qodo, P1).
+            self._baseline = snapshot
 
         # La actualización es solo en memoria: evita releer TOML/keyring desde
         # el filtro que corre en productores asyncio.
         from sky_claw.logging_config import update_logging_redaction_context
 
         update_logging_redaction_context(
-            telegram_chat_id=str(self._data.get("telegram_chat_id") or ""),
+            telegram_chat_id=str(save_data.get("telegram_chat_id") or ""),
         )
 
     @property
     def as_dict(self) -> dict[str, Any]:
-        return dict(self._data)
+        return dict(self._data.snapshot())
 
 
 # ── Backward Compatibility ──────────────────────────────────────────
