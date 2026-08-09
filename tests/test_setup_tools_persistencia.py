@@ -222,6 +222,55 @@ class TestDegradacionPorPersistencia:
         # peor para el LLM que el defecto que este aviso vino a cerrar.
         assert len(mensaje) <= 200
 
+    async def test_xedit_preexistente_participa_igual_que_sus_hermanos(
+        self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``xedit`` era el único que escribía sólo con ``not already_existed``.
+
+        Con SSEEdit ya presente en ``install_dir`` y ``xedit_exe`` ausente de la
+        config, la tool devolvía éxito y el path nunca se registraba: el agente
+        no podía resolver xEdit tras reiniciar. Recortarlo del aviso habría
+        dejado cinco ramas avisando y una no — la misma familia de defecto que
+        este cambio vino a cerrar (review #455).
+        """
+        _romper_el_guardado(monkeypatch)
+
+        salida = await setup_tools(
+            _instalador(already_existed=True),
+            tmp_path / "tools",
+            LocalConfig(),
+            tmp_path / "cfg.json",
+            None,
+            tools=["xedit"],
+            gateway=gateway,
+            session=sesion,
+        )
+
+        entrada = json.loads(salida)["xedit"]
+        assert entrada["success"] is False
+        assert entrada["message"]
+        assert entrada["status"] == "already_installed"
+
+    async def test_xedit_preexistente_escribe_el_path_en_la_config(
+        self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path
+    ) -> None:
+        """La otra mitad del mismo defecto: el campo ahora sí se escribe."""
+        cfg = LocalConfig()
+
+        await setup_tools(
+            _instalador(already_existed=True),
+            tmp_path / "tools",
+            cfg,
+            tmp_path / "cfg.json",
+            None,
+            tools=["xedit"],
+            gateway=gateway,
+            session=sesion,
+        )
+
+        assert cfg.xedit_exe is not None
+        assert cfg.xedit_exe.endswith("SSEEdit.exe")
+
 
 class TestQueNoSeDegrada:
     async def test_una_tool_que_ya_habia_fallado_conserva_su_mensaje(
@@ -250,36 +299,6 @@ class TestQueNoSeDegrada:
         assert entrada["success"] is False
         assert entrada["message"] == "el hash no coincide"  # el motivo REAL, no el aviso
 
-    async def test_una_tool_que_no_quiso_escribir_config_no_se_degrada(
-        self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Congela la asimetría de ``xedit`` como deliberada.
-
-        ``xedit`` sólo escribe ``xedit_exe`` cuando ``not already_existed`` — a
-        diferencia de sus cinco hermanos, que escriben siempre. Con xEdit
-        preexistente no se quiso persistir nada, así que un guardado roto no lo
-        convierte en operación parcial. (Que esa condición sea un defecto por
-        derecho propio se reporta aparte: con xEdit ya instalado, ``xedit_exe``
-        nunca se rellena en un config que no lo tenga.)
-        """
-        _romper_el_guardado(monkeypatch)
-
-        salida = await setup_tools(
-            _instalador(already_existed=True),
-            tmp_path / "tools",
-            LocalConfig(),
-            tmp_path / "cfg.json",
-            None,
-            tools=["xedit"],
-            gateway=gateway,
-            session=sesion,
-        )
-
-        entrada = json.loads(salida)["xedit"]
-        assert entrada["success"] is True
-        assert entrada["message"] == ""
-        assert entrada["status"] == "already_installed"
-
     async def test_con_la_persistencia_sana_el_exito_sigue_siendo_exito(
         self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path
     ) -> None:
@@ -302,6 +321,71 @@ class TestQueNoSeDegrada:
         assert entrada["success"] is True
         assert entrada["message"] == ""
         assert json.loads(config_path.read_text(encoding="utf-8"))["loot_exe"].endswith("loot.exe")
+
+    @pytest.mark.parametrize(
+        "excepcion",
+        [OSError("disco lleno"), ValueError("TOML ilegible"), TypeError("no sabe persistirse")],
+        ids=["disco", "config_ilegible", "config_no_persistible"],
+    )
+    async def test_los_fallos_conocidos_de_persistencia_degradan(
+        self,
+        excepcion: Exception,
+        gateway: NetworkGateway,
+        sesion: Any,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Los tres que la capa de config documenta como suyos: ninguno se relanza.
+
+        ``TOMLDecodeError`` y ``JSONDecodeError`` heredan de ``ValueError``, así
+        que el lector fail-closed entra por esa rama.
+        """
+
+        async def _explota(*_a: Any, **_k: Any) -> None:
+            raise excepcion
+
+        monkeypatch.setattr("sky_claw.local.local_config.guardar_config_bloqueante", _explota)
+
+        salida = await setup_tools(
+            _instalador(),
+            tmp_path / "tools",
+            LocalConfig(),
+            tmp_path / "cfg.json",
+            None,
+            tools=["loot"],
+            gateway=gateway,
+            session=sesion,
+        )
+
+        assert json.loads(salida)["loot"]["success"] is False
+
+    async def test_una_excepcion_desconocida_se_relanza_en_vez_de_disfrazarse(
+        self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`.github/coding_conventions.md` §2.5: relanzar lo desconocido tras loggear.
+
+        Un ``AttributeError`` de una implementación de config rota no es "no pude
+        guardar en disco". Devolver el aviso de operación parcial afirmaría un
+        estado que nadie verificó y dejaría el defecto invisible. El gate no lo
+        ataja: `BLE001` está exento en todo `sky_claw/app/**` (review #455).
+        """
+
+        async def _bug(*_a: Any, **_k: Any) -> None:
+            raise AttributeError("'Config' object has no attribute 'save'")
+
+        monkeypatch.setattr("sky_claw.local.local_config.guardar_config_bloqueante", _bug)
+
+        with pytest.raises(AttributeError):
+            await setup_tools(
+                _instalador(),
+                tmp_path / "tools",
+                LocalConfig(),
+                tmp_path / "cfg.json",
+                None,
+                tools=["loot"],
+                gateway=gateway,
+                session=sesion,
+            )
 
     async def test_el_guardado_corre_aunque_ninguna_tool_haya_escrito_un_campo(
         self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch

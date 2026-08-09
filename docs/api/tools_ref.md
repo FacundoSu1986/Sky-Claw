@@ -39,8 +39,11 @@ Una tool de `setup_tools` que quedó instalada en disco pero cuyo campo de confi
 no se pudo guardar se devuelve con `success: false` y un mensaje que lo dice, conservando
 sus campos estructurados (`status`, `exe_path`, `mods`): la operación fue parcial, y
 reportarla como éxito total esconde que el path o el registro no sobreviven al reinicio.
-Un fallo al guardar nunca se propaga como excepción. El conjunto de ramas que participan
-de ese aviso está congelado por AST en `tests/test_setup_tools_persistencia.py`.
+Eso cubre los fallos de persistencia conocidos —disco, permisos, config ilegible o no
+persistible—, que ya no se propagan como excepción. Uno desconocido sí se relanza tras
+loggearse: disfrazarlo de fallo de disco afirmaría un estado que nadie verificó. El
+conjunto de ramas que participan del aviso está congelado por AST en
+`tests/test_setup_tools_persistencia.py`.
 
 ## Ruta de orquestación
 

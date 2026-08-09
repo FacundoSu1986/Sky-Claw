@@ -37,6 +37,21 @@ _AVISO_PERSISTENCIA = (
     "sobrevive al reinicio. Reintentar la instalación es seguro (es idempotente)."
 )
 
+# Fallos de persistencia CONOCIDOS, los que la capa de config documenta como
+# suyos: `OSError` (disco lleno, permisos, archivo tomado), `ValueError` (config
+# ilegible — `tomllib.TOMLDecodeError` y `json.JSONDecodeError` heredan de él, y
+# el lector es fail-closed a propósito) y `TypeError` (`guardar_config` rechaza
+# explícitamente un objeto que no sabe persistirse). Ante cualquiera de ellos la
+# operación es parcial y se avisa.
+#
+# Lo que NO esté acá es un defecto de programación —un `AttributeError` de una
+# implementación de config rota, por ejemplo—: se loguea y se relanza, porque
+# disfrazarlo de "no pude guardar en disco" reporta un estado que nadie verificó.
+# `.github/coding_conventions.md` §2.5 lo pide explícitamente, y §3 prohíbe el
+# `except Exception` desnudo; el gate no lo ataja porque `BLE001` está exento en
+# todo `sky_claw/app/**` (review #455).
+_FALLOS_DE_PERSISTENCIA = (OSError, ValueError, TypeError)
+
 
 async def setup_tools(
     tools_installer: Any,
@@ -80,8 +95,10 @@ async def setup_tools(
         estructurados (``status``, ``exe_path``, ``mods``): la operación fue
         parcial, no exitosa, y reportarla como éxito total es el "éxito visual"
         que la review del PR #445 le hizo corregir al gemelo de la GUI. Un fallo
-        al guardar nunca se propaga como excepción — eso perdía el resultado
-        entero.
+        de persistencia CONOCIDO (:data:`_FALLOS_DE_PERSISTENCIA`) ya no se
+        propaga como excepción — eso perdía el resultado entero. Uno desconocido
+        sí, tras loggearlo: disfrazar un bug de la capa de config de "no pude
+        guardar en disco" afirma un estado que nadie verificó.
     """
     from sky_claw.local.local_config import escribir_campo, guardar_config_bloqueante
     from sky_claw.local.tools_installer import ToolInstallError
@@ -136,7 +153,14 @@ async def setup_tools(
                     requieren_persistencia.append("loot")
                 elif tool_name_lower == "xedit":
                     result = await tools_installer.ensure_xedit(install_dir, session)
-                    if not result.already_existed and local_cfg:
+                    # Escribe SIEMPRE, como sus cinco hermanos. Antes lo hacía sólo
+                    # con `not already_existed`, y eso dejaba un agujero: con SSEEdit
+                    # ya presente en `install_dir` y `xedit_exe` ausente de la config,
+                    # la tool devolvía éxito y el path nunca se registraba — el agente
+                    # no podía resolver xEdit tras reiniciar. `ensure_xedit` devuelve
+                    # el exe que encontró DENTRO de `install_dir`, así que registrarlo
+                    # es exactamente lo que hacen loot/pandora/bodyslide (review #455).
+                    if local_cfg:
                         escribir_campo(local_cfg, "xedit_exe", str(result.exe_path))
                     results["xedit"] = {
                         "status": "already_installed" if result.already_existed else "installed",
@@ -145,14 +169,7 @@ async def setup_tools(
                         "success": True,
                         "message": "",
                     }
-                    # Espeja la condición de arriba: con xEdit preexistente no se
-                    # quiso escribir nada, así que un guardado roto no convierte
-                    # esta rama en parcial. (Que esa asimetría con los otros
-                    # cinco sea un defecto por derecho propio —`xedit_exe` nunca
-                    # se rellena en un config que no lo tenga— se reporta aparte;
-                    # uniformarla cambia semántica de instalación.)
-                    if not result.already_existed:
-                        requieren_persistencia.append("xedit")
+                    requieren_persistencia.append("xedit")
                 elif tool_name_lower == "pandora":
                     result = await tools_installer.ensure_pandora(install_dir, session)
                     if local_cfg:
@@ -303,12 +320,19 @@ async def setup_tools(
     if local_cfg and config_path:
         try:
             await guardar_config_bloqueante(local_cfg, config_path)
-        except Exception:  # noqa: BLE001 — las tools ya están en disco; no perder el resultado
+        except _FALLOS_DE_PERSISTENCIA:
             # Sin esto la excepción se propagaba y se llevaba puesto `results`
             # entero: el caller no se enteraba de que la instalación SÍ había
             # ocurrido. La GUI ya degradaba en vez de romper (`run_ritual_install`).
             logger.exception("No se pudo persistir la configuración en %s", config_path)
             persistencia_ok = False
+        except Exception:
+            # Desconocida: se loguea con traza y se relanza. Perder `results` es
+            # malo, pero devolver "instalado, sólo falló el guardado" ante un bug
+            # de la capa de config afirma algo que no se verificó — y deja el
+            # defecto invisible para quien tenga que arreglarlo.
+            logger.exception("Fallo inesperado al persistir la configuración en %s", config_path)
+            raise
     elif requieren_persistencia:
         # Sin config o sin su ruta el guardado no puede correr: mismo desenlace
         # parcial que si hubiera lanzado. Cubrir sólo la excepción dejaba vivo el

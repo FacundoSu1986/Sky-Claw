@@ -134,9 +134,9 @@ reparación.
 
 Las **dos** superficies avisan. La GUI lo muestra como notificación de advertencia; el
 agente LLM devuelve la operación como fallida, con el detalle de lo que sí quedó en disco,
-y nombra que el registro no sobrevive al reinicio. Ninguna de las dos propaga el fallo de
-guardado como error opaco ni informa éxito total cuando no hay dónde escribir. En todos
-los casos los mods ya están en disco y se pueden activar a mano.
+y nombra que el registro no sobrevive al reinicio. Ninguna informa éxito total cuando no
+hay dónde escribir. En todos los casos los mods ya están en disco y se pueden activar a
+mano.
 
 ## Integridad de las descargas
 
