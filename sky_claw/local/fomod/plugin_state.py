@@ -94,7 +94,10 @@ class MO2PluginStateProvider:
 
         El modlist se compara por CONTENIDO (la activación es la fuente de
         verdad; inmune a mtimes no refrescados). También se comparan los mtimes
-        de cada mod conocido para detectar altas, bajas y mutaciones internas.
+        de cada mod conocido para detectar altas, bajas y mutaciones cuando el
+        filesystem publica esa señal. Limitación: NTFS puede conservar el mtime
+        del directorio tras una mutación interna; sin cambio de modlist ni
+        alta/baja del mod, esa mutación no se garantiza detectable.
         """
         if not self._indexed:
             return True

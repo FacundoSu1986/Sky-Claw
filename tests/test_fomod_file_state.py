@@ -213,19 +213,6 @@ class TestMO2PluginStateProvider:
 
         assert provider.file_state("ModA.esp") == FileState.MISSING
 
-    def test_invalida_cache_si_cambia_un_mod_existente(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = crear_arbol_mo2(
-            tmp_path,
-            modlist="+ModA\n",
-            mods={"ModA": {"ModA.esp": "esp"}},
-        )
-        provider = MO2PluginStateProvider(mo2_root)
-        assert provider.file_state("Nuevo.esp") == FileState.MISSING
-
-        (mo2_root / "mods" / "ModA" / "Nuevo.esp").write_text("esp", encoding="utf-8")
-
-        assert provider.file_state("Nuevo.esp") == FileState.ACTIVE
-
     def test_modlist_no_utf8_degrada_a_missing(self, tmp_path: pathlib.Path) -> None:
         """Un modlist.txt corrupto no puede tumbar la resolución: estado vacío."""
         mo2_root = tmp_path / "mo2"
