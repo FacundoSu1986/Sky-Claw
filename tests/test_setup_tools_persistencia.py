@@ -95,6 +95,24 @@ def _romper_el_guardado(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sky_claw.local.local_config.guardar_config_bloqueante", _explota)
 
 
+def _assert_parcial(entrada: dict[str, Any], *, status: str, exe: str, version: str) -> None:
+    """Contrato completo de una operación parcial, no sólo ``success: False``.
+
+    El detalle de lo que SÍ pasó es lo que permite al LLM decir "está en disco"
+    en vez de reinstalar a ciegas: si una regresión dejara caer ``exe_path`` o
+    ``version``, comprobar sólo el booleano seguiría en verde (review CodeRabbit
+    #455).
+    """
+    assert entrada["success"] is False
+    assert entrada["message"]
+    assert entrada["status"] == status
+    assert entrada["exe_path"].endswith(exe)
+    assert entrada["version"] == version
+    normalizado = normalize_tool_result(entrada)
+    assert normalizado["success"] is False
+    assert normalizado["message"] != "error desconocido"
+
+
 def _espiar_el_guardado(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, Any]]:
     llamadas: list[tuple[Any, Any]] = []
 
@@ -132,18 +150,7 @@ class TestDegradacionPorPersistencia:
             session=sesion,
         )
 
-        entrada = json.loads(salida)["loot"]
-        assert entrada["success"] is False  # NO éxito: la operación fue parcial
-        assert entrada["message"]
-        # El detalle de lo que SÍ pasó sobrevive: el LLM tiene que poder decir
-        # "está en disco" sin volver a instalar a ciegas.
-        assert entrada["status"] == "installed"
-        assert entrada["exe_path"].endswith("loot.exe")
-        assert entrada["version"] == "0.22.1"
-        # Y el contrato canónico lo entiende sin caer al fallback.
-        normalizado = normalize_tool_result(entrada)
-        assert normalizado["success"] is False
-        assert normalizado["message"] != "error desconocido"
+        _assert_parcial(json.loads(salida)["loot"], status="installed", exe="loot.exe", version="0.22.1")
 
     async def test_sin_config_path_degrada_igual_que_si_hubiera_lanzado(
         self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path
@@ -165,10 +172,7 @@ class TestDegradacionPorPersistencia:
             session=sesion,
         )
 
-        entrada = json.loads(salida)["loot"]
-        assert entrada["success"] is False
-        assert entrada["message"]
-        assert entrada["status"] == "installed"
+        _assert_parcial(json.loads(salida)["loot"], status="installed", exe="loot.exe", version="0.22.1")
 
     async def test_sin_local_cfg_degrada_igual(
         self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path
@@ -189,9 +193,7 @@ class TestDegradacionPorPersistencia:
             session=sesion,
         )
 
-        entrada = json.loads(salida)["loot"]
-        assert entrada["success"] is False
-        assert entrada["message"]
+        _assert_parcial(json.loads(salida)["loot"], status="installed", exe="loot.exe", version="0.22.1")
 
     async def test_el_mensaje_nombra_el_disco_y_la_configuracion(
         self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -246,10 +248,7 @@ class TestDegradacionPorPersistencia:
             session=sesion,
         )
 
-        entrada = json.loads(salida)["xedit"]
-        assert entrada["success"] is False
-        assert entrada["message"]
-        assert entrada["status"] == "already_installed"
+        _assert_parcial(json.loads(salida)["xedit"], status="already_installed", exe="SSEEdit.exe", version="4.1.5")
 
     async def test_xedit_preexistente_escribe_el_path_en_la_config(
         self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path
@@ -357,7 +356,7 @@ class TestQueNoSeDegrada:
             session=sesion,
         )
 
-        assert json.loads(salida)["loot"]["success"] is False
+        _assert_parcial(json.loads(salida)["loot"], status="installed", exe="loot.exe", version="0.22.1")
 
     async def test_una_excepcion_desconocida_se_relanza_en_vez_de_disfrazarse(
         self, gateway: NetworkGateway, sesion: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -426,22 +425,30 @@ class TestQueNoSeDegrada:
 # nacieron `ngio` y `community_shaders`— que llame `escribir_campo` y se olvide
 # del `append`, o que lo haga con el literal de la rama de al lado.
 #
-# Por eso se congela la TABLA COMPLETA y con TRES literales por rama, no la
+# Por eso se congela la TABLA COMPLETA y con CUATRO datos por rama, no la
 # igualdad de dos conjuntos: `{escribe} == {registra}` deja pasar un `append`
 # con el literal equivocado, y `community_shaders` es copia literal de `ngio`.
+#
+# El cuarto dato —si el `append` es una sentencia directa del cuerpo o vive
+# anidado bajo un `if`— no es teórico: la primera versión de este cambio recortó
+# `xedit` con `if not result.already_existed:` y la tabla daba verde igual,
+# porque un registro condicional produce la misma tupla que uno incondicional.
+# Ese recorte era el defecto (review Codex #455). Sin este dato, el ancla no
+# ataja la forma exacta del error que ya se cometió una vez acá.
 
 LISTA_DE_REGISTRO = "requieren_persistencia"
 
 # Igualdad literal. Formato: clave de la condición → (escribe config, clave del
-# dict de éxito, clave del registro). Una rama nueva rompe esto hasta que se
-# decida si participa; cambiar un literal por el de otra rama, también.
+# dict de éxito, clave del registro, registro incondicional). Una rama nueva
+# rompe esto hasta que se decida si participa; cambiar un literal por el de otra
+# rama, o esconder el registro bajo un `if`, también.
 RAMAS_DE_SETUP_TOOLS = {
-    "loot": (True, "loot", "loot"),
-    "xedit": (True, "xedit", "xedit"),
-    "pandora": (True, "pandora", "pandora"),
-    "bodyslide": (True, "bodyslide", "bodyslide"),
-    "ngio": (True, "ngio", "ngio"),
-    "community_shaders": (True, "community_shaders", "community_shaders"),
+    "loot": (True, "loot", "loot", True),
+    "xedit": (True, "xedit", "xedit", True),
+    "pandora": (True, "pandora", "pandora", True),
+    "bodyslide": (True, "bodyslide", "bodyslide", True),
+    "ngio": (True, "ngio", "ngio", True),
+    "community_shaders": (True, "community_shaders", "community_shaders", True),
 }
 
 
@@ -503,38 +510,68 @@ def _clave_del_resultado(rama: ast.If) -> str | None:
     return None
 
 
-def _clave_del_registro(rama: ast.If) -> str | None:
-    """Literal que la rama appendea a la lista de registro."""
-    for nodo in _nodos_del_cuerpo(rama):
-        if (
-            isinstance(nodo, ast.Call)
-            and isinstance(nodo.func, ast.Attribute)
-            and nodo.func.attr == "append"
-            and isinstance(nodo.func.value, ast.Name)
-            and nodo.func.value.id == LISTA_DE_REGISTRO
-            and nodo.args
-            and isinstance(nodo.args[0], ast.Constant)
-            and isinstance(nodo.args[0].value, str)
-        ):
-            return nodo.args[0].value
+def _es_llamada_de_registro(nodo: ast.AST) -> str | None:
+    """``requieren_persistencia.append("<clave>")`` → ``"<clave>"``, si no ``None``."""
+    if (
+        isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == "append"
+        and isinstance(nodo.func.value, ast.Name)
+        and nodo.func.value.id == LISTA_DE_REGISTRO
+        and nodo.args
+        and isinstance(nodo.args[0], ast.Constant)
+        and isinstance(nodo.args[0].value, str)
+    ):
+        return nodo.args[0].value
     return None
 
 
-def _tabla_de_ramas(arbol: ast.AST) -> dict[str, tuple[bool, str | None, str | None]]:
+def _clave_del_registro(rama: ast.If) -> str | None:
+    """Literal que la rama appendea a la lista de registro, esté donde esté."""
+    for nodo in _nodos_del_cuerpo(rama):
+        clave = _es_llamada_de_registro(nodo)
+        if clave is not None:
+            return clave
+    return None
+
+
+def _registro_incondicional(rama: ast.If) -> bool:
+    """True si el ``append`` es una sentencia DIRECTA del cuerpo de la rama.
+
+    Un registro anidado bajo un ``if`` produce exactamente la misma tupla que uno
+    incondicional, así que sin este dato el ancla no distingue una rama que
+    participa siempre de una que participa a veces — y "a veces" es el recorte
+    que el review del PR #455 hizo revertir en ``xedit``.
+    """
+    return any(
+        isinstance(sentencia, ast.Expr) and _es_llamada_de_registro(sentencia.value) is not None
+        for sentencia in rama.body
+    )
+
+
+_FilaDeRama = tuple[bool, str | None, str | None, bool]
+
+
+def _tabla_de_ramas(arbol: ast.AST) -> dict[str, _FilaDeRama]:
     """Tabla de las ramas por tool de ``setup_tools`` en un árbol cualquiera."""
     funcion = next(n for n in ast.walk(arbol) if isinstance(n, ast.AsyncFunctionDef) and n.name == "setup_tools")
-    tabla: dict[str, tuple[bool, str | None, str | None]] = {}
+    tabla: dict[str, _FilaDeRama] = {}
     for nodo in ast.walk(funcion):
         if not isinstance(nodo, ast.If):
             continue
         clave = _clave_de_la_condicion(nodo)
         if clave is None:
             continue
-        tabla[clave] = (_escribe_config(nodo), _clave_del_resultado(nodo), _clave_del_registro(nodo))
+        tabla[clave] = (
+            _escribe_config(nodo),
+            _clave_del_resultado(nodo),
+            _clave_del_registro(nodo),
+            _registro_incondicional(nodo),
+        )
     return tabla
 
 
-def _tabla_real() -> dict[str, tuple[bool, str | None, str | None]]:
+def _tabla_real() -> dict[str, _FilaDeRama]:
     fuente = pathlib.Path(external_tools.__file__).read_text(encoding="utf-8")
     return _tabla_de_ramas(ast.parse(fuente, filename=external_tools.__file__))
 
@@ -548,11 +585,12 @@ def test_ancla_congela_la_tabla_de_ramas_de_setup_tools() -> None:
 def test_toda_rama_que_escribe_config_se_registra_con_su_propia_clave() -> None:
     """La propiedad que el ancla protege, enunciada aparte de la tabla: si
     escribís config, participás del aviso, y con TU clave."""
-    for clave, (escribe, clave_resultado, clave_registro) in _tabla_real().items():
+    for clave, (escribe, clave_resultado, clave_registro, incondicional) in _tabla_real().items():
         if not escribe:
             continue
         assert clave_registro == clave, f"la rama {clave!r} se registra como {clave_registro!r}"
         assert clave_resultado == clave, f"la rama {clave!r} publica su resultado como {clave_resultado!r}"
+        assert incondicional, f"la rama {clave!r} esconde su registro bajo un `if`: participa sólo a veces"
 
 
 # ---------------------------------------------------------------------------
@@ -563,7 +601,7 @@ def test_toda_rama_que_escribe_config_se_registra_con_su_propia_clave() -> None:
 # da la señal de estar cubierto. Se ejerce contra fuentes sintéticas.
 
 
-def _tabla_de_fuente(fuente: str) -> dict[str, tuple[bool, str | None, str | None]]:
+def _tabla_de_fuente(fuente: str) -> dict[str, _FilaDeRama]:
     return _tabla_de_ramas(ast.parse(textwrap.dedent(fuente)))
 
 
@@ -590,8 +628,8 @@ FUENTE_SIN_REGISTRO = """
 def test_el_detector_ve_la_rama_que_escribe_y_no_se_registra() -> None:
     """El defecto central: copiar una rama y olvidar el ``append``."""
     tabla = _tabla_de_fuente(FUENTE_SIN_REGISTRO)
-    assert tabla["loot"] == (True, "loot", None)
-    assert tabla["xedit"] == (True, "xedit", "xedit")
+    assert tabla["loot"] == (True, "loot", None, False)
+    assert tabla["xedit"] == (True, "xedit", "xedit", True)
 
 
 def test_el_registro_de_una_rama_no_se_le_atribuye_a_la_anterior() -> None:
@@ -622,7 +660,35 @@ def test_el_detector_ve_el_literal_cruzado_entre_ramas() -> None:
                     requieren_persistencia.append("ngio")
         """
     )
-    assert tabla["community_shaders"] == (True, "community_shaders", "ngio")
+    assert tabla["community_shaders"] == (True, "community_shaders", "ngio", True)
+
+
+def test_el_detector_ve_el_registro_escondido_bajo_un_if() -> None:
+    """La forma exacta del error que ya se cometió una vez en este archivo.
+
+    La primera versión de este cambio recortó ``xedit`` con
+    ``if not result.already_existed:``. Con sólo tres datos por rama la tabla
+    daba verde, porque un registro condicional produce la misma tupla que uno
+    incondicional (review Codex #455, nitpick de CodeRabbit sobre el ancla).
+    """
+    tabla = _tabla_de_fuente(
+        """
+        async def setup_tools(local_cfg, tools):
+            for tool_name in tools:
+                tool_name_lower = tool_name.lower()
+                if tool_name_lower == "xedit":
+                    results["xedit"] = {"success": True, "message": ""}
+                    if not result.already_existed:
+                        requieren_persistencia.append("xedit")
+                elif tool_name_lower == "loot":
+                    results["loot"] = {"success": True, "message": ""}
+                    requieren_persistencia.append("loot")
+        """
+    )
+    # Las dos ramas registran su propia clave y publican su propio resultado: con
+    # tres datos serían indistinguibles. El cuarto es el único que las separa.
+    assert tabla["xedit"] == (False, "xedit", "xedit", False)
+    assert tabla["loot"] == (False, "loot", "loot", True)
 
 
 def test_el_detector_ignora_las_entradas_de_error() -> None:
@@ -640,4 +706,4 @@ def test_el_detector_ignora_las_entradas_de_error() -> None:
                     results["ngio"] = {"success": True, "message": ""}
         """
     )
-    assert tabla["ngio"] == (False, "ngio", None)
+    assert tabla["ngio"] == (False, "ngio", None, False)
