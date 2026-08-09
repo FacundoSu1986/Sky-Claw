@@ -11,7 +11,7 @@
 > `sky_claw/app/gui/views/forge_dashboard.py`,
 > `sky_claw/local/discovery/scanner.py` y `sky_claw/local/local_config.py`.
 >
-> **Última verificación:** 2026-08-09 sobre `origin/main` `272d4953`.
+> **Última verificación:** 2026-08-09 sobre `origin/main` `67eaeec5` más este cambio.
 
 ## Objetivo
 
@@ -130,13 +130,13 @@ reparación.
 | Componente ya instalado | El sentinel de ese mod ya estaba: no se vuelve a descargar | Nada; la operación es idempotente por componente |
 | Abortado por un requisito | Ningún byte descargado, nada modificado | Resolver el requisito y repetir; ver [diagnóstico](troubleshooting.md) |
 | Denegado a mitad | Lo anterior queda instalado; el resto no se intentó | Repetir cuando se pueda aprobar; los componentes ya instalados se saltan |
-| Instalado con aviso de persistencia (sólo GUI) | Los mods están en disco pero `community_shaders_mods` no se pudo guardar | Los mods son utilizables: activarlos igual en MO2. Para regenerar el registro hay que pedírselo al agente —la tarjeta ya no ofrece reinstalar— y sólo funciona si el agente tiene la configuración y su ruta; no borrar nada |
+| Instalado con aviso de persistencia | Los mods están en disco pero `community_shaders_mods` no se pudo guardar | Los mods son utilizables: activarlos igual en MO2. Para regenerar el registro, repetir la instalación: es idempotente y no vuelve a descargar. No borrar nada |
 
-El aviso de persistencia lo emite **únicamente la GUI**. Por el agente LLM, un fallo al
-guardar la configuración propaga el error en vez de devolver ese aviso; y si el agente no
-recibió la configuración o su ruta, el guardado se omite sin avisar y el resultado informa
-la instalación como correcta aunque el registro no se haya escrito. En todos los casos los
-mods ya están en disco y se pueden activar a mano.
+Las **dos** superficies avisan. La GUI lo muestra como notificación de advertencia; el
+agente LLM devuelve la operación como fallida, con el detalle de lo que sí quedó en disco,
+y nombra que el registro no sobrevive al reinicio. Ninguna de las dos propaga el fallo de
+guardado como error opaco ni informa éxito total cuando no hay dónde escribir. En todos
+los casos los mods ya están en disco y se pueden activar a mano.
 
 ## Integridad de las descargas
 
@@ -168,8 +168,6 @@ evidencia antes de repetir cualquier operación.
 - **La activación no está automatizada.** Sky-Claw registra los nombres instalados, pero
   ninguna ruta de producción los consume todavía: hay que activar los tres mods en MO2 a
   mano.
-- **El aviso de persistencia es sólo de la GUI.** El camino del agente LLM no lo emite;
-  ver la tabla de desenlaces.
 - **La GUI no puede reparar el registro.** Una vez que el mod se detecta, su tarjeta pasa
   a `Instalado` y deja de ofrecer la instalación, así que recuperar
   `community_shaders_mods` sólo es posible por el agente.
@@ -187,6 +185,7 @@ evidencia antes de repetir cualquier operación.
 
 - `ensure_community_shaders` en `sky_claw/local/tools_installer.py`.
 - Tests ancla: `tests/test_tools_installer_community_shaders.py`,
-  `tests/test_ritual_install.py`, `tests/test_local_config_persistencia.py`.
+  `tests/test_ritual_install.py`, `tests/test_local_config_persistencia.py`,
+  `tests/test_setup_tools_persistencia.py`.
 - [Interfaz gráfica](gui.md) · [Configuración](configuration.md) ·
   [Diagnóstico](troubleshooting.md) · [Flujo seguro](safe_workflows.md)

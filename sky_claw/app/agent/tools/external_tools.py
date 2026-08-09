@@ -27,6 +27,17 @@ def _error_result(message: str) -> dict[str, Any]:
     return {"success": False, "message": message}
 
 
+# Aviso de operación parcial: la tool quedó en disco pero el campo que la hace
+# utilizable no se pudo guardar. Corto a propósito — `LLMRouter` trunca el
+# resultado a 4000 chars y un JSON de seis tools con `mod_dirs`/`versions` ya es
+# voluminoso: un JSON cortado a la mitad le sirve al LLM menos que el defecto que
+# este aviso vino a cerrar.
+_AVISO_PERSISTENCIA = (
+    "Instalado en disco, pero no se pudo guardar la configuración: el registro no "
+    "sobrevive al reinicio. Reintentar la instalación es seguro (es idempotente)."
+)
+
+
 async def setup_tools(
     tools_installer: Any,
     install_dir: pathlib.Path,
@@ -63,7 +74,14 @@ async def setup_tools(
         tools: List of tools to install. Defaults to all.
 
     Returns:
-        JSON string with installation results.
+        JSON string con una entrada por tool. Una tool que quedó instalada en
+        disco pero cuyo campo de config no se pudo guardar se devuelve con
+        ``success: False`` y :data:`_AVISO_PERSISTENCIA`, conservando sus campos
+        estructurados (``status``, ``exe_path``, ``mods``): la operación fue
+        parcial, no exitosa, y reportarla como éxito total es el "éxito visual"
+        que la review del PR #445 le hizo corregir al gemelo de la GUI. Un fallo
+        al guardar nunca se propaga como excepción — eso perdía el resultado
+        entero.
     """
     from sky_claw.local.local_config import escribir_campo, guardar_config_bloqueante
     from sky_claw.local.tools_installer import ToolInstallError
@@ -72,6 +90,14 @@ async def setup_tools(
         return json.dumps(_error_result("Tools installer is not configured"))
 
     results: dict[str, Any] = {}
+    # Tools cuyo desenlace depende de que la config se persista: si el guardado
+    # no ocurre, el path o el registro que acaban de escribir no sobreviven al
+    # reinicio y la operación fue parcial, no exitosa. Se registra DESPUÉS de
+    # publicar el resultado de éxito (así la invariante "clave registrada ⟺ la
+    # entrada es el dict de éxito de esa iteración" se sostiene sola) y con
+    # independencia de que `local_cfg` exista: no tener dónde escribir es el
+    # mismo desenlace parcial que fallar al escribir.
+    requieren_persistencia: list[str] = []
 
     # TASK-013 P1: Zero-Trust egress policy — a missing NetworkGateway means
     # the integration layer is misconfigured. Abort immediately rather than
@@ -107,6 +133,7 @@ async def setup_tools(
                         "success": True,
                         "message": "",
                     }
+                    requieren_persistencia.append("loot")
                 elif tool_name_lower == "xedit":
                     result = await tools_installer.ensure_xedit(install_dir, session)
                     if not result.already_existed and local_cfg:
@@ -118,6 +145,14 @@ async def setup_tools(
                         "success": True,
                         "message": "",
                     }
+                    # Espeja la condición de arriba: con xEdit preexistente no se
+                    # quiso escribir nada, así que un guardado roto no convierte
+                    # esta rama en parcial. (Que esa asimetría con los otros
+                    # cinco sea un defecto por derecho propio —`xedit_exe` nunca
+                    # se rellena en un config que no lo tenga— se reporta aparte;
+                    # uniformarla cambia semántica de instalación.)
+                    if not result.already_existed:
+                        requieren_persistencia.append("xedit")
                 elif tool_name_lower == "pandora":
                     result = await tools_installer.ensure_pandora(install_dir, session)
                     if local_cfg:
@@ -129,6 +164,7 @@ async def setup_tools(
                         "success": True,
                         "message": "",
                     }
+                    requieren_persistencia.append("pandora")
                 elif tool_name_lower == "bodyslide":
                     result = await tools_installer.ensure_bodyslide(install_dir, session, downloader)
                     if local_cfg:
@@ -140,6 +176,7 @@ async def setup_tools(
                         "success": True,
                         "message": "",
                     }
+                    requieren_persistencia.append("bodyslide")
                 elif tool_name_lower == "ngio":
                     # Dependencias del precache de grass (Stage 8): se instalan
                     # como mods de MO2 (no tienen exe) y la selección SE/AE la
@@ -183,6 +220,7 @@ async def setup_tools(
                         "success": True,
                         "message": "",
                     }
+                    requieren_persistencia.append("ngio")
                 elif tool_name_lower == "community_shaders":
                     # Autoinstalador de Community Shaders (blueprint 1786043077717):
                     # mods de MO2 (misma clase que NGIO, NO la de SKSE) cuyos gates
@@ -234,6 +272,7 @@ async def setup_tools(
                         "success": True,
                         "message": "",
                     }
+                    requieren_persistencia.append("community_shaders")
                 else:
                     detail = (
                         f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, "
@@ -255,7 +294,39 @@ async def setup_tools(
     # `_bloqueante` serializa además con `run_ritual_install` de la GUI (mismo
     # config.toml, mismo proceso) — ver el comentario de módulo en
     # local_config.py sobre por qué hace falta (review PR #444).
+    #
+    # El guardado NO se condiciona a que alguien se haya registrado: `Config.save()`
+    # persiste por generaciones sucias, no por diff de valores (merge-on-save F1),
+    # así que saltearlo dejaría colgados los cambios pendientes que otro camino dejó
+    # sobre el objeto `Config` compartido.
+    persistencia_ok = True
     if local_cfg and config_path:
-        await guardar_config_bloqueante(local_cfg, config_path)
+        try:
+            await guardar_config_bloqueante(local_cfg, config_path)
+        except Exception:  # noqa: BLE001 — las tools ya están en disco; no perder el resultado
+            # Sin esto la excepción se propagaba y se llevaba puesto `results`
+            # entero: el caller no se enteraba de que la instalación SÍ había
+            # ocurrido. La GUI ya degradaba en vez de romper (`run_ritual_install`).
+            logger.exception("No se pudo persistir la configuración en %s", config_path)
+            persistencia_ok = False
+    elif requieren_persistencia:
+        # Sin config o sin su ruta el guardado no puede correr: mismo desenlace
+        # parcial que si hubiera lanzado. Cubrir sólo la excepción dejaba vivo el
+        # éxito visual — es la corrección que la review adversarial del PR #445 le
+        # hizo al gemelo de la GUI (`persistencia_ok = config_path is not None`).
+        persistencia_ok = False
+
+    if not persistencia_ok:
+        # Sólo se degrada lo que dependía del guardado, y sólo si sigue siendo el
+        # dict de éxito: `tools` es una lista sin dedupe y el bucle tampoco
+        # deduplica, así que una segunda vuelta pudo haber reemplazado la entrada
+        # por un error — pisarle encima este aviso perdería el motivo real.
+        for clave in dict.fromkeys(requieren_persistencia):
+            entrada = results.get(clave)
+            if isinstance(entrada, dict) and entrada.get("success") is True:
+                entrada["success"] = False
+                entrada["message"] = _AVISO_PERSISTENCIA
+        # Si nadie se registró, el fallo queda sólo en el log: ninguna tool de
+        # este resultado escribió un campo, así que no hay nada que degradar.
 
     return json.dumps(results)

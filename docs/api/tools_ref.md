@@ -9,7 +9,7 @@
 > `sky_claw/app/orchestrator/tool_strategies/` y
 > `sky_claw/local/tools/tool_result.py`.
 >
-> **Última verificación:** 2026-08-09 sobre `origin/main` `272d4953`.
+> **Última verificación:** 2026-08-09 sobre `origin/main` `67eaeec5` más este cambio.
 
 ## Ruta LLM
 
@@ -35,6 +35,13 @@ porque sus prerrequisitos de host no los puede satisfacer Sky-Claw. Ver
 ejecutables en el directorio del juego y la aprobación debe ser la del operador. El
 recorte está congelado por igualdad literal en `tests/test_ritual_install.py`.
 
+Una tool de `setup_tools` que quedó instalada en disco pero cuyo campo de configuración
+no se pudo guardar se devuelve con `success: false` y un mensaje que lo dice, conservando
+sus campos estructurados (`status`, `exe_path`, `mods`): la operación fue parcial, y
+reportarla como éxito total esconde que el path o el registro no sobreviven al reinicio.
+Un fallo al guardar nunca se propaga como excepción. El conjunto de ramas que participan
+de ese aviso está congelado por AST en `tests/test_setup_tools_persistencia.py`.
+
 ## Ruta de orquestación
 
 `build_orchestration_dispatcher()` registra `ToolStrategy` y middleware. Los
@@ -57,7 +64,9 @@ wiring antes de prometer eventos de progreso en una ruta concreta.
 Los runners pueden emitir shapes legacy. `normalize_tool_result()` es la única
 pieza que conoce `details`, `error`, `logs`, `stderr`, `errors` y `reason`, y
 produce la vista común con `success` y `message`. El consumidor de producción
-comprobado está en `gui/controllers/ritual_runner.py`.
+comprobado está en `gui/controllers/ritual_runner.py`. Ante un `success` booleano real
+prevalece ése sobre `status`, así que una entrada con `status: "installed"` y
+`success: false` —la instalación parcial de arriba— normaliza a fallo con su mensaje.
 
 No aplicar el schema estricto de un resultado normalizado a un dict legacy
 antes de normalizar: podría descartar el detalle de diagnóstico.
