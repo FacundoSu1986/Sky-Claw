@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import pathlib
 import shutil
 import tempfile
+import uuid
 import zipfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -23,17 +25,44 @@ import aiofiles
 import aiofiles.os
 
 from sky_claw.app.security.links import rmtree_link_aware
-from sky_claw.app.security.path_validator import PathValidator, PathViolationError, safe_join
+from sky_claw.app.security.path_validator import (
+    PathValidator,
+    PathViolationError,
+    assert_safe_component,
+    safe_join,
+)
+from sky_claw.local.fomod.models import CompositeDependency
 from sky_claw.local.fomod.parser import FomodParseError, parse_fomod
+from sky_claw.local.fomod.plugin_state import FileStateProvider
 from sky_claw.local.fomod.resolver import FomodResolver
+from sky_claw.local.thread_bridge import esperar_hilo_ininterrumpible
 
 if TYPE_CHECKING:
     from sky_claw.local.fomod.models import FileInstall
 
 
 async def async_copy2(src: pathlib.Path, dst: pathlib.Path) -> None:
-    """Copy src to dst using shutil.copy2 in a thread pool."""
-    await asyncio.to_thread(shutil.copy2, str(src), str(dst))
+    """Copia sin propagar cancelación mientras el hilo siga mutando."""
+    await esperar_hilo_ininterrumpible(shutil.copy2, str(src), str(dst))
+
+
+def _promover_staging(staging: pathlib.Path, destino: pathlib.Path) -> None:
+    """Publica *staging* de forma atómica y restaura el destino si falla."""
+    respaldo = destino.with_name(f".{destino.name}.skyclaw-backup-{uuid.uuid4().hex}")
+    tenia_destino = destino.exists() or destino.is_symlink()
+    if tenia_destino:
+        os.replace(destino, respaldo)
+    try:
+        os.replace(staging, destino)
+    except Exception:
+        if tenia_destino and (respaldo.exists() or respaldo.is_symlink()):
+            os.replace(respaldo, destino)
+        raise
+    if tenia_destino:
+        try:
+            rmtree_link_aware(respaldo, limpiar_readonly=True)
+        except OSError:
+            logger.warning("No se pudo limpiar el respaldo de instalación %s", respaldo, exc_info=True)
 
 
 logger = logging.getLogger(__name__)
@@ -73,6 +102,36 @@ def _is_safe_path(member_path: str) -> bool:
     """Reject paths containing traversal components (zip-slip)."""
     parts = pathlib.PurePosixPath(member_path).parts
     return ".." not in parts
+
+
+def _is_fomod_xml_name(member_path: str) -> bool:
+    """True si el entry del archive es un ``fomod/ModuleConfig.xml``.
+
+    Comparación case-insensitive y tolerante a backslashes; se rechazan paths
+    con componentes de traversal y paths absolutos — ``Path(tmp) / "C:/x"``
+    reemplazaría el destino en lugar de anidarlo (escape del directorio
+    temporal de lectura selectiva).
+    """
+    normalized = member_path.replace("\\", "/").lower()
+    if not normalized.endswith("fomod/moduleconfig.xml"):
+        return False
+    if not _is_safe_path(member_path):
+        return False
+    if pathlib.PurePosixPath(normalized).is_absolute():
+        return False
+    return not pathlib.PureWindowsPath(normalized).drive
+
+
+def _serialize_dependency(dependency: CompositeDependency | None) -> dict[str, Any] | None:
+    """Representación serializable de una dependencia FOMOD (para previews)."""
+    if dependency is None:
+        return None
+    return {
+        "operator": dependency.operator,
+        "flag_dependencies": [{"flag": d.flag, "value": d.value} for d in dependency.flag_deps],
+        "file_dependencies": [{"file": d.file, "state": d.state.value} for d in dependency.file_deps],
+        "nested": [_serialize_dependency(n) for n in dependency.nested],
+    }
 
 
 def _extract_zip(archive: pathlib.Path, dest: pathlib.Path) -> None:
@@ -153,10 +212,14 @@ class FomodInstaller:
 
     Args:
         path_validator: Sandbox validator for all file operations.
+        file_state_provider: Provider of installed-file state used to evaluate
+            ``fileDependency`` conditions during resolution (None = fail-closed:
+            file conditions never match).
     """
 
-    def __init__(self, path_validator: PathValidator) -> None:
+    def __init__(self, path_validator: PathValidator, file_state_provider: FileStateProvider | None = None) -> None:
         self._validator = path_validator
+        self.file_state_provider = file_state_provider
 
     async def preview(self, archive_path: pathlib.Path) -> FomodPreview:
         """Preview FOMOD installation options without full extraction.
@@ -171,7 +234,7 @@ class FomodInstaller:
         mod_name = archive_path.stem
 
         # RND-03: Delegar I/O síncrono (zipfile) a thread pool
-        fomod_xml = await asyncio.to_thread(self._extract_fomod_xml, archive_path)
+        fomod_xml = await asyncio.to_thread(self.read_fomod_xml, archive_path)
         if fomod_xml is None:
             return FomodPreview(mod_name=mod_name, has_fomod=False)
 
@@ -188,7 +251,33 @@ class FomodInstaller:
                 group_info = {
                     "name": group.name,
                     "type": group.group_type.value,
+                    # Compat: lista plana de nombres para consumidores previos.
                     "options": [p.name for p in group.plugins],
+                    # Detalle estructurado para que el agente decida con
+                    # descripción, tipo (Required/Recommended/Optional) y
+                    # dependencias de cada opción. Los campos del dependencyType
+                    # (default_type/patterns) exponen la MISMA semántica que
+                    # aplica resolve_fomod, no solo el type estático.
+                    "plugin_details": [
+                        {
+                            "name": p.name,
+                            "description": p.description,
+                            "image": p.image,
+                            "type": p.type_descriptor.value,
+                            "default_type": (
+                                p.dependency_default_type.value if p.dependency_default_type is not None else None
+                            ),
+                            "dependency_patterns": [
+                                {
+                                    "type": pat.type.value,
+                                    "conditions": _serialize_dependency(pat.conditions),
+                                }
+                                for pat in p.dependency_patterns
+                            ],
+                            "dependency": _serialize_dependency(p.dependency),
+                        }
+                        for p in group.plugins
+                    ],
                 }
                 step_info["groups"].append(group_info)
             steps.append(step_info)
@@ -233,7 +322,7 @@ class FomodInstaller:
         try:
             # Extract — RND-03: Delegar extracción síncrona a thread pool
             try:
-                await asyncio.to_thread(extractor, archive_path, tmp_dir)
+                await esperar_hilo_ininterrumpible(extractor, archive_path, tmp_dir)
             except PathViolationError:
                 raise
             except Exception as exc:
@@ -270,20 +359,27 @@ class FomodInstaller:
             # el fallo va dentro de `suppress(OSError)`, sin el flag el tmp
             # quedaba huérfano EN SILENCIO y la fuga de disco crecía por corrida.
             with contextlib.suppress(OSError):
-                await asyncio.to_thread(rmtree_link_aware, tmp_dir, limpiar_readonly=True)
+                await esperar_hilo_ininterrumpible(rmtree_link_aware, tmp_dir, limpiar_readonly=True)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def read_fomod_xml(self, archive_path: pathlib.Path) -> str | None:
+        """Lee ModuleConfig.xml tras validar el archive contra el sandbox."""
+        validated = self._validator.validate(archive_path)
+        return self._extract_fomod_xml(validated)
+
     def _extract_fomod_xml(self, archive_path: pathlib.Path) -> str | None:
         """Try to read fomod/ModuleConfig.xml from archive without full extraction."""
-
         suffix = archive_path.suffix.lower()
         if suffix == ".zip":
             return self._read_from_zip(archive_path)
-        # For other formats, we need full extraction — return None
-        # to trigger the full extract path.
+        if suffix == ".7z":
+            return self._read_fomod_xml_7z(archive_path)
+        if suffix == ".rar":
+            return self._read_fomod_xml_rar(archive_path)
+        # Other formats: no selective read — the full-extract path applies.
         return None
 
     @staticmethod
@@ -291,13 +387,64 @@ class FomodInstaller:
         """Read FOMOD XML directly from a zip without extracting."""
         try:
             with zipfile.ZipFile(archive_path, "r") as zf:
-                names = zf.namelist()
-                for name in names:
-                    normalized = name.replace("\\", "/").lower()
-                    if normalized.endswith("fomod/moduleconfig.xml"):
+                for name in zf.namelist():
+                    if _is_fomod_xml_name(name):
                         return zf.read(name).decode("utf-8", errors="replace")
         except (zipfile.BadZipFile, KeyError, OSError):
             pass
+        return None
+
+    @staticmethod
+    def _read_fomod_xml_7z(archive_path: pathlib.Path) -> str | None:
+        """Read FOMOD XML directly from a .7z without full extraction.
+
+        py7zr >= 1.0 no expone lectura en memoria selectiva: se extrae SOLO el
+        entry ``fomod/ModuleConfig.xml`` a un directorio temporal y se lee.
+        """
+        try:
+            import py7zr
+            from py7zr.exceptions import Bad7zFile, CrcError, PasswordRequired, UnsupportedCompressionMethodError
+        except ModuleNotFoundError:
+            # Distinguible de "el archive no tiene FOMOD" (has_fomod=False):
+            # falta la dependencia opcional.
+            logger.warning("py7zr no está instalado — preview de .7z degradado a sin FOMOD (%s)", archive_path)
+            return None
+        target: str | None = None
+        try:
+            with py7zr.SevenZipFile(archive_path, "r") as szf:
+                for name in szf.getnames():
+                    if _is_fomod_xml_name(name):
+                        target = name
+                        break
+                if target is None:
+                    return None
+                with tempfile.TemporaryDirectory(prefix="skyclaw_preview_") as tmp:
+                    szf.extract(path=tmp, targets=[target])
+                    xml_path = pathlib.Path(tmp) / target
+                    return xml_path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, KeyError, Bad7zFile, CrcError, PasswordRequired, UnsupportedCompressionMethodError):
+            return None
+        return None
+
+    @staticmethod
+    def _read_fomod_xml_rar(archive_path: pathlib.Path) -> str | None:
+        """Read FOMOD XML directly from a .rar without full extraction."""
+        try:
+            import rarfile
+        except ModuleNotFoundError:
+            logger.warning("rarfile no está instalado — preview de .rar degradado a sin FOMOD (%s)", archive_path)
+            return None
+        try:
+            with rarfile.RarFile(archive_path, "r") as rf:
+                for info in rf.infolist():
+                    if _is_fomod_xml_name(info.filename):
+                        # rarfile es import dinámico: bytes() estrecha Any a bytes.
+                        data = bytes(rf.read(info.filename))
+                        return data.decode("utf-8", errors="replace")
+        except (OSError, KeyError, rarfile.Error):
+            # rarfile.Error cubre BadRarFile, RarCannotExec (sin binario
+            # unrar), PasswordRequired y NeedFirstVolume — degradan a None.
+            return None
         return None
 
     @staticmethod
@@ -325,11 +472,13 @@ class FomodInstaller:
                 errors=[f"FOMOD parse error: {exc}"],
             )
 
-        mod_name = config.module_name or fallback_name
-        resolver = FomodResolver(config)
-        result = resolver.resolve(selections)
+        mod_name = assert_safe_component(config.module_name or fallback_name, field="moduleName")
+        resolver = FomodResolver(config, file_state=self.file_state_provider)
+        # RND-03: la resolución puede disparar el escaneo lazy del proveedor de
+        # estado (rglob sobre mods/) — I/O síncrono fuera del event loop.
+        result = await asyncio.to_thread(resolver.resolve, selections)
 
-        if result.pending_decisions and not result.files:
+        if result.pending_decisions:
             return InstallResult(
                 mod_name=mod_name,
                 pending_decisions=result.pending_decisions,
@@ -338,12 +487,28 @@ class FomodInstaller:
         # The FOMOD content root is the parent of the fomod/ directory.
         content_root = fomod_xml_path.parent.parent
 
-        mod_dest = mo2_mods_dir / mod_name
-        copied = await self._copy_resolved_files(
-            content_root,
-            mod_dest,
-            result.files,
-        )
+        mod_dest = safe_join(mo2_mods_dir, mod_name)
+        staging = pathlib.Path(tempfile.mkdtemp(prefix=".skyclaw-staging-", dir=mo2_mods_dir))
+        try:
+            if mod_dest.is_dir():
+                await esperar_hilo_ininterrumpible(
+                    shutil.copytree,
+                    mod_dest,
+                    staging,
+                    dirs_exist_ok=True,
+                    symlinks=True,
+                )
+            copied = await self._copy_resolved_files(
+                content_root,
+                staging,
+                result.files,
+            )
+            if copied:
+                await esperar_hilo_ininterrumpible(_promover_staging, staging, mod_dest)
+        finally:
+            if staging.exists() or staging.is_symlink():
+                with contextlib.suppress(OSError):
+                    await esperar_hilo_ininterrumpible(rmtree_link_aware, staging, limpiar_readonly=True)
 
         return InstallResult(
             mod_name=mod_name,
@@ -367,19 +532,34 @@ class FomodInstaller:
         else:
             content_root = extract_dir
 
-        mod_dest = mo2_mods_dir / mod_name
+        mod_name = assert_safe_component(mod_name, field="mod_name")
+        mod_dest = safe_join(mo2_mods_dir, mod_name)
+        staging = pathlib.Path(tempfile.mkdtemp(prefix=".skyclaw-staging-", dir=mo2_mods_dir))
         copied: list[str] = []
+        try:
+            if mod_dest.is_dir():
+                await esperar_hilo_ininterrumpible(
+                    shutil.copytree,
+                    mod_dest,
+                    staging,
+                    dirs_exist_ok=True,
+                    symlinks=True,
+                )
+            for src_file in content_root.rglob("*"):
+                if src_file.is_dir():
+                    continue
+                rel = src_file.relative_to(content_root)
+                dest_file = safe_join(staging, rel)
 
-        for src_file in content_root.rglob("*"):
-            if src_file.is_dir():
-                continue
-            rel = src_file.relative_to(content_root)
-            dest_file = mod_dest / rel
-
-            await aiofiles.os.makedirs(dest_file.parent, exist_ok=True)
-            # Use asynchronous copy to avoid blocking the event loop
-            await async_copy2(src_file, dest_file)
-            copied.append(str(rel))
+                await aiofiles.os.makedirs(dest_file.parent, exist_ok=True)
+                await async_copy2(src_file, dest_file)
+                copied.append(str(rel))
+            if copied:
+                await esperar_hilo_ininterrumpible(_promover_staging, staging, mod_dest)
+        finally:
+            if staging.exists() or staging.is_symlink():
+                with contextlib.suppress(OSError):
+                    await esperar_hilo_ininterrumpible(rmtree_link_aware, staging, limpiar_readonly=True)
 
         return InstallResult(
             mod_name=mod_name,

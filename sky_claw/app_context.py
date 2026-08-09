@@ -36,7 +36,7 @@ from sky_claw.app.security.auth_token_manager import AuthTokenManager
 from sky_claw.app.security.credential_vault import CredentialVault
 from sky_claw.app.security.hitl import HITLGuard, HITLRequest
 from sky_claw.app.security.network_gateway import GatewayTCPConnector, NetworkGateway
-from sky_claw.app.security.path_validator import PathValidator
+from sky_claw.app.security.path_validator import PathValidator, assert_safe_component
 from sky_claw.app.security.prompt_armor import build_system_header
 from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, SystemPaths
 from sky_claw.local.ai.patch_advisor_llm import LLMCallable
@@ -73,13 +73,27 @@ SYSTEM_PROMPT = (
     "oculto al usuario</thought> paso a paso.\n"
     "Sé directo y conciso en tu respuesta final. "
     "Cuando el usuario pregunte sobre mods, load order o conflictos, "
-    "usá el perfil 'Default' automáticamente sin preguntar. "
+    "usá el perfil configurado para esta sesión automáticamente sin preguntar. "
     "Si una herramienta (LOOT, xEdit) no está disponible, ofrecé instalarla. "
     "Si un mod no está en la base de datos, buscá primero en Nexus Mods antes de rendirte. "
     "Tenés soporte para Pandora Behavior Engine (animaciones) y BodySlide (físicas/cuerpos); "
     "usá las herramientas correspondientes si el usuario instala mods de este tipo. "
     "Nunca pidas información que puedas detectar o deducir por tu cuenta."
 )
+
+
+def _resolve_mo2_profile(args: Any) -> str:
+    """Resuelve y valida el perfil MO2 fijo de la sesión."""
+    configured = getattr(args, "profile", "")
+    cli_profile = configured if isinstance(configured, str) else ""
+    profile = cli_profile or os.environ.get("MO2_PROFILE", "") or "Default"
+    return assert_safe_component(profile, field="profile")
+
+
+def _build_system_prompt(profile: str) -> str:
+    """Materializa el prompt con el mismo perfil que consumen las tools."""
+    safe_profile = assert_safe_component(profile, field="profile")
+    return SYSTEM_PROMPT.replace("perfil configurado para esta sesión", f"perfil '{safe_profile}'")
 
 
 class LifecycleContext:
@@ -659,6 +673,7 @@ class AppContext:
 
             local_cfg = Config(config_path)
             # H-04: Eliminada mutación de os.environ. Los secretos se pasan explícitamente.
+            active_profile = _resolve_mo2_profile(self._args)
 
             mo2_root = self._args.mo2_root
             config_changed = False
@@ -1094,6 +1109,21 @@ class AppContext:
             self._push_startup_cleanup(journal.close)
             await self._await_startup(journal.open())
 
+            # Auditoría FOMOD: el motor (parser/resolver/installer) existía pero
+            # nunca se cableó — las tools preview_mod_installer /
+            # install_mod_from_archive / resolve_fomod respondían "not configured".
+            # Comparte el PathValidator de la app: todo I/O del instalador queda
+            # sandboxeado contra mo2_root / staging / install_dir.
+            from sky_claw.local.fomod.installer import FomodInstaller
+            from sky_claw.local.fomod.plugin_state import MO2PluginStateProvider
+
+            fomod_installer = FomodInstaller(
+                path_validator=validator,
+                # Estado de plugins/mods instalados para evaluar fileDependency
+                # de FOMOD (parches condicionados a mods presentes/ausentes).
+                file_state_provider=MO2PluginStateProvider(mo2_root=mo2.root, profile=active_profile),
+            )
+
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
@@ -1102,6 +1132,7 @@ class AppContext:
                 loot_runner=vfs_loot_runner,
                 hitl=hitl,
                 downloader=self.network.downloader,
+                fomod_installer=fomod_installer,
                 tools_installer=tools_installer,
                 install_dir=install_dir,
                 # Consolidation (obs #187): AnimationHub was removed. run_pandora /
@@ -1122,11 +1153,11 @@ class AppContext:
                 # T2-07: per-session tool allowlist (None = all tools permitted).
                 allowed_tools=allowed_tools,
                 session_id=session_id,
+                mo2_profile=active_profile,
             )
 
             history_db = str(self._args.db_path).replace(".db", "_history.db")
-            mo2_root = local_cfg.mo2_root or "."
-            mo2_profile = os.path.join(mo2_root, "profiles", "Default")
+            mo2_profile_path = mo2.root / "profiles" / active_profile
 
             # F1: provisionar el vault (si SKYCLAW_VAULT_MASTER_KEY está seteada)
             # y cablearlo al router para habilitar el hot-swap Zero-Trust de
@@ -1141,9 +1172,9 @@ class AppContext:
                 provider=provider,
                 tool_registry=tool_registry,
                 db_path=history_db,
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=_build_system_prompt(active_profile),
                 registry_db=str(self._args.db_path),
-                mo2_profile=mo2_profile,
+                mo2_profile=str(mo2_profile_path),
                 gateway=self.network.gateway,
                 vault=credential_vault,
                 # M-01.1: history DB via DatabaseLifecycleManager (WAL recovery,

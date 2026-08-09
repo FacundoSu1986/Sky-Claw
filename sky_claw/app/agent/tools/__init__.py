@@ -137,6 +137,9 @@ class AsyncToolRegistry:
         # T2-07: identificador opcional de sesion/usuario para enriquecer
         # logs de auditoria cuando un tool no permitido es invocado.
         session_id: str | None = None,
+        # Perfil MO2 único de esta sesión. Las tools FOMOD deben evaluar
+        # fileDependency y activar el mod sobre la misma vista.
+        mo2_profile: str = "Default",
     ) -> None:
         self._registry = registry
         self._mo2 = mo2
@@ -163,6 +166,7 @@ class AsyncToolRegistry:
         # silenciosamente la autorizacion de un registry ya construido.
         self._allowed_tools: frozenset[str] | None = frozenset(allowed_tools) if allowed_tools is not None else None
         self._session_id = session_id
+        self._mo2_profile = mo2_profile
         self._tools: dict[str, ToolDescriptor] = {}
         self._register_builtins()
 
@@ -497,7 +501,16 @@ class AsyncToolRegistry:
             description="Install a mod from archive into MO2.",
             params_model=InstallFromArchiveParams,
             fn=lambda archive_path, selections=None: install_mod_from_archive(
-                self._mo2, self._fomod_installer, self._hitl, archive_path, selections
+                self._mo2,
+                self._fomod_installer,
+                self._hitl,
+                archive_path,
+                selections,
+                profile=self._mo2_profile,
+                # T-31: la instalación de mods participa del lock cross-process
+                # de la familia de instalación (mismo recurso que los
+                # autoinstaladores de tools sobre mods/).
+                lock_manager=self._lock_manager,
             ),
         )
         self._tools["resolve_fomod"] = ToolDescriptor(

@@ -38,6 +38,8 @@ from sky_claw.app.security.text_inspector import TextInspector
 # el historial recargado. Stateless → una instancia compartida a nivel módulo.
 _HISTORY_INSPECTOR = TextInspector()
 _HISTORY_BLOCK_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
+_TOOL_RESULT_INSPECTOR = TextInspector()
+_TOOL_RESULT_BLOCK_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
 
 if TYPE_CHECKING:
     import aiohttp
@@ -47,6 +49,28 @@ if TYPE_CHECKING:
     from sky_claw.app.security.credential_vault import CredentialVault
 
 logger = logging.getLogger(__name__)
+
+_BLOCKED_TOOL_RESULT = json.dumps(
+    {
+        "success": False,
+        "message": "Resultado bloqueado: contenido externo no confiable detectado.",
+    },
+    ensure_ascii=False,
+)
+
+
+def _prepare_tool_result_for_model(result: str) -> str:
+    """Inspecciona y sanea output no confiable antes de reinyectarlo al LLM."""
+    sanitized = sanitize_for_prompt(result)
+    findings = [
+        *_TOOL_RESULT_INSPECTOR.inspect(result, filename="tool_result_raw"),
+        *_TOOL_RESULT_INSPECTOR.inspect(sanitized, filename="tool_result_sanitized"),
+    ]
+    if any(finding.get("severity") in _TOOL_RESULT_BLOCK_SEVERITIES for finding in findings):
+        logger.warning("Resultado de tool bloqueado por posible prompt injection")
+        return _BLOCKED_TOOL_RESULT
+    return sanitized
+
 
 # FASE 1.5.3: Legacy constants kept for backward compatibility with tests.
 # Actual budget management is delegated to TokenBudgetManager.
@@ -674,7 +698,7 @@ class LLMRouter:
                                 continue  # give every call its own error response; don't drop the rest
                             if len(result_str_h) > 4000:
                                 result_str_h = result_str_h[:4000] + "\n\n[... truncated ...]"
-                            tool_content = sanitize_for_prompt(f"[Tool Result] {result_str_h}")
+                            tool_content = f"[Tool Result] {_prepare_tool_result_for_model(result_str_h)}"
                             await self._save_message(chat_id, "user", tool_content)
                             messages.append({"role": "user", "content": tool_content})
                         messages = messages[-self._max_context :]
@@ -803,7 +827,7 @@ class LLMRouter:
                         {
                             "type": "tool_result",
                             "tool_use_id": tool_id,
-                            "content": sanitize_for_prompt(result_str),
+                            "content": _prepare_tool_result_for_model(result_str),
                         }
                     )
 

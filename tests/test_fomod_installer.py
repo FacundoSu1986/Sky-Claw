@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
+import threading
 import zipfile
 
 import pytest
 
+import sky_claw.local.fomod.installer as installer_module
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.fomod.installer import (
     FomodInstaller,
@@ -204,9 +207,160 @@ class TestFomodInstall:
 
         result = await installer.install(archive, mo2_mods_dir, selections={})
 
-        # Should have pending decisions for the SelectExactlyOne group
-        # but still install required files
-        assert len(result.pending_decisions) > 0 or result.installed is True
+        assert result.pending_decisions
+        assert result.installed is False
+        assert result.files_copied == []
+        assert not (mo2_mods_dir / "TestMod").exists()
+
+    @pytest.mark.asyncio
+    async def test_module_name_no_puede_escapar_de_mods(
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
+    ) -> None:
+        archive = _make_simple_zip(
+            sandbox / "NombreMalicioso.zip",
+            {
+                "fomod/ModuleConfig.xml": """\
+<config>
+    <moduleName>../escape</moduleName>
+    <requiredInstallFiles>
+        <file source="core/plugin.esp" destination="plugin.esp" />
+    </requiredInstallFiles>
+</config>
+""",
+                "core/plugin.esp": "esp data",
+            },
+        )
+
+        with pytest.raises(PathViolationError):
+            await installer.install(archive, mo2_mods_dir)
+
+        assert not (sandbox / "escape").exists()
+        assert list(mo2_mods_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_fallo_de_copia_conserva_mod_existente(
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        archive = _make_simple_zip(
+            sandbox / "Reemplazo.zip",
+            {
+                "fomod/ModuleConfig.xml": SIMPLE_FOMOD_XML,
+                "core/plugin.esp": "nuevo plugin",
+                "textures/hd/file.dds": "nueva textura",
+            },
+        )
+        destino = mo2_mods_dir / "TestMod"
+        destino.mkdir()
+        (destino / "anterior.txt").write_text("conservar", encoding="utf-8")
+        copiar_real = installer_module.async_copy2
+        llamadas = 0
+
+        async def fallar_segunda_copia(src: pathlib.Path, dst: pathlib.Path) -> None:
+            nonlocal llamadas
+            llamadas += 1
+            if llamadas == 2:
+                raise OSError("fallo simulado")
+            await copiar_real(src, dst)
+
+        monkeypatch.setattr(installer_module, "async_copy2", fallar_segunda_copia)
+
+        with pytest.raises(OSError, match="fallo simulado"):
+            await installer.install(
+                archive,
+                mo2_mods_dir,
+                selections={"Options": ["HD Textures"]},
+            )
+
+        assert {p.name for p in destino.iterdir()} == {"anterior.txt"}
+        assert (destino / "anterior.txt").read_text(encoding="utf-8") == "conservar"
+
+        monkeypatch.setattr(installer_module, "async_copy2", copiar_real)
+        resultado = await installer.install(
+            archive,
+            mo2_mods_dir,
+            selections={"Options": ["HD Textures"]},
+        )
+
+        assert resultado.installed is True
+        assert (destino / "anterior.txt").read_text(encoding="utf-8") == "conservar"
+        assert (destino / "plugin.esp").read_text(encoding="utf-8") == "nuevo plugin"
+
+    @pytest.mark.asyncio
+    async def test_cancelacion_espera_copia_y_no_publica_mod_parcial(
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        archive = _make_simple_zip(sandbox / "CancelMod.zip", {"plugin.esp": "esp data"})
+        inicio = threading.Event()
+        liberar = threading.Event()
+        fin = threading.Event()
+        copy2_real = installer_module.shutil.copy2
+
+        def copia_bloqueada(src: str, dst: str) -> str:
+            inicio.set()
+            if not liberar.wait(timeout=5):
+                raise TimeoutError("el test no liberó la copia")
+            resultado = copy2_real(src, dst)
+            fin.set()
+            return resultado
+
+        monkeypatch.setattr(installer_module.shutil, "copy2", copia_bloqueada)
+        tarea = asyncio.create_task(installer.install(archive, mo2_mods_dir))
+        assert await asyncio.to_thread(inicio.wait, 2)
+
+        tarea.cancel()
+        await asyncio.sleep(0.05)
+        esperaba_al_worker = not tarea.done()
+        liberar.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        assert esperaba_al_worker
+        assert fin.is_set()
+        assert not (mo2_mods_dir / "CancelMod").exists()
+
+    @pytest.mark.asyncio
+    async def test_fallo_de_promocion_restaura_destino(
+        self,
+        installer: FomodInstaller,
+        sandbox: pathlib.Path,
+        mo2_mods_dir: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        archive = _make_simple_zip(sandbox / "Promocion.zip", {"plugin.esp": "nuevo"})
+        destino = mo2_mods_dir / "Promocion"
+        destino.mkdir()
+        (destino / "anterior.txt").write_text("conservar", encoding="utf-8")
+        replace_real = installer_module.os.replace
+        fallo_inyectado = False
+
+        def fallar_publicacion(src: str | pathlib.Path, dst: str | pathlib.Path) -> None:
+            nonlocal fallo_inyectado
+            origen = pathlib.Path(src)
+            if not fallo_inyectado and origen.name.startswith(".skyclaw-staging-"):
+                fallo_inyectado = True
+                raise OSError("promoción simulada")
+            replace_real(src, dst)
+
+        monkeypatch.setattr(installer_module.os, "replace", fallar_publicacion)
+
+        with pytest.raises(OSError, match="promoción simulada"):
+            await installer.install(archive, mo2_mods_dir)
+
+        assert fallo_inyectado
+        assert {p.name for p in destino.iterdir()} == {"anterior.txt"}
+        assert not any(p.name.startswith(".Promocion.skyclaw-backup-") for p in mo2_mods_dir.iterdir())
 
 
 # ------------------------------------------------------------------

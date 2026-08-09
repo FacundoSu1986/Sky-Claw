@@ -10,6 +10,7 @@ via the tool's ``params_model``.  Handlers receive pre-validated arguments.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import pathlib
@@ -181,15 +182,23 @@ async def preview_mod_installer(fomod_installer: Any, archive_path: str) -> str:
     """Preview FOMOD options for a mod archive.
 
     Args are pre-validated by AsyncToolRegistry.execute() via PreviewInstallerParams.
+
+    Contrato canónico de tools (AGENTS.md): ``success`` + ``message`` (vacío en
+    éxito) más los campos estructurados del preview.
     """
     if fomod_installer is None:
-        return json.dumps({"error": "FOMOD installer is not configured"})
+        return json.dumps({"success": False, "message": "FOMOD installer is not configured."})
     try:
         preview = await fomod_installer.preview(pathlib.Path(archive_path))
-    except Exception as exc:
-        return json.dumps({"error": str(exc)})
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # frontera deliberada: JSON para el LLM, nunca propagar crudo
+        logger.exception("preview_mod_installer falló para %s", archive_path)
+        return json.dumps({"success": False, "message": sanitize_for_prompt(str(exc), max_length=256)})
     return json.dumps(
         {
+            "success": True,
+            "message": "",
             "mod_name": preview.mod_name,
             "has_fomod": preview.has_fomod,
             "steps": preview.steps,
@@ -203,45 +212,135 @@ async def install_mod_from_archive(
     hitl: Any,
     archive_path: str,
     selections: dict[str, list[str]] | None = None,
+    *,
+    profile: str = "Default",
+    lock_manager: Any | None = None,
 ) -> str:
     """Install a mod from archive into MO2 with mandatory HITL approval.
 
     Args are pre-validated by AsyncToolRegistry.execute() via InstallFromArchiveParams.
+
+    Contrato canónico de tools (AGENTS.md): ``success`` + ``message`` (vacío en
+    éxito). El rechazo del operador conserva ``status="denied"`` como estado
+    estructurado; el fallo parcial (archivos copiados pero modlist no
+    actualizado) se reporta como fallo sin perder los campos estructurados.
+
+    Con ``lock_manager`` cableado (producción vía ``app_context``), todo el
+    flujo mutante (extracción+copia en ``mods/`` y ``modlist.txt``) corre bajo
+    el lock cross-process de la familia T-31 — el lock solo protege si TODOS
+    los mutadores participan. Sin lock (legacy/tests) el flujo corre directo,
+    igual que ``run_loot_sort`` sin lock_manager.
     """
     if hitl is None:
-        return json.dumps({"error": "HITL guard is not configured. Installation blocked."})
+        return json.dumps({"success": False, "message": "HITL guard is not configured. Installation blocked."})
     request_id = f"install-{pathlib.Path(archive_path).name}"
-    # Decision already imported at module level (HOTFIX: removed dynamic import)
-    decision = await hitl.request_approval(
-        request_id=request_id,
-        reason=f"Confirmar instalación de mod: {pathlib.Path(archive_path).name}",
-        detail=f"Selecciones FOMOD detectadas: {json.dumps(selections or {})}",
-    )
+    # Decision ya está importado a nivel de módulo (HOTFIX: se eliminó el import dinámico).
+    try:
+        decision = await hitl.request_approval(
+            request_id=request_id,
+            reason=f"Confirmar instalación de mod: {pathlib.Path(archive_path).name}",
+            detail=f"Selecciones FOMOD detectadas: {json.dumps(selections or {})}",
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # frontera deliberada: JSON para el LLM, nunca propagar crudo
+        logger.exception("Solicitud HITL falló para %s", archive_path)
+        return json.dumps({"success": False, "message": sanitize_for_prompt(str(exc), max_length=256)})
     if decision is not Decision.APPROVED:
-        return json.dumps({"status": "denied", "reason": "User rejected the installation."})
+        return json.dumps(
+            {
+                "success": False,
+                "status": "denied",
+                "message": "Instalación rechazada por el operador.",
+            }
+        )
     if fomod_installer is None:
-        return json.dumps({"error": "FOMOD installer is not configured"})
+        return json.dumps({"success": False, "message": "FOMOD installer is not configured."})
+
     mo2_mods_dir = mo2.root / "mods"
+    if lock_manager is not None:
+        # API pública de la familia de instalación (T-31): el mismo recurso que
+        # los autoinstaladores de tools sobre mods/.
+        from sky_claw.local.tools_installer import bajo_lock_de_instalacion, install_lock_resource_id
+
+        async with bajo_lock_de_instalacion(lock_manager, install_lock_resource_id(mo2_mods_dir)):
+            return await _instalar_con_contrato(
+                mo2,
+                fomod_installer,
+                archive_path,
+                selections,
+                mo2_mods_dir,
+                profile,
+            )
+    return await _instalar_con_contrato(mo2, fomod_installer, archive_path, selections, mo2_mods_dir, profile)
+
+
+async def _instalar_con_contrato(
+    mo2: Any,
+    fomod_installer: Any,
+    archive_path: str,
+    selections: dict[str, list[str]] | None,
+    mo2_mods_dir: pathlib.Path,
+    profile: str,
+) -> str:
+    """Ejecuta la instalación FOMOD y devuelve el JSON con contrato canónico.
+
+    TODO error que cruza al LLM pasa por ``sanitize_for_prompt`` (un nombre de
+    archivo o un mensaje de excepción del sistema puede contener texto no
+    confiable).
+    """
     try:
         result = await fomod_installer.install(
             archive_path=pathlib.Path(archive_path),
             mo2_mods_dir=mo2_mods_dir,
             selections=selections or {},
         )
-    except Exception as exc:
-        return json.dumps({"error": str(exc)})
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # frontera deliberada: JSON para el LLM, nunca propagar crudo
+        logger.exception("Instalación falló para %s", archive_path)
+        return json.dumps({"success": False, "message": sanitize_for_prompt(str(exc), max_length=256)})
+
+    errores_saneados = [sanitize_for_prompt(str(e), max_length=256) for e in result.errors]
+
     if result.installed:
         try:
-            await mo2.add_mod_to_modlist(result.mod_name)
+            await mo2.add_mod_to_modlist(result.mod_name, profile=profile)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            result.errors.append(f"Failed to update modlist: {exc}")
+            logger.exception("Registro en modlist falló para %s", result.mod_name)
+            # Fallo parcial: los archivos quedaron en mods/ pero el mod no se
+            # activa en MO2 — se reporta como fallo conservando los campos
+            # estructurados para diagnóstico.
+            error_modlist = sanitize_for_prompt(f"modlist: {exc}", max_length=256)
+            return json.dumps(
+                {
+                    "success": False,
+                    "message": sanitize_for_prompt(
+                        f"El mod se instaló pero no se registró en modlist.txt: {exc}",
+                        max_length=256,
+                    ),
+                    "mod_name": result.mod_name,
+                    "files_copied": result.files_copied,
+                    "pending_decisions": result.pending_decisions,
+                    "errors": [error_modlist],
+                }
+            )
+
     return json.dumps(
         {
+            "success": result.installed,
+            "message": (
+                ""
+                if result.installed
+                else "; ".join(errores_saneados) or "La instalación no copió archivos (faltan decisiones FOMOD?)."
+            ),
             "mod_name": result.mod_name,
             "installed": result.installed,
             "files_copied": result.files_copied,
             "pending_decisions": result.pending_decisions,
-            "errors": result.errors,
+            "errors": errores_saneados,
         }
     )
 
@@ -254,27 +353,52 @@ async def resolve_fomod(
     """Resolve FOMOD options for a mod archive and return would-be installed files.
 
     Args are pre-validated by AsyncToolRegistry.execute() via ResolveFomodParams.
+
+    Contrato canónico de tools (AGENTS.md): ``success`` + ``message`` (vacío en
+    éxito) más los campos estructurados de la resolución.
     """
     if fomod_installer is None:
-        return json.dumps({"error": "FOMOD installer is not configured"})
+        return json.dumps({"success": False, "message": "FOMOD installer is not configured."})
+    from sky_claw.app.core.errors import FomodParserSecurityError
     from sky_claw.local.fomod.parser import FomodParseError, parse_fomod_string
     from sky_claw.local.fomod.resolver import FomodResolver
 
     archive = pathlib.Path(archive_path)
-    if not hasattr(fomod_installer, "_extract_fomod_xml"):
-        return json.dumps({"error": "FomodInstaller is missing _extract_fomod_xml capability."})
-    fomod_xml = fomod_installer._extract_fomod_xml(archive)
+    if not hasattr(fomod_installer, "read_fomod_xml"):
+        return json.dumps({"success": False, "message": "FomodInstaller is missing read_fomod_xml capability."})
+    try:
+        # RND-03: la lectura del archive (zip/7z/rar) es I/O síncrono — fuera
+        # del event loop.
+        fomod_xml = await asyncio.to_thread(fomod_installer.read_fomod_xml, archive)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # frontera deliberada: JSON para el LLM, nunca propagar crudo
+        logger.exception("Lectura del FOMOD falló para %s", archive_path)
+        return json.dumps({"success": False, "message": sanitize_for_prompt(str(exc), max_length=256)})
     if fomod_xml is None:
-        return json.dumps({"error": "No FOMOD configuration found in archive."})
+        return json.dumps({"success": False, "message": "El archive no contiene fomod/ModuleConfig.xml."})
     try:
         config = parse_fomod_string(fomod_xml)
-    except FomodParseError as exc:
-        return json.dumps({"error": f"FOMOD Parse Error: {exc}"})
-    resolver = FomodResolver(config)
-    result = resolver.resolve(selections or {})
+    except (FomodParseError, FomodParserSecurityError) as exc:
+        # FomodParserSecurityError (XXE/entidades prohibidas) NO es subclase de
+        # FomodParseError: sin este catch el XML malicioso reventaría la tool.
+        return json.dumps(
+            {"success": False, "message": sanitize_for_prompt(f"FOMOD Parse Error: {exc}", max_length=256)}
+        )
+    resolver = FomodResolver(
+        config,
+        # El installer conoce el proveedor de estado de plugins (fail-closed si
+        # no está cableado): las fileDependency se evalúan contra la instalación.
+        file_state=getattr(fomod_installer, "file_state_provider", None),
+    )
+    # RND-03: la resolución puede escanear mods/ (proveedor de estado) — I/O
+    # síncrono fuera del event loop.
+    result = await asyncio.to_thread(resolver.resolve, selections or {})
     files = [str(f.source) for f in result.files]
     return json.dumps(
         {
+            "success": True,
+            "message": "",
             "files_to_install": files,
             "pending_decisions": result.pending_decisions,
         }

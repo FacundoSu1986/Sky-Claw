@@ -8,7 +8,7 @@
 > `sky_claw/app/gui/views/forge_dashboard.py` y
 > `sky_claw/app/gui/controllers/ritual_runner.py`.
 >
-> **Última verificación:** 2026-08-09 sobre `origin/main` `272d4953`.
+> **Última verificación:** 2026-08-09 sobre `origin/main` `67eaeec5` más este cambio.
 
 ## Arranque
 
@@ -76,9 +76,9 @@ solapan: comparten el mismo cerrojo.
 
 La tarjeta **«Renderizado Moderno»** instala Community Shaders y sus dependencias. Sus
 requisitos previos se comprueban antes de descargar, y un resultado con aviso significa
-que los mods quedaron en disco pero no se pudo guardar la configuración que el
-orquestador necesita para activarlos. El detalle completo está en
-[Community Shaders](community_shaders.md).
+que los mods quedaron en disco pero no se pudo guardar el registro de lo instalado. Los
+mods se activan a mano en MO2 igual, así que el aviso no bloquea nada. El detalle completo
+está en [Community Shaders](community_shaders.md).
 
 ## Seguridad operativa
 
