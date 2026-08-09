@@ -50,11 +50,12 @@ Ambas existen porque esos componentes no tienen ejecutable propio: el escaneo no
 deducir qué instaló Sky-Claw, así que se deja constancia del nombre exacto de cada
 directorio bajo `mods/`.
 
-Son **un registro, no un disparador**. En el árbol actual ninguna ruta de producción
-lee estas claves: la activación en `modlist.txt` la sigue haciendo el operador desde
-MO2. Los comentarios del código las describen como insumo de una activación
-automática; eso es intención de diseño, no comportamiento vigente. Escribirlas a mano
-no activa nada, y que falten no impide activar los mods manualmente.
+Son **un registro, no un disparador**. Se leen al cargar la configuración y se migran
+desde el formato legacy, pero ninguna ruta de producción las usa para activar mods: la
+activación en `modlist.txt` la sigue haciendo el operador desde MO2. Los comentarios del
+código las describen como insumo de una activación automática; eso es intención de
+diseño, no comportamiento vigente. Escribirlas a mano no activa nada, y que falten no
+impide activar los mods manualmente.
 
 ## Secretos
 

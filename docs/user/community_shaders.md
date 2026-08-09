@@ -130,13 +130,13 @@ reparación.
 | Componente ya instalado | El sentinel de ese mod ya estaba: no se vuelve a descargar | Nada; la operación es idempotente por componente |
 | Abortado por un requisito | Ningún byte descargado, nada modificado | Resolver el requisito y repetir; ver [diagnóstico](troubleshooting.md) |
 | Denegado a mitad | Lo anterior queda instalado; el resto no se intentó | Repetir cuando se pueda aprobar; los componentes ya instalados se saltan |
-| Instalado con aviso de persistencia (sólo GUI) | Los mods están en disco pero `community_shaders_mods` no se pudo guardar | Los mods son utilizables: activarlos igual en MO2. Repetir la instalación si querés recuperar el registro; no borrar nada |
+| Instalado con aviso de persistencia (sólo GUI) | Los mods están en disco pero `community_shaders_mods` no se pudo guardar | Los mods son utilizables: activarlos igual en MO2. Para regenerar el registro hay que pedírselo al agente (la tarjeta ya no ofrece reinstalar); no borrar nada |
 
 El aviso de persistencia lo emite **únicamente la GUI**. Por el agente LLM, un fallo al
-guardar la configuración propaga el error en vez de devolver ese aviso, y sin ruta de
-configuración el guardado se omite sin avisar: el resultado informa la instalación como
-correcta aunque el registro no se haya escrito. En ambos casos los mods ya están en
-disco y se pueden activar a mano.
+guardar la configuración propaga el error en vez de devolver ese aviso; y si el agente no
+recibió la configuración o su ruta, el guardado se omite sin avisar y el resultado informa
+la instalación como correcta aunque el registro no se haya escrito. En todos los casos los
+mods ya están en disco y se pueden activar a mano.
 
 ## Integridad de las descargas
 
@@ -152,8 +152,10 @@ disco y se pueden activar a mano.
   techo superado no se arregla repitiendo.
 - Si el directorio del mod no existía, Sky-Claw extrae y verifica en un staging propio y
   sólo lo publica al terminar. Un fallo limpia ese payload temporal, nunca un destino que
-  MO2 o el operador haya creado durante la operación. Un mod preexistente se repara in-place
-  pero nunca se borra; una denegación tampoco borra nada.
+  MO2 o el operador haya creado durante la operación.
+- Si el directorio **ya existía**, la reparación escribe directamente sobre él. Sky-Claw
+  nunca lo borra, pero un fallo de extracción o verificación puede dejarlo con contenido
+  a medias: revisar ese directorio antes de reintentar. Una denegación no escribe nada.
 
 ## Fallos y recuperación
 
@@ -168,6 +170,9 @@ evidencia antes de repetir cualquier operación.
   mano.
 - **El aviso de persistencia es sólo de la GUI.** El camino del agente LLM no lo emite;
   ver la tabla de desenlaces.
+- **La GUI no puede reparar el registro.** Una vez que el mod se detecta, su tarjeta pasa
+  a `Instalado` y deja de ofrecer la instalación, así que recuperar
+  `community_shaders_mods` sólo es posible por el agente.
 - **Sin validación en un rig real.** Lo documentado proviene de código y tests con la red
   simulada; ninguna prueba descarga de Nexus o GitHub reales.
 - **Descarga desde Nexus sin cuenta premium:** la API sólo genera enlaces directos para
