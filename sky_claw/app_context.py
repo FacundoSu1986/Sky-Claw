@@ -1094,6 +1094,21 @@ class AppContext:
             self._push_startup_cleanup(journal.close)
             await self._await_startup(journal.open())
 
+            # Auditoría FOMOD: el motor (parser/resolver/installer) existía pero
+            # nunca se cableó — las tools preview_mod_installer /
+            # install_mod_from_archive / resolve_fomod respondían "not configured".
+            # Comparte el PathValidator de la app: todo I/O del instalador queda
+            # sandboxeado contra mo2_root / staging / install_dir.
+            from sky_claw.local.fomod.installer import FomodInstaller
+            from sky_claw.local.fomod.plugin_state import MO2PluginStateProvider
+
+            fomod_installer = FomodInstaller(
+                path_validator=validator,
+                # Estado de plugins/mods instalados para evaluar fileDependency
+                # de FOMOD (parches condicionados a mods presentes/ausentes).
+                file_state_provider=MO2PluginStateProvider(mo2_root=mo2.root),
+            )
+
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
@@ -1102,6 +1117,7 @@ class AppContext:
                 loot_runner=vfs_loot_runner,
                 hitl=hitl,
                 downloader=self.network.downloader,
+                fomod_installer=fomod_installer,
                 tools_installer=tools_installer,
                 install_dir=install_dir,
                 # Consolidation (obs #187): AnimationHub was removed. run_pandora /

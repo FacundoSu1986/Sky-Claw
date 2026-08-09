@@ -208,12 +208,18 @@ class TestResolverSimple:
         assert "textures/1k" not in sources
         assert "textures/4k" not in sources
 
-    def test_resolve_no_selection_gives_pending(self, config: FomodConfig) -> None:
+    def test_resolve_sin_seleccion_preselecciona_recommended(self, config: FomodConfig) -> None:
+        """SelectExactlyOne con un plugin Recommended: sin selección explícita se
+        preselecciona la recomendación del autor ("2K Textures") en vez de quedar
+        pendiente — semántica de typeDescriptor (T-3)."""
         resolver = FomodResolver(config)
         result = resolver.resolve({})
 
-        assert len(result.pending_decisions) == 1
-        assert "exactly one" in result.pending_decisions[0]
+        assert result.pending_decisions == []
+        sources = [f.source for f in result.files]
+        assert "textures/2k" in sources
+        assert "textures/1k" not in sources
+        assert "textures/4k" not in sources
 
     def test_required_files_always_included(self, config: FomodConfig) -> None:
         resolver = FomodResolver(config)

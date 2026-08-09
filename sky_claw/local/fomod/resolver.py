@@ -17,7 +17,9 @@ from sky_claw.local.fomod.models import (
     GroupType,
     InstallStep,
     Plugin,
+    PluginType,
 )
+from sky_claw.local.fomod.plugin_state import FileStateProvider
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +44,15 @@ class FomodResolver:
 
     Args:
         config: Parsed FOMOD configuration.
+        file_state: Provider of installed-file state used to evaluate
+            ``fileDependency`` conditions. When None, file dependencies are
+            evaluated as **false** (fail-closed): a condition on an unverifiable
+            file never installs its content blindly.
     """
 
-    def __init__(self, config: FomodConfig) -> None:
+    def __init__(self, config: FomodConfig, file_state: FileStateProvider | None = None) -> None:
         self._config = config
+        self._file_state = file_state
 
     def resolve(
         self,
@@ -82,6 +89,7 @@ class FomodResolver:
                     group.group_type,
                     group.plugins,
                     step_selections,
+                    flags,
                     result,
                 )
 
@@ -116,18 +124,65 @@ class FomodResolver:
         group_type: GroupType,
         plugins: list[Plugin],
         step_selections: list[str],
+        flags: dict[str, str],
         result: ResolveResult,
     ) -> set[str]:
-        """Determine which plugins are selected in a group."""
-        plugin_names = {p.name for p in plugins}
+        """Determine which plugins are selected in a group.
+
+        Semantics applied here (FOMOD ``typeDescriptor``):
+        - plugins whose ``dependencyType`` is unsatisfied are ineligible —
+          an explicit user selection on them is ignored;
+        - ``Required`` plugins are forced when eligible;
+        - with no user selection, ``Recommended`` plugins are preselected.
+        """
+        eligible = [p for p in plugins if self._plugin_eligible(p, flags)]
+        plugin_names = {p.name for p in eligible}
         selected = {s for s in step_selections if s in plugin_names}
+
+        # Required: forzado siempre que su dependencyType esté satisfecho. En
+        # un grupo de selección única el obligatorio DEFINE el grupo: la
+        # selección del usuario en ese grupo (incompatible por cardinalidad)
+        # se descarta — instalar dos variantes mutuamente excluyentes es el
+        # defecto que esta validación previene.
+        required = {p.name for p in eligible if p.type_descriptor is PluginType.REQUIRED}
+        if required and group_type in (GroupType.SELECT_EXACTLY_ONE, GroupType.SELECT_AT_MOST_ONE):
+            selected = set(required)
+        else:
+            selected |= required
+
+        if not selected:
+            # Preselección Recommended: sin selección explícita del usuario se
+            # elige lo que el autor del mod recomienda.
+            selected |= {p.name for p in eligible if p.type_descriptor is PluginType.RECOMMENDED}
 
         if group_type == GroupType.SELECT_ALL:
             return plugin_names
 
-        if group_type == GroupType.SELECT_EXACTLY_ONE and len(selected) != 1:
-            if not selected:
+        if group_type == GroupType.SELECT_EXACTLY_ONE:
+            if len(selected) != 1:
+                if selected:
+                    # Selección inválida (>1) en un grupo de selección única:
+                    # fail-closed — nada de este grupo se instala.
+                    logger.warning(
+                        "%s/%s: selección inválida (%d opciones) — se descarta el grupo",
+                        step_name,
+                        group_name,
+                        len(selected),
+                    )
                 result.pending_decisions.append(f"{step_name}/{group_name}: must select exactly one")
+                return set()
+            return selected
+
+        if group_type == GroupType.SELECT_AT_MOST_ONE:
+            if len(selected) > 1:
+                logger.warning(
+                    "%s/%s: selección inválida (%d opciones) — se descarta el grupo",
+                    step_name,
+                    group_name,
+                    len(selected),
+                )
+                result.pending_decisions.append(f"{step_name}/{group_name}: must select at most one")
+                return set()
             return selected
 
         if group_type == GroupType.SELECT_AT_LEAST_ONE and not selected:
@@ -135,21 +190,30 @@ class FomodResolver:
 
         return selected
 
+    def _plugin_eligible(self, plugin: Plugin, flags: dict[str, str]) -> bool:
+        """A plugin with an unsatisfied ``dependencyType`` must not be installed."""
+        if plugin.dependency is None:
+            return True
+        return self._evaluate_conditions(plugin.dependency, flags)
+
     def _evaluate_conditions(
         self,
         conditions: CompositeDependency,
         flags: dict[str, str],
     ) -> bool:
-        """Evaluate a composite dependency against current flags."""
+        """Evaluate a composite dependency against current flags and file state."""
         results: list[bool] = []
 
         for fd in conditions.flag_deps:
             results.append(flags.get(fd.flag, "") == fd.value)
 
-        for _ in conditions.file_deps:
-            # File deps cannot be fully evaluated without filesystem access.
-            # Default to True (optimistic).
-            results.append(True)
+        for file_dep in conditions.file_deps:
+            # File deps are evaluated against the installed-file state. Without
+            # a provider there is no evidence the condition holds — fail-closed.
+            if self._file_state is None:
+                results.append(False)
+            else:
+                results.append(self._file_state.file_state(file_dep.file) == file_dep.state)
 
         for nested in conditions.nested:
             results.append(self._evaluate_conditions(nested, flags))

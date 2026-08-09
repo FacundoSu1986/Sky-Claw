@@ -32,6 +32,7 @@ from sky_claw.local.fomod.models import (
     GroupType,
     InstallStep,
     Plugin,
+    PluginType,
 )
 
 if TYPE_CHECKING:
@@ -214,12 +215,21 @@ def _parse_plugins(element: _stdlib_ET.Element | None) -> list[Plugin]:
             condition_flags = _parse_condition_flags(plugin_el.find("conditionFlags"))
             files = _parse_file_list(plugin_el.find("files"))
 
-            type_desc = "Optional"
+            type_desc = PluginType.OPTIONAL
+            dependency: CompositeDependency | None = None
             td_el = plugin_el.find("typeDescriptor")
             if td_el is not None:
                 type_el = td_el.find("type")
                 if type_el is not None:
-                    type_desc = type_el.get("name", "Optional")
+                    raw_type = type_el.get("name", "Optional")
+                    try:
+                        type_desc = PluginType(raw_type)
+                    except ValueError:
+                        logger.warning("Unknown plugin type %r, defaulting to Optional", raw_type)
+                        type_desc = PluginType.OPTIONAL
+                dep_el = td_el.find("dependencyType")
+                if dep_el is not None:
+                    dependency = _parse_composite_dependency(dep_el)
 
             plugins.append(
                 Plugin(
@@ -229,6 +239,7 @@ def _parse_plugins(element: _stdlib_ET.Element | None) -> list[Plugin]:
                     condition_flags=condition_flags,
                     files=files,
                     type_descriptor=type_desc,
+                    dependency=dependency,
                 )
             )
         except Exception:

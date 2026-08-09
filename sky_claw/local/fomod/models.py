@@ -30,6 +30,14 @@ class FileState(StrEnum):
     MISSING = "Missing"
 
 
+class PluginType(StrEnum):
+    """Category of a plugin in the FOMOD installer."""
+
+    REQUIRED = "Required"
+    OPTIONAL = "Optional"
+    RECOMMENDED = "Recommended"
+
+
 # ------------------------------------------------------------------
 # Dependency conditions
 # ------------------------------------------------------------------
@@ -103,7 +111,10 @@ class Plugin(pydantic.BaseModel):
     image: str = ""
     condition_flags: list[ConditionFlag] = pydantic.Field(default_factory=list)
     files: list[FileInstall] = pydantic.Field(default_factory=list)
-    type_descriptor: str = "Optional"
+    type_descriptor: PluginType = PluginType.OPTIONAL
+    # ``<dependencyType>``: conditions that gate whether the plugin may be
+    # selected/installed at all (evaluated against flags and installed files).
+    dependency: CompositeDependency | None = None
 
 
 class Group(pydantic.BaseModel):

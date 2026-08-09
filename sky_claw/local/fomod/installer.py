@@ -24,7 +24,9 @@ import aiofiles.os
 
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError, safe_join
+from sky_claw.local.fomod.models import CompositeDependency
 from sky_claw.local.fomod.parser import FomodParseError, parse_fomod
+from sky_claw.local.fomod.plugin_state import FileStateProvider
 from sky_claw.local.fomod.resolver import FomodResolver
 
 if TYPE_CHECKING:
@@ -73,6 +75,28 @@ def _is_safe_path(member_path: str) -> bool:
     """Reject paths containing traversal components (zip-slip)."""
     parts = pathlib.PurePosixPath(member_path).parts
     return ".." not in parts
+
+
+def _is_fomod_xml_name(member_path: str) -> bool:
+    """True si el entry del archive es un ``fomod/ModuleConfig.xml``.
+
+    Comparación case-insensitive y tolerante a backslashes; los paths con
+    componentes de traversal se rechazan.
+    """
+    normalized = member_path.replace("\\", "/").lower()
+    return normalized.endswith("fomod/moduleconfig.xml") and _is_safe_path(member_path)
+
+
+def _serialize_dependency(dependency: CompositeDependency | None) -> dict[str, Any] | None:
+    """Representación serializable de una dependencia FOMOD (para previews)."""
+    if dependency is None:
+        return None
+    return {
+        "operator": dependency.operator,
+        "flag_dependencies": [{"flag": d.flag, "value": d.value} for d in dependency.flag_deps],
+        "file_dependencies": [{"file": d.file, "state": d.state.value} for d in dependency.file_deps],
+        "nested": [_serialize_dependency(n) for n in dependency.nested],
+    }
 
 
 def _extract_zip(archive: pathlib.Path, dest: pathlib.Path) -> None:
@@ -153,10 +177,14 @@ class FomodInstaller:
 
     Args:
         path_validator: Sandbox validator for all file operations.
+        file_state_provider: Provider of installed-file state used to evaluate
+            ``fileDependency`` conditions during resolution (None = fail-closed:
+            file conditions never match).
     """
 
-    def __init__(self, path_validator: PathValidator) -> None:
+    def __init__(self, path_validator: PathValidator, file_state_provider: FileStateProvider | None = None) -> None:
         self._validator = path_validator
+        self.file_state_provider = file_state_provider
 
     async def preview(self, archive_path: pathlib.Path) -> FomodPreview:
         """Preview FOMOD installation options without full extraction.
@@ -188,7 +216,21 @@ class FomodInstaller:
                 group_info = {
                     "name": group.name,
                     "type": group.group_type.value,
+                    # Compat: lista plana de nombres para consumidores previos.
                     "options": [p.name for p in group.plugins],
+                    # Detalle estructurado para que el agente decida con
+                    # descripción, tipo (Required/Recommended/Optional) y
+                    # dependencias de cada opción.
+                    "plugin_details": [
+                        {
+                            "name": p.name,
+                            "description": p.description,
+                            "image": p.image,
+                            "type": p.type_descriptor.value,
+                            "dependency": _serialize_dependency(p.dependency),
+                        }
+                        for p in group.plugins
+                    ],
                 }
                 step_info["groups"].append(group_info)
             steps.append(step_info)
@@ -278,12 +320,14 @@ class FomodInstaller:
 
     def _extract_fomod_xml(self, archive_path: pathlib.Path) -> str | None:
         """Try to read fomod/ModuleConfig.xml from archive without full extraction."""
-
         suffix = archive_path.suffix.lower()
         if suffix == ".zip":
             return self._read_from_zip(archive_path)
-        # For other formats, we need full extraction — return None
-        # to trigger the full extract path.
+        if suffix == ".7z":
+            return self._read_fomod_xml_7z(archive_path)
+        if suffix == ".rar":
+            return self._read_fomod_xml_rar(archive_path)
+        # Other formats: no selective read — the full-extract path applies.
         return None
 
     @staticmethod
@@ -291,13 +335,58 @@ class FomodInstaller:
         """Read FOMOD XML directly from a zip without extracting."""
         try:
             with zipfile.ZipFile(archive_path, "r") as zf:
-                names = zf.namelist()
-                for name in names:
-                    normalized = name.replace("\\", "/").lower()
-                    if normalized.endswith("fomod/moduleconfig.xml"):
+                for name in zf.namelist():
+                    if _is_fomod_xml_name(name):
                         return zf.read(name).decode("utf-8", errors="replace")
         except (zipfile.BadZipFile, KeyError, OSError):
             pass
+        return None
+
+    @staticmethod
+    def _read_fomod_xml_7z(archive_path: pathlib.Path) -> str | None:
+        """Read FOMOD XML directly from a .7z without full extraction.
+
+        py7zr >= 1.0 no expone lectura en memoria selectiva: se extrae SOLO el
+        entry ``fomod/ModuleConfig.xml`` a un directorio temporal y se lee.
+        """
+        try:
+            import py7zr
+            from py7zr.exceptions import Bad7zFile, CrcError
+        except ModuleNotFoundError:
+            return None
+        target: str | None = None
+        try:
+            with py7zr.SevenZipFile(archive_path, "r") as szf:
+                for name in szf.getnames():
+                    if _is_fomod_xml_name(name):
+                        target = name
+                        break
+                if target is None:
+                    return None
+                with tempfile.TemporaryDirectory(prefix="skyclaw_preview_") as tmp:
+                    szf.extract(path=tmp, targets=[target])
+                    xml_path = pathlib.Path(tmp) / target
+                    return xml_path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, KeyError, Bad7zFile, CrcError):
+            return None
+        return None
+
+    @staticmethod
+    def _read_fomod_xml_rar(archive_path: pathlib.Path) -> str | None:
+        """Read FOMOD XML directly from a .rar without full extraction."""
+        try:
+            import rarfile
+        except ModuleNotFoundError:
+            return None
+        try:
+            with rarfile.RarFile(archive_path, "r") as rf:
+                for info in rf.infolist():
+                    if _is_fomod_xml_name(info.filename):
+                        # rarfile es import dinámico: bytes() estrecha Any a bytes.
+                        data = bytes(rf.read(info.filename))
+                        return data.decode("utf-8", errors="replace")
+        except (OSError, KeyError, rarfile.BadRarFile):
+            return None
         return None
 
     @staticmethod
@@ -326,8 +415,10 @@ class FomodInstaller:
             )
 
         mod_name = config.module_name or fallback_name
-        resolver = FomodResolver(config)
-        result = resolver.resolve(selections)
+        resolver = FomodResolver(config, file_state=self.file_state_provider)
+        # RND-03: la resolución puede disparar el escaneo lazy del proveedor de
+        # estado (rglob sobre mods/) — I/O síncrono fuera del event loop.
+        result = await asyncio.to_thread(resolver.resolve, selections)
 
         if result.pending_decisions and not result.files:
             return InstallResult(
