@@ -98,11 +98,7 @@ def _simbolos_importados(
                     simbolos.add(alias.asname or alias.name)
                     continue
                 destino = _ruta_de_modulo(nodo.module, archivo)
-                if (
-                    namespaces_con_simbolos
-                    and destino in namespaces_con_simbolos
-                    and alias.name in SIMBOLOS_CANONICOS
-                ):
+                if namespaces_con_simbolos and destino in namespaces_con_simbolos and alias.name in SIMBOLOS_CANONICOS:
                     simbolos.add(alias.asname or alias.name)
         elif isinstance(nodo, ast.Import):
             for alias in nodo.names:
