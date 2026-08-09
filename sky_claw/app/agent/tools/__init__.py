@@ -239,10 +239,10 @@ class AsyncToolRegistry:
         ]
 
     def xml_tool_prompt_block(self) -> str:
-        """Serialize registered tools as a <tools>…</tools> XML block for XML tool-calling prompting.
+        """Serializa las tools registradas como un bloque XML <tools>…</tools>.
 
-        T2-07 (review fix): igual que tool_schemas — solo expone tools
-        permitidos en esta sesion.
+        T2-07 (review fix): igual que tool_schemas, solo expone tools
+        permitidas en esta sesión.
         """
         schemas = [
             {
@@ -255,7 +255,7 @@ class AsyncToolRegistry:
         return f"<tools>\n{json.dumps(schemas, indent=2, ensure_ascii=False)}\n</tools>"
 
     def hermes_system_prompt_block(self) -> str:
-        """Compatibility wrapper for the legacy XML prompt method name."""
+        """Wrapper de compatibilidad para el nombre legado del prompt XML."""
         return self.xml_tool_prompt_block()
 
     async def _download_mod(self, nexus_id: int, file_id: int | None = None) -> str:

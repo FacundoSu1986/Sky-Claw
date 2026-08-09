@@ -1,4 +1,4 @@
-"""Tests for AsyncToolRegistry.xml_tool_prompt_block()."""
+"""Tests de AsyncToolRegistry.xml_tool_prompt_block()."""
 
 from __future__ import annotations
 
@@ -33,8 +33,7 @@ def test_xml_tool_block_contains_all_tool_names(registry: AsyncToolRegistry) -> 
     inner = block[len("<tools>") : block.rfind("</tools>")].strip()
     schemas = json.loads(inner)
     names = {s["name"] for s in schemas}
-    assert "search_mod" in names
-    assert "run_loot_sort" in names
+    assert names == set(registry._tools)
 
 
 def test_xml_tool_block_uses_parameters_key(registry: AsyncToolRegistry) -> None:

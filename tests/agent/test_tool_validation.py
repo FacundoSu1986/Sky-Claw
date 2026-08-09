@@ -219,9 +219,9 @@ class TestValidationFeedback:
 
 
 class TestXmlToolCounterIndependence:
-    """Parse errors must not consume the execution-retry budget and vice versa.
+    """Los errores de parseo no deben consumir el presupuesto de ejecución, ni al revés.
 
-    These tests target the LLMRouter chat loop with XML tool calling enabled.
+    Estas pruebas cubren el bucle de chat de LLMRouter con tool calling XML habilitado.
     """
 
     @pytest.mark.asyncio

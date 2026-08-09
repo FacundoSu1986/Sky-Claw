@@ -540,12 +540,12 @@ class TestBudgetCircuitBreakerInteraction:
 
 
 class TestXmlToolTimeout:
-    """XML tool-calling execution also respects timeout."""
+    """La ejecución de tools XML también respeta el timeout."""
 
     @pytest.mark.asyncio
     async def test_xml_tool_timeout_handled(self, tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path) -> None:
         r = _make_router(tmp_path, tool_registry)
-        # Enable XML tool-calling mode.
+        # Habilitar el modo de tool calling XML.
         r._xml_tool_calling = True
         await r.open()
         r._semantic_router.route = MagicMock(
@@ -571,7 +571,7 @@ class TestXmlToolTimeout:
                     "content": [
                         {
                             "type": "text",
-                            "text": '```tool\n{"name": "list_mods", "arguments": {}}\n```',
+                            "text": '<tool_call>{"name": "list_mods", "arguments": {}}</tool_call>',
                         }
                     ],
                 }
@@ -593,6 +593,6 @@ class TestXmlToolTimeout:
             session = MagicMock()
             result = await r.chat("run XML tool", session, chat_id="xml_tool_timeout")
 
-        assert result is not None
-        assert isinstance(result, str)
+        assert result == "Done"
+        assert call_count == 2
         await r.close()

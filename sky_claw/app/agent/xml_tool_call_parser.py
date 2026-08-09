@@ -1,4 +1,4 @@
-"""Zero-trust XML tool-call parser."""
+"""Parser seguro para llamadas de tools mediante XML."""
 
 from __future__ import annotations
 
@@ -10,15 +10,15 @@ TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
 
 def has_tool_calls(text: str) -> bool:
-    """Return True if *text* contains at least one <tool_call> block."""
+    """Devuelve True si *text* contiene al menos un bloque <tool_call>."""
     return bool(TOOL_CALL_RE.search(text))
 
 
 def extract_tool_calls(text: str) -> list[dict[str, Any]]:
-    """Extract all <tool_call> blocks from *text* and parse their JSON payloads.
+    """Extrae los bloques <tool_call> de *text* y analiza sus payloads JSON.
 
-    Raises:
-        ValueError: if any block contains malformed JSON or is missing the 'name' key.
+    Lanza:
+        ValueError: si algún bloque contiene JSON inválido o carece de la clave 'name'.
     """
     results: list[dict[str, Any]] = []
     for raw in TOOL_CALL_RE.findall(text):

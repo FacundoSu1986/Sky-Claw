@@ -1,4 +1,4 @@
-"""Tests for LLMRouter in XML tool-calling mode."""
+"""Tests de LLMRouter en modo de tool calling XML."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import aiohttp
 import pytest
 
 from sky_claw.app.agent.providers import AnthropicProvider
-from sky_claw.app.agent.router import MAX_XML_TOOL_RETRIES, LLMRouter
+from sky_claw.app.agent.router import MAX_HERMES_RETRIES, MAX_XML_TOOL_RETRIES, LLMRouter
 from sky_claw.app.agent.tools import AsyncToolRegistry
 from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.orchestrator.sync_engine import SyncEngine
@@ -87,7 +87,7 @@ async def xml_tool_router(tool_registry: AsyncToolRegistry, tmp_path: pathlib.Pa
 
 class TestXmlToolInitGuard:
     def test_legacy_hermes_mode_without_registry_raises(self, tmp_path: pathlib.Path) -> None:
-        """hermes_mode=True without a tool_registry must fail at construction time."""
+        """hermes_mode=True sin tool_registry debe fallar al construir el router."""
         with pytest.raises(ValueError, match="tool_registry"):
             LLMRouter(
                 provider=AnthropicProvider("test-key"),
@@ -107,6 +107,7 @@ class TestXmlToolInitGuard:
         )
 
         assert router._xml_tool_calling is True
+        assert MAX_HERMES_RETRIES == MAX_XML_TOOL_RETRIES
 
     @pytest.mark.parametrize(
         ("canonical", "legacy"),
@@ -136,7 +137,7 @@ class TestXmlToolSystemPrompt:
     async def test_tools_block_injected_in_system_prompt(
         self, xml_tool_router: LLMRouter, tool_registry: AsyncToolRegistry
     ) -> None:
-        """When XML tool calling is enabled, provider.chat receives <tools>."""
+        """Con tool calling XML habilitado, provider.chat recibe <tools>."""
         captured: list[dict[str, Any]] = []
 
         async def fake_chat(**kwargs: Any) -> dict[str, Any]:

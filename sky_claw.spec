@@ -188,7 +188,7 @@ hiddenimports = [
     "sky_claw.app.orchestrator.tool_strategies.validate_plugin_limit",
     "sky_claw.app.security.loop_guardrail",
     "sky_claw.app.agent.xml_tool_call_parser",
-    "sky_claw.app.agent.hermes_parser",  # Legacy import shim.
+    "sky_claw.app.agent.hermes_parser",  # Shim de importación legado.
 ]
 
 a = Analysis(

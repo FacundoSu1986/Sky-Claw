@@ -77,6 +77,8 @@ def _prepare_tool_result_for_model(result: str) -> str:
 MAX_CONTEXT_MESSAGES = 20
 MAX_TOOL_ROUNDS = 10
 MAX_XML_TOOL_RETRIES = 3
+# Alias legado: el nombre anterior era importable desde este módulo.
+MAX_HERMES_RETRIES = MAX_XML_TOOL_RETRIES
 
 # FASE 1.5.3: Default tool round timeout
 DEFAULT_TOOL_ROUND_TIMEOUT = 120.0
@@ -643,7 +645,7 @@ class LLMRouter:
                 await self._save_message(chat_id, "assistant", json.dumps(content_blocks))
                 messages.append({"role": "assistant", "content": content_blocks})
 
-                # ── XML tool-calling mode: detect <tool_call> tags in plain text ───
+                # ── Modo de tool calling XML: detectar etiquetas <tool_call> en texto ─
                 if self._xml_tool_calling:
                     full_text = "\n".join(
                         block.get("text", "") for block in content_blocks if block.get("type") == "text"
@@ -711,7 +713,7 @@ class LLMRouter:
                     else:
                         xml_tool_parse_error_count = 0
                         xml_tool_exec_error_count = 0
-                        # Output gate — apply same guardrail as native path
+                        # Puerta de salida: aplicar el mismo guardrail que en la ruta nativa.
                         if self._guardrail:
                             try:
                                 await self._guardrail.after_model_callback(full_text)

@@ -1,4 +1,4 @@
-"""Tests for the XML tool-call parser."""
+"""Tests del parser XML de llamadas de tools."""
 
 from __future__ import annotations
 
