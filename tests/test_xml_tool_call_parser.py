@@ -100,11 +100,15 @@ def test_extract_arguments_falsy_no_objeto_raise(raw_arguments: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "raw_arguments",
-    ["{}", '{"mod_name": "SKSE"}'],
+    ("raw_arguments", "esperado"),
+    [
+        ("{}", {}),
+        ('{"mod_name": "SKSE"}', {"mod_name": "SKSE"}),
+    ],
+    ids=["objeto_vacio", "con_claves"],
 )
-def test_extract_arguments_objeto_valido(raw_arguments: str) -> None:
-    """Los objetos JSON (incluido vacío) son argumentos válidos."""
+def test_extract_arguments_objeto_valido(raw_arguments: str, esperado: dict[str, str]) -> None:
+    """Los objetos JSON (incluido vacío) son argumentos válidos y se conservan."""
     text = f'<tool_call>{{"name": "search_mod", "arguments": {raw_arguments}}}</tool_call>'
     calls = extract_tool_calls(text)
-    assert isinstance(calls[0]["arguments"], dict)
+    assert calls[0]["arguments"] == esperado
