@@ -150,6 +150,20 @@ _RITUALS: list[dict[str, str]] = [
         "tool": "skse",
         "tone": "#9c7a40",
     },
+    # Community Shaders comparte la naturaleza de SKSE en la grilla: es un
+    # instalador aprobado desde la GUI (`RITUAL_INSTALLER_MAP["community_shaders"]`)
+    # y sin tarjeta ese instalador es código muerto. La detección es por
+    # sentinel del mod bajo mo2_root/mods (caso especial del scanner): el VFS
+    # de MO2 no es visible. Tampoco tiene entrada en `RITUAL_TOOL_MAP`: nada
+    # de "Ejecutar" cuando ya está instalado.
+    {
+        "rune": "ᚱ",
+        "label": "Renderizado Moderno",
+        "desc": "Instala Community Shaders y sus dependencias (SKSE + sin ENB + preloader de Engine Fixes).",
+        "tech": "Community Shaders",
+        "tool": "community_shaders",
+        "tone": "#6f9c7a",
+    },
 ]
 
 _STAT_RUNES = {"mods": "ᛗ", "pending": "ᛒ", "conflicts": "ᚤ", "space": "ᛜ"}

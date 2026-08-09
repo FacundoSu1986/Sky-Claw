@@ -414,6 +414,17 @@ class EnvironmentScanner:
                 "https://www.nexusmods.com/skyrimspecialedition/mods/32382",
                 False,
             ),
+            (
+                "community_shaders",
+                # Exe ficticio con sufijo .exe: NO hay tal binario — la detección
+                # real es por sentinel del mod bajo mo2_root/mods (caso especial
+                # en el loop); `exe_names[0]` solo alimenta el `technical_name`
+                # del MissingTool (el bloque lo deriva con .replace(".exe", "")).
+                ("community_shaders.exe",),
+                "Renderizado moderno (Community Shaders) - Instalable desde el dashboard",
+                "https://www.nexusmods.com/skyrimspecialedition/mods/86492",
+                False,
+            ),
         ]
 
         mo2_root = mo2_path if mo2_path else None
@@ -431,6 +442,22 @@ class EnvironmentScanner:
                     if skyrim_path is not None
                     else None
                 )
+            elif key == "community_shaders":
+                # Mod de MO2, no un exe: se detecta por el sentinel físico bajo
+                # mods/ — el VFS de MO2 no es visible para el scanner. Importación
+                # diferida: tools_installer importa de scanner en producción (ciclo).
+                from sky_claw.local.tools_installer import COMMUNITY_SHADERS_MOD_NAME
+
+                if mo2_root is None:
+                    found = None
+                else:
+                    # Mismo criterio de validez que el instalador (hallazgo de
+                    # review del PR #442): un mod con el DLL pero sin Shaders/
+                    # (bug real CS 1.8.0) NO se muestra como instalado — la GUI
+                    # conserva la acción de reparación.
+                    mod_dir = pathlib.Path(mo2_root) / "mods" / COMMUNITY_SHADERS_MOD_NAME
+                    sentinel = mod_dir / "SKSE" / "Plugins" / "CommunityShaders.dll"
+                    found = sentinel if sentinel.is_file() and (mod_dir / "Shaders").is_dir() else None
             else:
                 found = self._resolve_tool_path(key, exe_names, search_roots)
             if found:
@@ -482,7 +509,7 @@ class EnvironmentScanner:
         # config, so don't let the tool tally downgrade CRITICAL → NEEDS_SETUP.
         if not skyrim_found:
             snap.health_status = HealthStatus.CRITICAL
-        elif snap.missing:
+        elif any(missing.is_critical for missing in snap.missing):
             snap.health_status = HealthStatus.NEEDS_SETUP
         else:
             snap.health_status = HealthStatus.READY

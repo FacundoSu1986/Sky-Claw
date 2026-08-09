@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import io
 import json
 import pathlib
 import tempfile
+import threading
 import zipfile
 from collections.abc import AsyncIterator
 from typing import Any
@@ -154,6 +157,7 @@ def _mockear_py7zr(monkeypatch: pytest.MonkeyPatch, *, miembros: list[str]) -> N
     """py7zr abre bien y lista *miembros* (para ejercitar su propia validación)."""
     szf = MagicMock()
     szf.getnames = MagicMock(return_value=miembros)
+    szf.list = MagicMock(return_value=[MagicMock(filename=nombre, is_symlink=False) for nombre in miembros])
     szf.__enter__ = MagicMock(return_value=szf)
     szf.__exit__ = MagicMock(return_value=False)
     monkeypatch.setattr("py7zr.SevenZipFile", MagicMock(return_value=szf))
@@ -701,6 +705,23 @@ class TestExtraccion7zConFallback:
 
         mock_run.assert_not_called()
 
+    def test_rechaza_symlink_informado_por_py7zr_antes_de_extraer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Un miembro symlink perforaría el sandbox aunque su nombre fuese relativo."""
+        szf = MagicMock()
+        szf.list.return_value = [MagicMock(filename="enlace-seguro", is_symlink=True)]
+        szf.__enter__.return_value = szf
+        monkeypatch.setattr("py7zr.SevenZipFile", MagicMock(return_value=szf))
+        mock_run = MagicMock()
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        with pytest.raises(PathViolationError, match="enlace simbólico"):
+            _extract_7z_safe(tmp_path / "malicioso.7z", tmp_path / "out")
+
+        szf.extractall.assert_not_called()
+        mock_run.assert_not_called()
+
     def test_rechaza_el_archive_si_el_listado_de_7z_tiene_traversal(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
     ) -> None:
@@ -1063,8 +1084,9 @@ class TestSetupToolsTool:
 
         result_str = await registry.execute("setup_tools", {})
         result = json.loads(result_str)
-        assert "error" in result
-        assert "not configured" in result["error"]
+        assert result["success"] is False
+        assert "not configured" in result["message"]
+        assert set(result) == {"success", "message"}
 
         await db.close()
 
@@ -1119,7 +1141,8 @@ class TestSetupToolsTool:
 
             result = json.loads(result_str)
             assert "unknown_tool" in result
-            assert "error" in result["unknown_tool"]
+            assert result["unknown_tool"]["success"] is False
+            assert set(result["unknown_tool"]) == {"success", "message"}
         finally:
             await lock_mgr.close()
             await db.close()
@@ -1950,3 +1973,384 @@ class TestEnsureSkse:
 async def _async_iter(items: list[bytes]):
     for item in items:
         yield item
+
+
+# ---------------------------------------------------------------------------
+# Blueprint Fase 2 — helpers compartidos del autoinstalador de Community
+# Shaders (camino compartido con loot/xedit/pandora/NGIO): digest de la API de
+# GitHub, techo de bytes durante el streaming, verificación compuesta
+# (required_rel) y comment del meta.ini.
+# ---------------------------------------------------------------------------
+
+
+class TestHelpersCompartidosBlueprint:
+    def test_parse_github_digest_normaliza_y_rechaza(self) -> None:
+        """'sha256:<hex>' y el hex pelado se normalizan; malformado/ausente → '' (TOFU)."""
+        hex64 = "5c9bbb49f71402fa8fd5936df6eefa40a8f0bcb4c623ebceeb478a1e14447c11"
+        assert tools_installer._parse_github_digest(f"sha256:{hex64}") == hex64
+        assert tools_installer._parse_github_digest(hex64) == hex64
+        assert tools_installer._parse_github_digest("sha256:zz" + "0" * 62) == ""
+        assert tools_installer._parse_github_digest("sha256:abc") == ""
+        assert tools_installer._parse_github_digest("") == ""
+        assert tools_installer._parse_github_digest(None) == ""
+        assert tools_installer._parse_github_digest(123) == ""
+
+    async def test_download_asset_digest_mismatch_aborta_y_borra(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """El digest de la API (vía expected_sha256) es vinculante: mismatch → abort + borrado."""
+        payload = b"contenido-de-prueba"
+        asset = ReleaseAsset(
+            name="x.zip",
+            size=len(payload),
+            download_url="https://api.github.com/x",
+            browser_download_url="https://github.com/x",
+        )
+
+        async def _iter_chunks(size: int):
+            yield payload
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.release = MagicMock()
+        resp.content = MagicMock()
+        resp.content.iter_chunked = _iter_chunks
+        installer._gateway.request = AsyncMock(return_value=resp)  # type: ignore[method-assign]
+
+        dest_dir = tmp_path / "dest"
+        with pytest.raises(ToolInstallError, match="SHA-256"):
+            await installer._download_asset(
+                MagicMock(spec=aiohttp.ClientSession),
+                asset,
+                dest_dir,
+                expected_sha256="0" * 64,
+            )
+        assert not (dest_dir / asset.name).exists()
+
+    async def test_download_asset_digest_correcto_instala(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Digest correcto: la descarga procede y el archivo queda en disco."""
+        payload = b"contenido-de-prueba"
+        asset = ReleaseAsset(
+            name="x.zip",
+            size=len(payload),
+            download_url="https://api.github.com/x",
+            browser_download_url="https://github.com/x",
+        )
+
+        async def _iter_chunks(size: int):
+            yield payload
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.release = MagicMock()
+        resp.content = MagicMock()
+        resp.content.iter_chunked = _iter_chunks
+        installer._gateway.request = AsyncMock(return_value=resp)  # type: ignore[method-assign]
+
+        dest_dir = tmp_path / "dest"
+        dest = await installer._download_asset(
+            MagicMock(spec=aiohttp.ClientSession),
+            asset,
+            dest_dir,
+            expected_sha256=hashlib.sha256(payload).hexdigest(),
+        )
+        assert dest.read_bytes() == payload
+
+    async def test_techo_de_bytes_aborta_durante_streaming_y_borra(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Un cuerpo mayor al size declarado aborta a mitad de la descarga y borra el parcial."""
+        asset = ReleaseAsset(
+            name="gordo.zip",
+            size=10,
+            download_url="https://api.github.com/x",
+            browser_download_url="https://github.com/x",
+        )
+
+        async def _iter_chunks(size: int):
+            yield b"x" * 100
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.release = MagicMock()
+        resp.content = MagicMock()
+        resp.content.iter_chunked = _iter_chunks
+        installer._gateway.request = AsyncMock(return_value=resp)  # type: ignore[method-assign]
+
+        dest_dir = tmp_path / "dest"
+        with pytest.raises(ToolInstallError, match="excede"):
+            await installer._download_asset(MagicMock(spec=aiohttp.ClientSession), asset, dest_dir)
+        assert not (dest_dir / asset.name).exists()
+
+    async def test_techo_absoluto_de_respaldo_cuando_size_es_cero(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sin size publicado por la API (size=0) rige el techo absoluto de respaldo:
+        sin él, el streaming escribe sin límite hasta el timeout total de 600 s
+        (el camino SKSE ya tenía techo absoluto; este helper compartido, no)."""
+        monkeypatch.setattr(tools_installer, "_GITHUB_ASSET_MAX_BYTES", 100)
+        asset = ReleaseAsset(
+            name="sin-size.zip",
+            size=0,
+            download_url="https://api.github.com/x",
+            browser_download_url="https://github.com/x",
+        )
+
+        async def _iter_chunks(size: int):
+            yield b"x" * 200
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.release = MagicMock()
+        resp.content = MagicMock()
+        resp.content.iter_chunked = _iter_chunks
+        installer._gateway.request = AsyncMock(return_value=resp)  # type: ignore[method-assign]
+
+        dest_dir = tmp_path / "dest"
+        with pytest.raises(ToolInstallError, match="techo absoluto"):
+            await installer._download_asset(MagicMock(spec=aiohttp.ClientSession), asset, dest_dir)
+        assert not (dest_dir / asset.name).exists()
+
+    async def test_staging_se_valida_contra_el_sandbox_antes_de_crearse(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """El staging (``.skyclaw-dl``) se valida contra el PathValidator ANTES del
+        mkdir: con ``mods_dir`` == raíz del sandbox, el staging cae en el padre
+        (fuera de los roots) y la descarga no arranca. El assert de "dentro de los
+        roots" del comentario dejaba la garantía en la palabra, no en el código.
+
+        Se ancla la SECUENCIA de validación porque el camino viejo también lanzaba
+        ``PathViolationError`` — pero tarde: dentro de ``_download_asset``, sobre el
+        destino y DESPUÉS de crear el directorio no autorizado (el rmdir del finally
+        borraba la evidencia)."""
+        hitl = AsyncMock(return_value=Decision.APPROVED)
+        installer._hitl.request_approval = hitl  # type: ignore[method-assign]
+        installer._gateway.request = AsyncMock()  # type: ignore[method-assign]
+        installer._find_github_asset = AsyncMock(  # type: ignore[method-assign]
+            return_value=(
+                ReleaseAsset(
+                    name="mod.zip",
+                    size=10,
+                    download_url="https://api.github.com/x",
+                    browser_download_url="https://github.com/x",
+                ),
+                "1.0.0",
+            )
+        )
+        validados: list[pathlib.Path] = []
+        validar_real = installer._validator.validate
+
+        def _registrar(path: str | pathlib.Path, *, strict_symlink: bool = True) -> pathlib.Path:
+            validados.append(pathlib.Path(path))
+            return validar_real(path, strict_symlink=strict_symlink)
+
+        installer._validator.validate = _registrar  # type: ignore[method-assign]
+
+        with pytest.raises(PathViolationError):
+            await installer._ensure_github_mod(
+                tmp_path,
+                MagicMock(spec=aiohttp.ClientSession),
+                mod_name="ModFicticio",
+                releases_url="https://api.github.com/repos/x/x/releases",
+                sentinel_glob="*.dll",
+                request_slug="mod-ficticio",
+                source_hint="GitHub x/x releases",
+            )
+
+        # El staging COMO TAL es lo único validado: si la validación viniera de
+        # adentro de la descarga, la lista tendría el destino (<staging>/mod.zip).
+        # Desde F4 el staging vive en .skyclaw-dl/<mod_dir.name> (la identidad
+        # del lock), no en la raíz compartida de antes ni bajo el slug.
+        assert validados == [tmp_path.parent / ".skyclaw-dl" / "ModFicticio"]
+        assert not (tmp_path.parent / ".skyclaw-dl" / "ModFicticio").exists()
+        assert installer._gateway.request.await_count == 0
+
+    async def test_post_extract_corre_en_un_hilo_no_en_el_event_loop(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """F5: ``post_extract`` hace I/O pesado — el transform del FOMOD de Engine
+        Fixes corre ``shutil.copytree``/``copy2`` y ``rmtree_link_aware``. Llamado
+        inline en ``_ensure_nexus_mod`` congelaba el event loop (en NiceGUI se ve
+        como un hang de la UI). Debe despacharse por ``_esperar_hilo_ininterrumpible``,
+        igual que la extracción: no cambia el orden ni el contrato funcional.
+        """
+        hilo_del_loop = threading.get_ident()
+        hilo_post_extract: list[int] = []
+
+        def _post_extract(mod_dir: pathlib.Path) -> None:
+            hilo_post_extract.append(threading.get_ident())
+            # Arma el payload que el zip no trae: el foco del test es el hilo,
+            # la verificación del sentinel tiene que pasar igual.
+            plugins = mod_dir / "SKSE" / "Plugins"
+            plugins.mkdir(parents=True, exist_ok=True)
+            (plugins / "Tool.dll").write_text("x", encoding="utf-8")
+
+        mods_dir = tmp_path / "mods"
+        mods_dir.mkdir()
+        # Zip mínimo extraíble; el payload real lo aporta post_extract.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("placeholder.txt", "x")
+        archive = tmp_path / "staging" / "tool.zip"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(buf.getvalue())
+
+        file_info = MagicMock(file_id=1, file_name="tool.zip", size_bytes=100)
+        downloader = MagicMock()
+        downloader.get_file_info = AsyncMock(return_value=file_info)
+        downloader.download = AsyncMock(return_value=archive)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        resultado = await installer._ensure_nexus_mod(
+            mods_dir,
+            MagicMock(spec=aiohttp.ClientSession),
+            downloader,
+            mod_name="ModFicticio",
+            nexus_id=99999,
+            sentinel_glob="Tool.dll",
+            request_slug="post-extract-thread",
+            post_extract=_post_extract,
+        )
+
+        assert resultado.already_existed is False
+        assert (mods_dir / "ModFicticio" / "SKSE" / "Plugins" / "Tool.dll").is_file()
+        # El transform corrió en un worker del pool, NUNCA en el hilo del loop.
+        assert hilo_post_extract and hilo_post_extract[0] != hilo_del_loop
+
+    async def test_dos_instalaciones_github_concurrentes_no_se_pisan_el_staging(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """Carrera F4: dos ``_ensure_github_mod`` concurrentes (mods DISTINTOS → locks
+        per-mod_dir distintos) compartían UN único staging ``.skyclaw-dl``. El mod que
+        terminaba hacía ``rmdir()`` mientras el otro seguía descargando (entre el mkdir
+        y el ``open`` de su archivo, en el ``await`` al gateway) y le borraba el directorio
+        en uso, haciéndolo fallar con ``FileNotFoundError``. El staging por mod
+        (``.skyclaw-dl/<mod_dir.name>``) hace que cada instalación limpie SOLO lo propio.
+
+        El interleaving es determinista: A bloquea su descarga (señalando que ya hizo el
+        mkdir de staging pero aún no escribió el archivo), B corre COMPLETA — su ``finally``
+        ``rmdir()`` es el que, con staging compartido, elimina el directorio de A — y solo
+        entonces se libera A. Antes del fix, A muere al abrir su destino.
+
+        El staging se keyea por ``mod_dir.name`` —la MISMA identidad que el lock de
+        instalación— y no por ``request_slug``: dos mods que reutilizaran un slug quedan
+        igualmente aislados (ver el ``request_slug`` repetido abajo). Review de Codex.
+        """
+        mods_dir = tmp_path / "mods"
+        mods_dir.mkdir()
+
+        # Payload mínimo válido: sentinel ``*.dll`` bajo SKSE/Plugins para ambos mods.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("SKSE/Plugins/tool.dll", "x")
+        payload = buf.getvalue()
+
+        en_descarga_a = asyncio.Event()
+        liberar_a = asyncio.Event()
+
+        asset_a = ReleaseAsset(
+            name="a.zip",
+            size=len(payload),
+            download_url="https://api.github.com/repos/x/a/releases/assets/1",
+            browser_download_url="https://github.com/x/a/a.zip",
+        )
+        asset_b = ReleaseAsset(
+            name="b.zip",
+            size=len(payload),
+            download_url="https://api.github.com/repos/x/b/releases/assets/2",
+            browser_download_url="https://github.com/x/b/b.zip",
+        )
+
+        async def _find_asset(session: Any, releases_url: str, *, keyword: Any = None, select: Any = None) -> Any:
+            return (asset_a if "/a/" in releases_url else asset_b, "1.0.0")
+
+        installer._find_github_asset = AsyncMock(side_effect=_find_asset)  # type: ignore[method-assign]
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        def _stream_response() -> MagicMock:
+            async def _chunks(_n: int) -> AsyncIterator[bytes]:
+                yield payload
+
+            resp = MagicMock()
+            resp.status = 200
+            resp.raise_for_status = MagicMock()
+            resp.release = MagicMock()
+            resp.content = MagicMock()
+            resp.content.iter_chunked = _chunks
+            return resp
+
+        async def _gateway_request(method: str, url: str, session: Any, **kwargs: Any) -> MagicMock:
+            if "/a/" in url:
+                en_descarga_a.set()  # A ya hizo mkdir de staging, aún no escribió a.zip
+                await liberar_a.wait()
+            return _stream_response()
+
+        installer._gateway.request = AsyncMock(side_effect=_gateway_request)  # type: ignore[method-assign]
+
+        comun = dict(sentinel_glob="*.dll", source_hint="GitHub x/x releases")
+        # Los DOS usan el MISMO request_slug a propósito: ancla la regresión que
+        # señaló la review de Codex — si el staging se keyeara por slug, dos mods
+        # distintos con un slug repetido tendrían locks distintos sobre el MISMO
+        # staging y la carrera reaparecería. El staging keyeado por mod_dir.name
+        # lo hace estructuralmente imposible aunque el slug se repita.
+        task_a = asyncio.create_task(
+            installer._ensure_github_mod(
+                mods_dir,
+                MagicMock(spec=aiohttp.ClientSession),
+                mod_name="ModA",
+                releases_url="https://api.github.com/repos/x/a/releases",
+                request_slug="slug-compartido",
+                **comun,
+            )
+        )
+        await en_descarga_a.wait()  # A está entre el mkdir y el open, esperando el gateway
+
+        # B corre completa; su ``finally`` rmdir() es el que pisaría el staging de A.
+        resultado_b = await installer._ensure_github_mod(
+            mods_dir,
+            MagicMock(spec=aiohttp.ClientSession),
+            mod_name="ModB",
+            releases_url="https://api.github.com/repos/x/b/releases",
+            request_slug="slug-compartido",
+            **comun,
+        )
+
+        liberar_a.set()
+        resultado_a = await task_a
+
+        assert resultado_b.already_existed is False
+        assert resultado_a.already_existed is False
+        assert (mods_dir / "ModA" / "SKSE" / "Plugins" / "tool.dll").is_file()
+        assert (mods_dir / "ModB" / "SKSE" / "Plugins" / "tool.dll").is_file()
+
+    def test_verify_mod_payload_requiere_dirs_relativos(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """required_rel es vinculante: sin el dir, abort con su nombre; con él, pasa."""
+        mod_dir = tmp_path / "mod"
+        (mod_dir / "SKSE" / "Plugins").mkdir(parents=True)
+        (mod_dir / "SKSE" / "Plugins" / "CommunityShaders.dll").write_text("x", encoding="utf-8")
+
+        with pytest.raises(ToolInstallError, match="Shaders"):
+            installer._verify_mod_payload(mod_dir, "Mod", "CommunityShaders.dll", required_rel=("Shaders",))
+
+        (mod_dir / "Shaders").mkdir()
+        installer._verify_mod_payload(mod_dir, "Mod", "CommunityShaders.dll", required_rel=("Shaders",))
+
+    def test_write_mod_meta_ini_comment_deja_de_mentir(self, tmp_path: pathlib.Path) -> None:
+        """Default genérico sin 'precache'; comment explícito lo reemplaza."""
+        mod_dir = tmp_path / "mod"
+        mod_dir.mkdir()
+
+        tools_installer._write_mod_meta_ini(mod_dir, "Mod", "1.0")
+        default = (mod_dir / "meta.ini").read_text(encoding="utf-8")
+        assert "Instalado por Sky-Claw." in default
+        assert "precache" not in default.lower()
+
+        tools_installer._write_mod_meta_ini(
+            mod_dir, "Mod", "1.0", comment="Instalado por Sky-Claw (Community Shaders)."
+        )
+        custom = (mod_dir / "meta.ini").read_text(encoding="utf-8")
+        assert "Community Shaders" in custom

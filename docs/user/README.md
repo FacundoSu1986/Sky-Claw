@@ -8,15 +8,18 @@
 > **Fuentes canónicas:** `sky_claw/__main__.py`,
 > `sky_claw/app/gui/` y `sky_claw/local/AGENTS.md`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
+> `e8427063`.
 
 ## Ruta recomendada
 
 1. [Instalación](installation.md).
 2. [Configuración](configuration.md).
 3. [Interfaz gráfica](gui.md) o [CLI](cli.md).
-4. [Flujo seguro](safe_workflows.md) antes de ejecutar un ritual.
-5. [Diagnóstico](troubleshooting.md) si el preflight o una operación falla.
+4. [Community Shaders](community_shaders.md), capacidad opt-in de preparación del
+   entorno que no hace falta para el flujo base.
+5. [Flujo seguro](safe_workflows.md) antes de ejecutar un ritual.
+6. [Diagnóstico](troubleshooting.md) si el preflight o una operación falla.
 
 El modo [Telegram](telegram.md) es opcional. La documentación de usuario no
 reemplaza el [SOP técnico del pipeline](../pipeline/skyrim_sop.md), que define

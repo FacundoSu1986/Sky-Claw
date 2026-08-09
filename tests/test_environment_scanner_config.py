@@ -25,6 +25,7 @@ from sky_claw.local.discovery.scanner import (
     _WRYE_BASH_NAMES,
     _XEDIT_NAMES,
     EnvironmentScanner,
+    HealthStatus,
     _read_pe_product_version,
 )
 
@@ -218,3 +219,21 @@ async def test_bare_scanner_without_skyrim_stays_critical(tmp_path: Path, monkey
     snap = await scanner.scan()
 
     assert snap.skyrim is None
+
+
+async def test_herramientas_optativas_ausentes_no_impiden_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """READY significa que están las herramientas críticas, no todas las optativas."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    skyrim_exe = _touch_exe(skyrim_dir, "SkyrimSE.exe")
+    tool_paths = {key: str(_touch_exe(tmp_path, names[0])) for key, names, _technical in _GENERIC_TOOLS}
+    monkeypatch.setattr(scanner_module, "find_skse_installation", lambda *_a, **_k: skyrim_exe)
+    scanner = EnvironmentScanner(skyrim_path=skyrim_dir, tool_paths=tool_paths)
+
+    snap = await scanner.scan()
+
+    assert snap.missing
+    assert all(not missing.is_critical for missing in snap.missing)
+    assert snap.health_status is HealthStatus.READY

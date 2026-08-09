@@ -4,9 +4,11 @@ import asyncio
 import hashlib
 import logging
 import pathlib
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import aiofiles
 import aiohttp
@@ -35,6 +37,15 @@ logger = logging.getLogger(__name__)
 
 _NEXUS_API_BASE = "https://api.nexusmods.com/v1"
 
+#: Techo absoluto de respaldo para :meth:`NexusDownloader.download` cuando la
+#: API no publicó ``size_bytes`` (0): sin él, metadata rota = streaming sin
+#: límite hasta el timeout total (600 s), llenando el disco de staging. Es el
+#: hermano de ``tools_installer._GITHUB_ASSET_MAX_BYTES``; cuando el size SÍ
+#: está publicado rige el declarado (más estricto) y este techo nunca aplica.
+#: Nexus sirve files de varios GB legítimos: 4 GiB solo muerde cuerpos sin
+#: tamaño declarado (metadata rota), no archivos grandes con metadata sana.
+_NEXUS_FALLBACK_MAX_BYTES = 4 * 1024 * 1024 * 1024
+
 ProgressCallback = Callable[["DownloadProgress"], Awaitable[None]] | None
 
 
@@ -53,6 +64,25 @@ MD5ValidationError = HashValidationError
 
 
 class PremiumRequiredError(DownloadError):
+    pass
+
+
+class DownloadSizeLimitError(DownloadError):
+    """La descarga excedió un límite de bytes (size declarado o techo de respaldo).
+
+    Se clasifica por TIPO en :func:`_should_retry_nexus`, nunca parseando el
+    texto del mensaje: el mensaje inserta el ``file_name`` externo (validado
+    solo como componente de ruta seguro), e inferir reintentabilidad del
+    string hacía que un nombre legítimo con ``429``/``502``/``503``/``timeout``
+    convirtiera este abort no recuperable en hasta 5 intentos del mismo
+    tráfico descontrolado (review del PR #445). Un techo excedido no se
+    arregla reintentando.
+    """
+
+
+class MalformedDownloadUrlError(DownloadError):
+    """La URL del CDN no puede parsearse y reintentar no puede corregirla."""
+
     pass
 
 
@@ -115,8 +145,40 @@ class DownloadProgress:
         return min((self.downloaded_bytes / self.total_bytes) * 100, 100.0)
 
 
+_ESCAPE_PERCENT_VALIDO = re.compile(r"%[0-9A-Fa-f]{2}")
+
+
+def _quote_path_preservando_escapes(path: str) -> str:
+    """Percent-encode del path de descarga SIN doblar escapes ``%HH`` ya válidos.
+
+    El CDN de Nexus sirve el path crudo (espacios, paréntesis) pero también
+    puede incluir escapes pre-existentes (p.ej. ``%20``) en la misma URL.
+    ``quote`` solo doblaría esos escapes (``%20`` → ``%2520``), rompiendo la
+    firma. Esta función encodea los segmentos sin escapes y preserva los
+    ``%HH`` válidos tal cual; un ``%`` literal (no escape) se encodea a
+    ``%25`` (hallazgo de review del PR #442).
+    """
+    partes: list[str] = []
+    pos = 0
+    for match in _ESCAPE_PERCENT_VALIDO.finditer(path):
+        partes.append(quote(path[pos : match.start()], safe="/"))
+        partes.append(match.group(0))
+        pos = match.end()
+    partes.append(quote(path[pos:], safe="/"))
+    return "".join(partes)
+
+
 def _should_retry_nexus(exc: BaseException) -> bool:
-    """Determina si la excepción justifica un reintento (Network drop, 429, Hash mismatch)."""
+    """Determina si la excepción justifica un reintento (Network drop, 429, Hash mismatch).
+
+    Un exceso de tamaño (declarado o techo de respaldo) NUNCA se reintenta: se
+    clasifica por tipo antes que el parseo de texto de ``DownloadError``,
+    porque el mensaje inserta el ``file_name`` externo y un nombre legítimo
+    con ``429``/``502``/``503``/``timeout`` lo habría hecho parecer
+    transitorio (review del PR #445).
+    """
+    if isinstance(exc, (DownloadSizeLimitError, MalformedDownloadUrlError)):
+        return False
     if isinstance(
         exc,
         (
@@ -218,6 +280,10 @@ class NexusDownloader:
                     # F5b: gateway.request() re-autoriza cada redirect y elimina la
                     # apikey en saltos cross-host (session.get crudo no hacía ninguna
                     # de las dos).
+                    # REGLA DE SEGURIDAD (auditoría del blueprint CS): la apikey vive
+                    # en headers (`request_info.headers` de aiohttp). NUNCA loguear
+                    # ni incluir `request_info`/`exc.headers` en mensajes de error de
+                    # esta capa — los DownloadError de abajo son genéricos a propósito.
                     resp = await self._gateway.request("GET", files_url, session, headers=headers, timeout=meta_timeout)
                     try:
                         if resp.status in (401, 403):
@@ -373,9 +439,34 @@ class NexusDownloader:
                 # F5b: la descarga del CDN también va por el gateway. authorize()
                 # ocurre dentro de request() (hop 0); un redirect a un host no
                 # permitido se corta y la apikey no viaja a otro host.
-                resp = await self._gateway.request(
-                    "GET", file_info.download_url, session, headers=headers, timeout=timeout
+                #
+                # El CDN sirve el file_name crudo en la URL (espacios, paréntesis)
+                # — p.ej. "All in one (all game versions)-32444-....zip". El
+                # gateway rechaza whitespace a propósito (defensa contra header
+                # injection), así que el cliente percent-encodes ANTES de mandarla.
+                # Se encodea SOLO el path (urlsplit/urlunsplit): la query queda
+                # intacta (firma/expiración del CDN) y caracteres como "%", "?",
+                # "#" o "&" dentro del filename no pueden romper ni la URL ni el
+                # query — un safe-set parcial dejaría esos huecos abiertos.
+                try:
+                    partes = urlsplit(file_info.download_url)
+                except ValueError:
+                    # Autoridad malformada (p.ej. corchetes sin cerrar): DownloadError
+                    # sin la URL en el mensaje (la apikey no viaja aquí, pero la regla
+                    # de la capa es no incluir URLs crudas en errores).
+                    raise MalformedDownloadUrlError(
+                        f"URL de descarga inválida para {file_info.file_name!r} (autoridad malformada)"
+                    ) from None
+                cdn_url = urlunsplit(
+                    (
+                        partes.scheme,
+                        partes.netloc,
+                        _quote_path_preservando_escapes(partes.path),
+                        partes.query,
+                        partes.fragment,
+                    )
                 )
+                resp = await self._gateway.request("GET", cdn_url, session, headers=headers, timeout=timeout)
                 try:
                     async with resp:
                         resp.raise_for_status()
@@ -387,16 +478,55 @@ class NexusDownloader:
 
                         async with aiofiles.open(dest, "wb") as fh:
                             async for chunk in resp.content.iter_chunked(self._chunk_size):
+                                # Techo de bytes DURANTE el streaming — hermano de
+                                # `ToolsInstaller._download_asset`. Un cuerpo más largo
+                                # que el size declarado por la API (metadata stale, CDN
+                                # mal configurado) se escribía entero: la validación de
+                                # hash recién corre al final, así que primero se llenaba
+                                # el disco. Peor, el OSError de disco lleno SÍ es
+                                # reintentable y la pasada se repetía 5 veces. Se aborta
+                                # apenas se excede, sin escribir el chunk que excede, y
+                                # con un `DownloadSizeLimitError` que
+                                # `_should_retry_nexus` no reintenta — clasificado por
+                                # TIPO, no por texto del mensaje: el mensaje inserta el
+                                # file_name externo y un nombre con 429/502/503/timeout
+                                # habría parecido transitorio (review del PR #445). Con
+                                # size publicado rige el declarado; con
+                                # `size_bytes == 0` ("no declarado") rige el techo
+                                # absoluto de respaldo (`_NEXUS_FALLBACK_MAX_BYTES`), la
+                                # paridad real con el hermano GitHub y su
+                                # `_GITHUB_ASSET_MAX_BYTES` (antes no había ninguno:
+                                # metadata rota = streaming sin límite). No se usa
+                                # Content-Length, que lo elige el mismo servidor cuyo
+                                # cuerpo se acota.
+                                progress.downloaded_bytes += len(chunk)
+                                techo = file_info.size_bytes if file_info.size_bytes > 0 else _NEXUS_FALLBACK_MAX_BYTES
+                                if progress.downloaded_bytes > techo:
+                                    if file_info.size_bytes > 0:
+                                        raise DownloadSizeLimitError(
+                                            f"El cuerpo de {file_info.file_name!r} excede el tamaño declarado "
+                                            f"({file_info.size_bytes} bytes) — descarga abortada."
+                                        )
+                                    raise DownloadSizeLimitError(
+                                        f"El cuerpo de {file_info.file_name!r} excede el techo absoluto de respaldo "
+                                        f"({_NEXUS_FALLBACK_MAX_BYTES // (1024 * 1024 * 1024)} GiB): la API de Nexus "
+                                        "no publicó size — descarga abortada."
+                                    )
                                 await fh.write(chunk)
                                 # Actualizar ambos hashes por chunk
                                 md5_hash.update(chunk)
                                 sha256_hash.update(chunk)
-                                progress.downloaded_bytes += len(chunk)
                                 if progress_cb is not None:
                                     await progress_cb(progress)
                                 # Yield the event loop para evitar bloquear el thread principal
                                 await asyncio.sleep(0)
 
+                except DownloadError:
+                    # Techo de bytes excedido: el parcial no sirve para nada y el
+                    # error ya es descriptivo — limpiar y propagar sin re-envolver
+                    # (re-envolver lo haría indistinguible de un fallo de red).
+                    await _cleanup(dest)
+                    raise
                 except aiohttp.ClientError as exc:
                     await _cleanup(dest)
                     raise DownloadError(f"Download failed for {file_info.file_name!r}: {exc}") from exc

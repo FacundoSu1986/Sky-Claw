@@ -547,6 +547,12 @@ class TestExtraccionMods:
 
         assert not (tmp_path / "evil.dll").exists()
         assert not (mods_dir / "evil.dll").exists()
+        # clean_on_fail (blueprint Fase 2, default compartido con CS): el mod_dir
+        # NUEVO del componente que falló (Address Library) queda eliminado tras
+        # el fallo post-descarga — nunca basura en el VFS. NGIO (componente 1)
+        # quedó instalado: la limpieza es por mod_dir, no global.
+        assert not (mods_dir / ADDRESS_LIBRARY_MOD_NAME).exists()
+        assert (mods_dir / NGIO_MOD_NAME).exists()
 
     async def test_aplana_zip_con_carpeta_raiz(
         self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
@@ -651,7 +657,7 @@ class TestSetupToolsNgio:
     async def test_setup_tools_ngio_sin_mo2_root_devuelve_error(
         self, gateway: NetworkGateway, tmp_path: pathlib.Path
     ) -> None:
-        """Sin mo2_root la rama devuelve {'error': ...} y normalize_tool_result nunca cae en 'error desconocido'."""
+        """Sin mo2_root la rama devuelve el contrato canónico con mensaje accionable."""
         from sky_claw.app.agent.tools.external_tools import setup_tools
         from sky_claw.local.local_config import LocalConfig
         from sky_claw.local.tools.tool_result import normalize_tool_result
@@ -672,7 +678,7 @@ class TestSetupToolsNgio:
         )
 
         entrada = json.loads(salida)["ngio"]
-        assert "error" in entrada
+        assert set(entrada) == {"success", "message"}
         normalizado = normalize_tool_result(entrada)
         assert normalizado["success"] is False
         assert normalizado["message"]

@@ -8,7 +8,8 @@
 > `sky_claw/local/local_config.py` y
 > `sky_claw/app/core/path_resolver.py`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
+> `e8427063`.
 
 ## `Config`
 
@@ -25,6 +26,31 @@ defaults verificados son:
 
 `as_dict` devuelve una copia. `save()` extrae secretos y los persiste en el
 keyring `sky_claw`; no vuelve a texto plano si falla el backend.
+
+### Claves administradas, fuera de los defaults
+
+`Config.save()` relee el TOML y aplica sólo las claves reasignadas o borradas desde el
+baseline del objeto. Por eso una clave fuera de `_load_defaults()` se persiste cuando un
+instalador la escribe explícitamente en `_data`; no se serializa indiscriminadamente todo
+el estado en memoria. Los instaladores que producen mods sin ejecutable propio guardan
+así la lista de nombres que el orquestador necesita para activarlos:
+
+| Clave | Escrita por |
+|---|---|
+| `ngio_mods` | `ensure_ngio` |
+| `community_shaders_mods` | `ensure_community_shaders`, desde ambas superficies |
+
+No aparecen en la tabla de defaults porque no existen hasta que la operación termina. En
+`LocalConfig` sí son campos declarados de la dataclass, con la misma semántica.
+
+### Escribir y persistir
+
+`sky_claw/local/local_config.py` expone la frontera que abstrae las dos clases:
+`escribir_campo` para setear y `guardar_config` / `persistir_campo` para persistir, más
+sus variantes bloqueantes que serializan las escrituras concurrentes sobre el mismo
+archivo. `Config.__getattr__` sólo lee de `_data`: un `setattr` crudo crea un atributo que
+ningún `save` mira. No usar `load` / `save` de ese módulo directamente — son JSON-only y
+reescriben el archivo entero.
 
 ## `SystemPaths`
 

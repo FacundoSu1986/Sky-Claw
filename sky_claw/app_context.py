@@ -41,6 +41,7 @@ from sky_claw.app.security.prompt_armor import build_system_header
 from sky_claw.config import LOOT_COMMON_PATHS, XEDIT_COMMON_PATHS, Config, SystemPaths
 from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.auto_detect import AutoDetector, run_off_loop
+from sky_claw.local.local_config import escribir_campo
 from sky_claw.local.local_config import load as _load_legacy_json
 from sky_claw.local.mo2.brokered_loot import (
     BrokeredLootRunner,
@@ -677,14 +678,14 @@ class AppContext:
                 detected_mo2 = await self._await_startup(AutoDetector.find_mo2())
                 if detected_mo2 is not None:
                     mo2_root = detected_mo2
-                    local_cfg.mo2_root = str(detected_mo2)
+                    escribir_campo(local_cfg, "mo2_root", str(detected_mo2))
                     config_changed = True
                     logger.info("Zero-config: MO2 detected at %s", detected_mo2)
 
             if not local_cfg.skyrim_path:
                 detected_skyrim = await self._await_startup(AutoDetector.find_skyrim())
                 if detected_skyrim is not None:
-                    local_cfg.skyrim_path = str(detected_skyrim)
+                    escribir_campo(local_cfg, "skyrim_path", str(detected_skyrim))
                     config_changed = True
                     logger.info("Zero-config: Skyrim detected at %s", detected_skyrim)
 
@@ -955,7 +956,7 @@ class AppContext:
                 found = await self._await_startup(self._scan_tool_paths(LOOT_COMMON_PATHS, "loot.exe"))
                 if found:
                     loot_exe = found
-                    local_cfg.loot_exe = str(found)
+                    escribir_campo(local_cfg, "loot_exe", str(found))
                     config_changed = True
 
             xedit_exe = getattr(self._args, "xedit_exe", None)
@@ -967,7 +968,7 @@ class AppContext:
                 found = await self._await_startup(self._scan_tool_paths(XEDIT_COMMON_PATHS, "SSEEdit.exe"))
                 if found:
                     xedit_exe = found
-                    local_cfg.xedit_exe = str(found)
+                    escribir_campo(local_cfg, "xedit_exe", str(found))
                     config_changed = True
 
             instance_id = vfs_instance_id(mo2_root)
@@ -1432,14 +1433,24 @@ class AppContext:
             "pandora_exe": "pandora_exe",
             "bodyslide_exe": "bodyslide_exe",
             "telegram_chat_id": "telegram_chat_id",
+            "ngio_mods": "ngio_mods",
+            "community_shaders_mods": "community_shaders_mods",
         }
+
+        list_fields = {"ngio_mods", "community_shaders_mods"}
 
         for legacy_field, toml_field in field_map.items():
             legacy_val = getattr(legacy, legacy_field, None)
             if legacy_val:
                 current_toml_val = toml_cfg._data.get(toml_field, "")
                 if not current_toml_val:
-                    toml_cfg._data[toml_field] = str(legacy_val)
+                    if legacy_field in list_fields:
+                        if isinstance(legacy_val, list) and all(isinstance(item, str) for item in legacy_val):
+                            toml_cfg._data[toml_field] = list(legacy_val)
+                        else:
+                            logger.warning("CFG-01: Ignoring malformed legacy list field %s.", legacy_field)
+                    else:
+                        toml_cfg._data[toml_field] = str(legacy_val)
 
         # Migrate first_run flag
         if not legacy.first_run:

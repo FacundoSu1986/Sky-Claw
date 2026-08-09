@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextvars
 import logging
 import os
+import pathlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -174,6 +175,11 @@ RITUAL_INSTALLER_MAP: dict[str, str] = {
     # `test_skse_es_gui_only_y_no_lo_alcanza_el_agente_llm` (tests/test_ritual_install.py)
     # congela el recorte por igualdad literal.
     "skse": "ensure_skse",
+    # Community Shaders vive en AMBAS superficies (agente LLM y GUI, clase NGIO):
+    # la aprobación de descarga corre por el mismo modal HITL category="download".
+    # `test_ritual_installer_map_congela_las_tools_autoinstalables` congela la
+    # presencia por igualdad literal.
+    "community_shaders": "ensure_community_shaders",
 }
 
 #: Ritual tool key → the resolver env var seeded with the freshly installed exe path,
@@ -440,6 +446,11 @@ async def run_ritual_install(
     into a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
     cannot crash the loop.
     """
+    # Espejo del clear de ``run_ritual``: el install NO produce reporte de
+    # preflight (solo el sort de LOOT lo hace), así que un panel rojo remanente
+    # de un ritual previo no puede quedar asociado a esta tarjeta de instalación
+    # (defecto #1 del repo: dos superficies hermanas, un reset que solo hacía una).
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, None)
     method_name = ritual_installer_name(tool_key)
     if method_name is None:
         store.set(
@@ -462,6 +473,7 @@ async def run_ritual_install(
         )
         return
 
+    cs_kwargs: dict[str, object] | None = None
     if tool_key == "skse":
         # SKSE se instala DENTRO del directorio del juego, no en el directorio
         # genérico de tools (`app_context.install_dir`, donde van LOOT/xEdit/
@@ -482,8 +494,48 @@ async def run_ritual_install(
                 },
             )
             return
+    elif tool_key == "community_shaders":
+        # Community Shaders se instala como mods de MO2 (clase NGIO, no SKSE):
+        # requiere mo2_root + ruta/edición/versión del juego del snapshot y el
+        # NexusDownloader de app_context (Address Library y Engine Fixes viven
+        # en Nexus). La firma no es ensure(install_dir, session): se despacha
+        # con kwargs y se maneja list[ModInstallResult].
+        from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+
+        snapshot = store.get(STORE_KEY_ENV)
+        mo2 = getattr(snapshot, "mo2", None)
+        mo2_root = getattr(mo2, "path", None)
+        skyrim = getattr(snapshot, "skyrim", None)
+        game_dir = getattr(skyrim, "path", None)
+        if mo2_root is None:
+            store.set(
+                STORE_KEY_RITUAL_FEEDBACK,
+                {
+                    "text": "No se detectó Mod Organizer 2: corré el escaneo de entorno primero.",
+                    "type": "negative",
+                },
+            )
+            return
+        if game_dir is None:
+            store.set(
+                STORE_KEY_RITUAL_FEEDBACK,
+                {
+                    "text": "No se detectó la carpeta de Skyrim: corré el escaneo de entorno primero.",
+                    "type": "negative",
+                },
+            )
+            return
+        network = getattr(app_context, "network", None)
+        downloader = getattr(network, "downloader", None) if network is not None else None
+        install_dir = pathlib.Path(mo2_root) / "mods"
+        cs_kwargs = {
+            "edition": getattr(skyrim, "edition", None),
+            "game_version": getattr(skyrim, "version", "") or "",
+            "game_dir": game_dir,
+        }
     else:
         install_dir = getattr(app_context, "install_dir", None)
+        cs_kwargs = None
     session = getattr(app_context, "session", None)
     ensure = getattr(installer, method_name)
 
@@ -493,7 +545,10 @@ async def run_ritual_install(
     # aprobación de descarga con la pestaña que apretó "Instalar".
     tab_token = _ritual_tab_id.set(tab_id)
     try:
-        result = await ensure(install_dir, session)
+        if cs_kwargs is not None:
+            result = await ensure(install_dir, session, downloader, **cs_kwargs)
+        else:
+            result = await ensure(install_dir, session)
     except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
         logger.exception("Ritual install %s (%s) failed", tool_key, method_name)
         store.set(
@@ -515,6 +570,61 @@ async def run_ritual_install(
     exe_path = getattr(result, "exe_path", None)
     if env_name and exe_path:
         os.environ[env_name] = str(exe_path)
+
+    if tool_key == "community_shaders":
+        # Contrato NGIO: el orquestador activa en modlist.txt con estos nombres;
+        # se persisten igual que en la rama del agente (`community_shaders_mods`).
+        mods = list(result) if result is not None else []
+        nombres = [m.mod_name for m in mods]
+        config_path = getattr(app_context, "config_path", None)
+        # Sin config_path (boot incompleto) la persistencia NO corre: la
+        # operación también es parcial y se degrada igual que en el camino que
+        # lanza — cubrir solo la excepción dejaba vivo el éxito visual que este
+        # bloque vino a cerrar (review adversarial del PR #445).
+        persistencia_ok = config_path is not None
+        if config_path is not None:
+            try:
+                # `persistir_campo_bloqueante` despacha por el formato REAL del
+                # archivo: `AppContext.config_path` es el TOML canónico
+                # (`Config.DEFAULT_CONFIG_FILE`), no el JSON legacy. Leerlo con
+                # el parser equivocado devolvía defaults y el guardado
+                # posterior reescribía el archivo entero — la config del
+                # usuario se perdía sin un solo error visible. La variante
+                # `_bloqueante` además serializa con `setup_tools` del agente
+                # (mismo config.toml, mismo proceso): sin eso, un ritual de GUI
+                # y un `setup_tools` concurrentes podían pisarse el campo que
+                # cada uno acababa de escribir (review PR #444).
+                from sky_claw.local.local_config import persistir_campo_bloqueante
+
+                await persistir_campo_bloqueante(config_path, "community_shaders_mods", nombres)
+            except Exception:  # noqa: BLE001 — la instalación ya tuvo éxito; no romper el feedback
+                logger.exception("No se pudo persistir community_shaders_mods en %s", config_path)
+                persistencia_ok = False
+        if persistencia_ok:
+            store.set(
+                STORE_KEY_RITUAL_FEEDBACK,
+                {
+                    "text": f"«{tool_key}» instalado correctamente: {', '.join(nombres) or 'sin componentes'}.",
+                    "type": "positive",
+                },
+            )
+        else:
+            # El install en disco SÍ ocurrió, pero sin el campo persistido el
+            # orquestador no puede activar los mods en modlist.txt. Reportarlo
+            # como éxito total convierte una operación parcial en éxito visual
+            # (invariante GUI); el operador necesita saber que debe reintentar.
+            store.set(
+                STORE_KEY_RITUAL_FEEDBACK,
+                {
+                    "text": (
+                        f"«{tool_key}» instalado en disco ({', '.join(nombres) or 'sin componentes'}), "
+                        "pero no se pudo persistir la configuración: el orquestador no podrá "
+                        "activar los mods hasta que se reintente la instalación."
+                    ),
+                    "type": "warning",
+                },
+            )
+        return
 
     store.set(
         STORE_KEY_RITUAL_FEEDBACK,

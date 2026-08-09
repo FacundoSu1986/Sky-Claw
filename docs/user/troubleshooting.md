@@ -9,8 +9,8 @@
 > `sky_claw/app_context.py`, `sky_claw/app/db/` y
 > `sky_claw/local/mo2/`.
 >
-> **Última verificación:** 2026-07-26 sobre una rama basada en
-> `origin/main` `6cb4024`.
+> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
+> `e8427063`.
 
 ## Primero: preservar evidencia
 
@@ -34,6 +34,27 @@ No repetir una operación mutante a ciegas. Guardar:
 | Timeout | Log del runner, `worker_exit` y árbol de procesos | Esperar cierre acotado; no relanzar si quedan procesos |
 | Rollback incompleto | Journal y backup preservado | Detener escritores y escalar a recuperación manual |
 | SQLite ocupado | Logs de lifecycle y procesos | Cerrar productores normalmente; no borrar WAL/SHM |
+
+## Community Shaders
+
+Los cuatro primeros fallos de la tabla abortan **antes** de descargar: no hay archivos
+parciales que limpiar. Los dos últimos ocurren durante o después de la descarga: un rechazo
+limpia únicamente el staging temporal; un aviso de persistencia conserva los mods ya
+instalados. El contexto completo está en
+[Community Shaders](community_shaders.md).
+
+| Síntoma | Evidencia | Acción reversible |
+|---|---|---|
+| Versión de Skyrim no soportada | Versión y edición informadas en el mensaje del error | Comprobar la versión real del ejecutable; no forzar la instalación sobre una versión intermedia |
+| SKSE ausente | Raíz del juego sin loader de SKSE | Instalar SKSE primero desde su propia tarjeta del Panel y repetir el escaneo |
+| ENB detectado | `enbseries.ini` o el directorio `enbseries/` en la raíz del juego | Decidir entre ENB y Community Shaders; Sky-Claw no desinstala ENB |
+| Preloader de Engine Fixes ausente | Raíz del juego sin el DLL del preloader | Instalar ese archivo aparte en la raíz del juego y repetir |
+| Mods instalados con aviso de persistencia | Estado administrado en `~/.sky_claw/config.toml` y el aviso de la operación | Repetir la instalación: los componentes ya presentes se saltan. No editar la clave a mano ni borrar los mods |
+| Descarga rechazada por integridad o tamaño | Mensaje del descargador y `sky_claw.log` | No repetir a ciegas: un desajuste de hash o un techo superado no se arregla reintentando. Preservar el log y verificar el origen |
+
+Si el escaneo sigue mostrando la tarjeta como no instalada después de una instalación
+correcta, comprobar que el mod conserve **tanto** su DLL como su directorio de shaders:
+faltando uno, Sky-Claw no lo cuenta como instalado a propósito.
 
 ## Logs
 
