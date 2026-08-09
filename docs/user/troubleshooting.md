@@ -37,9 +37,10 @@ No repetir una operación mutante a ciegas. Guardar:
 ## Community Shaders
 
 Los cuatro primeros fallos de la tabla abortan **antes** de descargar: no hay archivos
-parciales que limpiar. Los dos últimos ocurren durante o después de la descarga: un rechazo
-limpia únicamente el staging temporal; un aviso de persistencia conserva los mods ya
-instalados. El contexto completo está en
+parciales que limpiar. Los últimos ocurren durante o después de la descarga: un rechazo
+limpia únicamente el staging temporal, y un fallo al guardar el registro conserva los
+mods ya instalados. Ninguno de estos dos impide usar Community Shaders: los mods están en
+disco y la activación en MO2 es manual de todos modos. El contexto completo está en
 [Community Shaders](community_shaders.md).
 
 | Síntoma | Evidencia | Acción reversible |
@@ -48,7 +49,8 @@ instalados. El contexto completo está en
 | SKSE ausente | Raíz del juego sin loader de SKSE | Instalar SKSE primero desde su propia tarjeta del Panel y repetir el escaneo |
 | ENB detectado | `enbseries.ini` o el directorio `enbseries/` en la raíz del juego | Decidir entre ENB y Community Shaders; Sky-Claw no desinstala ENB |
 | Preloader de Engine Fixes ausente | Raíz del juego sin el DLL del preloader | Instalar ese archivo aparte en la raíz del juego y repetir |
-| Mods instalados con aviso de persistencia | Estado administrado en `~/.sky_claw/config.toml` y el aviso de la operación | Repetir la instalación: los componentes ya presentes se saltan. No editar la clave a mano ni borrar los mods |
+| Mods instalados con aviso de persistencia (sólo GUI) | Estado administrado en `~/.sky_claw/config.toml` y el aviso de la operación | Los mods son utilizables: activarlos en MO2. Repetir la instalación si querés recuperar el registro; no editar la clave a mano ni borrar los mods |
+| El agente informa la instalación como correcta pero falta el registro | `community_shaders_mods` ausente en `~/.sky_claw/config.toml` | Comportamiento conocido del camino LLM: no bloquea nada. Activar los mods en MO2 y repetir desde la GUI si querés el registro |
 | Descarga rechazada por integridad o tamaño | Mensaje del descargador y `sky_claw.log` | No repetir a ciegas: un desajuste de hash o un techo superado no se arregla reintentando. Preservar el log y verificar el origen |
 
 Si el escaneo sigue mostrando la tarjeta como no instalada después de una instalación
