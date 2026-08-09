@@ -9,8 +9,7 @@
 > `sky_claw/app_context.py`, `sky_claw/app/db/` y
 > `sky_claw/local/mo2/`.
 >
-> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
-> `e8427063`.
+> **Última verificación:** 2026-08-09 sobre `origin/main` `272d4953`.
 
 ## Primero: preservar evidencia
 

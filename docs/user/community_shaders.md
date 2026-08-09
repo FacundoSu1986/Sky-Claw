@@ -11,8 +11,7 @@
 > `sky_claw/app/gui/views/forge_dashboard.py`,
 > `sky_claw/local/discovery/scanner.py` y `sky_claw/local/local_config.py`.
 >
-> **Última verificación:** 2026-08-08 sobre `fix/dyndolod-cli-contrato-asistida`
-> `e8427063`.
+> **Última verificación:** 2026-08-09 sobre `origin/main` `272d4953`.
 
 ## Objetivo
 
