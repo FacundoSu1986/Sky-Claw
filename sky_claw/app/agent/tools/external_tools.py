@@ -32,9 +32,17 @@ def _error_result(message: str) -> dict[str, Any]:
 # resultado a 4000 chars y un JSON de seis tools con `mod_dirs`/`versions` ya es
 # voluminoso: un JSON cortado a la mitad le sirve al LLM menos que el defecto que
 # este aviso vino a cerrar.
+# Dice sólo lo que se verificó: que el guardado no se aplicó. NO afirma que la
+# config quede sin el valor — los dos `save` escriben atómicamente (temporal +
+# `os.replace`), así que un fallo deja intacto lo que ya estaba, y una tool con
+# `already_existed=True` cuyo campo ya se había persistido en una corrida previa
+# sigue teniéndolo. Desde acá no se puede distinguir ese caso del genuino sin
+# releer el archivo, así que el aviso no promete cuál de los dos es (review Qodo
+# #455). Ancla del save atómico: `test_guardar_config_no_trunca_el_archivo_si_la
+# _escritura_falla` en `tests/test_local_config_persistencia.py`.
 _AVISO_PERSISTENCIA = (
-    "Instalado en disco, pero no se pudo guardar la configuración: el registro no "
-    "sobrevive al reinicio. Reintentar la instalación es seguro (es idempotente)."
+    "Instalado en disco, pero no se pudo guardar la configuración: lo que esta operación "
+    "escribió no quedó aplicado. Reintentar la instalación es seguro (es idempotente)."
 )
 
 # Fallos de persistencia CONOCIDOS, los que la capa de config documenta como
@@ -98,7 +106,9 @@ async def setup_tools(
         de persistencia CONOCIDO (:data:`_FALLOS_DE_PERSISTENCIA`) ya no se
         propaga como excepción — eso perdía el resultado entero. Uno desconocido
         sí, tras loggearlo: disfrazar un bug de la capa de config de "no pude
-        guardar en disco" afirma un estado que nadie verificó.
+        guardar en disco" afirma un estado que nadie verificó. Por la misma
+        razón el aviso dice que el guardado no se aplicó y no que la clave falte
+        en el archivo: eso último no se puede saber sin releerlo.
     """
     from sky_claw.local.local_config import escribir_campo, guardar_config_bloqueante
     from sky_claw.local.tools_installer import ToolInstallError

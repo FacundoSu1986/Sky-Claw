@@ -14,7 +14,9 @@ había cerrado:
   informaba éxito total, con el campo nunca escrito.
 
 Los dos desenlaces son la misma operación parcial: las tools están en disco pero
-el path/registro que las hace utilizables no sobrevive al reinicio.
+el path/registro que las hace utilizables no llegó a guardarse. El aviso NO
+afirma que la clave falte en el archivo — los `save` son atómicos, así que un
+fallo deja intacto lo que ya estaba (review Qodo #455).
 
 Estos tests enumeran en vez de muestrear (ver "La regla que más se viola" en
 `AGENTS.md`). El ancla por AST congela la tabla completa de ramas de

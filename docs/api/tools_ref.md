@@ -38,7 +38,10 @@ recorte está congelado por igualdad literal en `tests/test_ritual_install.py`.
 Una tool de `setup_tools` que quedó instalada en disco pero cuyo campo de configuración
 no se pudo guardar se devuelve con `success: false` y un mensaje que lo dice, conservando
 sus campos estructurados (`status`, `exe_path`, `mods`): la operación fue parcial, y
-reportarla como éxito total esconde que el path o el registro no sobreviven al reinicio.
+reportarla como éxito total esconde que lo que esa operación escribió no quedó aplicado.
+El aviso no afirma que la clave falte en el archivo: los `save` son atómicos, así que un
+fallo deja intacto lo que ya estaba y una tool ya registrada en una corrida previa lo
+sigue estando.
 Eso cubre los fallos de persistencia conocidos —disco, permisos, config ilegible o no
 persistible—, que ya no se propagan como excepción. Uno desconocido sí se relanza tras
 loggearse: disfrazarlo de fallo de disco afirmaría un estado que nadie verificó. El
