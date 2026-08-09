@@ -1,10 +1,5 @@
 # Pandora Managed Output Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use
-> superpowers:subagent-driven-development (recommended) or
-> superpowers:executing-plans to implement this plan task-by-task. Steps use
-> checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Hacer que toda ejecución de Pandora escriba únicamente en
 `<game_path resuelto>/Pandora_Output`, con rollback y reconciliación sobre ese
 mismo árbol y sin bypass desde el agente LLM.
@@ -767,8 +762,8 @@ E:\Skyclaw_Main_Sync\.venv\Scripts\python.exe -m pytest `
   --basetemp E:\pytest-tmp\pandora-managed-output-green-5
 npx --yes markdownlint-cli2@0.18.1 `
   docs/pending_ooda_status.md `
-  docs/superpowers/specs/2026-07-31-pandora-managed-output-design.md `
-  docs/superpowers/plans/2026-07-31-pandora-managed-output.md
+  docs/design/specs/2026-07-31-pandora-managed-output-design.md `
+  docs/design/plans/2026-07-31-pandora-managed-output.md
 ```
 
 Expected: pytest PASS y markdownlint `0 error(s)`.
@@ -829,8 +824,8 @@ E:\Skyclaw_Main_Sync\.venv\Scripts\python.exe -m ruff format --check sky_claw/ t
 E:\Skyclaw_Main_Sync\.venv\Scripts\python.exe -m mypy sky_claw/
 npx --yes markdownlint-cli2@0.18.1 `
   docs/pending_ooda_status.md `
-  docs/superpowers/specs/2026-07-31-pandora-managed-output-design.md `
-  docs/superpowers/plans/2026-07-31-pandora-managed-output.md
+  docs/design/specs/2026-07-31-pandora-managed-output-design.md `
+  docs/design/plans/2026-07-31-pandora-managed-output.md
 ```
 
 Expected: Ruff check PASS, Ruff format PASS, mypy PASS y markdownlint

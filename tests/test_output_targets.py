@@ -200,7 +200,7 @@ def test_dyndolod_salida_determinista_bajo_la_raiz(tmp_path: pathlib.Path) -> No
         )
     )
     root = runner._config.output_root
-    assert root == game.resolve() / "DynDOLOD"
+    assert root == game.resolve() / "Sky-Claw" / "DynDOLOD"
 
     # Sin nada en disco: los stagings se resuelven como candidatos bajo la raíz.
     assert runner._find_dyndolod_output() == root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
@@ -260,13 +260,99 @@ def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
     targets = svc._permission_targets()
     root = runner._config.output_root
     assert root is not None
-    assert root.parent in targets  # para poder CREAR la raíz en el primer run
     assert root in targets
     assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME in targets
     assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME in targets
-    # Las raíces ajenas (dir del exe / raíz MO2 / cwd) ya no se sondean.
-    assert exe_dir not in targets
+
+    # Para poder CREAR la raíz en el primer run hay que sondear un eslabón que
+    # EXISTA: con la raíz anidada bajo Sky-Claw/, `root.parent` tampoco está en
+    # disco todavía y el checker se lo saltearía, dejando mudo justo el sondeo
+    # que este assert cubre.
+    assert game in targets
+    assert not root.parent.exists()
+
+    # El dir del exe SÍ se sondea: no es staging de salida, pero es donde la
+    # herramienta escribe su log —el que `_leer_log` lee para dar el veredicto—
+    # y su INI. Con el tool en un árbol de solo lectura, omitirlo dejaba el
+    # preflight verde y el post-check sin evidencia.
+    assert exe_dir in targets
+    assert exe_dir / "Logs" in targets
+
+    # La raíz MO2 sigue fuera: con `-o:` dejó de ser raíz de staging.
     assert mo2 not in targets
+
+
+def test_preflight_no_sondea_fuera_del_juego_si_el_game_path_no_existe(tmp_path: pathlib.Path) -> None:
+    """Regresión (review adversarial #441): el ascenso corta en el dir del juego.
+
+    ``_primer_ancestro_existente`` sube hasta el primer directorio que existe. Con
+    un game path mal configurado o todavía no montado, eso llegaba hasta la raíz
+    del volumen: el preflight sondeaba —y aprobaba— un directorio ajeno al juego,
+    dando verde sobre una configuración inválida que recién fallaba después.
+    """
+    # Con ``..`` en la ruta A PROPÓSITO: `root` se construye sobre
+    # `game.resolve()` y `Path.__eq__` es léxico, así que un tope crudo no era
+    # ancestro literal de la raíz y el corte no disparaba nunca (review
+    # adversarial #441). El repo configura rutas así en sus propios tests.
+    game = tmp_path / "segmento" / ".." / "no-montado" / "Skyrim"  # no existe
+    mo2 = tmp_path / "mo2"
+    (mo2 / "mods").mkdir(parents=True)
+    exe_dir = tmp_path / "dyndolod"
+    exe_dir.mkdir()
+    exe = exe_dir / "DynDOLODx64.exe"
+    exe.write_text("", encoding="utf-8")
+
+    resolver = _resolver(game=game, mo2=mo2)
+    resolver.get_mo2_mods_path.return_value = mo2 / "mods"
+    resolver.get_dyndolod_exe.return_value = exe
+
+    svc = DynDOLODPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=resolver,
+        event_bus=MagicMock(),
+    )
+
+    targets = svc._permission_targets()
+    assert tmp_path not in targets, "no se sondea por encima del directorio del juego"
+    assert not any(t == pathlib.Path(t.anchor) for t in targets), "nunca la raíz del volumen"
+
+
+def test_preflight_no_sondea_el_padre_existente_del_juego_ausente(tmp_path: pathlib.Path) -> None:
+    """Regresión (review adversarial #441): el corte va ANTES que la existencia.
+
+    Evaluar ``exists()`` primero devolvía el primer ancestro existente aunque
+    estuviera FUERA del árbol del juego. El caso no es exótico —disco montado y
+    carpeta del juego ausente, o un typo en un path profundo—: acá el padre del
+    juego SÍ existe y el juego no, y el sondeo terminaba aprobando ese directorio
+    foráneo. Es el mismo verde sobre configuración inválida, por tercera vía.
+    """
+    montado = tmp_path / "disco-montado"
+    montado.mkdir()  # existe
+    game = montado / "Skyrim"  # NO existe
+    mo2 = tmp_path / "mo2"
+    (mo2 / "mods").mkdir(parents=True)
+    exe_dir = tmp_path / "dyndolod"
+    exe_dir.mkdir()
+    exe = exe_dir / "DynDOLODx64.exe"
+    exe.write_text("", encoding="utf-8")
+
+    resolver = _resolver(game=game, mo2=mo2)
+    resolver.get_mo2_mods_path.return_value = mo2 / "mods"
+    resolver.get_dyndolod_exe.return_value = exe
+
+    svc = DynDOLODPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=resolver,
+        event_bus=MagicMock(),
+    )
+
+    targets = svc._permission_targets()
+    assert montado not in targets, "el padre del juego está fuera del árbol del juego"
+    assert tmp_path not in targets
 
 
 def test_dyndolod_tiene_una_raiz_administrada_unica(tmp_path: pathlib.Path) -> None:
@@ -278,7 +364,7 @@ def test_dyndolod_tiene_una_raiz_administrada_unica(tmp_path: pathlib.Path) -> N
     """
     game = tmp_path / "segmento" / ".." / "game"
 
-    assert dyndolod_output_target(game=game) == game.resolve() / "DynDOLOD"
+    assert dyndolod_output_target(game=game) == game.resolve() / "Sky-Claw" / "DynDOLOD"
     assert dyndolod_output_target(game=None) is None
 
 
@@ -294,8 +380,8 @@ def test_dyndolod_staging_cuelga_de_la_raiz(tmp_path: pathlib.Path) -> None:
     root = dyndolod_output_target(game=game)
     assert root is not None
 
-    assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME == game.resolve() / "DynDOLOD" / "DynDOLOD_Output"
-    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME == game.resolve() / "DynDOLOD" / "TexGen_Output"
+    assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME == game.resolve() / "Sky-Claw" / "DynDOLOD" / "DynDOLOD_Output"
+    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME == game.resolve() / "Sky-Claw" / "DynDOLOD" / "TexGen_Output"
 
 
 # ---------------------------------------------------------------------------

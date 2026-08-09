@@ -153,6 +153,28 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 
 **Outputs:** Compiled behavior files injected into the engine's behavior graph.
 
+**Verdict:** The exit code does NOT report the patching result. Pandora is
+error-tolerant by design — on a malformed node it reverts that node to its
+original state and keeps generating the rest, so it exits 0 having silently
+dropped animation mods. That is exactly the "stale behaviors" state described
+above, reached while reporting success. `Engine.log` is the only signal of what
+was actually applied: `ERROR`/`FATAL` invalidate the run, `WARN` is reported but
+does not decide.
+
+If `Engine.log` is missing or unreadable, the runner MUST log that inability —
+never silently treat it as a clean pass — and fall back to the exit-code
+behavior described above. Because the log's location is itself an assumption
+(not yet verified on a real rig), an unreadable log is also a signal to confirm
+the path: run the pending smoke test (U-04) to verify where Pandora actually
+writes `Engine.log`. Which exact severity Pandora uses for a node reversion is
+**not verified against a real rig**:
+`ERROR`'s own definition ("prevented [this] work from completing") reads as the
+more literal match, so today's `ERROR`/`FATAL` gate is believed to cover it —
+but if a real run shows reversions logged as `WARN` instead, this verdict does
+NOT close the "stale behaviors" scenario and the gate needs to grow. See
+`docs/pending_ooda_status.md` (Contrato de veredicto de éxito) for the pending
+rig confirmation.
+
 ---
 
 ### 2.5 LOOT (Load Order Optimisation Tool)
@@ -243,8 +265,9 @@ The pipeline is a strict DAG. Each stage consumes the output of the previous sta
 **Procedure (STAGE 9 IS ASSISTED — the tools have NO headless mode):**
 1. TexGen and DynDOLOD are GUI applications (PE Subsystem 2): they never write to stdout/stderr, so an exit-code-only success check is a false green. Sky-Claw launches them with the verified vector (`dyndolod.info/Help/Command-Line-Argument` + `xeInit.pas`): the loose game-mode switch `-sse` (or `-tes5vr` for VR) plus `-o:"<root>"` (administered output root), `-d:"<Data>"`, `-t:"<temp>"`, and — when configured — explicit `-m:"<ini dir>"` and `-p:"<plugins.txt>"`. The old vector (`-game SSE`, `-p <preset>`, bare `-t`, `--expert`) does not exist and is silently ignored; `--expert` is `Expert=1` in the INI, not an argument.
 2. The preset (Low/Med/High) and worldspace selection are GUI buttons chosen by the human in the wizard. Sky-Claw publishes `assisted=True` with operator instructions and waits; the 4h timeout covers the interaction window by design. `-m:`/`-p:` explicit are REQUIRED on rigs whose Documents folder is OneDrive-redirected: without them the tool dies with `Fatal: Could not find ini` (verified on rig 2026-08-05).
-3. Success is decided by exit code AND artifact at the `-o:` root (`DynDOLOD.esp` as a file for DynDOLOD) AND no error lines in `Logs/{Tool}_{modo}_log.txt` — never by exit code alone. A missing or unreadable log is a warning, not a failure: the hard gate is the artifact at the `-o:` root.
-4. Deploy the packaged results and insert them as the ABSOLUTE FINAL entry of the load order to guarantee overwrite priority.
+3. Success is decided by exit code AND artifact at the `-o:` root (`DynDOLOD.esp` as a file for DynDOLOD) AND no error lines in `Logs/{Tool}_{modo}_log.txt` — never by exit code alone. A missing or unreadable log is a warning, not a failure: the hard gate is the artifact at the `-o:` root. **The artifact must also be FRESH** — the file that DECIDES the verdict (`DynDOLOD.esp` for DynDOLOD; the most recent regular file in the staging for TexGen) has to have changed during the run, compared against a signature taken before launch. A GUI app the operator closed mid-way exits 0 without flushing a log, so without this the previous run's output satisfies the artifact check and stale LODs get packaged as a fresh result. The staging is not cleaned or moved aside between runs, so its mere presence proves nothing. Signing the whole *tree* is not enough either: a run that rewrites some LOD meshes and dies before regenerating the plugin changes the tree while leaving another run's `.esp` in place. Two limits are known and NOT closed, both for the same reason — there is no completeness marker other than the log, and the log may legitimately be missing: (a) TexGen has no named artifact, so an aborted run that wrote some textures still counts as fresh; (b) for DynDOLOD, "the plugin changed" equals "the run completed" **only if the tool persists `DynDOLOD.esp` at the end of its work** — an assumption nobody has verified against the binary. If it wrote the plugin early instead, a run closed after that point would pass the gate with a half-generated tree. Anyone with a real rig: confirm when `DynDOLOD.esp` is written, and this criterion can be tightened.
+4. The administered output root is `<game>/Sky-Claw/DynDOLOD`. It hangs off the `Sky-Claw/` namespace on purpose: bare `<game>/DynDOLOD` is the folder the DynDOLOD Standalone archive extracts to, so an operator with the tool installed there would get its own installation directory back as `-o:`. Sky-Claw's write-permission preflight probes that root (plus the first existing ancestor, to prove the root can be CREATED on the first run) **and the executable's own directory**, where the tool writes its INI and the `Logs/` that step 3 reads.
+5. Deploy the packaged results and insert them as the ABSOLUTE FINAL entry of the load order to guarantee overwrite priority.
 
 **Outputs:** Packaged visual geographic memory data, spatial `.esp`/`.esm` plugins, and temporal visual injection.
 
@@ -301,6 +324,7 @@ To escape the paralyzing effect of the Rule of One, two patchers are used and th
 | DynDOLOD: "Resources SE version information not found" | DLL hierarchy wrong | Place DynDOLOD DLL NG folder BENEATH Resources SE |
 | DynDOLOD: engine crash / pointer overflow | Reference limit exceeded | Set `Temporary=1` in `DynDOLOD_SSE.ini` |
 | No Grass In Objects: empty output (zero-bounds) | Third-party mod has null bounds `(0,0,0)` | Purge broken mesh via Creation Kit |
+| Pandora: exit code 0 but animation mods silently missing (T-poses in game) | Engine is error-tolerant: it reverts the invalid node and keeps going, so the exit code does not report the patching result | Read `Engine.log`; `ERROR`/`FATAL` lines invalidate the run. Wired in `pandora_runner._leer_engine_log` — do NOT derive Pandora's verdict from the exit code alone |
 | Grass clipping through roads after DynDOLOD | Grass precache ran AFTER DynDOLOD | Re-run pipeline: precache FIRST, DynDOLOD LAST |
 
 ---

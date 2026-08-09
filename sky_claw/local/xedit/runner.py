@@ -95,9 +95,20 @@ class XEditScriptError(XEditError):
 
 
 class XEditWriteError(XEditError):
-    """Error durante operación de escritura en plugin."""
+    """Error durante operación de escritura en plugin.
 
-    pass
+    ``execute_patch()`` la lanza SIEMPRE que ``ScriptExecutionResult.success`` es
+    ``False`` — nunca retorna un resultado fallido, así que este es el único
+    punto por donde un caller ve el detalle real de por qué falló (exit code,
+    errores parseados). Sin ``result`` adjunto, ese detalle se pierde apenas la
+    excepción cruza el ``async with`` del caller y cae en un manejador genérico
+    (review CodeRabbit, PR #439: un cruce ``exit_code == 0 and not errors``
+    escrito en el caller nunca se ejercita en producción por esta misma razón).
+    """
+
+    def __init__(self, message: str, *, result: ScriptExecutionResult | None = None) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 class XEditTimeoutError(XEditError, RuntimeError):
@@ -1095,7 +1106,7 @@ class XEditRunner:
         if not result.success:
             error_msg = f"Patch execution failed: {result.errors}"
             logger.error(error_msg)
-            raise XEditWriteError(error_msg)
+            raise XEditWriteError(error_msg, result=result)
 
         logger.info(
             "Patch executed successfully: %d records processed in %.2fs",

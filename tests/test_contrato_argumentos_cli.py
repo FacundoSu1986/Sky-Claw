@@ -748,20 +748,48 @@ async def test_dyndolod_modo_vr_se_fija_por_config_no_por_ruta(tmp_path: pathlib
         )
 
     # SSE explícito aunque el path contenga "VR": la ruta NO decide.
-    sse = _runner(tmp_path / "CVR" / "Skyrim Special Edition", "sse")
+    sse = _runner(tmp_path / "a" / "CVR" / "Skyrim Special Edition", "sse")
     assert sse._build_xedit_args(None)[0] == "-sse"
     assert sse._modo() == "SSE"
 
     # VR explícito: switch suelto y nombre de log TES5VR.
-    vr = _runner(tmp_path / "Skyrim VR", "tes5vr")
+    vr = _runner(tmp_path / "b" / "Skyrim VR", "tes5vr")
     assert vr._build_xedit_args(None)[0] == "-tes5vr"
     assert vr._modo() == "TES5VR"
 
-    # Default inferido (retrocompat): instalaciones reales de VR se detectan solas.
-    inferido_vr = _runner(tmp_path / "Skyrim VR 2", None)
-    assert inferido_vr._build_xedit_args(None)[0] == "-tes5vr"
-    inferido_sse = _runner(tmp_path / "Skyrim Special Edition 2", None)
-    assert inferido_sse._build_xedit_args(None)[0] == "-sse"
+    # Default inferido: instalaciones reales de VR se detectan solas, por el
+    # NOMBRE de la carpeta del juego (con o sin espacio).
+    for nombre in ("Skyrim VR", "SkyrimVR"):
+        inferido_vr = _runner(tmp_path / f"vr-{nombre.replace(' ', '')}" / nombre, None)
+        assert inferido_vr._build_xedit_args(None)[0] == "-tes5vr"
+        assert inferido_vr._modo() == "TES5VR"
+
+    # Y el caso que el docstring del runner nombra como el bug: una instalación
+    # SSE colgada de un directorio con "VR" en el string, SIN override. El
+    # substring sobre la ruta entera la volcaba a -tes5vr en silencio, y de paso
+    # mandaba a `_modo()` a buscar un log *_TES5VR_log.txt que nunca existe:
+    # el post-check se quedaba sin evidencia y degradaba a artefacto-solo.
+    # Instalaciones VR reales con nombre NO canónico: exigir exactamente
+    # "SkyrimVR" cambiaba el falso positivo de abajo por un falso NEGATIVO —caían
+    # a -sse en silencio, generando LODs del mundo equivocado sobre datos VR
+    # (review adversarial #441). Se piden las dos marcas en el nombre.
+    for vr_no_canonico in ("Skyrim-VR", "VR Skyrim", "Skyrim VR - portable", "SkyrimVR Modded"):
+        inferido = _runner(tmp_path / f"nc-{vr_no_canonico.replace(' ', '_')}" / vr_no_canonico, None)
+        assert inferido._build_xedit_args(None)[0] == "-tes5vr", f"{vr_no_canonico} es una instalación VR"
+        assert inferido._modo() == "TES5VR"
+
+    # Y los ambiguos DENTRO del nombre de la carpeta del juego: comparar por
+    # substring sobre el nombre casaba `Skyrim CVR` y `Skyrim VRamDisk Edition`
+    # — el mismo error del substring sobre la ruta, más chico (review #441).
+    for sse_ambiguo in ("Skyrim CVR", "Skyrim VRamDisk Edition", "Skyrim SE - CVR build"):
+        inferido = _runner(tmp_path / f"amb-{sse_ambiguo.replace(' ', '_')}" / sse_ambiguo, None)
+        assert inferido._build_xedit_args(None)[0] == "-sse", f"{sse_ambiguo} no tiene `vr` como token"
+        assert inferido._modo() == "SSE"
+
+    for ambiguo in ("CVR", "VRamDisk", "SteamVR"):
+        inferido_sse = _runner(tmp_path / ambiguo / "Skyrim Special Edition", None)
+        assert inferido_sse._build_xedit_args(None)[0] == "-sse", f"{ambiguo} no es un marcador de VR"
+        assert inferido_sse._modo() == "SSE"
 
 
 async def test_pandora_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:

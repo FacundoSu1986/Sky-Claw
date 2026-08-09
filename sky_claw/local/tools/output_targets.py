@@ -78,6 +78,15 @@ BODYSLIDE_OUTPUT_DIR = "BodySlide_Output"
 #: en ``pandora_service`` y no en ``system_tools.run_pandora``.
 BODYSLIDE_MESHES_RESOURCE_ID = "bodyslide-meshes"
 
+#: Namespace de Sky-Claw dentro del directorio del juego. Todo destino
+#: administrado que lleve el nombre de una HERRAMIENTA cuelga de acá: sin el
+#: namespace, ``game/DynDOLOD`` es exactamente la carpeta a la que extrae el
+#: archivo DynDOLOD Standalone, así que ``-o:`` podía terminar apuntando al
+#: directorio de instalación de la propia herramienta. Los destinos que ya
+#: llevan sufijo ``_Output`` (Pandora, BodySlide) no lo necesitan: su nombre no
+#: colisiona con el de un tercero.
+SKY_CLAW_MANAGED_DIR = "Sky-Claw"
+
 #: Raíz administrada única de Sky-Claw para la salida de DynDOLOD/TexGen. Lleva
 #: el nombre de la FAMILIA, no el de una salida: la herramienta crea sus propias
 #: carpetas (``DynDOLOD_Output``/``TexGen_Output``) DENTRO del valor de ``-o:`` —
@@ -192,7 +201,17 @@ def dyndolod_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
     (``root/<StagingName>`` y, si la herramienta escribiera directo, ``root``);
     acá vive solo la raíz. ``None`` sin juego, mismo contrato que
     :func:`pandora_output_target`.
+
+    **Cuelga del namespace** ``Sky-Claw/`` porque el nombre pelado colisiona:
+    ``game/DynDOLOD`` es la carpeta a la que extrae el archivo DynDOLOD
+    Standalone, y un operador con la herramienta instalada ahí recibiría por
+    ``-o:`` su propio directorio de instalación. Hoy el gate de ``DynDOLOD.esp``
+    lo rechaza como salida, pero la raíz se declara ``manifest_target`` del ritual
+    y el plan de rollback move-aside es follow-up declarado: un move-aside sobre
+    una raíz que no es exclusivamente nuestra renombraría la instalación. La
+    exclusividad es la propiedad que ``rollback_reconciler`` usa para descubrir
+    destinos por escaneo — no es un detalle de nombre.
     """
     if game is None:
         return None
-    return game.resolve() / DYNDOLOD_OUTPUT_ROOT
+    return game.resolve() / SKY_CLAW_MANAGED_DIR / DYNDOLOD_OUTPUT_ROOT

@@ -236,6 +236,13 @@ MECANISMO_DE_MEDICION: dict[str, str] = {
     # build y el rollback descartaría el backup dando por buena una salida que no
     # existe.
     "sky_claw/local/tools/bodyslide_runner.py": "link-aware",
+    # Firma el staging de TexGen (cantidad de archivos, mtime máximo, bytes) para
+    # decidir si la corrida produjo salida: los binarios son GUI y salen con 0
+    # aunque el operador los cierre a mitad. Mide link-aware por el mismo motivo
+    # que BodySlide: su contraparte que borra es ``DirectoryRollback``, y si el
+    # recorrido entrara a un árbol ajeno por un junction, archivos de otro mod
+    # harían pasar por fresca una corrida que no escribió nada.
+    "sky_claw/local/tools/dyndolod_runner.py": "link-aware",
     "sky_claw/local/assets/asset_scanner.py": "sin-contraparte-que-borre",
     "sky_claw/local/tools/grass_cache_runner.py": "sin-contraparte-que-borre",
 }
