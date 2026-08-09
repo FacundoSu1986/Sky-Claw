@@ -62,7 +62,11 @@ class MO2PluginStateProvider:
         self._active_files: frozenset[str] = frozenset()
         self._inactive_files: frozenset[str] = frozenset()
         self._indexed = False
-        self._modlist_mtime: int | None = None
+        # Snapshot del CONTENIDO de modlist.txt: la fuente de verdad de
+        # activación. Comparar contenido (no solo mtime) hace la invalidación
+        # determinista — el mtime de archivos/directorios puede no refrescar
+        # inmediatamente en NTFS (caché de metadatos, visto en CI de Windows).
+        self._modlist_snapshot: str | None = None
         self._mods_root_mtime: int | None = None
         # Cache por mod: paths ya escaneados y mtime del directorio. Permite
         # reindexar SOLO los mods afectados (nuevos o mutados) en vez de
@@ -89,17 +93,25 @@ class MO2PluginStateProvider:
     def _estado_cambio(self) -> bool:
         """True si modlist.txt o el directorio mods/ cambiaron desde el último índice.
 
-        Dos stats baratos por consulta; el rglob solo alcanza a los mods cuyo
-        mtime individual cambió (instalación FOMOD = un mod nuevo, no un
-        barrido completo). Limitación declarada: mutaciones DENTRO de un mod
-        existente sin tocar modlist.txt ni crear/borrar mods no se detectan —
-        el flujo actual (instalar mods) no muta mods existentes.
+        El modlist se compara por CONTENIDO (la activación es la fuente de
+        verdad; inmune a mtimes no refrescados). El rglob solo alcanza a los
+        mods cuyo mtime individual cambió (instalación FOMOD = un mod nuevo,
+        no un barrido completo). Limitación declarada: mutaciones DENTRO de un
+        mod existente sin tocar modlist.txt ni crear/borrar mods no se
+        detectan — el flujo actual (instalar mods) no muta mods existentes.
         """
         if not self._indexed:
             return True
-        return self._modlist_mtime != _mtime_ns(
-            self._mo2_root / "profiles" / self._profile / _MODLIST_NAME
-        ) or self._mods_root_mtime != _mtime_ns(self._mo2_root / "mods")
+        if self._modlist_snapshot != self._leer_modlist_crudo():
+            return True
+        return self._mods_root_mtime != _mtime_ns(self._mo2_root / "mods")
+
+    def _leer_modlist_crudo(self) -> str:
+        """Contenido crudo de modlist.txt ("" si ilegible/ausente)."""
+        try:
+            return (self._mo2_root / "profiles" / self._profile / _MODLIST_NAME).read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            return ""
 
     # ------------------------------------------------------------------
     # Internals
@@ -135,7 +147,7 @@ class MO2PluginStateProvider:
             inactive.update(self._mod_paths.get(mod_name, ()))
         self._active_files = frozenset(active)
         self._inactive_files = frozenset(inactive)
-        self._modlist_mtime = _mtime_ns(self._mo2_root / "profiles" / self._profile / _MODLIST_NAME)
+        self._modlist_snapshot = self._leer_modlist_crudo()
         self._mods_root_mtime = _mtime_ns(self._mo2_root / "mods")
         self._indexed = True
 
