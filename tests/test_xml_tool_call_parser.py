@@ -86,3 +86,25 @@ def test_legacy_parser_module_reexports_canonical_symbols() -> None:
     assert hermes_parser.TOOL_CALL_RE is TOOL_CALL_RE
     assert hermes_parser.extract_tool_calls is extract_tool_calls
     assert hermes_parser.has_tool_calls is has_tool_calls
+
+
+@pytest.mark.parametrize(
+    "raw_arguments",
+    ["false", "0", '""', "[]", "null", "true", "1"],
+)
+def test_extract_arguments_falsy_no_objeto_raise(raw_arguments: str) -> None:
+    """Los arguments falsy o no-objeto deben rechazarse, no volverse {}."""
+    text = f'<tool_call>{{"name": "search_mod", "arguments": {raw_arguments}}}</tool_call>'
+    with pytest.raises(ValueError, match="'arguments' must be a JSON object"):
+        extract_tool_calls(text)
+
+
+@pytest.mark.parametrize(
+    "raw_arguments",
+    ["{}", '{"mod_name": "SKSE"}'],
+)
+def test_extract_arguments_objeto_valido(raw_arguments: str) -> None:
+    """Los objetos JSON (incluido vacío) son argumentos válidos."""
+    text = f'<tool_call>{{"name": "search_mod", "arguments": {raw_arguments}}}</tool_call>'
+    calls = extract_tool_calls(text)
+    assert isinstance(calls[0]["arguments"], dict)

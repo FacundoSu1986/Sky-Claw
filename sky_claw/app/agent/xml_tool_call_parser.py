@@ -18,7 +18,8 @@ def extract_tool_calls(text: str) -> list[dict[str, Any]]:
     """Extrae los bloques <tool_call> de *text* y analiza sus payloads JSON.
 
     Lanza:
-        ValueError: si algún bloque contiene JSON inválido o carece de la clave 'name'.
+        ValueError: si algún bloque contiene JSON inválido, carece de la clave 'name'
+            o su valor 'arguments' no es un objeto JSON.
     """
     results: list[dict[str, Any]] = []
     for raw in TOOL_CALL_RE.findall(text):
@@ -30,7 +31,7 @@ def extract_tool_calls(text: str) -> list[dict[str, Any]]:
             raise ValueError(f"<tool_call> payload must be a JSON object, got {type(parsed).__name__}: {raw!r}")
         if "name" not in parsed:
             raise ValueError(f"Missing 'name' key in tool call: {raw!r}")
-        arguments = parsed.get("arguments") or {}
+        arguments = parsed.get("arguments", {})
         if not isinstance(arguments, dict):
             raise ValueError(f"'arguments' must be a JSON object, got {type(arguments).__name__}")
         results.append({"name": str(parsed["name"]), "arguments": arguments})
