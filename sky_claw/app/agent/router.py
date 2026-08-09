@@ -18,11 +18,11 @@ import aiosqlite
 import pydantic
 
 from sky_claw.app.agent.context_manager import ContextManager
-from sky_claw.app.agent.hermes_parser import extract_tool_calls, has_tool_calls
 from sky_claw.app.agent.providers import LLMProvider, create_provider
 from sky_claw.app.agent.semantic_router import SemanticRouter
 from sky_claw.app.agent.token_budget import TokenBudgetManager
 from sky_claw.app.agent.token_circuit_breaker import TokenCircuitBreaker
+from sky_claw.app.agent.xml_tool_call_parser import extract_tool_calls, has_tool_calls
 from sky_claw.app.core.errors import (
     AgentOrchestrationError,
     SecurityViolationError,
@@ -76,7 +76,9 @@ def _prepare_tool_result_for_model(result: str) -> str:
 # Actual budget management is delegated to TokenBudgetManager.
 MAX_CONTEXT_MESSAGES = 20
 MAX_TOOL_ROUNDS = 10
-MAX_HERMES_RETRIES = 3
+MAX_XML_TOOL_RETRIES = 3
+# Alias legado: el nombre anterior era importable desde este módulo.
+MAX_HERMES_RETRIES = MAX_XML_TOOL_RETRIES
 
 # FASE 1.5.3: Default tool round timeout
 DEFAULT_TOOL_ROUND_TIMEOUT = 120.0
@@ -126,7 +128,7 @@ def _provider_chat_timeout(provider: LLMProvider) -> float:
     return DEFAULT_PROVIDER_CHAT_TIMEOUT
 
 
-_HERMES_TOOL_INSTRUCTIONS = (
+_XML_TOOL_INSTRUCTIONS = (
     "\n\nYou have access to the following tools. To call a tool, respond with a "
     '<tool_call> block containing a JSON object with "name" and "arguments" keys. '
     "Wait for the tool result before continuing. If no tool is needed, reply normally.\n\n"
@@ -238,8 +240,9 @@ class LLMRouter:
         vault: CredentialVault | None = None,
         gateway: Any | None = None,
         guardrail: AgentGuardrail | None = None,
-        hermes_mode: bool = False,
         lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
+        xml_tool_calling: bool | None = None,
+        hermes_mode: bool | None = None,
     ) -> None:
         if provider is None and not vault:
             # BUG-002 FIX: Validar API key antes de instanciar provider
@@ -277,9 +280,15 @@ class LLMRouter:
         self._context_manager = ContextManager(registry_db, mo2_profile)
         self._gateway = gateway
         self._guardrail = guardrail
-        self._hermes_mode = hermes_mode
-        if hermes_mode and tool_registry is None:
-            raise ValueError("hermes_mode=True requires a tool_registry")
+        if hermes_mode is not None:
+            if xml_tool_calling is not None and xml_tool_calling != hermes_mode:
+                raise ValueError("xml_tool_calling and hermes_mode cannot disagree")
+            xml_tool_calling = hermes_mode
+        if xml_tool_calling is None:
+            xml_tool_calling = False
+        self._xml_tool_calling = xml_tool_calling
+        if xml_tool_calling and tool_registry is None:
+            raise ValueError("xml_tool_calling=True requires a tool_registry")
 
         # FASE 1.5.3: Token budget management and circuit breaker
         self._token_budget = TokenBudgetManager()
@@ -535,8 +544,8 @@ class LLMRouter:
         # TASK-012: separate counters so a stream of malformed XML from the
         # model does not exhaust the budget reserved for legitimate execution
         # retries (and vice versa).
-        hermes_parse_error_count = 0
-        hermes_exec_error_count = 0
+        xml_tool_parse_error_count = 0
+        xml_tool_exec_error_count = 0
 
         for _round in range(MAX_TOOL_ROUNDS):
             try:
@@ -580,10 +589,8 @@ class LLMRouter:
                         "\u26a0\ufe0f Circuit breaker activado \u2014 consumo de tokens excesivo. Espera y reintenta."
                     )
                 effective_tools = tool_schemas
-                if self._hermes_mode and self._tools:
-                    effective_system = (
-                        effective_system + _HERMES_TOOL_INSTRUCTIONS + self._tools.hermes_system_prompt_block()
-                    )
+                if self._xml_tool_calling and self._tools:
+                    effective_system = effective_system + _XML_TOOL_INSTRUCTIONS + self._tools.xml_tool_prompt_block()
                     effective_tools = []
 
                 chat_kwargs = {
@@ -638,8 +645,8 @@ class LLMRouter:
                 await self._save_message(chat_id, "assistant", json.dumps(content_blocks))
                 messages.append({"role": "assistant", "content": content_blocks})
 
-                # ── Hermes mode: detect <tool_call> tags in plain text ──────────────
-                if self._hermes_mode:
+                # ── Modo de tool calling XML: detectar etiquetas <tool_call> en texto ─
+                if self._xml_tool_calling:
                     full_text = "\n".join(
                         block.get("text", "") for block in content_blocks if block.get("type") == "text"
                     )
@@ -647,10 +654,10 @@ class LLMRouter:
                         try:
                             calls = extract_tool_calls(full_text)
                         except ValueError as exc:
-                            hermes_parse_error_count += 1
-                            if hermes_parse_error_count >= MAX_HERMES_RETRIES:
+                            xml_tool_parse_error_count += 1
+                            if xml_tool_parse_error_count >= MAX_XML_TOOL_RETRIES:
                                 return "Error: max self-healing retries exceeded (parse error)."
-                            # role="user" — Hermes mode has no native tool_call_id contract
+                            # role="user" — XML mode has no native tool_call_id contract
                             messages.append(
                                 {
                                     "role": "user",
@@ -660,7 +667,7 @@ class LLMRouter:
                             continue
                         # Successful parse resets the parse-error budget so the
                         # next malformed block gets a fresh allowance.
-                        hermes_parse_error_count = 0
+                        xml_tool_parse_error_count = 0
                         for call in calls:
                             tool_name_h = call["name"]
                             tool_args_h = call["arguments"]
@@ -672,12 +679,12 @@ class LLMRouter:
                                     self._tools.execute(tool_name_h, tool_args_h),
                                     timeout=DEFAULT_TOOL_ROUND_TIMEOUT,
                                 )
-                                hermes_exec_error_count = 0
+                                xml_tool_exec_error_count = 0
                             except (asyncio.CancelledError, KeyboardInterrupt):
                                 raise
                             except pydantic.ValidationError as ve:
-                                hermes_exec_error_count += 1
-                                if hermes_exec_error_count >= MAX_HERMES_RETRIES:
+                                xml_tool_exec_error_count += 1
+                                if xml_tool_exec_error_count >= MAX_XML_TOOL_RETRIES:
                                     return "Error: max self-healing retries exceeded (execution error)."
                                 feedback = _format_validation_feedback(tool_name_h, ve)
                                 error_content = sanitize_for_prompt(
@@ -687,8 +694,8 @@ class LLMRouter:
                                 messages.append({"role": "user", "content": error_content})
                                 continue
                             except (KeyError, ValueError, TypeError, RuntimeError, OSError) as exc:
-                                hermes_exec_error_count += 1
-                                if hermes_exec_error_count >= MAX_HERMES_RETRIES:
+                                xml_tool_exec_error_count += 1
+                                if xml_tool_exec_error_count >= MAX_XML_TOOL_RETRIES:
                                     return "Error: max self-healing retries exceeded (execution error)."
                                 error_content = sanitize_for_prompt(
                                     f"[Tool Error] Error executing {tool_name_h}: {exc}"
@@ -704,20 +711,20 @@ class LLMRouter:
                         messages = messages[-self._max_context :]
                         continue
                     else:
-                        hermes_parse_error_count = 0
-                        hermes_exec_error_count = 0
-                        # Output gate — apply same guardrail as non-Hermes path
+                        xml_tool_parse_error_count = 0
+                        xml_tool_exec_error_count = 0
+                        # Puerta de salida: aplicar el mismo guardrail que en la ruta nativa.
                         if self._guardrail:
                             try:
                                 await self._guardrail.after_model_callback(full_text)
                             except SecurityViolationError as exc:
-                                logger.warning("Guardrail blocked Hermes output: %s", exc)
+                                logger.warning("Guardrail blocked XML tool-calling output: %s", exc)
                                 return "\u26a0\ufe0f La respuesta fue bloqueada por una pol\u00edtica de seguridad."
                             except AgentOrchestrationError as exc:
-                                logger.error("Schema violation in Hermes output: %s", exc)
+                                logger.error("Schema violation in XML tool-calling output: %s", exc)
                                 return "\u26a0\ufe0f La respuesta del modelo no cumple el esquema esperado."
                         return full_text
-                # ── end Hermes branch ────────────────────────────────────────────────
+                # ── end XML tool-calling branch ─────────────────────────────────────
 
                 if stop_reason != "tool_use":
                     text_parts = [block.get("text", "") for block in content_blocks if block.get("type") == "text"]

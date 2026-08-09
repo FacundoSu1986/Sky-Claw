@@ -201,7 +201,7 @@ class AsyncToolRegistry:
         """Devuelve solo los tools visibles para esta sesion.
 
         T2-07 (review fix): cuando ``allowed_tools`` esta configurado, las
-        APIs publicas que enumeran tools al LLM (tool_schemas, hermes_*)
+        APIs publicas que enumeran tools al LLM (tool_schemas, xml_tool_*)
         deben filtrar por el allowlist. Sin esto, el LLM ve TODOS los tools
         pero ``execute()`` los rechaza con PermissionError — el modelo gasta
         turnos intentando tools no permitidos y filtramos capabilities a
@@ -238,11 +238,11 @@ class AsyncToolRegistry:
             for td in self._visible_tools()
         ]
 
-    def hermes_system_prompt_block(self) -> str:
-        """Serialize registered tools as a <tools>…</tools> XML block for Hermes-style prompting.
+    def xml_tool_prompt_block(self) -> str:
+        """Serializa las tools registradas como un bloque XML <tools>…</tools>.
 
-        T2-07 (review fix): igual que tool_schemas — solo expone tools
-        permitidos en esta sesion.
+        T2-07 (review fix): igual que tool_schemas, solo expone tools
+        permitidas en esta sesión.
         """
         schemas = [
             {
@@ -253,6 +253,10 @@ class AsyncToolRegistry:
             for td in self._visible_tools()
         ]
         return f"<tools>\n{json.dumps(schemas, indent=2, ensure_ascii=False)}\n</tools>"
+
+    def hermes_system_prompt_block(self) -> str:
+        """Wrapper de compatibilidad para el nombre legado del prompt XML."""
+        return self.xml_tool_prompt_block()
 
     async def _download_mod(self, nexus_id: int, file_id: int | None = None) -> str:
         """Download a mod with HITL approval (P0-2: re-fetches fresh URL on execute)."""

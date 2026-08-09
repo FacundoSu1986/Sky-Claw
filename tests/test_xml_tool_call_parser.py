@@ -1,10 +1,10 @@
-"""Tests for sky_claw.app.agent.hermes_parser — zero-trust XML tool-call extraction."""
+"""Tests del parser XML de llamadas de tools."""
 
 from __future__ import annotations
 
 import pytest
 
-from sky_claw.app.agent.hermes_parser import extract_tool_calls, has_tool_calls
+from sky_claw.app.agent.xml_tool_call_parser import extract_tool_calls, has_tool_calls
 
 
 def test_has_tool_calls_true() -> None:
@@ -77,3 +77,12 @@ def test_extract_non_dict_arguments_raises() -> None:
     text = '<tool_call>{"name": "search_mod", "arguments": "bad"}</tool_call>'
     with pytest.raises(ValueError, match="'arguments' must be a JSON object"):
         extract_tool_calls(text)
+
+
+def test_legacy_parser_module_reexports_canonical_symbols() -> None:
+    from sky_claw.app.agent import hermes_parser
+    from sky_claw.app.agent.xml_tool_call_parser import TOOL_CALL_RE
+
+    assert hermes_parser.TOOL_CALL_RE is TOOL_CALL_RE
+    assert hermes_parser.extract_tool_calls is extract_tool_calls
+    assert hermes_parser.has_tool_calls is has_tool_calls

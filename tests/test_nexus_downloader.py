@@ -1289,10 +1289,13 @@ class TestDownloadModApproved:
 
         enqueued: list[Any] = []
 
-        def _fake_enqueue(coro: Any, context: str = "") -> asyncio.Task:
-            task = asyncio.create_task(coro)
-            enqueued.append(task)
-            return task
+        def _fake_enqueue(coro: Any, context: str = "") -> MagicMock:
+            # Este test verifica el enqueue, no la ejecución en background.
+            # Cerrar la corutina dentro del mock evita que empiece después de
+            # salir del patch de ClientSession y alcance la red real.
+            enqueued.append(coro)
+            coro.close()
+            return MagicMock()
 
         with patch("sky_claw.app.agent.tools.nexus_tools.aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
