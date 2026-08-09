@@ -136,6 +136,16 @@ Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nue
 
 ---
 
+## Acknowledgements
+
+Sky-Claw incorporates architectural inspiration from
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research,
+particularly around LLM tool-calling protocols.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
+
+---
+
 ## 📄 Licencia
 
 MIT

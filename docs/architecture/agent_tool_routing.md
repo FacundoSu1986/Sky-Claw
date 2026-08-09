@@ -15,7 +15,7 @@
 flowchart LR
     UI["CLI / Telegram / GUI chat"] --> Router["LLMRouter.chat"]
     Router --> Provider["LLMProvider"]
-    Provider --> Call["tool_use / Hermes tool_call"]
+    Provider --> Call["native tool_use / XML <tool_call>"]
     Call --> Registry["AsyncToolRegistry.execute"]
     Registry --> Handler["agent/tools handler"]
     Handler --> Local["servicio o runner local"]

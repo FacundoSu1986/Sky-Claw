@@ -117,7 +117,7 @@ async def test_allowlist_log_includes_attempted_tool_and_session(caplog) -> None
 
 
 # ---------------------------------------------------------------------------
-# PR #143 review fix: tool_schemas() y hermes_system_prompt_block() filtran
+# PR #143 review fix: tool_schemas() y xml_tool_prompt_block() filtran
 # por allowlist tambien, no solo execute(). Evita que el LLM vea capacidades
 # que va a recibir PermissionError al invocar.
 # ---------------------------------------------------------------------------
@@ -140,10 +140,10 @@ def test_tool_schemas_filters_by_allowlist() -> None:
     assert "download_mod" not in names
 
 
-def test_hermes_system_prompt_block_filters_by_allowlist() -> None:
-    """Hermes <tools> block excluye tools fuera del allowlist."""
+def test_xml_tool_prompt_block_filters_by_allowlist() -> None:
+    """El bloque XML <tools> excluye tools fuera del allowlist."""
     r = _make_registry(allowed_tools={"search_mod"})
-    block = r.hermes_system_prompt_block()
+    block = r.xml_tool_prompt_block()
     assert "search_mod" in block
     assert "download_mod" not in block
 
@@ -161,7 +161,7 @@ def test_empty_allowlist_yields_empty_schemas() -> None:
     r = _make_registry(allowed_tools=set())
     assert r.tool_schemas() == []
     assert r.tools == {}
-    block = r.hermes_system_prompt_block()
+    block = r.xml_tool_prompt_block()
     # El block sigue siendo valido XML pero sin tools listados.
     assert "<tools>" in block
     # Ningun tool conocido aparece.

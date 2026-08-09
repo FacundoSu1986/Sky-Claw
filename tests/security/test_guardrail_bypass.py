@@ -132,8 +132,8 @@ class TestRagContextSanitized:
         assert "SkyUI" in system_prompt_used
 
     @pytest.mark.asyncio
-    async def test_hermes_markers_stripped_from_rag_context(self, tmp_path: pathlib.Path) -> None:
-        """Hermes-style markers embedded in RAG context must also be neutralized."""
+    async def test_xml_tool_markers_stripped_from_rag_context(self, tmp_path: pathlib.Path) -> None:
+        """XML tool-call markers embedded in RAG context must also be neutralized."""
         router, provider = _make_router(tmp_path, intent="CONSULTA_MODDING")
 
         poisoned_context = (
@@ -151,7 +151,7 @@ class TestRagContextSanitized:
                     new=AsyncMock(return_value=poisoned_context),
                 ),
             ):
-                await router.chat("buscar algo", session=MagicMock(), chat_id="rag-hermes")
+                await router.chat("buscar algo", session=MagicMock(), chat_id="rag-xml-tool")
         finally:
             await router.close()
 

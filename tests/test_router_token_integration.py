@@ -535,18 +535,18 @@ class TestBudgetCircuitBreakerInteraction:
 
 
 # ------------------------------------------------------------------
-# Tests: Hermes mode timeout
+# Tests: XML tool-calling mode timeout
 # ------------------------------------------------------------------
 
 
-class TestHermesToolTimeout:
-    """Hermes mode tool execution also respects timeout."""
+class TestXmlToolTimeout:
+    """XML tool-calling execution also respects timeout."""
 
     @pytest.mark.asyncio
-    async def test_hermes_tool_timeout_handled(self, tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path) -> None:
+    async def test_xml_tool_timeout_handled(self, tool_registry: AsyncToolRegistry, tmp_path: pathlib.Path) -> None:
         r = _make_router(tmp_path, tool_registry)
-        # Enable hermes mode
-        r._hermes_mode = True
+        # Enable XML tool-calling mode.
+        r._xml_tool_calling = True
         await r.open()
         r._semantic_router.route = MagicMock(
             return_value={
@@ -591,7 +591,7 @@ class TestHermesToolTimeout:
 
         with patch("sky_claw.app.agent.router.DEFAULT_TOOL_ROUND_TIMEOUT", 0.1):
             session = MagicMock()
-            result = await r.chat("run hermes tool", session, chat_id="hermes_timeout")
+            result = await r.chat("run XML tool", session, chat_id="xml_tool_timeout")
 
         assert result is not None
         assert isinstance(result, str)

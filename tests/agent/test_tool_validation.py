@@ -214,14 +214,14 @@ class TestValidationFeedback:
 
 
 # ---------------------------------------------------------------------------
-# Hermes mode counter independence
+# XML tool-calling mode counter independence
 # ---------------------------------------------------------------------------
 
 
-class TestHermesCounterIndependence:
+class TestXmlToolCounterIndependence:
     """Parse errors must not consume the execution-retry budget and vice versa.
 
-    These tests target the LLMRouter chat loop with Hermes mode enabled.
+    These tests target the LLMRouter chat loop with XML tool calling enabled.
     """
 
     @pytest.mark.asyncio
@@ -274,7 +274,7 @@ class TestHermesCounterIndependence:
             provider=provider,
             tool_registry=reg,
             db_path=str(tmp_path / "history.db"),
-            hermes_mode=True,
+            xml_tool_calling=True,
         )
         await router.open()
         try:
