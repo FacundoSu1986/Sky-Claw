@@ -40,9 +40,14 @@ def _error_result(message: str) -> dict[str, Any]:
 # releer el archivo, así que el aviso no promete cuál de los dos es (review Qodo
 # #455). Ancla del save atómico: `test_guardar_config_no_trunca_el_archivo_si_la
 # _escritura_falla` en `tests/test_local_config_persistencia.py`.
+# Tampoco promete que reintentar lo arregle: si el guardado falla por una causa
+# persistente —disco lleno, permisos— el reintento vuelve a fallar igual, y
+# "reintentar es seguro" leído como remedio manda al agente a un bucle. Dice las
+# dos cosas por separado: dónde está el motivo, y que reinstalar no rompe nada
+# (evita que un `success: false` empuje a desinstalar o re-descargar).
 _AVISO_PERSISTENCIA = (
     "Instalado en disco, pero no se pudo guardar la configuración: lo que esta operación "
-    "escribió no quedó aplicado. Reintentar la instalación es seguro (es idempotente)."
+    "escribió no quedó aplicado. El motivo está en el log; reinstalar es seguro pero no lo arregla."
 )
 
 # Fallos de persistencia CONOCIDOS, los que la capa de config documenta como
