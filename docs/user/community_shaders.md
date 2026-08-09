@@ -130,7 +130,7 @@ reparación.
 | Componente ya instalado | El sentinel de ese mod ya estaba: no se vuelve a descargar | Nada; la operación es idempotente por componente |
 | Abortado por un requisito | Ningún byte descargado, nada modificado | Resolver el requisito y repetir; ver [diagnóstico](troubleshooting.md) |
 | Denegado a mitad | Lo anterior queda instalado; el resto no se intentó | Repetir cuando se pueda aprobar; los componentes ya instalados se saltan |
-| Instalado con aviso de persistencia (sólo GUI) | Los mods están en disco pero `community_shaders_mods` no se pudo guardar | Los mods son utilizables: activarlos igual en MO2. Para regenerar el registro hay que pedírselo al agente (la tarjeta ya no ofrece reinstalar); no borrar nada |
+| Instalado con aviso de persistencia (sólo GUI) | Los mods están en disco pero `community_shaders_mods` no se pudo guardar | Los mods son utilizables: activarlos igual en MO2. Para regenerar el registro hay que pedírselo al agente —la tarjeta ya no ofrece reinstalar— y sólo funciona si el agente tiene la configuración y su ruta; no borrar nada |
 
 El aviso de persistencia lo emite **únicamente la GUI**. Por el agente LLM, un fallo al
 guardar la configuración propaga el error en vez de devolver ese aviso; y si el agente no

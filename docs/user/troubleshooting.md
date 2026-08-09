@@ -36,14 +36,14 @@ No repetir una operación mutante a ciegas. Guardar:
 
 ## Community Shaders
 
-Los cuatro primeros fallos de la tabla abortan **antes** de descargar: no hay archivos
-parciales que limpiar. Los últimos ocurren durante o después de la descarga. Un rechazo
-por tamaño o integridad corta antes de extraer y sólo descarta el archivo de staging. En
-cambio, un fallo de extracción o verificación **sobre un mod que ya existía** escribe en
-ese directorio y no lo limpia: hay que revisarlo. Un fallo al guardar el registro conserva
-los mods ya instalados. Ninguno de estos impide usar Community Shaders, porque la
-activación en MO2 es manual de todos modos. El contexto completo está en
-[Community Shaders](community_shaders.md).
+En la tabla de esta sección, los cuatro primeros fallos abortan **antes** de descargar: no
+hay archivos parciales que limpiar. Los tres restantes ocurren durante o después de la
+descarga. Un rechazo por tamaño o integridad corta antes de extraer y sólo descarta el
+archivo de staging. En cambio, un fallo de extracción o verificación **sobre un mod que ya
+existía** escribe en ese directorio y no lo limpia: hay que revisarlo. Un fallo al guardar
+el registro conserva los mods ya instalados. Ninguno de estos impide usar Community
+Shaders, porque la activación en MO2 es manual de todos modos. El contexto completo está
+en [Community Shaders](community_shaders.md).
 
 | Síntoma | Evidencia | Acción reversible |
 |---|---|---|
@@ -52,7 +52,7 @@ activación en MO2 es manual de todos modos. El contexto completo está en
 | ENB detectado | `enbseries.ini` o el directorio `enbseries/` en la raíz del juego | Decidir entre ENB y Community Shaders; Sky-Claw no desinstala ENB |
 | Preloader de Engine Fixes ausente | Raíz del juego sin el DLL del preloader | Instalar ese archivo aparte en la raíz del juego y repetir |
 | Mods instalados con aviso de persistencia (sólo GUI) | Estado administrado en `~/.sky_claw/config.toml` y el aviso de la operación | Los mods son utilizables: activarlos en MO2. No editar la clave a mano ni borrar los mods; para regenerar el registro, ver la fila siguiente |
-| Falta `community_shaders_mods` con los mods ya instalados | La clave ausente en `~/.sky_claw/config.toml` y la tarjeta del Panel en `Instalado` | La tarjeta **no ofrece reinstalar** una vez detectado el mod. Pedirle al agente que ejecute la instalación de `community_shaders`: es idempotente, no vuelve a descargar y reescribe el registro. Mientras tanto no bloquea nada |
+| Falta `community_shaders_mods` con los mods ya instalados | La clave ausente en `~/.sky_claw/config.toml` y la tarjeta del Panel en `Instalado` | La tarjeta **no ofrece reinstalar** una vez detectado el mod. Pedirle al agente que ejecute la instalación de `community_shaders`: es idempotente y no vuelve a descargar. Sólo reescribe el registro si el agente tiene la configuración y su ruta; si la clave sigue sin aparecer, ése es el motivo y hay que revisar la configuración primero. Mientras tanto no bloquea nada |
 | Descarga rechazada por integridad o tamaño | Mensaje del descargador y `sky_claw.log` | No repetir a ciegas: un desajuste de hash o un techo superado no se arregla reintentando. Preservar el log y verificar el origen |
 
 Si el escaneo sigue mostrando la tarjeta como no instalada después de una instalación
