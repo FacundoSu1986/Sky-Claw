@@ -22,6 +22,11 @@ from sky_claw.app.security.network_gateway import GatewayTCPConnector, NetworkGa
 logger = logging.getLogger(__name__)
 
 
+def _error_result(message: str) -> dict[str, Any]:
+    """Construye el shape canónico sin perder el detalle legacy ``error``."""
+    return {"success": False, "message": message, "error": message}
+
+
 async def setup_tools(
     tools_installer: Any,
     install_dir: pathlib.Path,
@@ -64,7 +69,7 @@ async def setup_tools(
     from sky_claw.local.tools_installer import ToolInstallError
 
     if tools_installer is None:
-        return json.dumps({"error": "Tools installer is not configured"})
+        return json.dumps(_error_result("Tools installer is not configured"))
 
     results: dict[str, Any] = {}
 
@@ -77,7 +82,7 @@ async def setup_tools(
     if gateway is None:
         logger.error("setup_tools called without NetworkGateway — aborting (Zero-Trust policy)")
         return json.dumps(
-            {"error": ("NetworkGateway is required for all egress. Configure the gateway before calling this tool.")}
+            _error_result("NetworkGateway is required for all egress. Configure the gateway before calling this tool.")
         )
 
     own_session = False
@@ -144,19 +149,20 @@ async def setup_tools(
                     mo2_root = getattr(local_cfg, "mo2_root", None) if local_cfg else None
                     skyrim_str = getattr(local_cfg, "skyrim_path", None) if local_cfg else None
                     if not mo2_root:
-                        results["ngio"] = {"error": "mo2_root no configurado: corré el escaneo de entorno primero."}
+                        results["ngio"] = _error_result("mo2_root no configurado: corré el escaneo de entorno primero.")
                         continue
                     if not skyrim_str:
-                        results["ngio"] = {"error": "skyrim_path no configurado: no puedo detectar SE vs AE para NGIO."}
+                        results["ngio"] = _error_result(
+                            "skyrim_path no configurado: no puedo detectar SE vs AE para NGIO."
+                        )
                         continue
                     skyrim_exe = pathlib.Path(skyrim_str) / "SkyrimSE.exe"
                     if not skyrim_exe.is_file():
-                        results["ngio"] = {
-                            "error": (
-                                f"No encontré SkyrimSE.exe en {skyrim_str}: NGIO-NG requiere "
-                                "Skyrim SE/AE (revisá skyrim_path)."
-                            )
-                        }
+                        detail = (
+                            f"No encontré SkyrimSE.exe en {skyrim_str}: NGIO-NG requiere "
+                            "Skyrim SE/AE (revisá skyrim_path)."
+                        )
+                        results["ngio"] = _error_result(detail)
                         continue
                     # pefile hace I/O síncrono de PE: fuera del event loop.
                     edition = await asyncio.to_thread(detect_skyrim_edition, skyrim_exe)
@@ -188,23 +194,22 @@ async def setup_tools(
                     mo2_root = getattr(local_cfg, "mo2_root", None) if local_cfg else None
                     skyrim_str = getattr(local_cfg, "skyrim_path", None) if local_cfg else None
                     if not mo2_root:
-                        results["community_shaders"] = {
-                            "error": "mo2_root no configurado: corré el escaneo de entorno primero."
-                        }
+                        results["community_shaders"] = _error_result(
+                            "mo2_root no configurado: corré el escaneo de entorno primero."
+                        )
                         continue
                     if not skyrim_str:
-                        results["community_shaders"] = {
-                            "error": "skyrim_path no configurado: no puedo detectar versión/edición para Community Shaders."
-                        }
+                        results["community_shaders"] = _error_result(
+                            "skyrim_path no configurado: no puedo detectar versión/edición para Community Shaders."
+                        )
                         continue
                     skyrim_exe = pathlib.Path(skyrim_str) / "SkyrimSE.exe"
                     if not skyrim_exe.is_file():
-                        results["community_shaders"] = {
-                            "error": (
-                                f"No encontré SkyrimSE.exe en {skyrim_str}: Community Shaders "
-                                "requiere Skyrim SE/AE (revisá skyrim_path)."
-                            )
-                        }
+                        detail = (
+                            f"No encontré SkyrimSE.exe en {skyrim_str}: Community Shaders "
+                            "requiere Skyrim SE/AE (revisá skyrim_path)."
+                        )
+                        results["community_shaders"] = _error_result(detail)
                         continue
                     # pefile hace I/O síncrono de PE: fuera del event loop.
                     edition = await asyncio.to_thread(detect_skyrim_edition, skyrim_exe)
@@ -230,17 +235,16 @@ async def setup_tools(
                         "message": "",
                     }
                 else:
-                    results[tool_name] = {
-                        "error": (
-                            f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, "
-                            "bodyslide, ngio, community_shaders"
-                        )
-                    }
+                    detail = (
+                        f"Unknown tool: {tool_name!r}. Supported: loot, xedit, pandora, "
+                        "bodyslide, ngio, community_shaders"
+                    )
+                    results[tool_name] = _error_result(detail)
             except ToolInstallError as exc:
-                results[tool_name_lower] = {"error": str(exc)}
+                results[tool_name_lower] = _error_result(str(exc))
             except Exception as exc:
                 logger.error("Failed to install %s: %s", tool_name, exc)
-                results[tool_name_lower] = {"error": str(exc)}
+                results[tool_name_lower] = _error_result(str(exc))
 
     finally:
         if own_session and session and not session.closed:

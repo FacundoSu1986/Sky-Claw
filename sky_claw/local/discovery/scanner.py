@@ -509,7 +509,7 @@ class EnvironmentScanner:
         # config, so don't let the tool tally downgrade CRITICAL → NEEDS_SETUP.
         if not skyrim_found:
             snap.health_status = HealthStatus.CRITICAL
-        elif snap.missing:
+        elif any(missing.is_critical for missing in snap.missing):
             snap.health_status = HealthStatus.NEEDS_SETUP
         else:
             snap.health_status = HealthStatus.READY

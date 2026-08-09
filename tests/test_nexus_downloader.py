@@ -736,6 +736,17 @@ class TestDownload:
             await d.download(fi, session)
         assert gateway.request.await_count == 0
 
+    @pytest.mark.parametrize("file_name", ["timeout-fix.zip", "mod-503-fix.zip"])
+    def test_url_malformada_no_se_reintenta_por_substrings_del_nombre(self, file_name: str) -> None:
+        """El nombre externo no puede reclasificar como transitorio un abort determinístico."""
+        from sky_claw.app.scraper import nexus_downloader as downloader_module
+
+        assert hasattr(downloader_module, "MalformedDownloadUrlError")
+        error_type = downloader_module.MalformedDownloadUrlError
+        exc = error_type(f"URL inválida para {file_name}")
+
+        assert downloader_module._should_retry_nexus(exc) is False
+
     @pytest.mark.asyncio
     async def test_successful_download_no_md5(self, tmp_path: pathlib.Path) -> None:
         content = b"hello world data"

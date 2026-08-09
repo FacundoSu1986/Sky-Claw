@@ -480,7 +480,18 @@ class Config:
                     else:
                         self._secretos_pendientes.discard(key)
                 elif escritura_explicita:
-                    self._secretos_pendientes.discard(key)
+                    # Una mutación explícita a vacío es una intención de
+                    # borrado. No consultar/reinyectar el valor vivo: hacerlo
+                    # resucitaría exactamente el secreto que el caller pidió
+                    # eliminar. Si el backend falla, la intención queda
+                    # pendiente para el próximo save y nunca baja a plaintext.
+                    try:
+                        keyring.delete_password("sky_claw", key)
+                    except (keyring.errors.KeyringError, OSError) as exc:
+                        self._secretos_pendientes.add(key)
+                        logger.warning("Could not delete '%s' from keyring: %s.", key, type(exc).__name__)
+                    else:
+                        self._secretos_pendientes.discard(key)
                 else:
                     try:
                         valor_vivo = keyring.get_password("sky_claw", key)

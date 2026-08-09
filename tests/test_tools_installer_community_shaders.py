@@ -1208,6 +1208,114 @@ class TestEnsureCommunityShadersInstalacion:
 
 
 class TestCleanOnFailInvariantes:
+    @pytest.mark.parametrize("origen", ["nexus", "github"])
+    async def test_fallo_de_cleanup_no_enmascara_la_excepcion_original_en_ningun_hermano(
+        self,
+        installer: ToolsInstaller,
+        mods_dir: pathlib.Path,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        origen: str,
+    ) -> None:
+        """Un lock transitorio al limpiar no reemplaza el diagnóstico de instalación."""
+        extract_real = installer._extract
+
+        def _extract_que_falla(archive: pathlib.Path, dest: pathlib.Path) -> None:
+            es_github = archive.name == _CS_ASSET_CORE
+            if (origen == "github" and es_github) or (origen == "nexus" and not es_github):
+                raise ToolInstallError(f"fallo original {origen}")
+            extract_real(archive, dest)
+
+        cleanup_real = ti_mod.rmtree_link_aware
+        destino_del_fallo = mods_dir / (
+            ti_mod.ADDRESS_LIBRARY_MOD_NAME if origen == "nexus" else ti_mod.COMMUNITY_SHADERS_MOD_NAME
+        )
+
+        def _cleanup_lockeado(path: pathlib.Path, **kwargs: object) -> None:
+            if path == destino_del_fallo or path.name.startswith("payload-"):
+                raise PermissionError(32, "archivo en uso")
+            cleanup_real(path, **kwargs)
+
+        installer._extract = _extract_que_falla  # type: ignore[method-assign]
+        monkeypatch.setattr(ti_mod, "rmtree_link_aware", _cleanup_lockeado)
+        _aprobar_todo(installer)
+        if origen == "github":
+            _mock_gateway_github_cs(installer, _ZIP_CS)
+        game_dir = tmp_path / "game"
+        _juego_valido(game_dir)
+
+        with pytest.raises(ToolInstallError, match=f"fallo original {origen}"):
+            await installer.ensure_community_shaders(
+                mods_dir,
+                MagicMock(spec=aiohttp.ClientSession),
+                _downloader_completo(tmp_path),
+                edition=SkyrimEdition.SE,
+                game_version="1.5.97",
+                game_dir=game_dir,
+            )
+
+    async def test_nexus_no_borra_archivos_creados_por_un_escritor_externo_durante_la_operacion(
+        self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        """El cleanup sólo toca staging propio aunque el destino aparezca tras el precheck."""
+        destino = mods_dir / ti_mod.ADDRESS_LIBRARY_MOD_NAME
+        nota = destino / "creado-por-mo2.txt"
+
+        def _extract_con_carrera(_archive: pathlib.Path, _dest: pathlib.Path) -> None:
+            destino.mkdir(parents=True, exist_ok=True)
+            nota.write_text("externo", encoding="utf-8")
+            raise ToolInstallError("fallo simulado después de la carrera")
+
+        installer._extract = _extract_con_carrera  # type: ignore[method-assign]
+        _aprobar_todo(installer)
+        game_dir = tmp_path / "game"
+        _juego_valido(game_dir)
+
+        with pytest.raises(ToolInstallError, match="fallo simulado"):
+            await installer.ensure_community_shaders(
+                mods_dir,
+                MagicMock(spec=aiohttp.ClientSession),
+                _downloader_completo(tmp_path),
+                edition=SkyrimEdition.SE,
+                game_version="1.5.97",
+                game_dir=game_dir,
+            )
+
+        assert nota.read_text(encoding="utf-8") == "externo"
+
+    async def test_github_no_borra_archivos_creados_por_un_escritor_externo_durante_la_operacion(
+        self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
+    ) -> None:
+        """El hermano GitHub conserva el destino ajeno y descarta sólo su payload temporal."""
+        destino = mods_dir / ti_mod.COMMUNITY_SHADERS_MOD_NAME
+        nota = destino / "creado-por-mo2.txt"
+        extract_real = installer._extract
+
+        def _extract_con_carrera(archive: pathlib.Path, dest: pathlib.Path) -> None:
+            if archive.name == _CS_ASSET_CORE:
+                destino.mkdir(parents=True, exist_ok=True)
+                nota.write_text("externo", encoding="utf-8")
+                raise ToolInstallError("fallo simulado en GitHub")
+            extract_real(archive, dest)
+
+        installer._extract = _extract_con_carrera  # type: ignore[method-assign]
+        _mock_gateway_github_cs(installer, _ZIP_CS)
+        _aprobar_todo(installer)
+        game_dir = tmp_path / "game"
+        _juego_valido(game_dir)
+
+        with pytest.raises(ToolInstallError, match="fallo simulado en GitHub"):
+            await installer.ensure_community_shaders(
+                mods_dir,
+                MagicMock(spec=aiohttp.ClientSession),
+                _downloader_completo(tmp_path),
+                edition=SkyrimEdition.SE,
+                game_version="1.5.97",
+                game_dir=game_dir,
+            )
+
+        assert nota.read_text(encoding="utf-8") == "externo"
+
     async def test_denegacion_hitl_no_borra_mod_dir_preexistente(
         self, installer: ToolsInstaller, mods_dir: pathlib.Path, tmp_path: pathlib.Path
     ) -> None:
@@ -1295,11 +1403,12 @@ class TestCleanOnFailInvariantes:
                 game_dir=game_dir,
             )
 
-        # El mod_dir del primer componente existe (mkdir corrió) y quedó vacío:
-        # la limpieza NO corrió sobre una cancelación.
+        # El destino MO2 nunca se publicó. El parcial propio queda en staging:
+        # la cancelación no dispara el cleanup de ``except Exception``.
         addrlib_dir = mods_dir / ti_mod.ADDRESS_LIBRARY_MOD_NAME
-        assert addrlib_dir.exists()
-        assert not any(addrlib_dir.iterdir())
+        assert not addrlib_dir.exists()
+        parciales = list((tmp_path / ".skyclaw-dl" / ti_mod.ADDRESS_LIBRARY_MOD_NAME).glob("payload-*"))
+        assert len(parciales) == 1
 
     async def test_unlink_del_archive_lockeado_no_rompe_la_instalacion(
         self,
@@ -1321,7 +1430,7 @@ class TestCleanOnFailInvariantes:
         real_unlink = pathlib.Path.unlink
 
         def _unlink_lockeado_en_staging(self: pathlib.Path, *args: object, **kwargs: object) -> None:
-            if ".skyclaw-dl" in str(self):
+            if ".skyclaw-dl" in str(self) and self.suffix.lower() in {".zip", ".7z"}:
                 raise PermissionError(32, "archivo en uso por otro proceso")
             return real_unlink(self, *args, **kwargs)
 
@@ -1536,6 +1645,8 @@ class TestSetupToolsCommunityShaders:
 
         entrada = json.loads(salida)["community_shaders"]
         assert "error" in entrada
+        assert entrada["success"] is False
+        assert entrada["message"] == entrada["error"]
         normalizado = normalize_tool_result(entrada)
         assert normalizado["success"] is False
         assert normalizado["message"]

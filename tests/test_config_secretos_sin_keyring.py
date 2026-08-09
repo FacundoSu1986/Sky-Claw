@@ -274,6 +274,55 @@ def test_un_config_long_lived_no_pisa_un_keyring_actualizado_despues_de_construi
     assert "nexus_api_key" not in tomllib.loads(config_path.read_text(encoding="utf-8"))
 
 
+def test_escritura_explicita_vacia_elimina_el_secreto_del_keyring(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Vaciar explícitamente una clave es una intención de borrado persistente."""
+    almacen = {"nexus_api_key": "clave-anterior"}
+    monkeypatch.setattr(keyring, "get_password", lambda _s, k: almacen.get(k))
+    monkeypatch.setattr(keyring, "set_password", lambda _s, k, v: almacen.__setitem__(k, v))
+    monkeypatch.setattr(keyring, "delete_password", lambda _s, k: almacen.pop(k))
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+
+    cfg._data["nexus_api_key"] = ""
+    cfg.save()
+
+    assert "nexus_api_key" not in almacen
+    assert "nexus_api_key" not in tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+
+def test_borrado_de_secreto_fallido_queda_pendiente_y_se_reintenta(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un backend caído no rehidrata el secreto borrado ni pierde la intención."""
+    almacen = {"nexus_api_key": "clave-anterior"}
+    keyring_caido = True
+    monkeypatch.setattr(keyring, "get_password", lambda _s, k: almacen.get(k))
+    monkeypatch.setattr(keyring, "set_password", lambda _s, k, v: almacen.__setitem__(k, v))
+
+    def _borrar(_servicio: str, clave: str) -> None:
+        if keyring_caido:
+            raise keyring.errors.KeyringError("fallo transitorio")
+        almacen.pop(clave)
+
+    monkeypatch.setattr(keyring, "delete_password", _borrar)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    cfg = Config(config_path)
+    cfg._data["nexus_api_key"] = ""
+
+    cfg.save()
+    assert cfg._data["nexus_api_key"] == ""
+    assert "nexus_api_key" not in tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+    keyring_caido = False
+    cfg.save()
+
+    assert "nexus_api_key" not in almacen
+
+
 def test_keyring_vivo_prevalece_sobre_plaintext_fresco_si_no_hubo_escritura_explicita(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

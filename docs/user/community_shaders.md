@@ -139,9 +139,10 @@ reparación.
   el log. Es confianza en el primer uso, no verificación.
 - Hay un techo de bytes durante el streaming. Excederlo aborta y **no** se reintenta: un
   techo superado no se arregla repitiendo.
-- Un fallo posterior a la aprobación borra el directorio parcial del mod **solo** si ese
-  directorio no tenía contenido antes de la operación. Un mod preexistente nunca se borra,
-  y una denegación tampoco borra nada.
+- Si el directorio del mod no existía, Sky-Claw extrae y verifica en un staging propio y
+  sólo lo publica al terminar. Un fallo limpia ese payload temporal, nunca un destino que
+  MO2 o el operador haya creado durante la operación. Un mod preexistente se repara in-place
+  pero nunca se borra; una denegación tampoco borra nada.
 
 ## Fallos y recuperación
 

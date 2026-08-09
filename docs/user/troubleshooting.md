@@ -37,8 +37,11 @@ No repetir una operación mutante a ciegas. Guardar:
 
 ## Community Shaders
 
-Estos fallos abortan **antes** de descargar: no hay archivos parciales que limpiar. El
-contexto completo está en [Community Shaders](community_shaders.md).
+Los cuatro primeros fallos de la tabla abortan **antes** de descargar: no hay archivos
+parciales que limpiar. Los dos últimos ocurren durante o después de la descarga: un rechazo
+limpia únicamente el staging temporal; un aviso de persistencia conserva los mods ya
+instalados. El contexto completo está en
+[Community Shaders](community_shaders.md).
 
 | Síntoma | Evidencia | Acción reversible |
 |---|---|---|

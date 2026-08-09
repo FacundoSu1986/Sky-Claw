@@ -702,9 +702,12 @@ def _extract_7z_safe(archive: pathlib.Path, dest: pathlib.Path) -> None:
         import py7zr
 
         with py7zr.SevenZipFile(archive, "r") as szf:
-            for name in szf.getnames():
+            for member in szf.list():
+                name = member.filename
                 if not _is_safe_path(name):
                     raise PathViolationError(f"Zip-slip detected in 7z: {name!r}")
+                if member.is_symlink:
+                    raise PathViolationError(f"El archive 7z contiene un enlace simbólico: {name!r}")
             szf.extractall(dest)
     except PathViolationError:
         # Una falla de SEGURIDAD nunca degrada a fallback: reintentar con otro
@@ -1052,6 +1055,32 @@ def _write_mod_meta_ini(mod_dir: pathlib.Path, mod_name: str, version: str, comm
     }
     with (mod_dir / "meta.ini").open("w", encoding="utf-8") as fh:
         config.write(fh)
+
+
+def _promover_payload_verificado(payload_dir: pathlib.Path, mod_dir: pathlib.Path, mod_name: str) -> None:
+    """Publica un payload propio sin reemplazar un destino aparecido en carrera."""
+    if mod_dir.exists():
+        raise ToolInstallError(
+            f"El destino {mod_dir} apareció durante la instalación de {mod_name}; "
+            "se conserva intacto y no se mezcla con el payload de Sky-Claw."
+        )
+    try:
+        payload_dir.rename(mod_dir)
+    except OSError as exc:
+        raise ToolInstallError(f"No pude promover el payload verificado de {mod_name}: {exc}") from exc
+
+
+def _limpiar_payload_temporal(payload_dir: pathlib.Path, mod_name: str) -> None:
+    """Limpia staging propio sin ocultar la excepción funcional original."""
+    try:
+        rmtree_link_aware(payload_dir, limpiar_readonly=True)
+    except OSError as cleanup_exc:
+        logger.warning(
+            "No se pudo limpiar el payload temporal de %s (%s): %s",
+            mod_name,
+            payload_dir,
+            type(cleanup_exc).__name__,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2186,13 +2215,13 @@ class ToolsInstaller:
         release trae varios builds); si no, usa *keyword*.
 
         *required_rel* / *required_files*: verificación compuesta del payload
-        (ver :meth:`_verify_mod_payload`). *clean_on_fail*: ante un fallo
-        post-HITL (descarga/extracción/verificación) se elimina el ``mod_dir``
-        parcial con ``rmtree_link_aware(..., limpiar_readonly=True)`` — NUNCA si
-        el directorio ya tenía contenido antes de esta invocación, NUNCA en
-        denegación HITL, NUNCA en ``CancelledError`` (``except Exception`` no
-        captura ``BaseException``). *install_comment*: comentario del
-        ``meta.ini``; ``None`` → genérico.
+        (ver :meth:`_verify_mod_payload`). Si el destino no existía, la
+        extracción ocurre en un staging propio y sólo se promueve al terminar;
+        *clean_on_fail* elimina exclusivamente ese staging. Un destino
+        preexistente se repara in-place y nunca se limpia. En denegación HITL o
+        ``CancelledError`` tampoco se limpia (``except Exception`` no captura
+        ``BaseException``). *install_comment*: comentario del ``meta.ini``;
+        ``None`` → genérico.
         """
         mod_dir = mods_dir / mod_name
         # Lock por mod_dir, NO global: un componente no debe frenar a otro.
@@ -2221,9 +2250,11 @@ class ToolsInstaller:
                     f"Instalación de {mod_name} denegada por el operador (decision={decision.value})"
                 )
 
-            # Un dir que YA tenía contenido antes de esta invocación jamás se
-            # borra: podría ser un mod ajeno o un intento previo del usuario.
-            preexistia = mod_dir.exists() and any(mod_dir.iterdir())
+            # Si el destino no existe, extraer directamente allí crea un TOCTOU:
+            # MO2/el operador puede poblarlo y un fallo posterior no distingue
+            # esos archivos de los propios. El payload nuevo vive en un staging
+            # único y sólo se promueve cuando está completamente verificado.
+            destino_preexistia = mod_dir.exists()
             # Staging SEPARADO de mod_dir y POR MOD (mo2_root/.skyclaw-dl/<mod>):
             # un zip stale/parcial jamás vive dentro del mod — ni bloquea el
             # flatten, ni envenena `preexistia`, ni es visible en MO2. Hermano
@@ -2245,6 +2276,9 @@ class ToolsInstaller:
             staging = mods_dir.parent / ".skyclaw-dl" / mod_dir.name
             self._validator.validate(staging)
             staging.mkdir(parents=True, exist_ok=True)
+            payload_dir = (
+                mod_dir if destino_preexistia else pathlib.Path(tempfile.mkdtemp(prefix="payload-", dir=staging))
+            )
             try:
                 archive = await self._download_asset(
                     session,
@@ -2255,7 +2289,7 @@ class ToolsInstaller:
                     # y activaría la rama de validación con un hash vacío.
                     expected_sha256=_PINNED_SHA256.get(asset.name) or asset.sha256 or None,
                 )
-                await _esperar_hilo_ininterrumpible(self._extract, archive, mod_dir)
+                await _esperar_hilo_ininterrumpible(self._extract, archive, payload_dir)
                 try:
                     archive.unlink(missing_ok=True)
                 except OSError:
@@ -2267,13 +2301,14 @@ class ToolsInstaller:
                     # (cazado en el smoke E2E premium: el unlink falló y el except
                     # de clean_on_fail borró un mod VÁLIDO).
                     logger.warning("No se pudo borrar el archive temporal %s (lock transitorio)", archive)
-                _flatten_single_root(mod_dir)
-                self._verify_mod_payload(mod_dir, mod_name, sentinel_glob, required_rel, required_files)
-                _write_mod_meta_ini(mod_dir, mod_name, version, comment=install_comment)
+                _flatten_single_root(payload_dir)
+                self._verify_mod_payload(payload_dir, mod_name, sentinel_glob, required_rel, required_files)
+                _write_mod_meta_ini(payload_dir, mod_name, version, comment=install_comment)
+                if not destino_preexistia:
+                    _promover_payload_verificado(payload_dir, mod_dir, mod_name)
             except Exception:
-                if clean_on_fail and not preexistia:
-                    rmtree_link_aware(mod_dir, limpiar_readonly=True)
-                    logger.warning("mod_dir parcial de %s eliminado tras fallo de instalación (%s)", mod_name, mod_dir)
+                if clean_on_fail and not destino_preexistia:
+                    _limpiar_payload_temporal(payload_dir, mod_name)
                 raise
             finally:
                 # Limpieza del staging vacío (un zip stale hace fallar rmdir — se
@@ -2358,13 +2393,16 @@ class ToolsInstaller:
             if pin:
                 file_info = replace(file_info, sha256=pin)
 
-            # Un dir que YA tenía contenido antes de esta invocación jamás se
-            # borra (idem _ensure_github_mod).
-            preexistia = mod_dir.exists() and any(mod_dir.iterdir())
+            destino_preexistia = mod_dir.exists()
+            staging = mods_dir.parent / ".skyclaw-dl" / mod_dir.name
+            self._validator.validate(staging)
+            staging.mkdir(parents=True, exist_ok=True)
+            payload_dir = (
+                mod_dir if destino_preexistia else pathlib.Path(tempfile.mkdtemp(prefix="payload-", dir=staging))
+            )
             try:
                 archive = await downloader.download(file_info, session)
-                mod_dir.mkdir(parents=True, exist_ok=True)
-                await _esperar_hilo_ininterrumpible(self._extract, archive, mod_dir)
+                await _esperar_hilo_ininterrumpible(self._extract, archive, payload_dir)
                 try:
                     archive.unlink(missing_ok=True)
                 except OSError:
@@ -2377,15 +2415,19 @@ class ToolsInstaller:
                     # F5: es I/O pesado (copytree/copy2/rmtree del FOMOD de EF) —
                     # fuera del event loop, igual que la extracción; inline
                     # congelaba el loop principal (hang visible en NiceGUI).
-                    await _esperar_hilo_ininterrumpible(post_extract, mod_dir)
-                _flatten_single_root(mod_dir)
-                self._verify_mod_payload(mod_dir, mod_name, sentinel_glob, required_rel, required_files)
-                _write_mod_meta_ini(mod_dir, mod_name, file_info.file_name, comment=install_comment)
+                    await _esperar_hilo_ininterrumpible(post_extract, payload_dir)
+                _flatten_single_root(payload_dir)
+                self._verify_mod_payload(payload_dir, mod_name, sentinel_glob, required_rel, required_files)
+                _write_mod_meta_ini(payload_dir, mod_name, file_info.file_name, comment=install_comment)
+                if not destino_preexistia:
+                    _promover_payload_verificado(payload_dir, mod_dir, mod_name)
             except Exception:
-                if clean_on_fail and not preexistia:
-                    rmtree_link_aware(mod_dir, limpiar_readonly=True)
-                    logger.warning("mod_dir parcial de %s eliminado tras fallo de instalación (%s)", mod_name, mod_dir)
+                if clean_on_fail and not destino_preexistia:
+                    _limpiar_payload_temporal(payload_dir, mod_name)
                 raise
+            finally:
+                with contextlib.suppress(OSError):
+                    staging.rmdir()
 
             logger.info("%s (%s) instalado como mod en %s", mod_name, file_info.file_name, mod_dir)
             return ModInstallResult(

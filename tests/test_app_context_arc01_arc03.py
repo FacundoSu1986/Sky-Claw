@@ -1038,6 +1038,35 @@ class TestAppContextPartialFullAcquisition:
 
 
 class TestAppContextSecretMigrationLogging:
+    def test_migracion_legacy_conserva_las_listas_de_mods(
+        self, mock_args, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Los campos hermanos de mods pasan de JSON a TOML sin convertirse a texto."""
+        legacy_path = tmp_path / "sky_claw_config.json"
+        legacy_path.write_text("{}", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        legacy = MagicMock(
+            first_run=True,
+            ngio_mods=["NGIO-NG"],
+            community_shaders_mods=["Address Library", "Community Shaders"],
+        )
+        legacy.get_api_key.return_value = None
+        legacy.get_nexus_api_key.return_value = None
+        legacy.get_telegram_bot_token.return_value = None
+        toml_cfg = MagicMock()
+        toml_cfg._data = {}
+        ctx = AppContext(mock_args)
+        ctx.config_path = tmp_path / "config.toml"
+
+        with (
+            patch("sky_claw.app_context._load_legacy_json", return_value=legacy),
+            patch("sky_claw.app_context.Config", return_value=toml_cfg),
+        ):
+            ctx._migrate_legacy_json()
+
+        assert toml_cfg._data["ngio_mods"] == ["NGIO-NG"]
+        assert toml_cfg._data["community_shaders_mods"] == ["Address Library", "Community Shaders"]
+
     def test_secret_migration_failure_does_not_log_secret_material(
         self,
         mock_args,

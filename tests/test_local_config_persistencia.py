@@ -233,8 +233,8 @@ async def test_lock_evita_la_escritura_entrelazada_y_corrupta(tmp_path: pathlib.
 
     Sin el lock, dos ``to_thread`` concurrentes sobre el mismo ``config.toml``
     pueden intercalar sus escrituras (dos ``os.replace`` compitiendo) — acá se
-    fuerza el solapamiento con un ``sleep`` dentro de la ventana del lock (en
-    vez de confiar en el scheduler) para que el test sea determinístico, y se
+    ordena el arranque con un ``sleep(0)`` antes de que el agente tome el lock,
+    y se
     verifica que el resultado final SIEMPRE es TOML válido con exactamente una
     de las dos escrituras completas.
     """

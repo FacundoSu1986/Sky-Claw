@@ -79,6 +79,10 @@ class DownloadSizeLimitError(DownloadError):
     arregla reintentando.
     """
 
+
+class MalformedDownloadUrlError(DownloadError):
+    """La URL del CDN no puede parsearse y reintentar no puede corregirla."""
+
     pass
 
 
@@ -173,7 +177,7 @@ def _should_retry_nexus(exc: BaseException) -> bool:
     con ``429``/``502``/``503``/``timeout`` lo habría hecho parecer
     transitorio (review del PR #445).
     """
-    if isinstance(exc, DownloadSizeLimitError):
+    if isinstance(exc, (DownloadSizeLimitError, MalformedDownloadUrlError)):
         return False
     if isinstance(
         exc,
@@ -450,7 +454,7 @@ class NexusDownloader:
                     # Autoridad malformada (p.ej. corchetes sin cerrar): DownloadError
                     # sin la URL en el mensaje (la apikey no viaja aquí, pero la regla
                     # de la capa es no incluir URLs crudas en errores).
-                    raise DownloadError(
+                    raise MalformedDownloadUrlError(
                         f"URL de descarga inválida para {file_info.file_name!r} (autoridad malformada)"
                     ) from None
                 cdn_url = urlunsplit(

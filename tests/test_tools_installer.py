@@ -157,6 +157,7 @@ def _mockear_py7zr(monkeypatch: pytest.MonkeyPatch, *, miembros: list[str]) -> N
     """py7zr abre bien y lista *miembros* (para ejercitar su propia validación)."""
     szf = MagicMock()
     szf.getnames = MagicMock(return_value=miembros)
+    szf.list = MagicMock(return_value=[MagicMock(filename=nombre, is_symlink=False) for nombre in miembros])
     szf.__enter__ = MagicMock(return_value=szf)
     szf.__exit__ = MagicMock(return_value=False)
     monkeypatch.setattr("py7zr.SevenZipFile", MagicMock(return_value=szf))
@@ -702,6 +703,23 @@ class TestExtraccion7zConFallback:
         with pytest.raises(PathViolationError):
             _extract_7z_safe(tmp_path / "malicioso.7z", tmp_path / "out")
 
+        mock_run.assert_not_called()
+
+    def test_rechaza_symlink_informado_por_py7zr_antes_de_extraer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+    ) -> None:
+        """Un miembro symlink perforaría el sandbox aunque su nombre fuese relativo."""
+        szf = MagicMock()
+        szf.list.return_value = [MagicMock(filename="enlace-seguro", is_symlink=True)]
+        szf.__enter__.return_value = szf
+        monkeypatch.setattr("py7zr.SevenZipFile", MagicMock(return_value=szf))
+        mock_run = MagicMock()
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        with pytest.raises(PathViolationError, match="enlace simbólico"):
+            _extract_7z_safe(tmp_path / "malicioso.7z", tmp_path / "out")
+
+        szf.extractall.assert_not_called()
         mock_run.assert_not_called()
 
     def test_rechaza_el_archive_si_el_listado_de_7z_tiene_traversal(

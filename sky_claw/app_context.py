@@ -1433,14 +1433,24 @@ class AppContext:
             "pandora_exe": "pandora_exe",
             "bodyslide_exe": "bodyslide_exe",
             "telegram_chat_id": "telegram_chat_id",
+            "ngio_mods": "ngio_mods",
+            "community_shaders_mods": "community_shaders_mods",
         }
+
+        list_fields = {"ngio_mods", "community_shaders_mods"}
 
         for legacy_field, toml_field in field_map.items():
             legacy_val = getattr(legacy, legacy_field, None)
             if legacy_val:
                 current_toml_val = toml_cfg._data.get(toml_field, "")
                 if not current_toml_val:
-                    toml_cfg._data[toml_field] = str(legacy_val)
+                    if legacy_field in list_fields:
+                        if isinstance(legacy_val, list) and all(isinstance(item, str) for item in legacy_val):
+                            toml_cfg._data[toml_field] = list(legacy_val)
+                        else:
+                            logger.warning("CFG-01: Ignoring malformed legacy list field %s.", legacy_field)
+                    else:
+                        toml_cfg._data[toml_field] = str(legacy_val)
 
         # Migrate first_run flag
         if not legacy.first_run:
