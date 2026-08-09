@@ -23,6 +23,7 @@ from sky_claw.local.fomod.models import (
     CompositeDependency,
     ConditionalPattern,
     ConditionFlag,
+    DependencyPattern,
     FileDependency,
     FileInstall,
     FileState,
@@ -217,6 +218,8 @@ def _parse_plugins(element: _stdlib_ET.Element | None) -> list[Plugin]:
 
             type_desc = PluginType.OPTIONAL
             dependency: CompositeDependency | None = None
+            dependency_default_type: PluginType | None = None
+            dependency_patterns: list[DependencyPattern] = []
             td_el = plugin_el.find("typeDescriptor")
             if td_el is not None:
                 type_el = td_el.find("type")
@@ -230,6 +233,8 @@ def _parse_plugins(element: _stdlib_ET.Element | None) -> list[Plugin]:
                 dep_el = td_el.find("dependencyType")
                 if dep_el is not None:
                     dependency = _parse_composite_dependency(dep_el)
+                    dependency_default_type = _parse_plugin_type_attr(dep_el.get("defaultType"))
+                    dependency_patterns = _parse_dependency_patterns(dep_el)
 
             plugins.append(
                 Plugin(
@@ -240,6 +245,8 @@ def _parse_plugins(element: _stdlib_ET.Element | None) -> list[Plugin]:
                     files=files,
                     type_descriptor=type_desc,
                     dependency=dependency,
+                    dependency_default_type=dependency_default_type,
+                    dependency_patterns=dependency_patterns,
                 )
             )
         except Exception:
@@ -258,6 +265,45 @@ def _parse_condition_flags(element: _stdlib_ET.Element | None) -> list[Condition
         if name:
             flags.append(ConditionFlag(name=name, value=value))
     return flags
+
+
+def _parse_plugin_type_attr(raw_type: str | None) -> PluginType | None:
+    """Convierte un atributo de tipo (``defaultType``/``type name``) a PluginType.
+
+    ``CouldBeUsable``/``NotUsable`` solo tienen sentido en los patterns;
+    un valor desconocido se ignora (None) en lugar de romper el parse.
+    """
+    if raw_type is None:
+        return None
+    try:
+        return PluginType(raw_type)
+    except ValueError:
+        logger.warning("Unknown plugin type %r, ignoring it", raw_type)
+        return None
+
+
+def _parse_dependency_patterns(element: _stdlib_ET.Element | None) -> list[DependencyPattern]:
+    """Parse <dependencyType><patterns> → list of DependencyPattern."""
+    if element is None:
+        return []
+    patterns_el = element.find("patterns")
+    if patterns_el is None:
+        return []
+    patterns: list[DependencyPattern] = []
+    for pattern_el in patterns_el.findall("pattern"):
+        try:
+            type_el = pattern_el.find("type")
+            raw_type = type_el.get("name", "") if type_el is not None else ""
+            pattern_type = _parse_plugin_type_attr(raw_type)
+            if pattern_type is None:
+                logger.warning("Skipping dependency pattern without a valid type")
+                continue
+            deps_el = pattern_el.find("dependencies")
+            parsed = _parse_composite_dependency_direct(deps_el) if deps_el is not None else None
+            patterns.append(DependencyPattern(type=pattern_type, conditions=parsed or CompositeDependency()))
+        except Exception:
+            logger.warning("Skipping malformed dependency pattern", exc_info=True)
+    return patterns
 
 
 def _parse_composite_dependency(

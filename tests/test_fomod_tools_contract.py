@@ -251,6 +251,38 @@ class TestInstallModFromArchiveContrato:
         assert "modlist" in payload["message"]
         assert payload["files_copied"] == ["plugin.esp"]
 
+    async def test_instalacion_ok_con_lock_manager_cableado(
+        self,
+        fake_mo2: _FakeMO2,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Con lock_manager cableado, la instalación participa del lock
+        cross-process de la familia T-31 y el flujo completo funciona."""
+        from sky_claw.app.db.locks import DistributedLockManager
+
+        lock_manager = DistributedLockManager(db_path=tmp_path / "locks.db")
+        await lock_manager.initialize()
+        try:
+            hitl = _FakeHITL()
+            installer = _FakeFomodInstaller(
+                install_result=InstallResult(mod_name="TestMod", files_copied=["plugin.esp"], installed=True)
+            )
+            payload = _cargar(
+                await install_mod_from_archive(
+                    fake_mo2,
+                    installer,
+                    hitl,
+                    "C:/mods/TestMod.zip",
+                    lock_manager=lock_manager,
+                )
+            )
+
+            assert payload["success"] is True
+            assert payload["files_copied"] == ["plugin.esp"]
+            assert fake_mo2.added == ["TestMod"]
+        finally:
+            await lock_manager.close()
+
     async def test_propaga_cancelacion_async(self, fake_mo2: _FakeMO2) -> None:
         class _CancelHITL(_FakeHITL):
             async def request_approval(self, request_id: str, reason: str, **kwargs: Any) -> Decision:
@@ -312,6 +344,19 @@ class TestResolveFomodContrato:
 
 
 class TestRegistryFomodCableado:
+    def test_ancla_enumera_las_tres_tools_fomod(self, fake_mo2: _FakeMO2) -> None:
+        """Ancla de superficie: las tres tools FOMOD deben estar registradas —
+        si un camino nuevo agrega una herramienta FOMOD sin cablearla, este
+        test se rompe (regla del repo: anclas que enumeran, no que muestrean)."""
+        registry = AsyncToolRegistry(
+            registry=None,
+            mo2=fake_mo2,
+            sync_engine=None,
+            fomod_installer=_FakeFomodInstaller(),
+        )
+
+        assert {"preview_mod_installer", "install_mod_from_archive", "resolve_fomod"} <= set(registry.tools)
+
     async def test_ejecuta_preview_con_instalador_cableado(self, fake_mo2: _FakeMO2) -> None:
         preview = FomodPreview(
             mod_name="TestMod",
@@ -332,6 +377,41 @@ class TestRegistryFomodCableado:
         assert payload["success"] is True
         assert payload["has_fomod"] is True
         assert payload["steps"][0]["name"] == "Options"
+
+    async def test_ejecuta_install_y_resolve_via_registry(self, fake_mo2: _FakeMO2) -> None:
+        """Las tres tools pasan por el registry con sus dependencias inyectadas:
+        el wiring del lambda (mo2/hitl/installer) no puede quedar como no-op."""
+        fomod_xml = """\
+        <config>
+            <moduleName>TestMod</moduleName>
+            <requiredInstallFiles>
+                <file source="core/main.esp" destination="main.esp" />
+            </requiredInstallFiles>
+        </config>
+        """
+        installer = _FakeFomodInstaller(
+            install_result=InstallResult(mod_name="TestMod", files_copied=["main.esp"], installed=True),
+            fomod_xml=fomod_xml,
+        )
+        registry = AsyncToolRegistry(
+            registry=None,
+            mo2=fake_mo2,
+            sync_engine=None,
+            hitl=_FakeHITL(),
+            fomod_installer=installer,
+        )
+        archive = pathlib.Path.home() / "Modding" / "TestMod.zip"
+
+        install_payload = _cargar(
+            await registry.execute("install_mod_from_archive", {"archive_path": str(archive), "selections": {}})
+        )
+        assert install_payload["success"] is True
+        assert install_payload["files_copied"] == ["main.esp"]
+        assert fake_mo2.added == ["TestMod"]
+
+        resolve_payload = _cargar(await registry.execute("resolve_fomod", {"archive_path": str(archive)}))
+        assert resolve_payload["success"] is True
+        assert "core/main.esp" in resolve_payload["files_to_install"]
 
     async def test_sin_instalador_el_registry_responde_not_configured(self, fake_mo2: _FakeMO2) -> None:
         registry = AsyncToolRegistry(registry=None, mo2=fake_mo2, sync_engine=None)

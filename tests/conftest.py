@@ -225,6 +225,32 @@ def correlation_id() -> Iterator[str]:
     correlation_id_var.reset(token)
 
 
+def crear_arbol_mo2(
+    tmp_path: pathlib.Path,
+    modlist: str,
+    mods: dict[str, dict[str, str]],
+) -> pathlib.Path:
+    """Crea un árbol MO2 minimal para tests de FOMOD.
+
+    ``profiles/Default/modlist.txt`` (líneas ``+mod``/``-mod``) más
+    ``mods/<nombre>/`` con los archivos dados. Devuelve el ``mo2_root``.
+
+    Compartido por los tests que ejercitan ``fileDependency`` contra el estado
+    de instalación (``test_fomod_file_state`` / ``test_fomod_plugin_types``) —
+    la copia local divergiría cuando cambie el layout de MO2.
+    """
+    mo2_root = tmp_path / "mo2"
+    profile_dir = mo2_root / "profiles" / "Default"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "modlist.txt").write_text(modlist, encoding="utf-8")
+    for mod_name, files in mods.items():
+        for rel, content in files.items():
+            target = mo2_root / "mods" / mod_name / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+    return mo2_root
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # noqa: ARG001
     """Remove .pytest-tmp after every session to prevent Windows ACL lock buildup.
 

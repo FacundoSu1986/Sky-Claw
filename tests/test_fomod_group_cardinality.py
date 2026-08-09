@@ -14,8 +14,11 @@ import zipfile
 
 from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.fomod.installer import FomodInstaller
+from sky_claw.local.fomod.models import FomodConfig
 from sky_claw.local.fomod.parser import parse_fomod_string
+from sky_claw.local.fomod.plugin_state import MO2PluginStateProvider
 from sky_claw.local.fomod.resolver import FomodResolver
+from tests.conftest import crear_arbol_mo2
 
 FOMOD_GRUPOS = """\
 <config>
@@ -81,7 +84,7 @@ FOMOD_REQUIRED_EN_EXACTO = """\
 """
 
 
-def _config(fomod_xml: str):
+def _config(fomod_xml: str) -> FomodConfig:
     return parse_fomod_string(fomod_xml)
 
 
@@ -144,6 +147,58 @@ class TestCardinalidadDeGrupos:
         assert "core/engine.esp" in sources
         assert "lite/engine.esp" not in sources
         assert result.pending_decisions == []
+
+    def test_grupo_con_todos_los_plugins_inelegibles_explica_la_causa(self, tmp_path: pathlib.Path) -> None:
+        """Si todas las opciones quedan bloqueadas por dependencyType, el
+        mensaje pendiente debe decir la causa, no "must select exactly one"."""
+        mo2_root = crear_arbol_mo2(
+            tmp_path,
+            modlist="+OtroMod\n",
+            mods={"OtroMod": {"OtroMod.esp": "esp"}},
+        )
+        fomod_xml = """\
+        <config>
+            <installSteps order="Explicit">
+                <installStep name="Core">
+                    <optionalFileGroups order="Explicit">
+                        <group name="Motor" type="SelectExactlyOne">
+                            <plugins order="Explicit">
+                                <plugin name="MotorSE">
+                                    <typeDescriptor>
+                                        <dependencyType operator="And">
+                                            <dependencies>
+                                                <fileDependency file="AddressLibrary.esp" state="Active" />
+                                            </dependencies>
+                                        </dependencyType>
+                                        <type name="Required" />
+                                    </typeDescriptor>
+                                    <files><file source="se/engine.esp" destination="engine.esp" /></files>
+                                </plugin>
+                                <plugin name="MotorFallback">
+                                    <typeDescriptor>
+                                        <dependencyType operator="And">
+                                            <dependencies>
+                                                <fileDependency file="OtroRequisito.esp" state="Active" />
+                                            </dependencies>
+                                        </dependencyType>
+                                        <type name="Optional" />
+                                    </typeDescriptor>
+                                    <files><file source="fb/engine.esp" destination="engine.esp" /></files>
+                                </plugin>
+                            </plugins>
+                        </group>
+                    </optionalFileGroups>
+                </installStep>
+            </installSteps>
+        </config>
+        """
+        resolver = FomodResolver(_config(fomod_xml), file_state=MO2PluginStateProvider(mo2_root))
+
+        result = resolver.resolve({})
+
+        assert len(result.pending_decisions) == 1
+        assert "no eligible options" in result.pending_decisions[0]
+        assert "must select exactly one" not in result.pending_decisions[0]
 
 
 class TestInstallerCardinalidad:

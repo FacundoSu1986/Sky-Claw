@@ -45,6 +45,14 @@ def _normalize(path: str) -> str:
     return normalized
 
 
+def _mtime_ns(path: pathlib.Path) -> int | None:
+    """mtime en nanosegundos de *path*, o None si no existe/ilegible."""
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 class MO2PluginStateProvider:
     """Estado de archivos derivado de una instancia portable de MO2."""
 
@@ -54,15 +62,17 @@ class MO2PluginStateProvider:
         self._active_files: frozenset[str] = frozenset()
         self._inactive_files: frozenset[str] = frozenset()
         self._indexed = False
+        self._modlist_mtime: int | None = None
+        self._mods_mtime: int | None = None
         # El índice se construye una sola vez; el lock protege el doble-chequeo
         # cuando la resolución corre en un hilo (asyncio.to_thread).
         self._index_lock = threading.Lock()
 
     def file_state(self, path: str) -> FileState:
         """Estado del archivo *path* (relativo a ``Data/``)."""
-        if not self._indexed:
+        if self._estado_cambio():
             with self._index_lock:
-                if not self._indexed:
+                if self._estado_cambio():
                     self._build_index()
         key = _normalize(path)
         if key in self._active_files:
@@ -70,6 +80,19 @@ class MO2PluginStateProvider:
         if key in self._inactive_files:
             return FileState.INACTIVE
         return FileState.MISSING
+
+    def _estado_cambio(self) -> bool:
+        """True si modlist.txt o mods/ cambiaron desde el último índice.
+
+        Dos stats baratos por consulta; la reindexación solo ocurre cuando un
+        mutador (instalación, activar/desactivar) tocó el estado de MO2. Sin
+        esto el índice quedaría obsoleto durante la sesión.
+        """
+        if not self._indexed:
+            return True
+        return self._modlist_mtime != _mtime_ns(
+            self._mo2_root / "profiles" / self._profile / _MODLIST_NAME
+        ) or self._mods_mtime != _mtime_ns(self._mo2_root / "mods")
 
     # ------------------------------------------------------------------
     # Internals
@@ -84,6 +107,8 @@ class MO2PluginStateProvider:
         self._index_mods(disabled_mods, inactive)
         self._active_files = frozenset(active)
         self._inactive_files = frozenset(inactive)
+        self._modlist_mtime = _mtime_ns(self._mo2_root / "profiles" / self._profile / _MODLIST_NAME)
+        self._mods_mtime = _mtime_ns(self._mo2_root / "mods")
         self._indexed = True
 
     def _read_modlist(self) -> tuple[set[str], set[str]]:
@@ -99,7 +124,7 @@ class MO2PluginStateProvider:
         modlist_path = self._mo2_root / "profiles" / self._profile / _MODLIST_NAME
         try:
             lines = modlist_path.read_text(encoding="utf-8-sig").splitlines()
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             logger.warning("modlist.txt ilegible (%s) — estado tratado como vacío: %s", modlist_path, exc)
             return enabled, disabled
         for raw_line in lines:

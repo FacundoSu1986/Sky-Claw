@@ -135,7 +135,8 @@ class FomodResolver:
         - ``Required`` plugins are forced when eligible;
         - with no user selection, ``Recommended`` plugins are preselected.
         """
-        eligible = [p for p in plugins if self._plugin_eligible(p, flags)]
+        effective_types = {p.name: self._plugin_type_effective(p, flags) for p in plugins}
+        eligible = [p for p in plugins if effective_types[p.name] is not None]
         plugin_names = {p.name for p in eligible}
         selected = {s for s in step_selections if s in plugin_names}
 
@@ -144,7 +145,7 @@ class FomodResolver:
         # selección del usuario en ese grupo (incompatible por cardinalidad)
         # se descarta — instalar dos variantes mutuamente excluyentes es el
         # defecto que esta validación previene.
-        required = {p.name for p in eligible if p.type_descriptor is PluginType.REQUIRED}
+        required = {p.name for p in eligible if effective_types[p.name] is PluginType.REQUIRED}
         if required and group_type in (GroupType.SELECT_EXACTLY_ONE, GroupType.SELECT_AT_MOST_ONE):
             selected = set(required)
         else:
@@ -153,23 +154,31 @@ class FomodResolver:
         if not selected:
             # Preselección Recommended: sin selección explícita del usuario se
             # elige lo que el autor del mod recomienda.
-            selected |= {p.name for p in eligible if p.type_descriptor is PluginType.RECOMMENDED}
+            selected |= {p.name for p in eligible if effective_types[p.name] is PluginType.RECOMMENDED}
 
         if group_type == GroupType.SELECT_ALL:
             return plugin_names
 
         if group_type == GroupType.SELECT_EXACTLY_ONE:
             if len(selected) != 1:
-                if selected:
-                    # Selección inválida (>1) en un grupo de selección única:
-                    # fail-closed — nada de este grupo se instala.
-                    logger.warning(
-                        "%s/%s: selección inválida (%d opciones) — se descarta el grupo",
-                        step_name,
-                        group_name,
-                        len(selected),
+                if plugins and not eligible:
+                    # Todas las opciones bloqueadas por dependencyType: el
+                    # mensaje genérico confundiría al LLM (no es falta de
+                    # selección, es un requisito no satisfecho).
+                    result.pending_decisions.append(
+                        f"{step_name}/{group_name}: no eligible options (unsatisfied dependencies)"
                     )
-                result.pending_decisions.append(f"{step_name}/{group_name}: must select exactly one")
+                else:
+                    if selected:
+                        # Selección inválida (>1) en un grupo de selección única:
+                        # fail-closed — nada de este grupo se instala.
+                        logger.warning(
+                            "%s/%s: selección inválida (%d opciones) — se descarta el grupo",
+                            step_name,
+                            group_name,
+                            len(selected),
+                        )
+                    result.pending_decisions.append(f"{step_name}/{group_name}: must select exactly one")
                 return set()
             return selected
 
@@ -186,15 +195,39 @@ class FomodResolver:
             return selected
 
         if group_type == GroupType.SELECT_AT_LEAST_ONE and not selected:
-            result.pending_decisions.append(f"{step_name}/{group_name}: must select at least one")
+            if plugins and not eligible:
+                result.pending_decisions.append(
+                    f"{step_name}/{group_name}: no eligible options (unsatisfied dependencies)"
+                )
+            else:
+                result.pending_decisions.append(f"{step_name}/{group_name}: must select at least one")
 
         return selected
 
-    def _plugin_eligible(self, plugin: Plugin, flags: dict[str, str]) -> bool:
-        """A plugin with an unsatisfied ``dependencyType`` must not be installed."""
-        if plugin.dependency is None:
-            return True
-        return self._evaluate_conditions(plugin.dependency, flags)
+    def _plugin_type_effective(self, plugin: Plugin, flags: dict[str, str]) -> PluginType | None:
+        """Tipo efectivo del plugin tras evaluar su ``dependencyType``.
+
+        None = plugin no elegible (no puede instalarse):
+        - con ``patterns``: el primero que matchee define el tipo; ``NotUsable``
+          o ningún match → no elegible; ``CouldBeUsable`` → Optional.
+        - sin ``patterns``: dependencias directas insatisfechas → se aplica
+          ``defaultType`` (o no elegible si no hay default); satisfechas → el
+          ``type`` normal.
+        """
+        if plugin.dependency_patterns:
+            for pattern in plugin.dependency_patterns:
+                if self._evaluate_conditions(pattern.conditions, flags):
+                    if pattern.type is PluginType.NOT_USABLE:
+                        return None
+                    if pattern.type is PluginType.COULD_BE_USABLE:
+                        return PluginType.OPTIONAL
+                    return pattern.type
+            return None
+
+        if plugin.dependency is not None and not self._evaluate_conditions(plugin.dependency, flags):
+            return plugin.dependency_default_type
+
+        return plugin.type_descriptor
 
     def _evaluate_conditions(
         self,

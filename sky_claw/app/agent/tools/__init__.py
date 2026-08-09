@@ -497,7 +497,15 @@ class AsyncToolRegistry:
             description="Install a mod from archive into MO2.",
             params_model=InstallFromArchiveParams,
             fn=lambda archive_path, selections=None: install_mod_from_archive(
-                self._mo2, self._fomod_installer, self._hitl, archive_path, selections
+                self._mo2,
+                self._fomod_installer,
+                self._hitl,
+                archive_path,
+                selections,
+                # T-31: la instalación de mods participa del lock cross-process
+                # de la familia de instalación (mismo recurso que los
+                # autoinstaladores de tools sobre mods/).
+                lock_manager=self._lock_manager,
             ),
         )
         self._tools["resolve_fomod"] = ToolDescriptor(

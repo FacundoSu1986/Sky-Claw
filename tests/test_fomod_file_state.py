@@ -17,6 +17,7 @@ from sky_claw.local.fomod.models import FileState
 from sky_claw.local.fomod.parser import parse_fomod_string
 from sky_claw.local.fomod.plugin_state import MO2PluginStateProvider
 from sky_claw.local.fomod.resolver import FomodResolver
+from tests.conftest import crear_arbol_mo2
 
 FOMOD_PATCH_USSEP = """\
 <config>
@@ -103,23 +104,9 @@ FOMOD_FLAG_ONLY = """\
 # ---------------------------------------------------------------------------
 
 
-def _mo2_tree(tmp_path: pathlib.Path, modlist: str, mods: dict[str, dict[str, str]]) -> pathlib.Path:
-    """Crea un árbol MO2 minimal: profiles/Default/modlist.txt + mods/<m>/archivos."""
-    mo2_root = tmp_path / "mo2"
-    profile_dir = mo2_root / "profiles" / "Default"
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "modlist.txt").write_text(modlist, encoding="utf-8")
-    for mod_name, files in mods.items():
-        for rel, content in files.items():
-            target = mo2_root / "mods" / mod_name / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-    return mo2_root
-
-
 class TestMO2PluginStateProvider:
     def test_archivo_en_mod_habilitado_es_active(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+ModA\n",
             mods={"ModA": {"ModA.esp": "esp"}},
@@ -129,7 +116,7 @@ class TestMO2PluginStateProvider:
         assert provider.file_state("ModA.esp") == FileState.ACTIVE
 
     def test_archivo_en_mod_deshabilitado_es_inactive(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="-ModA\n",
             mods={"ModA": {"ModA.esp": "esp"}},
@@ -139,7 +126,7 @@ class TestMO2PluginStateProvider:
         assert provider.file_state("ModA.esp") == FileState.INACTIVE
 
     def test_archivo_ausente_es_missing(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+ModA\n",
             mods={"ModA": {"ModA.esp": "esp"}},
@@ -149,7 +136,7 @@ class TestMO2PluginStateProvider:
         assert provider.file_state("USSEP.esp") == FileState.MISSING
 
     def test_comparacion_case_insensitive(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+ModA\n",
             mods={"ModA": {"ModA.esp": "esp"}},
@@ -159,7 +146,7 @@ class TestMO2PluginStateProvider:
         assert provider.file_state("moda.ESP") == FileState.ACTIVE
 
     def test_path_con_prefijo_data(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+ModA\n",
             mods={"ModA": {"ModA.esp": "esp"}},
@@ -169,7 +156,7 @@ class TestMO2PluginStateProvider:
         assert provider.file_state("Data/ModA.esp") == FileState.ACTIVE
 
     def test_separadores_y_espacios_en_modlist(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+Mod Con Espacios\n==\n-ModB\n",
             mods={
@@ -182,6 +169,49 @@ class TestMO2PluginStateProvider:
         assert provider.file_state("ModA.esp") == FileState.ACTIVE
         assert provider.file_state("ModB.esp") == FileState.INACTIVE
 
+    def test_invalida_el_indice_cuando_cambia_el_modlist(self, tmp_path: pathlib.Path) -> None:
+        """Activar/desactivar un mod durante la sesión no puede quedar cacheado."""
+        mo2_root = crear_arbol_mo2(
+            tmp_path,
+            modlist="-ModA\n",
+            mods={"ModA": {"ModA.esp": "esp"}},
+        )
+        provider = MO2PluginStateProvider(mo2_root)
+        assert provider.file_state("ModA.esp") == FileState.INACTIVE
+
+        (mo2_root / "profiles" / "Default" / "modlist.txt").write_text("+ModA\n", encoding="utf-8")
+
+        assert provider.file_state("ModA.esp") == FileState.ACTIVE
+
+    def test_invalida_el_indice_cuando_aparece_un_mod_nuevo(self, tmp_path: pathlib.Path) -> None:
+        mo2_root = crear_arbol_mo2(
+            tmp_path,
+            modlist="+ModA\n",
+            mods={"ModA": {"ModA.esp": "esp"}},
+        )
+        provider = MO2PluginStateProvider(mo2_root)
+        assert provider.file_state("Nuevo.esp") == FileState.MISSING
+
+        nuevo = mo2_root / "mods" / "ModNuevo"
+        nuevo.mkdir()
+        (nuevo / "Nuevo.esp").write_text("esp", encoding="utf-8")
+        (mo2_root / "profiles" / "Default" / "modlist.txt").write_text("+ModA\n+ModNuevo\n", encoding="utf-8")
+
+        assert provider.file_state("Nuevo.esp") == FileState.ACTIVE
+
+    def test_modlist_no_utf8_degrada_a_missing(self, tmp_path: pathlib.Path) -> None:
+        """Un modlist.txt corrupto no puede tumbar la resolución: estado vacío."""
+        mo2_root = tmp_path / "mo2"
+        profile_dir = mo2_root / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "modlist.txt").write_bytes(b"\xff\xfe+ModA\xff")
+        mod_dir = mo2_root / "mods" / "ModA"
+        mod_dir.mkdir(parents=True)
+        (mod_dir / "ModA.esp").write_text("esp", encoding="utf-8")
+        provider = MO2PluginStateProvider(mo2_root)
+
+        assert provider.file_state("ModA.esp") == FileState.MISSING
+
 
 # ---------------------------------------------------------------------------
 # Resolver: fileDependency evaluadas contra el proveedor (fail-closed)
@@ -190,7 +220,7 @@ class TestMO2PluginStateProvider:
 
 class TestResolverFileDependency:
     def test_parche_condicionado_a_plugin_presente_se_instala(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+USSEP\n",
             mods={"USSEP": {"USSEP.esp": "esp"}},
@@ -205,7 +235,7 @@ class TestResolverFileDependency:
         assert "patches/ussep_patch.esp" in sources
 
     def test_parche_condicionado_a_plugin_ausente_no_se_instala(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+OtroMod\n",
             mods={"OtroMod": {"OtroMod.esp": "esp"}},
@@ -242,7 +272,7 @@ class TestResolverFileDependency:
         assert "extras/readme.txt" in sources
 
     def test_estado_missing_se_cumple_cuando_archivo_no_existe(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+ModActual\n",
             mods={"ModActual": {"main.esp": "esp"}},
@@ -256,7 +286,7 @@ class TestResolverFileDependency:
         assert "patches/fix.esp" in sources
 
     def test_estado_missing_no_se_cumple_cuando_archivo_existe(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+OldMod\n",
             mods={"OldMod": {"OldMod.esp": "esp"}},
@@ -286,7 +316,7 @@ def _zip_con_fomod(sandbox: pathlib.Path, fomod_xml: str) -> pathlib.Path:
 
 class TestInstallerFileDependency:
     async def test_install_fomod_respeta_estado_de_plugins(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+USSEP\n",
             mods={"USSEP": {"USSEP.esp": "esp"}},
@@ -309,7 +339,7 @@ class TestInstallerFileDependency:
         assert any(f.endswith("ussep_patch.esp") for f in copied)
 
     async def test_install_fomod_omite_parche_sin_plugin(self, tmp_path: pathlib.Path) -> None:
-        mo2_root = _mo2_tree(
+        mo2_root = crear_arbol_mo2(
             tmp_path,
             modlist="+OtroMod\n",
             mods={"OtroMod": {"OtroMod.esp": "esp"}},

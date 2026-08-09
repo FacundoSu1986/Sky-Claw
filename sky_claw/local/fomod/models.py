@@ -36,6 +36,10 @@ class PluginType(StrEnum):
     REQUIRED = "Required"
     OPTIONAL = "Optional"
     RECOMMENDED = "Recommended"
+    #: Types used by ``<dependencyType><patterns><pattern>`` entries: the
+    #: plugin is usable (as Optional) or not, depending on the pattern match.
+    COULD_BE_USABLE = "CouldBeUsable"
+    NOT_USABLE = "NotUsable"
 
 
 # ------------------------------------------------------------------
@@ -101,6 +105,20 @@ class ConditionFlag(pydantic.BaseModel):
     value: str = ""
 
 
+class DependencyPattern(pydantic.BaseModel):
+    """Un patrón de ``<dependencyType>``: tipo resultante si las condiciones se cumplen.
+
+    ``NotUsable`` inhabilita el plugin; ``CouldBeUsable`` lo trata como
+    ``Optional``; el resto (Required/Recommended/Optional) define su
+    comportamiento de selección.
+    """
+
+    model_config = pydantic.ConfigDict(strict=True)
+
+    type: PluginType
+    conditions: CompositeDependency
+
+
 class Plugin(pydantic.BaseModel):
     """A selectable option within a group."""
 
@@ -112,9 +130,13 @@ class Plugin(pydantic.BaseModel):
     condition_flags: list[ConditionFlag] = pydantic.Field(default_factory=list)
     files: list[FileInstall] = pydantic.Field(default_factory=list)
     type_descriptor: PluginType = PluginType.OPTIONAL
-    # ``<dependencyType>``: conditions that gate whether the plugin may be
-    # selected/installed at all (evaluated against flags and installed files).
+    # ``<dependencyType>``: condiciones que determinan si el plugin puede
+    # seleccionarse/instalarse (se evalúan contra flags y archivos instalados).
     dependency: CompositeDependency | None = None
+    #: Tipo por defecto cuando las dependencias directas NO se cumplen.
+    dependency_default_type: PluginType | None = None
+    #: Patrones evaluados en orden: el primero que matchee define el tipo.
+    dependency_patterns: list[DependencyPattern] = pydantic.Field(default_factory=list)
 
 
 class Group(pydantic.BaseModel):

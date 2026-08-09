@@ -80,6 +80,12 @@ class TestIsFomodXmlName:
     def test_rechaza_traversal(self) -> None:
         assert _is_fomod_xml_name("../../fomod/ModuleConfig.xml") is False
 
+    def test_rechaza_path_absoluto_posix(self) -> None:
+        assert _is_fomod_xml_name("/fomod/ModuleConfig.xml") is False
+
+    def test_rechaza_path_absoluto_windows(self) -> None:
+        assert _is_fomod_xml_name("C:/fomod/ModuleConfig.xml") is False
+
 
 # ---------------------------------------------------------------------------
 # Preview de .7z (lectura selectiva real con py7zr)
@@ -173,6 +179,27 @@ class TestPreviewRar:
         sin_fomod = _FakeRarFile.con_entradas({"plugin.esp": b"esp"})
         monkeypatch.setattr(rarfile, "RarFile", sin_fomod)
         archive = tmp_path / "Flat.rar"
+        archive.write_bytes(b"fake")
+
+        preview = await installer.preview(archive)
+
+        assert preview.has_fomod is False
+
+    async def test_preview_rar_sin_binario_unrar_degrada_a_sin_fomod(
+        self,
+        installer: FomodInstaller,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sin el binario ``unrar``, rarfile lanza RarCannotExec: el preview
+        debe degradar a has_fomod=False, no reventar la tool."""
+
+        class _RarSinUnrar:
+            def __init__(self, path: str, mode: str) -> None:
+                raise rarfile.RarCannotExec("unrar not found")
+
+        monkeypatch.setattr(rarfile, "RarFile", _RarSinUnrar)
+        archive = tmp_path / "Mod.rar"
         archive.write_bytes(b"fake")
 
         preview = await installer.preview(archive)

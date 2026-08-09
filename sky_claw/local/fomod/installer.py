@@ -80,11 +80,19 @@ def _is_safe_path(member_path: str) -> bool:
 def _is_fomod_xml_name(member_path: str) -> bool:
     """True si el entry del archive es un ``fomod/ModuleConfig.xml``.
 
-    Comparación case-insensitive y tolerante a backslashes; los paths con
-    componentes de traversal se rechazan.
+    Comparación case-insensitive y tolerante a backslashes; se rechazan paths
+    con componentes de traversal y paths absolutos — ``Path(tmp) / "C:/x"``
+    reemplazaría el destino en lugar de anidarlo (escape del directorio
+    temporal de lectura selectiva).
     """
     normalized = member_path.replace("\\", "/").lower()
-    return normalized.endswith("fomod/moduleconfig.xml") and _is_safe_path(member_path)
+    if not normalized.endswith("fomod/moduleconfig.xml"):
+        return False
+    if not _is_safe_path(member_path):
+        return False
+    if pathlib.PurePosixPath(normalized).is_absolute():
+        return False
+    return not pathlib.PureWindowsPath(normalized).drive
 
 
 def _serialize_dependency(dependency: CompositeDependency | None) -> dict[str, Any] | None:
@@ -351,8 +359,11 @@ class FomodInstaller:
         """
         try:
             import py7zr
-            from py7zr.exceptions import Bad7zFile, CrcError
+            from py7zr.exceptions import Bad7zFile, CrcError, PasswordRequired, UnsupportedCompressionMethodError
         except ModuleNotFoundError:
+            # Distinguible de "el archive no tiene FOMOD" (has_fomod=False):
+            # falta la dependencia opcional.
+            logger.warning("py7zr no está instalado — preview de .7z degradado a sin FOMOD (%s)", archive_path)
             return None
         target: str | None = None
         try:
@@ -367,7 +378,7 @@ class FomodInstaller:
                     szf.extract(path=tmp, targets=[target])
                     xml_path = pathlib.Path(tmp) / target
                     return xml_path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, KeyError, Bad7zFile, CrcError):
+        except (OSError, KeyError, Bad7zFile, CrcError, PasswordRequired, UnsupportedCompressionMethodError):
             return None
         return None
 
@@ -377,6 +388,7 @@ class FomodInstaller:
         try:
             import rarfile
         except ModuleNotFoundError:
+            logger.warning("rarfile no está instalado — preview de .rar degradado a sin FOMOD (%s)", archive_path)
             return None
         try:
             with rarfile.RarFile(archive_path, "r") as rf:
@@ -385,7 +397,9 @@ class FomodInstaller:
                         # rarfile es import dinámico: bytes() estrecha Any a bytes.
                         data = bytes(rf.read(info.filename))
                         return data.decode("utf-8", errors="replace")
-        except (OSError, KeyError, rarfile.BadRarFile):
+        except (OSError, KeyError, rarfile.Error):
+            # rarfile.Error cubre BadRarFile, RarCannotExec (sin binario
+            # unrar), PasswordRequired y NeedFirstVolume — degradan a None.
             return None
         return None
 
