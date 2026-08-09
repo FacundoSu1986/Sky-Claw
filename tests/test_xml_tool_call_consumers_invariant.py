@@ -44,21 +44,32 @@ CONSUMIDORES_ESPERADOS = {
 
 
 def _simbolos_importados(arbol: ast.AST) -> set[str]:
-    """Símbolos que el módulo importa del parser (directo o vía shim)."""
+    """Símbolos que el módulo importa del parser (directo, vía paquete o shim).
+
+    Cubre las tres formas válidas: `from ...xml_tool_call_parser import X`,
+    `from ...agent import xml_tool_call_parser` (el submódulo queda ligado al
+    paquete) e `import ...xml_tool_call_parser [as alias]`.
+    """
     simbolos: set[str] = set()
     for nodo in ast.walk(arbol):
         if isinstance(nodo, ast.ImportFrom):
-            modulo = (nodo.module or "").split(".")[-1]
-            if modulo in MODULOS_RAIZ_DEL_PARSER:
+            modulo = (nodo.module or "").split(".")
+            if modulo[-1] in MODULOS_RAIZ_DEL_PARSER:
                 simbolos.update(alias.name for alias in nodo.names)
+                continue
+            for alias in nodo.names:
+                if alias.name in MODULOS_RAIZ_DEL_PARSER:
+                    simbolos.add(alias.asname or alias.name)
         elif isinstance(nodo, ast.Import):
             for alias in nodo.names:
-                if alias.name.split(".")[-1] in MODULOS_RAIZ_DEL_PARSER:
-                    simbolos.add(alias.name.split(".")[-1])
+                nombre = alias.name.split(".")[-1]
+                if nombre in MODULOS_RAIZ_DEL_PARSER:
+                    simbolos.add(alias.asname or nombre)
     return simbolos
 
 
 def _consumidores_reales() -> dict[str, set[str]]:
+    """Escanea el árbol e indexa cada módulo por los símbolos que importa del parser."""
     consumidores: dict[str, set[str]] = {}
     for archivo in PAQUETE.rglob("*.py"):
         arbol = ast.parse(archivo.read_text(encoding="utf-8"))
@@ -66,6 +77,26 @@ def _consumidores_reales() -> dict[str, set[str]]:
         if simbolos:
             consumidores[archivo.relative_to(PAQUETE.parent).as_posix()] = simbolos
     return consumidores
+
+
+def test_detector_detecta_todas_las_formas_de_import() -> None:
+    """Las formas válidas de importar el parser deben ser visibles para el ancla.
+
+    Blind spot del review: `from sky_claw.app.agent import xml_tool_call_parser`
+    deja `module` en `agent` y el submódulo en `names` — un detector que solo
+    mira el último componente de `module` no lo ve, y un consumidor escrito así
+    quedaría fuera de la congelación.
+    """
+    muestras = {
+        "directo": "from sky_claw.app.agent.xml_tool_call_parser import extract_tool_calls",
+        "paquete": "from sky_claw.app.agent import xml_tool_call_parser",
+        "paquete_con_alias": "from sky_claw.app.agent import xml_tool_call_parser as p",
+        "import_punto": "import sky_claw.app.agent.xml_tool_call_parser as p",
+        "shim": "from sky_claw.app.agent import hermes_parser",
+    }
+    for nombre, codigo in muestras.items():
+        simbolos = _simbolos_importados(ast.parse(codigo))
+        assert simbolos, f"forma de import no detectada: {nombre} ({codigo!r})"
 
 
 def test_consumidores_del_parser_congelados() -> None:
