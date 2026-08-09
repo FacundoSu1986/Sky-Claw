@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 def _error_result(message: str) -> dict[str, Any]:
-    """Construye el shape canónico sin perder el detalle legacy ``error``."""
-    return {"success": False, "message": message, "error": message}
+    """Construye el resultado de error canónico."""
+    return {"success": False, "message": message}
 
 
 async def setup_tools(

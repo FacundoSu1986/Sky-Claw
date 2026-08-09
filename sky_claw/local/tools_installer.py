@@ -52,6 +52,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_ES_WINDOWS = os.name == "nt"
+
 # ---------------------------------------------------------------------------
 # Lock cross-process de instalación (T-31)
 # ---------------------------------------------------------------------------
@@ -1064,9 +1066,27 @@ def _promover_payload_verificado(payload_dir: pathlib.Path, mod_dir: pathlib.Pat
             f"El destino {mod_dir} apareció durante la instalación de {mod_name}; "
             "se conserva intacto y no se mezcla con el payload de Sky-Claw."
         )
+    # Windows ya ofrece no-replace para rename de directorios. POSIX, en
+    # cambio, reemplaza un directorio destino vacío: reclamar primero el nombre
+    # con mkdir (O_EXCL a nivel de filesystem) garantiza que el rename posterior
+    # sólo sustituye nuestro propio placeholder. Si otro proceso gana la carrera,
+    # mkdir falla sin tocar ni su destino ni nuestro payload.
+    if not _ES_WINDOWS:
+        try:
+            mod_dir.mkdir()
+        except FileExistsError:
+            raise ToolInstallError(
+                f"El destino {mod_dir} apareció durante la instalación de {mod_name}; "
+                "se conserva intacto y no se mezcla con el payload de Sky-Claw."
+            ) from None
     try:
         payload_dir.rename(mod_dir)
     except OSError as exc:
+        if not _ES_WINDOWS:
+            # Sólo remueve el placeholder propio si sigue vacío. Si un escritor
+            # externo lo pobló, rmdir falla y sus archivos quedan intactos.
+            with contextlib.suppress(OSError):
+                mod_dir.rmdir()
         raise ToolInstallError(f"No pude promover el payload verificado de {mod_name}: {exc}") from exc
 
 

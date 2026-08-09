@@ -342,8 +342,9 @@ class TestSetupToolsZeroTrust:
             session=None,
         )
         data = json.loads(result)
-        assert "error" in data, f"Expected 'error' key in response, got: {data}"
-        assert "NetworkGateway" in data["error"], f"Error message must mention NetworkGateway, got: {data['error']!r}"
+        assert data["success"] is False
+        assert "NetworkGateway" in data["message"]
+        assert set(data) == {"success", "message"}
 
     @pytest.mark.asyncio
     async def test_no_aiohttp_session_created_when_gateway_none(self, tmp_path: pathlib.Path) -> None:

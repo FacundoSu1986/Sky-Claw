@@ -1084,8 +1084,9 @@ class TestSetupToolsTool:
 
         result_str = await registry.execute("setup_tools", {})
         result = json.loads(result_str)
-        assert "error" in result
-        assert "not configured" in result["error"]
+        assert result["success"] is False
+        assert "not configured" in result["message"]
+        assert set(result) == {"success", "message"}
 
         await db.close()
 
@@ -1140,7 +1141,8 @@ class TestSetupToolsTool:
 
             result = json.loads(result_str)
             assert "unknown_tool" in result
-            assert "error" in result["unknown_tool"]
+            assert result["unknown_tool"]["success"] is False
+            assert set(result["unknown_tool"]) == {"success", "message"}
         finally:
             await lock_mgr.close()
             await db.close()

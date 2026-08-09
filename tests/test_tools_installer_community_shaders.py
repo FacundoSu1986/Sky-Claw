@@ -1208,6 +1208,42 @@ class TestEnsureCommunityShadersInstalacion:
 
 
 class TestCleanOnFailInvariantes:
+    def test_promocion_posix_no_reemplaza_destino_vacio_aparecido_en_carrera(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """La promoción no-replace conserva ambos árboles aun con semántica POSIX."""
+        payload = tmp_path / "payload"
+        payload.mkdir()
+        (payload / "propio.txt").write_text("sky-claw", encoding="utf-8")
+        destino = tmp_path / "mod"
+        destino.mkdir()
+
+        exists_real = pathlib.Path.exists
+        rename_real = pathlib.Path.rename
+
+        def _exists_con_carrera(path: pathlib.Path) -> bool:
+            # Simula que el precheck vio ausente el destino aunque otro proceso
+            # ya lo creó vacío antes de la operación de rename.
+            if path == destino:
+                return False
+            return exists_real(path)
+
+        def _rename_con_semantica_posix(path: pathlib.Path, target: pathlib.Path) -> pathlib.Path:
+            if path == payload and target == destino and destino.is_dir() and not any(destino.iterdir()):
+                destino.rmdir()
+            return rename_real(path, target)
+
+        monkeypatch.setattr(pathlib.Path, "exists", _exists_con_carrera)
+        monkeypatch.setattr(pathlib.Path, "rename", _rename_con_semantica_posix)
+        monkeypatch.setattr(ti_mod, "_ES_WINDOWS", False, raising=False)
+
+        with pytest.raises(ToolInstallError, match="apareció"):
+            ti_mod._promover_payload_verificado(payload, destino, "Mod externo")
+
+        assert destino.is_dir()
+        assert payload.is_dir()
+        assert (payload / "propio.txt").read_text(encoding="utf-8") == "sky-claw"
+
     @pytest.mark.parametrize("origen", ["nexus", "github"])
     async def test_fallo_de_cleanup_no_enmascara_la_excepcion_original_en_ningun_hermano(
         self,
@@ -1623,7 +1659,7 @@ class TestSetupToolsCommunityShaders:
     async def test_setup_tools_community_shaders_sin_mo2_root_devuelve_error(
         self, gateway: NetworkGateway, tmp_path: pathlib.Path
     ) -> None:
-        """Sin mo2_root la rama devuelve {'error': ...} y normalize_tool_result nunca cae en 'error desconocido'."""
+        """Sin mo2_root la rama devuelve el contrato canónico con mensaje accionable."""
         from sky_claw.app.agent.tools.external_tools import setup_tools
         from sky_claw.local.local_config import LocalConfig
         from sky_claw.local.tools.tool_result import normalize_tool_result
@@ -1644,9 +1680,9 @@ class TestSetupToolsCommunityShaders:
         )
 
         entrada = json.loads(salida)["community_shaders"]
-        assert "error" in entrada
         assert entrada["success"] is False
-        assert entrada["message"] == entrada["error"]
+        assert entrada["message"]
+        assert set(entrada) == {"success", "message"}
         normalizado = normalize_tool_result(entrada)
         assert normalizado["success"] is False
         assert normalizado["message"]

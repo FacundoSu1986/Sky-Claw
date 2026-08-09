@@ -657,7 +657,7 @@ class TestSetupToolsNgio:
     async def test_setup_tools_ngio_sin_mo2_root_devuelve_error(
         self, gateway: NetworkGateway, tmp_path: pathlib.Path
     ) -> None:
-        """Sin mo2_root la rama devuelve {'error': ...} y normalize_tool_result nunca cae en 'error desconocido'."""
+        """Sin mo2_root la rama devuelve el contrato canónico con mensaje accionable."""
         from sky_claw.app.agent.tools.external_tools import setup_tools
         from sky_claw.local.local_config import LocalConfig
         from sky_claw.local.tools.tool_result import normalize_tool_result
@@ -678,7 +678,7 @@ class TestSetupToolsNgio:
         )
 
         entrada = json.loads(salida)["ngio"]
-        assert "error" in entrada
+        assert set(entrada) == {"success", "message"}
         normalizado = normalize_tool_result(entrada)
         assert normalizado["success"] is False
         assert normalizado["message"]
