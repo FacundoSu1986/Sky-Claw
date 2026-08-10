@@ -24,6 +24,7 @@ from sky_claw.app.core.metrics_server import (
     start_metrics_server,
     stop_metrics_server,
 )
+from sky_claw.app.core.path_resolver import PERFIL_MO2_POR_DEFECTO
 from sky_claw.app.core.tracing import configure_tracing, shutdown_tracing
 from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.db.journal import OperationJournal
@@ -82,18 +83,17 @@ SYSTEM_PROMPT = (
 )
 
 
-#: Fallback compatible cuando no hay `--profile` ni `MO2_PROFILE` (spec del PR #454).
-#: Vive en una constante porque lo comparten el resolver y el valor inicial del
-#: atributo publicado: dos literales iguales en dos lugares es exactamente cómo se
-#: desincronizan.
-_PERFIL_MO2_POR_DEFECTO = "Default"
-
-
 def _resolve_mo2_profile(args: Any) -> str:
-    """Resuelve y valida el perfil MO2 fijo de la sesión."""
+    """Resuelve y valida el perfil MO2 fijo de la sesión.
+
+    Precedencia: ``--profile`` → ``MO2_PROFILE`` → ``Default``. Es la ÚNICA fuente
+    de esa decisión: `resolver_perfil_activo` respeta el valor ya resuelto en vez de
+    volver a mirar el entorno, para que un `--profile` no pueda perder contra un
+    `MO2_PROFILE` puesto a la vez.
+    """
     configured = getattr(args, "profile", "")
     cli_profile = configured if isinstance(configured, str) else ""
-    profile = cli_profile or os.environ.get("MO2_PROFILE", "") or _PERFIL_MO2_POR_DEFECTO
+    profile = cli_profile or os.environ.get("MO2_PROFILE", "") or PERFIL_MO2_POR_DEFECTO
     return assert_safe_component(profile, field="profile")
 
 
@@ -226,7 +226,7 @@ class AppContext:
         # dentro de start_full y necesitan el mismo valor: el `SupervisorAgent` del
         # bootloader de la GUI es el caso que motivó esto. Arranca en el mismo
         # fallback que `_resolve_mo2_profile` para que nunca sea None.
-        self.mo2_profile: str = _PERFIL_MO2_POR_DEFECTO
+        self.mo2_profile: str = PERFIL_MO2_POR_DEFECTO
 
         # ARC-02: AsyncExitStack para compensación atómica ante fallos
         self._exit_stack = AsyncExitStack()
@@ -564,7 +564,7 @@ class AppContext:
         self.vfs_instance_id = None
         self.vfs_loot_runner = None
         self.install_dir = None
-        self.mo2_profile = _PERFIL_MO2_POR_DEFECTO
+        self.mo2_profile = PERFIL_MO2_POR_DEFECTO
         self.router = None
         self.polling = None
         self.hitl = None

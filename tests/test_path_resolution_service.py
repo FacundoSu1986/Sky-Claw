@@ -201,13 +201,12 @@ class TestGetMo2ModsPath:
 class TestGetActiveProfile:
     """Tests para get_active_profile."""
 
-    def test_returns_env_var_profile(
-        self,
-        path_resolver: PathResolutionService,
-    ) -> None:
-        """Retorna perfil desde MO2_PROFILE env var."""
+    def test_returns_env_var_profile(self, sandbox_root: pathlib.Path) -> None:
+        """Sin perfil inyectado, MO2_PROFILE decide."""
+        validator = PathValidator(roots=[sandbox_root])
+        resolver = PathResolutionService(path_validator=validator)
         with patch.dict(os.environ, {"MO2_PROFILE": "CustomProfile"}):
-            assert path_resolver.get_active_profile() == "CustomProfile"
+            assert resolver.get_active_profile() == "CustomProfile"
 
     def test_returns_constructor_profile_when_no_env(
         self,
@@ -217,12 +216,26 @@ class TestGetActiveProfile:
         with patch.dict(os.environ, {}, clear=True):
             assert path_resolver.get_active_profile() == "TestProfile"
 
+    def test_el_perfil_inyectado_gana_sobre_la_env_var(
+        self,
+        path_resolver: PathResolutionService,
+    ) -> None:
+        """Este test afirmaba lo CONTRARIO y congelaba el defecto.
+
+        Con la precedencia vieja (entorno primero), un `--profile Requiem` junto a
+        un `MO2_PROFILE=Default` hacía que `AppContext` resolviera `Requiem` para
+        las tools del agente y este resolver devolviera `Default` para LOOT,
+        DynDOLOD, Pandora, Wrye Bash y Synthesis: la divergencia GUI↔agente
+        sobrevivía a que el perfil se inyectara bien. Quien inyecta ya consultó
+        `MO2_PROFILE` con la precedencia correcta, así que volver a leerlo acá no
+        agrega una fuente — pisa una decisión ya tomada.
+        """
+        with patch.dict(os.environ, {"MO2_PROFILE": "PerfilDelEntorno"}):
+            assert path_resolver.get_active_profile() == "TestProfile"
+
     def test_returns_default_when_nothing_set(self, sandbox_root: pathlib.Path) -> None:
         """Retorna 'Default' cuando no hay perfil configurado."""
         validator = PathValidator(roots=[sandbox_root])
-        resolver = PathResolutionService(
-            path_validator=validator,
-            profile_name="",
-        )
+        resolver = PathResolutionService(path_validator=validator)
         with patch.dict(os.environ, {}, clear=True):
             assert resolver.get_active_profile() == "Default"

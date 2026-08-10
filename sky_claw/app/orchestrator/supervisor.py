@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import pathlib
 from typing import Any, Literal
 
@@ -11,7 +10,7 @@ from sky_claw.app.core.contracts import PathValidatorProtocol
 from sky_claw.app.core.database import DatabaseAgent
 from sky_claw.app.core.event_bus import CoreEventBus, Event, create_bus_with_dlq
 from sky_claw.app.core.models import HitlApprovalRequest
-from sky_claw.app.core.path_resolver import PathResolutionService
+from sky_claw.app.core.path_resolver import PathResolutionService, resolver_perfil_activo
 from sky_claw.app.core.windows_interop import ModdingToolsAgent
 from sky_claw.app.db.rollback_manager import RollbackManager
 from sky_claw.app.orchestrator.maintenance_daemon import (
@@ -117,7 +116,11 @@ def parse_active_plugins(load_order_text: str, *, source: PluginListSource = "lo
 class SupervisorAgent:
     def __init__(
         self,
-        profile_name: str = "Default",
+        # Perfil MO2 de la sesión. ``None`` (standalone/tests) deja que lo decida
+        # ``MO2_PROFILE``; un valor inyectado manda sobre el entorno, porque quien
+        # lo inyecta (``AppContext``) ya consultó esa variable con la precedencia
+        # correcta. Ver `resolver_perfil_activo`.
+        profile_name: str | None = None,
         *,
         hitl_guard: HITLGuard | None = None,
         lifecycle=None,  # DatabaseLifecycleManager | None — evita import circular en runtime
@@ -149,7 +152,13 @@ class SupervisorAgent:
         self.scraper = ScraperAgent(self.db, gateway=self.gateway)
         self.tools = ModdingToolsAgent()
         self.interface = InterfaceAgent()
-        self.profile_name = profile_name
+        # Se resuelve UNA vez, con la misma primitiva que usa el PathResolver, para
+        # que `self.profile_name` (rituales, clon de grass, modlist) y
+        # `get_active_profile()` (LOOT, DynDOLOD, Pandora, Wrye Bash, Synthesis) no
+        # puedan divergir. Guardamos también el valor crudo: es el que se le pasa al
+        # resolver, y `None` ahí significa "que decida el entorno".
+        self._profile_name_inyectado = profile_name
+        self.profile_name = resolver_perfil_activo(profile_name)
         # M-01.1: lifecycle compartido para journal/locks/DLQ (DI opcional;
         # None conserva los fallbacks directos pre-M-01 en tests/standalone).
         self._db_lifecycle = lifecycle
@@ -866,8 +875,8 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     # Entrypoint manual de desarrollo: no hay sesión de la que heredar el perfil, así
-    # que se nombra explícitamente. El ancla de
+    # que se declara explícitamente que lo decide el entorno. El ancla de
     # `tests/test_perfil_sesion_invariante.py` exige que TODA construcción declare el
     # suyo — incluida esta, para que el próximo caller no lo dé por sobreentendido.
-    supervisor = SupervisorAgent(profile_name=os.environ.get("MO2_PROFILE", "") or "Default")
+    supervisor = SupervisorAgent(profile_name=None)
     # asyncio.run(supervisor.start()) # En producción

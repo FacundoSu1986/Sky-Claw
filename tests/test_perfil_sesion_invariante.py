@@ -323,6 +323,37 @@ def test_ninguna_linea_de_comando_fija_el_perfil() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_las_dos_resoluciones_de_perfil_coinciden_ante_cli_y_entorno_en_conflicto() -> None:
+    """Las dos superficies resuelven el perfil por caminos distintos —``AppContext``
+    para las tools del agente, ``PathResolver`` para LOOT/DynDOLOD/Pandora/Wrye
+    Bash/Synthesis— y tienen que llegar al mismo valor.
+
+    El caso que las separaba era exactamente este: ``--profile`` y ``MO2_PROFILE``
+    seteados a la vez con valores distintos. ``AppContext`` daba prioridad al CLI y
+    ``get_active_profile()`` a la variable de entorno, así que el perfil inyectado
+    se perdía y la divergencia GUI↔agente sobrevivía al wiring correcto.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from sky_claw.app.core.path_resolver import resolver_perfil_activo
+    from sky_claw.app_context import _resolve_mo2_profile
+
+    with patch.dict("os.environ", {"MO2_PROFILE": "PerfilDelEntorno"}):
+        del_app_context = _resolve_mo2_profile(SimpleNamespace(profile=PERFIL))
+        del_path_resolver = resolver_perfil_activo(del_app_context)
+
+        assert del_app_context == PERFIL
+        assert del_path_resolver == PERFIL
+
+    # Sin CLI, la variable de entorno sigue siendo la fuente en AMBOS caminos.
+    with patch.dict("os.environ", {"MO2_PROFILE": "PerfilDelEntorno"}):
+        sin_cli = _resolve_mo2_profile(SimpleNamespace(profile=""))
+
+        assert sin_cli == "PerfilDelEntorno"
+        assert resolver_perfil_activo(None) == "PerfilDelEntorno"
+
+
 def test_toda_construccion_del_supervisor_declara_su_perfil() -> None:
     """El defecto era exactamente este: ``_bootloader.py`` construía el supervisor
     sin ``profile_name`` cuatro líneas después de que ``start_full`` resolviera el
