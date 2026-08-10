@@ -145,12 +145,15 @@ async def run_loot_sort(
     # devuelve `self` cuando coinciden, así que el caso normal no paga nada.
     # La detección sale del alias público de `loot_service`, que es su fuente única:
     # duplicarla acá reabriría el desfasaje que ese helper existe para cerrar.
-    from sky_claw.local.tools.loot_service import es_runner_por_perfil
-
-    if es_runner_por_perfil(loot_runner):
-        loot_runner = loot_runner.for_profile(profile)
-
+    # El rebind va DENTRO del try: `for_profile` construye un runner nuevo cuyo
+    # `__init__` resuelve tres paths (`.resolve()` puede lanzar OSError), así que
+    # dejarlo afuera rompía el contrato "siempre JSON" de esta tool justo en el
+    # código que este PR agregó (review Qodo #460).
     try:
+        from sky_claw.local.tools.loot_service import es_runner_por_perfil
+
+        if es_runner_por_perfil(loot_runner):
+            loot_runner = loot_runner.for_profile(profile)
         result = await loot_runner.sort()
     except Exception as exc:
         return json.dumps({"error": str(exc)})

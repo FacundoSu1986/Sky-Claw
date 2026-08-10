@@ -794,6 +794,28 @@ class TestRunLootSortLock:
         assert result["profile"] == "Requiem"
 
     @pytest.mark.asyncio
+    async def test_legacy_path_devuelve_json_si_el_rebind_falla(self, tmp_path: pathlib.Path) -> None:
+        """El rebind también respeta el contrato "siempre JSON" de la tool.
+
+        `for_profile` construye un runner nuevo y su `__init__` resuelve paths
+        (`.resolve()` puede lanzar OSError), así que fuera del try la excepción se
+        escapaba y el caller recibía una excepción en vez del JSON de error — en el
+        código que este PR agregó (review Qodo #460).
+        """
+
+        class _RunnerQueFallaAlRebindear:
+            def for_profile(self, profile: str) -> object:
+                raise OSError("no se pudo resolver el perfil")
+
+            async def sort(self) -> LOOTResult:  # pragma: no cover — no se llega
+                raise AssertionError("no debería ordenar si el rebind falló")
+
+        result = json.loads(await run_loot_sort(MagicMock(), _RunnerQueFallaAlRebindear(), None, profile="Requiem"))
+
+        assert "error" in result
+        assert "no se pudo resolver el perfil" in result["error"]
+
+    @pytest.mark.asyncio
     async def test_locked_path_returns_json_on_unexpected_error(self, tmp_path: pathlib.Path) -> None:
         """An unexpected subprocess error (e.g. OSError) is returned as JSON, not raised.
 
