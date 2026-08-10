@@ -389,7 +389,7 @@ causa del resultado de las suites enfocadas.
 git diff --check
 git diff --stat
 git status --short
-git add -- sky_claw/__main__.py sky_claw/app_context.py sky_claw/app/agent/router.py sky_claw/app/agent/tools/__init__.py sky_claw/app/agent/tools/system_tools.py tests/test_main.py tests/test_app_context_profile.py tests/test_fomod_tools_contract.py tests/security/test_guardrail_bypass.py tests/test_hermes_router.py docs/superpowers/plans/2026-08-09-fomod-profile-and-tool-output-security.md
+git add -- sky_claw/__main__.py sky_claw/app_context.py sky_claw/app/agent/router.py sky_claw/app/agent/tools/__init__.py sky_claw/app/agent/tools/system_tools.py tests/test_main.py tests/test_app_context_profile.py tests/test_fomod_tools_contract.py tests/security/test_guardrail_bypass.py tests/test_hermes_router.py docs/design/plans/2026-08-09-fomod-profile-and-tool-output-security.md
 git commit -m "fix(fomod): respetar perfil y bloquear resultados inyectados"
 ```
 

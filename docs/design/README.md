@@ -19,6 +19,7 @@ Diseño acordado antes de implementar: contexto, decisión y alcance.
 - [#330 — Remediación crítica del núcleo asíncrono](specs/2026-07-18-core-async-critical-remediation-design.md)
 - [#372 — Endurecimiento tras la revisión de crash logging](specs/2026-07-26-crash-logging-review-hardening-design.md)
 - [#411 — Salida administrada y reversible de Pandora](specs/2026-07-31-pandora-managed-output-design.md)
+- [#454 — Perfil FOMOD y frontera segura de resultados de tools](specs/2026-08-09-fomod-profile-and-tool-output-security-design.md)
 
 ## Planes de implementación (`plans/`)
 
@@ -27,6 +28,7 @@ Descomposición en tareas de una spec o de un objetivo concreto.
 - [#330 — Core Async Critical Remediation](plans/2026-07-18-core-async-critical-remediation.md)
 - [#411 — Pandora Managed Output](plans/2026-07-31-pandora-managed-output.md)
 - [#427 — Autoinstalación de SKSE](plans/2026-08-02-skse-autoinstall.md)
+- [#454 — FOMOD Profile and Tool Output Security](plans/2026-08-09-fomod-profile-and-tool-output-security.md)
 
 El número es el PR que mergeó cada documento junto con su implementación. Para
 saber qué sigue vigente, contrastar con el código, los tests y los ADR
