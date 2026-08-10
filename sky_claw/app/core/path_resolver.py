@@ -20,6 +20,7 @@ import pathlib
 from typing import Protocol, runtime_checkable
 
 from sky_claw.app.core.contracts import PathValidatorProtocol
+from sky_claw.app.security.path_validator import assert_safe_component
 
 logger = logging.getLogger("SkyClaw.PathResolution")
 security_logger = logging.getLogger("SkyClaw.Security")
@@ -53,10 +54,26 @@ def resolver_perfil_activo(profile_name: str | None) -> str:
     un caller que enhebre el valor crudo del CLI inyectaría ``""`` — con ``is None``
     eso devolvía ``""`` y los runners recibían un perfil inexistente en vez del
     fallback (hallazgo de review de Qodo, PR #460).
+
+    **La validación vive acá, no en cada caller.** El valor que sale de esta función
+    termina en rutas ``profiles/<perfil>/…`` (LOOT, DynDOLOD, Pandora, Wrye Bash) y en
+    el argumento ``--profile`` del CLI de Synthesis. ``AppContext._resolve_mo2_profile``
+    y ``AsyncToolRegistry.__init__`` ya validaban su entrada, pero ``MO2_PROFILE``
+    como ÚNICA fuente (resolver standalone, supervisor sin perfil inyectado) llegaba
+    crudo: un segundo punto de entrada que evadía la primitiva que este PR centraliza
+    (hallazgo de review de Qodo, PR #460). Validar acá es el mismo argumento que el de
+    la precedencia — la propiedad pertenece a quien PRODUCE el valor, no a quien lo
+    consume, o vuelve a haber un camino sin cubrir.
+
+    Fail-closed a propósito: un perfil malformado lanza en vez de degradar al
+    fallback. Degradar en silencio operaría sobre un perfil distinto del pedido, que
+    es exactamente la clase de defecto que este resolver cierra.
+
+    Lanza:
+        PathViolationError: si el perfil resuelto no es un componente de ruta seguro.
     """
-    if profile_name:
-        return profile_name
-    return os.environ.get("MO2_PROFILE", "") or PERFIL_MO2_POR_DEFECTO
+    resuelto = profile_name or os.environ.get("MO2_PROFILE", "") or PERFIL_MO2_POR_DEFECTO
+    return assert_safe_component(resuelto, field="profile")
 
 
 # Rutas candidatas para auto-detección de MO2 (ordenadas por probabilidad).

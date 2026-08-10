@@ -399,6 +399,42 @@ def test_ancla_api_publica_de_la_deteccion_de_runner_por_perfil() -> None:
     assert loot_service.es_runner_por_perfil is loot_service._is_per_profile_runner
 
 
+def test_ninguna_fuente_del_perfil_evade_la_validacion() -> None:
+    """El perfil entra por tres puertas y las tres validan.
+
+    ``--profile`` (vía ``_resolve_mo2_profile``) y el constructor del registry ya lo
+    hacían. ``MO2_PROFILE`` como ÚNICA fuente —resolver standalone, supervisor sin
+    perfil inyectado— llegaba crudo hasta rutas ``profiles/<perfil>/…`` y hasta el
+    argumento ``--profile`` del CLI de Synthesis, que este PR cableó por primera vez
+    (hallazgo de review de Qodo, #460). La documentación afirmaba que un nombre con
+    separadores aborta el arranque: con este cierre eso pasa a ser cierto por las
+    tres puertas, no por dos.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from sky_claw.app.core.path_resolver import resolver_perfil_activo
+    from sky_claw.app_context import _resolve_mo2_profile
+
+    malicioso = "../../etc"
+
+    # Puerta 1: la flag del CLI.
+    with pytest.raises(PathViolationError):
+        _resolve_mo2_profile(SimpleNamespace(profile=malicioso))
+
+    # Puerta 2: el constructor del registry.
+    with pytest.raises(PathViolationError):
+        _registry(mo2_profile=malicioso)
+
+    # Puerta 3: el entorno como única fuente — la que quedaba abierta.
+    with patch.dict("os.environ", {"MO2_PROFILE": malicioso}, clear=True), pytest.raises(PathViolationError):
+        resolver_perfil_activo(None)
+
+    # Y un perfil inyectado malformado tampoco pasa por ser inyectado.
+    with pytest.raises(PathViolationError):
+        resolver_perfil_activo(malicioso)
+
+
 def test_las_dos_resoluciones_de_perfil_coinciden_ante_cli_y_entorno_en_conflicto() -> None:
     """Las dos superficies resuelven el perfil por caminos distintos —``AppContext``
     para las tools del agente, ``PathResolver`` para LOOT/DynDOLOD/Pandora/Wrye
