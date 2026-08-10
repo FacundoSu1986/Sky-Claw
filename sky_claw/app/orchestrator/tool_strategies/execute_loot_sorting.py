@@ -12,8 +12,10 @@ perfil coincide, así que el ``profile=active_profile`` con el que ``app_context
 construye el runner quedaba descartado. Resultado: la GUI ordenaba el load order de
 ``Default`` mientras el agente LLM ordenaba el de la sesión, sobre el MISMO
 ``plugins.txt``/``loadorder.txt``; el modal HITL nombraba ``Default``; y el
-snapshot/rollback (que saca su perfil del ``PathResolver``) protegía los archivos
-del perfil de sesión, es decir los que LOOT no tocaba.
+snapshot/rollback obtiene sus targets desde ``mutation_targets`` del runner YA
+rebindeado (``LootSortingService._resolve_load_order_for_runner``): con LOOT
+rebindeado a ``Default``, ordenaba Y protegía ``Default`` — no ``PathResolver``.
+El desplazamiento era coherente, no un archivo mutado sin red.
 
 El mecanismo es el mismo que ya usan los dos hermanos de esta carpeta:
 ``ValidatePluginLimitStrategy`` (``default_profile_getter``) y

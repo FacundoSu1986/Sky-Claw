@@ -71,7 +71,7 @@ sobre esa superficie el fix queda inerte.
 
 ### Camino, sin una sola pieza mockeada del código bajo prueba
 
-```
+```text
 ritual_runner.dispatch_ritual   ->  supervisor.dispatch_tool("execute_loot_sorting", {})
 ExecuteLootSortingStrategy      ->  LootExecutionParams(**{})
 app/core/models.py:51           ->  profile_name = "Default"    (default de pydantic)
@@ -86,7 +86,7 @@ middleware lo toca.
 
 ### Reproducción, con el perfil de sesión en `Requiem`
 
-```
+```text
 perfil de sesión (--profile / MO2_PROFILE) : 'Requiem'
 perfil que resuelve el PathResolver        : 'Requiem'
 
@@ -181,7 +181,7 @@ los cinco que cruza el dispatch llevando un perfil**; los otros cuatro lo resuel
 aguas abajo desde `supervisor.profile_name` o `get_active_profile()`, así que no hay
 valor que el payload pueda contradecir. Sin el fix, el ancla dice exactamente esto:
 
-```
+```text
 AssertionError: «loot» cruzó el dispatch con un perfil ajeno a la sesión: ['Default']
 ```
 

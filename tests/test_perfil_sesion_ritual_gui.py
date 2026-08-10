@@ -122,6 +122,35 @@ async def test_el_ritual_de_loot_ordena_el_perfil_de_sesion() -> None:
     assert registro == [PERFIL_DE_SESION], f"el Ritual de LOOT ordenó otro perfil: {registro}"
 
 
+def test_un_payload_con_perfil_explicito_no_consulta_el_getter() -> None:
+    """La rama explícita de ``_parse_params`` (``"profile_name" in payload_dict``) no
+    estaba ejercitada por ningún test — todos usaban ``PAYLOAD_DEL_RITUAL`` vacío
+    (hallazgo de review de CodeRabbit, #461).
+
+    El getter lanza si se lo llama: si la implementación lo consultara igual —por
+    ejemplo por un ``or`` en vez del chequeo explícito de membership— este test
+    explota en vez de pasar en falso.
+    """
+    service = LootSortingService(
+        lock_manager=object(),
+        snapshot_manager=object(),
+        path_resolver=_ResolverDeSesion(),
+        loot_runner=_RunnerPorPerfil(PERFIL_DE_SESION, []),
+    )
+
+    def _getter_que_no_deberia_llamarse() -> str:
+        raise AssertionError("el getter no debía consultarse: el payload ya traía profile_name")
+
+    strategy = ExecuteLootSortingStrategy(
+        service=service,
+        default_profile_getter=_getter_que_no_deberia_llamarse,
+    )
+
+    params = strategy._parse_params({"profile_name": "OtroPerfil"})
+
+    assert params.profile_name == "OtroPerfil"
+
+
 def test_el_modal_hitl_le_nombra_al_operador_el_perfil_de_sesion() -> None:
     """Lo que el operador aprueba tiene que ser lo que se va a ejecutar.
 
