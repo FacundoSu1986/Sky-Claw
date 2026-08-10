@@ -36,7 +36,12 @@ y ``GenerateBashedPatchStrategy`` (``profile or self._path_resolver.get_active_p
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 
+import pydantic
+import pytest
+
+from sky_claw.app.gui.controllers.ritual_runner import RITUAL_TOOL_MAP
 from sky_claw.app.orchestrator.tool_strategies.execute_loot_sorting import ExecuteLootSortingStrategy
 from sky_claw.local.tools.loot_service import LootSortingService
 
@@ -150,3 +155,141 @@ async def test_el_snapshot_del_rollback_cubre_los_archivos_del_perfil_de_sesion(
     assert [ruta.parent.name for ruta in targets.files] == [PERFIL_DE_SESION], (
         f"el rollback cubre archivos de otro perfil: {[str(r) for r in targets.files]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Ancla enumerativa sobre RITUAL_TOOL_MAP
+# ---------------------------------------------------------------------------
+#
+# Los tres tests de arriba son de comportamiento y cubren el CASO (LOOT). Este
+# cubre la CLASE: se enumeran los cinco Rituales de la GUI y se mira qué cruza la
+# frontera del dispatch con el payload vacío que manda `dispatch_ritual`.
+#
+# `RITUAL_TOOL_MAP` ya está congelado por igualdad literal en
+# `tests/test_ritual_dispatch.py`, así que un ritual nuevo entra acá solo y rompe
+# la igualdad de :data:`RITUALES_QUE_LLEVAN_PERFIL` hasta que alguien decida de
+# dónde saca su perfil — y esa decisión lo mete en el assert de comportamiento.
+# Mismo instrumento que `tests/test_hitl_client_scoping.py`.
+
+_CAMPOS_DE_PERFIL = {"profile", "profile_name", "source_profile"}
+
+#: Qué Rituales cruzan la frontera del dispatch LLEVANDO un perfil.
+#:
+#: `False` no es "no le importa el perfil": es que lo resuelven aguas abajo desde la
+#: sesión (`supervisor.profile_name` o `PathResolutionService.get_active_profile()`),
+#: así que no hay ningún valor que el payload pueda contradecir. `True` significa que
+#: el perfil viaja EN la llamada, y entonces tiene que ser el de la sesión — que es
+#: exactamente donde `execute_loot_sorting` se caía al default de pydantic.
+RITUALES_QUE_LLEVAN_PERFIL: dict[str, bool] = {
+    "dyndolod": False,
+    "loot": True,
+    "pandora": False,
+    "wrye_bash": False,
+    "xedit": False,
+}
+
+
+def _perfiles_en(args: tuple, kwargs: dict) -> list[str]:
+    """Todo valor de perfil que cruzó en una llamada: kwargs con nombre de perfil y
+    campos de perfil de cualquier modelo pydantic posicional."""
+    hallados: list[str] = []
+    for nombre, valor in kwargs.items():
+        if nombre in _CAMPOS_DE_PERFIL and isinstance(valor, str):
+            hallados.append(valor)
+    for valor in (*args, *kwargs.values()):
+        if isinstance(valor, pydantic.BaseModel):
+            for campo in type(valor).model_fields:
+                if campo in _CAMPOS_DE_PERFIL:
+                    hallados.append(getattr(valor, campo))
+    return hallados
+
+
+def _supervisor_de_sesion() -> Any:
+    """``SupervisorAgent`` construction-free con el perfil de sesión ya resuelto.
+
+    Mismo patrón que ``tests/test_idempotency_wiring.py``: se saltea ``__init__`` y se
+    cablean los colaboradores como dobles, para que el dispatcher REAL
+    (``build_orchestration_dispatcher``) sea lo único bajo prueba.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+
+    sup = SupervisorAgent.__new__(SupervisorAgent)
+    for atributo in (
+        "scraper",
+        "tools",
+        "interface",
+        "_loot_service",
+        "_synthesis_service",
+        "_xedit_service",
+        "_dyndolod_service",
+        "_pandora_service",
+        "_grass_cache_service",
+    ):
+        setattr(sup, atributo, MagicMock())
+    # Los servicios se invocan con await: AsyncMock en los métodos que el dispatch toca.
+    sup._loot_service.sort_load_order = AsyncMock(return_value={"success": True})
+    sup._loot_service.prepare_vfs_attestation = MagicMock(return_value=None)
+    sup._xedit_service.quick_auto_clean = AsyncMock(return_value={"success": True})
+    # DynDOLOD expone `execute`, no un metodo homonimo del ritual.
+    sup._dyndolod_service.execute = AsyncMock(return_value={"success": True})
+    sup._pandora_service.generate_animations = AsyncMock(return_value={"success": True})
+    sup.execute_wrye_bash_pipeline = AsyncMock(return_value={"success": True})
+    sup.journal = AsyncMock()
+    sup.profile_name = PERFIL_DE_SESION
+    return sup
+
+
+async def _perfiles_que_cruzan(tool: str) -> list[str]:
+    """Despacha ``tool`` con el payload vacío del Ritual y devuelve todo perfil que
+    haya cruzado la frontera del dispatch."""
+    from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+    from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+
+    sup = _supervisor_de_sesion()
+    dispatcher = build_orchestration_dispatcher(sup, hitl_gate=HitlGateMiddleware(allow_unattended=True))
+    await dispatcher.dispatch(tool, dict(PAYLOAD_DEL_RITUAL))
+
+    hallados: list[str] = []
+    for atributo in (
+        "_loot_service",
+        "_xedit_service",
+        "_dyndolod_service",
+        "_pandora_service",
+        "_grass_cache_service",
+        "execute_wrye_bash_pipeline",
+    ):
+        objetivo = getattr(sup, atributo)
+        candidatos = [objetivo, *getattr(objetivo, "_mock_children", {}).values()]
+        for candidato in candidatos:
+            llamada = getattr(candidato, "call_args", None)
+            if llamada is not None:
+                hallados.extend(_perfiles_en(llamada.args, llamada.kwargs))
+    return hallados
+
+
+def test_la_clasificacion_de_los_rituales_esta_congelada() -> None:
+    """Igualdad literal contra ``RITUAL_TOOL_MAP``: un Ritual nuevo entra solo y rompe
+    acá hasta que se decida de dónde saca su perfil."""
+    assert set(RITUALES_QUE_LLEVAN_PERFIL) == set(RITUAL_TOOL_MAP)
+
+
+@pytest.mark.parametrize("ritual", sorted(RITUAL_TOOL_MAP))
+async def test_ningun_ritual_cruza_el_dispatch_con_un_perfil_ajeno(ritual: str) -> None:
+    """Con el payload vacío de la GUI, ningún Ritual puede llevar un perfil que no sea
+    el de la sesión.
+
+    Los que no llevan ninguno (``False`` en la clasificación) lo resuelven aguas abajo
+    desde la sesión, así que no hay valor que el payload pueda contradecir; se afirma
+    esa ausencia para que empezar a llevarlo sea una decisión explícita y no un
+    accidente. ``loot`` es el que lo lleva, y es donde el default de pydantic lo ponía
+    en ``"Default"``.
+    """
+    perfiles = await _perfiles_que_cruzan(RITUAL_TOOL_MAP[ritual])
+
+    assert bool(perfiles) == RITUALES_QUE_LLEVAN_PERFIL[ritual], (
+        f"cambió si «{ritual}» lleva perfil en el dispatch: {perfiles}"
+    )
+    ajenos = [p for p in perfiles if p != PERFIL_DE_SESION]
+    assert not ajenos, f"«{ritual}» cruzó el dispatch con un perfil ajeno a la sesión: {ajenos}"

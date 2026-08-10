@@ -159,21 +159,38 @@ El mismo mecanismo que ya usa `ValidatePluginLimitStrategy`: la estrategia recib
 
 - `sky_claw/app/orchestrator/tool_strategies/execute_loot_sorting.py`
 - `sky_claw/app/orchestrator/tool_dispatcher.py`
-- `tests/test_perfil_sesion_ritual_gui.py` — 3 tests, verificados **en rojo** contra el
-  código de producción de `bd1b475` (revirtiendo la estrategia, no el test) y en verde
-  con el fix. Afirman sobre a qué perfil se rebindeó el runner
-  (lo que LOOT va a ordenar), no sobre el texto del wiring.
+- `tests/test_perfil_sesion_ritual_gui.py` — 9 tests. Todos verificados **en rojo**
+  contra el código de producción de `bd1b475` (revirtiendo la estrategia y el
+  dispatcher, nunca el test) y en verde con el fix.
 
-Verificación del fix: `4513 passed, 34 skipped`, exit code 0;
+**Los 3 primeros cubren el CASO** y afirman sobre a qué perfil se rebindeó el runner
+—lo que LOOT va a ordenar de verdad—, no sobre el texto del wiring.
+
+**Los 6 restantes cubren la CLASE**, enumerando sobre `RITUAL_TOOL_MAP` (ya congelado
+por igualdad literal en `tests/test_ritual_dispatch.py`): se despacha cada uno de los
+cinco Rituales por el dispatcher REAL (`build_orchestration_dispatcher`) con el payload
+vacío que manda `dispatch_ritual`, y se recoge todo perfil que cruce la frontera del
+dispatch. Dos afirmaciones por ritual:
+
+1. si lleva perfil o no, congelado en `RITUALES_QUE_LLEVAN_PERFIL` — empezar a llevar
+   uno tiene que ser una decisión explícita, no un accidente;
+2. si lo lleva, tiene que ser el de la sesión.
+
+La clasificación deja ver la asimetría que produjo el defecto: **`loot` es el único de
+los cinco que cruza el dispatch llevando un perfil**; los otros cuatro lo resuelven
+aguas abajo desde `supervisor.profile_name` o `get_active_profile()`, así que no hay
+valor que el payload pueda contradecir. Sin el fix, el ancla dice exactamente esto:
+
+```
+AssertionError: «loot» cruzó el dispatch con un perfil ajeno a la sesión: ['Default']
+```
+
+Un Ritual nuevo entra solo por `RITUAL_TOOL_MAP` y rompe la igualdad literal hasta que
+alguien decida de dónde saca su perfil — y esa decisión lo mete automáticamente en el
+assert de comportamiento. Mismo instrumento que `tests/test_hitl_client_scoping.py`, y
+el equivalente para la superficie GUI de lo que `test_perfil_sesion_invariante.py` hace
+para la del agente.
+
+Verificación del fix: `4519 passed, 34 skipped`, exit code 0;
 `ruff check` + `ruff format --check` limpios; `mypy --platform win32` →
 `Success: no issues found in 263 source files`.
-
-### Ancla más fuerte, para considerar
-
-Los 3 tests de arriba son de comportamiento y cubren el caso. El ancla que atajaría la
-**clase** es enumerativa sobre `RITUAL_TOOL_MAP` (ya congelado por igualdad literal en
-`tests/test_ritual_dispatch.py`): despachar cada ritual con el payload vacío que manda
-la GUI y afirmar que el perfil que llega al servicio es el de la sesión. Así un ritual
-nuevo entra solo y rompe hasta que se decida su perfil — mismo instrumento que
-`test_perfil_sesion_invariante.py` aplica a la superficie del agente, aplicado a la
-superficie que le falta.
