@@ -6,7 +6,7 @@
 >
 > **Fuente canónica del diseño acordado:** archivos bajo `specs/` y `plans/`.
 >
-> **Última verificación del índice:** 2026-08-08 sobre `origin/main` `01faebd3`.
+> **Última verificación del índice:** 2026-08-10 sobre `claude/remove-superpowers-reintroduction-ldo2eb` `87b778e4`.
 
 Los archivos de este directorio explican una intención aprobada en su momento. No
 deben usarse como referencia runtime sin comprobar el código actual y los ADR

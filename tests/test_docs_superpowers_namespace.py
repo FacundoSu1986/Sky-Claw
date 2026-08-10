@@ -23,6 +23,7 @@ de skill, fuera del alcance de esta limpieza. Este ancla protege el
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -30,7 +31,17 @@ RAIZ = Path(__file__).resolve().parents[1]
 ESTE_ARCHIVO = Path(__file__).resolve()
 
 VARIANTES_DE_NAMESPACE = ("superpowers", "super-powers", "super_powers")
-RUTA_VIEJA = "docs/superpowers"
+
+# Requiere un "/" inmediatamente antes de la variante -eso es lo que distingue
+# una referencia de ruta ("docs/superpowers", "../superpowers/plans/x.md",
+# "docs/super-powers/...") de una mención léxica suelta ("el namespace
+# superpowers", o el banner "superpowers:subagent-driven-development", que va
+# precedido por un espacio y seguido de ":", no de "/"). La lookahead negativa
+# evita matchear un prefijo dentro de un nombre más largo ("superpowers_backup").
+PATRON_RUTA_VIEJA = re.compile(
+    "(?<=/)(?:" + "|".join(re.escape(variante) for variante in VARIANTES_DE_NAMESPACE) + r")(?![\w-])",
+    re.IGNORECASE,
+)
 
 
 def _archivos_trackeados() -> list[str]:
@@ -88,24 +99,60 @@ def test_ningun_archivo_vive_bajo_el_namespace_superpowers() -> None:
     )
 
 
+def test_patron_de_ruta_vieja_exige_barra_no_solo_la_palabra() -> None:
+    """Regresión: variantes con separador y enlaces relativos también cuentan.
+
+    Señalado en la revisión de PR #459: la versión anterior solo buscaba el
+    substring literal `docs/superpowers`, así que un enlace relativo
+    (`../superpowers/plans/foo.md`) o una variante con guion
+    (`docs/super-powers/...`) pasaban sin detectarse.
+    """
+    assert PATRON_RUTA_VIEJA.search("ver docs/superpowers para más detalle")
+    assert PATRON_RUTA_VIEJA.search("[plan](../superpowers/plans/foo.md)")
+    assert PATRON_RUTA_VIEJA.search("docs/super-powers/x.md")
+    assert PATRON_RUTA_VIEJA.search("docs/super_powers/x.md")
+    # El banner de harness (precedido por espacio, seguido de ":") no es una ruta.
+    assert not PATRON_RUTA_VIEJA.search("Use superpowers:subagent-driven-development")
+    # Mención léxica suelta, sin "/" antes: fuera de alcance de este ancla.
+    assert not PATRON_RUTA_VIEJA.search("el namespace superpowers ya no existe")
+    # Prefijo dentro de un nombre más largo: no es el namespace.
+    assert not PATRON_RUTA_VIEJA.search("docs/non-superpowers-stuff/x.md")
+
+
 def test_ningun_archivo_referencia_la_ruta_vieja_docs_superpowers() -> None:
-    """Ninguna mención textual apunta a `docs/superpowers` como ruta."""
+    """Ninguna mención textual apunta a `docs/superpowers` (o variantes) como ruta."""
     ofensores = []
     for relativa in _archivos_trackeados():
         ruta = RAIZ / relativa
         if ruta.resolve() == ESTE_ARCHIVO or not ruta.is_file():
             continue
         contenido = ruta.read_text(encoding="utf-8", errors="ignore")
-        if RUTA_VIEJA in contenido.lower():
+        if PATRON_RUTA_VIEJA.search(contenido):
             ofensores.append(relativa)
     assert not ofensores, (
-        f"Referencia textual a la ruta vieja `{RUTA_VIEJA}` en: {sorted(ofensores)}. "
+        f"Referencia de ruta al namespace viejo en: {sorted(ofensores)}. "
         "Actualizar al equivalente bajo docs/design/{specs,plans}/."
     )
 
 
+def _destinos_de_enlaces_markdown(texto: str) -> set[str]:
+    """Destinos de enlaces `[texto](destino)`, sin bloques de código."""
+    sin_bloques_de_codigo = re.sub(r"```.*?```", "", texto, flags=re.DOTALL)
+    return set(re.findall(r"\[[^\]]+\]\(([^)]+)\)", sin_bloques_de_codigo))
+
+
 def test_design_readme_indexa_el_spec_y_el_plan_movidos() -> None:
-    """El índice no puede quedar desactualizado tras el move (PR #446 lo dejó así una vez)."""
+    """El índice no puede quedar desactualizado tras el move (PR #446 lo dejó así una vez).
+
+    Compara destinos reales de enlaces Markdown, no una simple pertenencia de
+    substring: un `in indice` pasaría igual si la ruta apareciera en texto
+    plano o en un bloque de código, sin que el documento esté realmente
+    indexado (señalado en la revisión de PR #459).
+    """
     indice = (RAIZ / "docs/design/README.md").read_text(encoding="utf-8")
-    assert "specs/2026-08-09-fomod-profile-and-tool-output-security-design.md" in indice
-    assert "plans/2026-08-09-fomod-profile-and-tool-output-security.md" in indice
+    destinos = _destinos_de_enlaces_markdown(indice)
+    esperados = {
+        "specs/2026-08-09-fomod-profile-and-tool-output-security-design.md",
+        "plans/2026-08-09-fomod-profile-and-tool-output-security.md",
+    }
+    assert esperados <= destinos
