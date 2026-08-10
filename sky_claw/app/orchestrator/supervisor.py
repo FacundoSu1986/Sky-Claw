@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import pathlib
 from typing import Any, Literal
 
@@ -864,5 +865,9 @@ class SupervisorAgent:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    supervisor = SupervisorAgent()
+    # Entrypoint manual de desarrollo: no hay sesión de la que heredar el perfil, así
+    # que se nombra explícitamente. El ancla de
+    # `tests/test_perfil_sesion_invariante.py` exige que TODA construcción declare el
+    # suyo — incluida esta, para que el próximo caller no lo dé por sobreentendido.
+    supervisor = SupervisorAgent(profile_name=os.environ.get("MO2_PROFILE", "") or "Default")
     # asyncio.run(supervisor.start()) # En producción

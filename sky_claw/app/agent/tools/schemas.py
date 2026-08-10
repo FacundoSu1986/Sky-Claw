@@ -97,26 +97,15 @@ class SearchModParams(pydantic.BaseModel):
     mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
 
 
-class ProfileParams(pydantic.BaseModel):
-    """Parameters for tools that operate on an MO2 profile."""
-
-    model_config = pydantic.ConfigDict(strict=True)
-
-    # SECURITY: Tightened pattern — removed '%()\[\] to prevent argument injection
-    # into LOOT CLI (loot.exe --game-path ...).  Spaces and dots are still valid
-    # because MO2 profile names frequently contain them.
-    profile: str = pydantic.Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.\- ]+$")
-
-
-class LaunchGameParams(pydantic.BaseModel):
-    """Parameters for the ``launch_game`` tool.
-
-    Separate from ProfileParams because ``profile`` has a default value.
-    """
-
-    model_config = pydantic.ConfigDict(strict=True)
-
-    profile: str = pydantic.Field(default="Default", min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.\- ]+$")
+# `ProfileParams` y `LaunchGameParams` vivían acá y exponían el perfil MO2 como
+# argumento del tool. Se eliminaron: el perfil queda FIJO durante la sesión (spec del
+# PR #454) y el registry lo inyecta desde `AsyncToolRegistry(mo2_profile=…)`, así que
+# devolvérselo al LLM como parámetro contradecía el contrato y era la vía por la que
+# `check_load_order`/`detect_conflicts`/`run_loot_sort`/`launch_game` terminaban
+# operando sobre otro perfil. Los tools que perdieron su único campo ya no declaran
+# `params_model`. La validación del nombre (antes el `pattern` de estos modelos) vive
+# ahora en `AsyncToolRegistry.__init__` vía `assert_safe_component`, que es el único
+# punto por el que el perfil entra. Ancla: `tests/test_perfil_sesion_invariante.py`.
 
 
 class InstallModParams(pydantic.BaseModel):
@@ -258,39 +247,28 @@ class AnalyzeConflictsParams(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    profile: str = pydantic.Field(min_length=1, max_length=128, pattern=_SAFE_NAME_PATTERN)
     plugins: list[str] | None = pydantic.Field(
         default=None,
         description="Specific plugins to analyze. If omitted, uses all enabled plugins from the profile.",
     )
 
 
-class ModNameParams(pydantic.BaseModel):
-    """Parameters for tools specifying an EXISTING mod name (read-only ops).
-
-    Uses the relaxed ``_EXISTING_MOD_NAME_PATTERN`` because real Nexus mods
-    have apostrophes / parens that ``_SAFE_NAME_PATTERN`` would reject.
-    """
-
-    model_config = pydantic.ConfigDict(strict=True)
-
-    mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=_EXISTING_MOD_NAME_PATTERN)
-    profile: str = pydantic.Field(default="Default", pattern=_SAFE_NAME_PATTERN)
+# `ModNameParams` también vivía acá. Además de exponer `profile`, era código muerto:
+# estaba exportado en `__all__` y en el facade, pero ningún `ToolDescriptor` lo
+# registraba. Se eliminó junto con el resto de la familia.
 
 
 class ToggleModParams(pydantic.BaseModel):
     """Parameters for toggling a mod.
 
     PR #141 review fix: relaxed `mod_name` pattern to allow real Nexus mod
-    names like ``powerofthree's Tweaks`` and ``Mod (SE)``. Profile sigue
-    siendo `_SAFE_NAME_PATTERN` (esos vienen de la UI humana en MO2).
+    names like ``powerofthree's Tweaks`` and ``Mod (SE)``.
     """
 
     model_config = pydantic.ConfigDict(strict=True)
 
     mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=_EXISTING_MOD_NAME_PATTERN)
     enable: bool
-    profile: str = pydantic.Field(default="Default", pattern=_SAFE_NAME_PATTERN)
 
 
 class BodySlideBatchParams(pydantic.BaseModel):
@@ -392,15 +370,11 @@ class BodySlideBatchParams(pydantic.BaseModel):
 
 
 class UninstallModParams(pydantic.BaseModel):
-    """Parameters for the ``uninstall_mod`` tool.
-
-    Separate from ModNameParams to decouple tool-specific evolution.
-    """
+    """Parameters for the ``uninstall_mod`` tool."""
 
     model_config = pydantic.ConfigDict(strict=True)
 
     mod_name: str = pydantic.Field(min_length=1, max_length=256, pattern=r"^[a-zA-Z0-9_. \-'%()\[\]]+$")
-    profile: str = pydantic.Field(default="Default", pattern=r"^[a-zA-Z0-9_.\- ]+$")
 
 
 __all__ = [
@@ -409,10 +383,7 @@ __all__ = [
     "DownloadModParams",
     "InstallFromArchiveParams",
     "InstallModParams",
-    "LaunchGameParams",
-    "ModNameParams",
     "PreviewInstallerParams",
-    "ProfileParams",
     "ResolveFomodParams",
     "SearchModParams",
     "SearchNexusParams",

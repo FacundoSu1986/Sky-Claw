@@ -213,7 +213,7 @@ async def install_mod_from_archive(
     archive_path: str,
     selections: dict[str, list[str]] | None = None,
     *,
-    profile: str = "Default",
+    profile: str,
     lock_manager: Any | None = None,
 ) -> str:
     """Install a mod from archive into MO2 with mandatory HITL approval.
@@ -452,10 +452,17 @@ async def analyze_esp_conflicts(
     return json.dumps(result)
 
 
-async def uninstall_mod(mo2: Any, mod_name: str, profile: str = "Default") -> str:
+async def uninstall_mod(mo2: Any, mod_name: str, *, profile: str) -> str:
     """Uninstall a mod completely by deleting its files from MO2.
 
     Args are pre-validated by AsyncToolRegistry.execute() via UninstallModParams.
+
+    ``profile`` es keyword-only y SIN default a propósito: el default silencioso
+    `"Default"` era lo que hacía que esta tool quitara la entrada del perfil
+    equivocado mientras `delete_mod_files` borraba igual — dejando el modlist del
+    perfil de sesión apuntando a un directorio inexistente. El perfil sale de
+    ``AsyncToolRegistry(mo2_profile=…)``; un caller que no lo pase falla al invocar,
+    no en producción.
     """
     try:
         await mo2.remove_mod_from_modlist(mod_name, profile)
@@ -471,10 +478,11 @@ async def uninstall_mod(mo2: Any, mod_name: str, profile: str = "Default") -> st
         return json.dumps({"error": str(exc)})
 
 
-async def toggle_mod(mo2: Any, mod_name: str, enable: bool, profile: str = "Default") -> str:
-    """Enable or disable an installed mod in a specific MO2 profile load order.
+async def toggle_mod(mo2: Any, mod_name: str, enable: bool, *, profile: str) -> str:
+    """Enable or disable an installed mod in the session's MO2 profile load order.
 
     Args are pre-validated by AsyncToolRegistry.execute() via ToggleModParams.
+    ``profile`` es keyword-only y sin default — ver :func:`uninstall_mod`.
     """
     try:
         await mo2.toggle_mod_in_modlist(mod_name, profile, enable)
@@ -490,10 +498,11 @@ async def toggle_mod(mo2: Any, mod_name: str, enable: bool, profile: str = "Defa
         return json.dumps({"error": str(exc)})
 
 
-async def launch_game(mo2: Any, profile: str = "Default") -> str:
+async def launch_game(mo2: Any, *, profile: str) -> str:
     """Launch Skyrim Special Edition via MO2 using SKSE.
 
-    Args are pre-validated by AsyncToolRegistry.execute() via LaunchGameParams.
+    ``profile`` es keyword-only y sin default — ver :func:`uninstall_mod`. La tool ya
+    no declara ``params_model``: no le queda ningún argumento que el LLM elija.
     """
     try:
         result = await mo2.launch_game(profile)

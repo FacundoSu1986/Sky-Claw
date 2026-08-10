@@ -169,6 +169,11 @@ class SynthesisPipelineService:
             output_path=output_path,
             synthesis_exe=synthesis_exe,
             timeout_seconds=300,
+            # Misma fuente que el resolver de fuentes de abajo
+            # (`build_mo2_profile_sources_resolver`): el CLI tenía "Default" fijo,
+            # así que generaba el patch contra un perfil distinto del que resolvía
+            # sus fuentes.
+            profile=self._path_resolver.get_active_profile(),
         )
 
         self._synthesis_runner = SynthesisRunner(config)

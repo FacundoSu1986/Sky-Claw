@@ -178,7 +178,9 @@ class TestInstallModFromArchiveContrato:
     async def test_sin_hitl_bloquea_con_contrato_canonico(
         self, fake_installer: _FakeFomodInstaller, fake_mo2: _FakeMO2
     ) -> None:
-        payload = _cargar(await install_mod_from_archive(fake_mo2, fake_installer, None, "C:/mods/TestMod.zip"))
+        payload = _cargar(
+            await install_mod_from_archive(fake_mo2, fake_installer, None, "C:/mods/TestMod.zip", profile="Default")
+        )
 
         assert payload["success"] is False
         assert "HITL" in payload["message"]
@@ -186,7 +188,9 @@ class TestInstallModFromArchiveContrato:
 
     async def test_sin_instalador_fomod_bloquea(self, fake_mo2: _FakeMO2) -> None:
         hitl = _FakeHITL()
-        payload = _cargar(await install_mod_from_archive(fake_mo2, None, hitl, "C:/mods/TestMod.zip"))
+        payload = _cargar(
+            await install_mod_from_archive(fake_mo2, None, hitl, "C:/mods/TestMod.zip", profile="Default")
+        )
 
         assert payload["success"] is False
         assert "FOMOD installer" in payload["message"]
@@ -195,7 +199,9 @@ class TestInstallModFromArchiveContrato:
         self, fake_installer: _FakeFomodInstaller, fake_mo2: _FakeMO2
     ) -> None:
         hitl = _FakeHITL(decision=Decision.DENIED)
-        payload = _cargar(await install_mod_from_archive(fake_mo2, fake_installer, hitl, "C:/mods/TestMod.zip"))
+        payload = _cargar(
+            await install_mod_from_archive(fake_mo2, fake_installer, hitl, "C:/mods/TestMod.zip", profile="Default")
+        )
 
         assert payload["success"] is False
         assert payload["status"] == "denied"
@@ -206,7 +212,9 @@ class TestInstallModFromArchiveContrato:
         installer = _FakeFomodInstaller(
             install_result=InstallResult(mod_name="TestMod", files_copied=["plugin.esp"], installed=True)
         )
-        payload = _cargar(await install_mod_from_archive(fake_mo2, installer, hitl, "C:/mods/TestMod.zip"))
+        payload = _cargar(
+            await install_mod_from_archive(fake_mo2, installer, hitl, "C:/mods/TestMod.zip", profile="Default")
+        )
 
         assert payload["success"] is True
         assert payload["message"] == ""
@@ -218,7 +226,9 @@ class TestInstallModFromArchiveContrato:
         installer = _FakeFomodInstaller(
             install_result=InstallResult(mod_name="TestMod", errors=["no se pudo extraer"], installed=False)
         )
-        payload = _cargar(await install_mod_from_archive(fake_mo2, installer, hitl, "C:/mods/TestMod.zip"))
+        payload = _cargar(
+            await install_mod_from_archive(fake_mo2, installer, hitl, "C:/mods/TestMod.zip", profile="Default")
+        )
 
         assert payload["success"] is False
         assert payload["errors"] == ["no se pudo extraer"]
@@ -235,7 +245,9 @@ class TestInstallModFromArchiveContrato:
                 installed=False,
             )
         )
-        payload = _cargar(await install_mod_from_archive(fake_mo2, installer, hitl, "C:/mods/TestMod.zip"))
+        payload = _cargar(
+            await install_mod_from_archive(fake_mo2, installer, hitl, "C:/mods/TestMod.zip", profile="Default")
+        )
 
         assert payload["success"] is False
         assert payload["message"] != ""
@@ -265,7 +277,9 @@ class TestInstallModFromArchiveContrato:
         installer = _FakeFomodInstaller(
             install_result=InstallResult(mod_name="TestMod", files_copied=["plugin.esp"], installed=True)
         )
-        payload = _cargar(await install_mod_from_archive(fake_mo2, installer, hitl, "C:/mods/TestMod.zip"))
+        payload = _cargar(
+            await install_mod_from_archive(fake_mo2, installer, hitl, "C:/mods/TestMod.zip", profile="Default")
+        )
 
         # Los archivos quedaron en mods/ pero el mod no se activa en MO2: fallo
         # parcial honesto que conserva los campos estructurados.
@@ -295,6 +309,7 @@ class TestInstallModFromArchiveContrato:
                     installer,
                     hitl,
                     "C:/mods/TestMod.zip",
+                    profile="Default",
                     lock_manager=lock_manager,
                 )
             )
@@ -313,7 +328,7 @@ class TestInstallModFromArchiveContrato:
         installer = _FakeFomodInstaller()
 
         with pytest.raises(asyncio.CancelledError):
-            await install_mod_from_archive(fake_mo2, installer, _CancelHITL(), "C:/mods/TestMod.zip")
+            await install_mod_from_archive(fake_mo2, installer, _CancelHITL(), "C:/mods/TestMod.zip", profile="Default")
 
 
 # ---------------------------------------------------------------------------
