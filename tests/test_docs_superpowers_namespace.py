@@ -45,11 +45,16 @@ def _archivos_trackeados() -> list[str]:
 
 
 def test_ningun_archivo_vive_bajo_el_namespace_superpowers() -> None:
-    """Ninguna ruta trackeada tiene un segmento que sea el namespace viejo."""
+    """Ninguna ruta trackeada tiene un segmento que sea el namespace viejo.
+
+    Se excluye este propio archivo: su nombre necesita mencionar el namespace
+    para poder documentarlo y buscarlo, pero no vive bajo `docs/superpowers`.
+    """
     ofensores = sorted(
         ruta
         for ruta in _archivos_trackeados()
-        if any(variante in segmento.lower() for segmento in ruta.split("/") for variante in VARIANTES_DE_NAMESPACE)
+        if (RAIZ / ruta).resolve() != ESTE_ARCHIVO
+        and any(variante in segmento.lower() for segmento in ruta.split("/") for variante in VARIANTES_DE_NAMESPACE)
     )
     assert not ofensores, (
         f"Reapareció el namespace `superpowers` en rutas trackeadas: {ofensores}. "
