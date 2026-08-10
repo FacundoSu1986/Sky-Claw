@@ -44,8 +44,33 @@ def _archivos_trackeados() -> list[str]:
     return [linea for linea in resultado.stdout.splitlines() if linea]
 
 
+def _segmento_es_namespace_viejo(segmento: str) -> bool:
+    """True si el segmento (carpeta, o archivo sin extensión) ES el namespace viejo.
+
+    Igualdad exacta, no subcadena: un archivo cuyo nombre solo *contiene* la
+    palabra (p. ej. `2026-08-09-superpowers-related.md`) no vive bajo el
+    namespace y no debe romper el test — eso fue un falso positivo real que
+    dejó pasar la primera versión de este ancla (ver revisión de PR #459).
+    """
+    normalizado = segmento.lower()
+    stem = normalizado.rsplit(".", 1)[0] if "." in normalizado else normalizado
+    return normalizado in VARIANTES_DE_NAMESPACE or stem in VARIANTES_DE_NAMESPACE
+
+
+def test_detector_de_segmento_exige_igualdad_exacta_no_subcadena() -> None:
+    """Regresión del falso positivo señalado por el revisor: subcadena no alcanza."""
+    assert _segmento_es_namespace_viejo("superpowers") is True
+    assert _segmento_es_namespace_viejo("Super-Powers") is True
+    assert _segmento_es_namespace_viejo("super_powers") is True
+    # Archivo (con extensión) cuyo nombre completo es el namespace.
+    assert _segmento_es_namespace_viejo("superpowers.md") is True
+    # Namespace como prefijo/sufijo de un nombre más largo: no es el namespace.
+    assert _segmento_es_namespace_viejo("2026-08-09-superpowers-related.md") is False
+    assert _segmento_es_namespace_viejo("non-superpowers-stuff") is False
+
+
 def test_ningun_archivo_vive_bajo_el_namespace_superpowers() -> None:
-    """Ninguna ruta trackeada tiene un segmento que sea el namespace viejo.
+    """Ninguna ruta trackeada tiene un segmento que SEA el namespace viejo.
 
     Se excluye este propio archivo: su nombre necesita mencionar el namespace
     para poder documentarlo y buscarlo, pero no vive bajo `docs/superpowers`.
@@ -54,7 +79,7 @@ def test_ningun_archivo_vive_bajo_el_namespace_superpowers() -> None:
         ruta
         for ruta in _archivos_trackeados()
         if (RAIZ / ruta).resolve() != ESTE_ARCHIVO
-        and any(variante in segmento.lower() for segmento in ruta.split("/") for variante in VARIANTES_DE_NAMESPACE)
+        and any(_segmento_es_namespace_viejo(segmento) for segmento in ruta.split("/"))
     )
     assert not ofensores, (
         f"Reapareció el namespace `superpowers` en rutas trackeadas: {ofensores}. "
