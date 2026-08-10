@@ -55,29 +55,47 @@ def _archivos_trackeados() -> list[str]:
     return [linea for linea in resultado.stdout.splitlines() if linea]
 
 
-def _segmento_es_namespace_viejo(segmento: str) -> bool:
-    """True si el segmento (carpeta, o archivo sin extensión) ES el namespace viejo.
+def _segmento_es_namespace_viejo(segmento: str, *, es_archivo: bool = False) -> bool:
+    """True si el segmento ES el namespace viejo (carpeta exacta, o archivo final sin extensión).
 
     Igualdad exacta, no subcadena: un archivo cuyo nombre solo *contiene* la
     palabra (p. ej. `2026-08-09-superpowers-related.md`) no vive bajo el
     namespace y no debe romper el test — eso fue un falso positivo real que
     dejó pasar la primera versión de este ancla (ver revisión de PR #459).
+
+    La extensión solo se quita cuando el segmento es el archivo final de la
+    ruta: una carpeta llamada literalmente `superpowers.archive` no es el
+    namespace, y tratar ese sufijo como si fuera la extensión de un archivo
+    fue otro falso positivo señalado en la misma revisión.
     """
     normalizado = segmento.lower()
-    stem = normalizado.rsplit(".", 1)[0] if "." in normalizado else normalizado
-    return normalizado in VARIANTES_DE_NAMESPACE or stem in VARIANTES_DE_NAMESPACE
+    if normalizado in VARIANTES_DE_NAMESPACE:
+        return True
+    return es_archivo and "." in normalizado and normalizado.rsplit(".", 1)[0] in VARIANTES_DE_NAMESPACE
+
+
+def _ruta_tiene_segmento_de_namespace_viejo(ruta: str) -> bool:
+    segmentos = ruta.split("/")
+    ultimo = len(segmentos) - 1
+    return any(
+        _segmento_es_namespace_viejo(segmento, es_archivo=(indice == ultimo))
+        for indice, segmento in enumerate(segmentos)
+    )
 
 
 def test_detector_de_segmento_exige_igualdad_exacta_no_subcadena() -> None:
-    """Regresión del falso positivo señalado por el revisor: subcadena no alcanza."""
-    assert _segmento_es_namespace_viejo("superpowers") is True
-    assert _segmento_es_namespace_viejo("Super-Powers") is True
-    assert _segmento_es_namespace_viejo("super_powers") is True
-    # Archivo (con extensión) cuyo nombre completo es el namespace.
-    assert _segmento_es_namespace_viejo("superpowers.md") is True
-    # Namespace como prefijo/sufijo de un nombre más largo: no es el namespace.
-    assert _segmento_es_namespace_viejo("2026-08-09-superpowers-related.md") is False
-    assert _segmento_es_namespace_viejo("non-superpowers-stuff") is False
+    """Regresión de los falsos positivos señalados por el revisor: subcadena no alcanza."""
+    assert _segmento_es_namespace_viejo("Super-Powers") is True  # case-insensitive
+    for variante in VARIANTES_DE_NAMESPACE:
+        # Carpeta: igualdad exacta, sin tocar extensión.
+        assert _segmento_es_namespace_viejo(variante) is True
+        # Archivo final (con extensión) cuyo nombre completo es el namespace.
+        assert _segmento_es_namespace_viejo(f"{variante}.md", es_archivo=True) is True
+        # Namespace como prefijo/sufijo de un nombre más largo: no es el namespace.
+        assert _segmento_es_namespace_viejo(f"2026-08-09-{variante}-related.md", es_archivo=True) is False
+        assert _segmento_es_namespace_viejo(f"non-{variante}-stuff") is False
+        # Carpeta con un sufijo con punto: no es un archivo, no se le quita "extensión".
+        assert _segmento_es_namespace_viejo(f"{variante}.archive", es_archivo=False) is False
 
 
 def test_ningun_archivo_vive_bajo_el_namespace_superpowers() -> None:
@@ -89,8 +107,7 @@ def test_ningun_archivo_vive_bajo_el_namespace_superpowers() -> None:
     ofensores = sorted(
         ruta
         for ruta in _archivos_trackeados()
-        if (RAIZ / ruta).resolve() != ESTE_ARCHIVO
-        and any(_segmento_es_namespace_viejo(segmento) for segmento in ruta.split("/"))
+        if (RAIZ / ruta).resolve() != ESTE_ARCHIVO and _ruta_tiene_segmento_de_namespace_viejo(ruta)
     )
     assert not ofensores, (
         f"Reapareció el namespace `superpowers` en rutas trackeadas: {ofensores}. "
