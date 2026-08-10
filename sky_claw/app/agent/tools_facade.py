@@ -22,10 +22,7 @@ from sky_claw.app.agent.tools import (
     DownloadModParams,
     InstallFromArchiveParams,
     InstallModParams,
-    LaunchGameParams,
-    ModNameParams,
     PreviewInstallerParams,
-    ProfileParams,
     ResolveFomodParams,
     # Schemas
     SearchModParams,
@@ -67,10 +64,7 @@ __all__ = [
     "DownloadModParams",
     "InstallFromArchiveParams",
     "InstallModParams",
-    "LaunchGameParams",
-    "ModNameParams",
     "PreviewInstallerParams",
-    "ProfileParams",
     "ResolveFomodParams",
     # Schemas (re-exports)
     "SearchModParams",

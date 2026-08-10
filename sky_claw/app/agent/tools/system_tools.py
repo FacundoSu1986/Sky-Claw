@@ -24,10 +24,11 @@ from sky_claw.local.tools.output_targets import BODYSLIDE_MESHES_RESOURCE_ID
 logger = logging.getLogger(__name__)
 
 
-async def check_load_order(mo2: Any, profile: str) -> str:
-    """Read the MO2 modlist for a profile.
+async def check_load_order(mo2: Any, *, profile: str) -> str:
+    """Read the MO2 modlist for the session profile.
 
-    Args are pre-validated by AsyncToolRegistry.execute() via ProfileParams.
+    ``profile`` es keyword-only y sin default, como toda la familia — ver
+    :func:`uninstall_mod`. La tool ya no lo expone al LLM.
     """
     entries: list[dict[str, Any]] = []
     idx = 0
@@ -37,10 +38,11 @@ async def check_load_order(mo2: Any, profile: str) -> str:
     return json.dumps({"profile": profile, "load_order": entries})
 
 
-async def detect_conflicts(registry: Any, mo2: Any, profile: str) -> str:
+async def detect_conflicts(registry: Any, mo2: Any, *, profile: str) -> str:
     """Detect missing-master conflicts among active ESPs.
 
-    Args are pre-validated by AsyncToolRegistry.execute() via ProfileParams.
+    ``profile`` es keyword-only y sin default, como toda la familia — ver
+    :func:`uninstall_mod`. La tool ya no lo expone al LLM.
     """
     enabled_mods: list[str] = []
     async for mod_name, enabled in mo2.read_modlist(profile):
@@ -54,8 +56,8 @@ async def run_loot_sort(
     mo2: Any,
     loot_runner: Any,
     loot_exe: pathlib.Path | None,
-    profile: str,
     *,
+    profile: str,
     lock_manager: Any | None = None,
     snapshot_manager: Any | None = None,
     path_validator: Any | None = None,
@@ -135,7 +137,23 @@ async def run_loot_sort(
             out["error"] = res["logs"]
         return json.dumps(out)
 
+    # Rama sin lock (legacy/tests; producción siempre cablea lock+snapshot y va por
+    # el servicio de arriba). Rebindear el runner al perfil pedido ANTES de ordenar:
+    # un `BrokeredLootRunner` viene atado al perfil con el que se construyó, así que
+    # sin esto se ordenaba ese y el payload informaba el pedido — el resultado decía
+    # un perfil sobre el que no actuó (review CodeRabbit #460). `for_profile`
+    # devuelve `self` cuando coinciden, así que el caso normal no paga nada.
+    # La detección sale del alias público de `loot_service`, que es su fuente única:
+    # duplicarla acá reabriría el desfasaje que ese helper existe para cerrar.
+    # El rebind va DENTRO del try: `for_profile` construye un runner nuevo cuyo
+    # `__init__` resuelve tres paths (`.resolve()` puede lanzar OSError), así que
+    # dejarlo afuera rompía el contrato "siempre JSON" de esta tool justo en el
+    # código que este PR agregó (review Qodo #460).
     try:
+        from sky_claw.local.tools.loot_service import es_runner_por_perfil
+
+        if es_runner_por_perfil(loot_runner):
+            loot_runner = loot_runner.for_profile(profile)
         result = await loot_runner.sort()
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -213,7 +231,7 @@ async def install_mod_from_archive(
     archive_path: str,
     selections: dict[str, list[str]] | None = None,
     *,
-    profile: str = "Default",
+    profile: str,
     lock_manager: Any | None = None,
 ) -> str:
     """Install a mod from archive into MO2 with mandatory HITL approval.
@@ -408,6 +426,7 @@ async def resolve_fomod(
 async def analyze_esp_conflicts(
     mo2: Any,
     xedit_runner: Any,
+    *,
     profile: str,
     plugins: list[str] | None = None,
 ) -> str:
@@ -452,10 +471,17 @@ async def analyze_esp_conflicts(
     return json.dumps(result)
 
 
-async def uninstall_mod(mo2: Any, mod_name: str, profile: str = "Default") -> str:
+async def uninstall_mod(mo2: Any, mod_name: str, *, profile: str) -> str:
     """Uninstall a mod completely by deleting its files from MO2.
 
     Args are pre-validated by AsyncToolRegistry.execute() via UninstallModParams.
+
+    ``profile`` es keyword-only y SIN default a propósito: el default silencioso
+    `"Default"` era lo que hacía que esta tool quitara la entrada del perfil
+    equivocado mientras `delete_mod_files` borraba igual — dejando el modlist del
+    perfil de sesión apuntando a un directorio inexistente. El perfil sale de
+    ``AsyncToolRegistry(mo2_profile=…)``; un caller que no lo pase falla al invocar,
+    no en producción.
     """
     try:
         await mo2.remove_mod_from_modlist(mod_name, profile)
@@ -471,10 +497,11 @@ async def uninstall_mod(mo2: Any, mod_name: str, profile: str = "Default") -> st
         return json.dumps({"error": str(exc)})
 
 
-async def toggle_mod(mo2: Any, mod_name: str, enable: bool, profile: str = "Default") -> str:
-    """Enable or disable an installed mod in a specific MO2 profile load order.
+async def toggle_mod(mo2: Any, mod_name: str, enable: bool, *, profile: str) -> str:
+    """Enable or disable an installed mod in the session's MO2 profile load order.
 
     Args are pre-validated by AsyncToolRegistry.execute() via ToggleModParams.
+    ``profile`` es keyword-only y sin default — ver :func:`uninstall_mod`.
     """
     try:
         await mo2.toggle_mod_in_modlist(mod_name, profile, enable)
@@ -490,10 +517,11 @@ async def toggle_mod(mo2: Any, mod_name: str, enable: bool, profile: str = "Defa
         return json.dumps({"error": str(exc)})
 
 
-async def launch_game(mo2: Any, profile: str = "Default") -> str:
+async def launch_game(mo2: Any, *, profile: str) -> str:
     """Launch Skyrim Special Edition via MO2 using SKSE.
 
-    Args are pre-validated by AsyncToolRegistry.execute() via LaunchGameParams.
+    ``profile`` es keyword-only y sin default — ver :func:`uninstall_mod`. La tool ya
+    no declara ``params_model``: no le queda ningún argumento que el LLM elija.
     """
     try:
         result = await mo2.launch_game(profile)

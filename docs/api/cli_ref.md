@@ -6,7 +6,7 @@
 >
 > **Fuente canónica:** `sky_claw/__main__.py::_parse_args`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-08-10 sobre `origin/main` `60f7957` más este cambio.
 
 ## Sintaxis
 
@@ -25,7 +25,8 @@ el ejecutable congelado cambia el default a `gui`.
 | `--provider` | `anthropic`, `deepseek`, `openai`, `ollama` | Proveedor LLM |
 | `--mo2-root` | config o `C:\MO2Portable` | Instancia portable |
 | `--skyrim-path` | config o vacío | Instalación; obligatoria para `vfs-health` |
-| `--vfs-profile` | `Default` | Perfil de la sonda |
+| `--profile` | `MO2_PROFILE` o `Default` | Perfil MO2 de **toda** la sesión |
+| `--vfs-profile` | `Default` | Perfil de la sonda `vfs-health` únicamente |
 | `--vfs-timeout` | `30.0` segundos | Timeout del worker VFS |
 | `--db-path` | `mod_registry.db` | Registry principal |
 | `--loot-exe` | config o `loot.exe` | LOOT CLI |
@@ -39,6 +40,17 @@ el ejecutable congelado cambia el default a `gui`.
 
 La descripción de un argumento no garantiza que todos los modos lo consuman.
 Seguir la rama correspondiente de `_async_main()` para confirmar impacto.
+
+`--profile` y `--vfs-profile` no son intercambiables: el primero fija el perfil MO2
+con el que trabaja la sesión entera —tools del agente, rituales de la GUI, LOOT,
+DynDOLOD, Pandora, Wrye Bash, Synthesis y la evaluación de `fileDependency` de
+FOMOD—; el segundo solo elige el perfil que sondea `--mode vfs-health`.
+
+El perfil queda **fijo durante la sesión**: no se puede cambiar desde el chat ni
+desde la GUI, y el agente no lo acepta como argumento de sus herramientas. Cambiarlo
+requiere reiniciar Sky-Claw con otro `--profile` (o con otro `MO2_PROFILE`). Un
+nombre con separadores de ruta o metacaracteres aborta el arranque antes de tocar el
+filesystem.
 
 ## Precondiciones especiales
 

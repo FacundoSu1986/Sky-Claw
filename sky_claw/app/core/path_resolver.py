@@ -20,9 +20,61 @@ import pathlib
 from typing import Protocol, runtime_checkable
 
 from sky_claw.app.core.contracts import PathValidatorProtocol
+from sky_claw.app.security.path_validator import assert_safe_component
 
 logger = logging.getLogger("SkyClaw.PathResolution")
 security_logger = logging.getLogger("SkyClaw.Security")
+
+#: Perfil MO2 cuando no hay ni perfil inyectado ni ``MO2_PROFILE``.
+PERFIL_MO2_POR_DEFECTO = "Default"
+
+
+def resolver_perfil_activo(profile_name: str | None) -> str:
+    """Perfil MO2 efectivo dado un perfil inyectado (o su ausencia).
+
+    Precedencia: **perfil inyectado → ``MO2_PROFILE`` → ``Default``**.
+
+    El orden importa y estaba invertido: ``get_active_profile`` leía la variable
+    de entorno ANTES del perfil inyectado, así que con ``--profile Requiem`` y
+    ``MO2_PROFILE=Default`` a la vez, ``AppContext`` resolvía ``Requiem`` para las
+    tools del agente y este resolver devolvía ``Default`` para LOOT, DynDOLOD,
+    Pandora, Wrye Bash y Synthesis — la misma divergencia GUI↔agente, sobreviviendo
+    a que el perfil se inyectara correctamente.
+
+    Un perfil inyectado gana porque ``AppContext._resolve_mo2_profile`` YA consultó
+    ``MO2_PROFILE`` al producirlo: volver a leer el entorno acá no agrega una fuente,
+    pisa una decisión que ya se tomó con la precedencia correcta. Sin perfil
+    inyectado (resolvers standalone, tests) el entorno sigue siendo la fuente.
+
+    "Sin perfil inyectado" se evalúa por **truthiness**, no por ``is None``: la cadena
+    vacía cuenta como ausencia. Es la misma prueba que hace
+    ``AppContext._resolve_mo2_profile`` (``cli_profile or entorno or Default``), y las
+    dos tienen que coincidir o vuelve la divergencia que este resolver vino a cerrar.
+    No es hipotético: ``--profile`` declara ``default=""`` en ``__main__.py``, así que
+    un caller que enhebre el valor crudo del CLI inyectaría ``""`` — con ``is None``
+    eso devolvía ``""`` y los runners recibían un perfil inexistente en vez del
+    fallback (hallazgo de review de Qodo, PR #460).
+
+    **La validación vive acá, no en cada caller.** El valor que sale de esta función
+    termina en rutas ``profiles/<perfil>/…`` (LOOT, DynDOLOD, Pandora, Wrye Bash) y en
+    el argumento ``--profile`` del CLI de Synthesis. ``AppContext._resolve_mo2_profile``
+    y ``AsyncToolRegistry.__init__`` ya validaban su entrada, pero ``MO2_PROFILE``
+    como ÚNICA fuente (resolver standalone, supervisor sin perfil inyectado) llegaba
+    crudo: un segundo punto de entrada que evadía la primitiva que este PR centraliza
+    (hallazgo de review de Qodo, PR #460). Validar acá es el mismo argumento que el de
+    la precedencia — la propiedad pertenece a quien PRODUCE el valor, no a quien lo
+    consume, o vuelve a haber un camino sin cubrir.
+
+    Fail-closed a propósito: un perfil malformado lanza en vez de degradar al
+    fallback. Degradar en silencio operaría sobre un perfil distinto del pedido, que
+    es exactamente la clase de defecto que este resolver cierra.
+
+    Lanza:
+        PathViolationError: si el perfil resuelto no es un componente de ruta seguro.
+    """
+    resuelto = profile_name or os.environ.get("MO2_PROFILE", "") or PERFIL_MO2_POR_DEFECTO
+    return assert_safe_component(resuelto, field="profile")
+
 
 # Rutas candidatas para auto-detección de MO2 (ordenadas por probabilidad).
 _CANDIDATE_MO2_PATHS: tuple[str, ...] = (
@@ -114,13 +166,15 @@ class PathResolutionService:
     Args:
         path_validator: Instancia de ``PathValidator`` configurada con
             las raíces del sandbox.
-        profile_name: Nombre del perfil MO2 por defecto.
+        profile_name: Perfil MO2 de la sesión. Si se inyecta, **manda** sobre
+            ``MO2_PROFILE`` (ver :func:`resolver_perfil_activo`). ``None`` deja que
+            el entorno decida, para resolvers standalone y tests.
     """
 
     def __init__(
         self,
         path_validator: PathValidatorProtocol,
-        profile_name: str = "Default",
+        profile_name: str | None = None,
     ) -> None:
         self._path_validator = path_validator
         self._profile_name = profile_name
@@ -400,19 +454,15 @@ class PathResolutionService:
     def get_active_profile(self) -> str:
         """Obtiene el nombre del perfil activo de MO2.
 
+        Precedencia en :func:`resolver_perfil_activo`: el perfil inyectado manda
+        sobre ``MO2_PROFILE``. Es lo que hace que el perfil de sesión que resolvió
+        ``AppContext`` llegue de verdad a LOOT, DynDOLOD, Pandora, Wrye Bash y
+        Synthesis, en vez de que el entorno lo pise por debajo.
+
         Returns:
             Nombre del perfil activo o ``'Default'`` si no se puede determinar.
         """
-        # Intentar obtener desde variable de entorno
-        profile = os.environ.get("MO2_PROFILE", "")
-        if profile:
-            return profile
-
-        # Usar el perfil almacenado en la instancia
-        if self._profile_name:
-            return self._profile_name
-
-        return "Default"
+        return resolver_perfil_activo(self._profile_name)
 
     # ------------------------------------------------------------------
     # Zero-Trust: resolved tool paths (centralised os.environ access)

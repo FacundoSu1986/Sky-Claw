@@ -9,7 +9,7 @@
 > `sky_claw/app/orchestrator/tool_strategies/` y
 > `sky_claw/local/tools/tool_result.py`.
 >
-> **Última verificación:** 2026-08-09 sobre `origin/main` `67eaeec5` más este cambio.
+> **Última verificación:** 2026-08-10 sobre `origin/main` `60f7957` más este cambio.
 
 ## Ruta LLM
 
@@ -24,6 +24,15 @@ JSON Schema y ejecuta handlers async. Su inventario incorporado verificado es:
 `close_game` y `setup_tools`.
 
 La allowlist de sesión filtra tanto la enumeración visible como la ejecución.
+
+Ninguna tool acepta un perfil de MO2 como argumento. El perfil queda fijo durante la
+sesión (`--profile` / `MO2_PROFILE`, ver [configuración](../user/configuration.md)) y
+lo inyecta `AsyncToolRegistry`, así que `check_load_order`, `detect_conflicts`,
+`run_loot_sort`, `analyze_esp_conflicts`, `install_mod_from_archive`, `uninstall_mod`,
+`toggle_mod` y `launch_game` operan todas sobre la misma vista. Un `profile` que el
+modelo mande igual se ignora: esas tools ya no declaran ese campo en su schema. El
+nombre se valida al construir el registry, que es el único punto por el que entra.
+Ancla enumerativa: `tests/test_perfil_sesion_invariante.py`.
 
 `setup_tools` acepta `loot`, `xedit`, `pandora`, `bodyslide`, `ngio` y
 `community_shaders`. Su lista por defecto contiene los cinco primeros:

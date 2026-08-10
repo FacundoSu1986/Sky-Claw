@@ -532,6 +532,12 @@ def run_nicegui(
         # M-01.1: el supervisor comparte el DatabaseLifecycleManager del
         # AppContext para journal/locks/DLQ (shutdown coordinado + pragmas).
         supervisor = SupervisorAgent(
+            # Mismo perfil MO2 que resolvió start_full para las tools del agente.
+            # Sin esto el supervisor caía en su default "Default" y toda la
+            # superficie de la GUI —rituales de LOOT, DynDOLOD, Pandora, Wrye Bash y
+            # xEdit, vía PathResolutionService— corría sobre un perfil distinto al
+            # que el agente instalaba, en el mismo proceso.
+            profile_name=ctx.mo2_profile,
             hitl_guard=ctx.hitl,
             lifecycle=ctx.lifecycle.manager,
             path_validator=ctx.sandbox_validator,

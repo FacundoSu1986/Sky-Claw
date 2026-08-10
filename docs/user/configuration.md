@@ -76,6 +76,18 @@ variables no secretas después de su escaneo.
 Las flags de CLI son otra entrada de configuración. Consultar
 [la referencia de CLI](../api/cli_ref.md).
 
+## Perfil de MO2
+
+El perfil sale de `--profile`, y si no está, de `MO2_PROFILE`; sin ninguno de los
+dos, `Default`. Es **uno solo para toda la sesión**: lo usan las herramientas del
+agente, los rituales de la GUI, LOOT, DynDOLOD, Pandora, Wrye Bash, Synthesis y la
+evaluación de `fileDependency` de FOMOD. No se puede cambiar en caliente —ni desde
+el chat, ni desde la GUI— y el agente no acepta un perfil como argumento de sus
+herramientas: para trabajar en otro hay que reiniciar Sky-Claw.
+
+Un nombre de perfil con separadores de ruta o metacaracteres aborta el arranque
+antes de tocar el filesystem.
+
 ## Criterio de parada
 
 No ejecutar un ritual si una ruta no existe, apunta a otra instancia, el

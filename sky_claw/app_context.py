@@ -24,6 +24,7 @@ from sky_claw.app.core.metrics_server import (
     start_metrics_server,
     stop_metrics_server,
 )
+from sky_claw.app.core.path_resolver import PERFIL_MO2_POR_DEFECTO
 from sky_claw.app.core.tracing import configure_tracing, shutdown_tracing
 from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.db.journal import OperationJournal
@@ -83,10 +84,16 @@ SYSTEM_PROMPT = (
 
 
 def _resolve_mo2_profile(args: Any) -> str:
-    """Resuelve y valida el perfil MO2 fijo de la sesión."""
+    """Resuelve y valida el perfil MO2 fijo de la sesión.
+
+    Precedencia: ``--profile`` → ``MO2_PROFILE`` → ``Default``. Es la ÚNICA fuente
+    de esa decisión: `resolver_perfil_activo` respeta el valor ya resuelto en vez de
+    volver a mirar el entorno, para que un `--profile` no pueda perder contra un
+    `MO2_PROFILE` puesto a la vez.
+    """
     configured = getattr(args, "profile", "")
     cli_profile = configured if isinstance(configured, str) else ""
-    profile = cli_profile or os.environ.get("MO2_PROFILE", "") or "Default"
+    profile = cli_profile or os.environ.get("MO2_PROFILE", "") or PERFIL_MO2_POR_DEFECTO
     return assert_safe_component(profile, field="profile")
 
 
@@ -214,6 +221,12 @@ class AppContext:
         # Resolved tools install dir, populated in start() — read by the GUI
         # "Instalar" button (Follow-up C). None until the full start path runs.
         self.install_dir: pathlib.Path | None = None
+        # Perfil MO2 de la sesión (`--profile` / `MO2_PROFILE` / fallback), resuelto
+        # por start_full. Se publica porque hay consumidores que NO se construyen
+        # dentro de start_full y necesitan el mismo valor: el `SupervisorAgent` del
+        # bootloader de la GUI es el caso que motivó esto. Arranca en el mismo
+        # fallback que `_resolve_mo2_profile` para que nunca sea None.
+        self.mo2_profile: str = PERFIL_MO2_POR_DEFECTO
 
         # ARC-02: AsyncExitStack para compensación atómica ante fallos
         self._exit_stack = AsyncExitStack()
@@ -551,6 +564,7 @@ class AppContext:
         self.vfs_instance_id = None
         self.vfs_loot_runner = None
         self.install_dir = None
+        self.mo2_profile = PERFIL_MO2_POR_DEFECTO
         self.router = None
         self.polling = None
         self.hitl = None
@@ -910,7 +924,7 @@ class AppContext:
                     result = await self._await_startup(
                         sync_engine.run(
                             self.network.session,
-                            profile="Default",
+                            profile=active_profile,
                             enrich_remote=enrich_remote,
                         )
                     )
@@ -929,7 +943,7 @@ class AppContext:
                         await self._await_startup(
                             sync_engine.run(
                                 self.network.session,
-                                profile="Default",
+                                profile=active_profile,
                                 enrich_remote=False,
                             )
                         )
@@ -1009,7 +1023,12 @@ class AppContext:
                 mo2_root=mo2_root,
                 game_path=configured_game,
                 loot_exe=loot_exe,
-                profile="Default",
+                # Este runner es el que MUTA plugins.txt/loadorder.txt, y lo comparten
+                # el tool `run_loot_sort` del agente y el ritual LOOT de la GUI. Con el
+                # literal "Default" que había acá, ordenar el load order iba siempre al
+                # perfil equivocado — sin que `--profile` ni `MO2_PROFILE` pudieran
+                # corregirlo.
+                profile=active_profile,
             )
             self.vfs_broker = broker
             self.vfs_instance_id = instance_id
@@ -1206,6 +1225,11 @@ class AppContext:
 
             logger.info("start_full complete")
             self.sandbox_validator = validator
+            # Perfil MO2 de la sesión, publicado para que los consumidores que se
+            # construyen FUERA de start_full lo reciban — el `SupervisorAgent` del
+            # bootloader de la GUI, sobre todo: sin esto quedaba en "Default" y la
+            # GUI corría sus rituales sobre otro perfil que el agente.
+            self.mo2_profile = active_profile
             self.install_dir = install_dir
             self.sender = sender
             self.hitl = hitl

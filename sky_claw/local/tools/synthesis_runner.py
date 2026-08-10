@@ -90,6 +90,11 @@ class SynthesisConfig:
         output_path: Ruta donde se genera Synthesis.esp.
         synthesis_exe: Ruta al ejecutable de Synthesis CLI.
         timeout_seconds: Timeout en segundos para la ejecución.
+        profile: Perfil MO2 con el que Synthesis interactúa (``--profile``). Lo
+            resuelve ``SynthesisService`` desde el ``PathResolver``, la MISMA fuente
+            que ya usaba para el resolver de fuentes: estaba hardcodeado a
+            ``"Default"`` en la línea de comando, así que el patch se generaba contra
+            un perfil y las fuentes se resolvían contra otro.
     """
 
     game_path: pathlib.Path
@@ -97,6 +102,7 @@ class SynthesisConfig:
     output_path: pathlib.Path  # Donde se genera Synthesis.esp
     synthesis_exe: pathlib.Path
     timeout_seconds: int = 300
+    profile: str = "Default"
 
     def __post_init__(self) -> None:
         """Valida que los paths requeridos existan."""
@@ -295,7 +301,7 @@ class SynthesisRunner:
             str(self._config.output_path),
             "--no-prompt",  # Modo headless
             "--profile",
-            "Default",  # Hardcode profile interact MO2
+            self._config.profile,
         ]
 
         # Añadir patchers

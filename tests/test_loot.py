@@ -695,7 +695,7 @@ class TestRunLootSortLock:
             runner = MagicMock()
             runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )
             assert result["success"] is True
             assert result["sorted_plugins"] == ["Skyrim.esm"]
@@ -723,7 +723,9 @@ class TestRunLootSortLock:
             runner = _ProfileFactory()
 
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Alternate", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(
+                    MagicMock(), runner, None, profile="Alternate", lock_manager=lm, snapshot_manager=sm
+                )
             )
 
             assert result["success"] is True
@@ -741,7 +743,7 @@ class TestRunLootSortLock:
             runner = MagicMock()
             runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["x.esp"]))
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )
             assert result["success"] is False
             assert "error" in result
@@ -754,9 +756,64 @@ class TestRunLootSortLock:
         """Back-compat: with no lock manager wired, the tool sorts directly (no lock)."""
         runner = MagicMock()
         runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
-        result = json.loads(await run_loot_sort(MagicMock(), runner, None, "Default"))
+        result = json.loads(await run_loot_sort(MagicMock(), runner, None, profile="Default"))
         assert result["success"] is True
         runner.sort.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_legacy_path_rebindea_el_runner_al_perfil_pedido(self, tmp_path: pathlib.Path) -> None:
+        """Sin lock, el runner también tiene que ordenar el perfil que se pidió.
+
+        Un `BrokeredLootRunner` queda atado al perfil con el que se construyó. Sin
+        rebindear, la rama sin lock ordenaba ESE perfil y el payload informaba el
+        pedido: el resultado afirmaba un perfil sobre el que no actuó (review
+        CodeRabbit #460). La rama con `LootSortingService` ya lo hacía vía
+        `profile_name`.
+        """
+
+        class _RunnerPorPerfil:
+            """Doble con `for_profile` en la CLASE — es lo que exige la detección."""
+
+            def __init__(self, profile: str, registro: list[str]) -> None:
+                self._profile = profile
+                self._registro = registro
+
+            def for_profile(self, profile: str) -> _RunnerPorPerfil:
+                return self if profile == self._profile else _RunnerPorPerfil(profile, self._registro)
+
+            async def sort(self) -> LOOTResult:
+                self._registro.append(self._profile)
+                return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+
+        ordenados: list[str] = []
+        runner = _RunnerPorPerfil("Default", ordenados)
+
+        result = json.loads(await run_loot_sort(MagicMock(), runner, None, profile="Requiem"))
+
+        assert ordenados == ["Requiem"], "ordenó un perfil distinto del que informa"
+        assert result["profile"] == "Requiem"
+
+    @pytest.mark.asyncio
+    async def test_legacy_path_devuelve_json_si_el_rebind_falla(self, tmp_path: pathlib.Path) -> None:
+        """El rebind también respeta el contrato "siempre JSON" de la tool.
+
+        `for_profile` construye un runner nuevo y su `__init__` resuelve paths
+        (`.resolve()` puede lanzar OSError), así que fuera del try la excepción se
+        escapaba y el caller recibía una excepción en vez del JSON de error — en el
+        código que este PR agregó (review Qodo #460).
+        """
+
+        class _RunnerQueFallaAlRebindear:
+            def for_profile(self, profile: str) -> object:
+                raise OSError("no se pudo resolver el perfil")
+
+            async def sort(self) -> LOOTResult:  # pragma: no cover — no se llega
+                raise AssertionError("no debería ordenar si el rebind falló")
+
+        result = json.loads(await run_loot_sort(MagicMock(), _RunnerQueFallaAlRebindear(), None, profile="Requiem"))
+
+        assert "error" in result
+        assert "no se pudo resolver el perfil" in result["error"]
 
     @pytest.mark.asyncio
     async def test_locked_path_returns_json_on_unexpected_error(self, tmp_path: pathlib.Path) -> None:
@@ -770,7 +827,7 @@ class TestRunLootSortLock:
             runner = MagicMock()
             runner.sort = AsyncMock(side_effect=OSError("loot.exe is not executable"))
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )
             assert "error" in result
             # Lock must still be released after the failure.
@@ -803,7 +860,7 @@ class TestRunLootSortLock:
                     MagicMock(),
                     runner,
                     None,
-                    "Default",
+                    profile="Default",
                     lock_manager=lm,
                     snapshot_manager=sm,
                     journal=journal,
@@ -839,7 +896,7 @@ class TestRunLootSortLock:
             runner = MagicMock()
             runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )
             assert result["success"] is True
             runner.sort.assert_awaited_once()

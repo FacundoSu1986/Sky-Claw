@@ -21,6 +21,7 @@ from typing import Any
 
 import keyring
 
+from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.config import SystemPaths
 from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
 from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
@@ -36,10 +37,7 @@ from .schemas import (
     DownloadModParams,
     InstallFromArchiveParams,
     InstallModParams,
-    LaunchGameParams,
-    ModNameParams,
     PreviewInstallerParams,
-    ProfileParams,
     ResolveFomodParams,
     SearchModParams,
     SearchNexusParams,
@@ -137,8 +135,10 @@ class AsyncToolRegistry:
         # T2-07: identificador opcional de sesion/usuario para enriquecer
         # logs de auditoria cuando un tool no permitido es invocado.
         session_id: str | None = None,
-        # Perfil MO2 único de esta sesión. Las tools FOMOD deben evaluar
-        # fileDependency y activar el mod sobre la misma vista.
+        # Perfil MO2 único de esta sesión. TODOS los tools que tocan un perfil lo
+        # reciben de acá; ninguno lo expone como argumento del LLM (spec del PR
+        # #454: "el perfil queda fijo durante la sesión"). El default sigue siendo
+        # "Default" para los callers legacy y los fixtures.
         mo2_profile: str = "Default",
     ) -> None:
         self._registry = registry
@@ -166,7 +166,12 @@ class AsyncToolRegistry:
         # silenciosamente la autorizacion de un registry ya construido.
         self._allowed_tools: frozenset[str] | None = frozenset(allowed_tools) if allowed_tools is not None else None
         self._session_id = session_id
-        self._mo2_profile = mo2_profile
+        # Al sacar `profile` de los params_model se fue también su `pattern` de
+        # pydantic, que era lo que rechazaba un nombre con traversal o con
+        # metacaracteres de shell (`"Default; rm -rf /"`). La validación no
+        # desaparece: se muda acá, que es el ÚNICO punto por el que el perfil entra
+        # al registry. Misma primitiva que usa `app_context._resolve_mo2_profile`.
+        self._mo2_profile = assert_safe_component(mo2_profile, field="mo2_profile")
         self._tools: dict[str, ToolDescriptor] = {}
         self._register_builtins()
 
@@ -458,27 +463,33 @@ class AsyncToolRegistry:
             ),
         )
         # System
+        #
+        # Perfil MO2: ninguno de estos tools lo recibe del LLM. El perfil queda fijo
+        # durante la sesión (spec del PR #454) y sale de `self._mo2_profile`, igual
+        # que en `install_mod_from_archive`. Exponerlo como argumento era la vía por
+        # la que el modelo podía —y por el default de pydantic, solía— operar sobre
+        # `Default` mientras la instalación iba al perfil configurado.
         self._tools["check_load_order"] = ToolDescriptor(
             name="check_load_order",
-            description="Read the MO2 modlist for a profile.",
-            params_model=ProfileParams,
-            fn=lambda profile: check_load_order(self._mo2, profile),
+            description="Read the MO2 modlist for the session profile.",
+            params_model=None,
+            fn=lambda: check_load_order(self._mo2, profile=self._mo2_profile),
         )
         self._tools["detect_conflicts"] = ToolDescriptor(
             name="detect_conflicts",
             description="Compare masters of active ESP plugins.",
-            params_model=ProfileParams,
-            fn=lambda profile: detect_conflicts(self._registry, self._mo2, profile),
+            params_model=None,
+            fn=lambda: detect_conflicts(self._registry, self._mo2, profile=self._mo2_profile),
         )
         self._tools["run_loot_sort"] = ToolDescriptor(
             name="run_loot_sort",
             description="Invoke LOOT to sort load order.",
-            params_model=ProfileParams,
-            fn=lambda profile: run_loot_sort(
+            params_model=None,
+            fn=lambda: run_loot_sort(
                 self._mo2,
                 self._loot_runner,
                 self._resolve_loot_exe(),
-                profile,
+                profile=self._mo2_profile,
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
                 # PR #171 follow-up: sandbox the config-controlled exe path.
@@ -527,7 +538,9 @@ class AsyncToolRegistry:
             name="analyze_esp_conflicts",
             description="Analyze record-level ESP conflicts.",
             params_model=AnalyzeConflictsParams,
-            fn=lambda profile, plugins=None: analyze_esp_conflicts(self._mo2, self._xedit_runner, profile, plugins),
+            fn=lambda plugins=None: analyze_esp_conflicts(
+                self._mo2, self._xedit_runner, profile=self._mo2_profile, plugins=plugins
+            ),
         )
         # Consolidation (obs #187): run_pandora / run_bodyslide are backed by the
         # M-02/M-03 runners (unified _process subprocess handling). The duplicate
@@ -594,19 +607,19 @@ class AsyncToolRegistry:
             name="uninstall_mod",
             description="Uninstall a mod completely.",
             params_model=UninstallModParams,
-            fn=lambda mod_name, profile="Default": uninstall_mod(self._mo2, mod_name, profile),
+            fn=lambda mod_name: uninstall_mod(self._mo2, mod_name, profile=self._mo2_profile),
         )
         self._tools["toggle_mod"] = ToolDescriptor(
             name="toggle_mod",
             description="Enable or disable an installed mod.",
             params_model=ToggleModParams,
-            fn=lambda mod_name, enable, profile="Default": toggle_mod(self._mo2, mod_name, enable, profile),
+            fn=lambda mod_name, enable: toggle_mod(self._mo2, mod_name, enable, profile=self._mo2_profile),
         )
         self._tools["launch_game"] = ToolDescriptor(
             name="launch_game",
-            description="Launch Skyrim via MO2.",
-            params_model=LaunchGameParams,
-            fn=lambda profile="Default": launch_game(self._mo2, profile),
+            description="Launch Skyrim via MO2 using the session profile.",
+            params_model=None,
+            fn=lambda: launch_game(self._mo2, profile=self._mo2_profile),
         )
         self._tools["close_game"] = ToolDescriptor(
             name="close_game",
@@ -638,12 +651,9 @@ __all__ = [
     "DownloadModParams",
     "InstallFromArchiveParams",
     "InstallModParams",
-    "LaunchGameParams",
     "LOOTConfig",
     "LOOTRunner",
-    "ModNameParams",
     "PreviewInstallerParams",
-    "ProfileParams",
     "ResolveFomodParams",
     # re-exports
     "SearchModParams",

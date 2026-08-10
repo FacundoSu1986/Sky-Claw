@@ -19,10 +19,10 @@ import pytest
 from sky_claw.app.agent.router import _format_validation_feedback
 from sky_claw.app.agent.tools import (
     AsyncToolRegistry,
-    ProfileParams,
     SearchModParams,
 )
 from sky_claw.app.agent.tools.descriptor import ToolDescriptor
+from sky_claw.app.security.path_validator import PathViolationError
 
 
 @pytest.fixture()
@@ -54,11 +54,21 @@ class TestExecuteValidation:
         with pytest.raises(pydantic.ValidationError):
             await registry.execute("search_mod", {"mod_name": ""})
 
-    @pytest.mark.asyncio
-    async def test_check_load_order_rejects_invalid_pattern(self, registry: AsyncToolRegistry) -> None:
-        # ProfileParams pattern excludes ';' to defeat CLI argument injection.
-        with pytest.raises(pydantic.ValidationError):
-            await registry.execute("check_load_order", {"profile": "Default; rm -rf /"})
+    def test_el_perfil_de_sesion_rechaza_inyeccion_de_argumentos(self, tmp_path: pathlib.Path) -> None:
+        """El perfil ya no es un argumento del LLM (queda fijo por sesión), así que
+        el ``pattern`` de ``ProfileParams`` que excluía ``;`` para frenar la
+        inyección al CLI de LOOT se fue con el modelo. La defensa no se perdió: se
+        mudó al ÚNICO punto por el que el perfil entra ahora, el constructor del
+        registry. Ancla completa en ``tests/test_perfil_sesion_invariante.py``."""
+        mo2 = MagicMock()
+        mo2.root = tmp_path
+        with pytest.raises(PathViolationError):
+            AsyncToolRegistry(
+                registry=MagicMock(),
+                mo2=mo2,
+                sync_engine=MagicMock(),
+                mo2_profile="Default; rm -rf /",
+            )
 
     @pytest.mark.asyncio
     async def test_install_mod_rejects_negative_id(self, registry: AsyncToolRegistry) -> None:
@@ -178,12 +188,12 @@ class TestSchemaDerivation:
 class TestValidationFeedback:
     def test_feedback_has_required_keys(self) -> None:
         try:
-            ProfileParams(profile="")
+            SearchModParams(mod_name="")
         except pydantic.ValidationError as exc:
-            feedback = _format_validation_feedback("check_load_order", exc)
+            feedback = _format_validation_feedback("search_mod", exc)
 
         assert feedback["error"].startswith("Invalid arguments")
-        assert feedback["tool"] == "check_load_order"
+        assert feedback["tool"] == "search_mod"
         assert isinstance(feedback["validation_errors"], list)
         assert feedback["validation_errors"]
         first = feedback["validation_errors"][0]
@@ -194,14 +204,14 @@ class TestValidationFeedback:
 
     def test_feedback_is_json_serializable(self) -> None:
         try:
-            ProfileParams(profile=42)
+            SearchModParams(mod_name=42)
         except pydantic.ValidationError as exc:
-            feedback = _format_validation_feedback("check_load_order", exc)
+            feedback = _format_validation_feedback("search_mod", exc)
 
         # default=str needed because Pydantic may include non-serializable types in 'input'.
         encoded = json.dumps(feedback, ensure_ascii=False, default=str)
         assert "Invalid arguments" in encoded
-        assert "check_load_order" in encoded
+        assert "search_mod" in encoded
 
     def test_feedback_lists_field_path(self) -> None:
         try:

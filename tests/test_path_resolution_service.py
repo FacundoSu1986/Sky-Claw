@@ -201,13 +201,12 @@ class TestGetMo2ModsPath:
 class TestGetActiveProfile:
     """Tests para get_active_profile."""
 
-    def test_returns_env_var_profile(
-        self,
-        path_resolver: PathResolutionService,
-    ) -> None:
-        """Retorna perfil desde MO2_PROFILE env var."""
+    def test_returns_env_var_profile(self, sandbox_root: pathlib.Path) -> None:
+        """Sin perfil inyectado, MO2_PROFILE decide."""
+        validator = PathValidator(roots=[sandbox_root])
+        resolver = PathResolutionService(path_validator=validator)
         with patch.dict(os.environ, {"MO2_PROFILE": "CustomProfile"}):
-            assert path_resolver.get_active_profile() == "CustomProfile"
+            assert resolver.get_active_profile() == "CustomProfile"
 
     def test_returns_constructor_profile_when_no_env(
         self,
@@ -217,12 +216,64 @@ class TestGetActiveProfile:
         with patch.dict(os.environ, {}, clear=True):
             assert path_resolver.get_active_profile() == "TestProfile"
 
+    def test_el_perfil_inyectado_gana_sobre_la_env_var(
+        self,
+        path_resolver: PathResolutionService,
+    ) -> None:
+        """Este test afirmaba lo CONTRARIO y congelaba el defecto.
+
+        Con la precedencia vieja (entorno primero), un `--profile Requiem` junto a
+        un `MO2_PROFILE=Default` hacía que `AppContext` resolviera `Requiem` para
+        las tools del agente y este resolver devolviera `Default` para LOOT,
+        DynDOLOD, Pandora, Wrye Bash y Synthesis: la divergencia GUI↔agente
+        sobrevivía a que el perfil se inyectara bien. Quien inyecta ya consultó
+        `MO2_PROFILE` con la precedencia correcta, así que volver a leerlo acá no
+        agrega una fuente — pisa una decisión ya tomada.
+        """
+        with patch.dict(os.environ, {"MO2_PROFILE": "PerfilDelEntorno"}):
+            assert path_resolver.get_active_profile() == "TestProfile"
+
     def test_returns_default_when_nothing_set(self, sandbox_root: pathlib.Path) -> None:
         """Retorna 'Default' cuando no hay perfil configurado."""
         validator = PathValidator(roots=[sandbox_root])
-        resolver = PathResolutionService(
-            path_validator=validator,
-            profile_name="",
-        )
+        resolver = PathResolutionService(path_validator=validator)
         with patch.dict(os.environ, {}, clear=True):
             assert resolver.get_active_profile() == "Default"
+
+    def test_el_perfil_vacio_cuenta_como_ausencia(self, sandbox_root: pathlib.Path) -> None:
+        """`""` no es un perfil: cae al entorno y después al fallback.
+
+        `--profile` declara `default=""` en `__main__.py`, así que un caller que
+        enhebre el valor crudo del CLI inyecta la cadena vacía. Evaluando por
+        `is None` eso devolvía `""` y los runners (LOOT, Synthesis) armaban rutas
+        y líneas de comando con un perfil inexistente en vez del fallback. La
+        prueba por truthiness es además la MISMA que hace
+        `AppContext._resolve_mo2_profile`: si las dos no coinciden, vuelve la
+        divergencia que este resolver cierra (hallazgo de review de Qodo, #460).
+        """
+        validator = PathValidator(roots=[sandbox_root])
+        resolver = PathResolutionService(path_validator=validator, profile_name="")
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert resolver.get_active_profile() == "Default"
+        with patch.dict(os.environ, {"MO2_PROFILE": "PerfilDelEntorno"}):
+            assert resolver.get_active_profile() == "PerfilDelEntorno"
+
+    def test_la_precedencia_coincide_con_la_de_app_context(self, sandbox_root: pathlib.Path) -> None:
+        """Las dos resoluciones del perfil tienen que dar lo mismo ante la misma
+        entrada. Son piezas distintas —`AppContext` para las tools del agente, este
+        resolver para los runners de la GUI— y su desacuerdo ES el defecto."""
+        from types import SimpleNamespace
+
+        from sky_claw.app_context import _resolve_mo2_profile
+
+        validator = PathValidator(roots=[sandbox_root])
+        casos = [("Requiem", "Entorno"), ("", "Entorno"), ("Requiem", ""), ("", "")]
+
+        for cli, entorno in casos:
+            entorno_parcheado = {"MO2_PROFILE": entorno} if entorno else {}
+            with patch.dict(os.environ, entorno_parcheado, clear=True):
+                desde_app_context = _resolve_mo2_profile(SimpleNamespace(profile=cli))
+                desde_resolver = PathResolutionService(path_validator=validator, profile_name=cli).get_active_profile()
+
+            assert desde_app_context == desde_resolver, f"divergen con cli={cli!r} entorno={entorno!r}"

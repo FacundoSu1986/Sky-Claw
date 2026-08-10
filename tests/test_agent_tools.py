@@ -11,7 +11,6 @@ import pytest
 from sky_claw.app.agent.tools import (
     AsyncToolRegistry,
     InstallModParams,
-    ProfileParams,
     SearchModParams,
 )
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
@@ -90,13 +89,10 @@ class TestPydanticModels:
         with pytest.raises(pydantic.ValidationError):
             SearchModParams(mod_name="")
 
-    def test_profile_params_valid(self) -> None:
-        p = ProfileParams(profile="Default")
-        assert p.profile == "Default"
-
-    def test_profile_params_empty_rejected(self) -> None:
-        with pytest.raises(pydantic.ValidationError):
-            ProfileParams(profile="")
+    # `ProfileParams` se eliminó: el perfil ya no es un argumento del LLM, queda fijo
+    # por sesión y entra por `AsyncToolRegistry(mo2_profile=…)`. Su validación se
+    # cubre en `tests/agent/test_tool_validation.py` y
+    # `tests/test_perfil_sesion_invariante.py`.
 
     def test_install_mod_params_valid(self) -> None:
         p = InstallModParams(nexus_id=1234, version="1.0")
@@ -193,7 +189,8 @@ class TestSearchMod:
 class TestCheckLoadOrder:
     @pytest.mark.asyncio
     async def test_check_load_order(self, tool_registry: AsyncToolRegistry) -> None:
-        result = json.loads(await tool_registry.execute("check_load_order", {"profile": "Default"}))
+        # Sin argumentos: el perfil sale de `AsyncToolRegistry(mo2_profile=…)`.
+        result = json.loads(await tool_registry.execute("check_load_order", {}))
         assert result["profile"] == "Default"
         entries = result["load_order"]
         assert len(entries) == 3
@@ -203,9 +200,13 @@ class TestCheckLoadOrder:
         assert entries[1]["enabled"] is False
 
     @pytest.mark.asyncio
-    async def test_check_load_order_empty_profile_rejected(self, tool_registry: AsyncToolRegistry) -> None:
-        with pytest.raises(pydantic.ValidationError):
-            await tool_registry.execute("check_load_order", {"profile": ""})
+    async def test_check_load_order_ignora_el_perfil_que_mande_el_llm(self, tool_registry: AsyncToolRegistry) -> None:
+        """El tool ya no declara ``params_model``: un ``profile`` inventado por el
+        modelo no llega al handler. Antes esto lo frenaba el ``pattern`` del schema;
+        ahora directamente no hay por dónde pasarlo — que es el punto."""
+        result = json.loads(await tool_registry.execute("check_load_order", {"profile": "OtroPerfil"}))
+
+        assert result["profile"] == "Default"
 
 
 # ------------------------------------------------------------------
