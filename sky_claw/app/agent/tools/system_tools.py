@@ -137,6 +137,19 @@ async def run_loot_sort(
             out["error"] = res["logs"]
         return json.dumps(out)
 
+    # Rama sin lock (legacy/tests; producción siempre cablea lock+snapshot y va por
+    # el servicio de arriba). Rebindear el runner al perfil pedido ANTES de ordenar:
+    # un `BrokeredLootRunner` viene atado al perfil con el que se construyó, así que
+    # sin esto se ordenaba ese y el payload informaba el pedido — el resultado decía
+    # un perfil sobre el que no actuó (review CodeRabbit #460). `for_profile`
+    # devuelve `self` cuando coinciden, así que el caso normal no paga nada.
+    # La detección sale del alias público de `loot_service`, que es su fuente única:
+    # duplicarla acá reabriría el desfasaje que ese helper existe para cerrar.
+    from sky_claw.local.tools.loot_service import es_runner_por_perfil
+
+    if es_runner_por_perfil(loot_runner):
+        loot_runner = loot_runner.for_profile(profile)
+
     try:
         result = await loot_runner.sort()
     except Exception as exc:

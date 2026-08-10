@@ -103,6 +103,19 @@ def _is_per_profile_runner(runner: object) -> bool:
     return callable(getattr(type(runner), "for_profile", None)) and callable(getattr(runner, "for_profile", None))
 
 
+# ---------------------------------------------------------------------------
+# API pública de la detección de runner por perfil
+# ---------------------------------------------------------------------------
+# El tercer consumidor de esta detección vive fuera del módulo: la rama SIN lock
+# de `run_loot_sort` (agente LLM) también tiene que rebindear el runner al perfil
+# pedido antes de ordenar. Consume el alias en vez del helper privado —mismo
+# criterio que `bajo_lock_de_instalacion` / `install_lock_resource_id` en
+# `tools_installer` (T-31)—: un rename interno rompe el import time del paquete,
+# no la corrida real. Si esta detección se duplicara allá, sería exactamente el
+# desfasaje que el docstring de arriba existe para hacer imposible.
+es_runner_por_perfil = _is_per_profile_runner
+
+
 def _primary_load_order_file(paths: list[pathlib.Path]) -> pathlib.Path | None:
     """Elige el archivo de load order que mejor refleja el orden de plugins.
 

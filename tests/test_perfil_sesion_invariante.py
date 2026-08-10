@@ -385,6 +385,20 @@ def test_toda_construccion_del_resolver_declara_su_perfil() -> None:
     assert sin_perfil == [], f"PathResolutionService construido sin perfil explícito en {sin_perfil}"
 
 
+def test_ancla_api_publica_de_la_deteccion_de_runner_por_perfil() -> None:
+    """La rama sin lock de ``run_loot_sort`` consume la detección de runner por
+    perfil desde el alias público de ``loot_service``, que es su fuente única.
+
+    Si un rename interno rompiera el alias, este test lo atrapa en import time y no
+    en la corrida real; y si alguien duplicara la detección en ``system_tools``,
+    reabriría el desfasaje que el helper existe para cerrar (mismo criterio que
+    ``test_ancla_api_publica_de_los_helpers_de_lock`` para T-31).
+    """
+    import sky_claw.local.tools.loot_service as loot_service
+
+    assert loot_service.es_runner_por_perfil is loot_service._is_per_profile_runner
+
+
 def test_las_dos_resoluciones_de_perfil_coinciden_ante_cli_y_entorno_en_conflicto() -> None:
     """Las dos superficies resuelven el perfil por caminos distintos —``AppContext``
     para las tools del agente, ``PathResolver`` para LOOT/DynDOLOD/Pandora/Wrye

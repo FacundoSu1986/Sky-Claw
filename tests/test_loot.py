@@ -761,6 +761,39 @@ class TestRunLootSortLock:
         runner.sort.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_legacy_path_rebindea_el_runner_al_perfil_pedido(self, tmp_path: pathlib.Path) -> None:
+        """Sin lock, el runner también tiene que ordenar el perfil que se pidió.
+
+        Un `BrokeredLootRunner` queda atado al perfil con el que se construyó. Sin
+        rebindear, la rama sin lock ordenaba ESE perfil y el payload informaba el
+        pedido: el resultado afirmaba un perfil sobre el que no actuó (review
+        CodeRabbit #460). La rama con `LootSortingService` ya lo hacía vía
+        `profile_name`.
+        """
+
+        class _RunnerPorPerfil:
+            """Doble con `for_profile` en la CLASE — es lo que exige la detección."""
+
+            def __init__(self, profile: str, registro: list[str]) -> None:
+                self._profile = profile
+                self._registro = registro
+
+            def for_profile(self, profile: str) -> _RunnerPorPerfil:
+                return self if profile == self._profile else _RunnerPorPerfil(profile, self._registro)
+
+            async def sort(self) -> LOOTResult:
+                self._registro.append(self._profile)
+                return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+
+        ordenados: list[str] = []
+        runner = _RunnerPorPerfil("Default", ordenados)
+
+        result = json.loads(await run_loot_sort(MagicMock(), runner, None, profile="Requiem"))
+
+        assert ordenados == ["Requiem"], "ordenó un perfil distinto del que informa"
+        assert result["profile"] == "Requiem"
+
+    @pytest.mark.asyncio
     async def test_locked_path_returns_json_on_unexpected_error(self, tmp_path: pathlib.Path) -> None:
         """An unexpected subprocess error (e.g. OSError) is returned as JSON, not raised.
 
