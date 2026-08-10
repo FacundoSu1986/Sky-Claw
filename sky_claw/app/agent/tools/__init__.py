@@ -473,13 +473,13 @@ class AsyncToolRegistry:
             name="check_load_order",
             description="Read the MO2 modlist for the session profile.",
             params_model=None,
-            fn=lambda: check_load_order(self._mo2, self._mo2_profile),
+            fn=lambda: check_load_order(self._mo2, profile=self._mo2_profile),
         )
         self._tools["detect_conflicts"] = ToolDescriptor(
             name="detect_conflicts",
             description="Compare masters of active ESP plugins.",
             params_model=None,
-            fn=lambda: detect_conflicts(self._registry, self._mo2, self._mo2_profile),
+            fn=lambda: detect_conflicts(self._registry, self._mo2, profile=self._mo2_profile),
         )
         self._tools["run_loot_sort"] = ToolDescriptor(
             name="run_loot_sort",
@@ -489,7 +489,7 @@ class AsyncToolRegistry:
                 self._mo2,
                 self._loot_runner,
                 self._resolve_loot_exe(),
-                self._mo2_profile,
+                profile=self._mo2_profile,
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
                 # PR #171 follow-up: sandbox the config-controlled exe path.
@@ -538,7 +538,9 @@ class AsyncToolRegistry:
             name="analyze_esp_conflicts",
             description="Analyze record-level ESP conflicts.",
             params_model=AnalyzeConflictsParams,
-            fn=lambda plugins=None: analyze_esp_conflicts(self._mo2, self._xedit_runner, self._mo2_profile, plugins),
+            fn=lambda plugins=None: analyze_esp_conflicts(
+                self._mo2, self._xedit_runner, profile=self._mo2_profile, plugins=plugins
+            ),
         )
         # Consolidation (obs #187): run_pandora / run_bodyslide are backed by the
         # M-02/M-03 runners (unified _process subprocess handling). The duplicate

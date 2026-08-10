@@ -318,9 +318,71 @@ def test_ninguna_linea_de_comando_fija_el_perfil() -> None:
     assert fijos == [], f"perfil fijo en una línea de comando: {fijos}"
 
 
+def test_todo_caller_de_la_familia_pasa_el_perfil() -> None:
+    """Los handlers de la familia reciben ``profile`` keyword-only y sin default:
+    un caller que lo omita revienta con ``TypeError`` recién en runtime.
+
+    Ese hueco NO lo tapa ningún gate: ``sky_claw.app.agent.*`` tiene
+    ``ignore_errors = true`` en la config de mypy (``pyproject.toml``), así que el
+    type-check no ve ``system_tools.py``. Y el ancla de literales de arriba solo
+    mira kwargs con valor constante, así que una llamada que directamente omita el
+    argumento le pasa por al lado (hallazgo de review de Qodo, #460).
+
+    Se enumeran TODAS las llamadas del paquete a esos nombres. Solo se miran
+    llamadas por nombre pelado: ``mo2.launch_game(...)`` es el método de
+    ``MO2Controller``, otra función que casualmente comparte nombre.
+    """
+    sin_perfil: list[str] = []
+    for archivo in sorted(PAQUETE.rglob("*.py")):
+        try:
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        except SyntaxError:  # pragma: no cover
+            continue
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call) or not isinstance(nodo.func, ast.Name):
+                continue
+            if nodo.func.id not in FAMILIA_DEL_PERFIL:
+                continue
+            if not any(kw.arg == "profile" for kw in nodo.keywords):
+                clave = str(archivo.relative_to(RAIZ)).replace("\\", "/")
+                sin_perfil.append(f"{clave}:{nodo.lineno} → {nodo.func.id}")
+
+    assert sin_perfil == [], f"callers de la familia que no pasan el perfil: {sin_perfil}"
+
+
 # ---------------------------------------------------------------------------
-# 4. Constructores del supervisor
+# 4. Constructores del supervisor y del resolver
 # ---------------------------------------------------------------------------
+
+
+def test_toda_construccion_del_resolver_declara_su_perfil() -> None:
+    """``PathResolutionService`` es la fuente del perfil para LOOT, DynDOLOD,
+    Pandora, Wrye Bash y Synthesis (todos leen ``get_active_profile()``).
+
+    Hoy hay una sola construcción en el paquete y pasa el perfil del supervisor,
+    pero eso es un hecho verificado una vez, no un invariante: un resolver nuevo
+    construido sin perfil devolvería el fallback y esos cinco runners volverían a
+    divergir del perfil de sesión sin que nada se ponga rojo (hallazgo de review de
+    Qodo, #460). Este ancla lo congela.
+    """
+    sin_perfil: list[str] = []
+    for archivo in sorted(PAQUETE.rglob("*.py")):
+        try:
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        except SyntaxError:  # pragma: no cover
+            continue
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call):
+                continue
+            objetivo = nodo.func
+            nombre = objetivo.attr if isinstance(objetivo, ast.Attribute) else getattr(objetivo, "id", "")
+            if nombre != "PathResolutionService":
+                continue
+            if not any(kw.arg == "profile_name" for kw in nodo.keywords):
+                clave = str(archivo.relative_to(RAIZ)).replace("\\", "/")
+                sin_perfil.append(f"{clave}:{nodo.lineno}")
+
+    assert sin_perfil == [], f"PathResolutionService construido sin perfil explícito en {sin_perfil}"
 
 
 def test_las_dos_resoluciones_de_perfil_coinciden_ante_cli_y_entorno_en_conflicto() -> None:

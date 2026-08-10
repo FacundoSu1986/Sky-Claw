@@ -24,10 +24,11 @@ from sky_claw.local.tools.output_targets import BODYSLIDE_MESHES_RESOURCE_ID
 logger = logging.getLogger(__name__)
 
 
-async def check_load_order(mo2: Any, profile: str) -> str:
-    """Read the MO2 modlist for a profile.
+async def check_load_order(mo2: Any, *, profile: str) -> str:
+    """Read the MO2 modlist for the session profile.
 
-    Args are pre-validated by AsyncToolRegistry.execute() via ProfileParams.
+    ``profile`` es keyword-only y sin default, como toda la familia — ver
+    :func:`uninstall_mod`. La tool ya no lo expone al LLM.
     """
     entries: list[dict[str, Any]] = []
     idx = 0
@@ -37,10 +38,11 @@ async def check_load_order(mo2: Any, profile: str) -> str:
     return json.dumps({"profile": profile, "load_order": entries})
 
 
-async def detect_conflicts(registry: Any, mo2: Any, profile: str) -> str:
+async def detect_conflicts(registry: Any, mo2: Any, *, profile: str) -> str:
     """Detect missing-master conflicts among active ESPs.
 
-    Args are pre-validated by AsyncToolRegistry.execute() via ProfileParams.
+    ``profile`` es keyword-only y sin default, como toda la familia — ver
+    :func:`uninstall_mod`. La tool ya no lo expone al LLM.
     """
     enabled_mods: list[str] = []
     async for mod_name, enabled in mo2.read_modlist(profile):
@@ -54,8 +56,8 @@ async def run_loot_sort(
     mo2: Any,
     loot_runner: Any,
     loot_exe: pathlib.Path | None,
-    profile: str,
     *,
+    profile: str,
     lock_manager: Any | None = None,
     snapshot_manager: Any | None = None,
     path_validator: Any | None = None,
@@ -408,6 +410,7 @@ async def resolve_fomod(
 async def analyze_esp_conflicts(
     mo2: Any,
     xedit_runner: Any,
+    *,
     profile: str,
     plugins: list[str] | None = None,
 ) -> str:

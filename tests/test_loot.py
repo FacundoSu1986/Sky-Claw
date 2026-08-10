@@ -695,7 +695,7 @@ class TestRunLootSortLock:
             runner = MagicMock()
             runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )
             assert result["success"] is True
             assert result["sorted_plugins"] == ["Skyrim.esm"]
@@ -723,7 +723,9 @@ class TestRunLootSortLock:
             runner = _ProfileFactory()
 
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Alternate", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(
+                    MagicMock(), runner, None, profile="Alternate", lock_manager=lm, snapshot_manager=sm
+                )
             )
 
             assert result["success"] is True
@@ -741,7 +743,7 @@ class TestRunLootSortLock:
             runner = MagicMock()
             runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["x.esp"]))
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )
             assert result["success"] is False
             assert "error" in result
@@ -754,7 +756,7 @@ class TestRunLootSortLock:
         """Back-compat: with no lock manager wired, the tool sorts directly (no lock)."""
         runner = MagicMock()
         runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
-        result = json.loads(await run_loot_sort(MagicMock(), runner, None, "Default"))
+        result = json.loads(await run_loot_sort(MagicMock(), runner, None, profile="Default"))
         assert result["success"] is True
         runner.sort.assert_awaited_once()
 
@@ -770,7 +772,7 @@ class TestRunLootSortLock:
             runner = MagicMock()
             runner.sort = AsyncMock(side_effect=OSError("loot.exe is not executable"))
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )
             assert "error" in result
             # Lock must still be released after the failure.
@@ -803,7 +805,7 @@ class TestRunLootSortLock:
                     MagicMock(),
                     runner,
                     None,
-                    "Default",
+                    profile="Default",
                     lock_manager=lm,
                     snapshot_manager=sm,
                     journal=journal,
@@ -839,7 +841,7 @@ class TestRunLootSortLock:
             runner = MagicMock()
             runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
             result = json.loads(
-                await run_loot_sort(MagicMock(), runner, None, "Default", lock_manager=lm, snapshot_manager=sm)
+                await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )
             assert result["success"] is True
             runner.sort.assert_awaited_once()
