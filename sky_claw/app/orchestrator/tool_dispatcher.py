@@ -303,6 +303,10 @@ def build_orchestration_dispatcher(
     dispatcher.register(
         ExecuteLootSortingStrategy(
             service=supervisor._loot_service,
+            # El Ritual de la GUI despacha con payload vacío: sin esto el perfil salía
+            # del default de pydantic ("Default") y la GUI ordenaba otro load order
+            # que el agente LLM, sobre el mismo plugins.txt.
+            default_profile_getter=lambda: supervisor.profile_name,
         ),
         middleware=[
             ErrorWrappingMiddleware("LootExecutionFailed"),
