@@ -44,8 +44,17 @@ def resolver_perfil_activo(profile_name: str | None) -> str:
     ``MO2_PROFILE`` al producirlo: volver a leer el entorno acá no agrega una fuente,
     pisa una decisión que ya se tomó con la precedencia correcta. Sin perfil
     inyectado (resolvers standalone, tests) el entorno sigue siendo la fuente.
+
+    "Sin perfil inyectado" se evalúa por **truthiness**, no por ``is None``: la cadena
+    vacía cuenta como ausencia. Es la misma prueba que hace
+    ``AppContext._resolve_mo2_profile`` (``cli_profile or entorno or Default``), y las
+    dos tienen que coincidir o vuelve la divergencia que este resolver vino a cerrar.
+    No es hipotético: ``--profile`` declara ``default=""`` en ``__main__.py``, así que
+    un caller que enhebre el valor crudo del CLI inyectaría ``""`` — con ``is None``
+    eso devolvía ``""`` y los runners recibían un perfil inexistente en vez del
+    fallback (hallazgo de review de Qodo, PR #460).
     """
-    if profile_name is not None:
+    if profile_name:
         return profile_name
     return os.environ.get("MO2_PROFILE", "") or PERFIL_MO2_POR_DEFECTO
 
