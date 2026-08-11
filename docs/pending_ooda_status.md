@@ -71,8 +71,114 @@ confirmarlo contra código y tests.
 | Smokes reales restantes | Bloqueado (rig humano) | — | NGIO, scripts `.pas`, GUI/FOMOD y Telegram end-to-end | humano |
 | Residuos OODA de bajo valor | Abierto | — | Solo retomar agrupados si cambia su relación esfuerzo/impacto | historial OODA §3 |
 | Residuos de crash logging | Abierto | #383 cerró F1/F2 reales | Cinco deudas sin víctima productiva actual | historial OODA, addendum #372 |
+| Preset de TexGen desvía `OutputPath` | Abierto | — | Determinar la precedencia `preset` vs `-o:` y decidir el mecanismo (limpiar/aislar, sembrar preset administrado, detectar en preflight o verificar el campo antes de Start) — ver sección propia abajo | rig T5 2026-08-11 (`INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` §7.3) |
 
 <!-- markdownlint-enable MD013 -->
+
+## TexGen: preset persistido puede desviar `OutputPath` fuera del staging administrado
+
+> **Estado:** `OPEN / FOLLOW-UP — evidencia dinámica confirmada, fix no diseñado
+> todavía`. **Prioridad sugerida:** P1, antes de automatizar completamente la GUI
+> de TexGen.
+>
+> **Nota de nomenclatura:** el informe de rig lo rotula **F1**. En este inventario
+> `F1` ya está tomado (fila `F1 | Cerrado | #328`, auditoría de resiliencia #319),
+> así que acá lleva ID descriptivo. Al citarlo, referenciar el informe y no el
+> número suelto.
+
+### Evidencia
+
+Medido sobre **Alpha-209 real** (rig 2026-08-11). **Evidencia externa, no
+committeada a este repo**: el informe `INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md`
+(§6.1 y §7.3, citado abajo) y los dumps UIA que respaldan las afirmaciones sobre
+el campo Output viven en la máquina del rig operador (`_rig_test\evidence\`),
+no en el árbol de Sky-Claw. Un maintainer no puede auditarlos ni reproducirlos
+directamente desde este repo; quien retome este ítem debería pedir el informe
+o reproducir la corrida en su propio rig antes de tomar decisiones de diseño
+apoyado solo en esta descripción (hallazgo del revisor Codex en el PR #463).
+
+- el preset persistido `Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini`
+  guarda una clave `OutputPath=` con el root de la corrida anterior;
+- Sky-Claw pasó `-o:<root administrado>` correctamente, y el **argv se parseó
+  bien**: el encabezado del log del binario ecoó `Using Output Path:` igual al
+  root del argv;
+- pero la GUI **pre-cargó el campo Output desde el preset**, no desde el argv
+  (verificado por dump UIA del campo antes de pulsar Start);
+- al pulsar Start, las **escrituras reales fueron al path del preset**, no al root
+  administrado. Exit 0.
+- quitando/aislando el preset, TexGen volvió a usar el root esperado (§6.3: campo
+  GUI = valor del argv, escrituras en el root del argv, `Using Output Path:`
+  exacto).
+
+DynDOLOD no exhibió el comportamiento en el mismo rig, pero **no se probó con un
+preset de DynDOLOD rancio**: la corrida fue sin preset. La asimetría no está
+verificada, solo no observada.
+
+### Riesgo
+
+Sky-Claw puede **creer que controla la superficie de salida mediante `-o:`**
+mientras TexGen escribe fuera del staging administrado. El log no delata la
+divergencia: el encabezado sigue ecoando el argv.
+
+**Lo que el gate de frescura de Sky-Claw SÍ contiene** — verificado leyendo
+`_post_check` (`dyndolod_runner.py:1143`), `_tiene_artefacto` (`:1223`) y el
+gate de empaquetado en `run_full_pipeline` (`:870`, `if texgen_result.success
+and texgen_result.output_path`): el candidato administrado
+(`root/TexGen_Output`) se firma antes y después de lanzar, y si las escrituras
+reales van al path del preset en vez de ahí, esa firma no cambia. El
+post-check lo marca "artefacto rancio" → `success=False`, y
+`_package_output_as_mod` nunca corre. Por diseño, esto descarta dos
+consecuencias que una lectura apresurada del hallazgo sugeriría: un stale
+output **no puede** pasar por fresco, y Sky-Claw **no puede** empaquetar a MO2
+una superficie distinta de la generada — la corrida falla cerrada, no en
+silencio (hallazgo del revisor Codex en el PR #463, verificado contra el
+código antes de aceptarlo — no se listan acá como riesgos).
+
+Consecuencias **derivadas, no reproducidas** en el rig, que el gate de
+frescura **no** cubre porque ocurren en el path del preset — fuera de
+cualquier superficie que Sky-Claw mire:
+
+- las escrituras reales quedan **fuera del alcance del rollback**: nada en
+  `_dir_rollback.py`/`DirectoryRollback` conoce ese path, así que un
+  cancel/timeout no las revierte ni las limpia;
+- si el path del preset coincide con el staging de una corrida **de Sky-Claw**
+  anterior (un root administrado viejo que el operador no limpió), las
+  escrituras nuevas se mezclan ahí sin que Sky-Claw se entere — contaminación
+  invisible de un árbol que Sky-Claw sí cree gestionar, aunque en ese momento
+  no lo esté mirando;
+- el mensaje de error que ve el operador ("El artefacto de TexGen no se
+  regeneró durante la corrida") es técnicamente correcto pero engañoso: TexGen
+  sí generó texturas, solo que en otro lugar. Es un problema de
+  diagnóstico/UX, no de integridad.
+
+### Investigación previa al fix
+
+Antes de implementar nada:
+
+1. determinar el **contrato exacto de precedencia** entre el `OutputPath` del
+   preset y el `-o:` del argv (¿el argv solo alimenta el encabezado del log y la
+   GUI gana siempre? ¿depende de si el preset existe?);
+2. decidir el mecanismo entre: limpiar/aislar el preset, sembrar un preset
+   administrado, detectar el conflicto en preflight, o verificar el campo Output
+   antes de Start;
+3. **preservar backup/restore del preset** si se decide modificarlo;
+4. **no tocar presets del usuario en silencio** — es estado suyo;
+5. agregar test o rig que demuestre que **TexGen Y DynDOLOD** escriben dentro
+   del staging administrado incluso cuando existe estado persistido previo en
+   SU PROPIO preset. `Presets\DynDOLOD_SSE_Default.ini` persiste su propia
+   clave `OutputPath` (mismo mecanismo `Save/LoadPreset`, verificado por
+   análisis del binario en la investigación previa de este ítem) — mismo
+   riesgo potencial, y el rig de este hallazgo no lo ejercitó: corrió DynDOLOD
+   sin preset presente. Cerrar el ítem verificando solo TexGen y dejando a
+   DynDOLOD con el mismo defecto sin probar es el patrón que `AGENTS.md`
+   nombra como el más repetido del repo — arreglar un hermano y no al otro
+   (hallazgo del revisor Codex en el PR #463).
+
+### Qué NO es
+
+No es un defecto del contrato de argv del PR #462: en ese mismo rig el `-o:` se
+parseó exacto en los dos binarios y el acceptance gate de quoting quedó cerrado
+(informe §7.1). No bloquea ese merge.
 
 ## 2.3 Zero-Trust — 2 ítems residuales
 
@@ -231,7 +337,7 @@ con el defecto ya cerrado:
 ## Decide — recomendación de próximo frente
 
 El frente de cierres mecánicos verificables íntegramente por un agente está
-agotado. Lo pendiente se divide en tres clases:
+agotado. Lo pendiente se divide en cuatro clases:
 
 1. **prueba humana en rig real:** T-25, QuickAutoClean y los demás smokes de
    herramientas. Pandora ya no tiene modo `Data` implícito en el comando de
@@ -240,8 +346,16 @@ agotado. Lo pendiente se divide en tres clases:
 2. **aislamiento pendiente:** T-27 sigue abierto hasta que Pandora, DynDOLOD y
    Wrye Bash lean y ejecuten dentro del sandbox USVFS con diff/promoción;
 3. **deuda incremental no bloqueante:** T-10/T-11/T-12, F9 y los residuales de
-   bajo valor.
+   bajo valor;
+4. **decisión de diseño pendiente, bloqueante solo para su propio alcance:**
+   "Preset de TexGen desvía `OutputPath`" (arriba). No encaja en las otras
+   tres — la evidencia dinámica ya existe (no es prueba de rig pendiente), no
+   es aislamiento USVFS, y es P1, no deuda de bajo valor. Requiere primero
+   decidir el contrato de precedencia preset/`-o:` y el mecanismo (limpiar,
+   sembrar, preflight o verificar antes de Start) antes de que un agente
+   pueda tocar código, y el criterio de cierre exige a DynDOLOD y TexGen por
+   igual (ver "Investigación previa al fix" del ítem).
 
-El próximo PR debería partir de evidencia nueva del rig o del aislamiento
+El próximo PR debería partir de evidencia nueva del rig, del aislamiento
 pendiente. Este inventario no declara GA. No conviene abrir otra caza general de
 hallazgos sobre este snapshot.

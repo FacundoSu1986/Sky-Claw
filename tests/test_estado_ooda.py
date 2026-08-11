@@ -52,6 +52,12 @@ _ITEMS = frozenset(
         "Etapa 6 (Wrye Bash) sin build headless",
         "Orden de masters sin validar",
         "Segundo parser TES4 sin gate",
+        # Rig T5 2026-08-11 (`INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` §7.3): el preset
+        # persistido de TexGen pre-llena el campo Output de la GUI y desvía las
+        # escrituras fuera del root del `-o:`, aunque el argv se parsee exacto. El
+        # informe lo rotula "F1"; acá lleva ID descriptivo porque `F1` ya está tomado
+        # por la auditoría de resiliencia #319 (cerrado en #328).
+        "Preset de TexGen desvía `OutputPath`",
     }
 )
 
