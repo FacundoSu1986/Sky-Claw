@@ -20,6 +20,7 @@ Diseño acordado antes de implementar: contexto, decisión y alcance.
 - [#372 — Endurecimiento tras la revisión de crash logging](specs/2026-07-26-crash-logging-review-hardening-design.md)
 - [#411 — Salida administrada y reversible de Pandora](specs/2026-07-31-pandora-managed-output-design.md)
 - [#454 — Perfil FOMOD y frontera segura de resultados de tools](specs/2026-08-09-fomod-profile-and-tool-output-security-design.md)
+- [Knowledge Capture — captura local de casos verificables](specs/2026-08-11-knowledge-capture-design.md) — spec sin implementación: acompaña a [ADR 0008](../adr/0008-knowledge-case.md) y precede a su desarrollo, así que no lleva número de PR de implementación como el resto del índice.
 
 ## Planes de implementación (`plans/`)
 
