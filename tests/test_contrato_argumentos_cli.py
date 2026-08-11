@@ -1385,6 +1385,60 @@ async def test_generate_lods_no_puede_inyectar_switches_por_payload(tmp_path: pa
     assert resultado["argv"][-1] == "-B:C:\\backups\\"
 
 
+def test_el_servicio_real_reenvia_los_extra_args_al_runner() -> None:
+    """El eslabón que el stub no puede probar: ``service.execute`` → ``run_full_pipeline``.
+
+    ``test_generate_lods_no_puede_inyectar_switches_por_payload`` usa un
+    ``_ServicioFalso``, así que demuestra que la *strategy* reenvía
+    ``dyndolod_args`` a cualquier servicio que tenga — no que
+    ``DynDOLODPipelineService.execute`` lo reenvíe al runner. Si el servicio real
+    renombrara o dejara caer el parámetro, ese test seguiría verde (nitpick de
+    CodeRabbit en el PR #462).
+
+    La protección de fondo no depende de esto: ``_build_xedit_args`` valida
+    incondicionalmente en el borde del runner, así que un valor sin validar no
+    puede llegar al argv por ninguna ruta. Lo que se cierra acá es la
+    **completitud del test**, y se cierra por introspección en vez de con un
+    test de integración: barato, y cumple la regla del repo de enumerar las
+    superficies relacionadas en vez de muestrear una.
+
+    Enumera los DOS parámetros y los DOS destinos: que el servicio acepte
+    ``texgen_args`` y lo pierda en el camino es exactamente el defecto hermano.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+
+    # 1) La firma del servicio real acepta las dos claves que el allowlist permite.
+    parametros = inspect.signature(DynDOLODPipelineService.execute).parameters
+    for nombre in ("texgen_args", "dyndolod_args"):
+        assert nombre in parametros, (
+            f"`DynDOLODPipelineService.execute` dejó de aceptar `{nombre}`: el allowlist de "
+            "`GenerateLodsStrategy` lo sigue permitiendo, así que el valor se perdería en "
+            "silencio entre la strategy y el runner."
+        )
+
+    # 2) Y los reenvía a `run_full_pipeline` como keyword, con el MISMO nombre.
+    #    Por AST y no por texto: `"texgen_args" in fuente` pasaría igual con el
+    #    parámetro solo mencionado en el docstring.
+    fuente = textwrap.dedent(inspect.getsource(DynDOLODPipelineService.execute))
+    reenviados: set[str] = {
+        kw.arg
+        for nodo in ast.walk(ast.parse(fuente))
+        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "run_full_pipeline"
+        for kw in nodo.keywords
+        if kw.arg is not None
+    }
+    assert {"texgen_args", "dyndolod_args"} <= reenviados, (
+        "`DynDOLODPipelineService.execute` no reenvía los extra_args a "
+        f"`run_full_pipeline`. Reenviados hoy: {sorted(reenviados)}. Sin esto, el "
+        "payload cruza la strategy y muere en el servicio sin llegar a la validación "
+        "del runner ni al argv."
+    )
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="normalización de rutas de Windows")
 def test_dyndolod_switch_de_ruta_no_duplica_el_backslash_de_una_raiz() -> None:
     """``C:\\`` ya termina en backslash: agregarle otro es una ruta distinta.
