@@ -1078,8 +1078,12 @@ class DynDOLODRunner:
             if ruta is not None:
                 args.append(self._switch_de_ruta(letra, ruta, directorio=es_directorio))
 
-        if extra_args:
-            args.extend(self._extra_args_admisibles(extra_args))
+        # SIN guard de truthiness: `if extra_args:` mandaba a `""`, `{}`, `0`,
+        # `False` y `()` por el camino de "no hay argumentos" en vez del de
+        # validación, o sea que la regla (1) no los veía (hallazgo de CodeRabbit
+        # en #462). La ausencia se expresa con `None`, y el que decide es
+        # `_extra_args_admisibles` — no la truthiness del valor.
+        args.extend(self._extra_args_admisibles(extra_args))
 
         logger.debug("DynDOLOD/TexGen CLI args: %s", self._linea_de_comando(args))
         return args
@@ -1088,13 +1092,24 @@ class DynDOLODRunner:
     def _extra_args_admisibles(extra_args: object) -> list[str]:
         """Los ``extra_args`` del caller, o ``DynDOLODValidationError``. Fail-closed.
 
+        **La ausencia se expresa con ``None``, no con "algo falsy".** ``None`` →
+        ``[]``; ``[]`` → ``[]``; una ``list[str]`` no vacía pasa por las cuatro
+        reglas; **cualquier otra cosa se rechaza, sea falsy o no**. La distinción
+        importa porque antes el llamador hacía ``if extra_args:`` y mandaba ``""``,
+        ``{}``, ``0``, ``False`` y ``()`` por el camino de "no hay argumentos": la
+        regla (1) no llegaba a verlos y un payload con el tipo equivocado se leía
+        como "el operador no pidió extras" (hallazgo de CodeRabbit en #462).
+        Colapsar esos valores contra ``[]`` es la misma clase de error que despojar
+        comillas en silencio — esconde el bug del caller en vez de reportarlo.
+
         Cuatro reglas, y ninguna normaliza: **rechazan**.
 
-        1. **Tiene que ser ``list[str]``.** El valor entra por payload y los type
-           hints no validan datos en runtime: ``GenerateLodsStrategy._filter_payload``
-           filtra la CLAVE (``texgen_args``/``dyndolod_args`` están en
-           ``_VALID_LOD_KEYS``) sin mirar el tipo ni el valor. Un ``str`` suelto se
-           extendería **carácter por carácter** sobre el argv.
+        1. **Tiene que ser ``list[str]`` (o ``None``).** El valor entra por payload
+           y los type hints no validan datos en runtime:
+           ``GenerateLodsStrategy._filter_payload`` filtra la CLAVE
+           (``texgen_args``/``dyndolod_args`` están en ``_VALID_LOD_KEYS``) sin
+           mirar el tipo ni el valor. Un ``str`` suelto se extendería **carácter
+           por carácter** sobre el argv.
         2. **Ningún elemento puede traer comillas propias.** Arreglar
            :meth:`_switch_de_ruta` y dejar esta puerta abierta es el defecto hermano
            del repo en su forma pura: ``extra_args`` se extendía verbatim, así que un
@@ -1140,10 +1155,18 @@ class DynDOLODRunner:
         "métodos que sondean el disco para dar el veredicto"), y esto no toca disco
         ni decide veredicto. El ancla congelada lo detectó al primer intento.
         """
+        # `None` es la ÚNICA forma de decir "sin argumentos extra". Se chequea por
+        # identidad y no por truthiness justamente para que `""`/`{}`/`0`/`False`/`()`
+        # caigan en el rechazo de abajo en vez de colarse como lista vacía.
+        if extra_args is None:
+            return []
+
         if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
             raise DynDOLODValidationError(
-                "extra_args tiene que ser list[str]: viene de payload y los type hints no "
-                f"validan en runtime (un str suelto se extendería carácter por carácter). Recibido: {extra_args!r}"
+                "extra_args tiene que ser list[str] o None: viene de payload y los type hints no "
+                "validan en runtime (un str suelto se extendería carácter por carácter). La ausencia "
+                "se expresa con None — un valor falsy de otro tipo es un bug del caller, no una lista "
+                f"vacía. Recibido: {extra_args!r}"
             )
 
         con_comillas = [a for a in extra_args if '"' in a]

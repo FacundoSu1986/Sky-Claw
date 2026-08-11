@@ -1286,6 +1286,63 @@ async def test_dyndolod_extra_args_rechaza_tipos_invalidos(tmp_path: pathlib.Pat
             assert not ejecutar.called
 
 
+#: Valores falsy que NO son `None` ni `[]`. Cada uno es un tipo equivocado que un
+#: payload puede traer, y ninguno significa "sin argumentos extra".
+_FALSY_QUE_NO_SON_AUSENCIA = ["", {}, 0, False, (), 0.0, set(), frozenset()]
+
+
+@pytest.mark.parametrize("falsy", _FALSY_QUE_NO_SON_AUSENCIA, ids=repr)
+@pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
+async def test_dyndolod_extra_args_falsy_no_se_lee_como_ausencia(
+    tmp_path: pathlib.Path,
+    lanzador: str,
+    falsy: object,
+) -> None:
+    """Un valor falsy del tipo equivocado es un bug del caller, no una lista vacía.
+
+    Hallazgo de CodeRabbit en el PR #462. ``_build_xedit_args`` llamaba a la
+    validación **dentro** de un ``if extra_args:``, así que todo lo falsy la
+    esquivaba: ``""``, ``{}``, ``0``, ``False`` y ``()`` no llegaban a la regla (1)
+    y se leían como "el operador no pidió extras". El agujero es de la MISMA clase
+    que despojar comillas en silencio —esconde el bug del caller en vez de
+    reportarlo— y llega desde payload, donde el tipo no está garantizado:
+    ``_filter_payload`` filtra la clave, nunca el valor.
+
+    ``""`` es el caso que más duele: es el valor natural de un campo de texto vacío
+    en un formulario, y de los tipos equivocados es el único que, si el guard
+    cambiara para dejarlo pasar a `extend`, se expandiría **carácter por carácter**.
+
+    Enumera el conjunto falsy × los dos lanzadores. Si alguien reintroduce el guard
+    de truthiness, estos casos se ponen rojos.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
+
+    with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
+        with pytest.raises(DynDOLODValidationError, match=r"list\[str\]"):
+            await getattr(runner, lanzador)(extra_args=falsy)  # type: ignore[arg-type]
+        assert not ejecutar.called, "el proceso no debe lanzarse con un extra_args de tipo inválido"
+
+
+@pytest.mark.parametrize("ausencia", [None, []], ids=repr)
+def test_dyndolod_extra_args_none_y_lista_vacia_son_ausencia_legitima(
+    tmp_path: pathlib.Path,
+    ausencia: list[str] | None,
+) -> None:
+    """La otra mitad del contrato: ``None`` y ``[]`` SÍ pasan, y no agregan nada.
+
+    Sin este test, "rechazar todo lo falsy" podría implementarse de más y romper
+    el caso normal —que es el único que ocurre en producción, porque ningún caller
+    pasa ``extra_args`` hoy—. El vector queda idéntico al de la config sola.
+    """
+    runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
+
+    base = runner._build_xedit_args(None)
+    assert runner._build_xedit_args(ausencia) == base
+    assert len(base) == 6, f"-sse + los cinco switches de ruta; obtenido: {base}"
+
+
 async def test_generate_lods_no_puede_inyectar_switches_por_payload(tmp_path: pathlib.Path) -> None:
     """El boundary real: ``payload → GenerateLodsStrategy → service → runner``.
 
@@ -1317,7 +1374,9 @@ async def test_generate_lods_no_puede_inyectar_switches_por_payload(tmp_path: pa
 
     estrategia = GenerateLodsStrategy(_ServicioFalso())  # type: ignore[arg-type]
 
-    for ofensivo in (['-o:"C:\\evil\\"'], ["-o:C:\\evil\\"], "-o:C:\\evil\\"):
+    # Las dos últimas son falsy: cruzan el allowlist igual que las otras (filtra la
+    # CLAVE) y antes esquivaban la validación entera por el guard de truthiness.
+    for ofensivo in (['-o:"C:\\evil\\"'], ["-o:C:\\evil\\"], "-o:C:\\evil\\", "", {}):
         with pytest.raises(DynDOLODValidationError):
             await estrategia.execute({"preset": "Medium", "dyndolod_args": ofensivo})
 
