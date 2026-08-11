@@ -841,6 +841,60 @@ async def test_dyndolod_argv_sobrevive_la_serializacion_de_windows(
     assert not [a for a in argv if '"' in a]
 
 
+@pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
+async def test_dyndolod_extra_args_con_comillas_es_rechazado(tmp_path: pathlib.Path, lanzador: str) -> None:
+    """``extra_args`` no puede evadir ``_switch_de_ruta``: fail-closed.
+
+    Es la puerta hermana del defecto de este PR. ``_build_xedit_args`` extendía
+    ``extra_args`` **verbatim**, así que un ``-o:"C:\\...\\"`` que entrara por ahí
+    reproducía el ``Can not create path C:\\C:\\...`` sin pasar por el helper que
+    acabamos de arreglar (hallazgo de CodeRabbit en el PR #462).
+
+    Y es alcanzable desde payload: ``GenerateLodsStrategy._VALID_LOD_KEYS`` incluye
+    ``texgen_args`` y ``dyndolod_args``, y ese allowlist filtra la CLAVE sin mirar
+    el VALOR.
+
+    Enumera **los dos** lanzadores: validar en uno y no en el otro es exactamente
+    el defecto que `AGENTS.md` llama dominante (#373). La validación vive en la
+    pieza compartida, así que ambos la heredan por construcción — y este test lo
+    verifica en vez de asumirlo.
+    """
+    from sky_claw.local.tools.dyndolod_runner import (
+        DynDOLODConfig,
+        DynDOLODRunner,
+        DynDOLODValidationError,
+    )
+
+    game = tmp_path / "Skyrim Special Edition"
+    (game / "Data").mkdir(parents=True)
+    exe_dir = tmp_path / "DynDOLOD"
+    exe_dir.mkdir()
+    dyndolod_exe = exe_dir / "DynDOLODx64.exe"
+    dyndolod_exe.touch()
+    texgen_exe = exe_dir / "TexGenx64.exe"
+    texgen_exe.touch()
+
+    runner = DynDOLODRunner(
+        DynDOLODConfig(
+            game_path=game,
+            mo2_path=tmp_path / "MO2",
+            mo2_mods_path=tmp_path / "MO2" / "mods",
+            dyndolod_exe=dyndolod_exe,
+            texgen_exe=texgen_exe,
+        )
+    )
+
+    with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
+        with pytest.raises(DynDOLODValidationError, match="comillas"):
+            await getattr(runner, lanzador)(extra_args=['-o:"C:\\otra\\ruta\\"'])
+        assert not ejecutar.called, "el proceso no debe lanzarse con un argv inválido"
+
+    # Un extra_args limpio sigue pasando: la validación rechaza comillas, no el
+    # mecanismo de argumentos extra.
+    argv = runner._build_xedit_args(["-B:C:\\backups\\"])
+    assert argv[-1] == "-B:C:\\backups\\"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="normalización de rutas de Windows")
 def test_dyndolod_switch_de_ruta_no_duplica_el_backslash_de_una_raiz() -> None:
     """``C:\\`` ya termina en backslash: agregarle otro es una ruta distinta.

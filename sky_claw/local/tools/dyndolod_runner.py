@@ -93,7 +93,7 @@ class DynDOLODNotFoundError(DynDOLODExecutionError):
 
 
 class DynDOLODValidationError(DynDOLODExecutionError):
-    """Raised when output validation fails."""
+    """Raised when validation fails: output artifacts or caller-supplied argv."""
 
     def __init__(self, message: str, output_path: pathlib.Path | None = None) -> None:
         super().__init__(message=message, return_code=None, stderr=None)
@@ -1010,10 +1010,56 @@ class DynDOLODRunner:
                 args.append(self._switch_de_ruta(letra, ruta, directorio=es_directorio))
 
         if extra_args:
-            args.extend(extra_args)
+            args.extend(self._extra_args_sin_comillas(extra_args))
 
         logger.debug("DynDOLOD/TexGen CLI args: %s", self._linea_de_comando(args))
         return args
+
+    @staticmethod
+    def _extra_args_sin_comillas(extra_args: list[str]) -> list[str]:
+        """Los ``extra_args`` del caller, o ``DynDOLODValidationError``. Fail-closed.
+
+        Ningún argumento de un caller puede traer comillas propias.
+
+        Arreglar :meth:`_switch_de_ruta` y dejar esta puerta abierta es el defecto
+        hermano del repo en su forma pura: ``extra_args`` se extendía **verbatim**,
+        así que un ``-o:"C:\\...\\"`` que entre por acá reproduce exactamente el
+        ``Can not create path C:\\C:\\...`` que el helper acaba de cerrar, sin pasar
+        por él.
+
+        Y es alcanzable desde payload, no solo desde código del repo:
+        ``GenerateLodsStrategy._VALID_LOD_KEYS`` incluye ``texgen_args`` y
+        ``dyndolod_args``, y el allowlist filtra la CLAVE sin mirar el VALOR
+        (``generate_lods.py`` → ``DynDOLODPipelineService.execute`` →
+        ``run_full_pipeline`` → ``run_texgen``/``run_dyndolod``). Se valida en
+        ``_build_xedit_args`` porque es la pieza ÚNICA que los dos ejecutables
+        atraviesan: puesto en un solo lanzador, el otro queda sin cubrir.
+
+        **Rechaza en vez de normalizar** a propósito. Despojar las comillas en
+        silencio convierte el bug del caller en un comportamiento distinto del
+        pedido y lo esconde; un error explícito lo deja en el log del ritual —
+        ``run_full_pipeline`` ya traduce ``DynDOLODExecutionError`` a un resultado
+        fallido, así que degrada a rojo reportado, no a excepción sin manejar.
+
+        Alcance: cubre la invariante de quoting de T1, no la inyección de argv en
+        general. Un ``extra_args`` puede seguir pisando los cinco switches
+        administrados (``-o:``/``-d:``/``-m:``/``-p:``/``-t:``) o agregar otros del
+        parser de xEdit (``-B:``, ``-C:``, ``-D:``); eso es una superficie aparte
+        y se decide con datos, no acá.
+
+        El nombre evita a propósito el prefijo ``_valida``: ese prefijo declara
+        pertenencia a la familia del post-check (``test_dyndolod_service.py``,
+        "métodos que sondean el disco para dar el veredicto"), y esto no toca disco
+        ni decide veredicto. El ancla congelada lo detectó al primer intento.
+        """
+        con_comillas = [a for a in extra_args if '"' in a]
+        if con_comillas:
+            raise DynDOLODValidationError(
+                "extra_args no puede contener comillas: en un elemento de argv pasan a ser "
+                "parte del valor y DynDOLOD muere con 'Can not create path C:\\C:\\...'. "
+                f"Pasá la ruta sin comillas. Ofensores: {con_comillas}"
+            )
+        return extra_args
 
     @staticmethod
     def _linea_de_comando(args: list[str]) -> str:
