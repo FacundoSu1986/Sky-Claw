@@ -15,6 +15,7 @@
 - [0005 — Promoción síncrona HITL](0005-sandbox-promocion-sincrona-hitl.md)
 - [0006 — Guardrail en dispatcher](0006-retiro-stategraph-guardrail-en-dispatcher.md)
 - [0007 — MO2 broker USVFS](0007-mo2-broker-usvfs.md)
+- [0008 — El KnowledgeCase](0008-knowledge-case.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.
