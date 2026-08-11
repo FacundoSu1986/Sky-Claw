@@ -39,9 +39,16 @@ La auditoría también verificó que la infraestructura necesaria **ya existe** 
 - **Almacén transaccional durable** con precedente de extensión sin migración:
   `OperationJournal` guarda `ActionManifest` y `FlightReport` como `model_dump(mode="json")` en la
   columna `metadata`, discriminados por una clave `kind` centralizada en `journal_contracts.py`.
-- **Identificador de entorno reproducible.** `_profile_fingerprint`
-  (`sky_claw/local/mo2/vfs_attestation.py:140`) calcula un SHA-256 sobre los cinco archivos de
-  estado del perfil (`vfs_attestation.py:13`).
+- **Precedente de digest de perfil — pero NO un identificador de entorno reutilizable.**
+  `_profile_fingerprint` (`sky_claw/local/mo2/vfs_attestation.py:140-166`) hashea los cinco
+  archivos de estado del perfil (`vfs_attestation.py:13`), y por eso parece candidato obvio. **No
+  lo es**, por dos razones verificadas en su firma y su cuerpo: además del perfil incorpora
+  `source_mod`, `relative_path` y `canary_sha256` al digest, así que **cambiar el archivo canario
+  elegido cambia el identificador de un entorno idéntico**; y `build_attestation_challenge` aborta
+  con `VfsAttestationError` cuando *"el perfil no tiene mods habilitados para construir un canary
+  elegible"*, de modo que **un perfil sin mods habilitados no puede obtener identidad**. Es un
+  digest de *attestation*, atado a un canario concreto, no un identificador canónico de entorno.
+  Se toma como **precedente de diseño**, no como implementación a reutilizar (ver §5).
 - **Snapshot de entorno.** `EnvironmentSnapshot`
   (`sky_claw/local/discovery/environment.py:76`) con edición, versión del juego y versión por
   herramienta.
@@ -161,8 +168,19 @@ que necesite afirmar que hubo restauración debe consultar al reconciliador
 |---|---|
 | `case_id` | Nuevo. Identifica el **problema lógico**, estable a través de los intentos |
 | `experiment_id` | Nuevo. Un intento concreto de resolverlo; N por caso |
-| `environment_id` | **Derivado, no inventado**: el fingerprint del perfil combinado con un hash del snapshot de entorno |
+| `environment_id` | **Digest propio sobre un manifiesto canónico de entorno**, definido por la capa de casos. NO se reutiliza `_profile_fingerprint` (ver abajo) |
 | `correlation_id` | **No se redefine.** Referencia opcional dentro del caso, nunca su identidad |
+
+**Por qué `environment_id` es propio y no reutiliza el fingerprint de attestation.** El digest
+existente sirve a otro propósito —probar que un worker ve el overlay correcto— y para eso ata su
+valor a un archivo canario. Reutilizarlo rompería las dos operaciones que el `environment_id`
+tiene que habilitar: **comparar** dos casos del mismo entorno (un canario distinto los separaría
+aunque el entorno sea idéntico) y **existir siempre** (un perfil sin mods habilitados no puede
+producirlo). El identificador del caso se calcula sobre un manifiesto canónico y **estable** del
+entorno —los cinco archivos de estado del perfil más los campos `AVAILABLE_NOW` de §5— y no
+incluye ningún elemento elegido dinámicamente. `_profile_fingerprint` queda como **prior art**:
+de él se toman la lista de archivos y la disciplina de dominio-separado en el digest, no la
+función.
 
 `correlation_id` ya tiene significado en producción: es un identificador de **turno
 conversacional**, seteado en cuatro superficies de entrada (web, Telegram, GUI-chat, CLI) y
@@ -170,9 +188,16 @@ presente en cada línea de log. La ruta de rituales no lo setea, así que dentro
 ser la cadena vacía; eso es información, no un defecto a corregir desde acá.
 
 **Los experimentos fallidos son evidencia y no se eliminan.** Un caso con tres intentos
-—`EXP-1 FAIL`, `EXP-2 FAIL`, `EXP-3 PASS`— conserva los tres. El estado del caso es el máximo de
-los estados de sus experimentos; los `FAIL` son la evidencia de qué no funciona, que es
-exactamente lo que un corpus de diagnóstico necesita.
+—`EXP-1 FAIL`, `EXP-2 FAIL`, `EXP-3 PASS`— conserva los tres. Los `FAIL` son la evidencia de qué
+no funciona, que es exactamente lo que un corpus de diagnóstico necesita.
+
+**El estado del caso NO es el máximo de sus experimentos.** Se deriva con un reductor sobre
+**dos** entradas: los experimentos propios **y los enlaces con otros casos**. La razón es que
+`CONTESTED` nace de una contradicción *entre casos*: cuando aparece un segundo caso con el mismo
+`environment_id` y un resultado incompatible, al primero **no se le agrega ningún experimento**.
+Un reductor que solo mirara `experiments[]` dejaría al primer caso en `VERIFIED_LOCAL` y, peor,
+**elegible para entrenamiento pese a la contradicción**. El enlace es entrada del reductor, no un
+metadato decorativo.
 
 ### 5. Entorno reproducible
 
@@ -184,7 +209,7 @@ campos que el código actual no puede obtener:
 | Ruta y edición de Skyrim (SE/AE/LE), versión del juego, store | `AVAILABLE_NOW` |
 | Ruta de MO2, perfiles, perfil activo | `AVAILABLE_NOW` |
 | Herramientas detectadas con su versión, y herramientas faltantes | `AVAILABLE_NOW` |
-| Mods habilitados y orden de carga | `DERIVABLE` (fingerprint del perfil) |
+| Mods habilitados y orden de carga | `DERIVABLE` — digest sobre los cinco archivos de estado del perfil, calculado por la capa de casos (§4), no por `_profile_fingerprint` |
 | Momento del snapshot (arranque vs. momento del caso) | `DERIVABLE` — hoy se produce en el arranque, y debe declararse |
 | Versión de SKSE, versión de DynDOLOD Resources | `UNKNOWN` — no se verificó que el sistema las detecte |
 | Hardware, VRAM | `FUTURE` — solo lo necesita el Model Lab |
@@ -305,8 +330,9 @@ Este ADR es documentación. No introduce código, ni tabla, ni migración, ni de
   nueve.
 - **La calidad de la evidencia de fallo está degradada en origen.** `OperationJournal.fail_operation`
   (`sky_claw/app/db/journal.py:831`) no persiste su parámetro `metadata`, y solo escribe el mensaje
-  de error cuando `metadata` es truthy: la llamada más natural —`fail_operation(entry_id,
-  error="…")`— deja la fila en `FAILED` sin el mensaje. Es un defecto preexistente e independiente
+  de error cuando `metadata` es truthy: la llamada más natural
+  —`fail_operation(entry_id, error="…")`— deja la fila en `FAILED` sin el mensaje. Es un defecto
+  preexistente e independiente
   de este ADR, pero **condiciona directamente la utilidad de todo caso de fallo**, y corregirlo
   después de empezar a grabar deja un corpus inicial que no puede repararse retroactivamente.
   **Debe resolverse en un cambio atómico previo a la implementación de la captura.**
@@ -352,7 +378,27 @@ siguiendo los instrumentos que el repositorio ya usa:
 3. **Ancla AST sobre el motor de redacción** — congelar que exista uno solo y quién puede
    importarlo, con el patrón que `tests/test_local_config_persistencia.py` aplica a `load`/`save`
    crudos.
+4. **Ancla por introspección sobre los ENTRYPOINTS MUTANTES** — no sobre "la familia de
+   servicios". La distinción no es pedante: **la capa de servicios no está debajo de todos los
+   mutadores.** Verificado en el árbol actual, dos handlers de la ruta del agente LLM llegan al
+   runner sin atravesar ningún servicio de `local/tools/`, y por motivos distintos:
+
+   | Handler | Cómo evita el servicio |
+   |---|---|
+   | `run_xedit_script` (`sky_claw/app/agent/tools/system_tools.py:172-197`) | `XEditPipelineService` **existe** y lo construyen `supervisor.py:221` y `chain_preview_service.py:115`, pero este handler llama `xedit_runner.run_script()` directo — **sin lock, sin journal y sin rollback** |
+   | `run_bodyslide_batch` (`system_tools.py:754-862`) | **No existe `bodyslide_service.py`.** El handler toma su propio lock y `DirectoryRollback` (`:835`) y llama `bodyslide_runner.run_batch()` (`:836`) |
+
+   Un ancla que enumere servicios los dejaría a los dos afuera, y la captura nacería ciega
+   justo en la ruta del agente. El ancla tiene que enumerar **entrypoints que mutan**, cualquiera
+   sea la capa por la que bajen.
 
 **Lo que ninguna de esas anclas verifica**, y por lo tanto no debe darse por cubierto: que la
 evidencia capturada sea *suficiente* para diagnosticar, y que los niveles de confianza se estén
 asignando con criterio. Eso solo lo dice el uso.
+
+**Hallazgo colateral, fuera del alcance de este ADR y no corregido acá:** la asimetría de
+`run_xedit_script` no es solo un problema de captura. La ruta de Rituales ejecuta scripts de xEdit
+a través de `XEditPipelineService` —con lock, journal y rollback— y la ruta del agente LLM los
+ejecuta sin ninguna de las tres, sobre el mismo recurso. Es la topología "dos superficies, un
+recurso" que `AGENTS.md` declara clase de defecto dominante, y precede a este trabajo. Queda
+registrado para que se evalúe por su cuenta.

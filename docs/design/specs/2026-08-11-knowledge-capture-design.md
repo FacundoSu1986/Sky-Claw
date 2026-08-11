@@ -128,8 +128,9 @@ KnowledgeCase
   evidence_integrity                 ver §3.4
   evidence_capability                ver §3.5
   experiments[]                      ver §3.3
+  related_cases[]                    enlaces a casos del mismo environment_id — ver §3.6
 
-  verification                       estado del caso = máximo de sus experimentos
+  verification                       DERIVADO por reductor sobre experiments[] + related_cases[]
   verifiability                      eje ortogonal del ADR §2
   privacy, provenance                ver §6
 ```
@@ -168,18 +169,36 @@ outcome                              PASS | FAIL | INCONCLUSIVE
 Los `FAIL` no se borran nunca. Un caso con tres intentos conserva los tres: la secuencia de lo que
 no funcionó es la mitad del valor de diagnóstico.
 
-### 3.4 `evidence_integrity` — copiado, no estimado
+### 3.4 `evidence_integrity` — medido por DELTA, no copiado
 
 ```
-logging          copia literal de LoggingHealthSnapshot
+logging          delta entre dos LoggingHealthSnapshot: baseline al abrir, final al cerrar
 process          capacidad real por herramienta (§3.5)
 journal          estado transaccional, y si provino del barrido de 24 h
 snapshot_scope   arranque | momento del caso
 complete         derivado
 ```
 
-`degraded = true` degrada la confianza del caso sin discusión. El recorder **no deriva** ningún
-veredicto de integridad: lo copia de quien lo midió.
+**Un solo snapshot al cierre no sirve, y el motivo es del mecanismo.** `LoggingHealth`
+(`sky_claw/_logging_runtime.py:37-93`) inicializa sus contadores al construirse y **no expone
+ningún `reset`**: `_degraded` queda en `True` de forma permanente tras el primer descarte, y
+`dropped_records`, `suppressed_records` y `file_errors` acumulan desde el arranque del runtime.
+Copiar el snapshot al cerrar marcaría **degradado a todo caso posterior al primer record perdido
+de la sesión**, aunque durante ese caso no se haya perdido nada. Sería un falso negativo de
+confianza permanente y contagioso.
+
+Por lo tanto el caso captura **dos** snapshots —uno al abrir y otro al cerrar— y persiste
+**la diferencia por contador**, más el baseline para que el cálculo sea auditable. `degraded` del
+caso es `delta > 0` en cualquier contador, no el flag latcheado del runtime.
+
+Dos límites que el delta **no** resuelve, y que el caso declara en vez de disimular: la ventana
+es del proceso entero, no del caso, así que **una pérdida concurrente de otra actividad se
+atribuye igual a este caso** (sobreestima, nunca subestima — es el sentido seguro); y
+`listener_alive` es un booleano de estado instantáneo, no un contador, así que se registran los
+dos valores y no su resta.
+
+`degraded = true` degrada la confianza del caso sin discusión. El recorder **no estima** ningún
+veredicto de integridad: lo calcula sobre valores que midió el propio logger.
 
 ### 3.5 `evidence_capability` — la asimetría, declarada
 
@@ -192,18 +211,77 @@ Un caso registra la capacidad **real** con la que se construyó. Mientras la evi
 no se emita desde un punto único y en ambos caminos, la mitad de la tabla queda en "no", y el
 schema obliga a decirlo en lugar de aparentar uniformidad.
 
+### 3.6 `related_cases[]` y el reductor de estado
+
+El estado de verificación **no** es `max(experiments)`. `CONTESTED` nace de una contradicción
+*entre casos*, y cuando aparece el segundo caso contradictorio **al primero no se le agrega
+ningún experimento**: un reductor que solo mirara `experiments[]` dejaría al primero en
+`VERIFIED_LOCAL` y **elegible para entrenamiento pese a la contradicción**.
+
+```
+related_cases[]
+  case_id          el otro caso
+  relation         contradicts | corroborates | supersedes
+  basis            mismo environment_id + misma problem.signature
+  detected_at
+```
+
+El reductor toma **dos** entradas:
+
+```
+si existe algún related_cases[] con relation == "contradicts"  → CONTESTED
+si no  → el máximo de los estados de experiments[]
+```
+
+`CONTESTED` **gana sobre cualquier otro estado**, incluido `VERIFIED_LOCAL`: una verificación
+determinista que otro caso del mismo entorno contradice es exactamente la situación en la que no
+se debe entrenar.
+
+Consecuencia operativa: **el enlace es bidireccional y su creación reevalúa a ambos casos.** Un
+caso ya persistido puede cambiar de estado por la llegada de otro; el reductor no es una función
+del caso aislado. Los dos conservan su evidencia intacta — cambia el veredicto, no el registro.
+
+Detectar la contradicción exige `environment_id` **estable y siempre presente**, que es la razón
+por la que §5.4 no lo deriva del digest de attestation.
+
 ## 4. Ciclo de vida
 
 ### 4.1 Cuándo se abre
 
-Cuando una operación relevante produce un síntoma: un Ritual que falla, un validador que reporta
-hallazgos, o un operador que declara un problema. **No** se abre un caso por cada operación
-exitosa y rutinaria: el corpus se llenaría de ruido sin valor de diagnóstico.
+Cuando una operación relevante produce un síntoma. Hay **tres** orígenes, y cada uno tiene su
+propio disparador:
+
+| Origen | Quién abre |
+|---|---|
+| Un Ritual que falla | el propio Ritual |
+| Un validador que reporta hallazgos | el validador, corra o no dentro de un Ritual |
+| Un operador que declara un problema | la UI |
+
+**No** se abre un caso por cada operación exitosa y rutinaria: el corpus se llenaría de ruido sin
+valor de diagnóstico.
 
 ### 4.2 Cuándo se cierra
 
-Cuando termina el Ritual, en cualquier resultado. Al cerrar se copia el snapshot de integridad, se
-resuelve el estado de verificación a partir de los experimentos, y se persiste.
+**El cierre es por origen, no "cuando termina el Ritual".** Atar el cierre al Ritual dejaría a dos
+de los tres orígenes sin persistir nunca: un hallazgo de validador autónomo y una declaración de
+operador no tienen Ritual cuya finalización lo dispare.
+
+Todos los productores completan el **mismo lifecycle**
+—`abrir` → `baseline de integridad` → `acumular evidencia y experimentos` → `cerrar` →
+`persistir`— y lo que cambia es qué evento dispara el cierre:
+
+| Origen | Cierre |
+|---|---|
+| Ritual | Al terminar el Ritual, en cualquier resultado |
+| Validador autónomo | Al terminar la corrida del validador |
+| Operador | **Explícito** por el operador, **o** por vencimiento de un TTL que lo cierra como `OBSERVED` con `verifiability` sin resolver |
+
+El TTL existe porque un caso declarado por una persona **no tiene fin natural**, y un caso abierto
+para siempre nunca se persiste — es la misma pérdida silenciosa, con otra forma.
+
+El cierre, sea cual sea el disparador, hace siempre lo mismo: toma el snapshot final de
+integridad, calcula el delta contra el baseline (§3.4), corre el reductor de estado (§3.6) y
+persiste.
 
 ### 4.3 Qué pasa si falla el recorder
 
@@ -244,8 +322,8 @@ horas, que no inspecciona el filesystem.
 
 ### 5.2 Con `LoggingHealthSnapshot`
 
-Única dirección: el caso **lee** el snapshot al cerrarse. No hay acoplamiento inverso, y el
-sistema de logging no conoce la existencia del caso.
+Única dirección: el caso **lee** el snapshot dos veces —al abrir y al cerrar— y persiste el delta
+(§3.4). No hay acoplamiento inverso, y el sistema de logging no conoce la existencia del caso.
 
 ### 5.3 Con los validadores
 
@@ -259,9 +337,24 @@ Cuando no hay oráculo aplicable, el caso lo declara en `verifiability` (`ORACLE
 
 `EnvironmentSnapshot` (`sky_claw/local/discovery/environment.py:76`) aporta edición y versión del
 juego, rutas y perfiles de MO2 y versión por herramienta.
-`_profile_fingerprint` (`sky_claw/local/mo2/vfs_attestation.py:140`) aporta el SHA-256 sobre los
-cinco archivos de estado del perfil, que es lo que hace reproducible el conjunto de mods
-habilitados y su orden.
+
+El conjunto de mods habilitados y su orden se derivan de los cinco archivos de estado del perfil
+(`modlist.txt`, `plugins.txt`, `loadorder.txt`, `settings.ini`, `settings.txt`), hasheados por la
+capa de casos sobre un **manifiesto canónico**.
+
+**No se reutiliza `_profile_fingerprint`** (`sky_claw/local/mo2/vfs_attestation.py:140-166`),
+aunque hashee esos mismos cinco archivos. Su firma exige `source_mod`, `relative_path` y
+`canary_sha256`, y los mezcla en el digest: el valor queda atado al **archivo canario** que la
+attestation eligió. Eso rompe las dos propiedades que el `environment_id` necesita:
+
+- **Estabilidad** — dos casos del mismo entorno con distinto canario producirían identificadores
+  distintos, y la detección de `CONTESTED` (§3.6) depende de que coincidan.
+- **Totalidad** — `build_attestation_challenge` aborta con
+  `VfsAttestationError("el perfil no tiene mods habilitados para construir un canary elegible")`,
+  así que un perfil recién creado **no podría obtener identidad alguna**.
+
+De la attestation se toman la lista de archivos y la disciplina de separar dominios dentro del
+digest; no la función. Es prior art, no una dependencia.
 
 **Los dos juntos**: ninguno alcanza solo. El fingerprint no conoce versiones de herramientas; el
 snapshot no conoce el orden de carga.
@@ -285,8 +378,12 @@ scan_status         clean | redacted | blocked | not_scanned
 consent             rag / training / public_dataset, cada uno sí | no | no preguntado
 ```
 
-`no preguntado` no es `no`. Sin consentimiento explícito nada sale de la máquina, y hoy no existe
-ningún camino de salida: el MVP es local por construcción.
+`no preguntado` no es `no`. Sin consentimiento explícito nada sale de la máquina.
+
+**Corrección importante sobre "el MVP es local por construcción": lo es para la persistencia, NO
+para el RAG.** No hay camino de subida de casos —`NetworkGateway` no tiene ningún host de
+conocimiento en su allowlist— pero **inyectar un caso en el prompt sí es una salida de datos** si
+el provider activo es remoto. Ver §7.
 
 **Prerrequisito estructural:** el motor de redacción tiene que extraerse a una función pública
 antes de que el caso lo use. Escribir un segundo redactor sería, textualmente, la clase de defecto
@@ -297,9 +394,26 @@ La procedencia aplica solo a material externo, con el contrato mínimo del ADR �
 
 ## 7. Extensibilidad
 
-- **RAG.** El punto de inyección existe (`sky_claw/app/agent/router.py`, rama de consulta de
-  modding) y ya pasa por `sanitize_for_prompt` y `PromptArmor`. Un caso puede alimentarlo marcado
-  con su estado de verificación.
+- **RAG — con dos condiciones previas, no solo con una marca.** El punto de inyección existe
+  (`sky_claw/app/agent/router.py`, rama de consulta de modding) y ya pasa por `sanitize_for_prompt`
+  y `PromptArmor`. Eso **no alcanza**: ese contexto se envía al provider activo vía `chat()`, y con
+  Anthropic, OpenAI o DeepSeek configurados **el provider es remoto**. `sanitize_for_prompt` reduce
+  secretos e inyección, pero no consulta ningún permiso ni vuelve local al provider — así que un
+  caso con `consent.rag = null` **saldría de la máquina**, contradiciendo la política local-first
+  del ADR.
+
+  Por eso inyectar un caso exige, además de marcarlo con su estado de verificación, **dos gates
+  evaluados en el momento de la inyección**:
+
+  | Gate | Regla |
+  |---|---|
+  | Consentimiento | `consent.rag == true`. `null` **no habilita** (§6) |
+  | Localidad del destino | Si el provider activo **no** es local, se requiere `consent.rag` otorgado **a sabiendas de que el destino es remoto** |
+
+  Los dos se evalúan contra el provider **efectivo del momento**, no contra el configurado al
+  abrir el caso: el router permite intercambiar el provider en caliente, así que un caso elegible
+  bajo un provider local puede dejar de serlo en la consulta siguiente. Sin ambos gates, la
+  inyección se omite y la consulta procede sin ese contexto.
 - **Benchmark.** Un caso `CONTESTED` o con experimentos `FAIL` es material de benchmark de alta
   calidad, porque la respuesta correcta está determinada por evidencia y no por opinión.
 - **Training.** Cadena completa: procedencia, privacidad con consentimiento explícito de
@@ -312,11 +426,11 @@ La procedencia aplica solo a material externo, con el contrato mínimo del ADR �
 
 Forma física de los DTOs · implementación del almacenamiento · red comunitaria · backend de RAG ·
 vector database · elección de modelo base · compilador de Papyrus · fine-tuning · umbral de
-`VERIFIED_MULTI_HOST` · UI y API de consentimiento · a cuántos servicios se cablea la captura.
+`VERIFIED_MULTI_HOST` · UI y API de consentimiento · a cuántos entrypoints se cablea la captura.
 
 ## 9. Anclas propuestas
 
-`AGENTS.md` es explícito: *"anclala con un test que enumere, no que muestree"*. Las tres anclas,
+`AGENTS.md` es explícito: *"anclala con un test que enumere, no que muestree"*. Las cuatro anclas,
 cada una con el instrumento que el repositorio ya usa:
 
 | Ancla | Qué congela | Patrón de referencia |
@@ -324,7 +438,7 @@ cada una con el instrumento que el repositorio ya usa:
 | AST de lanzadores | El conjunto de módulos que pueden invocar `create_subprocess_exec` | `tests/test_db_connection_invariant.py` |
 | Igualdad literal de `kind` | Los discriminadores de `journal_contracts.py` | `RITUAL_TOOL_MAP` en `tests/test_ritual_dispatch.py` |
 | AST del redactor | Que exista un solo motor de redacción, y quién lo importa | Las anclas de `load`/`save` crudos en `tests/test_local_config_persistencia.py` |
-| Introspección de servicios | La familia de servicios mutantes que deben emitir caso | `tests/test_hitl_client_scoping.py` |
+| Introspección de **entrypoints mutantes** | La familia de entrypoints que mutan y deben emitir caso — **no "la familia de servicios"** (§10) | `tests/test_hitl_client_scoping.py` |
 
 La primera es la que convierte la evidencia de proceso en una propiedad del mecanismo en vez de en
 una serie de arreglos por sitio. Sin ella, el próximo lanzador nace sin evidencia y la suite queda
@@ -344,11 +458,32 @@ camino de lanzamiento hasta que una corrida real con un espacio en la ruta confi
 lee la raíz administrada. **`run_capture` es camino de lanzamiento**, así que emitir evidencia
 desde ahí debe demostrar que no altera la serialización del argv, o esperar esa corrida.
 
-**Dos rutas de tools con contratos distintos.** La ruta del agente LLM devuelve una cadena JSON
-sin pasar por `normalize_tool_result`; la de Rituales devuelve un diccionario y sí lo usa. Capturar
-"el resultado del tool" a nivel de ruta obligaría a manejar dos formas incompatibles. **Enganchar
-por debajo de ambas, en la capa de servicios de `local/tools/`, evita el problema por
-construcción** — y es la misma capa que ya concentra journal, locks, manifiesto e informe de vuelo.
+**Dos rutas de tools con contratos distintos, y la capa de servicios NO está debajo de las dos.**
+La ruta del agente LLM devuelve una cadena JSON sin pasar por `normalize_tool_result`; la de
+Rituales devuelve un diccionario y sí lo usa. Enganchar en la capa de servicios de `local/tools/`
+resuelve esa incompatibilidad **para los tools que la atraviesan** — pero **no todos lo hacen**, y
+dar por buena la cobertura "por construcción" sería exactamente el defecto que este documento dice
+prevenir.
+
+Verificado sobre el árbol actual: en `sky_claw/app/agent/tools/system_tools.py`, `run_loot_sort`,
+`generate_bashed_patch` y `run_pandora` construyen su servicio (`LootSortingService`,
+`WryeBashPipelineService`, `PandoraPipelineService`). **Dos handlers no**, y por motivos distintos:
+
+| Handler | Cómo evita el servicio | Qué implica para la captura |
+|---|---|---|
+| `run_xedit_script` (`system_tools.py:172-197`) | `XEditPipelineService` **existe** —lo construyen `supervisor.py:221` y `chain_preview_service.py:115`— pero el handler llama `xedit_runner.run_script()` directo, **sin lock, sin journal y sin rollback** | Un enganche en servicios **no vería** ninguna ejecución de script xEdit iniciada por el agente |
+| `run_bodyslide_batch` (`system_tools.py:754-862`) | **No existe `bodyslide_service.py`.** El handler toma su propio lock y `DirectoryRollback` (`:835`) y llama `bodyslide_runner.run_batch()` (`:836`) | Ídem para BodySlide |
+
+**Consecuencia de diseño:** el punto de enganche se define por **entrypoints que mutan**, no por
+capa. Donde hay servicio, el servicio; donde no lo hay, el entrypoint. Y el ancla enumerativa
+(§9) enumera esa lista, no la de servicios — si enumerara servicios, estos dos nacerían ciegos y
+la suite quedaría verde.
+
+**Hallazgo colateral, preexistente y fuera de alcance:** que `run_xedit_script` ejecute scripts de
+xEdit sin lock, journal ni rollback mientras la ruta de Rituales usa `XEditPipelineService` con
+los tres, sobre el mismo recurso, es la topología "dos superficies, un recurso" que `AGENTS.md`
+declara clase de defecto dominante. Excede a la captura de conocimiento y debe evaluarse por su
+cuenta; **este trabajo no lo corrige**, solo lo deja registrado.
 
 **Ruido.** Un caso por operación llenaría el corpus de material sin valor. El criterio de apertura
 de §4.1 es una decisión de diseño que habrá que revisar con datos reales.
