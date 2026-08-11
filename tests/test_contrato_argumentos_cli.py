@@ -81,7 +81,7 @@ from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunn
 # test) porque `@parametrize` se evalúa en tiempo de colección: es lo que hace que
 # la enumeración de los switches administrados SALGA del código en vez de ser una
 # tercera lista escrita a mano que puede desalinearse en silencio.
-from sky_claw.local.tools.dyndolod_runner import _LETRAS_ADMINISTRADAS
+from sky_claw.local.tools.dyndolod_runner import _GAME_MODES_ADMINISTRADOS, _LETRAS_ADMINISTRADAS
 from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 from sky_claw.local.tools.wrye_bash_runner import (
     WryeBashConfig,
@@ -1137,6 +1137,93 @@ async def test_dyndolod_extra_args_rechaza_las_formas_alternativas_del_prefijo(
         with pytest.raises(DynDOLODValidationError, match="administra DynDOLODConfig"):
             await runner.run_dyndolod(extra_args=[f"{prefijo}{letra}:C:\\otra\\ruta\\"])
         assert not ejecutar.called
+
+
+@pytest.mark.parametrize("modo", sorted(_GAME_MODES_ADMINISTRADOS))
+@pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
+async def test_dyndolod_extra_args_no_puede_introducir_un_segundo_game_mode(
+    tmp_path: pathlib.Path,
+    lanzador: str,
+    modo: str,
+) -> None:
+    """El game mode también tiene dueño: ``DynDOLODConfig.game_mode``.
+
+    Hallazgo de la revisión Qodo sobre el PR #462. Es un switch **suelto**, sin
+    ``:``, así que la regla de ``_SWITCH_ADMINISTRADO`` no lo veía: un ``-tes5``
+    en ``extra_args`` pasaba derecho al argv al lado del ``-sse`` que emite
+    ``_build_xedit_args``.
+
+    Y el daño es MAYOR que el de una ruta desviada. Una ruta de más manda la
+    salida a otro lado; un game mode de más cambia el juego: ``-tes5`` hace que
+    DynDOLOD busque la clave de registro de Skyrim LE y muera con
+    ``Could not determine ... installation path`` —el error que el rig midió el
+    2026-08-05— y ``-tes5vr`` contra un rig SSE corre con las definiciones
+    equivocadas. El parser de xEdit no documenta cuál gana si aparecen dos, así
+    que el resultado además sería indeterminado.
+
+    Enumera **todos** los modos conocidos × **los dos** lanzadores × mayúsculas y
+    minúsculas. La lista sale de ``_GAME_MODES_ADMINISTRADOS``, no de un literal
+    acá: un literal sería una segunda copia que puede desalinearse sola.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
+
+    variantes = (f"-{modo}", f"-{modo.upper()}", f"-{modo.capitalize()}", f"/{modo}", f" -{modo}")
+    with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
+        for variante in variantes:
+            with pytest.raises(DynDOLODValidationError, match="segundo game mode"):
+                await getattr(runner, lanzador)(extra_args=[variante])
+        assert not ejecutar.called, "el proceso no debe lanzarse con dos game modes"
+
+
+def test_game_modes_administrados_cubre_los_que_emite_el_runner() -> None:
+    """Los game modes que Sky-Claw emite tienen que estar en el conjunto rechazado.
+
+    Misma técnica que el ancla de las letras, y misma razón: el conjunto es un
+    literal y lo que el runner emite es otro. Este lee por AST los strings del
+    ``game_mode = "-tes5vr" if ... else "-sse"`` de ``_build_xedit_args`` y exige
+    que estén contenidos en ``_GAME_MODES_ADMINISTRADOS``.
+
+    Es contención, no igualdad: el conjunto incluye a propósito game modes que
+    Sky-Claw nunca emite (``-tes4``, ``-fo4``…) porque el rechazo es sobre lo que
+    el CALLER puede meter, no sobre lo que el runner produce. Lo que este ancla
+    impide es lo inverso: que alguien agregue un game mode emitible —un
+    ``-enderalse`` para Enderal, digamos— y quede fuera del rechazo, que es
+    exactamente el hueco que la review encontró.
+
+    NO afirma que la lista sea exhaustiva respecto de xEdit: si xEdit agrega un
+    game mode nuevo, este test sigue verde y la regla sigue siendo fail-closed
+    sobre los conocidos. Eso está declarado en el docstring de la constante.
+    """
+    import inspect
+    import textwrap
+
+    from sky_claw.local.tools import dyndolod_runner
+
+    fuente = textwrap.dedent(inspect.getsource(dyndolod_runner.DynDOLODRunner._build_xedit_args))
+    asignaciones = [
+        nodo
+        for nodo in ast.walk(ast.parse(fuente))
+        if isinstance(nodo, ast.Assign) and any(getattr(t, "id", None) == "game_mode" for t in nodo.targets)
+    ]
+    assert len(asignaciones) == 1, (
+        f"se esperaba exactamente una asignación de `game_mode` en `_build_xedit_args`; hay {len(asignaciones)}. "
+        "Si el runner cambió de forma, este ancla necesita actualizarse — no borrarse."
+    )
+
+    emitidos = {
+        nodo.value.lstrip("-/").lower()
+        for nodo in ast.walk(asignaciones[0].value)
+        if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str)
+    }
+    assert emitidos, "no se extrajo ningún game mode del AST: el ancla dejó de leer lo que cree leer"
+    assert emitidos <= _GAME_MODES_ADMINISTRADOS, (
+        f"`_build_xedit_args` puede emitir {sorted(emitidos)} y el rechazo cubre "
+        f"{sorted(_GAME_MODES_ADMINISTRADOS)}. Un game mode emitible quedó fuera de "
+        "`_extra_args_admisibles`: `extra_args` puede introducir un segundo game mode y "
+        "cambiar el juego de la corrida, no solo una ruta."
+    )
 
 
 def test_letras_administradas_cubre_los_switches_que_emite_el_runner() -> None:

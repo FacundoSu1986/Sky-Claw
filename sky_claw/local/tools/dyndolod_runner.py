@@ -64,6 +64,44 @@ _LETRAS_ADMINISTRADAS = "odmpt"
 #: ``_extra_args_admisibles``.
 _SWITCH_ADMINISTRADO = re.compile(rf"^\s*[-/][{_LETRAS_ADMINISTRADAS}]:", re.IGNORECASE)
 
+#: Game modes de xEdit, sin el prefijo. También los administra ``DynDOLODConfig``
+#: (campo tipado ``game_mode``, decisión única en ``__post_init__``), así que
+#: ``extra_args`` tampoco puede introducir un segundo game mode.
+#:
+#: Por qué importa más que los switches de ruta: el game mode es un switch SUELTO,
+#: sin ``:``, así que la regla de ``_SWITCH_ADMINISTRADO`` no lo veía. Y un segundo
+#: game mode no desvía una ruta — cambia el juego entero: `-tes5` manda a DynDOLOD
+#: a buscar la clave de registro de Skyrim LE y morir con
+#: ``Fatal: Could not determine ... installation path`` (el error del rig del
+#: 2026-08-05), y `-tes5vr` contra un rig SSE ejecuta con las definiciones
+#: equivocadas. El parser de xEdit no documenta cuál gana si aparecen dos.
+#:
+#: Procedencia, sin sobre-declarar: los DOS que Sky-Claw puede emitir (``sse``,
+#: ``tes5vr``) NO están escritos acá — los deriva por AST
+#: ``test_game_modes_administrados_cubre_los_que_emite_el_runner``, que exige que
+#: estén contenidos en este conjunto. El resto son los game modes que documenta
+#: xEdit; la lista puede quedar incompleta si xEdit agrega uno, y eso no la
+#: invalida: es fail-closed sobre los conocidos, no una prueba de exhaustividad.
+_GAME_MODES_ADMINISTRADOS = frozenset(
+    {
+        "sse",
+        "tes5vr",
+        "tes5",
+        "tes4",
+        "fo3",
+        "fnv",
+        "fo4",
+        "fo4vr",
+        "fo76",
+        "enderal",
+        "enderalse",
+    }
+)
+
+#: Mismo prefijo tolerante que ``_SWITCH_ADMINISTRADO`` (``-``/``/``, whitespace
+#: líder) y sin ``:``: el game mode es un switch suelto.
+_GAME_MODE_SUELTO = re.compile(r"^\s*[-/]([A-Za-z0-9]+)\s*$")
+
 # Firma de un candidato sin artefacto. Distinto de ``None`` (= no se pudo
 # sondear) a propósito: colapsar los dos casos hace fail-open el gate de
 # frescura, porque "no lo pude mirar antes" pasa a leerse como "no había nada".
@@ -1050,7 +1088,7 @@ class DynDOLODRunner:
     def _extra_args_admisibles(extra_args: object) -> list[str]:
         """Los ``extra_args`` del caller, o ``DynDOLODValidationError``. Fail-closed.
 
-        Tres reglas, y ninguna normaliza: **rechazan**.
+        Cuatro reglas, y ninguna normaliza: **rechazan**.
 
         1. **Tiene que ser ``list[str]``.** El valor entra por payload y los type
            hints no validan datos en runtime: ``GenerateLodsStrategy._filter_payload``
@@ -1071,10 +1109,22 @@ class DynDOLODRunner:
            documenta cuál gana si el switch aparece dos veces, así que el resultado
            sería indeterminado además de ambiguo.
 
-        La (3) es la corrección que pidió la review del PR #462 sobre la (2): con
-        solo la (2), un ``-o:C:\\otra\\ruta\\`` sin comillas pasaba y pisaba la raíz
-        administrada. `_switch_de_ruta` sigue siendo el ÚNICO constructor de los
-        switches de ruta que Sky-Claw administra.
+        4. **Ningún elemento puede introducir un segundo game mode**
+           (``-sse``/``-tes5``/``-tes5vr``/… — ver ``_GAME_MODES_ADMINISTRADOS``).
+           Lo administra :class:`DynDOLODConfig` por campo tipado, resuelto una
+           sola vez en ``__post_init__``. Es un switch SUELTO, sin ``:``, así que
+           la regla (3) no lo alcanzaba; y su daño es mayor que el de una ruta
+           desviada: ``-tes5`` manda la corrida a buscar la instalación de Skyrim
+           LE y muere con ``Could not determine ... installation path`` (el error
+           del rig del 2026-08-05), ``-tes5vr`` contra un rig SSE corre con las
+           definiciones equivocadas.
+
+        Las (3) y (4) son las correcciones que pidieron las reviews del PR #462
+        sobre la (2): con solo la (2), un ``-o:C:\\otra\\ruta\\`` sin comillas
+        pasaba y pisaba la raíz administrada, y un ``-tes5`` pelado pasaba y
+        cambiaba el juego. `_switch_de_ruta` sigue siendo el ÚNICO constructor de
+        los switches de ruta que Sky-Claw administra, y ``_build_xedit_args`` el
+        único emisor del game mode.
 
         Se valida en :meth:`_build_xedit_args` porque es la pieza ÚNICA que los dos
         ejecutables atraviesan: puesta en un solo lanzador, el otro queda sin cubrir.
@@ -1110,6 +1160,20 @@ class DynDOLODRunner:
                 "extra_args no puede redefinir los switches de ruta que administra DynDOLODConfig "
                 "(-o:/-d:/-m:/-p:/-t:): serían dos fuentes de verdad y romperían las premisas del "
                 f"staging, el post-check y el rollback. Ofensores: {reservados}"
+            )
+
+        modos = [
+            a
+            for a in extra_args
+            if (m := _GAME_MODE_SUELTO.match(a)) and m.group(1).lower() in _GAME_MODES_ADMINISTRADOS
+        ]
+        if modos:
+            raise DynDOLODValidationError(
+                "extra_args no puede introducir un segundo game mode: lo administra DynDOLODConfig "
+                "(campo `game_mode`, resuelto una sola vez en __post_init__). Un game mode de más no "
+                "desvía una ruta, cambia el juego — `-tes5` manda la corrida a buscar la instalación "
+                "de Skyrim LE y muere con 'Could not determine installation path', y el parser de "
+                f"xEdit no documenta cuál gana si aparecen dos. Ofensores: {modos}"
             )
         return extra_args
 
