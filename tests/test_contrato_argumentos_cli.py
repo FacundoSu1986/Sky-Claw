@@ -852,9 +852,66 @@ def _runner_con_raiz(tmp_path: pathlib.Path, carpeta: str, *, sin_espacios: bool
     return runner, dyndolod_exe
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="serialización de línea de comandos de Windows")
+@pytest.mark.parametrize(
+    ("etiqueta", "base", "duplica"),
+    [
+        ("sin espacios", "C:\\SkyClaw\\salida", False),
+        ("con espacios", "C:\\Program Files\\Sky Claw\\salida", True),
+        ("con paréntesis y espacios (Steam real)", "C:\\Program Files (x86)\\Steam\\Skyrim Special Edition", True),
+    ],
+)
+def test_switch_de_ruta_round_trip_sintetico(etiqueta: str, base: str, duplica: bool) -> None:
+    """Round-trip del helper sobre rutas SINTÉTICAS: sin filesystem, corre siempre.
+
+    Existe porque los dos tests de abajo construyen su árbol bajo ``tmp_path``, que en
+    Windows cuelga del perfil del usuario: en una máquina cuyo usuario tenga un espacio
+    (``C:\\Users\\John Doe\\AppData\\Local\\Temp\\...``) la variante "sin espacios" es
+    infabricable y el test se saltea. Este no depende del entorno —las rutas son
+    literales y no necesitan existir— así que la propiedad queda cubierta en toda
+    máquina Windows, incluida esa (hallazgo del revisor adversarial en el PR #462).
+
+    Afirma las dos mitades del contrato medido:
+
+    * la serialización es válida como línea de comandos de Windows (CRT round-trip);
+    * Delphi ve un backslash final de más **sí y solo si** ``list2cmdline`` citó, o
+      sea solo cuando la ruta trae espacios. ``duplica`` codifica esa expectativa por
+      caso, así que un cambio de serialización que altere el patrón rompe el test en
+      vez de pasar en silencio.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
+
+    arg = DynDOLODRunner._switch_de_ruta("o", pathlib.Path(base), directorio=True)
+    assert arg == f"-o:{base}\\"
+    assert '"' not in arg
+
+    exe = "C:\\t\\DynDOLODx64.exe"
+    cmdline = subprocess.list2cmdline([exe, arg])
+    crt = _argv_segun_crt(cmdline)[1]
+    delphi = _argv_segun_delphi(cmdline)[1]
+
+    assert crt == arg, f"[{etiqueta}] la serialización CRT debería cerrar: {cmdline}"
+    esperado_delphi = arg + "\\" if duplica else arg
+    assert delphi == esperado_delphi, (
+        f"[{etiqueta}] Delphi no ve lo esperado.\n"
+        f"  argv   : {arg!r}\n  cmdline: {cmdline}\n"
+        f"  delphi : {delphi!r}\n  esperado: {esperado_delphi!r}\n"
+        "Si la divergencia con espacios desapareció, releé la decisión A/B/C de T5."
+    )
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="round-trip contra el parser de línea de comandos de Windows")
 def test_dyndolod_argv_sin_espacios_sobrevive_los_dos_parsers(tmp_path: pathlib.Path) -> None:
     """Ruta SIN espacios: ``list2cmdline`` no cita, y CRT y Delphi coinciden.
+
+    Se saltea si la raíz de ``tmp_path`` trae espacios: en Windows el temp dir cuelga
+    del perfil del usuario, así que con un usuario como ``John Doe`` la variante sin
+    espacios es infabricable y el ``assert`` fallaría **por el entorno**, no por el
+    código — un falso rojo en cualquier máquina de desarrollo con espacio en el nombre
+    de usuario (CI no lo veía porque el runner usa ``runneradmin``). La propiedad no
+    queda descubierta ahí: ``test_switch_de_ruta_round_trip_sintetico`` la cubre sin
+    tocar el filesystem. Lo que este test aporta y ése no es la **enumeración de los
+    cinco switches tal como los arma** ``_build_xedit_args``.
 
     Es el único caso de este archivo donde "el proceso recibe lo que Sky-Claw
     construyó" está afirmado de verdad: sin comillas externas no hay reglas de
@@ -868,6 +925,12 @@ def test_dyndolod_argv_sin_espacios_sobrevive_los_dos_parsers(tmp_path: pathlib.
     estaban en verde: los tres miraban el string que Sky-Claw produce, ninguno lo
     que el proceso recibe. Este enumera los cinco switches de ruta a la vez.
     """
+    if " " in str(tmp_path):
+        pytest.skip(
+            f"la raíz temporal trae espacios ({tmp_path}): la variante sin espacios es "
+            "infabricable acá. La cubre test_switch_de_ruta_round_trip_sintetico."
+        )
+
     runner, dyndolod_exe = _runner_con_raiz(tmp_path, "Sky-Claw", sin_espacios=True)
 
     argv = runner._build_xedit_args(None)

@@ -1128,9 +1128,20 @@ class DynDOLODRunner:
         y llega igual con las comillas adentro. Y además contradice al binario,
         que documenta *"All path parameters must be specified with trailing
         backslash"*. Lo que sobra son las comillas: ``list2cmdline`` ya cita el
-        argumento cuando hace falta y duplica los backslashes finales antes de la
-        comilla de cierre que ella misma agrega, así que el valor sobrevive
-        también en rutas con espacios.
+        argumento cuando hace falta.
+
+        **Pero el fix está verificado solo para rutas SIN espacios.** Cuando el
+        argumento trae espacios, ``list2cmdline`` lo cita y duplica el backslash
+        final para que no escape su propia comilla de cierre: correcto bajo las
+        reglas de la CRT, y **no** bajo las de Delphi, que nunca trata el backslash
+        como escape. Medido: el binario recibiría ``-d:...\\Data\\\\`` en vez de
+        ``-d:...\\Data\\``. Y esa es la rama que corre SIEMPRE en un rig real —el
+        juego vive en ``Skyrim Special Edition`` y los INI bajo ``My Games``—, así
+        que el caso sin espacios es el sintético. Si el binario no tolera el
+        separador duplicado, el síntoma ``Can not create path`` sigue en producción.
+        **Pendiente de T5**, que lo decide en una corrida porque la herramienta ecoa
+        la ruta parseada en su log (``Using Output Path:``): dejar el duplicado si lo
+        tolera, omitir el ``\\`` final, o línea verbatim. No lo damos por resuelto.
 
         Anclas, y su alcance exacto — los tests que solo miraban el string que
         Sky-Claw produce congelaron el defecto en vez de atajarlo:
