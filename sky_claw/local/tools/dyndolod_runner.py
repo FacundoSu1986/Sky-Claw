@@ -18,6 +18,7 @@ import logging
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -346,7 +347,9 @@ class DynDOLODRunner:
         """
         Ejecuta TexGen (etapa 9, asistida).
 
-        CLI verificado: TexGenx64.exe -sse -o:"…" -d:"…" [-m:"…"] [-p:"…"] -t:"…".
+        CLI verificado (línea de comandos): TexGenx64.exe -sse -o:"…" -d:"…"
+        [-m:"…"] [-p:"…"] -t:"…". Las comillas son de la LÍNEA; en el argv que
+        construye :meth:`_build_xedit_args` no van (ver :meth:`_switch_de_ruta`).
         La herramienta es una app GUI (PE Subsystem 2): no escribe a stdout; el
         éxito se decide por exit code + artefacto + log (ver post-check).
 
@@ -438,7 +441,9 @@ class DynDOLODRunner:
         """
         Ejecuta DynDOLOD (etapa 9, asistida).
 
-        CLI verificado: DynDOLODx64.exe -sse -o:"…" -d:"…" [-m:"…"] [-p:"…"] -t:"…".
+        CLI verificado (línea de comandos): DynDOLODx64.exe -sse -o:"…" -d:"…"
+        [-m:"…"] [-p:"…"] -t:"…". Las comillas son de la LÍNEA; en el argv que
+        construye :meth:`_build_xedit_args` no van (ver :meth:`_switch_de_ruta`).
         La herramienta es una app GUI (PE Subsystem 2): no escribe a stdout; el
         éxito se decide por exit code + artefacto + log (ver post-check).
 
@@ -556,11 +561,12 @@ class DynDOLODRunner:
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
+        # La línea real, no la lista: es la evidencia que faltaba cuando el argv
+        # llegaba mangled (ver _linea_de_comando).
         logger.info(
-            "Ejecutando %s: %s %s (timeout: %ds)",
+            "Ejecutando %s: %s (timeout: %ds)",
             tool_name,
-            executable,
-            " ".join(args),
+            self._linea_de_comando([str(executable), *args]),
             effective_timeout,
         )
 
@@ -988,8 +994,10 @@ class DynDOLODRunner:
         game_mode = "-tes5vr" if self._config.game_mode == "tes5vr" else "-sse"
         args: list[str] = [game_mode]
 
-        # Los cinco -X:"ruta" de la doc (sin espacios; directorios con \ final).
-        # -o:/-d:/-t: siempre (tienen default derivado); -m:/-p: solo explícitos.
+        # Los cinco -X: de la doc, un elemento de argv por switch: dos puntos,
+        # directorios con \ final y SIN comillas (las pone list2cmdline; ver
+        # _switch_de_ruta). -o:/-d:/-t: siempre (tienen default derivado);
+        # -m:/-p: solo explícitos.
         switches = (
             ("o", self._config.output_root, True),
             ("d", self._config.data_dir, True),
@@ -1004,18 +1012,63 @@ class DynDOLODRunner:
         if extra_args:
             args.extend(extra_args)
 
-        logger.debug("DynDOLOD/TexGen CLI args: %s", " ".join(args))
+        logger.debug("DynDOLOD/TexGen CLI args: %s", self._linea_de_comando(args))
         return args
 
     @staticmethod
+    def _linea_de_comando(args: list[str]) -> str:
+        """Los ``args`` tal como los va a recibir el proceso, para los logs.
+
+        En Windows se serializa con ``subprocess.list2cmdline`` —la misma función
+        que usa ``create_subprocess_exec``— en vez de ``" ".join``. No es cosmético:
+        el bug de las comillas de :meth:`_switch_de_ruta` era invisible porque los
+        dos sitios que loguean el argv mostraban la LISTA, no la línea real, así
+        que el ``-o:\\"C:\\...`` mangled nunca apareció en ningún log. Fuera de
+        Windows ``list2cmdline`` no aplica (aplica reglas de quoting de MS) y el
+        join simple alcanza: ahí ``create_subprocess_exec`` pasa el argv directo.
+        """
+        if sys.platform == "win32":
+            return subprocess.list2cmdline(args)
+        return " ".join(args)
+
+    @staticmethod
     def _switch_de_ruta(letra: str, ruta: pathlib.Path, *, directorio: bool) -> str:
-        """Formatea ``-X:"ruta"`` según la doc oficial: dos puntos, comillas y
-        ``\\`` final en directorios (``-p:`` es un archivo: sin ``\\``). Sin los
-        dos puntos el parser de xEdit ignora el switch en silencio."""
+        """Formatea ``-X:<ruta>`` como ELEMENTO DE ARGV: dos puntos, ``\\`` final en
+        directorios (``-p:`` es un archivo: sin ``\\``) y **sin comillas**.
+
+        Sin los dos puntos el parser de xEdit ignora el switch en silencio.
+
+        **Las comillas de la doc pertenecen a la línea de comandos, no al valor.**
+        ``dyndolod.info/Help/Command-Line-Argument`` escribe ``-o:"c:\\Output\\"``
+        porque documenta lo que se tipea en un ``.lnk`` o en el campo *Arguments*
+        de MO2: ahí las comillas las consume el parser de Windows y nunca llegan
+        al programa. Embebidas en el elemento de la lista pasan a ser parte del
+        VALOR — ``create_subprocess_exec`` serializa con
+        ``subprocess.list2cmdline``, que escapa la comilla interna como ``\\"``, y
+        el programa recibe ``-o:"C:\\...\\"`` con las comillas literales adentro.
+        ``"C:\\...`` no es una ruta absoluta para DynDOLOD, que le antepone el
+        drive actual y muere con ``Can not create path C:\\C:\\...``. Medido en
+        rig el 2026-08-10: con este defecto **ninguna** corrida de TexGen ni de
+        DynDOLOD podía arrancar (2/2 binarios), incluso con el entorno correcto.
+
+        Quitar el ``\\`` final NO arregla eso: ``-p:"archivo"`` no lleva backslash
+        y llega igual con las comillas adentro. Y además contradice al binario,
+        que documenta *"All path parameters must be specified with trailing
+        backslash"*. Lo que sobra son las comillas: ``list2cmdline`` ya cita el
+        argumento cuando hace falta y duplica los backslashes finales antes de la
+        comilla de cierre que ella misma agrega, así que el valor sobrevive
+        también en rutas con espacios.
+
+        Ancla: ``test_dyndolod_argv_sobrevive_la_serializacion_de_windows`` hace
+        el round-trip ``list2cmdline`` → ``CommandLineToArgvW`` (el parser real de
+        Windows) y exige que el proceso reciba exactamente este argv. Los tests
+        que solo miraban el string que Sky-Claw produce congelaron el defecto en
+        vez de atajarlo.
+        """
         texto = str(ruta)
         if directorio and not texto.endswith("\\"):
             texto += "\\"
-        return f'-{letra}:"{texto}"'
+        return f"-{letra}:{texto}"
 
     def _modo(self) -> str:
         """Modo del juego para el nombre del log (``DynDOLOD_SSE_log.txt``/``_TES5VR``).
