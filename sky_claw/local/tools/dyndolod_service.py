@@ -412,7 +412,12 @@ class DynDOLODPipelineService:
                 transaction_id=tx_id,
             )
         except Exception:  # noqa: BLE001 — boundary best-effort del journal
-            logger.error("Fallo al persistir el informe de vuelo de la TX %d", tx_id, exc_info=True)
+            logger.error(
+                "DynDOLOD (stage 9): fallo al persistir el informe de vuelo de la TX %d",
+                tx_id,
+                exc_info=True,
+                extra={"pipeline_stage": 9},
+            )
 
     async def _cerrar_tx_tras_rollback(
         self,
@@ -448,28 +453,31 @@ class DynDOLODPipelineService:
         if not rolled_back:
             if mutation_started and not mutation_coverage_complete and rollbacks_resueltos:
                 logger.warning(
-                    "Cobertura de staging DynDOLOD no demostrada tras %s (TX %d): "
+                    "DynDOLOD (stage 9): cobertura de staging no demostrada tras %s (TX %d): "
                     "la TX queda PENDIENTE hasta aislar los targets crudos.",
                     contexto,
                     tx_id,
+                    extra={"pipeline_stage": 9},
                 )
             else:
                 logger.critical(
-                    "Rollback DynDOLOD INCOMPLETO tras %s (TX %d): la TX queda PENDIENTE; "
+                    "DynDOLOD (stage 9): rollback INCOMPLETO tras %s (TX %d): la TX queda PENDIENTE; "
                     "revisar backups move-aside y targets no cubiertos manualmente.",
                     contexto,
                     tx_id,
+                    extra={"pipeline_stage": 9},
                 )
             return False
         try:
             await self._journal.mark_transaction_rolled_back(tx_id)
         except Exception as journal_exc:  # noqa: BLE001 — boundary best-effort del journal
             logger.error(
-                "Failed to mark TX %d as rolled back after %s: %s",
+                "DynDOLOD (stage 9): no se pudo marcar la TX %d como rolled back tras %s: %s",
                 tx_id,
                 contexto,
                 journal_exc,
                 exc_info=True,
+                extra={"pipeline_stage": 9},
             )
         return True
 
@@ -524,7 +532,11 @@ class DynDOLODPipelineService:
             preflight_report = await preflight.run()
             if preflight_report.blocks_mutations:
                 red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
-                logger.warning("DynDOLOD (stage 9) bloqueado por preflight en rojo: %s", red)
+                logger.warning(
+                    "DynDOLOD (stage 9) bloqueado por preflight en rojo: %s",
+                    red,
+                    extra={"pipeline_stage": 9},
+                )
                 return _attach_preflight(
                     {
                         "status": "error",
@@ -593,7 +605,7 @@ class DynDOLODPipelineService:
         if ruta_faltante is not None:
             msg = f"Ruta declarada por la configuración de DynDOLOD no existe: {ruta_faltante}"
             duration = time.monotonic() - start_time
-            logger.error("DynDOLOD (stage 9): %s", msg)
+            logger.error("DynDOLOD (stage 9): %s", msg, extra={"pipeline_stage": 9})
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -717,7 +729,7 @@ class DynDOLODPipelineService:
                         # (U-11) es no reportar éxito sobre un estado indeterminado
                         # solo porque "no debería pasar".
                         msg = "DynDOLOD reportó éxito sin resultado de ejecución"
-                        logger.error(msg)
+                        logger.error(msg, extra={"pipeline_stage": 9})
                         raise DynDOLODExecutionError(msg)
 
                     output_path = result.dyndolod_result.output_path
@@ -729,13 +741,13 @@ class DynDOLODPipelineService:
                         # éxito: falso verde por exit-code sobre un estado donde no
                         # se sabe si DynDOLOD escribió algo.
                         msg = "DynDOLOD no dejó un directorio de salida localizable"
-                        logger.error(msg)
+                        logger.error(msg, extra={"pipeline_stage": 9})
                         raise DynDOLODExecutionError(msg)
 
                     is_valid = await runner.validate_dyndolod_output(output_path)
                     if not is_valid:
                         msg = "DynDOLOD output validation failed"
-                        logger.error(msg)
+                        logger.error(msg, extra={"pipeline_stage": 9})
                         raise DynDOLODExecutionError(msg)
 
                 if not result.success:
@@ -1114,5 +1126,10 @@ class DynDOLODPipelineService:
                 "success": False,
                 "preset": preset,
                 "error": error_msg,
+                # El registro canónico del fallo —el que consulta un dashboard—
+                # también lleva la etapa: etiquetar solo el handler que LLAMA a
+                # este helper dejaba el outcome sin filtrar por stage (review
+                # CodeRabbit/Codex, PR #464).
+                "pipeline_stage": 9,
             },
         )

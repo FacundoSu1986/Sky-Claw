@@ -2393,14 +2393,13 @@ async def test_ruta_de_config_faltante_bloquea_antes_del_lock(
 # =============================================================================
 # ANCLA — SOP §5 regla 5: el índice de etapa en los fallos del pipeline
 # =============================================================================
-# "ALWAYS log the pipeline stage index when a tool fails. Stage index is the
-# primary debugging signal" (`sky_claw/local/AGENTS.md` §5 regla 5). Hasta acá la
-# regla no tenía gate y envejeció como el ~94% de los ítems normativos que
-# `AGENTS.md` admite no tener verificación: dentro de UN SOLO método —`execute`—
-# tres handlers nombraban la etapa y cinco no, incluido el que atrapa la mayoría
-# de los fallos reales (`DynDOLODExecutionError`/`DynDOLODTimeoutError`, donde
-# `run_full_pipeline` desemboca los `DynDOLODValidationError`). El defecto
-# hermano clásico del repo, esta vez sin cruzar de archivo.
+# La regla 5 de `sky_claw/local/AGENTS.md` exige registrar el índice de etapa
+# cada vez que una tool falla: es la señal primaria de depuración. Hasta acá no
+# tenía gate y envejeció como el ~94% de los ítems normativos que `AGENTS.md`
+# admite no tener verificación. Dentro de UN SOLO método —`execute`— tres
+# handlers nombraban la etapa y cinco no, incluido el que atrapa la mayoría de
+# los fallos reales (`DynDOLODExecutionError`/`DynDOLODTimeoutError`, donde
+# `run_full_pipeline` desemboca los `DynDOLODValidationError`).
 #
 # El contrato es la forma ESTRUCTURADA (`extra={"pipeline_stage": 9}` o
 # `subprocess_error_extra(pipeline_stage=9)`), no la prosa. Motivo: es la única
@@ -2408,36 +2407,86 @@ async def test_ruta_de_config_faltante_bloquea_antes_del_lock(
 # —"(stage 9)" en dyndolod, "(fase 6)"/"[FASE-6]" en wrye_bash— así que un ancla
 # sobre texto sería un pantano de regex que además bendice el drift. La prosa que
 # ya existe se conserva por legibilidad humana; lo que se verifica es el campo.
+#
+# El ancla NO se limita a los `except`. La primera versión sí lo hacía y dejaba
+# tres agujeros que encontró la review del PR #464: el preflight en rojo y la
+# ruta de config faltante salen por `return`, no por `raise`; y
+# `_log_result_error` —el registro canónico `dyndolod_pipeline_failed`, el que
+# consulta un dashboard— vive en un helper que los handlers LLAMAN. Etiquetar el
+# handler y no el registro que emite es exactamente el defecto que este ancla
+# existe para atajar, cometido dentro de su propio fix. Por eso el universo es
+# TODO registro de fallo del módulo, esté dentro de un `except` o no.
 # =============================================================================
+
+#: Servicios de `local/tools/` que todavía NO emiten el stage index estructurado,
+#: con la etapa que les corresponde según la prosa que ya arrastran. NO es una
+#: lista de "pendientes que quizá": es una exención explícita y revisada. Mientras
+#: un servicio esté acá, el ancla lo deja pasar; un servicio NUEVO no entra solo
+#: —no cumple ni está exento— y rompe el test hasta que se decida cuál de las dos.
+_SERVICIOS_SIN_STAGE_INDEX = {
+    "loot_service.py": "etapa 5; hoy solo la emite su runner (loot/cli.py)",
+    "pandora_service.py": "etapa 4; solo prosa (stage 4)",
+    "synthesis_service.py": "etapa 7; solo prosa (stage 7)",
+    "vramr_service.py": "etapa SIN DETERMINAR; no marca la etapa de ninguna forma",
+    "wrye_bash_service.py": "etapa 6; solo prosa [FASE-6] / (fase 6)",
+    "xedit_service.py": "etapa 1; solo prosa QuickAutoClean (stage 1)",
+}
+
+
+def _modulo_servicio_ast() -> ast.Module:
+    """AST del módulo ``dyndolod_service`` completo, leído del fuente real."""
+    fuente = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).read_text(encoding="utf-8")
+    return ast.parse(fuente)
 
 
 def _metodo_execute_ast() -> ast.AsyncFunctionDef:
     """AST de ``DynDOLODPipelineService.execute``, del fuente real del módulo."""
-    fuente = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).read_text(encoding="utf-8")
-    cls = next(n for n in ast.parse(fuente).body if isinstance(n, ast.ClassDef) and n.name == "DynDOLODPipelineService")
+    cls = next(
+        n for n in _modulo_servicio_ast().body if isinstance(n, ast.ClassDef) and n.name == "DynDOLODPipelineService"
+    )
     return next(m for m in cls.body if isinstance(m, ast.AsyncFunctionDef) and m.name == "execute")
 
 
-def _nombre_de_excepcion(handler: ast.ExceptHandler) -> frozenset[str]:
-    """Tipos que atrapa un ``except``; ``except (A, B)`` → ``{"A", "B"}``."""
+def _nombre_de_excepcion(handler: ast.ExceptHandler) -> str:
+    """Tipos que atrapa un ``except``; ``except (A, B)`` -> ``"A, B"``."""
     tipo = handler.type
     if tipo is None:
-        return frozenset({"<bare>"})
+        return "<bare>"
     nodos = tipo.elts if isinstance(tipo, ast.Tuple) else [tipo]
-    return frozenset(ast.unparse(n) for n in nodos)
+    return ", ".join(sorted(ast.unparse(n) for n in nodos))
 
 
-def _emite_stage_index(nodo: ast.AST, etapa: int) -> bool:
-    """¿Hay un ``logger.<nivel>(...)`` que lleve el stage index ESTRUCTURADO?
+def _registros_de_fallo(nodo: ast.AST) -> list[ast.Call]:
+    """Llamadas ``logger.error``/``warning``/``critical`` dentro de ``nodo``.
+
+    Los tres niveles cuentan como registro de fallo en ESTE servicio: es de una
+    sola etapa, y sus tres ``warning`` reportan fallos (preflight en rojo,
+    cobertura de staging no demostrada, cancelación). Un aviso que no sea un fallo
+    tiene ``info``/``debug`` disponibles; si alguna vez hace falta un ``warning``
+    neutro, que rompa el ancla y se decida explícitamente — para eso es un gate.
+    """
+    return [
+        llamada
+        for llamada in ast.walk(nodo)
+        if isinstance(llamada, ast.Call)
+        and isinstance(llamada.func, ast.Attribute)
+        and isinstance(llamada.func.value, ast.Name)
+        and llamada.func.value.id == "logger"
+        and llamada.func.attr in {"error", "warning", "critical"}
+    ]
+
+
+def _lleva_stage_index(llamada: ast.Call, etapa: int) -> bool:
+    """¿La llamada lleva el stage index ESTRUCTURADO en su ``extra``?
 
     Acepta las dos formas estructuradas del repo: el dict literal
     (``extra={"pipeline_stage": N}``, como `grass_cache_service.py`) y el helper
     (``extra=subprocess_error_extra(..., pipeline_stage=N)``, como
-    `logging_config.py`, que usan `loot/cli.py` y `xedit/runner.py`). NO acepta
-    la prosa: un ``"DynDOLOD (stage 9): ..."`` suelto no satisface el ancla.
+    `logging_config.py`, que usan `loot/cli.py` y `xedit/runner.py`). NO acepta la
+    prosa: un ``"DynDOLOD (stage 9): ..."`` suelto no satisface el ancla.
     """
 
-    def _lleva_la_etapa(valor: ast.AST) -> bool:
+    def _valor_correcto(valor: ast.AST) -> bool:
         if isinstance(valor, ast.Dict):
             return any(
                 isinstance(k, ast.Constant)
@@ -2453,73 +2502,98 @@ def _emite_stage_index(nodo: ast.AST, etapa: int) -> bool:
             )
         return False
 
-    return any(
-        isinstance(llamada.func, ast.Attribute)
-        and isinstance(llamada.func.value, ast.Name)
-        and llamada.func.value.id == "logger"
-        and any(kw.arg == "extra" and _lleva_la_etapa(kw.value) for kw in llamada.keywords)
-        for llamada in ast.walk(nodo)
-        if isinstance(llamada, ast.Call)
-    )
+    return any(kw.arg == "extra" and _valor_correcto(kw.value) for kw in llamada.keywords)
 
 
 def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
-    """El conjunto de ``except`` de ``execute``. Igualdad LITERAL, no muestreo.
+    """Los ``except`` de ``execute``, CON multiplicidad. Igualdad literal.
 
-    Un handler nuevo rompe acá hasta que se lo agregue a la lista, y agregarlo lo
-    mete automáticamente en el ancla de stage index de abajo (que itera sobre la
-    familia DETECTADA, no sobre esta lista). Es el instrumento de
-    `RITUAL_TOOL_MAP` en `test_ritual_dispatch.py`: enumerar, no muestrear.
+    Lista ordenada y no conjunto (review Codex del PR #464): con un ``set``, un
+    segundo ``except Exception`` alrededor de una operación hermana nueva se
+    deduplicaría contra el que ya está, el congelamiento no rompería y el handler
+    nuevo entraría sin que nadie lo revisara — justo lo que el ancla promete
+    impedir. Es el instrumento de `RITUAL_TOOL_MAP` en `test_ritual_dispatch.py`.
     """
-    familia = {_nombre_de_excepcion(h) for h in ast.walk(_metodo_execute_ast()) if isinstance(h, ast.ExceptHandler)}
-
-    assert familia == {
-        frozenset({"DynDOLODExecutionError"}),
-        frozenset({"_ActionManifestError"}),
-        frozenset({"LockAcquisitionError"}),
-        frozenset({"DynDOLODExecutionError", "DynDOLODTimeoutError"}),
-        frozenset({"asyncio.CancelledError"}),
-        frozenset({"Exception"}),
-    }
-
-
-def test_todos_los_handlers_de_execute_nombran_la_etapa_del_pipeline() -> None:
-    """SOP §5 regla 5 sobre CADA ``except`` de ``execute``, detectados por AST.
-
-    El caso que motivó el ancla es el handler de dominio
-    (``DynDOLODExecutionError``/``DynDOLODTimeoutError``): atrapa la mayoría de
-    los fallos reales del pipeline y era el único de su método que no decía en
-    qué etapa del DAG ocurrió. Escribirle un caso a mano no ataja al hermano
-    siguiente — acá se enumera la familia entera.
-    """
-    execute = _metodo_execute_ast()
-    handlers = [h for h in ast.walk(execute) if isinstance(h, ast.ExceptHandler)]
-    assert handlers, "no se detectó ningún except en execute: el ancla quedaría vacía"
-
-    sin_etapa = sorted(
-        ", ".join(sorted(_nombre_de_excepcion(h))) for h in handlers if not _emite_stage_index(h, etapa=9)
+    familia = sorted(
+        _nombre_de_excepcion(h) for h in ast.walk(_metodo_execute_ast()) if isinstance(h, ast.ExceptHandler)
     )
+
+    assert familia == [
+        "DynDOLODExecutionError",
+        "DynDOLODExecutionError, DynDOLODTimeoutError",
+        "Exception",
+        "LockAcquisitionError",
+        "_ActionManifestError",
+        "asyncio.CancelledError",
+    ]
+
+
+def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
+    """SOP §5 regla 5 sobre CADA registro de fallo del módulo, detectado por AST.
+
+    Universo = todo ``logger.error``/``warning``/``critical`` del módulo, no solo
+    los que están dentro de un ``except``. Las tres fugas que esto cierra y que un
+    ancla limitada a los handlers dejaba pasar:
+
+    - el preflight en rojo y la ruta de config faltante devuelven el fallo con
+      ``return``, sin pasar por ningún ``except``;
+    - ``_log_result_error`` emite el registro canónico ``dyndolod_pipeline_failed``
+      —el que consulta un dashboard— desde un helper que los handlers llaman, así
+      que etiquetar el handler no lo alcanza;
+    - un ``any(...)`` por handler daba por bueno el bloque entero con que UNO solo
+      de sus registros llevara el campo.
+    """
+    registros = _registros_de_fallo(_modulo_servicio_ast())
+    assert registros, "no se detectó ningún registro de fallo: el ancla quedaría vacía"
+
+    sin_etapa = sorted(f"{c.func.attr}:{c.lineno}" for c in registros if not _lleva_stage_index(c, etapa=9))
 
     assert sin_etapa == [], (
-        f"handlers de DynDOLODPipelineService.execute sin stage index estructurado: {sin_etapa}. "
-        'Agregar extra={"pipeline_stage": 9} al logger del handler (SOP §5 regla 5).'
+        f"registros de fallo de dyndolod_service.py sin stage index estructurado: {sin_etapa}. "
+        'Agregar extra={"pipeline_stage": 9} (SOP 5 regla 5).'
     )
+
+
+def test_los_servicios_sin_stage_index_estan_enumerados() -> None:
+    """Los OCHO ``*_service.py``, clasificados uno por uno. Nadie entra solo.
+
+    La regla es del pipeline entero, no de DynDOLOD. Congelar solo el conjunto de
+    los que CUMPLEN dejaba la exención como subproducto; este ancla la invierte y
+    enumera los ocho, así que un servicio nuevo no cumple ni está exento y rompe
+    el test hasta que se decida cuál de las dos cosas es.
+
+    Que la deuda esté enumerada NO equivale a haberla verificado: seis servicios
+    siguen sin emitir el campo, y `AGENTS.md` es explícito en que el párrafo que
+    justifica un recorte no cuenta como verificación. Esto la acota y la hace
+    fallar si crece; cerrarla es un PR por servicio (cinco tienen su etapa ya
+    determinada por la prosa que arrastran, `vramr` no marca ninguna).
+    """
+    tools = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).parent
+    servicios = sorted(p.name for p in tools.glob("*_service.py"))
+    assert len(servicios) == 8, f"cambió el universo de servicios: {servicios}"
+
+    cumplen, no_cumplen = set(), set()
+    for nombre in servicios:
+        arbol = ast.parse((tools / nombre).read_text(encoding="utf-8"))
+        emite = any(
+            (isinstance(n, ast.keyword) and n.arg == "pipeline_stage")
+            or (isinstance(n, ast.Constant) and n.value == "pipeline_stage")
+            for n in ast.walk(arbol)
+        )
+        (cumplen if emite else no_cumplen).add(nombre)
+
+    assert cumplen == {"dyndolod_service.py", "grass_cache_service.py"}
+    assert no_cumplen == set(_SERVICIOS_SIN_STAGE_INDEX)
 
 
 def test_los_modulos_que_emiten_el_stage_index_estan_congelados() -> None:
     """Qué módulos de ``sky_claw/local/`` emiten el stage index estructurado.
 
-    La regla es del pipeline entero, no de DynDOLOD: hoy la cumplen DOS de los
-    ocho ``*_service.py`` (grass_cache y —tras este cambio— dyndolod) más dos
-    runners que la emiten vía ``subprocess_error_extra``. Los seis servicios
-    restantes (synthesis, loot, pandora, wrye_bash, vramr, xedit) son el mismo
-    hueco a escala: los que marcan etapa lo hacen SOLO en prosa, y en tres
-    ortografías incompatibles ("(stage 7)", "(fase 6)", "[FASE-6]").
-
-    Se congela el conjunto —en vez de arreglar los seis en este PR— para que la
-    deuda sea visible y para que un servicio nuevo, o una regresión que borre el
-    campo, rompan el test. Misma forma que `test_db_connection_invariant.py`:
-    detectar por AST y congelar. Al portar la regla a un servicio, agregarlo acá.
+    Cubre lo que el ancla por servicio no ve: los runners. `loot/cli.py` y
+    `xedit/runner.py` hardcodean ``pipeline_stage=5``/``=1`` vía
+    ``subprocess_error_extra``, que es la razón por la que "los runners son
+    stage-agnósticos" no es precedente asentado en este repo (ver §5 regla 5).
+    Una regresión que borre el campo de cualquiera de los cuatro rompe acá.
     """
     raiz = pathlib.Path(sky_claw.local.__file__).parent
 
