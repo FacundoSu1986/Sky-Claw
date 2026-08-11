@@ -51,9 +51,9 @@ logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
 #: duplicarlo garantiza que un reordenamiento del DAG deje la mitad desactualizada.
 #:
 #: No se deriva de nada porque no hay de dónde: el orden del pipeline vive como
-#: tabla en prosa en §1 —que dice de sí misma "NOT yet enforced at runtime"— y no
-#: existe un registro de etapas en código. Si alguna vez se construye, este es el
-#: único sitio a cambiar en este servicio.
+#: tabla en prosa en §1 —que la propia sección aclara que todavía no se hace
+#: cumplir en tiempo de ejecución— y no existe un registro de etapas en código.
+#: Si alguna vez se construye, este es el único sitio a cambiar en este servicio.
 _ETAPA_DYNDOLOD = 9
 
 

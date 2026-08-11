@@ -2510,10 +2510,13 @@ def _nodo_de_la_etapa(llamada: ast.Call) -> ast.expr | None:
     """Nodo usado como valor de ``pipeline_stage`` en el ``extra``, o ``None``.
 
     Reconoce las dos formas estructuradas del repo: el dict literal
-    (``extra={"pipeline_stage": X}``, como `grass_cache_service.py`) y el helper
-    (``extra=subprocess_error_extra(..., pipeline_stage=X)``, como
-    `logging_config.py`, que usan `loot/cli.py` y `xedit/runner.py`). NO reconoce
-    la prosa: un ``"DynDOLOD (stage 9): ..."`` suelto no cuenta.
+    (``extra={"pipeline_stage": X}``, como `grass_cache_service.py`) y ESE helper
+    puntual (``extra=subprocess_error_extra(..., pipeline_stage=X)``, como
+    `logging_config.py`, que usan `loot/cli.py` y `xedit/runner.py`) — no
+    cualquier llamada que exponga el kwarg. Un ``extra=otro_helper(pipeline_stage=9)``
+    no cuenta: nada garantiza que otro helper decore el dict que le llega al
+    logger de la misma forma (review CodeRabbit, PR #464). Tampoco reconoce la
+    prosa: un ``"DynDOLOD (stage 9): ..."`` suelto no cuenta.
 
     Devuelve el NODO y no un bool para que quien llame distinga un literal suelto
     de una referencia a la constante del módulo — la diferencia que impide que el
@@ -2526,7 +2529,11 @@ def _nodo_de_la_etapa(llamada: ast.Call) -> ast.expr | None:
             for clave, valor in zip(kw.value.keys, kw.value.values, strict=True):
                 if isinstance(clave, ast.Constant) and clave.value == "pipeline_stage":
                     return valor
-        elif isinstance(kw.value, ast.Call):
+        elif (
+            isinstance(kw.value, ast.Call)
+            and isinstance(kw.value.func, ast.Name)
+            and kw.value.func.id == "subprocess_error_extra"
+        ):
             for interno in kw.value.keywords:
                 if interno.arg == "pipeline_stage":
                     return interno.value
@@ -2597,10 +2604,11 @@ def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None
 
     Lo que este ancla NO puede hacer, y conviene no aparentar: atar ese 9 al orden
     real del DAG. Ese orden vive como tabla en prosa en `sky_claw/local/AGENTS.md`
-    §1, que dice de sí misma "NOT yet enforced at runtime"; no hay registro de
-    etapas en código del que derivarlo (`GenerateLodsStrategy` no menciona ninguna
-    etapa). Centralizar el número es la mitad que sí se puede hacer hoy: deja UN
-    solo sitio que corregir si el DAG se reordena, en vez de dieciséis.
+    §1, que la propia sección aclara que todavía no se hace cumplir en tiempo de
+    ejecución; no hay registro de etapas en código del que derivarlo
+    (`GenerateLodsStrategy` no menciona ninguna etapa). Centralizar el número es
+    la mitad que sí se puede hacer hoy: deja UN solo sitio que corregir si el DAG
+    se reordena, en vez de dieciséis.
     """
     arbol = _modulo_servicio_ast()
     constantes = _constantes_de_modulo(arbol)
