@@ -18,6 +18,7 @@ import logging
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -39,6 +40,67 @@ logger = logging.getLogger(__name__)
 # sobrevive al padre, el write-end nunca cierra y `_drain` no vería EOF jamás; sin
 # esta cota, el `gather` del path de éxito colgaría `_execute_process` para siempre.
 _DRAIN_GRACE_SECONDS = 10.0
+
+#: Switches de ruta cuyo dueño es ``DynDOLODConfig``: ``extra_args`` no puede
+#: redefinirlos (ver ``DynDOLODRunner._extra_args_admisibles``).
+#:
+#: Es la MISMA lista que la tupla ``switches`` de ``_build_xedit_args``, escrita
+#: dos veces: nada en el lenguaje las acopla. El acoplamiento lo impone un test —
+#: ``test_letras_administradas_cubre_los_switches_que_emite_el_runner`` lee la
+#: tupla por AST y exige igualdad literal contra estas letras. Sin ese ancla,
+#: agregar un sexto switch administrado lo dejaba fuera del rechazo y la suite
+#: quedaba verde: medido por mutación en la review de #462 (los tests de vector
+#: solo se quejaban del ``len`` del argv, y actualizar ese ``len`` —lo que haría
+#: cualquiera al agregar un switch— restauraba el verde con el hueco abierto).
+_LETRAS_ADMINISTRADAS = "odmpt"
+
+#: El prefijo admite ``/`` además de ``-``, y tolera whitespace líder. La RTL de
+#: Delphi reconoce ``/switch`` en ``FindCmdLineSwitch`` y NO está verificado cuál
+#: de las dos formas mira el parser de xEdit. La asimetría decide: rechazar un
+#: ``/o:`` que el binario quizá ignore no le cuesta nada a ningún caller legítimo
+#: —la doc usa ``-`` y nadie emite la otra forma—, mientras que dejar pasar uno
+#: que sí honre pisa la raíz administrada, que es exactamente lo que esta regla
+#: existe para impedir. Fail-closed sobre la duda, como el resto de
+#: ``_extra_args_admisibles``.
+_SWITCH_ADMINISTRADO = re.compile(rf"^\s*[-/][{_LETRAS_ADMINISTRADAS}]:", re.IGNORECASE)
+
+#: Game modes de xEdit, sin el prefijo. También los administra ``DynDOLODConfig``
+#: (campo tipado ``game_mode``, decisión única en ``__post_init__``), así que
+#: ``extra_args`` tampoco puede introducir un segundo game mode.
+#:
+#: Por qué importa más que los switches de ruta: el game mode es un switch SUELTO,
+#: sin ``:``, así que la regla de ``_SWITCH_ADMINISTRADO`` no lo veía. Y un segundo
+#: game mode no desvía una ruta — cambia el juego entero: `-tes5` manda a DynDOLOD
+#: a buscar la clave de registro de Skyrim LE y morir con
+#: ``Fatal: Could not determine ... installation path`` (el error del rig del
+#: 2026-08-05), y `-tes5vr` contra un rig SSE ejecuta con las definiciones
+#: equivocadas. El parser de xEdit no documenta cuál gana si aparecen dos.
+#:
+#: Procedencia, sin sobre-declarar: los DOS que Sky-Claw puede emitir (``sse``,
+#: ``tes5vr``) NO están escritos acá — los deriva por AST
+#: ``test_game_modes_administrados_cubre_los_que_emite_el_runner``, que exige que
+#: estén contenidos en este conjunto. El resto son los game modes que documenta
+#: xEdit; la lista puede quedar incompleta si xEdit agrega uno, y eso no la
+#: invalida: es fail-closed sobre los conocidos, no una prueba de exhaustividad.
+_GAME_MODES_ADMINISTRADOS = frozenset(
+    {
+        "sse",
+        "tes5vr",
+        "tes5",
+        "tes4",
+        "fo3",
+        "fnv",
+        "fo4",
+        "fo4vr",
+        "fo76",
+        "enderal",
+        "enderalse",
+    }
+)
+
+#: Mismo prefijo tolerante que ``_SWITCH_ADMINISTRADO`` (``-``/``/``, whitespace
+#: líder) y sin ``:``: el game mode es un switch suelto.
+_GAME_MODE_SUELTO = re.compile(r"^\s*[-/]([A-Za-z0-9]+)\s*$")
 
 # Firma de un candidato sin artefacto. Distinto de ``None`` (= no se pudo
 # sondear) a propósito: colapsar los dos casos hace fail-open el gate de
@@ -92,7 +154,7 @@ class DynDOLODNotFoundError(DynDOLODExecutionError):
 
 
 class DynDOLODValidationError(DynDOLODExecutionError):
-    """Raised when output validation fails."""
+    """Raised when validation fails: output artifacts or caller-supplied argv."""
 
     def __init__(self, message: str, output_path: pathlib.Path | None = None) -> None:
         super().__init__(message=message, return_code=None, stderr=None)
@@ -346,7 +408,9 @@ class DynDOLODRunner:
         """
         Ejecuta TexGen (etapa 9, asistida).
 
-        CLI verificado: TexGenx64.exe -sse -o:"…" -d:"…" [-m:"…"] [-p:"…"] -t:"…".
+        CLI verificado (línea de comandos): TexGenx64.exe -sse -o:"…" -d:"…"
+        [-m:"…"] [-p:"…"] -t:"…". Las comillas son de la LÍNEA; en el argv que
+        construye :meth:`_build_xedit_args` no van (ver :meth:`_switch_de_ruta`).
         La herramienta es una app GUI (PE Subsystem 2): no escribe a stdout; el
         éxito se decide por exit code + artefacto + log (ver post-check).
 
@@ -359,6 +423,10 @@ class DynDOLODRunner:
         Raises:
             DynDOLODNotFoundError: Si el ejecutable de TexGen no existe.
             DynDOLODTimeoutError: Si excede el timeout.
+            DynDOLODValidationError: Si ``extra_args`` no cumple el contrato
+                (ver :meth:`_extra_args_admisibles`). Se lanza ANTES de tocar el
+                proceso; ``run_full_pipeline`` la atrapa como
+                ``DynDOLODExecutionError`` y la reporta como corrida fallida.
         """
         if self._config.texgen_exe is None:
             return ToolExecutionResult(
@@ -438,7 +506,9 @@ class DynDOLODRunner:
         """
         Ejecuta DynDOLOD (etapa 9, asistida).
 
-        CLI verificado: DynDOLODx64.exe -sse -o:"…" -d:"…" [-m:"…"] [-p:"…"] -t:"…".
+        CLI verificado (línea de comandos): DynDOLODx64.exe -sse -o:"…" -d:"…"
+        [-m:"…"] [-p:"…"] -t:"…". Las comillas son de la LÍNEA; en el argv que
+        construye :meth:`_build_xedit_args` no van (ver :meth:`_switch_de_ruta`).
         La herramienta es una app GUI (PE Subsystem 2): no escribe a stdout; el
         éxito se decide por exit code + artefacto + log (ver post-check).
 
@@ -454,6 +524,10 @@ class DynDOLODRunner:
         Raises:
             DynDOLODNotFoundError: Si el ejecutable no existe.
             DynDOLODTimeoutError: Si excede el timeout.
+            DynDOLODValidationError: Si ``extra_args`` no cumple el contrato
+                (ver :meth:`_extra_args_admisibles`). Se lanza ANTES de tocar el
+                proceso; ``run_full_pipeline`` la atrapa como
+                ``DynDOLODExecutionError`` y la reporta como corrida fallida.
         """
         logger.info("Iniciando DynDOLOD con preset: %s", preset)
 
@@ -556,11 +630,12 @@ class DynDOLODRunner:
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
+        # La línea real, no la lista: es la evidencia que faltaba cuando el argv
+        # llegaba mangled (ver _linea_de_comando).
         logger.info(
-            "Ejecutando %s: %s %s (timeout: %ds)",
+            "Ejecutando %s: %s (timeout: %ds)",
             tool_name,
-            executable,
-            " ".join(args),
+            self._linea_de_comando([str(executable), *args]),
             effective_timeout,
         )
 
@@ -988,8 +1063,10 @@ class DynDOLODRunner:
         game_mode = "-tes5vr" if self._config.game_mode == "tes5vr" else "-sse"
         args: list[str] = [game_mode]
 
-        # Los cinco -X:"ruta" de la doc (sin espacios; directorios con \ final).
-        # -o:/-d:/-t: siempre (tienen default derivado); -m:/-p: solo explícitos.
+        # Los cinco -X: de la doc, un elemento de argv por switch: dos puntos,
+        # directorios con \ final y SIN comillas (las pone list2cmdline; ver
+        # _switch_de_ruta). -o:/-d:/-t: siempre (tienen default derivado);
+        # -m:/-p: solo explícitos.
         switches = (
             ("o", self._config.output_root, True),
             ("d", self._config.data_dir, True),
@@ -1001,21 +1078,200 @@ class DynDOLODRunner:
             if ruta is not None:
                 args.append(self._switch_de_ruta(letra, ruta, directorio=es_directorio))
 
-        if extra_args:
-            args.extend(extra_args)
+        # SIN guard de truthiness: `if extra_args:` mandaba a `""`, `{}`, `0`,
+        # `False` y `()` por el camino de "no hay argumentos" en vez del de
+        # validación, o sea que la regla (1) no los veía (hallazgo de CodeRabbit
+        # en #462). La ausencia se expresa con `None`, y el que decide es
+        # `_extra_args_admisibles` — no la truthiness del valor.
+        args.extend(self._extra_args_admisibles(extra_args))
 
-        logger.debug("DynDOLOD/TexGen CLI args: %s", " ".join(args))
+        logger.debug("DynDOLOD/TexGen CLI args: %s", self._linea_de_comando(args))
         return args
 
     @staticmethod
+    def _extra_args_admisibles(extra_args: object) -> list[str]:
+        """Los ``extra_args`` del caller, o ``DynDOLODValidationError``. Fail-closed.
+
+        **La ausencia se expresa con ``None``, no con "algo falsy".** ``None`` →
+        ``[]``; ``[]`` → ``[]``; una ``list[str]`` no vacía pasa por las cuatro
+        reglas; **cualquier otra cosa se rechaza, sea falsy o no**. La distinción
+        importa porque antes el llamador hacía ``if extra_args:`` y mandaba ``""``,
+        ``{}``, ``0``, ``False`` y ``()`` por el camino de "no hay argumentos": la
+        regla (1) no llegaba a verlos y un payload con el tipo equivocado se leía
+        como "el operador no pidió extras" (hallazgo de CodeRabbit en #462).
+        Colapsar esos valores contra ``[]`` es la misma clase de error que despojar
+        comillas en silencio — esconde el bug del caller en vez de reportarlo.
+
+        Cuatro reglas, y ninguna normaliza: **rechazan**.
+
+        1. **Tiene que ser ``list[str]`` (o ``None``).** El valor entra por payload
+           y los type hints no validan datos en runtime:
+           ``GenerateLodsStrategy._filter_payload`` filtra la CLAVE
+           (``texgen_args``/``dyndolod_args`` están en ``_VALID_LOD_KEYS``) sin
+           mirar el tipo ni el valor. Un ``str`` suelto se extendería **carácter
+           por carácter** sobre el argv.
+        2. **Ningún elemento puede traer comillas propias.** Arreglar
+           :meth:`_switch_de_ruta` y dejar esta puerta abierta es el defecto hermano
+           del repo en su forma pura: ``extra_args`` se extendía verbatim, así que un
+           ``-o:"C:\\...\\"`` que entre por acá reproduce el
+           ``Can not create path C:\\C:\\...`` sin pasar por el helper.
+        3. **Ningún elemento puede redefinir un switch administrado**
+           (``-o:``/``-d:``/``-m:``/``-p:``/``-t:``, case-insensitive, y también en
+           sus formas ``/o:`` y con whitespace líder — ver ``_SWITCH_ADMINISTRADO``).
+           Esos cinco tienen dueño: :class:`DynDOLODConfig`. Que el payload los
+           re-suministre crea dos fuentes de verdad y rompe las premisas del
+           staging, del post-check y del rollback — y el parser de xEdit no
+           documenta cuál gana si el switch aparece dos veces, así que el resultado
+           sería indeterminado además de ambiguo.
+
+        4. **Ningún elemento puede introducir un segundo game mode**
+           (``-sse``/``-tes5``/``-tes5vr``/… — ver ``_GAME_MODES_ADMINISTRADOS``).
+           Lo administra :class:`DynDOLODConfig` por campo tipado, resuelto una
+           sola vez en ``__post_init__``. Es un switch SUELTO, sin ``:``, así que
+           la regla (3) no lo alcanzaba; y su daño es mayor que el de una ruta
+           desviada: ``-tes5`` manda la corrida a buscar la instalación de Skyrim
+           LE y muere con ``Could not determine ... installation path`` (el error
+           del rig del 2026-08-05), ``-tes5vr`` contra un rig SSE corre con las
+           definiciones equivocadas.
+
+        Las (3) y (4) son las correcciones que pidieron las reviews del PR #462
+        sobre la (2): con solo la (2), un ``-o:C:\\otra\\ruta\\`` sin comillas
+        pasaba y pisaba la raíz administrada, y un ``-tes5`` pelado pasaba y
+        cambiaba el juego. `_switch_de_ruta` sigue siendo el ÚNICO constructor de
+        los switches de ruta que Sky-Claw administra, y ``_build_xedit_args`` el
+        único emisor del game mode.
+
+        Se valida en :meth:`_build_xedit_args` porque es la pieza ÚNICA que los dos
+        ejecutables atraviesan: puesta en un solo lanzador, el otro queda sin cubrir.
+        ``run_full_pipeline`` ya traduce ``DynDOLODExecutionError`` a un resultado
+        fallido, así que esto degrada a rojo reportado, no a excepción sin manejar.
+
+        Sigue fuera de alcance agregar switches ajenos del parser de xEdit
+        (``-B:``, ``-C:``, ``-D:``, ``-S:``…): son legítimos como extensión y no
+        colisionan con nada que Sky-Claw administre.
+
+        El nombre evita a propósito el prefijo ``_valida``: ese prefijo declara
+        pertenencia a la familia del post-check (``test_dyndolod_service.py``,
+        "métodos que sondean el disco para dar el veredicto"), y esto no toca disco
+        ni decide veredicto. El ancla congelada lo detectó al primer intento.
+        """
+        # `None` es la ÚNICA forma de decir "sin argumentos extra". Se chequea por
+        # identidad y no por truthiness justamente para que `""`/`{}`/`0`/`False`/`()`
+        # caigan en el rechazo de abajo en vez de colarse como lista vacía.
+        if extra_args is None:
+            return []
+
+        if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
+            raise DynDOLODValidationError(
+                "extra_args tiene que ser list[str] o None: viene de payload y los type hints no "
+                "validan en runtime (un str suelto se extendería carácter por carácter). La ausencia "
+                "se expresa con None — un valor falsy de otro tipo es un bug del caller, no una lista "
+                f"vacía. Recibido: {extra_args!r}"
+            )
+
+        con_comillas = [a for a in extra_args if '"' in a]
+        if con_comillas:
+            raise DynDOLODValidationError(
+                "extra_args no puede contener comillas: en un elemento de argv pasan a ser "
+                "parte del valor y DynDOLOD muere con 'Can not create path C:\\C:\\...'. "
+                f"Pasá la ruta sin comillas. Ofensores: {con_comillas}"
+            )
+
+        reservados = [a for a in extra_args if _SWITCH_ADMINISTRADO.match(a)]
+        if reservados:
+            raise DynDOLODValidationError(
+                "extra_args no puede redefinir los switches de ruta que administra DynDOLODConfig "
+                "(-o:/-d:/-m:/-p:/-t:): serían dos fuentes de verdad y romperían las premisas del "
+                f"staging, el post-check y el rollback. Ofensores: {reservados}"
+            )
+
+        modos = [
+            a
+            for a in extra_args
+            if (m := _GAME_MODE_SUELTO.match(a)) and m.group(1).lower() in _GAME_MODES_ADMINISTRADOS
+        ]
+        if modos:
+            raise DynDOLODValidationError(
+                "extra_args no puede introducir un segundo game mode: lo administra DynDOLODConfig "
+                "(campo `game_mode`, resuelto una sola vez en __post_init__). Un game mode de más no "
+                "desvía una ruta, cambia el juego — `-tes5` manda la corrida a buscar la instalación "
+                "de Skyrim LE y muere con 'Could not determine installation path', y el parser de "
+                f"xEdit no documenta cuál gana si aparecen dos. Ofensores: {modos}"
+            )
+        return extra_args
+
+    @staticmethod
+    def _linea_de_comando(args: list[str]) -> str:
+        """Los ``args`` tal como los va a recibir el proceso, para los logs.
+
+        En Windows se serializa con ``subprocess.list2cmdline`` —la misma función
+        que usa ``create_subprocess_exec``— en vez de ``" ".join``. No es cosmético:
+        el bug de las comillas de :meth:`_switch_de_ruta` era invisible porque los
+        dos sitios que loguean el argv mostraban la LISTA, no la línea real, así
+        que el ``-o:\\"C:\\...`` mangled nunca apareció en ningún log. Fuera de
+        Windows ``list2cmdline`` no aplica (aplica reglas de quoting de MS) y el
+        join simple alcanza: ahí ``create_subprocess_exec`` pasa el argv directo.
+        """
+        if sys.platform == "win32":
+            return subprocess.list2cmdline(args)
+        return " ".join(args)
+
+    @staticmethod
     def _switch_de_ruta(letra: str, ruta: pathlib.Path, *, directorio: bool) -> str:
-        """Formatea ``-X:"ruta"`` según la doc oficial: dos puntos, comillas y
-        ``\\`` final en directorios (``-p:`` es un archivo: sin ``\\``). Sin los
-        dos puntos el parser de xEdit ignora el switch en silencio."""
+        """Formatea ``-X:<ruta>`` como ELEMENTO DE ARGV: dos puntos, ``\\`` final en
+        directorios (``-p:`` es un archivo: sin ``\\``) y **sin comillas**.
+
+        Sin los dos puntos el parser de xEdit ignora el switch en silencio.
+
+        **Las comillas de la doc pertenecen a la línea de comandos, no al valor.**
+        ``dyndolod.info/Help/Command-Line-Argument`` escribe ``-o:"c:\\Output\\"``
+        porque documenta lo que se tipea en un ``.lnk`` o en el campo *Arguments*
+        de MO2: ahí las comillas las consume el parser de Windows y nunca llegan
+        al programa. Embebidas en el elemento de la lista pasan a ser parte del
+        VALOR — ``create_subprocess_exec`` serializa con
+        ``subprocess.list2cmdline``, que escapa la comilla interna como ``\\"``, y
+        el programa recibe ``-o:"C:\\...\\"`` con las comillas literales adentro.
+        ``"C:\\...`` no es una ruta absoluta para DynDOLOD, que le antepone el
+        drive actual y muere con ``Can not create path C:\\C:\\...``. Medido en
+        rig el 2026-08-10: con este defecto **ninguna** corrida de TexGen ni de
+        DynDOLOD podía arrancar (2/2 binarios), incluso con el entorno correcto.
+
+        Quitar el ``\\`` final NO arregla eso: ``-p:"archivo"`` no lleva backslash
+        y llega igual con las comillas adentro. Y además contradice al binario,
+        que documenta *"All path parameters must be specified with trailing
+        backslash"*. Lo que sobra son las comillas: ``list2cmdline`` ya cita el
+        argumento cuando hace falta.
+
+        **Pero el fix está verificado solo para rutas SIN espacios.** Cuando el
+        argumento trae espacios, ``list2cmdline`` lo cita y duplica el backslash
+        final para que no escape su propia comilla de cierre: correcto bajo las
+        reglas de la CRT, y **no** bajo las de Delphi, que nunca trata el backslash
+        como escape. Medido: el binario recibiría ``-d:...\\Data\\\\`` en vez de
+        ``-d:...\\Data\\``. Y esa es la rama que corre SIEMPRE en un rig real —el
+        juego vive en ``Skyrim Special Edition`` y los INI bajo ``My Games``—, así
+        que el caso sin espacios es el sintético. Si el binario no tolera el
+        separador duplicado, el síntoma ``Can not create path`` sigue en producción.
+        **Pendiente de T5**, que lo decide en una corrida porque la herramienta ecoa
+        la ruta parseada en su log (``Using Output Path:``): dejar el duplicado si lo
+        tolera, omitir el ``\\`` final, o línea verbatim. No lo damos por resuelto.
+
+        Anclas, y su alcance exacto — los tests que solo miraban el string que
+        Sky-Claw produce congelaron el defecto en vez de atajarlo:
+
+        * ``test_dyndolod_argv_sin_espacios_sobrevive_los_dos_parsers``: con rutas
+          sin espacios ``list2cmdline`` no cita, y el parser de la CRT y el de
+          Delphi ven ambos exactamente este argv. Verificación real.
+        * ``test_dyndolod_argv_con_espacios_diverge_entre_crt_y_delphi``: con
+          espacios ``list2cmdline`` cita y **duplica el backslash final** (regla de
+          la CRT que Delphi no implementa), así que el binario ve un ``\\`` de más.
+          **Pendiente de T5**, y es la rama que corre siempre en un rig real
+          (``Skyrim Special Edition``, ``My Games``). Ningún test afirma que ese
+          vector sea correcto: se ancla la divergencia medida.
+        """
         texto = str(ruta)
         if directorio and not texto.endswith("\\"):
             texto += "\\"
-        return f'-{letra}:"{texto}"'
+        return f"-{letra}:{texto}"
 
     def _modo(self) -> str:
         """Modo del juego para el nombre del log (``DynDOLOD_SSE_log.txt``/``_TES5VR``).
