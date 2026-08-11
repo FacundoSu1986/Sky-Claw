@@ -42,11 +42,27 @@ logger = logging.getLogger(__name__)
 _DRAIN_GRACE_SECONDS = 10.0
 
 #: Switches de ruta cuyo dueño es ``DynDOLODConfig``: ``extra_args`` no puede
-#: redefinirlos (ver ``DynDOLODRunner._extra_args_admisibles``). Se derivan de las
-#: letras que emite ``_build_xedit_args``, no de una lista escrita a mano, para que
-#: agregar un switch administrado no deje su entrada afuera del rechazo.
+#: redefinirlos (ver ``DynDOLODRunner._extra_args_admisibles``).
+#:
+#: Es la MISMA lista que la tupla ``switches`` de ``_build_xedit_args``, escrita
+#: dos veces: nada en el lenguaje las acopla. El acoplamiento lo impone un test —
+#: ``test_letras_administradas_cubre_los_switches_que_emite_el_runner`` lee la
+#: tupla por AST y exige igualdad literal contra estas letras. Sin ese ancla,
+#: agregar un sexto switch administrado lo dejaba fuera del rechazo y la suite
+#: quedaba verde: medido por mutación en la review de #462 (los tests de vector
+#: solo se quejaban del ``len`` del argv, y actualizar ese ``len`` —lo que haría
+#: cualquiera al agregar un switch— restauraba el verde con el hueco abierto).
 _LETRAS_ADMINISTRADAS = "odmpt"
-_SWITCH_ADMINISTRADO = re.compile(rf"^-[{_LETRAS_ADMINISTRADAS}]:", re.IGNORECASE)
+
+#: El prefijo admite ``/`` además de ``-``, y tolera whitespace líder. La RTL de
+#: Delphi reconoce ``/switch`` en ``FindCmdLineSwitch`` y NO está verificado cuál
+#: de las dos formas mira el parser de xEdit. La asimetría decide: rechazar un
+#: ``/o:`` que el binario quizá ignore no le cuesta nada a ningún caller legítimo
+#: —la doc usa ``-`` y nadie emite la otra forma—, mientras que dejar pasar uno
+#: que sí honre pisa la raíz administrada, que es exactamente lo que esta regla
+#: existe para impedir. Fail-closed sobre la duda, como el resto de
+#: ``_extra_args_admisibles``.
+_SWITCH_ADMINISTRADO = re.compile(rf"^\s*[-/][{_LETRAS_ADMINISTRADAS}]:", re.IGNORECASE)
 
 # Firma de un candidato sin artefacto. Distinto de ``None`` (= no se pudo
 # sondear) a propósito: colapsar los dos casos hace fail-open el gate de
@@ -369,6 +385,10 @@ class DynDOLODRunner:
         Raises:
             DynDOLODNotFoundError: Si el ejecutable de TexGen no existe.
             DynDOLODTimeoutError: Si excede el timeout.
+            DynDOLODValidationError: Si ``extra_args`` no cumple el contrato
+                (ver :meth:`_extra_args_admisibles`). Se lanza ANTES de tocar el
+                proceso; ``run_full_pipeline`` la atrapa como
+                ``DynDOLODExecutionError`` y la reporta como corrida fallida.
         """
         if self._config.texgen_exe is None:
             return ToolExecutionResult(
@@ -466,6 +486,10 @@ class DynDOLODRunner:
         Raises:
             DynDOLODNotFoundError: Si el ejecutable no existe.
             DynDOLODTimeoutError: Si excede el timeout.
+            DynDOLODValidationError: Si ``extra_args`` no cumple el contrato
+                (ver :meth:`_extra_args_admisibles`). Se lanza ANTES de tocar el
+                proceso; ``run_full_pipeline`` la atrapa como
+                ``DynDOLODExecutionError`` y la reporta como corrida fallida.
         """
         logger.info("Iniciando DynDOLOD con preset: %s", preset)
 
@@ -1039,12 +1063,13 @@ class DynDOLODRunner:
            ``-o:"C:\\...\\"`` que entre por acá reproduce el
            ``Can not create path C:\\C:\\...`` sin pasar por el helper.
         3. **Ningún elemento puede redefinir un switch administrado**
-           (``-o:``/``-d:``/``-m:``/``-p:``/``-t:``, case-insensitive). Esos cinco
-           tienen dueño: :class:`DynDOLODConfig`. Que el payload los re-suministre
-           crea dos fuentes de verdad y rompe las premisas del staging, del
-           post-check y del rollback — y el parser de xEdit no documenta cuál gana
-           si el switch aparece dos veces, así que el resultado sería indeterminado
-           además de ambiguo.
+           (``-o:``/``-d:``/``-m:``/``-p:``/``-t:``, case-insensitive, y también en
+           sus formas ``/o:`` y con whitespace líder — ver ``_SWITCH_ADMINISTRADO``).
+           Esos cinco tienen dueño: :class:`DynDOLODConfig`. Que el payload los
+           re-suministre crea dos fuentes de verdad y rompe las premisas del
+           staging, del post-check y del rollback — y el parser de xEdit no
+           documenta cuál gana si el switch aparece dos veces, así que el resultado
+           sería indeterminado además de ambiguo.
 
         La (3) es la corrección que pidió la review del PR #462 sobre la (2): con
         solo la (2), un ``-o:C:\\otra\\ruta\\`` sin comillas pasaba y pisaba la raíz

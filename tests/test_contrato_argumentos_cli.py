@@ -76,6 +76,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
+
+# Import a nivel de módulo (el resto del archivo importa dyndolod dentro de cada
+# test) porque `@parametrize` se evalúa en tiempo de colección: es lo que hace que
+# la enumeración de los switches administrados SALGA del código en vez de ser una
+# tercera lista escrita a mano que puede desalinearse en silencio.
+from sky_claw.local.tools.dyndolod_runner import _LETRAS_ADMINISTRADAS
 from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 from sky_claw.local.tools.wrye_bash_runner import (
     WryeBashConfig,
@@ -490,8 +496,9 @@ def test_switches_de_ruta_de_dyndolod_siempre_llevan_dos_puntos() -> None:
         )
     )
     assert not ofensores, (
-        f'`-t`/`-p` pelados reaparecen en {ofensores}. El contrato exige `-t:"…"`/`-p:"…"` '
-        "con dos puntos: sin `:` el switch se ignora en silencio."
+        f"`-t`/`-p` pelados reaparecen en {ofensores}. El contrato exige `-t:<ruta>`/`-p:<ruta>` "
+        "con dos puntos: sin `:` el switch se ignora en silencio. (Sin comillas: las pone "
+        "`list2cmdline` al serializar — ver `_switch_de_ruta`.)"
     )
 
 
@@ -1069,14 +1076,14 @@ async def test_dyndolod_extra_args_con_comillas_es_rechazado(tmp_path: pathlib.P
     assert argv[-1] == "-B:C:\\backups\\"
 
 
-@pytest.mark.parametrize("letra", ["o", "d", "m", "p", "t"])
+@pytest.mark.parametrize("letra", list(_LETRAS_ADMINISTRADAS))
 @pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
 async def test_dyndolod_extra_args_no_puede_redefinir_un_switch_administrado(
     tmp_path: pathlib.Path,
     lanzador: str,
     letra: str,
 ) -> None:
-    """Los cinco switches de ruta tienen dueño: ``DynDOLODConfig``.
+    """Los switches de ruta tienen dueño: ``DynDOLODConfig``.
 
     Rechazar solo las comillas no alcanzaba: un ``-o:C:\\otra\\ruta\\`` sin comillas
     pasaba y **pisaba la raíz administrada**, creando dos fuentes de verdad. El
@@ -1085,8 +1092,12 @@ async def test_dyndolod_extra_args_no_puede_redefinir_un_switch_administrado(
     documenta cuál gana si el switch aparece dos veces, así que el resultado sería
     indeterminado además de ambiguo (review del PR #462).
 
-    Enumera **los cinco** switches × **los dos** lanzadores: un caso escrito a mano
-    para el que uno se acordó no ataja al de al lado.
+    Enumera **todos** los switches × **los dos** lanzadores: un caso escrito a mano
+    para el que uno se acordó no ataja al de al lado. La lista de letras sale de
+    ``_LETRAS_ADMINISTRADAS``, no de un literal en este archivo — un literal acá
+    sería una tercera copia que puede desalinearse del código sin dar señal. Que
+    esa constante siga cubriendo lo que el runner emite lo verifica
+    ``test_letras_administradas_cubre_los_switches_que_emite_el_runner``.
     """
     from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
 
@@ -1097,6 +1108,75 @@ async def test_dyndolod_extra_args_no_puede_redefinir_un_switch_administrado(
             with pytest.raises(DynDOLODValidationError, match="administra DynDOLODConfig"):
                 await getattr(runner, lanzador)(extra_args=[variante])
         assert not ejecutar.called
+
+
+@pytest.mark.parametrize("letra", list(_LETRAS_ADMINISTRADAS))
+@pytest.mark.parametrize("prefijo", ["-", "/", " -", "\t-", "  /"])
+async def test_dyndolod_extra_args_rechaza_las_formas_alternativas_del_prefijo(
+    tmp_path: pathlib.Path,
+    prefijo: str,
+    letra: str,
+) -> None:
+    """El rechazo no se evade cambiando ``-`` por ``/`` ni metiendo un espacio.
+
+    La RTL de Delphi reconoce ``/switch`` en ``FindCmdLineSwitch`` y NO está
+    verificado cuál de las dos formas mira el parser de xEdit — así que la regla
+    resuelve la duda fail-closed, igual que el resto de ``_extra_args_admisibles``.
+    La asimetría es lo que decide: rechazar un ``/o:`` que el binario tal vez ignore
+    no le cuesta nada a ningún caller legítimo (la doc usa ``-`` y nadie emite la
+    otra forma), mientras que dejar pasar uno que sí honre pisa la raíz administrada.
+
+    Con la regex anclada en ``^-`` que tenía la primera versión, las cinco variantes
+    de prefijo de este test pasaban derecho al argv (review del PR #462).
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
+
+    with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
+        with pytest.raises(DynDOLODValidationError, match="administra DynDOLODConfig"):
+            await runner.run_dyndolod(extra_args=[f"{prefijo}{letra}:C:\\otra\\ruta\\"])
+        assert not ejecutar.called
+
+
+def test_letras_administradas_cubre_los_switches_que_emite_el_runner() -> None:
+    """``_LETRAS_ADMINISTRADAS`` y la tupla ``switches`` son la misma lista, dos veces.
+
+    Nada en el lenguaje las acopla: son dos literales en el mismo módulo. Este ancla
+    lee la tupla **por AST** y exige igualdad literal, que es la diferencia entre
+    enumerar y muestrear (`AGENTS.md`).
+
+    Sin él, agregar un sexto switch administrado a ``_build_xedit_args`` lo dejaba
+    fuera de ``_extra_args_admisibles`` y ``extra_args`` podía pisarlo. Medido por
+    mutación en la review del PR #462: los tests de vector solo se quejaban del
+    ``len`` del argv, y actualizar ese ``len`` —lo que haría cualquiera al agregar un
+    switch— devolvía la suite entera a verde con el hueco abierto. El comentario del
+    módulo llegó a afirmar que las letras "se derivan" de la tupla; no se derivaban,
+    y esa afirmación es peor que ninguna porque suprime la auditoría del próximo.
+    """
+    import inspect
+    import textwrap
+
+    from sky_claw.local.tools import dyndolod_runner
+
+    fuente = textwrap.dedent(inspect.getsource(dyndolod_runner.DynDOLODRunner._build_xedit_args))
+    asignaciones = [
+        nodo
+        for nodo in ast.walk(ast.parse(fuente))
+        if isinstance(nodo, ast.Assign) and any(getattr(t, "id", None) == "switches" for t in nodo.targets)
+    ]
+    assert len(asignaciones) == 1, (
+        f"se esperaba exactamente una asignación de `switches` en `_build_xedit_args`; hay {len(asignaciones)}. "
+        "Si el runner cambió de forma, este ancla necesita actualizarse — no borrarse."
+    )
+
+    emitidas = {elemento.elts[0].value for elemento in asignaciones[0].value.elts}
+    assert emitidas == set(_LETRAS_ADMINISTRADAS), (
+        f"`_build_xedit_args` emite {sorted(emitidas)} y el rechazo cubre "
+        f"{sorted(set(_LETRAS_ADMINISTRADAS))}. Un switch administrado quedó fuera de "
+        "`_extra_args_admisibles`: `extra_args` puede pisarlo y crear dos fuentes de verdad "
+        "sobre una ruta que el staging, el post-check y el rollback dan por fija."
+    )
 
 
 @pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
