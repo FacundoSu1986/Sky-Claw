@@ -562,7 +562,7 @@ class DynDOLODPipelineService:
         try:
             runner = self._ensure_runner()
         except DynDOLODExecutionError as exc:
-            logger.error("Error inicializando DynDOLOD: %s", exc)
+            logger.error("DynDOLOD (stage 9): error inicializando el runner: %s", exc, extra={"pipeline_stage": 9})
             duration = time.monotonic() - start_time
             await self._publish_completed(
                 preset=preset,
@@ -814,7 +814,11 @@ class DynDOLODPipelineService:
                 contexto="fallo del manifiesto",
             )
             duration = time.monotonic() - start_time
-            logger.error("DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s", exc)
+            logger.error(
+                "DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s",
+                exc,
+                extra={"pipeline_stage": 9},
+            )
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -840,7 +844,11 @@ class DynDOLODPipelineService:
 
         except LockAcquisitionError as exc:
             duration = time.monotonic() - start_time
-            logger.error("No se pudo adquirir lock para DynDOLOD pipeline: %s", exc)
+            logger.error(
+                "DynDOLOD (stage 9): no se pudo adquirir el lock del pipeline: %s",
+                exc,
+                extra={"pipeline_stage": 9},
+            )
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -875,7 +883,12 @@ class DynDOLODPipelineService:
                 contexto="error de dominio",
             )
             duration = time.monotonic() - start_time
-            logger.error("DynDOLOD pipeline domain error: %s (rolled_back=%s)", exc, rolled_back)
+            logger.error(
+                "DynDOLOD (stage 9): error de dominio del pipeline: %s (rolled_back=%s)",
+                exc,
+                rolled_back,
+                extra={"pipeline_stage": 9},
+            )
 
             await self._log_result_error(preset, str(exc))
             await self._publish_completed(
@@ -902,7 +915,11 @@ class DynDOLODPipelineService:
         except asyncio.CancelledError:
             # Cancelación de task — hacer cleanup mínimo y re-lanzar.
             duration = time.monotonic() - start_time
-            logger.warning("DynDOLOD pipeline cancelled after %.1fs", duration)
+            logger.warning(
+                "DynDOLOD (stage 9): pipeline cancelado tras %.1fs",
+                duration,
+                extra={"pipeline_stage": 9},
+            )
             await self._cerrar_tx_tras_rollback(
                 tx_id,
                 dir_rollbacks,
@@ -927,9 +944,10 @@ class DynDOLODPipelineService:
             )
             duration = time.monotonic() - start_time
             logger.error(
-                "Unexpected error in DynDOLOD pipeline: %s",
+                "DynDOLOD (stage 9): error inesperado del pipeline: %s",
                 exc,
                 exc_info=True,
+                extra={"pipeline_stage": 9},
             )
 
             await self._log_result_error(preset, str(exc))
