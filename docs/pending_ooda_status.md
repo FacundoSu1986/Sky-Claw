@@ -71,8 +71,78 @@ confirmarlo contra código y tests.
 | Smokes reales restantes | Bloqueado (rig humano) | — | NGIO, scripts `.pas`, GUI/FOMOD y Telegram end-to-end | humano |
 | Residuos OODA de bajo valor | Abierto | — | Solo retomar agrupados si cambia su relación esfuerzo/impacto | historial OODA §3 |
 | Residuos de crash logging | Abierto | #383 cerró F1/F2 reales | Cinco deudas sin víctima productiva actual | historial OODA, addendum #372 |
+| Preset de TexGen desvía `OutputPath` | Abierto | — | Determinar la precedencia `preset` vs `-o:` y decidir el mecanismo (limpiar/aislar, sembrar preset administrado, detectar en preflight o verificar el campo antes de Start) — ver sección propia abajo | rig T5 2026-08-11 (`INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` §7.3) |
 
 <!-- markdownlint-enable MD013 -->
+
+## TexGen: preset persistido puede desviar `OutputPath` fuera del staging administrado
+
+> **Estado:** `OPEN / FOLLOW-UP — evidencia dinámica confirmada, fix no diseñado
+> todavía`. **Prioridad sugerida:** P1, antes de automatizar completamente la GUI
+> de TexGen.
+>
+> **Nota de nomenclatura:** el informe de rig lo rotula **F1**. En este inventario
+> `F1` ya está tomado (fila `F1 | Cerrado | #328`, auditoría de resiliencia #319),
+> así que acá lleva ID descriptivo. Al citarlo, referenciar el informe y no el
+> número suelto.
+
+### Evidencia
+
+Medido sobre **Alpha-209 real** (rig 2026-08-11, informe
+`INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` §6.1 y §7.3):
+
+- el preset persistido `Edit Scripts\DynDOLOD\Presets\DynDOLOD_SSE_TexGen.ini`
+  guarda una clave `OutputPath=` con el root de la corrida anterior;
+- Sky-Claw pasó `-o:<root administrado>` correctamente, y el **argv se parseó
+  bien**: el encabezado del log del binario ecoó `Using Output Path:` igual al
+  root del argv;
+- pero la GUI **pre-cargó el campo Output desde el preset**, no desde el argv
+  (verificado por dump UIA del campo antes de pulsar Start);
+- al pulsar Start, las **escrituras reales fueron al path del preset**, no al root
+  administrado. Exit 0.
+- quitando/aislando el preset, TexGen volvió a usar el root esperado (§6.3: campo
+  GUI = valor del argv, escrituras en el root del argv, `Using Output Path:`
+  exacto).
+
+DynDOLOD no exhibió el comportamiento en el mismo rig, pero **no se probó con un
+preset de DynDOLOD rancio**: la corrida fue sin preset. La asimetría no está
+verificada, solo no observada.
+
+### Riesgo
+
+Sky-Claw puede **creer que controla la superficie de salida mediante `-o:`**
+mientras TexGen escribe fuera del staging administrado. El log no delata la
+divergencia: el encabezado sigue ecoando el argv.
+
+Consecuencias **derivadas, no reproducidas** en el rig — el rig demostró la
+desviación de escrituras, no cada uno de estos efectos:
+
+- post-check corriendo sobre la ruta equivocada;
+- artefactos fuera del alcance del rollback;
+- stale output aceptado como fresco;
+- contaminación con salida de una corrida anterior;
+- empaquetado a MO2 de una superficie distinta de la realmente generada.
+
+### Investigación previa al fix
+
+Antes de implementar nada:
+
+1. determinar el **contrato exacto de precedencia** entre el `OutputPath` del
+   preset y el `-o:` del argv (¿el argv solo alimenta el encabezado del log y la
+   GUI gana siempre? ¿depende de si el preset existe?);
+2. decidir el mecanismo entre: limpiar/aislar el preset, sembrar un preset
+   administrado, detectar el conflicto en preflight, o verificar el campo Output
+   antes de Start;
+3. **preservar backup/restore del preset** si se decide modificarlo;
+4. **no tocar presets del usuario en silencio** — es estado suyo;
+5. agregar test o rig que demuestre que TexGen escribe **dentro** del staging
+   administrado incluso cuando existe estado persistido previo.
+
+### Qué NO es
+
+No es un defecto del contrato de argv del PR #462: en ese mismo rig el `-o:` se
+parseó exacto en los dos binarios y el acceptance gate de quoting quedó cerrado
+(informe §7.1). No bloquea ese merge.
 
 ## 2.3 Zero-Trust — 2 ítems residuales
 
