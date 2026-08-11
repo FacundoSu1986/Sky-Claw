@@ -45,6 +45,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
 
+#: Índice de etapa de DynDOLOD en el DAG de ``sky_claw/local/AGENTS.md`` §1, que
+#: todo registro de fallo de este módulo emite como ``pipeline_stage`` (§5 regla
+#: 5). Se define UNA vez a propósito: el número aparece en dieciséis registros y
+#: duplicarlo garantiza que un reordenamiento del DAG deje la mitad desactualizada.
+#:
+#: No se deriva de nada porque no hay de dónde: el orden del pipeline vive como
+#: tabla en prosa en §1 —que dice de sí misma "NOT yet enforced at runtime"— y no
+#: existe un registro de etapas en código. Si alguna vez se construye, este es el
+#: único sitio a cambiar en este servicio.
+_ETAPA_DYNDOLOD = 9
+
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
     """Adjunta el reporte de preflight al ``result`` cuando no está verde.
@@ -416,7 +427,7 @@ class DynDOLODPipelineService:
                 "DynDOLOD (stage 9): fallo al persistir el informe de vuelo de la TX %d",
                 tx_id,
                 exc_info=True,
-                extra={"pipeline_stage": 9},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
             )
 
     async def _cerrar_tx_tras_rollback(
@@ -457,7 +468,7 @@ class DynDOLODPipelineService:
                     "la TX queda PENDIENTE hasta aislar los targets crudos.",
                     contexto,
                     tx_id,
-                    extra={"pipeline_stage": 9},
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD},
                 )
             else:
                 logger.critical(
@@ -465,7 +476,7 @@ class DynDOLODPipelineService:
                     "revisar backups move-aside y targets no cubiertos manualmente.",
                     contexto,
                     tx_id,
-                    extra={"pipeline_stage": 9},
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD},
                 )
             return False
         try:
@@ -477,7 +488,7 @@ class DynDOLODPipelineService:
                 contexto,
                 journal_exc,
                 exc_info=True,
-                extra={"pipeline_stage": 9},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
             )
         return True
 
@@ -535,7 +546,7 @@ class DynDOLODPipelineService:
                 logger.warning(
                     "DynDOLOD (stage 9) bloqueado por preflight en rojo: %s",
                     red,
-                    extra={"pipeline_stage": 9},
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD},
                 )
                 return _attach_preflight(
                     {
@@ -574,7 +585,9 @@ class DynDOLODPipelineService:
         try:
             runner = self._ensure_runner()
         except DynDOLODExecutionError as exc:
-            logger.error("DynDOLOD (stage 9): error inicializando el runner: %s", exc, extra={"pipeline_stage": 9})
+            logger.error(
+                "DynDOLOD (stage 9): error inicializando el runner: %s", exc, extra={"pipeline_stage": _ETAPA_DYNDOLOD}
+            )
             duration = time.monotonic() - start_time
             await self._publish_completed(
                 preset=preset,
@@ -605,7 +618,7 @@ class DynDOLODPipelineService:
         if ruta_faltante is not None:
             msg = f"Ruta declarada por la configuración de DynDOLOD no existe: {ruta_faltante}"
             duration = time.monotonic() - start_time
-            logger.error("DynDOLOD (stage 9): %s", msg, extra={"pipeline_stage": 9})
+            logger.error("DynDOLOD (stage 9): %s", msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD})
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -729,7 +742,7 @@ class DynDOLODPipelineService:
                         # (U-11) es no reportar éxito sobre un estado indeterminado
                         # solo porque "no debería pasar".
                         msg = "DynDOLOD reportó éxito sin resultado de ejecución"
-                        logger.error(msg, extra={"pipeline_stage": 9})
+                        logger.error(msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD})
                         raise DynDOLODExecutionError(msg)
 
                     output_path = result.dyndolod_result.output_path
@@ -741,13 +754,13 @@ class DynDOLODPipelineService:
                         # éxito: falso verde por exit-code sobre un estado donde no
                         # se sabe si DynDOLOD escribió algo.
                         msg = "DynDOLOD no dejó un directorio de salida localizable"
-                        logger.error(msg, extra={"pipeline_stage": 9})
+                        logger.error(msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD})
                         raise DynDOLODExecutionError(msg)
 
                     is_valid = await runner.validate_dyndolod_output(output_path)
                     if not is_valid:
                         msg = "DynDOLOD output validation failed"
-                        logger.error(msg, extra={"pipeline_stage": 9})
+                        logger.error(msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD})
                         raise DynDOLODExecutionError(msg)
 
                 if not result.success:
@@ -829,7 +842,7 @@ class DynDOLODPipelineService:
             logger.error(
                 "DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s",
                 exc,
-                extra={"pipeline_stage": 9},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
             )
             await self._publish_completed(
                 preset=preset,
@@ -859,7 +872,7 @@ class DynDOLODPipelineService:
             logger.error(
                 "DynDOLOD (stage 9): no se pudo adquirir el lock del pipeline: %s",
                 exc,
-                extra={"pipeline_stage": 9},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
             )
             await self._publish_completed(
                 preset=preset,
@@ -899,7 +912,7 @@ class DynDOLODPipelineService:
                 "DynDOLOD (stage 9): error de dominio del pipeline: %s (rolled_back=%s)",
                 exc,
                 rolled_back,
-                extra={"pipeline_stage": 9},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
             )
 
             await self._log_result_error(preset, str(exc))
@@ -930,7 +943,7 @@ class DynDOLODPipelineService:
             logger.warning(
                 "DynDOLOD (stage 9): pipeline cancelado tras %.1fs",
                 duration,
-                extra={"pipeline_stage": 9},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
             )
             await self._cerrar_tx_tras_rollback(
                 tx_id,
@@ -959,7 +972,7 @@ class DynDOLODPipelineService:
                 "DynDOLOD (stage 9): error inesperado del pipeline: %s",
                 exc,
                 exc_info=True,
-                extra={"pipeline_stage": 9},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
             )
 
             await self._log_result_error(preset, str(exc))
@@ -1130,6 +1143,6 @@ class DynDOLODPipelineService:
                 # también lleva la etapa: etiquetar solo el handler que LLAMA a
                 # este helper dejaba el outcome sin filtrar por stage (review
                 # CodeRabbit/Codex, PR #464).
-                "pipeline_stage": 9,
+                "pipeline_stage": _ETAPA_DYNDOLOD,
             },
         )

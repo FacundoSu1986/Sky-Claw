@@ -2423,6 +2423,11 @@ async def test_ruta_de_config_faltante_bloquea_antes_del_lock(
 #: lista de "pendientes que quizá": es una exención explícita y revisada. Mientras
 #: un servicio esté acá, el ancla lo deja pasar; un servicio NUEVO no entra solo
 #: —no cumple ni está exento— y rompe el test hasta que se decida cuál de las dos.
+#: Nombre de la constante que fija la etapa en `dyndolod_service.py`. El ancla la
+#: resuelve por AST y verifica su VALOR, así que centralizar el número no afloja
+#: la verificación: un `= 8` rompe igual que un literal suelto.
+_NOMBRE_DE_LA_CONSTANTE = "_ETAPA_DYNDOLOD"
+
 _SERVICIOS_SIN_STAGE_INDEX = {
     "loot_service.py": "etapa 5; hoy solo la emite su runner (loot/cli.py)",
     "pandora_service.py": "etapa 4; solo prosa (stage 4)",
@@ -2476,33 +2481,48 @@ def _registros_de_fallo(nodo: ast.AST) -> list[ast.Call]:
     ]
 
 
-def _lleva_stage_index(llamada: ast.Call, etapa: int) -> bool:
-    """¿La llamada lleva el stage index ESTRUCTURADO en su ``extra``?
+def _constantes_de_modulo(arbol: ast.Module) -> dict[str, object]:
+    """Constantes de módulo con valor literal: ``_ETAPA = 9`` → ``{"_ETAPA": 9}``."""
+    constantes: dict[str, object] = {}
+    for nodo in arbol.body:
+        if (
+            isinstance(nodo, ast.AnnAssign)
+            and isinstance(nodo.target, ast.Name)
+            and isinstance(nodo.value, ast.Constant)
+        ):
+            constantes[nodo.target.id] = nodo.value.value
+        elif isinstance(nodo, ast.Assign) and isinstance(nodo.value, ast.Constant):
+            for destino in nodo.targets:
+                if isinstance(destino, ast.Name):
+                    constantes[destino.id] = nodo.value.value
+    return constantes
 
-    Acepta las dos formas estructuradas del repo: el dict literal
-    (``extra={"pipeline_stage": N}``, como `grass_cache_service.py`) y el helper
-    (``extra=subprocess_error_extra(..., pipeline_stage=N)``, como
-    `logging_config.py`, que usan `loot/cli.py` y `xedit/runner.py`). NO acepta la
-    prosa: un ``"DynDOLOD (stage 9): ..."`` suelto no satisface el ancla.
+
+def _nodo_de_la_etapa(llamada: ast.Call) -> ast.expr | None:
+    """Nodo usado como valor de ``pipeline_stage`` en el ``extra``, o ``None``.
+
+    Reconoce las dos formas estructuradas del repo: el dict literal
+    (``extra={"pipeline_stage": X}``, como `grass_cache_service.py`) y el helper
+    (``extra=subprocess_error_extra(..., pipeline_stage=X)``, como
+    `logging_config.py`, que usan `loot/cli.py` y `xedit/runner.py`). NO reconoce
+    la prosa: un ``"DynDOLOD (stage 9): ..."`` suelto no cuenta.
+
+    Devuelve el NODO y no un bool para que quien llame distinga un literal suelto
+    de una referencia a la constante del módulo — la diferencia que impide que el
+    número quede duplicado en dieciséis sitios (review Qodo, PR #464).
     """
-
-    def _valor_correcto(valor: ast.AST) -> bool:
-        if isinstance(valor, ast.Dict):
-            return any(
-                isinstance(k, ast.Constant)
-                and k.value == "pipeline_stage"
-                and isinstance(v, ast.Constant)
-                and v.value == etapa
-                for k, v in zip(valor.keys, valor.values, strict=True)
-            )
-        if isinstance(valor, ast.Call):
-            return any(
-                kw.arg == "pipeline_stage" and isinstance(kw.value, ast.Constant) and kw.value.value == etapa
-                for kw in valor.keywords
-            )
-        return False
-
-    return any(kw.arg == "extra" and _valor_correcto(kw.value) for kw in llamada.keywords)
+    for kw in llamada.keywords:
+        if kw.arg != "extra":
+            continue
+        if isinstance(kw.value, ast.Dict):
+            for clave, valor in zip(kw.value.keys, kw.value.values, strict=True):
+                if isinstance(clave, ast.Constant) and clave.value == "pipeline_stage":
+                    return valor
+        elif isinstance(kw.value, ast.Call):
+            for interno in kw.value.keywords:
+                if interno.arg == "pipeline_stage":
+                    return interno.value
+    return None
 
 
 def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
@@ -2543,14 +2563,53 @@ def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
     - un ``any(...)`` por handler daba por bueno el bloque entero con que UNO solo
       de sus registros llevara el campo.
     """
-    registros = _registros_de_fallo(_modulo_servicio_ast())
+    arbol = _modulo_servicio_ast()
+    registros = _registros_de_fallo(arbol)
     assert registros, "no se detectó ningún registro de fallo: el ancla quedaría vacía"
 
-    sin_etapa = sorted(f"{c.func.attr}:{c.lineno}" for c in registros if not _lleva_stage_index(c, etapa=9))
+    sin_etapa = sorted(f"{c.func.attr}:{c.lineno}" for c in registros if _nodo_de_la_etapa(c) is None)
 
     assert sin_etapa == [], (
         f"registros de fallo de dyndolod_service.py sin stage index estructurado: {sin_etapa}. "
-        'Agregar extra={"pipeline_stage": 9} (SOP 5 regla 5).'
+        f'Agregar extra={{"pipeline_stage": {_NOMBRE_DE_LA_CONSTANTE}}} (SOP 5 regla 5).'
+    )
+
+
+def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None:
+    """El 9 se define UNA vez y los registros lo referencian por nombre.
+
+    El ancla anterior exigía el literal `9` (`ast.Constant`), lo que dejaba dos
+    problemas señalados por la review Qodo del PR #464: el número quedaba
+    duplicado en dieciséis sitios, y un refactor legítimo a una constante con
+    nombre ROMPÍA el test — un gate que castiga la mejora que él mismo debería
+    incentivar. Acá se invierte: el literal suelto es lo que falla.
+
+    Sigue verificándose el VALOR (la constante vale 9), así que resolver el nombre
+    no afloja el ancla: un `_ETAPA_DYNDOLOD = 8` rompe igual.
+
+    Lo que este ancla NO puede hacer, y conviene no aparentar: atar ese 9 al orden
+    real del DAG. Ese orden vive como tabla en prosa en `sky_claw/local/AGENTS.md`
+    §1, que dice de sí misma "NOT yet enforced at runtime"; no hay registro de
+    etapas en código del que derivarlo (`GenerateLodsStrategy` no menciona ninguna
+    etapa). Centralizar el número es la mitad que sí se puede hacer hoy: deja UN
+    solo sitio que corregir si el DAG se reordena, en vez de dieciséis.
+    """
+    arbol = _modulo_servicio_ast()
+    constantes = _constantes_de_modulo(arbol)
+
+    assert constantes.get(_NOMBRE_DE_LA_CONSTANTE) == 9, (
+        f"{_NOMBRE_DE_LA_CONSTANTE} debe ser una constante de módulo con valor 9 "
+        f"(SOP §1: DynDOLOD es la etapa 9); hoy vale {constantes.get(_NOMBRE_DE_LA_CONSTANTE)!r}"
+    )
+
+    literales = sorted(
+        f"{c.func.attr}:{c.lineno}"
+        for c in _registros_de_fallo(arbol)
+        if isinstance(_nodo_de_la_etapa(c), ast.Constant)
+    )
+
+    assert literales == [], (
+        f"registros que hardcodean el número de etapa en vez de usar {_NOMBRE_DE_LA_CONSTANTE}: {literales}"
     )
 
 
