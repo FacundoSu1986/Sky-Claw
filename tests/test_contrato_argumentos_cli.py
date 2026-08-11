@@ -70,6 +70,7 @@ import ast
 import pathlib
 import subprocess
 import sys
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -741,17 +742,14 @@ def test_dyndolod_switch_de_ruta_formato_de_doc() -> None:
     assert DynDOLODRunner._switch_de_ruta("p", pathlib.Path("plugins.txt"), directorio=False) == "-p:plugins.txt"
 
 
-def _argv_que_recibe_el_proceso(cmdline: str) -> list[str]:
-    """Parsea ``cmdline`` con el parser de Windows (``shell32!CommandLineToArgvW``).
+def _argv_segun_crt(cmdline: str) -> list[str]:
+    """``cmdline`` parseada por ``shell32!CommandLineToArgvW`` — reglas de la CRT.
 
-    Es el paso que ningún test cubría: los anteriores afirmaban el string que
-    Sky-Claw produce, no el argv que el proceso termina viendo. Entre los dos hay
-    una serialización (``subprocess.list2cmdline``) y una deserialización (el
-    parser de Windows), y el defecto del rig vivía justo ahí.
-
-    Alcance honesto: esto verifica la **serialización**, no el parser propio de
-    DynDOLOD/Delphi. Que el binario real acepte el vector lo demuestra la corrida
-    en rig (T5), no este test.
+    Es el oráculo correcto para "¿mi serialización es válida como línea de comandos
+    de Windows?" y **NO** para "¿qué recibe DynDOLOD?". DynDOLOD/TexGen son binarios
+    Delphi y la RTL de Delphi no implementa el escape con backslash de la CRT: ver
+    :func:`_argv_segun_delphi` y la divergencia anclada más abajo (hallazgo del
+    revisor adversarial en el PR #462).
     """
     import ctypes
     from ctypes import wintypes
@@ -768,43 +766,70 @@ def _argv_que_recibe_el_proceso(cmdline: str) -> list[str]:
         ctypes.windll.kernel32.LocalFree(puntero)
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="round-trip contra el parser de línea de comandos de Windows")
-@pytest.mark.parametrize(
-    ("etiqueta", "carpeta"),
-    [
-        ("sin espacios", "Sky-Claw"),
-        # El caso que hace no-trivial al fix: `list2cmdline` tiene que citar el
-        # argumento Y duplicar el backslash final para que no escape su propia
-        # comilla de cierre. Con la ruta sin espacios no cita y el bug se
-        # esconde, así que un test que solo probara `C:\salida\` pasaría igual
-        # con una implementación rota para el caso real (Program Files, My Games).
-        ("con espacios", "Program Files Sky Claw"),
-    ],
-)
-async def test_dyndolod_argv_sobrevive_la_serializacion_de_windows(
-    tmp_path: pathlib.Path,
-    etiqueta: str,
-    carpeta: str,
-) -> None:
-    """El argv que recibe el proceso es EXACTAMENTE el que construyó Sky-Claw.
+def _argv_segun_delphi(cmdline: str) -> list[str]:
+    """``cmdline`` parseada con la semántica de ``System.pas::GetParamStr`` (Delphi).
 
-    Por qué existe: con las comillas embebidas de ``_switch_de_ruta``, el rig midió
-    que **ninguna** corrida de TexGen ni de DynDOLOD podía arrancar (2/2 binarios,
-    ``Can not create path C:\\C:\\...``) — y los tres tests de argv que ya había
-    estaban en verde, porque los tres miraban el mismo string de salida en vez de
-    lo que el proceso recibe. Este enumera los cinco switches de ruta a la vez:
-    basta que uno vuelva a embeber comillas para que el round-trip no cierre.
+    Dos diferencias con la CRT, y la segunda es la que importa:
+
+    1. la comilla es un **delimitador** que se descarta, y puede abrir/cerrar en
+       cualquier posición del token (de ahí que ``-o:"C:\\ruta\\"`` funcione);
+    2. el backslash **nunca** es un carácter de escape. ``\\\\"`` no es "un
+       backslash literal más comilla de cierre": son dos backslashes y una comilla.
+
+    Reimplementación de referencia, no del binario real: se apoya en que
+    ``DynDOLODx64.exe`` trae la RTL de Delphi (``ParamCount`` presente en sus
+    strings) y en que xEdit lee sus parámetros con ``ParamStr``/``ParamCount``
+    (``xeInit.pas``). Eso hace a esta función un oráculo **mucho** más cercano que
+    ``CommandLineToArgvW``, pero sigue siendo INFERENCIA: el cierre autoritativo es
+    T5 leyendo el ``Using Output Path:`` que el binario imprime en su log.
+    """
+    argv: list[str] = []
+    i, n = 0, len(cmdline)
+    while True:
+        while i < n and cmdline[i] <= " ":
+            i += 1
+        while i + 1 < n and cmdline[i] == '"' and cmdline[i + 1] == '"':
+            i += 2
+        if i >= n:
+            return argv
+        token: list[str] = []
+        while i < n and cmdline[i] > " ":
+            if cmdline[i] == '"':
+                i += 1
+                while i < n and cmdline[i] != '"':
+                    token.append(cmdline[i])
+                    i += 1
+                if i < n:
+                    i += 1
+            else:
+                token.append(cmdline[i])
+                i += 1
+        argv.append("".join(token))
+
+
+def _runner_con_raiz(tmp_path: pathlib.Path, carpeta: str, *, sin_espacios: bool = False) -> Any:
+    """Runner con los cinco switches de ruta poblados bajo ``tmp_path/carpeta``.
+
+    ``sin_espacios`` fuerza nombres sintéticos sin espacios en TODOS los tramos. Hace
+    falta un flag porque los nombres reales (``Skyrim Special Edition`` del juego,
+    ``My Games`` de Windows) traen espacios por sí mismos: en un rig de verdad no
+    existe la variante sin espacios de ``-d:``/``-m:``, y esa es justamente la razón
+    por la que la divergencia CRT↔Delphi no es un borde. Ver
+    ``test_dyndolod_argv_con_espacios_diverge_entre_crt_y_delphi``.
     """
     from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
 
+    nombre_juego = "SkyrimSE" if sin_espacios else "Skyrim Special Edition"
+    nombre_inis = "MyGames" if sin_espacios else "My Games"
+
     raiz = tmp_path / carpeta
-    game = raiz / "Skyrim Special Edition"
+    game = raiz / nombre_juego
     (game / "Data").mkdir(parents=True)
     exe_dir = raiz / "DynDOLOD"
     exe_dir.mkdir()
     dyndolod_exe = exe_dir / "DynDOLODx64.exe"
     dyndolod_exe.touch()
-    ini_dir = raiz / "My Games" / "Skyrim Special Edition"
+    ini_dir = raiz / nombre_inis / nombre_juego
     ini_dir.mkdir(parents=True)
     plugins_file = raiz / "plugins.txt"
     plugins_file.touch()
@@ -824,21 +849,107 @@ async def test_dyndolod_argv_sobrevive_la_serializacion_de_windows(
         )
     )
 
+    return runner, dyndolod_exe
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="round-trip contra el parser de línea de comandos de Windows")
+def test_dyndolod_argv_sin_espacios_sobrevive_los_dos_parsers(tmp_path: pathlib.Path) -> None:
+    """Ruta SIN espacios: ``list2cmdline`` no cita, y CRT y Delphi coinciden.
+
+    Es el único caso de este archivo donde "el proceso recibe lo que Sky-Claw
+    construyó" está afirmado de verdad: sin comillas externas no hay reglas de
+    escape en juego, así que los dos parsers ven lo mismo y coincide con el argv.
+    Además es exactamente el valor que el rig midió funcionando el 2026-08-10
+    (``-o:C:\\...\\output\\`` vía línea verbatim).
+
+    Con las comillas embebidas de la implementación anterior, el rig midió que
+    **ninguna** corrida podía arrancar (2/2 binarios,
+    ``Can not create path C:\\C:\\...``) y los tres tests de argv que ya había
+    estaban en verde: los tres miraban el string que Sky-Claw produce, ninguno lo
+    que el proceso recibe. Este enumera los cinco switches de ruta a la vez.
+    """
+    runner, dyndolod_exe = _runner_con_raiz(tmp_path, "Sky-Claw", sin_espacios=True)
+
     argv = runner._build_xedit_args(None)
     assert len(argv) == 6, f"-sse + los cinco switches de ruta; obtenido: {argv}"
+    assert not [a for a in argv if " " in a], "este caso exige rutas sin espacios"
 
     cmdline = subprocess.list2cmdline([str(dyndolod_exe), *argv])
-    recibido = _argv_que_recibe_el_proceso(cmdline)
-
-    assert recibido[1:] == argv, (
-        f"[{etiqueta}] el proceso no recibe el argv que Sky-Claw construyó.\n"
-        f"  construido: {argv}\n"
-        f"  cmdline   : {cmdline}\n"
-        f"  recibido  : {recibido[1:]}"
+    assert '"' not in cmdline[len(str(dyndolod_exe)) + 2 :], (
+        f"sin espacios `list2cmdline` no debería citar nada: {cmdline}"
     )
-    # Redundante si el round-trip cierra, pero nombra la causa: lo que rompía el
-    # round-trip eran las comillas dentro del elemento, no otra cosa.
+
+    for nombre, parser in (("CRT", _argv_segun_crt), ("Delphi", _argv_segun_delphi)):
+        recibido = parser(cmdline)[1:]
+        assert recibido == argv, (
+            f"[{nombre}] el proceso no recibe el argv que Sky-Claw construyó.\n"
+            f"  construido: {argv}\n  cmdline   : {cmdline}\n  recibido  : {recibido}"
+        )
     assert not [a for a in argv if '"' in a]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="serialización de línea de comandos de Windows")
+def test_dyndolod_argv_con_espacios_diverge_entre_crt_y_delphi(tmp_path: pathlib.Path) -> None:
+    """Ruta CON espacios: los dos parsers **no** ven lo mismo. Pendiente de T5.
+
+    Hallazgo del revisor adversarial en el PR #462, confirmado por medición:
+    ``list2cmdline`` cita solo si el argumento tiene espacios, y al citar **duplica
+    el backslash final** para que no escape su propia comilla de cierre. Eso es
+    correcto bajo las reglas de la CRT y **no** bajo las de Delphi, que no trata el
+    backslash como escape:
+
+    ======================  ==========================================
+    intención                ``-o:C:\\Program Files\\...\\salida\\``
+    ``list2cmdline``         ``"-o:C:\\Program Files\\...\\salida\\\\"``
+    CRT ve                   ``-o:C:\\Program Files\\...\\salida\\``
+    **Delphi ve**            ``-o:C:\\Program Files\\...\\salida\\\\``
+    ======================  ==========================================
+
+    **Y este es el caso NORMAL, no un borde. En un rig real es inevitable**: el juego
+    se instala en una carpeta llamada ``Skyrim Special Edition`` y los INI viven bajo
+    ``My Games``, así que ``-d:`` y ``-m:`` traen espacios sí o sí, sin importar dónde
+    el operador ponga la salida (y el path típico agrega
+    ``C:\\Program Files (x86)\\Steam\\steamapps\\common\\`` encima). La variante sin
+    espacios de este argv solo existe con nombres sintéticos — de hecho el fixture
+    necesita un flag para fabricarla, y ese detalle es la evidencia: la rama que este
+    test ancla es la que corre siempre.
+
+    Este test **no afirma que el vector sea correcto** —eso es justo lo que no está
+    verificado— sino que ancla la divergencia exacta que hoy existe, para que:
+
+    * nadie la lea como verificada (el test anterior la daba por buena);
+    * si alguien cambia la serialización y los dos parsers pasan a coincidir, este
+      test se ponga ROJO y obligue a releer la decisión en vez de dejarla pasar.
+
+    Lo resuelve **T5** con una corrida contra Alpha-209 real: el binario ecoa la
+    ruta que parseó en su log (``Using Output Path: …``), así que una sola corrida
+    con un ``-o:`` que contenga espacios decide entre las tres formas candidatas
+    (dejar el backslash duplicado si el binario lo tolera / no emitir el ``\\``
+    final / línea verbatim). Hasta entonces queda declarado, no supuesto.
+    """
+    runner, dyndolod_exe = _runner_con_raiz(tmp_path, "Program Files Sky Claw")
+
+    argv = runner._build_xedit_args(None)
+    con_espacios = [a for a in argv if " " in a]
+    assert con_espacios, "este caso exige rutas con espacios"
+
+    cmdline = subprocess.list2cmdline([str(dyndolod_exe), *argv])
+    crt = _argv_segun_crt(cmdline)[1:]
+    delphi = _argv_segun_delphi(cmdline)[1:]
+
+    # La serialización SÍ es válida como línea de comandos de Windows.
+    assert crt == argv, f"la serialización CRT debería cerrar: {cmdline}"
+
+    # Y Delphi ve un backslash final de más en cada switch de directorio citado.
+    assert delphi != argv, (
+        "si Delphi y el argv coinciden, la divergencia medida en el PR #462 dejó de "
+        "existir: releé la decisión A/B/C y actualizá T5 en vez de borrar este test"
+    )
+    esperado_delphi = [a + "\\" if (" " in a and a.endswith("\\")) else a for a in argv]
+    assert delphi == esperado_delphi, (
+        "la divergencia cambió de forma; se esperaba solo el backslash final duplicado "
+        f"en los switches citados.\n  argv  : {argv}\n  delphi: {delphi}"
+    )
 
 
 @pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
@@ -893,6 +1004,96 @@ async def test_dyndolod_extra_args_con_comillas_es_rechazado(tmp_path: pathlib.P
     # mecanismo de argumentos extra.
     argv = runner._build_xedit_args(["-B:C:\\backups\\"])
     assert argv[-1] == "-B:C:\\backups\\"
+
+
+@pytest.mark.parametrize("letra", ["o", "d", "m", "p", "t"])
+@pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
+async def test_dyndolod_extra_args_no_puede_redefinir_un_switch_administrado(
+    tmp_path: pathlib.Path,
+    lanzador: str,
+    letra: str,
+) -> None:
+    """Los cinco switches de ruta tienen dueño: ``DynDOLODConfig``.
+
+    Rechazar solo las comillas no alcanzaba: un ``-o:C:\\otra\\ruta\\`` sin comillas
+    pasaba y **pisaba la raíz administrada**, creando dos fuentes de verdad. El
+    staging, el post-check (``_candidatos_de_salida`` mira bajo ``output_root``) y el
+    rollback asumen que la salida está donde la config dice; y el parser de xEdit no
+    documenta cuál gana si el switch aparece dos veces, así que el resultado sería
+    indeterminado además de ambiguo (review del PR #462).
+
+    Enumera **los cinco** switches × **los dos** lanzadores: un caso escrito a mano
+    para el que uno se acordó no ataja al de al lado.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
+
+    with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
+        for variante in (f"-{letra}:C:\\otra\\ruta\\", f"-{letra.upper()}:C:\\otra\\ruta\\"):
+            with pytest.raises(DynDOLODValidationError, match="administra DynDOLODConfig"):
+                await getattr(runner, lanzador)(extra_args=[variante])
+        assert not ejecutar.called
+
+
+@pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
+async def test_dyndolod_extra_args_rechaza_tipos_invalidos(tmp_path: pathlib.Path, lanzador: str) -> None:
+    """``extra_args`` viene de payload: el type hint no valida en runtime.
+
+    ``GenerateLodsStrategy._filter_payload`` deja pasar ``texgen_args``/
+    ``dyndolod_args`` filtrando la CLAVE, sin mirar tipo ni valor. Un ``str`` suelto
+    se extendería **carácter por carácter** sobre el argv, que es el modo más
+    silencioso de corromperlo.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
+
+    for invalido in ("-B:C:\\backups\\", {"-B": "x"}, [1, 2], ["-B:ok", None]):
+        with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
+            with pytest.raises(DynDOLODValidationError, match=r"list\[str\]"):
+                await getattr(runner, lanzador)(extra_args=invalido)  # type: ignore[arg-type]
+            assert not ejecutar.called
+
+
+async def test_generate_lods_no_puede_inyectar_switches_por_payload(tmp_path: pathlib.Path) -> None:
+    """El boundary real: ``payload → GenerateLodsStrategy → service → runner``.
+
+    Es la ruta que hace relevante el problema y la que ningún test cruzaba. Los tests
+    de arriba entran por el runner; este entra por donde entra un payload de verdad,
+    porque ``_VALID_LOD_KEYS`` incluye ``texgen_args``/``dyndolod_args`` y el
+    allowlist filtra la clave sin mirar el valor.
+
+    Verifica las dos mitades del contrato: la clave sigue siendo aceptada (no se
+    rompió la API) y el valor ofensivo es rechazado antes de lanzar nada.
+    """
+    from sky_claw.app.orchestrator.tool_strategies.generate_lods import (
+        _VALID_LOD_KEYS,
+        GenerateLodsStrategy,
+    )
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    assert {"texgen_args", "dyndolod_args"} <= _VALID_LOD_KEYS, (
+        "si estas claves dejan de estar permitidas, este boundary cambió: revisá el test"
+    )
+
+    runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
+
+    class _ServicioFalso:
+        """Stub del servicio: reenvía al runner como hace `DynDOLODPipelineService`."""
+
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            return {"argv": runner._build_xedit_args(kwargs.get("dyndolod_args"))}
+
+    estrategia = GenerateLodsStrategy(_ServicioFalso())  # type: ignore[arg-type]
+
+    for ofensivo in (['-o:"C:\\evil\\"'], ["-o:C:\\evil\\"], "-o:C:\\evil\\"):
+        with pytest.raises(DynDOLODValidationError):
+            await estrategia.execute({"preset": "Medium", "dyndolod_args": ofensivo})
+
+    # Un extra legítimo sigue cruzando el boundary intacto.
+    resultado = await estrategia.execute({"dyndolod_args": ["-B:C:\\backups\\"]})
+    assert resultado["argv"][-1] == "-B:C:\\backups\\"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="normalización de rutas de Windows")

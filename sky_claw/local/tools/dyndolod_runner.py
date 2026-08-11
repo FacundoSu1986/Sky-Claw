@@ -41,6 +41,13 @@ logger = logging.getLogger(__name__)
 # esta cota, el `gather` del path de éxito colgaría `_execute_process` para siempre.
 _DRAIN_GRACE_SECONDS = 10.0
 
+#: Switches de ruta cuyo dueño es ``DynDOLODConfig``: ``extra_args`` no puede
+#: redefinirlos (ver ``DynDOLODRunner._extra_args_admisibles``). Se derivan de las
+#: letras que emite ``_build_xedit_args``, no de una lista escrita a mano, para que
+#: agregar un switch administrado no deje su entrada afuera del rechazo.
+_LETRAS_ADMINISTRADAS = "odmpt"
+_SWITCH_ADMINISTRADO = re.compile(rf"^-[{_LETRAS_ADMINISTRADAS}]:", re.IGNORECASE)
+
 # Firma de un candidato sin artefacto. Distinto de ``None`` (= no se pudo
 # sondear) a propósito: colapsar los dos casos hace fail-open el gate de
 # frescura, porque "no lo pude mirar antes" pasa a leerse como "no había nada".
@@ -1010,54 +1017,74 @@ class DynDOLODRunner:
                 args.append(self._switch_de_ruta(letra, ruta, directorio=es_directorio))
 
         if extra_args:
-            args.extend(self._extra_args_sin_comillas(extra_args))
+            args.extend(self._extra_args_admisibles(extra_args))
 
         logger.debug("DynDOLOD/TexGen CLI args: %s", self._linea_de_comando(args))
         return args
 
     @staticmethod
-    def _extra_args_sin_comillas(extra_args: list[str]) -> list[str]:
+    def _extra_args_admisibles(extra_args: object) -> list[str]:
         """Los ``extra_args`` del caller, o ``DynDOLODValidationError``. Fail-closed.
 
-        Ningún argumento de un caller puede traer comillas propias.
+        Tres reglas, y ninguna normaliza: **rechazan**.
 
-        Arreglar :meth:`_switch_de_ruta` y dejar esta puerta abierta es el defecto
-        hermano del repo en su forma pura: ``extra_args`` se extendía **verbatim**,
-        así que un ``-o:"C:\\...\\"`` que entre por acá reproduce exactamente el
-        ``Can not create path C:\\C:\\...`` que el helper acaba de cerrar, sin pasar
-        por él.
+        1. **Tiene que ser ``list[str]``.** El valor entra por payload y los type
+           hints no validan datos en runtime: ``GenerateLodsStrategy._filter_payload``
+           filtra la CLAVE (``texgen_args``/``dyndolod_args`` están en
+           ``_VALID_LOD_KEYS``) sin mirar el tipo ni el valor. Un ``str`` suelto se
+           extendería **carácter por carácter** sobre el argv.
+        2. **Ningún elemento puede traer comillas propias.** Arreglar
+           :meth:`_switch_de_ruta` y dejar esta puerta abierta es el defecto hermano
+           del repo en su forma pura: ``extra_args`` se extendía verbatim, así que un
+           ``-o:"C:\\...\\"`` que entre por acá reproduce el
+           ``Can not create path C:\\C:\\...`` sin pasar por el helper.
+        3. **Ningún elemento puede redefinir un switch administrado**
+           (``-o:``/``-d:``/``-m:``/``-p:``/``-t:``, case-insensitive). Esos cinco
+           tienen dueño: :class:`DynDOLODConfig`. Que el payload los re-suministre
+           crea dos fuentes de verdad y rompe las premisas del staging, del
+           post-check y del rollback — y el parser de xEdit no documenta cuál gana
+           si el switch aparece dos veces, así que el resultado sería indeterminado
+           además de ambiguo.
 
-        Y es alcanzable desde payload, no solo desde código del repo:
-        ``GenerateLodsStrategy._VALID_LOD_KEYS`` incluye ``texgen_args`` y
-        ``dyndolod_args``, y el allowlist filtra la CLAVE sin mirar el VALOR
-        (``generate_lods.py`` → ``DynDOLODPipelineService.execute`` →
-        ``run_full_pipeline`` → ``run_texgen``/``run_dyndolod``). Se valida en
-        ``_build_xedit_args`` porque es la pieza ÚNICA que los dos ejecutables
-        atraviesan: puesto en un solo lanzador, el otro queda sin cubrir.
+        La (3) es la corrección que pidió la review del PR #462 sobre la (2): con
+        solo la (2), un ``-o:C:\\otra\\ruta\\`` sin comillas pasaba y pisaba la raíz
+        administrada. `_switch_de_ruta` sigue siendo el ÚNICO constructor de los
+        switches de ruta que Sky-Claw administra.
 
-        **Rechaza en vez de normalizar** a propósito. Despojar las comillas en
-        silencio convierte el bug del caller en un comportamiento distinto del
-        pedido y lo esconde; un error explícito lo deja en el log del ritual —
+        Se valida en :meth:`_build_xedit_args` porque es la pieza ÚNICA que los dos
+        ejecutables atraviesan: puesta en un solo lanzador, el otro queda sin cubrir.
         ``run_full_pipeline`` ya traduce ``DynDOLODExecutionError`` a un resultado
-        fallido, así que degrada a rojo reportado, no a excepción sin manejar.
+        fallido, así que esto degrada a rojo reportado, no a excepción sin manejar.
 
-        Alcance: cubre la invariante de quoting de T1, no la inyección de argv en
-        general. Un ``extra_args`` puede seguir pisando los cinco switches
-        administrados (``-o:``/``-d:``/``-m:``/``-p:``/``-t:``) o agregar otros del
-        parser de xEdit (``-B:``, ``-C:``, ``-D:``); eso es una superficie aparte
-        y se decide con datos, no acá.
+        Sigue fuera de alcance agregar switches ajenos del parser de xEdit
+        (``-B:``, ``-C:``, ``-D:``, ``-S:``…): son legítimos como extensión y no
+        colisionan con nada que Sky-Claw administre.
 
         El nombre evita a propósito el prefijo ``_valida``: ese prefijo declara
         pertenencia a la familia del post-check (``test_dyndolod_service.py``,
         "métodos que sondean el disco para dar el veredicto"), y esto no toca disco
         ni decide veredicto. El ancla congelada lo detectó al primer intento.
         """
+        if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
+            raise DynDOLODValidationError(
+                "extra_args tiene que ser list[str]: viene de payload y los type hints no "
+                f"validan en runtime (un str suelto se extendería carácter por carácter). Recibido: {extra_args!r}"
+            )
+
         con_comillas = [a for a in extra_args if '"' in a]
         if con_comillas:
             raise DynDOLODValidationError(
                 "extra_args no puede contener comillas: en un elemento de argv pasan a ser "
                 "parte del valor y DynDOLOD muere con 'Can not create path C:\\C:\\...'. "
                 f"Pasá la ruta sin comillas. Ofensores: {con_comillas}"
+            )
+
+        reservados = [a for a in extra_args if _SWITCH_ADMINISTRADO.match(a)]
+        if reservados:
+            raise DynDOLODValidationError(
+                "extra_args no puede redefinir los switches de ruta que administra DynDOLODConfig "
+                "(-o:/-d:/-m:/-p:/-t:): serían dos fuentes de verdad y romperían las premisas del "
+                f"staging, el post-check y el rollback. Ofensores: {reservados}"
             )
         return extra_args
 
@@ -1105,11 +1132,18 @@ class DynDOLODRunner:
         comilla de cierre que ella misma agrega, así que el valor sobrevive
         también en rutas con espacios.
 
-        Ancla: ``test_dyndolod_argv_sobrevive_la_serializacion_de_windows`` hace
-        el round-trip ``list2cmdline`` → ``CommandLineToArgvW`` (el parser real de
-        Windows) y exige que el proceso reciba exactamente este argv. Los tests
-        que solo miraban el string que Sky-Claw produce congelaron el defecto en
-        vez de atajarlo.
+        Anclas, y su alcance exacto — los tests que solo miraban el string que
+        Sky-Claw produce congelaron el defecto en vez de atajarlo:
+
+        * ``test_dyndolod_argv_sin_espacios_sobrevive_los_dos_parsers``: con rutas
+          sin espacios ``list2cmdline`` no cita, y el parser de la CRT y el de
+          Delphi ven ambos exactamente este argv. Verificación real.
+        * ``test_dyndolod_argv_con_espacios_diverge_entre_crt_y_delphi``: con
+          espacios ``list2cmdline`` cita y **duplica el backslash final** (regla de
+          la CRT que Delphi no implementa), así que el binario ve un ``\\`` de más.
+          **Pendiente de T5**, y es la rama que corre siempre en un rig real
+          (``Skyrim Special Edition``, ``My Games``). Ningún test afirma que ese
+          vector sea correcto: se ancla la divergencia medida.
         """
         texto = str(ruta)
         if directorio and not texto.endswith("\\"):
