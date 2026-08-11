@@ -2418,17 +2418,25 @@ async def test_ruta_de_config_faltante_bloquea_antes_del_lock(
 # TODO registro de fallo del módulo, esté dentro de un `except` o no.
 # =============================================================================
 
-#: Servicios de `local/tools/` que todavía NO emiten el stage index estructurado,
-#: con la etapa que les corresponde según la prosa que ya arrastran. NO es una
-#: lista de "pendientes que quizá": es una exención explícita y revisada. Mientras
-#: un servicio esté acá, el ancla lo deja pasar; un servicio NUEVO no entra solo
-#: —no cumple ni está exento— y rompe el test hasta que se decida cuál de las dos.
 #: Nombre de la constante que fija la etapa en `dyndolod_service.py`. El ancla la
 #: resuelve por AST y verifica su VALOR, así que centralizar el número no afloja
 #: la verificación: un `= 8` rompe igual que un literal suelto.
 _NOMBRE_DE_LA_CONSTANTE = "_ETAPA_DYNDOLOD"
 
-_SERVICIOS_SIN_STAGE_INDEX = {
+#: Los OCHO `*_service.py` clasificados por COBERTURA REAL: qué fracción de sus
+#: registros de fallo emite el campo. La primera versión clasificaba por MENCIÓN
+#: de la cadena `"pipeline_stage"` en cualquier parte del AST, y la review Qodo
+#: del PR #464 mostró que eso se podía "pagar" con una docstring: una sola
+#: mención movía el servicio a la columna de los que cumplen sin que un solo
+#: `logger.error` emitiera nada. Era el muestreo que el ancla principal de este
+#: mismo PR prohíbe, reintroducido a nivel de archivo.
+#:
+#: Clasificar por registro además corrigió un dato que yo mismo había afirmado
+#: mal: `grass_cache_service.py` NO cumple —emite el campo en 1 de sus 10
+#: registros de fallo—. El único servicio completo del repo es `dyndolod`.
+_SERVICIOS_COMPLETOS = {"dyndolod_service.py"}
+_SERVICIOS_PARCIALES = {"grass_cache_service.py"}
+_SERVICIOS_SIN_COBERTURA = {
     "loot_service.py": "etapa 5; hoy solo la emite su runner (loot/cli.py)",
     "pandora_service.py": "etapa 4; solo prosa (stage 4)",
     "synthesis_service.py": "etapa 7; solo prosa (stage 7)",
@@ -2613,7 +2621,7 @@ def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None
     )
 
 
-def test_los_servicios_sin_stage_index_estan_enumerados() -> None:
+def test_los_servicios_estan_clasificados_por_cobertura_real() -> None:
     """Los OCHO ``*_service.py``, clasificados uno por uno. Nadie entra solo.
 
     La regla es del pipeline entero, no de DynDOLOD. Congelar solo el conjunto de
@@ -2631,40 +2639,43 @@ def test_los_servicios_sin_stage_index_estan_enumerados() -> None:
     servicios = sorted(p.name for p in tools.glob("*_service.py"))
     assert len(servicios) == 8, f"cambió el universo de servicios: {servicios}"
 
-    cumplen, no_cumplen = set(), set()
+    completos, parciales, sin_cobertura = set(), set(), set()
     for nombre in servicios:
-        arbol = ast.parse((tools / nombre).read_text(encoding="utf-8"))
-        emite = any(
-            (isinstance(n, ast.keyword) and n.arg == "pipeline_stage")
-            or (isinstance(n, ast.Constant) and n.value == "pipeline_stage")
-            for n in ast.walk(arbol)
-        )
-        (cumplen if emite else no_cumplen).add(nombre)
+        registros = _registros_de_fallo(ast.parse((tools / nombre).read_text(encoding="utf-8")))
+        con_etapa = [c for c in registros if _nodo_de_la_etapa(c) is not None]
+        if registros and len(con_etapa) == len(registros):
+            completos.add(nombre)
+        elif con_etapa:
+            parciales.add(nombre)
+        else:
+            sin_cobertura.add(nombre)
 
-    assert cumplen == {"dyndolod_service.py", "grass_cache_service.py"}
-    assert no_cumplen == set(_SERVICIOS_SIN_STAGE_INDEX)
+    assert completos == _SERVICIOS_COMPLETOS
+    assert parciales == _SERVICIOS_PARCIALES
+    assert sin_cobertura == set(_SERVICIOS_SIN_COBERTURA)
 
 
 def test_los_modulos_que_emiten_el_stage_index_estan_congelados() -> None:
-    """Qué módulos de ``sky_claw/local/`` emiten el stage index estructurado.
+    """Qué módulos de ``sky_claw/local/`` emiten el stage index en un fallo real.
 
     Cubre lo que el ancla por servicio no ve: los runners. `loot/cli.py` y
     `xedit/runner.py` hardcodean ``pipeline_stage=5``/``=1`` vía
     ``subprocess_error_extra``, que es la razón por la que "los runners son
     stage-agnósticos" no es precedente asentado en este repo (ver §5 regla 5).
     Una regresión que borre el campo de cualquiera de los cuatro rompe acá.
+
+    Detecta EMISIÓN, no mención (review Qodo, PR #464). La versión anterior
+    marcaba el módulo con que la cadena ``"pipeline_stage"`` apareciera en
+    cualquier nodo, lo que tenía dos consecuencias: un servicio podía "cumplir"
+    con una docstring, y una edición ajena que nombrara la cadena en un literal
+    rompía CI sin que nada real hubiera cambiado.
     """
     raiz = pathlib.Path(sky_claw.local.__file__).parent
 
     emisores = set()
     for archivo in sorted(raiz.rglob("*.py")):
-        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
-        menciona = any(
-            (isinstance(n, ast.keyword) and n.arg == "pipeline_stage")
-            or (isinstance(n, ast.Constant) and n.value == "pipeline_stage")
-            for n in ast.walk(arbol)
-        )
-        if menciona:
+        registros = _registros_de_fallo(ast.parse(archivo.read_text(encoding="utf-8")))
+        if any(_nodo_de_la_etapa(c) is not None for c in registros):
             emisores.add(archivo.relative_to(raiz).as_posix())
 
     assert emisores == {
