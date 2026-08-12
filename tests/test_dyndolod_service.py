@@ -12,6 +12,7 @@ import logging
 import os
 import pathlib
 import time
+import warnings
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2724,87 +2725,143 @@ def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None
     )
 
 
-def test_los_ocho_servicios_ligan_su_logger_al_nombre_logger() -> None:
-    """Precondición de la que depende TODA clasificación por cobertura de este archivo.
+def test_dyndolod_service_liga_su_logger_al_nombre_logger() -> None:
+    """Precondición de la que depende `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`.
 
     `_registros_de_fallo` reconoce únicamente ``logger.<nivel>(...)`` por nombre
-    literal. Eso es correcto en la medida en que cada servicio tenga un único
-    logger de módulo llamado ``logger`` — lo que hoy se cumple en los ocho, pero
-    nada lo impedía de dejar de cumplirse en silencio: un segundo logger o un
-    alias (``_log = logging.getLogger(...)``) harían que la clasificación de
-    `test_los_servicios_estan_clasificados_por_cobertura_real` cuente registros
-    reales como inexistentes, sin que ningún assert lo note (review Qodo, PR #464).
+    literal. Eso es correcto en la medida en que el módulo tenga un único logger
+    llamado ``logger`` — lo que hoy se cumple, pero nada lo impedía de dejar de
+    cumplirse en silencio: un segundo logger o un alias
+    (``_log = logging.getLogger(...)``) harían que la clasificación cuente
+    registros reales como inexistentes, sin que ningún assert lo note (review
+    Qodo, PR #464).
 
-    Ancla la PRECONDICIÓN en vez de generalizar la detección: es la corrección
-    barata que el propio hallazgo ofrece como alternativa a resolver alias
-    arbitrarios por AST estático, un problema sin límite claro y desproporcionado
-    para un caso que la propia review marca severidad baja-media.
+    Acotado a ESTE módulo, no a los ocho ``*_service.py``. La primera versión
+    verificaba los ocho, y una review posterior del mismo PR (comment "Acoplamiento
+    anclas") mostró el costo: un rename legítimo del logger en un servicio que este
+    PR no posee rompería este archivo, acoplando el merge de un PR ajeno a mantener
+    los tests de este. Los otros siete no necesitan esta precondición para las
+    garantías que ESTE PR hace — su cobertura ya está documentada como deuda no
+    verificada al 100% (`_SERVICIOS_SIN_COBERTURA`/`_SERVICIOS_PARCIALES`), así que
+    un alias no detectado ahí los deja clasificados como estaban, sin acoplar nada.
     """
-    tools = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).parent
-    servicios = sorted(p.name for p in tools.glob("*_service.py"))
+    arbol = _modulo_servicio_ast()
+    nombre = _nombre_del_logger_de_modulo(arbol)
 
-    sin_logger_unico_llamado_logger = sorted(
-        nombre
-        for nombre in servicios
-        if _nombre_del_logger_de_modulo(ast.parse((tools / nombre).read_text(encoding="utf-8"))) != "logger"
-    )
-
-    assert sin_logger_unico_llamado_logger == [], (
-        f"servicios cuyo logger de módulo no es un único `logger = logging.getLogger(...)`: "
-        f"{sin_logger_unico_llamado_logger}. _registros_de_fallo no los cubre correctamente."
+    assert nombre == "logger", (
+        f"dyndolod_service.py debe tener un único `logger = logging.getLogger(...)` de "
+        f"módulo; _registros_de_fallo no cubre correctamente el caso medido ({nombre!r})."
     )
 
 
-def test_los_servicios_estan_clasificados_por_cobertura_real() -> None:
+#: Orden de la escala de cobertura, para comparar "mejor que" / "peor que" sin
+#: depender de qué tan lejos está cada extremo.
+_ORDEN_DE_COBERTURA = {"sin_cobertura": 0, "parcial": 1, "completo": 2}
+
+
+def _categoria_medida(registros: list[ast.Call]) -> str:
+    con_etapa = [c for c in registros if _nodo_de_la_etapa(c) is not None]
+    if registros and len(con_etapa) == len(registros):
+        return "completo"
+    if con_etapa:
+        return "parcial"
+    return "sin_cobertura"
+
+
+def _categoria_declarada(nombre: str) -> str | None:
+    if nombre in _SERVICIOS_COMPLETOS:
+        return "completo"
+    if nombre in _SERVICIOS_PARCIALES:
+        return "parcial"
+    if nombre in _SERVICIOS_SIN_COBERTURA:
+        return "sin_cobertura"
+    return None
+
+
+def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
     """Los OCHO ``*_service.py``, clasificados uno por uno. Nadie entra solo.
 
     La regla es del pipeline entero, no de DynDOLOD. Congelar solo el conjunto de
-    los que CUMPLEN dejaba la exención como subproducto; este ancla la invierte y
-    enumera los ocho, así que un servicio nuevo no cumple ni está exento y rompe
-    el test hasta que se decida cuál de las dos cosas es.
+    los que CUMPLEN dejaba la exención como subproducto; este ancla enumera los
+    ocho, así que un servicio nuevo no está declarado en ningún lado y rompe el
+    test hasta que se decida dónde clasificarlo.
 
     Que la deuda esté enumerada NO equivale a haberla verificado: seis servicios
     siguen sin emitir el campo, y `AGENTS.md` es explícito en que el párrafo que
     justifica un recorte no cuenta como verificación. Esto la acota y la hace
     fallar si crece; cerrarla es un PR por servicio (cinco tienen su etapa ya
     determinada por la prosa que arrastran, `vramr` no marca ninguna).
+
+    NO es igualdad estricta contra el snapshot congelado (review Qodo, PR #464,
+    "Acoplamiento anclas"). La primera versión sí lo era, y eso significaba que el
+    primer PR ajeno que cumpliera la regla que este mismo PR instituye —cerrar la
+    deuda de `synthesis_service.py`, por ejemplo— rompía este test sin que su
+    cambio tuviera nada de malo. Reproducido antes de corregir: simular ese cierre
+    en `synthesis_service.py` rompía `assert sin_cobertura == set(_SERVICIOS_SIN_COBERTURA)`
+    con la versión anterior.
+
+    La dirección que sí importa bloquear es la opuesta: un servicio que
+    RETROCEDE de lo declarado (`dyndolod` deja de estar completo, o cualquiera
+    pierde cobertura que tenía) es una regresión real dentro del alcance de este
+    repo y debe fallar. Una mejora no declarada no bloquea el merge —no es este
+    PR quien la introduce ni quien debe mantenerla al día— pero se avisa por
+    `warnings.warn` para que alguien actualice las constantes eventualmente.
     """
     tools = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).parent
     servicios = sorted(p.name for p in tools.glob("*_service.py"))
     assert len(servicios) == 8, f"cambió el universo de servicios: {servicios}"
 
-    completos, parciales, sin_cobertura = set(), set(), set()
+    sin_declarar, regresiones, mejoras = [], [], []
     for nombre in servicios:
-        registros = _registros_de_fallo(ast.parse((tools / nombre).read_text(encoding="utf-8")))
-        con_etapa = [c for c in registros if _nodo_de_la_etapa(c) is not None]
-        if registros and len(con_etapa) == len(registros):
-            completos.add(nombre)
-        elif con_etapa:
-            parciales.add(nombre)
-        else:
-            sin_cobertura.add(nombre)
+        medida = _categoria_medida(_registros_de_fallo(ast.parse((tools / nombre).read_text(encoding="utf-8"))))
+        declarada = _categoria_declarada(nombre)
+        if declarada is None:
+            sin_declarar.append(nombre)
+        elif _ORDEN_DE_COBERTURA[medida] < _ORDEN_DE_COBERTURA[declarada]:
+            regresiones.append(f"{nombre}: declarado {declarada}, medido {medida}")
+        elif _ORDEN_DE_COBERTURA[medida] > _ORDEN_DE_COBERTURA[declarada]:
+            mejoras.append(f"{nombre}: declarado {declarada}, medido {medida}")
 
-    assert completos == _SERVICIOS_COMPLETOS
-    assert parciales == _SERVICIOS_PARCIALES
-    assert sin_cobertura == set(_SERVICIOS_SIN_COBERTURA)
+    assert sin_declarar == [], f"servicios nuevos sin clasificar en ningún conjunto: {sin_declarar}"
+    assert regresiones == [], f"servicios que retrocedieron de su cobertura declarada: {regresiones}"
+
+    if mejoras:
+        warnings.warn(
+            f"servicios con MÁS cobertura que la declarada — actualizar las constantes "
+            f"_SERVICIOS_COMPLETOS/_SERVICIOS_PARCIALES/_SERVICIOS_SIN_COBERTURA en "
+            f"tests/test_dyndolod_service.py: {mejoras}",
+            stacklevel=1,
+        )
 
 
-def test_los_modulos_que_emiten_el_stage_index_estan_congelados() -> None:
-    """Qué módulos de ``sky_claw/local/`` emiten el stage index en un fallo real.
+def test_los_modulos_que_emiten_el_stage_index_no_dejan_de_hacerlo() -> None:
+    """Los módulos conocidos que emiten el stage index en un fallo real no retroceden.
 
     Cubre lo que el ancla por servicio no ve: los runners. `loot/cli.py` y
     `xedit/runner.py` hardcodean ``pipeline_stage=5``/``=1`` vía
     ``subprocess_error_extra``, que es la razón por la que "los runners son
     stage-agnósticos" no es precedente asentado en este repo (ver §5 regla 5).
-    Una regresión que borre el campo de cualquiera de los cuatro rompe acá.
 
     Detecta EMISIÓN, no mención (review Qodo, PR #464). La versión anterior
     marcaba el módulo con que la cadena ``"pipeline_stage"`` apareciera en
     cualquier nodo, lo que tenía dos consecuencias: un servicio podía "cumplir"
     con una docstring, y una edición ajena que nombrara la cadena en un literal
     rompía CI sin que nada real hubiera cambiado.
+
+    NO es igualdad estricta sobre el `rglob` (mismo hallazgo Qodo, "Acoplamiento
+    anclas", que en `test_los_servicios_no_regresan_de_su_cobertura_declarada").
+    Un PR ajeno que agregue el campo a un QUINTO módulo bajo `sky_claw/local/`
+    —de nuevo, exactamente el trabajo que este PR declara pendiente— no debe
+    romper este archivo. Lo que sí debe romperlo es que alguno de los cuatro
+    conocidos DEJE de emitir el campo, que es la regresión real.
     """
     raiz = pathlib.Path(sky_claw.local.__file__).parent
+    conocidos = {
+        "loot/cli.py",
+        "tools/dyndolod_service.py",
+        "tools/grass_cache_service.py",
+        "xedit/runner.py",
+    }
 
     emisores = set()
     for archivo in sorted(raiz.rglob("*.py")):
@@ -2812,9 +2869,13 @@ def test_los_modulos_que_emiten_el_stage_index_estan_congelados() -> None:
         if any(_nodo_de_la_etapa(c) is not None for c in registros):
             emisores.add(archivo.relative_to(raiz).as_posix())
 
-    assert emisores == {
-        "loot/cli.py",
-        "tools/dyndolod_service.py",
-        "tools/grass_cache_service.py",
-        "xedit/runner.py",
-    }
+    perdidos = sorted(conocidos - emisores)
+    assert perdidos == [], f"módulos que dejaron de emitir el stage index estructurado: {perdidos}"
+
+    nuevos = sorted(emisores - conocidos)
+    if nuevos:
+        warnings.warn(
+            f"módulos que emiten el stage index y no están en el set conocido de "
+            f"tests/test_dyndolod_service.py — actualizar `conocidos`: {nuevos}",
+            stacklevel=1,
+        )
