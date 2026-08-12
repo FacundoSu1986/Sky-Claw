@@ -3002,21 +3002,37 @@ def test_todo_registro_con_etapa_lleva_tx_id() -> None:
     )
 
 
-def _bloque_que_contiene(nodo: ast.AST, raiz: ast.AST) -> ast.AST | None:
-    """El nodo compuesto (``ExceptHandler``/``If``/función) MÁS CERCANO que contiene ``nodo``.
+def _bloque_de_companeros(nodo: ast.AST, raiz: ast.AST) -> ast.AST | None:
+    """El ``except`` que contiene a ``nodo``; si no está en uno, su función.
 
-    "Más cercano" = el de rango más chico entre los que envuelven a ``nodo`` — así
-    un ``if`` anidado dentro de un ``except`` no se confunde con el ``except`` en sí.
+    NO considera ``ast.If`` a propósito (review CodeRabbit, PR #464). Una versión
+    anterior tomaba el bloque compuesto más CHICO que envolviera al nodo, ``if``
+    incluido — y eso invertía la dirección útil para buscar compañeros: un
+    ``self._log_result_error(...)`` dentro de un ``if`` anidado en un ``except``
+    quedaba con el ``if`` como bloque, mientras su ``logger.error`` compañero vive
+    directamente en el ``except``, fuera del ``if``. Resultado: el ancla fallaba
+    sobre código CORRECTO (falso negativo, reproducido antes de corregir).
+
+    Para esta búsqueda la dirección correcta es ENSANCHAR hasta el handler, no
+    estrechar. El ``except`` sigue siendo un límite estricto —no se ensancha hasta
+    la función cuando hay uno—, así que un compañero de OTRO handler no cuenta: eso
+    mantiene el ancla tan fuerte como antes para el caso que sí importa.
     """
-    candidatos = [
+    handlers = [
         n
         for n in ast.walk(raiz)
-        if isinstance(n, (ast.ExceptHandler, ast.If, ast.FunctionDef, ast.AsyncFunctionDef))
-        and n is not nodo
-        and hasattr(n, "lineno")
-        and n.lineno <= nodo.lineno <= (getattr(n, "end_lineno", None) or n.lineno)
+        if isinstance(n, ast.ExceptHandler) and n.lineno <= nodo.lineno <= (n.end_lineno or n.lineno)
     ]
-    return min(candidatos, key=lambda n: (n.end_lineno or n.lineno) - n.lineno, default=None)
+    if handlers:
+        return min(handlers, key=lambda n: (n.end_lineno or n.lineno) - n.lineno)
+
+    funciones = [
+        n
+        for n in ast.walk(raiz)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.lineno <= nodo.lineno <= (n.end_lineno or n.lineno)
+    ]
+    return min(funciones, key=lambda n: (n.end_lineno or n.lineno) - n.lineno, default=None)
 
 
 def test_log_result_error_siempre_tiene_companero_con_etapa() -> None:
@@ -3057,7 +3073,7 @@ def test_log_result_error_siempre_tiene_companero_con_etapa() -> None:
 
     sin_companero = []
     for llamada in llamadas_log_result_error:
-        bloque = _bloque_que_contiene(llamada, arbol)
+        bloque = _bloque_de_companeros(llamada, arbol)
         if bloque is None:
             sin_companero.append(f"_log_result_error:{llamada.lineno} (sin bloque contenedor detectado)")
             continue
