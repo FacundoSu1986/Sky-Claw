@@ -45,10 +45,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
 
-#: Índice de etapa de DynDOLOD en el DAG de ``sky_claw/local/AGENTS.md`` §1, que
-#: todo registro de fallo de este módulo emite como ``pipeline_stage`` (§5 regla
-#: 5). Se define UNA vez a propósito: el número aparece en trece registros y
-#: duplicarlo garantiza que un reordenamiento del DAG deje la mitad desactualizada.
+#: Índice de etapa de DynDOLOD en el DAG de ``sky_claw/local/AGENTS.md`` §1. La
+#: mayoría de los registros de fallo de este módulo la emiten como
+#: ``pipeline_stage`` (§5 regla 5); los que no —porque semánticamente no son un
+#: fallo de la etapa 9— están enumerados como exención en
+#: ``_REGISTROS_EXENTOS_DE_ETAPA`` (``tests/test_dyndolod_service.py``), no
+#: dejados afuera en silencio. Se define UNA vez a propósito: duplicar el número
+#: en cada registro garantiza que un reordenamiento del DAG deje algunos
+#: desactualizados. No se pone un conteo fijo acá —"aparece en N registros"— a
+#: propósito: quedó desactualizado dos veces en este mismo PR (16→13→14 según
+#: fixes posteriores agregaban o quitaban registros); el conteo real lo miden
+#: en vivo los anclas de `tests/test_dyndolod_service.py`, no este comentario.
 #:
 #: No se deriva de nada porque no hay de dónde: el orden del pipeline vive como
 #: tabla en prosa en §1 —que la propia sección aclara que todavía no se hace

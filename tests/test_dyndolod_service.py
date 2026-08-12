@@ -3011,7 +3011,7 @@ def test_log_result_error_siempre_tiene_companero_con_etapa() -> None:
 
 
 def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None:
-    """El 9 se define UNA vez y los registros lo referencian por nombre.
+    """El 9 se define UNA vez y TODOS los registros referencian ESE nombre.
 
     El ancla anterior exigía el literal `9` (`ast.Constant`), lo que dejaba dos
     problemas señalados por la review Qodo del PR #464: el número quedaba
@@ -3019,8 +3019,17 @@ def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None
     constante con nombre ROMPÍA el test — un gate que castiga la mejora que él
     mismo debería incentivar. Acá se invierte: el literal suelto es lo que falla.
 
-    Sigue verificándose el VALOR (la constante vale 9), así que resolver el nombre
-    no afloja el ancla: un `_ETAPA_DYNDOLOD = 8` rompe igual.
+    Verificar "no es literal" no basta (review Qodo, PR #464, ronda posterior):
+    la versión anterior solo exigía que el nodo NO fuera `ast.Constant`, sin
+    resolver a qué nombre apunta ni si ese nombre vale 9. Una constante hermana
+    —`_MI_ETAPA = 8` a nivel de módulo, usada en un registro nuevo— pasaba las
+    dos aserciones (no es literal; `_ETAPA_DYNDOLOD` sigue valiendo 9) mientras
+    ese registro emitía `pipeline_stage=8` en runtime: el número duplicado con
+    la mitad desactualizada que este ancla dice prevenir, sin que nada fallara.
+    Ahora se resuelve el `ast.Name` de CADA registro contra `_constantes_de_modulo`
+    y se exige que sea EXACTAMENTE `_NOMBRE_DE_LA_CONSTANTE` —no cualquier nombre
+    que resuelva a 9: dos constantes con el mismo valor también rompen "un solo
+    sitio que corregir si el DAG se reordena", que es la promesa completa.
 
     Lo que este ancla NO puede hacer, y conviene no aparentar: atar ese 9 al orden
     real del DAG. Ese orden vive como tabla en prosa en `sky_claw/local/AGENTS.md`
@@ -3038,14 +3047,19 @@ def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None
         f"(SOP §1: DynDOLOD es la etapa 9); hoy vale {constantes.get(_NOMBRE_DE_LA_CONSTANTE)!r}"
     )
 
-    literales = sorted(
-        f"{c.func.attr}:{c.lineno}"
-        for c in _registros_de_fallo(arbol)
-        if isinstance(_nodo_de_la_etapa(c), ast.Constant)
-    )
+    mal_referenciados = []
+    for c in _registros_de_fallo(arbol):
+        nodo = _nodo_de_la_etapa(c)
+        if nodo is None:
+            continue
+        if isinstance(nodo, ast.Constant):
+            mal_referenciados.append(f"{c.func.attr}:{c.lineno} (literal {nodo.value!r} en vez de nombre)")
+        elif not (isinstance(nodo, ast.Name) and nodo.id == _NOMBRE_DE_LA_CONSTANTE):
+            nombre = nodo.id if isinstance(nodo, ast.Name) else ast.unparse(nodo)
+            mal_referenciados.append(f"{c.func.attr}:{c.lineno} (usa {nombre!r}, no {_NOMBRE_DE_LA_CONSTANTE!r})")
 
-    assert literales == [], (
-        f"registros que hardcodean el número de etapa en vez de usar {_NOMBRE_DE_LA_CONSTANTE}: {literales}"
+    assert mal_referenciados == [], (
+        f"registros que no referencian {_NOMBRE_DE_LA_CONSTANTE} exactamente: {mal_referenciados}"
     )
 
 
@@ -3179,6 +3193,63 @@ def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
             f"servicios con MÁS cobertura que la declarada — actualizar las constantes "
             f"_SERVICIOS_COMPLETOS/_SERVICIOS_PARCIALES/_SERVICIOS_SIN_COBERTURA en "
             f"tests/test_dyndolod_service.py: {mejoras}",
+            stacklevel=1,
+        )
+
+
+#: Deuda de `dyndolod_runner.py` —el runner de la etapa 9, no un `*_service.py`—
+#: con el mismo formato que `_SERVICIOS_SIN_COBERTURA`. Registrado por separado
+#: porque este ancla enumera UN archivo, no ocho: mezclarlo con
+#: `_SERVICIOS_SIN_COBERTURA` mediría un servicio contra un runner con la misma
+#: vara sin que ninguno de los dos lo pida.
+_RUNNER_SIN_COBERTURA = {
+    "dyndolod_runner.py": (
+        "etapa 9 (mismo runner del servicio que este PR cierra); 0 de sus 24 "
+        "registros de fallo emiten pipeline_stage o tx_id — ninguna prosa "
+        "'(stage 9)' tampoco, a diferencia de loot/pandora/synthesis/wrye_bash/xedit"
+    ),
+}
+
+
+def test_dyndolod_runner_no_regresa_de_su_cobertura_declarada() -> None:
+    """El runner de la etapa 9, con la MISMA vara que sus ocho servicios hermanos.
+
+    `dyndolod_runner.py` quedó fuera de las anclas anteriores por una asimetría
+    real (review Qodo, PR #464, análisis independiente sobre el PR completo):
+    `test_los_modulos_que_emiten_el_stage_index_no_dejan_de_hacerlo` congela
+    `loot/cli.py` y `xedit/runner.py` como runners que SÍ emiten el campo, pero
+    nunca exigió nada de `dyndolod_runner.py` —ni como emisor conocido ni como
+    deuda enumerada— pese a ser el runner HERMANO del servicio que este PR
+    entero existe para cerrar. Un PR anterior de esta misma review
+    (`9608ca46`) incluso lo citó como evidencia ("dyndolod_runner.py, vecino
+    directo de este servicio, ya usa logger.exception tres veces") sin
+    clasificarlo — la enumeración de deuda se completa acá.
+
+    Mismo criterio que `test_los_servicios_no_regresan_de_su_cobertura_declarada`:
+    no-regresión, no igualdad estricta (evita el mismo acoplamiento de merge de
+    "Acoplamiento anclas"). `dyndolod_runner.py` es hoy `sin_cobertura`
+    (0 de 24 registros con el campo); cerrarlo es su propio PR, con su propia
+    decisión de si el service layer sigue siendo la capa preferida o si el
+    runner —que SÍ tiene visibilidad directa del exit code y la causa técnica
+    del fallo, algo que el handler del servicio no reconstruye— amerita emitirlo
+    él mismo.
+    """
+    tools = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).parent
+    ruta = tools / "dyndolod_runner.py"
+    assert ruta.exists(), f"cambió la ubicación de dyndolod_runner.py: {ruta}"
+
+    medida = _categoria_medida(_registros_de_fallo(ast.parse(ruta.read_text(encoding="utf-8"))))
+    declarada = "sin_cobertura" if ruta.name in _RUNNER_SIN_COBERTURA else None
+
+    assert declarada is not None, "dyndolod_runner.py debe estar clasificado en _RUNNER_SIN_COBERTURA"
+    assert _ORDEN_DE_COBERTURA[medida] >= _ORDEN_DE_COBERTURA[declarada], (
+        f"dyndolod_runner.py retrocedió de su cobertura declarada: declarado {declarada}, medido {medida}"
+    )
+
+    if _ORDEN_DE_COBERTURA[medida] > _ORDEN_DE_COBERTURA[declarada]:
+        warnings.warn(
+            f"dyndolod_runner.py tiene MÁS cobertura que la declarada ({medida} vs {declarada}) "
+            f"— actualizar _RUNNER_SIN_COBERTURA en tests/test_dyndolod_service.py",
             stacklevel=1,
         )
 
