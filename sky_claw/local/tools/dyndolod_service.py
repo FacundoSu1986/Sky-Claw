@@ -849,6 +849,19 @@ class DynDOLODPipelineService:
                 )
 
         except _ActionManifestError as exc:
+            # El logger.error del incidente va PRIMERO, antes de cualquier await
+            # cancelable (review Qodo, PR #464, "Pérdida de señal"): si la task
+            # se cancela durante `_cerrar_tx_tras_rollback` —rollback de
+            # directorios, potencialmente largo—, la CancelledError se propaga
+            # desde dentro de ESTE handler y nada de lo que venga después se
+            # ejecuta. Antes del fix de "Duplicación de señal" el guard logueaba
+            # inmediatamente antes de lanzar, así que la señal sobrevivía
+            # cualquier cancelación posterior; moverla acá restaura esa garantía.
+            logger.error(
+                "DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s",
+                exc,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
             # La caja negra no se pudo emitir: ningún LOD se generó. Cerrar la TX
             # sólo si todos los DirectoryRollback observados confirman que no quedó
             # mutación sin resolver (M-7).
@@ -861,11 +874,6 @@ class DynDOLODPipelineService:
                 contexto="fallo del manifiesto",
             )
             duration = time.monotonic() - start_time
-            logger.error(
-                "DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s",
-                exc,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
-            )
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -917,6 +925,22 @@ class DynDOLODPipelineService:
             )
 
         except (DynDOLODExecutionError, DynDOLODTimeoutError) as exc:
+            # El logger.error del incidente va PRIMERO, antes de cualquier await
+            # cancelable (review Qodo, PR #464, "Pérdida de señal"): con el log
+            # después de `_cerrar_tx_tras_rollback` —que puede tardar y es
+            # cancelable—, una cancelación en esa ventana propagaba la
+            # CancelledError desde dentro de ESTE handler y el registro del
+            # incidente original (el caso de validación de output, el más común)
+            # nunca se emitía. `rolled_back` ya no va en el mismo mensaje —se
+            # calcula DESPUÉS— pero no se pierde: si el rollback queda
+            # incompleto, `_cerrar_tx_tras_rollback` emite su propio
+            # warning/critical con pipeline_stage y tx_id; si se completa, no
+            # hay nada urgente que reportar.
+            logger.error(
+                "DynDOLOD (stage 9): error de dominio del pipeline: %s",
+                exc,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
             # M-7: reportar el resultado REAL del rollback. Los __aexit__ de los
             # DirectoryRollback ya corrieron (restore best-effort); rolled_back es
             # True sólo si TODOS completaron. Un rmtree/rename fallido deja el output
@@ -930,12 +954,6 @@ class DynDOLODPipelineService:
                 contexto="error de dominio",
             )
             duration = time.monotonic() - start_time
-            logger.error(
-                "DynDOLOD (stage 9): error de dominio del pipeline: %s (rolled_back=%s)",
-                exc,
-                rolled_back,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
-            )
 
             await self._log_result_error(preset, str(exc), tx_id)
             await self._publish_completed(
@@ -992,6 +1010,15 @@ class DynDOLODPipelineService:
             raise
 
         except Exception as exc:
+            # El logger.error del incidente va PRIMERO, antes de cualquier await
+            # cancelable (review Qodo, PR #464, "Pérdida de señal") — mismo
+            # motivo que el handler de dominio arriba.
+            logger.error(
+                "DynDOLOD (stage 9): error inesperado del pipeline: %s",
+                exc,
+                exc_info=True,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
             # PREVENCIÓN T11: red de seguridad final con resultado REAL del
             # rollback. Una TX queda PENDING a propósito si algún move-aside no
             # pudo confirmar su recuperación (ver handler de dominio arriba).
@@ -1004,12 +1031,6 @@ class DynDOLODPipelineService:
                 contexto="error inesperado",
             )
             duration = time.monotonic() - start_time
-            logger.error(
-                "DynDOLOD (stage 9): error inesperado del pipeline: %s",
-                exc,
-                exc_info=True,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
-            )
 
             await self._log_result_error(preset, str(exc), tx_id)
             await self._publish_completed(

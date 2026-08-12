@@ -946,6 +946,64 @@ async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
 
 
 @pytest.mark.asyncio
+async def test_cancelacion_durante_cierre_de_tx_no_pierde_el_log_del_incidente(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """El log del incidente sobrevive una cancelación DENTRO de `_cerrar_tx_tras_rollback`.
+
+    Review Qodo, PR #464, "Pérdida de señal": el fix de "Duplicación de señal"
+    movió el `logger.error` del incidente a DESPUÉS de
+    `await self._cerrar_tx_tras_rollback(...)` en tres handlers. Si la task se
+    cancela durante ese await —cancelable de verdad: contiene
+    `await self._journal.mark_transaction_rolled_back(tx_id)`, que
+    `except Exception` NO atrapa porque `CancelledError` hereda de
+    `BaseException`—, la excepción se propaga desde DENTRO del handler y nada
+    de lo que sigue se ejecuta. Antes del fix, eso significaba perder el
+    registro del incidente por completo, no solo contarlo de más.
+
+    Ejercita `_ActionManifestError`, no el handler de dominio, porque es el
+    escenario donde el await es alcanzable HOY con datos reales: el manifiesto
+    se emite ANTES de `mutation_started = True`, así que `dir_rollbacks` está
+    vacío y `_cerrar_tx_tras_rollback` toma la rama que SÍ llama a
+    `mark_transaction_rolled_back` (a diferencia del handler de dominio, donde
+    `mutation_coverage_complete` está hoy hardcodeado en `False` y la función
+    nunca llega a ese await — ver comentario "Cobertura honesta" en el
+    servicio). El fix se aplicó a los tres handlers por igual porque el
+    principio no depende de qué rama es alcanzable hoy.
+    """
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    mock_runner._config = mock_config
+    mock_runner.DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
+    mock_runner.TEXGEN_MOD_NAME = "TexGen Output"
+    service._runner = mock_runner
+
+    mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=asyncio.CancelledError)
+
+    with (
+        patch.object(
+            service,
+            "_emit_action_manifest",
+            AsyncMock(side_effect=sky_claw.local.tools.dyndolod_service._ActionManifestError("boom del manifiesto")),
+        ),
+        caplog.at_level(logging.ERROR, logger="SkyClaw.DynDOLODPipelineService"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=False)
+
+    incidente = [r for r in caplog.records if "no se pudo emitir el ActionManifest" in r.getMessage()]
+    assert len(incidente) == 1, (
+        f"el log del incidente debe sobrevivir la cancelación del cierre de TX: {caplog.records}"
+    )
+    assert incidente[0].pipeline_stage == sky_claw.local.tools.dyndolod_service._ETAPA_DYNDOLOD
+    assert incidente[0].tx_id == 42
+
+
+@pytest.mark.asyncio
 async def test_cancelacion_durante_commit_sella_todos_los_outputs_antes_de_liberar_lock(
     service: DynDOLODPipelineService,
     mock_lock_manager: AsyncMock,
