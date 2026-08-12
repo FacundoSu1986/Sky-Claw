@@ -531,6 +531,11 @@ async def test_validation_failure_deja_tx_pendiente(
     assert len(outcome) == 1, "el outcome-record (_log_result_error) debe seguir emitiéndose, sin pipeline_stage"
     assert getattr(outcome[0], "pipeline_stage", None) is None
     assert outcome[0].tx_id is not None
+    # El resultado del rollback viaja en el outcome-record (review Qodo, PR #464,
+    # "Perdida de senal" 2a vuelta): al adelantar el logger.error del handler se
+    # perdio el "rolled_back=%s" de su mensaje, y en la rama de EXITO del rollback
+    # no quedaba ningun registro que lo dijera — solo el dict que devuelve execute().
+    assert outcome[0].rolled_back is False
 
 
 @pytest.mark.asyncio
@@ -590,6 +595,11 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     assert len(outcome) == 1, "el outcome-record (_log_result_error) debe seguir emitiéndose, sin pipeline_stage"
     assert getattr(outcome[0], "pipeline_stage", None) is None
     assert outcome[0].tx_id is not None
+    # El resultado del rollback viaja en el outcome-record (review Qodo, PR #464,
+    # "Perdida de senal" 2a vuelta): al adelantar el logger.error del handler se
+    # perdio el "rolled_back=%s" de su mensaje, y en la rama de EXITO del rollback
+    # no quedaba ningun registro que lo dijera — solo el dict que devuelve execute().
+    assert outcome[0].rolled_back is False
 
 
 @pytest.mark.asyncio

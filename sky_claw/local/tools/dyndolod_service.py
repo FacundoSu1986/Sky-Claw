@@ -962,7 +962,7 @@ class DynDOLODPipelineService:
             )
             duration = time.monotonic() - start_time
 
-            await self._log_result_error(preset, str(exc), tx_id)
+            await self._log_result_error(preset, str(exc), tx_id, rolled_back)
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -1039,7 +1039,7 @@ class DynDOLODPipelineService:
             )
             duration = time.monotonic() - start_time
 
-            await self._log_result_error(preset, str(exc), tx_id)
+            await self._log_result_error(preset, str(exc), tx_id, rolled_back)
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -1192,7 +1192,13 @@ class DynDOLODPipelineService:
             },
         )
 
-    async def _log_result_error(self, preset: str, error_msg: str, tx_id: int | None = None) -> None:
+    async def _log_result_error(
+        self,
+        preset: str,
+        error_msg: str,
+        tx_id: int | None = None,
+        rolled_back: bool | None = None,
+    ) -> None:
         """Registra el resultado fallido del pipeline mediante logging estructurado.
 
         Gemelo de `_log_result` (éxito) en el canal de fallo: ese usa ``info`` y
@@ -1226,5 +1232,20 @@ class DynDOLODPipelineService:
                 # es un caso real: los llamadores sin `tx_id` explícito son paths
                 # donde la TX puede no haberse abierto aún.
                 "tx_id": tx_id,
+                # El resultado del rollback vive acá desde la review Qodo del PR
+                # #464 ("Pérdida de señal", segunda vuelta). El fix de la primera
+                # vuelta adelantó el `logger.error` del handler para que
+                # sobreviviera a una cancelación, y al hacerlo perdió el
+                # `rolled_back=%s` que ese mensaje llevaba —se calcula después—.
+                # La justificación de entonces solo cubría la rama de FALLO (si el
+                # rollback queda incompleto, `_cerrar_tx_tras_rollback` emite su
+                # propio warning/critical): en la rama de ÉXITO no quedaba ningún
+                # registro diciendo que el rollback se confirmó, así que en los
+                # logs no se distinguía "rollback confirmado" de "rollback no
+                # aplicable". Este es el sitio correcto para reponerlo: el
+                # outcome-record ya se emite después de calcularlo, así que no
+                # reintroduce la ventana de cancelación ni re-emite el incidente.
+                # `None` = el llamador no lo computa (no todos los paths lo tienen).
+                "rolled_back": rolled_back,
             },
         )
