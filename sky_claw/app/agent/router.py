@@ -863,6 +863,8 @@ class LLMRouter:
         async with self._conn_lock:
             if self._conn is None:
                 raise RuntimeError("Router database is not open")
+            if self._lifecycle is not None:
+                self._conn = await self._lifecycle.refresh_connection(self._db_path, self._conn)
             await self._conn.execute(
                 "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                 (chat_id, role, content, time.time()),
@@ -875,6 +877,8 @@ class LLMRouter:
         async with self._conn_lock:
             if self._conn is None:
                 raise RuntimeError("Router database is not open")
+            if self._lifecycle is not None:
+                self._conn = await self._lifecycle.refresh_connection(self._db_path, self._conn)
             async with self._conn.execute(
                 "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
                 (chat_id, self._max_context),

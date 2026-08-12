@@ -351,6 +351,18 @@ class AsyncModRegistry:
     # Single-row helpers
     # ------------------------------------------------------------------
 
+    async def _revalidar_conexion(self) -> None:
+        """Revalida ``self._conn`` contra el lifecycle antes de cada operación.
+
+        La conexión del lifecycle es singleton por path resuelto: otro wrapper
+        sobre la misma DB puede haberla puesto en cuarentena, y sin esta
+        revalidación este registry seguiría emitiendo SQL contra una conexión
+        cerrada. Deja el chequeo de ``None`` a cada método para no cambiarles el
+        error que ya documentan.
+        """
+        if self._conn is not None and self._lifecycle is not None:
+            self._conn = await self._lifecycle.refresh_connection(self._db_path, self._conn)
+
     async def upsert_mod(
         self,
         nexus_id: int,
@@ -361,6 +373,7 @@ class AsyncModRegistry:
         download_url: str = "",
     ) -> int:
         """Insert or update a mod record.  Returns the ``mod_id``."""
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with (
@@ -378,6 +391,7 @@ class AsyncModRegistry:
 
     async def set_vfs_status(self, nexus_id: int, *, installed: bool, enabled: bool) -> None:
         """Update the VFS installation and activation status for a mod."""
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with (
@@ -391,6 +405,7 @@ class AsyncModRegistry:
 
     async def get_mod(self, nexus_id: int) -> aiosqlite.Row | None:
         """Return the mod row for *nexus_id*, or ``None``."""
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with self._conn.execute("SELECT * FROM mods WHERE nexus_id = ?", (nexus_id,)) as cur:
@@ -398,6 +413,7 @@ class AsyncModRegistry:
 
     async def is_empty(self) -> bool:
         """Return True if the mods table is empty."""
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with self._conn.execute("SELECT COUNT(*) FROM mods") as cur:
@@ -417,6 +433,7 @@ class AsyncModRegistry:
         Returns:
             List of dicts with mod metadata.
         """
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -439,6 +456,7 @@ class AsyncModRegistry:
 
     async def get_all_nexus_ids(self) -> set[int]:
         """Return all registered nexus_id values."""
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with self._conn.execute("SELECT nexus_id FROM mods") as cur:
@@ -446,6 +464,7 @@ class AsyncModRegistry:
 
     async def get_dependencies(self, mod_id: int) -> list[tuple[int, str]]:
         """Return ``(depends_on_nexus_id, dep_name)`` for *mod_id*."""
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with self._conn.execute(
@@ -468,6 +487,7 @@ class AsyncModRegistry:
         Returns:
             List of dicts with mod_name, missing nexus_id, and dep_name.
         """
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         if not mod_names:
@@ -506,6 +526,7 @@ class AsyncModRegistry:
         """
         if not rows:
             return
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with self._write_lock:
@@ -528,6 +549,7 @@ class AsyncModRegistry:
         """
         if not rows:
             return
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with self._write_lock:
@@ -550,6 +572,7 @@ class AsyncModRegistry:
         """
         if not rows:
             return
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         async with self._write_lock:
@@ -571,6 +594,7 @@ class AsyncModRegistry:
         del mod se resuelve con LEFT JOIN (``mod_name`` es ``None`` para
         eventos sin mod asociado, p. ej. syncs).
         """
+        await self._revalidar_conexion()
         if self._conn is None:
             raise RuntimeError("Database is not open")
         # En SQLite un LIMIT negativo significa "sin límite": un -1 accidental

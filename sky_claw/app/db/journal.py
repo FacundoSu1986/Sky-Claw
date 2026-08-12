@@ -387,9 +387,20 @@ class OperationJournal:
             logger.info("Journal database closed")
 
     async def _ensure_connected(self) -> aiosqlite.Connection:
-        """Asegura que la conexión está abierta."""
+        """Asegura que la conexión está abierta y que sigue siendo la válida.
+
+        Chequear ``is None`` no alcanza cuando la conexión viene del lifecycle:
+        es singleton por path resuelto, así que otro `OperationJournal` —u otro
+        wrapper cualquiera— sobre la misma DB puede haberla puesto en cuarentena
+        sin que esta instancia se entere, y el atributo seguiría apuntando a una
+        conexión cerrada. ``refresh_connection`` contesta "¿la que tengo sigue
+        siendo la válida de este path?" en el único lugar que lo sabe, y
+        devuelve el reemplazo o falla closed si el path quedó envenenado.
+        """
         if self._db is None:
             await self.open()
+        elif self._lifecycle is not None:
+            self._db = await self._lifecycle.refresh_connection(self._db_path, self._db)
         if self._db is None:
             raise JournalConnectionError("Database connection not available")
         return self._db

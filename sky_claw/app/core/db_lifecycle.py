@@ -103,6 +103,22 @@ class DatabaseShutdownIncompleteError(RuntimeError):
         super().__init__("Database shutdown incomplete; retained managed connections: " + ", ".join(retained_paths))
 
 
+class DatabasePathPoisonedError(RuntimeError):
+    """El path quedó fail-closed: su conexión se invalidó y no pudo cerrarse.
+
+    Se levanta desde ``get_connection`` mientras el path está invalidado. Es
+    deliberadamente distinto de "no hay conexión": acá SÍ hay una, sigue bajo
+    ownership del lifecycle, y entregar un reemplazo mentiría sobre el estado
+    del archivo — la vieja puede seguir sosteniendo el write lock de SQLite.
+    """
+
+    def __init__(self, path_str: str, close_error: BaseException | None = None) -> None:
+        self.path_str = path_str
+        self.close_error = close_error
+        detalle = f": {close_error}" if close_error is not None else " (cierre en curso)"
+        super().__init__(f"Database path is poisoned and unavailable: {path_str}{detalle}")
+
+
 # ---------------------------------------------------------------------------
 # DatabaseLifecycleManager
 # ---------------------------------------------------------------------------
@@ -122,6 +138,31 @@ class DatabaseLifecycleManager:
       foreign_keys=ON, temp_store=MEMORY).
     - Shutdown coordinado vía ``shutdown_all()`` que ejecuta TRUNCATE
       checkpoint y elimina los ``-wal``/``-shm``.
+
+    CONTRATO DE INVALIDACIÓN: la conexión es **singleton por path resuelto**, así
+    que varios wrappers comparten el mismo objeto. De ahí la propiedad que rige
+    toda retirada de circulación:
+
+        una conexión compartida sólo se puede invalidar de forma compartida —
+        si el que la retira es el único que se entera, los demás siguen
+        emitiendo SQL contra una conexión cerrada
+
+    Concretamente: ``quarantine_connection()`` es el único punto de invalidación,
+    y todo wrapper que **cachee** la conexión en un atributo debe pedirla con
+    ``refresh_connection(path, cached)`` antes de reusarla, en vez de chequear
+    ``is None``. Los dos estados del path que eso hace visibles no son
+    intercambiables:
+
+    - ``INVALIDATED != EVICTED``: invalidar es inmediato e incondicional;
+      expulsar del pool es ceder ownership y sólo ocurre si el cierre terminó.
+    - ``POISONED != AVAILABLE_FOR_REPLACEMENT``: si el cierre falló, el path
+      queda fail-closed (``DatabasePathPoisonedError``) y NO se abre un
+      reemplazo — la conexión vieja puede seguir sosteniendo el write lock del
+      archivo, y el lifecycle conserva su ownership para reintentar la limpieza
+      en ``shutdown_all()``.
+
+    El ancla enumerativa de qué módulos cachean conexión —y con qué estrategia—
+    vive en ``tests/test_db_connection_invalidation.py``.
 
     Módulos cubiertos por M-01/M-01.1: ``core/database.py``,
     ``db/async_registry.py``, ``db/journal.py``, ``security/governance.py``,
@@ -162,6 +203,12 @@ class DatabaseLifecycleManager:
         # Per-path write lock shared by every wrapper reusing the same managed
         # connection (see get_write_lock) — closes the shared-connection write race.
         self._write_locks: dict[str, asyncio.Lock] = {}
+        # Paths cuya conexión registrada dejó de ser utilizable (ver
+        # quarantine_connection). Presencia == estado POISONED: la clave está
+        # acá desde ANTES de intentar el cierre, así que la invalidación no
+        # depende de que el cierre salga bien. El valor es el error de cierre
+        # una vez conocido, o None mientras el cierre sigue en vuelo.
+        self._poisoned_paths: dict[str, BaseException | None] = {}
         self._registered_signals: bool = False
         # Lock para garantizar singleton por path ante llamadas concurrentes
         self._init_lock = asyncio.Lock()
@@ -223,7 +270,7 @@ class DatabaseLifecycleManager:
         except BaseException:
             # CancelledError is a BaseException on Python 3.11. The close must
             # finish before the original startup failure is propagated.
-            close_error = await self._quarantine_connection(db_path, conn)
+            close_error = await self.quarantine_connection(db_path, conn)
             if close_error is not None and not isinstance(close_error, asyncio.CancelledError):
                 logger.critical(
                     "DatabaseLifecycle: no se pudo cerrar la conexión no registrada para %s",
@@ -429,6 +476,10 @@ class DatabaseLifecycleManager:
             else:
                 if self._connections.get(path_str) is conn:
                     self._connections.pop(path_str)
+                # Recovery del path fail-closed: shutdown es el reintento de
+                # limpieza que quarantine_connection dejó pendiente al conservar
+                # ownership. Si acá el cierre sí terminó, el veneno se levanta.
+                self._poisoned_paths.pop(path_str, None)
 
         # Step 3: Verify WAL/SHM elimination.
         #
@@ -609,6 +660,23 @@ class DatabaseLifecycleManager:
     # Accessors
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _resolve_key(db_path: Path | str) -> str:
+        """Canoniza *db_path* a la clave con la que se indexa todo estado por path.
+
+        Conexión, write lock y estado POISONED comparten esta clave a propósito:
+        dos formas del mismo archivo ("db.db", "./db.db", un symlink) tienen que
+        caer en la misma entrada o la invalidación protegería a un alias y no al
+        otro.
+        """
+        path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
+        return str(path_obj.resolve())
+
+    def _raise_if_poisoned(self, path_str: str) -> None:
+        """Fail-closed: un path envenenado no entrega conexión, ni vieja ni nueva."""
+        if path_str in self._poisoned_paths:
+            raise DatabasePathPoisonedError(path_str, self._poisoned_paths[path_str])
+
     async def get_connection(self, db_path: Path | str) -> aiosqlite.Connection:
         """Return the managed connection for db_path, initializing on demand.
 
@@ -630,7 +698,12 @@ class DatabaseLifecycleManager:
         path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
         # Canonizar la key con .resolve() para que rutas equivalentes
         # (p.ej. "db.db" vs "./db.db") mapeen al mismo singleton.
-        path_str = str(path_obj.resolve())
+        path_str = self._resolve_key(path_obj)
+
+        # Fail-closed antes que nada: mientras el path esté envenenado no se
+        # entrega la conexión vieja (está sucia) ni una nueva (la vieja puede
+        # seguir sosteniendo el write lock del archivo).
+        self._raise_if_poisoned(path_str)
 
         # Fast-path sin lock (double-checked locking)
         if path_str in self._connections:
@@ -639,7 +712,11 @@ class DatabaseLifecycleManager:
         # Lock para evitar race condition: dos coroutines pueden pasar el
         # check anterior simultáneamente y ambas intentarían init.
         async with self._init_lock:
-            # Re-check dentro del lock (segunda mitad del double-checked locking)
+            # Re-check dentro del lock (segunda mitad del double-checked locking).
+            # El re-check del veneno va junto: el path puede haberse envenenado
+            # mientras esta coroutine esperaba el lock, y sin él dos wrappers que
+            # detectan la invalidación a la vez abrirían dos reemplazos.
+            self._raise_if_poisoned(path_str)
             if path_str in self._connections:
                 return self._connections[path_str]
 
@@ -693,25 +770,127 @@ class DatabaseLifecycleManager:
         if cancelación is not None:
             raise cancelación
 
-    async def _quarantine_connection(
+    async def quarantine_connection(
         self,
         db_path: Path | str,
         conn: aiosqlite.Connection,
     ) -> BaseException | None:
-        """Retira y cierra una conexión dañada sin tocar su reemplazo."""
-        path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
-        path_str = str(path_obj.resolve())
-        if self._connections.get(path_str) is conn:
-            self._connections.pop(path_str)
+        """Retira de circulación una conexión que dejó de ser utilizable.
+
+        Punto único de invalidación del lifecycle: lo usan el fallo de
+        ``_init_single``, el rollback fallido de ``_rollback_after_failure`` y
+        los wrappers que detectan corrupción o una transacción que no pudo
+        deshacerse. Tres implementaciones a mano del mismo primitivo es como
+        nacieron N1 y N2; esta es la única que debe existir.
+
+        El contrato, y por qué el orden de los pasos ES el mecanismo:
+
+        1. **Invalidar ANTES de cerrar.** La conexión deja de ser válida en el
+           instante en que se la cuarentena, no cuando el cierre termina. Si la
+           invalidación dependiera del cierre, un ``close()`` fallido dejaría a
+           todos los wrappers cacheados creyendo válida una conexión sucia —
+           que es exactamente el agujero que este método existe para tapar.
+        2. **``INVALIDATED != EVICTED``.** Expulsar del pool es ceder ownership,
+           y sólo se cede cuando el cierre terminó. Un ``pop`` antes del cierre
+           (la secuencia anterior de este método) pierde la única referencia que
+           ``shutdown_all`` tenía para reintentar la limpieza.
+        3. **``POISONED != AVAILABLE_FOR_REPLACEMENT``.** Si el cierre falla, el
+           path queda fail-closed: la conexión vieja puede seguir sosteniendo el
+           write lock de SQLite, así que abrir un reemplazo produciría
+           "database is locked" en vez de un error que nombre la causa.
+
+        Una conexión que NO es la registrada para su path (p. ej. la de un
+        ``_init_single`` que falló antes de registrarla) no envenena nada: nadie
+        más puede tener una referencia cacheada a ella.
+
+        Returns:
+            El error de cierre, o ``None`` si la conexión cerró bien.
+        """
+        path_str = self._resolve_key(db_path)
+        es_la_registrada = self._connections.get(path_str) is conn
+
+        if es_la_registrada:
+            # Paso 1: incondicional y antes del await. Desde acá,
+            # is_connection_current() dice False para toda referencia cacheada.
+            self._poisoned_paths.setdefault(path_str, None)
+
+        close_error: BaseException | None = None
         try:
             await self._await_db_operation(conn.close())
         except _DatabaseOperationFailedAfterCancellation as error:
-            return error.operation_error
+            close_error = error.operation_error
         except _DatabaseOperationCancelled as error:
-            return error.cause
+            close_error = error.cause
         except BaseException as error:
-            return error
-        return None
+            close_error = error
+
+        if not es_la_registrada:
+            return close_error
+
+        if close_error is None:
+            # Paso 2: el cierre terminó, recién ahora se cede ownership y el
+            # path vuelve a estar disponible para un reemplazo limpio.
+            if self._connections.get(path_str) is conn:
+                self._connections.pop(path_str)
+            self._poisoned_paths.pop(path_str, None)
+            return None
+
+        # Paso 3: ownership conservado + path fail-closed. shutdown_all sigue
+        # viendo la conexión y reintentará el cierre.
+        self._poisoned_paths[path_str] = close_error
+        logger.error(
+            "DatabaseLifecycle: no se pudo cerrar la conexión en cuarentena de %s; "
+            "path fail-closed y ownership conservado para reintentar en shutdown",
+            path_str,
+            exc_info=(type(close_error), close_error, close_error.__traceback__),
+        )
+        return close_error
+
+    def is_path_poisoned(self, db_path: Path | str) -> bool:
+        """``True`` si el path está fail-closed por una cuarentena sin cerrar."""
+        return self._resolve_key(db_path) in self._poisoned_paths
+
+    def is_connection_current(
+        self,
+        db_path: Path | str,
+        conn: aiosqlite.Connection,
+    ) -> bool:
+        """``True`` si *conn* sigue siendo la conexión válida de *db_path*.
+
+        La pregunta "¿mi conexión cacheada sigue sirviendo?" se contesta acá y
+        en ningún otro lado: la identidad del objeto es la validez, no una
+        descripción de ella. Un contador de generación sólo agregaría un
+        segundo registro que puede desincronizarse del primero, y no cubre nada
+        extra — el wrapper obsoleto sostiene una referencia fuerte a su
+        conexión vieja, así que ninguna conexión nueva puede reusar su
+        identidad mientras exista alguien a quien engañar.
+        """
+        path_str = self._resolve_key(db_path)
+        if path_str in self._poisoned_paths:
+            return False
+        return self._connections.get(path_str) is conn
+
+    async def refresh_connection(
+        self,
+        db_path: Path | str,
+        cached: aiosqlite.Connection | None = None,
+    ) -> aiosqlite.Connection:
+        """Devuelve la conexión válida de *db_path*, reusando *cached* si sirve.
+
+        Es la forma en que un wrapper lifecycle-managed consume el contrato de
+        invalidación sin reimplementarlo: pasa lo que tiene cacheado y recibe lo
+        que vale. Tres desenlaces, todos decididos acá:
+
+        - la cacheada sigue siendo la registrada → se devuelve tal cual;
+        - fue invalidada y el cierre salió bien → se abre y devuelve el reemplazo;
+        - el path quedó POISONED → ``DatabasePathPoisonedError`` (fail-closed).
+
+        El wrapper no distingue los dos últimos casos: reasigna lo que vuelve, y
+        la excepción se propaga sola.
+        """
+        if cached is not None and self.is_connection_current(db_path, cached):
+            return cached
+        return await self.get_connection(db_path)
 
     async def _rollback_after_failure(
         self,
@@ -743,7 +922,7 @@ class DatabaseLifecycleManager:
                 raise cancellation_to_restore from operation_error
             return
 
-        close_error = await self._quarantine_connection(db_path, conn)
+        close_error = await self.quarantine_connection(db_path, conn)
         if cancellation_to_restore is operation_error:
             diagnostic_error = rollback_error
         else:
@@ -812,7 +991,7 @@ class DatabaseLifecycleManager:
         the same resolved-path key as the connection. No ``await`` between lookup
         and insert keeps this atomic on the single-threaded event loop.
         """
-        path_str = str((db_path if isinstance(db_path, Path) else Path(db_path)).resolve())
+        path_str = self._resolve_key(db_path)
         lock = self._write_locks.get(path_str)
         if lock is None:
             lock = asyncio.Lock()
@@ -846,8 +1025,14 @@ class DatabaseLifecycleManager:
             ``True`` si se retiro una entrada; ``False`` si no existia o habia
             sido reemplazada.
         """
-        path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
-        path_str = str(path_obj.resolve())
+        path_str = self._resolve_key(db_path)
+        # Un path envenenado no se puede expulsar: el veneno existe porque el
+        # cierre FALLÓ, y la entrada en ``_connections`` es la única referencia
+        # con la que shutdown puede reintentarlo. Expulsar acá dejaría el path
+        # fail-closed para siempre y sin dueño — el peor de los dos mundos.
+        # ``quarantine_connection`` es la única salida del estado POISONED.
+        if path_str in self._poisoned_paths:
+            return False
         current_connection = self._connections.get(path_str)
         if current_connection is None:
             return False

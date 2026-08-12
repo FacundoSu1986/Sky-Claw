@@ -834,8 +834,14 @@ async def test_renew_lock_swallows_unexpected_sqlite_error(
             raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
 
     # _ensure_conn() devuelve la conn aiosqlite viva; la cambiamos por una cuyo
-    # execute() tira un sqlite3.Error que el catch viejo no cubría.
-    monkeypatch.setattr(lock_manager, "_ensure_conn", lambda: _BoomConn())
+    # execute() tira un sqlite3.Error que el catch viejo no cubría. El stub es
+    # `async` porque `_ensure_conn` lo es desde el contrato de invalidación
+    # (revalida la conexión contra el lifecycle antes de devolverla); lo que este
+    # test ejercita —que renew_lock degrade a False— no cambió.
+    async def _boom_conn() -> object:
+        return _BoomConn()
+
+    monkeypatch.setattr(lock_manager, "_ensure_conn", _boom_conn)
 
     assert await lock_manager.renew_lock("res-dberr", "agent-1") is False
 

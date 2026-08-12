@@ -272,9 +272,19 @@ class DistributedLockManager:
             self._conn = None
             logger.info("DistributedLockManager closed")
 
-    def _ensure_conn(self) -> aiosqlite.Connection:
+    async def _ensure_conn(self) -> aiosqlite.Connection:
+        """Devuelve la conexión, revalidándola contra el lifecycle antes de usarla.
+
+        Es ``async`` desde el contrato de invalidación de conexiones: la
+        conexión del lifecycle es singleton por path, así que otro wrapper sobre
+        la misma DB puede haberla puesto en cuarentena y este manager seguiría
+        con la referencia vieja. ``refresh_connection`` devuelve el reemplazo, o
+        falla closed si el path quedó envenenado.
+        """
         if self._conn is None:
             raise LockError("LockManager not initialized — call initialize() first")
+        if self._lifecycle is not None:
+            self._conn = await self._lifecycle.refresh_connection(self._db_path, self._conn)
         return self._conn
 
     # ------------------------------------------------------------------
@@ -308,7 +318,7 @@ class DistributedLockManager:
         LockAcquisitionError
             If the lock cannot be acquired after ``max_retries`` attempts.
         """
-        conn = self._ensure_conn()
+        conn = await self._ensure_conn()
         ttl_seconds = ttl if ttl is not None else self._default_ttl
 
         for attempt in range(self._max_retries):
@@ -389,7 +399,7 @@ class DistributedLockManager:
         bool
             ``True`` if the lock was found and deleted.
         """
-        conn = self._ensure_conn()
+        conn = await self._ensure_conn()
         try:
             async with conn.execute(
                 _RELEASE_SQL,
@@ -438,7 +448,7 @@ class DistributedLockManager:
             ``True`` if the lease was extended; ``False`` if the lock no longer
             belongs to *agent_id* or already expired (lease lost).
         """
-        conn = self._ensure_conn()
+        conn = await self._ensure_conn()
         ttl_seconds = ttl if ttl is not None else self._default_ttl
         now = time.time()
         try:
@@ -474,7 +484,7 @@ class DistributedLockManager:
 
         Use only for emergency recovery (e.g. orphan locks after crash).
         """
-        conn = self._ensure_conn()
+        conn = await self._ensure_conn()
         try:
             async with conn.execute(
                 _RELEASE_ANY_SQL,
@@ -493,7 +503,7 @@ class DistributedLockManager:
 
     async def get_lock_info(self, resource_id: str) -> LockInfo | None:
         """Query current lock state for a resource (may be expired)."""
-        conn = self._ensure_conn()
+        conn = await self._ensure_conn()
         async with conn.execute(
             "SELECT resource_id, agent_id, acquired_at, expires_at FROM resource_locks WHERE resource_id = ?",
             (resource_id,),
@@ -510,7 +520,7 @@ class DistributedLockManager:
 
     async def cleanup_expired(self) -> int:
         """Delete all locks whose TTL has expired.  Returns count removed."""
-        conn = self._ensure_conn()
+        conn = await self._ensure_conn()
         now = time.time()
         async with conn.execute(
             "DELETE FROM resource_locks WHERE expires_at < ?",
