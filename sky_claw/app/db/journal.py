@@ -876,6 +876,67 @@ class OperationJournal:
         return valor, None
 
     @staticmethod
+    def _metadata_argumento_utilizable(metadata: dict[str, Any] | None) -> tuple[dict[str, Any], str | None]:
+        """Valida la metadata auxiliar del caller sin dejar que hunda el reporte de fallo.
+
+        Devuelve ``(metadata_auxiliar, motivo_de_descarte)``, con la misma forma
+        que :meth:`_metadata_previa_utilizable`. El motivo distingue las dos
+        formas en que ``json.dumps(..., allow_nan=False)`` rechaza un dict, y el
+        mapeo es 1 a 1 con el tipo de excepción, así que el tipo no se loguea
+        aparte:
+
+        - ``non_finite_number`` (``ValueError``): contiene ``NaN``/``±Infinity``.
+        - ``non_serializable_value`` (``TypeError``): contiene un valor que
+          ``json.dumps`` no sabe convertir — un ``object()``, un ``set``, una
+          excepción, un ``Path``…
+
+        **Por qué degrada en vez de propagar, a diferencia del hermano.**
+        :meth:`begin_operation` está *creando* una operación: si el caller le da
+        metadata inválida, es razonable no crearla. :meth:`fail_operation` es un
+        *failure-reporting boundary*: su responsabilidad mínima es que una
+        operación que realmente falló no quede en ``STARTED`` porque un dato
+        auxiliar del reporte era irrepresentable. Preservar ``FAILED`` + el error
+        primario vale más que preservar metadata auxiliar inválida — si no, el
+        reporte del fallo se convierte en el fallo y el error real desaparece del
+        journal. La asimetría entre los dos escritores de la columna es
+        deliberada.
+
+        La degradación cubre **solo** la representación de esta metadata. Un
+        error de SQLite, del commit o del rollback conserva su contrato y se
+        propaga.
+        """
+        if not metadata:
+            return {}, None
+        auxiliar = dict(metadata)
+        try:
+            json.dumps(auxiliar, allow_nan=False)
+        except ValueError:
+            return {}, "non_finite_number"
+        except TypeError:
+            return {}, "non_serializable_value"
+        return auxiliar, None
+
+    @staticmethod
+    def _avisar_metadata_argumento_descartada(entry_id: int, motivo: str) -> None:
+        """Emite el WARNING de metadata auxiliar descartada, sin filtrar contenido.
+
+        No se loguea ni el dict, ni su ``repr``, ni sus claves, ni el mensaje de
+        la excepción de serialización: cualquiera de esos puede arrastrar rutas,
+        nombres de mod o el contenido de una excepción que el caller metió como
+        valor. Tampoco se hashea, porque calcular el hash exigiría producir
+        justamente la representación que no queremos construir. Solo sale qué
+        fila y por qué.
+        """
+        logger.warning(
+            "Metadata auxiliar del caller descartada al registrar el fallo de la operación",
+            extra={
+                "event": "journal_metadata_argumento_descartada",
+                "entry_id": entry_id,
+                "motivo": motivo,
+            },
+        )
+
+    @staticmethod
     def _avisar_metadata_previa_descartada(entry_id: int, crudo: object, motivo: str) -> None:
         """Emite el WARNING de metadata previa descartada, sin filtrar el contenido.
 
@@ -935,48 +996,57 @@ class OperationJournal:
         silencio — otra pérdida de evidencia, disfrazada de dato presente. Mismo
         criterio en :meth:`begin_operation`, el otro escritor de la columna.
 
-        **Dato legacy roto ≠ input nuevo inválido**, y los dos caminos son
-        opuestos a propósito:
+        **Ninguna metadata irrepresentable puede impedir que se registre el
+        fallo**, venga de donde venga. Hay dos fuentes y cada una tiene su
+        clasificador, pero la política es la misma: descartar, avisar, seguir.
 
-        - *Input nuevo inválido* (``metadata`` con ``NaN``, ``Infinity`` o un
-          objeto no serializable): se valida **antes** de tocar la DB y se
-          propaga el ``ValueError``. No cambia el estado, no toca la metadata y
-          no abre una transacción que después haya que revertir.
-        - *Metadata previa corrupta* en la fila: **nunca** impide registrar el
-          fallo. Se clasifica con :meth:`_metadata_previa_utilizable`, se
-          descarta, se emite un ``WARNING`` estructurado
-          (``event="journal_metadata_previa_descartada"``) y la operación queda
-          ``FAILED`` con la evidencia nueva. El fallo que se está registrando
-          importa más que la metadata vieja que ya estaba rota. El warning lleva
-          solo ``entry_id``, motivo, tamaño en bytes y SHA-256 del valor crudo:
-          **el blob no se loguea**, porque puede contener rutas o nombres.
+        - *Metadata auxiliar del caller* (``NaN``, ``Infinity``, un objeto no
+          serializable): se clasifica con :meth:`_metadata_argumento_utilizable`,
+          se descarta entera y se emite un ``WARNING``
+          (``event="journal_metadata_argumento_descartada"``). **No se propaga**
+          la excepción de serialización: la operación queda ``FAILED`` y el
+          ``error`` canónico se persiste igual.
+        - *Metadata previa corrupta* en la fila: se clasifica con
+          :meth:`_metadata_previa_utilizable`, se descarta y se avisa con
+          ``event="journal_metadata_previa_descartada"``. Si además la del
+          caller era inválida, se descartan las dos y queda el ``error`` solo.
+
+        Ninguno de los dos warnings loguea el contenido descartado — pueden traer
+        rutas, nombres de perfil de MO2 o nombres de mod.
+
+        **La asimetría con :meth:`begin_operation` es deliberada.** Ese método
+        valida estricto y propaga: está *creando* una operación, y no crearla
+        ante datos malos es la respuesta correcta. Este es un *failure-reporting
+        boundary*: si tirara por la metadata auxiliar, una operación que
+        realmente falló quedaría en ``STARTED`` y el error real desaparecería del
+        journal — el reporte del fallo se convertiría en el fallo.
+
+        La degradación cubre **exclusivamente** la representación de la metadata
+        auxiliar. Errores de SQLite, del commit o del rollback conservan sus
+        contratos: se propagan tras deshacer la transacción.
 
         Una entrada inexistente es un no-op silencioso, como antes.
 
         Args:
             entry_id: ID de la entrada a actualizar.
             error: Mensaje de error. Vacío = no se registra la clave ``error``.
-            metadata: Metadatos adicionales del error.
+            metadata: Metadatos adicionales del error. Si no se puede serializar,
+                se descarta con un warning en vez de hacer fallar el reporte.
 
         Raises:
-            ValueError: Si ``metadata`` contiene ``NaN``/``Infinity``, rechazados
-                por ``allow_nan=False``. La fila queda intacta.
-            TypeError: Si ``metadata`` contiene un valor que ``json.dumps`` no
-                sabe serializar. La fila queda intacta.
             asyncio.CancelledError: Si llega una cancelación externa mientras se
                 deshace la transacción. Se propaga **después** de que el rollback
                 terminó, con el fallo original como ``__cause__``.
+            sqlite3.Error: Si falla la escritura o el commit. La transacción se
+                deshace antes de propagar; no queda estado parcial.
         """
-        evidencia: dict[str, Any] = dict(metadata) if metadata else {}
+        auxiliar, motivo_argumento = self._metadata_argumento_utilizable(metadata)
+        if motivo_argumento is not None:
+            self._avisar_metadata_argumento_descartada(entry_id, motivo_argumento)
+
+        evidencia: dict[str, Any] = auxiliar
         if error:
             evidencia["error"] = error
-
-        # Fail-fast sobre el input del caller, FUERA de la transacción: si la
-        # evidencia nueva no se puede serializar, la fila no se toca. Adentro, el
-        # mismo ValueError obligaría a un rollback y dejaría el estado sin cambiar
-        # igual — pero habiendo abierto y revertido una transacción para nada.
-        if evidencia:
-            json.dumps(evidencia, allow_nan=False)
 
         db = await self._ensure_connected()
 
