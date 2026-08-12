@@ -1,5 +1,6 @@
 # tests/test_journal.py
 
+import asyncio
 import contextlib
 import pathlib
 import sqlite3
@@ -280,6 +281,179 @@ class TestTransactionContextManager:
             tx = await j2.get_transaction(tx_id)
             assert tx is not None
             assert tx.status is TransactionStatus.ROLLED_BACK
+            await j2.close()
+        finally:
+            await lifecycle.shutdown_all()
+
+
+class TestJournalWriteLockCompartido:
+    """El lock de escritura acompaña a la CONEXIÓN, no a la instancia.
+
+    ``DatabaseLifecycleManager.get_connection`` es singleton por path resuelto:
+    dos ``OperationJournal`` sobre la misma DB comparten conexión. Con un
+    ``asyncio.Lock`` propio cada uno, sus transacciones se intercalan sobre esa
+    conexión compartida —uno abre, el otro commitea lo que el primero llevaba a
+    medias— y ninguno de los dos locks lo impide, porque cada uno protege a su
+    dueño de sí mismo y de nadie más.
+
+    Es la misma propiedad que ``get_write_lock`` ya sostiene para
+    ``AsyncModRegistry``, y su docstring la enuncia: *"a per-wrapper lock would
+    leave the transaction-interleaving race open"*. Estos tests la congelan del
+    lado del journal, por comportamiento observable y no por prohibición
+    sintáctica: lo que importa no es qué tipo de lock se construye, sino que dos
+    journals sobre la misma conexión no puedan intercalar transacciones.
+    """
+
+    @staticmethod
+    def _lifecycle() -> DatabaseLifecycleManager:
+        return DatabaseLifecycleManager(
+            db_paths=[],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+
+    # -- identidad y separación del lock --------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_mismo_lifecycle_y_path_comparten_el_mismo_objeto_lock(self, tmp_path):
+        lifecycle = self._lifecycle()
+        db_path = tmp_path / "compartida.db"
+        try:
+            j1 = OperationJournal(db_path, lifecycle=lifecycle)
+            j2 = OperationJournal(db_path, lifecycle=lifecycle)
+            await j1.open()
+            await j2.open()
+
+            assert j1._db is j2._db, "premisa: la conexión del lifecycle es singleton por path"
+            assert j1._lock is j2._lock, "dos journals sobre la misma conexión deben compartir el lock"
+            assert j1._lock is lifecycle.get_write_lock(db_path), "debe ser el lock del lifecycle, no uno propio"
+
+            await j1.close()
+            await j2.close()
+        finally:
+            await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_paths_distintos_no_comparten_lock(self, tmp_path):
+        """Compartir de más serializaría DBs sin relación."""
+        lifecycle = self._lifecycle()
+        try:
+            j1 = OperationJournal(tmp_path / "una.db", lifecycle=lifecycle)
+            j2 = OperationJournal(tmp_path / "otra.db", lifecycle=lifecycle)
+            await j1.open()
+            await j2.open()
+
+            assert j1._db is not j2._db
+            assert j1._lock is not j2._lock
+
+            await j1.close()
+            await j2.close()
+        finally:
+            await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_standalone_conserva_locks_locales_independientes(self, tmp_path):
+        """Sin lifecycle cada journal abre su PROPIA conexión: no hay nada que compartir."""
+        db_path = tmp_path / "standalone.db"
+        j1 = OperationJournal(db_path)
+        j2 = OperationJournal(db_path)
+        try:
+            await j1.open()
+            await j2.open()
+
+            assert j1._owns_conn and j2._owns_conn
+            assert j1._db is not j2._db
+            assert j1._lock is not j2._lock, "el camino standalone no debe adoptar un lock compartido"
+        finally:
+            await j1.close()
+            await j2.close()
+
+    @pytest.mark.asyncio
+    async def test_el_lock_ya_esta_puesto_antes_del_schema_y_del_sweep(self, tmp_path):
+        """El rebind va antes de cualquier SQL de ``open()``, no después.
+
+        Si ocurriera al final, el ``executescript`` del schema y el sweep de
+        arranque —que toma el lock— correrían bajo el lock equivocado.
+        """
+        lifecycle = self._lifecycle()
+        db_path = tmp_path / "orden.db"
+        observado: list[bool] = []
+        journal = OperationJournal(db_path, lifecycle=lifecycle)
+        compartido = lifecycle.get_write_lock(db_path)
+
+        original_sweep = journal.sweep_stale_pending
+
+        async def sweep_espia():
+            observado.append(journal._lock is compartido)
+            await original_sweep()
+
+        journal.sweep_stale_pending = sweep_espia  # type: ignore[method-assign]
+        try:
+            await journal.open()
+            assert observado == [True], "el sweep de arranque corrió con el lock viejo"
+            await journal.close()
+        finally:
+            await lifecycle.shutdown_all()
+
+    # -- la propiedad que realmente importa: no hay interleaving ---------------
+
+    @pytest.mark.asyncio
+    async def test_dos_journals_no_intercalan_transacciones_sobre_la_misma_conexion(self, tmp_path):
+        """Carrera real: dos instancias, misma DB, transacciones concurrentes.
+
+        Cada ``begin_transaction`` hace ``BEGIN`` + ``INSERT`` + ``COMMIT`` sobre
+        la conexión compartida. Sin el lock compartido, el ``COMMIT`` de uno
+        cierra la transacción abierta del otro y las secciones críticas se
+        solapan. Se mide el solapamiento contando entradas/salidas concurrentes
+        de la sección crítica, no por timing.
+        """
+        lifecycle = self._lifecycle()
+        db_path = tmp_path / "carrera.db"
+        try:
+            j1 = OperationJournal(db_path, lifecycle=lifecycle)
+            j2 = OperationJournal(db_path, lifecycle=lifecycle)
+            await j1.open()
+            await j2.open()
+
+            en_vuelo = 0
+            solapamiento_maximo = 0
+            original_execute = j1._db.execute
+
+            def execute_instrumentado(sql, *args, **kwargs):
+                nonlocal en_vuelo, solapamiento_maximo
+                if sql.strip().upper().startswith("INSERT INTO TRANSACTIONS"):
+
+                    async def con_ventana():
+                        nonlocal en_vuelo, solapamiento_maximo
+                        en_vuelo += 1
+                        solapamiento_maximo = max(solapamiento_maximo, en_vuelo)
+                        try:
+                            # Cede el loop DENTRO de la sección crítica: si el
+                            # lock no está compartido, el otro journal entra acá.
+                            await asyncio.sleep(0)
+                            return await original_execute(sql, *args, **kwargs)
+                        finally:
+                            en_vuelo -= 1
+
+                    return con_ventana()
+                return original_execute(sql, *args, **kwargs)
+
+            j1._db.execute = execute_instrumentado  # type: ignore[method-assign]
+
+            await asyncio.gather(
+                *(j.begin_transaction(description=f"tx-{i}", mod_id=None) for i, j in enumerate([j1, j2] * 6)),
+            )
+
+            j1._db.execute = original_execute  # type: ignore[method-assign]
+            assert solapamiento_maximo == 1, (
+                f"dos journals entraron a la sección crítica a la vez "
+                f"(solapamiento={solapamiento_maximo}): el lock no está compartido"
+            )
+
+            # Y las 12 transacciones quedaron persistidas, ninguna perdida.
+            transacciones = await j1.list_recent_transactions(limit=50)
+            assert len(transacciones) == 12
+
+            await j1.close()
             await j2.close()
         finally:
             await lifecycle.shutdown_all()
