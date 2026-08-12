@@ -896,12 +896,32 @@ class OperationJournal:
                         )
 
                 await db.commit()
-            except Exception:
+            except BaseException:
                 # Boundary de atomicidad: cualquier fallo —de la DB o de la
                 # serialización— deshace la transacción entera para no dejar
                 # estado parcial, y se propaga tal cual para no cambiar el
                 # contrato de excepciones que ven los callers.
-                await db.rollback()
+                #
+                # `BaseException` y no `Exception` porque `CancelledError` hereda
+                # de la primera: una cancelación entre el UPDATE del estado y el
+                # commit soltaba el lock con la transacción ABIERTA, y el próximo
+                # escritor de la misma conexión commiteaba ese FAILED a medias,
+                # sin su evidencia. El `shield` deja que el rollback termine aunque
+                # nos estén cancelando; si la cancelación llega igual, se propaga
+                # —nunca se traga— y el rollback ya quedó en curso.
+                try:
+                    await asyncio.shield(db.rollback())
+                except Exception:
+                    # Invariante de `app/db/AGENTS.md`: "un rollback fallido conserva
+                    # evidencia y no se reporta como éxito". Se registra acá porque el
+                    # `raise` de abajo propaga el fallo ORIGINAL —que es lo que el caller
+                    # necesita— y el del rollback quedaría solo como ``__context__``,
+                    # invisible en los logs. Tragarlo dejaría el peor de los mundos:
+                    # transacción sucia y sin rastro de por qué.
+                    logger.exception(
+                        "El rollback de fail_operation falló; la transacción puede haber quedado sucia",
+                        extra={"entry_id": entry_id},
+                    )
                 raise
 
         logger.error("Operation failed", extra={"entry_id": entry_id, "error": error})

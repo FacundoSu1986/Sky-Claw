@@ -1,7 +1,9 @@
 # tests/test_journal.py
 
+import asyncio
 import contextlib
 import json
+import logging
 import pathlib
 import sqlite3
 from unittest.mock import AsyncMock
@@ -510,6 +512,68 @@ class TestFailOperationEvidencia:
         entry = await journal.get_operation_by_id(entry_id)
         assert entry.status == OperationStatus.FAILED
         assert entry.metadata == {"previa": True, "error": "ahora sí"}
+
+    @pytest.mark.asyncio
+    async def test_cancelacion_antes_del_commit_no_deja_estado_parcial(self, journal, monkeypatch):
+        """``CancelledError`` hereda de ``BaseException``: ``except Exception`` no la ve.
+
+        Sin el manejo explícito, la cancelación entre el ``UPDATE`` del estado y
+        el ``commit`` soltaba el lock con la transacción abierta y el siguiente
+        escritor de la misma conexión commiteaba el ``FAILED`` sin evidencia.
+        """
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+        original = journal._db.execute
+
+        def execute_cancelado_en_el_segundo_update(sql, *args, **kwargs):
+            if sql.strip().startswith("UPDATE journal_entries SET metadata"):
+                raise asyncio.CancelledError
+            return original(sql, *args, **kwargs)
+
+        monkeypatch.setattr(journal._db, "execute", execute_cancelado_en_el_segundo_update)
+
+        with pytest.raises(asyncio.CancelledError):
+            await journal.fail_operation(entry_id, error="boom")
+
+        monkeypatch.undo()
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.STARTED
+        assert entry.metadata == {"previa": True}
+
+        # La conexión no quedó con una transacción abierta a medias.
+        await journal.fail_operation(entry_id, error="ahora sí")
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"previa": True, "error": "ahora sí"}
+
+    @pytest.mark.asyncio
+    async def test_rollback_fallido_conserva_evidencia_y_no_reporta_exito(self, journal, monkeypatch, caplog):
+        """Invariante de ``app/db/AGENTS.md``: un rollback fallido deja rastro.
+
+        Si el rollback también falla, se propaga el error ORIGINAL —que es lo que
+        el caller necesita— y el del rollback se registra en vez de tragarse.
+        """
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+        original_execute = journal._db.execute
+
+        def execute_que_falla(sql, *args, **kwargs):
+            if sql.strip().startswith("UPDATE journal_entries SET metadata"):
+                raise sqlite3.OperationalError("fallo de la operación")
+            return original_execute(sql, *args, **kwargs)
+
+        async def rollback_que_tambien_falla():
+            raise sqlite3.OperationalError("fallo del rollback")
+
+        monkeypatch.setattr(journal._db, "execute", execute_que_falla)
+        monkeypatch.setattr(journal._db, "rollback", rollback_que_tambien_falla)
+
+        with (
+            caplog.at_level(logging.ERROR),
+            pytest.raises(sqlite3.OperationalError, match="fallo de la operación"),
+        ):
+            await journal.fail_operation(entry_id, error="boom")
+
+        monkeypatch.undo()
+        assert any("rollback de fail_operation falló" in r.message.lower() for r in caplog.records)
 
     # -- 12. colisión con la clave reservada ----------------------------------
 
