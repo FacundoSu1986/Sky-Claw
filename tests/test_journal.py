@@ -656,6 +656,85 @@ class TestFailOperationEvidencia:
         assert entry.status == OperationStatus.FAILED
         assert entry.metadata == {"previa": True, "error": "ahora sí"}
 
+    @pytest.mark.asyncio
+    async def test_cancelacion_durante_el_rollback_no_se_pierde_con_fallo_original_de_db(self, journal, monkeypatch):
+        """El otro eje de la cancelación: el fallo original NO es la cancelación.
+
+        El test de arriba cubre el caso en que la propia cancelación es el fallo
+        que entra al boundary, y ahí el ``raise`` pelado la re-propaga sola. Acá el
+        fallo original es un ``OperationalError`` real y la cancelación llega
+        **después**, con el rollback ya en vuelo: el bucle la absorbe para no
+        abandonar la transacción a medias, y si no la devuelve, la task termina con
+        ``cancelled() == False``. Quien canceló creería que canceló algo que en
+        realidad siguió su curso.
+
+        El contrato exigido es que las dos cosas sobrevivan: la cancelación como
+        excepción propagada, y el fallo original como su causa.
+        """
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+        original_execute = journal._db.execute
+        original_rollback = journal._db.rollback
+
+        fallo = sqlite3.OperationalError("disk I/O error simulado")
+        rollback_iniciado = asyncio.Event()
+        permitir_rollback = asyncio.Event()  # lo libera el test
+        rollback_terminado = asyncio.Event()
+
+        def execute_que_falla(sql, *args, **kwargs):
+            if sql.strip().startswith("UPDATE journal_entries SET metadata"):
+
+                async def explotar():
+                    raise fallo
+
+                return explotar()
+            return original_execute(sql, *args, **kwargs)
+
+        async def rollback_retenido():
+            rollback_iniciado.set()
+            await permitir_rollback.wait()
+            await original_rollback()
+            rollback_terminado.set()
+
+        monkeypatch.setattr(journal._db, "execute", execute_que_falla)
+        monkeypatch.setattr(journal._db, "rollback", rollback_retenido)
+
+        tarea = asyncio.create_task(journal.fail_operation(entry_id, error="boom"))
+        await asyncio.wait_for(rollback_iniciado.wait(), timeout=5)
+
+        # Cancelación externa REAL con el rollback ya en vuelo. A diferencia del test
+        # anterior, acá alcanza con una: la corrutina no está esperando el UPDATE,
+        # está esperando el rollback, así que este cancel golpea directamente el
+        # `await asyncio.shield(...)` del bucle.
+        tarea.cancel()
+
+        try:
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not tarea.done(), "abandonó el boundary con el rollback retenido"
+            assert journal._lock.locked(), "soltó el lock con la transacción abierta"
+        finally:
+            permitir_rollback.set()
+
+        with pytest.raises(asyncio.CancelledError) as excinfo:
+            await tarea
+
+        assert rollback_terminado.is_set(), "el rollback debía terminar antes de propagar"
+        assert tarea.cancelled(), "la cancelación externa se perdió: la task no quedó cancelada"
+        assert excinfo.value.__cause__ is fallo, "el fallo original desapareció de la cadena"
+        assert not journal._lock.locked()
+
+        # Sin transacción parcial: ni el estado ni la metadata se movieron.
+        monkeypatch.undo()
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.STARTED
+        assert entry.metadata == {"previa": True}
+
+        # Y la conexión sigue usable.
+        await journal.fail_operation(entry_id, error="ahora sí")
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"previa": True, "error": "ahora sí"}
+
     @pytest.mark.parametrize("no_finito", [float("nan"), float("inf"), float("-inf")], ids=repr)
     @pytest.mark.asyncio
     async def test_nan_no_puede_escribir_json_invalido(self, journal, no_finito):

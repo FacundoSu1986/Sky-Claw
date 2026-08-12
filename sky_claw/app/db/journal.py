@@ -682,6 +682,11 @@ class OperationJournal:
 
         Raises:
             JournalTransactionError: Si no hay transacción activa.
+            ValueError: Si ``metadata`` contiene ``NaN``/``Infinity``; la
+                serialización estricta (``allow_nan=False``) los rechaza en vez
+                de escribir JSON inválido en la columna.
+            TypeError: Si ``metadata`` contiene un valor que ``json.dumps`` no
+                sabe serializar.
         """
         db = await self._ensure_connected()
 
@@ -954,8 +959,13 @@ class OperationJournal:
             metadata: Metadatos adicionales del error.
 
         Raises:
-            ValueError: si ``metadata`` no es representable como JSON estricto.
-                La fila queda intacta.
+            ValueError: Si ``metadata`` contiene ``NaN``/``Infinity``, rechazados
+                por ``allow_nan=False``. La fila queda intacta.
+            TypeError: Si ``metadata`` contiene un valor que ``json.dumps`` no
+                sabe serializar. La fila queda intacta.
+            asyncio.CancelledError: Si llega una cancelación externa mientras se
+                deshace la transacción. Se propaga **después** de que el rollback
+                terminó, con el fallo original como ``__cause__``.
         """
         evidencia: dict[str, Any] = dict(metadata) if metadata else {}
         if error:
@@ -993,7 +1003,7 @@ class OperationJournal:
                         )
 
                 await db.commit()
-            except BaseException:
+            except BaseException as fallo_original:
                 # Boundary de atomicidad: cualquier fallo —de la DB o de la
                 # serialización— deshace la transacción entera para no dejar
                 # estado parcial, y se propaga tal cual para no cambiar el
@@ -1016,11 +1026,28 @@ class OperationJournal:
                 # tanto. Mismo patrón que `DatabaseLifecycleManager._await_db_operation`
                 # ("completa una operación SQLite aunque el llamador sea cancelado");
                 # se replica en vez de importarse porque es privado del lifecycle.
+                #
+                # Absorber la cancelación para terminar el rollback obliga a
+                # DEVOLVERLA después: si el fallo original es un error de DB real y
+                # el `raise` de abajo propaga solo ese error, la task termina con
+                # `cancelled() == False` y quien canceló cree que canceló algo que
+                # en realidad siguió su curso. Por eso se guarda la instancia
+                # recibida y se relanza con el fallo original como `__cause__`:
+                # CPython guarda en `Task._cancelled_exc` la instancia exacta que
+                # sale del coroutine, así que el awaiter recibe esa cancelación con
+                # su causa intacta y `task.cancelled()` queda en True. Verificado
+                # idéntico en 3.11, 3.12 y 3.13, y un `asyncio.timeout` externo
+                # sigue pudiendo atribuírsela como `TimeoutError`.
+                # `current_task().cancel()` antes del `raise` NO sirve: marca una
+                # cancelación pendiente que nadie va a entregar porque el coroutine
+                # ya está saliendo por otra excepción.
                 rollback = asyncio.ensure_future(db.rollback())
+                cancelacion: asyncio.CancelledError | None = None
                 while not rollback.done():
                     try:
                         await asyncio.shield(rollback)
-                    except asyncio.CancelledError:
+                    except asyncio.CancelledError as recibida:
+                        cancelacion = recibida
                         continue
                     except Exception:
                         break
@@ -1037,6 +1064,8 @@ class OperationJournal:
                         "El rollback de fail_operation falló; la transacción puede haber quedado sucia",
                         extra={"entry_id": entry_id},
                     )
+                if cancelacion is not None and cancelacion is not fallo_original:
+                    raise cancelacion from fallo_original
                 raise
 
         logger.error("Operation failed", extra={"entry_id": entry_id, "error": error})
