@@ -2491,6 +2491,35 @@ _NIVELES_DE_FALLO = frozenset({"error", "warning", "critical", "exception"})
 _NIVELES_NEUTROS = frozenset({"info", "debug"})
 
 
+def _nombre_del_logger_de_modulo(arbol: ast.Module) -> str | None:
+    """Nombre de la ÚNICA variable de módulo asignada desde ``logging.getLogger(...)``.
+
+    ``None`` si hay cero o más de una — ambos casos son responsabilidad de quien
+    llama: cero significa "no hay logger que analizar", más de una significa que
+    la premisa de `_registros_de_fallo` (un único receptor) no aplica y no debe
+    asumirse en silencio.
+    """
+
+    def _es_get_logger(valor: ast.AST) -> bool:
+        return (
+            isinstance(valor, ast.Call)
+            and isinstance(valor.func, ast.Attribute)
+            and valor.func.attr == "getLogger"
+            and isinstance(valor.func.value, ast.Name)
+            and valor.func.value.id == "logging"
+        )
+
+    nombres = [
+        nodo.targets[0].id
+        for nodo in arbol.body
+        if isinstance(nodo, ast.Assign)
+        and len(nodo.targets) == 1
+        and isinstance(nodo.targets[0], ast.Name)
+        and _es_get_logger(nodo.value)
+    ]
+    return nombres[0] if len(nombres) == 1 else None
+
+
 def _registros_de_fallo(nodo: ast.AST) -> list[ast.Call]:
     """Llamadas ``logger.<nivel>(...)`` de ``_NIVELES_DE_FALLO`` dentro de ``nodo``.
 
@@ -2500,6 +2529,16 @@ def _registros_de_fallo(nodo: ast.AST) -> list[ast.Call]:
     sea un fallo tiene ``info``/``debug`` disponibles; si alguna vez hace falta
     un ``warning`` neutro, que rompa el ancla y se decida explícitamente — para
     eso es un gate.
+
+    DEPENDE de que el módulo tenga un único logger llamado literalmente
+    ``logger`` (review Qodo, PR #464): un alias (``_log = logging.getLogger(...)``)
+    o un segundo logger no se detectan, y un registro emitido a través de ellos
+    quedaría fuera del universo sin que el gate lo note. No se generaliza a
+    "cualquier nombre que referencie un ``logging.Logger``" a propósito —eso es
+    resolución de alias sin límite claro por AST estático, y el propio hallazgo
+    la marca severidad baja-media—; en cambio, la premisa se congela con
+    `test_los_ocho_servicios_ligan_su_logger_al_nombre_logger`, que hoy la
+    verifica cierta en los ocho `*_service.py` y rompe si deja de serlo.
     """
     return [
         llamada
@@ -2682,6 +2721,37 @@ def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None
 
     assert literales == [], (
         f"registros que hardcodean el número de etapa en vez de usar {_NOMBRE_DE_LA_CONSTANTE}: {literales}"
+    )
+
+
+def test_los_ocho_servicios_ligan_su_logger_al_nombre_logger() -> None:
+    """Precondición de la que depende TODA clasificación por cobertura de este archivo.
+
+    `_registros_de_fallo` reconoce únicamente ``logger.<nivel>(...)`` por nombre
+    literal. Eso es correcto en la medida en que cada servicio tenga un único
+    logger de módulo llamado ``logger`` — lo que hoy se cumple en los ocho, pero
+    nada lo impedía de dejar de cumplirse en silencio: un segundo logger o un
+    alias (``_log = logging.getLogger(...)``) harían que la clasificación de
+    `test_los_servicios_estan_clasificados_por_cobertura_real` cuente registros
+    reales como inexistentes, sin que ningún assert lo note (review Qodo, PR #464).
+
+    Ancla la PRECONDICIÓN en vez de generalizar la detección: es la corrección
+    barata que el propio hallazgo ofrece como alternativa a resolver alias
+    arbitrarios por AST estático, un problema sin límite claro y desproporcionado
+    para un caso que la propia review marca severidad baja-media.
+    """
+    tools = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).parent
+    servicios = sorted(p.name for p in tools.glob("*_service.py"))
+
+    sin_logger_unico_llamado_logger = sorted(
+        nombre
+        for nombre in servicios
+        if _nombre_del_logger_de_modulo(ast.parse((tools / nombre).read_text(encoding="utf-8"))) != "logger"
+    )
+
+    assert sin_logger_unico_llamado_logger == [], (
+        f"servicios cuyo logger de módulo no es un único `logger = logging.getLogger(...)`: "
+        f"{sin_logger_unico_llamado_logger}. _registros_de_fallo no los cubre correctamente."
     )
 
 
