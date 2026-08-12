@@ -47,7 +47,7 @@ logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
 
 #: Índice de etapa de DynDOLOD en el DAG de ``sky_claw/local/AGENTS.md`` §1, que
 #: todo registro de fallo de este módulo emite como ``pipeline_stage`` (§5 regla
-#: 5). Se define UNA vez a propósito: el número aparece en dieciséis registros y
+#: 5). Se define UNA vez a propósito: el número aparece en trece registros y
 #: duplicarlo garantiza que un reordenamiento del DAG deje la mitad desactualizada.
 #:
 #: No se deriva de nada porque no hay de dónde: el orden del pipeline vive como
@@ -741,8 +741,13 @@ class DynDOLODPipelineService:
                         # alcanzable — pero el tipo lo permite y el criterio del repo
                         # (U-11) es no reportar éxito sobre un estado indeterminado
                         # solo porque "no debería pasar".
+                        # No se loguea acá: el `raise` lo hace `except (DynDOLODExecutionError,
+                        # DynDOLODTimeoutError)` más abajo, que preserva `msg` vía `str(exc)`
+                        # y agrega `pipeline_stage`/`tx_id`. Loguear también acá duplicaba el
+                        # mismo incidente 2-3 veces sin id de correlación (review Qodo, PR #464,
+                        # "Duplicación de señal") — una alerta contando por `pipeline_stage=9`
+                        # sobrecontaba la tasa de fallos real.
                         msg = "DynDOLOD reportó éxito sin resultado de ejecución"
-                        logger.error(msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD})
                         raise DynDOLODExecutionError(msg)
 
                     output_path = result.dyndolod_result.output_path
@@ -754,14 +759,12 @@ class DynDOLODPipelineService:
                         # éxito: falso verde por exit-code sobre un estado donde no
                         # se sabe si DynDOLOD escribió algo.
                         msg = "DynDOLOD no dejó un directorio de salida localizable"
-                        logger.error(msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD})
-                        raise DynDOLODExecutionError(msg)
+                        raise DynDOLODExecutionError(msg)  # el handler loguea, ver guard anterior
 
                     is_valid = await runner.validate_dyndolod_output(output_path)
                     if not is_valid:
                         msg = "DynDOLOD output validation failed"
-                        logger.error(msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD})
-                        raise DynDOLODExecutionError(msg)
+                        raise DynDOLODExecutionError(msg)  # el handler loguea, ver guard anterior
 
                 if not result.success:
                     errors_str = "; ".join(result.errors) if result.errors else "Unknown error"
@@ -912,10 +915,10 @@ class DynDOLODPipelineService:
                 "DynDOLOD (stage 9): error de dominio del pipeline: %s (rolled_back=%s)",
                 exc,
                 rolled_back,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
 
-            await self._log_result_error(preset, str(exc))
+            await self._log_result_error(preset, str(exc), tx_id)
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -972,10 +975,10 @@ class DynDOLODPipelineService:
                 "DynDOLOD (stage 9): error inesperado del pipeline: %s",
                 exc,
                 exc_info=True,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
 
-            await self._log_result_error(preset, str(exc))
+            await self._log_result_error(preset, str(exc), tx_id)
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -1128,7 +1131,7 @@ class DynDOLODPipelineService:
             },
         )
 
-    async def _log_result_error(self, preset: str, error_msg: str) -> None:
+    async def _log_result_error(self, preset: str, error_msg: str, tx_id: int | None = None) -> None:
         """Registra un error del pipeline mediante logging estructurado."""
         logger.error(
             "DynDOLOD pipeline failed",
@@ -1144,5 +1147,11 @@ class DynDOLODPipelineService:
                 # este helper dejaba el outcome sin filtrar por stage (review
                 # CodeRabbit/Codex, PR #464).
                 "pipeline_stage": _ETAPA_DYNDOLOD,
+                # Y el tx_id: sin él, este registro y el `logger.error` del handler
+                # que lo invoca no se pueden correlacionar entre sí ni con el
+                # rollback posterior (review Qodo, PR #464, "Duplicación de señal").
+                # `None` es un caso real: los llamadores que no reciben `tx_id`
+                # explícito son paths donde la TX puede no haberse abierto aún.
+                "tx_id": tx_id,
             },
         )

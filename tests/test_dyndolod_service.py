@@ -478,8 +478,18 @@ async def test_validation_failure_deja_tx_pendiente(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """La validación falla después del runner: staging puede quedar parcial."""
+    """La validación falla después del runner: staging puede quedar parcial.
+
+    También ancla la NO-duplicación (review Qodo, PR #464, "Duplicación de
+    señal"): antes del fix, el guard de ``validate_dyndolod_output`` logueaba el
+    incidente Y el handler de dominio lo volvía a loguear al capturar el
+    ``DynDOLODExecutionError`` que ese mismo guard lanza — 2 registros ERROR (más
+    el de `_log_result_error`, un tercero de esquema distinto) por 1 incidente,
+    ninguno correlacionable por `tx_id`. El guard ya no loguea; su mensaje llega
+    al handler vía `str(exc)`.
+    """
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=False)
@@ -491,11 +501,23 @@ async def test_validation_failure_deja_tx_pendiente(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
+    with caplog.at_level(logging.ERROR, logger="SkyClaw.DynDOLODPipelineService"):
+        result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
     assert result["rolled_back"] is False
     mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+    errores = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errores) == 2, (
+        f"se esperaban 2 registros ERROR (handler + _log_result_error), no {len(errores)}: "
+        f"{[r.getMessage() for r in errores]}"
+    )
+    textos = [r.getMessage() for r in errores] + [str(getattr(r, "error", "")) for r in errores]
+    assert any("DynDOLOD output validation failed" in texto for texto in textos), (
+        "el mensaje del guard se perdió al dejar de loguearlo ahí directamente"
+    )
+    assert all(r.tx_id is not None for r in errores), "los 2 registros deben poder correlacionarse por tx_id"
 
 
 @pytest.mark.asyncio
@@ -503,6 +525,7 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """U-06: exit 0 pero SIN directorio de salida localizable no es éxito.
 
@@ -512,6 +535,10 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     que con ``None`` la validación se SALTEABA entera y el ritual commiteaba el
     journal reportando éxito — falso verde por exit-code (U-06) sobre un estado
     donde no se sabe si DynDOLOD escribió algo.
+
+    También ancla la NO-duplicación (review Qodo, PR #464, "Duplicación de
+    señal") — ver `test_validation_failure_deja_tx_pendiente` para el detalle;
+    acá se ejercita el guard hermano de "sin directorio de salida localizable".
     """
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result(dyndolod_output=None))
@@ -524,7 +551,8 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
+    with caplog.at_level(logging.ERROR, logger="SkyClaw.DynDOLODPipelineService"):
+        result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
     assert result["rolled_back"] is False
@@ -532,6 +560,17 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     mock_journal.mark_transaction_rolled_back.assert_not_called()
     # Sin path no hay nada que validar: el fallo es anterior a la validación.
     mock_runner.validate_dyndolod_output.assert_not_awaited()
+
+    errores = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errores) == 2, (
+        f"se esperaban 2 registros ERROR (handler + _log_result_error), no {len(errores)}: "
+        f"{[r.getMessage() for r in errores]}"
+    )
+    textos = [r.getMessage() for r in errores] + [str(getattr(r, "error", "")) for r in errores]
+    assert any("DynDOLOD no dejó un directorio de salida localizable" in texto for texto in textos), (
+        "el mensaje del guard se perdió al dejar de loguearlo ahí directamente"
+    )
+    assert all(r.tx_id is not None for r in errores), "los 2 registros deben poder correlacionarse por tx_id"
 
 
 @pytest.mark.asyncio
@@ -2594,7 +2633,7 @@ def _nodo_de_la_etapa(llamada: ast.Call) -> ast.expr | None:
 
     Devuelve el NODO y no un bool para que quien llame distinga un literal suelto
     de una referencia a la constante del módulo — la diferencia que impide que el
-    número quede duplicado en dieciséis sitios (review Qodo, PR #464).
+    número quede duplicado en trece sitios (review Qodo, PR #464).
     """
     for kw in llamada.keywords:
         if kw.arg != "extra":
@@ -2702,9 +2741,9 @@ def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None
 
     El ancla anterior exigía el literal `9` (`ast.Constant`), lo que dejaba dos
     problemas señalados por la review Qodo del PR #464: el número quedaba
-    duplicado en dieciséis sitios, y un refactor legítimo a una constante con
-    nombre ROMPÍA el test — un gate que castiga la mejora que él mismo debería
-    incentivar. Acá se invierte: el literal suelto es lo que falla.
+    duplicado en cada registro de fallo del módulo, y un refactor legítimo a una
+    constante con nombre ROMPÍA el test — un gate que castiga la mejora que él
+    mismo debería incentivar. Acá se invierte: el literal suelto es lo que falla.
 
     Sigue verificándose el VALOR (la constante vale 9), así que resolver el nombre
     no afloja el ancla: un `_ETAPA_DYNDOLOD = 8` rompe igual.
@@ -2715,7 +2754,7 @@ def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None
     ejecución; no hay registro de etapas en código del que derivarlo
     (`GenerateLodsStrategy` no menciona ninguna etapa). Centralizar el número es
     la mitad que sí se puede hacer hoy: deja UN solo sitio que corregir si el DAG
-    se reordena, en vez de dieciséis.
+    se reordena, en vez de uno por cada registro de fallo.
     """
     arbol = _modulo_servicio_ast()
     constantes = _constantes_de_modulo(arbol)
