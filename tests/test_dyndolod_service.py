@@ -2469,14 +2469,37 @@ def _nombre_de_excepcion(handler: ast.ExceptHandler) -> str:
     return ", ".join(sorted(ast.unparse(n) for n in nodos))
 
 
-def _registros_de_fallo(nodo: ast.AST) -> list[ast.Call]:
-    """Llamadas ``logger.error``/``warning``/``critical`` dentro de ``nodo``.
+#: Niveles de ``logger.<nivel>(...)`` que cuentan como registro de FALLO en este
+#: servicio. Se define una vez y la usan tanto `_registros_de_fallo` como su
+#: ancla de congelamiento (`test_los_niveles_de_fallo_estan_congelados`), para
+#: que el universo que un docstring PROMETE y el que el código CUBRE no puedan
+#: divergir en silencio — que es, literalmente, la tercera vez que esta review
+#: encuentra ese patrón en este mismo archivo (mención-vs-emisión, helper
+#: sin-nombre, y ahora nivel-de-log faltante).
+#:
+#: ``exception`` entró tras la review Qodo del PR #464: quedaba fuera pese a que
+#: el docstring de `_registros_de_fallo` afirmaba cubrir "todo registro de
+#: fallo". No es hipotético — `dyndolod_runner.py`, vecino directo de este
+#: servicio, ya usa ``logger.exception`` tres veces; es el idiom estándar para
+#: loguear con traceback, así que es exactamente el método que alguien
+#: escribiría en un ``except`` nuevo del servicio sin pensarlo dos veces.
+_NIVELES_DE_FALLO = frozenset({"error", "warning", "critical", "exception"})
 
-    Los tres niveles cuentan como registro de fallo en ESTE servicio: es de una
-    sola etapa, y sus tres ``warning`` reportan fallos (preflight en rojo,
-    cobertura de staging no demostrada, cancelación). Un aviso que no sea un fallo
-    tiene ``info``/``debug`` disponibles; si alguna vez hace falta un ``warning``
-    neutro, que rompa el ancla y se decida explícitamente — para eso es un gate.
+#: Niveles de logging que este servicio SÍ usa pero que no son un fallo. Sirve de
+#: contraste explícito para el ancla de abajo: un nivel que no está en ninguno de
+#: los dos conjuntos es el caso que el gate debe atrapar, no dejar pasar callado.
+_NIVELES_NEUTROS = frozenset({"info", "debug"})
+
+
+def _registros_de_fallo(nodo: ast.AST) -> list[ast.Call]:
+    """Llamadas ``logger.<nivel>(...)`` de ``_NIVELES_DE_FALLO`` dentro de ``nodo``.
+
+    Los niveles de `_NIVELES_DE_FALLO` cuentan como registro de fallo en ESTE
+    servicio: es de una sola etapa, y sus ``warning`` reportan fallos (preflight
+    en rojo, cobertura de staging no demostrada, cancelación). Un aviso que no
+    sea un fallo tiene ``info``/``debug`` disponibles; si alguna vez hace falta
+    un ``warning`` neutro, que rompa el ancla y se decida explícitamente — para
+    eso es un gate.
     """
     return [
         llamada
@@ -2485,7 +2508,7 @@ def _registros_de_fallo(nodo: ast.AST) -> list[ast.Call]:
         and isinstance(llamada.func, ast.Attribute)
         and isinstance(llamada.func.value, ast.Name)
         and llamada.func.value.id == "logger"
-        and llamada.func.attr in {"error", "warning", "critical"}
+        and llamada.func.attr in _NIVELES_DE_FALLO
     ]
 
 
@@ -2561,6 +2584,39 @@ def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
         "_ActionManifestError",
         "asyncio.CancelledError",
     ]
+
+
+def test_los_niveles_de_fallo_estan_congelados() -> None:
+    """Todo ``logger.<nivel>`` del módulo está clasificado — fallo o neutro.
+
+    Sin esto, el universo que `_registros_de_fallo` cubre puede reducirse en
+    silencio: es la MISMA clase de hallazgo que ya cerró esta review dos veces
+    (mención-vs-emisión, helper sin nombrar) reaparecida una tercera, sobre el
+    propio helper de enumeración. No alcanza con congelar `_NIVELES_DE_FALLO`
+    como constante aislada —eso ancla la intención, no el uso real—: acá se
+    recorren TODOS los ``logger.<algo>(...)`` que aparecen en el módulo y se
+    exige que cada nivel usado esté en `_NIVELES_DE_FALLO` o en
+    `_NIVELES_NEUTROS`. Un nivel nuevo (``logger.log(...)``, o un método que
+    todavía no existe) no cuenta como neutro por default: rompe acá hasta que
+    alguien decida a qué lado pertenece.
+    """
+    arbol = _modulo_servicio_ast()
+    niveles_usados = {
+        llamada.func.attr
+        for llamada in ast.walk(arbol)
+        if isinstance(llamada, ast.Call)
+        and isinstance(llamada.func, ast.Attribute)
+        and isinstance(llamada.func.value, ast.Name)
+        and llamada.func.value.id == "logger"
+    }
+    assert niveles_usados, "no se detectó ninguna llamada a logger.*: el ancla quedaría vacía"
+
+    sin_clasificar = niveles_usados - _NIVELES_DE_FALLO - _NIVELES_NEUTROS
+    assert sin_clasificar == set(), (
+        f"niveles de logging sin clasificar como fallo o neutro: {sin_clasificar}. "
+        "Agregar a _NIVELES_DE_FALLO o _NIVELES_NEUTROS en tests/test_dyndolod_service.py."
+    )
+    assert {"error", "warning", "critical", "exception"} == _NIVELES_DE_FALLO
 
 
 def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
