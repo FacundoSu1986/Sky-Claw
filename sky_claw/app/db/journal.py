@@ -924,12 +924,21 @@ class OperationJournal:
             return {}, None
         try:
             valor = json.loads(crudo)  # type: ignore[arg-type]
+        except RecursionError:
+            # `RecursionError` hereda de `RuntimeError`, no de ValueError/TypeError:
+            # sin este brazo se escapaba del clasificador y hundía el reporte del
+            # fallo, que es exactamente lo que este método promete que no pasa.
+            # Se nombra explícito en vez de ensanchar el except: un `BaseException`
+            # acá se tragaría también la cancelación.
+            return {}, "recursion_limit"
         except (ValueError, TypeError):
             return {}, "invalid_json"
         if not isinstance(valor, dict):
             return {}, "non_object_json"
         try:
             json.dumps(valor, allow_nan=False)
+        except RecursionError:
+            return {}, "recursion_limit"
         except ValueError:
             return {}, "non_serializable_json"
         return valor, None
@@ -969,11 +978,97 @@ class OperationJournal:
         auxiliar = dict(metadata)
         try:
             json.dumps(auxiliar, allow_nan=False)
+        except RecursionError:
+            # Hermano simétrico del brazo de `_metadata_previa_utilizable`: una
+            # estructura demasiado profunda revienta la serialización con un
+            # error que no es ValueError ni TypeError, y sin este brazo el
+            # reporte del fallo moriría por un dato auxiliar.
+            return {}, "recursion_limit"
         except ValueError:
             return {}, "non_finite_number"
         except TypeError:
             return {}, "non_serializable_value"
         return auxiliar, None
+
+    async def _cuarentenar_conexion(self, db: aiosqlite.Connection) -> None:
+        """Retira de circulación una conexión que quedó con la transacción abierta.
+
+        Se invoca **solo** cuando el ``rollback`` falló: ahí la conexión conserva
+        el estado parcial y cualquier escritor posterior lo commitearía. Cerrarla
+        aborta la transacción y ``evict_connection`` hace que el próximo
+        ``get_connection`` abra una limpia.
+
+        Usa la API **pública** del lifecycle en ese orden porque es el contrato
+        que su propio docstring declara — *"for recovery paths where the caller
+        has already closed the connection"*—; no se llama al helper privado de
+        cuarentena del manager solo porque se parezca.
+
+        Es best-effort y nunca eclipsa el fallo original: si el cierre también
+        falla, se registra y se sigue. El caller ya está propagando una excepción
+        y esa es la que el consumidor necesita ver.
+        """
+        try:
+            await db.close()
+        except Exception:
+            logger.exception(
+                "No se pudo cerrar la conexión sucia de fail_operation",
+                extra={"event": "journal_cuarentena_cierre_fallido", "db_path": str(self._db_path)},
+            )
+        if self._lifecycle is not None:
+            self._lifecycle.evict_connection(self._db_path, expected_connection=db)
+        # En el camino standalone la conexión es propia: alcanza con soltar la
+        # referencia. En ambos casos `_db = None` obliga a que el próximo
+        # `_ensure_connected()` reabra en vez de reutilizar la sucia.
+        self._owns_conn = False
+        self._db = None
+        logger.warning(
+            "Conexión del journal puesta en cuarentena tras un rollback fallido",
+            extra={"event": "journal_conexion_en_cuarentena", "db_path": str(self._db_path)},
+        )
+
+    @staticmethod
+    def _error_representable(error: object) -> tuple[str, str | None]:
+        """Normaliza el payload canónico de error a algo siempre persistible.
+
+        Devuelve ``(texto, tipo_degradado)``. ``tipo_degradado`` es ``None``
+        cuando el caller respetó el type hint.
+
+        El contrato para los callers válidos **no cambia**: un ``str`` se
+        persiste tal cual, byte por byte. La degradación existe solo para
+        valores que violan el hint en runtime — algo que este módulo no puede
+        descartar, porque está en la lista ``ignore_errors`` de mypy y ningún
+        gate ataja un ``error=exc`` en vez de ``error=str(exc)``.
+
+        Se usa ``str()`` y no ``repr()``: para una excepción, ``str(exc)`` es
+        exactamente el mensaje que el caller correcto habría pasado, mientras
+        que ``repr()`` agrega el tipo y las comillas del constructor. Si el
+        propio ``__str__`` falla —un objeto puede definirlo mal— se cae a un
+        centinela fijo, sin tocar el objeto: preferimos perder el texto del
+        error antes que perder el registro del fallo.
+        """
+        if isinstance(error, str):
+            return error, None
+        try:
+            return str(error), type(error).__name__
+        except Exception:
+            return "<error no representable>", type(error).__name__
+
+    @staticmethod
+    def _avisar_error_degradado(entry_id: int, tipo: str) -> None:
+        """Avisa que el ``error`` del caller no era ``str``, sin filtrar su valor.
+
+        Solo sale el nombre del tipo: el valor ya se persiste en la fila como
+        evidencia, y duplicarlo en el log sería exponerlo en un canal con otra
+        política de retención y redacción.
+        """
+        logger.warning(
+            "El argumento `error` de fail_operation no era str; se normalizó",
+            extra={
+                "event": "journal_error_degradado",
+                "entry_id": entry_id,
+                "tipo_recibido": tipo,
+            },
+        )
 
     @staticmethod
     def _avisar_metadata_argumento_descartada(entry_id: int, motivo: str) -> None:
@@ -1103,9 +1198,19 @@ class OperationJournal:
         if motivo_argumento is not None:
             self._avisar_metadata_argumento_descartada(entry_id, motivo_argumento)
 
+        # El payload canónico se normaliza ANTES de la primera mutación de DB:
+        # si `error` no fuera representable, el `json.dumps` de la fusión —ya
+        # dentro de la transacción— reventaría, el rollback dejaría la operación
+        # en STARTED y el reporte del fallo se habría convertido en el fallo.
+        # Es el mismo principio que la degradación de la metadata auxiliar, pero
+        # el canónico no puede descartarse: se normaliza.
+        error_texto, tipo_degradado = self._error_representable(error)
+        if tipo_degradado is not None:
+            self._avisar_error_degradado(entry_id, tipo_degradado)
+
         evidencia: dict[str, Any] = auxiliar
-        if error:
-            evidencia["error"] = error
+        if error_texto:
+            evidencia["error"] = error_texto
 
         db = await self._ensure_connected()
 
@@ -1183,6 +1288,13 @@ class OperationJournal:
                 try:
                     rollback.result()
                 except Exception:
+                    # Un rollback FALLIDO deja la transacción abierta sobre la
+                    # conexión. Loguear y soltar el lock no alcanza: el siguiente
+                    # escritor la encuentra sucia y commitea el FAILED parcial que
+                    # este boundary quería descartar — reproducido antes de tocar
+                    # nada. Por eso la conexión se pone en cuarentena y NO vuelve a
+                    # usarse; el próximo `get_connection` abre una limpia.
+                    await self._cuarentenar_conexion(db)
                     # Invariante de `app/db/AGENTS.md`: "un rollback fallido conserva
                     # evidencia y no se reporta como éxito". Se registra acá porque el
                     # `raise` de abajo propaga el fallo ORIGINAL —que es lo que el caller

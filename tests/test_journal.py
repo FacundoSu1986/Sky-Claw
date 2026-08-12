@@ -1432,3 +1432,302 @@ class TestJournalWriteLockCompartido:
             await j2.close()
         finally:
             await lifecycle.shutdown_all()
+
+
+class TestFailOperationBoundaryEndurecido:
+    """Segunda ronda de revisión: el boundary no puede morir por su propio payload.
+
+    Los tres defectos que cierran estos tests comparten una forma: algo que
+    ``fail_operation`` manipula para *reportar* un fallo terminaba impidiendo
+    que el fallo se registrara, o dejaba la conexión en un estado del que otro
+    escritor se contagiaba.
+    """
+
+    @staticmethod
+    def _lifecycle() -> DatabaseLifecycleManager:
+        return DatabaseLifecycleManager(
+            db_paths=[],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+
+    @staticmethod
+    async def _entrada(journal, *, metadata=None) -> int:
+        tx_id = await journal.begin_transaction(description="tx endurecido", mod_id=None)
+        return await journal.begin_operation(
+            agent_id="agente_endurecido",
+            operation_type=OperationType.FILE_MODIFY,
+            target_path="/test/path/mod.esp",
+            transaction_id=tx_id,
+            metadata=metadata,
+        )
+
+    # -- C3: un rollback fallido no puede contagiar al siguiente escritor -----
+
+    @pytest.mark.asyncio
+    async def test_rollback_fallido_pone_la_conexion_en_cuarentena(self, tmp_path):
+        """Si el rollback falla, la conexión sucia NO vuelve al pool.
+
+        Sin cuarentena, la transacción queda abierta sobre la conexión
+        compartida y el siguiente escritor commitea el ``FAILED`` parcial que
+        este boundary quería descartar — exactamente el estado que promete
+        impedir.
+        """
+        lifecycle = self._lifecycle()
+        db_path = tmp_path / "cuarentena.db"
+        try:
+            j1 = OperationJournal(db_path, lifecycle=lifecycle)
+            await j1.open()
+            j2 = OperationJournal(db_path, lifecycle=lifecycle)
+            await j2.open()
+            entry_id = await self._entrada(j1)
+
+            conexion = j1._db
+            original_execute = conexion.execute
+
+            def execute_que_falla(sql, *args, **kwargs):
+                if sql.strip().startswith("UPDATE journal_entries SET metadata"):
+
+                    async def explotar():
+                        raise sqlite3.OperationalError("fallo de la operación")
+
+                    return explotar()
+                return original_execute(sql, *args, **kwargs)
+
+            async def rollback_que_tambien_falla():
+                raise sqlite3.OperationalError("fallo del rollback")
+
+            conexion.execute = execute_que_falla  # type: ignore[method-assign]
+            conexion.rollback = rollback_que_tambien_falla  # type: ignore[method-assign]
+
+            with pytest.raises(sqlite3.OperationalError, match="fallo de la operación"):
+                await j1.fail_operation(entry_id, error="boom")
+
+            # La conexión salió del pool y j1 la soltó.
+            assert j1._db is None, "el journal siguió apuntando a la conexión sucia"
+            assert lifecycle._connections.get(str(db_path.resolve())) is not conexion, (
+                "la conexión sucia seguía registrada en el lifecycle"
+            )
+
+            # El siguiente escritor obtiene una conexión LIMPIA y no puede
+            # confirmar el FAILED parcial.
+            await j2.close()
+            j3 = OperationJournal(db_path, lifecycle=lifecycle)
+            await j3.open()
+            assert j3._db is not conexion
+            await j3.begin_transaction(description="del siguiente escritor", mod_id=None)
+
+            entry = await j3.get_operation_by_id(entry_id)
+            assert entry.status == OperationStatus.STARTED, "el FAILED parcial fue commiteado por un escritor posterior"
+            await j1.close()
+            await j3.close()
+        finally:
+            await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_rollback_exitoso_no_pone_la_conexion_en_cuarentena(self, journal, monkeypatch):
+        """La cuarentena es para el rollback FALLIDO; el exitoso no la dispara."""
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+        conexion = journal._db
+        original = journal._db.execute
+
+        def execute_que_falla(sql, *args, **kwargs):
+            if sql.strip().startswith("UPDATE journal_entries SET metadata"):
+                raise sqlite3.OperationalError("fallo de la operación")
+            return original(sql, *args, **kwargs)
+
+        monkeypatch.setattr(journal._db, "execute", execute_que_falla)
+        with pytest.raises(sqlite3.OperationalError):
+            await journal.fail_operation(entry_id, error="boom")
+        monkeypatch.undo()
+
+        assert journal._db is conexion, "el rollback exitoso no debe descartar la conexión"
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.STARTED
+        assert entry.metadata == {"previa": True}
+
+    # -- Q3: el payload canónico no puede hundir el reporte -------------------
+
+    @pytest.mark.asyncio
+    async def test_un_error_no_str_igual_registra_el_fallo(self, journal):
+        """``error=exc`` en vez de ``error=str(exc)`` no puede dejar STARTED.
+
+        mypy no cubre este módulo, así que nada ataja esa confusión del caller.
+        """
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, error=ValueError("boom"))  # type: ignore[arg-type]
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"error": "boom"}, "se perdió el mensaje del error"
+
+    @pytest.mark.asyncio
+    async def test_un_error_cuyo_str_falla_cae_a_un_centinela(self, journal):
+        entry_id = await self._entrada(journal)
+
+        class SinStr:
+            def __str__(self):
+                raise RuntimeError("ni siquiera str() funciona")
+
+        await journal.fail_operation(entry_id, error=SinStr())  # type: ignore[arg-type]
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"error": "<error no representable>"}
+
+    @pytest.mark.asyncio
+    async def test_un_error_no_serializable_igual_registra_el_fallo(self, journal):
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, error=object())  # type: ignore[arg-type]
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata is not None
+        assert "error" in entry.metadata
+
+    @pytest.mark.asyncio
+    async def test_un_error_str_se_persiste_exactamente_igual_que_antes(self, journal):
+        """El contrato de los callers válidos no cambia."""
+        entry_id = await self._entrada(journal)
+        exacto = 'texto con "comillas", \\backslash y ünïcode'
+
+        await journal.fail_operation(entry_id, error=exacto)
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"error": exacto}
+
+    @pytest.mark.asyncio
+    async def test_la_degradacion_del_error_avisa_sin_filtrar_el_valor(self, journal, caplog):
+        entry_id = await self._entrada(journal)
+
+        with caplog.at_level(logging.WARNING, logger="sky_claw.app.db.journal"):
+            await journal.fail_operation(entry_id, error=ValueError("secreto-en-el-mensaje"))  # type: ignore[arg-type]
+
+        (aviso,) = [r for r in caplog.records if getattr(r, "event", None) == "journal_error_degradado"]
+        assert aviso.entry_id == entry_id
+        assert aviso.tipo_recibido == "ValueError"
+        assert "secreto-en-el-mensaje" not in aviso.getMessage() + repr(aviso.__dict__)
+
+    # -- C1: RecursionError en los dos clasificadores hermanos ----------------
+
+    @staticmethod
+    def _anidado(profundidad: int) -> list:
+        """Construye la estructura por iteración: hacerlo recursivo ya reventaría."""
+        valor: list = []
+        for _ in range(profundidad):
+            valor = [valor]
+        return valor
+
+    @pytest.mark.asyncio
+    async def test_metadata_legacy_demasiado_profunda_no_hunde_el_reporte(self, journal):
+        """``json.loads`` levanta ``RecursionError``, que no es ValueError ni TypeError."""
+        entry_id = await self._entrada(journal)
+        hondo = "[" * 1000 + "]" * 1000
+        await journal._db.execute("UPDATE journal_entries SET metadata = ? WHERE id = ?", (hondo, entry_id))
+        await journal._db.commit()
+
+        await journal.fail_operation(entry_id, error="fallo real")
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"error": "fallo real"}
+
+    @pytest.mark.asyncio
+    async def test_metadata_argumento_demasiado_profunda_no_hunde_el_reporte(self, journal):
+        """El hermano: ``json.dumps`` sobre una estructura profunda del caller."""
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, error="fallo real", metadata={"hondo": self._anidado(1200)})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"error": "fallo real"}
+
+    @pytest.mark.parametrize(
+        ("caso", "motivo"),
+        [
+            pytest.param("legacy", "recursion_limit", id="previa"),
+            pytest.param("argumento", "recursion_limit", id="argumento"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_el_descarte_por_profundidad_se_avisa(self, journal, caplog, caso, motivo):
+        entry_id = await self._entrada(journal)
+        evento = "journal_metadata_previa_descartada" if caso == "legacy" else "journal_metadata_argumento_descartada"
+        if caso == "legacy":
+            hondo = "[" * 1000 + "]" * 1000
+            await journal._db.execute("UPDATE journal_entries SET metadata = ? WHERE id = ?", (hondo, entry_id))
+            await journal._db.commit()
+            kwargs = {}
+        else:
+            kwargs = {"metadata": {"hondo": self._anidado(1200)}}
+
+        with caplog.at_level(logging.WARNING, logger="sky_claw.app.db.journal"):
+            await journal.fail_operation(entry_id, error="fallo real", **kwargs)
+
+        avisos = [r for r in caplog.records if getattr(r, "event", None) == evento]
+        assert len(avisos) == 1
+        assert avisos[0].motivo == motivo
+
+    # -- Q2: la fila que este PR repara queda públicamente legible ------------
+
+    @pytest.mark.parametrize(
+        "crudo",
+        ["[]", '"texto"', '{"a":', '{"ratio": NaN}', "texto plano"],
+    )
+    @pytest.mark.asyncio
+    async def test_la_fila_reparada_es_legible_por_la_api_publica(self, journal, crudo):
+        """Congela el contrato de SALIDA de este PR, no el del reader en general.
+
+        Dos de estos blobs son ilegibles por ``get_operation_by_id`` ANTES de
+        pasar por ``fail_operation`` —``_row_to_entry`` hace ``json.loads`` sin
+        guarda, defecto preexistente del camino de lectura y fuera de alcance—.
+        Lo que este test exige es que lo que ESTE PR escribe sí sea legible.
+        """
+        entry_id = await self._entrada(journal)
+        await journal._db.execute("UPDATE journal_entries SET metadata = ? WHERE id = ?", (crudo, entry_id))
+        await journal._db.commit()
+
+        await journal.fail_operation(entry_id, error="fallo real")
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"error": "fallo real"}
+
+    # -- Q1: SQLite serializa incluso entre conexiones distintas --------------
+
+    @pytest.mark.asyncio
+    async def test_dos_lifecycles_distintos_no_pierden_evidencia(self, tmp_path):
+        """El ``UPDATE status`` previo toma la write transaction antes del SELECT.
+
+        El read-modify-write (SELECT → merge → UPDATE) parece una ventana TOCTOU,
+        pero ``fail_operation`` ejecuta antes un ``UPDATE`` que adquiere la
+        transacción de escritura de SQLite: el segundo escritor queda bloqueado
+        aunque tenga otra conexión y otro lock. Este test congela esa propiedad
+        por si alguien reordena las sentencias.
+        """
+        lifecycle_a = self._lifecycle()
+        lifecycle_b = self._lifecycle()
+        db_path = tmp_path / "dos_managers.db"
+        try:
+            ja = OperationJournal(db_path, lifecycle=lifecycle_a)
+            jb = OperationJournal(db_path, lifecycle=lifecycle_b)
+            await ja.open()
+            await jb.open()
+            assert ja._db is not jb._db, "premisa: conexiones distintas"
+            assert ja._lock is not jb._lock, "premisa: locks distintos"
+
+            entry_id = await self._entrada(ja)
+            await asyncio.gather(
+                ja.fail_operation(entry_id, metadata={"a": 1}),
+                jb.fail_operation(entry_id, metadata={"b": 2}),
+            )
+
+            entry = await ja.get_operation_by_id(entry_id)
+            assert entry.metadata == {"a": 1, "b": 2}, "se perdió la evidencia de un escritor"
+            await ja.close()
+            await jb.close()
+        finally:
+            await lifecycle_a.shutdown_all()
+            await lifecycle_b.shutdown_all()
