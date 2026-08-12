@@ -2531,15 +2531,26 @@ def _registros_de_fallo(nodo: ast.AST) -> list[ast.Call]:
     un ``warning`` neutro, que rompa el ancla y se decida explícitamente — para
     eso es un gate.
 
-    DEPENDE de que el módulo tenga un único logger llamado literalmente
+    DEPENDE de que el módulo analizado tenga un único logger llamado literalmente
     ``logger`` (review Qodo, PR #464): un alias (``_log = logging.getLogger(...)``)
     o un segundo logger no se detectan, y un registro emitido a través de ellos
     quedaría fuera del universo sin que el gate lo note. No se generaliza a
     "cualquier nombre que referencie un ``logging.Logger``" a propósito —eso es
     resolución de alias sin límite claro por AST estático, y el propio hallazgo
     la marca severidad baja-media—; en cambio, la premisa se congela con
-    `test_los_ocho_servicios_ligan_su_logger_al_nombre_logger`, que hoy la
-    verifica cierta en los ocho `*_service.py` y rompe si deja de serlo.
+    `test_dyndolod_service_liga_su_logger_al_nombre_logger`.
+
+    Esa ancla cubre SOLO `dyndolod_service.py` (review Qodo, PR #464,
+    "Contradicción en anclas" — este mismo párrafo afirmaba antes que cubría los
+    ocho `*_service.py`, y el ancla real nunca lo hizo: drift documentación-vs-gate
+    dentro del propio PR que existe para eliminarlo). Esta función también corre
+    sobre los otros siete servicios y sobre todo `sky_claw/local/` — ahí la
+    precondición NO está verificada: un alias los dejaría clasificados como ya
+    están (`sin_cobertura` o su categoría actual, ver `_SERVICIOS_SIN_COBERTURA`),
+    sin romper CI. Es un hueco aceptado, no cerrado: esos siete ya son deuda no
+    verificada al 100% por otras razones, y extender el ancla a los ocho volvía a
+    acoplar el merge de un PR ajeno a este archivo (mismo hallazgo, "Acoplamiento
+    anclas").
     """
     return [
         llamada
