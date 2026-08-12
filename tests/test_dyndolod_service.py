@@ -2594,6 +2594,23 @@ def _metodo_execute_ast() -> ast.AsyncFunctionDef:
     return next(m for m in cls.body if isinstance(m, ast.AsyncFunctionDef) and m.name == "execute")
 
 
+def _metodo_que_contiene(nodo: ast.AST, raiz: ast.AST) -> str | None:
+    """Nombre del método/función MÁS CERCANO que contiene ``nodo``, o ``None``.
+
+    Se usa para anclar exenciones por UBICACIÓN y no solo por la cadena de
+    ``operation_type``, que es copiable (ver `_REGISTROS_EXENTOS_DE_ETAPA`).
+    """
+    contenedores = [
+        n
+        for n in ast.walk(raiz)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.lineno <= nodo.lineno <= (n.end_lineno or n.lineno)
+    ]
+    if not contenedores:
+        return None
+    return min(contenedores, key=lambda n: (n.end_lineno or n.lineno) - n.lineno).name
+
+
 def _nombre_de_excepcion(handler: ast.ExceptHandler) -> str:
     """Tipos que atrapa un ``except``; ``except (A, B)`` -> ``"A, B"``."""
     tipo = handler.type
@@ -2770,34 +2787,56 @@ def _valor_de_clave_en_extra(llamada: ast.Call, clave: str) -> ast.expr | None:
 #: llevar en su lugar → el motivo de la exención. Un registro sin
 #: `pipeline_stage` cuyo `operation_type` no esté acá sigue rompiendo el ancla
 #: principal; uno que esté acá pero no lleve `tx_id` también.
+#: Cada exención declara, además del motivo, el MÉTODO donde vive el único
+#: registro que la usa. El `operation_type` solo no alcanza como identidad
+#: (review Qodo, PR #464, "Exención de etapa copiable"): es una cadena copiable,
+#: y un `logger.error` nuevo en cualquier otra ruta del módulo que copiara
+#: `extra={"operation_type": "dyndolod_pipeline_failed", "tx_id": tx_id}` pasaba
+#: las dos anclas sin `pipeline_stage` —reproducido: 2 passed— dejando un fallo
+#: real de la etapa 9 sin señal estructurada. Es el patrón de copiar-el-gemelo
+#: que el repo documenta como su defecto dominante, aplicado al mecanismo de
+#: exención que este PR introdujo. Anclar el método hace que la exención sea una
+#: propiedad del SITIO, no de la cadena.
 _REGISTROS_EXENTOS_DE_ETAPA = {
-    "dyndolod_flight_report_persist_failed": (
-        "_emit_flight_report solo se alcanza tras un pipeline YA exitoso (único "
-        "call site: en execute, después del commit) — un fallo ahí es de "
-        "infraestructura de journaling, no de la etapa 9. Etiquetarlo con la "
-        "etapa haría que un fallo que no implica que DynDOLOD falló se contara "
-        "como si lo hubiera hecho, en cualquier alerta agrupando por pipeline_stage."
-    ),
-    "dyndolod_pipeline_failed": (
-        "_log_result_error es el outcome-record del fallo, gemelo de _log_result "
-        "(éxito, que usa info y tampoco lleva la etapa) — SIEMPRE se emite junto "
-        "al logger.error del handler que lo llama, nunca solo, así que por "
-        "construcción es una repetición mecánica del MISMO incidente que ese "
-        "handler ya reportó con pipeline_stage. Llevarla también acá duplicaba el "
-        "conteo de un COUNT(*) WHERE pipeline_stage=9 (review Qodo, PR #464, "
-        "'Sobreconteo de señal') — el mismo problema que 'Duplicación de señal' ya "
-        "había cerrado, reintroducido por el propio fix. Se identifica por "
-        "operation_type, que ya tenía antes de que se le agregara pipeline_stage."
-    ),
-    "dyndolod_post_commit_cancelled": (
-        "Rama del handler except asyncio.CancelledError cuando journal_committed "
-        "ya es True (review CodeRabbit, PR #464): commit_transaction ya corrió, "
-        "así que la etapa 9 tuvo éxito — la cancelación es de un paso posterior "
-        "best-effort (confirmar rollbacks / emitir el flight report), no de la "
-        "etapa. Mismo criterio que dyndolod_flight_report_persist_failed. El "
-        "WARNING pre-commit del mismo handler SÍ sigue llevando pipeline_stage: "
-        "ahí la etapa realmente no completó."
-    ),
+    "dyndolod_flight_report_persist_failed": {
+        "metodo": "_emit_flight_report",
+        "motivo": (
+            "_emit_flight_report solo se alcanza tras un pipeline YA exitoso (único "
+            "call site: en execute, después del commit) — un fallo ahí es de "
+            "infraestructura de journaling, no de la etapa 9. Etiquetarlo con la "
+            "etapa haría que un fallo que no implica que DynDOLOD falló se contara "
+            "como si lo hubiera hecho, en cualquier alerta agrupando por pipeline_stage."
+        ),
+    },
+    "dyndolod_pipeline_failed": {
+        "metodo": "_log_result_error",
+        "motivo": (
+            "_log_result_error es el outcome-record del fallo, gemelo de _log_result "
+            "(éxito, que usa info y tampoco lleva la etapa) — SIEMPRE se emite junto "
+            "al logger.error del handler que lo llama, nunca solo, así que por "
+            "construcción es una repetición mecánica del MISMO incidente que ese "
+            "handler ya reportó con pipeline_stage. Llevarla también acá duplicaba el "
+            "conteo de un COUNT(*) WHERE pipeline_stage=9 (review Qodo, PR #464, "
+            "'Sobreconteo de señal') — el mismo problema que 'Duplicación de señal' ya "
+            "había cerrado, reintroducido por el propio fix. Se identifica por "
+            "operation_type, que ya tenía antes de que se le agregara pipeline_stage."
+        ),
+    },
+    "dyndolod_post_commit_cancelled": {
+        "metodo": "execute",
+        "motivo": (
+            "Rama del handler except asyncio.CancelledError cuando journal_committed "
+            "ya es True (review CodeRabbit, PR #464): commit_transaction ya corrió, "
+            "así que la etapa 9 tuvo éxito — la cancelación es de un paso posterior "
+            "best-effort (confirmar rollbacks / emitir el flight report), no de la "
+            "etapa. Mismo criterio que dyndolod_flight_report_persist_failed. El "
+            "WARNING pre-commit del mismo handler SÍ sigue llevando pipeline_stage: "
+            "ahí la etapa realmente no completó. Vive en `execute` (no en un helper "
+            "propio), así que su ancla de ubicación es más débil que las otras dos — "
+            "lo que la protege de una copia suelta es que el ancla exige que sea el "
+            "ÚNICO registro del módulo con ese operation_type."
+        ),
+    },
 }
 
 
@@ -2878,11 +2917,22 @@ def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
     etapa 9— con su propio ``operation_type`` Y ``tx_id`` en el ``extra`` (review
     Qodo, PR #464, "Sobreconteo de señal": sin esto, el único registro exento de
     hoy podría perder silenciosamente su correlación al perder pipeline_stage).
+
+    La exención se verifica por UBICACIÓN, no solo por la cadena: cada entrada
+    declara el método donde vive su único registro, y el ancla exige (a) que el
+    registro esté en ESE método y (b) que sea el ÚNICO del módulo con ese
+    ``operation_type``. Sin eso, la identidad de la exención era una cadena
+    copiable (review Qodo, PR #464, "Exención de etapa copiable"): reproducido —
+    un `logger.error` nuevo en el handler de `LockAcquisitionError` copiando
+    ``extra={"operation_type": "dyndolod_pipeline_failed", "tx_id": tx_id}``
+    pasaba esta ancla y su compañera (2 passed) sin `pipeline_stage`, dejando un
+    fallo real de la etapa 9 sin señal estructurada.
     """
     arbol = _modulo_servicio_ast()
     registros = _registros_de_fallo(arbol)
     assert registros, "no se detectó ningún registro de fallo: el ancla quedaría vacía"
 
+    usos_por_operation_type: dict[str, list[str]] = {}
     sin_cobertura = []
     for c in registros:
         etiqueta = f"{c.func.attr}:{c.lineno}"
@@ -2890,10 +2940,25 @@ def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
             continue
         operation_type = _valor_de_clave_en_extra(c, "operation_type")
         nombre_op = operation_type.value if isinstance(operation_type, ast.Constant) else None
-        if nombre_op not in _REGISTROS_EXENTOS_DE_ETAPA:
+        exencion = _REGISTROS_EXENTOS_DE_ETAPA.get(nombre_op) if isinstance(nombre_op, str) else None
+        if exencion is None:
             sin_cobertura.append(f"{etiqueta}: sin pipeline_stage y sin exención válida en operation_type")
-        elif _valor_de_clave_en_extra(c, "tx_id") is None:
+            continue
+        usos_por_operation_type.setdefault(nombre_op, []).append(etiqueta)
+        if _valor_de_clave_en_extra(c, "tx_id") is None:
             sin_cobertura.append(f"{etiqueta}: exento de pipeline_stage ({nombre_op}) pero sin tx_id")
+        metodo = _metodo_que_contiene(c, arbol)
+        if metodo != exencion["metodo"]:
+            sin_cobertura.append(
+                f"{etiqueta}: usa la exención {nombre_op!r}, declarada solo para "
+                f"{exencion['metodo']!r}, pero vive en {metodo!r}"
+            )
+
+    duplicados = sorted(f"{op}: {sitios}" for op, sitios in usos_por_operation_type.items() if len(sitios) > 1)
+    assert duplicados == [], (
+        f"operation_type exento usado en más de un registro: {duplicados}. Cada exención cubre UN "
+        f"registro concreto; un segundo sitio necesita su propia entrada o su propio pipeline_stage."
+    )
 
     assert sin_cobertura == [], (
         f"registros de fallo de dyndolod_service.py sin cobertura completa: {sin_cobertura}. "
@@ -3103,9 +3168,15 @@ def _registro_cubierto(c: ast.Call) -> bool:
     Mismo criterio de `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`:
     un registro exento (`operation_type` en `_REGISTROS_EXENTOS_DE_ETAPA` + `tx_id`
     presente) cuenta como cubierto para la clasificación de cobertura, igual que
-    uno con `pipeline_stage`. Sin esto, el único registro exento de hoy degradaba
-    `dyndolod` de completo a parcial — una regresión FALSA: 12 de 13 llevan la
-    etapa y el 13.º está exento con justificación, no sin cubrir.
+    uno con `pipeline_stage`. Sin esto, los registros exentos degradaban
+    `dyndolod` de completo a parcial — una regresión FALSA: están exentos con
+    justificación declarada, no sin cubrir.
+
+    Deliberadamente NO repite la verificación estructural (método declarado +
+    unicidad del `operation_type`) que hace el ancla principal: esto es un
+    clasificador de cobertura para comparar servicios entre sí, y si un registro
+    fingiera una exención, el ancla principal ya rompe antes — no hace falta que
+    los dos caminos dupliquen la misma regla para que el gate la sostenga.
     """
     if _nodo_de_la_etapa(c) is not None:
         return True
