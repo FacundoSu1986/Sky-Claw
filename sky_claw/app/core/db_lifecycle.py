@@ -807,9 +807,8 @@ class DatabaseLifecycleManager:
             El error de cierre, o ``None`` si la conexión cerró bien.
         """
         path_str = self._resolve_key(db_path)
-        es_la_registrada = self._connections.get(path_str) is conn
 
-        if es_la_registrada:
+        if self._connections.get(path_str) is conn:
             # Paso 1: incondicional y antes del await. Desde acá,
             # is_connection_current() dice False para toda referencia cacheada.
             self._poisoned_paths.setdefault(path_str, None)
@@ -821,19 +820,47 @@ class DatabaseLifecycleManager:
             close_error = error.operation_error
         except _DatabaseOperationCancelled as error:
             close_error = error.cause
+        except asyncio.CancelledError as error:
+            # Cancelación EXTERNA con el cierre YA TERMINADO: las dos clases de
+            # arriba son las que significan "la operación falló", así que llegar
+            # acá quiere decir que ``_await_db_operation`` completó el close y
+            # recién después re-lanzó la cancelación del llamador.
+            #
+            # El cierre salió bien ⇒ se cede ownership igual que en el camino
+            # feliz. Envenenar acá marcaría fail-closed un path cuya conexión
+            # cerró perfectamente, sólo porque cancelaron al que la cerraba.
+            #
+            # La cancelación se DEVUELVE, no se re-lanza: los dos llamadores ya
+            # tienen su propia restauración —``_init_single`` re-lanza la
+            # cancelación ORIGINAL con un ``raise`` pelado, y
+            # ``_rollback_after_failure`` elige entre ``cancellation_to_restore``
+            # y la del rollback—. Un ``raise`` acá las pisaría con la del cierre,
+            # que es la más tardía y la menos informativa.
+            self._completar_retirada(path_str, conn)
+            return error
         except BaseException as error:
             close_error = error
-
-        if not es_la_registrada:
-            return close_error
 
         if close_error is None:
             # Paso 2: el cierre terminó, recién ahora se cede ownership y el
             # path vuelve a estar disponible para un reemplazo limpio.
-            if self._connections.get(path_str) is conn:
-                self._connections.pop(path_str)
-            self._poisoned_paths.pop(path_str, None)
+            self._completar_retirada(path_str, conn)
             return None
+
+        # El estado se relee DESPUÉS del await: la identidad que se leyó antes
+        # de cerrar ya no vale. Si un hermano cuarentenó la misma conexión en
+        # paralelo y su cierre sí terminó, la retirada ya está completa — y
+        # envenenar acá dejaría el path fail-closed SIN conexión registrada,
+        # que es un callejón sin salida: ``shutdown_all`` no tendría qué cerrar
+        # y por lo tanto nunca levantaría el veneno.
+        if self._connections.get(path_str) is not conn:
+            logger.warning(
+                "DatabaseLifecycle: el cierre en cuarentena de %s falló, pero la conexión "
+                "ya había sido retirada por otro camino; no se envenena el path: %s",
+                path_str,
+                close_error,
+            )
+            return close_error
 
         # Paso 3: ownership conservado + path fail-closed. shutdown_all sigue
         # viendo la conexión y reintentará el cierre.
@@ -845,6 +872,17 @@ class DatabaseLifecycleManager:
             exc_info=(type(close_error), close_error, close_error.__traceback__),
         )
         return close_error
+
+    def _completar_retirada(self, path_str: str, conn: aiosqlite.Connection) -> None:
+        """Cede ownership y rehabilita el path tras un cierre confirmado.
+
+        El invariante que sostiene: **un path envenenado siempre conserva su
+        conexión registrada**. Es lo que garantiza que ``shutdown_all`` tenga
+        siempre algo que reintentar y que el veneno nunca sea permanente.
+        """
+        if self._connections.get(path_str) is conn:
+            self._connections.pop(path_str)
+            self._poisoned_paths.pop(path_str, None)
 
     def is_path_poisoned(self, db_path: Path | str) -> bool:
         """``True`` si el path está fail-closed por una cuarentena sin cerrar."""

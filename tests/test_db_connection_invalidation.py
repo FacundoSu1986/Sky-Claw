@@ -70,25 +70,65 @@ WRAPPERS_QUE_CACHEAN_CONEXION = {
 _OBTENCION = {"get_connection", "refresh_connection"}
 
 
+def _asignaciones(nodo: ast.AST) -> tuple[list[ast.expr], ast.expr] | None:
+    """Normaliza ``x = v`` y ``x: T = v`` a ``(destinos, valor)``."""
+    if isinstance(nodo, ast.Assign):
+        return nodo.targets, nodo.value
+    if isinstance(nodo, ast.AnnAssign) and nodo.value is not None:
+        return [nodo.target], nodo.value
+    return None
+
+
+def _es_obtencion(valor: ast.expr) -> bool:
+    """True si *valor* es ``await <algo>.get_connection(...)`` o ``refresh_connection(...)``."""
+    return (
+        isinstance(valor, ast.Await)
+        and isinstance(valor.value, ast.Call)
+        and isinstance(valor.value.func, ast.Attribute)
+        and valor.value.func.attr in _OBTENCION
+    )
+
+
+def _es_atributo_de_self(destino: ast.expr) -> bool:
+    return isinstance(destino, ast.Attribute) and isinstance(destino.value, ast.Name) and destino.value.id == "self"
+
+
 def _cachea_conexion(arbol: ast.AST) -> bool:
-    """True si el módulo asigna a un atributo de ``self`` una conexión del lifecycle."""
-    for nodo in ast.walk(arbol):
-        if not isinstance(nodo, ast.Assign):
+    """True si el módulo guarda en un atributo de ``self`` una conexión del lifecycle.
+
+    Detecta también el guardado **en dos pasos** —``conn = await ...get_connection();
+    self._conn = conn``—, que no es hipotético: es exactamente lo que hace
+    ``core/database.py:128-130``. Un detector que sólo mirara la asignación
+    directa dejaría entrar un wrapper nuevo escrito con ese idioma sin romper el
+    ancla, o sea justo el defecto que el ancla existe para atajar.
+
+    Sobre-aproxima a propósito (no sigue el flujo de datos, sólo nombres dentro
+    de la función): para un ancla, marcar de más obliga a tomar una decisión y
+    marcar de menos deja pasar el hermano.
+    """
+    for funcion in ast.walk(arbol):
+        if not isinstance(funcion, ast.AsyncFunctionDef | ast.FunctionDef):
             continue
-        valor = nodo.value
-        if not isinstance(valor, ast.Await):
-            continue
-        llamada = valor.value
-        if not isinstance(llamada, ast.Call) or not isinstance(llamada.func, ast.Attribute):
-            continue
-        if llamada.func.attr not in _OBTENCION:
-            continue
-        for destino in nodo.targets:
-            if (
-                isinstance(destino, ast.Attribute)
-                and isinstance(destino.value, ast.Name)
-                and destino.value.id == "self"
-            ):
+
+        # Paso 1: nombres locales que reciben una conexión del lifecycle.
+        locales: set[str] = set()
+        for nodo in ast.walk(funcion):
+            par = _asignaciones(nodo)
+            if par is None or not _es_obtencion(par[1]):
+                continue
+            for destino in par[0]:
+                if isinstance(destino, ast.Name):
+                    locales.add(destino.id)
+
+        # Paso 2: ¿alguno termina en un atributo de self, directo o vía local?
+        for nodo in ast.walk(funcion):
+            par = _asignaciones(nodo)
+            if par is None:
+                continue
+            destinos, valor = par
+            if not (_es_obtencion(valor) or (isinstance(valor, ast.Name) and valor.id in locales)):
+                continue
+            if any(_es_atributo_de_self(destino) for destino in destinos):
                 return True
     return False
 
@@ -424,6 +464,149 @@ async def test_t7_dos_wrappers_no_abren_dos_reemplazos(tmp_path: Path) -> None:
 
     lifecycle._init_single = init_real  # type: ignore[method-assign]
     await lifecycle.shutdown_all()
+
+
+# ===========================================================================
+# T8 — dos cuarentenas concurrentes de la MISMA conexión
+# ===========================================================================
+
+
+async def test_t8_una_cuarentena_perdedora_no_mata_el_path(tmp_path: Path) -> None:
+    """El veneno nunca puede quedar sin conexión registrada que lo levante.
+
+    Si dos caminos cuarentenan la misma conexión a la vez y uno cierra bien, el
+    que llega tarde recibe "already closed". Envenenar con ESE error dejaría el
+    path fail-closed y con ``_connections`` vacío: ``shutdown_all`` no tendría
+    qué cerrar, así que el veneno sería permanente hasta reiniciar el proceso —
+    peor que el estado previo a este contrato, donde el siguiente
+    ``get_connection`` simplemente abría un reemplazo.
+    """
+    db = tmp_path / "doble.db"
+    lifecycle = _lifecycle(db)
+    conn = await lifecycle.get_connection(db)
+
+    cierre_real = conn.close
+    intentos = 0
+
+    async def _cierre(*, _real=cierre_real) -> None:
+        nonlocal intentos
+        intentos += 1
+        if intentos == 1:
+            await _real()
+            return
+        # El perdedor termina DESPUÉS del ganador: es el orden que deja el
+        # veneno escrito al final si no se relee el estado tras el await.
+        await asyncio.sleep(0.02)
+        raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+
+    conn.close = _cierre  # type: ignore[method-assign]
+
+    await asyncio.gather(
+        lifecycle.quarantine_connection(db, conn),
+        lifecycle.quarantine_connection(db, conn),
+        return_exceptions=True,
+    )
+    assert intentos == 2, "precondición: las dos cuarentenas llegaron a cerrar"
+
+    assert not lifecycle.is_path_poisoned(db), "el path quedó envenenado por un cierre ajeno ya resuelto"
+    reemplazo = await lifecycle.get_connection(db)
+    assert reemplazo is not conn
+
+    await lifecycle.shutdown_all()
+
+
+async def test_t8b_el_veneno_siempre_conserva_su_conexion(tmp_path: Path) -> None:
+    """Invariante: ``POISONED`` implica conexión registrada (si no, es un callejón)."""
+    db = tmp_path / "inv.db"
+    lifecycle = _lifecycle(db)
+    conn = await lifecycle.get_connection(db)
+    cierre_real = conn.close
+
+    async def _falla() -> None:
+        raise sqlite3.OperationalError("close imposible")
+
+    conn.close = _falla  # type: ignore[method-assign]
+    await lifecycle.quarantine_connection(db, conn)
+
+    assert lifecycle.is_path_poisoned(db)
+    assert lifecycle._connections.get(str(db.resolve())) is conn, (
+        "un path envenenado sin conexión registrada no lo puede recuperar nadie"
+    )
+
+    conn.close = cierre_real  # type: ignore[method-assign]
+    await lifecycle.shutdown_all()
+
+
+# ===========================================================================
+# T9 — cancelación externa con el cierre ya completado
+# ===========================================================================
+
+
+async def test_t9_cancelacion_tras_un_cierre_exitoso_no_envenena(tmp_path: Path) -> None:
+    """Un cierre que SÍ terminó cede ownership, aunque cancelen al llamador.
+
+    ``_await_db_operation`` completa la operación y recién después re-lanza la
+    cancelación externa. Tratar esa ``CancelledError`` como un error de cierre
+    cualquiera envenenaría el path pese a que el cierre salió bien, y encima
+    conservaría el ownership de una conexión ya cerrada.
+
+    La cancelación se devuelve en vez de re-lanzarse a propósito: los llamadores
+    ya restauran la suya —``_init_single`` la ORIGINAL, verificado por
+    ``test_init_single_cancelado_espera_close_y_preserva_cancelacion_original``—
+    y re-lanzarla acá la pisaría con la del cierre.
+    """
+    db = tmp_path / "cancel.db"
+    lifecycle = _lifecycle(db)
+    conn = await lifecycle.get_connection(db)
+
+    cierre_real = conn.close
+
+    async def _cierre_lento(*, _real=cierre_real) -> None:
+        await asyncio.sleep(0.05)
+        await _real()
+
+    conn.close = _cierre_lento  # type: ignore[method-assign]
+
+    tarea = asyncio.create_task(lifecycle.quarantine_connection(db, conn))
+    await asyncio.sleep(0.01)
+    tarea.cancel()
+
+    resultado = await asyncio.gather(tarea, return_exceptions=True)
+    devuelto = resultado[0]
+    assert isinstance(devuelto, asyncio.CancelledError), (
+        "la cancelación no puede desaparecer: vuelve como resultado para que el llamador la restaure"
+    )
+
+    assert not conn._running, "el cierre tenía que haber terminado igual"
+    assert not lifecycle.is_path_poisoned(db), "se envenenó el path por una cancelación, no por un fallo"
+    assert str(db.resolve()) not in lifecycle._connections, "el cierre exitoso no cedió ownership"
+
+
+# ===========================================================================
+# Capacidad del detector del ancla
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    ("nombre", "fuente"),
+    [
+        ("directo", "async def f(self):\n    self._c = await self._lc.get_connection(p)\n"),
+        # El de dos pasos NO es hipotético: es `core/database.py:128-130`.
+        ("dos_pasos", "async def f(self):\n    c = await self._lc.get_connection(p)\n    self._c = c\n"),
+        ("anotado", "async def f(self):\n    self._c: object = await self._lc.get_connection(p)\n"),
+        ("multiple", "async def f(self):\n    a = self._c = await self._lc.get_connection(p)\n"),
+        ("refresh", "async def f(self):\n    self._c = await self._lc.refresh_connection(p, self._c)\n"),
+    ],
+)
+def test_el_detector_no_es_evadible_por_el_idioma_de_asignacion(nombre: str, fuente: str) -> None:
+    """El ancla vale lo que valga su detector: si se esquiva, no ancla nada."""
+    assert _cachea_conexion(ast.parse(fuente)), f"el idioma '{nombre}' esquiva el ancla"
+
+
+def test_el_detector_no_marca_a_quien_no_cachea() -> None:
+    """Una conexión que vive en una local y no se guarda no cuenta (dlq_manager/governance)."""
+    fuente = "async def f(self):\n    c = await self._lc.get_connection(p)\n    await c.execute('SELECT 1')\n"
+    assert not _cachea_conexion(ast.parse(fuente))
 
 
 # ===========================================================================
