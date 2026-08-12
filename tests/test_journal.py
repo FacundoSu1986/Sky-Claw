@@ -575,6 +575,45 @@ class TestFailOperationEvidencia:
         monkeypatch.undo()
         assert any("rollback de fail_operation falló" in r.message.lower() for r in caplog.records)
 
+    @pytest.mark.parametrize("no_finito", [float("nan"), float("inf"), float("-inf")], ids=repr)
+    @pytest.mark.asyncio
+    async def test_nan_no_puede_escribir_json_invalido(self, journal, no_finito):
+        """``json.dumps`` emite ``NaN``/``Infinity``, que no son JSON válido.
+
+        Sin ``allow_nan=False`` la columna quedaba con ``json_valid() == 0`` y
+        ``json_extract`` devolvía ``NULL`` en silencio: evidencia perdida
+        disfrazada de dato presente.
+        """
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+
+        with pytest.raises(ValueError):
+            await journal.fail_operation(entry_id, error="boom", metadata={"ratio": no_finito})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.STARTED
+        assert entry.metadata == {"previa": True}
+
+        async with journal._db.execute(
+            "SELECT json_valid(metadata) FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ) as cursor:
+            (valido,) = await cursor.fetchone()
+        assert valido == 1
+
+    @pytest.mark.asyncio
+    async def test_begin_operation_tampoco_puede_escribir_json_invalido(self, journal):
+        """El hermano: ``begin_operation`` es el otro escritor de la columna."""
+        tx_id = await journal.begin_transaction(description="tx nan", mod_id=None)
+
+        with pytest.raises(ValueError):
+            await journal.begin_operation(
+                agent_id="agente_evidencia",
+                operation_type=OperationType.FILE_MODIFY,
+                target_path="/test/path/mod.esp",
+                transaction_id=tx_id,
+                metadata={"ratio": float("nan")},
+            )
+
     # -- 12. colisión con la clave reservada ----------------------------------
 
     @pytest.mark.asyncio

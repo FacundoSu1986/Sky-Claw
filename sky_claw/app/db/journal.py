@@ -705,7 +705,11 @@ class OperationJournal:
                         OperationStatus.STARTED.value,
                         snapshot_path,
                         checksum,
-                        json.dumps(metadata) if metadata else None,
+                        # allow_nan=False: el hermano de la misma corrección en
+                        # `fail_operation`. `json.dumps` serializa NaN/Infinity como
+                        # `NaN`/`Infinity`, que NO son JSON válido: la columna queda con
+                        # `json_valid() == 0` y `json_extract` devuelve NULL en silencio.
+                        json.dumps(metadata, allow_nan=False) if metadata else None,
                     ),
                 )
                 await db.commit()
@@ -861,6 +865,14 @@ class OperationJournal:
         por su valor sería exactamente la pérdida de evidencia que este método
         debe evitar.
 
+        Se serializa con ``allow_nan=False`` porque el default de ``json.dumps``
+        emite ``NaN``/``Infinity``, que **no son JSON válido**: la columna quedaría
+        con ``json_valid() == 0`` y ``json_extract`` devolvería ``NULL`` en
+        silencio — otra pérdida de evidencia, disfrazada de dato presente. Con la
+        bandera, el ``ValueError`` ocurre dentro de la transacción y el rollback
+        conserva la atomicidad. Mismo criterio en :meth:`begin_operation`, el otro
+        escritor de la columna.
+
         Una entrada inexistente es un no-op silencioso, como antes.
 
         Args:
@@ -892,7 +904,7 @@ class OperationJournal:
                         fusionada.update(evidencia)
                         await db.execute(
                             "UPDATE journal_entries SET metadata = ? WHERE id = ?",
-                            (json.dumps(fusionada), entry_id),
+                            (json.dumps(fusionada, allow_nan=False), entry_id),
                         )
 
                 await db.commit()
