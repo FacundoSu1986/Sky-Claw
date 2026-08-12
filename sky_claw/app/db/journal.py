@@ -830,27 +830,79 @@ class OperationJournal:
 
     async def fail_operation(self, entry_id: int, error: str = "", metadata: dict[str, Any] | None = None) -> None:
         """
-        Marcar una operación como fallida.
+        Marcar una operación como fallida, conservando su evidencia.
+
+        La evidencia final de la fila es::
+
+            metadata_previa + metadata (argumento) + {"error": error} si error no es vacío
+
+        **Precedencia, y por qué.** El argumento ``metadata`` pisa las claves
+        homónimas de la metadata previa: es información más nueva sobre la misma
+        operación. La clave ``error`` es **canónica del argumento ``error``** y se
+        aplica al final, así que un ``metadata={"error": ...}`` no puede
+        sustituirla en silencio — si el caller quiere ese texto como mensaje de
+        error, lo pasa por su parámetro.
+
+        Un ``error`` vacío **no** crea la clave: ausencia de mensaje y mensaje
+        vacío no son lo mismo, y ``{"error": ""}`` es ruido que no distingue
+        ninguno de los dos casos.
+
+        **Atomicidad.** El cambio de estado y la evidencia se escriben bajo el
+        mismo lock y con un único ``commit``. Antes eran dos transacciones —
+        ``_update_status`` commiteaba y recién después se tocaba la metadata—,
+        así que una caída entre ambas dejaba ``FAILED`` sin evidencia. Cualquier
+        fallo posterior al inicio de la modificación hace ``rollback`` y propaga:
+        no queda ni estado ni metadata a medias. Por eso el ``UPDATE`` del estado
+        va acá y no delegado en :meth:`_update_status`, que abre su propia
+        transacción.
+
+        La fusión se resuelve en Python y no con ``json_patch`` a propósito:
+        RFC 7396 **borra** las claves cuyo valor es ``null``, y perder una clave
+        por su valor sería exactamente la pérdida de evidencia que este método
+        debe evitar.
+
+        Una entrada inexistente es un no-op silencioso, como antes.
 
         Args:
             entry_id: ID de la entrada a actualizar.
-            error: Mensaje de error.
+            error: Mensaje de error. Vacío = no se registra la clave ``error``.
             metadata: Metadatos adicionales del error.
         """
-        await self._update_status(entry_id, OperationStatus.FAILED)
+        db = await self._ensure_connected()
 
-        if metadata:
-            db = await self._ensure_connected()
-            async with self._lock:
+        async with self._lock:
+            try:
                 await db.execute(
-                    """
-                    UPDATE journal_entries
-                    SET metadata = json_set(COALESCE(metadata, '{}'), '$.error', ?)
-                    WHERE id = ?
-                    """,
-                    (error, entry_id),
+                    "UPDATE journal_entries SET status = ? WHERE id = ?",
+                    (OperationStatus.FAILED.value, entry_id),
                 )
+
+                evidencia: dict[str, Any] = dict(metadata) if metadata else {}
+                if error:
+                    evidencia["error"] = error
+
+                if evidencia:
+                    async with db.execute(
+                        "SELECT metadata FROM journal_entries WHERE id = ?",
+                        (entry_id,),
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                    if row is not None:
+                        fusionada: dict[str, Any] = json.loads(row[0]) if row[0] else {}
+                        fusionada.update(evidencia)
+                        await db.execute(
+                            "UPDATE journal_entries SET metadata = ? WHERE id = ?",
+                            (json.dumps(fusionada), entry_id),
+                        )
+
                 await db.commit()
+            except Exception:
+                # Boundary de atomicidad: cualquier fallo —de la DB o de la
+                # serialización— deshace la transacción entera para no dejar
+                # estado parcial, y se propaga tal cual para no cambiar el
+                # contrato de excepciones que ven los callers.
+                await db.rollback()
+                raise
 
         logger.error("Operation failed", extra={"entry_id": entry_id, "error": error})
 

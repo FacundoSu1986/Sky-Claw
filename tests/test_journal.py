@@ -1,6 +1,7 @@
 # tests/test_journal.py
 
 import contextlib
+import json
 import pathlib
 import sqlite3
 from unittest.mock import AsyncMock
@@ -93,6 +94,9 @@ class TestOperationJournal:
         entry = await journal.get_last_operation("test_agent")
         assert entry is not None
         assert entry.status == OperationStatus.FAILED
+        # El estado solo NO alcanza: este test afirmaba únicamente FAILED y por eso
+        # la suite quedaba verde mientras el mensaje de error se perdía.
+        assert entry.metadata == {"error": "Test error"}
 
     @pytest.mark.asyncio
     async def test_open_con_schema_fallido_conserva_conexion_hasta_shutdown(
@@ -283,3 +287,248 @@ class TestTransactionContextManager:
             await j2.close()
         finally:
             await lifecycle.shutdown_all()
+
+
+class TestFailOperationEvidencia:
+    """Contrato de evidencia de ``fail_operation``.
+
+    El defecto que cierran estos tests: ``metadata`` era solo un gate de
+    truthiness —nunca se persistía— y el ``error`` únicamente se escribía cuando
+    ese gate se cumplía, así que ``fail_operation(id, error="boom")`` —la forma
+    que usan los cuatro call sites de producción— dejaba la fila ``FAILED`` sin
+    mensaje.
+    """
+
+    @staticmethod
+    async def _entrada(journal, *, metadata=None) -> int:
+        """Crea una operación STARTED y devuelve su id."""
+        tx_id = await journal.begin_transaction(description="tx evidencia", mod_id=None)
+        return await journal.begin_operation(
+            agent_id="agente_evidencia",
+            operation_type=OperationType.FILE_MODIFY,
+            target_path="/test/path/mod.esp",
+            transaction_id=tx_id,
+            metadata=metadata,
+        )
+
+    # -- 1. error sin metadata: EL caso de producción ------------------------
+
+    @pytest.mark.asyncio
+    async def test_error_sin_metadata_persiste_el_mensaje(self, journal):
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, error="boom")
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"error": "boom"}
+
+    # -- 2. metadata sin error -----------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_metadata_sin_error_se_persiste_entera(self, journal):
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, metadata={"exit_code": 3, "tool": "loot"})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"exit_code": 3, "tool": "loot"}
+
+    # -- 3. error + metadata --------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_error_y_metadata_conviven(self, journal):
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"exit_code": 3})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"exit_code": 3, "error": "boom"}
+
+    # -- 4 y 5. metadata previa y claves ajenas preservadas -------------------
+
+    @pytest.mark.asyncio
+    async def test_metadata_previa_se_conserva_y_se_fusiona(self, journal):
+        entry_id = await self._entrada(
+            journal,
+            metadata={"kind": "teardown_incomplete", "paths": ["a", "b"]},
+        )
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"exit_code": 3})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {
+            "kind": "teardown_incomplete",
+            "paths": ["a", "b"],
+            "exit_code": 3,
+            "error": "boom",
+        }
+
+    @pytest.mark.asyncio
+    async def test_solo_error_no_borra_la_metadata_previa(self, journal):
+        entry_id = await self._entrada(journal, metadata={"kind": "x", "paths": ["a"]})
+
+        await journal.fail_operation(entry_id, error="boom")
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"kind": "x", "paths": ["a"], "error": "boom"}
+
+    @pytest.mark.asyncio
+    async def test_la_metadata_nueva_pisa_la_previa_en_colision(self, journal):
+        """Precedencia documentada: el argumento es información más nueva."""
+        entry_id = await self._entrada(journal, metadata={"intento": 1, "ajena": "intacta"})
+
+        await journal.fail_operation(entry_id, metadata={"intento": 2})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"intento": 2, "ajena": "intacta"}
+
+    # -- 6 y 7. vacíos --------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_metadata_vacia_no_impide_registrar_el_error(self, journal):
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, error="boom", metadata={})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"error": "boom"}
+
+    @pytest.mark.asyncio
+    async def test_error_vacio_no_crea_la_clave(self, journal):
+        """Ausencia de mensaje y mensaje vacío no son lo mismo."""
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, error="", metadata={"exit_code": 3})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"exit_code": 3}
+        assert "error" not in entry.metadata
+
+    @pytest.mark.asyncio
+    async def test_sin_error_ni_metadata_solo_marca_failed(self, journal):
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id)
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata is None
+
+    # -- 8. entrada inexistente ----------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_entrada_inexistente_es_no_op_sin_excepcion(self, journal):
+        """Contrato preexistente: no lanza y no crea filas."""
+        await journal.fail_operation(999_999, error="boom", metadata={"exit_code": 3})
+
+        assert await journal.get_operation_by_id(999_999) is None
+
+    # -- 9. JSON válido en la columna ----------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_la_columna_queda_con_json_valido(self, journal):
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"anidado": {"a": [1, 2]}})
+
+        async with journal._db.execute(
+            "SELECT json_valid(metadata), metadata FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ) as cursor:
+            valido, crudo = await cursor.fetchone()
+        assert valido == 1
+        assert json.loads(crudo) == {
+            "previa": True,
+            "anidado": {"a": [1, 2]},
+            "error": "boom",
+        }
+
+    @pytest.mark.asyncio
+    async def test_un_valor_none_se_conserva_no_se_borra(self, journal):
+        """No se usa json_patch: RFC 7396 borraría la clave por ser null."""
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, metadata={"exit_code": None})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"exit_code": None}
+
+    # -- 10. reintentos / idempotencia ---------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_reintento_acumula_sin_perder_lo_anterior(self, journal):
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, error="primero", metadata={"intento": 1})
+        await journal.fail_operation(entry_id, error="segundo", metadata={"otra": "x"})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"intento": 1, "otra": "x", "error": "segundo"}
+
+    # -- 11. atomicidad -------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_fallo_de_serializacion_no_deja_estado_parcial(self, journal):
+        """El UPDATE de estado ya corrió; el fallo posterior debe revertirlo."""
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+
+        with pytest.raises(TypeError):
+            await journal.fail_operation(entry_id, error="boom", metadata={"malo": object()})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.STARTED
+        assert entry.metadata == {"previa": True}
+
+    @pytest.mark.asyncio
+    async def test_fallo_de_db_revierte_y_deja_la_conexion_usable(self, journal, monkeypatch):
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+        original = journal._db.execute
+        llamadas = {"n": 0}
+
+        def execute_que_falla_en_el_segundo_update(sql, *args, **kwargs):
+            if sql.strip().startswith("UPDATE journal_entries SET metadata"):
+                llamadas["n"] += 1
+                raise sqlite3.OperationalError("fallo forzado antes del commit")
+            return original(sql, *args, **kwargs)
+
+        monkeypatch.setattr(journal._db, "execute", execute_que_falla_en_el_segundo_update)
+
+        with pytest.raises(sqlite3.OperationalError):
+            await journal.fail_operation(entry_id, error="boom")
+
+        monkeypatch.undo()
+        assert llamadas["n"] == 1
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.STARTED
+        assert entry.metadata == {"previa": True}
+
+        # La conexión sigue siendo usable tras el rollback.
+        await journal.fail_operation(entry_id, error="ahora sí")
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"previa": True, "error": "ahora sí"}
+
+    # -- 12. colisión con la clave reservada ----------------------------------
+
+    @pytest.mark.asyncio
+    async def test_metadata_no_puede_secuestrar_la_clave_error(self, journal):
+        """``error`` es canónico del argumento, no de ``metadata``."""
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, error="canónico", metadata={"error": "impostor"})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"error": "canónico"}
+
+    @pytest.mark.asyncio
+    async def test_sin_error_la_metadata_si_puede_traer_su_clave_error(self, journal):
+        """Sin argumento canónico no hay nada que proteger: el dato del caller vale."""
+        entry_id = await self._entrada(journal)
+
+        await journal.fail_operation(entry_id, metadata={"error": "del caller"})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"error": "del caller"}
