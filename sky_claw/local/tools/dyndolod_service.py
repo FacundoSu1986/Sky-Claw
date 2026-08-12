@@ -962,11 +962,25 @@ class DynDOLODPipelineService:
         except asyncio.CancelledError:
             # Cancelación de task — hacer cleanup mínimo y re-lanzar.
             duration = time.monotonic() - start_time
-            logger.warning(
-                "DynDOLOD (stage 9): pipeline cancelado tras %.1fs",
-                duration,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
-            )
+            if journal_committed:
+                # Post-commit (review CodeRabbit, PR #464): `commit_transaction`
+                # ya corrió, así que la etapa 9 YA tuvo éxito — lo cancelado es
+                # post-proceso best-effort (confirmar rollbacks / emitir el
+                # flight report), no la etapa en sí. Mismo criterio que
+                # `_emit_flight_report`/`_log_result_error`: no pipeline_stage
+                # para algo que ocurre después de que la etapa ya completó.
+                logger.warning(
+                    "DynDOLOD: cancelación post-commit tras %.1fs (TX %d ya committeada)",
+                    duration,
+                    tx_id,
+                    extra={"operation_type": "dyndolod_post_commit_cancelled", "tx_id": tx_id},
+                )
+            else:
+                logger.warning(
+                    "DynDOLOD (stage 9): pipeline cancelado tras %.1fs",
+                    duration,
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                )
             await self._cerrar_tx_tras_rollback(
                 tx_id,
                 dir_rollbacks,

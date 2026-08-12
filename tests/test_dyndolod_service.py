@@ -898,8 +898,17 @@ async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Una cancelación del flight report ocurre después del punto de no retorno."""
+    """Una cancelación del flight report ocurre después del punto de no retorno.
+
+    También ancla la exención `dyndolod_post_commit_cancelled` (review
+    CodeRabbit, PR #464): con ``journal_committed=True`` cuando llega la
+    cancelación, la etapa 9 ya tuvo éxito — el WARNING de este escenario NO debe
+    llevar `pipeline_stage` (contaría un fallo de la etapa que no existió), pero
+    SÍ debe seguir siendo identificable (`operation_type`) y correlacionable
+    (`tx_id`).
+    """
     mods = tmp_path / "mods"
     output_dir = mods / "DynDOLOD Output"
     output_dir.mkdir(parents=True)
@@ -918,6 +927,7 @@ async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
     with (
         patch.object(service, "_emit_flight_report", AsyncMock(side_effect=asyncio.CancelledError)),
         pytest.raises(asyncio.CancelledError),
+        caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"),
     ):
         await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
 
@@ -926,6 +936,13 @@ async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
     assert (output_dir / "new.esp").read_text(encoding="utf-8") == "NEW"
     assert not (output_dir / "old.esp").exists()
     assert not list(mods.glob("DynDOLOD Output.rollback-*"))
+
+    con_etapa = [r for r in caplog.records if getattr(r, "pipeline_stage", None) is not None]
+    assert con_etapa == [], f"cancelación post-commit no debe contarse como fallo de la etapa: {con_etapa}"
+
+    exentos = [r for r in caplog.records if getattr(r, "operation_type", None) == "dyndolod_post_commit_cancelled"]
+    assert len(exentos) == 1, "debe emitirse exactamente un registro identificable de cancelación post-commit"
+    assert exentos[0].tx_id == 42
 
 
 @pytest.mark.asyncio
@@ -2713,6 +2730,15 @@ _REGISTROS_EXENTOS_DE_ETAPA = {
         "'Sobreconteo de señal') — el mismo problema que 'Duplicación de señal' ya "
         "había cerrado, reintroducido por el propio fix. Se identifica por "
         "operation_type, que ya tenía antes de que se le agregara pipeline_stage."
+    ),
+    "dyndolod_post_commit_cancelled": (
+        "Rama del handler except asyncio.CancelledError cuando journal_committed "
+        "ya es True (review CodeRabbit, PR #464): commit_transaction ya corrió, "
+        "así que la etapa 9 tuvo éxito — la cancelación es de un paso posterior "
+        "best-effort (confirmar rollbacks / emitir el flight report), no de la "
+        "etapa. Mismo criterio que dyndolod_flight_report_persist_failed. El "
+        "WARNING pre-commit del mismo handler SÍ sigue llevando pipeline_stage: "
+        "ahí la etapa realmente no completó."
     ),
 }
 
