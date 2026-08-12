@@ -2937,6 +2937,79 @@ def test_todo_registro_con_etapa_lleva_tx_id() -> None:
     )
 
 
+def _bloque_que_contiene(nodo: ast.AST, raiz: ast.AST) -> ast.AST | None:
+    """El nodo compuesto (``ExceptHandler``/``If``/función) MÁS CERCANO que contiene ``nodo``.
+
+    "Más cercano" = el de rango más chico entre los que envuelven a ``nodo`` — así
+    un ``if`` anidado dentro de un ``except`` no se confunde con el ``except`` en sí.
+    """
+    candidatos = [
+        n
+        for n in ast.walk(raiz)
+        if isinstance(n, (ast.ExceptHandler, ast.If, ast.FunctionDef, ast.AsyncFunctionDef))
+        and n is not nodo
+        and hasattr(n, "lineno")
+        and n.lineno <= nodo.lineno <= (getattr(n, "end_lineno", None) or n.lineno)
+    ]
+    return min(candidatos, key=lambda n: (n.end_lineno or n.lineno) - n.lineno, default=None)
+
+
+def test_log_result_error_siempre_tiene_companero_con_etapa() -> None:
+    """La premisa de la exención `dyndolod_pipeline_failed`, verificada, no solo escrita.
+
+    `_REGISTROS_EXENTOS_DE_ETAPA` justifica esa exención en prosa: "SIEMPRE se
+    emite junto al logger.error del handler que lo llama, nunca solo". Hasta
+    este ancla, nada comprobaba esa premisa — `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`
+    solo mira que el registro exento lleve `operation_type`/`tx_id` en su propio
+    `extra`, sin inspeccionar el bloque que lo contiene (review Qodo, PR #464,
+    "Exención latente"). Un futuro call site de `_log_result_error` sin un
+    `logger.<nivel>` con `pipeline_stage` ANTES en el mismo `except` pasaría el
+    ancla existente en silencio y reintroduciría el subconteo de fallos de la
+    etapa 9 que "Sobreconteo de señal" cerró — exactamente lo que AGENTS.md
+    describe como "un párrafo justificando el recorte no cuenta como
+    verificación".
+
+    Acotado a ESTA exención a propósito: las otras dos
+    (`dyndolod_flight_report_persist_failed`, `dyndolod_post_commit_cancelled`)
+    tienen premisas de ALCANZABILIDAD ("solo se llega tras un pipeline exitoso",
+    "solo cuando journal_committed es True") — propiedades de flujo de datos en
+    tiempo de ejecución, no de co-ocurrencia textual con otro log en el mismo
+    bloque. Verificarlas requeriría un analizador de flujo real, no una
+    inspección AST estática razonable; se aceptan como límite documentado, igual
+    que la decisión ya tomada de no resolver alias de logger arbitrarios.
+    """
+    arbol = _modulo_servicio_ast()
+    llamadas_log_result_error = [
+        c
+        for c in ast.walk(arbol)
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Attribute)
+        and c.func.attr == "_log_result_error"
+        and isinstance(c.func.value, ast.Name)
+        and c.func.value.id == "self"
+    ]
+    assert llamadas_log_result_error, "no se detectó ninguna llamada a self._log_result_error: el ancla quedaría vacía"
+
+    sin_companero = []
+    for llamada in llamadas_log_result_error:
+        bloque = _bloque_que_contiene(llamada, arbol)
+        if bloque is None:
+            sin_companero.append(f"_log_result_error:{llamada.lineno} (sin bloque contenedor detectado)")
+            continue
+        companeros = [
+            r for r in _registros_de_fallo(bloque) if r.lineno < llamada.lineno and _nodo_de_la_etapa(r) is not None
+        ]
+        if not companeros:
+            sin_companero.append(f"_log_result_error:{llamada.lineno}")
+
+    assert sin_companero == [], (
+        f"llamadas a _log_result_error sin un logger.<nivel> con pipeline_stage ANTES en el "
+        f"mismo bloque: {sin_companero}. La exención dyndolod_pipeline_failed asume que este "
+        f"registro nunca es la única señal del incidente — si un call site nuevo rompe eso, "
+        f"agregarle su propio logger.error con pipeline_stage antes de la llamada."
+    )
+
+
 def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None:
     """El 9 se define UNA vez y los registros lo referencian por nombre.
 
@@ -3068,6 +3141,15 @@ def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
     en `synthesis_service.py` rompía `assert sin_cobertura == set(_SERVICIOS_SIN_COBERTURA)`
     con la versión anterior.
 
+    NI siquiera el conteo de archivos es igualdad estricta (review Qodo, PR #464,
+    segunda ronda de "Acoplamiento anclas"): un `assert len(servicios) == 8` residual
+    reintroducía exactamente el mismo acoplamiento para "aparece un noveno
+    servicio" — un PR ajeno agregando un tool nuevo lo rompía aunque clasificara
+    correctamente el servicio en las constantes de ESTE archivo, porque el
+    conteo seguiría sin dar 8. Es puramente redundante con `sin_declarar`, que ya
+    detecta el mismo caso con un mensaje más accionable (nombra el servicio, no
+    solo "cambió el universo") — eliminado.
+
     La dirección que sí importa bloquear es la opuesta: un servicio que
     RETROCEDE de lo declarado (`dyndolod` deja de estar completo, o cualquiera
     pierde cobertura que tenía) es una regresión real dentro del alcance de este
@@ -3077,7 +3159,6 @@ def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
     """
     tools = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).parent
     servicios = sorted(p.name for p in tools.glob("*_service.py"))
-    assert len(servicios) == 8, f"cambió el universo de servicios: {servicios}"
 
     sin_declarar, regresiones, mejoras = [], [], []
     for nombre in servicios:
