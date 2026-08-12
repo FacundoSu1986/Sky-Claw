@@ -12,12 +12,14 @@ import logging
 import os
 import pathlib
 import time
+import warnings
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import sky_claw.local.tools.dyndolod_runner
+import sky_claw.local.tools.dyndolod_service
 from sky_claw.app.core.event_bus import CoreEventBus
 from sky_claw.app.db.locks import (
     DistributedLockManager,
@@ -476,8 +478,26 @@ async def test_validation_failure_deja_tx_pendiente(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """La validación falla después del runner: staging puede quedar parcial."""
+    """La validación falla después del runner: staging puede quedar parcial.
+
+    También ancla la NO-duplicación (review Qodo, PR #464, "Duplicación de
+    señal" + "Sobreconteo de señal"): antes del primer fix, el guard de
+    ``validate_dyndolod_output`` logueaba el incidente Y el handler de dominio lo
+    volvía a loguear al capturar el ``DynDOLODExecutionError`` que ese mismo
+    guard lanza. El guard ya no loguea; su mensaje llega al handler vía
+    ``str(exc)``. Y antes del segundo fix, tanto el handler como
+    ``_log_result_error`` llevaban ``pipeline_stage`` — un ``COUNT(*) WHERE
+    pipeline_stage=9`` contaba 2 por este incidente (más el CRITICAL de rollback
+    incompleto que este mismo escenario dispara: 3, no 2 — la primera versión de
+    este test filtraba solo ``levelno == ERROR`` y ese CRITICAL quedaba invisible
+    al ancla, exactamente el hueco que la review señaló). Ahora
+    ``_log_result_error`` está exento (`_REGISTROS_EXENTOS_DE_ETAPA`, identificado
+    por `operation_type`), así que el conteo por etapa baja a 2: el handler +
+    el CRITICAL de rollback incompleto — dos hechos reales distintos (la etapa
+    falló, y el rollback no cerró), no una repetición del mismo incidente.
+    """
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=False)
@@ -489,11 +509,33 @@ async def test_validation_failure_deja_tx_pendiente(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
+    with caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"):
+        result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
     assert result["rolled_back"] is False
     mock_journal.mark_transaction_rolled_back.assert_not_called()
+
+    con_etapa = [r for r in caplog.records if getattr(r, "pipeline_stage", None) is not None]
+    assert len(con_etapa) == 2, (
+        f"se esperaban 2 registros con pipeline_stage (handler + rollback incompleto), "
+        f"no {len(con_etapa)}: {[(r.levelname, r.getMessage()) for r in con_etapa]}"
+    )
+    textos = [r.getMessage() for r in con_etapa]
+    assert any("DynDOLOD output validation failed" in texto for texto in textos), (
+        "el mensaje del guard se perdió al dejar de loguearlo ahí directamente"
+    )
+    assert all(r.tx_id is not None for r in con_etapa), "los registros con etapa deben correlacionarse por tx_id"
+
+    outcome = [r for r in caplog.records if getattr(r, "operation_type", None) == "dyndolod_pipeline_failed"]
+    assert len(outcome) == 1, "el outcome-record (_log_result_error) debe seguir emitiéndose, sin pipeline_stage"
+    assert getattr(outcome[0], "pipeline_stage", None) is None
+    assert outcome[0].tx_id is not None
+    # El resultado del rollback viaja en el outcome-record (review Qodo, PR #464,
+    # "Perdida de senal" 2a vuelta): al adelantar el logger.error del handler se
+    # perdio el "rolled_back=%s" de su mensaje, y en la rama de EXITO del rollback
+    # no quedaba ningun registro que lo dijera — solo el dict que devuelve execute().
+    assert outcome[0].rolled_back is False
 
 
 @pytest.mark.asyncio
@@ -501,6 +543,7 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """U-06: exit 0 pero SIN directorio de salida localizable no es éxito.
 
@@ -510,6 +553,11 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     que con ``None`` la validación se SALTEABA entera y el ritual commiteaba el
     journal reportando éxito — falso verde por exit-code (U-06) sobre un estado
     donde no se sabe si DynDOLOD escribió algo.
+
+    También ancla la NO-duplicación (review Qodo, PR #464, "Duplicación de
+    señal" + "Sobreconteo de señal") — ver `test_validation_failure_deja_tx_pendiente`
+    para el detalle del conteo esperado; acá se ejercita el guard hermano de
+    "sin directorio de salida localizable".
     """
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result(dyndolod_output=None))
@@ -522,7 +570,8 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
 
     service._runner = mock_runner
 
-    result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
+    with caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"):
+        result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
     assert result["rolled_back"] is False
@@ -530,6 +579,27 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     mock_journal.mark_transaction_rolled_back.assert_not_called()
     # Sin path no hay nada que validar: el fallo es anterior a la validación.
     mock_runner.validate_dyndolod_output.assert_not_awaited()
+
+    con_etapa = [r for r in caplog.records if getattr(r, "pipeline_stage", None) is not None]
+    assert len(con_etapa) == 2, (
+        f"se esperaban 2 registros con pipeline_stage (handler + rollback incompleto), "
+        f"no {len(con_etapa)}: {[(r.levelname, r.getMessage()) for r in con_etapa]}"
+    )
+    textos = [r.getMessage() for r in con_etapa]
+    assert any("DynDOLOD no dejó un directorio de salida localizable" in texto for texto in textos), (
+        "el mensaje del guard se perdió al dejar de loguearlo ahí directamente"
+    )
+    assert all(r.tx_id is not None for r in con_etapa), "los registros con etapa deben correlacionarse por tx_id"
+
+    outcome = [r for r in caplog.records if getattr(r, "operation_type", None) == "dyndolod_pipeline_failed"]
+    assert len(outcome) == 1, "el outcome-record (_log_result_error) debe seguir emitiéndose, sin pipeline_stage"
+    assert getattr(outcome[0], "pipeline_stage", None) is None
+    assert outcome[0].tx_id is not None
+    # El resultado del rollback viaja en el outcome-record (review Qodo, PR #464,
+    # "Perdida de senal" 2a vuelta): al adelantar el logger.error del handler se
+    # perdio el "rolled_back=%s" de su mensaje, y en la rama de EXITO del rollback
+    # no quedaba ningun registro que lo dijera — solo el dict que devuelve execute().
+    assert outcome[0].rolled_back is False
 
 
 @pytest.mark.asyncio
@@ -838,8 +908,17 @@ async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
     service: DynDOLODPipelineService,
     mock_journal: AsyncMock,
     tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Una cancelación del flight report ocurre después del punto de no retorno."""
+    """Una cancelación del flight report ocurre después del punto de no retorno.
+
+    También ancla la exención `dyndolod_post_commit_cancelled` (review
+    CodeRabbit, PR #464): con ``journal_committed=True`` cuando llega la
+    cancelación, la etapa 9 ya tuvo éxito — el WARNING de este escenario NO debe
+    llevar `pipeline_stage` (contaría un fallo de la etapa que no existió), pero
+    SÍ debe seguir siendo identificable (`operation_type`) y correlacionable
+    (`tx_id`).
+    """
     mods = tmp_path / "mods"
     output_dir = mods / "DynDOLOD Output"
     output_dir.mkdir(parents=True)
@@ -858,6 +937,7 @@ async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
     with (
         patch.object(service, "_emit_flight_report", AsyncMock(side_effect=asyncio.CancelledError)),
         pytest.raises(asyncio.CancelledError),
+        caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"),
     ):
         await service.execute(preset="Medium", run_texgen=False, create_snapshot=True)
 
@@ -866,6 +946,71 @@ async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
     assert (output_dir / "new.esp").read_text(encoding="utf-8") == "NEW"
     assert not (output_dir / "old.esp").exists()
     assert not list(mods.glob("DynDOLOD Output.rollback-*"))
+
+    con_etapa = [r for r in caplog.records if getattr(r, "pipeline_stage", None) is not None]
+    assert con_etapa == [], f"cancelación post-commit no debe contarse como fallo de la etapa: {con_etapa}"
+
+    exentos = [r for r in caplog.records if getattr(r, "operation_type", None) == "dyndolod_post_commit_cancelled"]
+    assert len(exentos) == 1, "debe emitirse exactamente un registro identificable de cancelación post-commit"
+    assert exentos[0].tx_id == 42
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_durante_cierre_de_tx_no_pierde_el_log_del_incidente(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """El log del incidente sobrevive una cancelación DENTRO de `_cerrar_tx_tras_rollback`.
+
+    Review Qodo, PR #464, "Pérdida de señal": el fix de "Duplicación de señal"
+    movió el `logger.error` del incidente a DESPUÉS de
+    `await self._cerrar_tx_tras_rollback(...)` en tres handlers. Si la task se
+    cancela durante ese await —cancelable de verdad: contiene
+    `await self._journal.mark_transaction_rolled_back(tx_id)`, que
+    `except Exception` NO atrapa porque `CancelledError` hereda de
+    `BaseException`—, la excepción se propaga desde DENTRO del handler y nada
+    de lo que sigue se ejecuta. Antes del fix, eso significaba perder el
+    registro del incidente por completo, no solo contarlo de más.
+
+    Ejercita `_ActionManifestError`, no el handler de dominio, porque es el
+    escenario donde el await es alcanzable HOY con datos reales: el manifiesto
+    se emite ANTES de `mutation_started = True`, así que `dir_rollbacks` está
+    vacío y `_cerrar_tx_tras_rollback` toma la rama que SÍ llama a
+    `mark_transaction_rolled_back` (a diferencia del handler de dominio, donde
+    `mutation_coverage_complete` está hoy hardcodeado en `False` y la función
+    nunca llega a ese await — ver comentario "Cobertura honesta" en el
+    servicio). El fix se aplicó a los tres handlers por igual porque el
+    principio no depende de qué rama es alcanzable hoy.
+    """
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    mock_runner._config = mock_config
+    mock_runner.DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
+    mock_runner.TEXGEN_MOD_NAME = "TexGen Output"
+    service._runner = mock_runner
+
+    mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=asyncio.CancelledError)
+
+    with (
+        patch.object(
+            service,
+            "_emit_action_manifest",
+            AsyncMock(side_effect=sky_claw.local.tools.dyndolod_service._ActionManifestError("boom del manifiesto")),
+        ),
+        caplog.at_level(logging.ERROR, logger="SkyClaw.DynDOLODPipelineService"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=False)
+
+    incidente = [r for r in caplog.records if "no se pudo emitir el ActionManifest" in r.getMessage()]
+    assert len(incidente) == 1, (
+        f"el log del incidente debe sobrevivir la cancelación del cierre de TX: {caplog.records}"
+    )
+    assert incidente[0].pipeline_stage == sky_claw.local.tools.dyndolod_service._ETAPA_DYNDOLOD
+    assert incidente[0].tx_id == 42
 
 
 @pytest.mark.asyncio
@@ -2387,3 +2532,867 @@ async def test_ruta_de_config_faltante_bloquea_antes_del_lock(
     mock_runner.run_full_pipeline.assert_not_awaited()
     mock_journal.begin_transaction.assert_not_awaited()
     mock_journal.commit_transaction.assert_not_called()
+
+
+# =============================================================================
+# ANCLA — SOP §5 regla 5: el índice de etapa en los fallos del pipeline
+# =============================================================================
+# La regla 5 de `sky_claw/local/AGENTS.md` exige registrar el índice de etapa
+# cada vez que una tool falla: es la señal primaria de depuración. Hasta acá no
+# tenía gate y envejeció como el ~94% de los ítems normativos que `AGENTS.md`
+# admite no tener verificación. Dentro de UN SOLO método —`execute`— tres
+# handlers nombraban la etapa y cinco no, incluido el que atrapa la mayoría de
+# los fallos reales (`DynDOLODExecutionError`/`DynDOLODTimeoutError`, donde
+# `run_full_pipeline` desemboca los `DynDOLODValidationError`).
+#
+# El contrato es la forma ESTRUCTURADA (`extra={"pipeline_stage": 9}` o
+# `subprocess_error_extra(pipeline_stage=9)`), no la prosa. Motivo: es la única
+# consultable en los logs, y las prosas del repo son irreconciliables entre sí
+# —"(stage 9)" en dyndolod, "(fase 6)"/"[FASE-6]" en wrye_bash— así que un ancla
+# sobre texto sería un pantano de regex que además bendice el drift. La prosa que
+# ya existe se conserva por legibilidad humana; lo que se verifica es el campo.
+#
+# El ancla NO se limita a los `except`. La primera versión sí lo hacía y dejaba
+# tres agujeros que encontró la review del PR #464: el preflight en rojo y la
+# ruta de config faltante salen por `return`, no por `raise`; y
+# `_log_result_error` —el registro canónico `dyndolod_pipeline_failed`, el que
+# consulta un dashboard— vive en un helper que los handlers LLAMAN. Etiquetar el
+# handler y no el registro que emite es exactamente el defecto que este ancla
+# existe para atajar, cometido dentro de su propio fix. Por eso el universo es
+# TODO registro de fallo del módulo, esté dentro de un `except` o no.
+# =============================================================================
+
+#: Nombre de la constante que fija la etapa en `dyndolod_service.py`. El ancla la
+#: resuelve por AST y verifica su VALOR, así que centralizar el número no afloja
+#: la verificación: un `= 8` rompe igual que un literal suelto.
+_NOMBRE_DE_LA_CONSTANTE = "_ETAPA_DYNDOLOD"
+
+#: Los OCHO `*_service.py` clasificados por COBERTURA REAL: qué fracción de sus
+#: registros de fallo emite el campo. La primera versión clasificaba por MENCIÓN
+#: de la cadena `"pipeline_stage"` en cualquier parte del AST, y la review Qodo
+#: del PR #464 mostró que eso se podía "pagar" con una docstring: una sola
+#: mención movía el servicio a la columna de los que cumplen sin que un solo
+#: `logger.error` emitiera nada. Era el muestreo que el ancla principal de este
+#: mismo PR prohíbe, reintroducido a nivel de archivo.
+#:
+#: Clasificar por registro además corrigió un dato que yo mismo había afirmado
+#: mal: `grass_cache_service.py` NO cumple —emite el campo en 1 de sus 10
+#: registros de fallo—. El único servicio completo del repo es `dyndolod`.
+_SERVICIOS_COMPLETOS = {"dyndolod_service.py"}
+_SERVICIOS_PARCIALES = {"grass_cache_service.py"}
+_SERVICIOS_SIN_COBERTURA = {
+    "loot_service.py": "etapa 5; hoy solo la emite su runner (loot/cli.py)",
+    "pandora_service.py": "etapa 4; solo prosa (stage 4)",
+    "synthesis_service.py": "etapa 7; solo prosa (stage 7)",
+    "vramr_service.py": "etapa SIN DETERMINAR; no marca la etapa de ninguna forma",
+    "wrye_bash_service.py": "etapa 6; solo prosa [FASE-6] / (fase 6)",
+    "xedit_service.py": "etapa 1; solo prosa QuickAutoClean (stage 1)",
+}
+
+
+def _modulo_servicio_ast() -> ast.Module:
+    """AST del módulo ``dyndolod_service`` completo, leído del fuente real."""
+    fuente = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).read_text(encoding="utf-8")
+    return ast.parse(fuente)
+
+
+def _metodo_execute_ast() -> ast.AsyncFunctionDef:
+    """AST de ``DynDOLODPipelineService.execute``, del fuente real del módulo."""
+    cls = next(
+        n for n in _modulo_servicio_ast().body if isinstance(n, ast.ClassDef) and n.name == "DynDOLODPipelineService"
+    )
+    return next(m for m in cls.body if isinstance(m, ast.AsyncFunctionDef) and m.name == "execute")
+
+
+def _metodo_que_contiene(nodo: ast.AST, raiz: ast.AST) -> str | None:
+    """Nombre del método/función MÁS CERCANO que contiene ``nodo``, o ``None``.
+
+    Se usa para anclar exenciones por UBICACIÓN y no solo por la cadena de
+    ``operation_type``, que es copiable (ver `_REGISTROS_EXENTOS_DE_ETAPA`).
+    """
+    contenedores = [
+        n
+        for n in ast.walk(raiz)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.lineno <= nodo.lineno <= (n.end_lineno or n.lineno)
+    ]
+    if not contenedores:
+        return None
+    return min(contenedores, key=lambda n: (n.end_lineno or n.lineno) - n.lineno).name
+
+
+def _nombre_de_excepcion(handler: ast.ExceptHandler) -> str:
+    """Tipos que atrapa un ``except``; ``except (A, B)`` -> ``"A, B"``."""
+    tipo = handler.type
+    if tipo is None:
+        return "<bare>"
+    nodos = tipo.elts if isinstance(tipo, ast.Tuple) else [tipo]
+    return ", ".join(sorted(ast.unparse(n) for n in nodos))
+
+
+#: Niveles de ``logger.<nivel>(...)`` que cuentan como registro de FALLO en este
+#: servicio. Se define una vez y la usan tanto `_registros_de_fallo` como su
+#: ancla de congelamiento (`test_los_niveles_de_fallo_estan_congelados`), para
+#: que el universo que un docstring PROMETE y el que el código CUBRE no puedan
+#: divergir en silencio — que es, literalmente, la tercera vez que esta review
+#: encuentra ese patrón en este mismo archivo (mención-vs-emisión, helper
+#: sin-nombre, y ahora nivel-de-log faltante).
+#:
+#: ``exception`` entró tras la review Qodo del PR #464: quedaba fuera pese a que
+#: el docstring de `_registros_de_fallo` afirmaba cubrir "todo registro de
+#: fallo". No es hipotético — `dyndolod_runner.py`, vecino directo de este
+#: servicio, ya usa ``logger.exception`` tres veces; es el idiom estándar para
+#: loguear con traceback, así que es exactamente el método que alguien
+#: escribiría en un ``except`` nuevo del servicio sin pensarlo dos veces.
+_NIVELES_DE_FALLO = frozenset({"error", "warning", "critical", "exception"})
+
+#: Niveles de logging que este servicio SÍ usa pero que no son un fallo. Sirve de
+#: contraste explícito para el ancla de abajo: un nivel que no está en ninguno de
+#: los dos conjuntos es el caso que el gate debe atrapar, no dejar pasar callado.
+_NIVELES_NEUTROS = frozenset({"info", "debug"})
+
+
+def _nombre_del_logger_de_modulo(arbol: ast.Module) -> str | None:
+    """Nombre de la ÚNICA variable de módulo asignada desde ``logging.getLogger(...)``.
+
+    ``None`` si hay cero o más de una — ambos casos son responsabilidad de quien
+    llama: cero significa "no hay logger que analizar", más de una significa que
+    la premisa de `_registros_de_fallo` (un único receptor) no aplica y no debe
+    asumirse en silencio.
+    """
+
+    def _es_get_logger(valor: ast.AST) -> bool:
+        return (
+            isinstance(valor, ast.Call)
+            and isinstance(valor.func, ast.Attribute)
+            and valor.func.attr == "getLogger"
+            and isinstance(valor.func.value, ast.Name)
+            and valor.func.value.id == "logging"
+        )
+
+    nombres = [
+        nodo.targets[0].id
+        for nodo in arbol.body
+        if isinstance(nodo, ast.Assign)
+        and len(nodo.targets) == 1
+        and isinstance(nodo.targets[0], ast.Name)
+        and _es_get_logger(nodo.value)
+    ]
+    return nombres[0] if len(nombres) == 1 else None
+
+
+def _registros_de_fallo(nodo: ast.AST) -> list[ast.Call]:
+    """Llamadas ``logger.<nivel>(...)`` de ``_NIVELES_DE_FALLO`` dentro de ``nodo``.
+
+    Los niveles de `_NIVELES_DE_FALLO` cuentan como registro de fallo en ESTE
+    servicio: es de una sola etapa, y sus ``warning`` reportan fallos (preflight
+    en rojo, cobertura de staging no demostrada, cancelación). Un aviso que no
+    sea un fallo tiene ``info``/``debug`` disponibles; si alguna vez hace falta
+    un ``warning`` neutro, que rompa el ancla y se decida explícitamente — para
+    eso es un gate.
+
+    DEPENDE de que el módulo analizado tenga un único logger llamado literalmente
+    ``logger`` (review Qodo, PR #464): un alias (``_log = logging.getLogger(...)``)
+    o un segundo logger no se detectan, y un registro emitido a través de ellos
+    quedaría fuera del universo sin que el gate lo note. No se generaliza a
+    "cualquier nombre que referencie un ``logging.Logger``" a propósito —eso es
+    resolución de alias sin límite claro por AST estático, y el propio hallazgo
+    la marca severidad baja-media—; en cambio, la premisa se congela con
+    `test_dyndolod_service_liga_su_logger_al_nombre_logger`.
+
+    Esa ancla cubre SOLO `dyndolod_service.py` (review Qodo, PR #464,
+    "Contradicción en anclas" — este mismo párrafo afirmaba antes que cubría los
+    ocho `*_service.py`, y el ancla real nunca lo hizo: drift documentación-vs-gate
+    dentro del propio PR que existe para eliminarlo). Esta función también corre
+    sobre los otros siete servicios y sobre todo `sky_claw/local/` — ahí la
+    precondición NO está verificada: un alias los dejaría clasificados como ya
+    están (`sin_cobertura` o su categoría actual, ver `_SERVICIOS_SIN_COBERTURA`),
+    sin romper CI. Es un hueco aceptado, no cerrado: esos siete ya son deuda no
+    verificada al 100% por otras razones, y extender el ancla a los ocho volvía a
+    acoplar el merge de un PR ajeno a este archivo (mismo hallazgo, "Acoplamiento
+    anclas").
+    """
+    return [
+        llamada
+        for llamada in ast.walk(nodo)
+        if isinstance(llamada, ast.Call)
+        and isinstance(llamada.func, ast.Attribute)
+        and isinstance(llamada.func.value, ast.Name)
+        and llamada.func.value.id == "logger"
+        and llamada.func.attr in _NIVELES_DE_FALLO
+    ]
+
+
+def _constantes_de_modulo(arbol: ast.Module) -> dict[str, object]:
+    """Constantes de módulo con valor literal: ``_ETAPA = 9`` → ``{"_ETAPA": 9}``."""
+    constantes: dict[str, object] = {}
+    for nodo in arbol.body:
+        if (
+            isinstance(nodo, ast.AnnAssign)
+            and isinstance(nodo.target, ast.Name)
+            and isinstance(nodo.value, ast.Constant)
+        ):
+            constantes[nodo.target.id] = nodo.value.value
+        elif isinstance(nodo, ast.Assign) and isinstance(nodo.value, ast.Constant):
+            for destino in nodo.targets:
+                if isinstance(destino, ast.Name):
+                    constantes[destino.id] = nodo.value.value
+    return constantes
+
+
+def _nodo_de_la_etapa(llamada: ast.Call) -> ast.expr | None:
+    """Nodo usado como valor de ``pipeline_stage`` en el ``extra``, o ``None``.
+
+    Reconoce las dos formas estructuradas del repo: el dict literal
+    (``extra={"pipeline_stage": X}``, como `grass_cache_service.py`) y ESE helper
+    puntual (``extra=subprocess_error_extra(..., pipeline_stage=X)``, como
+    `logging_config.py`, que usan `loot/cli.py` y `xedit/runner.py`) — no
+    cualquier llamada que exponga el kwarg. Un ``extra=otro_helper(pipeline_stage=9)``
+    no cuenta: nada garantiza que otro helper decore el dict que le llega al
+    logger de la misma forma (review CodeRabbit, PR #464). Tampoco reconoce la
+    prosa: un ``"DynDOLOD (stage 9): ..."`` suelto no cuenta.
+
+    Devuelve el NODO y no un bool para que quien llame distinga un literal suelto
+    de una referencia a la constante del módulo — la diferencia que impide que el
+    número quede duplicado en trece sitios (review Qodo, PR #464).
+    """
+    for kw in llamada.keywords:
+        if kw.arg != "extra":
+            continue
+        if isinstance(kw.value, ast.Dict):
+            for clave, valor in zip(kw.value.keys, kw.value.values, strict=True):
+                if isinstance(clave, ast.Constant) and clave.value == "pipeline_stage":
+                    return valor
+        elif (
+            isinstance(kw.value, ast.Call)
+            and isinstance(kw.value.func, ast.Name)
+            and kw.value.func.id == "subprocess_error_extra"
+        ):
+            for interno in kw.value.keywords:
+                if interno.arg == "pipeline_stage":
+                    return interno.value
+    return None
+
+
+def _valor_de_clave_en_extra(llamada: ast.Call, clave: str) -> ast.expr | None:
+    """Nodo del valor de ``clave`` en el dict literal de ``extra=``, o ``None``.
+
+    Más simple que `_nodo_de_la_etapa`: solo dict literal, sin el caso
+    `subprocess_error_extra` (`operation_type`/`tx_id` son claves propias de
+    este módulo — ningún registro las emite vía ese helper hoy).
+    """
+    for kw in llamada.keywords:
+        if kw.arg != "extra" or not isinstance(kw.value, ast.Dict):
+            continue
+        for k, v in zip(kw.value.keys, kw.value.values, strict=True):
+            if isinstance(k, ast.Constant) and k.value == clave:
+                return v
+    return None
+
+
+#: Registros de fallo de este módulo que NO llevan `pipeline_stage` porque no
+#: son, semánticamente, un fallo de la etapa 9 — y la excepción está acá para
+#: que sea DECIDIDA y VERIFICADA, no un hueco silencioso (review Qodo, PR #464,
+#: "Sobreconteo de señal"). Mapea el `operation_type` propio que cada uno debe
+#: llevar en su lugar → el motivo de la exención. Un registro sin
+#: `pipeline_stage` cuyo `operation_type` no esté acá sigue rompiendo el ancla
+#: principal; uno que esté acá pero no lleve `tx_id` también.
+#: Cada exención declara, además del motivo, el MÉTODO donde vive el único
+#: registro que la usa. El `operation_type` solo no alcanza como identidad
+#: (review Qodo, PR #464, "Exención de etapa copiable"): es una cadena copiable,
+#: y un `logger.error` nuevo en cualquier otra ruta del módulo que copiara
+#: `extra={"operation_type": "dyndolod_pipeline_failed", "tx_id": tx_id}` pasaba
+#: las dos anclas sin `pipeline_stage` —reproducido: 2 passed— dejando un fallo
+#: real de la etapa 9 sin señal estructurada. Es el patrón de copiar-el-gemelo
+#: que el repo documenta como su defecto dominante, aplicado al mecanismo de
+#: exención que este PR introdujo. Anclar el método hace que la exención sea una
+#: propiedad del SITIO, no de la cadena.
+_REGISTROS_EXENTOS_DE_ETAPA = {
+    "dyndolod_flight_report_persist_failed": {
+        "metodo": "_emit_flight_report",
+        "motivo": (
+            "_emit_flight_report solo se alcanza tras un pipeline YA exitoso (único "
+            "call site: en execute, después del commit) — un fallo ahí es de "
+            "infraestructura de journaling, no de la etapa 9. Etiquetarlo con la "
+            "etapa haría que un fallo que no implica que DynDOLOD falló se contara "
+            "como si lo hubiera hecho, en cualquier alerta agrupando por pipeline_stage."
+        ),
+    },
+    "dyndolod_pipeline_failed": {
+        "metodo": "_log_result_error",
+        "motivo": (
+            "_log_result_error es el outcome-record del fallo, gemelo de _log_result "
+            "(éxito, que usa info y tampoco lleva la etapa) — SIEMPRE se emite junto "
+            "al logger.error del handler que lo llama, nunca solo, así que por "
+            "construcción es una repetición mecánica del MISMO incidente que ese "
+            "handler ya reportó con pipeline_stage. Llevarla también acá duplicaba el "
+            "conteo de un COUNT(*) WHERE pipeline_stage=9 (review Qodo, PR #464, "
+            "'Sobreconteo de señal') — el mismo problema que 'Duplicación de señal' ya "
+            "había cerrado, reintroducido por el propio fix. Se identifica por "
+            "operation_type, que ya tenía antes de que se le agregara pipeline_stage."
+        ),
+    },
+    "dyndolod_post_commit_cancelled": {
+        "metodo": "execute",
+        "motivo": (
+            "Rama del handler except asyncio.CancelledError cuando journal_committed "
+            "ya es True (review CodeRabbit, PR #464): commit_transaction ya corrió, "
+            "así que la etapa 9 tuvo éxito — la cancelación es de un paso posterior "
+            "best-effort (confirmar rollbacks / emitir el flight report), no de la "
+            "etapa. Mismo criterio que dyndolod_flight_report_persist_failed. El "
+            "WARNING pre-commit del mismo handler SÍ sigue llevando pipeline_stage: "
+            "ahí la etapa realmente no completó. Vive en `execute` (no en un helper "
+            "propio), así que su ancla de ubicación es más débil que las otras dos — "
+            "lo que la protege de una copia suelta es que el ancla exige que sea el "
+            "ÚNICO registro del módulo con ese operation_type."
+        ),
+    },
+}
+
+
+def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
+    """Los ``except`` de ``execute``, CON multiplicidad. Igualdad literal.
+
+    Lista ordenada y no conjunto (review Codex del PR #464): con un ``set``, un
+    segundo ``except Exception`` alrededor de una operación hermana nueva se
+    deduplicaría contra el que ya está, el congelamiento no rompería y el handler
+    nuevo entraría sin que nadie lo revisara — justo lo que el ancla promete
+    impedir. Es el instrumento de `RITUAL_TOOL_MAP` en `test_ritual_dispatch.py`.
+    """
+    familia = sorted(
+        _nombre_de_excepcion(h) for h in ast.walk(_metodo_execute_ast()) if isinstance(h, ast.ExceptHandler)
+    )
+
+    assert familia == [
+        "DynDOLODExecutionError",
+        "DynDOLODExecutionError, DynDOLODTimeoutError",
+        "Exception",
+        "LockAcquisitionError",
+        "_ActionManifestError",
+        "asyncio.CancelledError",
+    ]
+
+
+def test_los_niveles_de_fallo_estan_congelados() -> None:
+    """Todo ``logger.<nivel>`` del módulo está clasificado — fallo o neutro.
+
+    Sin esto, el universo que `_registros_de_fallo` cubre puede reducirse en
+    silencio: es la MISMA clase de hallazgo que ya cerró esta review dos veces
+    (mención-vs-emisión, helper sin nombrar) reaparecida una tercera, sobre el
+    propio helper de enumeración. No alcanza con congelar `_NIVELES_DE_FALLO`
+    como constante aislada —eso ancla la intención, no el uso real—: acá se
+    recorren TODOS los ``logger.<algo>(...)`` que aparecen en el módulo y se
+    exige que cada nivel usado esté en `_NIVELES_DE_FALLO` o en
+    `_NIVELES_NEUTROS`. Un nivel nuevo (``logger.log(...)``, o un método que
+    todavía no existe) no cuenta como neutro por default: rompe acá hasta que
+    alguien decida a qué lado pertenece.
+    """
+    arbol = _modulo_servicio_ast()
+    niveles_usados = {
+        llamada.func.attr
+        for llamada in ast.walk(arbol)
+        if isinstance(llamada, ast.Call)
+        and isinstance(llamada.func, ast.Attribute)
+        and isinstance(llamada.func.value, ast.Name)
+        and llamada.func.value.id == "logger"
+    }
+    assert niveles_usados, "no se detectó ninguna llamada a logger.*: el ancla quedaría vacía"
+
+    sin_clasificar = niveles_usados - _NIVELES_DE_FALLO - _NIVELES_NEUTROS
+    assert sin_clasificar == set(), (
+        f"niveles de logging sin clasificar como fallo o neutro: {sin_clasificar}. "
+        "Agregar a _NIVELES_DE_FALLO o _NIVELES_NEUTROS en tests/test_dyndolod_service.py."
+    )
+    assert {"error", "warning", "critical", "exception"} == _NIVELES_DE_FALLO
+
+
+def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
+    """SOP §5 regla 5 sobre CADA registro de fallo del módulo, detectado por AST.
+
+    Universo = todo ``logger.error``/``warning``/``critical``/``exception`` del
+    módulo, no solo los que están dentro de un ``except``. Las fugas que esto
+    cierra y que un ancla limitada a los handlers dejaba pasar:
+
+    - el preflight en rojo y la ruta de config faltante devuelven el fallo con
+      ``return``, sin pasar por ningún ``except``;
+    - ``_log_result_error`` emite el registro canónico ``dyndolod_pipeline_failed``
+      —el que consulta un dashboard— desde un helper que los handlers llaman, así
+      que etiquetar el handler no lo alcanza;
+    - un ``any(...)`` por handler daba por bueno el bloque entero con que UNO solo
+      de sus registros llevara el campo.
+
+    Un registro puede satisfacer el ancla de DOS formas: llevando
+    ``pipeline_stage`` (el caso normal), o siendo una exención DECIDIDA en
+    `_REGISTROS_EXENTOS_DE_ETAPA` —porque no es semánticamente un fallo de la
+    etapa 9— con su propio ``operation_type`` Y ``tx_id`` en el ``extra`` (review
+    Qodo, PR #464, "Sobreconteo de señal": sin esto, el único registro exento de
+    hoy podría perder silenciosamente su correlación al perder pipeline_stage).
+
+    La exención se verifica por UBICACIÓN, no solo por la cadena: cada entrada
+    declara el método donde vive su único registro, y el ancla exige (a) que el
+    registro esté en ESE método y (b) que sea el ÚNICO del módulo con ese
+    ``operation_type``. Sin eso, la identidad de la exención era una cadena
+    copiable (review Qodo, PR #464, "Exención de etapa copiable"): reproducido —
+    un `logger.error` nuevo en el handler de `LockAcquisitionError` copiando
+    ``extra={"operation_type": "dyndolod_pipeline_failed", "tx_id": tx_id}``
+    pasaba esta ancla y su compañera (2 passed) sin `pipeline_stage`, dejando un
+    fallo real de la etapa 9 sin señal estructurada.
+    """
+    arbol = _modulo_servicio_ast()
+    registros = _registros_de_fallo(arbol)
+    assert registros, "no se detectó ningún registro de fallo: el ancla quedaría vacía"
+
+    usos_por_operation_type: dict[str, list[str]] = {}
+    sin_cobertura = []
+    for c in registros:
+        etiqueta = f"{c.func.attr}:{c.lineno}"
+        if _nodo_de_la_etapa(c) is not None:
+            continue
+        operation_type = _valor_de_clave_en_extra(c, "operation_type")
+        nombre_op = operation_type.value if isinstance(operation_type, ast.Constant) else None
+        exencion = _REGISTROS_EXENTOS_DE_ETAPA.get(nombre_op) if isinstance(nombre_op, str) else None
+        if exencion is None:
+            sin_cobertura.append(f"{etiqueta}: sin pipeline_stage y sin exención válida en operation_type")
+            continue
+        usos_por_operation_type.setdefault(nombre_op, []).append(etiqueta)
+        if _valor_de_clave_en_extra(c, "tx_id") is None:
+            sin_cobertura.append(f"{etiqueta}: exento de pipeline_stage ({nombre_op}) pero sin tx_id")
+        metodo = _metodo_que_contiene(c, arbol)
+        if metodo != exencion["metodo"]:
+            sin_cobertura.append(
+                f"{etiqueta}: usa la exención {nombre_op!r}, declarada solo para "
+                f"{exencion['metodo']!r}, pero vive en {metodo!r}"
+            )
+
+    duplicados = sorted(f"{op}: {sitios}" for op, sitios in usos_por_operation_type.items() if len(sitios) > 1)
+    assert duplicados == [], (
+        f"operation_type exento usado en más de un registro: {duplicados}. Cada exención cubre UN "
+        f"registro concreto; un segundo sitio necesita su propia entrada o su propio pipeline_stage."
+    )
+
+    assert sin_cobertura == [], (
+        f"registros de fallo de dyndolod_service.py sin cobertura completa: {sin_cobertura}. "
+        f'Agregar extra={{"pipeline_stage": {_NOMBRE_DE_LA_CONSTANTE}}}, o si no es un fallo de la '
+        f"etapa, un operation_type propio en _REGISTROS_EXENTOS_DE_ETAPA + tx_id (SOP §5 regla 5)."
+    )
+
+
+def test_todo_registro_con_etapa_lleva_tx_id() -> None:
+    """Todo registro CON ``pipeline_stage`` también lleva ``tx_id`` en ``extra``.
+
+    Ancla separada de `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`
+    a propósito: esa verifica `tx_id` solo para el caso de EXENCIÓN; esta cubre
+    el caso normal (con etapa), que se coló sin `tx_id` en 4 sitios distintos
+    durante esta misma review (review Qodo, PR #464, "Correlación incompleta" +
+    "tx_id ausente" — dos rondas encontrando el mismo hueco en sitios distintos,
+    la clase de defecto que este repo señala como dominante: arreglar un hermano
+    y dejar al resto igual).
+
+    `tx_id` en el TEXTO interpolado del mensaje (``"TX %d"``) no cuenta: una
+    consulta estructurada no puede filtrar por prosa. `_valor_de_clave_en_extra`
+    solo mira el dict de ``extra``, así que un mensaje con ``tx_id`` humano-legible
+    pero sin la clave en `extra` sigue rompiendo este ancla — es la distinción
+    exacta que motivó "Correlación incompleta".
+
+    El único caso donde `tx_id` legítimamente vale `None` (el preflight en rojo,
+    antes de que la transacción exista) ya NO es una excepción que este ancla
+    tenga que conocer: `tx_id` se declara antes del preflight precisamente para
+    que la regla sea universal — `None` es un valor honesto para "sin TX", no la
+    ausencia de la clave.
+    """
+    arbol = _modulo_servicio_ast()
+    con_etapa = [c for c in _registros_de_fallo(arbol) if _nodo_de_la_etapa(c) is not None]
+    assert con_etapa, "no se detectó ningún registro con pipeline_stage: el ancla quedaría vacía"
+
+    sin_tx_id = sorted(f"{c.func.attr}:{c.lineno}" for c in con_etapa if _valor_de_clave_en_extra(c, "tx_id") is None)
+
+    assert sin_tx_id == [], (
+        f"registros con pipeline_stage pero sin tx_id en extra: {sin_tx_id}. "
+        'Agregar "tx_id": tx_id al extra (SOP §5 regla 5).'
+    )
+
+
+def _bloque_de_companeros(nodo: ast.AST, raiz: ast.AST) -> ast.AST | None:
+    """El ``except`` que contiene a ``nodo``; si no está en uno, su función.
+
+    NO considera ``ast.If`` a propósito (review CodeRabbit, PR #464). Una versión
+    anterior tomaba el bloque compuesto más CHICO que envolviera al nodo, ``if``
+    incluido — y eso invertía la dirección útil para buscar compañeros: un
+    ``self._log_result_error(...)`` dentro de un ``if`` anidado en un ``except``
+    quedaba con el ``if`` como bloque, mientras su ``logger.error`` compañero vive
+    directamente en el ``except``, fuera del ``if``. Resultado: el ancla fallaba
+    sobre código CORRECTO (falso negativo, reproducido antes de corregir).
+
+    Para esta búsqueda la dirección correcta es ENSANCHAR hasta el handler, no
+    estrechar. El ``except`` sigue siendo un límite estricto —no se ensancha hasta
+    la función cuando hay uno—, así que un compañero de OTRO handler no cuenta: eso
+    mantiene el ancla tan fuerte como antes para el caso que sí importa.
+    """
+    handlers = [
+        n
+        for n in ast.walk(raiz)
+        if isinstance(n, ast.ExceptHandler) and n.lineno <= nodo.lineno <= (n.end_lineno or n.lineno)
+    ]
+    if handlers:
+        return min(handlers, key=lambda n: (n.end_lineno or n.lineno) - n.lineno)
+
+    funciones = [
+        n
+        for n in ast.walk(raiz)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.lineno <= nodo.lineno <= (n.end_lineno or n.lineno)
+    ]
+    return min(funciones, key=lambda n: (n.end_lineno or n.lineno) - n.lineno, default=None)
+
+
+def test_log_result_error_siempre_tiene_companero_con_etapa() -> None:
+    """La premisa de la exención `dyndolod_pipeline_failed`, verificada, no solo escrita.
+
+    `_REGISTROS_EXENTOS_DE_ETAPA` justifica esa exención en prosa: "SIEMPRE se
+    emite junto al logger.error del handler que lo llama, nunca solo". Hasta
+    este ancla, nada comprobaba esa premisa — `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`
+    solo mira que el registro exento lleve `operation_type`/`tx_id` en su propio
+    `extra`, sin inspeccionar el bloque que lo contiene (review Qodo, PR #464,
+    "Exención latente"). Un futuro call site de `_log_result_error` sin un
+    `logger.<nivel>` con `pipeline_stage` ANTES en el mismo `except` pasaría el
+    ancla existente en silencio y reintroduciría el subconteo de fallos de la
+    etapa 9 que "Sobreconteo de señal" cerró — exactamente lo que AGENTS.md
+    describe como "un párrafo justificando el recorte no cuenta como
+    verificación".
+
+    Acotado a ESTA exención a propósito: las otras dos
+    (`dyndolod_flight_report_persist_failed`, `dyndolod_post_commit_cancelled`)
+    tienen premisas de ALCANZABILIDAD ("solo se llega tras un pipeline exitoso",
+    "solo cuando journal_committed es True") — propiedades de flujo de datos en
+    tiempo de ejecución, no de co-ocurrencia textual con otro log en el mismo
+    bloque. Verificarlas requeriría un analizador de flujo real, no una
+    inspección AST estática razonable; se aceptan como límite documentado, igual
+    que la decisión ya tomada de no resolver alias de logger arbitrarios.
+    """
+    arbol = _modulo_servicio_ast()
+    llamadas_log_result_error = [
+        c
+        for c in ast.walk(arbol)
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Attribute)
+        and c.func.attr == "_log_result_error"
+        and isinstance(c.func.value, ast.Name)
+        and c.func.value.id == "self"
+    ]
+    assert llamadas_log_result_error, "no se detectó ninguna llamada a self._log_result_error: el ancla quedaría vacía"
+
+    sin_companero = []
+    for llamada in llamadas_log_result_error:
+        bloque = _bloque_de_companeros(llamada, arbol)
+        if bloque is None:
+            sin_companero.append(f"_log_result_error:{llamada.lineno} (sin bloque contenedor detectado)")
+            continue
+        companeros = [
+            r for r in _registros_de_fallo(bloque) if r.lineno < llamada.lineno and _nodo_de_la_etapa(r) is not None
+        ]
+        if not companeros:
+            sin_companero.append(f"_log_result_error:{llamada.lineno}")
+
+    assert sin_companero == [], (
+        f"llamadas a _log_result_error sin un logger.<nivel> con pipeline_stage ANTES en el "
+        f"mismo bloque: {sin_companero}. La exención dyndolod_pipeline_failed asume que este "
+        f"registro nunca es la única señal del incidente — si un call site nuevo rompe eso, "
+        f"agregarle su propio logger.error con pipeline_stage antes de la llamada."
+    )
+
+
+def test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido() -> None:
+    """El 9 se define UNA vez y TODOS los registros referencian ESE nombre.
+
+    El ancla anterior exigía el literal `9` (`ast.Constant`), lo que dejaba dos
+    problemas señalados por la review Qodo del PR #464: el número quedaba
+    duplicado en cada registro de fallo del módulo, y un refactor legítimo a una
+    constante con nombre ROMPÍA el test — un gate que castiga la mejora que él
+    mismo debería incentivar. Acá se invierte: el literal suelto es lo que falla.
+
+    Verificar "no es literal" no basta (review Qodo, PR #464, ronda posterior):
+    la versión anterior solo exigía que el nodo NO fuera `ast.Constant`, sin
+    resolver a qué nombre apunta ni si ese nombre vale 9. Una constante hermana
+    —`_MI_ETAPA = 8` a nivel de módulo, usada en un registro nuevo— pasaba las
+    dos aserciones (no es literal; `_ETAPA_DYNDOLOD` sigue valiendo 9) mientras
+    ese registro emitía `pipeline_stage=8` en runtime: el número duplicado con
+    la mitad desactualizada que este ancla dice prevenir, sin que nada fallara.
+    Ahora se resuelve el `ast.Name` de CADA registro contra `_constantes_de_modulo`
+    y se exige que sea EXACTAMENTE `_NOMBRE_DE_LA_CONSTANTE` —no cualquier nombre
+    que resuelva a 9: dos constantes con el mismo valor también rompen "un solo
+    sitio que corregir si el DAG se reordena", que es la promesa completa.
+
+    Lo que este ancla NO puede hacer, y conviene no aparentar: atar ese 9 al orden
+    real del DAG. Ese orden vive como tabla en prosa en `sky_claw/local/AGENTS.md`
+    §1, que la propia sección aclara que todavía no se hace cumplir en tiempo de
+    ejecución; no hay registro de etapas en código del que derivarlo
+    (`GenerateLodsStrategy` no menciona ninguna etapa). Centralizar el número es
+    la mitad que sí se puede hacer hoy: deja UN solo sitio que corregir si el DAG
+    se reordena, en vez de uno por cada registro de fallo.
+    """
+    arbol = _modulo_servicio_ast()
+    constantes = _constantes_de_modulo(arbol)
+
+    assert constantes.get(_NOMBRE_DE_LA_CONSTANTE) == 9, (
+        f"{_NOMBRE_DE_LA_CONSTANTE} debe ser una constante de módulo con valor 9 "
+        f"(SOP §1: DynDOLOD es la etapa 9); hoy vale {constantes.get(_NOMBRE_DE_LA_CONSTANTE)!r}"
+    )
+
+    mal_referenciados = []
+    for c in _registros_de_fallo(arbol):
+        nodo = _nodo_de_la_etapa(c)
+        if nodo is None:
+            continue
+        if isinstance(nodo, ast.Constant):
+            mal_referenciados.append(f"{c.func.attr}:{c.lineno} (literal {nodo.value!r} en vez de nombre)")
+        elif not (isinstance(nodo, ast.Name) and nodo.id == _NOMBRE_DE_LA_CONSTANTE):
+            nombre = nodo.id if isinstance(nodo, ast.Name) else ast.unparse(nodo)
+            mal_referenciados.append(f"{c.func.attr}:{c.lineno} (usa {nombre!r}, no {_NOMBRE_DE_LA_CONSTANTE!r})")
+
+    assert mal_referenciados == [], (
+        f"registros que no referencian {_NOMBRE_DE_LA_CONSTANTE} exactamente: {mal_referenciados}"
+    )
+
+
+def test_dyndolod_service_liga_su_logger_al_nombre_logger() -> None:
+    """Precondición de la que depende `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`.
+
+    `_registros_de_fallo` reconoce únicamente ``logger.<nivel>(...)`` por nombre
+    literal. Eso es correcto en la medida en que el módulo tenga un único logger
+    llamado ``logger`` — lo que hoy se cumple, pero nada lo impedía de dejar de
+    cumplirse en silencio: un segundo logger o un alias
+    (``_log = logging.getLogger(...)``) harían que la clasificación cuente
+    registros reales como inexistentes, sin que ningún assert lo note (review
+    Qodo, PR #464).
+
+    Acotado a ESTE módulo, no a los ocho ``*_service.py``. La primera versión
+    verificaba los ocho, y una review posterior del mismo PR (comment "Acoplamiento
+    anclas") mostró el costo: un rename legítimo del logger en un servicio que este
+    PR no posee rompería este archivo, acoplando el merge de un PR ajeno a mantener
+    los tests de este. Los otros siete no necesitan esta precondición para las
+    garantías que ESTE PR hace — su cobertura ya está documentada como deuda no
+    verificada al 100% (`_SERVICIOS_SIN_COBERTURA`/`_SERVICIOS_PARCIALES`), así que
+    un alias no detectado ahí los deja clasificados como estaban, sin acoplar nada.
+    """
+    arbol = _modulo_servicio_ast()
+    nombre = _nombre_del_logger_de_modulo(arbol)
+
+    assert nombre == "logger", (
+        f"dyndolod_service.py debe tener un único `logger = logging.getLogger(...)` de "
+        f"módulo; _registros_de_fallo no cubre correctamente el caso medido ({nombre!r})."
+    )
+
+
+#: Orden de la escala de cobertura, para comparar "mejor que" / "peor que" sin
+#: depender de qué tan lejos está cada extremo.
+_ORDEN_DE_COBERTURA = {"sin_cobertura": 0, "parcial": 1, "completo": 2}
+
+
+def _registro_cubierto(c: ast.Call) -> bool:
+    """¿El registro satisface la regla 5 — etapa O exención válida?
+
+    Mismo criterio de `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`:
+    un registro exento (`operation_type` en `_REGISTROS_EXENTOS_DE_ETAPA` + `tx_id`
+    presente) cuenta como cubierto para la clasificación de cobertura, igual que
+    uno con `pipeline_stage`. Sin esto, los registros exentos degradaban
+    `dyndolod` de completo a parcial — una regresión FALSA: están exentos con
+    justificación declarada, no sin cubrir.
+
+    Deliberadamente NO repite la verificación estructural (método declarado +
+    unicidad del `operation_type`) que hace el ancla principal: esto es un
+    clasificador de cobertura para comparar servicios entre sí, y si un registro
+    fingiera una exención, el ancla principal ya rompe antes — no hace falta que
+    los dos caminos dupliquen la misma regla para que el gate la sostenga.
+    """
+    if _nodo_de_la_etapa(c) is not None:
+        return True
+    operation_type = _valor_de_clave_en_extra(c, "operation_type")
+    nombre_op = operation_type.value if isinstance(operation_type, ast.Constant) else None
+    return nombre_op in _REGISTROS_EXENTOS_DE_ETAPA and _valor_de_clave_en_extra(c, "tx_id") is not None
+
+
+def _categoria_medida(registros: list[ast.Call]) -> str:
+    cubiertos = [c for c in registros if _registro_cubierto(c)]
+    if registros and len(cubiertos) == len(registros):
+        return "completo"
+    if cubiertos:
+        return "parcial"
+    return "sin_cobertura"
+
+
+def _categoria_declarada(nombre: str) -> str | None:
+    if nombre in _SERVICIOS_COMPLETOS:
+        return "completo"
+    if nombre in _SERVICIOS_PARCIALES:
+        return "parcial"
+    if nombre in _SERVICIOS_SIN_COBERTURA:
+        return "sin_cobertura"
+    return None
+
+
+def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
+    """Los OCHO ``*_service.py``, clasificados uno por uno. Nadie entra solo.
+
+    La regla es del pipeline entero, no de DynDOLOD. Congelar solo el conjunto de
+    los que CUMPLEN dejaba la exención como subproducto; este ancla enumera los
+    ocho, así que un servicio nuevo no está declarado en ningún lado y rompe el
+    test hasta que se decida dónde clasificarlo.
+
+    Que la deuda esté enumerada NO equivale a haberla verificado: seis servicios
+    siguen sin emitir el campo, y `AGENTS.md` es explícito en que el párrafo que
+    justifica un recorte no cuenta como verificación. Esto la acota y la hace
+    fallar si crece; cerrarla es un PR por servicio (cinco tienen su etapa ya
+    determinada por la prosa que arrastran, `vramr` no marca ninguna).
+
+    NO es igualdad estricta contra el snapshot congelado (review Qodo, PR #464,
+    "Acoplamiento anclas"). La primera versión sí lo era, y eso significaba que el
+    primer PR ajeno que cumpliera la regla que este mismo PR instituye —cerrar la
+    deuda de `synthesis_service.py`, por ejemplo— rompía este test sin que su
+    cambio tuviera nada de malo. Reproducido antes de corregir: simular ese cierre
+    en `synthesis_service.py` rompía `assert sin_cobertura == set(_SERVICIOS_SIN_COBERTURA)`
+    con la versión anterior.
+
+    NI siquiera el conteo de archivos es igualdad estricta (review Qodo, PR #464,
+    segunda ronda de "Acoplamiento anclas"): un `assert len(servicios) == 8` residual
+    reintroducía exactamente el mismo acoplamiento para "aparece un noveno
+    servicio" — un PR ajeno agregando un tool nuevo lo rompía aunque clasificara
+    correctamente el servicio en las constantes de ESTE archivo, porque el
+    conteo seguiría sin dar 8. Es puramente redundante con `sin_declarar`, que ya
+    detecta el mismo caso con un mensaje más accionable (nombra el servicio, no
+    solo "cambió el universo") — eliminado.
+
+    La dirección que sí importa bloquear es la opuesta: un servicio que
+    RETROCEDE de lo declarado (`dyndolod` deja de estar completo, o cualquiera
+    pierde cobertura que tenía) es una regresión real dentro del alcance de este
+    repo y debe fallar. Una mejora no declarada no bloquea el merge —no es este
+    PR quien la introduce ni quien debe mantenerla al día— pero se avisa por
+    `warnings.warn` para que alguien actualice las constantes eventualmente.
+    """
+    tools = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).parent
+    servicios = sorted(p.name for p in tools.glob("*_service.py"))
+
+    sin_declarar, regresiones, mejoras = [], [], []
+    for nombre in servicios:
+        medida = _categoria_medida(_registros_de_fallo(ast.parse((tools / nombre).read_text(encoding="utf-8"))))
+        declarada = _categoria_declarada(nombre)
+        if declarada is None:
+            sin_declarar.append(nombre)
+        elif _ORDEN_DE_COBERTURA[medida] < _ORDEN_DE_COBERTURA[declarada]:
+            regresiones.append(f"{nombre}: declarado {declarada}, medido {medida}")
+        elif _ORDEN_DE_COBERTURA[medida] > _ORDEN_DE_COBERTURA[declarada]:
+            mejoras.append(f"{nombre}: declarado {declarada}, medido {medida}")
+
+    assert sin_declarar == [], f"servicios nuevos sin clasificar en ningún conjunto: {sin_declarar}"
+    assert regresiones == [], f"servicios que retrocedieron de su cobertura declarada: {regresiones}"
+
+    if mejoras:
+        warnings.warn(
+            f"servicios con MÁS cobertura que la declarada — actualizar las constantes "
+            f"_SERVICIOS_COMPLETOS/_SERVICIOS_PARCIALES/_SERVICIOS_SIN_COBERTURA en "
+            f"tests/test_dyndolod_service.py: {mejoras}",
+            stacklevel=1,
+        )
+
+
+#: Deuda de `dyndolod_runner.py` —el runner de la etapa 9, no un `*_service.py`—
+#: con el mismo formato que `_SERVICIOS_SIN_COBERTURA`. Registrado por separado
+#: porque este ancla enumera UN archivo, no ocho: mezclarlo con
+#: `_SERVICIOS_SIN_COBERTURA` mediría un servicio contra un runner con la misma
+#: vara sin que ninguno de los dos lo pida.
+_RUNNER_SIN_COBERTURA = {
+    "dyndolod_runner.py": (
+        "etapa 9 (mismo runner del servicio que este PR cierra); 0 de sus 24 "
+        "registros de fallo emiten pipeline_stage o tx_id — ninguna prosa "
+        "'(stage 9)' tampoco, a diferencia de loot/pandora/synthesis/wrye_bash/xedit"
+    ),
+}
+
+
+def test_dyndolod_runner_no_regresa_de_su_cobertura_declarada() -> None:
+    """El runner de la etapa 9, con la MISMA vara que sus ocho servicios hermanos.
+
+    `dyndolod_runner.py` quedó fuera de las anclas anteriores por una asimetría
+    real (review Qodo, PR #464, análisis independiente sobre el PR completo):
+    `test_los_modulos_que_emiten_el_stage_index_no_dejan_de_hacerlo` congela
+    `loot/cli.py` y `xedit/runner.py` como runners que SÍ emiten el campo, pero
+    nunca exigió nada de `dyndolod_runner.py` —ni como emisor conocido ni como
+    deuda enumerada— pese a ser el runner HERMANO del servicio que este PR
+    entero existe para cerrar. Un PR anterior de esta misma review
+    (`9608ca46`) incluso lo citó como evidencia ("dyndolod_runner.py, vecino
+    directo de este servicio, ya usa logger.exception tres veces") sin
+    clasificarlo — la enumeración de deuda se completa acá.
+
+    Mismo criterio que `test_los_servicios_no_regresan_de_su_cobertura_declarada`:
+    no-regresión, no igualdad estricta (evita el mismo acoplamiento de merge de
+    "Acoplamiento anclas"). `dyndolod_runner.py` es hoy `sin_cobertura`
+    (0 de 24 registros con el campo); cerrarlo es su propio PR, con su propia
+    decisión de si el service layer sigue siendo la capa preferida o si el
+    runner —que SÍ tiene visibilidad directa del exit code y la causa técnica
+    del fallo, algo que el handler del servicio no reconstruye— amerita emitirlo
+    él mismo.
+    """
+    tools = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).parent
+    ruta = tools / "dyndolod_runner.py"
+    assert ruta.exists(), f"cambió la ubicación de dyndolod_runner.py: {ruta}"
+
+    medida = _categoria_medida(_registros_de_fallo(ast.parse(ruta.read_text(encoding="utf-8"))))
+    declarada = "sin_cobertura" if ruta.name in _RUNNER_SIN_COBERTURA else None
+
+    assert declarada is not None, "dyndolod_runner.py debe estar clasificado en _RUNNER_SIN_COBERTURA"
+    assert _ORDEN_DE_COBERTURA[medida] >= _ORDEN_DE_COBERTURA[declarada], (
+        f"dyndolod_runner.py retrocedió de su cobertura declarada: declarado {declarada}, medido {medida}"
+    )
+
+    if _ORDEN_DE_COBERTURA[medida] > _ORDEN_DE_COBERTURA[declarada]:
+        warnings.warn(
+            f"dyndolod_runner.py tiene MÁS cobertura que la declarada ({medida} vs {declarada}) "
+            f"— actualizar _RUNNER_SIN_COBERTURA en tests/test_dyndolod_service.py",
+            stacklevel=1,
+        )
+
+
+def test_los_modulos_que_emiten_el_stage_index_no_dejan_de_hacerlo() -> None:
+    """Los módulos conocidos que emiten el stage index en un fallo real no retroceden.
+
+    Cubre lo que el ancla por servicio no ve: los runners. `loot/cli.py` y
+    `xedit/runner.py` hardcodean ``pipeline_stage=5``/``=1`` vía
+    ``subprocess_error_extra``, que es la razón por la que "los runners son
+    stage-agnósticos" no es precedente asentado en este repo (ver §5 regla 5).
+
+    Detecta EMISIÓN, no mención (review Qodo, PR #464). La versión anterior
+    marcaba el módulo con que la cadena ``"pipeline_stage"`` apareciera en
+    cualquier nodo, lo que tenía dos consecuencias: un servicio podía "cumplir"
+    con una docstring, y una edición ajena que nombrara la cadena en un literal
+    rompía CI sin que nada real hubiera cambiado.
+
+    NO es igualdad estricta sobre el `rglob` (mismo hallazgo Qodo, "Acoplamiento
+    anclas", que en `test_los_servicios_no_regresan_de_su_cobertura_declarada").
+    Un PR ajeno que agregue el campo a un QUINTO módulo bajo `sky_claw/local/`
+    —de nuevo, exactamente el trabajo que este PR declara pendiente— no debe
+    romper este archivo. Lo que sí debe romperlo es que alguno de los cuatro
+    conocidos DEJE de emitir el campo, que es la regresión real.
+    """
+    raiz = pathlib.Path(sky_claw.local.__file__).parent
+    conocidos = {
+        "loot/cli.py",
+        "tools/dyndolod_service.py",
+        "tools/grass_cache_service.py",
+        "xedit/runner.py",
+    }
+
+    emisores = set()
+    for archivo in sorted(raiz.rglob("*.py")):
+        registros = _registros_de_fallo(ast.parse(archivo.read_text(encoding="utf-8")))
+        if any(_nodo_de_la_etapa(c) is not None for c in registros):
+            emisores.add(archivo.relative_to(raiz).as_posix())
+
+    perdidos = sorted(conocidos - emisores)
+    assert perdidos == [], f"módulos que dejaron de emitir el stage index estructurado: {perdidos}"
+
+    nuevos = sorted(emisores - conocidos)
+    if nuevos:
+        warnings.warn(
+            f"módulos que emiten el stage index y no están en el set conocido de "
+            f"tests/test_dyndolod_service.py — actualizar `conocidos`: {nuevos}",
+            stacklevel=1,
+        )

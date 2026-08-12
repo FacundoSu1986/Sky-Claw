@@ -45,6 +45,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("SkyClaw.DynDOLODPipelineService")
 
+#: Índice de etapa de DynDOLOD en el DAG de ``sky_claw/local/AGENTS.md`` §1. La
+#: mayoría de los registros de fallo de este módulo la emiten como
+#: ``pipeline_stage`` (§5 regla 5); los que no —porque semánticamente no son un
+#: fallo de la etapa 9— están enumerados como exención en
+#: ``_REGISTROS_EXENTOS_DE_ETAPA`` (``tests/test_dyndolod_service.py``), no
+#: dejados afuera en silencio. Se define UNA vez a propósito: duplicar el número
+#: en cada registro garantiza que un reordenamiento del DAG deje algunos
+#: desactualizados. No se pone un conteo fijo acá —"aparece en N registros"— a
+#: propósito: quedó desactualizado dos veces en este mismo PR (16→13→14 según
+#: fixes posteriores agregaban o quitaban registros); el conteo real lo miden
+#: en vivo los anclas de `tests/test_dyndolod_service.py`, no este comentario.
+#:
+#: No se deriva de nada porque no hay de dónde: el orden del pipeline vive como
+#: tabla en prosa en §1 —que la propia sección aclara que todavía no se hace
+#: cumplir en tiempo de ejecución— y no existe un registro de etapas en código.
+#: Si alguna vez se construye, este es el único sitio a cambiar en este servicio.
+_ETAPA_DYNDOLOD = 9
+
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
     """Adjunta el reporte de preflight al ``result`` cuando no está verde.
@@ -412,7 +430,22 @@ class DynDOLODPipelineService:
                 transaction_id=tx_id,
             )
         except Exception:  # noqa: BLE001 — boundary best-effort del journal
-            logger.error("Fallo al persistir el informe de vuelo de la TX %d", tx_id, exc_info=True)
+            # Sin pipeline_stage a propósito (review Qodo, PR #464, "Sobreconteo de
+            # señal"): este método SOLO se alcanza tras un pipeline YA exitoso (ver
+            # el único call site, en `execute`, después del commit). Etiquetarlo con
+            # la etapa 9 haría que un fallo de infraestructura de journaling —que no
+            # implica que DynDOLOD haya fallado— se contara como un fallo real de la
+            # etapa 9 en cualquier alerta que agrupe por ese campo, inflando la tasa
+            # de fallos exactamente como "Duplicación de señal" ya advertía para
+            # registros duplicados. `operation_type` propio en su lugar, para que
+            # sea identificable sin mentir sobre su origen. `tx_id` sí aplica: sigue
+            # siendo correlacionable con la TX y su rollback si lo hubiera.
+            logger.error(
+                "DynDOLOD: fallo al persistir el informe de vuelo de la TX %d (pipeline ya exitoso)",
+                tx_id,
+                exc_info=True,
+                extra={"operation_type": "dyndolod_flight_report_persist_failed", "tx_id": tx_id},
+            )
 
     async def _cerrar_tx_tras_rollback(
         self,
@@ -448,28 +481,31 @@ class DynDOLODPipelineService:
         if not rolled_back:
             if mutation_started and not mutation_coverage_complete and rollbacks_resueltos:
                 logger.warning(
-                    "Cobertura de staging DynDOLOD no demostrada tras %s (TX %d): "
+                    "DynDOLOD (stage 9): cobertura de staging no demostrada tras %s (TX %d): "
                     "la TX queda PENDIENTE hasta aislar los targets crudos.",
                     contexto,
                     tx_id,
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                 )
             else:
                 logger.critical(
-                    "Rollback DynDOLOD INCOMPLETO tras %s (TX %d): la TX queda PENDIENTE; "
+                    "DynDOLOD (stage 9): rollback INCOMPLETO tras %s (TX %d): la TX queda PENDIENTE; "
                     "revisar backups move-aside y targets no cubiertos manualmente.",
                     contexto,
                     tx_id,
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                 )
             return False
         try:
             await self._journal.mark_transaction_rolled_back(tx_id)
         except Exception as journal_exc:  # noqa: BLE001 — boundary best-effort del journal
             logger.error(
-                "Failed to mark TX %d as rolled back after %s: %s",
+                "DynDOLOD (stage 9): no se pudo marcar la TX %d como rolled back tras %s: %s",
                 tx_id,
                 contexto,
                 journal_exc,
                 exc_info=True,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
         return True
 
@@ -514,6 +550,14 @@ class DynDOLODPipelineService:
         if dry_run:
             return await self._preview(preset=preset, run_texgen=run_texgen)
 
+        # Declarado ANTES del preflight (review Qodo, PR #464, "tx_id ausente"):
+        # sin esto, `tx_id` ni siquiera existe todavía cuando el preflight bloquea
+        # en rojo, así que ese registro no podía llevarlo. Con la variable ya en
+        # scope (en `None`, honesto — no hay TX abierta antes del lock), TODO
+        # registro de fallo del método puede incluir `tx_id` sin excepción: la
+        # regla deja de tener un caso especial que documentar y verificar aparte.
+        tx_id: int | None = None
+
         # Preflight brutal ANTES de tocar nada (T-16c·3): un semáforo ROJO (p. ej.
         # el dir de salida sin permisos) cancela el run de 30+ min / GBs sin adquirir
         # el lock, abrir transacción, ni publicar el evento de inicio. Amarillo/verde
@@ -524,7 +568,11 @@ class DynDOLODPipelineService:
             preflight_report = await preflight.run()
             if preflight_report.blocks_mutations:
                 red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
-                logger.warning("DynDOLOD (stage 9) bloqueado por preflight en rojo: %s", red)
+                logger.warning(
+                    "DynDOLOD (stage 9) bloqueado por preflight en rojo: %s",
+                    red,
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                )
                 return _attach_preflight(
                     {
                         "status": "error",
@@ -538,7 +586,6 @@ class DynDOLODPipelineService:
 
         start_time = time.monotonic()
         rolled_back = False
-        tx_id: int | None = None
         journal_committed = False
         mutation_started = False
         mutation_coverage_complete = False
@@ -562,7 +609,11 @@ class DynDOLODPipelineService:
         try:
             runner = self._ensure_runner()
         except DynDOLODExecutionError as exc:
-            logger.error("Error inicializando DynDOLOD: %s", exc)
+            logger.error(
+                "DynDOLOD (stage 9): error inicializando el runner: %s",
+                exc,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
             duration = time.monotonic() - start_time
             await self._publish_completed(
                 preset=preset,
@@ -593,7 +644,7 @@ class DynDOLODPipelineService:
         if ruta_faltante is not None:
             msg = f"Ruta declarada por la configuración de DynDOLOD no existe: {ruta_faltante}"
             duration = time.monotonic() - start_time
-            logger.error("DynDOLOD (stage 9): %s", msg)
+            logger.error("DynDOLOD (stage 9): %s", msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id})
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -716,8 +767,13 @@ class DynDOLODPipelineService:
                         # alcanzable — pero el tipo lo permite y el criterio del repo
                         # (U-11) es no reportar éxito sobre un estado indeterminado
                         # solo porque "no debería pasar".
+                        # No se loguea acá: el `raise` lo hace `except (DynDOLODExecutionError,
+                        # DynDOLODTimeoutError)` más abajo, que preserva `msg` vía `str(exc)`
+                        # y agrega `pipeline_stage`/`tx_id`. Loguear también acá duplicaba el
+                        # mismo incidente 2-3 veces sin id de correlación (review Qodo, PR #464,
+                        # "Duplicación de señal") — una alerta contando por `pipeline_stage=9`
+                        # sobrecontaba la tasa de fallos real.
                         msg = "DynDOLOD reportó éxito sin resultado de ejecución"
-                        logger.error(msg)
                         raise DynDOLODExecutionError(msg)
 
                     output_path = result.dyndolod_result.output_path
@@ -729,14 +785,12 @@ class DynDOLODPipelineService:
                         # éxito: falso verde por exit-code sobre un estado donde no
                         # se sabe si DynDOLOD escribió algo.
                         msg = "DynDOLOD no dejó un directorio de salida localizable"
-                        logger.error(msg)
-                        raise DynDOLODExecutionError(msg)
+                        raise DynDOLODExecutionError(msg)  # el handler loguea, ver guard anterior
 
                     is_valid = await runner.validate_dyndolod_output(output_path)
                     if not is_valid:
                         msg = "DynDOLOD output validation failed"
-                        logger.error(msg)
-                        raise DynDOLODExecutionError(msg)
+                        raise DynDOLODExecutionError(msg)  # el handler loguea, ver guard anterior
 
                 if not result.success:
                     errors_str = "; ".join(result.errors) if result.errors else "Unknown error"
@@ -802,6 +856,19 @@ class DynDOLODPipelineService:
                 )
 
         except _ActionManifestError as exc:
+            # El logger.error del incidente va PRIMERO, antes de cualquier await
+            # cancelable (review Qodo, PR #464, "Pérdida de señal"): si la task
+            # se cancela durante `_cerrar_tx_tras_rollback` —rollback de
+            # directorios, potencialmente largo—, la CancelledError se propaga
+            # desde dentro de ESTE handler y nada de lo que venga después se
+            # ejecuta. Antes del fix de "Duplicación de señal" el guard logueaba
+            # inmediatamente antes de lanzar, así que la señal sobrevivía
+            # cualquier cancelación posterior; moverla acá restaura esa garantía.
+            logger.error(
+                "DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s",
+                exc,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
             # La caja negra no se pudo emitir: ningún LOD se generó. Cerrar la TX
             # sólo si todos los DirectoryRollback observados confirman que no quedó
             # mutación sin resolver (M-7).
@@ -814,7 +881,6 @@ class DynDOLODPipelineService:
                 contexto="fallo del manifiesto",
             )
             duration = time.monotonic() - start_time
-            logger.error("DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s", exc)
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -840,7 +906,11 @@ class DynDOLODPipelineService:
 
         except LockAcquisitionError as exc:
             duration = time.monotonic() - start_time
-            logger.error("No se pudo adquirir lock para DynDOLOD pipeline: %s", exc)
+            logger.error(
+                "DynDOLOD (stage 9): no se pudo adquirir el lock del pipeline: %s",
+                exc,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -862,6 +932,22 @@ class DynDOLODPipelineService:
             )
 
         except (DynDOLODExecutionError, DynDOLODTimeoutError) as exc:
+            # El logger.error del incidente va PRIMERO, antes de cualquier await
+            # cancelable (review Qodo, PR #464, "Pérdida de señal"): con el log
+            # después de `_cerrar_tx_tras_rollback` —que puede tardar y es
+            # cancelable—, una cancelación en esa ventana propagaba la
+            # CancelledError desde dentro de ESTE handler y el registro del
+            # incidente original (el caso de validación de output, el más común)
+            # nunca se emitía. `rolled_back` ya no va en el mismo mensaje —se
+            # calcula DESPUÉS— pero no se pierde: si el rollback queda
+            # incompleto, `_cerrar_tx_tras_rollback` emite su propio
+            # warning/critical con pipeline_stage y tx_id; si se completa, no
+            # hay nada urgente que reportar.
+            logger.error(
+                "DynDOLOD (stage 9): error de dominio del pipeline: %s",
+                exc,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
             # M-7: reportar el resultado REAL del rollback. Los __aexit__ de los
             # DirectoryRollback ya corrieron (restore best-effort); rolled_back es
             # True sólo si TODOS completaron. Un rmtree/rename fallido deja el output
@@ -875,9 +961,8 @@ class DynDOLODPipelineService:
                 contexto="error de dominio",
             )
             duration = time.monotonic() - start_time
-            logger.error("DynDOLOD pipeline domain error: %s (rolled_back=%s)", exc, rolled_back)
 
-            await self._log_result_error(preset, str(exc))
+            await self._log_result_error(preset, str(exc), tx_id, rolled_back)
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -902,7 +987,25 @@ class DynDOLODPipelineService:
         except asyncio.CancelledError:
             # Cancelación de task — hacer cleanup mínimo y re-lanzar.
             duration = time.monotonic() - start_time
-            logger.warning("DynDOLOD pipeline cancelled after %.1fs", duration)
+            if journal_committed:
+                # Post-commit (review CodeRabbit, PR #464): `commit_transaction`
+                # ya corrió, así que la etapa 9 YA tuvo éxito — lo cancelado es
+                # post-proceso best-effort (confirmar rollbacks / emitir el
+                # flight report), no la etapa en sí. Mismo criterio que
+                # `_emit_flight_report`/`_log_result_error`: no pipeline_stage
+                # para algo que ocurre después de que la etapa ya completó.
+                logger.warning(
+                    "DynDOLOD: cancelación post-commit tras %.1fs (TX %d ya committeada)",
+                    duration,
+                    tx_id,
+                    extra={"operation_type": "dyndolod_post_commit_cancelled", "tx_id": tx_id},
+                )
+            else:
+                logger.warning(
+                    "DynDOLOD (stage 9): pipeline cancelado tras %.1fs",
+                    duration,
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                )
             await self._cerrar_tx_tras_rollback(
                 tx_id,
                 dir_rollbacks,
@@ -914,6 +1017,15 @@ class DynDOLODPipelineService:
             raise
 
         except Exception as exc:
+            # El logger.error del incidente va PRIMERO, antes de cualquier await
+            # cancelable (review Qodo, PR #464, "Pérdida de señal") — mismo
+            # motivo que el handler de dominio arriba.
+            logger.error(
+                "DynDOLOD (stage 9): error inesperado del pipeline: %s",
+                exc,
+                exc_info=True,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
             # PREVENCIÓN T11: red de seguridad final con resultado REAL del
             # rollback. Una TX queda PENDING a propósito si algún move-aside no
             # pudo confirmar su recuperación (ver handler de dominio arriba).
@@ -926,13 +1038,8 @@ class DynDOLODPipelineService:
                 contexto="error inesperado",
             )
             duration = time.monotonic() - start_time
-            logger.error(
-                "Unexpected error in DynDOLOD pipeline: %s",
-                exc,
-                exc_info=True,
-            )
 
-            await self._log_result_error(preset, str(exc))
+            await self._log_result_error(preset, str(exc), tx_id, rolled_back)
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -1085,8 +1192,31 @@ class DynDOLODPipelineService:
             },
         )
 
-    async def _log_result_error(self, preset: str, error_msg: str) -> None:
-        """Registra un error del pipeline mediante logging estructurado."""
+    async def _log_result_error(
+        self,
+        preset: str,
+        error_msg: str,
+        tx_id: int | None = None,
+        rolled_back: bool | None = None,
+    ) -> None:
+        """Registra el resultado fallido del pipeline mediante logging estructurado.
+
+        Gemelo de `_log_result` (éxito) en el canal de fallo: ese usa ``info`` y
+        ``operation_type="dyndolod_pipeline_complete"``; este usa ``error`` y
+        ``operation_type="dyndolod_pipeline_failed"`` — ninguno de los dos lleva
+        `pipeline_stage`, a propósito. Es el outcome-record del run, siempre
+        emitido JUNTO al `logger.error` del handler que lo llama, nunca solo: por
+        construcción es una repetición mecánica del MISMO incidente que ese
+        handler ya reportó con la etapa, no un fallo adicional. Sí llevaba
+        `pipeline_stage` hasta la review Qodo del PR #464 ("Sobreconteo de
+        señal"): CodeRabbit/Codex pedían que este registro fuera identificable
+        por stage para no quedar fuera de un filtro, pero eso hacía que un
+        ``COUNT(*) WHERE pipeline_stage=9`` contara 2 por cada incidente de
+        dominio/inesperado — el mismo sobreconteo que "Duplicación de señal" ya
+        había señalado, reintroducido por el propio fix que lo cerraba. La
+        identidad correcta para filtrar este registro YA existía:
+        `operation_type`.
+        """
         logger.error(
             "DynDOLOD pipeline failed",
             extra={
@@ -1096,5 +1226,26 @@ class DynDOLODPipelineService:
                 "success": False,
                 "preset": preset,
                 "error": error_msg,
+                # tx_id sí se mantiene: sin él, este registro y el del handler que
+                # lo invoca no se pueden correlacionar entre sí ni con el rollback
+                # posterior (review Qodo, PR #464, "Duplicación de señal"). `None`
+                # es un caso real: los llamadores sin `tx_id` explícito son paths
+                # donde la TX puede no haberse abierto aún.
+                "tx_id": tx_id,
+                # El resultado del rollback vive acá desde la review Qodo del PR
+                # #464 ("Pérdida de señal", segunda vuelta). El fix de la primera
+                # vuelta adelantó el `logger.error` del handler para que
+                # sobreviviera a una cancelación, y al hacerlo perdió el
+                # `rolled_back=%s` que ese mensaje llevaba —se calcula después—.
+                # La justificación de entonces solo cubría la rama de FALLO (si el
+                # rollback queda incompleto, `_cerrar_tx_tras_rollback` emite su
+                # propio warning/critical): en la rama de ÉXITO no quedaba ningún
+                # registro diciendo que el rollback se confirmó, así que en los
+                # logs no se distinguía "rollback confirmado" de "rollback no
+                # aplicable". Este es el sitio correcto para reponerlo: el
+                # outcome-record ya se emite después de calcularlo, así que no
+                # reintroduce la ventana de cancelación ni re-emite el incidente.
+                # `None` = el llamador no lo computa (no todos los paths lo tienen).
+                "rolled_back": rolled_back,
             },
         )
