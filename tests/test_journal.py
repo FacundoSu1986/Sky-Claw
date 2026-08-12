@@ -457,3 +457,115 @@ class TestJournalWriteLockCompartido:
             await j2.close()
         finally:
             await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_un_open_tardio_no_puede_commitear_la_transaccion_de_otro(self, tmp_path):
+        """P1: asignar el lock compartido **no** es ejecutar bajo el lock compartido.
+
+        ``executescript`` emite un ``COMMIT`` implícito de cualquier transacción
+        pendiente en la conexión. Como las conexiones del lifecycle son singleton
+        por path, un ``open()`` tardío corría ese ``executescript`` sobre la
+        conexión que otro journal estaba usando —y sin tomar el lock—, así que
+        commiteaba su trabajo a medias y el ``rollback()`` posterior de la
+        víctima ya no lo podía deshacer.
+
+        La sincronización es por ``Event``, no por ``sleep``: el test suelta el
+        lock recién cuando comprobó que ``j2.open()`` sigue bloqueado.
+        """
+        lifecycle = self._lifecycle()
+        db_path = tmp_path / "commit_ajeno.db"
+        try:
+            j1 = OperationJournal(db_path, lifecycle=lifecycle)
+            await j1.open()
+            conexion = j1._db
+
+            j2 = OperationJournal(db_path, lifecycle=lifecycle)
+            schema_ejecutado = asyncio.Event()
+            original_executescript = conexion.executescript
+
+            async def executescript_observado(sql):
+                schema_ejecutado.set()
+                return await original_executescript(sql)
+
+            conexion.executescript = executescript_observado  # type: ignore[method-assign]
+
+            apertura: asyncio.Task[None]
+            async with j1._lock:
+                # j1 deja trabajo a medias en la conexión compartida.
+                await conexion.execute("BEGIN")
+                await conexion.execute(
+                    "INSERT INTO transactions (description, status) VALUES ('parcial de j1', 'pending')"
+                )
+                assert conexion._conn.in_transaction, "premisa: hay una transacción abierta"
+
+                # j2 arranca su open() MIENTRAS j1 sostiene el lock.
+                apertura = asyncio.create_task(j2.open())
+                for _ in range(50):
+                    await asyncio.sleep(0)
+
+                assert not schema_ejecutado.is_set(), (
+                    "j2 ejecutó el schema sin el lock: puede commitear la transacción de j1"
+                )
+                assert not apertura.done(), "j2.open() no esperó al lock"
+                assert conexion._conn.in_transaction, "la transacción de j1 dejó de estar pendiente"
+
+                # j1 descarta su trabajo. Nadie debió haberlo commiteado antes.
+                await conexion.rollback()
+
+            await asyncio.wait_for(apertura, timeout=5)
+            conexion.executescript = original_executescript  # type: ignore[method-assign]
+
+            transacciones = await j1.list_recent_transactions(limit=50)
+            assert [t.description for t in transacciones] == [], (
+                "el trabajo parcial de j1 sobrevivió: alguien lo commiteó por su cuenta"
+            )
+
+            # Y j2 quedó plenamente utilizable tras esperar su turno.
+            assert j2._db is conexion
+            assert j2._lock is j1._lock
+            tx_id = await j2.begin_transaction(description="post-apertura", mod_id=None)
+            assert tx_id > 0
+
+            await j1.close()
+            await j2.close()
+        finally:
+            await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_dos_formas_del_mismo_path_comparten_conexion_y_lock(self, tmp_path):
+        """La clave del lock debe normalizarse igual que la de la conexión.
+
+        Si ``get_write_lock`` cambiara a indexar por el string crudo mientras
+        ``get_connection`` sigue resolviendo, dos journals compartirían conexión
+        pero no lock — el defecto exacto que este PR cierra, reintroducido por la
+        puerta de atrás. El symlink produce dos formas distintas del mismo
+        archivo sin usar ``..``, que el ``PathTraversalValidator`` rechaza.
+        """
+        real = tmp_path / "real"
+        real.mkdir()
+        enlace = tmp_path / "enlace"
+        try:
+            enlace.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:  # pragma: no cover
+            # No se filtra por plataforma: Windows con Developer Mode sí puede.
+            pytest.skip(f"el entorno no permite crear symlinks: {exc}")
+
+        via_real = real / "alias.db"
+        via_enlace = enlace / "alias.db"
+        assert str(via_real) != str(via_enlace), "premisa: son dos formas distintas"
+        assert via_real.resolve() == via_enlace.resolve(), "premisa: apuntan al mismo archivo"
+
+        lifecycle = self._lifecycle()
+        try:
+            j1 = OperationJournal(via_real, lifecycle=lifecycle)
+            j2 = OperationJournal(via_enlace, lifecycle=lifecycle)
+            await j1.open()
+            await j2.open()
+
+            assert j1._db is j2._db, "premisa: la conexión se resuelve por path canónico"
+            assert j1._lock is j2._lock, "el lock debe usar la MISMA clave que la conexión"
+
+            await j1.close()
+            await j2.close()
+        finally:
+            await lifecycle.shutdown_all()
