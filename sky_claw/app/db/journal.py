@@ -1309,7 +1309,11 @@ class OperationJournal:
                     raise cancelacion from fallo_original
                 raise
 
-        logger.error("Operation failed", extra={"entry_id": entry_id, "error": error})
+        # `error_texto`, no `error`: el objeto crudo esquivaría la normalización y
+        # `SecurityRedactionFilter._redact_value` devuelve los no-str sin tocar —el
+        # formatter los stringifica DESPUÉS, o sea fuera del alcance del redactor—.
+        # Un `__str__` roto además haría desaparecer el registro ERROR.
+        logger.error("Operation failed", extra={"entry_id": entry_id, "error": error_texto})
 
     async def log_operation(
         self,

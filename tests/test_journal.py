@@ -1611,6 +1611,14 @@ class TestFailOperationBoundaryEndurecido:
 
     # -- C1: RecursionError en los dos clasificadores hermanos ----------------
 
+    #: Profundidad que desborda la recursión del parser JSON. NO es un número
+    #: mágico estable: py3.11 revienta a 1000, pero py3.12/3.13 aguantan hasta
+    #: ~5000 (el límite de recursión en C se separó del de Python). Un test
+    #: atado a 1000 pasaba en 3.12 sin ejercitar nada — falló en CI justamente
+    #: así. Por eso los tests que la usan VERIFICAN primero que desborde en el
+    #: runtime actual y se saltean si no, en vez de degradar en silencio.
+    PROFUNDIDAD_DESBORDE = 20_000
+
     @staticmethod
     def _anidado(profundidad: int) -> list:
         """Construye la estructura por iteración: hacerlo recursivo ya reventaría."""
@@ -1619,11 +1627,31 @@ class TestFailOperationBoundaryEndurecido:
             valor = [valor]
         return valor
 
+    @classmethod
+    def _texto_desbordante(cls) -> str:
+        """JSON crudo demasiado profundo, o skip si este runtime lo tolera."""
+        crudo = "[" * cls.PROFUNDIDAD_DESBORDE + "]" * cls.PROFUNDIDAD_DESBORDE
+        try:
+            json.loads(crudo)
+        except RecursionError:
+            return crudo
+        pytest.skip(f"json.loads tolera {cls.PROFUNDIDAD_DESBORDE} niveles en este runtime")
+
+    @classmethod
+    def _valor_desbordante(cls) -> list:
+        """Estructura Python demasiado profunda, o skip si este runtime la tolera."""
+        valor = cls._anidado(cls.PROFUNDIDAD_DESBORDE)
+        try:
+            json.dumps(valor, allow_nan=False)
+        except RecursionError:
+            return valor
+        pytest.skip(f"json.dumps tolera {cls.PROFUNDIDAD_DESBORDE} niveles en este runtime")
+
     @pytest.mark.asyncio
     async def test_metadata_legacy_demasiado_profunda_no_hunde_el_reporte(self, journal):
         """``json.loads`` levanta ``RecursionError``, que no es ValueError ni TypeError."""
         entry_id = await self._entrada(journal)
-        hondo = "[" * 1000 + "]" * 1000
+        hondo = self._texto_desbordante()
         await journal._db.execute("UPDATE journal_entries SET metadata = ? WHERE id = ?", (hondo, entry_id))
         await journal._db.commit()
 
@@ -1638,7 +1666,7 @@ class TestFailOperationBoundaryEndurecido:
         """El hermano: ``json.dumps`` sobre una estructura profunda del caller."""
         entry_id = await self._entrada(journal)
 
-        await journal.fail_operation(entry_id, error="fallo real", metadata={"hondo": self._anidado(1200)})
+        await journal.fail_operation(entry_id, error="fallo real", metadata={"hondo": self._valor_desbordante()})
 
         entry = await journal.get_operation_by_id(entry_id)
         assert entry.status == OperationStatus.FAILED
@@ -1656,12 +1684,12 @@ class TestFailOperationBoundaryEndurecido:
         entry_id = await self._entrada(journal)
         evento = "journal_metadata_previa_descartada" if caso == "legacy" else "journal_metadata_argumento_descartada"
         if caso == "legacy":
-            hondo = "[" * 1000 + "]" * 1000
+            hondo = self._texto_desbordante()
             await journal._db.execute("UPDATE journal_entries SET metadata = ? WHERE id = ?", (hondo, entry_id))
             await journal._db.commit()
             kwargs = {}
         else:
-            kwargs = {"metadata": {"hondo": self._anidado(1200)}}
+            kwargs = {"metadata": {"hondo": self._valor_desbordante()}}
 
         with caplog.at_level(logging.WARNING, logger="sky_claw.app.db.journal"):
             await journal.fail_operation(entry_id, error="fallo real", **kwargs)
@@ -1731,3 +1759,54 @@ class TestFailOperationBoundaryEndurecido:
         finally:
             await lifecycle_a.shutdown_all()
             await lifecycle_b.shutdown_all()
+
+    # -- C1 sin depender de la versión: se inyecta el RecursionError ----------
+    #
+    # Los tests de profundidad real se saltean si el runtime tolera 20 000
+    # niveles, así que por sí solos no garantizan cobertura. Estos dos la
+    # garantizan siempre: prueban el CONTRATO —el clasificador tolera
+    # RecursionError— sin depender de cuántos frames consume el parser de C en
+    # la versión de turno, que es justo el detalle que hizo pasar en falso al
+    # test anterior en py3.12.
+
+    @pytest.mark.asyncio
+    async def test_recursion_error_en_la_metadata_previa_no_hunde_el_reporte(self, journal, monkeypatch):
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+        original = json.loads
+
+        def loads_que_desborda(s, *args, **kwargs):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(json, "loads", loads_que_desborda)
+        try:
+            await journal.fail_operation(entry_id, error="fallo real")
+        finally:
+            monkeypatch.setattr(json, "loads", original)
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"error": "fallo real"}
+
+    @pytest.mark.asyncio
+    async def test_recursion_error_en_la_metadata_del_caller_no_hunde_el_reporte(self, journal, monkeypatch):
+        entry_id = await self._entrada(journal)
+        original = json.dumps
+        vistos: list[object] = []
+
+        def dumps_que_desborda_solo_el_auxiliar(obj, *args, **kwargs):
+            # Solo la PRIMERA serialización (la validación del argumento) desborda;
+            # la de la fusión debe seguir funcionando para que la fila se escriba.
+            vistos.append(obj)
+            if len(vistos) == 1:
+                raise RecursionError("maximum recursion depth exceeded")
+            return original(obj, *args, **kwargs)
+
+        monkeypatch.setattr(json, "dumps", dumps_que_desborda_solo_el_auxiliar)
+        try:
+            await journal.fail_operation(entry_id, error="fallo real", metadata={"hondo": [1]})
+        finally:
+            monkeypatch.setattr(json, "dumps", original)
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"error": "fallo real"}
