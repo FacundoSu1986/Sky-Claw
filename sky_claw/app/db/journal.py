@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import pathlib
@@ -832,6 +833,64 @@ class OperationJournal:
         )
         return op_id
 
+    @staticmethod
+    def _metadata_previa_utilizable(crudo: object) -> tuple[dict[str, Any], str | None]:
+        """Clasifica la metadata ya presente en la fila antes de fusionarla.
+
+        Devuelve ``(metadata_previa, motivo_de_descarte)``. El motivo es ``None``
+        cuando la metadata previa se puede fusionar; en cualquier otro caso el
+        primer elemento es ``{}`` y el motivo nombra por qué se descartó:
+
+        - ``invalid_json``: la columna no parsea como JSON (fila truncada, texto
+          plano, o un tipo que ``json.loads`` no acepta).
+        - ``non_object_json``: parsea, pero la raíz no es un objeto — ``[]``,
+          ``"texto"``, un número. No se puede fusionar clave a clave.
+        - ``non_serializable_json``: es un objeto, pero contiene valores que
+          ``json.dumps(..., allow_nan=False)`` rechaza. ``json.loads`` **acepta**
+          los literales ``NaN``/``Infinity`` que ``json.dumps`` estricto no emite,
+          así que una fila legacy puede llegar acá con un ``float('nan')`` adentro
+          y hacer fallar la re-serialización de la fusión.
+
+        Es deliberadamente total: no propaga. Una fila legacy corrupta no puede
+        impedir que se registre un fallo nuevo — el error que ``fail_operation``
+        está intentando persistir tiene prioridad sobre el defecto de la metadata
+        vieja.
+        """
+        if not crudo:
+            return {}, None
+        try:
+            valor = json.loads(crudo)  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            return {}, "invalid_json"
+        if not isinstance(valor, dict):
+            return {}, "non_object_json"
+        try:
+            json.dumps(valor, allow_nan=False)
+        except ValueError:
+            return {}, "non_serializable_json"
+        return valor, None
+
+    @staticmethod
+    def _avisar_metadata_previa_descartada(entry_id: int, crudo: object, motivo: str) -> None:
+        """Emite el WARNING de metadata previa descartada, sin filtrar el contenido.
+
+        El blob **no** se loguea: puede contener rutas, nombres de perfil de MO2 o
+        nombres de mod. Solo sale información diagnóstica segura — qué fila, por
+        qué se descartó, cuánto ocupaba y el SHA-256 del valor crudo, que alcanza
+        para correlacionar dos filas con el mismo defecto sin revelar ninguna.
+        """
+        bruto = crudo if isinstance(crudo, bytes) else str(crudo).encode("utf-8", errors="replace")
+        logger.warning(
+            "Metadata previa ilegible descartada al registrar el fallo de la operación",
+            extra={
+                "event": "journal_metadata_previa_descartada",
+                "entry_id": entry_id,
+                "motivo": motivo,
+                "metadata_previa_bytes": len(bruto),
+                "metadata_previa_sha256": hashlib.sha256(bruto).hexdigest(),
+            },
+        )
+
     async def fail_operation(self, entry_id: int, error: str = "", metadata: dict[str, Any] | None = None) -> None:
         """
         Marcar una operación como fallida, conservando su evidencia.
@@ -868,10 +927,24 @@ class OperationJournal:
         Se serializa con ``allow_nan=False`` porque el default de ``json.dumps``
         emite ``NaN``/``Infinity``, que **no son JSON válido**: la columna quedaría
         con ``json_valid() == 0`` y ``json_extract`` devolvería ``NULL`` en
-        silencio — otra pérdida de evidencia, disfrazada de dato presente. Con la
-        bandera, el ``ValueError`` ocurre dentro de la transacción y el rollback
-        conserva la atomicidad. Mismo criterio en :meth:`begin_operation`, el otro
-        escritor de la columna.
+        silencio — otra pérdida de evidencia, disfrazada de dato presente. Mismo
+        criterio en :meth:`begin_operation`, el otro escritor de la columna.
+
+        **Dato legacy roto ≠ input nuevo inválido**, y los dos caminos son
+        opuestos a propósito:
+
+        - *Input nuevo inválido* (``metadata`` con ``NaN``, ``Infinity`` o un
+          objeto no serializable): se valida **antes** de tocar la DB y se
+          propaga el ``ValueError``. No cambia el estado, no toca la metadata y
+          no abre una transacción que después haya que revertir.
+        - *Metadata previa corrupta* en la fila: **nunca** impide registrar el
+          fallo. Se clasifica con :meth:`_metadata_previa_utilizable`, se
+          descarta, se emite un ``WARNING`` estructurado
+          (``event="journal_metadata_previa_descartada"``) y la operación queda
+          ``FAILED`` con la evidencia nueva. El fallo que se está registrando
+          importa más que la metadata vieja que ya estaba rota. El warning lleva
+          solo ``entry_id``, motivo, tamaño en bytes y SHA-256 del valor crudo:
+          **el blob no se loguea**, porque puede contener rutas o nombres.
 
         Una entrada inexistente es un no-op silencioso, como antes.
 
@@ -879,7 +952,22 @@ class OperationJournal:
             entry_id: ID de la entrada a actualizar.
             error: Mensaje de error. Vacío = no se registra la clave ``error``.
             metadata: Metadatos adicionales del error.
+
+        Raises:
+            ValueError: si ``metadata`` no es representable como JSON estricto.
+                La fila queda intacta.
         """
+        evidencia: dict[str, Any] = dict(metadata) if metadata else {}
+        if error:
+            evidencia["error"] = error
+
+        # Fail-fast sobre el input del caller, FUERA de la transacción: si la
+        # evidencia nueva no se puede serializar, la fila no se toca. Adentro, el
+        # mismo ValueError obligaría a un rollback y dejaría el estado sin cambiar
+        # igual — pero habiendo abierto y revertido una transacción para nada.
+        if evidencia:
+            json.dumps(evidencia, allow_nan=False)
+
         db = await self._ensure_connected()
 
         async with self._lock:
@@ -889,10 +977,6 @@ class OperationJournal:
                     (OperationStatus.FAILED.value, entry_id),
                 )
 
-                evidencia: dict[str, Any] = dict(metadata) if metadata else {}
-                if error:
-                    evidencia["error"] = error
-
                 if evidencia:
                     async with db.execute(
                         "SELECT metadata FROM journal_entries WHERE id = ?",
@@ -900,11 +984,12 @@ class OperationJournal:
                     ) as cursor:
                         row = await cursor.fetchone()
                     if row is not None:
-                        fusionada: dict[str, Any] = json.loads(row[0]) if row[0] else {}
-                        fusionada.update(evidencia)
+                        previa, motivo = self._metadata_previa_utilizable(row[0])
+                        if motivo is not None:
+                            self._avisar_metadata_previa_descartada(entry_id, row[0], motivo)
                         await db.execute(
                             "UPDATE journal_entries SET metadata = ? WHERE id = ?",
-                            (json.dumps(fusionada, allow_nan=False), entry_id),
+                            (json.dumps({**previa, **evidencia}, allow_nan=False), entry_id),
                         )
 
                 await db.commit()

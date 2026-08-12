@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import pathlib
@@ -715,3 +716,212 @@ class TestFailOperationEvidencia:
 
         entry = await journal.get_operation_by_id(entry_id)
         assert entry.metadata == {"error": "del caller"}
+
+
+class TestFailOperationMetadataLegacyCorrupta:
+    """Una fila legacy corrupta no puede impedir que se registre un fallo nuevo.
+
+    Regresión de la fusión en Python: al leer la metadata previa y hacerle
+    ``.update()``, cuatro formas de fila corrupta —``[]``, ``"texto"``, JSON
+    truncado y ``{"ratio": NaN}``— hacían estallar ``fail_operation`` con
+    ``AttributeError``/``JSONDecodeError``/``ValueError`` **después** del UPDATE
+    del estado, así que el rollback dejaba la operación en ``started``: el fallo
+    real nunca quedaba registrado, y encima la excepción que veía el caller no
+    era la suya.
+
+    El contrato que fijan estos tests distingue dos cosas que se parecen y no lo
+    son: **dato legacy roto** (se descarta, se avisa, la operación queda FAILED)
+    contra **input nuevo inválido** (se rechaza fail-fast, la fila no se toca).
+    """
+
+    #: (blob crudo en la columna, motivo esperado en el WARNING)
+    CORRUPTAS = [
+        pytest.param("[]", "non_object_json", id="lista_json"),
+        pytest.param('"texto"', "non_object_json", id="string_json"),
+        pytest.param("42", "non_object_json", id="numero_json"),
+        pytest.param("texto plano", "invalid_json", id="texto_plano"),
+        pytest.param('{"a":', "invalid_json", id="json_truncado"),
+        pytest.param('{"ratio": NaN}', "non_serializable_json", id="nan_legacy"),
+    ]
+
+    @staticmethod
+    async def _entrada_con_metadata_cruda(journal, crudo) -> int:
+        """Crea una operación STARTED y le inyecta ``crudo`` en la columna.
+
+        Por SQL directo a propósito: ``begin_operation`` serializa con
+        ``allow_nan=False`` y no puede producir estas filas. Son filas escritas
+        por versiones anteriores o por corrupción, que es exactamente el caso que
+        se está cubriendo.
+        """
+        tx_id = await journal.begin_transaction(description="tx legacy", mod_id=None)
+        entry_id = await journal.begin_operation(
+            agent_id="agente_legacy",
+            operation_type=OperationType.FILE_MODIFY,
+            target_path="/test/path/mod.esp",
+            transaction_id=tx_id,
+        )
+        await journal._db.execute(
+            "UPDATE journal_entries SET metadata = ? WHERE id = ?",
+            (crudo, entry_id),
+        )
+        await journal._db.commit()
+        return entry_id
+
+    @staticmethod
+    async def _fila_cruda(journal, entry_id):
+        """Lee estado y metadata por SQL, sin pasar por ``get_operation_by_id``.
+
+        Hace falta acá porque ``_row_to_entry`` hace ``json.loads`` sin guarda:
+        leer una fila con metadata corrupta por la API pública explota. Es un
+        defecto del camino de LECTURA, previo a este PR y fuera de su alcance —
+        estos tests cubren el de ESCRITURA y no pueden depender de él.
+        """
+        async with journal._db.execute(
+            "SELECT status, metadata FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ) as cursor:
+            return await cursor.fetchone()
+
+    # -- el fallo real gana sobre el defecto legacy ---------------------------
+
+    @pytest.mark.parametrize(("crudo", "motivo"), CORRUPTAS)
+    @pytest.mark.asyncio
+    async def test_metadata_previa_corrupta_no_impide_registrar_el_fallo(self, journal, crudo, motivo):
+        entry_id = await self._entrada_con_metadata_cruda(journal, crudo)
+
+        await journal.fail_operation(entry_id, error="fallo real")
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"error": "fallo real"}
+
+    @pytest.mark.parametrize(("crudo", "motivo"), CORRUPTAS)
+    @pytest.mark.asyncio
+    async def test_metadata_previa_corrupta_no_propaga_su_excepcion(self, journal, crudo, motivo):
+        """Ni ``JSONDecodeError``, ni ``AttributeError``, ni ``ValueError``."""
+        entry_id = await self._entrada_con_metadata_cruda(journal, crudo)
+
+        await journal.fail_operation(entry_id, error="fallo real", metadata={"exit_code": 3})
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.metadata == {"exit_code": 3, "error": "fallo real"}
+
+    @pytest.mark.parametrize(("crudo", "motivo"), CORRUPTAS)
+    @pytest.mark.asyncio
+    async def test_la_columna_queda_con_json_valido_tras_descartar(self, journal, crudo, motivo):
+        """El descarte no puede dejar la fila igual de rota que estaba."""
+        entry_id = await self._entrada_con_metadata_cruda(journal, crudo)
+
+        await journal.fail_operation(entry_id, error="fallo real")
+
+        async with journal._db.execute(
+            "SELECT json_valid(metadata), json_extract(metadata, '$.error') FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ) as cursor:
+            valido, mensaje = await cursor.fetchone()
+        assert valido == 1
+        assert mensaje == "fallo real"
+
+    # -- el descarte se avisa, y el aviso no filtra el blob -------------------
+
+    @pytest.mark.parametrize(("crudo", "motivo"), CORRUPTAS)
+    @pytest.mark.asyncio
+    async def test_el_descarte_emite_warning_con_diagnostico_seguro(self, journal, caplog, crudo, motivo):
+        entry_id = await self._entrada_con_metadata_cruda(journal, crudo)
+
+        with caplog.at_level(logging.WARNING, logger="sky_claw.app.db.journal"):
+            await journal.fail_operation(entry_id, error="fallo real")
+
+        avisos = [r for r in caplog.records if getattr(r, "event", None) == "journal_metadata_previa_descartada"]
+        assert len(avisos) == 1, "el descarte de metadata previa no puede ser silencioso"
+        aviso = avisos[0]
+        assert aviso.entry_id == entry_id
+        assert aviso.motivo == motivo
+        assert aviso.metadata_previa_bytes == len(crudo.encode("utf-8"))
+        assert aviso.metadata_previa_sha256 == hashlib.sha256(crudo.encode("utf-8")).hexdigest()
+
+    @pytest.mark.asyncio
+    async def test_el_warning_no_incluye_el_blob_descartado(self, journal, caplog):
+        """El blob puede traer rutas, perfiles de MO2 o nombres de mod."""
+        secreto = r'{"path": "C:\\Users\\facundo\\Documents\\My Games\\Skyrim", '
+        entry_id = await self._entrada_con_metadata_cruda(journal, secreto)
+
+        with caplog.at_level(logging.WARNING, logger="sky_claw.app.db.journal"):
+            await journal.fail_operation(entry_id, error="fallo real")
+
+        (aviso,) = [r for r in caplog.records if getattr(r, "event", None) == "journal_metadata_previa_descartada"]
+        rendido = aviso.getMessage() + repr(aviso.__dict__)
+        assert "facundo" not in rendido
+        assert "Skyrim" not in rendido
+        assert secreto not in rendido
+
+    # -- control: la metadata previa sana sigue fusionándose ------------------
+
+    @pytest.mark.asyncio
+    async def test_control_metadata_previa_valida_se_fusiona_y_no_avisa(self, journal, caplog):
+        entry_id = await self._entrada_con_metadata_cruda(journal, '{"kind": "ok"}')
+
+        with caplog.at_level(logging.WARNING, logger="sky_claw.app.db.journal"):
+            await journal.fail_operation(entry_id, error="fallo real")
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"kind": "ok", "error": "fallo real"}
+        assert not [r for r in caplog.records if getattr(r, "event", None) == "journal_metadata_previa_descartada"]
+
+    # -- la otra mitad del contrato: input nuevo inválido NO es lo mismo ------
+
+    @pytest.mark.parametrize(
+        "invalida",
+        [
+            pytest.param({"ratio": float("nan")}, id="nan"),
+            pytest.param({"ratio": float("inf")}, id="inf"),
+            pytest.param({"ratio": float("-inf")}, id="-inf"),
+            pytest.param({"obj": object()}, id="no_serializable"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_metadata_nueva_invalida_deja_la_fila_intacta(self, journal, invalida):
+        """Input nuevo inválido: excepción, estado anterior y metadata anteriores intactos."""
+        entry_id = await self._entrada_con_metadata_cruda(journal, '{"previa": true}')
+
+        with pytest.raises((ValueError, TypeError)):
+            await journal.fail_operation(entry_id, error="boom", metadata=invalida)
+
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.STARTED
+        assert entry.metadata == {"previa": True}
+
+    @pytest.mark.parametrize(("crudo", "motivo"), CORRUPTAS)
+    @pytest.mark.asyncio
+    async def test_input_invalido_tampoco_toca_una_fila_ya_corrupta(self, journal, crudo, motivo):
+        """La recuperación de la fila legacy no puede convertirse en excusa para escribirla.
+
+        Si el caller manda evidencia irrepresentable, no hay nada válido con qué
+        reemplazar el blob: la fila queda tal cual estaba, corrupta y ``started``.
+        """
+        entry_id = await self._entrada_con_metadata_cruda(journal, crudo)
+
+        with pytest.raises(ValueError):
+            await journal.fail_operation(entry_id, error="boom", metadata={"ratio": float("nan")})
+
+        estado, metadata = await self._fila_cruda(journal, entry_id)
+        assert estado == OperationStatus.STARTED.value
+        assert metadata == crudo
+
+    @pytest.mark.asyncio
+    async def test_la_validacion_del_input_ocurre_antes_de_tocar_la_db(self, journal, monkeypatch):
+        """Discrimina fail-fast de rollback: con la DB inalcanzable, igual falla por el input.
+
+        Si la validación viviera dentro de la transacción, este test vería el
+        centinela de ``_ensure_connected`` en vez del ``ValueError`` — y eso
+        significaría que se abrió una transacción para después revertirla.
+        """
+
+        async def _explota():
+            raise AssertionError("no se debe tocar la DB con metadata inválida")
+
+        monkeypatch.setattr(journal, "_ensure_connected", _explota)
+
+        with pytest.raises(ValueError):
+            await journal.fail_operation(1, error="boom", metadata={"ratio": float("nan")})
