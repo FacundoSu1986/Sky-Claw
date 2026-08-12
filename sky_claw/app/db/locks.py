@@ -45,6 +45,10 @@ from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 
+# db_lifecycle no importa nada de sky_claw, así que traer su excepción no crea
+# ciclo (el DI del manager sí se mantiene sin tipar en runtime, ver __init__).
+from sky_claw.app.core.db_lifecycle import DatabasePathPoisonedError
+
 if TYPE_CHECKING:
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 
@@ -86,6 +90,16 @@ class SnapshotRollbackError(LockError):
     the no-mutation guarantee is surfaced loudly instead of being swallowed.
     On the exception path (a real error inside the context) a failed restore is
     only logged — it must never mask the original exception.
+    """
+
+
+class LockDatabaseUnavailableError(LockError):
+    """La base de locks quedó fail-closed y no se puede consultar ni mutar.
+
+    Traduce ``DatabasePathPoisonedError`` del lifecycle a la taxonomía de este
+    módulo: el path se envenena cuando una conexión compartida se invalidó y su
+    cierre falló, y sin esta traducción el error saldría como ``RuntimeError``
+    crudo por los seis métodos públicos que resuelven la conexión.
     """
 
 
@@ -284,7 +298,15 @@ class DistributedLockManager:
         if self._conn is None:
             raise LockError("LockManager not initialized — call initialize() first")
         if self._lifecycle is not None:
-            self._conn = await self._lifecycle.refresh_connection(self._db_path, self._conn)
+            try:
+                self._conn = await self._lifecycle.refresh_connection(self._db_path, self._conn)
+            except DatabasePathPoisonedError as error:
+                # Se traduce acá, en el único punto por el que pasan los seis
+                # métodos públicos, y no en cada uno: `DatabasePathPoisonedError`
+                # es un `RuntimeError`, así que sin traducir se escaparía de la
+                # taxonomía `LockError` que los llamadores documentan capturar y
+                # les llegaría como un error genérico sin diagnóstico.
+                raise LockDatabaseUnavailableError(f"Lock database is unavailable: {self._db_path}") from error
         return self._conn
 
     # ------------------------------------------------------------------
@@ -677,7 +699,21 @@ class SnapshotTransactionLock:
             )
         if not verify_db:
             return
-        info = await self._lock_manager.get_lock_info(self._resource_id)
+        try:
+            info = await self._lock_manager.get_lock_info(self._resource_id)
+        except LockDatabaseUnavailableError as error:
+            # No poder CONSULTAR la propiedad no es un error de cuerpo cualquiera:
+            # es exactamente el caso en que la exclusividad dejó de ser
+            # verificable. Si se propagara tal cual, `__aexit__` lo clasificaría
+            # como excepción del cuerpo y restauraría los snapshots — que es lo
+            # que el contrato prohíbe justamente acá, porque otro agente pudo
+            # haber reclamado la lease vencida y mutado los archivos. Un lease
+            # que no se puede verificar se trata como perdido.
+            self._lease_lost = True
+            raise LockLeaseLostError(
+                f"Lease for '{self._resource_id}' (agent '{self._agent_id}') "
+                "cannot be verified — the lock database is unavailable"
+            ) from error
         if (
             info is None
             or self.lock_info is None

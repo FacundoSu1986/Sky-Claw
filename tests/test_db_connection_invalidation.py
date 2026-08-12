@@ -31,6 +31,7 @@ import ast
 import asyncio
 import sqlite3
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import aiosqlite
 import pytest
@@ -41,7 +42,12 @@ from sky_claw.app.core.db_lifecycle import (
     DatabasePathPoisonedError,
 )
 from sky_claw.app.db.journal import OperationJournal
-from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.locks import (
+    DistributedLockManager,
+    LockDatabaseUnavailableError,
+    LockLeaseLostError,
+    SnapshotTransactionLock,
+)
 
 RAIZ = Path(__file__).resolve().parents[1]
 
@@ -149,16 +155,74 @@ def test_ancla_wrappers_que_cachean_conexion() -> None:
     )
 
 
-def test_ancla_los_que_revalidan_llaman_al_lifecycle() -> None:
-    """Los clasificados 'revalida' consumen la decisión, no la reimplementan."""
-    for ruta, estado in sorted(WRAPPERS_QUE_CACHEAN_CONEXION.items()):
-        if estado != "revalida":
-            continue
-        fuente = (RAIZ / ruta).read_text(encoding="utf-8")
-        assert "refresh_connection(" in fuente, (
-            f"{ruta} cachea una conexión del lifecycle y está declarado como "
-            "'revalida', pero no llama a refresh_connection(): quedaría con una "
-            "referencia obsoleta cuando otro wrapper ponga la conexión en cuarentena."
+# Para cada wrapper 'revalida': el atributo donde cachea la conexión, los puntos
+# por los que se revalida, y los métodos que pueden LEER el atributo sin pasar
+# por ellos.
+#
+# La exención no es discrecional: son los métodos que ESTABLECEN o DESTRUYEN la
+# conexión. Revalidar ahí no tendría sentido —``open`` es quien la consigue y
+# ``close`` quien la suelta—, y son los únicos dos roles que legítimamente
+# tocan el atributo crudo. Cualquier otro método que lo lea está usando la
+# conexión para trabajar, y entonces debe revalidarla.
+REVALIDACION_POR_WRAPPER = {
+    "sky_claw/app/agent/router.py": ("_conn", {"refresh_connection"}, {"open", "close"}),
+    "sky_claw/app/db/async_registry.py": (
+        "_conn",
+        {"refresh_connection", "_revalidar_conexion"},
+        {"open", "close"},
+    ),
+    "sky_claw/app/db/journal.py": ("_db", {"refresh_connection", "_ensure_connected"}, {"open", "close"}),
+    "sky_claw/app/db/locks.py": ("_conn", {"refresh_connection", "_ensure_conn"}, {"initialize", "close"}),
+}
+
+
+def _lee_atributo(funcion: ast.AST, attr: str) -> bool:
+    """True si la función LEE ``self.<attr>`` (uso, no asignación)."""
+    return any(
+        isinstance(nodo, ast.Attribute)
+        and nodo.attr == attr
+        and isinstance(nodo.ctx, ast.Load)
+        and isinstance(nodo.value, ast.Name)
+        and nodo.value.id == "self"
+        for nodo in ast.walk(funcion)
+    )
+
+
+def _llama_a(funcion: ast.AST, nombres: set[str]) -> bool:
+    return any(
+        isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr in nombres
+        for nodo in ast.walk(funcion)
+    )
+
+
+def test_ancla_todo_uso_de_la_conexion_cacheada_se_revalida() -> None:
+    """Enumera los MÉTODOS, no la presencia de la llamada en el archivo.
+
+    Verificar que ``refresh_connection(`` aparezca una vez por módulo no ancla
+    nada: un método nuevo que use ``self._conn`` sin revalidar deja los tests en
+    verde y reproduce exactamente el hermano sin invalidar que este contrato
+    existe para prevenir. Acá se enumera cada método que lee la conexión
+    cacheada y se exige que pase por la revalidación, con las excepciones
+    congeladas por igualdad.
+    """
+    declarados = {r for r, e in WRAPPERS_QUE_CACHEAN_CONEXION.items() if e == "revalida"}
+    assert declarados == set(REVALIDACION_POR_WRAPPER), "todo wrapper 'revalida' necesita su receta de revalidación acá"
+
+    for ruta, (attr, chokepoints, exentos) in sorted(REVALIDACION_POR_WRAPPER.items()):
+        arbol = ast.parse((RAIZ / ruta).read_text(encoding="utf-8"), filename=ruta)
+        sin_revalidar = {
+            funcion.name
+            for funcion in ast.walk(arbol)
+            if isinstance(funcion, ast.AsyncFunctionDef | ast.FunctionDef)
+            and _lee_atributo(funcion, attr)
+            and not _llama_a(funcion, chokepoints)
+        }
+        assert sin_revalidar == exentos, (
+            f"En {ruta} cambió el conjunto de métodos que leen self.{attr} sin "
+            f"revalidar: {sorted(sin_revalidar)} (esperado {sorted(exentos)}). "
+            "Un método que usa la conexión cacheada tiene que pasar por "
+            f"{sorted(chokepoints)}; sólo los que la establecen o la cierran "
+            "quedan exentos."
         )
 
 
@@ -580,6 +644,69 @@ async def test_t9_cancelacion_tras_un_cierre_exitoso_no_envenena(tmp_path: Path)
     assert not conn._running, "el cierre tenía que haber terminado igual"
     assert not lifecycle.is_path_poisoned(db), "se envenenó el path por una cancelación, no por un fallo"
     assert str(db.resolve()) not in lifecycle._connections, "el cierre exitoso no cedió ownership"
+
+
+# ===========================================================================
+# T10 — un path envenenado no puede disfrazarse de error de cuerpo
+# ===========================================================================
+
+
+async def test_t10_propiedad_no_verificable_es_lease_perdida(tmp_path: Path) -> None:
+    """Fail-closed no puede degenerar en pisar los archivos de otro agente.
+
+    Hacer que `_ensure_conn` pueda lanzar `DatabasePathPoisonedError` metió un
+    tipo de excepción nuevo en `assert_owned`. Sin traducirlo, `__aexit__` lo
+    clasificaría como una excepción del cuerpo y restauraría los snapshots
+    justo cuando la exclusividad dejó de ser verificable — y otro agente pudo
+    haber reclamado la lease vencida y mutado esos archivos.
+    """
+    db = tmp_path / "lease.db"
+    lifecycle = _lifecycle(db)
+    locks = DistributedLockManager(str(db), lifecycle=lifecycle)
+    await locks.initialize()
+    conn = locks._conn
+    assert conn is not None
+
+    gestor_snapshots = AsyncMock()
+    snapshot = SnapshotTransactionLock(
+        resource_id="recurso",
+        agent_id="agente",
+        lock_manager=locks,
+        snapshot_manager=gestor_snapshots,
+        target_files=[],
+    )
+    cierre_real = conn.close
+    causa: BaseException | None = None
+
+    async def _falla() -> None:
+        raise sqlite3.OperationalError("close imposible")
+
+    # El contexto termina en lease perdida, NO en la excepción del cuerpo: es
+    # esa clasificación la que decide si se restauran los snapshots.
+    with pytest.raises(LockLeaseLostError):
+        async with snapshot:
+            conn.close = _falla  # type: ignore[method-assign]
+            await lifecycle.quarantine_connection(db, conn)
+            assert lifecycle.is_path_poisoned(db)
+
+            with pytest.raises(LockLeaseLostError) as excinfo:
+                await snapshot.assert_owned()
+            causa = excinfo.value.__cause__
+
+            assert snapshot.lease_lost, "una propiedad no verificable debe marcar la lease como perdida"
+
+            # Restaurar antes de salir para que el teardown pueda cerrar.
+            conn.close = cierre_real  # type: ignore[method-assign]
+            lifecycle._poisoned_paths.clear()
+
+    assert isinstance(causa, LockDatabaseUnavailableError), "la causa debe venir de la taxonomía del módulo"
+    assert isinstance(causa.__cause__, DatabasePathPoisonedError), (
+        "se perdió el diagnóstico de por qué no se pudo verificar"
+    )
+    gestor_snapshots.restore_snapshot.assert_not_called()
+    gestor_snapshots.restore.assert_not_called()
+
+    await lifecycle.shutdown_all()
 
 
 # ===========================================================================
