@@ -483,12 +483,20 @@ async def test_validation_failure_deja_tx_pendiente(
     """La validación falla después del runner: staging puede quedar parcial.
 
     También ancla la NO-duplicación (review Qodo, PR #464, "Duplicación de
-    señal"): antes del fix, el guard de ``validate_dyndolod_output`` logueaba el
-    incidente Y el handler de dominio lo volvía a loguear al capturar el
-    ``DynDOLODExecutionError`` que ese mismo guard lanza — 2 registros ERROR (más
-    el de `_log_result_error`, un tercero de esquema distinto) por 1 incidente,
-    ninguno correlacionable por `tx_id`. El guard ya no loguea; su mensaje llega
-    al handler vía `str(exc)`.
+    señal" + "Sobreconteo de señal"): antes del primer fix, el guard de
+    ``validate_dyndolod_output`` logueaba el incidente Y el handler de dominio lo
+    volvía a loguear al capturar el ``DynDOLODExecutionError`` que ese mismo
+    guard lanza. El guard ya no loguea; su mensaje llega al handler vía
+    ``str(exc)``. Y antes del segundo fix, tanto el handler como
+    ``_log_result_error`` llevaban ``pipeline_stage`` — un ``COUNT(*) WHERE
+    pipeline_stage=9`` contaba 2 por este incidente (más el CRITICAL de rollback
+    incompleto que este mismo escenario dispara: 3, no 2 — la primera versión de
+    este test filtraba solo ``levelno == ERROR`` y ese CRITICAL quedaba invisible
+    al ancla, exactamente el hueco que la review señaló). Ahora
+    ``_log_result_error`` está exento (`_REGISTROS_EXENTOS_DE_ETAPA`, identificado
+    por `operation_type`), así que el conteo por etapa baja a 2: el handler +
+    el CRITICAL de rollback incompleto — dos hechos reales distintos (la etapa
+    falló, y el rollback no cerró), no una repetición del mismo incidente.
     """
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
@@ -501,23 +509,28 @@ async def test_validation_failure_deja_tx_pendiente(
 
     service._runner = mock_runner
 
-    with caplog.at_level(logging.ERROR, logger="SkyClaw.DynDOLODPipelineService"):
+    with caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"):
         result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
     assert result["rolled_back"] is False
     mock_journal.mark_transaction_rolled_back.assert_not_called()
 
-    errores = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(errores) == 2, (
-        f"se esperaban 2 registros ERROR (handler + _log_result_error), no {len(errores)}: "
-        f"{[r.getMessage() for r in errores]}"
+    con_etapa = [r for r in caplog.records if getattr(r, "pipeline_stage", None) is not None]
+    assert len(con_etapa) == 2, (
+        f"se esperaban 2 registros con pipeline_stage (handler + rollback incompleto), "
+        f"no {len(con_etapa)}: {[(r.levelname, r.getMessage()) for r in con_etapa]}"
     )
-    textos = [r.getMessage() for r in errores] + [str(getattr(r, "error", "")) for r in errores]
+    textos = [r.getMessage() for r in con_etapa]
     assert any("DynDOLOD output validation failed" in texto for texto in textos), (
         "el mensaje del guard se perdió al dejar de loguearlo ahí directamente"
     )
-    assert all(r.tx_id is not None for r in errores), "los 2 registros deben poder correlacionarse por tx_id"
+    assert all(r.tx_id is not None for r in con_etapa), "los registros con etapa deben correlacionarse por tx_id"
+
+    outcome = [r for r in caplog.records if getattr(r, "operation_type", None) == "dyndolod_pipeline_failed"]
+    assert len(outcome) == 1, "el outcome-record (_log_result_error) debe seguir emitiéndose, sin pipeline_stage"
+    assert getattr(outcome[0], "pipeline_stage", None) is None
+    assert outcome[0].tx_id is not None
 
 
 @pytest.mark.asyncio
@@ -537,8 +550,9 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     donde no se sabe si DynDOLOD escribió algo.
 
     También ancla la NO-duplicación (review Qodo, PR #464, "Duplicación de
-    señal") — ver `test_validation_failure_deja_tx_pendiente` para el detalle;
-    acá se ejercita el guard hermano de "sin directorio de salida localizable".
+    señal" + "Sobreconteo de señal") — ver `test_validation_failure_deja_tx_pendiente`
+    para el detalle del conteo esperado; acá se ejercita el guard hermano de
+    "sin directorio de salida localizable".
     """
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result(dyndolod_output=None))
@@ -551,7 +565,7 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
 
     service._runner = mock_runner
 
-    with caplog.at_level(logging.ERROR, logger="SkyClaw.DynDOLODPipelineService"):
+    with caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"):
         result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
 
     assert result["success"] is False
@@ -561,16 +575,21 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     # Sin path no hay nada que validar: el fallo es anterior a la validación.
     mock_runner.validate_dyndolod_output.assert_not_awaited()
 
-    errores = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(errores) == 2, (
-        f"se esperaban 2 registros ERROR (handler + _log_result_error), no {len(errores)}: "
-        f"{[r.getMessage() for r in errores]}"
+    con_etapa = [r for r in caplog.records if getattr(r, "pipeline_stage", None) is not None]
+    assert len(con_etapa) == 2, (
+        f"se esperaban 2 registros con pipeline_stage (handler + rollback incompleto), "
+        f"no {len(con_etapa)}: {[(r.levelname, r.getMessage()) for r in con_etapa]}"
     )
-    textos = [r.getMessage() for r in errores] + [str(getattr(r, "error", "")) for r in errores]
+    textos = [r.getMessage() for r in con_etapa]
     assert any("DynDOLOD no dejó un directorio de salida localizable" in texto for texto in textos), (
         "el mensaje del guard se perdió al dejar de loguearlo ahí directamente"
     )
-    assert all(r.tx_id is not None for r in errores), "los 2 registros deben poder correlacionarse por tx_id"
+    assert all(r.tx_id is not None for r in con_etapa), "los registros con etapa deben correlacionarse por tx_id"
+
+    outcome = [r for r in caplog.records if getattr(r, "operation_type", None) == "dyndolod_pipeline_failed"]
+    assert len(outcome) == 1, "el outcome-record (_log_result_error) debe seguir emitiéndose, sin pipeline_stage"
+    assert getattr(outcome[0], "pipeline_stage", None) is None
+    assert outcome[0].tx_id is not None
 
 
 @pytest.mark.asyncio
@@ -2684,6 +2703,17 @@ _REGISTROS_EXENTOS_DE_ETAPA = {
         "etapa haría que un fallo que no implica que DynDOLOD falló se contara "
         "como si lo hubiera hecho, en cualquier alerta agrupando por pipeline_stage."
     ),
+    "dyndolod_pipeline_failed": (
+        "_log_result_error es el outcome-record del fallo, gemelo de _log_result "
+        "(éxito, que usa info y tampoco lleva la etapa) — SIEMPRE se emite junto "
+        "al logger.error del handler que lo llama, nunca solo, así que por "
+        "construcción es una repetición mecánica del MISMO incidente que ese "
+        "handler ya reportó con pipeline_stage. Llevarla también acá duplicaba el "
+        "conteo de un COUNT(*) WHERE pipeline_stage=9 (review Qodo, PR #464, "
+        "'Sobreconteo de señal') — el mismo problema que 'Duplicación de señal' ya "
+        "había cerrado, reintroducido por el propio fix. Se identifica por "
+        "operation_type, que ya tenía antes de que se le agregara pipeline_stage."
+    ),
 }
 
 
@@ -2785,6 +2815,41 @@ def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
         f"registros de fallo de dyndolod_service.py sin cobertura completa: {sin_cobertura}. "
         f'Agregar extra={{"pipeline_stage": {_NOMBRE_DE_LA_CONSTANTE}}}, o si no es un fallo de la '
         f"etapa, un operation_type propio en _REGISTROS_EXENTOS_DE_ETAPA + tx_id (SOP §5 regla 5)."
+    )
+
+
+def test_todo_registro_con_etapa_lleva_tx_id() -> None:
+    """Todo registro CON ``pipeline_stage`` también lleva ``tx_id`` en ``extra``.
+
+    Ancla separada de `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`
+    a propósito: esa verifica `tx_id` solo para el caso de EXENCIÓN; esta cubre
+    el caso normal (con etapa), que se coló sin `tx_id` en 4 sitios distintos
+    durante esta misma review (review Qodo, PR #464, "Correlación incompleta" +
+    "tx_id ausente" — dos rondas encontrando el mismo hueco en sitios distintos,
+    la clase de defecto que este repo señala como dominante: arreglar un hermano
+    y dejar al resto igual).
+
+    `tx_id` en el TEXTO interpolado del mensaje (``"TX %d"``) no cuenta: una
+    consulta estructurada no puede filtrar por prosa. `_valor_de_clave_en_extra`
+    solo mira el dict de ``extra``, así que un mensaje con ``tx_id`` humano-legible
+    pero sin la clave en `extra` sigue rompiendo este ancla — es la distinción
+    exacta que motivó "Correlación incompleta".
+
+    El único caso donde `tx_id` legítimamente vale `None` (el preflight en rojo,
+    antes de que la transacción exista) ya NO es una excepción que este ancla
+    tenga que conocer: `tx_id` se declara antes del preflight precisamente para
+    que la regla sea universal — `None` es un valor honesto para "sin TX", no la
+    ausencia de la clave.
+    """
+    arbol = _modulo_servicio_ast()
+    con_etapa = [c for c in _registros_de_fallo(arbol) if _nodo_de_la_etapa(c) is not None]
+    assert con_etapa, "no se detectó ningún registro con pipeline_stage: el ancla quedaría vacía"
+
+    sin_tx_id = sorted(f"{c.func.attr}:{c.lineno}" for c in con_etapa if _valor_de_clave_en_extra(c, "tx_id") is None)
+
+    assert sin_tx_id == [], (
+        f"registros con pipeline_stage pero sin tx_id en extra: {sin_tx_id}. "
+        'Agregar "tx_id": tx_id al extra (SOP §5 regla 5).'
     )
 
 

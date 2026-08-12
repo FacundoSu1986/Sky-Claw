@@ -543,6 +543,14 @@ class DynDOLODPipelineService:
         if dry_run:
             return await self._preview(preset=preset, run_texgen=run_texgen)
 
+        # Declarado ANTES del preflight (review Qodo, PR #464, "tx_id ausente"):
+        # sin esto, `tx_id` ni siquiera existe todavía cuando el preflight bloquea
+        # en rojo, así que ese registro no podía llevarlo. Con la variable ya en
+        # scope (en `None`, honesto — no hay TX abierta antes del lock), TODO
+        # registro de fallo del método puede incluir `tx_id` sin excepción: la
+        # regla deja de tener un caso especial que documentar y verificar aparte.
+        tx_id: int | None = None
+
         # Preflight brutal ANTES de tocar nada (T-16c·3): un semáforo ROJO (p. ej.
         # el dir de salida sin permisos) cancela el run de 30+ min / GBs sin adquirir
         # el lock, abrir transacción, ni publicar el evento de inicio. Amarillo/verde
@@ -556,7 +564,7 @@ class DynDOLODPipelineService:
                 logger.warning(
                     "DynDOLOD (stage 9) bloqueado por preflight en rojo: %s",
                     red,
-                    extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                 )
                 return _attach_preflight(
                     {
@@ -571,7 +579,6 @@ class DynDOLODPipelineService:
 
         start_time = time.monotonic()
         rolled_back = False
-        tx_id: int | None = None
         journal_committed = False
         mutation_started = False
         mutation_coverage_complete = False
@@ -596,7 +603,9 @@ class DynDOLODPipelineService:
             runner = self._ensure_runner()
         except DynDOLODExecutionError as exc:
             logger.error(
-                "DynDOLOD (stage 9): error inicializando el runner: %s", exc, extra={"pipeline_stage": _ETAPA_DYNDOLOD}
+                "DynDOLOD (stage 9): error inicializando el runner: %s",
+                exc,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
             duration = time.monotonic() - start_time
             await self._publish_completed(
@@ -628,7 +637,7 @@ class DynDOLODPipelineService:
         if ruta_faltante is not None:
             msg = f"Ruta declarada por la configuración de DynDOLOD no existe: {ruta_faltante}"
             duration = time.monotonic() - start_time
-            logger.error("DynDOLOD (stage 9): %s", msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD})
+            logger.error("DynDOLOD (stage 9): %s", msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id})
             await self._publish_completed(
                 preset=preset,
                 run_texgen=run_texgen,
@@ -855,7 +864,7 @@ class DynDOLODPipelineService:
             logger.error(
                 "DynDOLOD (stage 9): no se pudo emitir el ActionManifest; abortado: %s",
                 exc,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
             await self._publish_completed(
                 preset=preset,
@@ -885,7 +894,7 @@ class DynDOLODPipelineService:
             logger.error(
                 "DynDOLOD (stage 9): no se pudo adquirir el lock del pipeline: %s",
                 exc,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
             await self._publish_completed(
                 preset=preset,
@@ -956,7 +965,7 @@ class DynDOLODPipelineService:
             logger.warning(
                 "DynDOLOD (stage 9): pipeline cancelado tras %.1fs",
                 duration,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
             await self._cerrar_tx_tras_rollback(
                 tx_id,
@@ -1142,7 +1151,24 @@ class DynDOLODPipelineService:
         )
 
     async def _log_result_error(self, preset: str, error_msg: str, tx_id: int | None = None) -> None:
-        """Registra un error del pipeline mediante logging estructurado."""
+        """Registra el resultado fallido del pipeline mediante logging estructurado.
+
+        Gemelo de `_log_result` (éxito) en el canal de fallo: ese usa ``info`` y
+        ``operation_type="dyndolod_pipeline_complete"``; este usa ``error`` y
+        ``operation_type="dyndolod_pipeline_failed"`` — ninguno de los dos lleva
+        `pipeline_stage`, a propósito. Es el outcome-record del run, siempre
+        emitido JUNTO al `logger.error` del handler que lo llama, nunca solo: por
+        construcción es una repetición mecánica del MISMO incidente que ese
+        handler ya reportó con la etapa, no un fallo adicional. Sí llevaba
+        `pipeline_stage` hasta la review Qodo del PR #464 ("Sobreconteo de
+        señal"): CodeRabbit/Codex pedían que este registro fuera identificable
+        por stage para no quedar fuera de un filtro, pero eso hacía que un
+        ``COUNT(*) WHERE pipeline_stage=9`` contara 2 por cada incidente de
+        dominio/inesperado — el mismo sobreconteo que "Duplicación de señal" ya
+        había señalado, reintroducido por el propio fix que lo cerraba. La
+        identidad correcta para filtrar este registro YA existía:
+        `operation_type`.
+        """
         logger.error(
             "DynDOLOD pipeline failed",
             extra={
@@ -1152,16 +1178,11 @@ class DynDOLODPipelineService:
                 "success": False,
                 "preset": preset,
                 "error": error_msg,
-                # El registro canónico del fallo —el que consulta un dashboard—
-                # también lleva la etapa: etiquetar solo el handler que LLAMA a
-                # este helper dejaba el outcome sin filtrar por stage (review
-                # CodeRabbit/Codex, PR #464).
-                "pipeline_stage": _ETAPA_DYNDOLOD,
-                # Y el tx_id: sin él, este registro y el `logger.error` del handler
-                # que lo invoca no se pueden correlacionar entre sí ni con el
-                # rollback posterior (review Qodo, PR #464, "Duplicación de señal").
-                # `None` es un caso real: los llamadores que no reciben `tx_id`
-                # explícito son paths donde la TX puede no haberse abierto aún.
+                # tx_id sí se mantiene: sin él, este registro y el del handler que
+                # lo invoca no se pueden correlacionar entre sí ni con el rollback
+                # posterior (review Qodo, PR #464, "Duplicación de señal"). `None`
+                # es un caso real: los llamadores sin `tx_id` explícito son paths
+                # donde la TX puede no haberse abierto aún.
                 "tx_id": tx_id,
             },
         )
