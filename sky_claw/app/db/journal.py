@@ -253,6 +253,10 @@ class OperationJournal:
         self._lifecycle = lifecycle  # DatabaseLifecycleManager | None
         self._owns_conn: bool = False  # True when we opened the connection directly (no lifecycle)
         self._db: aiosqlite.Connection | None = None
+        # Lock local, provisional: si hay lifecycle, ``open()`` lo reemplaza por
+        # el lock compartido por path de ese manager. En el camino standalone
+        # (``lifecycle=None``, conexión propia) este es el definitivo, y debe
+        # seguir siendo independiente por instancia.
         self._lock = asyncio.Lock()
         self._current_transaction: int | None = None
 
@@ -265,6 +269,18 @@ class OperationJournal:
         pragmas (pre-M-01 behaviour), which avoids spawning a lifecycle that
         creates non-daemon aiosqlite worker threads — those block process exit
         on CPython 3.11 when callers omit ``close()`` (CI 20-minute timeout).
+
+        **Invariante del lock de escritura.** Con lifecycle, el journal adopta
+        acá el lock compartido por path de ese manager: *el lock acompaña a la
+        conexión, no a la instancia*. Es la misma propiedad que ya sostiene
+        ``AsyncModRegistry`` y la razón por la que ``get_write_lock`` cachea bajo
+        la clave de path resuelto. Sin lifecycle la conexión es propia y el lock
+        local se conserva, que es lo correcto: no hay nada que compartir.
+
+        La inicialización del schema **corre adquiriendo** ese lock, no solo
+        teniéndolo asignado: ``executescript`` commitea implícitamente lo que
+        haya pendiente en la conexión compartida. El lock se suelta antes del
+        sweep de arranque, que lo toma por su cuenta.
         """
         if self._db is not None:
             return
@@ -276,6 +292,27 @@ class OperationJournal:
                 # ----------------------------------------------------------
                 self._owns_conn = False
                 self._db = await self._lifecycle.get_connection(self._db_path)
+                # El lock viaja con la conexión, no con la instancia. Las
+                # conexiones del lifecycle son singleton por path resuelto, así
+                # que dos `OperationJournal` sobre la misma DB comparten
+                # conexión — y con un `asyncio.Lock` propio cada uno, sus
+                # transacciones se intercalan sobre esa conexión compartida:
+                # uno abre, el otro commitea lo que el primero llevaba a medias.
+                # `get_write_lock` devuelve el lock cacheado bajo la MISMA clave
+                # de path resuelto que la conexión, que es la propiedad que hace
+                # falta; su docstring ya lo dice para `AsyncModRegistry`
+                # ("a per-wrapper lock would leave the transaction-interleaving
+                # race open") y acá aplica igual.
+                #
+                # Un solo rebind alcanza: los 16 `async with self._lock` del
+                # módulo leen el atributo en el momento de entrar, y todos
+                # resuelven la conexión con `_ensure_connected()` —que llama a
+                # `open()`— antes de tomarlo. Va acá, sin `await` de por medio
+                # tras `get_connection`, para que ningún SQL posterior (empezando
+                # por el `executescript` del schema y el sweep de arranque) corra
+                # bajo el lock equivocado. Que el lock esté ASIGNADO no alcanza:
+                # el `executescript` de abajo además lo ADQUIERE.
+                self._lock = self._lifecycle.get_write_lock(self._db_path)
             else:
                 # ----------------------------------------------------------
                 # Backwards-compat path — direct aiosqlite.connect (pre-M-01)
@@ -291,8 +328,30 @@ class OperationJournal:
                 await self._db.execute("PRAGMA busy_timeout=5000")
                 await self._db.execute("PRAGMA synchronous=NORMAL")
 
-            # Schema is the same regardless of path
-            await self._db.executescript(self._SCHEMA_SQL)
+            # Schema is the same regardless of path — pero el boundary no.
+            #
+            # Asignar el lock compartido NO es lo mismo que ejecutar bajo él.
+            # `executescript` emite un COMMIT implícito de cualquier transacción
+            # pendiente (documentado en `sqlite3`), así que un `open()` tardío
+            # sobre la conexión compartida commiteaba el trabajo a medias de otro
+            # journal que SÍ estaba sosteniendo el lock — y su `rollback()`
+            # posterior ya no lo podía deshacer. Es el mismo interleaving que este
+            # rebind viene a cerrar, sobreviviendo en la única sentencia de
+            # `open()` que corría fuera del lock.
+            #
+            # El boundary es solo el `executescript`, **no** todo `open()`:
+            # `sweep_stale_pending()` toma este mismo `asyncio.Lock` por su cuenta
+            # y `asyncio.Lock` no es reentrante, así que sostenerlo hasta el final
+            # de `open()` sería un deadlock garantizado en el arranque.
+            #
+            # En el camino standalone la conexión es propia de esta instancia: no
+            # hay un tercero que pueda commitear encima, así que no hace falta
+            # boundary. Se usa `nullcontext` en vez de duplicar el
+            # `executescript` en las dos ramas — dos call sites del mismo SQL son
+            # exactamente el hermano desalineado que este repo colecciona.
+            boundary: Any = self._lock if self._lifecycle is not None else contextlib.nullcontext()
+            async with boundary:
+                await self._db.executescript(self._SCHEMA_SQL)
             logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
         except sqlite3.Error as e:
             if self._db is not None and self._owns_conn:
