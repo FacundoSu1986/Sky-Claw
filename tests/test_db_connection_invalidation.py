@@ -41,7 +41,7 @@ from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleManager,
     DatabasePathPoisonedError,
 )
-from sky_claw.app.db.journal import OperationJournal
+from sky_claw.app.db.journal import JournalConnectionError, OperationJournal
 from sky_claw.app.db.locks import (
     DistributedLockManager,
     LockDatabaseUnavailableError,
@@ -353,7 +353,9 @@ async def test_t3_cierre_fallido_deja_el_path_envenenado(tmp_path: Path) -> None
         await lifecycle.get_connection(db)
     # (d) el hermano cacheado no puede seguir usándola en silencio
     assert not lifecycle.is_connection_current(db, compartida)
-    with pytest.raises(DatabasePathPoisonedError):
+    # El journal lo traduce a su propia taxonomía (ver T11), pero el hermano
+    # falla closed igual: lo que no puede es seguir usándola en silencio.
+    with pytest.raises(JournalConnectionError):
         await j2.begin_transaction("no debería entrar")
 
     # (e) evict_connection no puede robarle el ownership al path envenenado:
@@ -706,6 +708,87 @@ async def test_t10_propiedad_no_verificable_es_lease_perdida(tmp_path: Path) -> 
     gestor_snapshots.restore_snapshot.assert_not_called()
     gestor_snapshots.restore.assert_not_called()
 
+    await lifecycle.shutdown_all()
+
+
+# ===========================================================================
+# T11 — el path envenenado habla la taxonomía de cada módulo
+# ===========================================================================
+
+# Qué excepción documenta cada wrapper para "no hay conexión utilizable". Un
+# path envenenado tiene que llegar al llamador COMO ESA, o el `except` que ya
+# tenía escrito deja de atrapar el caso.
+#
+# `router.py` y `async_registry.py` levantan `RuntimeError` pelado para ese
+# estado y `DatabasePathPoisonedError` ES un `RuntimeError`, así que su contrato
+# se cumple sin traducir. No es una excusa: lo verifica el subtest de abajo, y
+# el día que alguno de los dos se dé una excepción propia, el ancla lo obliga a
+# traducir como los otros.
+TAXONOMIA_DE_PATH_ENVENENADO: dict[str, type[BaseException]] = {
+    "journal": JournalConnectionError,
+    "locks": LockDatabaseUnavailableError,
+    "async_registry": RuntimeError,
+    "router": RuntimeError,
+}
+
+
+async def _envenenar(lifecycle: DatabaseLifecycleManager, db: Path, conn: aiosqlite.Connection) -> None:
+    async def _falla() -> None:
+        raise sqlite3.OperationalError("close imposible")
+
+    conn.close = _falla  # type: ignore[method-assign]
+    await lifecycle.quarantine_connection(db, conn)
+    assert lifecycle.is_path_poisoned(db)
+
+
+def test_t11_la_taxonomia_cubre_a_toda_la_familia() -> None:
+    """Cada wrapper 'revalida' declara con qué excepción sale un path envenenado."""
+    esperados = {Path(r).stem for r, e in WRAPPERS_QUE_CACHEAN_CONEXION.items() if e == "revalida"}
+    assert set(TAXONOMIA_DE_PATH_ENVENENADO) == esperados, (
+        "un wrapper que revalida sin declarar su taxonomía dejaría escapar "
+        "DatabasePathPoisonedError crudo por su API pública"
+    )
+    for modulo, excepcion in TAXONOMIA_DE_PATH_ENVENENADO.items():
+        assert issubclass(DatabasePathPoisonedError, excepcion) or excepcion is not RuntimeError, (
+            f"{modulo}: declarar RuntimeError sólo vale si el error envenenado ya lo es"
+        )
+
+
+async def test_t11a_el_journal_traduce_a_su_excepcion(tmp_path: Path) -> None:
+    db = tmp_path / "tax_journal.db"
+    lifecycle = _lifecycle(db)
+    journal = OperationJournal(str(db), lifecycle=lifecycle)
+    await journal.open()
+    conn = journal._db
+    assert conn is not None
+    cierre_real = conn.close
+
+    await _envenenar(lifecycle, db, conn)
+
+    with pytest.raises(JournalConnectionError) as excinfo:
+        await journal.begin_transaction("no debería entrar")
+    assert isinstance(excinfo.value.__cause__, DatabasePathPoisonedError), "se perdió el diagnóstico original"
+
+    conn.close = cierre_real  # type: ignore[method-assign]
+    await lifecycle.shutdown_all()
+
+
+async def test_t11b_locks_traduce_a_su_excepcion(tmp_path: Path) -> None:
+    db = tmp_path / "tax_locks.db"
+    lifecycle = _lifecycle(db)
+    locks = DistributedLockManager(str(db), lifecycle=lifecycle)
+    await locks.initialize()
+    conn = locks._conn
+    assert conn is not None
+    cierre_real = conn.close
+
+    await _envenenar(lifecycle, db, conn)
+
+    with pytest.raises(LockDatabaseUnavailableError) as excinfo:
+        await locks.get_lock_info("recurso")
+    assert isinstance(excinfo.value.__cause__, DatabasePathPoisonedError)
+
+    conn.close = cierre_real  # type: ignore[method-assign]
     await lifecycle.shutdown_all()
 
 

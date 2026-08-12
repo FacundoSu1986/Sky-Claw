@@ -22,6 +22,10 @@ from typing import Any
 
 import aiosqlite
 
+# db_lifecycle no importa nada de sky_claw, así que traer su excepción no crea
+# ciclo (el manager sigue inyectándose sin tipar en runtime, ver __init__).
+from sky_claw.app.core.db_lifecycle import DatabasePathPoisonedError
+
 logger = logging.getLogger(__name__)
 
 
@@ -396,11 +400,20 @@ class OperationJournal:
         conexión cerrada. ``refresh_connection`` contesta "¿la que tengo sigue
         siendo la válida de este path?" en el único lugar que lo sabe, y
         devuelve el reemplazo o falla closed si el path quedó envenenado.
+
+        Un path envenenado se traduce a ``JournalConnectionError``: es la
+        excepción que este módulo documenta para "no hay conexión utilizable", y
+        ``DatabasePathPoisonedError`` es un ``RuntimeError`` que quedaría fuera
+        de ella. La causa original se conserva encadenada para no perder el
+        diagnóstico de POR QUÉ el path está fail-closed.
         """
         if self._db is None:
             await self.open()
         elif self._lifecycle is not None:
-            self._db = await self._lifecycle.refresh_connection(self._db_path, self._db)
+            try:
+                self._db = await self._lifecycle.refresh_connection(self._db_path, self._db)
+            except DatabasePathPoisonedError as error:
+                raise JournalConnectionError(f"Journal database is unavailable: {self._db_path}") from error
         if self._db is None:
             raise JournalConnectionError("Database connection not available")
         return self._db
