@@ -423,11 +423,21 @@ class DynDOLODPipelineService:
                 transaction_id=tx_id,
             )
         except Exception:  # noqa: BLE001 — boundary best-effort del journal
+            # Sin pipeline_stage a propósito (review Qodo, PR #464, "Sobreconteo de
+            # señal"): este método SOLO se alcanza tras un pipeline YA exitoso (ver
+            # el único call site, en `execute`, después del commit). Etiquetarlo con
+            # la etapa 9 haría que un fallo de infraestructura de journaling —que no
+            # implica que DynDOLOD haya fallado— se contara como un fallo real de la
+            # etapa 9 en cualquier alerta que agrupe por ese campo, inflando la tasa
+            # de fallos exactamente como "Duplicación de señal" ya advertía para
+            # registros duplicados. `operation_type` propio en su lugar, para que
+            # sea identificable sin mentir sobre su origen. `tx_id` sí aplica: sigue
+            # siendo correlacionable con la TX y su rollback si lo hubiera.
             logger.error(
-                "DynDOLOD (stage 9): fallo al persistir el informe de vuelo de la TX %d",
+                "DynDOLOD: fallo al persistir el informe de vuelo de la TX %d (pipeline ya exitoso)",
                 tx_id,
                 exc_info=True,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                extra={"operation_type": "dyndolod_flight_report_persist_failed", "tx_id": tx_id},
             )
 
     async def _cerrar_tx_tras_rollback(
@@ -468,7 +478,7 @@ class DynDOLODPipelineService:
                     "la TX queda PENDIENTE hasta aislar los targets crudos.",
                     contexto,
                     tx_id,
-                    extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                 )
             else:
                 logger.critical(
@@ -476,7 +486,7 @@ class DynDOLODPipelineService:
                     "revisar backups move-aside y targets no cubiertos manualmente.",
                     contexto,
                     tx_id,
-                    extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                 )
             return False
         try:
@@ -488,7 +498,7 @@ class DynDOLODPipelineService:
                 contexto,
                 journal_exc,
                 exc_info=True,
-                extra={"pipeline_stage": _ETAPA_DYNDOLOD},
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
         return True
 

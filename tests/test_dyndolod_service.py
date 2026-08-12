@@ -2653,6 +2653,40 @@ def _nodo_de_la_etapa(llamada: ast.Call) -> ast.expr | None:
     return None
 
 
+def _valor_de_clave_en_extra(llamada: ast.Call, clave: str) -> ast.expr | None:
+    """Nodo del valor de ``clave`` en el dict literal de ``extra=``, o ``None``.
+
+    Más simple que `_nodo_de_la_etapa`: solo dict literal, sin el caso
+    `subprocess_error_extra` (`operation_type`/`tx_id` son claves propias de
+    este módulo — ningún registro las emite vía ese helper hoy).
+    """
+    for kw in llamada.keywords:
+        if kw.arg != "extra" or not isinstance(kw.value, ast.Dict):
+            continue
+        for k, v in zip(kw.value.keys, kw.value.values, strict=True):
+            if isinstance(k, ast.Constant) and k.value == clave:
+                return v
+    return None
+
+
+#: Registros de fallo de este módulo que NO llevan `pipeline_stage` porque no
+#: son, semánticamente, un fallo de la etapa 9 — y la excepción está acá para
+#: que sea DECIDIDA y VERIFICADA, no un hueco silencioso (review Qodo, PR #464,
+#: "Sobreconteo de señal"). Mapea el `operation_type` propio que cada uno debe
+#: llevar en su lugar → el motivo de la exención. Un registro sin
+#: `pipeline_stage` cuyo `operation_type` no esté acá sigue rompiendo el ancla
+#: principal; uno que esté acá pero no lleve `tx_id` también.
+_REGISTROS_EXENTOS_DE_ETAPA = {
+    "dyndolod_flight_report_persist_failed": (
+        "_emit_flight_report solo se alcanza tras un pipeline YA exitoso (único "
+        "call site: en execute, después del commit) — un fallo ahí es de "
+        "infraestructura de journaling, no de la etapa 9. Etiquetarlo con la "
+        "etapa haría que un fallo que no implica que DynDOLOD falló se contara "
+        "como si lo hubiera hecho, en cualquier alerta agrupando por pipeline_stage."
+    ),
+}
+
+
 def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
     """Los ``except`` de ``execute``, CON multiplicidad. Igualdad literal.
 
@@ -2712,9 +2746,9 @@ def test_los_niveles_de_fallo_estan_congelados() -> None:
 def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
     """SOP §5 regla 5 sobre CADA registro de fallo del módulo, detectado por AST.
 
-    Universo = todo ``logger.error``/``warning``/``critical`` del módulo, no solo
-    los que están dentro de un ``except``. Las tres fugas que esto cierra y que un
-    ancla limitada a los handlers dejaba pasar:
+    Universo = todo ``logger.error``/``warning``/``critical``/``exception`` del
+    módulo, no solo los que están dentro de un ``except``. Las fugas que esto
+    cierra y que un ancla limitada a los handlers dejaba pasar:
 
     - el preflight en rojo y la ruta de config faltante devuelven el fallo con
       ``return``, sin pasar por ningún ``except``;
@@ -2723,16 +2757,34 @@ def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
       que etiquetar el handler no lo alcanza;
     - un ``any(...)`` por handler daba por bueno el bloque entero con que UNO solo
       de sus registros llevara el campo.
+
+    Un registro puede satisfacer el ancla de DOS formas: llevando
+    ``pipeline_stage`` (el caso normal), o siendo una exención DECIDIDA en
+    `_REGISTROS_EXENTOS_DE_ETAPA` —porque no es semánticamente un fallo de la
+    etapa 9— con su propio ``operation_type`` Y ``tx_id`` en el ``extra`` (review
+    Qodo, PR #464, "Sobreconteo de señal": sin esto, el único registro exento de
+    hoy podría perder silenciosamente su correlación al perder pipeline_stage).
     """
     arbol = _modulo_servicio_ast()
     registros = _registros_de_fallo(arbol)
     assert registros, "no se detectó ningún registro de fallo: el ancla quedaría vacía"
 
-    sin_etapa = sorted(f"{c.func.attr}:{c.lineno}" for c in registros if _nodo_de_la_etapa(c) is None)
+    sin_cobertura = []
+    for c in registros:
+        etiqueta = f"{c.func.attr}:{c.lineno}"
+        if _nodo_de_la_etapa(c) is not None:
+            continue
+        operation_type = _valor_de_clave_en_extra(c, "operation_type")
+        nombre_op = operation_type.value if isinstance(operation_type, ast.Constant) else None
+        if nombre_op not in _REGISTROS_EXENTOS_DE_ETAPA:
+            sin_cobertura.append(f"{etiqueta}: sin pipeline_stage y sin exención válida en operation_type")
+        elif _valor_de_clave_en_extra(c, "tx_id") is None:
+            sin_cobertura.append(f"{etiqueta}: exento de pipeline_stage ({nombre_op}) pero sin tx_id")
 
-    assert sin_etapa == [], (
-        f"registros de fallo de dyndolod_service.py sin stage index estructurado: {sin_etapa}. "
-        f'Agregar extra={{"pipeline_stage": {_NOMBRE_DE_LA_CONSTANTE}}} (SOP 5 regla 5).'
+    assert sin_cobertura == [], (
+        f"registros de fallo de dyndolod_service.py sin cobertura completa: {sin_cobertura}. "
+        f'Agregar extra={{"pipeline_stage": {_NOMBRE_DE_LA_CONSTANTE}}}, o si no es un fallo de la '
+        f"etapa, un operation_type propio en _REGISTROS_EXENTOS_DE_ETAPA + tx_id (SOP §5 regla 5)."
     )
 
 
@@ -2809,11 +2861,28 @@ def test_dyndolod_service_liga_su_logger_al_nombre_logger() -> None:
 _ORDEN_DE_COBERTURA = {"sin_cobertura": 0, "parcial": 1, "completo": 2}
 
 
+def _registro_cubierto(c: ast.Call) -> bool:
+    """¿El registro satisface la regla 5 — etapa O exención válida?
+
+    Mismo criterio de `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`:
+    un registro exento (`operation_type` en `_REGISTROS_EXENTOS_DE_ETAPA` + `tx_id`
+    presente) cuenta como cubierto para la clasificación de cobertura, igual que
+    uno con `pipeline_stage`. Sin esto, el único registro exento de hoy degradaba
+    `dyndolod` de completo a parcial — una regresión FALSA: 12 de 13 llevan la
+    etapa y el 13.º está exento con justificación, no sin cubrir.
+    """
+    if _nodo_de_la_etapa(c) is not None:
+        return True
+    operation_type = _valor_de_clave_en_extra(c, "operation_type")
+    nombre_op = operation_type.value if isinstance(operation_type, ast.Constant) else None
+    return nombre_op in _REGISTROS_EXENTOS_DE_ETAPA and _valor_de_clave_en_extra(c, "tx_id") is not None
+
+
 def _categoria_medida(registros: list[ast.Call]) -> str:
-    con_etapa = [c for c in registros if _nodo_de_la_etapa(c) is not None]
-    if registros and len(con_etapa) == len(registros):
+    cubiertos = [c for c in registros if _registro_cubierto(c)]
+    if registros and len(cubiertos) == len(registros):
         return "completo"
-    if con_etapa:
+    if cubiertos:
         return "parcial"
     return "sin_cobertura"
 
