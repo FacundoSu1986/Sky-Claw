@@ -575,6 +575,86 @@ class TestFailOperationEvidencia:
         monkeypatch.undo()
         assert any("rollback de fail_operation falló" in r.message.lower() for r in caplog.records)
 
+    @pytest.mark.asyncio
+    async def test_cancelacion_externa_no_suelta_el_boundary_hasta_terminar_el_rollback(self, journal, monkeypatch):
+        """Cancelación REAL: ``task.cancel()`` desde afuera, con el rollback bloqueado.
+
+        No alcanza con que el rollback "quede en curso": si ``fail_operation``
+        abandona el ``async with self._lock`` con la transacción todavía abierta,
+        el siguiente escritor de la misma conexión commitea el estado parcial. Este
+        test retiene el rollback con un ``Event`` y exige que la corrutina **siga
+        adentro** del boundary mientras tanto.
+        """
+        entry_id = await self._entrada(journal, metadata={"previa": True})
+        original_execute = journal._db.execute
+        original_rollback = journal._db.rollback
+
+        suspendido = asyncio.Event()  # se alcanzó el punto posterior al UPDATE de estado
+        rollback_iniciado = asyncio.Event()
+        permitir_rollback = asyncio.Event()  # lo libera el test
+        rollback_terminado = asyncio.Event()
+
+        def execute_que_se_suspende(sql, *args, **kwargs):
+            if sql.strip().startswith("UPDATE journal_entries SET metadata"):
+
+                async def suspender():
+                    suspendido.set()
+                    await asyncio.Event().wait()  # queda acá hasta que la cancelen
+                    raise AssertionError("inalcanzable")
+
+                return suspender()
+            return original_execute(sql, *args, **kwargs)
+
+        async def rollback_retenido():
+            rollback_iniciado.set()
+            await permitir_rollback.wait()
+            await original_rollback()
+            rollback_terminado.set()
+
+        monkeypatch.setattr(journal._db, "execute", execute_que_se_suspende)
+        monkeypatch.setattr(journal._db, "rollback", rollback_retenido)
+
+        tarea = asyncio.create_task(journal.fail_operation(entry_id, error="boom"))
+        await asyncio.wait_for(suspendido.wait(), timeout=5)
+        assert journal._lock.locked(), "el boundary debería estar tomado"
+
+        tarea.cancel()
+        await asyncio.wait_for(rollback_iniciado.wait(), timeout=5)
+
+        # Segunda cancelación, YA con el rollback en vuelo. Es la que discrimina:
+        # `task.cancel()` entrega `CancelledError` una sola vez, en el await donde la
+        # corrutina estaba suspendida, y ese primer golpe lo absorbe el `except`. Un
+        # `await asyncio.shield(rollback)` suelto sobrevive a eso, así que sin este
+        # segundo cancel el test pasaría también con la implementación defectuosa
+        # (verificado por mutación). Con el shield suelto, este cancel lo hace
+        # abandonar el boundary con el rollback retenido; con el bucle, sigue esperando.
+        tarea.cancel()
+
+        # Con el rollback retenido, la corrutina NO puede haber salido del boundary.
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not tarea.done(), "soltó la cancelación antes de terminar el rollback"
+        assert journal._lock.locked(), "soltó el lock con la transacción abierta"
+        assert not rollback_terminado.is_set()
+
+        permitir_rollback.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        assert rollback_terminado.is_set(), "el rollback debía terminar antes de propagar"
+        assert not journal._lock.locked()
+
+        monkeypatch.undo()
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.STARTED
+        assert entry.metadata == {"previa": True}
+
+        # La conexión sigue usable tras la cancelación.
+        await journal.fail_operation(entry_id, error="ahora sí")
+        entry = await journal.get_operation_by_id(entry_id)
+        assert entry.status == OperationStatus.FAILED
+        assert entry.metadata == {"previa": True, "error": "ahora sí"}
+
     @pytest.mark.parametrize("no_finito", [float("nan"), float("inf"), float("-inf")], ids=repr)
     @pytest.mark.asyncio
     async def test_nan_no_puede_escribir_json_invalido(self, journal, no_finito):

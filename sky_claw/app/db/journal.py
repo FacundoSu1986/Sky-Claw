@@ -921,8 +921,26 @@ class OperationJournal:
                 # sin su evidencia. El `shield` deja que el rollback termine aunque
                 # nos estén cancelando; si la cancelación llega igual, se propaga
                 # —nunca se traga— y el rollback ya quedó en curso.
+                # El rollback tiene que TERMINAR antes de soltar el boundary. Un
+                # `await asyncio.shield(...)` suelto no alcanza: si nos cancelan, ese
+                # await levanta de inmediato y saldríamos del `async with self._lock`
+                # con el rollback todavía en vuelo — el siguiente escritor de la misma
+                # conexión encontraría la transacción abierta, que es justo el estado
+                # parcial que este método promete impedir. Por eso se espera en bucle
+                # hasta `done()`, absorbiendo las cancelaciones que lleguen mientras
+                # tanto. Mismo patrón que `DatabaseLifecycleManager._await_db_operation`
+                # ("completa una operación SQLite aunque el llamador sea cancelado");
+                # se replica en vez de importarse porque es privado del lifecycle.
+                rollback = asyncio.ensure_future(db.rollback())
+                while not rollback.done():
+                    try:
+                        await asyncio.shield(rollback)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
                 try:
-                    await asyncio.shield(db.rollback())
+                    rollback.result()
                 except Exception:
                     # Invariante de `app/db/AGENTS.md`: "un rollback fallido conserva
                     # evidencia y no se reporta como éxito". Se registra acá porque el
