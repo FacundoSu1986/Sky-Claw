@@ -12,6 +12,8 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
@@ -856,34 +858,50 @@ class LLMRouter:
     # History persistence
     # ------------------------------------------------------------------
 
+    @asynccontextmanager
+    async def _operacion(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Boundary del path: conexión válida + derecho a operar, atómicos.
+
+        Revalidar bajo ``self._conn_lock`` no alcanzaba: ese lock es del router
+        y la cuarentena toma el write lock DEL PATH, así que podía correr entre
+        la revalidación y el ``execute``. El lock del path va afuera y el del
+        router adentro; ese orden es el único que se usa (``open``/``close``
+        toman sólo ``_conn_lock``), así que no hay inversión posible.
+        """
+        if self._conn is None:
+            raise RuntimeError("Router database is not open")
+        if self._lifecycle is None:
+            async with self._conn_lock:
+                if self._conn is None:
+                    raise RuntimeError("Router database is not open")
+                yield self._conn
+            return
+        async with self._lifecycle.operation(self._db_path, self._conn) as conn, self._conn_lock:
+            self._conn = conn
+            yield conn
+
     async def _save_message(self, chat_id: str, role: str, content: str) -> None:
         """Persist a message to the history database immediately."""
         # R-2: bajo el lock, para que un close() concurrente no nule self._conn
         # entre el execute() y el commit().
-        async with self._conn_lock:
-            if self._conn is None:
-                raise RuntimeError("Router database is not open")
-            if self._lifecycle is not None:
-                self._conn = await self._lifecycle.refresh_connection(self._db_path, self._conn)
-            await self._conn.execute(
+        async with self._operacion() as conn:
+            await conn.execute(
                 "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                 (chat_id, role, content, time.time()),
             )
-            await self._conn.commit()
+            await conn.commit()
 
     async def _load_context(self, chat_id: str) -> list[dict[str, Any]]:
         # R-2: la lectura de filas va bajo el lock (la conexión no se cierra a
         # mitad de query); el parseo posterior no lo necesita.
-        async with self._conn_lock:
-            if self._conn is None:
-                raise RuntimeError("Router database is not open")
-            if self._lifecycle is not None:
-                self._conn = await self._lifecycle.refresh_connection(self._db_path, self._conn)
-            async with self._conn.execute(
+        async with (
+            self._operacion() as conn,
+            conn.execute(
                 "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
                 (chat_id, self._max_context),
-            ) as cur:
-                rows = await cur.fetchall()
+            ) as cur,
+        ):
+            rows = await cur.fetchall()
 
         messages: list[dict[str, Any]] = []
         for row in reversed(rows):

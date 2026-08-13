@@ -10,7 +10,8 @@ import asyncio
 import contextlib
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import pytest
@@ -833,15 +834,17 @@ async def test_renew_lock_swallows_unexpected_sqlite_error(
         def execute(self, *args: object, **kwargs: object) -> object:
             raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
 
-    # _ensure_conn() devuelve la conn aiosqlite viva; la cambiamos por una cuyo
-    # execute() tira un sqlite3.Error que el catch viejo no cubría. El stub es
-    # `async` porque `_ensure_conn` lo es desde el contrato de invalidación
-    # (revalida la conexión contra el lifecycle antes de devolverla); lo que este
-    # test ejercita —que renew_lock degrade a False— no cambió.
-    async def _boom_conn() -> object:
-        return _BoomConn()
+    # El boundary `_operacion()` entrega la conn aiosqlite viva; la cambiamos por
+    # una cuyo execute() tira un sqlite3.Error que el catch viejo no cubría. El
+    # stub es un context manager async porque desde el contrato de invalidación
+    # la conexión y el derecho a usarla se entregan juntos (el par revalidar/usar
+    # tiene que ser atómico respecto de la cuarentena); lo que este test ejercita
+    # —que renew_lock degrade a False— no cambió.
+    @asynccontextmanager
+    async def _boom_conn() -> AsyncIterator[object]:
+        yield _BoomConn()
 
-    monkeypatch.setattr(lock_manager, "_ensure_conn", _boom_conn)
+    monkeypatch.setattr(lock_manager, "_operacion", _boom_conn)
 
     assert await lock_manager.renew_lock("res-dberr", "agent-1") is False
 

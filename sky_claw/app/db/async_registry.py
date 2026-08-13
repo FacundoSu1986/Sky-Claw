@@ -13,6 +13,8 @@ import logging
 import pathlib
 import sqlite3
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -200,68 +202,85 @@ class AsyncModRegistry:
                 if corrupt_conn is None:
                     raise
 
-                close_error: BaseException | None = None
-                try:
-                    await corrupt_conn.close()
-                except asyncio.CancelledError as error:
-                    current_task = asyncio.current_task()
-                    # CancelledError tambien puede originarse dentro de close().
-                    # cancelling() > 0 es la evidencia de que la cancelacion fue
-                    # solicitada sobre la tarea actual: debe conservar identidad.
-                    if current_task is not None and current_task.cancelling() > 0:
-                        self._conn = None
-                        logger.warning(
-                            "Closing corrupt database was cancelled externally; lifecycle ownership retained"
+                # `recover_path` mantiene el path indisponible para TODOS los
+                # hermanos desde antes del cierre hasta después del rebuild, y
+                # sostiene el write lock del path mientras tanto. Sin eso, entre
+                # la expulsión y el rename un hermano abría un reemplazo sobre el
+                # archivo que estaba por moverse — bloquea el rename en Windows y
+                # en POSIX lo deja hablando con el backup.
+                #
+                # El CIERRE se queda acá y no se delega en `quarantine_connection`
+                # a propósito: la cuarentena completa el close antes de propagar
+                # una cancelación (`_await_db_operation`), y este camino tiene el
+                # contrato opuesto —una cancelación externa durante el close
+                # conserva identidad y ownership, con su propio test—. Lo que se
+                # delega es la decisión de DISPONIBILIDAD, que es la que no puede
+                # vivir replicada.
+                async with self._lifecycle.recover_path(self._db_path):
+                    close_error: BaseException | None = None
+                    try:
+                        await corrupt_conn.close()
+                    except asyncio.CancelledError as error:
+                        current_task = asyncio.current_task()
+                        # CancelledError tambien puede originarse dentro de close().
+                        # cancelling() > 0 es la evidencia de que la cancelacion fue
+                        # solicitada sobre la tarea actual: debe conservar identidad.
+                        if current_task is not None and current_task.cancelling() > 0:
+                            self._conn = None
+                            logger.warning(
+                                "Closing corrupt database was cancelled externally; lifecycle ownership retained"
+                            )
+                            raise
+                        close_error = error
+                    except Exception as error:
+                        close_error = error
+
+                    self._conn = None
+                    if close_error is not None:
+                        logger.error(
+                            "Failed to close corrupt database; lifecycle ownership retained: %s",
+                            close_error,
+                            exc_info=(
+                                type(close_error),
+                                close_error,
+                                close_error.__traceback__,
+                            ),
+                        )
+                        raise corruption_error from close_error
+
+                    evicted = self._lifecycle.evict_connection(
+                        self._db_path,
+                        expected_connection=corrupt_conn,
+                    )
+                    if not evicted:
+                        logger.error(
+                            "Corrupt database connection was replaced before eviction; replacement ownership retained"
                         )
                         raise
-                    close_error = error
-                except Exception as error:
-                    close_error = error
 
-                self._conn = None
-                if close_error is not None:
-                    logger.error(
-                        "Failed to close corrupt database; lifecycle ownership retained: %s",
-                        close_error,
-                        exc_info=(
-                            type(close_error),
-                            close_error,
-                            close_error.__traceback__,
-                        ),
-                    )
-                    raise corruption_error from close_error
+                    db_file = pathlib.Path(self._db_path)
+                    if db_file.exists():
+                        backup_path = db_file.with_name(f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}")
 
-                evicted = self._lifecycle.evict_connection(
-                    self._db_path,
-                    expected_connection=corrupt_conn,
-                )
-                if not evicted:
-                    logger.error(
-                        "Corrupt database connection was replaced before eviction; replacement ownership retained"
-                    )
-                    raise
+                        @retry(
+                            retry=retry_if_exception_type(OSError),
+                            stop=stop_after_attempt(5),
+                            wait=wait_exponential(multiplier=1, min=1, max=10),
+                            reraise=True,
+                        )
+                        async def _do_backup_lifecycle():
+                            await asyncio.to_thread(db_file.rename, backup_path)
 
-                db_file = pathlib.Path(self._db_path)
-                if db_file.exists():
-                    backup_path = db_file.with_name(f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}")
+                        try:
+                            await _do_backup_lifecycle()
+                            logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
+                        except OSError as e:
+                            logger.error("Failed to backup corrupt database: %s", e)
+                            raise
 
-                    @retry(
-                        retry=retry_if_exception_type(OSError),
-                        stop=stop_after_attempt(5),
-                        wait=wait_exponential(multiplier=1, min=1, max=10),
-                        reraise=True,
-                    )
-                    async def _do_backup_lifecycle():
-                        await asyncio.to_thread(db_file.rename, backup_path)
-
-                    try:
-                        await _do_backup_lifecycle()
-                        logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
-                    except OSError as e:
-                        logger.error("Failed to backup corrupt database: %s", e)
-                        raise
-
-                # Reopen fresh via lifecycle (file is now absent or empty)
+                # El path vuelve a estar disponible recién al salir del bloque:
+                # abrir acá adentro lo haría contra un path todavía en
+                # mantenimiento (y fail-closed a propósito).
                 self._conn = await self._lifecycle.get_connection(self._db_path)
                 self._conn.row_factory = aiosqlite.Row
 
@@ -351,17 +370,31 @@ class AsyncModRegistry:
     # Single-row helpers
     # ------------------------------------------------------------------
 
-    async def _revalidar_conexion(self) -> None:
-        """Revalida ``self._conn`` contra el lifecycle antes de cada operación.
+    @asynccontextmanager
+    async def _operacion(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Boundary del path: conexión válida + derecho a operar, atómicos.
 
-        La conexión del lifecycle es singleton por path resuelto: otro wrapper
-        sobre la misma DB puede haberla puesto en cuarentena, y sin esta
-        revalidación este registry seguiría emitiendo SQL contra una conexión
-        cerrada. Deja el chequeo de ``None`` a cada método para no cambiarles el
-        error que ya documentan.
+        Reemplaza al par ``_revalidar_conexion()`` seguido de SQL, que no era
+        atómico: entre revalidar y ejecutar había al menos un ``await`` —
+        adquirir ``self._write_lock``, o el propio execute— y en esa ventana un
+        hermano podía cuarentenar la conexión recién validada. Delega en
+        ``lifecycle.operation()``, que sostiene el MISMO lock que toma la
+        cuarentena; achicar la ventana revalidando "más cerca" no alcanzaba.
+
+        Vale también para lecturas: un lector sobre una conexión cerrada falla
+        igual que un escritor.
         """
-        if self._conn is not None and self._lifecycle is not None:
-            self._conn = await self._lifecycle.refresh_connection(self._db_path, self._conn)
+        if self._lifecycle is not None:
+            async with self._lifecycle.operation(self._db_path, self._conn) as conn:
+                self._conn = conn
+                yield conn
+            return
+        # Sin lifecycle (path legacy directo) no hay invalidación compartida que
+        # coordinar, pero el lock de escritura se sigue respetando.
+        async with self._write_lock:
+            if self._conn is None:
+                raise RuntimeError("Database is not open")
+            yield self._conn
 
     async def upsert_mod(
         self,
@@ -373,12 +406,9 @@ class AsyncModRegistry:
         download_url: str = "",
     ) -> int:
         """Insert or update a mod record.  Returns the ``mod_id``."""
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         async with (
-            self._write_lock,
-            self._conn.execute(
+            self._operacion() as conn,
+            conn.execute(
                 _UPSERT_MOD_SQL,
                 (nexus_id, name, version, author, category, download_url),
             ) as cur,
@@ -391,12 +421,9 @@ class AsyncModRegistry:
 
     async def set_vfs_status(self, nexus_id: int, *, installed: bool, enabled: bool) -> None:
         """Update the VFS installation and activation status for a mod."""
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         async with (
-            self._write_lock,
-            self._conn.execute(
+            self._operacion() as conn,
+            conn.execute(
                 "UPDATE mods SET installed = ?, enabled_in_vfs = ?, updated_at = datetime('now') WHERE nexus_id = ?",
                 (int(installed), int(enabled), nexus_id),
             ),
@@ -405,18 +432,12 @@ class AsyncModRegistry:
 
     async def get_mod(self, nexus_id: int) -> aiosqlite.Row | None:
         """Return the mod row for *nexus_id*, or ``None``."""
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._conn.execute("SELECT * FROM mods WHERE nexus_id = ?", (nexus_id,)) as cur:
+        async with self._operacion() as conn, conn.execute("SELECT * FROM mods WHERE nexus_id = ?", (nexus_id,)) as cur:
             return await cur.fetchone()
 
     async def is_empty(self) -> bool:
         """Return True if the mods table is empty."""
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._conn.execute("SELECT COUNT(*) FROM mods") as cur:
+        async with self._operacion() as conn, conn.execute("SELECT COUNT(*) FROM mods") as cur:
             row = await cur.fetchone()
             return int(row[0]) == 0 if row else True
 
@@ -433,14 +454,14 @@ class AsyncModRegistry:
         Returns:
             List of dicts with mod metadata.
         """
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        async with self._conn.execute(
-            "SELECT mod_id, nexus_id, name, version, installed, enabled_in_vfs FROM mods WHERE name LIKE ? ESCAPE '\\'",
-            (f"%{escaped}%",),
-        ) as cur:
+        async with (
+            self._operacion() as conn,
+            conn.execute(
+                "SELECT mod_id, nexus_id, name, version, installed, enabled_in_vfs FROM mods WHERE name LIKE ? ESCAPE '\\'",
+                (f"%{escaped}%",),
+            ) as cur,
+        ):
             rows = await cur.fetchall()
         return [
             {
@@ -456,21 +477,18 @@ class AsyncModRegistry:
 
     async def get_all_nexus_ids(self) -> set[int]:
         """Return all registered nexus_id values."""
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._conn.execute("SELECT nexus_id FROM mods") as cur:
+        async with self._operacion() as conn, conn.execute("SELECT nexus_id FROM mods") as cur:
             return {int(row[0]) for row in await cur.fetchall()}
 
     async def get_dependencies(self, mod_id: int) -> list[tuple[int, str]]:
         """Return ``(depends_on_nexus_id, dep_name)`` for *mod_id*."""
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._conn.execute(
-            "SELECT depends_on_nexus_id, dep_name FROM dependencies WHERE mod_id = ?",
-            (mod_id,),
-        ) as cur:
+        async with (
+            self._operacion() as conn,
+            conn.execute(
+                "SELECT depends_on_nexus_id, dep_name FROM dependencies WHERE mod_id = ?",
+                (mod_id,),
+            ) as cur,
+        ):
             return [(int(row[0]), str(row[1])) for row in await cur.fetchall()]
 
     async def find_missing_masters_for_mods(
@@ -487,20 +505,20 @@ class AsyncModRegistry:
         Returns:
             List of dicts with mod_name, missing nexus_id, and dep_name.
         """
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         if not mod_names:
             return []
         placeholders = ",".join("?" for _ in mod_names)
-        async with self._conn.execute(
-            "SELECT src.name, d.depends_on_nexus_id, d.dep_name "
-            "FROM dependencies d "
-            "JOIN mods src ON d.mod_id = src.mod_id "
-            "LEFT JOIN mods m ON d.depends_on_nexus_id = m.nexus_id "
-            "WHERE m.nexus_id IS NULL AND src.name IN (" + placeholders + ")",  # nosec
-            tuple(mod_names),
-        ) as cur:
+        async with (
+            self._operacion() as conn,
+            conn.execute(
+                "SELECT src.name, d.depends_on_nexus_id, d.dep_name "
+                "FROM dependencies d "
+                "JOIN mods src ON d.mod_id = src.mod_id "
+                "LEFT JOIN mods m ON d.depends_on_nexus_id = m.nexus_id "
+                "WHERE m.nexus_id IS NULL AND src.name IN (" + placeholders + ")",  # nosec
+                tuple(mod_names),
+            ) as cur,
+        ):
             rows = await cur.fetchall()
         return [
             {
@@ -526,15 +544,12 @@ class AsyncModRegistry:
         """
         if not rows:
             return
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._write_lock:
+        async with self._operacion() as conn:
             try:
-                await self._conn.executemany(_UPSERT_MOD_SQL_BATCH, rows)
-                await self._conn.commit()
+                await conn.executemany(_UPSERT_MOD_SQL_BATCH, rows)
+                await conn.commit()
             except sqlite3.Error as exc:
-                await self._conn.rollback()
+                await conn.rollback()
                 logger.error("Batch upsert failed, rolled back: %s", exc)
                 raise DatabaseError(f"upsert_mods_batch failed: {exc}") from exc
         logger.debug("Batch-upserted %d mod rows", len(rows))
@@ -549,15 +564,12 @@ class AsyncModRegistry:
         """
         if not rows:
             return
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._write_lock:
+        async with self._operacion() as conn:
             try:
-                await self._conn.executemany(_INSERT_DEP_SQL, rows)
-                await self._conn.commit()
+                await conn.executemany(_INSERT_DEP_SQL, rows)
+                await conn.commit()
             except sqlite3.Error as exc:
-                await self._conn.rollback()
+                await conn.rollback()
                 logger.error("Batch insert deps failed, rolled back: %s", exc)
                 raise DatabaseError(f"insert_deps_batch failed: {exc}") from exc
         logger.debug("Batch-inserted %d dependency rows", len(rows))
@@ -572,15 +584,12 @@ class AsyncModRegistry:
         """
         if not rows:
             return
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._write_lock:
+        async with self._operacion() as conn:
             try:
-                await self._conn.executemany(_LOG_TASK_SQL, rows)
-                await self._conn.commit()
+                await conn.executemany(_LOG_TASK_SQL, rows)
+                await conn.commit()
             except sqlite3.Error as exc:
-                await self._conn.rollback()
+                await conn.rollback()
                 logger.error("Batch log tasks failed, rolled back: %s", exc)
                 raise DatabaseError(f"log_tasks_batch failed: {exc}") from exc
         logger.debug("Batch-logged %d task rows", len(rows))
@@ -594,22 +603,22 @@ class AsyncModRegistry:
         del mod se resuelve con LEFT JOIN (``mod_name`` es ``None`` para
         eventos sin mod asociado, p. ej. syncs).
         """
-        await self._revalidar_conexion()
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         # En SQLite un LIMIT negativo significa "sin límite": un -1 accidental
         # volcaría el historial completo. Clampear a >= 0 (0 → lista vacía).
         limit = max(int(limit), 0)
-        async with self._conn.execute(
-            """
+        async with (
+            self._operacion() as conn,
+            conn.execute(
+                """
             SELECT t.action, t.status, t.detail, t.created_at, m.name AS mod_name
             FROM task_log t
             LEFT JOIN mods m ON m.mod_id = t.mod_id
             ORDER BY t.log_id DESC
             LIMIT ?
             """,
-            (limit,),
-        ) as cur:
+                (limit,),
+            ) as cur,
+        ):
             rows = await cur.fetchall()
             columns = [d[0] for d in cur.description]
         return [dict(zip(columns, row, strict=True)) for row in rows]

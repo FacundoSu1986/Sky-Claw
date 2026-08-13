@@ -30,6 +30,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -166,15 +168,27 @@ def test_ancla_wrappers_que_cachean_conexion() -> None:
 # ``close`` quien la suelta—, y son los únicos dos roles que legítimamente
 # tocan el atributo crudo. Cualquier otro método que lo lea está usando la
 # conexión para trabajar, y entonces debe revalidarla.
+# El chokepoint ya no es "llama a refresh_connection" sino "entra al boundary":
+# revalidar y DESPUÉS usar no es atómico respecto de la cuarentena, y ese hueco
+# fue un defecto real (T13). Cada wrapper entra por su `_operacion`, que delega
+# en `lifecycle.operation()`.
+#
+# ESTE ANCLA NO DEMUESTRA ATOMICIDAD, y no debe pretenderlo. Enumera superficies:
+# qué métodos usan la conexión cacheada y si pasan por el boundary. La autoridad
+# sobre la propiedad —que la cuarentena no puede interleavearse con una operación
+# admitida— son T13/T13b/T14, que ejercitan la carrera con barreras. Un ancla
+# estática que "probara" atomicidad sería una pseudo-verificación: volvería a dar
+# verde sin correr la carrera, que es exactamente cómo este defecto sobrevivió
+# tres rondas de revisión.
+#
+# Exentos: los que ESTABLECEN o DESTRUYEN la conexión, más el propio boundary
+# (lee el atributo para pasarlo como `cached`) y, en journal, el resolvedor que
+# el boundary llama FUERA del lock porque puede reabrir.
 REVALIDACION_POR_WRAPPER = {
-    "sky_claw/app/agent/router.py": ("_conn", {"refresh_connection"}, {"open", "close"}),
-    "sky_claw/app/db/async_registry.py": (
-        "_conn",
-        {"refresh_connection", "_revalidar_conexion"},
-        {"open", "close"},
-    ),
-    "sky_claw/app/db/journal.py": ("_db", {"refresh_connection", "_ensure_connected"}, {"open", "close"}),
-    "sky_claw/app/db/locks.py": ("_conn", {"refresh_connection", "_ensure_conn"}, {"initialize", "close"}),
+    "sky_claw/app/agent/router.py": ("_conn", {"_operacion"}, {"_operacion", "open", "close"}),
+    "sky_claw/app/db/async_registry.py": ("_conn", {"_operacion"}, {"_operacion", "open", "close"}),
+    "sky_claw/app/db/journal.py": ("_db", {"_operacion"}, {"_ensure_connected", "open", "close"}),
+    "sky_claw/app/db/locks.py": ("_conn", {"_operacion"}, {"_operacion", "initialize", "close"}),
 }
 
 
@@ -195,6 +209,28 @@ def _llama_a(funcion: ast.AST, nombres: set[str]) -> bool:
         isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr in nombres
         for nodo in ast.walk(funcion)
     )
+
+
+def test_ancla_el_boundary_lo_provee_el_lifecycle() -> None:
+    """Ningún wrapper se fabrica su propio boundary: todos usan el del lifecycle.
+
+    El boundary sólo excluye si es el MISMO objeto de lock que toma la
+    cuarentena. Un lock propio por wrapper daría exclusión entre sus métodos y
+    ninguna contra quien invalida — verde en los tests, defecto intacto.
+    """
+    for ruta, estado in sorted(WRAPPERS_QUE_CACHEAN_CONEXION.items()):
+        if estado != "revalida":
+            continue
+        fuente = (RAIZ / ruta).read_text(encoding="utf-8")
+        # Dos rutas legítimas al MISMO lock: `operation()` (el caso normal) o
+        # `get_write_lock()` directo, que es lo que hace journal porque su
+        # resolvedor puede reabrir y `open()` adquiere ese mismo lock —
+        # `operation()` ahí sería self-deadlock. Lo que el ancla prohíbe es un
+        # lock propio del wrapper, que no excluiría a quien cuarentena.
+        assert "_lifecycle.operation(" in fuente or "_lifecycle.get_write_lock(" in fuente, (
+            f"{ruta} entra al boundary por su cuenta en vez de pedírselo al lifecycle: "
+            "un lock propio no excluye a quien cuarentena."
+        )
 
 
 def test_ancla_todo_uso_de_la_conexion_cacheada_se_revalida() -> None:
@@ -978,3 +1014,165 @@ async def test_database_agent_repide_la_conexion_en_cada_uso(tmp_path: Path) -> 
     assert lifecycle.is_connection_current(db, segunda)
 
     await agent.close()
+
+
+# ===========================================================================
+# T13 — la cuarentena no puede interleavearse con una operación admitida
+# ===========================================================================
+
+
+async def test_t13_la_cuarentena_no_corre_entre_revalidar_y_usar(tmp_path: Path) -> None:
+    """El par (revalidar, usar) es atómico respecto de la cuarentena.
+
+    Es la carrera que quedaba abierta: revalidar y después emitir SQL no es
+    atómico —entre los dos hay al menos un ``await``— así que un hermano podía
+    cuarentenar la conexión recién validada y el SQL corría contra una conexión
+    cerrada (`sqlite3.ProgrammingError`, encima fuera de la taxonomía de T11).
+
+    Achicar la ventana no la cierra: lo que la cierra es que la invalidación y
+    el uso compitan por el MISMO lock. Acá se retiene a A DENTRO del boundary,
+    se lanza la cuarentena, y se libera en el orden adversarial.
+
+    Sin sleeps: todo el interleaving se ordena con `Event`.
+    """
+    db = tmp_path / "toctou.db"
+    lifecycle = _lifecycle(db)
+    registry = AsyncModRegistry(str(db), lifecycle=lifecycle)
+    await registry.open()
+    conn = registry._conn
+    assert conn is not None
+
+    a_dentro = asyncio.Event()
+    liberar_a = asyncio.Event()
+    real_op = registry._operacion
+
+    @asynccontextmanager
+    async def op_retenida() -> AsyncIterator[aiosqlite.Connection]:
+        async with real_op() as c:
+            # Retenido DESPUÉS de revalidar y ANTES del SQL: exactamente la
+            # ventana en la que el defecto se manifestaba.
+            a_dentro.set()
+            await liberar_a.wait()
+            yield c
+
+    registry._operacion = op_retenida  # type: ignore[method-assign]
+
+    tarea_a = asyncio.create_task(registry.is_empty())
+    await a_dentro.wait()
+
+    # LA aserción de la propiedad, y es determinista: mientras A está admitida
+    # sostiene el write lock DEL PATH — el mismo que `quarantine_connection`
+    # necesita. No depende de cómo se planifiquen las tareas ni de que el close
+    # de aiosqlite (que cruza a un thread) llegue a completarse.
+    #
+    # Con el orden viejo —revalidar y después usar, y los lectores sin lock
+    # alguno— acá el lock está libre y la cuarentena entra en la ventana.
+    assert lifecycle.get_write_lock(db).locked(), (
+        "la operación admitida no sostiene el boundary del path: la cuarentena "
+        "puede colarse entre la revalidación y el SQL"
+    )
+
+    # B intenta invalidar mientras A está admitida.
+    tarea_b = asyncio.create_task(lifecycle.quarantine_connection(db, conn))
+    assert lifecycle.is_connection_current(db, conn), "la conexión se invalidó mientras A estaba admitida"
+
+    liberar_a.set()
+    # Si el defecto estuviera vivo, esto sería ProgrammingError("closed database").
+    assert await tarea_a is True, "la operación admitida no pudo completarse"
+    assert await tarea_b is None, "el cierre de la cuarentena falló"
+    assert not lifecycle.is_connection_current(db, conn), "la cuarentena no llegó a invalidar"
+
+    await lifecycle.shutdown_all()
+
+
+async def test_t13b_el_orden_inverso_tambien_es_seguro(tmp_path: Path) -> None:
+    """Si la cuarentena gana la carrera, la operación revalida ANTES de su SQL.
+
+    El otro desenlace aceptable: B invalida primero y A, que entra al boundary
+    después, obtiene el reemplazo en vez de la conexión cerrada. Lo que nunca
+    puede pasar es que A ejecute sobre la conexión que B cerró.
+    """
+    db = tmp_path / "toctou_inverso.db"
+    lifecycle = _lifecycle(db)
+    registry = AsyncModRegistry(str(db), lifecycle=lifecycle)
+    await registry.open()
+    vieja = registry._conn
+    assert vieja is not None
+
+    assert await lifecycle.quarantine_connection(db, vieja) is None
+
+    # A recién ahora opera: tiene que revalidar y reemplazar, no reventar.
+    assert await registry.is_empty() is True
+    assert registry._conn is not vieja, "A siguió con la conexión cuarentenada"
+
+    await lifecycle.shutdown_all()
+
+
+# ===========================================================================
+# T14 — el path no vuelve a circulación a mitad de un rename/rebuild
+# ===========================================================================
+
+
+async def test_t14_nadie_obtiene_conexion_durante_el_rename(tmp_path: Path) -> None:
+    """Durante close→rename→rebuild el path está indisponible para TODOS.
+
+    El hueco: la recuperación de corrupción expulsaba la conexión y recién
+    después renombraba el archivo. En esa ventana el path estaba AVAILABLE, así
+    que un hermano abría un reemplazo sobre el archivo que estaba por moverse —
+    en Windows su handle bloquea el rename, en POSIX se queda hablando con el
+    backup ya renombrado.
+
+    Se ejercita en el rename real (barrera dentro de `Path.rename`), sin sleeps,
+    y sirve igual en POSIX y Windows porque lo que se afirma es la
+    indisponibilidad, no el efecto del sistema de archivos.
+    """
+    db = tmp_path / "recovery.db"
+    lifecycle = _lifecycle(db)
+    registry = AsyncModRegistry(str(db), lifecycle=lifecycle)
+    await registry.open()
+    corrupta = registry._conn
+    assert corrupta is not None
+    await registry.close()
+
+    en_rename = asyncio.Event()
+    liberar_rename = asyncio.Event()
+    rename_real = Path.rename
+
+    def rename_con_barrera(self: Path, destino):  # type: ignore[no-untyped-def]
+        en_rename.set()
+        # Barrera síncrona dentro de to_thread: el loop sigue libre.
+        asyncio.run_coroutine_threadsafe(liberar_rename.wait(), bucle).result()
+        return rename_real(self, destino)
+
+    bucle = asyncio.get_running_loop()
+    cursor_corrupto = MagicMock()
+    cursor_corrupto.__aenter__ = AsyncMock(return_value=cursor_corrupto)
+    cursor_corrupto.__aexit__ = AsyncMock(return_value=False)
+    cursor_corrupto.fetchone = AsyncMock(return_value=("no ok",))
+
+    otro = AsyncModRegistry(str(db), lifecycle=lifecycle)
+    ejecutar_real = corrupta.execute
+    corrupta.execute = MagicMock(return_value=cursor_corrupto)  # type: ignore[method-assign]
+    Path.rename = rename_con_barrera  # type: ignore[method-assign]
+    try:
+        tarea = asyncio.create_task(otro.open())
+        await en_rename.wait()
+
+        # Mientras el archivo se está moviendo: fail-closed, y sobre todo NINGÚN
+        # reemplazo abierto sobre el archivo en tránsito.
+        with pytest.raises(DatabasePathPoisonedError):
+            await lifecycle.get_connection(db)
+        assert str(db.resolve()) not in lifecycle._connections, "se abrió un reemplazo durante el rename"
+
+        liberar_rename.set()
+        await tarea
+    finally:
+        Path.rename = rename_real  # type: ignore[method-assign]
+        corrupta.execute = ejecutar_real  # type: ignore[method-assign]
+
+    # Terminado el rebuild, el path vuelve a estar disponible.
+    reconstruida = await lifecycle.get_connection(db)
+    assert reconstruida is not None
+    assert not lifecycle.is_path_poisoned(db)
+
+    await lifecycle.shutdown_all()
