@@ -1141,6 +1141,22 @@ class DynDOLODRunner:
         # `pipeline_stage=9`, un dashboard cuenta un fallo de etapa 9 para un
         # `tx_id` cuyo journal commiteó éxito — dos señales persistidas
         # contradiciéndose sobre la misma transacción (review Qodo, PR #471).
+        #
+        # CONSECUENCIA, decidida y no lateral (review Qodo, PR #471, "Regresión
+        # transaccional"): un fallo SOLO del empaquetado de TexGen ahora tumba la
+        # corrida entera — el servicio lanza, el journal no commitea y los
+        # `DirectoryRollback` revierten también el mod de DynDOLOD recién
+        # empaquetado. Es lo correcto y es la doctrina del repo (U-11: no
+        # reportar éxito sobre un estado indeterminado; nada de commits
+        # parciales): con el mod de TexGen ausente el resultado NO es usable
+        # —MO2 no despliega esas texturas y el juego queda con los meshes de LOD
+        # sin ellas—, así que "éxito parcial" sería el falso verde de nuevo, con
+        # otra cara. Lo que se pierde es acotado: el rollback cubre los mods
+        # EMPAQUETADOS bajo `mods/`, no el staging crudo del `-o:`, que queda
+        # explícitamente fuera del move-aside; los GB que DynDOLOD generó siguen
+        # en disco y lo que hay que rehacer es la corrida, no el trabajo perdido
+        # para siempre. Anclado en
+        # `test_el_empaquetado_fallido_de_texgen_no_commitea_la_transaccion`.
         success = (
             dyndolod_result is not None
             and dyndolod_result.success

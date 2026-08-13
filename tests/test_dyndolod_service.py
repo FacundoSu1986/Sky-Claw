@@ -3787,12 +3787,22 @@ def test_toda_llamada_al_runner_vive_dentro_de_la_correlacion() -> None:
     )
 
 
-#: Puntos de entrada del runner de la etapa 9. Alcanzar cualquiera de ellos desde
-#: fuera de `dyndolod_runner.py` es "usar el runner", y por lo tanto emitir sus
-#: registros de fallo — que ahora llevan `pipeline_stage=9`.
-_ENTRADAS_DEL_RUNNER = frozenset(
-    {"DynDOLODRunner", "run_full_pipeline", "run_texgen", "run_dyndolod", "validate_dyndolod_output"}
-)
+#: Entradas del runner cuyo nombre es SUYO: ningún otro módulo del repo puede
+#: tener un `run_texgen` o un `DynDOLODRunner` que signifique otra cosa, así que
+#: verlas alcanza para saber que se está usando este runner.
+_ENTRADAS_INEQUIVOCAS = frozenset({"DynDOLODRunner", "run_texgen", "run_dyndolod", "validate_dyndolod_output"})
+
+#: Entradas con nombre GENÉRICO: `run_full_pipeline` es un nombre que cualquier
+#: otro runner del repo puede estrenar mañana (`synthesis_runner`, `loot/cli.py`…)
+#: sin tener nada que ver con la etapa 9. Detectarlas por nombre suelto acoplaba
+#: el merge de un PR ajeno a este archivo —el costo que la review del PR #464
+#: llamó "Acoplamiento anclas" y que ya obligó a aflojar dos anclas de este mismo
+#: archivo— así que solo cuentan en módulos que IMPORTAN el runner (review Qodo,
+#: PR #471, "Falso positivo AST").
+_ENTRADAS_AMBIGUAS = frozenset({"run_full_pipeline"})
+
+#: Módulo del runner, para reconocer quién lo importa.
+_MODULO_DEL_RUNNER = "dyndolod_runner"
 
 #: Igualdad literal, no "está incluido": el conjunto COMPLETO de sitios de
 #: `sky_claw/` que alcanzan al runner. Un sitio nuevo rompe el test hasta que
@@ -3804,8 +3814,33 @@ _ALCANCE_DEL_RUNNER = {
 }
 
 
+def _importa_el_runner(arbol: ast.Module) -> bool:
+    """¿El módulo importa algo de ``dyndolod_runner``?"""
+    return any(
+        isinstance(nodo, ast.ImportFrom) and _MODULO_DEL_RUNNER in (nodo.module or "") for nodo in ast.walk(arbol)
+    ) or any(
+        isinstance(nodo, ast.Import) and any(_MODULO_DEL_RUNNER in alias.name for alias in nodo.names)
+        for nodo in ast.walk(arbol)
+    )
+
+
 def _alcances_del_runner(arbol: ast.Module) -> set[tuple[str, str]]:
-    """``(método contenedor, entrada)`` por cada alcance al runner en ``arbol``."""
+    """``(método contenedor, entrada)`` por cada alcance al runner en ``arbol``.
+
+    Las entradas inequívocas cuentan siempre; las ambiguas solo si el módulo
+    importa el runner. Ese corte no es simetría estética: el nombre suelto
+    ``run_full_pipeline`` puede aparecer mañana en otro runner y romper el ancla
+    sin que nadie haya tocado la etapa 9, mientras que para USAR este runner por
+    ese método hay que haberlo obtenido de algún lado — y las cuatro entradas
+    inequívocas siguen contando sin condición, así que un handler que construya
+    o lance el runner queda detectado igual.
+
+    Límite conocido: un módulo que reciba una instancia ya construida (inyección)
+    y la llame SOLO por ``run_full_pipeline``, sin importar nada, no se vería.
+    Es angosto —construir o usar cualquier otra entrada lo delata— y se prefiere
+    a un ancla que se rompa por homonimia.
+    """
+    admite_ambiguas = _importa_el_runner(arbol)
     alcances = set()
     for nodo in ast.walk(arbol):
         if not isinstance(nodo, ast.Call):
@@ -3816,7 +3851,7 @@ def _alcances_del_runner(arbol: ast.Module) -> set[tuple[str, str]]:
             nombre = nodo.func.attr
         else:
             continue
-        if nombre in _ENTRADAS_DEL_RUNNER:
+        if nombre in _ENTRADAS_INEQUIVOCAS or (nombre in _ENTRADAS_AMBIGUAS and admite_ambiguas):
             alcances.add((_metodo_que_contiene(nodo, arbol) or "<módulo>", nombre))
     return alcances
 
@@ -3829,17 +3864,27 @@ def test_el_detector_de_alcances_ve_una_superficie_nueva() -> None:
     igualdad literal sobre un conjunto que el detector no sabe llenar pasa
     siempre, y su verde no significa lo que promete.
     """
-    fuente = (
+    con_import = (
+        "from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner\n"
         "class Handler:\n"
         "    async def ejecutar(self):\n"
         "        runner = DynDOLODRunner(config)\n"
         "        return await runner.run_full_pipeline()\n"
     )
-
-    assert _alcances_del_runner(ast.parse(fuente)) == {
+    assert _alcances_del_runner(ast.parse(con_import)) == {
         ("ejecutar", "DynDOLODRunner"),
         ("ejecutar", "run_full_pipeline"),
     }
+
+    # Sin importar el runner, `run_full_pipeline` es un nombre de cualquiera: no
+    # cuenta. Es el falso positivo que acoplaba este archivo a PRs ajenos.
+    ajeno = "class OtroRunner:\n    async def run_full_pipeline(self):\n        return await self.correr()\n"
+    assert _alcances_del_runner(ast.parse(ajeno)) == set()
+
+    # Pero una entrada INEQUÍVOCA cuenta aunque no haya import: es la forma que
+    # tomaría una segunda superficie que reciba el runner ya construido.
+    inyectado = "class Handler:\n    async def ejecutar(self, runner):\n        return await runner.run_texgen()\n"
+    assert _alcances_del_runner(ast.parse(inyectado)) == {("ejecutar", "run_texgen")}
 
 
 def test_el_runner_solo_se_alcanza_desde_la_superficie_correlacionada() -> None:
@@ -4184,6 +4229,64 @@ async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
         "que exigir `texgen_mod_path`, igual que ya exige `dyndolod_mod_path` para su rama."
     )
     assert any("Failed to package TexGen output" in e for e in result.errors)
+
+
+@pytest.mark.asyncio
+async def test_el_empaquetado_fallido_de_texgen_no_commitea_la_transaccion(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """La consecuencia transaccional del fix anterior, DECIDIDA y no lateral.
+
+    Ajustar la fórmula de ``success`` para que exija ``texgen_mod_path`` tiene un
+    efecto que hay que mirar de frente (review Qodo, PR #471, "Regresión
+    transaccional"): un fallo SOLO del empaquetado de TexGen ahora tumba la
+    corrida entera — el servicio lanza, el journal NO commitea y los
+    `DirectoryRollback` revierten también el mod de DynDOLOD recién empaquetado.
+
+    Es lo correcto y es la doctrina del repo (U-11: no reportar éxito sobre un
+    estado indeterminado, nada de commits parciales). Con el mod de TexGen
+    ausente el resultado no es usable —MO2 no despliega esas texturas y el juego
+    queda con los meshes de LOD sin ellas—, así que "éxito parcial" sería el
+    mismo falso verde con otra cara. Y lo que se pierde es acotado: el rollback
+    cubre los mods EMPAQUETADOS bajo ``mods/``, no el staging crudo del ``-o:``,
+    que queda explícitamente fuera del move-aside.
+
+    Este test fija la DECISIÓN (no commitear) para que sea una semántica elegida
+    con gate y no un efecto colateral que el próximo lector tenga que deducir. La
+    mecánica del move-aside en sí ya tiene sus propios tests.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    config, runner = _runner_texgen(tmp_path)
+    (config.game_path / "Data").mkdir()
+    assert config.output_root is not None
+    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    service._runner = runner
+
+    corridas = {"n": 0}
+
+    def _ambas_salidas() -> None:
+        corridas["n"] += 1
+        _escribir_salida(texgen_staging, "textura.dds", b"\x00" * corridas["n"])
+        _escribir_salida(dyndolod_staging, "DynDOLOD.esp", b"\x00" * corridas["n"])
+
+    async def _empaquetar(output_path: pathlib.Path, mod_name: str) -> pathlib.Path:
+        if mod_name == DynDOLODRunner.TEXGEN_MOD_NAME:
+            raise DynDOLODValidationError("Permission denied creating mod: meta.ini")
+        return tmp_path / "mods" / mod_name
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_ambas_salidas)
+    with patch.object(runner, "_execute_process", fake), patch.object(runner, "_package_output_as_mod", _empaquetar):
+        resultado = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert resultado["success"] is False
+    mock_journal.commit_transaction.assert_not_awaited()
+    assert any("TexGen" in str(e) for e in resultado["errors"]), (
+        f"el error reportado tiene que nombrar a TexGen: {resultado['errors']}"
+    )
 
 
 @pytest.mark.asyncio
