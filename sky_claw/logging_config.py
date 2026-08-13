@@ -70,6 +70,20 @@ def correlacion_de_transaccion(tx_id: int | None) -> Iterator[None]:
     bloque lanza: sin el reset, el id de una corrida se filtraría a los registros
     de la etapa siguiente, que es peor que no tener correlación — miente en vez
     de faltar.
+
+    **El reset restaura el contexto de ESTE task, no las copias ya despachadas**,
+    y eso es lo correcto, no una fuga. ``asyncio.to_thread`` y
+    ``asyncio.create_task`` copian el contexto al despachar: un hilo que siga
+    empaquetando cuando el bloque ya se cerró —porque cancelaron el task que lo
+    esperaba, por ejemplo— emite sus registros con la transacción bajo la que fue
+    despachado. Su trabajo ES de esa transacción, así que ese es el id que hace
+    falta para diagnosticarlo. Lo que el reset previene es lo otro: que un
+    registro de la etapa SIGUIENTE herede el id de la anterior. Una copia por
+    hilo nunca es eso — lleva N, jamás N+1. Con un global mutable en vez de un
+    ContextVar, el hilo leería el valor ya reseteado y perdería la atribución.
+    Reportado como bug una vez (review Qodo, PR #471); anclado en
+    ``test_el_trabajo_ya_despachado_a_un_hilo_conserva_su_transaccion`` para que
+    la próxima lectura no lo "arregle".
     """
     token = pipeline_tx_id_var.set(tx_id)
     try:

@@ -12,6 +12,7 @@ import dataclasses
 import logging
 import os
 import pathlib
+import threading
 import time
 import warnings
 from collections.abc import Callable
@@ -4183,6 +4184,55 @@ async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
         "que exigir `texgen_mod_path`, igual que ya exige `dyndolod_mod_path` para su rama."
     )
     assert any("Failed to package TexGen output" in e for e in result.errors)
+
+
+@pytest.mark.asyncio
+async def test_el_trabajo_ya_despachado_a_un_hilo_conserva_su_transaccion() -> None:
+    """Un hilo que sobrevive al `with` sigue reportando la transacción que lo lanzó.
+
+    Existe para que nadie "arregle" esto, porque ya lo reportaron como bug
+    (review Qodo, PR #471, "Correlación tras reset en contexto de hilo"). El
+    mecanismo que describe es correcto —`asyncio.to_thread` copia el contexto al
+    despachar, y el `reset` del `finally` no revierte las copias ya hechas— pero
+    la conclusión no: ese registro NO está mal correlacionado.
+
+    La distinción es cuál es el valor correcto. El hilo está haciendo trabajo
+    **de** la transacción N (empaquetar la salida de esa corrida), así que su
+    registro pertenece al incidente de N aunque N ya se haya abortado mientras
+    tanto: "durante la corrida de N, el empaquetado seguía escribiendo cuando nos
+    cancelaron" es exactamente el hecho que uno quiere leer. Lo que el `reset`
+    previene es lo otro —que un registro de la etapa SIGUIENTE herede el id de la
+    anterior—, y las copias por hilo no son eso: llevan N, nunca N+1.
+
+    Visto de cerca, la semántica de copia es un argumento A FAVOR del ContextVar
+    sobre un global mutable: con un global, el hilo leería el valor ya reseteado
+    y perdería la atribución, o peor, tomaría el de la transacción siguiente.
+
+    La prueba no depende de timing: los dos `Event` fuerzan el orden —el hilo
+    lee DESPUÉS de que el `with` se cerró— así que si la copia no conservara el
+    valor, acá se leería `None`.
+    """
+    salio_del_with = threading.Event()
+    visto: list[int | None] = []
+
+    def _en_el_hilo() -> None:
+        salio_del_with.wait(timeout=5)
+        visto.append(pipeline_tx_id_var.get())
+
+    with correlacion_de_transaccion(777):
+        tarea = asyncio.create_task(asyncio.to_thread(_en_el_hilo))
+        # Que el despacho al hilo ocurra DENTRO del `with`: es ahí donde se copia
+        # el contexto.
+        await asyncio.sleep(0)
+
+    assert pipeline_tx_id_var.get() is None, "el `with` ya se cerró y el contexto del loop se restauró"
+    salio_del_with.set()
+    await tarea
+
+    assert visto == [777], (
+        "el hilo perdió la transacción bajo la que fue despachado: su trabajo pertenece a esa "
+        f"corrida y su registro tiene que poder unirse a ese incidente. Leyó {visto}."
+    )
 
 
 @pytest.mark.asyncio
