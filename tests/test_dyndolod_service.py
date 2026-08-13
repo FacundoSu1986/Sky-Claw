@@ -3692,6 +3692,69 @@ def test_el_registro_agregado_del_runner_siempre_tiene_companero_con_etapa() -> 
     )
 
 
+def test_toda_llamada_al_runner_vive_dentro_de_la_correlacion() -> None:
+    """El `with` cubre TODA la interacción con el runner, no la que hoy recordamos.
+
+    Cierra la única brecha real de la segunda pasada de Qodo (PR #471, findings
+    "Posible Bug" sobre `_tx_id` y sobre el test de integración, que convergen
+    acá): los tests de comportamiento prueban que el `tx_id` llega y que las dos
+    capas coinciden, pero **ninguno detecta un `with` que se angoste**. Si un
+    refactor dejara `validate_dyndolod_output` afuera, sus registros —todos
+    exentos de la etapa— saldrían con `tx_id=None` y perderían la capacidad de
+    unirse al incidente, y toda la suite seguiría verde.
+
+    Enumera en vez de muestrear, que es lo que `../AGENTS.md` pide y lo que un
+    test escrito a mano para la llamada que hoy existe no da: una llamada NUEVA
+    al runner agregada fuera del `with` rompe esto sin que nadie se acuerde de
+    la regla. Es el instrumento de `test_el_servicio_real_reenvia_los_extra_args_al_runner`,
+    aplicado a la otra propiedad de ese mismo bloque.
+
+    Alcance honesto: solo ve llamadas a MÉTODOS sobre el nombre local ``runner``.
+    Las lecturas de atributo (``runner._config``, ``runner.DYNDOLLOD_MOD_NAME``)
+    quedan fuera a propósito — no emiten registros. Si alguien renombra la
+    variable local, el ancla no se vuelve permisiva en silencio: la aserción de
+    no-vacuidad la pone en rojo.
+    """
+    execute = _metodo_execute_ast()
+
+    rangos = [
+        (n.lineno, n.end_lineno or n.lineno)
+        for n in ast.walk(execute)
+        if isinstance(n, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Name)
+            and item.context_expr.func.id == "correlacion_de_transaccion"
+            for item in n.items
+        )
+    ]
+    assert rangos, (
+        "`execute` no abre ningún `with correlacion_de_transaccion(...)`: los registros de "
+        "fallo del runner saldrían con tx_id=None y no habría cómo unirlos al incidente."
+    )
+
+    llamadas = [
+        c
+        for c in ast.walk(execute)
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Attribute)
+        and isinstance(c.func.value, ast.Name)
+        and c.func.value.id == "runner"
+    ]
+    assert llamadas, (
+        "no se detectó ninguna llamada a un método de `runner` en `execute`: el ancla quedaría "
+        "vacía (¿se renombró la variable local?)."
+    )
+
+    fuera = sorted(f"{c.func.attr}:{c.lineno}" for c in llamadas if not any(a <= c.lineno <= b for a, b in rangos))
+    assert fuera == [], (
+        f"llamadas al runner fuera del `with correlacion_de_transaccion(...)`: {fuera}. "
+        f"Todo lo que el runner haga por cuenta del servicio tiene que emitir sus registros "
+        f"con el tx_id de esta transacción — incluidos los exentos de pipeline_stage, que se "
+        f"unen al incidente solo por ese campo."
+    )
+
+
 def test_dyndolod_runner_no_regresa_de_su_cobertura_declarada() -> None:
     """El runner de la etapa 9, con la MISMA vara que sus ocho servicios hermanos.
 

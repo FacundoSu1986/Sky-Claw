@@ -1734,9 +1734,12 @@ class DynDOLODRunner:
             # CON etapa: `PathViolationError` no es `OSError` ni
             # `DynDOLODValidationError`, así que ningún `except` del runner la
             # atrapa — escapa entera de `run_full_pipeline` hasta el
-            # `except Exception` del servicio. Este es el ÚNICO registro del
-            # runner para el incidente, y además es un hecho distinto y
-            # condicional (bloqueo de sandbox), no una repetición mecánica.
+            # `except Exception` del servicio. Es el único registro QUE EMITE
+            # ESTE RUNNER para el incidente (el servicio emite el suyo, como en
+            # todos los demás: dos capas, un incidente, y por eso la métrica es
+            # COUNT(DISTINCT tx_id)), y además es un hecho distinto y condicional
+            # —un bloqueo de sandbox que aborta el empaquetado y tumba la
+            # corrida—, no una repetición mecánica de otro registro del runner.
             logger.error(
                 "Path traversal blocked for meta.ini: %s",
                 meta_ini_path,
