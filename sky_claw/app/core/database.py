@@ -134,6 +134,22 @@ class DatabaseAgent:
         return self._conn
 
     @asynccontextmanager
+    async def _read_operation(self) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Boundary de lectura sobre la conexión compartida.
+
+        Un lector sobre una conexión que otro camino acaba de cerrar falla igual
+        que un escritor, así que también participa. Sin lifecycle no hay
+        conexión compartida que coordinar y se usa la propia.
+        """
+        if self._lifecycle is not None:
+            async with self._lifecycle.operation(self.db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                self._conn = conn
+                yield conn
+            return
+        yield await self._get_conn()
+
+    @asynccontextmanager
     async def _write_transaction(self) -> AsyncGenerator[aiosqlite.Connection, None]:
         """Delega una escritura completa al lifecycle transaccional."""
         if self._lifecycle is None:
@@ -146,8 +162,10 @@ class DatabaseAgent:
     # ─────────────────────────────────────────────────────────────────────
 
     async def get_circuit_breaker_state(self, domain: str) -> dict:
-        conn = await self._get_conn()
-        async with conn.execute("SELECT * FROM scraper_state WHERE domain = ?", (domain,)) as cursor:
+        async with (
+            self._read_operation() as conn,
+            conn.execute("SELECT * FROM scraper_state WHERE domain = ?", (domain,)) as cursor,
+        ):
             row = await cursor.fetchone()
             return dict(row) if row else {"failures": 0, "locked_until": 0}
 
@@ -171,8 +189,10 @@ class DatabaseAgent:
     # ─────────────────────────────────────────────────────────────────────
 
     async def get_memory(self, key: str) -> str | None:
-        conn = await self._get_conn()
-        async with conn.execute("SELECT value FROM agent_memory WHERE key = ?", (key,)) as cursor:
+        async with (
+            self._read_operation() as conn,
+            conn.execute("SELECT value FROM agent_memory WHERE key = ?", (key,)) as cursor,
+        ):
             row = await cursor.fetchone()
             return row[0] if row else None
 
@@ -197,11 +217,10 @@ class DatabaseAgent:
 
     async def get_mods(self, status: str | None = None) -> list[dict]:
         """Obtiene lista de mods con filtro opcional por status."""
-        conn = await self._get_conn()
-        if status:
-            async with conn.execute("SELECT * FROM mods WHERE status = ? ORDER BY name", (status,)) as cursor:
-                return [dict(row) for row in await cursor.fetchall()]
-        else:
+        async with self._read_operation() as conn:
+            if status:
+                async with conn.execute("SELECT * FROM mods WHERE status = ? ORDER BY name", (status,)) as cursor:
+                    return [dict(row) for row in await cursor.fetchall()]
             async with conn.execute("SELECT * FROM mods ORDER BY name") as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
 
@@ -244,14 +263,13 @@ class DatabaseAgent:
 
     async def get_conflicts(self, resolved: bool | None = None) -> list[dict]:
         """Obtiene conflictos con filtro opcional."""
-        conn = await self._get_conn()
-        if resolved is not None:
-            async with conn.execute(
-                "SELECT * FROM conflicts WHERE resolved = ? ORDER BY detected_at DESC",
-                (resolved,),
-            ) as cursor:
-                return [dict(row) for row in await cursor.fetchall()]
-        else:
+        async with self._read_operation() as conn:
+            if resolved is not None:
+                async with conn.execute(
+                    "SELECT * FROM conflicts WHERE resolved = ? ORDER BY detected_at DESC",
+                    (resolved,),
+                ) as cursor:
+                    return [dict(row) for row in await cursor.fetchall()]
             async with conn.execute("SELECT * FROM conflicts ORDER BY detected_at DESC") as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
 

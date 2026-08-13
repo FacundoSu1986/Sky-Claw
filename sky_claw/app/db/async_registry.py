@@ -13,6 +13,8 @@ import logging
 import pathlib
 import sqlite3
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -334,7 +336,13 @@ class AsyncModRegistry:
                 logger.error("Failed to open async registry: %s", exc)
                 raise
 
-        await self._conn.executescript(_SCHEMA_SQL)
+        # Hermano del schema del router y de locks: `executescript` emite un
+        # COMMIT implícito sobre la conexión compartida. Inicializar es escribir.
+        if self._lifecycle is not None:
+            async with self._lifecycle.get_write_lock(self._db_path):
+                await self._conn.executescript(_SCHEMA_SQL)
+        else:
+            await self._conn.executescript(_SCHEMA_SQL)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -351,6 +359,33 @@ class AsyncModRegistry:
     # Single-row helpers
     # ------------------------------------------------------------------
 
+    @asynccontextmanager
+    async def _operacion(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Boundary del path: conexión válida + derecho a usarla, juntos.
+
+        Los escritores ya tomaban `self._write_lock` (que ES el lock del path
+        cuando hay lifecycle), pero resolvían `self._conn` afuera; los lectores
+        no tomaban nada. En ambos casos el par (resolver, usar) no era atómico
+        respecto de quien puede cerrar o reemplazar la conexión compartida.
+
+        Un wrapper cerrado no revive: `operation()` reemplaza conexiones
+        obsoletas, no wrappers cerrados, y el re-chequeo de abajo cubre el
+        `close()` que llega mientras se espera el lock.
+        """
+        if self._conn is None:
+            raise RuntimeError("Database is not open")
+        if self._lifecycle is None:
+            async with self._write_lock:
+                if self._conn is None:
+                    raise RuntimeError("Database is not open")
+                yield self._conn
+            return
+        async with self._lifecycle.operation(self._db_path) as conn:
+            if self._conn is None:
+                raise RuntimeError("Database is not open")
+            self._conn = conn
+            yield conn
+
     async def upsert_mod(
         self,
         nexus_id: int,
@@ -361,11 +396,9 @@ class AsyncModRegistry:
         download_url: str = "",
     ) -> int:
         """Insert or update a mod record.  Returns the ``mod_id``."""
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         async with (
-            self._write_lock,
-            self._conn.execute(
+            self._operacion() as conn,
+            conn.execute(
                 _UPSERT_MOD_SQL,
                 (nexus_id, name, version, author, category, download_url),
             ) as cur,
@@ -378,11 +411,9 @@ class AsyncModRegistry:
 
     async def set_vfs_status(self, nexus_id: int, *, installed: bool, enabled: bool) -> None:
         """Update the VFS installation and activation status for a mod."""
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         async with (
-            self._write_lock,
-            self._conn.execute(
+            self._operacion() as conn,
+            conn.execute(
                 "UPDATE mods SET installed = ?, enabled_in_vfs = ?, updated_at = datetime('now') WHERE nexus_id = ?",
                 (int(installed), int(enabled), nexus_id),
             ),
@@ -391,16 +422,12 @@ class AsyncModRegistry:
 
     async def get_mod(self, nexus_id: int) -> aiosqlite.Row | None:
         """Return the mod row for *nexus_id*, or ``None``."""
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._conn.execute("SELECT * FROM mods WHERE nexus_id = ?", (nexus_id,)) as cur:
+        async with self._operacion() as conn, conn.execute("SELECT * FROM mods WHERE nexus_id = ?", (nexus_id,)) as cur:
             return await cur.fetchone()
 
     async def is_empty(self) -> bool:
         """Return True if the mods table is empty."""
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._conn.execute("SELECT COUNT(*) FROM mods") as cur:
+        async with self._operacion() as conn, conn.execute("SELECT COUNT(*) FROM mods") as cur:
             row = await cur.fetchone()
             return int(row[0]) == 0 if row else True
 
@@ -417,13 +444,14 @@ class AsyncModRegistry:
         Returns:
             List of dicts with mod metadata.
         """
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         escaped = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        async with self._conn.execute(
-            "SELECT mod_id, nexus_id, name, version, installed, enabled_in_vfs FROM mods WHERE name LIKE ? ESCAPE '\\'",
-            (f"%{escaped}%",),
-        ) as cur:
+        async with (
+            self._operacion() as conn,
+            conn.execute(
+                "SELECT mod_id, nexus_id, name, version, installed, enabled_in_vfs FROM mods WHERE name LIKE ? ESCAPE '\\'",
+                (f"%{escaped}%",),
+            ) as cur,
+        ):
             rows = await cur.fetchall()
         return [
             {
@@ -439,19 +467,18 @@ class AsyncModRegistry:
 
     async def get_all_nexus_ids(self) -> set[int]:
         """Return all registered nexus_id values."""
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._conn.execute("SELECT nexus_id FROM mods") as cur:
+        async with self._operacion() as conn, conn.execute("SELECT nexus_id FROM mods") as cur:
             return {int(row[0]) for row in await cur.fetchall()}
 
     async def get_dependencies(self, mod_id: int) -> list[tuple[int, str]]:
         """Return ``(depends_on_nexus_id, dep_name)`` for *mod_id*."""
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._conn.execute(
-            "SELECT depends_on_nexus_id, dep_name FROM dependencies WHERE mod_id = ?",
-            (mod_id,),
-        ) as cur:
+        async with (
+            self._operacion() as conn,
+            conn.execute(
+                "SELECT depends_on_nexus_id, dep_name FROM dependencies WHERE mod_id = ?",
+                (mod_id,),
+            ) as cur,
+        ):
             return [(int(row[0]), str(row[1])) for row in await cur.fetchall()]
 
     async def find_missing_masters_for_mods(
@@ -468,19 +495,20 @@ class AsyncModRegistry:
         Returns:
             List of dicts with mod_name, missing nexus_id, and dep_name.
         """
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         if not mod_names:
             return []
         placeholders = ",".join("?" for _ in mod_names)
-        async with self._conn.execute(
-            "SELECT src.name, d.depends_on_nexus_id, d.dep_name "
-            "FROM dependencies d "
-            "JOIN mods src ON d.mod_id = src.mod_id "
-            "LEFT JOIN mods m ON d.depends_on_nexus_id = m.nexus_id "
-            "WHERE m.nexus_id IS NULL AND src.name IN (" + placeholders + ")",  # nosec
-            tuple(mod_names),
-        ) as cur:
+        async with (
+            self._operacion() as conn,
+            conn.execute(
+                "SELECT src.name, d.depends_on_nexus_id, d.dep_name "
+                "FROM dependencies d "
+                "JOIN mods src ON d.mod_id = src.mod_id "
+                "LEFT JOIN mods m ON d.depends_on_nexus_id = m.nexus_id "
+                "WHERE m.nexus_id IS NULL AND src.name IN (" + placeholders + ")",  # nosec
+                tuple(mod_names),
+            ) as cur,
+        ):
             rows = await cur.fetchall()
         return [
             {
@@ -506,14 +534,12 @@ class AsyncModRegistry:
         """
         if not rows:
             return
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._write_lock:
+        async with self._operacion() as conn:
             try:
-                await self._conn.executemany(_UPSERT_MOD_SQL_BATCH, rows)
-                await self._conn.commit()
+                await conn.executemany(_UPSERT_MOD_SQL_BATCH, rows)
+                await conn.commit()
             except sqlite3.Error as exc:
-                await self._conn.rollback()
+                await conn.rollback()
                 logger.error("Batch upsert failed, rolled back: %s", exc)
                 raise DatabaseError(f"upsert_mods_batch failed: {exc}") from exc
         logger.debug("Batch-upserted %d mod rows", len(rows))
@@ -528,14 +554,12 @@ class AsyncModRegistry:
         """
         if not rows:
             return
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._write_lock:
+        async with self._operacion() as conn:
             try:
-                await self._conn.executemany(_INSERT_DEP_SQL, rows)
-                await self._conn.commit()
+                await conn.executemany(_INSERT_DEP_SQL, rows)
+                await conn.commit()
             except sqlite3.Error as exc:
-                await self._conn.rollback()
+                await conn.rollback()
                 logger.error("Batch insert deps failed, rolled back: %s", exc)
                 raise DatabaseError(f"insert_deps_batch failed: {exc}") from exc
         logger.debug("Batch-inserted %d dependency rows", len(rows))
@@ -550,14 +574,12 @@ class AsyncModRegistry:
         """
         if not rows:
             return
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
-        async with self._write_lock:
+        async with self._operacion() as conn:
             try:
-                await self._conn.executemany(_LOG_TASK_SQL, rows)
-                await self._conn.commit()
+                await conn.executemany(_LOG_TASK_SQL, rows)
+                await conn.commit()
             except sqlite3.Error as exc:
-                await self._conn.rollback()
+                await conn.rollback()
                 logger.error("Batch log tasks failed, rolled back: %s", exc)
                 raise DatabaseError(f"log_tasks_batch failed: {exc}") from exc
         logger.debug("Batch-logged %d task rows", len(rows))
@@ -571,21 +593,22 @@ class AsyncModRegistry:
         del mod se resuelve con LEFT JOIN (``mod_name`` es ``None`` para
         eventos sin mod asociado, p. ej. syncs).
         """
-        if self._conn is None:
-            raise RuntimeError("Database is not open")
         # En SQLite un LIMIT negativo significa "sin límite": un -1 accidental
         # volcaría el historial completo. Clampear a >= 0 (0 → lista vacía).
         limit = max(int(limit), 0)
-        async with self._conn.execute(
-            """
+        async with (
+            self._operacion() as conn,
+            conn.execute(
+                """
             SELECT t.action, t.status, t.detail, t.created_at, m.name AS mod_name
             FROM task_log t
             LEFT JOIN mods m ON m.mod_id = t.mod_id
             ORDER BY t.log_id DESC
             LIMIT ?
             """,
-            (limit,),
-        ) as cur:
+                (limit,),
+            ) as cur,
+        ):
             rows = await cur.fetchall()
             columns = [d[0] for d in cur.description]
         return [dict(zip(columns, row, strict=True)) for row in rows]

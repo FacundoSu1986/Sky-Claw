@@ -260,9 +260,14 @@ class DLQManager:
         Without one, falls back to the pre-M-01 per-operation connection.
         """
         if self._lifecycle is not None:
-            conn = await self._lifecycle.get_connection(self._db_path)
-            conn.row_factory = aiosqlite.Row
-            yield conn
+            # Boundary del path: la conexión se resuelve DENTRO y el lock se
+            # sostiene toda la unidad. Los escritores ya participaban vía
+            # `lifecycle.transaction()`; este es el camino de LECTURA, que hasta
+            # ahora emitía SQL sobre la conexión compartida sin coordinarse con
+            # quien puede cerrarla.
+            async with self._lifecycle.operation(self._db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                yield conn
             return
         try:
             db, cancelacion_adquisicion = await self._observar_resultado(aiosqlite.connect(self._db_path))

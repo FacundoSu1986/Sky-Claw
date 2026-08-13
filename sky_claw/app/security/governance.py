@@ -306,11 +306,15 @@ class GovernanceManager:
             return False
 
         try:
-            db = await self._lifecycle.get_connection(self.cache_db_path)
-            await self._ensure_schema(db)
-            async with db.execute("SELECT status FROM scan_cache WHERE file_hash = ?", (file_hash,)) as cursor:
-                row = await cursor.fetchone()
-                return bool(row and row[0] == "CLEAN")
+            # Boundary del path: la conexión se resuelve DENTRO, y el schema y
+            # la lectura quedan en la misma unidad. Resolverla afuera dejaba la
+            # referencia expuesta a que otro camino cerrara o reemplazara la
+            # conexión compartida antes del execute.
+            async with self._lifecycle.operation(self.cache_db_path) as db:
+                await self._ensure_schema(db)
+                async with db.execute("SELECT status FROM scan_cache WHERE file_hash = ?", (file_hash,)) as cursor:
+                    row = await cursor.fetchone()
+                    return bool(row and row[0] == "CLEAN")
         except Exception as e:
             logger.error("Error consultando caché de escaneo: %s", e)
             return False
@@ -333,23 +337,25 @@ class GovernanceManager:
             return
 
         try:
-            db = await self._lifecycle.get_connection(self.cache_db_path)
-            await self._ensure_schema(db)
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO scan_cache
-                (file_hash, file_path, last_scan_time, scan_results, status)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    file_hash,
-                    str(file_path),
-                    datetime.now(UTC).isoformat(),
-                    json.dumps(results),
-                    status,
-                ),
-            )
-            await db.commit()
+            # El commit va DENTRO del boundary: soltarlo antes deja la
+            # transacción pendiente sin serializar sobre la conexión compartida.
+            async with self._lifecycle.operation(self.cache_db_path) as db:
+                await self._ensure_schema(db)
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO scan_cache
+                    (file_hash, file_path, last_scan_time, scan_results, status)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        file_hash,
+                        str(file_path),
+                        datetime.now(UTC).isoformat(),
+                        json.dumps(results),
+                        status,
+                    ),
+                )
+                await db.commit()
         except Exception as e:
             logger.error("Error actualizando caché: %s", e)
 

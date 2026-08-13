@@ -12,6 +12,8 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
@@ -338,6 +340,20 @@ class LLMRouter:
         requested from it (WAL recovery + hardened pragmas already applied).
         Otherwise falls back to a direct ``aiosqlite.connect`` (pre-M-01).
         """
+        if self._lifecycle is None:
+            await self._abrir_bajo_conn_lock()
+            return
+        # El write lock del path va AFUERA de `_conn_lock`, no adentro: ese es el
+        # único orden que existe en el árbol (`_operacion` hace lo mismo) y
+        # tomarlos al revés sería una inversión. Y hace falta porque
+        # `executescript` emite un COMMIT implícito sobre la conexión compartida:
+        # un `open()` tardío podría confirmar la transacción a medio hacer de
+        # otro wrapper. Inicializar es escribir.
+        async with self._lifecycle.get_write_lock(self._db_path):
+            await self._abrir_bajo_conn_lock()
+
+    async def _abrir_bajo_conn_lock(self) -> None:
+        """Cuerpo de ``open()``; el boundary del path lo toma el llamador."""
         async with self._conn_lock:
             if self._conn is not None:
                 return
@@ -856,30 +872,53 @@ class LLMRouter:
     # History persistence
     # ------------------------------------------------------------------
 
+    @asynccontextmanager
+    async def _operacion(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Boundary del path + el lock del router, en ese orden.
+
+        `_conn_lock` es del router y la cuarentena/el shutdown compiten por el
+        lock DEL PATH, así que el primero solo no excluye a quien puede cerrar
+        la conexión. Orden fijo `path → router`, el mismo que usa `open()`.
+        """
+        if self._conn is None:
+            raise RuntimeError("Router database is not open")
+        if self._lifecycle is None:
+            async with self._conn_lock:
+                if self._conn is None:
+                    raise RuntimeError("Router database is not open")
+                yield self._conn
+            return
+        async with self._lifecycle.operation(self._db_path) as conn, self._conn_lock:
+            # Re-chequeo DENTRO de `_conn_lock`: `close()` toma sólo ese lock, y
+            # pudo correr mientras esperábamos el del path. Sin esto la
+            # reasignación de abajo resucitaría un router ya cerrado.
+            if self._conn is None:
+                raise RuntimeError("Router database is not open")
+            self._conn = conn
+            yield conn
+
     async def _save_message(self, chat_id: str, role: str, content: str) -> None:
         """Persist a message to the history database immediately."""
         # R-2: bajo el lock, para que un close() concurrente no nule self._conn
         # entre el execute() y el commit().
-        async with self._conn_lock:
-            if self._conn is None:
-                raise RuntimeError("Router database is not open")
-            await self._conn.execute(
+        async with self._operacion() as conn:
+            await conn.execute(
                 "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                 (chat_id, role, content, time.time()),
             )
-            await self._conn.commit()
+            await conn.commit()
 
     async def _load_context(self, chat_id: str) -> list[dict[str, Any]]:
         # R-2: la lectura de filas va bajo el lock (la conexión no se cierra a
         # mitad de query); el parseo posterior no lo necesita.
-        async with self._conn_lock:
-            if self._conn is None:
-                raise RuntimeError("Router database is not open")
-            async with self._conn.execute(
+        async with (
+            self._operacion() as conn,
+            conn.execute(
                 "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
                 (chat_id, self._max_context),
-            ) as cur:
-                rows = await cur.fetchall()
+            ) as cur,
+        ):
+            rows = await cur.fetchall()
 
         messages: list[dict[str, Any]] = []
         for row in reversed(rows):

@@ -15,6 +15,7 @@ import logging
 import pathlib
 import sqlite3
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -386,6 +387,30 @@ class OperationJournal:
             self._current_transaction = None
             logger.info("Journal database closed")
 
+    @asynccontextmanager
+    async def _operacion(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Boundary del path: conexión válida + derecho a usarla, juntos.
+
+        Resolver la conexión va FUERA del boundary y usarla, adentro. No es una
+        licencia: ``_ensure_connected`` puede caer en ``open()``, que adquiere
+        ESTE MISMO lock para su ``executescript`` — y ``asyncio.Lock`` no es
+        reentrante. Por eso la resolución queda afuera y adentro se vuelve a
+        pedir la conexión al lifecycle, que es quien sabe cuál vale.
+        """
+        if self._db is None:
+            await self.open()
+        if self._lifecycle is None:
+            async with self._lock:
+                if self._db is None:
+                    raise JournalConnectionError("Database connection not available")
+                yield self._db
+            return
+        async with self._lifecycle.operation(self._db_path) as conexion:
+            if self._db is None:
+                raise JournalConnectionError("Database connection not available")
+            self._db = conexion
+            yield conexion
+
     async def _ensure_connected(self) -> aiosqlite.Connection:
         """Asegura que la conexión está abierta."""
         if self._db is None:
@@ -418,9 +443,7 @@ class OperationJournal:
         Raises:
             JournalTransactionError: Si falla la creación.
         """
-        db = await self._ensure_connected()
-
-        async with self._lock:
+        async with self._operacion() as db:
             try:
                 cursor = await db.execute(
                     """
@@ -462,9 +485,7 @@ class OperationJournal:
         Raises:
             JournalTransactionError: Si la transacción no existe o ya fue procesada.
         """
-        db = await self._ensure_connected()
-
-        async with self._lock:
+        async with self._operacion() as db:
             try:
                 cursor = await db.execute(
                     """
@@ -506,9 +527,7 @@ class OperationJournal:
         Raises:
             JournalTransactionError: Si la transacción no existe o ya fue procesada.
         """
-        db = await self._ensure_connected()
-
-        async with self._lock:
+        async with self._operacion() as db:
             try:
                 cursor = await db.execute(
                     """
@@ -581,9 +600,7 @@ class OperationJournal:
         Returns:
             Cantidad de transacciones barridas.
         """
-        db = await self._ensure_connected()
-
-        async with self._lock:
+        async with self._operacion() as db:
             try:
                 cursor = await db.execute(
                     """
@@ -620,10 +637,8 @@ class OperationJournal:
         Returns:
             La transacción o None si no existe.
         """
-        db = await self._ensure_connected()
-
         async with (
-            self._lock,
+            self._operacion() as db,
             db.execute(
                 """
                 SELECT transaction_id, mod_id, description, status,
@@ -666,8 +681,6 @@ class OperationJournal:
         Returns:
             Lista de transacciones.
         """
-        db = await self._ensure_connected()
-
         query = """
             SELECT transaction_id, mod_id, description, status,
                    created_at, committed_at, rolled_back_at
@@ -690,7 +703,7 @@ class OperationJournal:
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
 
-        async with self._lock, db.execute(query, params) as cursor:
+        async with self._operacion() as db, db.execute(query, params) as cursor:
             rows = await cursor.fetchall()
 
             transactions: list[Transaction] = []
@@ -741,13 +754,11 @@ class OperationJournal:
         Raises:
             JournalTransactionError: Si no hay transacción activa.
         """
-        db = await self._ensure_connected()
-
         tx_id = transaction_id or self._current_transaction
         if tx_id is None:
             raise JournalTransactionError("No active transaction. Call begin_transaction first.")
 
-        async with self._lock:
+        async with self._operacion() as db:
             try:
                 cursor = await db.execute(
                     """
@@ -899,8 +910,7 @@ class OperationJournal:
         await self._update_status(entry_id, OperationStatus.FAILED)
 
         if metadata:
-            db = await self._ensure_connected()
-            async with self._lock:
+            async with self._operacion() as db:
                 await db.execute(
                     """
                     UPDATE journal_entries
@@ -955,9 +965,7 @@ class OperationJournal:
             entry_id: ID de la entrada a actualizar.
             details: Detalles adicionales del rollback.
         """
-        db = await self._ensure_connected()
-
-        async with self._lock:
+        async with self._operacion() as db:
             await db.execute(
                 """
                 UPDATE journal_entries
@@ -983,9 +991,7 @@ class OperationJournal:
 
     async def _update_status(self, entry_id: int, status: OperationStatus) -> None:
         """Actualizar el estado de una operación."""
-        db = await self._ensure_connected()
-
-        async with self._lock:
+        async with self._operacion() as db:
             await db.execute(
                 "UPDATE journal_entries SET status = ? WHERE id = ?",
                 (status.value, entry_id),
@@ -1006,10 +1012,8 @@ class OperationJournal:
         Returns:
             Lista de entradas del journal.
         """
-        db = await self._ensure_connected()
-
         async with (
-            self._lock,
+            self._operacion() as db,
             db.execute(
                 """
                 SELECT id, timestamp, agent_id, operation_type, target_path,
@@ -1045,12 +1049,10 @@ class OperationJournal:
         if statuses is None:
             statuses = [OperationStatus.COMPLETED, OperationStatus.FAILED]
 
-        db = await self._ensure_connected()
-
         status_values = [s.value for s in statuses]
         placeholders = ",".join("?" * len(status_values))
 
-        async with self._lock:
+        async with self._operacion() as db:
             query = (
                 "SELECT id, timestamp, agent_id, operation_type, target_path, "
                 "status, snapshot_path, checksum, metadata "
@@ -1081,10 +1083,8 @@ class OperationJournal:
         Returns:
             La entrada encontrada o None.
         """
-        db = await self._ensure_connected()
-
         async with (
-            self._lock,
+            self._operacion() as db,
             db.execute(
                 """
                 SELECT id, timestamp, agent_id, operation_type, target_path,
@@ -1113,10 +1113,8 @@ class OperationJournal:
         Returns:
             Lista de entradas del journal.
         """
-        db = await self._ensure_connected()
-
         async with (
-            self._lock,
+            self._operacion() as db,
             db.execute(
                 """
                 SELECT id, timestamp, agent_id, operation_type, target_path,
@@ -1148,10 +1146,8 @@ class OperationJournal:
         Returns:
             Lista de entradas del journal.
         """
-        db = await self._ensure_connected()
-
         async with (
-            self._lock,
+            self._operacion() as db,
             db.execute(
                 """
                 SELECT id, timestamp, agent_id, operation_type, target_path,
@@ -1183,9 +1179,7 @@ class OperationJournal:
         Args:
             transaction_id: ID de la transacción.
         """
-        db = await self._ensure_connected()
-
-        async with self._lock:
+        async with self._operacion() as db:
             await db.execute(
                 """
                 UPDATE transactions
