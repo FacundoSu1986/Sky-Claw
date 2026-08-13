@@ -246,7 +246,15 @@ class DatabaseLifecycleManager:
     async def _init_single(self, db_path: Path) -> None:
         """Initialize a single database with recovery and pragmas."""
         # Usar la misma clave canonizada que get_connection para consistencia
-        path_str = str(db_path.resolve())
+        path_str = self._resolve_key(db_path)
+
+        # Fail-closed también acá, que es el ÚNICO punto de registro:
+        # ``init_all`` llega a este método sin pasar por ``get_connection``, y
+        # registrar un reemplazo pisaría la conexión que el path envenenado
+        # conserva para reintentar el cierre. Con eso el veneno se volvería
+        # permanente (nadie a quien cerrarle) y la conexión vieja quedaría
+        # huérfana, posiblemente sosteniendo el write lock del archivo.
+        self._raise_if_poisoned(path_str)
 
         # Step 1: Check for orphaned WAL files (crash recovery)
         wal_path = Path(path_str + "-wal")

@@ -263,7 +263,14 @@ class DistributedLockManager:
 
         if self._lifecycle is not None:
             self._owns_conn = False
-            self._conn = await self._lifecycle.get_connection(self._db_path)
+            try:
+                self._conn = await self._lifecycle.get_connection(self._db_path)
+            except DatabasePathPoisonedError as error:
+                # Misma traducción que `_ensure_conn`: reabrir sobre un path
+                # envenenado tiene que dar el error del módulo, no el crudo del
+                # lifecycle, o el mismo estado produce dos excepciones distintas
+                # según si el manager ya estaba inicializado.
+                raise LockDatabaseUnavailableError(f"Lock database is unavailable: {self._db_path}") from error
         else:
             self._owns_conn = True
             self._conn = await aiosqlite.connect(self._db_path)
@@ -468,9 +475,19 @@ class DistributedLockManager:
         -------
         bool
             ``True`` if the lease was extended; ``False`` if the lock no longer
-            belongs to *agent_id* or already expired (lease lost).
+            belongs to *agent_id*, ya expiró, o la base quedó fail-closed
+            (lease perdida en los tres casos).
         """
-        conn = await self._ensure_conn()
+        try:
+            conn = await self._ensure_conn()
+        except LockDatabaseUnavailableError:
+            # `renew_lock` es best-effort y degrada CUALQUIER fallo de base a
+            # False (ver el except de abajo): que la base esté fail-closed no
+            # puede ser la única forma de fallo que rompa ese contrato y mate
+            # el heartbeat con un traceback. Una lease que no se puede renovar
+            # es una lease perdida, igual que en `assert_owned`.
+            logger.error("Lock database unavailable; treating lease as lost", extra={"resource_id": resource_id})
+            return False
         ttl_seconds = ttl if ttl is not None else self._default_ttl
         now = time.time()
         try:

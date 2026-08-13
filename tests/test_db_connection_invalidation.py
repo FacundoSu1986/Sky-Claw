@@ -31,16 +31,18 @@ import ast
 import asyncio
 import sqlite3
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
 import pytest
 
+from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.core.database import DatabaseAgent
 from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleManager,
     DatabasePathPoisonedError,
 )
+from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.db.journal import JournalConnectionError, OperationJournal
 from sky_claw.app.db.locks import (
     DistributedLockManager,
@@ -647,6 +649,8 @@ async def test_t9_cancelacion_tras_un_cierre_exitoso_no_envenena(tmp_path: Path)
     assert not lifecycle.is_path_poisoned(db), "se envenenó el path por una cancelación, no por un fallo"
     assert str(db.resolve()) not in lifecycle._connections, "el cierre exitoso no cedió ownership"
 
+    await lifecycle.shutdown_all()
+
 
 # ===========================================================================
 # T10 — un path envenenado no puede disfrazarse de error de cuerpo
@@ -749,9 +753,13 @@ def test_t11_la_taxonomia_cubre_a_toda_la_familia() -> None:
         "DatabasePathPoisonedError crudo por su API pública"
     )
     for modulo, excepcion in TAXONOMIA_DE_PATH_ENVENENADO.items():
-        assert issubclass(DatabasePathPoisonedError, excepcion) or excepcion is not RuntimeError, (
-            f"{modulo}: declarar RuntimeError sólo vale si el error envenenado ya lo es"
-        )
+        # Declarar `RuntimeError` sólo vale mientras el error del lifecycle YA
+        # lo sea: es la única razón por la que esos wrappers no traducen. El día
+        # que deje de serlo, este assert los manda a traducir como los otros.
+        if excepcion is RuntimeError:
+            assert issubclass(DatabasePathPoisonedError, RuntimeError), (
+                f"{modulo}: el error envenenado dejó de ser RuntimeError; ahora hay que traducirlo"
+            )
 
 
 async def test_t11a_el_journal_traduce_a_su_excepcion(tmp_path: Path) -> None:
@@ -787,6 +795,131 @@ async def test_t11b_locks_traduce_a_su_excepcion(tmp_path: Path) -> None:
     with pytest.raises(LockDatabaseUnavailableError) as excinfo:
         await locks.get_lock_info("recurso")
     assert isinstance(excinfo.value.__cause__, DatabasePathPoisonedError)
+
+    conn.close = cierre_real  # type: ignore[method-assign]
+    await lifecycle.shutdown_all()
+
+
+async def test_t11c_async_registry_sale_como_runtime_error(tmp_path: Path) -> None:
+    """La entrada 'RuntimeError' se verifica por comportamiento, no por la tabla."""
+    db = tmp_path / "tax_registry.db"
+    lifecycle = _lifecycle(db)
+    registry = AsyncModRegistry(str(db), lifecycle=lifecycle)
+    await registry.open()
+    conn = registry._conn
+    assert conn is not None
+    cierre_real = conn.close
+
+    await _envenenar(lifecycle, db, conn)
+
+    with pytest.raises(TAXONOMIA_DE_PATH_ENVENENADO["async_registry"]):
+        await registry.is_empty()
+
+    conn.close = cierre_real  # type: ignore[method-assign]
+    await lifecycle.shutdown_all()
+
+
+async def test_t11d_router_sale_como_runtime_error(tmp_path: Path) -> None:
+    db = tmp_path / "tax_router.db"
+    lifecycle = _lifecycle(db)
+    router = LLMRouter(provider=MagicMock(), db_path=str(db), lifecycle=lifecycle)
+    await router.open()
+    conn = router._conn
+    assert conn is not None
+    cierre_real = conn.close
+
+    await _envenenar(lifecycle, db, conn)
+
+    with pytest.raises(TAXONOMIA_DE_PATH_ENVENENADO["router"]):
+        await router._save_message("chat", "user", "hola")
+
+    conn.close = cierre_real  # type: ignore[method-assign]
+    await lifecycle.shutdown_all()
+
+
+async def test_t11e_el_journal_traduce_tambien_al_reabrir(tmp_path: Path) -> None:
+    """El hermano de T11a: la traducción no puede vivir sólo en la rama cacheada.
+
+    Con ``_db is None`` (tras un ``close()``) ``_ensure_connected`` va por
+    ``open()``, que resuelve por el lifecycle y sólo atrapa ``sqlite3.Error``.
+    Sin traducir ahí, el MISMO estado fail-closed daba dos excepciones distintas
+    según si la instancia estaba abierta — que es justo la taxonomía rota que
+    T11a creía estar anclando.
+    """
+    db = tmp_path / "tax_reopen.db"
+    lifecycle = _lifecycle(db)
+    a = OperationJournal(str(db), lifecycle=lifecycle)
+    b = OperationJournal(str(db), lifecycle=lifecycle)
+    await a.open()
+    await b.open()
+    conn = a._db
+    assert conn is not None
+    cierre_real = conn.close
+
+    await a.close()
+    assert a._db is None, "el escenario exige que A entre por la rama open()"
+    await _envenenar(lifecycle, db, conn)
+
+    with pytest.raises(JournalConnectionError) as excinfo:
+        await a.begin_transaction("no debería entrar")
+    assert isinstance(excinfo.value.__cause__, DatabasePathPoisonedError)
+
+    conn.close = cierre_real  # type: ignore[method-assign]
+    await lifecycle.shutdown_all()
+
+
+async def test_t11f_renew_lock_degrada_a_false_con_la_base_caida(tmp_path: Path) -> None:
+    """`renew_lock` es best-effort: la base fail-closed no puede ser la excepción.
+
+    Degrada CUALQUIER `sqlite3.Error` a False para que un fallo de base no mate
+    el heartbeat con un traceback. Resolver la conexión quedó FUERA de ese try,
+    así que un path envenenado era la única forma de fallo que rompía el
+    contrato `-> bool`. Una lease que no se puede renovar es una lease perdida,
+    igual que en `assert_owned`.
+    """
+    db = tmp_path / "renew.db"
+    lifecycle = _lifecycle(db)
+    locks = DistributedLockManager(str(db), lifecycle=lifecycle)
+    await locks.initialize()
+    await locks.acquire_lock("recurso", "agente")
+    conn = locks._conn
+    assert conn is not None
+    cierre_real = conn.close
+
+    await _envenenar(lifecycle, db, conn)
+
+    assert await locks.renew_lock("recurso", "agente") is False, (
+        "renew_lock levantó en vez de degradar: el heartbeat muere con un traceback"
+    )
+
+    conn.close = cierre_real  # type: ignore[method-assign]
+    await lifecycle.shutdown_all()
+
+
+async def test_t12_init_all_no_puede_pisar_un_path_envenenado(tmp_path: Path) -> None:
+    """``init_all`` entra por ``_init_single``, sin pasar por ``get_connection``.
+
+    Registrar un reemplazo ahí pisaría la conexión que el path envenenado
+    conserva: nadie a quien reintentarle el cierre en ``shutdown_all`` (veneno
+    permanente) y la vieja huérfana, quizá todavía sosteniendo el write lock.
+    Es el invariante que documenta ``_completar_retirada``, alcanzado por el
+    otro camino de registro.
+    """
+    db = tmp_path / "init_envenenada.db"
+    lifecycle = _lifecycle(db)
+    conn = await lifecycle.get_connection(db)
+    cierre_real = conn.close
+
+    await _envenenar(lifecycle, db, conn)
+    registrada = lifecycle._connections[str(db.resolve())]
+
+    with pytest.raises(DatabasePathPoisonedError):
+        await lifecycle.init_all()
+
+    assert lifecycle._connections[str(db.resolve())] is registrada, (
+        "init_all pisó la conexión del path envenenado: shutdown_all se queda sin "
+        "a quién reintentarle el cierre y la vieja queda huérfana"
+    )
 
     conn.close = cierre_real  # type: ignore[method-assign]
     await lifecycle.shutdown_all()

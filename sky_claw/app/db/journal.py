@@ -407,13 +407,17 @@ class OperationJournal:
         de ella. La causa original se conserva encadenada para no perder el
         diagnóstico de POR QUÉ el path está fail-closed.
         """
-        if self._db is None:
-            await self.open()
-        elif self._lifecycle is not None:
-            try:
+        try:
+            if self._db is None:
+                await self.open()
+            elif self._lifecycle is not None:
                 self._db = await self._lifecycle.refresh_connection(self._db_path, self._db)
-            except DatabasePathPoisonedError as error:
-                raise JournalConnectionError(f"Journal database is unavailable: {self._db_path}") from error
+        except DatabasePathPoisonedError as error:
+            # Vale para las DOS ramas: `open()` también resuelve por el lifecycle
+            # y sólo atrapa `sqlite3.Error`, así que sin esto un journal cerrado
+            # devolvería el error crudo y el mismo estado fail-closed produciría
+            # dos excepciones distintas según si la instancia estaba abierta.
+            raise JournalConnectionError(f"Journal database is unavailable: {self._db_path}") from error
         if self._db is None:
             raise JournalConnectionError("Database connection not available")
         return self._db
