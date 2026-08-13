@@ -9,7 +9,7 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Protocol, TextIO, cast
 
@@ -30,6 +30,53 @@ logger = logging.getLogger("sky_claw")
 
 # Correlation ID for tracking requests across components
 correlation_id_var: ContextVar[str] = ContextVar("correlation_id", default="")
+
+#: Id de la transacción del journal en curso, para correlacionar los registros de
+#: una etapa del pipeline ENTRE CAPAS (SOP §5 regla 5, `sky_claw/local/AGENTS.md`).
+#:
+#: Existe porque un servicio y su runner describen el MISMO incidente desde dos
+#: alturas distintas: el servicio sabe la transacción, el runner sabe el exit code
+#: y la causa técnica que el handler del servicio nunca reconstruye. Con los dos
+#: emitiendo `pipeline_stage`, `COUNT(*)` deja de contar incidentes y la métrica
+#: pasa a ser `COUNT(DISTINCT tx_id) WHERE pipeline_stage=N` — que solo existe si
+#: el runner puede nombrar la transacción de la que no sabe nada.
+#:
+#: **ContextVar y no parámetro** a propósito. `contextvars` se copia hacia
+#: `asyncio.to_thread` y `asyncio.create_task`, así que alcanza el I/O que los
+#: runners empujan a hilos y sus tasks de heartbeat sin hilar un argumento por
+#: cada helper privado. Lo que compra de verdad es otra cosa: un registro de
+#: fallo NUEVO lee la misma variable sin que nadie se acuerde de propagarla. Un
+#: parámetro convierte la garantía en un recordatorio de proceso, y
+#: `AGENTS.md` documenta esa diferencia como la que separa los fixes que
+#: cubrieron a los dos hermanos de los que cubrieron a uno.
+#:
+#: **NO reemplaza a `correlation_id_var`,** que identifica la REQUEST (un mensaje
+#: de Telegram, un POST a /api/chat, el arranque de la GUI) y puede durar todo el
+#: proceso: correlacionar por él uniría todas las corridas de una sesión en un
+#: solo balde. Este identifica la MUTACIÓN.
+#:
+#: `None` —el default— es un valor honesto y esperado: el runner corre sin
+#: servicio en los tests y en cualquier uso directo. Es "no hay transacción acá",
+#: no una clave faltante.
+pipeline_tx_id_var: ContextVar[int | None] = ContextVar("pipeline_tx_id", default=None)
+
+
+@contextlib.contextmanager
+def correlacion_de_transaccion(tx_id: int | None) -> Iterator[None]:
+    """Liga los registros emitidos en el bloque a la transacción ``tx_id``.
+
+    Lo usa la capa que ABRE la transacción (el ``*_service.py``) alrededor de su
+    interacción con el runner. Restaura el valor previo al salir, incluso si el
+    bloque lanza: sin el reset, el id de una corrida se filtraría a los registros
+    de la etapa siguiente, que es peor que no tener correlación — miente en vez
+    de faltar.
+    """
+    token = pipeline_tx_id_var.set(tx_id)
+    try:
+        yield
+    finally:
+        pipeline_tx_id_var.reset(token)
+
 
 #: Campos del log JSON. ``trace_id`` es explícito (paridad con
 #: ``correlation_id``): ambos los setea CorrelationFilter, pero sin declararlo
@@ -378,8 +425,23 @@ def subprocess_error_extra(
     job_id: str | None = None,
     child_pid: int | None = None,
     pipeline_stage: int | None = None,
+    tx_id: int | None = None,
 ) -> dict[str, object]:
-    """Normaliza evidencia terminal sin permitir logs de tamaño ilimitado."""
+    """Normaliza evidencia terminal sin permitir logs de tamaño ilimitado.
+
+    ``tx_id`` acompaña a ``pipeline_stage`` (SOP §5 regla 5: todo registro que
+    lleva la etapa lleva la transacción donde exista). Va como parámetro y no
+    como lectura directa de `pipeline_tx_id_var` para que el helper siga siendo
+    una función pura sobre sus argumentos: quien llama decide, y los tres módulos
+    que ya usan este helper sin participar del pipeline (`loot/cli.py`,
+    `xedit/runner.py`, `mo2/vfs_worker.py`) no empiezan a emitir un campo por
+    sorpresa. Por lo mismo se OMITE cuando vale ``None``, como el resto de los
+    opcionales de esta función — que es la convención que congela
+    `test_stderr_completo_hasta_limite_y_tail_verificable`. Un llamador que
+    quiera declarar explícitamente "acá no hay transacción" tiene el dict literal
+    (``extra={"tx_id": None, ...}``), que es lo que hace `dyndolod_runner.py` en
+    los registros que no pasan por este helper.
+    """
     stderr_bytes = stderr.encode("utf-8", errors="replace")
     truncated = len(stderr_bytes) > _MAX_STDERR_BYTES
     if truncated:
@@ -408,6 +470,8 @@ def subprocess_error_extra(
         extra["child_pid"] = child_pid
     if pipeline_stage is not None:
         extra["pipeline_stage"] = pipeline_stage
+    if tx_id is not None:
+        extra["tx_id"] = tx_id
     return extra
 
 

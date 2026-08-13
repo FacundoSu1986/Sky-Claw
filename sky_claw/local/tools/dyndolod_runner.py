@@ -32,8 +32,47 @@ from sky_claw.app.security.links import (
 )
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.output_targets import dyndolod_output_target
+from sky_claw.logging_config import pipeline_tx_id_var, subprocess_error_extra
 
 logger = logging.getLogger(__name__)
+
+#: Índice de etapa de DynDOLOD en el DAG de ``sky_claw/local/AGENTS.md`` §1
+#: (SOP §5 regla 5). Se define UNA vez y todos los registros de fallo la
+#: referencian por nombre: duplicar el literal en cada uno garantiza que un
+#: reordenamiento del DAG deje la mitad desactualizada.
+#:
+#: Es el MISMO 9 que declara ``dyndolod_service.py``, escrito dos veces porque el
+#: runner no puede importar la constante del servicio sin cerrar un ciclo (el
+#: servicio importa al runner). Nada en el lenguaje acopla las dos: lo hace
+#: ``test_la_etapa_del_runner_es_una_constante_y_coincide_con_la_del_servicio``,
+#: que exige igualdad — mismo instrumento que ``_LETRAS_ADMINISTRADAS`` usa para
+#: la otra lista de este archivo que también está escrita dos veces.
+_ETAPA_DYNDOLOD = 9
+
+
+def _tx_id() -> int | None:
+    """Transacción del journal en curso, o ``None`` si el runner corre sin servicio.
+
+    La setea ``DynDOLODPipelineService.execute`` con
+    ``correlacion_de_transaccion(tx_id)`` alrededor de su bloque con el runner
+    (``sky_claw/logging_config.py``). Acá se LEE, nunca se escribe: el runner no
+    conoce el journal ni abre transacciones.
+
+    Por qué existe (SOP §5 regla 5): este runner y su servicio describen el mismo
+    incidente desde dos alturas —el servicio sabe la transacción, el runner sabe
+    el exit code y la causa técnica que el handler del servicio nunca
+    reconstruye—, así que con los dos emitiendo ``pipeline_stage`` un ``COUNT(*)``
+    cuenta filas y no incidentes. La métrica correcta es
+    ``COUNT(DISTINCT tx_id) WHERE pipeline_stage=9``, y solo existe si el runner
+    puede nombrar una transacción de la que no sabe nada.
+
+    ``None`` es un valor honesto y frecuente (uso directo, tests): significa "no
+    hay transacción acá", no una clave faltante. Por eso los registros lo emiten
+    igual en vez de omitir la clave — misma decisión que tomó el servicio al
+    declarar su ``tx_id`` antes del preflight.
+    """
+    return pipeline_tx_id_var.get()
+
 
 # S-4: gracia máxima para drenar los buffers residuales tras la salida normal del
 # proceso. Si un nieto (p.ej. TexGen lanzado por DynDOLOD) heredó el pipe y
@@ -429,6 +468,17 @@ class DynDOLODRunner:
                 ``DynDOLODExecutionError`` y la reporta como corrida fallida.
         """
         if self._config.texgen_exe is None:
+            # Sin registro, este camino era un fallo MUDO de la etapa 9: devuelve
+            # un resultado fallido y `run_full_pipeline` computa success=False
+            # (pidió TexGen y TexGen no anduvo), pero el único log del incidente
+            # terminaba siendo el agregado del final del pipeline. Es alcanzable
+            # de verdad — un rig sin TEXGEN_EXE configurado y el default
+            # `run_texgen=True`— y es lo que hacía falsa la premisa de la exención
+            # de ese registro agregado ("nunca es la única señal del incidente").
+            logger.error(
+                "TexGen (stage 9) no está configurado: no se puede ejecutar la etapa asistida",
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
             return ToolExecutionResult(
                 success=False,
                 tool_name="TexGen",
@@ -457,7 +507,11 @@ class DynDOLODRunner:
         except DynDOLODExecutionError:
             raise
         except (TimeoutError, OSError, RuntimeError) as e:
-            logger.exception("Error inesperado ejecutando TexGen: %s", e)
+            logger.exception(
+                "Error inesperado ejecutando TexGen: %s",
+                e,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
             return ToolExecutionResult(
                 success=False,
                 tool_name="TexGen",
@@ -490,10 +544,27 @@ class DynDOLODRunner:
                 output_path,
             )
         else:
+            # `subprocess_error_extra` es la forma canónica del repo para un fallo
+            # de subproceso (misma que `loot/cli.py` y `xedit/runner.py`), y lo
+            # que justifica que la etapa la emita el RUNNER y no solo el servicio:
+            # el exit code y la evidencia terminal viven acá, y el handler del
+            # servicio nunca los reconstruye — solo ve el mensaje agregado.
+            # `stderr` llega vacío casi siempre y está bien: estos binarios son
+            # apps GUI (PE Subsystem 2) que no escriben a stderr, y esa ausencia
+            # es en sí misma parte de la evidencia. La causa real va en el mensaje,
+            # parseada del log de la herramienta por el post-check.
             logger.error(
                 "TexGen falló (code %d): %s",
                 return_code,
                 "; ".join(errors) if errors else "Unknown error",
+                extra=subprocess_error_extra(
+                    operation="run_texgen",
+                    tool="TexGen",
+                    exit_code=return_code,
+                    stderr=stderr,
+                    pipeline_stage=_ETAPA_DYNDOLOD,
+                    tx_id=_tx_id(),
+                ),
             )
 
         return result
@@ -547,7 +618,11 @@ class DynDOLODRunner:
         except DynDOLODExecutionError:
             raise
         except (TimeoutError, OSError, RuntimeError) as e:
-            logger.exception("Error inesperado ejecutando DynDOLOD: %s", e)
+            logger.exception(
+                "Error inesperado ejecutando DynDOLOD: %s",
+                e,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
             return ToolExecutionResult(
                 success=False,
                 tool_name="DynDOLOD",
@@ -580,10 +655,22 @@ class DynDOLODRunner:
                 output_path,
             )
         else:
+            # Ver `run_texgen`: misma forma canónica y mismo motivo. Que los dos
+            # lanzadores la emitan es el punto — dejar uno sin cubrir es el
+            # defecto hermano que `../../AGENTS.md` documenta como dominante, y
+            # acá los dos son literalmente el mismo par de líneas.
             logger.error(
                 "DynDOLOD falló (code %d): %s",
                 return_code,
                 "; ".join(errors) if errors else "Unknown error",
+                extra=subprocess_error_extra(
+                    operation="run_dyndolod",
+                    tool="DynDOLOD",
+                    exit_code=return_code,
+                    stderr=stderr,
+                    pipeline_stage=_ETAPA_DYNDOLOD,
+                    tx_id=_tx_id(),
+                ),
             )
 
         return result
@@ -746,11 +833,17 @@ class DynDOLODRunner:
                     timeout=_DRAIN_GRACE_SECONDS,
                 )
             except TimeoutError:
+                # SIN `pipeline_stage`: el proceso ya salió y su código de salida
+                # ya está decidido; esto reporta que la CAPTURA quedó parcial y el
+                # propio mensaje dice que se continúa. Etiquetarlo sumaría un
+                # fallo de etapa 9 por cada corrida que salió con 0 y artefacto
+                # fresco pero dejó un nieto con el pipe heredado.
                 logger.warning(
                     "%s: los drains no cerraron en %.1fs tras la salida del proceso "
                     "(posible nieto con pipe heredado); se continúa con output parcial.",
                     tool_name,
                     _DRAIN_GRACE_SECONDS,
+                    extra={"operation_type": "dyndolod_drenaje_incompleto", "tx_id": _tx_id()},
                 )
                 drain_out.cancel()
                 drain_err.cancel()
@@ -761,10 +854,14 @@ class DynDOLODRunner:
                 results = []
             for r in results:
                 if isinstance(r, BaseException):
+                    # Exento por el mismo motivo que el drain-timeout de arriba:
+                    # es diagnóstico del andamiaje de captura, no el veredicto —
+                    # que lo dan el exit code, el artefacto y el log.
                     logger.warning(
                         "%s drain task falló inesperadamente: %r",
                         tool_name,
                         r,
+                        extra={"operation_type": "dyndolod_drenaje_fallido", "tx_id": _tx_id()},
                     )
             # U-07: salida normal. Cerrar el job mata el nieto que sobrevivió
             # heredando el pipe (el mismo que dispara el drain-timeout de arriba) —
@@ -951,13 +1048,29 @@ class DynDOLODRunner:
                         )
                     except DynDOLODValidationError as e:
                         errors.append(f"Failed to package TexGen output: {e}")
-                        logger.error("Error empaquetando TexGen: %s", e)
+                        # CON etapa aunque el `success` de abajo no lo mire: el
+                        # empaquetado de TexGen falla sin volcar `success` a False
+                        # (la fórmula exige que TexGen haya ANDADO, no que su mod
+                        # se haya empaquetado), así que el registro agregado del
+                        # final no se emite y éste es la ÚNICA señal del incidente.
+                        logger.error(
+                            "Error empaquetando TexGen: %s",
+                            e,
+                            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                        )
                 elif not texgen_result.success:
                     errors.extend(texgen_result.errors)
 
             except DynDOLODExecutionError as e:
                 errors.append(f"TexGen execution failed: {e}")
-                logger.error("Error ejecutando TexGen: %s", e)
+                # Primer registro del incidente: `run_texgen` relanza esta familia
+                # sin loguear (`except DynDOLODExecutionError: raise`) para no
+                # duplicar, así que la etapa tiene que salir de acá.
+                logger.error(
+                    "Error ejecutando TexGen: %s",
+                    e,
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                )
                 texgen_result = ToolExecutionResult(
                     success=False,
                     tool_name="TexGen",
@@ -984,13 +1097,23 @@ class DynDOLODRunner:
                     )
                 except DynDOLODValidationError as e:
                     errors.append(f"Failed to package DynDOLOD output: {e}")
-                    logger.error("Error empaquetando DynDOLOD: %s", e)
+                    logger.error(
+                        "Error empaquetando DynDOLOD: %s",
+                        e,
+                        extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                    )
             elif not dyndolod_result.success:
                 errors.extend(dyndolod_result.errors)
 
         except DynDOLODExecutionError as e:
             errors.append(f"DynDOLOD execution failed: {e}")
-            logger.error("Error ejecutando DynDOLOD: %s", e)
+            # Ver el gemelo de TexGen: `run_dyndolod` relanza esta familia sin
+            # loguear, así que la etapa sale de acá.
+            logger.error(
+                "Error ejecutando DynDOLOD: %s",
+                e,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
             dyndolod_result = ToolExecutionResult(
                 success=False,
                 tool_name="DynDOLOD",
@@ -1024,9 +1147,21 @@ class DynDOLODRunner:
                 dyndolod_mod_path,
             )
         else:
+            # SIN `pipeline_stage`, y es el registro más tentador de etiquetar del
+            # archivo. Es el AGREGADO —el resultado del pipeline, no la causa— y
+            # gemelo exacto de `dyndolod_pipeline_failed` (`_log_result_error`) en
+            # el servicio: por construcción repite un incidente que un registro
+            # más específico y CON etapa ya reportó antes en este mismo método
+            # (fallo del lanzador, del empaquetado, o TexGen sin configurar).
+            # Etiquetarlo sumaba una fila más por incidente sobre las dos que ya
+            # cuestan las dos capas. Su premisa —nunca es la única señal— la
+            # verifican dos tests, uno textual y uno de comportamiento
+            # (`test_el_registro_agregado_del_runner_siempre_tiene_companero_con_etapa`
+            # y `test_texgen_sin_configurar_emite_un_registro_de_etapa_9`).
             logger.error(
                 "Pipeline DynDOLOD falló: %s",
                 "; ".join(errors) if errors else "Unknown error",
+                extra={"operation_type": "dyndolod_runner_pipeline_failed", "tx_id": _tx_id()},
             )
 
         return result
@@ -1370,7 +1505,15 @@ class DynDOLODRunner:
             except FileNotFoundError:
                 return _SIN_ARTEFACTO
             except OSError as e:
-                logger.warning("No se pudo sondear el artefacto de %s: %s", directorio, e)
+                # SONDA, no veredicto: devuelve None y el post-check lo trata
+                # fail-closed, convirtiéndolo en un error que `run_dyndolod`
+                # reporta CON etapa. Acá etiquetar duplicaría ese incidente.
+                logger.warning(
+                    "No se pudo sondear el artefacto de %s: %s",
+                    directorio,
+                    e,
+                    extra={"operation_type": "dyndolod_sondeo_de_artefacto_fallido", "tx_id": _tx_id()},
+                )
                 return None
             return (st.st_mtime, st.st_size)
 
@@ -1390,7 +1533,13 @@ class DynDOLODRunner:
                 ultimo_mtime = max(ultimo_mtime, identidad.st_mtime)
                 bytes_totales += identidad.st_size
         except OSError as e:
-            logger.warning("No se pudo firmar el staging %s: %s", directorio, e)
+            # Misma sonda que arriba para la firma agregada del árbol de TexGen.
+            logger.warning(
+                "No se pudo firmar el staging %s: %s",
+                directorio,
+                e,
+                extra={"operation_type": "dyndolod_firma_de_staging_fallida", "tx_id": _tx_id()},
+            )
             return None
         if archivos == 0:
             return _SIN_ARTEFACTO
@@ -1488,7 +1637,14 @@ class DynDOLODRunner:
         try:
             return candidato.exists() and any(candidato.iterdir())
         except OSError as e:
-            logger.warning("No se pudo sondear el staging de TexGen (%s): %s", candidato, e)
+            # Sonda sobre UN candidato: devuelve False y el veredicto lo emite
+            # `run_texgen` con la etapa.
+            logger.warning(
+                "No se pudo sondear el staging de TexGen (%s): %s",
+                candidato,
+                e,
+                extra={"operation_type": "dyndolod_sondeo_de_staging_fallido", "tx_id": _tx_id()},
+            )
             return False
 
     def _leer_log(self, tool: str) -> str | None:
@@ -1511,10 +1667,25 @@ class DynDOLODRunner:
         try:
             return log_path.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
-            logger.warning("Log de %s no encontrado: %s", tool, log_path)
+            # SIN etapa por mandato explícito del SOP §2.9 punto 3: "A missing or
+            # unreadable log is a warning, not a failure — the hard gate is the
+            # artifact at the -o: root". Etiquetarlo contaría como fallo de la
+            # etapa 9 corridas exitosas cuyo log no se escribió.
+            logger.warning(
+                "Log de %s no encontrado: %s",
+                tool,
+                log_path,
+                extra={"operation_type": "dyndolod_log_ausente", "tx_id": _tx_id()},
+            )
             return None
         except OSError as e:
-            logger.warning("No se pudo leer el log de %s (%s): %s", tool, log_path, e)
+            logger.warning(
+                "No se pudo leer el log de %s (%s): %s",
+                tool,
+                log_path,
+                e,
+                extra={"operation_type": "dyndolod_log_ilegible", "tx_id": _tx_id()},
+            )
             return None
 
     def _parse_log(self, texto: str) -> tuple[list[str], list[str]]:
@@ -1560,7 +1731,17 @@ class DynDOLODRunner:
         try:
             validator.validate(meta_ini_path, strict_symlink=False)
         except PathViolationError:
-            logger.error("Path traversal blocked for meta.ini: %s", meta_ini_path)
+            # CON etapa: `PathViolationError` no es `OSError` ni
+            # `DynDOLODValidationError`, así que ningún `except` del runner la
+            # atrapa — escapa entera de `run_full_pipeline` hasta el
+            # `except Exception` del servicio. Este es el ÚNICO registro del
+            # runner para el incidente, y además es un hecho distinto y
+            # condicional (bloqueo de sandbox), no una repetición mecánica.
+            logger.error(
+                "Path traversal blocked for meta.ini: %s",
+                meta_ini_path,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
             raise
 
         config = configparser.ConfigParser()
@@ -1576,7 +1757,18 @@ class DynDOLODRunner:
                 config.write(f)
             logger.debug("meta.ini generado: %s", meta_ini_path)
         except OSError as e:
-            logger.error("Error generando meta.ini: %s", e)
+            # SIN etapa: loguea y RELANZA, y el `except OSError` de
+            # `_package_output_as_mod` convierte esa excepción en el
+            # `DynDOLODValidationError` que `run_full_pipeline` sí reporta con
+            # etapa. Es la repetición que §5 regla 5 prohíbe contar dos veces.
+            # El registro se conserva (en vez de borrarlo, que es lo que la regla
+            # prescribe para un guard redundante) porque nombra el artefacto
+            # —meta.ini— que el mensaje del handler no menciona.
+            logger.error(
+                "Error generando meta.ini: %s",
+                e,
+                extra={"operation_type": "dyndolod_meta_ini_no_escrito", "tx_id": _tx_id()},
+            )
             raise
 
     def _find_texgen_output(self) -> pathlib.Path | None:
@@ -1643,22 +1835,47 @@ class DynDOLODRunner:
         """
         logger.debug("Validando DynDOLOD output: %s", output_path)
 
+        # NINGUNO de los registros de abajo lleva `pipeline_stage`, y el motivo es
+        # el mismo para los seis: este método tiene DOS contextos de llamada con
+        # significados distintos, y no puede distinguirlos sin averiguar quién lo
+        # llamó. Como SONDA (`_tiene_artefacto`, sobre los dos candidatos de
+        # staging de DynDOLOD) un resultado negativo es lo NORMAL — que el primer
+        # candidato no tenga el artefacto es el caso esperado, y el veredicto lo
+        # emite `run_dyndolod` con la etapa. Como GATE del servicio
+        # (`validate_dyndolod_output`) el fallo lo reporta con etapa el `except`
+        # del servicio. En ninguno de los dos es este método quien decide, así que
+        # etiquetar acá sumaría un fallo de etapa 9 por cada candidato sondeado en
+        # corridas perfectamente sanas. El SOP §5 pide ramificar cuando el handler
+        # cubre dos momentos; acá no se puede, y se exime con `operation_type`
+        # propio por registro (`_REGISTROS_EXENTOS_DE_ETAPA_RUNNER`).
         try:
             # Verificar existencia
             if not output_path.exists():
-                logger.warning("Directorio de salida no existe: %s", output_path)
+                logger.warning(
+                    "Directorio de salida no existe: %s",
+                    output_path,
+                    extra={"operation_type": "dyndolod_validacion_sin_directorio", "tx_id": _tx_id()},
+                )
                 return False
 
             # Verificar que tiene contenido
             items = list(output_path.iterdir())
             if not items:
-                logger.warning("Directorio de salida vacío: %s", output_path)
+                logger.warning(
+                    "Directorio de salida vacío: %s",
+                    output_path,
+                    extra={"operation_type": "dyndolod_validacion_directorio_vacio", "tx_id": _tx_id()},
+                )
                 return False
 
             # Buscar DynDOLOD.esp
             esp_files = list(output_path.glob("*.esp"))
             if not esp_files:
-                logger.warning("No se encontró archivo ESP en: %s", output_path)
+                logger.warning(
+                    "No se encontró archivo ESP en: %s",
+                    output_path,
+                    extra={"operation_type": "dyndolod_validacion_sin_esp", "tx_id": _tx_id()},
+                )
                 return False
 
             # U-06: exigir DynDOLOD.esp, no cualquier .esp. Antes esto solo
@@ -1669,10 +1886,14 @@ class DynDOLODRunner:
             # pasaría el chequeo de existencia y se empaquetaría sin el plugin.
             dyndolod_esp = output_path / "DynDOLOD.esp"
             if not dyndolod_esp.is_file():
+                # El más tentador de etiquetar de los seis —suena a fallo
+                # definitivo— y sigue siendo el resultado de sondear UN candidato
+                # de dos. Ver el comentario al tope del método.
                 logger.error(
                     "DynDOLOD.esp no encontrado en %s; encontrados: %s",
                     output_path,
                     [e.name for e in esp_files],
+                    extra={"operation_type": "dyndolod_validacion_sin_dyndolod_esp", "tx_id": _tx_id()},
                 )
                 return False
 
@@ -1684,10 +1905,20 @@ class DynDOLODRunner:
             return True
 
         except OSError as e:
-            logger.error("Error de I/O validando output %s: %s", output_path, e)
+            logger.error(
+                "Error de I/O validando output %s: %s",
+                output_path,
+                e,
+                extra={"operation_type": "dyndolod_validacion_io_fallida", "tx_id": _tx_id()},
+            )
             return False
         except RuntimeError as e:
-            logger.exception("Error inesperado validando output %s: %s", output_path, e)
+            logger.exception(
+                "Error inesperado validando output %s: %s",
+                output_path,
+                e,
+                extra={"operation_type": "dyndolod_validacion_inesperada", "tx_id": _tx_id()},
+            )
             return False
 
 

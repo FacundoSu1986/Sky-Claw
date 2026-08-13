@@ -39,6 +39,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODTimeoutError,
 )
 from sky_claw.local.tools.output_targets import dyndolod_output_target
+from sky_claw.logging_config import correlacion_de_transaccion
 
 if TYPE_CHECKING:
     from sky_claw.local.validators.preflight import PreflightReport, PreflightService
@@ -749,48 +750,64 @@ class DynDOLODPipelineService:
                     dir_rollbacks.append(dr)
                     await tx_stack.enter_async_context(dr)
 
-                # Ejecutar pipeline
+                # Ejecutar pipeline.
+                #
+                # `correlacion_de_transaccion` liga los registros de fallo del
+                # RUNNER a esta transacción (SOP §5 regla 5). El runner no conoce
+                # el journal —`tx_id` es un concepto de esta capa— pero sí ve el
+                # exit code y la causa técnica que los handlers de abajo nunca
+                # reconstruyen, así que emite `pipeline_stage` él mismo. Con las
+                # dos capas etiquetando, `COUNT(*)` cuenta filas y no incidentes:
+                # la métrica pasa a ser `COUNT(DISTINCT tx_id) WHERE
+                # pipeline_stage=9`, y sin este `with` ese DISTINCT no existiría.
+                #
+                # Envuelve TODA la interacción con el runner (pipeline +
+                # validación de salida), no solo el pipeline: los registros de
+                # `validate_dyndolod_output` están exentos de la etapa pero
+                # llevan `tx_id` igual, que es lo que permite unirlos al incidente
+                # cuando la corrida termina fallando por otra razón.
                 mutation_started = True
-                result = await runner.run_full_pipeline(
-                    run_texgen=run_texgen,
-                    preset=preset,
-                    texgen_args=texgen_args,
-                    dyndolod_args=dyndolod_args,
-                )
+                with correlacion_de_transaccion(tx_id):
+                    result = await runner.run_full_pipeline(
+                        run_texgen=run_texgen,
+                        preset=preset,
+                        texgen_args=texgen_args,
+                        dyndolod_args=dyndolod_args,
+                    )
 
-                # Validar salida de DynDOLOD si fue exitoso
-                if result.success:
-                    if result.dyndolod_result is None:
-                        # U-06 (review Qodo): la otra mitad del guard encadenado. Hoy
-                        # ``run_full_pipeline`` computa ``success`` exigiendo
-                        # ``dyndolod_result is not None``, así que este estado NO es
-                        # alcanzable — pero el tipo lo permite y el criterio del repo
-                        # (U-11) es no reportar éxito sobre un estado indeterminado
-                        # solo porque "no debería pasar".
-                        # No se loguea acá: el `raise` lo hace `except (DynDOLODExecutionError,
-                        # DynDOLODTimeoutError)` más abajo, que preserva `msg` vía `str(exc)`
-                        # y agrega `pipeline_stage`/`tx_id`. Loguear también acá duplicaba el
-                        # mismo incidente 2-3 veces sin id de correlación (review Qodo, PR #464,
-                        # "Duplicación de señal") — una alerta contando por `pipeline_stage=9`
-                        # sobrecontaba la tasa de fallos real.
-                        msg = "DynDOLOD reportó éxito sin resultado de ejecución"
-                        raise DynDOLODExecutionError(msg)
+                    # Validar salida de DynDOLOD si fue exitoso
+                    if result.success:
+                        if result.dyndolod_result is None:
+                            # U-06 (review Qodo): la otra mitad del guard encadenado. Hoy
+                            # ``run_full_pipeline`` computa ``success`` exigiendo
+                            # ``dyndolod_result is not None``, así que este estado NO es
+                            # alcanzable — pero el tipo lo permite y el criterio del repo
+                            # (U-11) es no reportar éxito sobre un estado indeterminado
+                            # solo porque "no debería pasar".
+                            # No se loguea acá: el `raise` lo hace `except (DynDOLODExecutionError,
+                            # DynDOLODTimeoutError)` más abajo, que preserva `msg` vía `str(exc)`
+                            # y agrega `pipeline_stage`/`tx_id`. Loguear también acá duplicaba el
+                            # mismo incidente 2-3 veces sin id de correlación (review Qodo, PR #464,
+                            # "Duplicación de señal") — una alerta contando por `pipeline_stage=9`
+                            # sobrecontaba la tasa de fallos real.
+                            msg = "DynDOLOD reportó éxito sin resultado de ejecución"
+                            raise DynDOLODExecutionError(msg)
 
-                    output_path = result.dyndolod_result.output_path
-                    if output_path is None:
-                        # U-06: ``_find_dyndolod_output`` devuelve None cuando no
-                        # encuentra el output en ninguna ubicación candidata. Este
-                        # guard estaba encadenado al ``if``, así que un exit 0 sin
-                        # path SALTEABA la validación y commiteaba el journal como
-                        # éxito: falso verde por exit-code sobre un estado donde no
-                        # se sabe si DynDOLOD escribió algo.
-                        msg = "DynDOLOD no dejó un directorio de salida localizable"
-                        raise DynDOLODExecutionError(msg)  # el handler loguea, ver guard anterior
+                        output_path = result.dyndolod_result.output_path
+                        if output_path is None:
+                            # U-06: ``_find_dyndolod_output`` devuelve None cuando no
+                            # encuentra el output en ninguna ubicación candidata. Este
+                            # guard estaba encadenado al ``if``, así que un exit 0 sin
+                            # path SALTEABA la validación y commiteaba el journal como
+                            # éxito: falso verde por exit-code sobre un estado donde no
+                            # se sabe si DynDOLOD escribió algo.
+                            msg = "DynDOLOD no dejó un directorio de salida localizable"
+                            raise DynDOLODExecutionError(msg)  # el handler loguea, ver guard anterior
 
-                    is_valid = await runner.validate_dyndolod_output(output_path)
-                    if not is_valid:
-                        msg = "DynDOLOD output validation failed"
-                        raise DynDOLODExecutionError(msg)  # el handler loguea, ver guard anterior
+                        is_valid = await runner.validate_dyndolod_output(output_path)
+                        if not is_valid:
+                            msg = "DynDOLOD output validation failed"
+                            raise DynDOLODExecutionError(msg)  # el handler loguea, ver guard anterior
 
                 if not result.success:
                     errors_str = "; ".join(result.errors) if result.errors else "Unknown error"
