@@ -1048,11 +1048,14 @@ class DynDOLODRunner:
                         )
                     except DynDOLODValidationError as e:
                         errors.append(f"Failed to package TexGen output: {e}")
-                        # CON etapa aunque el `success` de abajo no lo mire: el
-                        # empaquetado de TexGen falla sin volcar `success` a False
-                        # (la fórmula exige que TexGen haya ANDADO, no que su mod
-                        # se haya empaquetado), así que el registro agregado del
-                        # final no se emite y éste es la ÚNICA señal del incidente.
+                        # CON etapa: el mod de TexGen no llegó a `mods/`, así que
+                        # MO2 no despliega sus texturas y la etapa no produjo su
+                        # resultado. La fórmula de `success` de más abajo ahora lo
+                        # mira (antes exigía solo que TexGen hubiera ANDADO, y este
+                        # registro quedaba como única señal de una corrida que se
+                        # reportaba exitosa), así que el agregado también se emite:
+                        # dos registros del runner para un incidente, uno con la
+                        # causa y otro con el resultado, que es la forma normal.
                         logger.error(
                             "Error empaquetando TexGen: %s",
                             e,
@@ -1123,12 +1126,28 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        # Determinar éxito general
+        # Determinar éxito general.
+        #
+        # Las DOS ramas exigen lo mismo: que la herramienta haya andado Y que su
+        # mod se haya empaquetado. La rama de TexGen pedía solo lo primero, y esa
+        # asimetría dentro de una sola expresión era un falso verde: DynDOLOD lee
+        # las texturas de TexGen del staging crudo (`-o:`), no de `mods/`, así que
+        # su corrida sale bien y el pipeline reportaba éxito mientras el mod nunca
+        # llegaba a `mods/` — MO2 no lo despliega y el juego queda con los meshes
+        # de LOD sin las texturas que les corresponden.
+        #
+        # Se corrige acá (y no en un PR aparte) porque es este PR el que vuelve la
+        # contradicción OBSERVABLE: desde que el fallo del empaquetado lleva
+        # `pipeline_stage=9`, un dashboard cuenta un fallo de etapa 9 para un
+        # `tx_id` cuyo journal commiteó éxito — dos señales persistidas
+        # contradiciéndose sobre la misma transacción (review Qodo, PR #471).
         success = (
             dyndolod_result is not None
             and dyndolod_result.success
             and dyndolod_mod_path is not None
-            and (not run_texgen or (texgen_result is not None and texgen_result.success))
+            and (
+                not run_texgen or (texgen_result is not None and texgen_result.success and texgen_mod_path is not None)
+            )
         )
 
         result = DynDOLODPipelineResult(

@@ -4122,6 +4122,70 @@ async def test_el_fallo_por_exit_code_lleva_etapa_y_correlacion(
 
 
 @pytest.mark.asyncio
+async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un falso verde: TexGen anduvo, su mod NO se empaquetó, y el pipeline decía éxito.
+
+    La fórmula de ``success`` exigía ``texgen_result.success`` —que el binario
+    haya ANDADO— pero no ``texgen_mod_path``, mientras que para DynDOLOD sí
+    exigía las dos cosas. Asimetría entre dos ramas de la misma expresión: el
+    defecto hermano del repo, dentro de una sola línea.
+
+    Consecuencia real: DynDOLOD lee las texturas de TexGen del staging crudo
+    (``-o:``), no de ``mods/``, así que su corrida sale bien y el pipeline
+    reporta éxito — pero el mod nunca llega a ``mods/``, MO2 no lo despliega y
+    el juego queda con los meshes de LOD sin las texturas que les corresponden.
+    Falso verde de la misma familia que U-06 persiguió.
+
+    Se arregla en el PR del stage index porque es ese PR el que vuelve la
+    contradicción OBSERVABLE: desde que el registro lleva ``pipeline_stage=9``,
+    un dashboard cuenta un fallo de etapa 9 para un ``tx_id`` cuyo journal
+    commiteó éxito. Dos señales persistidas que se contradicen para la misma
+    transacción (review Qodo, PR #471, "Falso verde").
+
+    Ningún test cubría este camino — por eso sobrevivió.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+
+    corridas = {"n": 0}
+
+    def _ambas_salidas() -> None:
+        # Tamaño distinto en cada corrida: el gate de frescura compara la firma
+        # del artefacto contra sí misma, y reescribir los mismos bytes dentro del
+        # mismo tick del reloj de Windows no se vería como cambio.
+        corridas["n"] += 1
+        _escribir_salida(texgen_staging, "textura.dds", b"\x00" * corridas["n"])
+        _escribir_salida(dyndolod_staging, "DynDOLOD.esp", b"\x00" * corridas["n"])
+
+    async def _empaquetar(output_path: pathlib.Path, mod_name: str) -> pathlib.Path:
+        if mod_name == DynDOLODRunner.TEXGEN_MOD_NAME:
+            raise DynDOLODValidationError("Permission denied creating mod: meta.ini")
+        return tmp_path / "mods" / mod_name
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_ambas_salidas)
+    with patch.object(runner, "_execute_process", fake), patch.object(runner, "_package_output_as_mod", _empaquetar):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    assert result.texgen_result is not None and result.texgen_result.success, (
+        "el binario de TexGen anduvo: el fallo es del empaquetado, no de la herramienta"
+    )
+    assert result.texgen_mod_path is None
+    assert result.dyndolod_mod_path is not None, "DynDOLOD sí se empaquetó: el pipeline no falla por él"
+    assert result.success is False, (
+        "el pipeline reportó éxito con el mod de TexGen sin empaquetar: MO2 no despliega esas "
+        "texturas y el juego queda con los meshes de LOD sin ellas. La fórmula de `success` tiene "
+        "que exigir `texgen_mod_path`, igual que ya exige `dyndolod_mod_path` para su rama."
+    )
+    assert any("Failed to package TexGen output" in e for e in result.errors)
+
+
+@pytest.mark.asyncio
 async def test_la_correlacion_cruza_el_hilo_del_empaquetado(
     tmp_path: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
