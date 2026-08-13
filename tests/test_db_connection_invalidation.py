@@ -44,6 +44,7 @@ from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleManager,
     DatabasePathPoisonedError,
 )
+from sky_claw.app.db import locks as locks_mod
 from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.db.journal import JournalConnectionError, OperationJournal
 from sky_claw.app.db.locks import (
@@ -185,7 +186,11 @@ def test_ancla_wrappers_que_cachean_conexion() -> None:
 # (lee el atributo para pasarlo como `cached`) y, en journal, el resolvedor que
 # el boundary llama FUERA del lock porque puede reabrir.
 REVALIDACION_POR_WRAPPER = {
-    "sky_claw/app/agent/router.py": ("_conn", {"_operacion"}, {"_operacion", "open", "close"}),
+    # `_abrir_bajo_conn_lock` es el cuerpo de `open()`: se separó para que el
+    # write lock del path se tome ANTES de `_conn_lock` (el orden que usa
+    # `_operacion`; al revés sería inversión de locks). Sigue siendo "establece
+    # la conexión", así que la exención es la misma que tenía `open`.
+    "sky_claw/app/agent/router.py": ("_conn", {"_operacion"}, {"_operacion", "_abrir_bajo_conn_lock", "close"}),
     "sky_claw/app/db/async_registry.py": ("_conn", {"_operacion"}, {"_operacion", "open", "close"}),
     "sky_claw/app/db/journal.py": ("_db", {"_operacion"}, {"_ensure_connected", "open", "close"}),
     "sky_claw/app/db/locks.py": ("_conn", {"_operacion"}, {"_operacion", "initialize", "close"}),
@@ -212,24 +217,72 @@ def _llama_a(funcion: ast.AST, nombres: set[str]) -> bool:
 
 
 def test_ancla_el_boundary_lo_provee_el_lifecycle() -> None:
-    """Ningún wrapper se fabrica su propio boundary: todos usan el del lifecycle.
+    """El boundary sale del lifecycle, y se verifica DENTRO del chokepoint.
 
-    El boundary sólo excluye si es el MISMO objeto de lock que toma la
-    cuarentena. Un lock propio por wrapper daría exclusión entre sus métodos y
-    ninguna contra quien invalida — verde en los tests, defecto intacto.
+    Buscar la cadena en todo el archivo no anclaba nada: `async_registry` y
+    `journal` ya llaman a `get_write_lock()` en su `open()`, así que pasaban el
+    test aunque su `_operacion` usara un `asyncio.Lock` propio — exactamente el
+    defecto que este ancla existe para atajar. Es la segunda vez en este PR que
+    una aserción "verde por casualidad" se coló; de ahí que ahora se resuelva
+    por AST y acotado al método declarado.
     """
-    for ruta, estado in sorted(WRAPPERS_QUE_CACHEAN_CONEXION.items()):
-        if estado != "revalida":
-            continue
-        fuente = (RAIZ / ruta).read_text(encoding="utf-8")
-        # Dos rutas legítimas al MISMO lock: `operation()` (el caso normal) o
-        # `get_write_lock()` directo, que es lo que hace journal porque su
-        # resolvedor puede reabrir y `open()` adquiere ese mismo lock —
-        # `operation()` ahí sería self-deadlock. Lo que el ancla prohíbe es un
-        # lock propio del wrapper, que no excluiría a quien cuarentena.
-        assert "_lifecycle.operation(" in fuente or "_lifecycle.get_write_lock(" in fuente, (
-            f"{ruta} entra al boundary por su cuenta en vez de pedírselo al lifecycle: "
-            "un lock propio no excluye a quien cuarentena."
+    for ruta, (_attr, chokepoints, _exentos) in sorted(REVALIDACION_POR_WRAPPER.items()):
+        arbol = ast.parse((RAIZ / ruta).read_text(encoding="utf-8"), filename=ruta)
+        # Acotado a la CLASE dueña del chokepoint: `journal.py` define TRES
+        # funciones llamadas `open` (el módulo tiene varias clases), así que un
+        # índice por nombre sobre todo el archivo resuelve la indirección contra
+        # el `open` equivocado y el ancla se vuelve inútil sin avisar.
+        funciones: dict[str, ast.AsyncFunctionDef | ast.FunctionDef] = {}
+        for clase in ast.walk(arbol):
+            if not isinstance(clase, ast.ClassDef):
+                continue
+            metodos = {m.name: m for m in clase.body if isinstance(m, ast.AsyncFunctionDef | ast.FunctionDef)}
+            if "_operacion" in metodos:
+                funciones = metodos
+                break
+        cuerpo = funciones.get("_operacion")
+        assert cuerpo is not None, f"{ruta}: falta el chokepoint `_operacion` declarado en la tabla"
+        assert "_operacion" in chokepoints, f"{ruta}: la tabla dejó de declarar `_operacion`"
+
+        llamadas = {
+            n.func.attr for n in ast.walk(cuerpo) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        }
+        directo = bool({"operation", "get_write_lock"} & llamadas)
+
+        # journal llega al MISMO lock por indirección: `open()` le asigna
+        # `self._lock = lifecycle.get_write_lock(path)` y `_operacion` lo usa.
+        # La indirección se acepta, pero se verifica: sin esta comprobación,
+        # `self._lock` podría pasar a ser un lock propio y nadie se enteraría.
+        indirecto = False
+        if not directo:
+            usa_self_lock = any(
+                isinstance(n, ast.Attribute)
+                and n.attr == "_lock"
+                and isinstance(n.value, ast.Name)
+                and n.value.id == "self"
+                for n in ast.walk(cuerpo)
+            )
+            apertura = funciones.get("open")
+            asigna_del_lifecycle = apertura is not None and any(
+                isinstance(n, ast.Assign)
+                and any(
+                    isinstance(t, ast.Attribute)
+                    and t.attr == "_lock"
+                    and isinstance(t.value, ast.Name)
+                    and t.value.id == "self"
+                    for t in n.targets
+                )
+                and isinstance(n.value, ast.Call)
+                and isinstance(n.value.func, ast.Attribute)
+                and n.value.func.attr == "get_write_lock"
+                for n in ast.walk(apertura)
+            )
+            indirecto = usa_self_lock and asigna_del_lifecycle
+
+        assert directo or indirecto, (
+            f"{ruta}:_operacion entra al boundary por su cuenta en vez de pedírselo al "
+            "lifecycle: un lock propio del wrapper excluye a sus propios métodos y NO a "
+            "quien cuarentena, que es el único hermano que importa."
         )
 
 
@@ -1174,5 +1227,190 @@ async def test_t14_nadie_obtiene_conexion_durante_el_rename(tmp_path: Path) -> N
     reconstruida = await lifecycle.get_connection(db)
     assert reconstruida is not None
     assert not lifecycle.is_path_poisoned(db)
+
+    await lifecycle.shutdown_all()
+
+
+# ===========================================================================
+# T15 — el boundary excluye a TODOS los que cierran, no sólo a la cuarentena
+# ===========================================================================
+
+
+async def test_t15_shutdown_no_cierra_bajo_una_operacion_admitida(tmp_path: Path) -> None:
+    """`shutdown_all` es EL OTRO cierre real: también compite por el boundary.
+
+    El defecto: `operation()` presentaba el write lock como "derecho a usar la
+    conexión durante todo el cuerpo", pero `shutdown_all` recorría
+    `_connections` y cerraba sin tomar ese lock. El boundary excluía a
+    `quarantine_connection` y NO a su hermano — la forma exacta de defecto que
+    este contrato existe para atajar, cometida dentro del propio contrato.
+
+    Determinismo sin sleeps: se espía `checkpoint_all` para soltar a la
+    operación admitida SÓLO cuando el shutdown ya terminó su fase previa y lo
+    único que lo separa del cierre es el lock. Así, si el lock no estuviera, el
+    cierre ganaría — y la aserción es sobre el ORDEN, no sobre tiempos.
+    """
+    db = tmp_path / "shutdown_boundary.db"
+    lifecycle = _lifecycle(db)
+    registry = AsyncModRegistry(str(db), lifecycle=lifecycle)
+    await registry.open()
+    conn = registry._conn
+    assert conn is not None
+
+    orden: list[str] = []
+    a_dentro = asyncio.Event()
+    liberar_a = asyncio.Event()
+    post_checkpoint = asyncio.Event()
+
+    real_checkpoint = lifecycle.checkpoint_all
+
+    async def checkpoint_espia(*args: object, **kwargs: object) -> dict:
+        resultado = await real_checkpoint(*args, **kwargs)  # type: ignore[arg-type]
+        # Desde acá, lo único entre el shutdown y el cierre es el write lock.
+        post_checkpoint.set()
+        return resultado
+
+    cierre_real = conn.close
+
+    async def close_espia() -> None:
+        orden.append("close")
+        await cierre_real()
+
+    real_op = registry._operacion
+
+    @asynccontextmanager
+    async def op_retenida() -> AsyncIterator[aiosqlite.Connection]:
+        async with real_op() as c:
+            a_dentro.set()
+            await liberar_a.wait()
+            yield c
+            # Se registra DENTRO del boundary: hacerlo tras `await tarea_a` lo
+            # pone a competir con el cierre del shutdown, que arranca apenas se
+            # suelta el lock. El orden que importa es "cuerpo terminado" vs
+            # "cierre", no quién vuelve antes al test.
+            orden.append("a_fin")
+
+    lifecycle.checkpoint_all = checkpoint_espia  # type: ignore[method-assign]
+    conn.close = close_espia  # type: ignore[method-assign]
+    registry._operacion = op_retenida  # type: ignore[method-assign]
+
+    tarea_a = asyncio.create_task(registry.is_empty())
+    await a_dentro.wait()
+    assert lifecycle.get_write_lock(db).locked(), "la operación admitida no sostiene el boundary"
+
+    tarea_shutdown = asyncio.create_task(lifecycle.shutdown_all())
+    await post_checkpoint.wait()
+
+    liberar_a.set()
+    assert await tarea_a is True, "shutdown cerró la conexión bajo una operación admitida"
+    await tarea_shutdown
+
+    assert orden.index("a_fin") < orden.index("close"), (
+        f"shutdown cerró antes de que terminara la operación admitida: {orden}. El boundary no lo excluye."
+    )
+
+
+async def test_t16_la_cuarentena_publica_propaga_la_cancelacion(tmp_path: Path) -> None:
+    """La frontera pública re-lanza la cancelación; no la devuelve como valor.
+
+    `_quarantine_locked` la DEVUELVE porque sus dos llamadores internos tienen
+    su propia restauración. La frontera pública no: devolverla dejaba a la tarea
+    terminando normal —`task.cancelled()` False— y a cualquier llamador que
+    hiciera `await` siguiendo como si nada.
+    """
+    db = tmp_path / "cancel_publica.db"
+    lifecycle = _lifecycle(db)
+    conn = await lifecycle.get_connection(db)
+
+    cerrando = asyncio.Event()
+    cierre_real = conn.close
+
+    async def cerrar_avisando() -> None:
+        cerrando.set()
+        await cierre_real()
+
+    conn.close = cerrar_avisando  # type: ignore[method-assign]
+    tarea = asyncio.create_task(lifecycle.quarantine_connection(db, conn))
+    await cerrando.wait()
+    tarea.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+    assert tarea.cancelled() or tarea.exception() is not None, (
+        "la cancelación se devolvió como valor: el llamador seguiría ejecutando"
+    )
+
+    await lifecycle.shutdown_all()
+
+
+async def test_t17_el_registry_cerrado_no_revive(tmp_path: Path) -> None:
+    """Un wrapper cerrado no se reabre solo: `operation()` reemplaza conexiones
+    obsoletas, no wrappers cerrados.
+
+    Con `cached=None`, `refresh_connection` cae en `get_connection` y abre — así
+    que un uso posterior a `close()` (o anterior a `open()`) persistía en
+    silencio, salteándose el schema, el `quick_check` y el `row_factory`, y
+    dando dos comportamientos opuestos según el modo de ownership.
+    """
+    db = tmp_path / "cerrado.db"
+    lifecycle = _lifecycle(db)
+    registry = AsyncModRegistry(str(db), lifecycle=lifecycle)
+
+    with pytest.raises(RuntimeError, match="not open"):
+        await registry.is_empty()
+
+    await registry.open()
+    await registry.close()
+    with pytest.raises(RuntimeError, match="not open"):
+        await registry.is_empty()
+
+    await lifecycle.shutdown_all()
+
+
+async def test_t18_la_lease_no_nace_vencida_por_esperar_el_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El reloj se lee DENTRO del boundary, no antes de esperarlo.
+
+    Con el timestamp tomado antes, el tiempo que un intento pasa esperando la
+    serialización se descuenta de la lease: con un TTL corto se puede insertar
+    una que ya nace vencida y que otro agente reclama de inmediato.
+
+    Reloj falso en vez de `sleep`: lo que importa es que el tiempo AVANCE
+    mientras el intento espera, no cuánto tarda el test. Así no depende del
+    scheduler ni de la carga del runner.
+    """
+    db = tmp_path / "lease_reloj.db"
+    lifecycle = _lifecycle(db)
+    locks = DistributedLockManager(str(db), lifecycle=lifecycle)
+    await locks.initialize()
+
+    reloj = {"t": 1_000.0}
+    monkeypatch.setattr(locks_mod.time, "time", lambda: reloj["t"])
+
+    retenido = asyncio.Event()
+    liberar = asyncio.Event()
+
+    async def retener() -> None:
+        async with lifecycle.operation(db, None):
+            retenido.set()
+            await liberar.wait()
+
+    tarea = asyncio.create_task(retener())
+    await retenido.wait()
+
+    ttl = 10.0
+    adquirir = asyncio.create_task(locks.acquire_lock("recurso", "agente", ttl=ttl))
+    await asyncio.sleep(0)  # que el intento llegue a esperar el boundary
+
+    # El tiempo avanza MÁS de un TTL mientras el intento está bloqueado.
+    reloj["t"] += ttl * 1.5
+    liberar.set()
+    info = await adquirir
+    await tarea
+
+    assert not info.is_expired, (
+        "la lease nació vencida: el reloj se leyó antes de esperar el boundary, así que la espera se descontó del TTL"
+    )
 
     await lifecycle.shutdown_all()

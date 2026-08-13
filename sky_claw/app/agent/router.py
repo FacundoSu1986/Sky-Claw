@@ -340,6 +340,21 @@ class LLMRouter:
         requested from it (WAL recovery + hardened pragmas already applied).
         Otherwise falls back to a direct ``aiosqlite.connect`` (pre-M-01).
         """
+        if self._lifecycle is None:
+            await self._abrir_bajo_conn_lock()
+            return
+        # Bajo el write lock del path, y ANTES de `_conn_lock`: `executescript`
+        # emite un COMMIT implícito sobre la conexión compartida, así que un
+        # `open()` tardío podría commitear la transacción a medio hacer de otro
+        # router que está dentro de su `_operacion`.
+        #
+        # El orden importa: `_operacion` toma write_lock → _conn_lock. Tomarlos
+        # al revés acá sería una inversión y un deadlock esperando a ocurrir.
+        async with self._lifecycle.get_write_lock(self._db_path):
+            await self._abrir_bajo_conn_lock()
+
+    async def _abrir_bajo_conn_lock(self) -> None:
+        """Cuerpo de ``open()``; el boundary del path lo toma el llamador."""
         async with self._conn_lock:
             if self._conn is not None:
                 return
@@ -877,6 +892,12 @@ class LLMRouter:
                 yield self._conn
             return
         async with self._lifecycle.operation(self._db_path, self._conn) as conn, self._conn_lock:
+            # Re-chequeo DENTRO de `_conn_lock`: `close()` toma sólo ese lock, así
+            # que puede correr entre la entrada al boundary del path y la espera
+            # de este. Sin esto, la reasignación de abajo resucitaría el router
+            # después de un `close()` — justo la carrera que R-2 blindaba.
+            if self._conn is None:
+                raise RuntimeError("Router database is not open")
             self._conn = conn
             yield conn
 

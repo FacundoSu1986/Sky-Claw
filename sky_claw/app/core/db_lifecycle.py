@@ -23,7 +23,7 @@ import logging
 import sqlite3
 import time
 import weakref
-from collections.abc import AsyncGenerator, Awaitable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -206,7 +206,7 @@ class DatabaseLifecycleManager:
         # Paths bajo recuperación destructiva (close → rename → rebuild). Es
         # distinto de `_poisoned_paths`: el veneno es fail-closed hasta que
         # shutdown consiga cerrar, esto se levanta solo al terminar el
-        # mantenimiento. Comparten la puerta (`_raise_if_unavailable`) y el tipo
+        # mantenimiento. Comparten la puerta (`_raise_if_poisoned`) y el tipo
         # de error, así que la taxonomía de cada wrapper sigue valiendo.
         self._maintenance_paths: set[str] = set()
         # Paths cuya conexión registrada dejó de ser utilizable (ver
@@ -484,20 +484,35 @@ class DatabaseLifecycleManager:
         # para que un shutdown posterior pueda reintentarlo.
         first_close_error: Exception | None = None
         for path_str, conn in list(self._connections.items()):
-            try:
-                await conn.close()
-                logger.info("DatabaseLifecycle: closed %s", path_str)
-            except Exception as e:
-                logger.error("Error closing %s: %s", path_str, e)
-                if first_close_error is None:
-                    first_close_error = e
-            else:
-                if self._connections.get(path_str) is conn:
-                    self._connections.pop(path_str)
-                # Recovery del path fail-closed: shutdown es el reintento de
-                # limpieza que quarantine_connection dejó pendiente al conservar
-                # ownership. Si acá el cierre sí terminó, el veneno se levanta.
-                self._poisoned_paths.pop(path_str, None)
+            # Bajo el write lock del path, igual que la cuarentena. `operation()`
+            # promete que mientras el cuerpo corre nadie cierra la conexión, y
+            # shutdown es EL OTRO cierre real del lifecycle: sin este lock el
+            # boundary excluiría a `quarantine_connection` y no a su hermano, que
+            # es exactamente la forma de defecto que este contrato ataja.
+            async with self.get_write_lock(path_str):
+                # Relectura bajo el lock: entre el snapshot del `for` y este
+                # punto, una cuarentena admitida pudo haber retirado o
+                # reemplazado la conexión.
+                actual = self._connections.get(path_str)
+                if actual is not conn:
+                    if actual is None:
+                        self._poisoned_paths.pop(path_str, None)
+                    continue
+                try:
+                    await conn.close()
+                    logger.info("DatabaseLifecycle: closed %s", path_str)
+                except Exception as e:
+                    logger.error("Error closing %s: %s", path_str, e)
+                    if first_close_error is None:
+                        first_close_error = e
+                else:
+                    if self._connections.get(path_str) is conn:
+                        self._connections.pop(path_str)
+                    # Recovery del path fail-closed: shutdown es el reintento de
+                    # limpieza que quarantine_connection dejó pendiente al
+                    # conservar ownership. Si acá el cierre sí terminó, el veneno
+                    # se levanta.
+                    self._poisoned_paths.pop(path_str, None)
 
         # Step 3: Verify WAL/SHM elimination.
         #
@@ -822,7 +837,16 @@ class DatabaseLifecycleManager:
         cierra, reducida a una ventana de concurrencia.
         """
         async with self.get_write_lock(db_path):
-            return await self._quarantine_locked(db_path, conn)
+            close_error = await self._quarantine_locked(db_path, conn)
+        if isinstance(close_error, asyncio.CancelledError):
+            # `_quarantine_locked` DEVUELVE la cancelación en vez de lanzarla
+            # porque sus dos llamadores internos tienen su propia restauración.
+            # Esta frontera no: un llamador que hace `await` a secas recibiría la
+            # cancelación como VALOR, `task.cancelled()` sería False y seguiría
+            # ejecutando como si nada. La retirada ya se completó, así que sólo
+            # queda re-lanzarla.
+            raise close_error
+        return close_error
 
     async def _quarantine_locked(
         self,
@@ -1118,7 +1142,9 @@ class DatabaseLifecycleManager:
             yield await self.refresh_connection(db_path, cached)
 
     @asynccontextmanager
-    async def recover_path(self, db_path: Path | str) -> AsyncGenerator[None, None]:
+    async def recover_path(
+        self, db_path: Path | str
+    ) -> AsyncGenerator[Callable[[], Awaitable[aiosqlite.Connection]], None]:
         """Mantiene un path indisponible mientras se lo cierra, renombra y reconstruye.
 
         La recuperación de corrupción cierra, expulsa, renombra y reconstruye
@@ -1134,19 +1160,36 @@ class DatabaseLifecycleManager:
            faltaba: liberar el path al expulsar la conexión deja que un hermano
            abra un reemplazo sobre el archivo que está por moverse — bloquea el
            rename en Windows y en POSIX lo deja hablando con el backup.
-        3. **Disponible recién al terminar**, haya salido bien o mal: si el
-           rebuild falló, el path queda como lo dejó el cuerpo (envenenado si
-           hubo cuarentena, vacío si no), nunca a medio reconstruir con el
-           mantenimiento colgado.
+        3. **La reapertura y el schema van DENTRO.** Levantar el mantenimiento
+           al terminar el rename deja una ventana en la que el archivo existe
+           pero todavía no tiene tablas: un hermano que estaba esperando el lock
+           entra ahí y falla con ``no such table``. Por eso el cuerpo recibe
+           ``reabrir``, que consigue la conexión saltándose la puerta —quien
+           recupera es el único autorizado— y puede correr el schema antes de
+           soltar el path.
+        4. **Disponible recién al terminar**, y sólo si terminó bien: si el
+           cuerpo falla, el path queda como lo dejó (envenenado si hubo
+           cuarentena) en vez de volver a circulación a medio reconstruir.
 
         Además sostiene el write lock del path, así que ningún wrapper puede
         estar en medio de una operación mientras el archivo se mueve.
         """
         path_str = self._resolve_key(db_path)
+
+        async def reabrir() -> aiosqlite.Connection:
+            """Reabre saltándose la puerta de mantenimiento, bajo el mismo lock."""
+            self._maintenance_paths.discard(path_str)
+            try:
+                return await self.get_connection(db_path)
+            finally:
+                # Se vuelve a cerrar la puerta enseguida: el schema todavía no
+                # corrió, así que el path sigue sin estar listo para terceros.
+                self._maintenance_paths.add(path_str)
+
         async with self.get_write_lock(db_path):
             self._maintenance_paths.add(path_str)
             try:
-                yield
+                yield reabrir
             finally:
                 self._maintenance_paths.discard(path_str)
 

@@ -347,25 +347,29 @@ class DistributedLockManager:
         ttl_seconds = ttl if ttl is not None else self._default_ttl
 
         for attempt in range(self._max_retries):
-            now = time.time()
-            expires_at = now + ttl_seconds
-
             try:
                 # Boundary por intento, no alrededor del loop: el backoff duerme
                 # entre intentos y sostener el write lock del path ahí bloquearía
                 # a todos los demás. Además, sin re-entrar, un hermano que
                 # cuarentena durante el sleep dejaría los intentos restantes
                 # corriendo contra una conexión cerrada.
-                async with (
-                    self._operacion() as conn,
-                    conn.execute(
+                async with self._operacion() as conn:
+                    # El reloj se lee DENTRO del boundary: tomado antes, el
+                    # tiempo que este intento pasa esperando la serialización se
+                    # descuenta de la lease, y con un TTL corto se puede insertar
+                    # una que ya nace vencida.
+                    now = time.time()
+                    expires_at = now + ttl_seconds
+                    async with conn.execute(
                         _ACQUIRE_SQL,
                         (resource_id, agent_id, now, expires_at),
-                    ) as cursor,
-                ):
-                    rowcount = cursor.rowcount
-
-                await conn.commit()
+                    ) as cursor:
+                        rowcount = cursor.rowcount
+                    # El commit va DENTRO: con él afuera, dos tareas sobre el
+                    # mismo recurso intercalan execute/commit en una sola
+                    # transacción de la conexión compartida y ambas se creen
+                    # dueñas del lock.
+                    await conn.commit()
 
                 # SQLite INSERT ... ON CONFLICT: rowcount == 1 if we inserted or
                 # updated (i.e. expired lock was reclaimed).  rowcount == 0 if
@@ -433,16 +437,13 @@ class DistributedLockManager:
             ``True`` if the lock was found and deleted.
         """
         try:
-            async with (
-                self._operacion() as conn,
-                conn.execute(
+            async with self._operacion() as conn:
+                async with conn.execute(
                     _RELEASE_SQL,
                     (resource_id, agent_id),
-                ) as cursor,
-            ):
-                deleted = cursor.rowcount > 0
-
-            await conn.commit()
+                ) as cursor:
+                    deleted = cursor.rowcount > 0
+                await conn.commit()
 
             if deleted:
                 logger.info(
@@ -485,9 +486,11 @@ class DistributedLockManager:
             (lease perdida en los tres casos).
         """
         ttl_seconds = ttl if ttl is not None else self._default_ttl
-        now = time.time()
         try:
             async with self._operacion() as conn:
+                # Igual que en `acquire_lock`: leer el reloj antes del boundary
+                # permitiría renovar una lease que venció durante la espera.
+                now = time.time()
                 async with conn.execute(
                     _RENEW_SQL,
                     (now + ttl_seconds, resource_id, agent_id, now),
@@ -529,15 +532,13 @@ class DistributedLockManager:
         Use only for emergency recovery (e.g. orphan locks after crash).
         """
         try:
-            async with (
-                self._operacion() as conn,
-                conn.execute(
+            async with self._operacion() as conn:
+                async with conn.execute(
                     _RELEASE_ANY_SQL,
                     (resource_id,),
-                ) as cursor,
-            ):
-                deleted = cursor.rowcount > 0
-            await conn.commit()
+                ) as cursor:
+                    deleted = cursor.rowcount > 0
+                await conn.commit()
             if deleted:
                 logger.warning(
                     "Lock force-released",
@@ -569,15 +570,13 @@ class DistributedLockManager:
     async def cleanup_expired(self) -> int:
         """Delete all locks whose TTL has expired.  Returns count removed."""
         now = time.time()
-        async with (
-            self._operacion() as conn,
-            conn.execute(
+        async with self._operacion() as conn:
+            async with conn.execute(
                 "DELETE FROM resource_locks WHERE expires_at < ?",
                 (now,),
-            ) as cursor,
-        ):
-            count = cursor.rowcount
-        await conn.commit()
+            ) as cursor:
+                count = cursor.rowcount
+            await conn.commit()
         if count > 0:
             logger.info("Cleaned up %d expired lock(s)", count)
         return count

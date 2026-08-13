@@ -216,7 +216,7 @@ class AsyncModRegistry:
                 # conserva identidad y ownership, con su propio test—. Lo que se
                 # delega es la decisión de DISPONIBILIDAD, que es la que no puede
                 # vivir replicada.
-                async with self._lifecycle.recover_path(self._db_path):
+                async with self._lifecycle.recover_path(self._db_path) as reabrir:
                     close_error: BaseException | None = None
                     try:
                         await corrupt_conn.close()
@@ -278,11 +278,13 @@ class AsyncModRegistry:
                             logger.error("Failed to backup corrupt database: %s", e)
                             raise
 
-                # El path vuelve a estar disponible recién al salir del bloque:
-                # abrir acá adentro lo haría contra un path todavía en
-                # mantenimiento (y fail-closed a propósito).
-                self._conn = await self._lifecycle.get_connection(self._db_path)
-                self._conn.row_factory = aiosqlite.Row
+                    # Reapertura y schema DENTRO del bloque: si el path volviera
+                    # a circulación al terminar el rename, un hermano que estaba
+                    # esperando el lock entraría con el archivo ya creado pero
+                    # todavía sin tablas y fallaría con `no such table`.
+                    self._conn = await reabrir()
+                    self._conn.row_factory = aiosqlite.Row
+                    await self._conn.executescript(_SCHEMA_SQL)
 
             except Exception as exc:
                 # El lifecycle sigue siendo propietario de cualquier conexion
@@ -384,6 +386,13 @@ class AsyncModRegistry:
         Vale también para lecturas: un lector sobre una conexión cerrada falla
         igual que un escritor.
         """
+        if self._conn is None:
+            # `operation()` reemplaza conexiones OBSOLETAS, no wrappers cerrados:
+            # con `cached=None` reabriría por `get_connection` y un uso posterior
+            # a `close()` persistiría en silencio en vez de fallar. La rama sin
+            # lifecycle siempre levantó este error; el mismo estado no puede dar
+            # dos comportamientos opuestos según el modo de ownership.
+            raise RuntimeError("Database is not open")
         if self._lifecycle is not None:
             async with self._lifecycle.operation(self._db_path, self._conn) as conn:
                 self._conn = conn
@@ -392,8 +401,6 @@ class AsyncModRegistry:
         # Sin lifecycle (path legacy directo) no hay invalidación compartida que
         # coordinar, pero el lock de escritura se sigue respetando.
         async with self._write_lock:
-            if self._conn is None:
-                raise RuntimeError("Database is not open")
             yield self._conn
 
     async def upsert_mod(
