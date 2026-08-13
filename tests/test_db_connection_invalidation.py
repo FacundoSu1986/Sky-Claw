@@ -192,7 +192,7 @@ REVALIDACION_POR_WRAPPER = {
     # la conexión", así que la exención es la misma que tenía `open`.
     "sky_claw/app/agent/router.py": ("_conn", {"_operacion"}, {"_operacion", "_abrir_bajo_conn_lock", "close"}),
     "sky_claw/app/db/async_registry.py": ("_conn", {"_operacion"}, {"_operacion", "open", "close"}),
-    "sky_claw/app/db/journal.py": ("_db", {"_operacion"}, {"_ensure_connected", "open", "close"}),
+    "sky_claw/app/db/journal.py": ("_db", {"_operacion"}, {"_operacion", "_ensure_connected", "open", "close"}),
     "sky_claw/app/db/locks.py": ("_conn", {"_operacion"}, {"_operacion", "initialize", "close"}),
 }
 
@@ -244,10 +244,25 @@ def test_ancla_el_boundary_lo_provee_el_lifecycle() -> None:
         assert cuerpo is not None, f"{ruta}: falta el chokepoint `_operacion` declarado en la tabla"
         assert "_operacion" in chokepoints, f"{ruta}: la tabla dejó de declarar `_operacion`"
 
-        llamadas = {
-            n.func.attr for n in ast.walk(cuerpo) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-        }
-        directo = bool({"operation", "get_write_lock"} & llamadas)
+        def _sobre_el_lifecycle(nodo: ast.AST, metodos: set[str]) -> bool:
+            """True si llama a ``self._lifecycle.<metodo>(...)``.
+
+            Compara el RECEPTOR y no sólo el nombre: `self._boundary.operation(...)`
+            también produce el atributo "operation", así que mirar el nombre suelto
+            dejaba pasar un boundary propio con la firma correcta.
+            """
+            return any(
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr in metodos
+                and isinstance(n.func.value, ast.Attribute)
+                and n.func.value.attr == "_lifecycle"
+                and isinstance(n.func.value.value, ast.Name)
+                and n.func.value.value.id == "self"
+                for n in ast.walk(nodo)
+            )
+
+        directo = _sobre_el_lifecycle(cuerpo, {"operation", "get_write_lock"})
 
         # journal llega al MISMO lock por indirección: `open()` le asigna
         # `self._lock = lifecycle.get_write_lock(path)` y `_operacion` lo usa.
@@ -272,9 +287,9 @@ def test_ancla_el_boundary_lo_provee_el_lifecycle() -> None:
                     and t.value.id == "self"
                     for t in n.targets
                 )
-                and isinstance(n.value, ast.Call)
-                and isinstance(n.value.func, ast.Attribute)
-                and n.value.func.attr == "get_write_lock"
+                # También por receptor: `self._lock = otra_cosa.get_write_lock()`
+                # no da el lock compartido.
+                and _sobre_el_lifecycle(n, {"get_write_lock"})
                 for n in ast.walk(apertura)
             )
             indirecto = usa_self_lock and asigna_del_lifecycle
@@ -1413,4 +1428,133 @@ async def test_t18_la_lease_no_nace_vencida_por_esperar_el_boundary(
         "la lease nació vencida: el reloj se leyó antes de esperar el boundary, así que la espera se descontó del TTL"
     )
 
+    await lifecycle.shutdown_all()
+
+
+# ===========================================================================
+# T19-T21 — hermanos de la ronda del boundary
+# ===========================================================================
+
+
+def test_ancla_todo_schema_lifecycle_corre_bajo_el_boundary() -> None:
+    """Enumera los `executescript`, no un caso a mano.
+
+    `executescript` emite un COMMIT implícito sobre la conexión compartida: una
+    inicialización tardía mientras otro wrapper sostiene una transacción le
+    confirma su trabajo parcial. Se arregló primero en `router.open()` y quedaron
+    `async_registry.open()` y `locks.initialize()` — el hermano sin cablear, otra
+    vez, y en el mismo commit que arreglaba esa clase de defecto.
+
+    Por eso enumera: cualquier `executescript` nuevo en un wrapper
+    lifecycle-managed rompe el test hasta que quede bajo el boundary. Se acepta
+    que el lock lo tome un LLAMADOR (router parte `open()` en dos para no
+    invertir el orden con `_conn_lock`), pero entonces lo tienen que tomar
+    TODOS los llamadores, no alguno.
+    """
+
+    def _toma_boundary(nodo: ast.AST) -> bool:
+        return any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in {"get_write_lock", "operation"}
+            for n in ast.walk(nodo)
+        )
+
+    def _llama_a(nodo: ast.AST, nombre: str) -> bool:
+        return any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == nombre
+            for n in ast.walk(nodo)
+        )
+
+    for ruta in sorted(REVALIDACION_POR_WRAPPER):
+        arbol = ast.parse((RAIZ / ruta).read_text(encoding="utf-8"), filename=ruta)
+        metodos = [f for f in ast.walk(arbol) if isinstance(f, ast.AsyncFunctionDef | ast.FunctionDef)]
+        for funcion in metodos:
+            if not _llama_a(funcion, "executescript"):
+                continue
+            if _toma_boundary(funcion):
+                continue
+            llamadores = [m for m in metodos if m is not funcion and _llama_a(m, funcion.name)]
+            assert llamadores, (
+                f"{ruta}:{funcion.name} corre `executescript` sin boundary y nadie la llama: "
+                "el COMMIT implícito confirmaría la transacción a medio hacer de otro wrapper."
+            )
+            sin_boundary = [m.name for m in llamadores if not _toma_boundary(m)]
+            assert not sin_boundary, (
+                f"{ruta}:{funcion.name} corre `executescript` y se la llama desde "
+                f"{sorted(sin_boundary)} sin tomar el boundary del path. Basta un llamador "
+                "descuidado para que el COMMIT implícito confirme el trabajo parcial ajeno."
+            )
+
+
+async def test_t19_un_close_concurrente_no_deja_revivir_al_registry(tmp_path: Path) -> None:
+    """El hermano CONCURRENTE de T17, que T17 no cubría.
+
+    El guard de "no está abierto" corre ANTES de esperar el write lock del path.
+    Con lifecycle, `close()` no cierra la conexión —sólo suelta la referencia—,
+    así que al reanudarse `refresh_connection` devolvía una conexión
+    perfectamente válida y el wrapper cerrado seguía escribiendo.
+    """
+    db = tmp_path / "close_concurrente.db"
+    lifecycle = _lifecycle(db)
+    registry = AsyncModRegistry(str(db), lifecycle=lifecycle)
+    await registry.open()
+
+    # Otro dueño del boundary retiene el lock mientras el registry se cierra.
+    retenido = asyncio.Event()
+    liberar = asyncio.Event()
+
+    async def retener() -> None:
+        async with lifecycle.operation(db, None):
+            retenido.set()
+            await liberar.wait()
+
+    tarea_lock = asyncio.create_task(retener())
+    await retenido.wait()
+
+    tarea_op = asyncio.create_task(registry.is_empty())
+    await asyncio.sleep(0)  # que pase el guard y quede esperando el boundary
+    await registry.close()
+    liberar.set()
+
+    with pytest.raises(RuntimeError, match="not open"):
+        await tarea_op
+    await tarea_lock
+    assert registry._conn is None, "el registry cerrado revivió"
+
+    await lifecycle.shutdown_all()
+
+
+async def test_t20_no_se_admiten_operaciones_durante_el_shutdown(tmp_path: Path) -> None:
+    """Nadie se reengancha mientras el shutdown está en curso.
+
+    El `for` de cierre recorre un snapshot: una operación encolada detrás del
+    write lock entraba al liberarse, abría un reemplazo por `refresh_connection`
+    y nadie lo cerraba — DB abierta tras el shutdown y `-wal` sin checkpoint.
+    """
+    db = tmp_path / "shutdown_admision.db"
+    lifecycle = _lifecycle(db)
+    await lifecycle.get_connection(db)
+
+    en_checkpoint = asyncio.Event()
+    liberar = asyncio.Event()
+    real_checkpoint = lifecycle.checkpoint_all
+
+    async def checkpoint_lento(*args: object, **kwargs: object) -> dict:
+        en_checkpoint.set()
+        await liberar.wait()
+        return await real_checkpoint(*args, **kwargs)  # type: ignore[arg-type]
+
+    lifecycle.checkpoint_all = checkpoint_lento  # type: ignore[method-assign]
+    tarea = asyncio.create_task(lifecycle.shutdown_all())
+    await en_checkpoint.wait()
+
+    with pytest.raises(DatabasePathPoisonedError):
+        await lifecycle.get_connection(db)
+
+    liberar.set()
+    await tarea
+    assert str(db.resolve()) not in lifecycle._connections, "quedó una conexión sin cerrar tras el shutdown"
+    # La puerta NO es terminal: el manager se reusa (start → stop → start).
+    assert await lifecycle.get_connection(db) is not None
     await lifecycle.shutdown_all()

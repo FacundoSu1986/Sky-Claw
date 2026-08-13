@@ -278,7 +278,13 @@ class DistributedLockManager:
             self._conn = await aiosqlite.connect(self._db_path)
             await self._conn.execute("PRAGMA journal_mode=WAL")
             await self._conn.execute("PRAGMA busy_timeout=5000")
-        await self._conn.executescript(_LOCKS_SCHEMA_SQL)
+        # Hermano del schema del router y del registry: COMMIT implícito sobre
+        # la conexión compartida, así que va bajo el write lock del path.
+        if self._lifecycle is not None:
+            async with self._lifecycle.get_write_lock(self._db_path):
+                await self._conn.executescript(_LOCKS_SCHEMA_SQL)
+        else:
+            await self._conn.executescript(_LOCKS_SCHEMA_SQL)
         logger.info(
             "DistributedLockManager initialized",
             extra={"db_path": self._db_path, "default_ttl": self._default_ttl},
@@ -312,6 +318,10 @@ class DistributedLockManager:
             return
         try:
             async with self._lifecycle.operation(self._db_path, self._conn) as conn:
+                # Hermano del re-chequeo de async_registry: el guard de arriba
+                # corrió antes de esperar el write lock del path.
+                if self._conn is None:
+                    raise LockError("LockManager not initialized — call initialize() first")
                 self._conn = conn
                 yield conn
         except DatabasePathPoisonedError as error:

@@ -209,6 +209,12 @@ class DatabaseLifecycleManager:
         # mantenimiento. Comparten la puerta (`_raise_if_poisoned`) y el tipo
         # de error, así que la taxonomía de cada wrapper sigue valiendo.
         self._maintenance_paths: set[str] = set()
+        # Terminal: una vez que shutdown empezó, nadie vuelve a entrar. Sin esto
+        # el `for` de cierre recorre un snapshot y un wrapper que revalida
+        # después de que su path ya fue cerrado y expulsado registra una conexión
+        # NUEVA que nadie va a cerrar — la DB queda abierta tras el shutdown, el
+        # `-wal` sin checkpoint, y en Windows el archivo bloqueado.
+        self._shutting_down: bool = False
         # Paths cuya conexión registrada dejó de ser utilizable (ver
         # quarantine_connection). Presencia == estado POISONED: la clave está
         # acá desde ANTES de intentar el cierre, así que la invalidación no
@@ -464,115 +470,128 @@ class DatabaseLifecycleManager:
         2. Close all connections.
         3. Verify WAL/SHM files were eliminated.
         """
-        if not self._connections:
-            return
-
-        logger.info(
-            "DatabaseLifecycle: shutting down %d connections...",
-            len(self._connections),
-        )
-
-        # Step 1: TRUNCATE checkpoint
-        checkpoints: dict[str, dict[str, Any]] = {}
+        # Puerta de admisión CERRADA mientras dura el shutdown, y sólo mientras
+        # dura: el `for` de cierre recorre un snapshot, así que una operación ya
+        # encolada detrás del write lock entraría al liberarse, abriría un
+        # reemplazo por `refresh_connection` y nadie lo cerraría — DB abierta tras
+        # el shutdown, `-wal` sin checkpoint y, en Windows, archivo bloqueado.
+        #
+        # No es terminal: el manager se reusa (AppContext hace start→stop→start),
+        # así que la puerta se reabre al terminar.
+        self._shutting_down = True
         try:
-            checkpoints = await self.checkpoint_all(mode="TRUNCATE")
-        except Exception as e:
-            logger.critical("DatabaseLifecycle: checkpoint during shutdown FAILED: %s", e)
+            if not self._connections:
+                return
 
-        # Step 2: Close all connections. Cada entrada se retira solamente si
-        # esa misma instancia termino de cerrar; un fallo conserva ownership
-        # para que un shutdown posterior pueda reintentarlo.
-        first_close_error: Exception | None = None
-        for path_str, conn in list(self._connections.items()):
-            # Bajo el write lock del path, igual que la cuarentena. `operation()`
-            # promete que mientras el cuerpo corre nadie cierra la conexión, y
-            # shutdown es EL OTRO cierre real del lifecycle: sin este lock el
-            # boundary excluiría a `quarantine_connection` y no a su hermano, que
-            # es exactamente la forma de defecto que este contrato ataja.
-            async with self.get_write_lock(path_str):
-                # Relectura bajo el lock: entre el snapshot del `for` y este
-                # punto, una cuarentena admitida pudo haber retirado o
-                # reemplazado la conexión.
-                actual = self._connections.get(path_str)
-                if actual is not conn:
-                    if actual is None:
+            logger.info(
+                "DatabaseLifecycle: shutting down %d connections...",
+                len(self._connections),
+            )
+
+            # Step 1: TRUNCATE checkpoint
+            checkpoints: dict[str, dict[str, Any]] = {}
+            try:
+                checkpoints = await self.checkpoint_all(mode="TRUNCATE")
+            except Exception as e:
+                logger.critical("DatabaseLifecycle: checkpoint during shutdown FAILED: %s", e)
+
+            # Step 2: Close all connections. Cada entrada se retira solamente si
+            # esa misma instancia termino de cerrar; un fallo conserva ownership
+            # para que un shutdown posterior pueda reintentarlo.
+            first_close_error: Exception | None = None
+            for path_str, conn in list(self._connections.items()):
+                # Bajo el write lock del path, igual que la cuarentena. `operation()`
+                # promete que mientras el cuerpo corre nadie cierra la conexión, y
+                # shutdown es EL OTRO cierre real del lifecycle: sin este lock el
+                # boundary excluiría a `quarantine_connection` y no a su hermano, que
+                # es exactamente la forma de defecto que este contrato ataja.
+                async with self.get_write_lock(path_str):
+                    # Relectura bajo el lock: entre el snapshot del `for` y este
+                    # punto, una cuarentena admitida pudo haber retirado o
+                    # reemplazado la conexión.
+                    actual = self._connections.get(path_str)
+                    if actual is not conn:
+                        if actual is None:
+                            self._poisoned_paths.pop(path_str, None)
+                        continue
+                    try:
+                        await conn.close()
+                        logger.info("DatabaseLifecycle: closed %s", path_str)
+                    except Exception as e:
+                        logger.error("Error closing %s: %s", path_str, e)
+                        if first_close_error is None:
+                            first_close_error = e
+                    else:
+                        if self._connections.get(path_str) is conn:
+                            self._connections.pop(path_str)
+                        # Recovery del path fail-closed: shutdown es el reintento de
+                        # limpieza que quarantine_connection dejó pendiente al
+                        # conservar ownership. Si acá el cierre sí terminó, el veneno
+                        # se levanta.
                         self._poisoned_paths.pop(path_str, None)
-                    continue
-                try:
-                    await conn.close()
-                    logger.info("DatabaseLifecycle: closed %s", path_str)
-                except Exception as e:
-                    logger.error("Error closing %s: %s", path_str, e)
-                    if first_close_error is None:
-                        first_close_error = e
-                else:
-                    if self._connections.get(path_str) is conn:
-                        self._connections.pop(path_str)
-                    # Recovery del path fail-closed: shutdown es el reintento de
-                    # limpieza que quarantine_connection dejó pendiente al
-                    # conservar ownership. Si acá el cierre sí terminó, el veneno
-                    # se levanta.
-                    self._poisoned_paths.pop(path_str, None)
 
-        # Step 3: Verify WAL/SHM elimination.
-        #
-        # SQLite borra ``-wal``/``-shm`` solo al cerrar la ULTIMA conexion al
-        # archivo. Si otro owner sigue abierto (la GUI y el SupervisorAgent
-        # tienen cada uno su DatabaseAgent sobre el mismo sky_claw_state.db),
-        # el que cierra primero SIEMPRE los ve presentes: avisar ahi de
-        # "checkpoint incompleto" es un falso positivo garantizado en todo
-        # apagado limpio, y envenena el triage real de WAL.
-        #
-        # El checkpoint TRUNCATE del paso 1 es el que decide: si reporto
-        # ``busy == 0`` los datos ya estan en el archivo principal y los
-        # sidecars restantes los explica el otro owner. Solo cuando el
-        # checkpoint no pudo completarse hay motivo de alarma.
-        for db_path in self._db_paths:
-            # Canonizar: ``get_connection`` indexa ``_connections`` con
-            # ``str(path.resolve())`` y ``checkpoint_all`` hereda esa clave,
-            # pero ``_db_paths`` guarda la ruta tal cual se pasó — y el default
-            # de ``DatabaseAgent`` es la relativa "sky_claw_state.db". Sin
-            # resolver, el lookup de abajo falla siempre justo en producción.
-            path_str = str(db_path.resolve())
-            wal_path = Path(path_str + "-wal")
-            shm_path = Path(path_str + "-shm")
-            if not (wal_path.exists() or shm_path.exists()):
-                continue
-            checkpoint = checkpoints.get(path_str)
-            if checkpoint is not None and checkpoint.get("busy") == 0:
-                logger.info(
-                    "Post-shutdown: WAL/SHM siguen presentes para %s (wal=%s, shm=%s), "
-                    "pero el checkpoint TRUNCATE completo: otra conexion sigue abierta "
-                    "sobre el archivo y SQLite los borrara al cerrarse la ultima.",
+            # Step 3: Verify WAL/SHM elimination.
+            #
+            # SQLite borra ``-wal``/``-shm`` solo al cerrar la ULTIMA conexion al
+            # archivo. Si otro owner sigue abierto (la GUI y el SupervisorAgent
+            # tienen cada uno su DatabaseAgent sobre el mismo sky_claw_state.db),
+            # el que cierra primero SIEMPRE los ve presentes: avisar ahi de
+            # "checkpoint incompleto" es un falso positivo garantizado en todo
+            # apagado limpio, y envenena el triage real de WAL.
+            #
+            # El checkpoint TRUNCATE del paso 1 es el que decide: si reporto
+            # ``busy == 0`` los datos ya estan en el archivo principal y los
+            # sidecars restantes los explica el otro owner. Solo cuando el
+            # checkpoint no pudo completarse hay motivo de alarma.
+            for db_path in self._db_paths:
+                # Canonizar: ``get_connection`` indexa ``_connections`` con
+                # ``str(path.resolve())`` y ``checkpoint_all`` hereda esa clave,
+                # pero ``_db_paths`` guarda la ruta tal cual se pasó — y el default
+                # de ``DatabaseAgent`` es la relativa "sky_claw_state.db". Sin
+                # resolver, el lookup de abajo falla siempre justo en producción.
+                path_str = str(db_path.resolve())
+                wal_path = Path(path_str + "-wal")
+                shm_path = Path(path_str + "-shm")
+                if not (wal_path.exists() or shm_path.exists()):
+                    continue
+                checkpoint = checkpoints.get(path_str)
+                if checkpoint is not None and checkpoint.get("busy") == 0:
+                    logger.info(
+                        "Post-shutdown: WAL/SHM siguen presentes para %s (wal=%s, shm=%s), "
+                        "pero el checkpoint TRUNCATE completo: otra conexion sigue abierta "
+                        "sobre el archivo y SQLite los borrara al cerrarse la ultima.",
+                        path_str,
+                        wal_path.exists(),
+                        shm_path.exists(),
+                    )
+                    continue
+                logger.warning(
+                    "Post-shutdown: WAL/SHM files still present for %s "
+                    "(wal=%s, shm=%s). This may indicate incomplete checkpoint.",
                     path_str,
                     wal_path.exists(),
                     shm_path.exists(),
                 )
-                continue
-            logger.warning(
-                "Post-shutdown: WAL/SHM files still present for %s "
-                "(wal=%s, shm=%s). This may indicate incomplete checkpoint.",
-                path_str,
-                wal_path.exists(),
-                shm_path.exists(),
-            )
 
-        if self._connections:
-            logger.warning(
-                "DatabaseLifecycle: shutdown incomplete; %d connections retained",
-                len(self._connections),
-            )
-        else:
-            logger.info("DatabaseLifecycle: shutdown complete")
+            if self._connections:
+                logger.warning(
+                    "DatabaseLifecycle: shutdown incomplete; %d connections retained",
+                    len(self._connections),
+                )
+            else:
+                logger.info("DatabaseLifecycle: shutdown complete")
 
-        if first_close_error is not None:
-            raise first_close_error
-        if self._connections:
-            raise DatabaseShutdownIncompleteError(tuple(self._connections))
+            if first_close_error is not None:
+                raise first_close_error
+            if self._connections:
+                raise DatabaseShutdownIncompleteError(tuple(self._connections))
 
-    # ------------------------------------------------------------------
-    # Health Check
-    # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # Health Check
+        # ------------------------------------------------------------------
+
+        finally:
+            self._shutting_down = False
 
     async def health_check(self) -> dict[str, WALHealth]:
         """Check WAL health for all managed databases.
@@ -714,6 +733,8 @@ class DatabaseLifecycleManager:
         abrir un reemplazo sería peor que fallar. Un solo punto de decisión, que
         es lo que impide que un wrapper se fabrique su propia política.
         """
+        if self._shutting_down:
+            raise DatabasePathPoisonedError(path_str, RuntimeError("lifecycle is shutting down"))
         if path_str in self._maintenance_paths:
             raise DatabasePathPoisonedError(path_str, self._maintenance_error(path_str))
         if path_str in self._poisoned_paths:
@@ -838,6 +859,20 @@ class DatabaseLifecycleManager:
         """
         async with self.get_write_lock(db_path):
             close_error = await self._quarantine_locked(db_path, conn)
+        tarea = asyncio.current_task()
+        if (
+            close_error is not None
+            and not isinstance(close_error, asyncio.CancelledError)
+            and tarea is not None
+            and tarea.cancelling() > 0
+        ):
+            # Desenlace combinado: cancelaron al llamador Y el cierre falló.
+            # `_quarantine_locked` devuelve sólo el error de operación, así que
+            # sin esto la frontera retorna normal y se traga la cancelación.
+            # `cancelling() > 0` es la evidencia de que la cancelación sigue
+            # pendiente sobre esta tarea. La identidad original la consume el
+            # `except` interno; se encadena el fallo de cierre como diagnóstico.
+            raise asyncio.CancelledError() from close_error
         if isinstance(close_error, asyncio.CancelledError):
             # `_quarantine_locked` DEVUELVE la cancelación en vez de lanzarla
             # porque sus dos llamadores internos tienen su propia restauración.
@@ -1176,20 +1211,32 @@ class DatabaseLifecycleManager:
         """
         path_str = self._resolve_key(db_path)
 
+        reabierta: list[aiosqlite.Connection] = []
+
         async def reabrir() -> aiosqlite.Connection:
             """Reabre saltándose la puerta de mantenimiento, bajo el mismo lock."""
             self._maintenance_paths.discard(path_str)
             try:
-                return await self.get_connection(db_path)
+                conn = await self.get_connection(db_path)
             finally:
                 # Se vuelve a cerrar la puerta enseguida: el schema todavía no
                 # corrió, así que el path sigue sin estar listo para terceros.
                 self._maintenance_paths.add(path_str)
+            reabierta.append(conn)
+            return conn
 
         async with self.get_write_lock(db_path):
             self._maintenance_paths.add(path_str)
             try:
                 yield reabrir
+            except BaseException as error:
+                # Si el rebuild falló DESPUÉS de reabrir, la conexión quedó
+                # registrada sobre una base sin schema o a medio construir.
+                # Levantar el mantenimiento ahí la entregaría al primer hermano
+                # que pase. El path queda fail-closed hasta que shutdown limpie.
+                if reabierta:
+                    self._poisoned_paths.setdefault(path_str, error)
+                raise
             finally:
                 self._maintenance_paths.discard(path_str)
 

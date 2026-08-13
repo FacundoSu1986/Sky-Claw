@@ -355,7 +355,18 @@ class AsyncModRegistry:
                 logger.error("Failed to open async registry: %s", exc)
                 raise
 
-        await self._conn.executescript(_SCHEMA_SQL)
+        # El `executescript` emite un COMMIT implícito sobre la conexión
+        # compartida: una inicialización tardía mientras otro wrapper sostiene
+        # una transacción le confirmaría su trabajo parcial. Va bajo el write
+        # lock del path, igual que `router.open()` y que toda operación admitida.
+        # (En el camino de recuperación de corrupción el schema ya corrió DENTRO
+        # de `recover_path`, que sostiene este mismo lock y ya salió; volver a
+        # correrlo acá es idempotente.)
+        if self._lifecycle is not None:
+            async with self._lifecycle.get_write_lock(self._db_path):
+                await self._conn.executescript(_SCHEMA_SQL)
+        else:
+            await self._conn.executescript(_SCHEMA_SQL)
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -395,6 +406,15 @@ class AsyncModRegistry:
             raise RuntimeError("Database is not open")
         if self._lifecycle is not None:
             async with self._lifecycle.operation(self._db_path, self._conn) as conn:
+                # Re-chequeo DESPUÉS del await: el guard de arriba corrió antes
+                # de esperar el write lock del path, y un `close()` concurrente
+                # pudo nular `self._conn` mientras tanto. Con lifecycle, `close()`
+                # NO cierra la conexión —sólo suelta la referencia—, así que
+                # `refresh_connection` devuelve una perfectamente válida y el
+                # wrapper cerrado seguiría escribiendo. El caso secuencial ya lo
+                # cubría T17; éste es su hermano concurrente.
+                if self._conn is None:
+                    raise RuntimeError("Database is not open")
                 self._conn = conn
                 yield conn
             return

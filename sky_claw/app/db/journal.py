@@ -421,6 +421,12 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
         async with self._lock:
+            # Hermano del re-chequeo de async_registry y locks: `_ensure_connected`
+            # corrió ANTES de esperar el lock, y un `close()` concurrente pudo
+            # soltar la referencia mientras tanto. Sin esto, `_revalidar_bajo_lock`
+            # la reasignaría y resucitaría un journal cerrado.
+            if self._db is None:
+                raise JournalConnectionError("Database connection not available")
             yield await self._revalidar_bajo_lock(db)
 
     async def _ensure_connected(self) -> aiosqlite.Connection:
