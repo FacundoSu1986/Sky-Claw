@@ -136,25 +136,39 @@ def _sostener(
 
 
 # ---------------------------------------------------------------------------
-# A — una operación en vuelo bloquea el shutdown
+# A — trabajo admitido en vuelo bloquea el shutdown
 # ---------------------------------------------------------------------------
 
 
-async def test_a_operacion_en_vuelo_bloquea_el_shutdown(
+@pytest.mark.parametrize(
+    "entrada",
+    [
+        pytest.param("operation", id="operation"),
+        pytest.param("get_connection", id="get_connection"),
+    ],
+)
+async def test_a_admitido_en_vuelo_bloquea_el_shutdown(
     gestor: DatabaseLifecycleManager,
     ruta_db: Path,
     conexiones: list[aiosqlite.Connection],
     monkeypatch: pytest.MonkeyPatch,
+    entrada: str,
 ) -> None:
     """El shutdown ESPERA lo ya admitido; no alcanza con rechazar lo nuevo.
 
-    La operación se toma en la posición donde el drenaje es lo ÚNICO que la
+    La entrada se toma en la posición donde el drenaje es lo ÚNICO que la
     sostiene: admitida, con la conexión todavía abriéndose, así que el registro
     está **vacío**. Sin drenaje, el shutdown ve cero conexiones, se declara
-    completo, y la operación registra después una conexión que ya nadie va a
+    completo, y la entrada registra después una conexión que ya nadie va a
     cerrar. Tomarla con la conexión ya registrada no probaría el drenaje: ahí
     el lock del path que toma el cierre alcanzaría para ordenar los dos, y el
     test pasaría igual con el drenaje removido.
+
+    Se parametriza sobre los DOS puntos de entrada públicos que abren la
+    conexión perezosamente: ``operation`` (que además toma el lock del path) y
+    ``get_connection`` (que no). La carrera lazy-open es la misma para ambos:
+    admitir → ``_resolve_connection`` → ``aiosqlite.connect`` suspendido. Quitar
+    la admisión de cualquiera de los dos debe romper SU caso, no el del hermano.
     """
     puerta, abriendo = asyncio.Event(), asyncio.Event()
     connect_espiado = db_lifecycle.aiosqlite.connect
@@ -168,31 +182,34 @@ async def test_a_operacion_en_vuelo_bloquea_el_shutdown(
 
     orden: list[str] = []
 
-    async def operacion() -> None:
+    async def admitir() -> None:
         # Sin init_all previo: la conexión se abre perezosamente acá adentro.
-        async with gestor.operation(ruta_db):
-            pass
-        orden.append("op_salio")
+        if entrada == "operation":
+            async with gestor.operation(ruta_db):
+                pass
+        else:
+            await gestor.get_connection(ruta_db)
+        orden.append("entrada_salio")
 
     async def apagar() -> None:
         await gestor.shutdown_all()
         orden.append("shutdown_termino")
 
-    t_op = asyncio.create_task(operacion())
+    t_op = asyncio.create_task(admitir())
     await abriendo.wait()
     assert gestor._connections == {}, "el registro debía estar vacío: si no, lo que ordena es el lock, no el drenaje"
 
     t_sd = asyncio.create_task(apagar())
     await ceder()
-    assert not t_sd.done(), "el shutdown se declaró completo con una operación admitida en vuelo"
+    assert not t_sd.done(), "el shutdown se declaró completo con trabajo admitido en vuelo"
 
     puerta.set()
     await asyncio.wait_for(t_op, timeout=DEADLINE)
     await asyncio.wait_for(t_sd, timeout=DEADLINE)
 
-    assert orden == ["op_salio", "shutdown_termino"], f"el shutdown no esperó al trabajo admitido: {orden}"
+    assert orden == ["entrada_salio", "shutdown_termino"], f"el shutdown no esperó al trabajo admitido: {orden}"
     assert conexiones, "el test no ejercitó ninguna conexión real"
-    assert not await esta_abierta(conexiones[0]), "la conexión que registró la operación quedó viva tras el shutdown"
+    assert not await esta_abierta(conexiones[0]), "la conexión que registró la entrada quedó viva tras el shutdown"
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +237,11 @@ async def test_b_admision_rechazada_una_vez_que_el_shutdown_empezo(
     await ceder()
     assert not t_sd.done(), "el shutdown terminó antes de que se pudiera probar la puerta cerrada"
 
-    # La puerta ya está cerrada: las DOS vías públicas tienen que rechazar.
+    # La puerta ya está cerrada: las TRES vías públicas de admisión tienen que
+    # rechazar. Se enumeran por comportamiento, ejecutando cada API de verdad:
+    # get_connection, operation y checkpoint_all. Un ancla sintáctica no
+    # alcanzaría — si a una de ellas se le quita la admisión, SU caso debe
+    # ponerse rojo (reversión: quitar la admisión de checkpoint_all).
     intento_get = asyncio.create_task(gestor.get_connection(ruta_db))
     await ceder()
     assert intento_get.done(), "get_connection() quedó encolado en vez de fallar: resucitaría la DB después del cierre"
@@ -237,6 +258,12 @@ async def test_b_admision_rechazada_una_vez_que_el_shutdown_empezo(
     with pytest.raises(DatabaseLifecycleShuttingDownError):
         intento_op.result()
 
+    intento_cp = asyncio.create_task(gestor.checkpoint_all())
+    await ceder()
+    assert intento_cp.done(), "checkpoint_all() quedó encolado en vez de fallar"
+    with pytest.raises(DatabaseLifecycleShuttingDownError):
+        intento_cp.result()
+
     assert len(conexiones) == creadas_antes, "un intento rechazado igual abrió una conexión"
 
     soltar.set()
@@ -245,7 +272,7 @@ async def test_b_admision_rechazada_una_vez_que_el_shutdown_empezo(
 
 
 # ---------------------------------------------------------------------------
-# C — una init ya admitida participa del drenaje
+# C — una init en vuelo bloquea el shutdown (por transition lock)
 # ---------------------------------------------------------------------------
 
 
@@ -254,11 +281,20 @@ async def test_c_init_en_vuelo_bloquea_el_shutdown(
     conexiones: list[aiosqlite.Connection],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """La inicialización también es trabajo admitido, y el shutdown la espera.
+    """La reapertura serializada impide que el shutdown se adelante a la init.
 
-    Si no participara, ``_init_single`` puede quedar suspendida, el shutdown ver
-    el contador en cero, declararse completo, y la init registrar DESPUÉS una
-    conexión que nadie cierra.
+    Lo que SÍ demuestra este test es la serialización por ``_transition_lock``:
+    ``init_all()`` lo sostiene durante toda la reapertura, así que un
+    ``shutdown_all()`` concurrente no puede alcanzar el drenaje hasta que la
+    init termina y libera el lock.
+
+    Lo que NO demuestra: que la admisión (``_admit``/``_release``) de
+    ``init_all`` sea necesaria de forma independiente. Con el transition lock
+    presente, el shutdown nunca observa el contador con una init en vuelo (la
+    init libera el lock DESPUÉS de su ``_release``), así que la reversión que
+    quita SOLO la admisión conservando el lock deja este test verde. La
+    reversión discriminante es la que quita la serialización del transition
+    lock, que rompe C y D juntos.
     """
     puerta, entro_init = asyncio.Event(), asyncio.Event()
     connect_espiado = db_lifecycle.aiosqlite.connect
@@ -375,7 +411,9 @@ async def test_e_checkpoint_all_respeta_el_lock_del_path(
     """El checkpoint periódico emite SQL sobre la conexión compartida: participa.
 
     Y el checkpoint que corre DENTRO del shutdown no puede re-adquirir el lock
-    que el drenaje ya garantizó, o el apagado se autobloquea.
+    que el drenaje ya garantizó, o el apagado se autobloquea. Además, ese
+    checkpoint interno SÍ debe emitir su ``PRAGMA wal_checkpoint(TRUNCATE)``:
+    el spy se limpia antes del shutdown para observarlo a él y no al público.
     """
     await gestor.init_all()
     conn = await gestor.get_connection(ruta_db)
@@ -411,8 +449,16 @@ async def test_e_checkpoint_all_respeta_el_lock_del_path(
     assert any("wal_checkpoint" in s.lower() for s in sentencias), "el checkpoint nunca llegó a emitir su SQL"
     assert str(ruta_db.resolve()) in resultados, f"el checkpoint no reportó el path esperado: {resultados}"
 
-    # El checkpoint interno del shutdown NO vuelve a tomar el lock.
+    # El checkpoint interno del shutdown NO vuelve a tomar el lock, y SÍ debe
+    # ejecutar su TRUNCATE. Limpiar el spy antes distingue el checkpoint público
+    # (ya observado arriba) del interno: si el shutdown cambiara a usar la
+    # pública, ``_admit()`` rechazaría por SHUTTING_DOWN y el ``except`` amplio
+    # se tragaría la excepción, dejando este assert sin TRUNCATE y a E verde.
+    sentencias.clear()
     await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+    assert any("wal_checkpoint" in s.lower() and "truncate" in s.lower() for s in sentencias), (
+        f"el shutdown no ejecutó su checkpoint interno TRUNCATE: {sentencias}"
+    )
     assert conexiones, "el test no ejercitó ninguna conexión real"
 
 
