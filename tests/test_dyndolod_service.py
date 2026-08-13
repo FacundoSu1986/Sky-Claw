@@ -3563,15 +3563,46 @@ def test_todo_registro_de_fallo_del_runner_lleva_tx_id() -> None:
     consulta estructurada no filtra por prosa. Y `None` es un valor honesto —el
     runner corre sin servicio en los tests y `pipeline_tx_id_var` vale None—; lo
     que rompe es la AUSENCIA de la clave.
+
+    **No alcanza con que la clave ESTÉ: tiene que venir de `_tx_id()`.** La
+    primera versión solo verificaba presencia, así que un `"tx_id": 42`
+    hardcodeado —o un valor de cualquier otra procedencia— pasaba el ancla y
+    rompía la correlación en runtime (review Qodo, PR #471, "Ancla solo de
+    presencia"). Los tests de comportamiento fijan el VALOR real, pero solo en
+    los caminos principales; los diez registros de sonda y exención restantes
+    (`_firma_de_veredicto`, `_tiene_artefacto`, `_leer_log` por OSError, los
+    `dyndolod_validacion_*`, `dyndolod_meta_ini_no_escrito`) no tienen ninguno,
+    y escribirles un test de valor a cada uno es exactamente el muestreo que
+    `../AGENTS.md` prohíbe: no ataja al registro número once.
+
+    Verificar la PROCEDENCIA por AST los cubre a todos de una, incluidos los que
+    todavía no existen. Es el mismo movimiento que el repo ya hizo con la etapa
+    —`test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido` exige
+    que el valor sea el NOMBRE de la constante y no cualquier literal que valga
+    9— aplicado al otro campo del par.
+
+    Acotado al RUNNER a propósito: el servicio escribe `"tx_id": tx_id` porque
+    es el dueño de la variable —él abre la transacción—, mientras que el runner
+    solo puede LEER el ContextVar. Son procedencias distintas para el mismo
+    campo, y exigirle al servicio la del runner sería falso.
     """
+    lector = "_tx_id"
     registros = _registros_de_fallo(_modulo_runner_ast())
     assert registros, "no se detectó ningún registro de fallo en el runner: el ancla quedaría vacía"
 
-    sin_tx_id = sorted(f"{c.func.attr}:{c.lineno}" for c in registros if _valor_de_clave_en_extra(c, "tx_id") is None)
+    mal_correlacionados = []
+    for c in registros:
+        etiqueta = f"{c.func.attr}:{c.lineno}"
+        nodo = _valor_de_clave_en_extra(c, "tx_id")
+        if nodo is None:
+            mal_correlacionados.append(f"{etiqueta}: sin tx_id en extra")
+        elif not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == lector):
+            mal_correlacionados.append(f"{etiqueta}: tx_id vale {ast.unparse(nodo)!r} y no {lector}()")
 
-    assert sin_tx_id == [], (
-        f"registros de fallo del runner sin tx_id en extra: {sin_tx_id}. "
-        'Agregar "tx_id": _tx_id() al extra (SOP §5 regla 5).'
+    assert mal_correlacionados == [], (
+        f"registros de fallo del runner sin correlación real: {mal_correlacionados}. "
+        f'El extra tiene que llevar "tx_id": {lector}() — la clave presente con un valor de otra '
+        f"procedencia pasa el ancla y rompe la correlación en runtime (SOP §5 regla 5)."
     )
 
 
