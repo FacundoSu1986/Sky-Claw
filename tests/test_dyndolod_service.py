@@ -3918,6 +3918,48 @@ async def test_el_fallo_por_exit_code_lleva_etapa_y_correlacion(
 
 
 @pytest.mark.asyncio
+async def test_sin_transaccion_los_registros_llevan_la_clave_tx_id_en_none(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Sin servicio alrededor, la clave sigue estando — valiendo ``None``.
+
+    Contraparte en RUNTIME de `test_todo_registro_de_fallo_del_runner_lleva_tx_id`,
+    que es AST y solo prueba que la clave esté escrita. La distinción no es
+    teórica: `subprocess_error_extra` seguía la regla "opcional en None se omite",
+    así que los dos registros del runner que pasan por ese helper —dos de los
+    únicos diez que llevan `pipeline_stage`— perdían la clave entera al correr
+    sin transacción, mientras los otros 23 la llevaban como `None`. El ancla AST
+    pasaba igual (review Qodo, PR #471, "Correlación rota en runtime").
+
+    Se ejercita SIN `correlacion_de_transaccion` a propósito: es el uso directo
+    del runner, el caso que el docstring de `_tx_id` describe como frecuente y
+    honesto. `None` significa "no hay transacción acá"; la ausencia de la clave
+    significa "este registro no participa del esquema", y son cosas distintas.
+    """
+    _, runner = _runner_texgen(tmp_path)
+    fake = _EjecucionFalsa(return_code=1)
+
+    with caplog.at_level(logging.WARNING), patch.object(runner, "_execute_process", fake):
+        await runner.run_dyndolod()
+
+    registros = _records_de_fallo(caplog)
+    assert registros, "el fallo por exit code debe dejar registros"
+
+    sin_clave = [f"{r.levelname}:{r.getMessage()[:60]}" for r in registros if not hasattr(r, "tx_id")]
+    assert sin_clave == [], (
+        f"registros del runner sin la clave tx_id al correr sin transacción: {sin_clave}. "
+        "None es el valor honesto para 'sin TX'; omitir la clave es la excepción que un "
+        "test tiene que conocer, que es justo lo que el PR #464 decidió no tallar."
+    )
+    assert all(r.tx_id is None for r in registros)
+
+    con_etapa = [r for r in registros if getattr(r, "pipeline_stage", None) == 9]
+    assert len(con_etapa) == 1, "el registro con la etapa es justamente el que perdía la clave"
+    assert con_etapa[0].tx_id is None
+
+
+@pytest.mark.asyncio
 async def test_el_log_ausente_no_es_fallo_de_etapa_pero_si_lleva_correlacion(
     tmp_path: pathlib.Path,
     caplog: pytest.LogCaptureFixture,

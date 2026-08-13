@@ -416,6 +416,21 @@ def default_log_dir() -> pathlib.Path:
     return pathlib.Path.home() / ".sky_claw" / "logs"
 
 
+class _NoSuministrado:
+    """Centinela: distingue "no pasaron el argumento" de "lo pasaron y vale ``None``".
+
+    Existe por `subprocess_error_extra(tx_id=...)`. El resto de sus opcionales
+    puede colapsar los dos casos porque para ellos ``None`` no significa nada
+    ("no hay job id" y "no me interesa el job id" son lo mismo). Para ``tx_id``
+    sí: ``None`` es el dato — "este registro corrió fuera de una transacción" —
+    y omitir la clave lo vuelve indistinguible de un registro que no participa
+    del esquema de correlación.
+    """
+
+
+_SIN_TX_ID = _NoSuministrado()
+
+
 def subprocess_error_extra(
     *,
     operation: str,
@@ -425,7 +440,7 @@ def subprocess_error_extra(
     job_id: str | None = None,
     child_pid: int | None = None,
     pipeline_stage: int | None = None,
-    tx_id: int | None = None,
+    tx_id: int | None | _NoSuministrado = _SIN_TX_ID,
 ) -> dict[str, object]:
     """Normaliza evidencia terminal sin permitir logs de tamaño ilimitado.
 
@@ -435,12 +450,23 @@ def subprocess_error_extra(
     una función pura sobre sus argumentos: quien llama decide, y los tres módulos
     que ya usan este helper sin participar del pipeline (`loot/cli.py`,
     `xedit/runner.py`, `mo2/vfs_worker.py`) no empiezan a emitir un campo por
-    sorpresa. Por lo mismo se OMITE cuando vale ``None``, como el resto de los
-    opcionales de esta función — que es la convención que congela
-    `test_stderr_completo_hasta_limite_y_tail_verificable`. Un llamador que
-    quiera declarar explícitamente "acá no hay transacción" tiene el dict literal
-    (``extra={"tx_id": None, ...}``), que es lo que hace `dyndolod_runner.py` en
-    los registros que no pasan por este helper.
+    sorpresa.
+
+    **Es el único opcional que NO se omite cuando vale ``None``**, y la asimetría
+    es deliberada: para los demás ``None`` no significa nada, mientras que para
+    ``tx_id`` es el dato — "este registro corrió fuera de una transacción". Se
+    distingue con el centinela `_SIN_TX_ID`: no pasarlo omite la clave (los tres
+    módulos de arriba quedan intactos, como congela
+    `test_stderr_completo_hasta_limite_y_tail_verificable`), pasarlo la emite
+    aunque valga ``None``.
+
+    La primera versión sí lo omitía en ``None``, por simetría con los demás, y
+    eso rompía en runtime la invariante que `dyndolod_runner.py` promete —todo
+    registro de fallo lleva la clave— justamente en dos de los diez registros que
+    llevan ``pipeline_stage``, mientras los otros 23 la llevaban como ``None``
+    (review Qodo, PR #471, "Correlación rota en runtime"). Era la excepción que
+    un test tiene que conocer, que es exactamente lo que el PR #464 decidió no
+    tallar cuando declaró el ``tx_id`` del servicio antes del preflight.
     """
     stderr_bytes = stderr.encode("utf-8", errors="replace")
     truncated = len(stderr_bytes) > _MAX_STDERR_BYTES
@@ -470,7 +496,7 @@ def subprocess_error_extra(
         extra["child_pid"] = child_pid
     if pipeline_stage is not None:
         extra["pipeline_stage"] = pipeline_stage
-    if tx_id is not None:
+    if not isinstance(tx_id, _NoSuministrado):
         extra["tx_id"] = tx_id
     return extra
 
