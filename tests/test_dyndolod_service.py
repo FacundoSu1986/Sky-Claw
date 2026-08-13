@@ -3786,6 +3786,116 @@ def test_toda_llamada_al_runner_vive_dentro_de_la_correlacion() -> None:
     )
 
 
+#: Puntos de entrada del runner de la etapa 9. Alcanzar cualquiera de ellos desde
+#: fuera de `dyndolod_runner.py` es "usar el runner", y por lo tanto emitir sus
+#: registros de fallo — que ahora llevan `pipeline_stage=9`.
+_ENTRADAS_DEL_RUNNER = frozenset(
+    {"DynDOLODRunner", "run_full_pipeline", "run_texgen", "run_dyndolod", "validate_dyndolod_output"}
+)
+
+#: Igualdad literal, no "está incluido": el conjunto COMPLETO de sitios de
+#: `sky_claw/` que alcanzan al runner. Un sitio nuevo rompe el test hasta que
+#: alguien decida si esa superficie participa de la correlación.
+_ALCANCE_DEL_RUNNER = {
+    ("local/tools/dyndolod_service.py", "_ensure_runner", "DynDOLODRunner"),
+    ("local/tools/dyndolod_service.py", "execute", "run_full_pipeline"),
+    ("local/tools/dyndolod_service.py", "execute", "validate_dyndolod_output"),
+}
+
+
+def _alcances_del_runner(arbol: ast.Module) -> set[tuple[str, str]]:
+    """``(método contenedor, entrada)`` por cada alcance al runner en ``arbol``."""
+    alcances = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        if isinstance(nodo.func, ast.Name):
+            nombre = nodo.func.id
+        elif isinstance(nodo.func, ast.Attribute):
+            nombre = nodo.func.attr
+        else:
+            continue
+        if nombre in _ENTRADAS_DEL_RUNNER:
+            alcances.add((_metodo_que_contiene(nodo, arbol) or "<módulo>", nombre))
+    return alcances
+
+
+def test_el_detector_de_alcances_ve_una_superficie_nueva() -> None:
+    """El detector del ancla de abajo, probado — un detector ciego no ancla nada.
+
+    Mismo criterio que `test_db_connection_invariant.py`, que prueba su detector
+    contra cada forma de importar el conector antes de congelar nada: un ancla de
+    igualdad literal sobre un conjunto que el detector no sabe llenar pasa
+    siempre, y su verde no significa lo que promete.
+    """
+    fuente = (
+        "class Handler:\n"
+        "    async def ejecutar(self):\n"
+        "        runner = DynDOLODRunner(config)\n"
+        "        return await runner.run_full_pipeline()\n"
+    )
+
+    assert _alcances_del_runner(ast.parse(fuente)) == {
+        ("ejecutar", "DynDOLODRunner"),
+        ("ejecutar", "run_full_pipeline"),
+    }
+
+
+def test_el_runner_solo_se_alcanza_desde_la_superficie_correlacionada() -> None:
+    """Quién puede usar el runner de la etapa 9, enumerado y congelado.
+
+    Cierra el hallazgo más filoso de la review (Qodo, PR #471, "Possible
+    Issue"), y tiene razón en el principio: toda la garantía de correlación
+    descansa en UN cableado —`correlacion_de_transaccion(tx_id)` dentro de
+    `DynDOLODPipelineService.execute`—, y `../AGENTS.md` documenta que este repo
+    alcanza cada operación mutante desde DOS superficies (GUI vía
+    `SupervisorAgent`→`tool_dispatcher`, agente LLM vía
+    `AsyncToolRegistry`→`LLMRouter`), con 9 de 13 episodios auditados siendo
+    exactamente "se protegió una y se olvidó la otra".
+
+    El hecho hoy es bueno y las dos superficies CONVERGEN:
+    `GenerateLodsStrategy.execute` llama `self.service.execute(**filtered)`, así
+    que las dos llegan al mismo `with`. Pero eso estaba escrito en prosa —en el
+    SOP y en el cuerpo del PR— y `AGENTS.md` es explícito en que un párrafo
+    justificando el recorte NO cuenta como verificación. Es la cuarta vez en
+    este mismo PR que una propiedad se afirma sin anclar; esta la cierra.
+
+    Igualdad literal y no "está incluido", como `RITUAL_TOOL_MAP`: un handler
+    nuevo que construya su propio `DynDOLODRunner` —o que llame un lanzador
+    desde la capa del agente— rompe esto hasta que alguien decida si esa
+    superficie abre transacción y participa de la correlación, o si emite
+    `tx_id=None` a conciencia. Sin el ancla, esos registros saldrían con
+    `pipeline_stage=9` y `tx_id=None`: invisibles para
+    `COUNT(DISTINCT tx_id)` —DISTINCT descarta NULLs— y sobrecontados por
+    `COUNT(*)`. La degradación exacta que la correlación existe para evitar,
+    entrando por la puerta que este repo deja abierta más seguido.
+
+    No cubre `dyndolod_runner.py` en sí: sus llamadas internas
+    (`run_full_pipeline` → `run_texgen`) y el ejemplo de su docstring no son
+    superficies externas.
+    """
+    raiz = pathlib.Path(sky_claw.local.__file__).parent.parent
+    runner = pathlib.Path(sky_claw.local.tools.dyndolod_runner.__file__).resolve()
+
+    medido = set()
+    for archivo in sorted(raiz.rglob("*.py")):
+        if archivo.resolve() == runner:
+            continue
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        ruta = archivo.relative_to(raiz).as_posix()
+        medido |= {(ruta, metodo, entrada) for metodo, entrada in _alcances_del_runner(arbol)}
+
+    assert medido == _ALCANCE_DEL_RUNNER, (
+        f"cambió el conjunto de sitios que alcanzan al runner de la etapa 9.\n"
+        f"  sobran: {sorted(medido - _ALCANCE_DEL_RUNNER)}\n"
+        f"  faltan: {sorted(_ALCANCE_DEL_RUNNER - medido)}\n"
+        f"Un alcance nuevo tiene que decidir explícitamente si abre transacción y envuelve "
+        f"su uso en `correlacion_de_transaccion(...)`, o si emite tx_id=None a conciencia: "
+        f"sin eso, sus registros con pipeline_stage=9 son invisibles para "
+        f"COUNT(DISTINCT tx_id) y sobrecontados por COUNT(*)."
+    )
+
+
 def test_dyndolod_runner_no_regresa_de_su_cobertura_declarada() -> None:
     """El runner de la etapa 9, con la MISMA vara que sus ocho servicios hermanos.
 
