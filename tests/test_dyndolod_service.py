@@ -3918,6 +3918,114 @@ async def test_el_fallo_por_exit_code_lleva_etapa_y_correlacion(
 
 
 @pytest.mark.asyncio
+async def test_la_correlacion_cruza_el_hilo_del_empaquetado(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """La propiedad de la que cuelga el diseño entero, verificada en vez de afirmada.
+
+    Todo el argumento para usar un ContextVar en vez de un parámetro descansa en
+    que el contexto se copia hacia el hilo — y `_generate_meta_ini` corre dentro
+    del ``asyncio.to_thread(_empaquetar_sincrono)`` de `_package_output_as_mod`,
+    así que es el único registro CON etapa que se emite fuera del event loop.
+    Hasta acá esa propiedad estaba escrita en tres lugares (el docstring de
+    `_tx_id`, el SOP y el mensaje del commit) y verificada en ninguno (review
+    Qodo, PR #471, "Correlación en hilos").
+
+    Hoy no hay bug: `asyncio.to_thread` copia el contexto por definición. Lo que
+    esto ancla es el futuro — un refactor a `loop.run_in_executor` sin
+    `contextvars.copy_context()` dejaría este registro con `tx_id=None` habiendo
+    transacción abierta, que es exactamente la "correlación rota en runtime" que
+    este mismo PR documenta como defecto y cierra en `subprocess_error_extra`,
+    reintroducida en silencio en uno de sus registros con etapa. Y `AGENTS.md` es
+    explícito: el párrafo que justifica algo no cuenta como verificarlo.
+
+    El `mod_name` con traversal es sintético a propósito — es la entrada que el
+    guard de sandbox existe para rechazar, y la vía más directa para llegar al
+    registro sin ensuciar el filesystem del test.
+    """
+    from sky_claw.app.security.path_validator import PathViolationError
+
+    _, runner = _runner_texgen(tmp_path)
+    salida = tmp_path / "staging"
+    salida.mkdir()
+    (salida / "textura.dds").write_bytes(b"\x00")
+
+    with (
+        caplog.at_level(logging.WARNING),
+        correlacion_de_transaccion(555),
+        pytest.raises(PathViolationError),
+    ):
+        await runner._package_output_as_mod(salida, "../fuera-del-sandbox")
+
+    bloqueos = [r for r in _records_de_fallo(caplog) if getattr(r, "pipeline_stage", None) == 9]
+    assert len(bloqueos) == 1, (
+        "el bloqueo de path traversal debe dejar exactamente un registro con la etapa; "
+        f"vistos: {[(r.levelname, r.getMessage()[:50]) for r in _records_de_fallo(caplog)]}"
+    )
+    assert bloqueos[0].tx_id == 555, (
+        "la correlación no cruzó el hilo del empaquetado: el registro con pipeline_stage "
+        f"salió con tx_id={bloqueos[0].tx_id!r} habiendo transacción abierta. Si "
+        "`_package_output_as_mod` dejó de usar `asyncio.to_thread`, el reemplazo tiene que "
+        "copiar el contexto explícitamente (`contextvars.copy_context()`)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_el_runner_y_el_servicio_reportan_el_mismo_tx_id_para_un_incidente(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """El eslabón de integración: un incidente, dos capas, el MISMO id.
+
+    Es la premisa completa de la métrica que justifica este PR
+    —`COUNT(DISTINCT tx_id) WHERE pipeline_stage=9`—: si el id que emite el
+    runner no fuera el mismo que usa el handler del servicio, el DISTINCT
+    contaría dos incidentes donde hubo uno y el cierre habría empeorado lo que
+    arregló.
+
+    Los otros tests verifican los dos EXTREMOS por separado: que el servicio
+    deja su tx_id en la variable (con `run_full_pipeline` mockeado) y que el
+    runner lo emite cuando se lo seteamos a mano. Ninguno corría el servicio
+    real contra el runner real, así que un `with` desplazado a otro punto del
+    flujo, o un `tx_id` local que divergiera del que se setea en la variable,
+    dejaba la suite verde y la correlación inexistente en producción (review
+    Qodo, PR #471, "Integración sin verificar").
+
+    Sin mocks del runner: `_execute_process` es lo único falso, que es la
+    frontera del proceso externo.
+    """
+    _, runner = _runner_texgen(tmp_path)
+    # El guard de rutas declaradas del servicio corre antes del lock: `data_dir`
+    # tiene default derivado (`<game>/Data`) y sin él la corrida aborta antes de
+    # llegar al runner.
+    (runner._config.game_path / "Data").mkdir()
+    service._runner = runner
+    fake = _EjecucionFalsa(return_code=1)
+
+    with caplog.at_level(logging.WARNING), patch.object(runner, "_execute_process", fake):
+        resultado = await service.execute(preset="Medium", run_texgen=False, create_snapshot=False)
+
+    assert resultado["success"] is False
+
+    con_etapa = [r for r in caplog.records if getattr(r, "pipeline_stage", None) == 9]
+    del_runner = [r for r in con_etapa if r.name.endswith("dyndolod_runner")]
+    del_servicio = [r for r in con_etapa if not r.name.endswith("dyndolod_runner")]
+
+    assert del_runner, "el runner no reportó el fallo con la etapa; el incidente pierde su causa técnica"
+    assert del_servicio, "el servicio no reportó el fallo con la etapa"
+    assert {r.tx_id for r in con_etapa} == {42}, (
+        "runner y servicio reportaron el mismo incidente con tx_id distintos: "
+        f"runner={[r.tx_id for r in del_runner]}, servicio={[r.tx_id for r in del_servicio]}. "
+        "COUNT(DISTINCT tx_id) contaría dos incidentes donde hubo uno."
+    )
+    # La causa técnica que el handler del servicio no reconstruye — el motivo por
+    # el que la etapa también sale del runner y no solo de la capa de arriba.
+    assert any(getattr(r, "exit_code", None) == 1 for r in del_runner)
+
+
+@pytest.mark.asyncio
 async def test_sin_transaccion_los_registros_llevan_la_clave_tx_id_en_none(
     tmp_path: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
