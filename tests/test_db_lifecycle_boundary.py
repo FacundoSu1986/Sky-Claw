@@ -274,7 +274,7 @@ async def test_b_admision_rechazada_una_vez_que_el_shutdown_empezo(
 
 
 # ---------------------------------------------------------------------------
-# C — una init en vuelo bloquea el shutdown (por transition lock)
+# C — una init en vuelo bloquea el shutdown (D aísla el transition lock)
 # ---------------------------------------------------------------------------
 
 
@@ -283,24 +283,20 @@ async def test_c_init_en_vuelo_bloquea_el_shutdown(
     conexiones: list[aiosqlite.Connection],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """La reapertura serializada impide que el shutdown se adelante a la init.
+    """Una ``init_all()`` en vuelo bloquea a un ``shutdown_all()`` concurrente.
 
-    Lo que SÍ demuestra este test es la serialización por ``_transition_lock``:
-    ``init_all()`` lo sostiene durante toda la reapertura, así que un
-    ``shutdown_all()`` concurrente no puede alcanzar el drenaje hasta que la
-    init termina y libera el lock.
+    Esa —y sólo esa— es la propiedad que C demuestra. El mecanismo que la
+    produce con el código actual es el ``_transition_lock``: ``init_all()`` lo
+    sostiene durante toda la reapertura, así que el shutdown no alcanza el
+    drenaje hasta que la init termina y lo libera.
 
-    Lo que NO demuestra: que la admisión (``_admit``/``_release``) de
-    ``init_all`` sea necesaria de forma independiente. Con el transition lock
-    presente, el shutdown nunca observa el contador con una init en vuelo (la
-    init libera el lock DESPUÉS de su ``_release``), así que la reversión que
-    quita SOLO la admisión conservando el lock deja C y D verdes. La reversión
-    que quita SOLO la serialización del transition lock rompe D pero NO C: la
-    admisión, todavía presente, cubre a C de forma redundante. Sólo quitar
-    AMBOS mecanismos rompe C. Es decir, C prueba que una init en vuelo bloquea
-    el shutdown, pero no aísla por sí solo cuál de los dos mecanismos lo
-    produce; D es el test que discrimina específicamente la serialización por
-    ``_transition_lock`` (ver su reversión dedicada).
+    Pero C NO aísla ese mecanismo por sí solo, y la matriz de reversiones lo
+    muestra: quitar SOLO la admisión (``_admit``/``_release``) conservando el
+    lock deja C y D verdes; quitar SOLO la serialización del transition lock
+    rompe D pero NO C —la admisión, todavía presente, cubre a C de forma
+    redundante—; sólo quitar AMBOS mecanismos rompe C. Por eso el test que
+    discrimina específicamente la serialización por ``_transition_lock`` es
+    **D** (ver su reversión dedicada), no C.
     """
     puerta, entro_init = asyncio.Event(), asyncio.Event()
     connect_espiado = db_lifecycle.aiosqlite.connect
