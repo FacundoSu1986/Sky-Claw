@@ -12,13 +12,26 @@ y ``GovernanceManager`` (operaciones de cache). Además, política EXPLÍCITA de
 
 Sincronización con ``asyncio.Event`` (barreras) + ``ceder()`` (vaciar la cola
 de listos del loop). Sin sleeps.
+
+Ronda de review PR-1b1 (findings de @codex / @coderabbitai): además de las
+carreras conductuales, dos anclas por introspección/AST que **enumeran** en vez
+de muestrear (regla "enumerar, no muestrear" de AGENTS.md): (1) el conjunto de
+lecturas públicas de ``DatabaseAgent`` migradas a ``_read_operation()``, con un
+guard funcional parametrizado por lectura; y (2) el inventario congelado de call
+sites de ``lifecycle.get_connection(...)`` en producción. El AST es INVENTARIO,
+no prueba de seguridad conductual: la autoridad sobre "shutdown vs SQL en vuelo"
+siguen siendo las carreras con Events/barreras (jerarquía: conducta observable >
+estado interno > inventario AST).
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -295,3 +308,277 @@ async def test_governance_update_durante_shutdown_no_persiste(tmp_path: Path, ca
         assert await gov.is_scanned_and_clean(str(archivo)) is False
     finally:
         await lifecycle.shutdown_all()
+
+
+# ===========================================================================
+# Ronda de review PR-1b1 — anclas de enumeración (no muestreo)
+# ===========================================================================
+#
+# Helpers AST compartidos por las dos anclas. Detectan y CONGELAN el conjunto de
+# superficies; NO analizan dataflow ni infieren "este get_connection corre SQL
+# después" (eso sería un analizador semántico complejo, fuera de alcance).
+
+_RAIZ_REPO = Path(__file__).resolve().parents[1]
+_PAQUETE = _RAIZ_REPO / "sky_claw"
+
+
+def _arbol_de(archivo: Path) -> ast.AST:
+    return ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
+
+
+def _mapa_de_padres(arbol: ast.AST) -> dict[ast.AST, ast.AST]:
+    """Enlaces hijo→padre (el AST de stdlib no los expone)."""
+    padres: dict[ast.AST, ast.AST] = {}
+    for nodo in ast.walk(arbol):
+        for hijo in ast.iter_child_nodes(nodo):
+            padres[hijo] = nodo
+    return padres
+
+
+def _qualname_envolvente(padres: dict[ast.AST, ast.AST], objetivo: ast.AST) -> str:
+    """``Clase.metodo`` (o ``funcion``) del def que contiene a ``objetivo``."""
+    nombres: list[str] = []
+    cur: ast.AST | None = objetivo
+    while cur is not None:
+        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            nombres.append(cur.name)
+        cur = padres.get(cur)
+    return ".".join(reversed(nombres)) if nombres else "<module>"
+
+
+def _es_llamada_self(nodo: ast.AST, metodo: str) -> bool:
+    """True si ``nodo`` es una llamada ``self.<metodo>(...)``."""
+    return (
+        isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == metodo
+        and isinstance(nodo.func.value, ast.Name)
+        and nodo.func.value.id == "self"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ancla 1 — lecturas públicas de DatabaseAgent migradas a _read_operation()
+# ---------------------------------------------------------------------------
+
+_LECTURAS_MIGRADAS = frozenset({"get_circuit_breaker_state", "get_memory", "get_mods", "get_conflicts"})
+
+
+def _lecturas_por_read_operation() -> set[str]:
+    """Métodos de ``database.py`` cuyo cuerpo usa ``self._read_operation()``."""
+    arbol = _arbol_de(_PAQUETE / "app" / "core" / "database.py")
+    padres = _mapa_de_padres(arbol)
+    return {
+        _qualname_envolvente(padres, nodo).split(".")[-1]
+        for nodo in ast.walk(arbol)
+        if _es_llamada_self(nodo, "_read_operation")
+    }
+
+
+def test_inventario_lecturas_migradas_esta_congelado() -> None:
+    """Ancla de igualdad: las lecturas que pasan por ``_read_operation()`` son
+    EXACTAMENTE las esperadas. Migrar una lectura nueva sin sumarla acá (y a la
+    parametrización de abajo) rompe el test — enumera, no muestrea."""
+    assert _lecturas_por_read_operation() == set(_LECTURAS_MIGRADAS)
+
+
+# Guard funcional por lectura migrada (+ ramas de filtro de get_mods/get_conflicts).
+# NO repite la carrera de shutdown (esa tiene autoridad propia arriba): solo prueba
+# que cada lectura sigue devolviendo datos correctos a través del boundary.
+
+
+async def _leer_cb_default(agent: DatabaseAgent) -> object:
+    return await agent.get_circuit_breaker_state("dominio.sin.estado")
+
+
+async def _leer_cb_con_estado(agent: DatabaseAgent) -> object:
+    await agent.update_circuit_breaker("nexusmods.com", 3, 987.0)
+    estado = await agent.get_circuit_breaker_state("nexusmods.com")
+    return (estado["failures"], estado["locked_until"])
+
+
+async def _leer_memory_presente(agent: DatabaseAgent) -> object:
+    await agent.set_memory("clave", "valor", 1.0)
+    return await agent.get_memory("clave")
+
+
+async def _leer_memory_ausente(agent: DatabaseAgent) -> object:
+    return await agent.get_memory("ausente")
+
+
+async def _leer_mods_sin_filtro(agent: DatabaseAgent) -> object:
+    await agent.add_mod("ModA")
+    await agent.add_mod("ModB")
+    return sorted((f["name"], f["status"]) for f in await agent.get_mods())
+
+
+async def _leer_mods_filtro_activos(agent: DatabaseAgent) -> object:
+    await agent.add_mod("ModA")
+    return sorted((f["name"], f["status"]) for f in await agent.get_mods(status="active"))
+
+
+async def _leer_mods_filtro_vacio(agent: DatabaseAgent) -> object:
+    await agent.add_mod("ModA")
+    return await agent.get_mods(status="inactive")
+
+
+async def _leer_conflicts_sin_filtro(agent: DatabaseAgent) -> object:
+    m1 = await agent.add_mod("ModA")
+    m2 = await agent.add_mod("ModB")
+    await agent.add_conflict(m1, m2, "record")
+    return [(f["mod_id_1"], f["mod_id_2"], bool(f["resolved"])) for f in await agent.get_conflicts()]
+
+
+async def _leer_conflicts_no_resueltos(agent: DatabaseAgent) -> object:
+    m1 = await agent.add_mod("ModA")
+    m2 = await agent.add_mod("ModB")
+    await agent.add_conflict(m1, m2, "record")
+    filas = await agent.get_conflicts(resolved=False)
+    return [(f["mod_id_1"], f["mod_id_2"], bool(f["resolved"])) for f in filas]
+
+
+async def _leer_conflicts_resueltos_vacio(agent: DatabaseAgent) -> object:
+    m1 = await agent.add_mod("ModA")
+    m2 = await agent.add_mod("ModB")
+    await agent.add_conflict(m1, m2, "record")
+    return await agent.get_conflicts(resolved=True)
+
+
+class _Escenario(NamedTuple):
+    metodo: str
+    sufijo: str
+    operacion: Callable[[DatabaseAgent], Awaitable[object]]
+    esperado: object
+
+
+_ESCENARIOS_LECTURA = [
+    _Escenario("get_circuit_breaker_state", "default", _leer_cb_default, {"failures": 0, "locked_until": 0}),
+    _Escenario("get_circuit_breaker_state", "con_estado", _leer_cb_con_estado, (3, 987.0)),
+    _Escenario("get_memory", "presente", _leer_memory_presente, "valor"),
+    _Escenario("get_memory", "ausente", _leer_memory_ausente, None),
+    _Escenario("get_mods", "sin_filtro", _leer_mods_sin_filtro, [("ModA", "active"), ("ModB", "active")]),
+    _Escenario("get_mods", "filtro_activos", _leer_mods_filtro_activos, [("ModA", "active")]),
+    _Escenario("get_mods", "filtro_vacio", _leer_mods_filtro_vacio, []),
+    _Escenario("get_conflicts", "sin_filtro", _leer_conflicts_sin_filtro, [(1, 2, False)]),
+    _Escenario("get_conflicts", "no_resueltos", _leer_conflicts_no_resueltos, [(1, 2, False)]),
+    _Escenario("get_conflicts", "resueltos_vacio", _leer_conflicts_resueltos_vacio, []),
+]
+
+
+@pytest.mark.parametrize("esc", _ESCENARIOS_LECTURA, ids=[f"{e.metodo}:{e.sufijo}" for e in _ESCENARIOS_LECTURA])
+async def test_lecturas_publicas_migradas_funcionan(tmp_path: Path, esc: _Escenario) -> None:
+    """Guard funcional end-to-end de CADA lectura migrada (+ ramas de filtro): sigue
+    devolviendo datos correctos a través de ``_read_operation()``."""
+    agent = DatabaseAgent(str(tmp_path / "agent.db"))
+    await agent.init_db()
+    try:
+        assert await esc.operacion(agent) == esc.esperado
+    finally:
+        await agent.close()
+
+
+def test_los_escenarios_cubren_todas_las_lecturas_migradas() -> None:
+    """La parametrización enumera EXACTAMENTE las lecturas migradas (no muestrea):
+    su conjunto de métodos coincide con el ancla de introspección de arriba."""
+    assert {e.metodo for e in _ESCENARIOS_LECTURA} == set(_LECTURAS_MIGRADAS)
+
+
+# ---------------------------------------------------------------------------
+# Ancla 2 — inventario de consumidores de lifecycle.get_connection(...)
+# ---------------------------------------------------------------------------
+
+
+class _Receta(NamedTuple):
+    categoria: str
+    call_sites: int
+    motivo: str
+
+
+_CATEGORIAS_PERMITIDAS = frozenset({"ACCESSOR_ALLOWED", "INIT_ALLOWED", "DEFERRED_PR_1B_COMPLEX"})
+
+# Universo REAL (verificado por AST) de call sites de ``<x>.get_connection(...)`` en
+# producción, EXCLUYENDO el propio DatabaseLifecycleManager (que la define). Clave:
+# (path relativo, qualname del def envolvente). Los chokepoints migrados en PR-1b1
+# (DatabaseAgent._read_operation, DLQManager._connect, GovernanceManager) NO aparecen
+# a propósito: ya no usan get_connection (pasan por operation()); no se inventan
+# entradas SAFE/MIGRATED para ellos.
+_CONSUMIDORES_GET_CONNECTION: dict[tuple[str, str], _Receta] = {
+    ("sky_claw/app/core/database.py", "DatabaseAgent._get_conn"): _Receta(
+        "ACCESSOR_ALLOWED",
+        1,
+        "Accessor: devuelve el handle vigente, no corre SQL por sí mismo. Contrato "
+        "congelado en test_core_async_transactions.py; sus 4 lecturas callers ya pasan "
+        "por operation() (PR-1b1). No auto-permite accesores futuros: cada uno se enumera.",
+    ),
+    ("sky_claw/app/core/database.py", "DatabaseAgent.init_db"): _Receta(
+        "INIT_ALLOWED",
+        1,
+        "Init: cachea self._conn tras init_all(); el DDL del esquema corre bajo "
+        "_write_transaction() (boundary transaccional), no suelto tras el get_connection.",
+    ),
+    ("sky_claw/app/agent/router.py", "LLMRouter.open"): _Receta(
+        "DEFERRED_PR_1B_COMPLEX",
+        1,
+        "AgentRouter (LLMRouter): _conn_lock propio (posible inversión de orden de locks, "
+        "F4). Migración diferida a un PR posterior.",
+    ),
+    ("sky_claw/app/db/async_registry.py", "AsyncModRegistry.open"): _Receta(
+        "DEFERRED_PR_1B_COMPLEX",
+        2,
+        "AsyncModRegistry: 2 call sites en open() (path normal + reapertura tras "
+        "corrupción). SQL de mods intrincado. Migración diferida.",
+    ),
+    ("sky_claw/app/db/journal.py", "OperationJournal.open"): _Receta(
+        "DEFERRED_PR_1B_COMPLEX",
+        1,
+        "OperationJournal: journaling propio. Migración diferida.",
+    ),
+    ("sky_claw/app/db/locks.py", "DistributedLockManager.initialize"): _Receta(
+        "DEFERRED_PR_1B_COMPLEX",
+        1,
+        "DistributedLockManager: lock cross-process. Migración diferida.",
+    ),
+}
+
+_DB_LIFECYCLE = _PAQUETE / "app" / "core" / "db_lifecycle.py"
+
+
+def _inventario_real_get_connection() -> dict[tuple[str, str], int]:
+    """``{(path_rel, qualname): nº de call sites}`` de ``.get_connection(...)`` en
+    producción, excluyendo ``db_lifecycle.py`` (el manager que la define)."""
+    conteo: dict[tuple[str, str], int] = {}
+    for archivo in sorted(_PAQUETE.rglob("*.py")):
+        if archivo == _DB_LIFECYCLE:
+            continue
+        arbol = _arbol_de(archivo)
+        padres = _mapa_de_padres(arbol)
+        for nodo in ast.walk(arbol):
+            if (
+                isinstance(nodo, ast.Call)
+                and isinstance(nodo.func, ast.Attribute)
+                and nodo.func.attr == "get_connection"
+            ):
+                clave = (archivo.relative_to(_RAIZ_REPO).as_posix(), _qualname_envolvente(padres, nodo))
+                conteo[clave] = conteo.get(clave, 0) + 1
+    return conteo
+
+
+def test_inventario_de_consumidores_get_connection_esta_congelado() -> None:
+    """Ancla estructural (Codex P1): el conjunto de call sites de
+    ``lifecycle.get_connection(...)`` en producción está TOTALMENTE inventariado.
+
+    Igualdad exhaustiva (no ``subset <=``): un consumidor nuevo no listado —o un
+    call site extra en uno existente— rompe el test y exige asignarle receta. Un
+    consumidor diferido que se migre también lo rompe (hay que quitarlo del mapa):
+    el inventario se mantiene fiel al código real.
+
+    LÍMITE HONESTO: es INVENTARIO, no prueba de que cada consumidor respete el
+    boundary en runtime. La seguridad conductual (shutdown vs SQL en vuelo) la
+    prueban las carreras con Events/barreras de este módulo; acá no hay análisis de
+    dataflow, solo se congela el conjunto de superficies.
+    """
+    esperado = {clave: receta.call_sites for clave, receta in _CONSUMIDORES_GET_CONNECTION.items()}
+    assert _inventario_real_get_connection() == esperado
+
+    categorias = {receta.categoria for receta in _CONSUMIDORES_GET_CONNECTION.values()}
+    assert categorias <= set(_CATEGORIAS_PERMITIDAS)
