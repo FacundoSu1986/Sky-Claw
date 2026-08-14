@@ -17,6 +17,7 @@ de listos del loop). Sin sleeps.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,91 @@ async def test_databaseagent_get_memory_end_to_end_sigue_leyendo(tmp_path: Path)
         assert await agent.get_memory("ausente") is None
     finally:
         await agent.close()
+
+
+async def test_databaseagent_carrera_conductual_contra_shutdown(tmp_path: Path) -> None:
+    """Prueba conductual end-to-end (NO inspecciona ``_admitted``): el cierre de
+    ``shutdown_all()`` debe ESPERAR a que una lectura en vuelo libere el boundary.
+
+    Reproduce fielmente el paso de cierre de ``shutdown_all`` —el único mutador
+    que corre la conexión debajo de una operación—: ``async with
+    get_write_lock(path): await conn.close()`` (``db_lifecycle.py``,
+    ``_shutdown_all_under_transition`` paso 2). No se llama a ``shutdown_all()``
+    entero porque su checkpoint TRUNCATE previo viaja al worker-thread de
+    aiosqlite: ``ceder()`` (vaciar la cola de listos del loop) no lo puede
+    conducir de forma determinista, así que "el shutdown llegó a cerrar" no sería
+    observable sin timing. El paso de cierre aislado SÍ es determinista: la cola
+    del worker es FIFO.
+
+    - Boundary correcto (``operation()``): la lectura sostiene el write-lock del
+      path; el cierre queda bloqueado tomándolo, la lectura corre su SELECT y
+      recién al salir libera → el cierre procede. El SELECT lee su valor.
+    - Reversión a ``get_connection()`` (sin boundary): la lectura NO sostiene el
+      lock; el cierre lo toma y encola ``conn.close()`` en el worker ANTES de que
+      la lectura encole su SELECT → el SELECT corre sobre la conexión ya cerrada
+      → cierre prematuro observable (``ProgrammingError``/``ValueError``). La
+      prueba falla por COMPORTAMIENTO, sin tocar ``_admitted``.
+    """
+    agent = DatabaseAgent(str(tmp_path / "agent.db"))
+    await agent.init_db()
+    await agent.set_memory("clave", "valor", 1.0)
+    lifecycle = agent._lifecycle
+    assert lifecycle is not None
+
+    # La MISMA instancia singleton que la lectura usará y que shutdown cerraría.
+    conn = await lifecycle.get_connection(agent.db_path)
+
+    entro, puerta = asyncio.Event(), asyncio.Event()
+    cerro = asyncio.Event()
+    lectura: dict[str, object] = {"valor": None, "error": None}
+    t_lec: asyncio.Task[None] | None = None
+    t_close: asyncio.Task[None] | None = None
+
+    async def lector() -> None:
+        async with agent._read_operation() as c:
+            entro.set()
+            await puerta.wait()  # suspendida DENTRO del boundary, ANTES del SQL
+            try:
+                async with c.execute("SELECT value FROM agent_memory WHERE key = ?", ("clave",)) as cur:
+                    row = await cur.fetchone()
+                lectura["valor"] = row[0] if row else None
+            except Exception as e:  # noqa: BLE001 — el cierre prematuro es justo lo que observamos
+                lectura["error"] = f"{type(e).__name__}: {e}"
+
+    async def cierre_como_shutdown() -> None:
+        # Reproducción literal de shutdown_all paso 2 (cierre bajo el lock del path).
+        async with lifecycle.get_write_lock(str(agent.db_path)):
+            await conn.close()
+            cerro.set()
+
+    try:
+        t_lec = asyncio.create_task(lector())
+        await entro.wait()  # lector dentro del boundary, ANTES de su SQL
+        t_close = asyncio.create_task(cierre_como_shutdown())
+        await ceder()  # el cierre intenta tomar el lock TODO lo que pueda
+
+        # Con el boundary, el cierre queda bloqueado en el write-lock que la
+        # lectura sostiene: NO pudo cerrar todavía. (En la reversión el cierre
+        # ya encoló su close en el worker; el discriminante fuerte es el SELECT
+        # de abajo, pero esto documenta el mecanismo.)
+        assert not cerro.is_set(), "el cierre completó con la lectura en vuelo (boundary roto)"
+
+        puerta.set()  # liberar la lectura: recién ahora encola su SELECT
+        await asyncio.wait_for(t_lec, timeout=DEADLINE)
+        await asyncio.wait_for(t_close, timeout=DEADLINE)
+
+        # DISCRIMINANTE CONDUCTUAL (sin ``_admitted``): con el boundary, el cierre
+        # esperó y el SELECT leyó su valor. La reversión cierra la conexión debajo
+        # del SELECT y esto queda en ``lectura["error"]``.
+        assert lectura["error"] is None, f"cierre prematuro debajo del SELECT: {lectura['error']}"
+        assert lectura["valor"] == "valor", "la lectura no leyó su valor"
+        assert cerro.is_set(), "el cierre nunca ocurrió (debía diferirse, no perderse)"
+    finally:
+        puerta.set()
+        for t in (t_lec, t_close):
+            if t is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(t, timeout=DEADLINE)
 
 
 # ---------------------------------------------------------------------------
