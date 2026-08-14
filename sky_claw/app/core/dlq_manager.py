@@ -260,9 +260,13 @@ class DLQManager:
         Without one, falls back to the pre-M-01 per-operation connection.
         """
         if self._lifecycle is not None:
-            conn = await self._lifecycle.get_connection(self._db_path)
-            conn.row_factory = aiosqlite.Row
-            yield conn
+            # PR-1b1: el yield va DENTRO de operation() para que el caller
+            # conserve la admisión mientras usa la conexión — sin esto, el
+            # boundary moría al retornar get_connection() y shutdown_all()
+            # podía cerrar la conexión debajo del SQL del caller.
+            async with self._lifecycle.operation(self._db_path) as conn:
+                conn.row_factory = aiosqlite.Row
+                yield conn
             return
         try:
             db, cancelacion_adquisicion = await self._observar_resultado(aiosqlite.connect(self._db_path))

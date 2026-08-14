@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from sky_claw.app.core.db_lifecycle import DatabaseLifecycleShuttingDownError
 from sky_claw.app.security.file_permissions import restrict_to_owner
 
 if TYPE_CHECKING:
@@ -306,11 +307,16 @@ class GovernanceManager:
             return False
 
         try:
-            db = await self._lifecycle.get_connection(self.cache_db_path)
-            await self._ensure_schema(db)
-            async with db.execute("SELECT status FROM scan_cache WHERE file_hash = ?", (file_hash,)) as cursor:
-                row = await cursor.fetchone()
-                return bool(row and row[0] == "CLEAN")
+            async with self._lifecycle.operation(self.cache_db_path) as db:
+                await self._ensure_schema(db)
+                async with db.execute("SELECT status FROM scan_cache WHERE file_hash = ?", (file_hash,)) as cursor:
+                    row = await cursor.fetchone()
+                    return bool(row and row[0] == "CLEAN")
+        except DatabaseLifecycleShuttingDownError:
+            # Política explícita PR-1b1: shutdown del lifecycle en curso → no se
+            # puede verificar la limpieza, así que fail-closed (return False).
+            logger.warning("is_scanned_and_clean durante el shutdown del lifecycle; fail-closed (False).")
+            return False
         except Exception as e:
             logger.error("Error consultando caché de escaneo: %s", e)
             return False
@@ -333,23 +339,28 @@ class GovernanceManager:
             return
 
         try:
-            db = await self._lifecycle.get_connection(self.cache_db_path)
-            await self._ensure_schema(db)
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO scan_cache
-                (file_hash, file_path, last_scan_time, scan_results, status)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    file_hash,
-                    str(file_path),
-                    datetime.now(UTC).isoformat(),
-                    json.dumps(results),
-                    status,
-                ),
-            )
-            await db.commit()
+            async with self._lifecycle.operation(self.cache_db_path) as db:
+                await self._ensure_schema(db)
+                await db.execute(
+                    """
+                    INSERT OR REPLACE INTO scan_cache
+                    (file_hash, file_path, last_scan_time, scan_results, status)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        file_hash,
+                        str(file_path),
+                        datetime.now(UTC).isoformat(),
+                        json.dumps(results),
+                        status,
+                    ),
+                )
+                await db.commit()
+        except DatabaseLifecycleShuttingDownError:
+            # Política explícita PR-1b1: shutdown del lifecycle en curso → no se
+            # persiste (el escaneo se reintentará en la próxima sesión).
+            logger.warning("update_scan_result durante el shutdown del lifecycle; resultado NO persistido.")
+            return
         except Exception as e:
             logger.error("Error actualizando caché: %s", e)
 
