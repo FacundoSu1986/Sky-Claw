@@ -35,15 +35,19 @@ PREVENCIÓN:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import pathlib
 import sqlite3
 import time
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
+
+from sky_claw.app.core.db_lifecycle import DatabaseLifecycleShuttingDownError
 
 if TYPE_CHECKING:
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
@@ -243,19 +247,26 @@ class DistributedLockManager:
         Otherwise falls back to a direct ``aiosqlite.connect`` with manual
         pragmas (pre-M-01 behaviour) — same contract as ``journal.py`` /
         ``async_registry.py``.
+
+        PR-1b2a: con lifecycle, el ``executescript`` del schema corre DENTRO de
+        ``operation()`` (admisión + lock del path + conexión vigente): un
+        ``shutdown_all()`` concurrente espera a que el DDL termine en vez de
+        cerrar la conexión debajo de él.
         """
         if self._conn is not None:
             return
 
         if self._lifecycle is not None:
             self._owns_conn = False
-            self._conn = await self._lifecycle.get_connection(self._db_path)
+            async with self._lifecycle.operation(self._db_path) as conn:
+                self._conn = conn
+                await conn.executescript(_LOCKS_SCHEMA_SQL)
         else:
             self._owns_conn = True
             self._conn = await aiosqlite.connect(self._db_path)
             await self._conn.execute("PRAGMA journal_mode=WAL")
             await self._conn.execute("PRAGMA busy_timeout=5000")
-        await self._conn.executescript(_LOCKS_SCHEMA_SQL)
+            await self._conn.executescript(_LOCKS_SCHEMA_SQL)
         logger.info(
             "DistributedLockManager initialized",
             extra={"db_path": self._db_path, "default_ttl": self._default_ttl},
@@ -276,6 +287,21 @@ class DistributedLockManager:
         if self._conn is None:
             raise LockError("LockManager not initialized — call initialize() first")
         return self._conn
+
+    @contextlib.asynccontextmanager
+    async def _operacion(self) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Boundary por path para el SQL del lock manager (PR-1b2a).
+
+        Con lifecycle: admisión + lock del path + conexión vigente durante toda
+        la unidad SQL; el SQL debe usar la conexión yielded, nunca
+        ``self._conn``. Sin lifecycle: la conexión propia (semántica pre-M-01
+        intacta). No introduce locks adicionales.
+        """
+        if self._lifecycle is not None:
+            async with self._lifecycle.operation(self._db_path) as conn:
+                yield conn
+            return
+        yield self._ensure_conn()
 
     # ------------------------------------------------------------------
     # Core operations
@@ -308,7 +334,7 @@ class DistributedLockManager:
         LockAcquisitionError
             If the lock cannot be acquired after ``max_retries`` attempts.
         """
-        conn = self._ensure_conn()
+        self._ensure_conn()  # contrato: LockError si initialize() no corrió
         ttl_seconds = ttl if ttl is not None else self._default_ttl
 
         for attempt in range(self._max_retries):
@@ -316,13 +342,16 @@ class DistributedLockManager:
             expires_at = now + ttl_seconds
 
             try:
-                async with conn.execute(
-                    _ACQUIRE_SQL,
-                    (resource_id, agent_id, now, expires_at),
-                ) as cursor:
-                    rowcount = cursor.rowcount
+                # PR-1b2a: cada INTENTO es su propio boundary; el backoff queda
+                # fuera (nunca se sostiene el path lock durante el sleep).
+                async with self._operacion() as conn:
+                    async with conn.execute(
+                        _ACQUIRE_SQL,
+                        (resource_id, agent_id, now, expires_at),
+                    ) as cursor:
+                        rowcount = cursor.rowcount
 
-                await conn.commit()
+                    await conn.commit()
 
                 # SQLite INSERT ... ON CONFLICT: rowcount == 1 if we inserted or
                 # updated (i.e. expired lock was reclaimed).  rowcount == 0 if
@@ -389,15 +418,19 @@ class DistributedLockManager:
         bool
             ``True`` if the lock was found and deleted.
         """
-        conn = self._ensure_conn()
+        self._ensure_conn()  # contrato: LockError si initialize() no corrió
         try:
-            async with conn.execute(
-                _RELEASE_SQL,
-                (resource_id, agent_id),
-            ) as cursor:
-                deleted = cursor.rowcount > 0
+            # PR-1b2a: SQL + commit dentro del boundary. El shutdown del
+            # lifecycle se propaga (política PROPAGATE): `_safe_release` lo
+            # absorbe loggeando y la lease expira por TTL.
+            async with self._operacion() as conn:
+                async with conn.execute(
+                    _RELEASE_SQL,
+                    (resource_id, agent_id),
+                ) as cursor:
+                    deleted = cursor.rowcount > 0
 
-            await conn.commit()
+                await conn.commit()
 
             if deleted:
                 logger.info(
@@ -438,16 +471,28 @@ class DistributedLockManager:
             ``True`` if the lease was extended; ``False`` if the lock no longer
             belongs to *agent_id* or already expired (lease lost).
         """
-        conn = self._ensure_conn()
+        self._ensure_conn()  # contrato: LockError si initialize() no corrió
         ttl_seconds = ttl if ttl is not None else self._default_ttl
         now = time.time()
         try:
-            async with conn.execute(
-                _RENEW_SQL,
-                (now + ttl_seconds, resource_id, agent_id, now),
-            ) as cursor:
-                renewed = cursor.rowcount > 0
-            await conn.commit()
+            # PR-1b2a: SQL + commit dentro del boundary (un intento, una unidad).
+            async with self._operacion() as conn:
+                async with conn.execute(
+                    _RENEW_SQL,
+                    (now + ttl_seconds, resource_id, agent_id, now),
+                ) as cursor:
+                    renewed = cursor.rowcount > 0
+                await conn.commit()
+        except DatabaseLifecycleShuttingDownError:
+            # Política explícita PR-1b2a: shutdown del lifecycle en curso → la
+            # lease no puede renovarse → lease perdido (fail-closed a False),
+            # igual que un error de DB. No se reabre ni revive nada.
+            logger.warning(
+                "Lock renewal skipped — database lifecycle is shutting down (lease will expire): '%s'",
+                resource_id,
+                extra={"resource_id": resource_id, "agent_id": agent_id},
+            )
+            return False
         except sqlite3.Error as exc:
             # Best-effort renewal: ANY sqlite failure (not just Operational/
             # Integrity) degrades to "lease lost" (False) rather than
@@ -474,14 +519,15 @@ class DistributedLockManager:
 
         Use only for emergency recovery (e.g. orphan locks after crash).
         """
-        conn = self._ensure_conn()
+        self._ensure_conn()  # contrato: LockError si initialize() no corrió
         try:
-            async with conn.execute(
-                _RELEASE_ANY_SQL,
-                (resource_id,),
-            ) as cursor:
-                deleted = cursor.rowcount > 0
-            await conn.commit()
+            async with self._operacion() as conn:
+                async with conn.execute(
+                    _RELEASE_ANY_SQL,
+                    (resource_id,),
+                ) as cursor:
+                    deleted = cursor.rowcount > 0
+                await conn.commit()
             if deleted:
                 logger.warning(
                     "Lock force-released",
@@ -493,11 +539,15 @@ class DistributedLockManager:
 
     async def get_lock_info(self, resource_id: str) -> LockInfo | None:
         """Query current lock state for a resource (may be expired)."""
-        conn = self._ensure_conn()
-        async with conn.execute(
-            "SELECT resource_id, agent_id, acquired_at, expires_at FROM resource_locks WHERE resource_id = ?",
-            (resource_id,),
-        ) as cursor:
+        self._ensure_conn()  # contrato: LockError si initialize() no corrió
+        # PR-1b2a: lectura bajo boundary; sin commit propio.
+        async with (
+            self._operacion() as conn,
+            conn.execute(
+                "SELECT resource_id, agent_id, acquired_at, expires_at FROM resource_locks WHERE resource_id = ?",
+                (resource_id,),
+            ) as cursor,
+        ):
             row = await cursor.fetchone()
             if row is None:
                 return None
@@ -510,14 +560,15 @@ class DistributedLockManager:
 
     async def cleanup_expired(self) -> int:
         """Delete all locks whose TTL has expired.  Returns count removed."""
-        conn = self._ensure_conn()
+        self._ensure_conn()  # contrato: LockError si initialize() no corrió
         now = time.time()
-        async with conn.execute(
-            "DELETE FROM resource_locks WHERE expires_at < ?",
-            (now,),
-        ) as cursor:
-            count = cursor.rowcount
-        await conn.commit()
+        async with self._operacion() as conn:
+            async with conn.execute(
+                "DELETE FROM resource_locks WHERE expires_at < ?",
+                (now,),
+            ) as cursor:
+                count = cursor.rowcount
+            await conn.commit()
         if count > 0:
             logger.info("Cleaned up %d expired lock(s)", count)
         return count
