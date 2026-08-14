@@ -294,9 +294,13 @@ async def test_c_init_en_vuelo_bloquea_el_shutdown(
     ``init_all`` sea necesaria de forma independiente. Con el transition lock
     presente, el shutdown nunca observa el contador con una init en vuelo (la
     init libera el lock DESPUÉS de su ``_release``), así que la reversión que
-    quita SOLO la admisión conservando el lock deja este test verde. La
-    reversión discriminante es la que quita la serialización del transition
-    lock, que rompe C y D juntos.
+    quita SOLO la admisión conservando el lock deja C y D verdes. La reversión
+    que quita SOLO la serialización del transition lock rompe D pero NO C: la
+    admisión, todavía presente, cubre a C de forma redundante. Sólo quitar
+    AMBOS mecanismos rompe C. Es decir, C prueba que una init en vuelo bloquea
+    el shutdown, pero no aísla por sí solo cuál de los dos mecanismos lo
+    produce; D es el test que discrimina específicamente la serialización por
+    ``_transition_lock`` (ver su reversión dedicada).
     """
     puerta, entro_init = asyncio.Event(), asyncio.Event()
     connect_espiado = db_lifecycle.aiosqlite.connect
