@@ -5,8 +5,9 @@ La propiedad que estos tests defienden:
     Toda lectura o escritura de la conexión compartida de un path está
     serializada con toda mutación del registro de ese path.
 
-Son tests A–J del preflight de PR-1a, más la sección P1-B/H1 (init_all
-idempotente por path, Casos 1–5). **La autoridad sobre comportamiento es la
+Son tests A–J del preflight de PR-1a, más las secciones P1-B/H1 (init_all
+idempotente por path, Casos 1–5) y P2 (shutdown incompleto rechaza la
+reapertura, K1–K3). **La autoridad sobre comportamiento es la
 carrera ejecutada, no una ancla sintáctica**: acá no se afirma "está protegido"
 mirando el AST, se pone una operación en vuelo y se comprueba que el shutdown no
 puede declararse completo. Política vigente desde la ronda de review de
@@ -841,5 +842,111 @@ async def test_h1_init_all_gana_y_el_lazy_open_reutiliza(
     assert contador["n"] == 1, f"se abrieron {contador['n']} conexiones para un solo path"
     registrada = gestor._connections[str(ruta_db.resolve())]
     assert registrada is conn_get, "el lazy-open entregó una conexión distinta de la registrada"
+
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+# ---------------------------------------------------------------------------
+# P2 — shutdown incompleto rechaza la reapertura (guard fail-closed)
+# ---------------------------------------------------------------------------
+
+
+async def _dejar_shutdown_incompleto(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[aiosqlite.Connection, object]:
+    """Deja al manager en shutdown incompleto; retorna (conexión retenida, close real).
+
+    El fault injection respeta la semántica real de ``aiosqlite.close()``: el
+    ``finally`` de aiosqlite deja ``_connection = None`` aunque el cierre falle,
+    así que la conexión retenida queda MUERTA. Es el estado exacto del P2.
+    """
+    await gestor.init_all()
+    conn = await gestor.get_connection(ruta_db)
+    real_close = conn.close
+
+    async def close_que_falla() -> None:
+        await real_close()
+        raise sqlite3.OperationalError("close falló a propósito")
+
+    monkeypatch.setattr(conn, "close", close_que_falla)
+    with pytest.raises(sqlite3.OperationalError):
+        await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+    assert gestor._connections.get(str(ruta_db.resolve())) is conn, "el shutdown incompleto no retuvo la entrada"
+    assert gestor._shutting_down and not gestor._closed
+    return conn, real_close
+
+
+async def test_k1_shutdown_incompleto_rechaza_el_reopen(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """K1 — tras un shutdown incompleto, init_all() DEBE fallar explícitamente.
+
+    Sin el guard, la idempotencia reutilizaría la entrada retenida —una
+    conexión muerta— y el manager entregaría un objeto que falla toda query.
+    El guard no debe abrir una conexión nueva ni tocar el estado de shutdown:
+    la recuperación es reintentar ``shutdown_all()``, no reabrir.
+    """
+    conn_a, _ = await _dejar_shutdown_incompleto(gestor, ruta_db, monkeypatch)
+    creadas_antes = len(conexiones)
+
+    with pytest.raises(DatabaseLifecycleShuttingDownError):
+        await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+
+    assert len(conexiones) == creadas_antes, "el guard abrió una conexión nueva"
+    assert gestor._connections.get(str(ruta_db.resolve())) is conn_a, "el guard tocó la entrada retenida"
+    assert gestor._shutting_down, "el guard limpió el estado de shutdown"
+    assert not gestor._closed, "el guard declaró CLOSED sin completar el cierre"
+
+
+async def test_k2_retry_de_shutdown_completa_el_cierre(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """K2 — liberado el fault injection, reintentar shutdown_all() SÍ completa.
+
+    El contrato "shutdown incompleto es reintentable" no debe ser destruido por
+    el guard: el segundo close es idempotente en aiosqlite (la conexión ya está
+    muerta) y el shutdown termina en CLOSED con el registro vacío.
+    """
+    conn_a, real_close = await _dejar_shutdown_incompleto(gestor, ruta_db, monkeypatch)
+    monkeypatch.setattr(conn_a, "close", real_close)
+
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+    assert gestor._connections == {}, "el retry no vació el registro"
+    assert gestor._closed, "el retry no llegó a CLOSED"
+
+
+async def test_k3_tras_el_retry_si_puede_reabrir(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """K3 — completado el retry (CLOSED), init_all() reabre una conexión VÁLIDA.
+
+    No alcanza con que init_all no lance: la conexión reabierta debe ejecutar
+    una query real.
+    """
+    conn_a, real_close = await _dejar_shutdown_incompleto(gestor, ruta_db, monkeypatch)
+    monkeypatch.setattr(conn_a, "close", real_close)
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+    assert gestor._closed
+
+    await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+    conn_b = await gestor.get_connection(ruta_db)
+    assert conn_b is not conn_a, "la reapertura reutilizó la conexión muerta del shutdown incompleto"
+
+    async with conn_b.execute("SELECT 1") as cursor:
+        row = await cursor.fetchone()
+        assert row[0] == 1, "la conexión reabierta no ejecuta queries"
 
     await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)

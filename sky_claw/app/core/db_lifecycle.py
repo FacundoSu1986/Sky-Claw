@@ -238,7 +238,16 @@ class DatabaseLifecycleManager:
         #   y re-chequea el registro DENTRO de `_init_lock` antes de decidir.
         #   RUNNING → init_all es por tanto idempotente: un path ya
         #   inicializado conserva SU conexión — nunca la reemplaza.
+        # * Fail-closed ESTRECHO (P2): tras un shutdown INCOMPLETO queda una
+        #   entrada retenida cuya conexión ya está muerta, y la idempotencia
+        #   la reutilizaría entregando un objeto inservible. Sólo ese estado
+        #   (`_shutting_down` sin `_closed`) rechaza la reapertura: RUNNING
+        #   sano y CLOSED siguen permitidos.
         async with self._transition_lock:
+            if self._shutting_down and not self._closed:
+                raise DatabaseLifecycleShuttingDownError(
+                    "Previous shutdown did not complete; retry shutdown_all() before init_all()."
+                )
             self._shutting_down = False
             self._closed = False
             if self._config.enable_auto_checkpoint:
