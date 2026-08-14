@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import logging
 import os
 import pathlib
+import threading
 import time
 import warnings
 from collections.abc import Callable
@@ -41,6 +43,7 @@ from sky_claw.local.validators.preflight import (
     PreflightReport,
     PreflightStatus,
 )
+from sky_claw.logging_config import correlacion_de_transaccion, pipeline_tx_id_var
 
 # =============================================================================
 # Fixtures
@@ -2756,37 +2759,39 @@ def _nodo_de_la_etapa(llamada: ast.Call) -> ast.expr | None:
     de una referencia a la constante del módulo — la diferencia que impide que el
     número quede duplicado en trece sitios (review Qodo, PR #464).
     """
+    return _valor_de_clave_en_extra(llamada, "pipeline_stage")
+
+
+def _valor_de_clave_en_extra(llamada: ast.Call, clave: str) -> ast.expr | None:
+    """Nodo del valor de ``clave`` en el ``extra=`` de ``llamada``, o ``None``.
+
+    Reconoce las MISMAS dos formas que documenta `_nodo_de_la_etapa` (dict
+    literal y el kwarg de ese helper puntual) para CUALQUIER clave, no solo
+    ``pipeline_stage``. Antes miraba únicamente el dict literal, con la premisa
+    escrita de que "``operation_type``/``tx_id`` son claves propias de este
+    módulo — ningún registro las emite vía ese helper hoy". Esa premisa venció
+    cuando `dyndolod_runner.py` empezó a emitir ``tx_id`` dentro de
+    ``subprocess_error_extra`` en sus dos fallos por exit code: con la versión
+    vieja, esos dos registros pasaban por "sin tx_id" y el ancla de correlación
+    del runner era imposible de satisfacer sin abandonar el helper canónico del
+    repo. Es la premisa-que-envejece que este archivo persigue, esta vez en un
+    helper del propio archivo.
+    """
     for kw in llamada.keywords:
         if kw.arg != "extra":
             continue
         if isinstance(kw.value, ast.Dict):
-            for clave, valor in zip(kw.value.keys, kw.value.values, strict=True):
-                if isinstance(clave, ast.Constant) and clave.value == "pipeline_stage":
-                    return valor
+            for k, v in zip(kw.value.keys, kw.value.values, strict=True):
+                if isinstance(k, ast.Constant) and k.value == clave:
+                    return v
         elif (
             isinstance(kw.value, ast.Call)
             and isinstance(kw.value.func, ast.Name)
             and kw.value.func.id == "subprocess_error_extra"
         ):
             for interno in kw.value.keywords:
-                if interno.arg == "pipeline_stage":
+                if interno.arg == clave:
                     return interno.value
-    return None
-
-
-def _valor_de_clave_en_extra(llamada: ast.Call, clave: str) -> ast.expr | None:
-    """Nodo del valor de ``clave`` en el dict literal de ``extra=``, o ``None``.
-
-    Más simple que `_nodo_de_la_etapa`: solo dict literal, sin el caso
-    `subprocess_error_extra` (`operation_type`/`tx_id` son claves propias de
-    este módulo — ningún registro las emite vía ese helper hoy).
-    """
-    for kw in llamada.keywords:
-        if kw.arg != "extra" or not isinstance(kw.value, ast.Dict):
-            continue
-        for k, v in zip(kw.value.keys, kw.value.values, strict=True):
-            if isinstance(k, ast.Constant) and k.value == clave:
-                return v
     return None
 
 
@@ -2848,6 +2853,53 @@ _REGISTROS_EXENTOS_DE_ETAPA = {
         ),
     },
 }
+
+
+def _auditar_cobertura_de_etapa(
+    arbol: ast.Module,
+    exenciones: dict[str, dict[str, str]],
+) -> tuple[list[str], list[str]]:
+    """Audita TODOS los registros de fallo de ``arbol`` contra la regla 5.
+
+    Devuelve ``(sin_cobertura, duplicados)``: la lista de registros que no
+    cumplen y la de ``operation_type`` exentos usados en más de un sitio. Quien
+    llama arma los mensajes de assert, que son específicos del módulo auditado.
+
+    Una sola implementación para el servicio Y para el runner a propósito. La
+    alternativa —escribirle al runner su propio bucle "parecido"— es el defecto
+    dominante que `../AGENTS.md` describe, cometido dentro del archivo de anclas
+    que existe para atajarlo: un endurecimiento futuro (el chequeo de UBICACIÓN
+    lo fue, el de UNICIDAD también) aterrizaría en una copia y no en la otra, y
+    el módulo olvidado se quedaría con la versión débil sin que nada fallara.
+    Acá el runner no puede quedar atrás: comparte la pieza, no el recordatorio.
+    """
+    registros = _registros_de_fallo(arbol)
+    assert registros, "no se detectó ningún registro de fallo: el ancla quedaría vacía"
+
+    usos_por_operation_type: dict[str, list[str]] = {}
+    sin_cobertura: list[str] = []
+    for c in registros:
+        etiqueta = f"{c.func.attr}:{c.lineno}"
+        if _nodo_de_la_etapa(c) is not None:
+            continue
+        operation_type = _valor_de_clave_en_extra(c, "operation_type")
+        nombre_op = operation_type.value if isinstance(operation_type, ast.Constant) else None
+        exencion = exenciones.get(nombre_op) if isinstance(nombre_op, str) else None
+        if exencion is None or not isinstance(nombre_op, str):
+            sin_cobertura.append(f"{etiqueta}: sin pipeline_stage y sin exención válida en operation_type")
+            continue
+        usos_por_operation_type.setdefault(nombre_op, []).append(etiqueta)
+        if _valor_de_clave_en_extra(c, "tx_id") is None:
+            sin_cobertura.append(f"{etiqueta}: exento de pipeline_stage ({nombre_op}) pero sin tx_id")
+        metodo = _metodo_que_contiene(c, arbol)
+        if metodo != exencion["metodo"]:
+            sin_cobertura.append(
+                f"{etiqueta}: usa la exención {nombre_op!r}, declarada solo para "
+                f"{exencion['metodo']!r}, pero vive en {metodo!r}"
+            )
+
+    duplicados = sorted(f"{op}: {sitios}" for op, sitios in usos_por_operation_type.items() if len(sitios) > 1)
+    return sin_cobertura, duplicados
 
 
 def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
@@ -2938,33 +2990,8 @@ def test_todo_registro_de_fallo_del_servicio_nombra_la_etapa() -> None:
     pasaba esta ancla y su compañera (2 passed) sin `pipeline_stage`, dejando un
     fallo real de la etapa 9 sin señal estructurada.
     """
-    arbol = _modulo_servicio_ast()
-    registros = _registros_de_fallo(arbol)
-    assert registros, "no se detectó ningún registro de fallo: el ancla quedaría vacía"
+    sin_cobertura, duplicados = _auditar_cobertura_de_etapa(_modulo_servicio_ast(), _REGISTROS_EXENTOS_DE_ETAPA)
 
-    usos_por_operation_type: dict[str, list[str]] = {}
-    sin_cobertura = []
-    for c in registros:
-        etiqueta = f"{c.func.attr}:{c.lineno}"
-        if _nodo_de_la_etapa(c) is not None:
-            continue
-        operation_type = _valor_de_clave_en_extra(c, "operation_type")
-        nombre_op = operation_type.value if isinstance(operation_type, ast.Constant) else None
-        exencion = _REGISTROS_EXENTOS_DE_ETAPA.get(nombre_op) if isinstance(nombre_op, str) else None
-        if exencion is None:
-            sin_cobertura.append(f"{etiqueta}: sin pipeline_stage y sin exención válida en operation_type")
-            continue
-        usos_por_operation_type.setdefault(nombre_op, []).append(etiqueta)
-        if _valor_de_clave_en_extra(c, "tx_id") is None:
-            sin_cobertura.append(f"{etiqueta}: exento de pipeline_stage ({nombre_op}) pero sin tx_id")
-        metodo = _metodo_que_contiene(c, arbol)
-        if metodo != exencion["metodo"]:
-            sin_cobertura.append(
-                f"{etiqueta}: usa la exención {nombre_op!r}, declarada solo para "
-                f"{exencion['metodo']!r}, pero vive en {metodo!r}"
-            )
-
-    duplicados = sorted(f"{op}: {sitios}" for op, sitios in usos_por_operation_type.items() if len(sitios) > 1)
     assert duplicados == [], (
         f"operation_type exento usado en más de un registro: {duplicados}. Cada exención cubre UN "
         f"registro concreto; un segundo sitio necesita su propia entrada o su propio pipeline_stage."
@@ -3188,19 +3215,27 @@ def test_dyndolod_service_liga_su_logger_al_nombre_logger() -> None:
 _ORDEN_DE_COBERTURA = {"sin_cobertura": 0, "parcial": 1, "completo": 2}
 
 
-def _registro_cubierto(c: ast.Call) -> bool:
+def _registro_cubierto(c: ast.Call, exenciones: dict[str, dict[str, str]] = _REGISTROS_EXENTOS_DE_ETAPA) -> bool:
     """¿El registro satisface la regla 5 — etapa O exención válida?
 
     Mismo criterio de `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`:
-    un registro exento (`operation_type` en `_REGISTROS_EXENTOS_DE_ETAPA` + `tx_id`
-    presente) cuenta como cubierto para la clasificación de cobertura, igual que
-    uno con `pipeline_stage`. Sin esto, los registros exentos degradaban
-    `dyndolod` de completo a parcial — una regresión FALSA: están exentos con
-    justificación declarada, no sin cubrir.
+    un registro exento (`operation_type` en `exenciones` + `tx_id` presente)
+    cuenta como cubierto para la clasificación de cobertura, igual que uno con
+    `pipeline_stage`. Sin esto, los registros exentos degradaban `dyndolod` de
+    completo a parcial — una regresión FALSA: están exentos con justificación
+    declarada, no sin cubrir.
+
+    El diccionario de exenciones es PARÁMETRO y no una constante global porque el
+    runner tiene el suyo (`_REGISTROS_EXENTOS_DE_ETAPA_RUNNER`): compartir uno
+    solo dejaría que un registro del servicio se exima con la justificación
+    escrita para un registro del runner —y al revés—, que es la cadena copiable
+    contra la que la review Qodo del PR #464 endureció este mecanismo, un nivel
+    más arriba. El default es el del servicio para que los llamadores existentes
+    no cambien de significado al pasar por acá.
 
     Deliberadamente NO repite la verificación estructural (método declarado +
     unicidad del `operation_type`) que hace el ancla principal: esto es un
-    clasificador de cobertura para comparar servicios entre sí, y si un registro
+    clasificador de cobertura para comparar módulos entre sí, y si un registro
     fingiera una exención, el ancla principal ya rompe antes — no hace falta que
     los dos caminos dupliquen la misma regla para que el gate la sostenga.
     """
@@ -3208,11 +3243,14 @@ def _registro_cubierto(c: ast.Call) -> bool:
         return True
     operation_type = _valor_de_clave_en_extra(c, "operation_type")
     nombre_op = operation_type.value if isinstance(operation_type, ast.Constant) else None
-    return nombre_op in _REGISTROS_EXENTOS_DE_ETAPA and _valor_de_clave_en_extra(c, "tx_id") is not None
+    return nombre_op in exenciones and _valor_de_clave_en_extra(c, "tx_id") is not None
 
 
-def _categoria_medida(registros: list[ast.Call]) -> str:
-    cubiertos = [c for c in registros if _registro_cubierto(c)]
+def _categoria_medida(
+    registros: list[ast.Call],
+    exenciones: dict[str, dict[str, str]] = _REGISTROS_EXENTOS_DE_ETAPA,
+) -> str:
+    cubiertos = [c for c in registros if _registro_cubierto(c, exenciones)]
     if registros and len(cubiertos) == len(registros):
         return "completo"
     if cubiertos:
@@ -3294,51 +3332,640 @@ def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
         )
 
 
-#: Deuda de `dyndolod_runner.py` —el runner de la etapa 9, no un `*_service.py`—
-#: con el mismo formato que `_SERVICIOS_SIN_COBERTURA`. Registrado por separado
-#: porque este ancla enumera UN archivo, no ocho: mezclarlo con
-#: `_SERVICIOS_SIN_COBERTURA` mediría un servicio contra un runner con la misma
-#: vara sin que ninguno de los dos lo pida.
-_RUNNER_SIN_COBERTURA = {
-    "dyndolod_runner.py": (
-        "etapa 9 (mismo runner del servicio que este PR cierra); 0 de sus 24 "
-        "registros de fallo emiten pipeline_stage o tx_id — ninguna prosa "
-        "'(stage 9)' tampoco, a diferencia de loot/pandora/synthesis/wrye_bash/xedit"
-    ),
+# =============================================================================
+# SOP §5 regla 5 — `dyndolod_runner.py`, el runner de la etapa 9
+#
+# Deuda que el PR #464 enumeró y ancló sin cerrar (`_RUNNER_SIN_COBERTURA`:
+# "0 de sus 24 registros de fallo emiten pipeline_stage o tx_id"). Se cierra acá,
+# con las MISMAS piezas que auditan al servicio — `_auditar_cobertura_de_etapa`,
+# `_registros_de_fallo`, `_nodo_de_la_etapa`— y no con copias "parecidas".
+#
+# Lo que este cierre cambia en la métrica, y hay que decirlo fuerte porque un
+# reviewer futuro lo va a leer como regresión: el servicio ya emitía EXACTAMENTE
+# un registro etiquetado por incidente, así que `COUNT(*) WHERE pipeline_stage=9`
+# contaba incidentes. Todo fallo del runner sube al servicio y allí se etiqueta:
+# en cuanto el runner también etiqueta, un solo fallo de TexGen produce DOS filas
+# con el campo (la del runner, con exit code y causa técnica; la del servicio,
+# con la transacción). Eso NO es el sobreconteo que "Sobreconteo de señal"
+# cerró —que era el mismo hecho repetido dentro de una capa— sino dos capas
+# describiendo el mismo incidente, que es justamente el join que faltaba.
+# La métrica correcta pasa a ser `COUNT(DISTINCT tx_id) WHERE pipeline_stage=9`,
+# y por eso `tx_id` no es opcional acá: sin él, contar incidentes se vuelve
+# imposible y el cierre habría degradado lo que el PR #464 construyó.
+#
+# El `tx_id` NO viaja por parámetro: viaja por `pipeline_tx_id_var`
+# (`sky_claw/logging_config.py`), que el servicio setea alrededor de su bloque
+# con el runner. Un ContextVar cruza `asyncio.to_thread` y `create_task`, así que
+# alcanza a `_generate_meta_ini` (que corre en un hilo) y al heartbeat sin hilar
+# nada — y sobre todo: un registro de fallo NUEVO en cualquier método del runner
+# lee la misma variable. No hay parámetro que se pueda olvidar de propagar, que
+# es exactamente la forma que toma acá el defecto dominante de `../AGENTS.md`.
+# =============================================================================
+
+#: Registros de `dyndolod_runner.py` exentos de `pipeline_stage`, con el mismo
+#: formato y las mismas reglas que `_REGISTROS_EXENTOS_DE_ETAPA` (su gemelo del
+#: servicio): `operation_type` propio + `tx_id`, ubicación declarada, y uno solo
+#: por `operation_type`. Diccionario SEPARADO a propósito — compartir uno dejaría
+#: que un registro del servicio se eximiera con la justificación escrita para un
+#: registro del runner, la cadena copiable de "Exención de etapa copiable" un
+#: nivel más arriba.
+#:
+#: Tres motivos distintos aparecen acá, y conviene no confundirlos:
+#:
+#: 1. **Best-effort que no falla la etapa**: los dos de `_execute_process` corren
+#:    DESPUÉS de que el proceso salió (el código de salida ya está decidido) y su
+#:    propio mensaje dice "se continúa"; los dos de `_leer_log` son el caso que el
+#:    SOP §2.9 declara explícitamente como advertencia y no fallo ("A missing or
+#:    unreadable log is a warning, not a failure").
+#: 2. **Sonda, no veredicto**: firmar/sondear un candidato de staging devuelve un
+#:    dato al post-check, que es quien decide y reporta por `run_texgen`/
+#:    `run_dyndolod`. `_validar_salida_dyndolod` es el caso más claro y el más
+#:    fácil de etiquetar mal: se llama como sonda RUTINARIA sobre los dos
+#:    candidatos de DynDOLOD (que el primero no tenga artefacto es lo normal,
+#:    no un fallo) Y como gate del servicio vía `validate_dyndolod_output` — y en
+#:    ese segundo caso quien reporta el fallo etiquetado es el `except` del
+#:    servicio, no esta función. Un registro, dos significados: el SOP §5 pide
+#:    ramificar cuando se puede, y acá no se puede sin que la función averigüe
+#:    quién la llamó, así que se exime y se documenta.
+#: 3. **Repetición mecánica del mismo incidente**: `dyndolod_runner_pipeline_failed`
+#:    es el gemelo exacto de `dyndolod_pipeline_failed` (`_log_result_error`) del
+#:    servicio — el registro AGREGADO que reporta el resultado del pipeline, no la
+#:    causa. Y `dyndolod_meta_ini_no_escrito` loguea-y-relanza: el `except OSError`
+#:    de `_package_output_as_mod` convierte esa excepción en el
+#:    `DynDOLODValidationError` que `run_full_pipeline` sí etiqueta. Se conserva
+#:    (en vez de borrarlo, que es lo que §5 prescribe para un guard redundante)
+#:    porque nombra el artefacto —`meta.ini`— que el mensaje del handler no
+#:    menciona; exento, no duplicado.
+_REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
+    "dyndolod_drenaje_incompleto": {
+        "metodo": "_execute_process",
+        "motivo": (
+            "Los drains no cerraron dentro de la gracia tras la salida NORMAL del proceso. "
+            "El código de salida ya está decidido y el propio mensaje dice que se continúa "
+            "con output parcial: la corrida no falla por esto. Etiquetarlo contaría como "
+            "fallo de etapa 9 una corrida que puede haber salido con 0 y artefacto fresco."
+        ),
+    },
+    "dyndolod_drenaje_fallido": {
+        "metodo": "_execute_process",
+        "motivo": (
+            "Una task de drenaje terminó con excepción, se reporta y se sigue. Mismo criterio "
+            "que dyndolod_drenaje_incompleto: es diagnóstico del andamiaje de captura, no el "
+            "veredicto de la corrida — que lo dan el exit code, el artefacto y el log."
+        ),
+    },
+    "dyndolod_runner_pipeline_failed": {
+        "metodo": "run_full_pipeline",
+        "motivo": (
+            "Registro AGREGADO del resultado del pipeline, gemelo de dyndolod_pipeline_failed "
+            "(_log_result_error) en el servicio: por construcción repite un incidente que un "
+            "registro más específico y CON etapa ya reportó antes en el mismo método (el fallo "
+            "del lanzador, el del empaquetado o el de TexGen sin configurar). Llevar la etapa "
+            "acá sumaba una fila más por incidente sobre las dos que ya cuestan las dos capas. "
+            "Su premisa —nunca es la única señal— la verifica "
+            "test_el_registro_agregado_del_runner_siempre_tiene_companero_con_etapa."
+        ),
+    },
+    "dyndolod_sondeo_de_artefacto_fallido": {
+        "metodo": "_firma_de_veredicto",
+        "motivo": (
+            "No se pudo hacer stat() de DynDOLOD.esp para firmarlo. Devuelve None, que el "
+            "post-check trata fail-closed y convierte en un error del veredicto — reportado, "
+            "CON etapa, por run_dyndolod. Acá es la sonda, no la decisión."
+        ),
+    },
+    "dyndolod_firma_de_staging_fallida": {
+        "metodo": "_firma_de_veredicto",
+        "motivo": (
+            "Idéntico al anterior para la firma agregada del árbol de TexGen (que no tiene "
+            "artefacto con nombre propio). Entrada separada porque cada exención cubre UN "
+            "registro: compartir el operation_type dejaría a un tercero entrar gratis."
+        ),
+    },
+    "dyndolod_sondeo_de_staging_fallido": {
+        "metodo": "_tiene_artefacto",
+        "motivo": (
+            "No se pudo listar el staging de TexGen. Devuelve False, y el veredicto lo emite "
+            "run_texgen con la etapa. Sonda sobre un candidato, no fallo de la etapa."
+        ),
+    },
+    "dyndolod_log_ausente": {
+        "metodo": "_leer_log",
+        "motivo": (
+            "El SOP §2.9 punto 3 lo declara explícitamente: la ausencia del log es advertencia, "
+            "no fallo — el gate duro es el artefacto en el -o:. Etiquetarlo contradiría el SOP "
+            "y contaría como fallo de etapa 9 corridas exitosas cuyo log no se escribió."
+        ),
+    },
+    "dyndolod_log_ilegible": {
+        "metodo": "_leer_log",
+        "motivo": "Mismo criterio y misma fuente (SOP §2.9 punto 3) que dyndolod_log_ausente, para el OSError.",
+    },
+    "dyndolod_meta_ini_no_escrito": {
+        "metodo": "_generate_meta_ini",
+        "motivo": (
+            "Loguea y RELANZA: el except OSError de _package_output_as_mod lo convierte en "
+            "DynDOLODValidationError y run_full_pipeline lo reporta con etapa. Es la repetición "
+            "que §5 regla 5 prohíbe contar dos veces; se conserva el registro porque nombra "
+            "meta.ini —que el mensaje del handler no menciona— pero sin la etapa."
+        ),
+    },
+    "dyndolod_validacion_sin_directorio": {
+        "metodo": "_validar_salida_dyndolod",
+        "motivo": (
+            "_validar_salida_dyndolod se llama como SONDA rutinaria sobre los candidatos de "
+            "staging (_tiene_artefacto: que el primero no exista es el caso normal) y como gate "
+            "del servicio (validate_dyndolod_output, donde el fallo lo reporta con etapa el "
+            "except del servicio). En ninguno de los dos es quien decide el veredicto."
+        ),
+    },
+    "dyndolod_validacion_directorio_vacio": {
+        "metodo": "_validar_salida_dyndolod",
+        "motivo": "Mismo doble contexto que dyndolod_validacion_sin_directorio, para el staging vacío.",
+    },
+    "dyndolod_validacion_sin_esp": {
+        "metodo": "_validar_salida_dyndolod",
+        "motivo": "Mismo doble contexto: no hay ningún .esp en el candidato.",
+    },
+    "dyndolod_validacion_sin_dyndolod_esp": {
+        "metodo": "_validar_salida_dyndolod",
+        "motivo": (
+            "Mismo doble contexto: hay .esp pero no DynDOLOD.esp (U-06). Es el más tentador de "
+            "etiquetar porque suena a fallo definitivo, y sigue siendo el resultado de sondear "
+            "UN candidato de dos."
+        ),
+    },
+    "dyndolod_validacion_io_fallida": {
+        "metodo": "_validar_salida_dyndolod",
+        "motivo": "Mismo doble contexto: OSError sondeando el candidato.",
+    },
+    "dyndolod_validacion_inesperada": {
+        "metodo": "_validar_salida_dyndolod",
+        "motivo": "Mismo doble contexto: RuntimeError sondeando el candidato.",
+    },
 }
+
+#: Cobertura DECLARADA de `dyndolod_runner.py`, con la misma escala que
+#: `_ORDEN_DE_COBERTURA`. Reemplaza a `_RUNNER_SIN_COBERTURA` del PR #464, que
+#: solo podía expresar "sin_cobertura": ahora que el archivo se cerró, la
+#: constante tiene que poder declarar el otro extremo o el ancla de no-regresión
+#: quedaría midiendo contra un piso que ya nadie puede violar.
+_COBERTURA_DECLARADA_DEL_RUNNER = {"dyndolod_runner.py": "completo"}
+
+
+def _modulo_runner_ast() -> ast.Module:
+    """AST del módulo ``dyndolod_runner`` completo, leído del fuente real."""
+    fuente = pathlib.Path(sky_claw.local.tools.dyndolod_runner.__file__).read_text(encoding="utf-8")
+    return ast.parse(fuente)
+
+
+def test_todo_registro_de_fallo_del_runner_nombra_la_etapa() -> None:
+    """SOP §5 regla 5 sobre CADA registro de fallo de `dyndolod_runner.py`.
+
+    Gemelo exacto de `test_todo_registro_de_fallo_del_servicio_nombra_la_etapa`
+    y —lo que importa— por la MISMA implementación: los dos llaman a
+    `_auditar_cobertura_de_etapa`. Escribirle al runner su propio bucle sería el
+    defecto que este archivo persigue, cometido en el archivo que lo persigue.
+
+    El runner quedó fuera de las anclas del PR #464 por una asimetría real
+    (review Qodo, análisis independiente sobre el PR completo): el ancla de
+    emisores congela `loot/cli.py` y `xedit/runner.py` como runners que SÍ emiten
+    el campo, pero nunca exigió nada del runner HERMANO del servicio que ese PR
+    entero existía para cerrar. Aquel PR lo enumeró como deuda; este lo cierra.
+    """
+    sin_cobertura, duplicados = _auditar_cobertura_de_etapa(_modulo_runner_ast(), _REGISTROS_EXENTOS_DE_ETAPA_RUNNER)
+
+    assert duplicados == [], (
+        f"operation_type exento usado en más de un registro del runner: {duplicados}. Cada exención "
+        f"cubre UN registro concreto; un segundo sitio necesita su propia entrada o su propio "
+        f"pipeline_stage."
+    )
+
+    assert sin_cobertura == [], (
+        f"registros de fallo de dyndolod_runner.py sin cobertura completa: {sin_cobertura}. "
+        f'Agregar extra={{"pipeline_stage": {_NOMBRE_DE_LA_CONSTANTE}, "tx_id": _tx_id()}}, o si no '
+        f"es un fallo de la etapa, un operation_type propio en "
+        f"_REGISTROS_EXENTOS_DE_ETAPA_RUNNER + tx_id (SOP §5 regla 5)."
+    )
+
+
+def test_todo_registro_de_fallo_del_runner_lleva_tx_id() -> None:
+    """TODO registro del runner lleva `tx_id`, lleve etapa o esté exento.
+
+    Más fuerte que su equivalente del servicio (`test_todo_registro_con_etapa_lleva_tx_id`,
+    que cubre los que llevan etapa; los exentos los cubre el ancla principal).
+    Acá se exige sobre el universo COMPLETO y en un solo lugar, porque en el
+    runner la correlación es la mitad que justifica el cierre: sin `tx_id`, sus
+    registros solo se pueden unir al incidente del servicio por timestamp, y
+    `COUNT(DISTINCT tx_id) WHERE pipeline_stage=9` —la métrica que reemplaza al
+    `COUNT(*)` de una sola capa— deja de existir.
+
+    `tx_id` en el TEXTO del mensaje no cuenta, igual que en el servicio: una
+    consulta estructurada no filtra por prosa. Y `None` es un valor honesto —el
+    runner corre sin servicio en los tests y `pipeline_tx_id_var` vale None—; lo
+    que rompe es la AUSENCIA de la clave.
+
+    **No alcanza con que la clave ESTÉ: tiene que venir de `_tx_id()`.** La
+    primera versión solo verificaba presencia, así que un `"tx_id": 42`
+    hardcodeado —o un valor de cualquier otra procedencia— pasaba el ancla y
+    rompía la correlación en runtime (review Qodo, PR #471, "Ancla solo de
+    presencia"). Los tests de comportamiento fijan el VALOR real, pero solo en
+    los caminos principales; los diez registros de sonda y exención restantes
+    (`_firma_de_veredicto`, `_tiene_artefacto`, `_leer_log` por OSError, los
+    `dyndolod_validacion_*`, `dyndolod_meta_ini_no_escrito`) no tienen ninguno,
+    y escribirles un test de valor a cada uno es exactamente el muestreo que
+    `../AGENTS.md` prohíbe: no ataja al registro número once.
+
+    Verificar la PROCEDENCIA por AST los cubre a todos de una, incluidos los que
+    todavía no existen. Es el mismo movimiento que el repo ya hizo con la etapa
+    —`test_la_etapa_es_una_constante_del_modulo_y_no_un_literal_repetido` exige
+    que el valor sea el NOMBRE de la constante y no cualquier literal que valga
+    9— aplicado al otro campo del par.
+
+    Acotado al RUNNER a propósito: el servicio escribe `"tx_id": tx_id` porque
+    es el dueño de la variable —él abre la transacción—, mientras que el runner
+    solo puede LEER el ContextVar. Son procedencias distintas para el mismo
+    campo, y exigirle al servicio la del runner sería falso.
+    """
+    lector = "_tx_id"
+    registros = _registros_de_fallo(_modulo_runner_ast())
+    assert registros, "no se detectó ningún registro de fallo en el runner: el ancla quedaría vacía"
+
+    mal_correlacionados = []
+    for c in registros:
+        etiqueta = f"{c.func.attr}:{c.lineno}"
+        nodo = _valor_de_clave_en_extra(c, "tx_id")
+        if nodo is None:
+            mal_correlacionados.append(f"{etiqueta}: sin tx_id en extra")
+        elif not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == lector):
+            mal_correlacionados.append(f"{etiqueta}: tx_id vale {ast.unparse(nodo)!r} y no {lector}()")
+
+    assert mal_correlacionados == [], (
+        f"registros de fallo del runner sin correlación real: {mal_correlacionados}. "
+        f'El extra tiene que llevar "tx_id": {lector}() — la clave presente con un valor de otra '
+        f"procedencia pasa el ancla y rompe la correlación en runtime (SOP §5 regla 5)."
+    )
+
+
+def test_dyndolod_runner_liga_su_logger_al_nombre_logger() -> None:
+    """Precondición del detector, para el runner (gemela de la del servicio).
+
+    `_registros_de_fallo` reconoce únicamente ``logger.<nivel>(...)`` por nombre
+    literal, así que un alias (``_log = logging.getLogger(...)``) o un segundo
+    logger dejarían registros reales fuera del universo sin que ningún assert lo
+    note. El servicio congela esa precondición desde el PR #464; el runner la
+    necesita por el mismo motivo y desde ahora, porque sus anclas dependen de
+    ella exactamente igual — dejarla sin congelar en el runner mientras el
+    servicio la tiene es, otra vez, arreglar un hermano y no al otro.
+    """
+    nombre = _nombre_del_logger_de_modulo(_modulo_runner_ast())
+
+    assert nombre == "logger", (
+        f"dyndolod_runner.py debe tener un único `logger = logging.getLogger(...)` de "
+        f"módulo; _registros_de_fallo no cubre correctamente el caso medido ({nombre!r})."
+    )
+
+
+def test_la_etapa_del_runner_es_una_constante_y_coincide_con_la_del_servicio() -> None:
+    """El 9 del runner es una constante con nombre, y es el MISMO 9 del servicio.
+
+    Dos mitades. La primera repite para el runner lo que el servicio ya exige: el
+    literal suelto falla y cada registro referencia `_ETAPA_DYNDOLOD` por nombre,
+    así que un reordenamiento del DAG deja UN sitio por módulo que corregir.
+
+    La segunda cierra lo que ese número duplicado abre. El runner no puede
+    importar la constante del servicio (el servicio importa al runner: sería un
+    ciclo), así que hay dos definiciones del mismo hecho en dos archivos — y "dos
+    escrituras del mismo hecho, nada en el lenguaje que las acople" es la
+    situación exacta que `_LETRAS_ADMINISTRADAS` resolvió en el runner con un
+    ancla y no con un comentario. Acá igual: si alguien reordena el DAG y toca
+    solo un archivo, esto se pone rojo. Sin esta mitad, la mitad de los registros
+    de la etapa 9 quedaría reportando 9 y la otra mitad otro número, en silencio.
+    """
+    arbol = _modulo_runner_ast()
+    constantes = _constantes_de_modulo(arbol)
+
+    assert constantes.get(_NOMBRE_DE_LA_CONSTANTE) == 9, (
+        f"{_NOMBRE_DE_LA_CONSTANTE} debe ser una constante de módulo con valor 9 en el runner "
+        f"(SOP §1: DynDOLOD es la etapa 9); hoy vale {constantes.get(_NOMBRE_DE_LA_CONSTANTE)!r}"
+    )
+
+    mal_referenciados = []
+    for c in _registros_de_fallo(arbol):
+        nodo = _nodo_de_la_etapa(c)
+        if nodo is None:
+            continue
+        if isinstance(nodo, ast.Constant):
+            mal_referenciados.append(f"{c.func.attr}:{c.lineno} (literal {nodo.value!r} en vez de nombre)")
+        elif not (isinstance(nodo, ast.Name) and nodo.id == _NOMBRE_DE_LA_CONSTANTE):
+            nombre = nodo.id if isinstance(nodo, ast.Name) else ast.unparse(nodo)
+            mal_referenciados.append(f"{c.func.attr}:{c.lineno} (usa {nombre!r}, no {_NOMBRE_DE_LA_CONSTANTE!r})")
+
+    assert mal_referenciados == [], (
+        f"registros del runner que no referencian {_NOMBRE_DE_LA_CONSTANTE} exactamente: {mal_referenciados}"
+    )
+
+    assert (
+        sky_claw.local.tools.dyndolod_runner._ETAPA_DYNDOLOD == sky_claw.local.tools.dyndolod_service._ETAPA_DYNDOLOD
+    ), (
+        "el runner y el servicio de la etapa 9 declaran etapas distintas: "
+        f"runner={sky_claw.local.tools.dyndolod_runner._ETAPA_DYNDOLOD}, "
+        f"servicio={sky_claw.local.tools.dyndolod_service._ETAPA_DYNDOLOD}. "
+        "Son dos definiciones del MISMO hecho (el runner no puede importar la del servicio "
+        "sin crear un ciclo): un reordenamiento del DAG tiene que tocar las dos."
+    )
+
+
+def test_el_registro_agregado_del_runner_siempre_tiene_companero_con_etapa() -> None:
+    """La premisa de la exención `dyndolod_runner_pipeline_failed`, verificada.
+
+    Misma forma y mismo límite que `test_log_result_error_siempre_tiene_companero_con_etapa`:
+    el registro agregado se exime porque "nunca es la única señal del incidente",
+    y `AGENTS.md` es explícito en que un párrafo justificando el recorte no
+    cuenta como verificación. Acá se exige que exista un registro CON etapa
+    ANTES, en el mismo bloque de compañeros.
+
+    Es co-ocurrencia TEXTUAL, no alcanzabilidad — igual que su gemelo, y por la
+    misma razón (verificar "qué caminos llegan hasta acá" pide un analizador de
+    flujo real). El camino concreto que hacía FALSA esta premisa antes de este
+    PR —`texgen_exe` sin configurar, que retornaba un resultado fallido sin
+    loguear nada, dejando al registro agregado solo— lo cubre un test de
+    comportamiento, no este: `test_texgen_sin_configurar_emite_un_registro_de_etapa_9`.
+    """
+    arbol = _modulo_runner_ast()
+    agregados = [
+        c
+        for c in _registros_de_fallo(arbol)
+        if (op := _valor_de_clave_en_extra(c, "operation_type")) is not None
+        and isinstance(op, ast.Constant)
+        and op.value == "dyndolod_runner_pipeline_failed"
+    ]
+    assert agregados, "no se detectó el registro agregado del runner: el ancla quedaría vacía"
+
+    sin_companero = []
+    for registro in agregados:
+        bloque = _bloque_de_companeros(registro, arbol)
+        companeros = (
+            []
+            if bloque is None
+            else [
+                r
+                for r in _registros_de_fallo(bloque)
+                if r.lineno < registro.lineno and _nodo_de_la_etapa(r) is not None
+            ]
+        )
+        if not companeros:
+            sin_companero.append(f"{registro.func.attr}:{registro.lineno}")
+
+    assert sin_companero == [], (
+        f"el registro agregado del runner no tiene un logger.<nivel> con pipeline_stage ANTES en "
+        f"el mismo bloque: {sin_companero}. Su exención asume que nunca es la única señal del "
+        f"incidente — si un camino nuevo rompe eso, ese camino necesita su propio registro con etapa."
+    )
+
+
+def test_toda_llamada_al_runner_vive_dentro_de_la_correlacion() -> None:
+    """El `with` cubre TODA la interacción con el runner, no la que hoy recordamos.
+
+    Cierra la única brecha real de la segunda pasada de Qodo (PR #471, findings
+    "Posible Bug" sobre `_tx_id` y sobre el test de integración, que convergen
+    acá): los tests de comportamiento prueban que el `tx_id` llega y que las dos
+    capas coinciden, pero **ninguno detecta un `with` que se angoste**. Si un
+    refactor dejara `validate_dyndolod_output` afuera, sus registros —todos
+    exentos de la etapa— saldrían con `tx_id=None` y perderían la capacidad de
+    unirse al incidente, y toda la suite seguiría verde.
+
+    Enumera en vez de muestrear, que es lo que `../AGENTS.md` pide y lo que un
+    test escrito a mano para la llamada que hoy existe no da: una llamada NUEVA
+    al runner agregada fuera del `with` rompe esto sin que nadie se acuerde de
+    la regla. Es el instrumento de `test_el_servicio_real_reenvia_los_extra_args_al_runner`,
+    aplicado a la otra propiedad de ese mismo bloque.
+
+    Alcance honesto: solo ve llamadas a MÉTODOS sobre el nombre local ``runner``.
+    Las lecturas de atributo (``runner._config``, ``runner.DYNDOLLOD_MOD_NAME``)
+    quedan fuera a propósito — no emiten registros. Si alguien renombra la
+    variable local, el ancla no se vuelve permisiva en silencio: la aserción de
+    no-vacuidad la pone en rojo.
+    """
+    execute = _metodo_execute_ast()
+
+    rangos = [
+        (n.lineno, n.end_lineno or n.lineno)
+        for n in ast.walk(execute)
+        if isinstance(n, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and isinstance(item.context_expr.func, ast.Name)
+            and item.context_expr.func.id == "correlacion_de_transaccion"
+            for item in n.items
+        )
+    ]
+    assert rangos, (
+        "`execute` no abre ningún `with correlacion_de_transaccion(...)`: los registros de "
+        "fallo del runner saldrían con tx_id=None y no habría cómo unirlos al incidente."
+    )
+
+    llamadas = [
+        c
+        for c in ast.walk(execute)
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Attribute)
+        and isinstance(c.func.value, ast.Name)
+        and c.func.value.id == "runner"
+    ]
+    assert llamadas, (
+        "no se detectó ninguna llamada a un método de `runner` en `execute`: el ancla quedaría "
+        "vacía (¿se renombró la variable local?)."
+    )
+
+    fuera = sorted(f"{c.func.attr}:{c.lineno}" for c in llamadas if not any(a <= c.lineno <= b for a, b in rangos))
+    assert fuera == [], (
+        f"llamadas al runner fuera del `with correlacion_de_transaccion(...)`: {fuera}. "
+        f"Todo lo que el runner haga por cuenta del servicio tiene que emitir sus registros "
+        f"con el tx_id de esta transacción — incluidos los exentos de pipeline_stage, que se "
+        f"unen al incidente solo por ese campo."
+    )
+
+
+#: Entradas del runner cuyo nombre es SUYO: ningún otro módulo del repo puede
+#: tener un `run_texgen` o un `DynDOLODRunner` que signifique otra cosa, así que
+#: verlas alcanza para saber que se está usando este runner.
+_ENTRADAS_INEQUIVOCAS = frozenset({"DynDOLODRunner", "run_texgen", "run_dyndolod", "validate_dyndolod_output"})
+
+#: Entradas con nombre GENÉRICO: `run_full_pipeline` es un nombre que cualquier
+#: otro runner del repo puede estrenar mañana (`synthesis_runner`, `loot/cli.py`…)
+#: sin tener nada que ver con la etapa 9. Detectarlas por nombre suelto acoplaba
+#: el merge de un PR ajeno a este archivo —el costo que la review del PR #464
+#: llamó "Acoplamiento anclas" y que ya obligó a aflojar dos anclas de este mismo
+#: archivo— así que solo cuentan en módulos que IMPORTAN el runner (review Qodo,
+#: PR #471, "Falso positivo AST").
+_ENTRADAS_AMBIGUAS = frozenset({"run_full_pipeline"})
+
+#: Módulo del runner, para reconocer quién lo importa.
+_MODULO_DEL_RUNNER = "dyndolod_runner"
+
+#: Igualdad literal, no "está incluido": el conjunto COMPLETO de sitios de
+#: `sky_claw/` que alcanzan al runner. Un sitio nuevo rompe el test hasta que
+#: alguien decida si esa superficie participa de la correlación.
+_ALCANCE_DEL_RUNNER = {
+    ("local/tools/dyndolod_service.py", "_ensure_runner", "DynDOLODRunner"),
+    ("local/tools/dyndolod_service.py", "execute", "run_full_pipeline"),
+    ("local/tools/dyndolod_service.py", "execute", "validate_dyndolod_output"),
+}
+
+
+def _importa_el_runner(arbol: ast.Module) -> bool:
+    """¿El módulo importa algo de ``dyndolod_runner``?"""
+    return any(
+        isinstance(nodo, ast.ImportFrom) and _MODULO_DEL_RUNNER in (nodo.module or "") for nodo in ast.walk(arbol)
+    ) or any(
+        isinstance(nodo, ast.Import) and any(_MODULO_DEL_RUNNER in alias.name for alias in nodo.names)
+        for nodo in ast.walk(arbol)
+    )
+
+
+def _alcances_del_runner(arbol: ast.Module) -> set[tuple[str, str]]:
+    """``(método contenedor, entrada)`` por cada alcance al runner en ``arbol``.
+
+    Las entradas inequívocas cuentan siempre; las ambiguas solo si el módulo
+    importa el runner. Ese corte no es simetría estética: el nombre suelto
+    ``run_full_pipeline`` puede aparecer mañana en otro runner y romper el ancla
+    sin que nadie haya tocado la etapa 9, mientras que para USAR este runner por
+    ese método hay que haberlo obtenido de algún lado — y las cuatro entradas
+    inequívocas siguen contando sin condición, así que un handler que construya
+    o lance el runner queda detectado igual.
+
+    Límite conocido: un módulo que reciba una instancia ya construida (inyección)
+    y la llame SOLO por ``run_full_pipeline``, sin importar nada, no se vería.
+    Es angosto —construir o usar cualquier otra entrada lo delata— y se prefiere
+    a un ancla que se rompa por homonimia.
+    """
+    admite_ambiguas = _importa_el_runner(arbol)
+    alcances = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        if isinstance(nodo.func, ast.Name):
+            nombre = nodo.func.id
+        elif isinstance(nodo.func, ast.Attribute):
+            nombre = nodo.func.attr
+        else:
+            continue
+        if nombre in _ENTRADAS_INEQUIVOCAS or (nombre in _ENTRADAS_AMBIGUAS and admite_ambiguas):
+            alcances.add((_metodo_que_contiene(nodo, arbol) or "<módulo>", nombre))
+    return alcances
+
+
+def test_el_detector_de_alcances_ve_una_superficie_nueva() -> None:
+    """El detector del ancla de abajo, probado — un detector ciego no ancla nada.
+
+    Mismo criterio que `test_db_connection_invariant.py`, que prueba su detector
+    contra cada forma de importar el conector antes de congelar nada: un ancla de
+    igualdad literal sobre un conjunto que el detector no sabe llenar pasa
+    siempre, y su verde no significa lo que promete.
+    """
+    con_import = (
+        "from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner\n"
+        "class Handler:\n"
+        "    async def ejecutar(self):\n"
+        "        runner = DynDOLODRunner(config)\n"
+        "        return await runner.run_full_pipeline()\n"
+    )
+    assert _alcances_del_runner(ast.parse(con_import)) == {
+        ("ejecutar", "DynDOLODRunner"),
+        ("ejecutar", "run_full_pipeline"),
+    }
+
+    # Sin importar el runner, `run_full_pipeline` es un nombre de cualquiera: no
+    # cuenta. Es el falso positivo que acoplaba este archivo a PRs ajenos.
+    ajeno = "class OtroRunner:\n    async def run_full_pipeline(self):\n        return await self.correr()\n"
+    assert _alcances_del_runner(ast.parse(ajeno)) == set()
+
+    # Pero una entrada INEQUÍVOCA cuenta aunque no haya import: es la forma que
+    # tomaría una segunda superficie que reciba el runner ya construido.
+    inyectado = "class Handler:\n    async def ejecutar(self, runner):\n        return await runner.run_texgen()\n"
+    assert _alcances_del_runner(ast.parse(inyectado)) == {("ejecutar", "run_texgen")}
+
+
+def test_el_runner_solo_se_alcanza_desde_la_superficie_correlacionada() -> None:
+    """Quién puede usar el runner de la etapa 9, enumerado y congelado.
+
+    Cierra el hallazgo más filoso de la review (Qodo, PR #471, "Possible
+    Issue"), y tiene razón en el principio: toda la garantía de correlación
+    descansa en UN cableado —`correlacion_de_transaccion(tx_id)` dentro de
+    `DynDOLODPipelineService.execute`—, y `../AGENTS.md` documenta que este repo
+    alcanza cada operación mutante desde DOS superficies (GUI vía
+    `SupervisorAgent`→`tool_dispatcher`, agente LLM vía
+    `AsyncToolRegistry`→`LLMRouter`), con 9 de 13 episodios auditados siendo
+    exactamente "se protegió una y se olvidó la otra".
+
+    El hecho hoy es bueno y las dos superficies CONVERGEN:
+    `GenerateLodsStrategy.execute` llama `self.service.execute(**filtered)`, así
+    que las dos llegan al mismo `with`. Pero eso estaba escrito en prosa —en el
+    SOP y en el cuerpo del PR— y `AGENTS.md` es explícito en que un párrafo
+    justificando el recorte NO cuenta como verificación. Es la cuarta vez en
+    este mismo PR que una propiedad se afirma sin anclar; esta la cierra.
+
+    Igualdad literal y no "está incluido", como `RITUAL_TOOL_MAP`: un handler
+    nuevo que construya su propio `DynDOLODRunner` —o que llame un lanzador
+    desde la capa del agente— rompe esto hasta que alguien decida si esa
+    superficie abre transacción y participa de la correlación, o si emite
+    `tx_id=None` a conciencia. Sin el ancla, esos registros saldrían con
+    `pipeline_stage=9` y `tx_id=None`: invisibles para
+    `COUNT(DISTINCT tx_id)` —DISTINCT descarta NULLs— y sobrecontados por
+    `COUNT(*)`. La degradación exacta que la correlación existe para evitar,
+    entrando por la puerta que este repo deja abierta más seguido.
+
+    No cubre `dyndolod_runner.py` en sí: sus llamadas internas
+    (`run_full_pipeline` → `run_texgen`) y el ejemplo de su docstring no son
+    superficies externas.
+    """
+    raiz = pathlib.Path(sky_claw.local.__file__).parent.parent
+    runner = pathlib.Path(sky_claw.local.tools.dyndolod_runner.__file__).resolve()
+
+    medido = set()
+    for archivo in sorted(raiz.rglob("*.py")):
+        if archivo.resolve() == runner:
+            continue
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        ruta = archivo.relative_to(raiz).as_posix()
+        medido |= {(ruta, metodo, entrada) for metodo, entrada in _alcances_del_runner(arbol)}
+
+    assert medido == _ALCANCE_DEL_RUNNER, (
+        f"cambió el conjunto de sitios que alcanzan al runner de la etapa 9.\n"
+        f"  sobran: {sorted(medido - _ALCANCE_DEL_RUNNER)}\n"
+        f"  faltan: {sorted(_ALCANCE_DEL_RUNNER - medido)}\n"
+        f"Un alcance nuevo tiene que decidir explícitamente si abre transacción y envuelve "
+        f"su uso en `correlacion_de_transaccion(...)`, o si emite tx_id=None a conciencia: "
+        f"sin eso, sus registros con pipeline_stage=9 son invisibles para "
+        f"COUNT(DISTINCT tx_id) y sobrecontados por COUNT(*)."
+    )
 
 
 def test_dyndolod_runner_no_regresa_de_su_cobertura_declarada() -> None:
     """El runner de la etapa 9, con la MISMA vara que sus ocho servicios hermanos.
 
-    `dyndolod_runner.py` quedó fuera de las anclas anteriores por una asimetría
-    real (review Qodo, PR #464, análisis independiente sobre el PR completo):
-    `test_los_modulos_que_emiten_el_stage_index_no_dejan_de_hacerlo` congela
-    `loot/cli.py` y `xedit/runner.py` como runners que SÍ emiten el campo, pero
-    nunca exigió nada de `dyndolod_runner.py` —ni como emisor conocido ni como
-    deuda enumerada— pese a ser el runner HERMANO del servicio que este PR
-    entero existe para cerrar. Un PR anterior de esta misma review
-    (`9608ca46`) incluso lo citó como evidencia ("dyndolod_runner.py, vecino
-    directo de este servicio, ya usa logger.exception tres veces") sin
-    clasificarlo — la enumeración de deuda se completa acá.
-
     Mismo criterio que `test_los_servicios_no_regresan_de_su_cobertura_declarada`:
-    no-regresión, no igualdad estricta (evita el mismo acoplamiento de merge de
-    "Acoplamiento anclas"). `dyndolod_runner.py` es hoy `sin_cobertura`
-    (0 de 24 registros con el campo); cerrarlo es su propio PR, con su propia
-    decisión de si el service layer sigue siendo la capa preferida o si el
-    runner —que SÍ tiene visibilidad directa del exit code y la causa técnica
-    del fallo, algo que el handler del servicio no reconstruye— amerita emitirlo
-    él mismo.
+    no-regresión, no igualdad estricta (evita el acoplamiento de merge que la
+    review Qodo llamó "Acoplamiento anclas"). `dyndolod_runner.py` pasó de
+    `sin_cobertura` a `completo`, así que lo que este ancla bloquea ahora es que
+    un registro nuevo entre sin etapa ni exención declarada y lo devuelva a
+    `parcial`.
+
+    Redundante con `test_todo_registro_de_fallo_del_runner_nombra_la_etapa` en el
+    caso normal, y a propósito: aquel falla con el detalle de QUÉ registro está
+    sin cubrir, éste mantiene al runner dentro de la misma escala con la que se
+    compara a los ocho servicios — que es lo que hace legible "cuánta deuda de la
+    regla 5 queda en el repo" sin leer ocho archivos.
     """
     tools = pathlib.Path(sky_claw.local.tools.dyndolod_service.__file__).parent
     ruta = tools / "dyndolod_runner.py"
     assert ruta.exists(), f"cambió la ubicación de dyndolod_runner.py: {ruta}"
 
-    medida = _categoria_medida(_registros_de_fallo(ast.parse(ruta.read_text(encoding="utf-8"))))
-    declarada = "sin_cobertura" if ruta.name in _RUNNER_SIN_COBERTURA else None
+    medida = _categoria_medida(_registros_de_fallo(_modulo_runner_ast()), _REGISTROS_EXENTOS_DE_ETAPA_RUNNER)
+    declarada = _COBERTURA_DECLARADA_DEL_RUNNER.get(ruta.name)
 
-    assert declarada is not None, "dyndolod_runner.py debe estar clasificado en _RUNNER_SIN_COBERTURA"
+    assert declarada is not None, "dyndolod_runner.py debe estar clasificado en _COBERTURA_DECLARADA_DEL_RUNNER"
     assert _ORDEN_DE_COBERTURA[medida] >= _ORDEN_DE_COBERTURA[declarada], (
         f"dyndolod_runner.py retrocedió de su cobertura declarada: declarado {declarada}, medido {medida}"
     )
@@ -3346,7 +3973,7 @@ def test_dyndolod_runner_no_regresa_de_su_cobertura_declarada() -> None:
     if _ORDEN_DE_COBERTURA[medida] > _ORDEN_DE_COBERTURA[declarada]:
         warnings.warn(
             f"dyndolod_runner.py tiene MÁS cobertura que la declarada ({medida} vs {declarada}) "
-            f"— actualizar _RUNNER_SIN_COBERTURA en tests/test_dyndolod_service.py",
+            f"— actualizar _COBERTURA_DECLARADA_DEL_RUNNER en tests/test_dyndolod_service.py",
             stacklevel=1,
         )
 
@@ -3375,6 +4002,7 @@ def test_los_modulos_que_emiten_el_stage_index_no_dejan_de_hacerlo() -> None:
     raiz = pathlib.Path(sky_claw.local.__file__).parent
     conocidos = {
         "loot/cli.py",
+        "tools/dyndolod_runner.py",
         "tools/dyndolod_service.py",
         "tools/grass_cache_service.py",
         "xedit/runner.py",
@@ -3396,3 +4024,532 @@ def test_los_modulos_que_emiten_el_stage_index_no_dejan_de_hacerlo() -> None:
             f"tests/test_dyndolod_service.py — actualizar `conocidos`: {nuevos}",
             stacklevel=1,
         )
+
+
+# =============================================================================
+# SOP §5 regla 5 — comportamiento, no forma
+#
+# Todo lo de arriba es AST: verifica que el campo esté ESCRITO. Nada de eso
+# demuestra que el valor LLEGUE al record — un `extra` correcto sobre una
+# variable de correlación que nadie setea produce `tx_id: None` en cada línea y
+# pasa todas las anclas anteriores. Lo que sigue ejercita el runner real y lee
+# los records con caplog. Es la parte que no se puede falsificar copiando forma.
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_el_servicio_pone_su_tx_id_al_alcance_del_runner(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El eslabón que hace útil todo lo demás: el runner VE la transacción.
+
+    `pipeline_tx_id_var` es un ContextVar y no un parámetro, así que ningún ancla
+    AST sobre el runner puede probar que alguien lo setea: los 25 registros
+    emitirían `tx_id: None` para siempre y toda la suite seguiría verde. Acá se
+    mira desde adentro de `run_full_pipeline` —donde corre el runner de verdad—
+    y se exige el mismo id que el journal entregó.
+
+    También se verifica que la variable se RESTAURE al salir. Sin el reset, el
+    id de una corrida se filtra al resto del proceso y los registros de la
+    siguiente etapa quedan correlacionados con una transacción que ya cerró, que
+    es peor que no tener correlación: miente en vez de faltar.
+    """
+    visto: list[int | None] = []
+
+    async def _pipeline_que_mira_la_correlacion(**_kwargs: object) -> DynDOLODPipelineResult:
+        visto.append(pipeline_tx_id_var.get())
+        return _make_success_result()
+
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_mira_la_correlacion)
+    mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
+    mock_config = MagicMock()
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
+    mock_runner._config = mock_config
+    service._runner = mock_runner
+
+    assert pipeline_tx_id_var.get() is None, "el test arranca con la correlación limpia"
+
+    result = await service.execute(preset="High", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is True
+    assert visto == [42], (
+        "el runner no vio el tx_id de la transacción del servicio: los registros de fallo del "
+        f"runner saldrían con tx_id={visto} y no se podrían unir al incidente. Visto: {visto}"
+    )
+    assert pipeline_tx_id_var.get() is None, (
+        "la correlación no se restauró al salir de execute: el tx_id de esta corrida se filtra "
+        "a los registros de las etapas siguientes."
+    )
+
+
+def _records_de_fallo(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Records de nivel WARNING o superior emitidos por el runner."""
+    return [r for r in caplog.records if r.levelno >= logging.WARNING and r.name.endswith("dyndolod_runner")]
+
+
+@pytest.mark.asyncio
+async def test_texgen_sin_configurar_emite_un_registro_de_etapa_9(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """El camino que hacía FALSA la premisa de la exención del registro agregado.
+
+    ``run_texgen`` con ``texgen_exe=None`` devolvía un resultado fallido **sin
+    loguear absolutamente nada**, y el pipeline fallaba (el `success` de
+    `run_full_pipeline` exige que TexGen haya andado si se lo pidió). Resultado:
+    el único registro del incidente era el agregado —el que este PR exime— así
+    que exentarlo sin cerrar esto habría dejado un fallo real de la etapa 9 sin
+    ninguna señal estructurada. Es alcanzable de verdad: un rig sin `TEXGEN_EXE`
+    configurado con el default ``run_texgen=True``.
+
+    El ancla de compañeros (`test_el_registro_agregado_del_runner_siempre_tiene_companero_con_etapa`)
+    no puede ver esto: es co-ocurrencia textual y los registros ya co-ocurren en
+    el mismo método. Hace falta correr el camino.
+    """
+    config, _ = _runner_texgen(tmp_path)
+    runner = DynDOLODRunner(dataclasses.replace(config, texgen_exe=None))
+
+    with caplog.at_level(logging.WARNING), correlacion_de_transaccion(7):
+        result = await runner.run_texgen()
+
+    assert result.success is False
+    con_etapa = [r for r in _records_de_fallo(caplog) if getattr(r, "pipeline_stage", None) == 9]
+    assert con_etapa, (
+        "TexGen sin configurar falla la etapa 9 y no dejó ningún registro con pipeline_stage: "
+        f"records vistos = {[(r.levelname, r.message) for r in _records_de_fallo(caplog)]}"
+    )
+    assert [r.tx_id for r in con_etapa] == [7]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lanzador", "tool"),
+    [("run_texgen", "TexGen"), ("run_dyndolod", "DynDOLOD")],
+)
+async def test_el_fallo_por_exit_code_lleva_etapa_y_correlacion(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+    lanzador: str,
+    tool: str,
+) -> None:
+    """Los DOS lanzadores, no uno: es el par que define el defecto hermano acá.
+
+    Verifica la forma canónica del repo para un fallo de subproceso
+    (`subprocess_error_extra`, la misma que `loot/cli.py` y `xedit/runner.py`) y
+    que la etapa y la correlación viajen DENTRO de ese helper — el caso que el
+    detector AST no miraba hasta este PR.
+
+    El `exit_code` es lo que justifica que el runner emita la etapa él mismo: el
+    handler del servicio nunca lo reconstruye, solo ve el mensaje agregado.
+    """
+    _, runner = _runner_texgen(tmp_path)
+    fake = _EjecucionFalsa(return_code=1)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        correlacion_de_transaccion(4242),
+        patch.object(runner, "_execute_process", fake),
+    ):
+        result = await getattr(runner, lanzador)()
+
+    assert result.success is False
+    con_etapa = [r for r in _records_de_fallo(caplog) if getattr(r, "pipeline_stage", None) == 9]
+    assert len(con_etapa) == 1, (
+        f"{tool} con exit 1 debe dejar EXACTAMENTE un registro con pipeline_stage en el lanzador; hubo {len(con_etapa)}"
+    )
+    registro = con_etapa[0]
+    assert registro.tx_id == 4242
+    assert registro.exit_code == 1
+    assert registro.tool == tool
+    assert registro.event == "external_process_failed"
+
+
+@pytest.mark.asyncio
+async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un falso verde: TexGen anduvo, su mod NO se empaquetó, y el pipeline decía éxito.
+
+    La fórmula de ``success`` exigía ``texgen_result.success`` —que el binario
+    haya ANDADO— pero no ``texgen_mod_path``, mientras que para DynDOLOD sí
+    exigía las dos cosas. Asimetría entre dos ramas de la misma expresión: el
+    defecto hermano del repo, dentro de una sola línea.
+
+    Consecuencia real: DynDOLOD lee las texturas de TexGen del staging crudo
+    (``-o:``), no de ``mods/``, así que su corrida sale bien y el pipeline
+    reporta éxito — pero el mod nunca llega a ``mods/``, MO2 no lo despliega y
+    el juego queda con los meshes de LOD sin las texturas que les corresponden.
+    Falso verde de la misma familia que U-06 persiguió.
+
+    Se arregla en el PR del stage index porque es ese PR el que vuelve la
+    contradicción OBSERVABLE: desde que el registro lleva ``pipeline_stage=9``,
+    un dashboard cuenta un fallo de etapa 9 para un ``tx_id`` cuyo journal
+    commiteó éxito. Dos señales persistidas que se contradicen para la misma
+    transacción (review Qodo, PR #471, "Falso verde").
+
+    Ningún test cubría este camino — por eso sobrevivió.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+
+    corridas = {"n": 0}
+
+    def _ambas_salidas() -> None:
+        # Tamaño distinto en cada corrida: el gate de frescura compara la firma
+        # del artefacto contra sí misma, y reescribir los mismos bytes dentro del
+        # mismo tick del reloj de Windows no se vería como cambio.
+        corridas["n"] += 1
+        _escribir_salida(texgen_staging, "textura.dds", b"\x00" * corridas["n"])
+        _escribir_salida(dyndolod_staging, "DynDOLOD.esp", b"\x00" * corridas["n"])
+
+    async def _empaquetar(output_path: pathlib.Path, mod_name: str) -> pathlib.Path:
+        if mod_name == DynDOLODRunner.TEXGEN_MOD_NAME:
+            raise DynDOLODValidationError("Permission denied creating mod: meta.ini")
+        return tmp_path / "mods" / mod_name
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_ambas_salidas)
+    with patch.object(runner, "_execute_process", fake), patch.object(runner, "_package_output_as_mod", _empaquetar):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    assert result.texgen_result is not None and result.texgen_result.success, (
+        "el binario de TexGen anduvo: el fallo es del empaquetado, no de la herramienta"
+    )
+    assert result.texgen_mod_path is None
+    assert result.dyndolod_mod_path is not None, "DynDOLOD sí se empaquetó: el pipeline no falla por él"
+    assert result.success is False, (
+        "el pipeline reportó éxito con el mod de TexGen sin empaquetar: MO2 no despliega esas "
+        "texturas y el juego queda con los meshes de LOD sin ellas. La fórmula de `success` tiene "
+        "que exigir `texgen_mod_path`, igual que ya exige `dyndolod_mod_path` para su rama."
+    )
+    assert any("Failed to package TexGen output" in e for e in result.errors)
+
+
+@pytest.mark.asyncio
+async def test_el_empaquetado_fallido_de_texgen_no_commitea_la_transaccion(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """La consecuencia transaccional del fix anterior, DECIDIDA y no lateral.
+
+    Ajustar la fórmula de ``success`` para que exija ``texgen_mod_path`` tiene un
+    efecto que hay que mirar de frente (review Qodo, PR #471, "Regresión
+    transaccional"): un fallo SOLO del empaquetado de TexGen ahora tumba la
+    corrida entera — el servicio lanza, el journal NO commitea y los
+    `DirectoryRollback` revierten también el mod de DynDOLOD recién empaquetado.
+
+    Es lo correcto y es la doctrina del repo (U-11: no reportar éxito sobre un
+    estado indeterminado, nada de commits parciales). Con el mod de TexGen
+    ausente el resultado no es usable —MO2 no despliega esas texturas y el juego
+    queda con los meshes de LOD sin ellas—, así que "éxito parcial" sería el
+    mismo falso verde con otra cara. Y lo que se pierde es acotado: el rollback
+    cubre los mods EMPAQUETADOS bajo ``mods/``, no el staging crudo del ``-o:``,
+    que queda explícitamente fuera del move-aside.
+
+    Este test fija la DECISIÓN (no commitear) para que sea una semántica elegida
+    con gate y no un efecto colateral que el próximo lector tenga que deducir. La
+    mecánica del move-aside en sí ya tiene sus propios tests.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    config, runner = _runner_texgen(tmp_path)
+    (config.game_path / "Data").mkdir()
+    assert config.output_root is not None
+    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    service._runner = runner
+
+    corridas = {"n": 0}
+
+    def _ambas_salidas() -> None:
+        corridas["n"] += 1
+        _escribir_salida(texgen_staging, "textura.dds", b"\x00" * corridas["n"])
+        _escribir_salida(dyndolod_staging, "DynDOLOD.esp", b"\x00" * corridas["n"])
+
+    async def _empaquetar(output_path: pathlib.Path, mod_name: str) -> pathlib.Path:
+        if mod_name == DynDOLODRunner.TEXGEN_MOD_NAME:
+            raise DynDOLODValidationError("Permission denied creating mod: meta.ini")
+        return tmp_path / "mods" / mod_name
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_ambas_salidas)
+    with patch.object(runner, "_execute_process", fake), patch.object(runner, "_package_output_as_mod", _empaquetar):
+        resultado = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert resultado["success"] is False
+    mock_journal.commit_transaction.assert_not_awaited()
+    assert any("TexGen" in str(e) for e in resultado["errors"]), (
+        f"el error reportado tiene que nombrar a TexGen: {resultado['errors']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_el_trabajo_ya_despachado_a_un_hilo_conserva_su_transaccion() -> None:
+    """Un hilo que sobrevive al `with` sigue reportando la transacción que lo lanzó.
+
+    Existe para que nadie "arregle" esto, porque ya lo reportaron como bug
+    (review Qodo, PR #471, "Correlación tras reset en contexto de hilo"). El
+    mecanismo que describe es correcto —`asyncio.to_thread` copia el contexto al
+    despachar, y el `reset` del `finally` no revierte las copias ya hechas— pero
+    la conclusión no: ese registro NO está mal correlacionado.
+
+    La distinción es cuál es el valor correcto. El hilo está haciendo trabajo
+    **de** la transacción N (empaquetar la salida de esa corrida), así que su
+    registro pertenece al incidente de N aunque N ya se haya abortado mientras
+    tanto: "durante la corrida de N, el empaquetado seguía escribiendo cuando nos
+    cancelaron" es exactamente el hecho que uno quiere leer. Lo que el `reset`
+    previene es lo otro —que un registro de la etapa SIGUIENTE herede el id de la
+    anterior—, y las copias por hilo no son eso: llevan N, nunca N+1.
+
+    Visto de cerca, la semántica de copia es un argumento A FAVOR del ContextVar
+    sobre un global mutable: con un global, el hilo leería el valor ya reseteado
+    y perdería la atribución, o peor, tomaría el de la transacción siguiente.
+
+    La prueba no depende de timing: los dos `Event` fuerzan el orden —el hilo
+    lee DESPUÉS de que el `with` se cerró— así que si la copia no conservara el
+    valor, acá se leería `None`.
+    """
+    salio_del_with = threading.Event()
+    visto: list[int | None] = []
+
+    def _en_el_hilo() -> None:
+        salio_del_with.wait(timeout=5)
+        visto.append(pipeline_tx_id_var.get())
+
+    with correlacion_de_transaccion(777):
+        tarea = asyncio.create_task(asyncio.to_thread(_en_el_hilo))
+        # Que el despacho al hilo ocurra DENTRO del `with`: es ahí donde se copia
+        # el contexto.
+        await asyncio.sleep(0)
+
+    assert pipeline_tx_id_var.get() is None, "el `with` ya se cerró y el contexto del loop se restauró"
+    salio_del_with.set()
+    await tarea
+
+    assert visto == [777], (
+        "el hilo perdió la transacción bajo la que fue despachado: su trabajo pertenece a esa "
+        f"corrida y su registro tiene que poder unirse a ese incidente. Leyó {visto}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_la_correlacion_cruza_el_hilo_del_empaquetado(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """La propiedad de la que cuelga el diseño entero, verificada en vez de afirmada.
+
+    Todo el argumento para usar un ContextVar en vez de un parámetro descansa en
+    que el contexto se copia hacia el hilo — y `_generate_meta_ini` corre dentro
+    del ``asyncio.to_thread(_empaquetar_sincrono)`` de `_package_output_as_mod`,
+    así que es el único registro CON etapa que se emite fuera del event loop.
+    Hasta acá esa propiedad estaba escrita en tres lugares (el docstring de
+    `_tx_id`, el SOP y el mensaje del commit) y verificada en ninguno (review
+    Qodo, PR #471, "Correlación en hilos").
+
+    Hoy no hay bug: `asyncio.to_thread` copia el contexto por definición. Lo que
+    esto ancla es el futuro — un refactor a `loop.run_in_executor` sin
+    `contextvars.copy_context()` dejaría este registro con `tx_id=None` habiendo
+    transacción abierta, que es exactamente la "correlación rota en runtime" que
+    este mismo PR documenta como defecto y cierra en `subprocess_error_extra`,
+    reintroducida en silencio en uno de sus registros con etapa. Y `AGENTS.md` es
+    explícito: el párrafo que justifica algo no cuenta como verificarlo.
+
+    El `mod_name` con traversal es sintético a propósito — es la entrada que el
+    guard de sandbox existe para rechazar, y la vía más directa para llegar al
+    registro sin ensuciar el filesystem del test.
+    """
+    from sky_claw.app.security.path_validator import PathViolationError
+
+    _, runner = _runner_texgen(tmp_path)
+    salida = tmp_path / "staging"
+    salida.mkdir()
+    (salida / "textura.dds").write_bytes(b"\x00")
+
+    with (
+        caplog.at_level(logging.WARNING),
+        correlacion_de_transaccion(555),
+        pytest.raises(PathViolationError),
+    ):
+        await runner._package_output_as_mod(salida, "../fuera-del-sandbox")
+
+    bloqueos = [r for r in _records_de_fallo(caplog) if getattr(r, "pipeline_stage", None) == 9]
+    assert len(bloqueos) == 1, (
+        "el bloqueo de path traversal debe dejar exactamente un registro con la etapa; "
+        f"vistos: {[(r.levelname, r.getMessage()[:50]) for r in _records_de_fallo(caplog)]}"
+    )
+    assert bloqueos[0].tx_id == 555, (
+        "la correlación no cruzó el hilo del empaquetado: el registro con pipeline_stage "
+        f"salió con tx_id={bloqueos[0].tx_id!r} habiendo transacción abierta. Si "
+        "`_package_output_as_mod` dejó de usar `asyncio.to_thread`, el reemplazo tiene que "
+        "copiar el contexto explícitamente (`contextvars.copy_context()`)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_el_runner_y_el_servicio_reportan_el_mismo_tx_id_para_un_incidente(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """El eslabón de integración: un incidente, dos capas, el MISMO id.
+
+    Es la premisa completa de la métrica que justifica este PR
+    —`COUNT(DISTINCT tx_id) WHERE pipeline_stage=9`—: si el id que emite el
+    runner no fuera el mismo que usa el handler del servicio, el DISTINCT
+    contaría dos incidentes donde hubo uno y el cierre habría empeorado lo que
+    arregló.
+
+    Los otros tests verifican los dos EXTREMOS por separado: que el servicio
+    deja su tx_id en la variable (con `run_full_pipeline` mockeado) y que el
+    runner lo emite cuando se lo seteamos a mano. Ninguno corría el servicio
+    real contra el runner real, así que un `with` desplazado a otro punto del
+    flujo, o un `tx_id` local que divergiera del que se setea en la variable,
+    dejaba la suite verde y la correlación inexistente en producción (review
+    Qodo, PR #471, "Integración sin verificar").
+
+    Sin mocks del runner: `_execute_process` es lo único falso, que es la
+    frontera del proceso externo.
+    """
+    _, runner = _runner_texgen(tmp_path)
+    # El guard de rutas declaradas del servicio corre antes del lock: `data_dir`
+    # tiene default derivado (`<game>/Data`) y sin él la corrida aborta antes de
+    # llegar al runner.
+    (runner._config.game_path / "Data").mkdir()
+    service._runner = runner
+    fake = _EjecucionFalsa(return_code=1)
+
+    with caplog.at_level(logging.WARNING), patch.object(runner, "_execute_process", fake):
+        resultado = await service.execute(preset="Medium", run_texgen=False, create_snapshot=False)
+
+    assert resultado["success"] is False
+
+    con_etapa = [r for r in caplog.records if getattr(r, "pipeline_stage", None) == 9]
+    del_runner = [r for r in con_etapa if r.name.endswith("dyndolod_runner")]
+    del_servicio = [r for r in con_etapa if not r.name.endswith("dyndolod_runner")]
+
+    assert del_runner, "el runner no reportó el fallo con la etapa; el incidente pierde su causa técnica"
+    assert del_servicio, "el servicio no reportó el fallo con la etapa"
+    assert {r.tx_id for r in con_etapa} == {42}, (
+        "runner y servicio reportaron el mismo incidente con tx_id distintos: "
+        f"runner={[r.tx_id for r in del_runner]}, servicio={[r.tx_id for r in del_servicio]}. "
+        "COUNT(DISTINCT tx_id) contaría dos incidentes donde hubo uno."
+    )
+    # La causa técnica que el handler del servicio no reconstruye — el motivo por
+    # el que la etapa también sale del runner y no solo de la capa de arriba.
+    assert any(getattr(r, "exit_code", None) == 1 for r in del_runner)
+
+
+@pytest.mark.asyncio
+async def test_sin_transaccion_los_registros_llevan_la_clave_tx_id_en_none(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Sin servicio alrededor, la clave sigue estando — valiendo ``None``.
+
+    Contraparte en RUNTIME de `test_todo_registro_de_fallo_del_runner_lleva_tx_id`,
+    que es AST y solo prueba que la clave esté escrita. La distinción no es
+    teórica: `subprocess_error_extra` seguía la regla "opcional en None se omite",
+    así que los dos registros del runner que pasan por ese helper —dos de los
+    únicos diez que llevan `pipeline_stage`— perdían la clave entera al correr
+    sin transacción, mientras los otros 23 la llevaban como `None`. El ancla AST
+    pasaba igual (review Qodo, PR #471, "Correlación rota en runtime").
+
+    Se ejercita SIN `correlacion_de_transaccion` a propósito: es el uso directo
+    del runner, el caso que el docstring de `_tx_id` describe como frecuente y
+    honesto. `None` significa "no hay transacción acá"; la ausencia de la clave
+    significa "este registro no participa del esquema", y son cosas distintas.
+    """
+    _, runner = _runner_texgen(tmp_path)
+    fake = _EjecucionFalsa(return_code=1)
+
+    with caplog.at_level(logging.WARNING), patch.object(runner, "_execute_process", fake):
+        await runner.run_dyndolod()
+
+    registros = _records_de_fallo(caplog)
+    assert registros, "el fallo por exit code debe dejar registros"
+
+    sin_clave = [f"{r.levelname}:{r.getMessage()[:60]}" for r in registros if not hasattr(r, "tx_id")]
+    assert sin_clave == [], (
+        f"registros del runner sin la clave tx_id al correr sin transacción: {sin_clave}. "
+        "None es el valor honesto para 'sin TX'; omitir la clave es la excepción que un "
+        "test tiene que conocer, que es justo lo que el PR #464 decidió no tallar."
+    )
+    assert all(r.tx_id is None for r in registros)
+
+    con_etapa = [r for r in registros if getattr(r, "pipeline_stage", None) == 9]
+    assert len(con_etapa) == 1, "el registro con la etapa es justamente el que perdía la clave"
+    assert con_etapa[0].tx_id is None
+
+
+@pytest.mark.asyncio
+async def test_el_log_ausente_no_es_fallo_de_etapa_pero_si_lleva_correlacion(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """La mitad exenta, ejercitada: sin etapa, con `operation_type` y `tx_id`.
+
+    El SOP §2.9 punto 3 declara que un log ausente es advertencia y no fallo, así
+    que este registro NO puede inflar un conteo de fallos de la etapa 9 — pero sí
+    tiene que poder unirse al incidente si la corrida termina fallando por otra
+    razón. Esa es exactamente la diferencia entre "exento" y "sin cubrir", y es
+    la que un ancla AST da por buena leyendo el diccionario de exenciones.
+
+    Se ejercita el post-check real: sin `Logs/TexGen_SSE_log.txt` en el dir del
+    exe, `_leer_log` emite su warning.
+    """
+    _, runner = _runner_texgen(tmp_path)
+    fake = _EjecucionFalsa(return_code=0)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        correlacion_de_transaccion(99),
+        patch.object(runner, "_execute_process", fake),
+    ):
+        await runner.run_texgen()
+
+    ausentes = [r for r in _records_de_fallo(caplog) if getattr(r, "operation_type", None) == "dyndolod_log_ausente"]
+    assert len(ausentes) == 1, (
+        "el post-check sin log debe emitir su registro exento; records vistos = "
+        f"{[(r.levelname, getattr(r, 'operation_type', None)) for r in _records_de_fallo(caplog)]}"
+    )
+    assert ausentes[0].tx_id == 99
+    assert not hasattr(ausentes[0], "pipeline_stage"), (
+        "el log ausente NO es un fallo de la etapa 9 (SOP §2.9 punto 3): con pipeline_stage "
+        "inflaría el conteo de fallos con corridas exitosas cuyo log no se escribió."
+    )
+
+
+@pytest.mark.asyncio
+async def test_la_validacion_de_salida_sondea_sin_declarar_fallo_de_etapa(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`_validar_salida_dyndolod` es sonda en un contexto y gate en el otro.
+
+    Se la llama como sonda rutinaria sobre los DOS candidatos de staging (que el
+    primero no tenga artefacto es el caso normal, no un fallo) y como gate del
+    servicio vía `validate_dyndolod_output` —donde el fallo lo reporta con etapa
+    el `except` del servicio, no ella—. Un registro, dos significados: el SOP §5
+    pide ramificar cuando se puede, y acá no se puede sin que la función averigüe
+    quién la llamó. Se exime, y esto lo demuestra sobre el camino real en vez de
+    confiar en el párrafo del diccionario.
+    """
+    _, runner = _runner_texgen(tmp_path)
+
+    with caplog.at_level(logging.WARNING), correlacion_de_transaccion(11):
+        assert await runner.validate_dyndolod_output(tmp_path / "no_existe") is False
+
+    sondas = [r for r in _records_de_fallo(caplog) if getattr(r, "operation_type", None) is not None]
+    assert [r.operation_type for r in sondas] == ["dyndolod_validacion_sin_directorio"]
+    assert sondas[0].tx_id == 11
+    assert not any(hasattr(r, "pipeline_stage") for r in sondas), (
+        "sondear un candidato de staging no es un fallo de la etapa 9: con pipeline_stage, cada "
+        "corrida sana de DynDOLOD sumaría un fallo por cada candidato que no tenía el artefacto."
+    )

@@ -88,3 +88,44 @@ def test_stderr_completo_hasta_limite_y_tail_verificable() -> None:
     assert extra["stderr_sha256"] == hashlib.sha256(largo.encode()).hexdigest()
     assert extra["job_id"] == "job-7"
     assert extra["child_pid"] == 123
+
+
+def test_tx_id_distingue_no_suministrado_de_suministrado_valiendo_none() -> None:
+    """ "No lo pasaron" y "lo pasaron y no hay transacción" NO son lo mismo.
+
+    ``tx_id`` no puede seguir la regla de los demás opcionales ("si es None, se
+    omite") sin romper la invariante que ``dyndolod_runner.py`` promete: TODO su
+    registro de fallo lleva la clave, con ``None`` como valor honesto para "acá
+    no hay transacción". Con la regla de omisión, los dos registros del runner
+    que usan este helper —que son, encima, dos de los que SÍ llevan
+    ``pipeline_stage``— perdían la clave entera al correr sin servicio, mientras
+    los otros 23 la llevaban como ``None``. Medido, no supuesto: un
+    ``run_dyndolod()`` directo dejaba `tiene_tx_id=False` justo en el registro
+    con la etapa (review Qodo, PR #471, "Correlación rota en runtime").
+
+    Eso reintroducía exactamente la excepción que el PR #464 evitó a propósito
+    cuando declaró el ``tx_id`` del servicio antes del preflight: "un valor
+    declarado valiendo None es un valor honesto para 'sin TX', más barato que
+    tallar una excepción que un test tenga que conocer".
+
+    El centinela lo resuelve sin tocar a nadie más: los tres módulos que usan
+    este helper sin participar del pipeline (`loot/cli.py`, `xedit/runner.py`,
+    `mo2/vfs_worker.py`) no pasan el argumento, así que su dict sigue idéntico
+    —lo congela `test_stderr_completo_hasta_limite_y_tail_verificable`, acá
+    arriba— y quien lo pasa explícito recibe la clave aunque valga ``None``.
+    """
+    comunes = {"operation": "run_dyndolod", "tool": "DynDOLOD", "exit_code": 1, "stderr": ""}
+
+    assert "tx_id" not in subprocess_error_extra(**comunes), (
+        "un llamador que no participa del pipeline no debe empezar a emitir tx_id"
+    )
+
+    explicito_none = subprocess_error_extra(**comunes, tx_id=None)
+    assert "tx_id" in explicito_none, (
+        "pasar tx_id=None es declarar 'no hay transacción acá', no omitir el campo: "
+        "sin la clave, el registro con pipeline_stage del runner queda sin correlación "
+        "mientras sus 23 hermanos la llevan como None."
+    )
+    assert explicito_none["tx_id"] is None
+
+    assert subprocess_error_extra(**comunes, tx_id=42)["tx_id"] == 42
