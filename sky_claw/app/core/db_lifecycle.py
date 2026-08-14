@@ -220,15 +220,24 @@ class DatabaseLifecycleManager:
         Se registra aunque ``_db_paths`` esté vacío: ``get_connection`` da de
         alta los paths on-demand y ``_sync_shutdown`` los lee recién al salir.
         """
-        # Reapertura EXPLÍCITA y serializada. Dos cosas, y ninguna es opcional:
+        # Reapertura EXPLÍCITA, serializada e idempotente por path.
         #
         # * `_transition_lock` cubre TODA la reapertura, así que no puede
         #   colarse entre el drenaje y el cierre de un shutdown en curso. Si hay
-        #   uno activo, esto espera a que termine y recién entonces reabre.
-        # * La admisión cubre TODA la reapertura, no sólo el flip del estado:
-        #   sin eso, `_init_single` puede quedar suspendido, el shutdown ver el
-        #   contador en cero, declararse completo, y la init registrar después
-        #   una conexión que nadie va a cerrar.
+        #   uno activo, esto espera a que termine y recién entonces reabre. Es
+        #   también lo que impide que el shutdown observe la init a medio abrir:
+        #   sin poseer el lock, el shutdown no alcanza el drenaje, y la init lo
+        #   libera recién después de registrar sus conexiones.
+        # * La admisión de la reapertura es uniformidad/defensa en profundidad,
+        #   no el mecanismo necesario para el caso init-vs-shutdown: ese
+        #   interleaving ya está cerrado por el transition lock. Se conserva
+        #   para que init_all participe del mismo régimen que las demás rutas.
+        # * Por path, la decisión de abrir participa del boundary completo
+        #   (transition → path → init, el mismo orden por path que
+        #   `operation()`): `_resolve_connection` es la única pieza que abre,
+        #   y re-chequea el registro DENTRO de `_init_lock` antes de decidir.
+        #   RUNNING → init_all es por tanto idempotente: un path ya
+        #   inicializado conserva SU conexión — nunca la reemplaza.
         async with self._transition_lock:
             self._shutting_down = False
             self._closed = False
@@ -237,7 +246,8 @@ class DatabaseLifecycleManager:
             self._admit()
             try:
                 for db_path in self._db_paths:
-                    await self._init_single(db_path)
+                    async with self.get_write_lock(db_path):
+                        await self._resolve_connection(db_path)
             finally:
                 self._release()
 
@@ -778,6 +788,13 @@ class DatabaseLifecycleManager:
         Interna y SIN admisión: la toma el llamador. Separarlas evita que
         entrar al boundary cuente dos veces y, sobre todo, que un shutdown que
         arranca a mitad de camino rechace una operación ya admitida.
+
+        Es además la ÚNICA pieza que decide abrir una conexión
+        (singleton-open): el fast-path de afuera es solo ahorro de lock, y la
+        decisión se re-chequea DENTRO de ``_init_lock`` inmediatamente antes de
+        abrir. La usan ``operation``/``get_connection`` (bajo admisión) y
+        ``init_all`` (bajo transition + lock del path): un path se inicializa
+        a lo sumo una vez, y uno ya inicializado conserva su conexión.
         """
         path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
         path_str = self._resolve_key(path_obj)

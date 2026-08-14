@@ -5,7 +5,8 @@ La propiedad que estos tests defienden:
     Toda lectura o escritura de la conexión compartida de un path está
     serializada con toda mutación del registro de ese path.
 
-Son tests A–J del preflight de PR-1a. **La autoridad sobre comportamiento es la
+Son tests A–J del preflight de PR-1a, más la sección P1-B/H1 (init_all
+idempotente por path, Casos 1–5). **La autoridad sobre comportamiento es la
 carrera ejecutada, no una ancla sintáctica**: acá no se afirma "está protegido"
 mirando el AST, se pone una operación en vuelo y se comprueba que el shutdown no
 puede declararse completo. Política vigente desde la ronda de review de
@@ -656,4 +657,189 @@ async def test_j_la_cancelacion_no_deja_admisiones_colgadas(
     assert gestor._drained.is_set()
 
     # La prueba conductual: con la contabilidad rota, esto no volvería nunca.
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+# ---------------------------------------------------------------------------
+# P1-B / H1 — init_all idempotente por path (singleton-open bajo el boundary)
+# ---------------------------------------------------------------------------
+
+
+async def test_p1b_init_all_running_no_reemplaza_conexion(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """Caso 1 — RUNNING, path ya abierto: init_all conserva la conexión.
+
+    El comportamiento viejo abría una conexión nueva y reemplazaba la
+    registrada, dejando a la original viva y fuera del registro: nadie la
+    cerraba. La reversión R-B1 (init_all → ``_init_single`` directo, sin
+    singleton) debe romper este test.
+    """
+    await gestor.init_all()
+    primera = await gestor.get_connection(ruta_db)
+    creadas_antes = len(conexiones)
+
+    await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+
+    segunda = await gestor.get_connection(ruta_db)
+    assert segunda is primera, "init_all() reemplazó la conexión registrada estando RUNNING"
+    assert len(conexiones) == creadas_antes, "init_all() abrió una conexión nueva sobre un path ya inicializado"
+
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+    assert not await esta_abierta(primera), "el shutdown no cerró la conexión conservada"
+
+
+async def test_p1b_init_all_espera_el_boundary_del_path(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """Caso 2 — operation en vuelo: init_all espera el lock del path y no reemplaza.
+
+    La reapertura participa del mismo boundary por path que ``operation()`` y el
+    cierre del shutdown: con una operación sosteniendo el lock del path,
+    ``init_all()`` debe esperarla y recién entonces re-chequear. La reversión
+    R-B2 (init_all con ``_init_lock`` pero SIN el lock del path) rompe la
+    espera: init_all terminaría con la operación todavía en vuelo.
+    """
+    await gestor.init_all()
+    primera = await gestor.get_connection(ruta_db)
+    creadas_antes = len(conexiones)
+
+    adentro, soltar = asyncio.Event(), asyncio.Event()
+    t_op = asyncio.create_task(_sostener(gestor, ruta_db, adentro, soltar))
+    await adentro.wait()
+
+    t_init = asyncio.create_task(gestor.init_all())
+    await ceder()
+    assert not t_init.done(), "init_all() no esperó el lock del path tomado por la operación en vuelo"
+
+    soltar.set()
+    await asyncio.wait_for(t_op, timeout=DEADLINE)
+    await asyncio.wait_for(t_init, timeout=DEADLINE)
+
+    registrada = await gestor.get_connection(ruta_db)
+    assert registrada is primera, "init_all() reemplazó la conexión tras esperar a la operación"
+    assert len(conexiones) == creadas_antes, "init_all() abrió otra conexión pese al re-check"
+
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+async def test_p1b_init_all_inicializa_solo_paths_nuevos(
+    tmp_path: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """Caso 5 — path nuevo mientras RUNNING: idempotente ≠ "no hacer nada".
+
+    A ya inicializado NO cambia de identidad; B (registrado después con
+    ``add_db_path``) SÍ se inicializa. Eso distingue idempotencia de un
+    early-return por "ya estoy RUNNING".
+    """
+    ruta_a = tmp_path / "a.db"
+    ruta_b = tmp_path / "b.db"
+    gestor = DatabaseLifecycleManager(
+        db_paths=[ruta_a],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False, enable_auto_checkpoint=False),
+    )
+    await gestor.init_all()
+    conn_a = await gestor.get_connection(ruta_a)
+    creadas = len(conexiones)
+
+    gestor.add_db_path(ruta_b)
+    await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+
+    assert gestor._connections[str(ruta_a.resolve())] is conn_a, "init_all() reemplazó el path ya inicializado"
+    assert str(ruta_b.resolve()) in gestor._connections, "init_all() no inicializó el path nuevo"
+    assert len(conexiones) == creadas + 1, "se abrió más de una conexión nueva"
+
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+async def test_h1_lazy_open_no_puede_convivir_con_init_all(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 3 — H1: lazy-open concurrente con init_all. Una sola apertura gana.
+
+    El lazy-open (``get_connection``) llega primero y queda suspendido
+    abriendo, con ``_init_lock`` tomado y el registro vacío. ``init_all()``
+    debe esperar el mismo singleton y REUSAR la conexión que registró el
+    lazy-open: ``connect`` count == 1 y la conexión entregada es exactamente
+    la registrada. La reversión R-B3 (quitar el re-check dentro de
+    ``_init_lock``) permite la segunda apertura y rompe este test.
+    """
+    puerta, abriendo = asyncio.Event(), asyncio.Event()
+    connect_espiado = db_lifecycle.aiosqlite.connect
+    contador = {"n": 0}
+
+    async def connect_vigilada(*args: object, **kwargs: object) -> aiosqlite.Connection:
+        contador["n"] += 1
+        abriendo.set()
+        await puerta.wait()
+        return await connect_espiado(*args, **kwargs)
+
+    monkeypatch.setattr(db_lifecycle.aiosqlite, "connect", connect_vigilada)
+
+    t_get = asyncio.create_task(gestor.get_connection(ruta_db))
+    await abriendo.wait()
+    assert gestor._connections == {}, "el registro debía estar vacío durante el lazy-open"
+
+    t_init = asyncio.create_task(gestor.init_all())
+    await ceder()
+    assert not t_init.done(), "init_all() abrió mientras el lazy-open estaba a mitad de camino"
+
+    puerta.set()
+    conn_get = await asyncio.wait_for(t_get, timeout=DEADLINE)
+    await asyncio.wait_for(t_init, timeout=DEADLINE)
+
+    assert contador["n"] == 1, f"se abrieron {contador['n']} conexiones para un solo path"
+    registrada = gestor._connections[str(ruta_db.resolve())]
+    assert registrada is conn_get, "la conexión entregada por el lazy-open no es la registrada"
+
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+async def test_h1_init_all_gana_y_el_lazy_open_reutiliza(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso 4 — H1 inverso: init_all abre primero; el lazy-open reutiliza.
+
+    ``connect`` count == 1 y el lazy-open entrega exactamente la conexión que
+    ``init_all()`` registró.
+    """
+    puerta, abriendo = asyncio.Event(), asyncio.Event()
+    connect_espiado = db_lifecycle.aiosqlite.connect
+    contador = {"n": 0}
+
+    async def connect_vigilada(*args: object, **kwargs: object) -> aiosqlite.Connection:
+        contador["n"] += 1
+        abriendo.set()
+        await puerta.wait()
+        return await connect_espiado(*args, **kwargs)
+
+    monkeypatch.setattr(db_lifecycle.aiosqlite, "connect", connect_vigilada)
+
+    t_init = asyncio.create_task(gestor.init_all())
+    await abriendo.wait()
+    assert gestor._connections == {}, "el registro debía estar vacío mientras init_all abría"
+
+    t_get = asyncio.create_task(gestor.get_connection(ruta_db))
+    await ceder()
+    assert not t_get.done(), "el lazy-open no quedó esperando a init_all"
+
+    puerta.set()
+    await asyncio.wait_for(t_init, timeout=DEADLINE)
+    conn_get = await asyncio.wait_for(t_get, timeout=DEADLINE)
+
+    assert contador["n"] == 1, f"se abrieron {contador['n']} conexiones para un solo path"
+    registrada = gestor._connections[str(ruta_db.resolve())]
+    assert registrada is conn_get, "el lazy-open entregó una conexión distinta de la registrada"
+
     await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
