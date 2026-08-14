@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import logging
 import sqlite3
 import time
@@ -95,6 +96,16 @@ class _DatabaseOperationFailedAfterCancellation(asyncio.CancelledError):
         self.operation_error = operation_error
 
 
+class DatabaseLifecycleShuttingDownError(RuntimeError):
+    """El manager dejó de admitir trabajo porque el shutdown ya empezó.
+
+    Fail-closed deliberado: entregar una conexión acá reabriría una DB que el
+    shutdown ya cerró —o está por cerrar— y nadie volvería a cerrarla. La
+    reapertura existe, pero es EXPLÍCITA (``init_all()``) y está serializada
+    contra el shutdown; nunca es un efecto lateral de pedir una conexión.
+    """
+
+
 class DatabaseShutdownIncompleteError(RuntimeError):
     """Shutdown reintentable porque aun quedan conexiones gestionadas."""
 
@@ -166,6 +177,24 @@ class DatabaseLifecycleManager:
         # Lock para garantizar singleton por path ante llamadas concurrentes
         self._init_lock = asyncio.Lock()
 
+        # Estado de admisión. Una sola transición viva, y serializada:
+        #
+        #     RUNNING --shutdown_all()--> SHUTTING_DOWN --...--> CLOSED
+        #        ^                                                  |
+        #        +---------------- init_all() ----------------------+
+        #
+        # `_transition_lock` se sostiene durante TODO `init_all()` y TODO
+        # `shutdown_all()`: sin eso, una reapertura puede colarse entre el
+        # drenaje y el cierre y volver a admitir trabajo a mitad del apagado.
+        # El booleano solo tampoco alcanza — el contrato exige ESPERAR lo ya
+        # admitido, y para eso hace falta saber cuánto hay en vuelo.
+        self._transition_lock = asyncio.Lock()
+        self._shutting_down: bool = False
+        self._closed: bool = False
+        self._admitted: int = 0
+        self._drained: asyncio.Event = asyncio.Event()
+        self._drained.set()
+
     def add_db_path(self, path: Path) -> None:
         """Register an additional database path for lifecycle management."""
         resolved = path.resolve()
@@ -191,10 +220,45 @@ class DatabaseLifecycleManager:
         Se registra aunque ``_db_paths`` esté vacío: ``get_connection`` da de
         alta los paths on-demand y ``_sync_shutdown`` los lee recién al salir.
         """
-        if self._config.enable_auto_checkpoint:
-            self.register_atexit_handler()
-        for db_path in self._db_paths:
-            await self._init_single(db_path)
+        # Reapertura EXPLÍCITA, serializada e idempotente por path.
+        #
+        # * `_transition_lock` cubre TODA la reapertura, así que no puede
+        #   colarse entre el drenaje y el cierre de un shutdown en curso. Si hay
+        #   uno activo, esto espera a que termine y recién entonces reabre. Es
+        #   también lo que impide que el shutdown observe la init a medio abrir:
+        #   sin poseer el lock, el shutdown no alcanza el drenaje, y la init lo
+        #   libera recién después de registrar sus conexiones.
+        # * La admisión de la reapertura es uniformidad/defensa en profundidad,
+        #   no el mecanismo necesario para el caso init-vs-shutdown: ese
+        #   interleaving ya está cerrado por el transition lock. Se conserva
+        #   para que init_all participe del mismo régimen que las demás rutas.
+        # * Por path, la decisión de abrir participa del boundary completo
+        #   (transition → path → init, el mismo orden por path que
+        #   `operation()`): `_resolve_connection` es la única pieza que abre,
+        #   y re-chequea el registro DENTRO de `_init_lock` antes de decidir.
+        #   RUNNING → init_all es por tanto idempotente: un path ya
+        #   inicializado conserva SU conexión — nunca la reemplaza.
+        # * Fail-closed ESTRECHO (P2): tras un shutdown INCOMPLETO queda una
+        #   entrada retenida cuya conexión ya está muerta, y la idempotencia
+        #   la reutilizaría entregando un objeto inservible. Sólo ese estado
+        #   (`_shutting_down` sin `_closed`) rechaza la reapertura: RUNNING
+        #   sano y CLOSED siguen permitidos.
+        async with self._transition_lock:
+            if self._shutting_down and not self._closed:
+                raise DatabaseLifecycleShuttingDownError(
+                    "Previous shutdown did not complete; retry shutdown_all() before init_all()."
+                )
+            self._shutting_down = False
+            self._closed = False
+            if self._config.enable_auto_checkpoint:
+                self.register_atexit_handler()
+            self._admit()
+            try:
+                for db_path in self._db_paths:
+                    async with self.get_write_lock(db_path):
+                        await self._resolve_connection(db_path)
+            finally:
+                self._release()
 
     async def _init_single(self, db_path: Path) -> None:
         """Initialize a single database with recovery and pragmas."""
@@ -337,8 +401,51 @@ class DatabaseLifecycleManager:
         Returns:
             Dict mapping db_path → checkpoint result info.
         """
+        # El checkpoint periódico (`MaintenanceDaemon`) emite SQL sobre la
+        # conexión compartida, así que participa del boundary como cualquier
+        # otra operación. No ser un wrapper no lo exime: el inventario que sólo
+        # miraba consumidores de `get_connection` se lo perdía justamente por
+        # eso — éste usa conexiones YA resueltas.
+        #
+        # El checkpoint del shutdown NO pasa por acá: usa
+        # `_checkpoint_all_under_boundary`, porque a esa altura el drenaje ya
+        # garantizó exclusividad y volver a tomar el lock sería innecesario.
+        self._admit()
+        try:
+            return await self._checkpoint_all_under_boundary(mode, con_boundary=True)
+        finally:
+            self._release()
+
+    async def _checkpoint_all_under_boundary(
+        self,
+        mode: str = "PASSIVE",
+        *,
+        con_boundary: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Cuerpo del checkpoint.
+
+        ``con_boundary=True`` toma el lock de cada path (camino periódico).
+        ``False`` asume exclusividad ya garantizada por el drenaje del shutdown:
+        tomarlo ahí no aportaría nada y arriesga una doble adquisición.
+        """
         results: dict[str, dict[str, Any]] = {}
         for path_str, conn in list(self._connections.items()):
+            lock = self.get_write_lock(path_str) if con_boundary else contextlib.nullcontext()
+            async with lock:  # type: ignore[attr-defined]
+                if self._connections.get(path_str) is not conn:
+                    continue
+                await self._checkpoint_one(path_str, conn, mode, results)
+        return results
+
+    async def _checkpoint_one(
+        self,
+        path_str: str,
+        conn: aiosqlite.Connection,
+        mode: str,
+        results: dict[str, dict[str, Any]],
+    ) -> None:
+        """Checkpoint de una sola conexión; el boundary lo decide el llamador."""
+        if True:  # noqa: SIM103 — conserva la indentación del cuerpo original
             try:
                 # Log WAL size before checkpoint
                 wal_size_before = self._get_wal_size(path_str)
@@ -378,8 +485,6 @@ class DatabaseLifecycleManager:
                 logger.error("WAL checkpoint failed for %s: %s", path_str, e)
                 results[path_str] = {"error": str(e), "mode": mode}
 
-        return results
-
     def _get_wal_size(self, db_path: str) -> int:
         """Get the size of the WAL file for a database, or 0 if not found."""
         wal_path = Path(db_path + "-wal")
@@ -399,7 +504,29 @@ class DatabaseLifecycleManager:
         2. Close all connections.
         3. Verify WAL/SHM files were eliminated.
         """
+        async with self._transition_lock:
+            await self._shutdown_all_under_transition()
+
+    async def _shutdown_all_under_transition(self) -> None:
+        """Cuerpo del shutdown; el llamador sostiene ``_transition_lock``.
+
+        Ese lock es lo que impide que un ``init_all()`` concurrente reabra la
+        admisión entre el drenaje y el cierre.
+        """
+        # 1. Cerrar la puerta ANTES de cualquier await. Va antes del
+        #    early-return porque "shutdown pedido" es un hecho aunque no haya
+        #    nada registrado.
+        self._shutting_down = True
+
+        # 2. Esperar lo YA admitido: operaciones e inicializaciones. Sin esto,
+        #    una init suspendida registra su conexión después de que el shutdown
+        #    se declaró completo y queda abierta para siempre; y el cierre puede
+        #    correr bajo una operación en vuelo. El drenaje termina porque la
+        #    puerta ya está cerrada.
+        await self._drained.wait()
+
         if not self._connections:
+            self._closed = True
             return
 
         logger.info(
@@ -407,10 +534,11 @@ class DatabaseLifecycleManager:
             len(self._connections),
         )
 
-        # Step 1: TRUNCATE checkpoint
+        # Step 1: TRUNCATE checkpoint — por la variante interna: el drenaje ya
+        # garantizó exclusividad, y la pública rechazaría por SHUTTING_DOWN.
         checkpoints: dict[str, dict[str, Any]] = {}
         try:
-            checkpoints = await self.checkpoint_all(mode="TRUNCATE")
+            checkpoints = await self._checkpoint_all_under_boundary(mode="TRUNCATE")
         except Exception as e:
             logger.critical("DatabaseLifecycle: checkpoint during shutdown FAILED: %s", e)
 
@@ -419,16 +547,23 @@ class DatabaseLifecycleManager:
         # para que un shutdown posterior pueda reintentarlo.
         first_close_error: Exception | None = None
         for path_str, conn in list(self._connections.items()):
-            try:
-                await conn.close()
-                logger.info("DatabaseLifecycle: closed %s", path_str)
-            except Exception as e:
-                logger.error("Error closing %s: %s", path_str, e)
-                if first_close_error is None:
-                    first_close_error = e
-            else:
-                if self._connections.get(path_str) is conn:
-                    self._connections.pop(path_str)
+            # Bajo el lock del path: el cierre es EL OTRO mutador real del
+            # registro, y dejarlo afuera es la asimetría que este contrato
+            # elimina. Tras el drenaje no debería haber contención, pero
+            # participar no es opcional según el mecanismo, sino su definición.
+            async with self.get_write_lock(path_str):
+                if self._connections.get(path_str) is not conn:
+                    continue
+                try:
+                    await conn.close()
+                    logger.info("DatabaseLifecycle: closed %s", path_str)
+                except Exception as e:
+                    logger.error("Error closing %s: %s", path_str, e)
+                    if first_close_error is None:
+                        first_close_error = e
+                else:
+                    if self._connections.get(path_str) is conn:
+                        self._connections.pop(path_str)
 
         # Step 3: Verify WAL/SHM elimination.
         #
@@ -480,6 +615,10 @@ class DatabaseLifecycleManager:
             )
         else:
             logger.info("DatabaseLifecycle: shutdown complete")
+            # CLOSED sólo cuando el cierre terminó de verdad. Si quedan
+            # conexiones retenidas el shutdown es reintentable, y marcarlo
+            # cerrado mentiría sobre un estado que todavía no se alcanzó.
+            self._closed = True
 
         if first_close_error is not None:
             raise first_close_error
@@ -609,48 +748,97 @@ class DatabaseLifecycleManager:
     # Accessors
     # ------------------------------------------------------------------
 
-    async def get_connection(self, db_path: Path | str) -> aiosqlite.Connection:
-        """Return the managed connection for db_path, initializing on demand.
+    @staticmethod
+    def _resolve_key(db_path: Path | str) -> str:
+        """Clave canónica del path, compartida por conexiones y locks."""
+        return str((db_path if isinstance(db_path, Path) else Path(db_path)).resolve())
 
-        CONTRATO M-01: Ningún módulo cubierto debe llamar
-        ``aiosqlite.connect(...)`` directamente. Pedir la conexión a este
-        método garantiza WAL recovery, pragmas hardenizadas según la
-        ``DatabaseLifecycleConfig`` activa (defaults: synchronous=NORMAL,
-        busy_timeout=5000, foreign_keys=ON, temp_store=MEMORY) y shutdown
-        coordinado vía ``shutdown_all()``.
+    def _admit(self) -> None:
+        """Registra una unidad de trabajo, o la rechaza si el shutdown empezó."""
+        if self._shutting_down:
+            raise DatabaseLifecycleShuttingDownError(
+                "DatabaseLifecycleManager is shutting down; no new work is admitted. "
+                "Call init_all() to reopen it explicitly."
+            )
+        self._admitted += 1
+        self._drained.clear()
 
-        Args:
-            db_path: Ruta a la DB (Path o str). Se normaliza a str para la
-                clave del dict ``_connections``.
+    def _release(self) -> None:
+        self._admitted -= 1
+        if self._admitted <= 0:
+            self._admitted = 0
+            self._drained.set()
 
-        Returns:
-            Conexión aiosqlite ya inicializada con pragmas. La misma instancia
-            ante llamadas repetidas con el mismo path (singleton por path).
+    @asynccontextmanager
+    async def operation(self, db_path: Path | str) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Boundary por path: admisión + conexión vigente + derecho a usarla.
+
+        La conexión se resuelve DESPUÉS de tomar el lock, nunca antes:
+        resolverla afuera y usarla adentro reintroduce resolve → await → stale,
+        que es exactamente lo que este boundary existe para impedir.
+
+        La admisión se toma ANTES de esperar el lock, y es deliberado: una
+        operación ya encolada cuenta como admitida, así que el shutdown la
+        espera en vez de dejarla entrar después de haber cerrado.
+
+        Lo que NO debe quedar adentro: red, filesystem, sleeps y backoff. El
+        lock protege la conexión compartida, no el trabajo ajeno a SQLite.
+        """
+        self._admit()
+        try:
+            async with self.get_write_lock(db_path):
+                yield await self._resolve_connection(db_path)
+        finally:
+            self._release()
+
+    async def _resolve_connection(self, db_path: Path | str) -> aiosqlite.Connection:
+        """Devuelve la conexión del path, inicializándola si hace falta.
+
+        Interna y SIN admisión: la toma el llamador. Separarlas evita que
+        entrar al boundary cuente dos veces y, sobre todo, que un shutdown que
+        arranca a mitad de camino rechace una operación ya admitida.
+
+        Es además la ÚNICA pieza que decide abrir una conexión
+        (singleton-open): el fast-path de afuera es solo ahorro de lock, y la
+        decisión se re-chequea DENTRO de ``_init_lock`` inmediatamente antes de
+        abrir. La usan ``operation``/``get_connection`` (bajo admisión) y
+        ``init_all`` (bajo transition + lock del path): un path se inicializa
+        a lo sumo una vez, y uno ya inicializado conserva su conexión.
         """
         path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
-        # Canonizar la key con .resolve() para que rutas equivalentes
-        # (p.ej. "db.db" vs "./db.db") mapeen al mismo singleton.
-        path_str = str(path_obj.resolve())
+        path_str = self._resolve_key(path_obj)
 
-        # Fast-path sin lock (double-checked locking)
         if path_str in self._connections:
             return self._connections[path_str]
 
-        # Lock para evitar race condition: dos coroutines pueden pasar el
-        # check anterior simultáneamente y ambas intentarían init.
         async with self._init_lock:
-            # Re-check dentro del lock (segunda mitad del double-checked locking)
             if path_str in self._connections:
                 return self._connections[path_str]
-
-            # Lazy registration: si el path no estaba en _db_paths, agregarlo
-            # para que los métodos que iteran (health_check, shutdown verification)
-            # lo vean.
             if not any(p.resolve() == path_obj.resolve() for p in self._db_paths):
                 self._db_paths.append(path_obj)
-
             await self._init_single(path_obj)
             return self._connections[path_str]
+
+    async def get_connection(self, db_path: Path | str) -> aiosqlite.Connection:
+        """Return the managed connection for db_path, initializing on demand.
+
+        CONTRATO M-01: ningún módulo cubierto debe llamar ``aiosqlite.connect``
+        directamente; pedirla acá garantiza WAL recovery, pragmas hardenizadas y
+        shutdown coordinado.
+
+        Devuelve la conexión, no el derecho a usarla: para emitir SQL sobre la
+        conexión compartida hay que entrar por ``operation()``, que sostiene el
+        lock del path durante toda la unidad.
+
+        Raises:
+            DatabaseLifecycleShuttingDownError: si el shutdown ya empezó. No hay
+                resurrección implícita; reabrir es ``init_all()``.
+        """
+        self._admit()
+        try:
+            return await self._resolve_connection(db_path)
+        finally:
+            self._release()
 
     @staticmethod
     async def _await_db_operation(awaitable: Awaitable[None]) -> None:
@@ -769,8 +957,7 @@ class DatabaseLifecycleManager:
         db_path: Path | str,
     ) -> AsyncGenerator[aiosqlite.Connection, None]:
         """Serializa una transacción completa sobre la conexión compartida."""
-        async with self.get_write_lock(db_path):
-            conn = await self.get_connection(db_path)
+        async with self.operation(db_path) as conn:
             try:
                 yield conn
             except BaseException as error:
