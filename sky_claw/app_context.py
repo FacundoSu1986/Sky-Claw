@@ -965,6 +965,7 @@ class AppContext:
                 max_retries=180,
                 backoff_base=1.0,
                 backoff_max=10.0,
+                lifecycle=self.lifecycle.manager,
             )
             self._push_startup_cleanup(tools_installer_lock_manager.close)
             await self._await_startup(tools_installer_lock_manager.initialize())
@@ -1052,7 +1053,10 @@ class AppContext:
             # here, but SnapshotTransactionLock requires the instance.
             _LOCK_STAGING_DIR.mkdir(parents=True, exist_ok=True)
             (_LOCK_STAGING_DIR / "snapshots").mkdir(parents=True, exist_ok=True)
-            lock_manager = DistributedLockManager(db_path=_LOCK_STAGING_DIR / "locks.db")
+            lock_manager = DistributedLockManager(
+                db_path=_LOCK_STAGING_DIR / "locks.db",
+                lifecycle=self.lifecycle.manager,
+            )
             self._push_startup_cleanup(lock_manager.close)
             await self._await_startup(lock_manager.initialize())
             snapshot_manager = FileSnapshotManager(snapshot_dir=_LOCK_STAGING_DIR / "snapshots")

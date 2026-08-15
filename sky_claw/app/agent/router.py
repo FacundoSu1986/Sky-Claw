@@ -337,18 +337,29 @@ class LLMRouter:
         M-01.1: If a DatabaseLifecycleManager was injected, the connection is
         requested from it (WAL recovery + hardened pragmas already applied).
         Otherwise falls back to a direct ``aiosqlite.connect`` (pre-M-01).
+
+        PR-1b2a: con lifecycle, el ``executescript`` del schema corre DENTRO de
+        ``operation()`` (admisión + lock del path + conexión vigente): un
+        ``shutdown_all()`` concurrente espera a que el DDL termine en vez de
+        cerrar la conexión debajo de él. Orden de locks de la familia:
+        ``_conn_lock`` → boundary del path (nunca al revés). Fix #473
+        (sentinel): ``self._conn`` se asigna DESPUÉS del DDL exitoso (dentro
+        del boundary): un fallo del schema no deja un sentinel de apertura que
+        convierta el reintento en no-op.
         """
         async with self._conn_lock:
             if self._conn is not None:
                 return
             if self._lifecycle is not None:
                 self._owns_conn = False
-                self._conn = await self._lifecycle.get_connection(self._db_path)
+                async with self._lifecycle.operation(self._db_path) as conn:
+                    await conn.executescript(_HISTORY_SCHEMA)
+                    self._conn = conn
             else:
                 self._owns_conn = True
                 self._conn = await aiosqlite.connect(self._db_path)
                 await self._conn.execute("PRAGMA journal_mode=WAL")
-            await self._conn.executescript(_HISTORY_SCHEMA)
+                await self._conn.executescript(_HISTORY_SCHEMA)
 
     async def close(self) -> None:
         """Close the history database (lifecycle-owned connections stay open)."""
@@ -860,9 +871,21 @@ class LLMRouter:
         """Persist a message to the history database immediately."""
         # R-2: bajo el lock, para que un close() concurrente no nule self._conn
         # entre el execute() y el commit().
+        #
+        # PR-1b2a: con lifecycle, la unidad SQL corre bajo ``transaction()``
+        # (admisión + lock del path + commit/rollback del wrapper) sobre la
+        # conexión yielded — nunca sobre ``self._conn``. Orden de locks:
+        # ``_conn_lock`` → boundary del path.
         async with self._conn_lock:
             if self._conn is None:
                 raise RuntimeError("Router database is not open")
+            if self._lifecycle is not None:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    await conn.execute(
+                        "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                        (chat_id, role, content, time.time()),
+                    )
+                return
             await self._conn.execute(
                 "INSERT INTO chat_history (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                 (chat_id, role, content, time.time()),
@@ -872,14 +895,28 @@ class LLMRouter:
     async def _load_context(self, chat_id: str) -> list[dict[str, Any]]:
         # R-2: la lectura de filas va bajo el lock (la conexión no se cierra a
         # mitad de query); el parseo posterior no lo necesita.
+        #
+        # PR-1b2a: con lifecycle, el fetch corre bajo ``operation()`` (admisión +
+        # lock del path + conexión vigente). El parseo JSON / sanitización /
+        # TextInspector queda FUERA del boundary: no toca SQLite.
         async with self._conn_lock:
             if self._conn is None:
                 raise RuntimeError("Router database is not open")
-            async with self._conn.execute(
-                "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
-                (chat_id, self._max_context),
-            ) as cur:
-                rows = await cur.fetchall()
+            if self._lifecycle is not None:
+                async with (
+                    self._lifecycle.operation(self._db_path) as conn,
+                    conn.execute(
+                        "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+                        (chat_id, self._max_context),
+                    ) as cur,
+                ):
+                    rows = await cur.fetchall()
+            else:
+                async with self._conn.execute(
+                    "SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+                    (chat_id, self._max_context),
+                ) as cur:
+                    rows = await cur.fetchall()
 
         messages: list[dict[str, Any]] = []
         for row in reversed(rows):
