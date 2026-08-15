@@ -342,7 +342,10 @@ class LLMRouter:
         ``operation()`` (admisión + lock del path + conexión vigente): un
         ``shutdown_all()`` concurrente espera a que el DDL termine en vez de
         cerrar la conexión debajo de él. Orden de locks de la familia:
-        ``_conn_lock`` → boundary del path (nunca al revés).
+        ``_conn_lock`` → boundary del path (nunca al revés). Fix #473
+        (sentinel): ``self._conn`` se asigna DESPUÉS del DDL exitoso (dentro
+        del boundary): un fallo del schema no deja un sentinel de apertura que
+        convierta el reintento en no-op.
         """
         async with self._conn_lock:
             if self._conn is not None:
@@ -350,8 +353,8 @@ class LLMRouter:
             if self._lifecycle is not None:
                 self._owns_conn = False
                 async with self._lifecycle.operation(self._db_path) as conn:
-                    self._conn = conn
                     await conn.executescript(_HISTORY_SCHEMA)
+                    self._conn = conn
             else:
                 self._owns_conn = True
                 self._conn = await aiosqlite.connect(self._db_path)

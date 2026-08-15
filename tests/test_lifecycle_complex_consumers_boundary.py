@@ -31,6 +31,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,8 @@ class _CursorSuspensor:
 
     - ``modo="await"``: suspende en ``__await__`` (patrón ``await conn.execute``).
     - ``modo="fetchall"``: suspende en ``fetchall`` (patrón ``async with``).
+    - ``modo="exit"``: suspende en ``__aexit__`` (el SQL YA se ejecutó; el commit
+      todavía no) — para cancelaciones "antes del commit" de una transacción.
     """
 
     def __init__(self, real: object, entro: asyncio.Event, puerta: asyncio.Event, *, modo: str) -> None:
@@ -98,6 +101,9 @@ class _CursorSuspensor:
         return self
 
     async def __aexit__(self, *exc_info: object):
+        if self._modo == "exit":
+            self._entro.set()
+            await self._puerta.wait()
         return await self._real.__aexit__(*exc_info)
 
     async def fetchall(self):
@@ -158,6 +164,16 @@ async def _cierre_ocurrio_durante_el_vuelo(evento: asyncio.Event) -> bool:
     except TimeoutError:
         return False
     return True
+
+
+async def _esperar_admitido(lifecycle: DatabaseLifecycleManager) -> None:
+    """Espera (yield del loop, sin sleeps) a que una operación quede admitida
+    esperando el path lock. Evidencia complementaria de mecanismo."""
+    for _ in range(500):
+        if lifecycle._admitted >= 1:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("la operación nunca quedó admitida esperando el path lock")
 
 
 # ===========================================================================
@@ -503,13 +519,23 @@ async def test_dlm_acquire_retry_conserva_semantica_y_backoff_fuera_del_boundary
     admitidos_en_backoff: list[int] = []
     segundo_backoff = asyncio.Event()
     real_sleep = locks_mod.asyncio.sleep
+    t_acquire: asyncio.Task[object] | None = None
 
     async def sleep_espia(delay: float):
-        if delay > 0:
+        # Fix #473 (sleep-spy isolation): registrar SOLO los backoffs de la task
+        # exacta de acquire_lock; sleeps ajenos no contaminan las observaciones.
+        if delay > 0 and asyncio.current_task() is t_acquire:
             admitidos_en_backoff.append(lifecycle._admitted)
             if len(admitidos_en_backoff) >= 2:
                 segundo_backoff.set()
         await real_sleep(delay)
+
+    async def sleeper_ajeno() -> None:
+        # Concurrente, con varios delays > 0: NINGUNO debe aparecer en las
+        # observaciones (sin el filtro, cualquiera de ellos contaminaría el
+        # conteo exacto == 2 y pondría el test ROJO).
+        for _ in range(3):
+            await asyncio.sleep(0.02)
 
     async def liberador() -> None:
         await segundo_backoff.wait()
@@ -518,16 +544,22 @@ async def test_dlm_acquire_retry_conserva_semantica_y_backoff_fuera_del_boundary
             await c.commit()
 
     monkeypatch.setattr(locks_mod.asyncio, "sleep", sleep_espia)
+    t_ajeno = asyncio.create_task(sleeper_ajeno())
     t_liberador = asyncio.create_task(liberador())
+    t_acquire = asyncio.create_task(dm.acquire_lock("recurso-retry", "agente-1"))
     try:
-        info = await asyncio.wait_for(dm.acquire_lock("recurso-retry", "agente-1"), DEADLINE)
+        info = await asyncio.wait_for(t_acquire, DEADLINE)
     finally:
         await asyncio.wait_for(t_liberador, DEADLINE)
+        await asyncio.wait_for(t_ajeno, DEADLINE)
         await lifecycle.shutdown_all()
 
     assert info.resource_id == "recurso-retry"
     assert info.agent_id == "agente-1"
-    assert len(admitidos_en_backoff) >= 2, "el retry nunca durmió el backoff"
+    assert len(admitidos_en_backoff) == 2, (
+        f"backoffs observados: {admitidos_en_backoff} (esperados exactamente 2 de acquire_lock; "
+        "el sleeper ajeno contaminó la observación)"
+    )
     assert all(a == 0 for a in admitidos_en_backoff), (
         f"backoff corrió con trabajo admitido (boundary envuelve el sleep): {admitidos_en_backoff}"
     )
@@ -552,17 +584,24 @@ async def test_dlm_backoff_fuera_del_boundary_shutdown_completa_durante_el_sleep
     retener_backoff = asyncio.Event()
     admitidos_en_backoff: list[int] = []
     real_sleep = locks_mod.asyncio.sleep
+    t_acquire: asyncio.Task[object] | None = None
 
     async def sleep_espia(delay: float):
-        if delay > 0:
+        # Fix #473 (sleep-spy isolation): solo la task exacta de acquire_lock
+        # puede registrar o retener el backoff.
+        if delay > 0 and asyncio.current_task() is t_acquire:
             admitidos_en_backoff.append(lifecycle._admitted)
             if not entro_backoff.is_set():
                 entro_backoff.set()
                 await retener_backoff.wait()  # retenemos el backoff: NO es trabajo admitido
         await real_sleep(delay)
 
+    async def sleeper_ajeno() -> None:
+        await asyncio.sleep(0.2)
+
     monkeypatch.setattr(locks_mod.asyncio, "sleep", sleep_espia)
-    t_acq = asyncio.create_task(dm.acquire_lock("recurso-retenido", "agente-1"))
+    t_ajeno = asyncio.create_task(sleeper_ajeno())
+    t_acquire = asyncio.create_task(dm.acquire_lock("recurso-retenido", "agente-1"))
     try:
         await asyncio.wait_for(entro_backoff.wait(), DEADLINE)
         assert admitidos_en_backoff == [0], "el backoff entró con trabajo admitido (boundary envuelve el sleep)"
@@ -572,11 +611,16 @@ async def test_dlm_backoff_fuera_del_boundary_shutdown_completa_durante_el_sleep
 
         retener_backoff.set()
         with pytest.raises(DatabaseLifecycleShuttingDownError):
-            await asyncio.wait_for(t_acq, DEADLINE)
+            await asyncio.wait_for(t_acquire, DEADLINE)
     finally:
         retener_backoff.set()
         with contextlib.suppress(BaseException):
-            await asyncio.wait_for(t_acq, DEADLINE)
+            await asyncio.wait_for(t_acquire, DEADLINE)
+        await asyncio.wait_for(t_ajeno, DEADLINE)
+
+    # El sleeper ajeno (delay > 0) no contaminó: exactamente UNA observación,
+    # la del backoff de acquire_lock.
+    assert admitidos_en_backoff == [0], f"el spy registró sleeps ajenos o trabajo admitido: {admitidos_en_backoff}"
 
 
 async def test_dlm_metodos_migrados_funcionan_con_lifecycle(tmp_path: Path) -> None:
@@ -602,4 +646,179 @@ async def test_dlm_metodos_migrados_funcionan_con_lifecycle(tmp_path: Path) -> N
     assert await dm.release_lock("recurso-func", "agente-func") is False  # ya fue liberado
     assert await dm.get_lock_info("recurso-func") is None
 
+    await lifecycle.shutdown_all()
+
+
+# ===========================================================================
+# Fix #473 — sentinel post-DDL, timestamps dentro del boundary, transaction()
+# ===========================================================================
+
+
+async def test_router_sentinel_no_queda_seteado_si_el_ddl_falla(tmp_path: Path) -> None:
+    """SENTINEL-ROUTER: un DDL fallido no deja `_conn` seteado; el reintento
+    ejecuta el schema de verdad y el router queda funcional."""
+    history = tmp_path / "history.db"
+    lifecycle = _mgr(history)
+    await lifecycle.init_all()
+    conn = await lifecycle.get_connection(history)
+
+    llamadas = {"n": 0}
+    real_executescript = conn.executescript
+
+    async def executescript_flaky(sql: str):
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            raise sqlite3.OperationalError("DDL falló (simulado)")
+        return await real_executescript(sql)
+
+    conn.executescript = executescript_flaky  # type: ignore[method-assign]
+
+    router = LLMRouter(db_path=str(history), api_key="test-api-key-123", lifecycle=lifecycle)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            await router.open()
+        assert router._conn is None, "el sentinel quedó seteado tras un DDL fallido"
+
+        await router.open()  # reintento: ejecuta el schema de verdad
+        assert llamadas["n"] == 2, "el reintento fue no-op (sentinel prematuro)"
+        assert router._conn is not None
+        await router._save_message("c1", "user", "ok")
+        assert [m["content"] for m in await router._load_context("c1")] == ["ok"]
+    finally:
+        conn.executescript = real_executescript
+        await lifecycle.shutdown_all()
+
+
+async def test_dlm_sentinel_no_queda_seteado_si_el_ddl_falla(tmp_path: Path) -> None:
+    """SENTINEL-DLM: ídem para ``DistributedLockManager.initialize()``."""
+    db = tmp_path / "locks.db"
+    lifecycle = _mgr(db)
+    await lifecycle.init_all()
+    conn = await lifecycle.get_connection(db)
+
+    llamadas = {"n": 0}
+    real_executescript = conn.executescript
+
+    async def executescript_flaky(sql: str):
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            raise sqlite3.OperationalError("DDL falló (simulado)")
+        return await real_executescript(sql)
+
+    conn.executescript = executescript_flaky  # type: ignore[method-assign]
+
+    dm = DistributedLockManager(str(db), lifecycle=lifecycle)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            await dm.initialize()
+        assert dm._conn is None, "el sentinel quedó seteado tras un DDL fallido"
+
+        await dm.initialize()  # reintento real
+        assert llamadas["n"] == 2, "el reintento fue no-op (sentinel prematuro)"
+        info = await dm.acquire_lock("sentinela", "agente-a")
+        assert info.agent_id == "agente-a"
+    finally:
+        conn.executescript = real_executescript
+        await lifecycle.shutdown_all()
+
+
+async def test_dlm_acquire_captura_el_reloj_despues_del_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TS-ACQUIRE: con el path lock retenido, la lease se calcula con el reloj
+    del MOMENTO DE ENTRAR al boundary — nunca con el reloj previo a la espera."""
+    dm, lifecycle = await _dlm_inicializado(tmp_path)
+    db = tmp_path / "locks.db"
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(locks_mod.time, "time", lambda: clock["now"])
+
+    lock_retenido, liberar = asyncio.Event(), asyncio.Event()
+
+    async def holder() -> None:
+        async with lifecycle.get_write_lock(db):
+            lock_retenido.set()
+            await liberar.wait()
+
+    t_holder = asyncio.create_task(holder())
+    await lock_retenido.wait()
+
+    t_acq = asyncio.create_task(dm.acquire_lock("ts-res", "agente", ttl=10.0))  # reloj pre-espera: 100
+    await _esperar_admitido(lifecycle)  # acquire espera el path lock (admisión tomada)
+    clock["now"] = 200.0  # la espera "duró" 100 unidades de reloj
+    liberar.set()
+
+    info = await asyncio.wait_for(t_acq, DEADLINE)
+    await asyncio.wait_for(t_holder, DEADLINE)
+
+    assert info.acquired_at == 200.0, f"reloj pre-espera capturado: {info.acquired_at}"
+    assert info.expires_at == 210.0, f"expires_at no incluye la espera del boundary: {info.expires_at}"
+    await lifecycle.shutdown_all()
+
+
+async def test_dlm_renew_no_resucita_lease_vencida_durante_la_espera(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TS-RENEW: si la lease vence MIENTRAS renew espera el path lock, el reloj
+    capturado DENTRO del boundary la ve expirada → renewed == False."""
+    dm, lifecycle = await _dlm_inicializado(tmp_path)
+    db = tmp_path / "locks.db"
+    conn = await lifecycle.get_connection(db)
+
+    await conn.execute(
+        "INSERT INTO resource_locks (resource_id, agent_id, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+        ("ts-ren", "agente", 0.0, 150.0),
+    )
+    await conn.commit()
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(locks_mod.time, "time", lambda: clock["now"])
+
+    lock_retenido, liberar = asyncio.Event(), asyncio.Event()
+
+    async def holder() -> None:
+        async with lifecycle.get_write_lock(db):
+            lock_retenido.set()
+            await liberar.wait()
+
+    t_holder = asyncio.create_task(holder())
+    await lock_retenido.wait()
+
+    t_ren = asyncio.create_task(dm.renew_lock("ts-ren", "agente", ttl=50.0))  # reloj pre-espera: 100
+    await _esperar_admitido(lifecycle)
+    clock["now"] = 200.0  # la lease expiró (150) durante la espera
+    liberar.set()
+
+    renewed = await asyncio.wait_for(t_ren, DEADLINE)
+    await asyncio.wait_for(t_holder, DEADLINE)
+
+    assert renewed is False, "renew resucitó una lease expirada usando el reloj pre-espera"
+    await lifecycle.shutdown_all()
+
+
+async def test_dlm_cancel_antes_de_commit_no_deja_suciedad(tmp_path: Path) -> None:
+    """CANCEL-BEFORE-COMMIT: con ``transaction()``, una cancelación con el INSERT
+    ya ejecutado y el commit pendiente hace rollback limpio: la conexión
+    compartida no queda sucia y otro agente puede adquirir el recurso (sin
+    lease huérfana). Reversión a operation()+commit manual → RED."""
+    dm, lifecycle = await _dlm_inicializado(tmp_path)
+    conn = await lifecycle.get_connection(tmp_path / "locks.db")
+
+    entro, puerta = asyncio.Event(), asyncio.Event()
+    real_execute = _patch_execute_con_barrera(conn, "INSERT INTO resource_locks", "exit", entro, puerta)
+
+    try:
+        t_acq = asyncio.create_task(dm.acquire_lock("r-cancel", "agente-1"))
+        await asyncio.wait_for(entro.wait(), DEADLINE)  # INSERT ejecutado; commit pendiente
+        t_acq.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(t_acq, DEADLINE)
+    finally:
+        conn.execute = real_execute
+
+    assert conn.in_transaction is False, "la transacción quedó sucia tras la cancelación"
+
+    # Sin lease huérfana: otro agente adquiere el mismo recurso al primer intento.
+    info = await dm.acquire_lock("r-cancel", "agente-2")
+    assert info.agent_id == "agente-2"
     await lifecycle.shutdown_all()

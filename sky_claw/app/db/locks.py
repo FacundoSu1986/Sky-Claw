@@ -251,7 +251,10 @@ class DistributedLockManager:
         PR-1b2a: con lifecycle, el ``executescript`` del schema corre DENTRO de
         ``operation()`` (admisión + lock del path + conexión vigente): un
         ``shutdown_all()`` concurrente espera a que el DDL termine en vez de
-        cerrar la conexión debajo de él.
+        cerrar la conexión debajo de él. Fix #473 (sentinel): ``self._conn`` se
+        asigna DESPUÉS del DDL exitoso (dentro del boundary): un fallo del
+        schema no deja un sentinel de apertura que convierta el reintento en
+        no-op.
         """
         if self._conn is not None:
             return
@@ -259,8 +262,8 @@ class DistributedLockManager:
         if self._lifecycle is not None:
             self._owns_conn = False
             async with self._lifecycle.operation(self._db_path) as conn:
-                self._conn = conn
                 await conn.executescript(_LOCKS_SCHEMA_SQL)
+                self._conn = conn
         else:
             self._owns_conn = True
             self._conn = await aiosqlite.connect(self._db_path)
@@ -290,12 +293,14 @@ class DistributedLockManager:
 
     @contextlib.asynccontextmanager
     async def _operacion(self) -> AsyncGenerator[aiosqlite.Connection, None]:
-        """Boundary por path para el SQL del lock manager (PR-1b2a).
+        """Boundary por path para LECTURAS del lock manager (PR-1b2a).
 
         Con lifecycle: admisión + lock del path + conexión vigente durante toda
-        la unidad SQL; el SQL debe usar la conexión yielded, nunca
-        ``self._conn``. Sin lifecycle: la conexión propia (semántica pre-M-01
-        intacta). No introduce locks adicionales.
+        la unidad; el SQL debe usar la conexión yielded, nunca ``self._conn``.
+        Sin lifecycle: la conexión propia (semántica pre-M-01 intacta). Las
+        MUTACIONES no pasan por acá: usan ramas explícitas por lifecycle con
+        ``transaction()`` (owner del commit/rollback) o commit manual legacy —
+        nunca las dos cosas (Claridad > DRY en concurrencia).
         """
         if self._lifecycle is not None:
             async with self._lifecycle.operation(self._db_path) as conn:
@@ -338,19 +343,31 @@ class DistributedLockManager:
         ttl_seconds = ttl if ttl is not None else self._default_ttl
 
         for attempt in range(self._max_retries):
-            now = time.time()
-            expires_at = now + ttl_seconds
-
             try:
-                # PR-1b2a: cada INTENTO es su propio boundary; el backoff queda
-                # fuera (nunca se sostiene el path lock durante el sleep).
-                async with self._operacion() as conn:
+                # PR-1b2a (fix #473): cada INTENTO es su propia unidad. Con
+                # lifecycle, ``transaction()`` es owner del commit/rollback/
+                # cancelación y el reloj se captura DESPUÉS de adquirir el
+                # boundary: la espera del path lock no puede dejar vencer la
+                # lease antes del INSERT. El backoff queda SIEMPRE fuera.
+                if self._lifecycle is not None:
+                    async with self._lifecycle.transaction(self._db_path) as conn:
+                        now = time.time()
+                        expires_at = now + ttl_seconds
+                        async with conn.execute(
+                            _ACQUIRE_SQL,
+                            (resource_id, agent_id, now, expires_at),
+                        ) as cursor:
+                            rowcount = cursor.rowcount
+                    # commit del wrapper ya terminó acá
+                else:
+                    now = time.time()
+                    expires_at = now + ttl_seconds
+                    conn = self._ensure_conn()
                     async with conn.execute(
                         _ACQUIRE_SQL,
                         (resource_id, agent_id, now, expires_at),
                     ) as cursor:
                         rowcount = cursor.rowcount
-
                     await conn.commit()
 
                 # SQLite INSERT ... ON CONFLICT: rowcount == 1 if we inserted or
@@ -420,16 +437,29 @@ class DistributedLockManager:
         """
         self._ensure_conn()  # contrato: LockError si initialize() no corrió
         try:
-            # PR-1b2a: SQL + commit dentro del boundary. El shutdown del
-            # lifecycle se propaga (política PROPAGATE): `_safe_release` lo
-            # absorbe loggeando y la lease expira por TTL.
-            async with self._operacion() as conn:
+            # PR-1b2a (fix #473): con lifecycle, ``transaction()`` es owner del
+            # commit/rollback/cancelación (la cancelación entre DELETE y commit
+            # no deja suciedad que una mutación posterior commitee). El shutdown
+            # del lifecycle se propaga (política PROPAGATE): `_safe_release` lo
+            # absorbe loggeando y la lease expira por TTL. Legacy: commit manual
+            # actual intacto.
+            if self._lifecycle is not None:
+                async with (
+                    self._lifecycle.transaction(self._db_path) as conn,
+                    conn.execute(
+                        _RELEASE_SQL,
+                        (resource_id, agent_id),
+                    ) as cursor,
+                ):
+                    deleted = cursor.rowcount > 0
+                # commit del wrapper ya terminó acá
+            else:
+                conn = self._ensure_conn()
                 async with conn.execute(
                     _RELEASE_SQL,
                     (resource_id, agent_id),
                 ) as cursor:
                     deleted = cursor.rowcount > 0
-
                 await conn.commit()
 
             if deleted:
@@ -473,10 +503,24 @@ class DistributedLockManager:
         """
         self._ensure_conn()  # contrato: LockError si initialize() no corrió
         ttl_seconds = ttl if ttl is not None else self._default_ttl
-        now = time.time()
         try:
-            # PR-1b2a: SQL + commit dentro del boundary (un intento, una unidad).
-            async with self._operacion() as conn:
+            # PR-1b2a (fix #473): con lifecycle, ``transaction()`` es owner del
+            # commit/rollback/cancelación y el reloj se captura DESPUÉS de
+            # adquirir el boundary: si la lease venció durante la espera del
+            # path lock, la cláusula ``expires_at > now`` la ve expirada y no se
+            # renueva (never resurrect). Legacy: orden previo intacto.
+            if self._lifecycle is not None:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    now = time.time()
+                    async with conn.execute(
+                        _RENEW_SQL,
+                        (now + ttl_seconds, resource_id, agent_id, now),
+                    ) as cursor:
+                        renewed = cursor.rowcount > 0
+                # commit del wrapper ya terminó acá
+            else:
+                now = time.time()
+                conn = self._ensure_conn()
                 async with conn.execute(
                     _RENEW_SQL,
                     (now + ttl_seconds, resource_id, agent_id, now),
@@ -521,7 +565,20 @@ class DistributedLockManager:
         """
         self._ensure_conn()  # contrato: LockError si initialize() no corrió
         try:
-            async with self._operacion() as conn:
+            # PR-1b2a (fix #473): transaction() en lifecycle (owner del commit).
+            # ShuttingDownError se propaga: no cae en el except de abajo.
+            if self._lifecycle is not None:
+                async with (
+                    self._lifecycle.transaction(self._db_path) as conn,
+                    conn.execute(
+                        _RELEASE_ANY_SQL,
+                        (resource_id,),
+                    ) as cursor,
+                ):
+                    deleted = cursor.rowcount > 0
+                # commit del wrapper ya terminó acá
+            else:
+                conn = self._ensure_conn()
                 async with conn.execute(
                     _RELEASE_ANY_SQL,
                     (resource_id,),
@@ -561,8 +618,21 @@ class DistributedLockManager:
     async def cleanup_expired(self) -> int:
         """Delete all locks whose TTL has expired.  Returns count removed."""
         self._ensure_conn()  # contrato: LockError si initialize() no corrió
-        now = time.time()
-        async with self._operacion() as conn:
+        # PR-1b2a (fix #473): con lifecycle, ``transaction()`` es owner del
+        # commit y el reloj se captura DENTRO del boundary (misma ventana stale
+        # que TS-ACQUIRE/TS-RENEW). Legacy: orden previo intacto.
+        if self._lifecycle is not None:
+            async with self._lifecycle.transaction(self._db_path) as conn:
+                now = time.time()
+                async with conn.execute(
+                    "DELETE FROM resource_locks WHERE expires_at < ?",
+                    (now,),
+                ) as cursor:
+                    count = cursor.rowcount
+            # commit del wrapper ya terminó acá
+        else:
+            now = time.time()
+            conn = self._ensure_conn()
             async with conn.execute(
                 "DELETE FROM resource_locks WHERE expires_at < ?",
                 (now,),
