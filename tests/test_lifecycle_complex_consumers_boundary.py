@@ -176,6 +176,18 @@ async def _esperar_admitido(lifecycle: DatabaseLifecycleManager) -> None:
     raise AssertionError("la operación nunca quedó admitida esperando el path lock")
 
 
+class _RelojFalso:
+    """Reloj test-only: expone ``.time()`` para reemplazar ÚNICAMENTE la
+    referencia ``time`` del módulo ``locks`` (vía ``monkeypatch.setattr(
+    locks_mod, "time", ...)``), sin tocar el módulo global ``time``."""
+
+    def __init__(self, reloj: dict[str, float]) -> None:
+        self._reloj = reloj
+
+    def time(self) -> float:
+        return self._reloj["now"]
+
+
 # ===========================================================================
 # LLMRouter — carreras conductuales
 # ===========================================================================
@@ -474,12 +486,16 @@ async def test_dlm_initialize_en_vuelo_bloquea_el_shutdown(tmp_path: Path) -> No
         ("acquire", lambda dm: dm.acquire_lock("r-tarde", "agente-tarde")),
         ("get_lock_info", lambda dm: dm.get_lock_info("r-tarde")),
         ("cleanup", lambda dm: dm.cleanup_expired()),
+        ("release", lambda dm: dm.release_lock("r-tarde", "agente-tarde")),
+        ("force_release", lambda dm: dm.force_release("r-tarde")),
     ],
-    ids=["acquire", "get_lock_info", "cleanup_expired"],
+    ids=["acquire", "get_lock_info", "cleanup_expired", "release", "force_release"],
 )
 async def test_dlm_late_admission_es_shutting_down(tmp_path: Path, operacion: tuple[str, object]) -> None:
     """D-B: tras empezar el shutdown, un intento DB del manager recibe
-    ``DatabaseLifecycleShuttingDownError`` — nunca ValueError de conexión cerrada."""
+    ``DatabaseLifecycleShuttingDownError`` — nunca ValueError de conexión
+    cerrada, y para release/force_release tampoco ``LockReleaseError``.
+    ``renew_lock`` queda fuera: su política propia es shutdown → False."""
     dm, lifecycle = await _dlm_inicializado(tmp_path)
     await lifecycle.shutdown_all()
 
@@ -731,7 +747,9 @@ async def test_dlm_acquire_captura_el_reloj_despues_del_boundary(
     db = tmp_path / "locks.db"
 
     clock = {"now": 100.0}
-    monkeypatch.setattr(locks_mod.time, "time", lambda: clock["now"])
+    # Aislado: reemplaza SOLO la referencia `time` de locks.py; el módulo
+    # global `time` no se toca.
+    monkeypatch.setattr(locks_mod, "time", _RelojFalso(clock))
 
     lock_retenido, liberar = asyncio.Event(), asyncio.Event()
 
@@ -772,7 +790,9 @@ async def test_dlm_renew_no_resucita_lease_vencida_durante_la_espera(
     await conn.commit()
 
     clock = {"now": 100.0}
-    monkeypatch.setattr(locks_mod.time, "time", lambda: clock["now"])
+    # Aislado: reemplaza SOLO la referencia `time` de locks.py; el módulo
+    # global `time` no se toca.
+    monkeypatch.setattr(locks_mod, "time", _RelojFalso(clock))
 
     lock_retenido, liberar = asyncio.Event(), asyncio.Event()
 
