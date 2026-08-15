@@ -505,7 +505,9 @@ _CATEGORIAS_PERMITIDAS = frozenset({"ACCESSOR_ALLOWED", "INIT_ALLOWED", "DEFERRE
 #
 # PR-1b2a retiró las recetas de LLMRouter.open y DistributedLockManager.initialize:
 # ambos ejecutan hoy su DDL dentro de operation() y ya no llaman a get_connection.
-# AsyncModRegistry y OperationJournal siguen DEFERRED_PR_1B_COMPLEX (PR-1b2b).
+# PR-1b2b retiró las de AsyncModRegistry.open y OperationJournal.open: su SQL
+# lifecycle-backed corre dentro de operation()/transaction() y tampoco llaman ya
+# a get_connection (su quick_check/schema/reapertura entran por el boundary).
 _CONSUMIDORES_GET_CONNECTION: dict[tuple[str, str], _Receta] = {
     ("sky_claw/app/core/database.py", "DatabaseAgent._get_conn"): _Receta(
         "ACCESSOR_ALLOWED",
@@ -519,17 +521,6 @@ _CONSUMIDORES_GET_CONNECTION: dict[tuple[str, str], _Receta] = {
         1,
         "Inicialización: guarda en caché self._conn tras init_all(); el DDL del esquema "
         "corre bajo _write_transaction() (boundary transaccional), no suelto tras el get_connection.",
-    ),
-    ("sky_claw/app/db/async_registry.py", "AsyncModRegistry.open"): _Receta(
-        "DEFERRED_PR_1B_COMPLEX",
-        2,
-        "AsyncModRegistry: 2 puntos de llamada en open() (camino normal + reapertura tras "
-        "corrupción). SQL de mods intrincado. Migración diferida (PR-1b2b).",
-    ),
-    ("sky_claw/app/db/journal.py", "OperationJournal.open"): _Receta(
-        "DEFERRED_PR_1B_COMPLEX",
-        1,
-        "OperationJournal: lleva su propio registro. Migración diferida (PR-1b2b).",
     ),
 }
 

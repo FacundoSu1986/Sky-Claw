@@ -290,7 +290,6 @@ class OperationJournal:
                 # M-01 DI path — lifecycle owns and manages the connection
                 # ----------------------------------------------------------
                 self._owns_conn = False
-                self._db = await self._lifecycle.get_connection(self._db_path)
                 # El lock viaja con la conexión, no con la instancia. Las
                 # conexiones del lifecycle son singleton por path resuelto, así
                 # que dos `OperationJournal` sobre la misma DB comparten
@@ -303,14 +302,14 @@ class OperationJournal:
                 # ("a per-wrapper lock would leave the transaction-interleaving
                 # race open") y acá aplica igual.
                 #
-                # Un solo rebind alcanza: los 16 `async with self._lock` del
-                # módulo leen el atributo en el momento de entrar, y todos
-                # resuelven la conexión con `_ensure_connected()` —que llama a
-                # `open()`— antes de tomarlo. Va acá, sin `await` de por medio
-                # tras `get_connection`, para que ningún SQL posterior (empezando
-                # por el `executescript` del schema y el sweep de arranque) corra
-                # bajo el lock equivocado. Que el lock esté ASIGNADO no alcanza:
-                # el `executescript` de abajo además lo ADQUIERE.
+                # Un solo rebind alcanza: los `async with self._lock` del módulo
+                # leen el atributo en el momento de entrar, y todos resuelven la
+                # conexión con `_ensure_connected()` —que llama a `open()`—
+                # antes de tomarlo. Va acá, sin `await` de por medio, para que
+                # ningún SQL posterior (empezando por el `executescript` del
+                # schema y el sweep de arranque) corra bajo el lock equivocado.
+                # Que el lock esté ASIGNADO no alcanza: el schema de abajo
+                # además corre bajo el boundary del path.
                 self._lock = self._lifecycle.get_write_lock(self._db_path)
             else:
                 # ----------------------------------------------------------
@@ -329,28 +328,33 @@ class OperationJournal:
 
             # Schema is the same regardless of path — pero el boundary no.
             #
-            # Asignar el lock compartido NO es lo mismo que ejecutar bajo él.
             # `executescript` emite un COMMIT implícito de cualquier transacción
             # pendiente (documentado en `sqlite3`), así que un `open()` tardío
             # sobre la conexión compartida commiteaba el trabajo a medias de otro
             # journal que SÍ estaba sosteniendo el lock — y su `rollback()`
-            # posterior ya no lo podía deshacer. Es el mismo interleaving que este
-            # rebind viene a cerrar, sobreviviendo en la única sentencia de
-            # `open()` que corría fuera del lock.
+            # posterior ya no lo podía deshacer. PR-1b2b: el schema corre dentro
+            # de `operation()`, que sostiene el boundary del path durante TODO el
+            # DDL y además resuelve la conexión vigente.
             #
             # El boundary es solo el `executescript`, **no** todo `open()`:
-            # `sweep_stale_pending()` toma este mismo `asyncio.Lock` por su cuenta
-            # y `asyncio.Lock` no es reentrante, así que sostenerlo hasta el final
-            # de `open()` sería un deadlock garantizado en el arranque.
+            # `sweep_stale_pending()` obtiene su PROPIO `transaction()` más abajo
+            # y `asyncio.Lock` no es reentrante, así que sostener el boundary
+            # hasta el final de `open()` sería un deadlock garantizado en el
+            # arranque.
             #
             # En el camino standalone la conexión es propia de esta instancia: no
             # hay un tercero que pueda commitear encima, así que no hace falta
             # boundary. Se usa `nullcontext` en vez de duplicar el
             # `executescript` en las dos ramas — dos call sites del mismo SQL son
             # exactamente el hermano desalineado que este repo colecciona.
-            boundary: Any = self._lock if self._lifecycle is not None else contextlib.nullcontext()
-            async with boundary:
-                await self._db.executescript(self._SCHEMA_SQL)
+            if self._lifecycle is not None:
+                boundary: Any = self._lifecycle.operation(self._db_path)
+            else:
+                boundary = contextlib.nullcontext(self._db)
+            async with boundary as db:
+                if self._lifecycle is not None:
+                    self._db = db
+                await db.executescript(self._SCHEMA_SQL)
             logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
         except sqlite3.Error as e:
             if self._db is not None and self._owns_conn:
@@ -420,6 +424,42 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
 
+        if self._lifecycle is not None:
+            # PR-1b2b: el INSERT commitea en el boundary lifecycle. El estado
+            # Python (_current_transaction) se actualiza SOLO después de que el
+            # commit durable terminó: el código posterior al `async with` no
+            # corre si transaction() falla o fue cancelado.
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO transactions (mod_id, description, status)
+                        VALUES (?, ?, ?)
+                        """,
+                        (mod_id, description, TransactionStatus.PENDING.value),
+                    )
+                    transaction_id = cursor.lastrowid
+
+                    if transaction_id is None:
+                        raise JournalTransactionError("Failed to get transaction ID after insert")
+
+            except sqlite3.Error as e:
+                raise JournalTransactionError(f"Failed to begin transaction: {e}") from e
+
+            self._current_transaction = transaction_id
+
+            logger.info(
+                "Transaction started",
+                extra={
+                    "transaction_id": transaction_id,
+                    "description": description,
+                    "mod_id": mod_id,
+                    "agent_id": agent_id,
+                },
+            )
+
+            return transaction_id
+
         async with self._lock:
             try:
                 cursor = await db.execute(
@@ -464,6 +504,43 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
 
+        if self._lifecycle is not None:
+            # El chequeo de rowcount va DENTRO del body: si no hay fila PENDING
+            # que actualizar, la excepción dispara el rollback del boundary.
+            # El estado Python se limpia SOLO después del commit durable.
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    cursor = await conn.execute(
+                        """
+                        UPDATE transactions
+                        SET status = ?, committed_at = datetime('now')
+                        WHERE transaction_id = ? AND status = ?
+                        """,
+                        (
+                            TransactionStatus.COMMITTED.value,
+                            transaction_id,
+                            TransactionStatus.PENDING.value,
+                        ),
+                    )
+
+                    if cursor.rowcount == 0:
+                        raise JournalTransactionError(
+                            f"Transaction {transaction_id} not found or not pending",
+                            transaction_id=transaction_id,
+                        )
+
+            except sqlite3.Error as e:
+                raise JournalTransactionError(
+                    f"Failed to commit transaction: {e}", transaction_id=transaction_id
+                ) from e
+
+            if self._current_transaction == transaction_id:
+                self._current_transaction = None
+
+            logger.info("Transaction committed", extra={"transaction_id": transaction_id})
+
+            return
+
         async with self._lock:
             try:
                 cursor = await db.execute(
@@ -507,6 +584,43 @@ class OperationJournal:
             JournalTransactionError: Si la transacción no existe o ya fue procesada.
         """
         db = await self._ensure_connected()
+
+        if self._lifecycle is not None:
+            # PR-1b2b: el journal "rollback" es una MUTACIÓN normal (UPDATE de
+            # status + commit); no confundir con el rollback SQLite que el
+            # boundary hace ante errores. Estado Python post-commit.
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    cursor = await conn.execute(
+                        """
+                        UPDATE transactions
+                        SET status = ?, rolled_back_at = datetime('now')
+                        WHERE transaction_id = ? AND status = ?
+                        """,
+                        (
+                            TransactionStatus.ROLLED_BACK.value,
+                            transaction_id,
+                            TransactionStatus.PENDING.value,
+                        ),
+                    )
+
+                    if cursor.rowcount == 0:
+                        raise JournalTransactionError(
+                            f"Transaction {transaction_id} not found or not pending",
+                            transaction_id=transaction_id,
+                        )
+
+            except sqlite3.Error as e:
+                raise JournalTransactionError(
+                    f"Failed to roll back transaction: {e}", transaction_id=transaction_id
+                ) from e
+
+            if self._current_transaction == transaction_id:
+                self._current_transaction = None
+
+            logger.info("Transaction rolled back", extra={"transaction_id": transaction_id})
+
+            return
 
         async with self._lock:
             try:
@@ -583,6 +697,36 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
 
+        if self._lifecycle is not None:
+            # PR-1b2b: un solo boundary lifecycle para la mutación, sin tomar
+            # self._lock (es el MISMO lock de path; asyncio.Lock no es reentrante).
+            # El rowcount se captura dentro del body, con el cursor válido.
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    cursor = await conn.execute(
+                        """
+                        UPDATE transactions
+                        SET status = ?, rolled_back_at = datetime('now')
+                        WHERE status = ? AND created_at < datetime('now', ?)
+                        """,
+                        (
+                            TransactionStatus.ROLLED_BACK.value,
+                            TransactionStatus.PENDING.value,
+                            f"-{max_age_hours} hours",
+                        ),
+                    )
+                    count = cursor.rowcount
+            except sqlite3.Error as e:
+                raise JournalTransactionError(f"Failed to sweep stale transactions: {e}") from e
+
+            if count > 0:
+                logger.warning(
+                    "Journal: %d stale PENDING transaction(s) swept to ROLLED_BACK (older than %.1fh)",
+                    count,
+                    max_age_hours,
+                )
+            return count
+
         async with self._lock:
             try:
                 cursor = await db.execute(
@@ -622,32 +766,34 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
 
-        async with (
-            self._lock,
-            db.execute(
-                """
-                SELECT transaction_id, mod_id, description, status,
-                       created_at, committed_at, rolled_back_at
-                FROM transactions
-                WHERE transaction_id = ?
-                """,
-                (transaction_id,),
-            ) as cursor,
-        ):
-            row = await cursor.fetchone()
+        sql = """
+            SELECT transaction_id, mod_id, description, status,
+                   created_at, committed_at, rolled_back_at
+            FROM transactions
+            WHERE transaction_id = ?
+            """
+        if self._lifecycle is not None:
+            async with (
+                self._lifecycle.operation(self._db_path) as conn,
+                conn.execute(sql, (transaction_id,)) as cursor,
+            ):
+                row = await cursor.fetchone()
+        else:
+            async with self._lock, db.execute(sql, (transaction_id,)) as cursor:
+                row = await cursor.fetchone()
 
-            if row is None:
-                return None
+        if row is None:
+            return None
 
-            return Transaction(
-                transaction_id=row[0],
-                mod_id=row[1],
-                description=row[2],
-                status=TransactionStatus(row[3]),
-                created_at=datetime.fromisoformat(row[4]),
-                committed_at=datetime.fromisoformat(row[5]) if row[5] else None,
-                rolled_back_at=datetime.fromisoformat(row[6]) if row[6] else None,
-            )
+        return Transaction(
+            transaction_id=row[0],
+            mod_id=row[1],
+            description=row[2],
+            status=TransactionStatus(row[3]),
+            created_at=datetime.fromisoformat(row[4]),
+            committed_at=datetime.fromisoformat(row[5]) if row[5] else None,
+            rolled_back_at=datetime.fromisoformat(row[6]) if row[6] else None,
+        )
 
     async def list_recent_transactions(
         self,
@@ -690,24 +836,31 @@ class OperationJournal:
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
 
-        async with self._lock, db.execute(query, params) as cursor:
-            rows = await cursor.fetchall()
+        if self._lifecycle is not None:
+            async with (
+                self._lifecycle.operation(self._db_path) as conn,
+                conn.execute(query, params) as cursor,
+            ):
+                rows = await cursor.fetchall()
+        else:
+            async with self._lock, db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
 
-            transactions: list[Transaction] = []
-            for row in rows:
-                transactions.append(
-                    Transaction(
-                        transaction_id=row[0],
-                        mod_id=row[1],
-                        description=row[2],
-                        status=TransactionStatus(row[3]),
-                        created_at=datetime.fromisoformat(row[4]),
-                        committed_at=datetime.fromisoformat(row[5]) if row[5] else None,
-                        rolled_back_at=datetime.fromisoformat(row[6]) if row[6] else None,
-                    )
+        transactions: list[Transaction] = []
+        for row in rows:
+            transactions.append(
+                Transaction(
+                    transaction_id=row[0],
+                    mod_id=row[1],
+                    description=row[2],
+                    status=TransactionStatus(row[3]),
+                    created_at=datetime.fromisoformat(row[4]),
+                    committed_at=datetime.fromisoformat(row[5]) if row[5] else None,
+                    rolled_back_at=datetime.fromisoformat(row[6]) if row[6] else None,
                 )
+            )
 
-            return transactions
+        return transactions
 
     # =========================================================================
     # OPERATION LOGGING
@@ -746,6 +899,48 @@ class OperationJournal:
         tx_id = transaction_id or self._current_transaction
         if tx_id is None:
             raise JournalTransactionError("No active transaction. Call begin_transaction first.")
+
+        if self._lifecycle is not None:
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO journal_entries
+                        (transaction_id, timestamp, agent_id, operation_type,
+                         target_path, status, snapshot_path, checksum, metadata)
+                        VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            tx_id,
+                            agent_id,
+                            operation_type.value,
+                            target_path,
+                            OperationStatus.STARTED.value,
+                            snapshot_path,
+                            checksum,
+                            json.dumps(metadata) if metadata else None,
+                        ),
+                    )
+                    entry_id = cursor.lastrowid
+
+                    if entry_id is None:
+                        raise JournalTransactionError("Failed to get entry ID after insert")
+
+            except sqlite3.Error as e:
+                raise JournalTransactionError(f"Failed to log operation: {e}", transaction_id=tx_id) from e
+
+            logger.debug(
+                "Operation started",
+                extra={
+                    "entry_id": entry_id,
+                    "transaction_id": tx_id,
+                    "operation_type": operation_type.value,
+                    "target_path": target_path,
+                    "agent_id": agent_id,
+                },
+            )
+
+            return entry_id
 
         async with self._lock:
             try:
@@ -900,16 +1095,30 @@ class OperationJournal:
 
         if metadata:
             db = await self._ensure_connected()
-            async with self._lock:
-                await db.execute(
-                    """
-                    UPDATE journal_entries
-                    SET metadata = json_set(COALESCE(metadata, '{}'), '$.error', ?)
-                    WHERE id = ?
-                    """,
-                    (error, entry_id),
-                )
-                await db.commit()
+            if self._lifecycle is not None:
+                # PR-1b2b: DOS boundaries separados (deuda #466 de atomicidad
+                # preservada, no resuelta acá): _update_status arriba ya fue su
+                # propia transaction; el write de metadata es otra.
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    await conn.execute(
+                        """
+                        UPDATE journal_entries
+                        SET metadata = json_set(COALESCE(metadata, '{}'), '$.error', ?)
+                        WHERE id = ?
+                        """,
+                        (error, entry_id),
+                    )
+            else:
+                async with self._lock:
+                    await db.execute(
+                        """
+                        UPDATE journal_entries
+                        SET metadata = json_set(COALESCE(metadata, '{}'), '$.error', ?)
+                        WHERE id = ?
+                        """,
+                        (error, entry_id),
+                    )
+                    await db.commit()
 
         logger.error("Operation failed", extra={"entry_id": entry_id, "error": error})
 
@@ -957,6 +1166,32 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
 
+        if self._lifecycle is not None:
+            # PR-1b2b: UNA sola transaction() conteniendo ambos UPDATE.
+            async with self._lifecycle.transaction(self._db_path) as conn:
+                await conn.execute(
+                    """
+                    UPDATE journal_entries
+                    SET status = ?, rolled_back = 1
+                    WHERE id = ?
+                    """,
+                    (OperationStatus.ROLLED_BACK.value, entry_id),
+                )
+
+                if details:
+                    await conn.execute(
+                        """
+                        UPDATE journal_entries
+                        SET metadata = json_set(COALESCE(metadata, '{}'), '$.rollback_details', ?)
+                        WHERE id = ?
+                        """,
+                        (details, entry_id),
+                    )
+
+            logger.info("Operation rolled back", extra={"entry_id": entry_id, "details": details})
+
+            return
+
         async with self._lock:
             await db.execute(
                 """
@@ -985,6 +1220,14 @@ class OperationJournal:
         """Actualizar el estado de una operación."""
         db = await self._ensure_connected()
 
+        if self._lifecycle is not None:
+            async with self._lifecycle.transaction(self._db_path) as conn:
+                await conn.execute(
+                    "UPDATE journal_entries SET status = ? WHERE id = ?",
+                    (status.value, entry_id),
+                )
+            return
+
         async with self._lock:
             await db.execute(
                 "UPDATE journal_entries SET status = ? WHERE id = ?",
@@ -1008,26 +1251,28 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
 
-        async with (
-            self._lock,
-            db.execute(
-                """
-                SELECT id, timestamp, agent_id, operation_type, target_path,
-                       status, snapshot_path, checksum, metadata
-                FROM journal_entries
-                WHERE transaction_id = ?
-                ORDER BY timestamp ASC
-                """,
-                (transaction_id,),
-            ) as cursor,
-        ):
-            rows = await cursor.fetchall()
+        sql = """
+            SELECT id, timestamp, agent_id, operation_type, target_path,
+                   status, snapshot_path, checksum, metadata
+            FROM journal_entries
+            WHERE transaction_id = ?
+            ORDER BY timestamp ASC
+            """
+        if self._lifecycle is not None:
+            async with (
+                self._lifecycle.operation(self._db_path) as conn,
+                conn.execute(sql, (transaction_id,)) as cursor,
+            ):
+                rows = await cursor.fetchall()
+        else:
+            async with self._lock, db.execute(sql, (transaction_id,)) as cursor:
+                rows = await cursor.fetchall()
 
-            entries: list[JournalEntry] = []
-            for row in rows:
-                entries.append(self._row_to_entry(row))
+        entries: list[JournalEntry] = []
+        for row in rows:
+            entries.append(self._row_to_entry(row))
 
-            return entries
+        return entries
 
     async def get_last_operation(
         self, agent_id: str, statuses: list[OperationStatus] | None = None
@@ -1050,22 +1295,28 @@ class OperationJournal:
         status_values = [s.value for s in statuses]
         placeholders = ",".join("?" * len(status_values))
 
-        async with self._lock:
-            query = (
-                "SELECT id, timestamp, agent_id, operation_type, target_path, "
-                "status, snapshot_path, checksum, metadata "
-                "FROM journal_entries "
-                f"WHERE agent_id = ? AND status IN ({placeholders}) "  # nosec
-                "ORDER BY timestamp DESC "
-                "LIMIT 1"
-            )
-            async with db.execute(query, (agent_id, *status_values)) as cursor:
+        query = (
+            "SELECT id, timestamp, agent_id, operation_type, target_path, "
+            "status, snapshot_path, checksum, metadata "
+            "FROM journal_entries "
+            f"WHERE agent_id = ? AND status IN ({placeholders}) "  # nosec
+            "ORDER BY timestamp DESC "
+            "LIMIT 1"
+        )
+        if self._lifecycle is not None:
+            async with (
+                self._lifecycle.operation(self._db_path) as conn,
+                conn.execute(query, (agent_id, *status_values)) as cursor,
+            ):
+                row = await cursor.fetchone()
+        else:
+            async with self._lock, db.execute(query, (agent_id, *status_values)) as cursor:
                 row = await cursor.fetchone()
 
-                if row is None:
-                    return None
+        if row is None:
+            return None
 
-                return self._row_to_entry(row)
+        return self._row_to_entry(row)
 
     async def get_operation_by_id(self, entry_id: int) -> JournalEntry | None:
         """
@@ -1083,24 +1334,26 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
 
-        async with (
-            self._lock,
-            db.execute(
-                """
-                SELECT id, timestamp, agent_id, operation_type, target_path,
-                       status, snapshot_path, checksum, metadata
-                FROM journal_entries
-                WHERE id = ?
-                """,
-                (entry_id,),
-            ) as cursor,
-        ):
-            row = await cursor.fetchone()
+        sql = """
+            SELECT id, timestamp, agent_id, operation_type, target_path,
+                   status, snapshot_path, checksum, metadata
+            FROM journal_entries
+            WHERE id = ?
+            """
+        if self._lifecycle is not None:
+            async with (
+                self._lifecycle.operation(self._db_path) as conn,
+                conn.execute(sql, (entry_id,)) as cursor,
+            ):
+                row = await cursor.fetchone()
+        else:
+            async with self._lock, db.execute(sql, (entry_id,)) as cursor:
+                row = await cursor.fetchone()
 
-            if row is None:
-                return None
+        if row is None:
+            return None
 
-            return self._row_to_entry(row)
+        return self._row_to_entry(row)
 
     async def get_operations_by_agent(self, agent_id: str, limit: int = 100) -> list[JournalEntry]:
         """
@@ -1115,27 +1368,29 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
 
-        async with (
-            self._lock,
-            db.execute(
-                """
-                SELECT id, timestamp, agent_id, operation_type, target_path,
-                       status, snapshot_path, checksum, metadata
-                FROM journal_entries
-                WHERE agent_id = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-                """,
-                (agent_id, limit),
-            ) as cursor,
-        ):
-            rows = await cursor.fetchall()
+        sql = """
+            SELECT id, timestamp, agent_id, operation_type, target_path,
+                   status, snapshot_path, checksum, metadata
+            FROM journal_entries
+            WHERE agent_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """
+        if self._lifecycle is not None:
+            async with (
+                self._lifecycle.operation(self._db_path) as conn,
+                conn.execute(sql, (agent_id, limit)) as cursor,
+            ):
+                rows = await cursor.fetchall()
+        else:
+            async with self._lock, db.execute(sql, (agent_id, limit)) as cursor:
+                rows = await cursor.fetchall()
 
-            entries: list[JournalEntry] = []
-            for row in rows:
-                entries.append(self._row_to_entry(row))
+        entries: list[JournalEntry] = []
+        for row in rows:
+            entries.append(self._row_to_entry(row))
 
-            return entries
+        return entries
 
     async def get_operations_by_path(self, target_path: str, limit: int = 50) -> list[JournalEntry]:
         """
@@ -1150,27 +1405,29 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
 
-        async with (
-            self._lock,
-            db.execute(
-                """
-                SELECT id, timestamp, agent_id, operation_type, target_path,
-                       status, snapshot_path, checksum, metadata
-                FROM journal_entries
-                WHERE target_path = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-                """,
-                (target_path, limit),
-            ) as cursor,
-        ):
-            rows = await cursor.fetchall()
+        sql = """
+            SELECT id, timestamp, agent_id, operation_type, target_path,
+                   status, snapshot_path, checksum, metadata
+            FROM journal_entries
+            WHERE target_path = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """
+        if self._lifecycle is not None:
+            async with (
+                self._lifecycle.operation(self._db_path) as conn,
+                conn.execute(sql, (target_path, limit)) as cursor,
+            ):
+                rows = await cursor.fetchall()
+        else:
+            async with self._lock, db.execute(sql, (target_path, limit)) as cursor:
+                rows = await cursor.fetchall()
 
-            entries: list[JournalEntry] = []
-            for row in rows:
-                entries.append(self._row_to_entry(row))
+        entries: list[JournalEntry] = []
+        for row in rows:
+            entries.append(self._row_to_entry(row))
 
-            return entries
+        return entries
 
     # =========================================================================
     # MARK TRANSACTION ROLLED BACK
@@ -1184,6 +1441,24 @@ class OperationJournal:
             transaction_id: ID de la transacción.
         """
         db = await self._ensure_connected()
+
+        if self._lifecycle is not None:
+            async with self._lifecycle.transaction(self._db_path) as conn:
+                await conn.execute(
+                    """
+                    UPDATE transactions
+                    SET status = ?, rolled_back_at = datetime('now')
+                    WHERE transaction_id = ?
+                    """,
+                    (TransactionStatus.ROLLED_BACK.value, transaction_id),
+                )
+
+            logger.info(
+                "Transaction marked as rolled back",
+                extra={"transaction_id": transaction_id},
+            )
+
+            return
 
         async with self._lock:
             await db.execute(
