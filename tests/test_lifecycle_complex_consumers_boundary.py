@@ -849,20 +849,6 @@ async def test_dlm_cancel_antes_de_commit_no_deja_suciedad(tmp_path: Path) -> No
 # ===========================================================================
 
 
-async def _sembrar_lease(
-    dm: DistributedLockManager, conn, resource_id: str, agent_id: str, acquired_at: float, expires_at: float
-) -> None:
-    """Cultivo" una fila de lease con timestamps exactos (como la dejaría un
-    commit ganador), para ejercitar la identidad de la compensación C4."""
-    await conn.execute(
-        "INSERT INTO resource_locks (resource_id, agent_id, acquired_at, expires_at) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(resource_id) DO UPDATE SET agent_id = excluded.agent_id, "
-        "acquired_at = excluded.acquired_at, expires_at = excluded.expires_at",
-        (resource_id, agent_id, acquired_at, expires_at),
-    )
-    await conn.commit()
-
-
 async def test_dlm_close_espera_initialize_y_no_resucita(tmp_path: Path) -> None:
     """C5: close() durante un initialize con el DDL suspendido espera el
     _conn_lock; cuando close retorna, _conn queda None (sin resurrección)."""
@@ -902,12 +888,100 @@ async def test_dlm_close_espera_initialize_y_no_resucita(tmp_path: Path) -> None
         await lifecycle.shutdown_all()
 
 
-async def test_dlm_cancel_durante_commit_compensa_la_lease_huerfana(tmp_path: Path) -> None:
-    """C4: cancelación con el INSERT ejecutado y el commit retenido → el commit
-    gana (COMMIT_WINS del core), el caller recibe CancelledError y la
-    compensación exacta elimina la lease huérfana (sin suciedad)."""
+async def test_dlm_cancel_durante_commit_ttl_recovery_failsafe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """C4 (TTL-only): cancelación durante el commit → CancelledError NATURAL,
+    sin compensación (la identidad por timestamps fue REFUTADA por C9: podía
+    borrar una adquisición nueva válida). El caller cancelado NO espera
+    trabajo ajeno post-commit (C8 eliminado por construcción). La lease queda
+    hasta expires_at y después es reclamable por el mecanismo normal
+    (fail-safe). Sin DELETE manual en el test."""
     dm, lifecycle = await _dlm_inicializado(tmp_path)
     conn = await lifecycle.get_connection(tmp_path / "locks.db")
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(locks_mod, "time", _RelojFalso(clock))
+
+    commit_empezado, liberar_commit = asyncio.Event(), asyncio.Event()
+    real_commit = conn.commit
+
+    async def commit_patch() -> None:
+        commit_empezado.set()
+        await liberar_commit.wait()
+        return await real_commit()
+
+    conn.commit = commit_patch  # type: ignore[method-assign]
+
+    t_acq = asyncio.create_task(dm.acquire_lock("c4-ttl", "agente-a", ttl=10.0))  # now=100 → 110
+    await asyncio.wait_for(commit_empezado.wait(), DEADLINE)  # INSERT hecho; commit retenido
+
+    # Un holder ajeno se ENCOLA en el path lock mientras el commit está retenido
+    # (FIFO de asyncio.Lock: lo toma al liberarse la transaction). Con el
+    # código anterior (compensación), el caller cancelado quedaba esperando
+    # ESTE lock; con TTL-only no.
+    holder_encolado, lock_retenido, liberar_holder = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def holder() -> None:
+        holder_encolado.set()
+        async with lifecycle.get_write_lock(tmp_path / "locks.db"):
+            lock_retenido.set()
+            await liberar_holder.wait()
+
+    t_holder = asyncio.create_task(holder())
+    await holder_encolado.wait()
+
+    t_acq.cancel()
+    liberar_commit.set()  # COMMIT_WINS: el commit (shielded) completa
+
+    # El caller cancelado termina con CancelledError SIN esperar al holder
+    # (no existe segunda transaction de cleanup).
+    await asyncio.wait_for(lock_retenido.wait(), DEADLINE)  # el holder tomó el lock
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(t_acq, DEADLINE)
+    liberar_holder.set()
+    await asyncio.wait_for(t_holder, DEADLINE)
+    conn.commit = real_commit  # type: ignore[method-assign]
+
+    assert conn.in_transaction is False, "la conexión quedó sucia tras la cancelación"
+
+    # COMMIT_WINS: la fila quedó persistida sin dueño observable (TTL-only).
+    async with (
+        lifecycle.operation(tmp_path / "locks.db") as c,
+        c.execute(
+            "SELECT agent_id, acquired_at, expires_at FROM resource_locks WHERE resource_id = ?",
+            ("c4-ttl",),
+        ) as cur,
+    ):
+        fila = await cur.fetchone()
+    assert fila is not None and fila[0] == "agente-a", "COMMIT_WINS no dejó la fila persistida"
+    assert fila[2] == 110.0
+
+    # ANTES del vencimiento (reloj 100 < 110) otro agente NO puede reclamarla.
+    dm_corto = DistributedLockManager(str(tmp_path / "locks.db"), lifecycle=lifecycle, max_retries=1)
+    await dm_corto.initialize()
+    with pytest.raises(LockAcquisitionError):
+        await dm_corto.acquire_lock("c4-ttl", "intruso", ttl=10.0)
+
+    # DESPUÉS del vencimiento, el mecanismo normal la reclama (fail-safe).
+    clock["now"] = 200.0
+    info = await dm_corto.acquire_lock("c4-ttl", "intruso", ttl=10.0)
+    assert info.agent_id == "intruso"
+    assert info.acquired_at == 200.0
+    await lifecycle.shutdown_all()
+
+
+async def test_dlm_renew_no_devuelve_true_si_expira_durante_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C7: si el commit del renew termina DESPUÉS de la nueva fecha de
+    vencimiento, renew_lock retorna False (lease lost) — nunca True expirado.
+    La fila queda vencida/reclamable (sin DELETE)."""
+    dm, lifecycle = await _dlm_inicializado(tmp_path)
+    conn = await lifecycle.get_connection(tmp_path / "locks.db")
+
+    await dm.acquire_lock("c7-ren", "agente-a", ttl=600.0)  # lease vigente (reloj real)
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(locks_mod, "time", _RelojFalso(clock))
 
     commit_empezado, liberar_commit = asyncio.Event(), asyncio.Event()
     real_commit = conn.commit
@@ -920,47 +994,26 @@ async def test_dlm_cancel_durante_commit_compensa_la_lease_huerfana(tmp_path: Pa
     conn.commit = commit_patch  # type: ignore[method-assign]
 
     try:
-        t_acq = asyncio.create_task(dm.acquire_lock("c4-res", "agente-a", ttl=600.0))
-        await asyncio.wait_for(commit_empezado.wait(), DEADLINE)  # INSERT hecho; commit retenido
-        t_acq.cancel()
-        liberar_commit.set()  # commit (shielded) completa; transaction restaura CancelledError
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(t_acq, DEADLINE)
+        t_ren = asyncio.create_task(dm.renew_lock("c7-ren", "agente-a", ttl=50.0))  # new_expires=150
+        await asyncio.wait_for(commit_empezado.wait(), DEADLINE)  # UPDATE hecho; commit retenido
+        clock["now"] = 200.0  # el commit "tarda" más que el TTL renovado
+        liberar_commit.set()
+        renewed = await asyncio.wait_for(t_ren, DEADLINE)
     finally:
         conn.commit = real_commit
 
-    assert conn.in_transaction is False, "la conexión quedó sucia tras la cancelación"
-    fila = await dm.get_lock_info("c4-res")
-    assert fila is None, "la lease huérfana persistió tras la compensación exacta"
-    await lifecycle.shutdown_all()
+    assert renewed is False, "renew declaró éxito sobre una lease ya expirada al retornar"
 
-
-async def test_dlm_cleanup_exacta_solo_borra_el_intento_exacto(tmp_path: Path) -> None:
-    """C4-A/B/C: la compensación identifica por CONTENIDO de fila
-    (resource+agent+acquired_at+expires_at), no por resource/agent sueltos."""
-    dm, lifecycle = await _dlm_inicializado(tmp_path)
-    conn = await lifecycle.get_connection(tmp_path / "locks.db")
-
-    # C4-A: la fila sigue siendo el intento exacto → rowcount=1 y desaparece.
-    await _sembrar_lease(dm, conn, "exact-res", "agente-a", 100.0, 700.0)
-    rc = await dm._cleanup_exact_acquisition("exact-res", "agente-a", 100.0, 700.0)
-    assert rc == 1
-    assert await dm.get_lock_info("exact-res") is None
-
-    # C4-B: OTRO agente reclamó con timestamps nuevos → rowcount=0, lease nueva intacta.
-    await _sembrar_lease(dm, conn, "exact-res", "otro", 300.0, 310.0)
-    rc = await dm._cleanup_exact_acquisition("exact-res", "agente-a", 100.0, 700.0)
-    fila = await dm.get_lock_info("exact-res")
-    assert rc == 0
-    assert fila is not None and fila.agent_id == "otro" and fila.acquired_at == 300.0
-
-    # C4-C: el MISMO agente con una adquisición distinta → rowcount=0, lease nueva intacta.
-    await _sembrar_lease(dm, conn, "exact-res", "agente-a", 400.0, 410.0)
-    rc = await dm._cleanup_exact_acquisition("exact-res", "agente-a", 100.0, 700.0)
-    fila = await dm.get_lock_info("exact-res")
-    assert rc == 0
-    assert fila is not None and fila.agent_id == "agente-a" and fila.acquired_at == 400.0
-
+    # La fila queda con expires_at vencido → reclamable por el mecanismo normal.
+    async with (
+        lifecycle.operation(tmp_path / "locks.db") as c,
+        c.execute(
+            "SELECT expires_at FROM resource_locks WHERE resource_id = ?",
+            ("c7-ren",),
+        ) as cur,
+    ):
+        row = await cur.fetchone()
+    assert row is not None and row[0] == 150.0 < clock["now"], "la fila no quedó expirada/reclamable"
     await lifecycle.shutdown_all()
 
 

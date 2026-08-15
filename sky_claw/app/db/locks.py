@@ -164,14 +164,6 @@ DELETE FROM resource_locks
 WHERE resource_id = ?
 """
 
-# Fix #473 (C4): compensación del intento EXACTO tras un commit ganador con
-# cancelación. Nunca por resource_id (o resource_id+agent_id) a secas: borraría
-# una adquisición distinta.
-_CLEANUP_EXACT_SQL = """\
-DELETE FROM resource_locks
-WHERE resource_id = ? AND agent_id = ? AND acquired_at = ? AND expires_at = ?
-"""
-
 
 # =============================================================================
 # DATA CLASSES
@@ -328,33 +320,6 @@ class DistributedLockManager:
             return
         yield self._ensure_conn()
 
-    async def _cleanup_exact_acquisition(
-        self,
-        resource_id: str,
-        agent_id: str,
-        acquired_at: float,
-        expires_at: float,
-    ) -> int:
-        """Compensación C4 (lifecycle-only) del intento EXACTO.
-
-        Elimina ÚNICAMENTE la fila que matchea la tupla temporal completa del
-        intento (resource + agent + acquired_at + expires_at): nunca borra una
-        adquisición distinta. ``rowcount == 1`` → era nuestro intento;
-        ``rowcount == 0`` → la fila ya cambió/reclamó/renovó → no tocar nada.
-
-        BEST-EFFORT: el llamador captura ``DatabaseLifecycleShuttingDownError``,
-        ``sqlite3.Error`` y una segunda cancelación; el TTL queda como
-        recuperación final.
-        """
-        async with (
-            self._lifecycle.transaction(self._db_path) as conn,  # type: ignore[union-attr] — solo rama lifecycle
-            conn.execute(
-                _CLEANUP_EXACT_SQL,
-                (resource_id, agent_id, acquired_at, expires_at),
-            ) as cursor,
-        ):
-            return cursor.rowcount
-
     # ------------------------------------------------------------------
     # Core operations
     # ------------------------------------------------------------------
@@ -395,8 +360,6 @@ class DistributedLockManager:
             # cancelación y el reloj se captura DESPUÉS de adquirir el
             # boundary: la espera del path lock no puede dejar vencer la
             # lease antes del INSERT. El backoff queda SIEMPRE fuera.
-            fila_intentada: tuple[float, float] | None = None
-            fila_insertada = False
             try:
                 if self._lifecycle is not None:
                     async with self._lifecycle.transaction(self._db_path) as conn:
@@ -407,8 +370,6 @@ class DistributedLockManager:
                             (resource_id, agent_id, now, expires_at),
                         ) as cursor:
                             rowcount = cursor.rowcount
-                        fila_insertada = rowcount > 0
-                        fila_intentada = (now, expires_at)
                     # commit del wrapper ya terminó acá
                 else:
                     now = time.time()
@@ -420,7 +381,6 @@ class DistributedLockManager:
                     ) as cursor:
                         rowcount = cursor.rowcount
                     await conn.commit()
-                    fila_insertada = rowcount > 0
 
                 # SQLite INSERT ... ON CONFLICT: rowcount == 1 if we inserted or
                 # updated (i.e. expired lock was reclaimed).  rowcount == 0 if
@@ -466,44 +426,13 @@ class DistributedLockManager:
                     self._max_retries,
                     exc,
                 )
-            except asyncio.CancelledError:
-                # C4 (fix #473): el commit pudo haber ganado (COMMIT_WINS del
-                # core) y la fila persistida sin dueño observable. Compensación
-                # BEST-EFFORT del intento EXACTO; el CancelledError original
-                # SIEMPRE se propaga (nunca se convierte en LockAcquisitionError).
-                if (
-                    self._lifecycle is not None
-                    and fila_insertada
-                    and fila_intentada is not None
-                    and fila_intentada[1] > fila_intentada[0]
-                ):
-                    try:
-                        await self._cleanup_exact_acquisition(
-                            resource_id,
-                            agent_id,
-                            fila_intentada[0],
-                            fila_intentada[1],
-                        )
-                    except asyncio.CancelledError:
-                        logger.warning(
-                            "Acquisition cleanup interrupted by a second cancellation; TTL will recover: '%s'",
-                            resource_id,
-                            extra={"resource_id": resource_id, "agent_id": agent_id},
-                        )
-                    except DatabaseLifecycleShuttingDownError:
-                        logger.warning(
-                            "Acquisition cleanup skipped — lifecycle is shutting down; TTL will recover: '%s'",
-                            resource_id,
-                            extra={"resource_id": resource_id, "agent_id": agent_id},
-                        )
-                    except sqlite3.Error as exc:
-                        logger.warning(
-                            "Acquisition cleanup failed (%s); TTL will recover: '%s'",
-                            exc,
-                            resource_id,
-                            extra={"resource_id": resource_id, "agent_id": agent_id},
-                        )
-                raise
+            # Cancelación (C4, fix #473): sin compensación eager. El core puede
+            # haber hecho COMMIT_WINS y la fila queda persistida sin dueño
+            # observable; el schema actual NO posee identidad única de lease
+            # (compensar por timestamps fue refutado: podía borrar una
+            # adquisición nueva válida), así que la recuperación es TTL + ON
+            # CONFLICT reclamable (fail-safe). El CancelledError se propaga
+            # naturalmente; nunca se devuelve LockInfo ni LockAcquisitionError.
 
             # Exponential backoff with jitter-free cap
             if attempt < self._max_retries - 1:
@@ -617,12 +546,25 @@ class DistributedLockManager:
             if self._lifecycle is not None:
                 async with self._lifecycle.transaction(self._db_path) as conn:
                     now = time.time()
+                    new_expires_at = now + ttl_seconds
                     async with conn.execute(
                         _RENEW_SQL,
-                        (now + ttl_seconds, resource_id, agent_id, now),
+                        (new_expires_at, resource_id, agent_id, now),
                     ) as cursor:
                         renewed = cursor.rowcount > 0
                 # commit del wrapper ya terminó acá
+                # C7 (fix #473): si el commit terminó DESPUÉS de la nueva fecha
+                # de vencimiento, la renovación ya está expirada al retornar:
+                # no se declara éxito (False → lease lost para el heartbeat).
+                # La fila queda expirada y es reclamable por el mecanismo
+                # normal (ON CONFLICT). Sin DELETE compensatorio.
+                if renewed and time.time() >= new_expires_at:
+                    logger.warning(
+                        "Lock renewal expired before commit returned; lease lost: '%s'",
+                        resource_id,
+                        extra={"resource_id": resource_id, "agent_id": agent_id},
+                    )
+                    return False
             else:
                 now = time.time()
                 conn = self._ensure_conn()
