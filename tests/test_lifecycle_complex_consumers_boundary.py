@@ -43,7 +43,7 @@ from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleManager,
     DatabaseLifecycleShuttingDownError,
 )
-from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.locks import DistributedLockManager, LockAcquisitionError
 
 DEADLINE = 5.0
 
@@ -841,4 +841,211 @@ async def test_dlm_cancel_antes_de_commit_no_deja_suciedad(tmp_path: Path) -> No
     # Sin lease huérfana: otro agente adquiere el mismo recurso al primer intento.
     info = await dm.acquire_lock("r-cancel", "agente-2")
     assert info.agent_id == "agente-2"
+    await lifecycle.shutdown_all()
+
+
+# ===========================================================================
+# Fix #473 (C4/C5/C6) — orphan post-commit, resurrección close, lease expirada
+# ===========================================================================
+
+
+async def _sembrar_lease(
+    dm: DistributedLockManager, conn, resource_id: str, agent_id: str, acquired_at: float, expires_at: float
+) -> None:
+    """Cultivo" una fila de lease con timestamps exactos (como la dejaría un
+    commit ganador), para ejercitar la identidad de la compensación C4."""
+    await conn.execute(
+        "INSERT INTO resource_locks (resource_id, agent_id, acquired_at, expires_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(resource_id) DO UPDATE SET agent_id = excluded.agent_id, "
+        "acquired_at = excluded.acquired_at, expires_at = excluded.expires_at",
+        (resource_id, agent_id, acquired_at, expires_at),
+    )
+    await conn.commit()
+
+
+async def test_dlm_close_espera_initialize_y_no_resucita(tmp_path: Path) -> None:
+    """C5: close() durante un initialize con el DDL suspendido espera el
+    _conn_lock; cuando close retorna, _conn queda None (sin resurrección)."""
+    db = tmp_path / "locks.db"
+    lifecycle = _mgr(db)
+    await lifecycle.init_all()  # pre-resolver la conexión para patch-ear executescript
+    conn = await lifecycle.get_connection(db)
+
+    entro, puerta = asyncio.Event(), asyncio.Event()
+    real_executescript = _patch_executescript_con_barrera(conn, entro, puerta)
+
+    dm = DistributedLockManager(str(db), lifecycle=lifecycle)
+    t_init: asyncio.Task[object] | None = None
+    t_close: asyncio.Task[object] | None = None
+    try:
+        t_init = asyncio.create_task(dm.initialize())
+        await asyncio.wait_for(entro.wait(), DEADLINE)  # DDL suspendido DENTRO de operation()
+        t_close = asyncio.create_task(dm.close())
+        await ceder()
+        assert not t_close.done(), "close retornó con initialize en vuelo (sin serialización)"
+
+        puerta.set()
+        await asyncio.wait_for(t_init, DEADLINE)
+        await asyncio.wait_for(t_close, DEADLINE)
+        assert dm._conn is None, "close retornó y el initialize resucitó el manager"
+    finally:
+        # También en el camino ROJO: liberar el DDL suspendido para que la
+        # admisión se suelte y el shutdown_all() de limpieza no cuelgue.
+        puerta.set()
+        conn.executescript = real_executescript
+        if t_init is not None:
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(t_init, DEADLINE)
+        if t_close is not None:
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(t_close, DEADLINE)
+        await lifecycle.shutdown_all()
+
+
+async def test_dlm_cancel_durante_commit_compensa_la_lease_huerfana(tmp_path: Path) -> None:
+    """C4: cancelación con el INSERT ejecutado y el commit retenido → el commit
+    gana (COMMIT_WINS del core), el caller recibe CancelledError y la
+    compensación exacta elimina la lease huérfana (sin suciedad)."""
+    dm, lifecycle = await _dlm_inicializado(tmp_path)
+    conn = await lifecycle.get_connection(tmp_path / "locks.db")
+
+    commit_empezado, liberar_commit = asyncio.Event(), asyncio.Event()
+    real_commit = conn.commit
+
+    async def commit_patch() -> None:
+        commit_empezado.set()
+        await liberar_commit.wait()
+        return await real_commit()
+
+    conn.commit = commit_patch  # type: ignore[method-assign]
+
+    try:
+        t_acq = asyncio.create_task(dm.acquire_lock("c4-res", "agente-a", ttl=600.0))
+        await asyncio.wait_for(commit_empezado.wait(), DEADLINE)  # INSERT hecho; commit retenido
+        t_acq.cancel()
+        liberar_commit.set()  # commit (shielded) completa; transaction restaura CancelledError
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(t_acq, DEADLINE)
+    finally:
+        conn.commit = real_commit
+
+    assert conn.in_transaction is False, "la conexión quedó sucia tras la cancelación"
+    fila = await dm.get_lock_info("c4-res")
+    assert fila is None, "la lease huérfana persistió tras la compensación exacta"
+    await lifecycle.shutdown_all()
+
+
+async def test_dlm_cleanup_exacta_solo_borra_el_intento_exacto(tmp_path: Path) -> None:
+    """C4-A/B/C: la compensación identifica por CONTENIDO de fila
+    (resource+agent+acquired_at+expires_at), no por resource/agent sueltos."""
+    dm, lifecycle = await _dlm_inicializado(tmp_path)
+    conn = await lifecycle.get_connection(tmp_path / "locks.db")
+
+    # C4-A: la fila sigue siendo el intento exacto → rowcount=1 y desaparece.
+    await _sembrar_lease(dm, conn, "exact-res", "agente-a", 100.0, 700.0)
+    rc = await dm._cleanup_exact_acquisition("exact-res", "agente-a", 100.0, 700.0)
+    assert rc == 1
+    assert await dm.get_lock_info("exact-res") is None
+
+    # C4-B: OTRO agente reclamó con timestamps nuevos → rowcount=0, lease nueva intacta.
+    await _sembrar_lease(dm, conn, "exact-res", "otro", 300.0, 310.0)
+    rc = await dm._cleanup_exact_acquisition("exact-res", "agente-a", 100.0, 700.0)
+    fila = await dm.get_lock_info("exact-res")
+    assert rc == 0
+    assert fila is not None and fila.agent_id == "otro" and fila.acquired_at == 300.0
+
+    # C4-C: el MISMO agente con una adquisición distinta → rowcount=0, lease nueva intacta.
+    await _sembrar_lease(dm, conn, "exact-res", "agente-a", 400.0, 410.0)
+    rc = await dm._cleanup_exact_acquisition("exact-res", "agente-a", 100.0, 700.0)
+    fila = await dm.get_lock_info("exact-res")
+    assert rc == 0
+    assert fila is not None and fila.agent_id == "agente-a" and fila.acquired_at == 400.0
+
+    await lifecycle.shutdown_all()
+
+
+async def test_dlm_acquire_no_devuelve_lease_expirada_durante_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C6: con el reloj avanzando 100→200 durante un commit retenido, el intento
+    expirado se consume y el retry devuelve una lease VÁLIDA (200/210), nunca
+    la expirada (100/110)."""
+    dm, lifecycle = await _dlm_inicializado(tmp_path)
+    conn = await lifecycle.get_connection(tmp_path / "locks.db")
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(locks_mod, "time", _RelojFalso(clock))
+
+    retenidos = {"n": 0}
+    commit_empezado, liberar_commit = asyncio.Event(), asyncio.Event()
+    real_commit = conn.commit
+
+    async def commit_patch() -> None:
+        if retenidos["n"] == 0:
+            retenidos["n"] += 1
+            commit_empezado.set()
+            await liberar_commit.wait()
+        return await real_commit()
+
+    conn.commit = commit_patch  # type: ignore[method-assign]
+
+    try:
+        t_acq = asyncio.create_task(dm.acquire_lock("c6-res", "agente-a", ttl=10.0))  # now=100 → 110
+        await asyncio.wait_for(commit_empezado.wait(), DEADLINE)
+        clock["now"] = 200.0  # el commit "tarda" más que el TTL
+        liberar_commit.set()
+        info = await asyncio.wait_for(t_acq, DEADLINE)
+    finally:
+        conn.commit = real_commit
+
+    assert info.acquired_at == 200.0, f"devolvió la lease vieja o con reloj stale: {info.acquired_at}"
+    assert info.expires_at == 210.0
+    assert info.expires_at > clock["now"], "devolvió una lease ya expirada"
+    await lifecycle.shutdown_all()
+
+
+async def test_dlm_acquire_ultimo_intento_expirado_levanta_lockerror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C6 (hermano): con max_retries=1, el intento expirado post-commit consume
+    el único attempt → LockAcquisitionError; la fila stale queda expirada y
+    reclamable (no se exige DELETE)."""
+    dm, lifecycle = await _dlm_inicializado(tmp_path, max_retries=1)
+    conn = await lifecycle.get_connection(tmp_path / "locks.db")
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(locks_mod, "time", _RelojFalso(clock))
+
+    commit_empezado, liberar_commit = asyncio.Event(), asyncio.Event()
+    real_commit = conn.commit
+
+    async def commit_patch() -> None:
+        commit_empezado.set()
+        await liberar_commit.wait()
+        return await real_commit()
+
+    conn.commit = commit_patch  # type: ignore[method-assign]
+
+    try:
+        t_acq = asyncio.create_task(dm.acquire_lock("c6-ult", "agente-a", ttl=10.0))
+        await asyncio.wait_for(commit_empezado.wait(), DEADLINE)
+        clock["now"] = 200.0
+        liberar_commit.set()
+        with pytest.raises(LockAcquisitionError):
+            await asyncio.wait_for(t_acq, DEADLINE)
+    finally:
+        conn.commit = real_commit
+
+    # La fila stale quedó expirada y reclamable por otro agente (sin DELETE exigido).
+    async with (
+        lifecycle.operation(tmp_path / "locks.db") as c,
+        c.execute(
+            "SELECT agent_id, acquired_at, expires_at FROM resource_locks WHERE resource_id = ?",
+            ("c6-ult",),
+        ) as cur,
+    ):
+        row = await cur.fetchone()
+    assert row is not None, "no quedó fila stale (inesperado)"
+    assert row[0] == "agente-a"
+    assert row[2] == 110.0 < clock["now"], "la fila stale no quedó expirada/reclamable"
     await lifecycle.shutdown_all()

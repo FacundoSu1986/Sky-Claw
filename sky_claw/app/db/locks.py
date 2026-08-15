@@ -164,6 +164,14 @@ DELETE FROM resource_locks
 WHERE resource_id = ?
 """
 
+# Fix #473 (C4): compensación del intento EXACTO tras un commit ganador con
+# cancelación. Nunca por resource_id (o resource_id+agent_id) a secas: borraría
+# una adquisición distinta.
+_CLEANUP_EXACT_SQL = """\
+DELETE FROM resource_locks
+WHERE resource_id = ? AND agent_id = ? AND acquired_at = ? AND expires_at = ?
+"""
+
 
 # =============================================================================
 # DATA CLASSES
@@ -234,6 +242,10 @@ class DistributedLockManager:
         self._lifecycle = lifecycle  # DatabaseLifecycleManager | None (M-01.1 DI)
         self._owns_conn: bool = False  # True when we opened the connection directly (no lifecycle)
         self._conn: aiosqlite.Connection | None = None
+        # Fix #473 (C5): serializa la transición de estado de conexión
+        # (initialize vs close). Orden de locks de la familia:
+        # _conn_lock → boundary del path (nunca al revés).
+        self._conn_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -254,37 +266,45 @@ class DistributedLockManager:
         cerrar la conexión debajo de él. Fix #473 (sentinel): ``self._conn`` se
         asigna DESPUÉS del DDL exitoso (dentro del boundary): un fallo del
         schema no deja un sentinel de apertura que convierta el reintento en
-        no-op.
+        no-op. Fix #473 (C5): toda la transición corre bajo ``_conn_lock``
+        (instancia): un ``close()`` concurrente espera a que el initialize en
+        vuelo termine y luego nulea — no puede haber resurrección.
         """
-        if self._conn is not None:
-            return
+        async with self._conn_lock:
+            if self._conn is not None:
+                return
 
-        if self._lifecycle is not None:
-            self._owns_conn = False
-            async with self._lifecycle.operation(self._db_path) as conn:
-                await conn.executescript(_LOCKS_SCHEMA_SQL)
-                self._conn = conn
-        else:
-            self._owns_conn = True
-            self._conn = await aiosqlite.connect(self._db_path)
-            await self._conn.execute("PRAGMA journal_mode=WAL")
-            await self._conn.execute("PRAGMA busy_timeout=5000")
-            await self._conn.executescript(_LOCKS_SCHEMA_SQL)
-        logger.info(
-            "DistributedLockManager initialized",
-            extra={"db_path": self._db_path, "default_ttl": self._default_ttl},
-        )
+            if self._lifecycle is not None:
+                self._owns_conn = False
+                async with self._lifecycle.operation(self._db_path) as conn:
+                    await conn.executescript(_LOCKS_SCHEMA_SQL)
+                    self._conn = conn
+            else:
+                self._owns_conn = True
+                self._conn = await aiosqlite.connect(self._db_path)
+                await self._conn.execute("PRAGMA journal_mode=WAL")
+                await self._conn.execute("PRAGMA busy_timeout=5000")
+                await self._conn.executescript(_LOCKS_SCHEMA_SQL)
+            logger.info(
+                "DistributedLockManager initialized",
+                extra={"db_path": self._db_path, "default_ttl": self._default_ttl},
+            )
 
     async def close(self) -> None:
-        """Close the DB connection (lifecycle-owned connections stay open)."""
-        if self._conn is not None:
-            if self._owns_conn:
-                await self._conn.close()
-                self._owns_conn = False
-            # Si el lifecycle es externo, no cerramos la conexión aquí;
-            # el propietario la cierra en shutdown_all().
-            self._conn = None
-            logger.info("DistributedLockManager closed")
+        """Close the DB connection (lifecycle-owned connections stay open).
+
+        Fix #473 (C5): corre bajo ``_conn_lock``: un ``initialize()`` en vuelo
+        termina antes de que el close nulee ``_conn`` (sin resurrección).
+        """
+        async with self._conn_lock:
+            if self._conn is not None:
+                if self._owns_conn:
+                    await self._conn.close()
+                    self._owns_conn = False
+                # Si el lifecycle es externo, no cerramos la conexión aquí;
+                # el propietario la cierra en shutdown_all().
+                self._conn = None
+                logger.info("DistributedLockManager closed")
 
     def _ensure_conn(self) -> aiosqlite.Connection:
         if self._conn is None:
@@ -307,6 +327,33 @@ class DistributedLockManager:
                 yield conn
             return
         yield self._ensure_conn()
+
+    async def _cleanup_exact_acquisition(
+        self,
+        resource_id: str,
+        agent_id: str,
+        acquired_at: float,
+        expires_at: float,
+    ) -> int:
+        """Compensación C4 (lifecycle-only) del intento EXACTO.
+
+        Elimina ÚNICAMENTE la fila que matchea la tupla temporal completa del
+        intento (resource + agent + acquired_at + expires_at): nunca borra una
+        adquisición distinta. ``rowcount == 1`` → era nuestro intento;
+        ``rowcount == 0`` → la fila ya cambió/reclamó/renovó → no tocar nada.
+
+        BEST-EFFORT: el llamador captura ``DatabaseLifecycleShuttingDownError``,
+        ``sqlite3.Error`` y una segunda cancelación; el TTL queda como
+        recuperación final.
+        """
+        async with (
+            self._lifecycle.transaction(self._db_path) as conn,  # type: ignore[union-attr] — solo rama lifecycle
+            conn.execute(
+                _CLEANUP_EXACT_SQL,
+                (resource_id, agent_id, acquired_at, expires_at),
+            ) as cursor,
+        ):
+            return cursor.rowcount
 
     # ------------------------------------------------------------------
     # Core operations
@@ -343,12 +390,14 @@ class DistributedLockManager:
         ttl_seconds = ttl if ttl is not None else self._default_ttl
 
         for attempt in range(self._max_retries):
+            # PR-1b2a (fix #473): cada INTENTO es su propia unidad. Con
+            # lifecycle, ``transaction()`` es owner del commit/rollback/
+            # cancelación y el reloj se captura DESPUÉS de adquirir el
+            # boundary: la espera del path lock no puede dejar vencer la
+            # lease antes del INSERT. El backoff queda SIEMPRE fuera.
+            fila_intentada: tuple[float, float] | None = None
+            fila_insertada = False
             try:
-                # PR-1b2a (fix #473): cada INTENTO es su propia unidad. Con
-                # lifecycle, ``transaction()`` es owner del commit/rollback/
-                # cancelación y el reloj se captura DESPUÉS de adquirir el
-                # boundary: la espera del path lock no puede dejar vencer la
-                # lease antes del INSERT. El backoff queda SIEMPRE fuera.
                 if self._lifecycle is not None:
                     async with self._lifecycle.transaction(self._db_path) as conn:
                         now = time.time()
@@ -358,6 +407,8 @@ class DistributedLockManager:
                             (resource_id, agent_id, now, expires_at),
                         ) as cursor:
                             rowcount = cursor.rowcount
+                        fila_insertada = rowcount > 0
+                        fila_intentada = (now, expires_at)
                     # commit del wrapper ya terminó acá
                 else:
                     now = time.time()
@@ -369,28 +420,44 @@ class DistributedLockManager:
                     ) as cursor:
                         rowcount = cursor.rowcount
                     await conn.commit()
+                    fila_insertada = rowcount > 0
 
                 # SQLite INSERT ... ON CONFLICT: rowcount == 1 if we inserted or
                 # updated (i.e. expired lock was reclaimed).  rowcount == 0 if
                 # the conflict condition (expires_at < ?) was NOT met (lock held
                 # by someone else and not yet expired).
                 if rowcount > 0:
-                    lock_info = LockInfo(
-                        resource_id=resource_id,
-                        agent_id=agent_id,
-                        acquired_at=now,
-                        expires_at=expires_at,
-                    )
-                    logger.info(
-                        "Lock acquired",
-                        extra={
-                            "resource_id": resource_id,
-                            "agent_id": agent_id,
-                            "ttl": ttl_seconds,
-                            "attempt": attempt + 1,
-                        },
-                    )
-                    return lock_info
+                    # C6 (fix #473): la lease nació con el reloj del boundary,
+                    # pero si su commit terminó DESPUÉS de expires_at no hay que
+                    # devolver éxito: se consume el intento y se reintenta. La
+                    # fila stale queda expirada y el próximo intento la reclama
+                    # atómicamente vía ON CONFLICT (sin DELETE compensatorio).
+                    if self._lifecycle is not None and time.time() >= expires_at:
+                        logger.warning(
+                            "Lock acquisition expired before commit returned; retrying",
+                            extra={
+                                "resource_id": resource_id,
+                                "agent_id": agent_id,
+                                "attempt": attempt + 1,
+                            },
+                        )
+                    else:
+                        lock_info = LockInfo(
+                            resource_id=resource_id,
+                            agent_id=agent_id,
+                            acquired_at=now,
+                            expires_at=expires_at,
+                        )
+                        logger.info(
+                            "Lock acquired",
+                            extra={
+                                "resource_id": resource_id,
+                                "agent_id": agent_id,
+                                "ttl": ttl_seconds,
+                                "attempt": attempt + 1,
+                            },
+                        )
+                        return lock_info
 
             except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
                 logger.warning(
@@ -399,6 +466,44 @@ class DistributedLockManager:
                     self._max_retries,
                     exc,
                 )
+            except asyncio.CancelledError:
+                # C4 (fix #473): el commit pudo haber ganado (COMMIT_WINS del
+                # core) y la fila persistida sin dueño observable. Compensación
+                # BEST-EFFORT del intento EXACTO; el CancelledError original
+                # SIEMPRE se propaga (nunca se convierte en LockAcquisitionError).
+                if (
+                    self._lifecycle is not None
+                    and fila_insertada
+                    and fila_intentada is not None
+                    and fila_intentada[1] > fila_intentada[0]
+                ):
+                    try:
+                        await self._cleanup_exact_acquisition(
+                            resource_id,
+                            agent_id,
+                            fila_intentada[0],
+                            fila_intentada[1],
+                        )
+                    except asyncio.CancelledError:
+                        logger.warning(
+                            "Acquisition cleanup interrupted by a second cancellation; TTL will recover: '%s'",
+                            resource_id,
+                            extra={"resource_id": resource_id, "agent_id": agent_id},
+                        )
+                    except DatabaseLifecycleShuttingDownError:
+                        logger.warning(
+                            "Acquisition cleanup skipped — lifecycle is shutting down; TTL will recover: '%s'",
+                            resource_id,
+                            extra={"resource_id": resource_id, "agent_id": agent_id},
+                        )
+                    except sqlite3.Error as exc:
+                        logger.warning(
+                            "Acquisition cleanup failed (%s); TTL will recover: '%s'",
+                            exc,
+                            resource_id,
+                            extra={"resource_id": resource_id, "agent_id": agent_id},
+                        )
+                raise
 
             # Exponential backoff with jitter-free cap
             if attempt < self._max_retries - 1:
