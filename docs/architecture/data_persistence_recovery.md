@@ -35,10 +35,13 @@ conexión y tener derecho a emitir SQL ya no son la misma cosa:
   ese lock y lo conserva durante toda la unidad.
 - `transaction(path)` se apoya en `operation(path)`, conserva el mismo boundary
   durante la transacción completa y coordina commit/rollback.
-- El lock se comparte por path resuelto; wrappers distintos sobre la misma DB no
-  deben introducir locks privados que compitan con ese ownership.
+- Dentro de una misma instancia de `DatabaseLifecycleManager`, el lock se
+  comparte por path resuelto entre wrappers que usan ese manager. Dos managers
+  distintos no comparten `_write_locks` ni garantizan exclusión mutua entre sus
+  conexiones; la serialización compartida exige reutilizar/injectar el mismo
+  lifecycle manager cuando ese ownership común sea parte del diseño.
 - Red, filesystem, sleeps y backoff deben quedar fuera del boundary: el lock
-  protege la conexión SQLite compartida, no trabajo externo.
+  protege la conexión SQLite compartida por ese manager, no trabajo externo.
 
 El shutdown es fail-closed: `shutdown_all()` deja de admitir trabajo nuevo,
 espera el drenaje de las unidades ya admitidas y recién después hace checkpoint
