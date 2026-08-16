@@ -143,9 +143,21 @@ servicio **`sky_claw`** mediante `Config._load_from_keyring()` (`config.py:67-81
 Esa sigue siendo la fuente inicial para LLM/Nexus/Telegram. `CredentialVault` no
 la sustituye: cuando `SKYCLAW_VAULT_MASTER_KEY` está configurada,
 `AppContext.start_full()` provisiona la bóveda, siembra **sólo si falta** la
-credencial del provider activo y la inyecta en `LLMRouter` para habilitar el
-hot-swap Zero-Trust. Sin esa variable, `vault=None` y el hot-swap queda
-deshabilitado.
+credencial del provider activo y la inyecta en `LLMRouter`.
+
+Hay dos rutas de cambio de provider y no son equivalentes:
+
+- `AppContext.reload_llm_provider()` es la ruta usada por la configuración viva:
+  toma una clave explícita o la lee del keyring y llama `LLMRouter.set_provider()`
+  directamente. **No consulta `CredentialVault`.**
+- `LLMRouter.reload_provider()` es una API separada, respaldada por la bóveda:
+  obtiene la credencial desde `CredentialVault`. En el árbol verificado no se
+  observó un caller productivo de esta ruta.
+
+Por lo tanto, sin `SKYCLAW_VAULT_MASTER_KEY` queda `vault=None` y se deshabilita
+la ruta **vault-backed** de `LLMRouter.reload_provider()`; el reload por
+settings/keyring mediante `AppContext.reload_llm_provider()` puede seguir
+funcionando.
 
 | Clave keyring (`service="sky_claw"`) | Uso |
 |---|---|
@@ -175,15 +187,22 @@ claro (se loguea) y elegís otro.
    **token-file rotativo** en `~/.sky_claw/tokens/` (`read_token_file(token_dir)`),
    con TTL/rotación. La rotación es del archivo, no del keyring.
 
-### CredentialVault (almacén cifrado, opcional para hot-swap)
+### CredentialVault (almacén cifrado, ruta vault-backed del router)
 `sky_claw/app/security/credential_vault.py` es un almacén **cifrado con
-Fernet** (clave derivada por PBKDF2 desde un salt por máquina en
-`~/.sky_claw/vault_salt.bin` + backup), ciphertext en SQLite. API
-`get_secret(name)` / `set_secret(name, value)`. El keyring sigue alimentando el
-bootstrap. Si existe `SKYCLAW_VAULT_MASTER_KEY`, el caller provisiona la bóveda
-e inyecta `vault` en el router; la credencial activa se siembra con semántica
-**seed-if-absent**, de modo que una credencial rotada en la bóveda no se pisa con
-la copia de Config en el siguiente arranque.
+Fernet**. La clave Fernet se deriva con PBKDF2HMAC desde la master-key y un salt
+aleatorio persistido con backup; en el wiring de `AppContext`, el salt efectivo
+se guarda bajo `<directorio-del-db>/vault_salt/salt.bin` y su backup es
+`salt.bin.bak`. El ciphertext se persiste en SQLite. API `get_secret(name)` /
+`set_secret(name, value)`.
+
+El keyring sigue alimentando el bootstrap. Si existe
+`SKYCLAW_VAULT_MASTER_KEY`, `AppContext` provisiona la bóveda e inyecta `vault`
+en el router; la credencial activa se siembra con semántica
+**seed-if-absent**, de modo que una credencial ya rotada en la bóveda no se pisa
+con la credencial de bootstrap leída vía Config/keyring. Esa bóveda puede ser
+consumida por `LLMRouter.reload_provider()`; la ruta productiva
+`AppContext.reload_llm_provider()` usa keyring/clave explícita y
+`LLMRouter.set_provider()` en forma independiente.
 
 ---
 
@@ -295,7 +314,7 @@ Antes de soltar el agente sobre un Skyrim+MO2 real (idealmente en VM o perfil de
 MO2 descartable la primera vez):
 
 - [ ] `~/.sky_claw/config.toml` creado; `SKYRIM_PATH` y `XEDIT_PATH` válidos (los exige el chequeo de paths en runtime), `MO2_PATH` dentro del sandbox.
-- [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. Esa es la fuente de bootstrap; si habilitás `SKYCLAW_VAULT_MASTER_KEY`, el provider activo puede sembrarse en `CredentialVault` para hot-swap sin sustituir el keyring inicial.
+- [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. Esa es la fuente de bootstrap. Si habilitás `SKYCLAW_VAULT_MASTER_KEY`, el provider activo puede sembrarse en `CredentialVault` para la ruta vault-backed de `LLMRouter.reload_provider()`; el reload de configuración viva mediante `AppContext.reload_llm_provider()` sigue usando clave explícita/keyring.
 - [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `openai` / `ollama`.
 - [ ] Suite local en verde: `pytest -q`.
 - [ ] Gates: `ruff check sky_claw/ tests/`, `ruff format --check sky_claw/ tests/` y `mypy sky_claw/`.
