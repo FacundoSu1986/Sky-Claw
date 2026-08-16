@@ -6,7 +6,7 @@
 > `app/orchestrator/tool_dispatcher.py`, `orchestrator/tool_strategies/`
 > y `local/tools/`.
 > **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
-> **Sincronización de contratos P1:** 2026-08-16 sobre `main`.
+> **Sincronización de contratos P1:** 2026-08-16 sobre `e48306c`.
 
 Esta guía explica **dónde** encaja una herramienta. No contiene una
 implementación ficticia: el patrón correcto depende de la ruta productiva que
@@ -64,8 +64,10 @@ compatibilidad legacy conocida sólo por `normalize_tool_result()`.
 
 - En la ruta LLM, el `params_model` del `ToolDescriptor` es la fuente de
   validación de argumentos.
-- `CONTRACT_SCHEMAS` sólo aplica a los métodos registrados en
-  `core/contracts.py`.
+- `CONTRACT_SCHEMAS` declara mappings en `core/contracts.py`, pero en el baseline
+  `e48306c` los cinco métodos productivos mapeados no tienen aplicados
+  `validate_input`, `validate_output` ni `validate_contract`; el mapping por sí
+  solo no implica enforcement activo.
 - Las strategies pueden validar payloads con sus modelos propios y middleware.
 - Un output Pydantic estricto debe declarar todos los campos retornados; no se
   deben mezclar ejemplos con campos que el modelo descartaría o rechazaría.
