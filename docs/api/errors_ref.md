@@ -9,7 +9,7 @@
 >
 > **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 >
-> **Sincronización DB/lifecycle:** 2026-08-16 sobre `main`.
+> **Sincronización DB/lifecycle:** 2026-08-16 sobre `e48306c`.
 
 ## Jerarquía común
 
