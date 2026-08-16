@@ -191,8 +191,8 @@ claro (se loguea) y elegís otro.
 `sky_claw/app/security/credential_vault.py` es un almacén **cifrado con
 Fernet**. La clave Fernet se deriva con PBKDF2HMAC desde la master-key y un salt
 aleatorio persistido con backup; en el wiring de `AppContext`, el salt efectivo
-se guarda bajo `<directorio-del-db>/vault_salt/salt.bin` y su backup es
-`salt.bin.bak`. El ciphertext se persiste en SQLite. API `get_secret(name)` /
+se guarda bajo `<directorio-del-db>/vault_salt/vault_salt.bin` y su backup es
+`vault_salt.bin.backup`. El ciphertext se persiste en SQLite. API `get_secret(name)` /
 `set_secret(name, value)`.
 
 El keyring sigue alimentando el bootstrap. Si existe
