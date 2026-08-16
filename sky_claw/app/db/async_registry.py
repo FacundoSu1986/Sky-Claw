@@ -23,6 +23,10 @@ from tenacity import (
     wait_exponential,
 )
 
+from sky_claw.app.core.db_lifecycle import (
+    DatabaseConnectionQuarantinedError,
+    DatabaseConnectionReplacedError,
+)
 from sky_claw.config import DB_PATH
 
 if TYPE_CHECKING:
@@ -199,79 +203,75 @@ class AsyncModRegistry:
                             raise _DatabaseCorruptionError(f"SQLite integrity check failed for {self._db_path}")
 
             except _DatabaseCorruptionError as corruption_error:
-                # El lifecycle conserva ownership hasta que el cierre de la
-                # conexion corrupta termine con exito.
+                # PR-2: la invalidación de la conexión corrupta ya NO se hace a
+                # mano (close + evict_connection). Ese par dejaba dos agujeros:
+                # el cierre no confirmado perdía el ownership, y entre el evict y
+                # el rename un operation() hermano podía abrir una conexión
+                # "fresh" sobre el archivo que estaba por moverse — el rename se
+                # llevaba el inodo y la recovery terminaba escribiendo el schema
+                # dentro del backup corrupto. La ventana del lifecycle cubre las
+                # dos cosas: mantiene el path fail-closed mientras dura, sin
+                # sostener L_path durante el rename/backoff.
                 corrupt_conn = self._conn
                 if corrupt_conn is None:
                     raise
-
-                close_error: BaseException | None = None
-                try:
-                    await corrupt_conn.close()
-                except asyncio.CancelledError as error:
-                    current_task = asyncio.current_task()
-                    # CancelledError tambien puede originarse dentro de close().
-                    # cancelling() > 0 es la evidencia de que la cancelacion fue
-                    # solicitada sobre la tarea actual: debe conservar identidad.
-                    if current_task is not None and current_task.cancelling() > 0:
-                        self._conn = None
-                        logger.warning(
-                            "Closing corrupt database was cancelled externally; lifecycle ownership retained"
-                        )
-                        raise
-                    close_error = error
-                except Exception as error:
-                    close_error = error
-
                 self._conn = None
-                if close_error is not None:
-                    logger.error(
-                        "Failed to close corrupt database; lifecycle ownership retained: %s",
-                        close_error,
-                        exc_info=(
-                            type(close_error),
-                            close_error,
-                            close_error.__traceback__,
-                        ),
-                    )
-                    raise corruption_error from close_error
-
-                evicted = self._lifecycle.evict_connection(
-                    self._db_path,
-                    expected_connection=corrupt_conn,
-                )
-                if not evicted:
-                    logger.error(
-                        "Corrupt database connection was replaced before eviction; replacement ownership retained"
-                    )
-                    raise
 
                 db_file = pathlib.Path(self._db_path)
-                if db_file.exists():
-                    backup_path = db_file.with_name(f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}")
+                try:
+                    async with self._lifecycle.recover_connection(
+                        self._db_path,
+                        corrupt_conn,
+                    ) as reabrir:
+                        if db_file.exists():
+                            backup_path = db_file.with_name(
+                                f"{db_file.stem}.corrupt.{int(time.time())}{db_file.suffix}"
+                            )
 
-                    @retry(
-                        retry=retry_if_exception_type(OSError),
-                        stop=stop_after_attempt(5),
-                        wait=wait_exponential(multiplier=1, min=1, max=10),
-                        reraise=True,
+                            @retry(
+                                retry=retry_if_exception_type(OSError),
+                                stop=stop_after_attempt(5),
+                                wait=wait_exponential(multiplier=1, min=1, max=10),
+                                reraise=True,
+                            )
+                            async def _do_backup_lifecycle():
+                                await asyncio.to_thread(db_file.rename, backup_path)
+
+                            try:
+                                await _do_backup_lifecycle()
+                                logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
+                            except OSError as e:
+                                logger.error("Failed to backup corrupt database: %s", e)
+                                raise
+
+                        # Conexión fresh Y schema DENTRO de la ventana: la
+                        # cuarentena se levanta al salir, así que el path nunca
+                        # se presenta como usable a medio reconstruir.
+                        async with reabrir() as conn:
+                            self._conn = conn
+                            conn.row_factory = aiosqlite.Row
+                            await conn.executescript(_SCHEMA_SQL)
+                except DatabaseConnectionReplacedError as error:
+                    self._conn = None
+                    logger.error(
+                        "Corrupt database connection was replaced before invalidation; replacement ownership retained"
                     )
-                    async def _do_backup_lifecycle():
-                        await asyncio.to_thread(db_file.rename, backup_path)
-
-                    try:
-                        await _do_backup_lifecycle()
-                        logger.warning("Corrupt database moved to %s. Rebuilding...", backup_path)
-                    except OSError as e:
-                        logger.error("Failed to backup corrupt database: %s", e)
-                        raise
-
-                # Reopen fresh via lifecycle boundary (file is now absent or empty).
-                # El rename del archivo corrupto ya terminó: no se sostiene ningún
-                # boundary durante el rename/backoff (PR-1b2b, regla de SQL+I/O).
-                async with self._lifecycle.operation(self._db_path) as conn:
-                    self._conn = conn
-                    self._conn.row_factory = aiosqlite.Row
+                    raise corruption_error from error
+                except DatabaseConnectionQuarantinedError as error:
+                    self._conn = None
+                    logger.error(
+                        "Failed to close corrupt database; lifecycle ownership retained: %s",
+                        error,
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
+                    raise corruption_error from (error.__cause__ or error)
+                except BaseException:
+                    # Recovery abortada a mitad (rename agotado, schema fallido,
+                    # cancelación). El lifecycle dejó el path fail-closed; quedarse
+                    # con la referencia haría que open() creyera estar abierto y
+                    # que cada query muriera contra la cuarentena.
+                    self._conn = None
+                    raise
 
             except Exception as exc:
                 # El lifecycle sigue siendo propietario de cualquier conexion
