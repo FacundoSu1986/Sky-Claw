@@ -333,6 +333,13 @@ Workflow estándar para publicar una nueva versión de Sky-Claw. El empaquetado 
 > Solo después de mergear esa reactivación debe crearse y pushearse un nuevo tag
 > de versión.
 
+> **Límites de la evidencia histórica:** lo que se sabe de `v0.2.4` sigue
+> acotado a lo que publicó el workflow. Esta documentación
+> no verificó criptográficamente el bundle publicado,
+> no hizo cold boot de `SkyClawApp.exe` ni inspeccionó de forma independiente la
+> firma PE/Authenticode del artefacto histórico. Que la release exista y haya
+> adjuntado su SBOM y su `SkyClawApp.exe.bundle.json` no sustituye esos smokes.
+
 ### 10.1 Checklist de Release
 
 Antes de invocar el empaquetado, **todos** los gates de CI deben estar en verde y la pre-flight checklist (§8) validada en una instalación real:
