@@ -372,6 +372,84 @@ async def test_b2_el_shutdown_exitoso_levanta_la_cuarentena(
     await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
 
 
+async def test_b3_el_checkpoint_no_emite_sql_sobre_un_path_en_cuarentena(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    tmp_path: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """El checkpoint itera ``_connections``, así que esquivaba el fail-closed.
+
+    Tras un cierre no confirmado la conexión queda RETENIDA a propósito —alguien
+    tiene que poder reintentar el cierre— y el path marcado, de modo que
+    ``operation()`` la rechaza. Pero ``checkpoint_all()`` no pasa por
+    ``_resolve_connection``: recorre el registro y emite SQL directo. El
+    mantenimiento periódico le mandaba ``PRAGMA wal_checkpoint`` a ese mismo
+    handle cada cinco minutos, contradiciendo el fail-closed que este PR
+    introduce.
+
+    Se mide el SQL EMITIDO sobre el handle, no el dict de resultados: un path
+    puede faltar en los resultados por muchas razones, pero que no le llegue
+    ningún ``PRAGMA`` es el hecho que importa. Y se verifica en el mismo tick que
+    un path sano SÍ se checkpointea, para que el guard no pase por "el
+    checkpoint dejó de funcionar".
+    """
+    ruta_sana = tmp_path / "sana.db"
+    gestor.add_db_path(ruta_sana)
+    await gestor.init_all()
+    conn = await gestor.get_connection(ruta_db)
+    conn_sana = await gestor.get_connection(ruta_sana)
+    clave = str(ruta_db.resolve())
+
+    # Cierre que falla SIN cerrar: el fd queda vivo, que es el caso realista
+    # ("close lanzó" no implica "quedó cerrada") y el único en el que se puede
+    # observar que alguien le siga mandando SQL después.
+    close_real = conn.close
+
+    async def close_que_falla() -> None:
+        raise sqlite3.OperationalError("close falló a propósito (sin cerrar)")
+
+    conn.close = close_que_falla  # type: ignore[method-assign]
+    _romper_rollback(conn)
+
+    # El `finally` NO es cosmético: el fault injection deja un close que siempre
+    # lanza, y el teardown de `conexiones` lo traga. Sin restaurarlo, un assert
+    # fallido de acá abajo se llevaría puesta la sesión entera con el fail-fast
+    # de hilos non-daemon, tapando el fallo real.
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            await asyncio.wait_for(_transaccion_que_falla(gestor, ruta_db), timeout=DEADLINE)
+
+        assert gestor._connections.get(clave) is conn, "precondición: la conexión quedó retenida"
+        assert clave in gestor._quarantined_paths, "precondición: el path quedó fail-closed"
+        with pytest.raises(DatabaseConnectionQuarantinedError):
+            async with gestor.operation(ruta_db):
+                pass
+
+        sql_al_handle: list[str] = []
+        ejecutar_previo = conn.execute
+
+        def execute_vigilado(sql: object, *a: object, **k: object) -> object:
+            sql_al_handle.append(str(sql))
+            return ejecutar_previo(sql, *a, **k)
+
+        conn.execute = execute_vigilado  # type: ignore[method-assign]
+
+        resultados = await asyncio.wait_for(gestor.checkpoint_all("PASSIVE"), timeout=DEADLINE)
+
+        assert sql_al_handle == [], f"el checkpoint emitió SQL sobre un handle en cuarentena: {sql_al_handle}"
+        assert clave not in resultados, "el path en cuarentena aparece como checkpointeado"
+        assert str(ruta_sana.resolve()) in resultados, "el guard apagó el checkpoint de los paths sanos"
+
+        # El TRUNCATE del shutdown comparte el cuerpo, así que hereda el guard.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+        assert sql_al_handle == [], f"el checkpoint del shutdown emitió SQL sobre el handle: {sql_al_handle}"
+        assert not await esta_usable(conn_sana), "el shutdown no cerró el path sano"
+    finally:
+        conn.close = close_real  # type: ignore[method-assign]
+
+
 # ---------------------------------------------------------------------------
 # C — MATRIZ DE CIERRE: CLOSE-1 … CLOSE-5
 # ---------------------------------------------------------------------------
@@ -1122,8 +1200,9 @@ async def test_h6_init_all_no_levanta_la_cuarentena_de_una_recovery_abortada(
     declarado corrupto puede seguir en el path (H9), y sólo ése.
 
     "Sin conexión retenida" habla del ownership del handle, no de la coherencia
-    del archivo. La salida de fail-closed es la transición TERMINAL, no la
-    reapertura — y sigue existiendo, que es lo que impide el callejón sin salida.
+    del archivo. Ninguna transición de este manager levanta esa marca (H8), y el
+    costo asumido es que el path queda inservible hasta que haya un manager
+    nuevo — donde el consumidor revalida el archivo en su ``open()``.
     """
     await gestor.init_all()
     conn = await gestor.get_connection(ruta_db)
@@ -1146,16 +1225,10 @@ async def test_h6_init_all_no_levanta_la_cuarentena_de_una_recovery_abortada(
         async with gestor.operation(ruta_db):
             pass
 
-    # Fail-closed no es un callejón sin salida: el cierre COMPLETO —el único
-    # punto donde consta que no queda nada a medio reconstruir— lo libera.
+    # Tampoco el cierre completo la levanta (H8): cerrar lo registrado no repara
+    # un archivo. El fail-closed sobrevive a la transición terminal.
     await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
-    assert gestor._quarantined_paths == set()
-
-    await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
-    async with gestor.operation(ruta_db) as fresca:
-        assert await esta_usable(fresca), "el ciclo shutdown→init no devolvió el path a servicio"
-
-    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+    assert clave in gestor._quarantined_paths, "el shutdown levantó la cuarentena de una recovery abortada"
 
 
 async def test_h7_init_all_no_rescata_un_cierre_no_confirmado(
@@ -1202,17 +1275,24 @@ async def test_h7_init_all_no_rescata_un_cierre_no_confirmado(
     assert gestor.managed_paths == []
 
 
-async def test_h8_el_shutdown_completo_limpia_las_cuarentenas(
+async def test_h8_el_shutdown_completo_tampoco_levanta_una_recovery_abortada(
     gestor: DatabaseLifecycleManager,
     ruta_db: Path,
     conexiones: list[aiosqlite.Connection],
 ) -> None:
-    """La transición terminal no puede dejar marcas que bloqueen el próximo ciclo.
+    """Las dos cuarentenas se retiran contra EVIDENCIA, y por eso son asimétricas.
 
-    Tras una recovery abortada el path queda marcado pero SIN entrada, así que el
-    barrido por-path del shutdown (que descarta al hacer pop) no lo alcanza.
-    Arrastrarla haría que el siguiente ``init_all()`` fallara sobre un path que
-    ya está limpio.
+    El shutdown hacía ``clear()`` global de las cuarentenas al llegar a CLOSED,
+    razonando que la transición terminal no puede dejar marcas que bloqueen el
+    próximo ciclo. Pero cerrar todo lo REGISTRADO no repara ningún ARCHIVO: la
+    marca de una recovery abortada existe porque el rename que iba a retirar el
+    archivo condenado falló, y eso sigue siendo cierto después del cierre. Con el
+    ``clear()``, el fail-open sólo se corría una transición más adelante
+    (shutdown → init → operation republicaba el mismo archivo; ver H9).
+
+    La cuarentena por cierre no confirmado SÍ tiene evidencia equivalente y sí se
+    retira — pero una por una, cuando ESA conexión por fin cierra (test B2), no
+    por un barrido global.
     """
     await gestor.init_all()
     conn = await gestor.get_connection(ruta_db)
@@ -1226,12 +1306,15 @@ async def test_h8_el_shutdown_completo_limpia_las_cuarentenas(
 
     await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
 
-    assert gestor._quarantined_paths == set(), "el cierre completo arrastró la cuarentena"
-    assert gestor._closed
-    await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
-    async with gestor.operation(ruta_db) as fresca:
-        assert await esta_usable(fresca)
-    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+    assert gestor._closed, "el shutdown no llegó a CLOSED"
+    assert clave in gestor._quarantined_paths, "el cierre completo levantó una cuarentena sin evidencia"
+
+    # Y el fail-closed se sostiene del otro lado de la transición: reabrir falla
+    # en vez de publicar el path. Es el costo aceptado — el path queda inservible
+    # para lo que reste de vida del manager, y se sale con un manager nuevo.
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+    assert clave in gestor._quarantined_paths
 
 
 async def test_h9_init_all_no_republica_el_archivo_que_la_recovery_no_pudo_retirar(
@@ -1319,9 +1402,26 @@ async def test_h9_init_all_no_republica_el_archivo_que_la_recovery_no_pudo_retir
     finally:
         condenada.close()
 
-    # Salida del estado: la transición TERMINAL.
+    # --- Y ninguna transición POSTERIOR lo republica -----------------------
+    #
+    # Acá terminaba este test, y era el agujero: bastaba seguir un paso más.
+    # `shutdown_all()` hacía `clear()` global de las cuarentenas al llegar a
+    # CLOSED, así que el `init_all()` siguiente reabría el archivo condenado y
+    # `operation()` lo entregaba — el MISMO fail-open, corrido una transición.
+    # El ciclo completo tiene que sostener el fail-closed de punta a punta.
     await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
-    assert gestor._quarantined_paths == set()
+    assert gestor._closed
+    assert clave in gestor._quarantined_paths, "el shutdown levantó la cuarentena del archivo condenado"
+
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with gestor.operation(ruta):
+            pass
+
+    assert len(conexiones) == creadas_antes, "el ciclo shutdown→init reabrió el archivo condenado"
+    assert len(quick_check.ejecutados) == 1, "una sola validación en TODA la historia, la que lo condenó"
+    assert list(tmp_path.glob("*.corrupt.*")) == [], "nadie reparó nada: no hay backup"
 
 
 # ---------------------------------------------------------------------------

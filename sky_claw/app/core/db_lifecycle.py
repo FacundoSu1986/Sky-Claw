@@ -126,11 +126,20 @@ class DatabaseConnectionQuarantinedError(RuntimeError):
       ``shutdown_all()``, que es quien conserva el derecho a cerrarla.
     - Una ventana de ``recover_connection()`` en curso: el archivo está por
       moverse y abrir una conexión "fresh" ahí la ataría al inodo que el rename
-      se lleva. Se levanta sola si la ventana COMPLETA la reconstrucción; si
-      aborta —el rename falló y el archivo declarado corrupto sigue en el
-      path—, sobrevive, y tampoco la levanta ``init_all()``: reabrir publicaría
-      ese mismo archivo sin que nadie lo haya vuelto a validar. Sale por
-      ``shutdown_all()`` completo, igual que el cierre no confirmado.
+      se lleva. Se levanta sola si la ventana COMPLETA la reconstrucción.
+
+    Las dos se retiran contra EVIDENCIA, y por eso son asimétricas. El cierre no
+    confirmado la tiene: cuando ``shutdown_all()`` consigue cerrar ESA conexión,
+    el motivo desapareció y la marca se retira con ella, una por una. Una
+    recovery ABORTADA no tiene ninguna evidencia equivalente —el archivo
+    condenado sigue en el path porque el rename que iba a retirarlo falló—, así
+    que su marca no la levanta ninguna transición de este manager: ni
+    ``init_all()`` ni ``shutdown_all()``. Es deliberado y tiene un costo real:
+    ese path queda fail-closed para toda la vida del manager, y un
+    ``init_all()`` posterior FALLA mientras el path siga registrado. La salida es
+    un manager nuevo (reinicio del proceso), donde el consumidor vuelve a
+    validar el archivo en su ``open()`` antes de que nadie lo use. Es el precio
+    de no volver a publicar una DB que alguien declaró corrupta.
     """
 
 
@@ -278,8 +287,7 @@ class DatabaseLifecycleManager:
             DatabaseLifecycleShuttingDownError: si el shutdown anterior quedó
                 incompleto.
             DatabaseConnectionQuarantinedError: si algún path registrado sigue
-                fail-closed. Reabrir NO levanta cuarentenas —de ningún origen—;
-                la salida es ``shutdown_all()`` completo.
+                fail-closed. Reabrir NO levanta cuarentenas, de ningún origen.
         """
         # Reapertura EXPLÍCITA, serializada e idempotente por path.
         #
@@ -333,14 +341,13 @@ class DatabaseLifecycleManager:
             #   que la reapertura llegaba antes que la revalidación, si es que
             #   alguna vez llegaba.
             #
-            # Una recovery incompleta queda fail-closed hasta la transición
-            # TERMINAL: `shutdown_all()` completo, que es el único punto donde
-            # consta que no hay nada a medio reconstruir (ver el `clear()` de
-            # ambas ramas del shutdown). Un path marcado que esté en `_db_paths`
-            # hace que esta reapertura falle con
-            # `DatabaseConnectionQuarantinedError` desde `_resolve_connection`,
-            # mismo desenlace que ya tenía el cierre no confirmado: las dos
-            # cuarentenas sobreviven a `init_all()`, y por el mismo motivo.
+            # Una recovery incompleta queda fail-closed y NO sale por acá. El
+            # shutdown tampoco la levanta: cerrar lo registrado no repara un
+            # archivo. Un path marcado que esté en `_db_paths` hace que esta
+            # reapertura falle con `DatabaseConnectionQuarantinedError` desde
+            # `_resolve_connection`, mismo desenlace que ya tenía el cierre no
+            # confirmado: las dos cuarentenas sobreviven a `init_all()`, y por
+            # el mismo motivo.
             if self._config.enable_auto_checkpoint:
                 self.register_atexit_handler()
             self._admit()
@@ -521,12 +528,35 @@ class DatabaseLifecycleManager:
         ``con_boundary=True`` toma el lock de cada path (camino periódico).
         ``False`` asume exclusividad ya garantizada por el drenaje del shutdown:
         tomarlo ahí no aportaría nada y arriesga una doble adquisición.
+
+        Un path en cuarentena se SALTA, en los dos caminos. El checkpoint itera
+        ``_connections`` directamente, así que no pasa por el guard de
+        ``_resolve_connection`` y era la única ruta que seguía emitiendo SQL
+        sobre una conexión que este mismo manager declaró inservible: la que
+        queda retenida tras un cierre no confirmado existe SÓLO para poder
+        reintentar su cierre, y mientras tanto ``operation()`` la rechaza. Que
+        el mantenimiento periódico le mandara ``PRAGMA wal_checkpoint`` cada
+        cinco minutos contradecía ese fail-closed. Saltarla puede dejar WAL sin
+        truncar en ese path; es la opción correcta igualmente, porque el
+        resultado de un checkpoint sobre un handle de estado desconocido no es
+        información en la que se pueda basar nada.
         """
         results: dict[str, dict[str, Any]] = {}
         for path_str, conn in list(self._connections.items()):
             lock = self.get_write_lock(path_str) if con_boundary else contextlib.nullcontext()
             async with lock:  # type: ignore[attr-defined]
                 if self._connections.get(path_str) is not conn:
+                    continue
+                # Dentro del lock, junto al guard de identidad: la cuarentena
+                # pudo instalarse mientras esperábamos el lock, y ese es
+                # justamente el interleaving que hay que cubrir.
+                if path_str in self._quarantined_paths:
+                    logger.warning(
+                        "DatabaseLifecycle: checkpoint (%s) OMITIDO para %s — el path está en cuarentena "
+                        "y su conexión sólo se retiene para reintentar el cierre",
+                        mode,
+                        path_str,
+                    )
                     continue
                 await self._checkpoint_one(path_str, conn, mode, results)
         return results
@@ -621,10 +651,15 @@ class DatabaseLifecycleManager:
 
         if not self._connections:
             self._closed = True
-            # Sin conexiones registradas no queda nada que proteger: arrastrar
-            # cuarentenas de recoveries abortadas bloquearía el próximo
-            # init_all() sobre un path que ya está limpio.
-            self._quarantined_paths.clear()
+            # Sin `clear()`: cerrar TODO lo registrado no dice nada sobre el
+            # ARCHIVO de un path cuya recovery abortó. La cuarentena por cierre
+            # no confirmado sí se retira, pero una por una y contra evidencia
+            # real —el `discard` del Step 2, cuando ESA conexión por fin cierra—.
+            # Una recovery abortada no tiene evidencia equivalente: el archivo
+            # condenado sigue donde estaba porque el rename que iba a retirarlo
+            # falló, y borrar la marca acá sólo movía el fail-open una
+            # transición más adelante (shutdown_all -> init_all -> operation
+            # volvía a publicarlo, con cero revalidaciones de por medio).
             return
 
         logger.info(
@@ -721,9 +756,11 @@ class DatabaseLifecycleManager:
             # conexiones retenidas el shutdown es reintentable, y marcarlo
             # cerrado mentiría sobre un estado que todavía no se alcanzó.
             self._closed = True
-            # El cierre completo es la transición terminal: ya no hay conexión
-            # que retener ni recovery a medio camino que proteger.
-            self._quarantined_paths.clear()
+            # Tampoco acá se hace `clear()`. Llegar a CLOSED prueba que ninguna
+            # conexión quedó retenida; no prueba que el archivo de una recovery
+            # abortada haya sido reparado. Lo que sobrevive a este punto es
+            # exactamente eso —el Step 2 ya retiró, una por una, las cuarentenas
+            # cuyo cierre se confirmó— y sobrevive a propósito.
 
         if first_close_error is not None:
             raise first_close_error
@@ -1264,18 +1301,24 @@ class DatabaseLifecycleManager:
         reporta como tal: un cierre limpio que no reabrió no puede pasar por
         recovery exitosa sólo porque nadie lanzó una excepción.
 
-        Cómo vuelve a servicio un path cuya recovery abortó: por la transición
-        TERMINAL, nunca por un resolve oportunista ni por una reapertura.
-        ``shutdown_all()`` limpia las cuarentenas al completar el cierre, y ese
-        es el único punto donde consta que no queda nada a medio reconstruir.
-        ``init_all()`` NO las levanta: "no quedó conexión retenida" habla del
-        ownership del handle, no de la coherencia del archivo, y cuando la
-        ventana abortó porque el rename falló, el archivo que sigue en el path
-        es exactamente el que se declaró corrupto. Reabrirlo ahí lo publicaría
-        vía ``operation()`` sin que ningún ``quick_check`` lo hubiera vuelto a
-        mirar — la revalidación vive en el consumidor, y este lado no puede
-        exigirla. Por eso las dos cuarentenas (cierre no confirmado y recovery
-        abortada) sobreviven a ``init_all()``.
+        Cómo vuelve a servicio un path cuya recovery abortó: dentro de este
+        manager, NO vuelve. Ni ``init_all()`` ni ``shutdown_all()`` levantan esa
+        marca, porque ninguna de las dos transiciones observa el archivo: "no
+        quedó conexión retenida" y "todo lo registrado cerró" hablan del
+        ownership de los handles, no de la coherencia de un archivo que sigue en
+        el path justamente porque el rename que iba a retirarlo falló. Reabrirlo
+        lo publicaría vía ``operation()`` sin que ningún ``quick_check`` lo
+        hubiera vuelto a mirar — la revalidación vive en el consumidor, y este
+        lado no puede exigirla.
+
+        El costo es explícito: ese path queda inservible para lo que reste de
+        vida del manager, y arrastra consigo a ``init_all()``. Se sale con un
+        manager nuevo, donde el consumidor revalida en su ``open()`` antes de que
+        el archivo llegue a nadie. Dar una salida en caliente exige que el dueño
+        de la recovery pueda REINTENTARLA sobre un path sin conexión viva, que
+        hoy no es expresable con esta API: ``recover_connection`` necesita una
+        ``expected_connection`` que en este estado ya no existe. Queda como
+        trabajo aparte, deliberadamente fuera de este contrato.
 
         La admisión abarca TODA la ventana —invalidación, rename, reapertura—,
         de modo que un ``shutdown_all()`` concurrente la espera en vez de cerrar
