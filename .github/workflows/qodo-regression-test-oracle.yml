@@ -46,6 +46,8 @@ jobs:
           github_action_config.auto_describe: "false"
           github_action_config.auto_improve: "false"
           github_action_config.pr_actions: '["opened", "reopened", "ready_for_review"]'
+          # PR-Agent v0.41.0 trata pull_request/synchronize como push trigger y
+          # ejecuta push_commands; este camino es independiente de pr_actions.
           github_action_config.handle_push_trigger: "true"
           github_action_config.push_commands: '["/review"]'
 
