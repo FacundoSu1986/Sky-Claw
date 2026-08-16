@@ -19,7 +19,7 @@
 | Flag CLI | QUICKSTART, DEPLOYMENT, `docs/api/cli_ref.md` |
 | Config o secreto | guía de configuración, referencia, SECURITY |
 | Startup/shutdown | lifecycle, async/concurrency, recovery |
-| DB lifecycle (`operation`, `transaction`, admisión, connection ownership, shutdown) | `docs/architecture/runtime_lifecycle.md`, `docs/architecture/data_persistence_recovery.md`, recovery y callers gestionados |
+| DB lifecycle (`operation`, `transaction`, admisión, connection ownership, shutdown) | runtime: `sky_claw/app/core/db_lifecycle.py`, `sky_claw/app/core/database.py`, `sky_claw/app/db/`; docs: `docs/architecture/runtime_lifecycle.md`, `docs/architecture/data_persistence_recovery.md`, recovery y callers gestionados |
 | DB, lock, snapshot o journal | persistencia/recuperación, operations |
 | VFS o subprocess | arquitectura VFS, rig real, troubleshooting |
 | GUI o Telegram | manual de superficie, `ui_comms.md` |
