@@ -1,9 +1,9 @@
 name: Release
 
+# Pausado temporalmente mientras el proyecto atraviesa refactors mayores.
+# Restaurar el trigger por tags y quitar el guard del job cuando se reanuden los releases.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   release:
+    if: ${{ false }}  # pausado intencionalmente; conservar intacta la receta de release
     name: "📦 Release ${{ github.ref_name }}"
     runs-on: windows-latest
     timeout-minutes: 30
