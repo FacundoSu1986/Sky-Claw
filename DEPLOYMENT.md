@@ -138,7 +138,11 @@ migra a keyring y los borra del TOML — `config.py:96-102`).
 ### Secretos de runtime (LLM / Nexus / Telegram) → OS keyring
 El path de arranque real: `Config._load_from_keyring()` (`config.py:67-81`) lee
 del **keyring del SO** bajo el servicio **`sky_claw`**. `AppContext` construye el
-`LLMRouter` con estas claves; **`CredentialVault` NO interviene en este flujo.**
+`LLMRouter` con estas claves. `CredentialVault` no sustituye esta fuente inicial,
+pero sí tiene un wiring opcional para el hot-swap Zero-Trust: cuando
+`SKYCLAW_VAULT_MASTER_KEY` está configurada, `AppContext.start_full()` provisiona
+el vault, siembra la credencial del provider activo y lo inyecta en el router.
+Sin esa variable, `vault=None` y el hot-swap permanece deshabilitado.
 
 | Clave keyring (`service="sky_claw"`) | Uso |
 |---|---|
@@ -172,8 +176,9 @@ claro (se loguea) y elegís otro.
 `sky_claw/app/security/credential_vault.py` es un almacén **cifrado con
 Fernet** (clave derivada por PBKDF2 desde un salt por máquina en
 `~/.sky_claw/vault_salt.bin` + backup), ciphertext en SQLite. API
-`get_secret(name)` / `set_secret(name, value)`. Es una facilidad aparte — **no es
-el mecanismo que alimenta LLM/Nexus/Telegram al arranque** (eso es keyring, arriba).
+`get_secret(name)` / `set_secret(name, value)`. Es una facilidad separada del
+keyring que alimenta LLM/Nexus/Telegram al arranque; sólo el wiring explícito del
+caller la usa para capacidades como el hot-swap de credenciales del router.
 
 ---
 

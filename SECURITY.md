@@ -5,12 +5,15 @@
 >
 > **English summary:** please report vulnerabilities privately via **GitHub → Security →
 > Advisories → "Report a vulnerability"**. Do not disclose exploit details in public
-> issues. No distributed release is currently verified; once releases exist,
-> only the latest 0.2.x release will receive security fixes.
+> issues. The latest published release is `v0.2.4`; only the latest published `0.2.x`
+> release will receive security fixes. The release artifacts exist, but this page
+> does not independently verify their cryptographic validity, Authenticode status or
+> cold-boot behavior.
 >
-> **Estado:** controles de runtime verificados leyendo código;
-> publicación, firma y SBOM no verificados como release distribuida.
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Estado:** controles de runtime verificados leyendo código; `v0.2.4` existe como
+> release pública, mientras que la verificación criptográfica del bundle, la firma
+> Authenticode y el cold boot del ejecutable permanecen fuera de esta verificación.
+> **Última verificación:** 2026-08-16 sobre `origin/main` `32abf6f77b758c622dd71f20607589c53effeaf1`.
 
 ## Versiones soportadas
 
@@ -18,7 +21,7 @@ Solo la última release publicada recibe correcciones de seguridad.
 
 | Versión | Soportada |
 | ------- | --------- |
-| 0.2.x (cuando exista una release publicada) | ✅ |
+| 0.2.x (última publicada: `v0.2.4`) | ✅ |
 | < 0.2 | ❌ |
 
 ## Cómo reportar una vulnerabilidad
@@ -52,9 +55,11 @@ Sky-Claw invoca (SSEEdit, LOOT, DynDOLOD, MO2, etc.): reportalas a sus proyectos
 
 - CI con **Bandit** (SAST) y **pip-audit --strict** sobre `requirements.lock` con hashes
   enforced; `npm audit` para el gateway de Telegram.
-- El workflow construye un artefacto PyInstaller en CI. No hay evidencia
-  vigente de tag de release, firma Authenticode/cosign ni SBOM publicado; no
-  deben anunciarse como garantías hasta validarlos en una release real.
+- El workflow construye un artefacto PyInstaller en CI y la release `v0.2.4`
+  publicó el ejecutable, el SBOM SPDX y el bundle Cosign. La existencia de esos
+  artefactos no equivale a una verificación criptográfica independiente, firma
+  Authenticode ni cold boot; no deben anunciarse como garantías hasta validarlos
+  específicamente.
 - Secretos vía el backend de keyring del sistema; directorios de estado con
   DACLs restrictivas (`.sky_claw/`) donde el control está cableado.
 - Sandboxing de rutas con `PathValidator`

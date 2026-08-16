@@ -7,7 +7,7 @@
 > **Fuentes canónicas:** `sky_claw/app/core/errors.py` y módulos que
 > declaran excepciones locales.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-08-16 sobre `origin/main` `32abf6f77b758c622dd71f20607589c53effeaf1`.
 
 ## Jerarquía común
 
@@ -25,7 +25,7 @@ No agregar bases genéricas a esta jerarquía sin un símbolo real en
 
 | Frontera | Bases o errores representativos |
 |---|---|
-| DB lifecycle | `DatabaseShutdownIncompleteError` |
+| DB lifecycle | `DatabaseLifecycleShuttingDownError`, `DatabaseShutdownIncompleteError` |
 | Registry async | `DatabaseError` |
 | Journal | `JournalError` y subclases |
 | Locks/snapshots | `LockError`, `LockAcquisitionError`, `LockLeaseLostError`, `SnapshotRollbackError` |
@@ -38,6 +38,17 @@ No agregar bases genéricas a esta jerarquía sin un símbolo real en
 
 No todas heredan de `AppNexusError`. Capturar esa base no cubre fallos de todas
 las fronteras.
+
+En DB lifecycle, `DatabaseLifecycleShuttingDownError` significa que no se admite
+trabajo nuevo porque el shutdown ya empezó o porque un shutdown incompleto dejó
+una conexión gestionada retenida. `get_connection()`, `operation()` y
+`checkpoint_all()` deben propagar ese rechazo fail-closed. La reapertura no se
+hace implícitamente: el caller debe reintentar `shutdown_all()` si quedó
+incompleto y sólo después usar `init_all()` de forma explícita.
+
+`DatabaseShutdownIncompleteError` describe el cierre incompleto y conserva los
+paths retenidos para diagnóstico y reintento; no debe tratarse como permiso para
+reutilizar esas conexiones.
 
 ## Cancelación
 

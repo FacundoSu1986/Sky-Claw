@@ -7,7 +7,7 @@
 >
 > **Fuentes canónicas:** runtime, ADR vigentes, `DEPLOYMENT.md` y `SECURITY.md`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-08-16 sobre `origin/main` `32abf6f77b758c622dd71f20607589c53effeaf1`.
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
@@ -132,7 +132,7 @@ Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nue
 - [x] Base de datos async distribuida
 - [x] Wrapper xEdit y LOOT headless
 - [x] Parser y resolución FOMOD
-- [ ] Empaquetado final como .exe único
+- [x] Empaquetado como `.exe` único publicado en `v0.2.4` (la firma, el cold boot y los smokes reales se verifican por separado)
 
 ---
 
