@@ -640,3 +640,114 @@ async def test_journal_close_does_not_close_lifecycle_connection(
     with pytest.raises(ValueError, match="no active connection"):
         async with db.execute("SELECT 1") as cur:
             await cur.fetchone()
+
+
+# ===========================================================================
+# JOURNAL — C2: el cleanup del context manager NO reemplaza la excepción original
+# ===========================================================================
+
+
+async def _c2_escenario_shutdown_real(
+    lifecycle: DatabaseLifecycleManager,
+    journal: OperationJournal,
+    original: BaseException,
+) -> BaseException | None:
+    """Shutdown REAL drenando una operación admitida + cuerpo que lanza.
+
+    Sin sleeps de timing: barreras asyncio.Event y yields del scheduler.
+    La operación retenida vive en OTRO path del mismo lifecycle para mantener
+    `_admitted > 0` (shutdown drenando, conexiones aún abiertas) sin bloquear
+    el lock del path del journal. Devuelve la excepción propagada por la tarea
+    del cuerpo (o None si terminara limpia, lo que no debería pasar).
+    """
+    hold_path = journal._db_path.parent / "hold_c2.db"
+    op_entro, liberar_op = asyncio.Event(), asyncio.Event()
+
+    async def operacion_retenida() -> None:
+        async with lifecycle.operation(hold_path):
+            op_entro.set()
+            await liberar_op.wait()
+
+    cuerpo_entro, senal = asyncio.Event(), asyncio.Event()
+
+    async def cuerpo() -> None:
+        async with journal.transaction("c2-shutdown-real"):
+            cuerpo_entro.set()
+            await senal.wait()
+            raise original
+
+    t_hold = asyncio.create_task(operacion_retenida())
+    await op_entro.wait()
+    t_cuerpo = asyncio.create_task(cuerpo())
+    await cuerpo_entro.wait()
+
+    t_sd = asyncio.create_task(lifecycle.shutdown_all())
+    for _ in range(10_000):
+        if lifecycle._shutting_down:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("shutdown_all nunca arrancó el cierre")
+    assert not t_sd.done(), "shutdown no está drenando la operación retenida"
+
+    senal.set()  # el cuerpo lanza → rollback → admisión rechazada
+    propagada: BaseException | None = None
+    try:
+        await asyncio.wait_for(t_cuerpo, timeout=DEADLINE)
+    except BaseException as error:
+        propagada = error
+
+    liberar_op.set()
+    await asyncio.wait_for(t_hold, timeout=DEADLINE)
+    await asyncio.wait_for(t_sd, timeout=DEADLINE)
+    return propagada
+
+
+async def test_journal_c2_sentinel_preservado_con_shutdown_real(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """C2-A: con el shutdown drenando, el rollback rechazado por admisión NO
+    reemplaza la excepción original del cuerpo del context manager.
+
+    Reversión: quitar DatabaseLifecycleShuttingDownError del except del cleanup
+    → `DatabaseLifecycleShuttingDownError` reemplaza el sentinel → ROJO.
+    """
+    journal = OperationJournal(tmp_path / "c2_sentinel.db", lifecycle=lifecycle)
+    await journal.open()
+    sentinel = ValueError("sentinel-cuerpo-c2")
+
+    propagada = await _c2_escenario_shutdown_real(lifecycle, journal, sentinel)
+
+    assert propagada is sentinel, f"la original fue reemplazada por {type(propagada).__name__}"
+    assert lifecycle._admitted == 0, "quedó una admisión colgada"
+    assert lifecycle._drained.is_set()
+    db = journal._db
+    assert db is not None
+    with pytest.raises(ValueError, match="no active connection"):
+        async with db.execute("SELECT 1") as cur:
+            await cur.fetchone()
+
+
+async def test_journal_c2_cancelled_error_preservado_con_shutdown_real(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """C2-B: una CancelledError del cuerpo NO se traduce a
+    DatabaseLifecycleShuttingDownError durante el cleanup con shutdown drenando.
+
+    Reversión: quitar DatabaseLifecycleShuttingDownError del except del cleanup
+    → la cancelación se traduce a ShuttingDownError → ROJO.
+    """
+    journal = OperationJournal(tmp_path / "c2_cancel.db", lifecycle=lifecycle)
+    await journal.open()
+    cancellation = asyncio.CancelledError("cancelacion-cuerpo-c2")
+
+    propagada = await _c2_escenario_shutdown_real(lifecycle, journal, cancellation)
+
+    assert propagada is cancellation, f"la cancelación fue traducida a {type(propagada).__name__}"
+    assert lifecycle._admitted == 0, "quedó una admisión colgada"
+    assert lifecycle._drained.is_set()
+    db = journal._db
+    assert db is not None
+    with pytest.raises(ValueError, match="no active connection"):
+        async with db.execute("SELECT 1") as cur:
+            await cur.fetchone()

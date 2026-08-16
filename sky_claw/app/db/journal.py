@@ -22,6 +22,8 @@ from typing import Any
 
 import aiosqlite
 
+from sky_claw.app.core.db_lifecycle import DatabaseLifecycleShuttingDownError
+
 logger = logging.getLogger(__name__)
 
 
@@ -672,8 +674,14 @@ class OperationJournal:
         except BaseException:
             try:
                 await self.rollback_transaction(transaction_id)
-            except JournalError:
-                # Nunca enmascarar la excepción original del cuerpo.
+            except (JournalError, DatabaseLifecycleShuttingDownError):
+                # Nunca enmascarar la excepción original del cuerpo. Con el
+                # boundary, un shutdown en curso rechaza la nueva admisión del
+                # rollback (fail-closed): la fila PENDING puede sobrevivir y la
+                # barrerá sweep_stale_pending() en el próximo arranque. Lo único
+                # inviolable acá es que la excepción original salga por arriba
+                # (C2). No se captura BaseException: una cancelación NUEVA
+                # durante el rollback debe seguir propagando.
                 logger.error(
                     "Rollback of transaction %d failed during exception handling",
                     transaction_id,
