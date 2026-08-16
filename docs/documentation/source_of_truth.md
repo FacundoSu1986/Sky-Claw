@@ -6,7 +6,10 @@
 >
 > **Fuentes canónicas:** código, ADR, instrucciones e índices del árbol actual.
 >
-> **Última verificación:** 2026-08-16 sobre `main` `7156718`.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+>
+> **Sincronización de política anti-drift y DB/lifecycle:** 2026-08-16 sobre
+> `main` `7156718`; no implica reverificación integral del resto del mapa.
 
 ## Precedencia de instrucciones para agentes
 
