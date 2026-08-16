@@ -328,9 +328,9 @@ Workflow estándar para publicar una nueva versión de Sky-Claw. El empaquetado 
 > bloqueado intencionalmente. Los cambios del árbol actual siguen en
 > `[Unreleased]`.
 >
-> **Evidencia histórica de `v0.2.4`:** esta actualización documental no verificó
-> criptográficamente el bundle, no hizo cold boot de `SkyClawApp.exe` ni
-> inspeccionó la firma PE del artefacto histórico.
+> **Evidencia histórica de `v0.2.4`:** esta actualización documental
+> no verificó criptográficamente el bundle, no hizo cold boot de
+> `SkyClawApp.exe` ni inspeccionó la firma PE del artefacto histórico.
 
 > **Reactivación:** restaurar en `.github/workflows/release.yml` el trigger
 > `push.tags` para `v*` y eliminar el guard `if: ${{ false }}` del job `release`.
