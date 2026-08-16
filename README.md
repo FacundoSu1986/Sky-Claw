@@ -145,7 +145,7 @@ Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nue
 - [x] Base de datos async distribuida
 - [x] Wrapper xEdit y LOOT headless
 - [x] Parser y resolución FOMOD
-- [x] Empaquetado `.exe` único publicado en `v0.2.4` (firma, cold boot y smokes reales se verifican por separado)
+- [x] Empaquetado `.exe` único publicado en `v0.2.4` (firma, cold boot y smokes reales quedan fuera de esta verificación)
 
 ---
 
