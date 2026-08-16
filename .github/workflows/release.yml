@@ -1,7 +1,7 @@
 name: Release
 
-# Temporarily paused while the project is undergoing major refactors.
-# Restore the tag push trigger and remove the job-level guard when releases resume.
+# Pausado temporalmente mientras el proyecto atraviesa refactors mayores.
+# Restaurar el trigger por tags y quitar el guard del job cuando se reanuden los releases.
 on:
   workflow_dispatch:
 
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   release:
-    if: ${{ false }}  # paused intentionally; keep the release recipe intact
+    if: ${{ false }}  # pausado intencionalmente; conservar intacta la receta de release
     name: "📦 Release ${{ github.ref_name }}"
     runs-on: windows-latest
     timeout-minutes: 30
