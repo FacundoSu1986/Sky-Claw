@@ -3,7 +3,8 @@
 > **Audiencia:** desarrolladores y agentes que modifican límites Pydantic.
 > **Estado:** implementado, con alcance limitado al registro documentado.
 > **Fuente canónica:** `sky_claw/app/core/contracts.py`.
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Sincronización de contratos P1:** 2026-08-16 sobre `main`.
 
 ## Qué resuelve
 
@@ -37,6 +38,11 @@ parcial y se propagan.
 La clave se construye con el nombre runtime de la clase. Renombrar una clase o
 método exige actualizar `CONTRACT_SCHEMAS` y sus tests.
 
+Eso tiene una consecuencia importante para agentes: que un modelo siga
+existiendo en `core/schemas.py` no demuestra que un caller siga validado. Hay que
+verificar también la clave exacta `Clase.método`, el decorador aplicado y el
+camino productivo que llega a ese método.
+
 ## Reglas al documentar schemas
 
 1. Copiar nombres y campos sólo después de leer `core/schemas.py`.
@@ -46,6 +52,11 @@ método exige actualizar `CONTRACT_SCHEMAS` y sus tests.
 4. No inventar versionado, deprecaciones ni compatibilidad implícita. Una
    política nueva requiere decisión arquitectónica y cambios reales.
 5. Añadir la fecha y SHA usados para verificar cualquier tabla estática.
+6. No extrapolar `extra="forbid"` a todos los modelos porque algunos límites
+   usan otra política deliberadamente.
+7. No usar `CONTRACT_SCHEMAS` como inventario de tools: una tool LLM se valida
+   por su `ToolDescriptor.params_model`, y una strategy puede tener modelos
+   propios.
 
 ## Relación con resultados de tools
 
@@ -59,11 +70,19 @@ Un schema con `extra="forbid"` no debe documentarse junto a retornos
 adicionales que el propio modelo no acepta. Los servicios nuevos emiten
 `success` y `message`; las claves legacy no forman parte del contrato recomendado.
 
+## Guardrail ante documentación vieja
+
+Si una tabla documental no coincide con `model_fields`, `CONTRACT_SCHEMAS` o el
+caller real, clasificarlo como `DOCUMENTATION_DRIFT`. No modificar el schema ni
+relajar validación para acomodar documentación antigua sin demostrar primero que
+esa documentación representa el contrato intencional.
+
 ## Verificación mínima
 
 - Confirmar la entrada exacta en `CONTRACT_SCHEMAS`.
 - Resolver cada nombre con `get_schema_class()`.
 - Comparar la tabla documental con `model_fields`.
+- Verificar el decorador y el nombre runtime de la clase consumidora.
 - Probar input inválido, output inválido y pass-through cuando no hay schema.
 - Ejecutar `tests/test_contracts_ticket_1_1.py` y los tests del consumidor.
 
