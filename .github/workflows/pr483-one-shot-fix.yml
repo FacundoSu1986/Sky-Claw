@@ -29,85 +29,66 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
 
           core_path = Path("sky_claw/app/core/db_lifecycle.py")
-          core = core_path.read_text(encoding="utf-8")
+          lines = core_path.read_text(encoding="utf-8").splitlines(keepends=True)
 
-          old_policy = '''        #   RUNNING → init_all es por tanto idempotente: un path ya
-          #   inicializado conserva SU conexión — nunca la reemplaza.
-          # * Fail-closed ESTRECHO (P2): tras un shutdown INCOMPLETO queda una
-          #   entrada retenida cuya conexión ya está muerta, y la idempotencia
-          #   la reutilizaría entregando un objeto inservible. Sólo ese estado
-          #   (`_shutting_down` sin `_closed`) rechaza la reapertura: RUNNING
-          #   sano y CLOSED siguen permitidos.
-          '''
-          new_policy = '''        #   RUNNING → init_all es idempotente para paths servibles: un path ya
-          #   inicializado conserva SU conexión — nunca la reemplaza.
-          # * Fail-closed: un shutdown INCOMPLETO rechaza la reapertura global y
-          #   una cuarentena por path tampoco se sobreescribe aquí. La ausencia de
-          #   conexión registrada prueba ownership, no coherencia del archivo:
-          #   sólo un shutdown terminal puede retirar una recovery abortada que
-          #   no llegó a reconstruir su recurso.
-          '''
-          assert core.count(old_policy) == 1, "policy comment drifted"
-          core = core.replace(old_policy, new_policy)
+          def unique_index(fragment: str) -> int:
+              matches = [i for i, line in enumerate(lines) if fragment in line]
+              assert len(matches) == 1, f"expected one {fragment!r}, got {matches}"
+              return matches[0]
 
-          old_rescue = '''            # Reapertura explícita de los paths cuya recovery abortó: quedaron
-          # fail-closed sin conexión retenida, así que no hay nada dañado que
-          # reutilizar y volver a abrir es seguro (el consumidor revalida su
-          # contenido, igual que en el arranque). Un path con conexión
-          # retenida NO se rescata acá: ahí el cierre no se confirmó y
-          # reutilizar esa entrada entregaría un objeto muerto — mismo
-          # criterio que el guard de shutdown incompleto de arriba.
-          for path_str in [p for p in self._quarantined_paths if p not in self._connections]:
-              self._quarantined_paths.discard(path_str)
-              logger.info(
-                  "DatabaseLifecycle: init_all() libera la cuarentena de %s (sin conexión retenida)",
-                  path_str,
-              )
-          '''
-          assert core.count(old_rescue) == 1, "init_all rescue block drifted"
-          core = core.replace(old_rescue, "")
+          # Actualiza la política documentada de init_all sin depender de offsets.
+          policy_start = unique_index("#   RUNNING → init_all es por tanto idempotente: un path ya")
+          policy_end = unique_index("#   sano y CLOSED siguen permitidos.") + 1
+          lines[policy_start:policy_end] = [
+              "        #   RUNNING → init_all es idempotente para paths servibles: un path ya\n",
+              "        #   inicializado conserva SU conexión — nunca la reemplaza.\n",
+              "        # * Fail-closed: un shutdown INCOMPLETO rechaza la reapertura global y\n",
+              "        #   una cuarentena por path tampoco se sobreescribe aquí. La ausencia de\n",
+              "        #   conexión registrada prueba ownership, no coherencia del archivo:\n",
+              "        #   sólo un shutdown terminal puede retirar una recovery abortada que\n",
+              "        #   no llegó a reconstruir su recurso.\n",
+          ]
 
-          old_doc = '''        Cómo vuelve a servicio un path cuya recovery abortó: la cuarentena la
-          levantan las transiciones explícitas del lifecycle, nunca un resolve
-          oportunista. ``init_all()`` la libera si NO quedó conexión retenida —el
-          caso de la recovery abortada— y ``shutdown_all()`` la limpia al
-          completar el cierre. La cuarentena que deja un cierre no confirmado
-          sobrevive a ``init_all()`` a propósito: ahí sí hay una conexión muerta
-          registrada, y reutilizarla entregaría un objeto inservible.
-          '''
-          new_doc = '''        Cómo vuelve a servicio un path cuya recovery abortó: ``init_all()`` NO
-          levanta esa cuarentena. Que no haya conexión retenida sólo demuestra
-          ownership del handle; no demuestra que el archivo siga siendo coherente
-          después de un rename/schema fallido. El path permanece fail-closed hasta
-          un ``shutdown_all()`` terminal, que limpia la transición antes del
-          próximo ciclo. Una cuarentena por cierre no confirmado también sobrevive
-          a ``init_all()`` y el shutdown conserva el derecho a reintentar el cierre.
-          '''
-          assert core.count(old_doc) == 1, "recover_connection doc drifted"
-          core = core.replace(old_doc, new_doc)
+          # Elimina el rescate inseguro: no-conexión != archivo coherente.
+          rescue_start = unique_index("# Reapertura explícita de los paths cuya recovery abortó")
+          rescue_end = unique_index("if self._config.enable_auto_checkpoint:")
+          assert rescue_start < rescue_end
+          del lines[rescue_start:rescue_end]
 
-          old_final = '''            # quedó a mitad de reconstruir). Ambas se levantan por transición
-          # explícita, no por el próximo resolve que pase.
-          '''
-          new_final = '''            # quedó a mitad de reconstruir). Ninguna la levanta ``init_all()``:
-          # hace falta completar la recovery o alcanzar un shutdown terminal.
-          '''
-          assert core.count(old_final) == 1, "recovery final comment drifted"
+          core = "".join(lines)
+
+          old_doc_start = "        Cómo vuelve a servicio un path cuya recovery abortó: la cuarentena la\n"
+          doc_start = core.index(old_doc_start)
+          doc_end = core.index("\n        La admisión abarca TODA la ventana", doc_start)
+          new_doc = (
+              "        Cómo vuelve a servicio un path cuya recovery abortó: ``init_all()`` NO\n"
+              "        levanta esa cuarentena. Que no haya conexión retenida sólo demuestra\n"
+              "        ownership del handle; no demuestra que el archivo siga siendo coherente\n"
+              "        después de un rename/schema fallido. El path permanece fail-closed hasta\n"
+              "        un ``shutdown_all()`` terminal, que limpia la transición antes del\n"
+              "        próximo ciclo. Una cuarentena por cierre no confirmado también sobrevive\n"
+              "        a ``init_all()`` y el shutdown conserva el derecho a reintentar el cierre.\n"
+          )
+          core = core[:doc_start] + new_doc + core[doc_end:]
+
+          old_final = (
+              "            # quedó a mitad de reconstruir). Ambas se levantan por transición\n"
+              "            # explícita, no por el próximo resolve que pase.\n"
+          )
+          new_final = (
+              "            # quedó a mitad de reconstruir). Ninguna la levanta ``init_all()``:\n"
+              "            # hace falta completar la recovery o alcanzar un shutdown terminal.\n"
+          )
+          assert core.count(old_final) == 1
           core = core.replace(old_final, new_final)
           core_path.write_text(core, encoding="utf-8")
 
           tests_path = Path("tests/test_db_lifecycle_quarantine.py")
           tests = tests_path.read_text(encoding="utf-8")
-
-          h6_pattern = re.compile(
-              r"async def test_h6_init_all_rescata_el_path_de_una_recovery_abortada\(.*?(?=\n\nasync def test_h7_)",
-              re.S,
-          )
-          h6_matches = h6_pattern.findall(tests)
-          assert len(h6_matches) == 1, "H6 drifted"
+          h6_start = tests.index("async def test_h6_init_all_rescata_el_path_de_una_recovery_abortada(")
+          h6_end = tests.index("\n\nasync def test_h7_", h6_start)
           h6_new = '''async def test_h6_init_all_no_republica_una_recovery_abortada(
               gestor: DatabaseLifecycleManager,
               ruta_db: Path,
@@ -118,7 +99,7 @@ jobs:
               Una recovery abortada puede haber dejado el recurso a medio mover o
               reconstruir. Que no haya conexión retenida prueba ownership, no que el
               path sea seguro para publicar. La salida explícita es un shutdown
-              terminal; después, un ciclo nuevo puede inicializar y revalidar.
+              terminal; recién el ciclo siguiente puede volver a abrir el recurso.
               """
               await gestor.init_all()
               conn = await gestor.get_connection(ruta_db)
@@ -148,14 +129,17 @@ jobs:
                   assert await esta_usable(fresca), "el ciclo nuevo no recuperó un path limpio"
               await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
           '''
-          tests = h6_pattern.sub(h6_new, tests, count=1)
+          tests = tests[:h6_start] + h6_new + tests[h6_end:]
 
-          marker = '''\n\n# ---------------------------------------------------------------------------
-          # G — INVENTARIO AST: quién puede mutar el registro
-          # ---------------------------------------------------------------------------
-          '''
-          assert tests.count(marker) == 1, "G marker drifted"
-          h9 = '''\n\nasync def test_h9_init_all_no_republica_archivo_declarado_corrupto_si_rename_falla(
+          marker = (
+              "\n\n# ---------------------------------------------------------------------------\n"
+              "# G — INVENTARIO AST: quién puede mutar el registro\n"
+              "# ---------------------------------------------------------------------------\n"
+          )
+          assert tests.count(marker) == 1
+          h9 = '''
+
+          async def test_h9_init_all_no_republica_archivo_declarado_corrupto_si_rename_falla(
               tmp_path: Path,
               conexiones: list[aiosqlite.Connection],
               monkeypatch: pytest.MonkeyPatch,
@@ -231,6 +215,8 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add sky_claw/app/core/db_lifecycle.py tests/test_db_lifecycle_quarantine.py
           git diff --cached --check
-          git diff --cached --name-only
+          test "$(git diff --cached --name-only | wc -l)" -eq 2
+          git diff --cached --name-only | grep -Fx "sky_claw/app/core/db_lifecycle.py"
+          git diff --cached --name-only | grep -Fx "tests/test_db_lifecycle_quarantine.py"
           git commit -m "fix(lifecycle): no republicar recoveries abortadas desde init_all"
           git push origin HEAD:claude/shared-invalidation-planning-b5bfhu
