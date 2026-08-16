@@ -321,12 +321,17 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
 
 Workflow estándar para publicar una nueva versión de Sky-Claw. El empaquetado se realiza con PyInstaller usando el spec `sky_claw.spec` (que autoderiva el `VERSIONINFO` de la versión del paquete en `pyproject.toml`).
 
-> **Estado actual:** GitHub contiene releases hasta `v0.2.4`. El workflow
-> publicado construyó `SkyClawApp.exe`, generó un SBOM SPDX, ejecutó
-> `Cosign sign-blob` keyless y adjuntó `SkyClawApp.exe.bundle.json`; su ejecución
-> para `v0.2.4` terminó correctamente. Los cambios del árbol actual siguen en
-> `[Unreleased]`. Esta tarea no verificó criptográficamente el bundle, no hizo
-> cold boot del ejecutable ni inspeccionó la firma PE del artefacto histórico.
+> **Estado actual:** GitHub contiene releases hasta `v0.2.4`. La publicación de
+> nuevos releases está **pausada temporalmente** mientras continúan los refactors
+> estructurales. `.github/workflows/release.yml` conserva la receta de build,
+> SBOM, firma y publicación, pero no se dispara por tags y el job `release` está
+> bloqueado intencionalmente. Los cambios del árbol actual siguen en
+> `[Unreleased]`.
+
+> **Reactivación:** restaurar en `.github/workflows/release.yml` el trigger
+> `push.tags` para `v*` y eliminar el guard `if: ${{ false }}` del job `release`.
+> Solo después de mergear esa reactivación debe crearse y pushearse un nuevo tag
+> de versión.
 
 ### 10.1 Checklist de Release
 
@@ -362,10 +367,11 @@ Tras generar el `.exe`:
 1.  **Arranque en modo GUI:** Ejecutar `SkyClawApp.exe` en una máquina limpia (sin Python instalado). Debe arrancar en modo GUI por defecto (`sys.frozen`).
 2.  **Arranque en modo CLI:** Probar `SkyClawApp.exe --mode cli -v` para verificar logs y que el handler de excepciones del loop funciona.
 3.  **Validación de Bridge:** Correr `SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"` y validar el smoke de §2.
-4.  **Artifact Tagging:** Sustituir `<version>` por la versión SemVer ya
-    declarada en `pyproject.toml`; crear el tag
+4.  **Artifact Tagging:** mientras la publicación esté pausada, **no crear ni
+    pushear tags de release**. Tras reactivar el workflow según el bloque
+    anterior, sustituir `<version>` por la versión SemVer declarada, crear el tag
     (`git tag -a "v<version>" -m "Release v<version>"`) y pushearlo
-    (`git push origin "v<version>"`). El push dispara
+    (`git push origin "v<version>"`). En ese estado reactivado, el push dispara
     `.github/workflows/release.yml`, que publica el ejecutable, el bundle Cosign
     y el SBOM en GitHub Releases. Los comandos con `<version>` son plantillas,
     no deben ejecutarse literalmente.
