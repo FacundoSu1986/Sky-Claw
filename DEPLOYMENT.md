@@ -2,8 +2,10 @@
 
 > **Audiencia:** operadores y responsables de release.
 > **Fuente canónica:** runtime, CI y packaging del árbol actual.
-> **Última verificación:** 2026-07-26 sobre
+> **Última verificación integral:** 2026-07-26 sobre
 > `codex/crash-logging-async-safe` `74bdb8f`.
+> **Sincronización CredentialVault/release:** 2026-08-16 sobre `main` `f6d502c`;
+> limitada al wiring de secretos y al estado público de `v0.2.4`.
 
 Operational guide for deploying, running and recovering Sky-Claw. For the
 quick-start install flow see [QUICKSTART.md](QUICKSTART.md); this document
@@ -136,9 +138,14 @@ vars, resueltos por argparse, no por `path_resolver`): `--xedit-exe`,
 migra a keyring y los borra del TOML — `config.py:96-102`).
 
 ### Secretos de runtime (LLM / Nexus / Telegram) → OS keyring
-El path de arranque real: `Config._load_from_keyring()` (`config.py:67-81`) lee
-del **keyring del SO** bajo el servicio **`sky_claw`**. `AppContext` construye el
-`LLMRouter` con estas claves; **`CredentialVault` NO interviene en este flujo.**
+El bootstrap real lee las credenciales desde el **keyring del SO** bajo el
+servicio **`sky_claw`** mediante `Config._load_from_keyring()` (`config.py:67-81`).
+Esa sigue siendo la fuente inicial para LLM/Nexus/Telegram. `CredentialVault` no
+la sustituye: cuando `SKYCLAW_VAULT_MASTER_KEY` está configurada,
+`AppContext.start_full()` provisiona la bóveda, siembra **sólo si falta** la
+credencial del provider activo y la inyecta en `LLMRouter` para habilitar el
+hot-swap Zero-Trust. Sin esa variable, `vault=None` y el hot-swap queda
+deshabilitado.
 
 | Clave keyring (`service="sky_claw"`) | Uso |
 |---|---|
@@ -168,12 +175,15 @@ claro (se loguea) y elegís otro.
    **token-file rotativo** en `~/.sky_claw/tokens/` (`read_token_file(token_dir)`),
    con TTL/rotación. La rotación es del archivo, no del keyring.
 
-### CredentialVault (almacén cifrado, separado)
+### CredentialVault (almacén cifrado, opcional para hot-swap)
 `sky_claw/app/security/credential_vault.py` es un almacén **cifrado con
 Fernet** (clave derivada por PBKDF2 desde un salt por máquina en
 `~/.sky_claw/vault_salt.bin` + backup), ciphertext en SQLite. API
-`get_secret(name)` / `set_secret(name, value)`. Es una facilidad aparte — **no es
-el mecanismo que alimenta LLM/Nexus/Telegram al arranque** (eso es keyring, arriba).
+`get_secret(name)` / `set_secret(name, value)`. El keyring sigue alimentando el
+bootstrap. Si existe `SKYCLAW_VAULT_MASTER_KEY`, el caller provisiona la bóveda
+e inyecta `vault` en el router; la credencial activa se siembra con semántica
+**seed-if-absent**, de modo que una credencial rotada en la bóveda no se pisa con
+la copia de Config en el siguiente arranque.
 
 ---
 
@@ -285,7 +295,7 @@ Antes de soltar el agente sobre un Skyrim+MO2 real (idealmente en VM o perfil de
 MO2 descartable la primera vez):
 
 - [ ] `~/.sky_claw/config.toml` creado; `SKYRIM_PATH` y `XEDIT_PATH` válidos (los exige el chequeo de paths en runtime), `MO2_PATH` dentro del sandbox.
-- [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. (Cargar en `CredentialVault` NO los expone al arranque.)
+- [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. Esa es la fuente de bootstrap; si habilitás `SKYCLAW_VAULT_MASTER_KEY`, el provider activo puede sembrarse en `CredentialVault` para hot-swap sin sustituir el keyring inicial.
 - [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `openai` / `ollama`.
 - [ ] Suite local en verde: `pytest -q`.
 - [ ] Gates: `ruff check sky_claw/ tests/`, `ruff format --check sky_claw/ tests/` y `mypy sky_claw/`.

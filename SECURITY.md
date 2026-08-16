@@ -5,12 +5,18 @@
 >
 > **English summary:** please report vulnerabilities privately via **GitHub → Security →
 > Advisories → "Report a vulnerability"**. Do not disclose exploit details in public
-> issues. No distributed release is currently verified; once releases exist,
-> only the latest 0.2.x release will receive security fixes.
+> issues. The latest public release observed is `v0.2.4`; only the latest published
+> `0.2.x` release receives security fixes. GitHub publishes an executable, an SPDX SBOM
+> and a Cosign bundle for `v0.2.4`, but their existence does not independently verify
+> cryptographic validity, Authenticode status or cold-boot behavior.
 >
-> **Estado:** controles de runtime verificados leyendo código;
-> publicación, firma y SBOM no verificados como release distribuida.
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Estado:** controles de runtime cubiertos por la verificación integral previa;
+> `v0.2.4` se verificó como release pública con `SkyClawApp.exe`, SBOM SPDX y
+> `SkyClawApp.exe.bundle.json`. La validez criptográfica del bundle, la firma
+> Authenticode y el cold boot del ejecutable permanecen fuera de esta verificación.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Sincronización release/security:** 2026-08-16 sobre `main` `f6d502c`;
+> limitada al estado público de `v0.2.4` y a las garantías explícitamente no verificadas.
 
 ## Versiones soportadas
 
@@ -18,7 +24,7 @@ Solo la última release publicada recibe correcciones de seguridad.
 
 | Versión | Soportada |
 | ------- | --------- |
-| 0.2.x (cuando exista una release publicada) | ✅ |
+| 0.2.x (última publicada: `v0.2.4`) | ✅ |
 | < 0.2 | ❌ |
 
 ## Cómo reportar una vulnerabilidad
@@ -52,9 +58,11 @@ Sky-Claw invoca (SSEEdit, LOOT, DynDOLOD, MO2, etc.): reportalas a sus proyectos
 
 - CI con **Bandit** (SAST) y **pip-audit --strict** sobre `requirements.lock` con hashes
   enforced; `npm audit` para el gateway de Telegram.
-- El workflow construye un artefacto PyInstaller en CI. No hay evidencia
-  vigente de tag de release, firma Authenticode/cosign ni SBOM publicado; no
-  deben anunciarse como garantías hasta validarlos en una release real.
+- El workflow construye un artefacto PyInstaller y la release pública `v0.2.4`
+  contiene `SkyClawApp.exe`, `sky-claw-v0.2.4-sbom.spdx.json` y
+  `SkyClawApp.exe.bundle.json`. La presencia de esos artefactos no equivale a una
+  verificación criptográfica independiente, firma Authenticode ni cold boot; no deben
+  anunciarse como garantías hasta validarlos específicamente.
 - Secretos vía el backend de keyring del sistema; directorios de estado con
   DACLs restrictivas (`.sky_claw/`) donde el control está cableado.
 - Sandboxing de rutas con `PathValidator`

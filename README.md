@@ -11,6 +11,9 @@
 >
 > **Sincronización DB/lifecycle:** 2026-08-16 sobre `main` `7156718`; no implica
 > reverificación integral del resto de claims del README.
+>
+> **Sincronización release/empaquetado:** 2026-08-16 sobre `main` `f6d502c`;
+> limitada al estado público de los artefactos de `v0.2.4`.
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
@@ -142,7 +145,7 @@ Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nue
 - [x] Base de datos async distribuida
 - [x] Wrapper xEdit y LOOT headless
 - [x] Parser y resolución FOMOD
-- [ ] Empaquetado final como .exe único
+- [x] Empaquetado `.exe` único publicado en `v0.2.4` (firma, cold boot y smokes reales se verifican por separado)
 
 ---
 
