@@ -149,6 +149,61 @@ def _fingir_corrupcion(conn: aiosqlite.Connection) -> None:
     conn.execute = execute_espia  # type: ignore[method-assign]
 
 
+class _EspiaQuickCheck:
+    """Cuenta CADA ``PRAGMA quick_check`` del proceso y puede corromper uno.
+
+    Instrumenta en el momento del ``connect``, no sobre una conexión concreta:
+    así cubre también las que abra un ``init_all()`` posterior, que es justo
+    donde hay que demostrar que nadie revalidó nada. El contador es la evidencia
+    central de H9 — "el path volvió a servicio" y "hubo una sola validación, la
+    que lo declaró corrupto" no se pueden afirmar mirando internals.
+    """
+
+    def __init__(self) -> None:
+        self.ejecutados: list[str] = []
+        self._corromper_proxima = False
+
+    def corromper_la_proxima(self) -> None:
+        """Arma la corrupción para el siguiente ``quick_check``, sea cual sea."""
+        self._corromper_proxima = True
+
+    def instrumentar(self, conn: aiosqlite.Connection) -> None:
+        ejecutar_real = conn.execute
+
+        def execute_espia(sql: object, *a: object, **k: object) -> object:
+            if "quick_check" in str(sql):
+                self.ejecutados.append(str(sql))
+                if self._corromper_proxima:
+                    self._corromper_proxima = False
+                    return _CursorCorrupto()
+            return ejecutar_real(sql, *a, **k)
+
+        conn.execute = execute_espia  # type: ignore[method-assign]
+
+
+@pytest.fixture
+def quick_check(
+    conexiones: list[aiosqlite.Connection],  # noqa: ARG001 — ordena el parcheo
+    monkeypatch: pytest.MonkeyPatch,
+) -> _EspiaQuickCheck:
+    """Espía de ``quick_check``. Depende de ``conexiones`` A PROPÓSITO.
+
+    Ambas fixtures parchean ``db_lifecycle.aiosqlite.connect``; declarar la
+    dependencia fuerza el orden y hace que ésta ENVUELVA al espía de aquélla en
+    vez de competir por el mismo atributo.
+    """
+    espia = _EspiaQuickCheck()
+    connect_previo = db_lifecycle.aiosqlite.connect
+
+    async def connect_instrumentado(*a: object, **k: object) -> aiosqlite.Connection:
+        conn = await connect_previo(*a, **k)
+        espia.instrumentar(conn)
+        return conn
+
+    monkeypatch.setattr(db_lifecycle.aiosqlite, "connect", connect_instrumentado)
+    return espia
+
+
 # ---------------------------------------------------------------------------
 # A — OWNERSHIP: el pop va DESPUÉS del cierre confirmado
 # ---------------------------------------------------------------------------
@@ -855,6 +910,13 @@ async def test_f3_corrupcion_con_cierre_fallido_no_renombra_nada(
 # seguida de un cuerpo fallido devolvía el path a servicio sin reconstruirlo.
 # El discriminante común de H1–H5: tras el fallo, un hermano NO puede usar el
 # path.
+#
+# H6–H9 cubren la otra mitad: quién puede LEVANTAR esa cuarentena. Ninguna
+# reapertura lo hace —da igual el origen de la marca (H6, H7)—, porque "no quedó
+# conexión retenida" habla del ownership del handle y no de la coherencia del
+# archivo; sólo el cierre COMPLETO la limpia (H8). H9 es por qué importa: el
+# rescate por reapertura publicaba justamente el archivo que la recovery no
+# había podido retirar del path.
 
 
 async def test_h1_cuerpo_fallido_antes_de_reabrir_deja_el_path_cerrado(
@@ -1044,21 +1106,29 @@ async def test_h5_salir_sin_reabrir_es_un_error_explicito(
         await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
 
 
-async def test_h6_init_all_rescata_el_path_de_una_recovery_abortada(
+async def test_h6_init_all_no_levanta_la_cuarentena_de_una_recovery_abortada(
     gestor: DatabaseLifecycleManager,
     ruta_db: Path,
     conexiones: list[aiosqlite.Connection],
 ) -> None:
-    """REV-INIT-RESCUE. Fail-closed no puede ser un callejón sin salida.
+    """REV-INIT-NO-RESCUE. Reabrir no es revalidar.
 
-    Tras una recovery abortada no queda conexión retenida: no hay nada dañado
-    que reutilizar, así que la reapertura EXPLÍCITA puede volver a abrir el path
-    —y el consumidor revalida el contenido, igual que en el arranque—. Sin esto,
-    un rename que falla una vez inutiliza la DB hasta reiniciar el proceso.
+    ``init_all()`` rescataba toda cuarentena sin conexión retenida, razonando
+    que "no hay nada dañado que reutilizar". El predicado era peor que
+    incompleto: los ÚNICOS dos productores de cuarentena son el cierre no
+    confirmado —que RETIENE la entrada— y la ventana de recovery —que la retira
+    tras cerrar—, así que ``p not in _connections`` seleccionaba EXACTAMENTE las
+    recoveries abortadas. Es decir, rescataba justo el caso en que el archivo
+    declarado corrupto puede seguir en el path (H9), y sólo ése.
+
+    "Sin conexión retenida" habla del ownership del handle, no de la coherencia
+    del archivo. La salida de fail-closed es la transición TERMINAL, no la
+    reapertura — y sigue existiendo, que es lo que impide el callejón sin salida.
     """
     await gestor.init_all()
     conn = await gestor.get_connection(ruta_db)
     clave = str(ruta_db.resolve())
+    creadas_antes = len(conexiones)
 
     with pytest.raises(RuntimeError):
         async with gestor.recover_connection(ruta_db, conn):
@@ -1067,11 +1137,23 @@ async def test_h6_init_all_rescata_el_path_de_una_recovery_abortada(
     assert clave in gestor._quarantined_paths
     assert clave not in gestor._connections, "precondición: no quedó conexión retenida"
 
-    await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
 
-    assert clave not in gestor._quarantined_paths, "init_all() no rescató un path sin conexión retenida"
+    assert clave in gestor._quarantined_paths, "init_all() levantó la cuarentena de una recovery abortada"
+    assert len(conexiones) == creadas_antes, "init_all() reabrió un path fail-closed"
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with gestor.operation(ruta_db):
+            pass
+
+    # Fail-closed no es un callejón sin salida: el cierre COMPLETO —el único
+    # punto donde consta que no queda nada a medio reconstruir— lo libera.
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+    assert gestor._quarantined_paths == set()
+
+    await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
     async with gestor.operation(ruta_db) as fresca:
-        assert await esta_usable(fresca), "el path rescatado no entrega una conexión usable"
+        assert await esta_usable(fresca), "el ciclo shutdown→init no devolvió el path a servicio"
 
     await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
 
@@ -1150,6 +1232,96 @@ async def test_h8_el_shutdown_completo_limpia_las_cuarentenas(
     async with gestor.operation(ruta_db) as fresca:
         assert await esta_usable(fresca)
     await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+async def test_h9_init_all_no_republica_el_archivo_que_la_recovery_no_pudo_retirar(
+    tmp_path: Path,
+    conexiones: list[aiosqlite.Connection],
+    quick_check: _EspiaQuickCheck,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H2 + H6 JUNTOS: el caso que ninguno de los dos cubría por separado.
+
+    H2 prueba que el rename fallido deja el path cerrado y se detiene ahí. H6
+    prueba el rescate de ``init_all()``, pero sobre un archivo SANO — por eso su
+    conexión rescatada respondía y nadie notaba nada. Encadenados sobre el mismo
+    path, el rescate republicaba exactamente el archivo que el consumidor acababa
+    de declarar corrupto y que el rename no había podido retirar.
+
+    El discriminante NO es si un ``SELECT 1`` funciona: SQLite abre sin quejarse
+    una DB cuyo ``quick_check`` es inválido. Es si el lifecycle volvió a PUBLICAR
+    como servible un recurso condenado sin ninguna revalidación posterior. Por
+    eso el assert que manda es el CONTADOR: un solo ``quick_check`` en toda la
+    historia —el que detectó la corrupción— y nadie llamó a ``registry.open()``
+    de nuevo, así que nadie pudo haber revalidado.
+
+    El rename falla con una excepción NO reintentable a propósito: lo que se
+    prueba es el estado tras el cuerpo fallido, no el backoff de tenacity (mismo
+    criterio que H2, y mantiene el test sin esperas reales).
+    """
+    ruta = tmp_path / "h9.db"
+    clave = str(ruta.resolve())
+    gestor = DatabaseLifecycleManager(
+        db_paths=[ruta],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False, enable_auto_checkpoint=False),
+    )
+    registry = AsyncModRegistry(ruta, lifecycle=gestor)
+
+    # Marca para poder afirmar DESPUÉS que el archivo es el mismo de antes.
+    async with gestor.operation(ruta) as c:
+        await c.execute("CREATE TABLE IF NOT EXISTS marca_original (x INT)")
+        await c.commit()
+
+    rename_real = pathlib.Path.rename
+    fallo = RuntimeError("rename deliberadamente fallido")
+
+    def rename_que_falla(*_a: object, **_k: object) -> None:
+        raise fallo
+
+    monkeypatch.setattr(pathlib.Path, "rename", rename_que_falla)
+    quick_check.corromper_la_proxima()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await asyncio.wait_for(registry.open(), timeout=DEADLINE)
+    assert exc_info.value is fallo
+
+    assert ruta.exists(), "precondición: el archivo condenado sigue en su lugar"
+    assert list(tmp_path.glob("*.corrupt.*")) == [], "precondición: el backup no llegó a crearse"
+    assert clave in gestor._quarantined_paths
+    assert clave not in gestor._connections, "precondición: no quedó conexión retenida"
+    assert registry._conn is None
+    assert len(quick_check.ejecutados) == 1, "precondición: una sola validación, la que detectó la corrupción"
+
+    # El rename vuelve a funcionar, pero NADIE llama a registry.open() otra vez:
+    # sin un segundo open() no hay quick_check, y sin quick_check no hay nada que
+    # pueda haber reclasificado el archivo.
+    monkeypatch.setattr(pathlib.Path, "rename", rename_real)
+    creadas_antes = len(conexiones)
+
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+
+    assert clave in gestor._quarantined_paths, "init_all() republicó el path condenado"
+    assert len(conexiones) == creadas_antes, "init_all() reabrió el archivo condenado"
+    assert len(quick_check.ejecutados) == 1, "hubo un quick_check que nadie pidió"
+
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with gestor.operation(ruta):
+            pass
+    assert len(quick_check.ejecutados) == 1, "operation() revalidó — no es su trabajo ni lo hace"
+
+    # El archivo condenado sigue siendo el mismo, sin backup y sin reconstruir:
+    # exactamente lo que se habría entregado si la cuarentena se hubiera levantado.
+    assert list(tmp_path.glob("*.corrupt.*")) == []
+    condenada = sqlite3.connect(ruta)
+    try:
+        assert condenada.execute("SELECT name FROM sqlite_master WHERE name = 'marca_original'").fetchone()
+    finally:
+        condenada.close()
+
+    # Salida del estado: la transición TERMINAL.
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+    assert gestor._quarantined_paths == set()
 
 
 # ---------------------------------------------------------------------------

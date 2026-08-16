@@ -126,7 +126,11 @@ class DatabaseConnectionQuarantinedError(RuntimeError):
       ``shutdown_all()``, que es quien conserva el derecho a cerrarla.
     - Una ventana de ``recover_connection()`` en curso: el archivo está por
       moverse y abrir una conexión "fresh" ahí la ataría al inodo que el rename
-      se lleva. Se recupera sola al cerrarse la ventana.
+      se lleva. Se levanta sola si la ventana COMPLETA la reconstrucción; si
+      aborta —el rename falló y el archivo declarado corrupto sigue en el
+      path—, sobrevive, y tampoco la levanta ``init_all()``: reabrir publicaría
+      ese mismo archivo sin que nadie lo haya vuelto a validar. Sale por
+      ``shutdown_all()`` completo, igual que el cierre no confirmado.
     """
 
 
@@ -269,6 +273,13 @@ class DatabaseLifecycleManager:
         ``register_atexit_handler`` terminó sin un solo caller en el árbol).
         Se registra aunque ``_db_paths`` esté vacío: ``get_connection`` da de
         alta los paths on-demand y ``_sync_shutdown`` los lee recién al salir.
+
+        Raises:
+            DatabaseLifecycleShuttingDownError: si el shutdown anterior quedó
+                incompleto.
+            DatabaseConnectionQuarantinedError: si algún path registrado sigue
+                fail-closed. Reabrir NO levanta cuarentenas —de ningún origen—;
+                la salida es ``shutdown_all()`` completo.
         """
         # Reapertura EXPLÍCITA, serializada e idempotente por path.
         #
@@ -300,19 +311,36 @@ class DatabaseLifecycleManager:
                 )
             self._shutting_down = False
             self._closed = False
-            # Reapertura explícita de los paths cuya recovery abortó: quedaron
-            # fail-closed sin conexión retenida, así que no hay nada dañado que
-            # reutilizar y volver a abrir es seguro (el consumidor revalida su
-            # contenido, igual que en el arranque). Un path con conexión
-            # retenida NO se rescata acá: ahí el cierre no se confirmó y
-            # reutilizar esa entrada entregaría un objeto muerto — mismo
-            # criterio que el guard de shutdown incompleto de arriba.
-            for path_str in [p for p in self._quarantined_paths if p not in self._connections]:
-                self._quarantined_paths.discard(path_str)
-                logger.info(
-                    "DatabaseLifecycle: init_all() libera la cuarentena de %s (sin conexión retenida)",
-                    path_str,
-                )
+            # `init_all()` NO levanta cuarentenas. Ninguna, de ningún origen.
+            #
+            # Antes rescataba las que no tenían conexión retenida, razonando que
+            # "no quedó nada dañado que reutilizar, así que reabrir es seguro (el
+            # consumidor revalida)". Las dos mitades del razonamiento son falsas:
+            #
+            # * Ausencia de conexión retenida prueba OWNERSHIP DEL HANDLE, no
+            #   coherencia del ARCHIVO. Y es peor que eso: los únicos dos lugares
+            #   que marcan un path son el cierre NO confirmado —que retiene la
+            #   entrada— y la ventana de `recover_connection()` —que la retira
+            #   tras cerrar—, así que `p not in _connections` seleccionaba
+            #   EXACTAMENTE las recoveries abortadas. El caso que rescataba era
+            #   precisamente aquel en que el archivo declarado corrupto puede
+            #   seguir en el path porque el rename que iba a retirarlo falló.
+            # * "El consumidor revalida" no es una garantía que este lado pueda
+            #   hacer valer. El único `PRAGMA quick_check` del árbol vive en
+            #   `AsyncModRegistry.open()`; `init_all()` ni lo ejecuta ni puede
+            #   exigirlo, y `_resolve_connection` publica la conexión reabierta a
+            #   CUALQUIER consumidor vía `operation()`/`get_connection()` — así
+            #   que la reapertura llegaba antes que la revalidación, si es que
+            #   alguna vez llegaba.
+            #
+            # Una recovery incompleta queda fail-closed hasta la transición
+            # TERMINAL: `shutdown_all()` completo, que es el único punto donde
+            # consta que no hay nada a medio reconstruir (ver el `clear()` de
+            # ambas ramas del shutdown). Un path marcado que esté en `_db_paths`
+            # hace que esta reapertura falle con
+            # `DatabaseConnectionQuarantinedError` desde `_resolve_connection`,
+            # mismo desenlace que ya tenía el cierre no confirmado: las dos
+            # cuarentenas sobreviven a `init_all()`, y por el mismo motivo.
             if self._config.enable_auto_checkpoint:
                 self.register_atexit_handler()
             self._admit()
@@ -1236,13 +1264,18 @@ class DatabaseLifecycleManager:
         reporta como tal: un cierre limpio que no reabrió no puede pasar por
         recovery exitosa sólo porque nadie lanzó una excepción.
 
-        Cómo vuelve a servicio un path cuya recovery abortó: la cuarentena la
-        levantan las transiciones explícitas del lifecycle, nunca un resolve
-        oportunista. ``init_all()`` la libera si NO quedó conexión retenida —el
-        caso de la recovery abortada— y ``shutdown_all()`` la limpia al
-        completar el cierre. La cuarentena que deja un cierre no confirmado
-        sobrevive a ``init_all()`` a propósito: ahí sí hay una conexión muerta
-        registrada, y reutilizarla entregaría un objeto inservible.
+        Cómo vuelve a servicio un path cuya recovery abortó: por la transición
+        TERMINAL, nunca por un resolve oportunista ni por una reapertura.
+        ``shutdown_all()`` limpia las cuarentenas al completar el cierre, y ese
+        es el único punto donde consta que no queda nada a medio reconstruir.
+        ``init_all()`` NO las levanta: "no quedó conexión retenida" habla del
+        ownership del handle, no de la coherencia del archivo, y cuando la
+        ventana abortó porque el rename falló, el archivo que sigue en el path
+        es exactamente el que se declaró corrupto. Reabrirlo ahí lo publicaría
+        vía ``operation()`` sin que ningún ``quick_check`` lo hubiera vuelto a
+        mirar — la revalidación vive en el consumidor, y este lado no puede
+        exigirla. Por eso las dos cuarentenas (cierre no confirmado y recovery
+        abortada) sobreviven a ``init_all()``.
 
         La admisión abarca TODA la ventana —invalidación, rename, reapertura—,
         de modo que un ``shutdown_all()`` concurrente la espera en vez de cerrar
