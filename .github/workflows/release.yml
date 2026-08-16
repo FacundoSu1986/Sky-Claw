@@ -1,9 +1,9 @@
 name: Release
 
+# Temporarily paused while the project is undergoing major refactors.
+# Restore the tag push trigger and remove the job-level guard when releases resume.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   release:
+    if: ${{ false }}  # paused intentionally; keep the release recipe intact
     name: "📦 Release ${{ github.ref_name }}"
     runs-on: windows-latest
     timeout-minutes: 30
