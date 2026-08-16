@@ -265,6 +265,13 @@ class AsyncModRegistry:
                         exc_info=(type(error), error, error.__traceback__),
                     )
                     raise corruption_error from (error.__cause__ or error)
+                except BaseException:
+                    # Recovery abortada a mitad (rename agotado, schema fallido,
+                    # cancelación). El lifecycle dejó el path fail-closed; quedarse
+                    # con la referencia haría que open() creyera estar abierto y
+                    # que cada query muriera contra la cuarentena.
+                    self._conn = None
+                    raise
 
             except Exception as exc:
                 # El lifecycle sigue siendo propietario de cualquier conexion

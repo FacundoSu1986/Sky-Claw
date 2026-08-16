@@ -300,6 +300,19 @@ class DatabaseLifecycleManager:
                 )
             self._shutting_down = False
             self._closed = False
+            # Reapertura explícita de los paths cuya recovery abortó: quedaron
+            # fail-closed sin conexión retenida, así que no hay nada dañado que
+            # reutilizar y volver a abrir es seguro (el consumidor revalida su
+            # contenido, igual que en el arranque). Un path con conexión
+            # retenida NO se rescata acá: ahí el cierre no se confirmó y
+            # reutilizar esa entrada entregaría un objeto muerto — mismo
+            # criterio que el guard de shutdown incompleto de arriba.
+            for path_str in [p for p in self._quarantined_paths if p not in self._connections]:
+                self._quarantined_paths.discard(path_str)
+                logger.info(
+                    "DatabaseLifecycle: init_all() libera la cuarentena de %s (sin conexión retenida)",
+                    path_str,
+                )
             if self._config.enable_auto_checkpoint:
                 self.register_atexit_handler()
             self._admit()
@@ -580,6 +593,10 @@ class DatabaseLifecycleManager:
 
         if not self._connections:
             self._closed = True
+            # Sin conexiones registradas no queda nada que proteger: arrastrar
+            # cuarentenas de recoveries abortadas bloquearía el próximo
+            # init_all() sobre un path que ya está limpio.
+            self._quarantined_paths.clear()
             return
 
         logger.info(
@@ -676,6 +693,9 @@ class DatabaseLifecycleManager:
             # conexiones retenidas el shutdown es reintentable, y marcarlo
             # cerrado mentiría sobre un estado que todavía no se alcanzó.
             self._closed = True
+            # El cierre completo es la transición terminal: ya no hay conexión
+            # que retener ni recovery a medio camino que proteger.
+            self._quarantined_paths.clear()
 
         if first_close_error is not None:
             raise first_close_error
@@ -1203,9 +1223,26 @@ class DatabaseLifecycleManager:
         es lo que cubre esa ventana sin sostener el lock.
 
         Rinde un invocable que abre el boundary del path para el dueño de la
-        ventana. La conexión fresh y su schema se establecen ahí adentro: la
-        cuarentena se levanta recién al salir, así que el path nunca se vuelve a
-        presentar como usable a medio reconstruir.
+        ventana. La conexión fresh y su schema se establecen ahí adentro, y ESE
+        boundary es el que define "recovery completa": la cuarentena se levanta
+        sólo si su cuerpo salió limpio. Un rename que agota los reintentos, un
+        schema que falla con la conexión nueva ya registrada, una cancelación a
+        mitad del backoff o un cuerpo que directamente no reconstruye dejan el
+        path fail-closed — antes los cuatro lo devolvían a servicio igual,
+        porque el ``finally`` levantaba la cuarentena por el mero hecho de que
+        la ventana hubiera terminado.
+
+        Salir de la ventana sin haber reconstruido nada es un error de uso y se
+        reporta como tal: un cierre limpio que no reabrió no puede pasar por
+        recovery exitosa sólo porque nadie lanzó una excepción.
+
+        Cómo vuelve a servicio un path cuya recovery abortó: la cuarentena la
+        levantan las transiciones explícitas del lifecycle, nunca un resolve
+        oportunista. ``init_all()`` la libera si NO quedó conexión retenida —el
+        caso de la recovery abortada— y ``shutdown_all()`` la limpia al
+        completar el cierre. La cuarentena que deja un cierre no confirmado
+        sobrevive a ``init_all()`` a propósito: ahí sí hay una conexión muerta
+        registrada, y reutilizarla entregaría un objeto inservible.
 
         La admisión abarca TODA la ventana —invalidación, rename, reapertura—,
         de modo que un ``shutdown_all()`` concurrente la espera en vez de cerrar
@@ -1221,6 +1258,21 @@ class DatabaseLifecycleManager:
         path_str = self._resolve_key(db_path)
         self._admit()
         cuarentena_propia = False
+        reconstruido = False
+
+        @asynccontextmanager
+        async def reabrir() -> AsyncGenerator[aiosqlite.Connection, None]:
+            """Boundary de reapertura; salir limpio de acá ES la señal de completitud.
+
+            Se recalcula en cada uso: si la recovery reabre más de una vez, manda
+            el último intento, no el primero que salió bien.
+            """
+            nonlocal reconstruido
+            reconstruido = False
+            async with self._operation_under_recovery(db_path) as conn:
+                yield conn
+            reconstruido = True
+
         try:
             async with self.get_write_lock(db_path):
                 outcome = await self._invalidate_under_boundary(
@@ -1261,12 +1313,24 @@ class DatabaseLifecycleManager:
                 self._quarantined_paths.add(path_str)
                 cuarentena_propia = True
 
-            yield lambda: self._operation_under_recovery(db_path)
+            yield reabrir
+
+            # Sólo se llega acá si el cuerpo salió limpio. Que no haya excepción
+            # no prueba que se haya reconstruido nada: sin esto, una ventana que
+            # nunca llamó a ``reabrir()`` devolvía el path a servicio sin
+            # conexión nueva y sin que nadie se enterara.
+            if not reconstruido:
+                raise DatabaseConnectionQuarantinedError(
+                    f"Recovery window for {path_str} ended without reopening the connection; the path stays quarantined"
+                )
         finally:
-            # Sólo se levanta la cuarentena que instaló ESTA ventana: la que deja
-            # un cierre no confirmado sobrevive a propósito, porque su conexión
-            # sigue retenida y sin cerrar.
-            if cuarentena_propia:
+            # La cuarentena se levanta sólo si ESTA ventana la instaló Y la
+            # recovery llegó a un estado coherente. Las dos que sobreviven lo
+            # hacen a propósito: la de un cierre no confirmado (su conexión sigue
+            # retenida y sin cerrar) y la de una recovery abortada (el archivo
+            # quedó a mitad de reconstruir). Ambas se levantan por transición
+            # explícita, no por el próximo resolve que pase.
+            if cuarentena_propia and reconstruido:
                 self._quarantined_paths.discard(path_str)
             self._release()
 

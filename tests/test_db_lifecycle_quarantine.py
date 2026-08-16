@@ -846,6 +846,313 @@ async def test_f3_corrupcion_con_cierre_fallido_no_renombra_nada(
 
 
 # ---------------------------------------------------------------------------
+# H — COMPLETITUD DE LA VENTANA: fallar DESPUÉS de invalidar con éxito
+# ---------------------------------------------------------------------------
+#
+# Toda la sección A–F prueba fallos ANTES o DURANTE el cierre. Es una familia
+# distinta de la de acá, y confundirlas fue el agujero: la ventana levantaba la
+# cuarentena por el mero hecho de terminar, así que una invalidación exitosa
+# seguida de un cuerpo fallido devolvía el path a servicio sin reconstruirlo.
+# El discriminante común de H1–H5: tras el fallo, un hermano NO puede usar el
+# path.
+
+
+async def test_h1_cuerpo_fallido_antes_de_reabrir_deja_el_path_cerrado(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """REV-COMPLETION. La invalidación salió bien; el cuerpo no llegó a reabrir."""
+    await gestor.init_all()
+    conn = await gestor.get_connection(ruta_db)
+    clave = str(ruta_db.resolve())
+    sentinel = RuntimeError("fallo del cuerpo de la recovery")
+    creadas_antes = len(conexiones)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with gestor.recover_connection(ruta_db, conn):
+            raise sentinel  # nunca se llama a reabrir()
+
+    assert exc_info.value is sentinel, "la ventana se comió el error del cuerpo"
+    assert clave in gestor._quarantined_paths, "la ventana devolvió a servicio un path sin reconstruir"
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with gestor.operation(ruta_db):
+            pass
+    assert len(conexiones) == creadas_antes, "un hermano abrió sobre el path a medio recuperar"
+
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+async def test_h2_rename_fallido_en_el_registry_deja_el_path_cerrado(
+    tmp_path: Path,
+    conexiones: list[aiosqlite.Connection],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El caso realista de H1: el único caller de producción de la ventana.
+
+    El cuerpo de ``AsyncModRegistry.open()`` es *rename → reabrir → schema*. Si
+    el rename no puede completarse, el archivo sigue siendo el que se acaba de
+    clasificar corrupto — y antes el manager lo reabría y lo entregaba como sano.
+
+    El fallo se inyecta con una excepción NO reintentable a propósito: lo que se
+    prueba es el estado tras un cuerpo fallido, no el backoff de tenacity (la
+    variante que agota los cinco reintentos llega al mismo estado, sólo que 15s
+    más tarde).
+    """
+    ruta = tmp_path / "h2.db"
+    gestor = DatabaseLifecycleManager(
+        db_paths=[ruta],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False, enable_auto_checkpoint=False),
+    )
+    conn_corrupta = await gestor.get_connection(ruta)
+    registry = AsyncModRegistry(ruta, lifecycle=gestor)
+
+    # Marca para poder afirmar DESPUÉS que el archivo es el mismo de antes.
+    async with gestor.operation(ruta) as c:
+        await c.execute("CREATE TABLE IF NOT EXISTS marca_original (x INT)")
+        await c.commit()
+
+    fallo = RuntimeError("rename deliberadamente fallido")
+
+    def rename_que_falla(*_a: object, **_k: object) -> None:
+        raise fallo
+
+    monkeypatch.setattr(pathlib.Path, "rename", rename_que_falla)
+    _fingir_corrupcion(conn_corrupta)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await asyncio.wait_for(registry.open(), timeout=DEADLINE)
+    assert exc_info.value is fallo
+
+    assert ruta.exists(), "precondición: el archivo corrupto sigue en su lugar"
+    assert list(tmp_path.glob("*.corrupt.*")) == [], "precondición: el backup no llegó a crearse"
+    assert str(ruta.resolve()) in gestor._quarantined_paths, "el path corrupto volvió a servicio"
+    assert registry._conn is None, "el registry se quedó con una conexión que el lifecycle no sirve"
+
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with gestor.operation(ruta):
+            pass
+
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+async def test_h3_fallo_dentro_del_boundary_de_reapertura_no_publica_el_path(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """El caso más engañoso: la conexión nueva YA está registrada y sana.
+
+    Es lo que pasa cuando el schema falla: B existe, responde ``SELECT 1`` y el
+    lifecycle es su dueño — pero la unidad que la ventana prometía dejar lista no
+    se completó. "Hay conexión" no es lo mismo que "el path está reconstruido".
+    """
+    await gestor.init_all()
+    conn = await gestor.get_connection(ruta_db)
+    clave = str(ruta_db.resolve())
+    fallo = RuntimeError("schema deliberadamente fallido")
+    b: dict[str, object] = {}
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async with gestor.recover_connection(ruta_db, conn) as reabrir:
+            async with reabrir() as fresca:
+                b["conn"] = fresca
+                raise fallo
+
+    assert exc_info.value is fallo
+    assert gestor._connections.get(clave) is b["conn"], "el lifecycle soltó el ownership de la conexión nueva"
+    assert await esta_usable(b["conn"]), "precondición: B quedó sana, y aun así el path no está listo"
+    assert clave in gestor._quarantined_paths, "se publicó un path cuya reconstrucción no terminó"
+
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with gestor.operation(ruta_db):
+            pass
+
+    # Sin fuga: el shutdown sigue siendo dueño de B y la cierra.
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+    assert gestor.managed_paths == []
+    assert not await esta_usable(b["conn"]), "B sobrevivió al shutdown"
+
+
+async def test_h4_cancelacion_en_el_cuerpo_no_publica_el_path(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """REV-COMPLETION bajo cancelación — alcanzable en producción.
+
+    El cuerpo de la recovery contiene ``asyncio.to_thread(rename)`` y los waits
+    del backoff: dos puntos de cancelación reales. Cancelar ahí dejaba el path
+    servible con la reconstrucción a medias. La identidad de la cancelación se
+    conserva, que es la otra mitad del contrato.
+    """
+    await gestor.init_all()
+    conn = await gestor.get_connection(ruta_db)
+    clave = str(ruta_db.resolve())
+    en_cuerpo = asyncio.Event()
+
+    async def recovery() -> None:
+        async with gestor.recover_connection(ruta_db, conn):
+            en_cuerpo.set()
+            await asyncio.Event().wait()  # acá vivirían el rename y el backoff
+
+    tarea = asyncio.create_task(recovery())
+    await en_cuerpo.wait()
+    tarea.cancel("cancelacion externa deliberada")
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await asyncio.wait_for(tarea, timeout=DEADLINE)
+    assert exc_info.value.args == ("cancelacion externa deliberada",), "la cancelación perdió su identidad"
+
+    assert clave in gestor._quarantined_paths, "la cancelación publicó un path a medio recuperar"
+    assert gestor._admitted == 0, "la ventana cancelada dejó una admisión colgada"
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with gestor.operation(ruta_db):
+            pass
+
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+async def test_h5_salir_sin_reabrir_es_un_error_explicito(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """REV-NO-REOPEN-RAISE.
+
+    Un cuerpo que sale limpio sin reconstruir nada no puede pasar por recovery
+    exitosa sólo porque nadie lanzó una excepción. Falla ruidosamente y el path
+    queda cerrado, en vez de volver a servicio en silencio y sin conexión nueva.
+    """
+    await gestor.init_all()
+    conn = await gestor.get_connection(ruta_db)
+    clave = str(ruta_db.resolve())
+
+    with pytest.raises(DatabaseConnectionQuarantinedError, match="without reopening"):
+        async with gestor.recover_connection(ruta_db, conn):
+            pass
+
+    assert clave in gestor._quarantined_paths
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with gestor.operation(ruta_db):
+            pass
+
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+async def test_h6_init_all_rescata_el_path_de_una_recovery_abortada(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """REV-INIT-RESCUE. Fail-closed no puede ser un callejón sin salida.
+
+    Tras una recovery abortada no queda conexión retenida: no hay nada dañado
+    que reutilizar, así que la reapertura EXPLÍCITA puede volver a abrir el path
+    —y el consumidor revalida el contenido, igual que en el arranque—. Sin esto,
+    un rename que falla una vez inutiliza la DB hasta reiniciar el proceso.
+    """
+    await gestor.init_all()
+    conn = await gestor.get_connection(ruta_db)
+    clave = str(ruta_db.resolve())
+
+    with pytest.raises(RuntimeError):
+        async with gestor.recover_connection(ruta_db, conn):
+            raise RuntimeError("recovery abortada")
+
+    assert clave in gestor._quarantined_paths
+    assert clave not in gestor._connections, "precondición: no quedó conexión retenida"
+
+    await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+
+    assert clave not in gestor._quarantined_paths, "init_all() no rescató un path sin conexión retenida"
+    async with gestor.operation(ruta_db) as fresca:
+        assert await esta_usable(fresca), "el path rescatado no entrega una conexión usable"
+
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+async def test_h7_init_all_no_rescata_un_cierre_no_confirmado(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """REV-INIT-GUARD. La otra cuarentena NO se levanta por reapertura.
+
+    Cuando el cierre no se confirmó queda una conexión REGISTRADA y muerta. Ahí
+    la idempotencia de ``init_all()`` la reutilizaría y entregaría un objeto
+    inservible: el rescate tiene que mirar si hay conexión retenida, no sólo si
+    el path está marcado. Se recupera reintentando el shutdown, que es quien
+    conserva el derecho a cerrarla.
+    """
+    await gestor.init_all()
+    conn = await gestor.get_connection(ruta_db)
+    clave = str(ruta_db.resolve())
+    close_real = conn.close
+    fallar = True
+
+    async def close_que_falla() -> None:
+        if fallar:
+            await close_real()
+            raise sqlite3.OperationalError("close falló a propósito")
+        await close_real()
+
+    conn.close = close_que_falla  # type: ignore[method-assign]
+    _romper_rollback(conn)
+
+    with pytest.raises(sqlite3.OperationalError):
+        await asyncio.wait_for(_transaccion_que_falla(gestor, ruta_db), timeout=DEADLINE)
+    assert gestor._connections.get(clave) is conn, "precondición: la conexión quedó retenida"
+
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+    assert clave in gestor._quarantined_paths, "init_all() rescató un path con conexión retenida"
+    assert gestor._connections.get(clave) is conn, "init_all() tocó la entrada retenida"
+
+    # El camino de recuperación correcto: reintentar el shutdown.
+    fallar = False
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+    assert clave not in gestor._quarantined_paths
+    assert gestor.managed_paths == []
+
+
+async def test_h8_el_shutdown_completo_limpia_las_cuarentenas(
+    gestor: DatabaseLifecycleManager,
+    ruta_db: Path,
+    conexiones: list[aiosqlite.Connection],
+) -> None:
+    """La transición terminal no puede dejar marcas que bloqueen el próximo ciclo.
+
+    Tras una recovery abortada el path queda marcado pero SIN entrada, así que el
+    barrido por-path del shutdown (que descarta al hacer pop) no lo alcanza.
+    Arrastrarla haría que el siguiente ``init_all()`` fallara sobre un path que
+    ya está limpio.
+    """
+    await gestor.init_all()
+    conn = await gestor.get_connection(ruta_db)
+    clave = str(ruta_db.resolve())
+
+    with pytest.raises(RuntimeError):
+        async with gestor.recover_connection(ruta_db, conn):
+            raise RuntimeError("recovery abortada")
+    assert clave in gestor._quarantined_paths
+    assert gestor._connections == {}, "precondición: el shutdown no tiene nada que popear"
+
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+    assert gestor._quarantined_paths == set(), "el cierre completo arrastró la cuarentena"
+    assert gestor._closed
+    await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+    async with gestor.operation(ruta_db) as fresca:
+        assert await esta_usable(fresca)
+    await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+
+
+# ---------------------------------------------------------------------------
 # G — INVENTARIO AST: quién puede mutar el registro
 # ---------------------------------------------------------------------------
 
