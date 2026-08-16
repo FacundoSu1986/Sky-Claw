@@ -1,0 +1,236 @@
+name: PR-483 one-shot lifecycle fix
+
+on:
+  push:
+    branches: ["claude/shared-invalidation-planning-b5bfhu"]
+    paths: [".github/workflows/pr483-one-shot-fix.yml"]
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: claude/shared-invalidation-planning-b5bfhu
+          fetch-depth: 0
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Apply minimal fail-closed fix and regression tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          core_path = Path("sky_claw/app/core/db_lifecycle.py")
+          core = core_path.read_text(encoding="utf-8")
+
+          old_policy = '''        #   RUNNING → init_all es por tanto idempotente: un path ya
+          #   inicializado conserva SU conexión — nunca la reemplaza.
+          # * Fail-closed ESTRECHO (P2): tras un shutdown INCOMPLETO queda una
+          #   entrada retenida cuya conexión ya está muerta, y la idempotencia
+          #   la reutilizaría entregando un objeto inservible. Sólo ese estado
+          #   (`_shutting_down` sin `_closed`) rechaza la reapertura: RUNNING
+          #   sano y CLOSED siguen permitidos.
+          '''
+          new_policy = '''        #   RUNNING → init_all es idempotente para paths servibles: un path ya
+          #   inicializado conserva SU conexión — nunca la reemplaza.
+          # * Fail-closed: un shutdown INCOMPLETO rechaza la reapertura global y
+          #   una cuarentena por path tampoco se sobreescribe aquí. La ausencia de
+          #   conexión registrada prueba ownership, no coherencia del archivo:
+          #   sólo un shutdown terminal puede retirar una recovery abortada que
+          #   no llegó a reconstruir su recurso.
+          '''
+          assert core.count(old_policy) == 1, "policy comment drifted"
+          core = core.replace(old_policy, new_policy)
+
+          old_rescue = '''            # Reapertura explícita de los paths cuya recovery abortó: quedaron
+          # fail-closed sin conexión retenida, así que no hay nada dañado que
+          # reutilizar y volver a abrir es seguro (el consumidor revalida su
+          # contenido, igual que en el arranque). Un path con conexión
+          # retenida NO se rescata acá: ahí el cierre no se confirmó y
+          # reutilizar esa entrada entregaría un objeto muerto — mismo
+          # criterio que el guard de shutdown incompleto de arriba.
+          for path_str in [p for p in self._quarantined_paths if p not in self._connections]:
+              self._quarantined_paths.discard(path_str)
+              logger.info(
+                  "DatabaseLifecycle: init_all() libera la cuarentena de %s (sin conexión retenida)",
+                  path_str,
+              )
+          '''
+          assert core.count(old_rescue) == 1, "init_all rescue block drifted"
+          core = core.replace(old_rescue, "")
+
+          old_doc = '''        Cómo vuelve a servicio un path cuya recovery abortó: la cuarentena la
+          levantan las transiciones explícitas del lifecycle, nunca un resolve
+          oportunista. ``init_all()`` la libera si NO quedó conexión retenida —el
+          caso de la recovery abortada— y ``shutdown_all()`` la limpia al
+          completar el cierre. La cuarentena que deja un cierre no confirmado
+          sobrevive a ``init_all()`` a propósito: ahí sí hay una conexión muerta
+          registrada, y reutilizarla entregaría un objeto inservible.
+          '''
+          new_doc = '''        Cómo vuelve a servicio un path cuya recovery abortó: ``init_all()`` NO
+          levanta esa cuarentena. Que no haya conexión retenida sólo demuestra
+          ownership del handle; no demuestra que el archivo siga siendo coherente
+          después de un rename/schema fallido. El path permanece fail-closed hasta
+          un ``shutdown_all()`` terminal, que limpia la transición antes del
+          próximo ciclo. Una cuarentena por cierre no confirmado también sobrevive
+          a ``init_all()`` y el shutdown conserva el derecho a reintentar el cierre.
+          '''
+          assert core.count(old_doc) == 1, "recover_connection doc drifted"
+          core = core.replace(old_doc, new_doc)
+
+          old_final = '''            # quedó a mitad de reconstruir). Ambas se levantan por transición
+          # explícita, no por el próximo resolve que pase.
+          '''
+          new_final = '''            # quedó a mitad de reconstruir). Ninguna la levanta ``init_all()``:
+          # hace falta completar la recovery o alcanzar un shutdown terminal.
+          '''
+          assert core.count(old_final) == 1, "recovery final comment drifted"
+          core = core.replace(old_final, new_final)
+          core_path.write_text(core, encoding="utf-8")
+
+          tests_path = Path("tests/test_db_lifecycle_quarantine.py")
+          tests = tests_path.read_text(encoding="utf-8")
+
+          h6_pattern = re.compile(
+              r"async def test_h6_init_all_rescata_el_path_de_una_recovery_abortada\(.*?(?=\n\nasync def test_h7_)",
+              re.S,
+          )
+          h6_matches = h6_pattern.findall(tests)
+          assert len(h6_matches) == 1, "H6 drifted"
+          h6_new = '''async def test_h6_init_all_no_republica_una_recovery_abortada(
+              gestor: DatabaseLifecycleManager,
+              ruta_db: Path,
+              conexiones: list[aiosqlite.Connection],
+          ) -> None:
+              """REV-INIT-FAIL-CLOSED. ``init_all`` no certifica coherencia del archivo.
+
+              Una recovery abortada puede haber dejado el recurso a medio mover o
+              reconstruir. Que no haya conexión retenida prueba ownership, no que el
+              path sea seguro para publicar. La salida explícita es un shutdown
+              terminal; después, un ciclo nuevo puede inicializar y revalidar.
+              """
+              await gestor.init_all()
+              conn = await gestor.get_connection(ruta_db)
+              clave = str(ruta_db.resolve())
+
+              with pytest.raises(RuntimeError):
+                  async with gestor.recover_connection(ruta_db, conn):
+                      raise RuntimeError("recovery abortada")
+
+              assert clave in gestor._quarantined_paths
+              assert clave not in gestor._connections, "precondición: no quedó conexión retenida"
+
+              with pytest.raises(DatabaseConnectionQuarantinedError):
+                  await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+              assert clave in gestor._quarantined_paths, "init_all() levantó una cuarentena sin evidencia de coherencia"
+              assert clave not in gestor._connections, "init_all() abrió una conexión sobre el path quarantined"
+              with pytest.raises(DatabaseConnectionQuarantinedError):
+                  async with gestor.operation(ruta_db):
+                      pass
+
+              # Liveness explícita: el shutdown terminal limpia una recovery abortada
+              # sin conexión retenida; recién el ciclo siguiente puede volver a abrir.
+              await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+              assert gestor._quarantined_paths == set()
+              await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+              async with gestor.operation(ruta_db) as fresca:
+                  assert await esta_usable(fresca), "el ciclo nuevo no recuperó un path limpio"
+              await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+          '''
+          tests = h6_pattern.sub(h6_new, tests, count=1)
+
+          marker = '''\n\n# ---------------------------------------------------------------------------
+          # G — INVENTARIO AST: quién puede mutar el registro
+          # ---------------------------------------------------------------------------
+          '''
+          assert tests.count(marker) == 1, "G marker drifted"
+          h9 = '''\n\nasync def test_h9_init_all_no_republica_archivo_declarado_corrupto_si_rename_falla(
+              tmp_path: Path,
+              conexiones: list[aiosqlite.Connection],
+              monkeypatch: pytest.MonkeyPatch,
+          ) -> None:
+              """REV-INIT-CORRUPT. Combina H2 + H6: no publicar sin revalidación.
+
+              El registry ya declaró corrupto el archivo y el rename no pudo retirarlo.
+              La conexión vieja cerró, así que no queda handle registrado; aun así el
+              mismo archivo condenado sigue en el path. ``init_all`` debe conservar el
+              fail-closed y no abrir una conexión fresh por su cuenta.
+              """
+              ruta = tmp_path / "h9.db"
+              gestor = DatabaseLifecycleManager(
+                  db_paths=[ruta],
+                  config=DatabaseLifecycleConfig(enable_signal_handlers=False, enable_auto_checkpoint=False),
+              )
+              conn_corrupta = await gestor.get_connection(ruta)
+              registry = AsyncModRegistry(ruta, lifecycle=gestor)
+              clave = str(ruta.resolve())
+
+              async with gestor.operation(ruta) as conn:
+                  await conn.execute("CREATE TABLE IF NOT EXISTS marca_original (x INT)")
+                  await conn.commit()
+
+              _fingir_corrupcion(conn_corrupta)
+              fallo = RuntimeError("rename deliberadamente fallido")
+
+              def rename_que_falla(*_a: object, **_k: object) -> None:
+                  raise fallo
+
+              creadas_antes = len(conexiones)
+              with monkeypatch.context() as patch:
+                  patch.setattr(pathlib.Path, "rename", rename_que_falla)
+                  with pytest.raises(RuntimeError) as exc_info:
+                      await asyncio.wait_for(registry.open(), timeout=DEADLINE)
+              assert exc_info.value is fallo
+
+              assert ruta.exists(), "el archivo declarado corrupto debía seguir en el path original"
+              assert list(tmp_path.glob("h9.corrupt.*.db")) == [], "el rename fallido no debía crear backup"
+              assert registry._conn is None
+              assert clave in gestor._quarantined_paths
+              assert clave not in gestor._connections
+
+              with pytest.raises(DatabaseConnectionQuarantinedError):
+                  await asyncio.wait_for(gestor.init_all(), timeout=DEADLINE)
+              assert clave in gestor._quarantined_paths, "init_all() republicó el archivo declarado corrupto"
+              assert clave not in gestor._connections
+              assert len(conexiones) == creadas_antes, "init_all() abrió una conexión fresh sin revalidación"
+              with pytest.raises(DatabaseConnectionQuarantinedError):
+                  async with gestor.operation(ruta):
+                      pass
+
+              await asyncio.wait_for(gestor.shutdown_all(), timeout=DEADLINE)
+              assert gestor._quarantined_paths == set()
+          '''
+          tests = tests.replace(marker, h9 + marker)
+          tests_path.write_text(tests, encoding="utf-8")
+          PY
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+      - name: Targeted lifecycle gates
+        run: python -m pytest tests/test_db_lifecycle_quarantine.py -q
+      - name: Ruff gates
+        run: |
+          ruff check sky_claw/app/core/db_lifecycle.py tests/test_db_lifecycle_quarantine.py
+          ruff format --check sky_claw/app/core/db_lifecycle.py tests/test_db_lifecycle_quarantine.py
+      - name: Full suite
+        run: python -m pytest -q
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name "Sky-Claw PR-483 Fix"
+          git config user.email "actions@users.noreply.github.com"
+          git add sky_claw/app/core/db_lifecycle.py tests/test_db_lifecycle_quarantine.py
+          git diff --cached --check
+          git diff --cached --name-only
+          git commit -m "fix(lifecycle): no republicar recoveries abortadas desde init_all"
+          git push origin HEAD:claude/shared-invalidation-planning-b5bfhu
