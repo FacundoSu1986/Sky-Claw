@@ -4,7 +4,8 @@
 > **Estado:** implementado con áreas parciales señaladas en cada documento.
 > **Fuentes canónicas:** `sky_claw/__main__.py`, `sky_claw/app_context.py`,
 > `sky_claw/app/`, `sky_claw/local/` y ADR aprobados.
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Sincronización DB/lifecycle:** 2026-08-16 sobre `main` `7156718`.
 
 Sky-Claw es un plano de control local para operar flujos de modding de Skyrim
 SE/AE sobre Mod Organizer 2. Combina interfaces GUI, CLI y Telegram con dos
@@ -38,10 +39,31 @@ flowchart TD
     ATR --> LT["Servicios y runners locales"]
     OTD --> LT
     LT --> MO2["MO2 / broker USVFS / herramientas externas"]
-    AC --> DB["SQLite / lifecycle / journal / locks"]
+    AC --> DB["SQLite / DatabaseLifecycleManager"]
+    DB --> OP["operation() / transaction()<br/>admission + lock por path"]
+    OP --> DBC["conexión SQLite gestionada"]
     SA --> CEB["CoreEventBus"]
     UI --> GEB["EventBus de GUI"]
 ```
+
+### Boundary de base de datos
+
+Los consumidores lifecycle-backed no deben interpretar
+`get_connection(path)` como permiso para conservar y usar la conexión fuera de
+un boundary. El contrato actual separa resolución y uso:
+
+- `operation(path)` mantiene admisión, lock por path y conexión vigente durante
+  toda una unidad SQL;
+- `transaction(path)` mantiene ese boundary durante la transacción completa y
+  coordina commit/rollback;
+- `shutdown_all()` cierra la admisión, espera que drene el trabajo ya admitido y
+  recién después hace checkpoint/cierre;
+- `init_all()` es la reapertura explícita y está serializada contra shutdown.
+
+Por eso, para un consumidor gestionado, volver al patrón
+`get_connection() -> await -> SQL` puede reintroducir una carrera con shutdown.
+La referencia detallada y el alcance verificado están en
+[data_persistence_recovery.md](docs/architecture/data_persistence_recovery.md).
 
 ### Dos rutas de herramientas
 
@@ -81,6 +103,9 @@ da el mismo contrato de arranque y cierre.
   documentados en [security_boundaries.md](docs/architecture/security_boundaries.md).
 - Las mutaciones críticas usan locks, snapshots, journal y, cuando corresponde,
   sandbox de perfil y aprobación HITL.
+- Los consumidores SQLite gestionados deben conservar el boundary de lifecycle
+  durante el SQL; obtener la conexión por sí solo no congela su validez frente
+  a un shutdown concurrente.
 - Los tests con subprocess mockeado no prueban MO2/USVFS ni herramientas reales.
   Los smokes pendientes se registran en
   [real_rig_validation.md](docs/operations/real_rig_validation.md).
@@ -91,3 +116,8 @@ da el mismo contrato de arranque y cierre.
 pertenecen a [docs/api](docs/api/README.md); las decisiones a
 [docs/adr](docs/adr/README.md); los hallazgos históricos a
 [docs/audits](docs/audits/README.md).
+
+La marca de sincronización DB/lifecycle no afirma que todo este portal haya sido
+reverificado contra `7156718`: sólo actualiza el contrato de persistencia que
+cambió después de la verificación integral de julio. Para contradicciones, usar
+[la política de fuentes de verdad](docs/documentation/source_of_truth.md).
