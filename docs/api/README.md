@@ -6,7 +6,7 @@
 >
 > **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 >
-> **Sincronización de contratos P1:** 2026-08-16 sobre `main`; limitada a las
+> **Sincronización de contratos P1:** 2026-08-16 sobre `e48306c`; limitada a las
 > referencias y guardrails auditados en esta rama.
 
 ## Índice
