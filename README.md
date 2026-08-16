@@ -7,7 +7,13 @@
 >
 > **Fuentes canónicas:** runtime, ADR vigentes, `DEPLOYMENT.md` y `SECURITY.md`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+>
+> **Sincronización DB/lifecycle:** 2026-08-16 sobre `main` `7156718`; no implica
+> reverificación integral del resto de claims del README.
+>
+> **Sincronización release/empaquetado:** 2026-08-16 sobre `main` `f6d502c`;
+> limitada al estado público de los artefactos de `v0.2.4`.
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
@@ -59,6 +65,12 @@ Usuario (GUI / CLI / Telegram)
          |
     MO2 Portable / Skyrim SE
 ```
+
+La persistencia SQLite gestionada usa `DatabaseLifecycleManager`: los
+consumidores lifecycle-backed mantienen `operation()` o `transaction()` durante
+la unidad SQL completa. Obtener una conexión mediante `get_connection()` no
+conserva por sí solo el boundary frente a un shutdown concurrente. Véase
+[Datos, persistencia y recuperación](docs/architecture/data_persistence_recovery.md).
 
 ---
 
@@ -119,6 +131,7 @@ Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nue
 - **[Manual de Agentes y Tools](docs/agents/tool_creation.md):** Tutorial para extender el sistema con nuevos Tool Runners y proveedores LLM.
 - **[SOP del Pipeline de Modding](sky_claw/local/AGENTS.md):** Reglas de negocio inmutables para la orquestación de herramientas de Skyrim.
 - **[Portal de Documentación](docs/README.md):** Guías para usuarios, operadores, desarrolladores y agentes.
+- **[Fuentes de verdad](docs/documentation/source_of_truth.md):** Precedencia para resolver contradicciones y `DOCUMENTATION_DRIFT`.
 
 ---
 
@@ -132,7 +145,7 @@ Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nue
 - [x] Base de datos async distribuida
 - [x] Wrapper xEdit y LOOT headless
 - [x] Parser y resolución FOMOD
-- [ ] Empaquetado final como .exe único
+- [x] Empaquetado `.exe` único publicado en `v0.2.4` (firma, cold boot y smokes reales quedan fuera de esta verificación)
 
 ---
 

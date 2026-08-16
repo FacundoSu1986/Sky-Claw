@@ -5,7 +5,8 @@
 > **Fuentes canónicas:** `app/agent/tools/`,
 > `app/orchestrator/tool_dispatcher.py`, `orchestrator/tool_strategies/`
 > y `local/tools/`.
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Sincronización de contratos P1:** 2026-08-16 sobre `e48306c`.
 
 Esta guía explica **dónde** encaja una herramienta. No contiene una
 implementación ficticia: el patrón correcto depende de la ruta productiva que
@@ -63,8 +64,10 @@ compatibilidad legacy conocida sólo por `normalize_tool_result()`.
 
 - En la ruta LLM, el `params_model` del `ToolDescriptor` es la fuente de
   validación de argumentos.
-- `CONTRACT_SCHEMAS` sólo aplica a los métodos registrados en
-  `core/contracts.py`.
+- `CONTRACT_SCHEMAS` declara mappings en `core/contracts.py`, pero en el baseline
+  `e48306c` los cinco métodos productivos mapeados no tienen aplicados
+  `validate_input`, `validate_output` ni `validate_contract`; el mapping por sí
+  solo no implica enforcement activo.
 - Las strategies pueden validar payloads con sus modelos propios y middleware.
 - Un output Pydantic estricto debe declarar todos los campos retornados; no se
   deben mezclar ejemplos con campos que el modelo descartaría o rechazaría.
@@ -89,12 +92,31 @@ es lock-only. Un handler puede recibir `HITLGuard` explícitamente, y los
 rituales destructivos del dispatcher o la promoción de sandbox pueden tener
 gates específicos.
 
+### SQLite gestionado
+
+Si la tool o servicio usa una conexión administrada por
+`DatabaseLifecycleManager`, el SQL debe ejecutarse dentro del boundary vigente:
+
+- `operation(path)` para una unidad SQL no transaccional;
+- `transaction(path)` para una mutación que requiere commit/rollback.
+
+`get_connection(path)` resuelve la conexión, pero no conserva el derecho de uso
+frente a un shutdown concurrente. No introducir el patrón
+`get_connection() -> await externo -> SQL` en un consumidor lifecycle-backed.
+Red, filesystem, sleeps y backoff deben permanecer fuera del boundary DB.
+
+Si una implementación histórica muestra otro patrón, verificar el runtime y los
+tests actuales antes de copiarla. Una contradicción se registra como
+`DOCUMENTATION_DRIFT`, no como razón para revertir el contrato moderno.
+
 ## 5. Testing
 
 - Lógica pura: unit tests.
 - Servicio: mock sólo en bordes de filesystem/subprocess/red.
 - Strategy/handler: probar validación, wiring, error serializable y cancelación.
 - Operación mutante: probar lock, snapshot/journal y rollback.
+- SQL lifecycle-backed: probar que la unidad conserva `operation()` o
+  `transaction()` durante el acceso y que shutdown no cierra la conexión debajo.
 - Ejecutable real: registrar el smoke por separado; un mock no prueba la tool.
 
 Los tests y comentarios del repositorio se escriben en español.
@@ -126,6 +148,7 @@ Fuentes:
 - [ ] Contrato `success`/`message` preservado.
 - [ ] Timeout, cancelación y reap documentados.
 - [ ] Lock/snapshot/journal/sandbox documentados si aplican.
+- [ ] Boundary `operation()`/`transaction()` conservado si usa SQLite gestionado.
 - [ ] Tests del handler/strategy y servicio identificados.
 - [ ] Smoke real separado de los tests mockeados.
 - [ ] SOP y matriz de impacto actualizados si cambia el pipeline.

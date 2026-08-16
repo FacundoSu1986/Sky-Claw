@@ -6,7 +6,10 @@
 >
 > **Fuentes canónicas:** código, ADR, instrucciones e índices del árbol actual.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+>
+> **Sincronización de política anti-drift y DB/lifecycle:** 2026-08-16 sobre
+> `main` `7156718`; no implica reverificación integral del resto del mapa.
 
 ## Precedencia de instrucciones para agentes
 
@@ -26,6 +29,24 @@ guía derivada, auditoría o comentario de PR puede sustituir esas invariantes.
 
 Los tests prueban el comportamiento que ejercitan; no convierten una afirmación
 de smoke real en verdadera.
+
+### Regla de seguridad para agentes de IA
+
+La documentación derivada puede quedar detrás del runtime. Si una guía, README,
+diagrama, plan o auditoría contradice el código actual o un test conductual
+relevante, el agente **no debe modificar producción para hacerla coincidir con
+esa documentación**. Debe:
+
+1. registrar la discrepancia como `DOCUMENTATION_DRIFT`;
+2. trazar el caller productivo y el contrato vigente;
+3. usar código + tests como autoridad de comportamiento mientras se verifica la
+   intención arquitectónica;
+4. consultar ADR vigentes cuando la contradicción sea de diseño;
+5. corregir la documentación por separado cuando el contrato quede demostrado.
+
+Un SHA o una fecha reciente en un documento no reemplazan esa verificación. No
+se debe actualizar una marca de "última verificación" si no se revisó el alcance
+que esa marca pretende cubrir.
 
 ## Mapa
 

@@ -10,7 +10,9 @@
 > `sky_claw/app/db/`, `sky_claw/local/mo2/profile_sandbox.py` y
 > `sky_claw/local/mo2/vfs_broker.py`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+>
+> **Sincronización DB/lifecycle:** 2026-08-16 sobre `main` `7156718`.
 
 ## Principio
 
@@ -30,6 +32,16 @@ Si el proceso no termina:
 3. identificar broker, worker y nietos;
 4. confirmar que la base cerró o reportó cierre incompleto;
 5. escalar con la evidencia antes de matar procesos.
+
+Para SQLite gestionado, un cierre solicitado impide nuevas admisiones y espera
+el trabajo ya admitido antes del checkpoint/cierre. Un
+`DatabaseLifecycleShuttingDownError` durante esta fase indica rechazo deliberado
+de trabajo nuevo; no debe resolverse abriendo una conexión paralela ni llamando
+`aiosqlite.connect()` por fuera del lifecycle.
+
+Si `shutdown_all()` reporta cierre incompleto, conservar la evidencia y reintentar
+el shutdown de forma explícita. `init_all()` no debe usarse para ocultar un cierre
+incompleto: el lifecycle rechaza esa reapertura hasta resolver el estado retenido.
 
 ## Operación transaccional
 
@@ -51,8 +63,24 @@ eleva `SandboxRollbackError`. Ese backup no debe eliminarse.
 No borrar `-wal` ni `-shm`. El lifecycle manager coordina checkpoints y cierre;
 la eliminación manual puede destruir evidencia o datos no checkpointed.
 
+En consumidores lifecycle-backed, `get_connection(path)` no conserva el derecho
+de uso de la conexión después de retornar. Para diagnosticar o corregir código,
+una unidad SQL debe permanecer dentro de `operation(path)` o
+`transaction(path)`, según corresponda. Sacar el SQL del boundary puede
+reintroducir la carrera en la que shutdown cierra la conexión entre resolución y
+uso.
+
+Un `-wal`/`-shm` presente después del cierre no prueba por sí solo corrupción: si
+el checkpoint TRUNCATE completó y existe otro owner abierto sobre el mismo
+archivo, SQLite puede conservar los sidecars hasta que cierre la última
+conexión. Usar los logs/resultados del checkpoint y ownership real antes de
+clasificar el incidente.
+
 ## Cierre de incidente
 
 Una recuperación termina sólo cuando el perfil, el artefacto, el journal, el
 lock y el árbol de procesos son coherentes. Documentar cualquier punto no
 verificado.
+
+La sincronización DB/lifecycle de 2026-08-16 no reverifica integralmente los
+procedimientos de `ProfileSandbox`, VFS ni todos los runners.
