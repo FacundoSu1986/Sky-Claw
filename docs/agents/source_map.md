@@ -6,7 +6,7 @@
 >
 > **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 >
-> **Sincronización de contratos P1:** 2026-08-16 sobre `main`.
+> **Sincronización de contratos P1:** 2026-08-16 sobre `e48306c`.
 
 Antes de usar este mapa, aplicar la precedencia de
 [fuentes de verdad](../documentation/source_of_truth.md): código y tests del
