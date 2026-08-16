@@ -24,7 +24,8 @@ Solo la última release publicada recibe correcciones de seguridad.
 
 | Versión | Soportada |
 | ------- | --------- |
-| 0.2.x (última publicada: `v0.2.4`) | ✅ |
+| `v0.2.4` | ✅ |
+| `0.2.x` anteriores | ❌ |
 | < 0.2 | ❌ |
 
 ## Cómo reportar una vulnerabilidad
@@ -58,8 +59,9 @@ Sky-Claw invoca (SSEEdit, LOOT, DynDOLOD, MO2, etc.): reportalas a sus proyectos
 
 - CI con **Bandit** (SAST) y **pip-audit --strict** sobre `requirements.lock` con hashes
   enforced; `npm audit` para el gateway de Telegram.
-- El workflow construye un artefacto PyInstaller y la release pública `v0.2.4`
-  contiene `SkyClawApp.exe`, `sky-claw-v0.2.4-sbom.spdx.json` y
+- El workflow de release conserva la receta para construir el artefacto PyInstaller,
+  pero su job `release` está pausado intencionalmente. La release histórica pública
+  `v0.2.4` contiene `SkyClawApp.exe`, `sky-claw-v0.2.4-sbom.spdx.json` y
   `SkyClawApp.exe.bundle.json`. La presencia de esos artefactos no equivale a una
   verificación criptográfica independiente, firma Authenticode ni cold boot; no deben
   anunciarse como garantías hasta validarlos específicamente.
