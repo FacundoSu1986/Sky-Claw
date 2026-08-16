@@ -4,7 +4,8 @@
 > **Estado:** referencia estática del código implementado.
 > **Fuentes canónicas:** `core/contracts.py`, `core/schemas.py`,
 > `local/tools/tool_result.py` y `core/errors.py`.
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Sincronización de contratos P1:** 2026-08-16 sobre `e48306c`.
 
 Esta página sirve para orientación. Ante cualquier diferencia, las clases y
 tests del árbol actual dominan sobre esta copia documental.
@@ -36,6 +37,21 @@ aceptan para compatibilidad, pero ningún consumidor debe reimplementar su orden
 El registro se puebla de forma lazy desde `core/schemas.py`. Un método no
 registrado opera en pass-through; esto no equivale a que toda llamada de tools
 del sistema use estos decoradores.
+
+**Estado productivo verificado en `e48306c`:** aunque esas cinco claves están
+declaradas en `CONTRACT_SCHEMAS`, sus métodos productivos no tienen aplicados
+`validate_input`, `validate_output` ni `validate_contract`. Por tanto, el
+mapping existe pero actualmente **no impone** esas validaciones Pydantic sobre
+los cinco caller boundaries. Los usos de esos decoradores localizados en el
+baseline están en tests de contrato. Un agente no debe asumir enforcement activo
+por la sola presencia del mapping.
+
+La clave efectiva de los decoradores se construye con
+`self.__class__.__name__` más el nombre del método. Si un caller empieza a usar
+estos decoradores, renombrar una clase, sustituirla por otra o mover un contrato
+sin actualizar `CONTRACT_SCHEMAS` puede dejar esa validación en pass-through.
+Para cambios de este tipo deben revisarse mapping, decorador aplicado y tests del
+caller; no basta con comprobar que la clase Pydantic todavía importa.
 
 ## Schemas críticos
 
@@ -80,7 +96,9 @@ del sistema use estos decoradores.
 | `recommendations` | `list[str]` | obligatorio |
 | `audited_at` | `datetime` | UTC actual |
 
-Todos estos modelos usan `ConfigDict(extra="forbid", strict=True)`.
+Estos cuatro modelos usan `ConfigDict(extra="forbid", strict=True)`. No
+extrapolar esa regla a todos los modelos de `core/schemas.py`: por ejemplo, el
+runtime contiene modelos con otra política de `extra` para fronteras concretas.
 
 ## Protocols
 
@@ -104,6 +122,17 @@ las implementaciones concretas.
 
 Otras excepciones específicas viven junto a su subsistema y no deben
 presentarse como subclases de `AppNexusError` sin verificarlo en el código.
+Consultar [errors_ref.md](errors_ref.md) para familias locales, especialmente
+lifecycle DB, journal, locks, VFS y runners.
+
+## Regla para agentes
+
+No inferir un contrato de ejecución de tools ni enforcement activo a partir de
+`CONTRACT_SCHEMAS`. Para una tool LLM, verificar `ToolDescriptor.params_model`;
+para una strategy, verificar su payload/modelo y middleware; para los decorators
+de `core/contracts.py`, verificar que el método productivo esté realmente
+decorado; para resultados crudos, normalizar antes de imponer la vista común. Si
+las capas difieren, registrar `DOCUMENTATION_DRIFT` antes de tocar producción.
 
 ## Fuentes de regresión
 
