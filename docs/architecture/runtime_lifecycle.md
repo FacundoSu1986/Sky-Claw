@@ -4,7 +4,8 @@
 >
 > **Audiencia:** desarrolladores y operadores.
 >
-> **Fuentes:** `sky_claw/__main__.py` y `sky_claw/app_context.py`.
+> **Fuentes:** `sky_claw/__main__.py`, `sky_claw/app_context.py` y
+> `sky_claw/app/core/db_lifecycle.py`.
 >
 > **Última verificación integral:** 2026-07-26 sobre una rama basada en
 > `origin/main` `6cb4024`.
