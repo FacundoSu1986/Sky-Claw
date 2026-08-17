@@ -648,6 +648,26 @@ def _fila_cruda(journal, entry_id):
         con.close()
 
 
+def _fila_completa(journal, entry_id):
+    """TODAS las columnas de la fila, como dict.
+
+    `_fila_cruda` mira sólo `(status, metadata)`, y con eso una divergencia en
+    cualquier otra columna pasaría en verde.
+    """
+    con = sqlite3.connect(str(journal._db_path))
+    try:
+        con.row_factory = sqlite3.Row
+        fila = con.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
+        return dict(fila) if fila is not None else {}
+    finally:
+        con.close()
+
+
+def _columnas_cambiadas(antes, despues):
+    """Nombres de las columnas cuyo valor cambió entre dos snapshots."""
+    return {columna for columna, valor in despues.items() if antes.get(columna) != valor}
+
+
 def _evidencia(journal, entry_id):
     """La metadata persistida, parseada. `None` si la columna está vacía."""
     crudo = _fila_cruda(journal, entry_id)[1]
@@ -1574,6 +1594,48 @@ class TestFailOperationHermanos:
         finally:
             await real.close()
             await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_paridad_de_columnas_con_update_status(self, journal_ambas_ramas):
+        """`fail_operation` toca EXACTAMENTE las columnas de `_update_status`, más
+        `metadata`.
+
+        `fail_operation` dejó de delegar la transición de estado en
+        `_update_status` —tiene que emitirla inline, porque anidar ese método
+        dentro del boundary deadlockea— y eso bifurca el SQL de la transición
+        FAILED respecto del resto de los mutadores. Hoy los dos escriben sólo
+        `status` y `journal_entries` no tiene columnas de auditoría
+        (`updated_at`/`finished_at`), así que no hay divergencia; el riesgo es
+        FUTURO: si alguien le agrega una columna a `_update_status`, el 100% de las
+        filas marcadas FAILED —todos los call sites de producción pasan por
+        `fail_operation`— dejaría de actualizarla en silencio.
+
+        Se compara el CONJUNTO DE COLUMNAS QUE CAMBIAN, no los valores: dos filas
+        gemelas difieren por construcción en `id`, `target_path` y el `timestamp`
+        que pone `datetime('now')`, así que una comparación de valores sería
+        frágil sin cubrir nada más. El delta expresa la propiedad directamente.
+        """
+        journal = journal_ambas_ramas
+        via_fail = await _entrada(journal)
+        via_update = await _entrada(journal)
+
+        antes_fail = _fila_completa(journal, via_fail)
+        antes_update = _fila_completa(journal, via_update)
+
+        await journal.fail_operation(via_fail, error="boom")
+        await journal._update_status(via_update, OperationStatus.FAILED)
+
+        cambiadas_fail = _columnas_cambiadas(antes_fail, _fila_completa(journal, via_fail))
+        cambiadas_update = _columnas_cambiadas(antes_update, _fila_completa(journal, via_update))
+
+        assert cambiadas_update == {"status"}, (
+            f"premisa: _update_status sólo cambia status, no {sorted(cambiadas_update)}"
+        )
+        assert cambiadas_fail - {"metadata"} == cambiadas_update, (
+            f"fail_operation y _update_status divergieron en qué columnas tocan: "
+            f"fail={sorted(cambiadas_fail)} vs. update_status={sorted(cambiadas_update)}. "
+            f"Si la divergencia es intencional, declaralo y ampliá este ancla."
+        )
 
     @pytest.mark.asyncio
     async def test_noop_journal_firma_compatible(self):
