@@ -22,7 +22,10 @@ from typing import Any
 
 import aiosqlite
 
-from sky_claw.app.core.db_lifecycle import DatabaseLifecycleShuttingDownError
+from sky_claw.app.core.db_lifecycle import (
+    DatabaseConnectionQuarantinedError,
+    DatabaseLifecycleShuttingDownError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,35 @@ class JournalRollbackError(JournalError):
         super().__init__(message)
         self.transaction_id = transaction_id
         self.partial_success = partial_success
+
+
+# Fallos SECUNDARIOS que un cleanup del journal absorbe (loguea) sin reemplazar
+# la excepción PRIMARIA que lo disparó.
+#
+# Enunciado como propiedad del mecanismo, no como lista a recordar: el cleanup
+# absorbe **todo rechazo de admisión del lifecycle**, y hoy
+# ``lifecycle.transaction().__aenter__`` rechaza por exactamente dos motivos —
+# shutdown (``_admit``) y cuarentena (``_resolve_connection``). Un tercer motivo
+# que se agregue allá entra ACÁ, en un solo lugar, y por eso cubre de una vez a
+# los dos sitios de cleanup del journal en vez de arreglar uno y dejar al gemelo.
+# Esa desalineación es justo lo que produjo este bug: #475 enumeró el único
+# rechazo que existía y #483 agregó el segundo sin tocar la enumeración.
+#
+# ``sqlite3.Error`` está por simetría OBSERVABLE entre los dos sitios:
+# ``rollback_transaction`` ya envuelve los errores SQLite en
+# ``JournalTransactionError``, pero ``mark_transaction_rolled_back`` no, así que
+# sin él ``log_operation`` seguiría enmascarando la primaria donde
+# ``transaction()`` no lo hace. El journal ya clasifica ese par como cleanup
+# best-effort en el sweep de arranque (``except (JournalError, sqlite3.Error)``).
+#
+# Lo que deliberadamente NO está: ``BaseException``. Una cancelación NUEVA
+# durante el cleanup debe seguir propagando con su identidad intacta.
+_FALLOS_DE_CLEANUP_ABSORBIBLES: tuple[type[BaseException], ...] = (
+    JournalError,
+    sqlite3.Error,
+    DatabaseLifecycleShuttingDownError,
+    DatabaseConnectionQuarantinedError,
+)
 
 
 # =============================================================================
@@ -674,14 +706,15 @@ class OperationJournal:
         except BaseException:
             try:
                 await self.rollback_transaction(transaction_id)
-            except (JournalError, DatabaseLifecycleShuttingDownError):
+            except _FALLOS_DE_CLEANUP_ABSORBIBLES:
                 # Nunca enmascarar la excepción original del cuerpo. Con el
-                # boundary, un shutdown en curso rechaza la nueva admisión del
-                # rollback (fail-closed): la fila PENDING puede sobrevivir y la
-                # barrerá sweep_stale_pending() en el próximo arranque. Lo único
-                # inviolable acá es que la excepción original salga por arriba
-                # (C2). No se captura BaseException: una cancelación NUEVA
-                # durante el rollback debe seguir propagando.
+                # boundary, un shutdown en curso —o un path en cuarentena—
+                # rechaza la nueva admisión del rollback (fail-closed): la fila
+                # PENDING puede sobrevivir y la barrerá sweep_stale_pending() en
+                # el próximo arranque. Lo único inviolable acá es que la
+                # excepción original salga por arriba (C2). La tupla no incluye
+                # BaseException: una cancelación NUEVA durante el rollback debe
+                # seguir propagando.
                 logger.error(
                     "Rollback of transaction %d failed during exception handling",
                     transaction_id,
@@ -1159,7 +1192,18 @@ class OperationJournal:
             await self.complete_operation(op_id)
             await self.commit_transaction(tx_id)
         except Exception:
-            await self.mark_transaction_rolled_back(tx_id)
+            try:
+                await self.mark_transaction_rolled_back(tx_id)
+            except _FALLOS_DE_CLEANUP_ABSORBIBLES:
+                # Mismo contrato que transaction(): el cleanup es SECUNDARIO y no
+                # puede reemplazar la excepción primaria de la operación. Acá el
+                # guard faltaba entero, así que cualquier fallo del marcado —no
+                # sólo el de cuarentena— se llevaba puesta la primaria.
+                logger.error(
+                    "Marking transaction %d as rolled back failed during exception handling",
+                    tx_id,
+                    exc_info=True,
+                )
             raise
 
         return op_id

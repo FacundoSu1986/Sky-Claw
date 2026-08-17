@@ -22,22 +22,29 @@ como yield del scheduler); los timeouts son watchdog.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import logging
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 import pytest
 
+from sky_claw.app.core import db_lifecycle as db_lifecycle_mod
 from sky_claw.app.core.db_lifecycle import (
+    DatabaseConnectionQuarantinedError,
+    DatabaseConnectionReplacedError,
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
     DatabaseLifecycleShuttingDownError,
+    DatabaseShutdownIncompleteError,
 )
 from sky_claw.app.db.async_registry import AsyncModRegistry, DatabaseError
 from sky_claw.app.db.journal import (
+    _FALLOS_DE_CLEANUP_ABSORBIBLES,
     JournalTransactionError,
     OperationJournal,
     TransactionStatus,
@@ -751,3 +758,454 @@ async def test_journal_c2_cancelled_error_preservado_con_shutdown_real(
     with pytest.raises(ValueError, match="no active connection"):
         async with db.execute("SELECT 1") as cur:
             await cur.fetchone()
+
+
+# ===========================================================================
+# JOURNAL — F-02: la cuarentena del lifecycle es el SEGUNDO motivo de rechazo
+#
+# #475 estableció que un rollback rechazado por el lifecycle no reemplaza la
+# excepción del cuerpo, y enumeró el único rechazo que existía entonces
+# (shutdown). #483 agregó un segundo —cuarentena por path— sin tocar esa
+# enumeración, así que el cleanup volvía a enmascarar. Los tests de acá abajo
+# son el gemelo exacto de los C2 de shutdown, con la cuarentena como causa.
+# ===========================================================================
+
+
+async def _instalar_cuarentena_real(lifecycle: DatabaseLifecycleManager, db_path: Path) -> None:
+    """Deja *db_path* en cuarentena usando SOLO la API pública del manager.
+
+    ``recover_connection()`` documenta que una ventana que termina sin haber
+    reabierto deja el path fail-closed y que esa marca no la levanta ninguna
+    transición del manager. Es la vía que separa limpiamente esta causa de la de
+    shutdown: acá ``_shutting_down`` sigue en False, así que lo único que cambia
+    respecto del escenario sano es la cuarentena.
+    """
+    conn = await lifecycle.get_connection(db_path)
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with lifecycle.recover_connection(db_path, conn):
+            pass  # ventana que NO reconstruye
+    assert lifecycle._resolve_key(db_path) in lifecycle._quarantined_paths
+    assert not lifecycle._shutting_down, "esta causa debe ser cuarentena, no shutdown"
+
+
+def _estado_de_fila(db_path: Path, transaction_id: int) -> str | None:
+    """Lee el status de la fila con una conexión INDEPENDIENTE del lifecycle.
+
+    El path está en cuarentena: pedirle la conexión al manager sería justamente
+    lo que el fail-closed rechaza.
+    """
+    con = sqlite3.connect(str(db_path))
+    try:
+        fila = con.execute("SELECT status FROM transactions WHERE transaction_id = ?", (transaction_id,)).fetchone()
+    finally:
+        con.close()
+    return None if fila is None else str(fila[0])
+
+
+async def test_journal_c2_sentinel_preservado_con_quarantine_real(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager, caplog: pytest.LogCaptureFixture
+) -> None:
+    """C2-C: con el path en cuarentena, el rollback rechazado NO reemplaza la
+    excepción original del cuerpo del context manager.
+
+    Gemelo de ``test_journal_c2_sentinel_preservado_con_shutdown_real``: misma
+    forma, mismo boundary, mismo punto de fallo — sólo cambia el motivo por el
+    que el lifecycle rechaza el rollback. Que uno preservara la original y el
+    otro no era el hueco de integración.
+
+    Reversión: quitar DatabaseConnectionQuarantinedError de
+    ``_FALLOS_DE_CLEANUP_ABSORBIBLES`` → la QuarantinedError reemplaza el
+    sentinel → ROJO.
+    """
+    journal = OperationJournal(tmp_path / "c2_quarantine.db", lifecycle=lifecycle)
+    await journal.open()
+    sentinel = ValueError("ORIGINAL_SENTINEL")
+    tx_id: int | None = None
+
+    propagada: BaseException | None = None
+    with caplog.at_level(logging.ERROR, logger="sky_claw.app.db.journal"):
+        try:
+            async with journal.transaction("c2-quarantine-real") as abierta:
+                tx_id = abierta
+                # La cuarentena SOBREVIENE con la fila PENDING ya creada.
+                # Instalarla antes haría fallar begin_transaction() y el cuerpo
+                # no correría: ese camino es fail-closed correcto, no este bug.
+                await _instalar_cuarentena_real(lifecycle, journal._db_path)
+                raise sentinel
+        except BaseException as error:
+            propagada = error
+
+    assert propagada is sentinel, f"la original fue reemplazada por {type(propagada).__name__}"
+
+    # El rollback REALMENTE intentó alcanzar el path en cuarentena: quedó
+    # logueado y la fila sigue PENDING porque el UPDATE nunca llegó a correr.
+    assert any("Rollback of transaction" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records), (
+        "el fallo secundario del cleanup no quedó logueado"
+    )
+    assert tx_id is not None
+    assert _estado_de_fila(journal._db_path, tx_id) == TransactionStatus.PENDING.value
+
+    assert lifecycle._resolve_key(journal._db_path) in lifecycle._quarantined_paths
+    assert lifecycle._admitted == 0, "quedó una admisión colgada"
+    assert lifecycle._drained.is_set()
+
+
+async def test_journal_salida_limpia_propaga_fallo_de_commit_por_quarantine(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """Guard anti-regresión del fix: sin excepción PRIMARIA que preservar, un
+    commit rechazado por cuarentena DEBE seguir propagando.
+
+    El contrato absorbe fallos de cleanup, no fallos de la operación principal.
+    Un fix que ensanchara el ``except`` hasta tragarse esto convertiría una
+    transacción no confirmada en un éxito silencioso.
+    """
+    journal = OperationJournal(tmp_path / "commit_limpio.db", lifecycle=lifecycle)
+    await journal.open()
+    tx_id: int | None = None
+
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with journal.transaction("commit-limpio") as abierta:
+            tx_id = abierta
+            await _instalar_cuarentena_real(lifecycle, journal._db_path)
+            # salida LIMPIA del cuerpo → commit_transaction() choca la cuarentena
+
+    assert tx_id is not None
+    assert _estado_de_fila(journal._db_path, tx_id) == TransactionStatus.PENDING.value
+    assert lifecycle._admitted == 0
+    assert lifecycle._drained.is_set()
+
+
+async def test_journal_log_operation_preserva_error_primario_con_quarantine(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager, caplog: pytest.LogCaptureFixture
+) -> None:
+    """El hermano de ``transaction()`` en el mismo archivo: ``log_operation()``
+    marcaba la transacción como rolled-back en un cleanup SIN guard alguno, así
+    que cualquier fallo de ese marcado —no sólo el de cuarentena— se llevaba
+    puesta la excepción primaria.
+
+    El fallo SECUNDARIO es integración real: ``mark_transaction_rolled_back()``
+    pide su boundary al lifecycle y choca con la cuarentena de verdad. El
+    sentinel PRIMARIO se inyecta por seam, igual que los C2 existentes lo
+    inyectan en el cuerpo del context manager (en ``log_operation`` no hay
+    cuerpo donde lanzarlo).
+
+    Reversión: quitar el try/except del cleanup de ``log_operation`` → la
+    QuarantinedError secundaria reemplaza el sentinel → ROJO.
+    """
+    journal = OperationJournal(tmp_path / "log_op_quarantine.db", lifecycle=lifecycle)
+    await journal.open()
+    sentinel = ValueError("ORIGINAL_SENTINEL")
+
+    async def _complete_operation_falla(entry_id: int) -> None:
+        # La cuarentena sobreviene con la transacción legacy ya abierta y su
+        # entrada ya insertada: el cleanup es quien va a chocar con ella.
+        await _instalar_cuarentena_real(lifecycle, journal._db_path)
+        raise sentinel
+
+    journal.complete_operation = _complete_operation_falla  # type: ignore[method-assign]
+
+    propagada: BaseException | None = None
+    with caplog.at_level(logging.ERROR, logger="sky_claw.app.db.journal"):
+        try:
+            await journal.log_operation(
+                agent_id="c2",
+                operation_type="file_modify",
+                file_path=str(tmp_path / "objetivo.esp"),
+            )
+        except BaseException as error:
+            propagada = error
+
+    assert propagada is sentinel, f"la primaria fue reemplazada por {type(propagada).__name__}"
+    assert any("Marking transaction" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records), (
+        "el fallo secundario del cleanup no quedó logueado"
+    )
+    assert lifecycle._resolve_key(journal._db_path) in lifecycle._quarantined_paths
+    assert lifecycle._admitted == 0, "quedó una admisión colgada"
+    assert lifecycle._drained.is_set()
+
+
+async def test_journal_cancelacion_nueva_durante_rollback_no_es_absorbida(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """El fix ensancha el ``except`` del cleanup, pero NO hasta BaseException:
+    una cancelación NUEVA llegada durante el rollback conserva su semántica y
+    sigue propagando.
+
+    Integración real, sin sleeps: un tercero toma el lock del path, el cleanup
+    queda esperándolo —ese es el punto de suspensión— y ahí se cancela la tarea
+    del cuerpo. Si el fix la absorbiera, la tarea terminaría con el sentinel en
+    vez de quedar cancelada.
+    """
+    journal = OperationJournal(tmp_path / "cancel_nueva.db", lifecycle=lifecycle)
+    await journal.open()
+    sentinel = ValueError("ORIGINAL_SENTINEL")
+
+    cuerpo_entro, senal = asyncio.Event(), asyncio.Event()
+
+    async def cuerpo() -> None:
+        async with journal.transaction("cancel-nueva"):
+            cuerpo_entro.set()
+            await senal.wait()
+            raise sentinel
+
+    t_cuerpo = asyncio.create_task(cuerpo())
+    await asyncio.wait_for(cuerpo_entro.wait(), timeout=DEADLINE)
+
+    hold_entro, liberar = asyncio.Event(), asyncio.Event()
+
+    async def retener_lock() -> None:
+        async with lifecycle.operation(journal._db_path):
+            hold_entro.set()
+            await liberar.wait()
+
+    t_hold = asyncio.create_task(retener_lock())
+    await asyncio.wait_for(hold_entro.wait(), timeout=DEADLINE)
+
+    senal.set()  # el cuerpo lanza → el cleanup pide el lock del path y bloquea
+    await ceder()
+    t_cuerpo.cancel()  # cancelación NUEVA, ya dentro del cleanup
+
+    hechas, pendientes = await asyncio.wait({t_cuerpo}, timeout=DEADLINE)
+    assert not pendientes, "el cuerpo quedó colgado"
+    assert t_cuerpo.cancelled(), "la cancelación nueva del cleanup fue absorbida por el fix"
+
+    liberar.set()
+    await asyncio.wait_for(t_hold, timeout=DEADLINE)
+    assert lifecycle._admitted == 0, "quedó una admisión colgada"
+    assert lifecycle._drained.is_set()
+
+
+# ===========================================================================
+# ANCLA ENUMERANTE — la familia de rechazos de admisión del lifecycle
+#
+# Los tests conductuales de arriba prueban los DOS rechazos que existen hoy,
+# pero un tercero que naciera en db_lifecycle no rompería ninguno: quedaría
+# fuera de `_FALLOS_DE_CLEANUP_ABSORBIBLES` y los dos cleanups del journal
+# volverían a pisar la excepción primaria — exactamente cómo nació este bug
+# (#475 enumeró shutdown, #483 agregó cuarentena sin tocar la enumeración).
+#
+# El ancla congela la familia COMPLETA de excepciones públicas del lifecycle y
+# obliga a clasificar cada una: o puede salir de `transaction().__aenter__` —y
+# entonces necesita su receta y queda cubierta por el contrato— o no puede, y
+# se dice por qué. Sin AST y sin congelar nombres privados: introspección del
+# módulo + igualdad literal, el patrón de RITUAL_TOOL_MAP.
+# ===========================================================================
+
+
+async def _provocar_shutdown(lifecycle: DatabaseLifecycleManager, db_path: Path) -> None:
+    """Receta de DatabaseLifecycleShuttingDownError: `_admit()` deja de admitir."""
+    await lifecycle.shutdown_all()
+
+
+async def _provocar_cuarentena(lifecycle: DatabaseLifecycleManager, db_path: Path) -> None:
+    """Receta de DatabaseConnectionQuarantinedError: `_resolve_connection()` fail-closed."""
+    await _instalar_cuarentena_real(lifecycle, db_path)
+
+
+# Rechazos que SÍ pueden salir de `lifecycle.transaction().__aenter__`, cada uno
+# con la receta que lo provoca. Un rechazo nuevo entra acá y hereda por
+# construcción el test conductual parametrizado de más abajo.
+_RECHAZOS_DE_ADMISION: dict[type[BaseException], Callable[[DatabaseLifecycleManager, Path], Awaitable[None]]] = {
+    DatabaseLifecycleShuttingDownError: _provocar_shutdown,
+    DatabaseConnectionQuarantinedError: _provocar_cuarentena,
+}
+
+# Excepciones públicas del lifecycle que NO pueden aparecer al entrar a
+# `transaction()`, con el motivo. Estar acá es una EXENCIÓN declarada, no un
+# olvido: el ancla de abajo exige que cada excepción esté en exactamente una
+# de las dos listas.
+_FUERA_DEL_CAMINO_DE_ADMISION: dict[type[BaseException], str] = {
+    DatabaseShutdownIncompleteError: "sólo la levanta shutdown_all() al no poder cerrar todo",
+    DatabaseConnectionReplacedError: "sólo la levanta recover_connection() por el guard de identidad",
+}
+
+
+def _excepciones_publicas_del_lifecycle() -> set[type[BaseException]]:
+    """Las excepciones públicas DEFINIDAS en db_lifecycle, por introspección."""
+    return {
+        objeto
+        for nombre, objeto in vars(db_lifecycle_mod).items()
+        if isinstance(objeto, type)
+        and issubclass(objeto, BaseException)
+        and objeto.__module__ == db_lifecycle_mod.__name__
+        and not nombre.startswith("_")
+    }
+
+
+def test_ancla_familia_de_excepciones_del_lifecycle_congelada() -> None:
+    """Toda excepción pública del lifecycle está clasificada, y sólo una vez.
+
+    Igualdad literal: agregar una excepción a db_lifecycle rompe este test hasta
+    que alguien decida si es un rechazo de admisión —y le escriba su receta, que
+    la mete automáticamente en el test conductual— o una exención con motivo.
+    """
+    clasificadas = set(_RECHAZOS_DE_ADMISION) | set(_FUERA_DEL_CAMINO_DE_ADMISION)
+
+    assert not (set(_RECHAZOS_DE_ADMISION) & set(_FUERA_DEL_CAMINO_DE_ADMISION)), (
+        "una excepción no puede ser rechazo de admisión y exención a la vez"
+    )
+    assert _excepciones_publicas_del_lifecycle() == clasificadas, (
+        "hay excepciones del lifecycle sin clasificar: decidí si pueden salir de "
+        "transaction().__aenter__ (receta en _RECHAZOS_DE_ADMISION) o no (motivo "
+        "en _FUERA_DEL_CAMINO_DE_ADMISION)"
+    )
+
+
+def test_ancla_todo_rechazo_de_admision_es_absorbible_por_el_cleanup() -> None:
+    """El contrato del journal cubre la familia ENTERA, no una muestra.
+
+    Reversión: quitar cualquier miembro de `_FALLOS_DE_CLEANUP_ABSORBIBLES` →
+    ROJO nombrando exactamente el rechazo que quedó sin cubrir.
+    """
+    sin_cubrir = set(_RECHAZOS_DE_ADMISION) - set(_FALLOS_DE_CLEANUP_ABSORBIBLES)
+    assert not sin_cubrir, (
+        "estos rechazos del lifecycle reemplazarían la excepción primaria en los "
+        f"cleanups del journal: {sorted(e.__name__ for e in sin_cubrir)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "rechazo",
+    list(_RECHAZOS_DE_ADMISION),
+    ids=[e.__name__ for e in _RECHAZOS_DE_ADMISION],
+)
+async def test_ancla_cleanup_preserva_primaria_para_todo_rechazo_de_admision(
+    rechazo: type[BaseException],
+    tmp_path: Path,
+    lifecycle: DatabaseLifecycleManager,
+) -> None:
+    """Conductual y parametrizado sobre la familia: para CADA rechazo, el cuerpo
+    falla, el rollback choca ese rechazo, y la primaria sale igual.
+
+    Un rechazo nuevo con su receta entra acá sin escribir un test a mano — que es
+    lo que diferencia enumerar de muestrear.
+    """
+    journal = OperationJournal(tmp_path / f"ancla_{rechazo.__name__}.db", lifecycle=lifecycle)
+    await journal.open()
+    sentinel = ValueError("ORIGINAL_SENTINEL")
+    provocar = _RECHAZOS_DE_ADMISION[rechazo]
+
+    propagada: BaseException | None = None
+    try:
+        async with journal.transaction(f"ancla-{rechazo.__name__}"):
+            await provocar(lifecycle, journal._db_path)
+            raise sentinel
+    except BaseException as error:
+        propagada = error
+
+    assert propagada is sentinel, f"la primaria fue reemplazada por {type(propagada).__name__}"
+
+    # La receta provocó ESE rechazo y no otro: sin esto, una receta que dejara de
+    # funcionar volvería el caso verde por la razón equivocada.
+    with pytest.raises(rechazo):
+        async with lifecycle.transaction(journal._db_path):
+            pass  # pragma: no cover — el __aenter__ ya rechaza
+
+
+# ---------------------------------------------------------------------------
+# Cierre del hueco: congelar los SITIOS de raise, no sólo el conjunto de clases
+#
+# El ancla de arriba detecta una excepción NUEVA en db_lifecycle, pero no que
+# una ya clasificada como exención empiece a levantarse desde el camino de
+# admisión (p.ej. `_resolve_connection` levantando DatabaseConnectionReplacedError):
+# el conjunto de clases no cambia y el contrato del journal queda corto igual.
+#
+# Es el mismo argumento con el que `test_db_connection_invariant.py` congela el
+# CONTEO por módulo y no los nombres: "agregar un segundo `connect()` dentro de
+# un módulo ya listado es el punto de extensión más probable, y con un set de
+# nombres pasaría sin romper nada". Acá el par (función, excepción) hace ese
+# papel. Escribir el párrafo explicando el hueco no lo verifica — AGENTS.md es
+# explícito en que eso no cuenta.
+# ---------------------------------------------------------------------------
+
+_ARCHIVO_DB_LIFECYCLE = Path(db_lifecycle_mod.__file__)
+
+# Eslabones de db_lifecycle que se atraviesan al entrar a `transaction()`:
+# transaction → operation → _admit / get_write_lock / _resolve_connection → _init_single.
+# Congelar estos nombres es deliberado y load-bearing: renombrar un eslabón
+# rompe el ancla y obliga a re-mirar qué puede levantar ahora ese camino.
+_CAMINO_DE_ADMISION = frozenset(
+    {"transaction", "operation", "_admit", "get_write_lock", "_resolve_connection", "_init_single"}
+)
+
+# Todo `raise <ClaseDeExcepción>` de db_lifecycle, por (función, excepción).
+_SITIOS_DE_RAISE_ESPERADOS = {
+    ("_admit", "DatabaseLifecycleShuttingDownError"),
+    ("_await_db_operation", "_DatabaseOperationCancelled"),
+    ("_await_db_operation", "_DatabaseOperationFailedAfterCancellation"),
+    ("_resolve_connection", "DatabaseConnectionQuarantinedError"),
+    ("_shutdown_all_under_transition", "DatabaseShutdownIncompleteError"),
+    ("init_all", "DatabaseLifecycleShuttingDownError"),
+    ("recover_connection", "DatabaseConnectionQuarantinedError"),
+    ("recover_connection", "DatabaseConnectionReplacedError"),
+}
+
+
+def _sitios_de_raise_del_lifecycle() -> set[tuple[str, str]]:
+    """(función, excepción) por cada ``raise <ClaseDeExcepción>`` de db_lifecycle.
+
+    AST para el sitio; introspección para quedarse SOLO con lo que de verdad es
+    una clase de excepción del módulo. Sin ese filtro, los ``raise
+    variable_local`` —re-raises de diagnóstico como ``raise diagnostic_error``—
+    entran al conjunto y lo vuelven ruido que nadie va a mantener.
+    """
+    arbol = ast.parse(_ARCHIVO_DB_LIFECYCLE.read_text(encoding="utf-8"))
+    pila: list[str] = []
+    sitios: set[tuple[str, str]] = set()
+
+    class _Visitante(ast.NodeVisitor):
+        def _entrar(self, nodo: Any) -> None:
+            pila.append(nodo.name)
+            self.generic_visit(nodo)
+            pila.pop()
+
+        def visit_FunctionDef(self, nodo: ast.FunctionDef) -> None:  # noqa: N802 — API de ast.NodeVisitor
+            self._entrar(nodo)
+
+        def visit_AsyncFunctionDef(self, nodo: ast.AsyncFunctionDef) -> None:  # noqa: N802 — API de ast.NodeVisitor
+            self._entrar(nodo)
+
+        def visit_Raise(self, nodo: ast.Raise) -> None:  # noqa: N802 — API de ast.NodeVisitor
+            if nodo.exc is not None:
+                objetivo = nodo.exc.func if isinstance(nodo.exc, ast.Call) else nodo.exc
+                if isinstance(objetivo, ast.Name):
+                    resuelto = getattr(db_lifecycle_mod, objetivo.id, None)
+                    if isinstance(resuelto, type) and issubclass(resuelto, BaseException):
+                        sitios.add((pila[-1] if pila else "<módulo>", objetivo.id))
+            self.generic_visit(nodo)
+
+    _Visitante().visit(arbol)
+    return sitios
+
+
+def test_ancla_sitios_de_raise_del_lifecycle_congelados() -> None:
+    """Igualdad literal de los pares (función, excepción) de db_lifecycle.
+
+    Un `raise` nuevo —clase nueva O una ya existente desde un sitio nuevo— rompe
+    esto hasta que alguien decida si ese camino alcanza `transaction().__aenter__`
+    y, si lo alcanza, lo agregue a `_RECHAZOS_DE_ADMISION` y a
+    `_FALLOS_DE_CLEANUP_ABSORBIBLES`.
+    """
+    assert _sitios_de_raise_del_lifecycle() == _SITIOS_DE_RAISE_ESPERADOS, (
+        "cambiaron los sitios de raise de db_lifecycle: decidí si el camino "
+        "afectado puede alcanzar transaction().__aenter__ y, si sí, que su "
+        "excepción quede cubierta por el contrato de cleanup del journal"
+    )
+
+
+def test_ancla_el_camino_de_admision_solo_levanta_rechazos_clasificados() -> None:
+    """Lo que el camino de admisión levanta == lo que el journal declara absorber.
+
+    Ata el ancla sintáctica a la semántica: cierra el caso que el conjunto de
+    clases no ve —una excepción ya clasificada como exención levantándose desde
+    el camino de admisión—, porque ahí el par cambia aunque el conjunto no.
+    """
+    levantados = {
+        excepcion for funcion, excepcion in _sitios_de_raise_del_lifecycle() if funcion in _CAMINO_DE_ADMISION
+    }
+    clasificados = {rechazo.__name__ for rechazo in _RECHAZOS_DE_ADMISION}
+    assert levantados == clasificados, (
+        "el camino de admisión del lifecycle levanta rechazos que el journal no "
+        f"clasifica (o al revés): camino={sorted(levantados)} vs. clasificados={sorted(clasificados)}"
+    )
