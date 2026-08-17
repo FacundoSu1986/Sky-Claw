@@ -25,21 +25,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 import pytest
 
+from sky_claw.app.core import db_lifecycle as db_lifecycle_mod
 from sky_claw.app.core.db_lifecycle import (
     DatabaseConnectionQuarantinedError,
+    DatabaseConnectionReplacedError,
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
     DatabaseLifecycleShuttingDownError,
+    DatabaseShutdownIncompleteError,
 )
 from sky_claw.app.db.async_registry import AsyncModRegistry, DatabaseError
 from sky_claw.app.db.journal import (
+    _FALLOS_DE_CLEANUP_ABSORBIBLES,
     JournalTransactionError,
     OperationJournal,
     TransactionStatus,
@@ -969,3 +973,130 @@ async def test_journal_cancelacion_nueva_durante_rollback_no_es_absorbida(
     await asyncio.wait_for(t_hold, timeout=DEADLINE)
     assert lifecycle._admitted == 0, "quedó una admisión colgada"
     assert lifecycle._drained.is_set()
+
+
+# ===========================================================================
+# ANCLA ENUMERANTE — la familia de rechazos de admisión del lifecycle
+#
+# Los tests conductuales de arriba prueban los DOS rechazos que existen hoy,
+# pero un tercero que naciera en db_lifecycle no rompería ninguno: quedaría
+# fuera de `_FALLOS_DE_CLEANUP_ABSORBIBLES` y los dos cleanups del journal
+# volverían a pisar la excepción primaria — exactamente cómo nació este bug
+# (#475 enumeró shutdown, #483 agregó cuarentena sin tocar la enumeración).
+#
+# El ancla congela la familia COMPLETA de excepciones públicas del lifecycle y
+# obliga a clasificar cada una: o puede salir de `transaction().__aenter__` —y
+# entonces necesita su receta y queda cubierta por el contrato— o no puede, y
+# se dice por qué. Sin AST y sin congelar nombres privados: introspección del
+# módulo + igualdad literal, el patrón de RITUAL_TOOL_MAP.
+# ===========================================================================
+
+
+async def _provocar_shutdown(lifecycle: DatabaseLifecycleManager, db_path: Path) -> None:
+    """Receta de DatabaseLifecycleShuttingDownError: `_admit()` deja de admitir."""
+    await lifecycle.shutdown_all()
+
+
+async def _provocar_cuarentena(lifecycle: DatabaseLifecycleManager, db_path: Path) -> None:
+    """Receta de DatabaseConnectionQuarantinedError: `_resolve_connection()` fail-closed."""
+    await _instalar_cuarentena_real(lifecycle, db_path)
+
+
+# Rechazos que SÍ pueden salir de `lifecycle.transaction().__aenter__`, cada uno
+# con la receta que lo provoca. Un rechazo nuevo entra acá y hereda por
+# construcción el test conductual parametrizado de más abajo.
+_RECHAZOS_DE_ADMISION: dict[type[BaseException], Callable[[DatabaseLifecycleManager, Path], Awaitable[None]]] = {
+    DatabaseLifecycleShuttingDownError: _provocar_shutdown,
+    DatabaseConnectionQuarantinedError: _provocar_cuarentena,
+}
+
+# Excepciones públicas del lifecycle que NO pueden aparecer al entrar a
+# `transaction()`, con el motivo. Estar acá es una EXENCIÓN declarada, no un
+# olvido: el ancla de abajo exige que cada excepción esté en exactamente una
+# de las dos listas.
+_FUERA_DEL_CAMINO_DE_ADMISION: dict[type[BaseException], str] = {
+    DatabaseShutdownIncompleteError: "sólo la levanta shutdown_all() al no poder cerrar todo",
+    DatabaseConnectionReplacedError: "sólo la levanta recover_connection() por el guard de identidad",
+}
+
+
+def _excepciones_publicas_del_lifecycle() -> set[type[BaseException]]:
+    """Las excepciones públicas DEFINIDAS en db_lifecycle, por introspección."""
+    return {
+        objeto
+        for nombre, objeto in vars(db_lifecycle_mod).items()
+        if isinstance(objeto, type)
+        and issubclass(objeto, BaseException)
+        and objeto.__module__ == db_lifecycle_mod.__name__
+        and not nombre.startswith("_")
+    }
+
+
+def test_ancla_familia_de_excepciones_del_lifecycle_congelada() -> None:
+    """Toda excepción pública del lifecycle está clasificada, y sólo una vez.
+
+    Igualdad literal: agregar una excepción a db_lifecycle rompe este test hasta
+    que alguien decida si es un rechazo de admisión —y le escriba su receta, que
+    la mete automáticamente en el test conductual— o una exención con motivo.
+    """
+    clasificadas = set(_RECHAZOS_DE_ADMISION) | set(_FUERA_DEL_CAMINO_DE_ADMISION)
+
+    assert not (set(_RECHAZOS_DE_ADMISION) & set(_FUERA_DEL_CAMINO_DE_ADMISION)), (
+        "una excepción no puede ser rechazo de admisión y exención a la vez"
+    )
+    assert _excepciones_publicas_del_lifecycle() == clasificadas, (
+        "hay excepciones del lifecycle sin clasificar: decidí si pueden salir de "
+        "transaction().__aenter__ (receta en _RECHAZOS_DE_ADMISION) o no (motivo "
+        "en _FUERA_DEL_CAMINO_DE_ADMISION)"
+    )
+
+
+def test_ancla_todo_rechazo_de_admision_es_absorbible_por_el_cleanup() -> None:
+    """El contrato del journal cubre la familia ENTERA, no una muestra.
+
+    Reversión: quitar cualquier miembro de `_FALLOS_DE_CLEANUP_ABSORBIBLES` →
+    ROJO nombrando exactamente el rechazo que quedó sin cubrir.
+    """
+    sin_cubrir = set(_RECHAZOS_DE_ADMISION) - set(_FALLOS_DE_CLEANUP_ABSORBIBLES)
+    assert not sin_cubrir, (
+        "estos rechazos del lifecycle reemplazarían la excepción primaria en los "
+        f"cleanups del journal: {sorted(e.__name__ for e in sin_cubrir)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "rechazo",
+    list(_RECHAZOS_DE_ADMISION),
+    ids=[e.__name__ for e in _RECHAZOS_DE_ADMISION],
+)
+async def test_ancla_cleanup_preserva_primaria_para_todo_rechazo_de_admision(
+    rechazo: type[BaseException],
+    tmp_path: Path,
+    lifecycle: DatabaseLifecycleManager,
+) -> None:
+    """Conductual y parametrizado sobre la familia: para CADA rechazo, el cuerpo
+    falla, el rollback choca ese rechazo, y la primaria sale igual.
+
+    Un rechazo nuevo con su receta entra acá sin escribir un test a mano — que es
+    lo que diferencia enumerar de muestrear.
+    """
+    journal = OperationJournal(tmp_path / f"ancla_{rechazo.__name__}.db", lifecycle=lifecycle)
+    await journal.open()
+    sentinel = ValueError("ORIGINAL_SENTINEL")
+    provocar = _RECHAZOS_DE_ADMISION[rechazo]
+
+    propagada: BaseException | None = None
+    try:
+        async with journal.transaction(f"ancla-{rechazo.__name__}"):
+            await provocar(lifecycle, journal._db_path)
+            raise sentinel
+    except BaseException as error:
+        propagada = error
+
+    assert propagada is sentinel, f"la primaria fue reemplazada por {type(propagada).__name__}"
+
+    # La receta provocó ESE rechazo y no otro: sin esto, una receta que dejara de
+    # funcionar volvería el caso verde por la razón equivocada.
+    with pytest.raises(rechazo):
+        async with lifecycle.transaction(journal._db_path):
+            pass  # pragma: no cover — el __aenter__ ya rechaza
