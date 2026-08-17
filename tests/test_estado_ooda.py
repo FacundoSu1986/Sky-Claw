@@ -238,9 +238,28 @@ def test_todo_test_citado_como_verificacion_existe() -> None:
 # celda, y sin el flag esa fila no disparaba nada: evidencia de rig externa sin
 # declarar, con la suite en verde. Los negativos no se alteran — no llevan fecha.
 _CITA_DE_RIG_FECHADO = re.compile(
-    r"rig\b.{0,25}?\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}.{0,25}?\brig\b",
+    r"\brig\b.{0,25}?\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}.{0,25}?\brig\b",
     re.IGNORECASE,
 )
+
+
+def _seccion_29_del_sop() -> str:
+    """El texto de §2.9 y nada más.
+
+    Leer el archivo entero deja el ancla afirmando menos de lo que su nombre
+    promete: si §2.9 pierde la declaración pero la misma frase aparece en otra
+    sección, el test sigue verde y el drift pasa. Se recorta desde el encabezado
+    de §2.9 hasta el siguiente de nivel igual o mayor.
+    """
+    texto = _SOP.read_text(encoding="utf-8")
+    inicio = texto.index("### 2.9 TexGen & DynDOLOD 3")
+    # Se busca DESPUÉS de la línea del propio encabezado: arrancando en `inicio`,
+    # el primer match del patrón es ese mismo encabezado y la sección sale vacía.
+    cuerpo = texto.index("\n", inicio) + 1
+    siguiente = re.search(r"^#{1,3} ", texto[cuerpo:], re.MULTILINE)
+    return texto[inicio:] if siguiente is None else texto[inicio : cuerpo + siguiente.start()]
+
+
 _MARCA_DE_EVIDENCIA_EXTERNA = "fuera del repo"
 
 # Las filas que se apoyan en un informe de rig que NO está en el árbol. Igualdad
@@ -289,6 +308,11 @@ def test_el_patron_de_cita_de_rig_reconoce_las_variantes_que_se_escriben() -> No
         "Bloqueado (rig humano)",
         "Verificar contra rig real qué severidad usa Pandora",
         "humano",
+        # `rig` como SUBSTRING no es una cita de rig. Sin `\b`, "trigger" la
+        # dispara y una fila que hable de triggers con fecha queda obligada a
+        # declarar evidencia externa que no tiene.
+        "trigger 2026-08-05",
+        "2026-08-05 trigger",
     )
     for frase in trabajo_pendiente:
         assert not _CITA_DE_RIG_FECHADO.search(frase), f"no afirma un hecho de rig: {frase!r}"
@@ -312,14 +336,16 @@ def test_el_sop_declara_que_su_evidencia_de_rig_es_externa() -> None:
     cubre este archivo —solo lee el inventario—, así que sin este ancla el SOP no
     tenía ningún gate equivalente.
     """
-    texto = _SOP.read_text(encoding="utf-8")
+    texto = _seccion_29_del_sop()
 
     assert "Rig evidence in this section is EXTERNAL and not auditable from this repo." in texto, (
         "§2.9 dejó de declarar que su evidencia de rig es externa"
     )
 
-    citadas = {m.group(1) for m in re.finditer(r"rig[^.\n]{0,20}?(\d{4}-\d{2}-\d{2})", texto, re.IGNORECASE)}
-    citadas |= {m.group(1) for m in re.finditer(r"(\d{4}-\d{2}-\d{2})[^.\n]{0,20}?rig", texto, re.IGNORECASE)}
+    # `\brig\b` en las dos: sin los límites, «trigger 2026-08-05» se lee como cita
+    # de rig y el ancla exige declarar una evidencia que no existe.
+    citadas = {m.group(1) for m in re.finditer(r"\brig\b[^.\n]{0,25}?(\d{4}-\d{2}-\d{2})", texto, re.IGNORECASE)}
+    citadas |= {m.group(1) for m in re.finditer(r"(\d{4}-\d{2}-\d{2})[^.\n]{0,25}?\brig\b", texto, re.IGNORECASE)}
     declaradas = {"2026-08-05", "2026-08-10", "2026-08-11"}
 
     assert citadas == declaradas, (
