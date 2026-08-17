@@ -29,6 +29,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     clasificar_log,
 )
 from tests.test_dyndolod_service import (
+    _corrida_que_completa,
     _EjecucionFalsa,
     _escribir_log,
     _escribir_salida,
@@ -95,9 +96,42 @@ def test_los_marcadores_de_completitud_estan_congelados() -> None:
         "DynDOLOD": (
             "DynDOLOD plugins generated successfully",
             "Occlusion.esp completed successfully",
-            "generated object LOD for",
         ),
     }
+
+
+def test_un_hito_intermedio_no_puede_ser_marcador_de_completitud() -> None:
+    """Regresión del falso verde de `generated object LOD for` (revisor, PR #488).
+
+    Los marcadores se evalúan con `any()`, así que cada entrada basta por sí sola.
+    Una entrada que describa un HITO INTERMEDIO —LODGen terminó su parte— convierte
+    en "completa" a una corrida que murió antes de generar los plugins. Y truncada
+    en el `<ws>` para tolerar el worldspace variable, además perdía el
+    `successfully` y matcheaba líneas de error.
+
+    Las dos mitades del contrato: la corrida a medias NO es completa, y una línea
+    de error que mencione LODGen tampoco la vuelve completa.
+    """
+    solo_lodgen = "[00:19:55] LODGenx64Win6.exe generated object LOD for Tamriel successfully\n"
+    _, _, completo = clasificar_log(solo_lodgen, "DynDOLOD")
+    assert completo is False, "una corrida que no generó los plugins no está completa"
+
+    con_error = "[00:19:55] Error: failed, never generated object LOD for Tamriel\n"
+    terminales, _, completo_error = clasificar_log(con_error, "DynDOLOD")
+    assert completo_error is False
+    assert terminales, "y además es terminal por la regla fail-closed"
+
+
+def test_todo_marcador_afirma_el_fin_del_trabajo() -> None:
+    """Propiedad del mecanismo, no un caso: ningún marcador sin `successfully`.
+
+    Es lo que distingue "la herramienta terminó" de "una etapa interna terminó".
+    Un marcador nuevo sin esa palabra rompe acá antes de llegar a producción, sin
+    depender de que alguien escriba a mano su caso de falso verde.
+    """
+    for tool, marcadores in MARCADORES_DE_COMPLETITUD.items():
+        for marcador in marcadores:
+            assert "successfully" in marcador, f"{tool}: {marcador!r} no afirma un final exitoso"
 
 
 def test_las_tres_cajas_estan_congeladas() -> None:
@@ -107,13 +141,16 @@ def test_las_tres_cajas_estan_congeladas() -> None:
     ampliar `NO_FATALES_DEL_DOMINIO` a mano es cómo vuelve el falso verde, y
     recortarlo es cómo vuelve el falso rojo de las 121 líneas.
     """
+    # Cada entrada es una tupla de substrings que deben aparecer TODOS. La del DLL
+    # lleva dos partes a propósito: exentar por `"DynDOLOD.DLL"` suelto declaraba
+    # no-fatal a `Critical: DynDOLOD.DLL is corrupt` (revisor Codex, PR #488).
     assert NO_FATALES_DEL_DOMINIO == (
-        "Deleted reference",
-        "Unresolved FormID",
-        "LOD billboard(s) not found",
-        "No TexGen output detected",
-        "DynDOLOD.DLL",
-        "File not found SkyrimSE.exe",
+        ("Deleted reference",),
+        ("Unresolved FormID",),
+        ("LOD billboard(s) not found",),
+        ("No TexGen output detected",),
+        ("DynDOLOD.DLL", "not found"),
+        ("File not found SkyrimSE.exe",),
     )
     assert PATRONES_TERMINALES == (
         "Fatal:",
@@ -126,12 +163,36 @@ def test_las_tres_cajas_estan_congeladas() -> None:
 
 
 def test_toda_herramienta_lanzada_por_el_runner_declara_su_marcador() -> None:
-    """El dict cubre exactamente a los dos binarios que el runner lanza.
+    """Introspección sobre el runner, no repetición del dict.
 
-    Un lanzador nuevo sin entrada en el dict haría `KeyError` en `clasificar_log`,
-    que es ruidoso pero tarde. Esto lo dice antes y por enumeración.
+    La versión anterior afirmaba `set(MARCADORES) == {"TexGen", "DynDOLOD"}`, que
+    es la MISMA información que ya congela `test_los_marcadores_..._congelados`:
+    un tercer lanzador sin marcador dejaba las claves en dos y los dos tests en
+    verde — exactamente el hermano que el docstring decía atajar (lo marcaron
+    Codex y CodeRabbit por separado, PR #488).
+
+    Ahora se leen del AST los `tool_name=` que el runner pasa a
+    `ToolExecutionResult` y se comparan contra el dict. Un lanzador nuevo rompe
+    acá hasta que declare su marcador.
     """
-    assert set(MARCADORES_DE_COMPLETITUD) == {"TexGen", "DynDOLOD"}
+    import ast
+    import inspect
+
+    from sky_claw.local.tools import dyndolod_runner
+
+    arbol = ast.parse(inspect.getsource(dyndolod_runner))
+    lanzadas = {
+        kw.value.value
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call)
+        for kw in nodo.keywords
+        if kw.arg == "tool_name" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str)
+    }
+
+    assert lanzadas, "el detector no encontró ningún tool_name: la introspección se rompió"
+    assert lanzadas <= set(MARCADORES_DE_COMPLETITUD), (
+        f"herramientas lanzadas sin marcador de completitud: {sorted(lanzadas - set(MARCADORES_DE_COMPLETITUD))}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +285,39 @@ async def test_falta_solo_el_marcador_y_la_corrida_sale_roja(tmp_path: pathlib.P
 
 
 @pytest.mark.asyncio
+async def test_la_corrida_cortada_despues_de_lodgen_sale_roja(tmp_path: pathlib.Path) -> None:
+    """El falso verde del hito intermedio, probado END-TO-END y no solo en el clasificador.
+
+    Escenario que los dos revisores señalaron por separado (PR #488): el proceso
+    se cierra justo después de que LODGen termina el primer worldspace. Queda
+    `rc == 0`, artefacto fresco —`DynDOLOD.esp` puede haberse persistido antes, y
+    el SOP deja esa persistencia temprana explícitamente sin verificar— y ni una
+    línea terminal. Con `generated object LOD for` en los marcadores, los cuatro
+    conjuntos daban verde sobre una generación a medias.
+
+    El test de `clasificar_log` no alcanzaba para cerrarlo: prueba la taxonomía,
+    no el veredicto. Este cruza el runner entero, que es donde el falso verde se
+    habría manifestado.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / "DynDOLOD_Output"
+    _escribir_log(
+        tmp_path,
+        "DynDOLOD",
+        "[00:00:01] Using Output Path: C:\\Modding\\out\\\n"
+        "[00:19:55] LODGenx64Win6.exe generated object LOD for Tamriel successfully\n",
+    )
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert result.return_code == 0, "el exit code era 0: lo que falla es la completitud"
+
+
+@pytest.mark.asyncio
 async def test_el_mismo_log_con_marcador_es_exito(tmp_path: pathlib.Path) -> None:
     """Contracara exacta del anterior: se agrega SOLO el marcador y sale verde.
 
@@ -233,9 +327,15 @@ async def test_el_mismo_log_con_marcador_es_exito(tmp_path: pathlib.Path) -> Non
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / "DynDOLOD_Output"
-    _escribir_log(tmp_path, "DynDOLOD", LOG_SIN_MARCADOR + "[00:20:10] DynDOLOD plugins generated successfully\n")
-
-    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "DynDOLOD",
+            lambda: _escribir_salida(staging, "DynDOLOD.esp"),
+            log=LOG_SIN_MARCADOR + "[00:20:10] DynDOLOD plugins generated successfully\n",
+        ),
+    )
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_dyndolod(preset="Medium")
 
@@ -263,9 +363,13 @@ async def test_el_log_se_recupera_intacto_en_los_dos_encodings(tmp_path: pathlib
     acentuado = "[00:04:12] Error: Deleted reference en Añocuervo — sección ñ\n"
     log = tmp_path / "DynDOLOD" / "Logs" / "DynDOLOD_SSE_log.txt"
     log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_bytes((acentuado + "[00:20:10] DynDOLOD plugins generated successfully\n").encode(codec))
 
-    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
+    def _correr() -> None:
+        _escribir_salida(staging, "DynDOLOD.esp")
+        # Durante la corrida: el marcador sólo cuenta si el log cambió.
+        log.write_bytes((acentuado + "[00:20:10] DynDOLOD plugins generated successfully\n").encode(codec))
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_dyndolod(preset="Medium")
 
