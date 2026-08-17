@@ -58,6 +58,15 @@ _ITEMS = frozenset(
         # informe lo rotula "F1"; acá lleva ID descriptivo porque `F1` ya está tomado
         # por la auditoría de resiliencia #319 (cerrado en #328).
         "Preset de TexGen desvía `OutputPath`",
+        # Los dos defectos de post-check que el rig 2026-08-10 midió sobre
+        # Alpha-209 y que hasta ahora no tenían fila propia: el gate `not errors`
+        # rechaza todo éxito real (121 líneas `Error:` en una corrida buena) y el
+        # candidato único de TexGen apunta a un directorio que no existe nunca.
+        # `U-06` rozaba la completitud de la etapa 9 pero no nombraba ninguno, así
+        # que ninguno tenía gate. Plan de cierre en
+        # `docs/design/plans/2026-08-16-dyndolod-roadmap-v2.md`.
+        "Clasificación del log de la etapa 9",
+        "Candidato de salida de TexGen",
     }
 )
 

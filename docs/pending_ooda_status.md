@@ -10,6 +10,12 @@
 > **Última verificación:** 2026-08-08 en la rama actual, basada en
 > `origin/main` `53083c0`; los cambios posteriores de esta rama no se afirman
 > integrados en `origin/main`.
+>
+> **Re-baseline parcial 2026-08-16 sobre `main` `f8e8a4f`:** cubre únicamente las
+> filas de la etapa 9 de DynDOLOD — «Clasificación del log de la etapa 9»,
+> «Candidato de salida de TexGen» y la corrección de `U-06`. Las referencias a
+> línea de esas tres filas son de `f8e8a4f`. **No** es una reverificación integral
+> del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
@@ -41,7 +47,7 @@ confirmarlo contra código y tests.
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
 | U-04 | Parcial | #397, #399, salida administrada de Pandora y subárbol administrado por grupo de BodySlide | Smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py`, `test_bodyslide_lock.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
-| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora; post-check por LOG **+ gate de frescura** de DynDOLOD/TexGen (binarios GUI sin stdout: ni el exit code ni un artefacto sin fecha alcanzan — el staging no se limpia entre corridas, así que la salida vieja satisfacía el gate) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean; **completitud** de la etapa 9: el gate prueba que el artefacto cambió, no que la corrida terminó — falta verificar en rig cuándo DynDOLOD persiste el `.esp` (si fuera temprano, una corrida cerrada a mitad pasaría), y TexGen no tiene marcador de completitud | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py`, `test_dyndolod_service.py` (post-check por log, frescura y ancla enumerativa de la familia) |
+| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora; post-check por LOG **+ gate de frescura** de DynDOLOD/TexGen (binarios GUI sin stdout: ni el exit code ni un artefacto sin fecha alcanzan — el staging no se limpia entre corridas, así que la salida vieja satisfacía el gate) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean; **completitud** de la etapa 9: el gate prueba que el artefacto cambió, no que la corrida terminó. El rig 2026-08-10 **cerró** la incógnita que esta fila declaraba abierta — DynDOLOD persiste el `.esp` al final (t3 > t4), así que el criterio se puede apretar con marcadores de completitud del log; queda pendiente cablearlos, y TexGen sigue sin marcador. Ver la fila «Clasificación del log de la etapa 9» | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py`, `test_dyndolod_service.py` (post-check por log, frescura y ancla enumerativa de la familia) |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |
 | U-08 | Cerrado | #378 y reconciliador de arranque | — | `test_rollback_reconciler.py` |
 | U-09 | Cerrado | #376 | — | tests del journal de grass |
@@ -72,6 +78,8 @@ confirmarlo contra código y tests.
 | Residuos OODA de bajo valor | Abierto | — | Solo retomar agrupados si cambia su relación esfuerzo/impacto | historial OODA §3 |
 | Residuos de crash logging | Abierto | #383 cerró F1/F2 reales | Cinco deudas sin víctima productiva actual | historial OODA, addendum #372 |
 | Preset de TexGen desvía `OutputPath` | Abierto | — | Determinar la precedencia `preset` vs `-o:` y decidir el mecanismo (limpiar/aislar, sembrar preset administrado, detectar en preflight o verificar el campo antes de Start) — ver sección propia abajo | rig T5 2026-08-11 (`INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` §7.3) |
+| Clasificación del log de la etapa 9 | Abierto | — | El gate `not errors` (`dyndolod_runner.py:526` y `:637`, patrón en `:416-419`) rechaza todo éxito real: el rig midió 121 líneas `Error:` en una corrida exitosa de DynDOLOD. Falta separar completitud / no-fatal de dominio / terminal, y leer el log en cp1252 (hoy `utf-8`, `:1703`). Enmendar el SOP §2.9 punto 3 en el mismo PR: hoy codifica el gate defectuoso y declara warning la ausencia de log, premisa de dos exenciones del dict del runner — ver `design/plans/2026-08-16-dyndolod-roadmap-v2.md` | `test_dyndolod_service.py`, `test_contrato_veredicto_de_exito.py`; rig 2026-08-10 (informe fuera del repo) |
+| Candidato de salida de TexGen | Abierto | — | `_candidatos_de_salida` (`dyndolod_runner.py:1472`) le da a TexGen el candidato único `root/TexGen_Output`, que según el rig no existe nunca: su gate de artefacto falla siempre. El fix no es agregar `root` como fallback (reintroduce el falso verde que cerró #440) sino gatear sobre `root/textures`. Acoplado al ítem del preset: hoy ese gate roto contiene el desvío por accidente — ver `design/plans/2026-08-16-dyndolod-roadmap-v2.md` | `test_dyndolod_service.py`, `test_output_targets.py`; rig 2026-08-10 (informe fuera del repo) |
 
 <!-- markdownlint-enable MD013 -->
 
