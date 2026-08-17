@@ -17,22 +17,28 @@ fail-closed la clasifica terminal y la corrida buena sale roja.** Ver
 
 from __future__ import annotations
 
+import ast
 import pathlib
 from unittest.mock import patch
 
 import pytest
 
 from sky_claw.local.tools.dyndolod_runner import (
+    _CODECS_DEL_LOG,
     MARCADORES_DE_COMPLETITUD,
     NO_FATALES_DEL_DOMINIO,
     PATRONES_TERMINALES,
     clasificar_log,
 )
 from tests.test_dyndolod_service import (
+    _clase_runner_ast,
+    _corre_en_hilo,
     _corrida_que_completa,
     _EjecucionFalsa,
     _escribir_log,
     _escribir_salida,
+    _llamadas,
+    _log_completo,
     _runner_texgen,
 )
 
@@ -375,3 +381,178 @@ async def test_el_log_se_recupera_intacto_en_los_dos_encodings(tmp_path: pathlib
 
     assert result.success is True
     assert any("Añocuervo" in w and "\ufffd" not in w for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_un_byte_que_ningun_codec_acepta_no_se_lleva_puesto_el_veredicto(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El último recurso `replace` existe para que un byte roto no borre el log.
+
+    `0x81` no está definido NI en utf-8 NI en cp1252 —los dos codecs estrictos
+    de `_CODECS_DEL_LOG` lo rechazan, y el test lo afirma en vez de suponerlo—,
+    así que es el único caso que alcanza la tercera rama. Sin ella,
+    `read_bytes().decode(...)` levantaría `UnicodeDecodeError` y una corrida
+    buena moriría por un byte de basura en una línea que ni siquiera participa
+    del veredicto.
+
+    Lo que se afirma es que el resto del log SÍ se lee: el marcador de
+    completitud está DESPUÉS del byte roto, así que si la decodificación se
+    cortara ahí el veredicto saldría rojo.
+    """
+    for codec in _CODECS_DEL_LOG:
+        with pytest.raises(UnicodeDecodeError):
+            b"\x81".decode(codec)
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / "DynDOLOD_Output"
+    log = tmp_path / "DynDOLOD" / "Logs" / "DynDOLOD_SSE_log.txt"
+    log.parent.mkdir(parents=True, exist_ok=True)
+
+    def _correr() -> None:
+        _escribir_salida(staging, "DynDOLOD.esp")
+        log.write_bytes(
+            b"[00:04:12] Error: Deleted reference \x81\n[00:20:10] DynDOLOD plugins generated successfully\n"
+        )
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# El marcador tiene que ser de ESTA corrida
+#
+# Los tres tests de abajo son el ancla que faltaba. Con el gate ya escrito, la
+# suite quedaba verde al borrar el bloque entero de invalidación del marcador
+# rancio: el falso verde volvía sin que CI dijera nada (revisores qodo y
+# CodeRabbit, PR #488; confirmado por mutación antes de escribirlos).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_el_marcador_de_la_corrida_anterior_no_vale_si_el_log_no_cambio(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Log viejo CON marcador + corrida que sólo toca la salida → rojo.
+
+    Es el falso verde P1: la corrida de hoy escribe el artefacto —así que el gate
+    de frescura pasa— y muere antes de tocar el log. Los otros tres conjuntos
+    (`rc == 0`, artefacto fresco, sin terminales) quedan satisfechos sobre el log
+    de AYER, que sí tiene su marcador.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / "DynDOLOD_Output"
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
+
+    # `al_ejecutar` NO toca el log a propósito: ésa es la corrida que muere antes.
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert any("el log no cambió" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+async def test_el_marcador_viejo_no_revive_porque_la_corrida_apendee_lineas(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si el binario APENDEA, cambiar de firma no prueba que el marcador sea de hoy.
+
+    El hermano del test de arriba, y el que la firma mtime+tamaño sola no ataja:
+    el log de ayer tiene su marcador, la corrida de hoy apendea sus líneas de
+    progreso —la firma CAMBIA— y muere sin llegar a declarar que terminó. Por eso
+    el marcador se busca sólo en los bytes que esta corrida agregó.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / "DynDOLOD_Output"
+    log = _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
+
+    def _correr() -> None:
+        _escribir_salida(staging, "DynDOLOD.esp")
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("[01:00:00] Building LOD for Tamriel\n")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert any("YA existía" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+async def test_la_corrida_que_apendea_su_propio_marcador_sí_es_exito(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Contracara exacta del anterior: mismo montaje, y esta vez el marcador es de hoy.
+
+    Sin este caso, el test de arriba lo satisface cualquier implementación que
+    diga que no ante un log con historia — incluida la que rompe el append
+    legítimo. Lo único que cambia entre los dos es QUIÉN escribió el marcador.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / "DynDOLOD_Output"
+    log = _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
+
+    def _correr() -> None:
+        _escribir_salida(staging, "DynDOLOD.esp")
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("[01:00:00] Building LOD for Tamriel\n")
+            fh.write("[01:30:00] DynDOLOD plugins generated successfully\n")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is True, result.errors
+
+
+def test_todo_lanzador_que_pide_veredicto_firma_el_log_antes_de_lanzar() -> None:
+    """La familia de lanzadores se detecta por introspección y se congela.
+
+    El scoping del marcador a ESTA corrida sólo funciona si el lanzador tomó la
+    firma del log ANTES de arrancar el proceso y se la pasó al post-check. Un
+    lanzador que se la olvide recibe el default `None`, y aunque eso es
+    fail-closed —rojo permanente, no verde falso— es la forma exacta del defecto
+    dominante de este repo: cablearlo en un camino y no en su gemelo.
+
+    Enumera, no muestrea: el conjunto de métodos que piden un post-check se
+    descubre leyendo el AST, así que un TERCER lanzador rompe este test hasta que
+    se lo cablee, en vez de entrar sin gate con la suite en verde.
+    """
+    cls = _clase_runner_ast()
+
+    lanzadores: dict[str, ast.Call] = {}
+    for miembro in cls.body:
+        if not isinstance(miembro, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for nodo in ast.walk(miembro):
+            if (
+                isinstance(nodo, ast.Call)
+                and nodo.args
+                and isinstance(nodo.args[0], ast.Attribute)
+                and nodo.args[0].attr == "_post_check"
+            ):
+                lanzadores[miembro.name] = nodo
+
+    assert set(lanzadores) == {"run_texgen", "run_dyndolod"}
+
+    for nombre, llamada in lanzadores.items():
+        # to_thread(self._post_check, tool, firmas_previas, firma_previa_del_log)
+        assert len(llamada.args) == 4, f"{nombre} no le pasa la firma previa del log al post-check"
+        miembro = next(
+            m for m in cls.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name == nombre
+        )
+        # Los lanzadores la corren en un hilo (`to_thread(self._firma_del_log, …)`),
+        # así que el nombre aparece como ARGUMENTO y no como llamada: mirar sólo
+        # `_llamadas` da un rojo falso. Se aceptan las dos formas.
+        firma = _corre_en_hilo(miembro, "_firma_del_log") or "_firma_del_log" in _llamadas(miembro)
+        assert firma, f"{nombre} no firma el log antes de lanzar"

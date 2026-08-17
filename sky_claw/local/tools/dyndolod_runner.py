@@ -252,6 +252,13 @@ def clasificar_log(texto: str, tool: str) -> tuple[list[str], list[str], bool]:
     """
     terminales: list[str] = []
     no_fatales: list[str] = []
+    # Deduplicación por set aparte de la lista: el log real del rig son 121
+    # líneas de error entre decenas de miles, y `x not in lista` sobre la lista
+    # que se está construyendo es O(n²) sobre un archivo que puede pesar
+    # decenas de MB. Las listas siguen siendo la salida porque el orden del log
+    # es lo que hace legible el diagnóstico; el set solo decide si ya se vio.
+    vistos_terminales: set[str] = set()
+    vistos_no_fatales: set[str] = set()
 
     terminales_en_minusculas = tuple(patron.lower() for patron in PATRONES_TERMINALES)
 
@@ -261,18 +268,21 @@ def clasificar_log(texto: str, tool: str) -> tuple[list[str], list[str], bool]:
             continue
         minuscula = limpia.lower()
         if any(patron in minuscula for patron in terminales_en_minusculas):
-            if limpia not in terminales:
+            if limpia not in vistos_terminales:
+                vistos_terminales.add(limpia)
                 terminales.append(limpia)
             continue
         if any(all(parte in limpia for parte in categoria) for categoria in NO_FATALES_DEL_DOMINIO):
-            if limpia not in no_fatales:
+            if limpia not in vistos_no_fatales:
+                vistos_no_fatales.add(limpia)
                 no_fatales.append(limpia)
             continue
         # Fail-closed: un `Error:` que no está en la lista de no-fatales conocidos
         # se trata como terminal. La lista salió del §11.4 del informe, que enumera
         # CATEGORÍAS y no las 121 ocurrencias, así que una categoría no prevista
         # tiene que dar rojo revisable y no verde silencioso.
-        if _ERROR_SUELTO.search(limpia) and limpia not in terminales:
+        if _ERROR_SUELTO.search(limpia) and limpia not in vistos_terminales:
+            vistos_terminales.add(limpia)
             terminales.append(limpia)
 
     completo = any(marcador in texto for marcador in MARCADORES_DE_COMPLETITUD[tool])
@@ -549,13 +559,16 @@ class DynDOLODRunner:
             print(f"DynDOLOD mod: {result.dyndolod_mod_path}")
     """
 
-    # Patrones regex para el post-check por LOG (los binarios son apps GUI, PE
+    # Patrón regex para el post-check por LOG (los binarios son apps GUI, PE
     # Subsystem 2: no escriben a stdout/stderr; la evidencia real de una corrida
     # vive en ``Logs/{Tool}_{modo}_log.txt``).
-    _ERROR_PATTERN = re.compile(
-        r"(?:ERROR|Error|FAIL|Exception|Critical|FATAL):\s*(.+?)(?:\n|$)",
-        re.IGNORECASE | re.MULTILINE,
-    )
+    #
+    # El `_ERROR_PATTERN` que acompañaba a este quedó sin callers en T2: su
+    # trabajo —decidir qué línea del log es un error— lo hace ahora
+    # `clasificar_log` con las tres cajas, y un regex de errores colgado en la
+    # clase invita a que alguien lo vuelva a cablear en paralelo a la taxonomía.
+    # Esa es exactamente la forma "hermano en el mismo archivo" que este repo
+    # mide como su defecto dominante, así que se borra en vez de dejarse muerto.
     _WARNING_PATTERN = re.compile(
         r"(?:WARNING|Warning|WARN):\s*(.+?)(?:\n|$)",
         re.IGNORECASE | re.MULTILINE,
@@ -1651,6 +1664,97 @@ class DynDOLODRunner:
             return None
         return (estado.st_mtime, estado.st_size)
 
+    def _validar_completitud_de_la_corrida(
+        self,
+        tool: str,
+        texto: str,
+        marcador_en_el_archivo: bool,
+        firma_previa_del_log: tuple[float | int, ...] | None,
+    ) -> tuple[bool, str | None]:
+        """¿El marcador de completitud lo escribió ESTA corrida, o ya estaba?
+
+        Comparar sólo la firma del archivo —mtime+tamaño— alcanza si el binario
+        TRUNCA su log en cada corrida, y no alcanza si lo abre en modo append:
+        con append, una corrida anterior exitosa deja su marcador en el archivo,
+        la de hoy apendea sus líneas de arranque (la firma CAMBIA), muere a mitad
+        con `rc == 0` y toca la salida — los cuatro conjuntos satisfechos sobre
+        trabajo a medias. El modo de escritura real del binario no está
+        documentado ni es auditable desde el árbol, así que acá no se asume:
+        **el marcador se busca sólo en los bytes que no estaban antes**, que es
+        correcto bajo las DOS semánticas. (Revisores qodo y CodeRabbit, PR #488.)
+
+        La asimetría con los terminales es deliberada: los `Error:` se clasifican
+        sobre el log ENTERO y el marcador sólo sobre la cola. Las dos decisiones
+        caen para el mismo lado — un terminal heredado da rojo, un marcador
+        heredado también—, y ese lado es el revisable.
+
+        **Lo que queda afuera, dicho y no disimulado:** si el log cambió de mtime
+        y NO creció, esto lo toma como truncado-y-reescrito y acepta el marcador.
+        Una corrida que abriera el log, no escribiera nada y saliera con `rc == 0`
+        cae en esa rama con el marcador viejo. Distinguirla exige firmar el
+        CONTENIDO previo (hash), y eso es una pasada completa por un archivo de
+        decenas de MB antes de cada lanzamiento. Se prefirió el rojo falso cero
+        sobre la corrida buena que reescribe su log al mismo tamaño —que es
+        frecuente— antes que cerrar un hueco que exige, además de todo lo demás,
+        un binario que no escriba absolutamente nada.
+
+        Returns:
+            ``(completo, motivo)``. `motivo` es ``None`` cuando no hay nada que
+            explicarle al operador: o la corrida está completa, o el marcador
+            simplemente no aparece y el diagnóstico genérico lo pone el llamador.
+        """
+        # Si el marcador no está en NINGUNA parte del archivo, tampoco está en la
+        # cola: se corta acá para no releer un log de decenas de MB al pedo.
+        if not marcador_en_el_archivo:
+            return False, None
+
+        if firma_previa_del_log is None:
+            return False, (
+                f"No se pudo sondear el log de {tool} ANTES de lanzar, así que el marcador de "
+                "completitud que tiene no se puede atribuir a esta corrida ni a una anterior."
+            )
+
+        firma_actual = self._firma_del_log(tool)
+        if firma_actual is None:
+            return False, (
+                f"No se pudo sondear el log de {tool} DESPUÉS de la corrida, así que no hay con qué "
+                "verificar que el marcador de completitud sea de ésta."
+            )
+        if firma_actual == _SIN_ARTEFACTO:
+            return False, (
+                f"El log de {tool} desapareció entre que se leyó y que se verificó: no se reporta "
+                "éxito sobre evidencia que ya no está."
+            )
+        if firma_actual == firma_previa_del_log:
+            return False, (
+                f"El marcador de completitud de {tool} está en el log, pero el log no cambió "
+                "durante la corrida: es la evidencia de una corrida anterior, no de ésta."
+            )
+
+        # `_SIN_ARTEFACTO` acá significa "no había log antes": todo el archivo es
+        # de esta corrida.
+        previo = 0 if firma_previa_del_log == _SIN_ARTEFACTO else int(firma_previa_del_log[1])
+        actual = int(firma_actual[1])
+        # Sólo un log que CRECIÓ puede conservar el prefijo viejo intacto, que es
+        # la premisa de recortarlo. Si no creció y aun así cambió —mismo tamaño,
+        # otro mtime—, el binario lo truncó y lo reescribió: lo que hay ahora lo
+        # puso esta corrida y recortarlo daría un rojo falso sobre una corrida
+        # buena, que es el defecto que T2 vino a cerrar, no a mover de lugar.
+        desde = previo if actual > previo else 0
+
+        # `desde == 0` es el caso corriente (log truncado o nuevo) y el texto ya
+        # está leído: releer el archivo sería una segunda pasada por nada.
+        de_esta_corrida = texto if desde == 0 else self._leer_log(tool, desde_byte=desde)
+        if de_esta_corrida is None:
+            return False, (f"No se pudo releer el log de {tool} para aislar lo que escribió esta corrida.")
+
+        if any(marcador in de_esta_corrida for marcador in MARCADORES_DE_COMPLETITUD[tool]):
+            return True, None
+        return False, (
+            f"El marcador de completitud de {tool} está en el log, pero en la parte que YA existía "
+            "antes de esta corrida: es de una corrida anterior. Ésta no declaró haber terminado."
+        )
+
     def _candidatos_de_salida(self, tool: str) -> list[pathlib.Path]:
         """Dónde puede haber aterrizado la salida de ``tool``, en orden de preferencia.
 
@@ -1826,21 +1930,17 @@ class DynDOLODRunner:
                 "que la corrida haya terminado. No se reporta éxito sobre completitud indeterminada."
             ]
         else:
-            terminales, warnings, completo = self._parse_log(texto, tool)
+            terminales, warnings, marcador_en_el_archivo = self._parse_log(texto, tool)
             errors = list(terminales)
 
             # El marcador tiene que ser de ESTA corrida, no de la anterior. Un log
             # viejo con marcador + una corrida que tocó la salida y murió antes de
             # reescribirlo satisface los cuatro conjuntos sobre trabajo a medias.
-            firma_actual = self._firma_del_log(tool)
-            if completo and (
-                firma_previa_del_log is None or firma_actual is None or firma_actual == firma_previa_del_log
-            ):
-                completo = False
-                errors.append(
-                    f"El marcador de completitud de {tool} está en el log, pero el log no cambió "
-                    "durante la corrida: es la evidencia de una corrida anterior, no de ésta."
-                )
+            completo, motivo = self._validar_completitud_de_la_corrida(
+                tool, texto, marcador_en_el_archivo, firma_previa_del_log
+            )
+            if motivo:
+                errors.append(motivo)
 
             # Sin esto, una corrida incompleta y sin terminales dejaba `errors`
             # vacío y los lanzadores reportaban "Unknown error" — una fuente nueva
@@ -1940,8 +2040,13 @@ class DynDOLODRunner:
             )
             return False
 
-    def _leer_log(self, tool: str) -> str | None:
+    def _leer_log(self, tool: str, desde_byte: int = 0) -> str | None:
         """Lee el log real de la herramienta: ``Logs/{tool}_{modo}_log.txt``.
+
+        ``desde_byte`` recorta el prefijo que ya existía ANTES de la corrida, para
+        preguntarle al log qué se escribió en ÉSTA. Se corta sobre los bytes y no
+        sobre el texto decodificado porque el offset viene de ``st_size``, que es
+        bytes: cortar un `str` por esa posición desalinea cualquier log no-ASCII.
 
         Síncrona a propósito: corre dentro del ``to_thread`` de
         :meth:`_post_check`, que es su único llamador.
@@ -1961,7 +2066,7 @@ class DynDOLODRunner:
         """
         log_path = self._ruta_del_log(tool)
         try:
-            crudo = log_path.read_bytes()
+            crudo = log_path.read_bytes()[desde_byte:]
         except FileNotFoundError:
             # Registro de SONDA, no de veredicto: la etapa la emite el lanzador
             # (`run_texgen`/`run_dyndolod`) al componer su resultado con la

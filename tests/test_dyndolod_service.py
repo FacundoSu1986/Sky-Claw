@@ -1883,15 +1883,28 @@ def _log_completo(tool: str, extra: str = "") -> str:
 
 @pytest.mark.asyncio
 async def test_exit_cero_con_error_en_log_no_es_exito(tmp_path: pathlib.Path) -> None:
-    """U-06: exit 0 + línea de error en el log real → success=False (TexGen)."""
+    """U-06: exit 0 + línea de error en el log real → success=False (TexGen).
+
+    El sujeto es **el gate de terminales, aislado**: el log que la corrida escribe
+    lleva el marcador de completitud DE TEXGEN, así que `post.completo` es True y
+    el único conjunto que puede tumbar el veredicto es `not post.terminales`.
+    Antes este test pasaba por el motivo equivocado —le faltaba el marcador, y
+    encima escribía el log de DynDOLOD— y borrar `not post.terminales` de las dos
+    fórmulas dejaba la suite entera en verde (revisor qodo, PR #488; confirmado
+    por mutación).
+    """
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    _escribir_log(tmp_path, "TexGen", "[00:00:01] Error: object LOD generation failed\n")
 
     fake = _EjecucionFalsa(
         return_code=0,
-        al_ejecutar=_corrida_que_completa(tmp_path, "DynDOLOD", lambda: _escribir_salida(staging, "a.dds")),
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "TexGen",
+            lambda: _escribir_salida(staging, "a.dds"),
+            log=_log_completo("TexGen", extra="[00:00:01] Error: object LOD generation failed\n"),
+        ),
     )
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_texgen()
@@ -1906,7 +1919,11 @@ async def test_exit_cero_con_error_en_log_no_es_exito(tmp_path: pathlib.Path) ->
 
 @pytest.mark.asyncio
 async def test_exit_cero_con_error_en_log_no_es_exito_dyndolod(tmp_path: pathlib.Path) -> None:
-    """El mismo criterio para DynDOLOD: exit 0 + log en error → success=False."""
+    """El mismo criterio para DynDOLOD: exit 0 + log en error → success=False.
+
+    Hermano del de TexGen y con el mismo aislamiento: el log lleva el marcador de
+    DynDOLOD, así que lo único que falla es el gate de terminales.
+    """
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
@@ -1916,7 +1933,7 @@ async def test_exit_cero_con_error_en_log_no_es_exito_dyndolod(tmp_path: pathlib
             tmp_path,
             "DynDOLOD",
             lambda: _escribir_salida(staging, "DynDOLOD.esp"),
-            log="[00:00:10] Fatal: exception while processing\n",
+            log=_log_completo("DynDOLOD", extra="[00:00:10] Fatal: exception while processing\n"),
         ),
     )
     with patch.object(runner, "_execute_process", fake):
@@ -2473,6 +2490,9 @@ def test_la_familia_del_post_check_esta_congelada() -> None:
         # T2: el marcador de completitud también tiene que ser de ESTA corrida, así
         # que el log se firma antes de lanzar igual que el artefacto.
         "_firma_del_log",
+        # T2: y la firma sola no alcanza si el binario apendea su log, así que el
+        # marcador se busca sólo en los bytes que esta corrida agregó.
+        "_validar_completitud_de_la_corrida",
         "_leer_log",
         "_parse_log",
         "_find_texgen_output",
