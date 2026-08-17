@@ -266,6 +266,23 @@ def test_el_patron_de_cita_de_rig_reconoce_las_variantes_que_se_escriben() -> No
         assert not _CITA_DE_RIG_FECHADO.search(frase), f"no afirma un hecho de rig: {frase!r}"
 
 
+def test_la_cita_de_rig_no_se_arma_cruzando_dos_celdas() -> None:
+    """Dos celdas vecinas no pueden fabricar una cita que ninguna contiene.
+
+    Uniendo las celdas con un espacio —como hacía la primera versión— un «rig» al
+    final de una columna y una fecha al principio de la siguiente caen dentro de la
+    ventana del patrón y producen un match espurio: la fila termina obligada a
+    declarar evidencia externa que nunca citó (revisor adversarial, PR #485).
+    """
+    celdas = ("Bloqueado por rig", "2026-09-01 queda pendiente")
+
+    assert not any(_CITA_DE_RIG_FECHADO.search(celda) for celda in celdas)
+    assert _CITA_DE_RIG_FECHADO.search(" ".join(celdas)), (
+        "si unir las celdas dejara de producir el match, este test ya no estaría "
+        "probando nada y habría que revisar el patrón"
+    )
+
+
 def test_toda_fila_que_afirma_un_hecho_de_rig_declara_que_la_evidencia_es_externa() -> None:
     """Una corrida de rig fechada respalda una AFIRMACIÓN, y su informe no está en el árbol.
 
@@ -284,11 +301,29 @@ def test_toda_fila_que_afirma_un_hecho_de_rig_declara_que_la_evidencia_es_extern
     tocar no ataja a la próxima. Las filas que nombran trabajo de rig PENDIENTE
     («rig humano», «rig real», sin fecha) no afirman ningún hecho y quedan fuera
     por construcción del patrón, no por una excepción escrita a mano.
+
+    La cita se busca **celda por celda**, nunca sobre las celdas unidas: uniéndolas,
+    un «rig» al final de una columna y una fecha al principio de la siguiente caían
+    dentro de la ventana del patrón y disparaban un match que no existe en ninguna
+    de las dos. La marca sí se acepta en cualquier celda de la fila, porque hoy
+    unas la llevan en «Qué falta» y otras en «Verificado por».
+
+    LIMITACIÓN CONOCIDA del detector, y es deliberado no taparla con vocabulario:
+    el patrón reconoce la CO-OCURRENCIA de «rig» y una fecha, no distingue afirmar
+    de planificar. Una fila futura que diga «correr el rig el 2026-09-01» —un plan,
+    sin hecho afirmado— va a pedir la marca sin corresponderle. La respuesta
+    correcta ahí es **reformular la fila**, no agregarle un «fuera del repo» que
+    sería falso: no hay informe todavía. Se descartó discriminar por verbo de
+    resultado («midió»/«confirmó»/…) porque es la misma trampa que este patrón ya
+    tuvo una vez: una lista cerrada de conectores dejó pasar «rig del 2026-08-10»
+    (PR #485), y una lista cerrada de verbos dejaría pasar «según el rig» igual.
     """
     sin_marca = []
     for item, fila in _tabla().items():
-        texto = " ".join(fila.values())
-        if _CITA_DE_RIG_FECHADO.search(texto) and _MARCA_DE_EVIDENCIA_EXTERNA not in texto:
+        celdas = list(fila.values())
+        cita_un_rig = any(_CITA_DE_RIG_FECHADO.search(celda) for celda in celdas)
+        declara_la_marca = any(_MARCA_DE_EVIDENCIA_EXTERNA in celda for celda in celdas)
+        if cita_un_rig and not declara_la_marca:
             sin_marca.append(item)
 
     assert not sin_marca, (

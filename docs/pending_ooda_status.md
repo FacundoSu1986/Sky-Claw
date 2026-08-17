@@ -11,11 +11,16 @@
 > `origin/main` `53083c0`; los cambios posteriores de esta rama no se afirman
 > integrados en `origin/main`.
 >
-> **Re-baseline parcial 2026-08-16 sobre `main` `f8e8a4f`:** cubre únicamente las
-> filas de la etapa 9 de DynDOLOD — «Clasificación del log de la etapa 9»,
-> «Candidato de salida de TexGen» y la corrección de `U-06`. Las referencias a
-> línea de esas tres filas son de `f8e8a4f`. **No** es una reverificación integral
-> del resto de la tabla.
+> **Re-baseline parcial 2026-08-16 sobre `main` `f8e8a4f`:** cubre las filas de la
+> etapa 9 de DynDOLOD y nada más —
+> «Clasificación del log de la etapa 9», «Candidato de salida de TexGen», la
+> corrección de `U-06`, y la fila «Preset de TexGen desvía `OutputPath`» **con su
+> sección propia**, donde se corrigió el alcance de la contención del gate de
+> frescura. **Todas** las referencias a línea de esas cuatro filas y de esa sección
+> —incluidas las de `run_full_pipeline` y los dos call sites de
+> `_package_output_as_mod`— se releyeron contra `f8e8a4f`; ninguna arrastra el
+> baseline de 2026-08-08. **No** es una reverificación integral del resto de la
+> tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
