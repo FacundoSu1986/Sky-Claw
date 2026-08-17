@@ -23,6 +23,7 @@ como yield del scheduler); los timeouts son watchdog.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -32,6 +33,7 @@ import aiosqlite
 import pytest
 
 from sky_claw.app.core.db_lifecycle import (
+    DatabaseConnectionQuarantinedError,
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
     DatabaseLifecycleShuttingDownError,
@@ -751,3 +753,219 @@ async def test_journal_c2_cancelled_error_preservado_con_shutdown_real(
     with pytest.raises(ValueError, match="no active connection"):
         async with db.execute("SELECT 1") as cur:
             await cur.fetchone()
+
+
+# ===========================================================================
+# JOURNAL — F-02: la cuarentena del lifecycle es el SEGUNDO motivo de rechazo
+#
+# #475 estableció que un rollback rechazado por el lifecycle no reemplaza la
+# excepción del cuerpo, y enumeró el único rechazo que existía entonces
+# (shutdown). #483 agregó un segundo —cuarentena por path— sin tocar esa
+# enumeración, así que el cleanup volvía a enmascarar. Los tests de acá abajo
+# son el gemelo exacto de los C2 de shutdown, con la cuarentena como causa.
+# ===========================================================================
+
+
+async def _instalar_cuarentena_real(lifecycle: DatabaseLifecycleManager, db_path: Path) -> None:
+    """Deja *db_path* en cuarentena usando SOLO la API pública del manager.
+
+    ``recover_connection()`` documenta que una ventana que termina sin haber
+    reabierto deja el path fail-closed y que esa marca no la levanta ninguna
+    transición del manager. Es la vía que separa limpiamente esta causa de la de
+    shutdown: acá ``_shutting_down`` sigue en False, así que lo único que cambia
+    respecto del escenario sano es la cuarentena.
+    """
+    conn = await lifecycle.get_connection(db_path)
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with lifecycle.recover_connection(db_path, conn):
+            pass  # ventana que NO reconstruye
+    assert lifecycle._resolve_key(db_path) in lifecycle._quarantined_paths
+    assert not lifecycle._shutting_down, "esta causa debe ser cuarentena, no shutdown"
+
+
+def _estado_de_fila(db_path: Path, transaction_id: int) -> str | None:
+    """Lee el status de la fila con una conexión INDEPENDIENTE del lifecycle.
+
+    El path está en cuarentena: pedirle la conexión al manager sería justamente
+    lo que el fail-closed rechaza.
+    """
+    con = sqlite3.connect(str(db_path))
+    try:
+        fila = con.execute("SELECT status FROM transactions WHERE transaction_id = ?", (transaction_id,)).fetchone()
+    finally:
+        con.close()
+    return None if fila is None else str(fila[0])
+
+
+async def test_journal_c2_sentinel_preservado_con_quarantine_real(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager, caplog: pytest.LogCaptureFixture
+) -> None:
+    """C2-C: con el path en cuarentena, el rollback rechazado NO reemplaza la
+    excepción original del cuerpo del context manager.
+
+    Gemelo de ``test_journal_c2_sentinel_preservado_con_shutdown_real``: misma
+    forma, mismo boundary, mismo punto de fallo — sólo cambia el motivo por el
+    que el lifecycle rechaza el rollback. Que uno preservara la original y el
+    otro no era el hueco de integración.
+
+    Reversión: quitar DatabaseConnectionQuarantinedError de
+    ``_FALLOS_DE_CLEANUP_ABSORBIBLES`` → la QuarantinedError reemplaza el
+    sentinel → ROJO.
+    """
+    journal = OperationJournal(tmp_path / "c2_quarantine.db", lifecycle=lifecycle)
+    await journal.open()
+    sentinel = ValueError("ORIGINAL_SENTINEL")
+    tx_id: int | None = None
+
+    propagada: BaseException | None = None
+    with caplog.at_level(logging.ERROR, logger="sky_claw.app.db.journal"):
+        try:
+            async with journal.transaction("c2-quarantine-real") as abierta:
+                tx_id = abierta
+                # La cuarentena SOBREVIENE con la fila PENDING ya creada.
+                # Instalarla antes haría fallar begin_transaction() y el cuerpo
+                # no correría: ese camino es fail-closed correcto, no este bug.
+                await _instalar_cuarentena_real(lifecycle, journal._db_path)
+                raise sentinel
+        except BaseException as error:
+            propagada = error
+
+    assert propagada is sentinel, f"la original fue reemplazada por {type(propagada).__name__}"
+
+    # El rollback REALMENTE intentó alcanzar el path en cuarentena: quedó
+    # logueado y la fila sigue PENDING porque el UPDATE nunca llegó a correr.
+    assert any("Rollback of transaction" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records), (
+        "el fallo secundario del cleanup no quedó logueado"
+    )
+    assert tx_id is not None
+    assert _estado_de_fila(journal._db_path, tx_id) == TransactionStatus.PENDING.value
+
+    assert lifecycle._resolve_key(journal._db_path) in lifecycle._quarantined_paths
+    assert lifecycle._admitted == 0, "quedó una admisión colgada"
+    assert lifecycle._drained.is_set()
+
+
+async def test_journal_salida_limpia_propaga_fallo_de_commit_por_quarantine(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """Guard anti-regresión del fix: sin excepción PRIMARIA que preservar, un
+    commit rechazado por cuarentena DEBE seguir propagando.
+
+    El contrato absorbe fallos de cleanup, no fallos de la operación principal.
+    Un fix que ensanchara el ``except`` hasta tragarse esto convertiría una
+    transacción no confirmada en un éxito silencioso.
+    """
+    journal = OperationJournal(tmp_path / "commit_limpio.db", lifecycle=lifecycle)
+    await journal.open()
+    tx_id: int | None = None
+
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        async with journal.transaction("commit-limpio") as abierta:
+            tx_id = abierta
+            await _instalar_cuarentena_real(lifecycle, journal._db_path)
+            # salida LIMPIA del cuerpo → commit_transaction() choca la cuarentena
+
+    assert tx_id is not None
+    assert _estado_de_fila(journal._db_path, tx_id) == TransactionStatus.PENDING.value
+    assert lifecycle._admitted == 0
+    assert lifecycle._drained.is_set()
+
+
+async def test_journal_log_operation_preserva_error_primario_con_quarantine(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager, caplog: pytest.LogCaptureFixture
+) -> None:
+    """El hermano de ``transaction()`` en el mismo archivo: ``log_operation()``
+    marcaba la transacción como rolled-back en un cleanup SIN guard alguno, así
+    que cualquier fallo de ese marcado —no sólo el de cuarentena— se llevaba
+    puesta la excepción primaria.
+
+    El fallo SECUNDARIO es integración real: ``mark_transaction_rolled_back()``
+    pide su boundary al lifecycle y choca con la cuarentena de verdad. El
+    sentinel PRIMARIO se inyecta por seam, igual que los C2 existentes lo
+    inyectan en el cuerpo del context manager (en ``log_operation`` no hay
+    cuerpo donde lanzarlo).
+
+    Reversión: quitar el try/except del cleanup de ``log_operation`` → la
+    QuarantinedError secundaria reemplaza el sentinel → ROJO.
+    """
+    journal = OperationJournal(tmp_path / "log_op_quarantine.db", lifecycle=lifecycle)
+    await journal.open()
+    sentinel = ValueError("ORIGINAL_SENTINEL")
+
+    async def _complete_operation_falla(entry_id: int) -> None:
+        # La cuarentena sobreviene con la transacción legacy ya abierta y su
+        # entrada ya insertada: el cleanup es quien va a chocar con ella.
+        await _instalar_cuarentena_real(lifecycle, journal._db_path)
+        raise sentinel
+
+    journal.complete_operation = _complete_operation_falla  # type: ignore[method-assign]
+
+    propagada: BaseException | None = None
+    with caplog.at_level(logging.ERROR, logger="sky_claw.app.db.journal"):
+        try:
+            await journal.log_operation(
+                agent_id="c2",
+                operation_type="file_modify",
+                file_path=str(tmp_path / "objetivo.esp"),
+            )
+        except BaseException as error:
+            propagada = error
+
+    assert propagada is sentinel, f"la primaria fue reemplazada por {type(propagada).__name__}"
+    assert any("Marking transaction" in r.getMessage() and r.levelno == logging.ERROR for r in caplog.records), (
+        "el fallo secundario del cleanup no quedó logueado"
+    )
+    assert lifecycle._resolve_key(journal._db_path) in lifecycle._quarantined_paths
+    assert lifecycle._admitted == 0, "quedó una admisión colgada"
+    assert lifecycle._drained.is_set()
+
+
+async def test_journal_cancelacion_nueva_durante_rollback_no_es_absorbida(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """El fix ensancha el ``except`` del cleanup, pero NO hasta BaseException:
+    una cancelación NUEVA llegada durante el rollback conserva su semántica y
+    sigue propagando.
+
+    Integración real, sin sleeps: un tercero toma el lock del path, el cleanup
+    queda esperándolo —ese es el punto de suspensión— y ahí se cancela la tarea
+    del cuerpo. Si el fix la absorbiera, la tarea terminaría con el sentinel en
+    vez de quedar cancelada.
+    """
+    journal = OperationJournal(tmp_path / "cancel_nueva.db", lifecycle=lifecycle)
+    await journal.open()
+    sentinel = ValueError("ORIGINAL_SENTINEL")
+
+    cuerpo_entro, senal = asyncio.Event(), asyncio.Event()
+
+    async def cuerpo() -> None:
+        async with journal.transaction("cancel-nueva"):
+            cuerpo_entro.set()
+            await senal.wait()
+            raise sentinel
+
+    t_cuerpo = asyncio.create_task(cuerpo())
+    await asyncio.wait_for(cuerpo_entro.wait(), timeout=DEADLINE)
+
+    hold_entro, liberar = asyncio.Event(), asyncio.Event()
+
+    async def retener_lock() -> None:
+        async with lifecycle.operation(journal._db_path):
+            hold_entro.set()
+            await liberar.wait()
+
+    t_hold = asyncio.create_task(retener_lock())
+    await asyncio.wait_for(hold_entro.wait(), timeout=DEADLINE)
+
+    senal.set()  # el cuerpo lanza → el cleanup pide el lock del path y bloquea
+    await ceder()
+    t_cuerpo.cancel()  # cancelación NUEVA, ya dentro del cleanup
+
+    hechas, pendientes = await asyncio.wait({t_cuerpo}, timeout=DEADLINE)
+    assert not pendientes, "el cuerpo quedó colgado"
+    assert t_cuerpo.cancelled(), "la cancelación nueva del cleanup fue absorbida por el fix"
+
+    liberar.set()
+    await asyncio.wait_for(t_hold, timeout=DEADLINE)
+    assert lifecycle._admitted == 0, "quedó una admisión colgada"
+    assert lifecycle._drained.is_set()
