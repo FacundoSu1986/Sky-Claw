@@ -24,10 +24,10 @@ import logging
 import sqlite3
 import time
 import weakref
-from collections.abc import AsyncGenerator, Awaitable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import aiosqlite
 from pydantic import BaseModel, ConfigDict
@@ -114,6 +114,62 @@ class DatabaseShutdownIncompleteError(RuntimeError):
         super().__init__("Database shutdown incomplete; retained managed connections: " + ", ".join(retained_paths))
 
 
+class DatabaseConnectionQuarantinedError(RuntimeError):
+    """El path quedó fail-closed y no puede entregar ni abrir conexiones.
+
+    Dos situaciones lo producen y ambas son el MISMO hecho: la conexión vigente
+    dejó de ser utilizable y todavía no hay un reemplazo coherente.
+
+    - Un cierre NO confirmado: la instancia sigue registrada porque perder el
+      ownership de una conexión que quizá siga viva es peor que retenerla, pero
+      entregarla otra vez devolvería un objeto dañado. Se recupera reintentando
+      ``shutdown_all()``, que es quien conserva el derecho a cerrarla.
+    - Una ventana de ``recover_connection()`` en curso: el archivo está por
+      moverse y abrir una conexión "fresh" ahí la ataría al inodo que el rename
+      se lleva. Se levanta sola si la ventana COMPLETA la reconstrucción.
+
+    Las dos se retiran contra EVIDENCIA, y por eso son asimétricas. El cierre no
+    confirmado la tiene: cuando ``shutdown_all()`` consigue cerrar ESA conexión,
+    el motivo desapareció y la marca se retira con ella, una por una. Una
+    recovery ABORTADA no tiene ninguna evidencia equivalente —el archivo
+    condenado sigue en el path porque el rename que iba a retirarlo falló—, así
+    que su marca no la levanta ninguna transición de este manager: ni
+    ``init_all()`` ni ``shutdown_all()``. Es deliberado y tiene un costo real:
+    ese path queda fail-closed para toda la vida del manager, y un
+    ``init_all()`` posterior FALLA mientras el path siga registrado. La salida es
+    un manager nuevo (reinicio del proceso), donde el consumidor vuelve a
+    validar el archivo en su ``open()`` antes de que nadie lo use. Es el precio
+    de no volver a publicar una DB que alguien declaró corrupta.
+    """
+
+
+class DatabaseConnectionReplacedError(RuntimeError):
+    """La conexión que se pedía invalidar ya no es la vigente del path.
+
+    Guard de identidad (ABA): el caller quería retirar A y el registro apunta a
+    B. Cerrar o expulsar B sería destruir una conexión sana de otro dueño, así
+    que la invalidación no toca nada y avisa.
+    """
+
+
+class _CloseOutcome(NamedTuple):
+    """Desenlace REAL de un cierre físico, con sus tres ejes separados.
+
+    Existe porque ``BaseException | None`` no alcanza: colapsa CLOSE-3
+    (cancelación externa y la conexión SÍ cerró) contra CLOSE-5 (el cierre se
+    canceló solo y la conexión sigue viva). Ambos son ``CancelledError`` y sin
+    embargo tienen ownership opuesto, así que el llamador no puede distinguirlos
+    y termina eligiendo mal quién conserva la conexión.
+
+    ``closed`` es la ÚNICA señal que gobierna ownership; ``cancellation`` es
+    ortogonal (hay que restaurarla haya cerrado o no) y ``error`` es diagnóstico.
+    """
+
+    closed: bool
+    error: BaseException | None
+    cancellation: asyncio.CancelledError | None
+
+
 # ---------------------------------------------------------------------------
 # DatabaseLifecycleManager
 # ---------------------------------------------------------------------------
@@ -173,6 +229,13 @@ class DatabaseLifecycleManager:
         # Per-path write lock shared by every wrapper reusing the same managed
         # connection (see get_write_lock) — closes the shared-connection write race.
         self._write_locks: dict[str, asyncio.Lock] = {}
+        # Paths fail-closed: `_resolve_connection` no los entrega NI abre un
+        # reemplazo. Retener una conexión que no se pudo cerrar sin marcar el
+        # path sólo cambia una fuga de ownership por una conexión envenenada —
+        # el siguiente `operation()` recibía la entrada retenida y toda query
+        # fallaba. Un set por path, no una FSM: el único estado que las carreras
+        # reproducidas obligan a distinguir.
+        self._quarantined_paths: set[str] = set()
         self._registered_signals: bool = False
         # Lock para garantizar singleton por path ante llamadas concurrentes
         self._init_lock = asyncio.Lock()
@@ -219,6 +282,12 @@ class DatabaseLifecycleManager:
         ``register_atexit_handler`` terminó sin un solo caller en el árbol).
         Se registra aunque ``_db_paths`` esté vacío: ``get_connection`` da de
         alta los paths on-demand y ``_sync_shutdown`` los lee recién al salir.
+
+        Raises:
+            DatabaseLifecycleShuttingDownError: si el shutdown anterior quedó
+                incompleto.
+            DatabaseConnectionQuarantinedError: si algún path registrado sigue
+                fail-closed. Reabrir NO levanta cuarentenas, de ningún origen.
         """
         # Reapertura EXPLÍCITA, serializada e idempotente por path.
         #
@@ -250,6 +319,35 @@ class DatabaseLifecycleManager:
                 )
             self._shutting_down = False
             self._closed = False
+            # `init_all()` NO levanta cuarentenas. Ninguna, de ningún origen.
+            #
+            # Antes rescataba las que no tenían conexión retenida, razonando que
+            # "no quedó nada dañado que reutilizar, así que reabrir es seguro (el
+            # consumidor revalida)". Las dos mitades del razonamiento son falsas:
+            #
+            # * Ausencia de conexión retenida prueba OWNERSHIP DEL HANDLE, no
+            #   coherencia del ARCHIVO. Y es peor que eso: los únicos dos lugares
+            #   que marcan un path son el cierre NO confirmado —que retiene la
+            #   entrada— y la ventana de `recover_connection()` —que la retira
+            #   tras cerrar—, así que `p not in _connections` seleccionaba
+            #   EXACTAMENTE las recoveries abortadas. El caso que rescataba era
+            #   precisamente aquel en que el archivo declarado corrupto puede
+            #   seguir en el path porque el rename que iba a retirarlo falló.
+            # * "El consumidor revalida" no es una garantía que este lado pueda
+            #   hacer valer. El único `PRAGMA quick_check` del árbol vive en
+            #   `AsyncModRegistry.open()`; `init_all()` ni lo ejecuta ni puede
+            #   exigirlo, y `_resolve_connection` publica la conexión reabierta a
+            #   CUALQUIER consumidor vía `operation()`/`get_connection()` — así
+            #   que la reapertura llegaba antes que la revalidación, si es que
+            #   alguna vez llegaba.
+            #
+            # Una recovery incompleta queda fail-closed y NO sale por acá. El
+            # shutdown tampoco la levanta: cerrar lo registrado no repara un
+            # archivo. Un path marcado que esté en `_db_paths` hace que esta
+            # reapertura falle con `DatabaseConnectionQuarantinedError` desde
+            # `_resolve_connection`, mismo desenlace que ya tenía el cierre no
+            # confirmado: las dos cuarentenas sobreviven a `init_all()`, y por
+            # el mismo motivo.
             if self._config.enable_auto_checkpoint:
                 self.register_atexit_handler()
             self._admit()
@@ -287,7 +385,10 @@ class DatabaseLifecycleManager:
         except BaseException:
             # CancelledError is a BaseException on Python 3.11. The close must
             # finish before the original startup failure is propagated.
-            close_error = await self._quarantine_connection(db_path, conn)
+            # Sin `_invalidate_under_boundary`: esta conexión NUNCA llegó a
+            # registrarse (el registro es la línea siguiente al try), así que no
+            # hay entrada que mutar ni identidad que custodiar — sólo cerrar.
+            close_error = (await self._close_connection(conn, shielded=True)).error
             if close_error is not None and not isinstance(close_error, asyncio.CancelledError):
                 logger.critical(
                     "DatabaseLifecycle: no se pudo cerrar la conexión no registrada para %s",
@@ -427,12 +528,35 @@ class DatabaseLifecycleManager:
         ``con_boundary=True`` toma el lock de cada path (camino periódico).
         ``False`` asume exclusividad ya garantizada por el drenaje del shutdown:
         tomarlo ahí no aportaría nada y arriesga una doble adquisición.
+
+        Un path en cuarentena se SALTA, en los dos caminos. El checkpoint itera
+        ``_connections`` directamente, así que no pasa por el guard de
+        ``_resolve_connection`` y era la única ruta que seguía emitiendo SQL
+        sobre una conexión que este mismo manager declaró inservible: la que
+        queda retenida tras un cierre no confirmado existe SÓLO para poder
+        reintentar su cierre, y mientras tanto ``operation()`` la rechaza. Que
+        el mantenimiento periódico le mandara ``PRAGMA wal_checkpoint`` cada
+        cinco minutos contradecía ese fail-closed. Saltarla puede dejar WAL sin
+        truncar en ese path; es la opción correcta igualmente, porque el
+        resultado de un checkpoint sobre un handle de estado desconocido no es
+        información en la que se pueda basar nada.
         """
         results: dict[str, dict[str, Any]] = {}
         for path_str, conn in list(self._connections.items()):
             lock = self.get_write_lock(path_str) if con_boundary else contextlib.nullcontext()
             async with lock:  # type: ignore[attr-defined]
                 if self._connections.get(path_str) is not conn:
+                    continue
+                # Dentro del lock, junto al guard de identidad: la cuarentena
+                # pudo instalarse mientras esperábamos el lock, y ese es
+                # justamente el interleaving que hay que cubrir.
+                if path_str in self._quarantined_paths:
+                    logger.warning(
+                        "DatabaseLifecycle: checkpoint (%s) OMITIDO para %s — el path está en cuarentena "
+                        "y su conexión sólo se retiene para reintentar el cierre",
+                        mode,
+                        path_str,
+                    )
                     continue
                 await self._checkpoint_one(path_str, conn, mode, results)
         return results
@@ -527,6 +651,15 @@ class DatabaseLifecycleManager:
 
         if not self._connections:
             self._closed = True
+            # Sin `clear()`: cerrar TODO lo registrado no dice nada sobre el
+            # ARCHIVO de un path cuya recovery abortó. La cuarentena por cierre
+            # no confirmado sí se retira, pero una por una y contra evidencia
+            # real —el `discard` del Step 2, cuando ESA conexión por fin cierra—.
+            # Una recovery abortada no tiene evidencia equivalente: el archivo
+            # condenado sigue donde estaba porque el rename que iba a retirarlo
+            # falló, y borrar la marca acá sólo movía el fail-open una
+            # transición más adelante (shutdown_all -> init_all -> operation
+            # volvía a publicarlo, con cero revalidaciones de por medio).
             return
 
         logger.info(
@@ -564,6 +697,10 @@ class DatabaseLifecycleManager:
                 else:
                     if self._connections.get(path_str) is conn:
                         self._connections.pop(path_str)
+                        # El shutdown es el owner que puede reintentar un cierre
+                        # que falló antes; cuando lo consigue, el path deja de
+                        # estar fail-closed y vuelve a ser reabrible.
+                        self._quarantined_paths.discard(path_str)
 
         # Step 3: Verify WAL/SHM elimination.
         #
@@ -619,6 +756,11 @@ class DatabaseLifecycleManager:
             # conexiones retenidas el shutdown es reintentable, y marcarlo
             # cerrado mentiría sobre un estado que todavía no se alcanzó.
             self._closed = True
+            # Tampoco acá se hace `clear()`. Llegar a CLOSED prueba que ninguna
+            # conexión quedó retenida; no prueba que el archivo de una recovery
+            # abortada haya sido reparado. Lo que sobrevive a este punto es
+            # exactamente eso —el Step 2 ya retiró, una por una, las cuarentenas
+            # cuyo cierre se confirmó— y sobrevive a propósito.
 
         if first_close_error is not None:
             raise first_close_error
@@ -791,7 +933,12 @@ class DatabaseLifecycleManager:
         finally:
             self._release()
 
-    async def _resolve_connection(self, db_path: Path | str) -> aiosqlite.Connection:
+    async def _resolve_connection(
+        self,
+        db_path: Path | str,
+        *,
+        ignorar_cuarentena: bool = False,
+    ) -> aiosqlite.Connection:
         """Devuelve la conexión del path, inicializándola si hace falta.
 
         Interna y SIN admisión: la toma el llamador. Separarlas evita que
@@ -807,6 +954,15 @@ class DatabaseLifecycleManager:
         """
         path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
         path_str = self._resolve_key(path_obj)
+
+        # Fail-closed ANTES del fast-path: un path en cuarentena no entrega la
+        # entrada retenida (estaría dañada) ni abre un reemplazo por su cuenta
+        # (durante una recovery, ese reemplazo quedaría atado al inodo que el
+        # rename se lleva). Sólo el dueño de la ventana lo atraviesa.
+        if not ignorar_cuarentena and path_str in self._quarantined_paths:
+            raise DatabaseConnectionQuarantinedError(
+                f"Database path is quarantined and cannot serve connections: {path_str}"
+            )
 
         if path_str in self._connections:
             return self._connections[path_str]
@@ -881,25 +1037,122 @@ class DatabaseLifecycleManager:
         if cancelación is not None:
             raise cancelación
 
-    async def _quarantine_connection(
+    async def _close_connection(
         self,
-        db_path: Path | str,
         conn: aiosqlite.Connection,
-    ) -> BaseException | None:
-        """Retira y cierra una conexión dañada sin tocar su reemplazo."""
-        path_obj = db_path if isinstance(db_path, Path) else Path(db_path)
-        path_str = str(path_obj.resolve())
-        if self._connections.get(path_str) is conn:
-            self._connections.pop(path_str)
+        *,
+        shielded: bool,
+    ) -> _CloseOutcome:
+        """Cierra una conexión y CARACTERIZA el resultado, sin decidir ownership.
+
+        ``shielded`` decide si la cancelación del llamador puede abortar el
+        cierre, y las dos respuestas son correctas para distintos dueños:
+
+        - ``True`` — el cierre corre DENTRO de una unidad ajena (rollback fallido
+          de ``transaction()``, rescate de ``_init_single``). Ahí la conexión es
+          compartida y dejarla a medio cerrar rompe a terceros, así que el cierre
+          se completa aunque cancelen al llamador.
+        - ``False`` — el cierre ES el trabajo del llamador (ventana de
+          ``recover_connection()``). Blindarlo volvería incancelable una recovery
+          trabada, y además rompe el contrato de que una cancelación externa
+          llegue al cierre conservando su identidad.
+
+        Los cinco desenlaces de la matriz, y por qué ninguno se infiere del tipo
+        de la excepción sola:
+
+        - CLOSE-1 retorno limpio ................ cerró.
+        - CLOSE-2 excepción ordinaria ........... NO cerró (fd probablemente vivo).
+        - CLOSE-3 ``CancelledError`` pelada ..... SÍ cerró. Blindado,
+          ``_await_db_operation`` sólo la levanta DESPUÉS de que ``task.result()``
+          salió bien: la cancelación es del llamador y el cierre ya terminó.
+        - CLOSE-4 ``…FailedAfterCancellation`` .. NO cerró, y además hay una
+          cancelación externa que conservar. Devolver sólo el error —como se hacía
+          antes— la descartaba en silencio.
+        - CLOSE-5 ``…OperationCancelled`` ....... NO cerró; la cancelación nació
+          dentro del cierre y no hay nada externo que restaurar, así que viaja
+          como error de diagnóstico y no como cancelación.
+
+        El orden de los ``except`` importa: las dos privadas son subclases de
+        ``CancelledError`` y tienen que filtrarse antes que la pelada.
+        """
+        if not shielded:
+            try:
+                await conn.close()
+            except asyncio.CancelledError as error:
+                tarea = asyncio.current_task()
+                # `cancelling() > 0` es la evidencia de que la cancelación se
+                # pidió sobre ESTA tarea: sólo entonces hay identidad externa que
+                # conservar. Si no, la cancelación nació dentro del cierre
+                # (CLOSE-5) y es un fallo más, no algo que restaurar.
+                if tarea is not None and tarea.cancelling() > 0:
+                    return _CloseOutcome(False, None, error)
+                return _CloseOutcome(False, error, None)
+            except BaseException as error:
+                return _CloseOutcome(False, error, None)
+            return _CloseOutcome(True, None, None)
+
         try:
             await self._await_db_operation(conn.close())
-        except _DatabaseOperationFailedAfterCancellation as error:
-            return error.operation_error
-        except _DatabaseOperationCancelled as error:
-            return error.cause
-        except BaseException as error:
-            return error
-        return None
+        except _DatabaseOperationFailedAfterCancellation as error:  # CLOSE-4
+            return _CloseOutcome(False, error.operation_error, error.cancellation)
+        except _DatabaseOperationCancelled as error:  # CLOSE-5
+            return _CloseOutcome(False, error.cause, None)
+        except asyncio.CancelledError as error:  # CLOSE-3
+            return _CloseOutcome(True, None, error)
+        except BaseException as error:  # CLOSE-2
+            return _CloseOutcome(False, error, None)
+        return _CloseOutcome(True, None, None)  # CLOSE-1
+
+    async def _invalidate_under_boundary(
+        self,
+        db_path: Path | str,
+        expected_connection: aiosqlite.Connection,
+        *,
+        shielded: bool,
+    ) -> _CloseOutcome | None:
+        """Invalida ``expected_connection``. ASUME admisión y ``L_path`` sostenidos.
+
+        Es el nivel interno del mecanismo compartido y NO vuelve a pedir
+        ``L_path``: el camino de fallo de ``transaction()`` lo llama con el lock
+        ya en la mano, y ``asyncio.Lock`` no es reentrante — pedirlo de nuevo
+        cuelga la transacción fallida para siempre en vez de propagar el error.
+        Quien no sostenga el boundary entra por ``recover_connection()``.
+
+        El orden es el contrato: **cerrar primero, mutar el registro después**.
+        Retirar la entrada antes del cierre deja —cuando el cierre falla— una
+        conexión con su fd vivo, fuera del registro y sin ningún owner que pueda
+        reintentarla; ``shutdown_all()`` después declara un cierre completo que
+        nunca ocurrió. Es la misma política que ya usa el shutdown: se retira
+        sólo lo que se confirmó cerrado.
+
+        Devuelve ``None`` cuando la entrada vigente no es ``expected_connection``
+        (guard de identidad ABA, por ``is``): esa conexión es de otro dueño y no
+        se cierra ni se expulsa.
+        """
+        path_str = self._resolve_key(db_path)
+
+        # El cierre NO se condiciona a la identidad: ``expected_connection`` es la
+        # conexión que el caller tiene en la mano y ya decidió invalidar, y si
+        # nadie la cierra queda viva, fuera del registro y sin owner — la fuga
+        # exacta que este contrato existe para impedir. El guard de identidad
+        # protege al REEMPLAZO, no exime de cerrar lo propio.
+        outcome = await self._close_connection(expected_connection, shielded=shielded)
+
+        # Guard de identidad, aplicado a la MUTACIÓN del registro. El cierre es un
+        # punto de suspensión: la entrada pudo pasar a apuntar a otra conexión
+        # mientras corría, y esa conexión es sana y de otro dueño. Ni pop ni
+        # cuarentena: sólo se informa que no había nada nuestro que retirar.
+        if self._connections.get(path_str) is not expected_connection:
+            return None
+
+        if outcome.closed:
+            self._connections.pop(path_str)
+        else:
+            # Cierre NO confirmado: se conserva el ownership —alguien tiene que
+            # poder reintentar el cierre— y el path queda fail-closed, porque la
+            # entrada retenida ya no sirve para trabajo nuevo.
+            self._quarantined_paths.add(path_str)
+        return outcome
 
     async def _rollback_after_failure(
         self,
@@ -931,7 +1184,13 @@ class DatabaseLifecycleManager:
                 raise cancellation_to_restore from operation_error
             return
 
-        close_error = await self._quarantine_connection(db_path, conn)
+        # Ya se sostienen admisión y `L_path` (venimos de `operation()`), así que
+        # entra por el nivel interno. Usar el público acá self-deadlockearía.
+        outcome = await self._invalidate_under_boundary(db_path, conn, shielded=True)
+        close_error = outcome.error if outcome is not None else None
+        # CLOSE-3/CLOSE-4: la cancelación externa observada durante el cierre es
+        # tan restaurable como la del rollback; descartarla perdía la identidad.
+        close_cancellation = outcome.cancellation if outcome is not None else None
         if cancellation_to_restore is operation_error:
             diagnostic_error = rollback_error
         else:
@@ -946,7 +1205,7 @@ class DatabaseLifecycleManager:
             except BaseException as chained_close_error:
                 diagnostic_error = chained_close_error
 
-        final_cancellation = cancellation_to_restore or rollback_cancellation
+        final_cancellation = cancellation_to_restore or rollback_cancellation or close_cancellation
         if final_cancellation is not None:
             raise final_cancellation from diagnostic_error
         raise diagnostic_error
@@ -988,6 +1247,168 @@ class DatabaseLifecycleManager:
             except BaseException as error:
                 await self._rollback_after_failure(db_path, conn, error)
                 raise
+
+    @asynccontextmanager
+    async def _operation_under_recovery(
+        self,
+        db_path: Path | str,
+    ) -> AsyncGenerator[aiosqlite.Connection, None]:
+        """Boundary del path para el dueño de una ventana de recovery.
+
+        Difiere de ``operation()`` en exactamente dos cosas, ambas deliberadas:
+        NO vuelve a admitir —la ventana ya sostiene esa admisión, y contarla dos
+        veces desalinearía el drenaje— y atraviesa la cuarentena que esa misma
+        ventana instaló, que es lo que le permite abrir la conexión fresh
+        mientras el resto del proceso sigue bloqueado.
+        """
+        async with self.get_write_lock(db_path):
+            yield await self._resolve_connection(db_path, ignorar_cuarentena=True)
+
+    @asynccontextmanager
+    async def recover_connection(
+        self,
+        db_path: Path | str,
+        expected_connection: aiosqlite.Connection,
+    ) -> AsyncGenerator[Callable[[], contextlib.AbstractAsyncContextManager[aiosqlite.Connection]], None]:
+        """Ventana admitida para reemplazar una conexión dañada de un path.
+
+        Es el nivel PÚBLICO del mecanismo compartido: adquiere la admisión y
+        ``L_path``, delega en ``_invalidate_under_boundary`` y suelta el lock
+        antes de devolver el control. Los consumidores externos entran por acá;
+        el camino de fallo de ``transaction()`` —que ya sostiene el boundary—
+        entra por el helper interno.
+
+        Entre el cierre de la conexión vieja y la apertura de la nueva hay una
+        ventana donde el archivo se mueve. Sostener ``L_path`` durante todo eso
+        violaría la regla de no meter filesystem, ``to_thread`` ni backoff dentro
+        del lock de DB; soltarlo sin más dejaba que un ``operation()`` hermano
+        abriera una conexión "fresh" sobre el archivo que estaba por renombrarse
+        —y el rename se llevaba el inodo, con lo que la recovery terminaba
+        escribiendo el schema dentro del backup corrupto. La cuarentena por path
+        es lo que cubre esa ventana sin sostener el lock.
+
+        Rinde un invocable que abre el boundary del path para el dueño de la
+        ventana. La conexión fresh y su schema se establecen ahí adentro, y ESE
+        boundary es el que define "recovery completa": la cuarentena se levanta
+        sólo si su cuerpo salió limpio. Un rename que agota los reintentos, un
+        schema que falla con la conexión nueva ya registrada, una cancelación a
+        mitad del backoff o un cuerpo que directamente no reconstruye dejan el
+        path fail-closed — antes los cuatro lo devolvían a servicio igual,
+        porque el ``finally`` levantaba la cuarentena por el mero hecho de que
+        la ventana hubiera terminado.
+
+        Salir de la ventana sin haber reconstruido nada es un error de uso y se
+        reporta como tal: un cierre limpio que no reabrió no puede pasar por
+        recovery exitosa sólo porque nadie lanzó una excepción.
+
+        Cómo vuelve a servicio un path cuya recovery abortó: dentro de este
+        manager, NO vuelve. Ni ``init_all()`` ni ``shutdown_all()`` levantan esa
+        marca, porque ninguna de las dos transiciones observa el archivo: "no
+        quedó conexión retenida" y "todo lo registrado cerró" hablan del
+        ownership de los handles, no de la coherencia de un archivo que sigue en
+        el path justamente porque el rename que iba a retirarlo falló. Reabrirlo
+        lo publicaría vía ``operation()`` sin que ningún ``quick_check`` lo
+        hubiera vuelto a mirar — la revalidación vive en el consumidor, y este
+        lado no puede exigirla.
+
+        El costo es explícito: ese path queda inservible para lo que reste de
+        vida del manager, y arrastra consigo a ``init_all()``. Se sale con un
+        manager nuevo, donde el consumidor revalida en su ``open()`` antes de que
+        el archivo llegue a nadie. Dar una salida en caliente exige que el dueño
+        de la recovery pueda REINTENTARLA sobre un path sin conexión viva, que
+        hoy no es expresable con esta API: ``recover_connection`` necesita una
+        ``expected_connection`` que en este estado ya no existe. Queda como
+        trabajo aparte, deliberadamente fuera de este contrato.
+
+        La admisión abarca TODA la ventana —invalidación, rename, reapertura—,
+        de modo que un ``shutdown_all()`` concurrente la espera en vez de cerrar
+        por debajo y dejar la recovery a medio camino.
+
+        Raises:
+            DatabaseConnectionReplacedError: si ``expected_connection`` ya no es
+                la vigente. No se cierra ni se expulsa el reemplazo.
+            DatabaseConnectionQuarantinedError: si el cierre no se pudo
+                confirmar. El ownership queda retenido y el path fail-closed;
+                se recupera reintentando ``shutdown_all()``.
+        """
+        path_str = self._resolve_key(db_path)
+        self._admit()
+        cuarentena_propia = False
+        reconstruido = False
+
+        @asynccontextmanager
+        async def reabrir() -> AsyncGenerator[aiosqlite.Connection, None]:
+            """Boundary de reapertura; salir limpio de acá ES la señal de completitud.
+
+            Se recalcula en cada uso: si la recovery reabre más de una vez, manda
+            el último intento, no el primero que salió bien.
+            """
+            nonlocal reconstruido
+            reconstruido = False
+            async with self._operation_under_recovery(db_path) as conn:
+                yield conn
+            reconstruido = True
+
+        try:
+            async with self.get_write_lock(db_path):
+                outcome = await self._invalidate_under_boundary(
+                    db_path,
+                    expected_connection,
+                    # El cierre ES el trabajo de esta ventana: una cancelación
+                    # externa debe poder abortarla y llegar al close con su
+                    # identidad, no quedar blindada afuera.
+                    shielded=False,
+                )
+                if outcome is None:
+                    raise DatabaseConnectionReplacedError(
+                        f"Expected connection is no longer the current one for {path_str}; nothing was invalidated"
+                    )
+                if not outcome.closed:
+                    # `_invalidate_under_boundary` ya retuvo la entrada y marcó
+                    # el path: acá sólo se traduce a excepción, conservando la
+                    # cancelación externa con su identidad y el fallo del cierre
+                    # como cadena diagnóstica.
+                    quarantined = DatabaseConnectionQuarantinedError(
+                        f"Could not confirm close of the managed connection for {path_str}; ownership retained"
+                    )
+                    if outcome.cancellation is not None:
+                        # CLOSE-4: la cancelación externa manda —viaja con su
+                        # identidad intacta— y el estado del cierre queda como
+                        # cadena diagnóstica en vez de perderse.
+                        if outcome.error is not None:
+                            quarantined.__cause__ = outcome.error
+                        raise outcome.cancellation from quarantined
+                    if outcome.error is not None:
+                        raise quarantined from outcome.error
+                    raise quarantined
+                if outcome.cancellation is not None:
+                    # CLOSE-3: el cierre SÍ terminó, así que el ownership ya se
+                    # actualizó arriba; la cancelación externa se propaga recién
+                    # ahora, con su identidad intacta.
+                    raise outcome.cancellation
+                self._quarantined_paths.add(path_str)
+                cuarentena_propia = True
+
+            yield reabrir
+
+            # Sólo se llega acá si el cuerpo salió limpio. Que no haya excepción
+            # no prueba que se haya reconstruido nada: sin esto, una ventana que
+            # nunca llamó a ``reabrir()`` devolvía el path a servicio sin
+            # conexión nueva y sin que nadie se enterara.
+            if not reconstruido:
+                raise DatabaseConnectionQuarantinedError(
+                    f"Recovery window for {path_str} ended without reopening the connection; the path stays quarantined"
+                )
+        finally:
+            # La cuarentena se levanta sólo si ESTA ventana la instaló Y la
+            # recovery llegó a un estado coherente. Las dos que sobreviven lo
+            # hacen a propósito: la de un cierre no confirmado (su conexión sigue
+            # retenida y sin cerrar) y la de una recovery abortada (el archivo
+            # quedó a mitad de reconstruir). Ambas se levantan por transición
+            # explícita, no por el próximo resolve que pase.
+            if cuarentena_propia and reconstruido:
+                self._quarantined_paths.discard(path_str)
+            self._release()
 
     def get_write_lock(self, db_path: Path | str) -> asyncio.Lock:
         """Return the write lock bound to the connection for *db_path*.
