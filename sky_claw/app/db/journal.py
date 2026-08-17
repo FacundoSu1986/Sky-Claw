@@ -1203,6 +1203,27 @@ class OperationJournal:
         nunca eclipsa el fallo original: el llamador ya está propagando la
         excepción primaria, que es la que el consumidor necesita ver.
 
+        **Lo que no puede saltearse es soltar la referencia**, porque es el paso
+        que impide la reutilización. El cierre es un ``await`` y puede no
+        completar nunca si hay una cancelación pendiente; si queda a medias el fd
+        sobrevive hasta el GC, que es peor que un cierre limpio pero
+        incomparablemente mejor que dejar que el siguiente escritor commitee el
+        estado parcial.
+
+        Eso está protegido DOS veces, y son redundantes a propósito: la
+        referencia se suelta antes del ``await``, y el cierre va bajo
+        ``suppress(BaseException)`` para que tampoco importe si se invierte el
+        orden. Verificado por mutación: quitar una sola de las dos no rompe nada
+        —cada una alcanza—, y quitar ambas tumba
+        ``test_cancelacion_durante_el_cierre_igual_suelta_la_referencia``.
+
+        El orden es, además, el inverso al de ``_invalidate_under_boundary`` del
+        lifecycle —que cierra y después muta el registro— y las dos elecciones son
+        correctas para su dueño: ahí la conexión es COMPARTIDA, retener la entrada
+        es lo que permite que ``shutdown_all()`` reintente el cierre, y retirarla
+        antes dejaría un fd vivo sin dueño. Acá la conexión es propia y no hay
+        nadie que vaya a reintentar.
+
         **Solo standalone, y a propósito.** Con lifecycle, ``transaction()`` ya
         cierra la conexión y deja el path fail-closed vía
         ``_invalidate_under_boundary`` (cerrar primero, mutar el registro después,
@@ -1211,14 +1232,18 @@ class OperationJournal:
         congelada sin callers de producción y acá no hay lifecycle al que
         pedírsela — la conexión es nuestra.
         """
-        with contextlib.suppress(Exception):
-            await db.close()
-
         # Guard de identidad: sostenemos el lock, pero no cuesta nada y evita
         # retirar la conexión de otro dueño si esto se llamara desde otro sitio.
         if self._db is db:
             self._db = None
             self._owns_conn = False
+
+        # Best-effort, y DESPUÉS de soltar la referencia. `BaseException` para que
+        # una cancelación pendiente no impida el WARNING de abajo; no se absorbe
+        # nada que importe: el llamador ya está propagando su excepción y, si la
+        # cancelación es para esta tarea, el `raise` del llamador la entrega.
+        with contextlib.suppress(BaseException):
+            await db.close()
 
         logger.warning(
             "Conexión propia del journal retirada tras un rollback fallido; se reabrirá en el próximo uso",
@@ -1335,24 +1360,42 @@ class OperationJournal:
                 try:
                     await self._escribir_fallo(db, entry_id, evidencia)
                     await db.commit()
-                except BaseException:
+                except BaseException as fallo_primario:
                     # Soltar el lock con la transacción abierta dejaría que el
                     # siguiente escritor commitee el estado parcial que este
-                    # boundary descarta.
+                    # boundary descarta. Hay TRES desenlaces y cada uno tiene su
+                    # respuesta; el invariante común es que la conexión no queda
+                    # instalada si el rollback no se pudo confirmar.
+                    rollback_confirmado = False
                     try:
                         await db.rollback()
+                        rollback_confirmado = True
                     except Exception:
                         # Invariante de `app/db/AGENTS.md`: "un rollback fallido
                         # conserva evidencia y no se reporta como éxito". Se
-                        # loguea porque el `raise` propaga la excepción PRIMARIA
-                        # —que es la que el caller necesita— y ésta quedaría
-                        # invisible. `except Exception` y no `BaseException`: una
-                        # cancelación NUEVA durante el rollback debe conservar su
-                        # identidad y propagar.
+                        # loguea porque el `raise` de abajo propaga la excepción
+                        # PRIMARIA —la que el caller necesita— y ésta quedaría
+                        # invisible.
                         logger.exception(
                             "El rollback de fail_operation falló; la transacción puede haber quedado sucia",
                             extra={"entry_id": entry_id},
                         )
+                    except BaseException as fallo_de_cleanup:
+                        # Cancelación NUEVA durante el rollback (o cualquier otra
+                        # BaseException). NO se absorbe —conserva su identidad y se
+                        # re-lanza— pero tampoco puede saltear la limpieza: sin
+                        # esto, la conexión quedaba instalada con la transacción
+                        # abierta y el siguiente escritor commiteaba el FAILED
+                        # parcial. Reproducido con `complete_operation` de una
+                        # operación no relacionada.
+                        #
+                        # La primaria viaja como `__cause__` y no solo como
+                        # `__context__`: es el mismo criterio que
+                        # `_rollback_after_failure` del lifecycle, que también
+                        # hace `raise final_cancellation from diagnostic_error`.
+                        await self._retirar_conexion_propia(db)
+                        raise fallo_de_cleanup from fallo_primario
+                    if not rollback_confirmado:
                         # Loguear y soltar el lock NO alcanza: la transacción
                         # sigue abierta sobre la conexión y el siguiente escritor
                         # la commitea junto con su trabajo. Se retira.

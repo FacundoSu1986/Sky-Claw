@@ -1,11 +1,14 @@
 # tests/test_journal.py
 
+import ast
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import pathlib
 import sqlite3
+import textwrap
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1037,33 +1040,83 @@ class TestFailOperationMetadataPreviaIlegible:
     propagan (`TestFailOperationAtomicidad`).
     """
 
+    # Cada forma viaja con el MOTIVO exacto que debe reportar el clasificador: un
+    # motivo nuevo sin caso, o un caso que cambia de motivo, rompe el ancla de
+    # igualdad de más abajo en vez de pasar con un `assert motivo` genérico.
     FORMAS_ILEGIBLES = [
-        pytest.param("texto plano no json", id="no_es_json"),
-        pytest.param("{trunca", id="json_truncado"),
-        pytest.param("[]", id="raiz_lista"),
-        pytest.param('"solo un string"', id="raiz_string"),
-        pytest.param("42", id="raiz_numero"),
-        pytest.param("null", id="raiz_null"),
-        pytest.param("true", id="raiz_bool"),
-        pytest.param('{"x": NaN}', id="nan_de_fila_legacy"),
+        pytest.param("texto plano no json", "json_invalido", id="no_es_json"),
+        pytest.param("{trunca", "json_invalido", id="json_truncado"),
+        pytest.param("[]", "raiz_no_objeto", id="raiz_lista"),
+        pytest.param('"solo un string"', "raiz_no_objeto", id="raiz_string"),
+        pytest.param("42", "raiz_no_objeto", id="raiz_numero"),
+        pytest.param("null", "raiz_no_objeto", id="raiz_null"),
+        pytest.param("true", "raiz_no_objeto", id="raiz_bool"),
+        pytest.param('{"x": NaN}', "no_reserializable", id="nan_de_fila_legacy"),
     ]
 
+    # Los tests que solo necesitan el blob, derivados de la MISMA fuente para que
+    # no puedan desincronizarse.
+    SOLO_CRUDOS = [pytest.param(caso.values[0], id=caso.id) for caso in FORMAS_ILEGIBLES]
+
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("crudo", FORMAS_ILEGIBLES)
-    async def test_registra_el_fallo_igual(self, journal_ambas_ramas, crudo):
-        """La fila queda FAILED y con el error canónico."""
+    @pytest.mark.parametrize(("crudo", "motivo_esperado"), FORMAS_ILEGIBLES)
+    async def test_registra_el_fallo_igual(self, journal_ambas_ramas, caplog, crudo, motivo_esperado):
+        """La fila queda FAILED, con el error canónico y el motivo EXACTO."""
         journal = journal_ambas_ramas
         entry_id = await _entrada(journal)
         _escribir_metadata_cruda(journal, entry_id, crudo)
 
-        await journal.fail_operation(entry_id, error="boom")
+        with caplog.at_level(logging.WARNING, logger="sky_claw.app.db.journal"):
+            await journal.fail_operation(entry_id, error="boom")
 
         status, _ = _fila_cruda(journal, entry_id)
         assert status == OperationStatus.FAILED.value
         assert _evidencia(journal, entry_id) == {"error": "boom"}
 
+        motivos = [
+            r.motivo for r in caplog.records if getattr(r, "event", None) == "journal_metadata_previa_descartada"
+        ]
+        assert motivos == [motivo_esperado], f"motivo inesperado para {crudo!r}: {motivos}"
+
+    def test_ancla_motivos_de_descarte_cubiertos(self):
+        """Igualdad literal: los motivos que el clasificador puede emitir son
+        EXACTAMENTE los que estos casos cubren.
+
+        Sin esto, agregar un motivo nuevo a `_metadata_previa_fusionable` no
+        rompía nada — que es cómo `limite_de_recursion` llegó a existir sin caso
+        propio hasta que lo señaló la revisión.
+        """
+        fuente = textwrap.dedent(inspect.getsource(OperationJournal._metadata_previa_fusionable))
+        emitidos = {
+            nodo.value.value
+            for nodo in ast.walk(ast.parse(fuente))
+            if isinstance(nodo, ast.Assign)
+            and isinstance(nodo.value, ast.Constant)
+            and isinstance(nodo.value.value, str)
+            and any(isinstance(t, ast.Name) and t.id == "motivo" for t in nodo.targets)
+        }
+        emitidos |= {
+            nodo.value.value
+            for nodo in ast.walk(ast.parse(fuente))
+            if isinstance(nodo, ast.Return)
+            and isinstance(nodo.value, ast.Tuple)
+            and len(nodo.value.elts) == 2
+            and isinstance(nodo.value.elts[1], ast.Constant)
+            and isinstance(nodo.value.elts[1].value, str)
+            for _ in [0]
+        }
+        cubiertos = {caso.values[1] for caso in self.FORMAS_ILEGIBLES}
+        # `limite_de_recursion` tiene sus propios tests (por inyección y por
+        # profundidad real), no un blob en FORMAS_ILEGIBLES: no se puede escribir
+        # una columna que desborde el parser sin desbordarlo al escribirla.
+        cubiertos |= {"limite_de_recursion"}
+        assert emitidos == cubiertos, (
+            f"motivos sin caso que los cubra: {sorted(emitidos - cubiertos)}; "
+            f"casos que esperan un motivo inexistente: {sorted(cubiertos - emitidos)}"
+        )
+
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("crudo", FORMAS_ILEGIBLES)
+    @pytest.mark.parametrize("crudo", SOLO_CRUDOS)
     async def test_no_propaga(self, journal_ambas_ramas, crudo):
         """Reproducción del caso fatal: la implementación vieja tiraba
         `sqlite3.OperationalError: malformed JSON` con el estado YA commiteado —
@@ -1076,7 +1129,7 @@ class TestFailOperationMetadataPreviaIlegible:
         await journal.fail_operation(entry_id, error="boom", metadata={"aux": "v"})
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("crudo", FORMAS_ILEGIBLES)
+    @pytest.mark.parametrize("crudo", SOLO_CRUDOS)
     async def test_la_columna_queda_json_valido(self, journal_ambas_ramas, crudo):
         """La fila se repara al pasar: deja de ser ilegible para el siguiente
         lector."""
@@ -1274,14 +1327,155 @@ class TestFailOperationRollbackFallidoStandalone:
             "retirar la conexión no puede impedir el trabajo posterior"
         )
 
+    # -- cancelación NUEVA durante la limpieza (hallazgo de Qodo en #487) ------
+    #
+    # Dos invariantes que parecían en tensión y NO lo están:
+    #
+    #   1. Una cancelación nueva durante el cleanup conserva su identidad y
+    #      propaga — nunca se absorbe.
+    #   2. Una conexión con la transacción abierta no puede quedar instalada.
+    #
+    # El primer intento cumplía (1) y rompía (2): el `except Exception` del
+    # rollback deja pasar la `CancelledError` —correcto— pero con eso se salteaba
+    # el retiro. Reproducido: `in_transaction: True`, conexión instalada, y
+    # `complete_operation` de otra entrada commiteando el `FAILED` parcial.
+    #
+    # Se cumplen las dos: el retiro corre en `finally` (no absorbe nada) y suelta
+    # la referencia ANTES de intentar el cierre, que es la parte que no puede
+    # depender de que un `await` sobreviva a la cancelación.
+
+    @staticmethod
+    def _romper_write_y_cancelar_rollback(journal):
+        real_execute = journal._db.execute
+
+        def execute_que_falla(sql, *args, **kwargs):
+            if isinstance(sql, str) and "SET metadata" in sql:
+                raise sqlite3.OperationalError("write de evidencia falla")
+            return real_execute(sql, *args, **kwargs)
+
+        async def rollback_cancelado():
+            raise asyncio.CancelledError()
+
+        journal._db.execute = execute_que_falla
+        journal._db.rollback = rollback_cancelado
+
+    @pytest.mark.asyncio
+    async def test_cancelacion_durante_el_rollback_propaga(self, journal_standalone):
+        """Invariante 1: no se absorbe."""
+        journal = journal_standalone
+        entry_id = await _entrada(journal)
+        self._romper_write_y_cancelar_rollback(journal)
+
+        with pytest.raises(asyncio.CancelledError):
+            await journal.fail_operation(entry_id, error="boom", metadata={"k": "v"})
+
+    @pytest.mark.asyncio
+    async def test_cancelacion_durante_el_rollback_igual_retira_la_conexion(self, journal_standalone):
+        """Invariante 2: propagar la cancelación no puede saltear el retiro."""
+        journal = journal_standalone
+        entry_id = await _entrada(journal)
+        self._romper_write_y_cancelar_rollback(journal)
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await journal.fail_operation(entry_id, error="boom", metadata={"k": "v"})
+
+        assert journal._db is None, "la cancelación del rollback salteó el retiro de la conexión"
+
+    @pytest.mark.asyncio
+    async def test_cancelacion_durante_el_rollback_no_contamina_al_siguiente(self, journal_standalone):
+        """La propiedad observable: sin `FAILED` parcial durable."""
+        journal = journal_standalone
+        fallida = await _entrada(journal)
+        otra = await _entrada(journal)
+        self._romper_write_y_cancelar_rollback(journal)
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await journal.fail_operation(fallida, error="boom", metadata={"k": "v"})
+
+        await journal.complete_operation(otra)
+
+        status, metadata = _fila_cruda(journal, fallida)
+        assert status == OperationStatus.STARTED.value, (
+            f"el FAILED parcial se commiteó tras una cancelación del rollback: metadata={metadata!r}"
+        )
+        assert _fila_cruda(journal, otra)[0] == OperationStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_cancelacion_durante_el_cierre_igual_suelta_la_referencia(self, journal_standalone):
+        """El cierre es best-effort; soltar la referencia NO.
+
+        `await db.close()` puede recibir la cancelación pendiente y no completar.
+        Por eso la referencia se suelta antes: aunque el fd quede vivo, ningún
+        escritor del journal puede volver a alcanzar esa conexión sucia.
+        """
+        journal = journal_standalone
+        entry_id = await _entrada(journal)
+        self._romper_write_y_cancelar_rollback(journal)
+
+        sucia = journal._db
+        cierre_real = sucia.close
+
+        async def close_cancelado():
+            raise asyncio.CancelledError()
+
+        sucia.close = close_cancelado
+        try:
+            with contextlib.suppress(asyncio.CancelledError):
+                await journal.fail_operation(entry_id, error="boom", metadata={"k": "v"})
+
+            assert journal._db is None, "un cierre cancelado dejó la conexión sucia instalada"
+        finally:
+            # El fd (y su hilo worker non-daemon) sobreviven a un cierre
+            # cancelado: es el costo aceptado de garantizar el no-reuso, y acá lo
+            # limpia el test para no disparar el guard de `pytest_unconfigure`,
+            # que sale con os._exit(3) ante hilos sin cerrar.
+            sucia.close = cierre_real
+            with contextlib.suppress(Exception):
+                await sucia.close()
+
 
 class TestFailOperationHermanos:
     """Los otros caminos que llegan al MISMO recurso.
 
     Enumerados sobre el código actual, no heredados de una lista histórica. Las
-    tres variantes de journal y la fachada de `RollbackManager` deben satisfacer
-    P1 sin cambios propios: si alguna dejara de reenviar, este bloque lo detecta.
+    variantes de journal y la fachada de `RollbackManager` deben satisfacer P1
+    sin cambios propios: si alguna dejara de reenviar, este bloque lo detecta.
+
+    La familia de subclases se descubre por INTROSPECCIÓN y se congela: una
+    variante nueva de journal rompe el ancla hasta que se le escriba su caso, en
+    vez de heredar en silencio un `fail_operation` que quizá no reenvía.
     """
+
+    # Subclases de OperationJournal, congeladas por igualdad. Cada una necesita
+    # su prueba de comportamiento más abajo.
+    SUBCLASES_ESPERADAS = {"NoOpJournal", "StagingJournal"}
+
+    def test_ancla_familia_de_journals_congelada(self):
+        """Igualdad literal sobre `__subclasses__()`: una variante nueva rompe acá."""
+        observadas = {sub.__name__ for sub in OperationJournal.__subclasses__()}
+        assert observadas == self.SUBCLASES_ESPERADAS, (
+            "cambió la familia de journals: la variante nueva necesita su propia "
+            "prueba de que fail_operation sigue satisfaciendo P1 (reenviar o no "
+            "tener efecto), no heredarla por inercia"
+        )
+
+    def test_ancla_firma_de_fail_operation_compatible_en_toda_la_familia(self):
+        """Toda subclase acepta la MISMA llamada que la base.
+
+        `StagingJournal` usa `*args/**kwargs` —compatible por construcción— y
+        `NoOpJournal` repite la firma explícita. Lo que se verifica es que la
+        llamada canónica se pueda ligar en todas, no que el texto coincida:
+        `NoOpJournal` con un parámetro renombrado rompería a los callers que usan
+        keywords, y hoy nada lo detectaba.
+        """
+        for clase in [OperationJournal, *OperationJournal.__subclasses__()]:
+            firma = inspect.signature(clase.fail_operation)
+            firma.bind(
+                object(),  # self
+                1,
+                error="boom",
+                metadata={"k": "v"},
+            )
 
     @pytest.mark.asyncio
     async def test_rollback_manager_fachada_persiste_el_error(self, tmp_path):

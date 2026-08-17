@@ -1407,6 +1407,35 @@ _EMISORES_DE_SQL_ESPERADOS = {
     "sweep_stale_pending": True,
 }
 
+# Segunda dimensión, y hace falta: `_EMISORES_DE_SQL_ESPERADOS` solo mira el
+# boundary del lifecycle, así que borrar `async with self._lock` de la rama
+# STANDALONE de cualquier mutador lo dejaba pasar en verde — y con eso se va la
+# serialización de la conexión propia, que es el único mecanismo que hay cuando
+# no hay lifecycle. Mismo criterio que el otro inventario: igualdad literal.
+_EMISORES_CON_LOCK_LOCAL_ESPERADOS = {
+    # `open()` no lo toma: el schema corre bajo `operation()` con lifecycle y sin
+    # boundary en standalone (conexión recién creada, nadie más la ve todavía), y
+    # sostenerlo hasta el final del método deadlockearía con el sweep de arranque.
+    "open": False,
+    # Helper compartido: el lock lo sostiene el llamador (ver más abajo).
+    "_escribir_fallo": False,
+    "_update_status": True,
+    "begin_operation": True,
+    "begin_transaction": True,
+    "commit_transaction": True,
+    "get_last_operation": True,
+    "get_operation_by_id": True,
+    "get_operations_by_agent": True,
+    "get_operations_by_path": True,
+    "get_operations_by_transaction": True,
+    "get_transaction": True,
+    "list_recent_transactions": True,
+    "mark_rolled_back": True,
+    "mark_transaction_rolled_back": True,
+    "rollback_transaction": True,
+    "sweep_stale_pending": True,
+}
+
 # Helpers que emiten SQL ASUMIENDO el boundary del llamador. Cada uno obliga a
 # que TODOS sus callers dentro de la clase lo tomen.
 _HELPERS_QUE_ASUMEN_BOUNDARY = frozenset({"_escribir_fallo"})
@@ -1440,6 +1469,46 @@ def _toma_boundary_del_lifecycle(metodo: ast.FunctionDef | ast.AsyncFunctionDef)
         if isinstance(receptor, ast.Attribute) and receptor.attr == "_lifecycle":
             return True
     return False
+
+
+def _toma_el_lock_local(metodo: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """``async with self._lock`` en el cuerpo — la serialización del standalone.
+
+    Con lifecycle, ``open()`` reemplaza ``self._lock`` por el lock compartido por
+    path del manager, así que este mismo ``async with`` sirve a las dos ramas; lo
+    que el ancla defiende es que el mutador tome ALGÚN lock, no cuál.
+    """
+    for nodo in ast.walk(metodo):
+        if not isinstance(nodo, ast.AsyncWith):
+            continue
+        for item in nodo.items:
+            objetivo = item.context_expr
+            if isinstance(objetivo, ast.Attribute) and objetivo.attr == "_lock":
+                return True
+            # `async with self._lock, db.execute(...) as cursor:` — el lock puede
+            # venir como uno de varios items, y también dentro de un Tuple.
+            if isinstance(objetivo, ast.Tuple) and any(
+                isinstance(e, ast.Attribute) and e.attr == "_lock" for e in objetivo.elts
+            ):
+                return True
+    return False
+
+
+def test_ancla_emisores_de_sql_serializan_su_rama_standalone() -> None:
+    """Igualdad literal de `{método: toma el lock}` para todo emisor de SQL.
+
+    Cierra el hueco que el inventario de boundaries no ve: sacar
+    `async with self._lock` de la rama sin lifecycle deja la conexión propia sin
+    serialización y los dos anclas anteriores siguen verdes.
+    """
+    observado = {
+        metodo.name: _toma_el_lock_local(metodo) for metodo in _cuerpo_de_operation_journal() if _emite_sql(metodo)
+    }
+    assert observado == _EMISORES_CON_LOCK_LOCAL_ESPERADOS, (
+        "cambió qué métodos de OperationJournal serializan su SQL con self._lock: "
+        "decidí si el método afectado participa de la serialización o es una "
+        "exención (y por qué la conexión propia no necesita protección ahí)"
+    )
 
 
 def _llama_a(metodo: ast.FunctionDef | ast.AsyncFunctionDef, nombre: str) -> bool:
