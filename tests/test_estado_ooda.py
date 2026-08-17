@@ -227,20 +227,39 @@ def test_todo_test_citado_como_verificacion_existe() -> None:
     assert not faltantes, f"el inventario cita tests que no existen: {sorted(faltantes)}"
 
 
-# "rig" seguido de una fecha a corta distancia. El hueco de hasta 15 caracteres es
-# el punto del patrón: cubre `rig 2026-08-10`, `rig T5 2026-08-11`, `rig del …`,
-# `rig, …` y `rig de …` sin enumerar conectores a mano. Exigir el formato canónico
-# dejaba pasar una fila que escribiera "rig del 2026-08-10" — variante que este
-# mismo repo ya usa en `docs/design/plans/` — con CI en verde (hallazgo del revisor
-# Regression & Test Oracle, PR #485). El límite es corto a propósito: sin él, una
-# fila con "rig humano" en una celda y una fecha cualquiera en otra pediría la
-# marca sin afirmar nada de rig.
-_CITA_DE_RIG_FECHADO = re.compile(r"rig\b.{0,15}?\d{4}-\d{2}-\d{2}")
+# Co-ocurrencia de "rig" y una fecha dentro de una ventana corta, **en cualquiera
+# de los dos órdenes**: cubre `rig 2026-08-10`, `rig del …`, `rig, en la corrida
+# del …` y también `el 2026-08-10 el rig midió …`, sin enumerar conectores a mano.
+# La ventana es corta a propósito: es lo único que evita emparejar un "rig humano"
+# con una fecha que vive en otra parte de la misma celda.
+_CITA_DE_RIG_FECHADO = re.compile(
+    r"rig\b.{0,25}?\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}.{0,25}?\brig\b",
+)
 _MARCA_DE_EVIDENCIA_EXTERNA = "fuera del repo"
+
+# Las filas que se apoyan en un informe de rig que NO está en el árbol. Igualdad
+# literal en las dos direcciones: quitarle la marca a una de estas rompe el test
+# aunque el patrón no la detecte, y una fila nueva que el patrón SÍ detecte rompe
+# hasta que se la declare acá o se la reformule.
+#
+# Este conjunto es el gate; el patrón es la red. La distinción importa porque la
+# propiedad "esta fila afirma un hecho de rig" NO es decidible por regex sobre
+# prosa: en el PR #485 el patrón se corrigió tres veces —formato canónico, luego
+# falsos positivos cruzando celdas, luego orden inverso— y cada vuelta movió el
+# hueco en vez de cerrarlo. Con el conjunto congelado, el caso conocido queda
+# anclado sin depender de cómo esté redactado.
+_FILAS_CON_EVIDENCIA_DE_RIG_EXTERNA = frozenset(
+    {
+        "U-06",
+        "Preset de TexGen desvía `OutputPath`",
+        "Clasificación del log de la etapa 9",
+        "Candidato de salida de TexGen",
+    }
+)
 
 
 def test_el_patron_de_cita_de_rig_reconoce_las_variantes_que_se_escriben() -> None:
-    """El ancla de evidencia externa vale lo que valga su patrón.
+    """La red vale lo que valga su patrón, y su límite tiene que estar escrito.
 
     Un oráculo que solo reconoce el formato canónico deja el agujero justo donde
     importa: la fila futura que escriba la fecha con otro conector pasa sin marca y
@@ -253,6 +272,8 @@ def test_el_patron_de_cita_de_rig_reconoce_las_variantes_que_se_escriben() -> No
         "rig del 2026-08-10",
         "rig, 2026-08-10",
         "rig de 2026-08-10",
+        "rig, en la corrida del 2026-08-10, midió",
+        "el 2026-08-10 el rig midió que DynDOLOD persiste el .esp",
     )
     for cita in afirman_un_hecho:
         assert _CITA_DE_RIG_FECHADO.search(cita), f"debería exigir la marca: {cita!r}"
@@ -317,18 +338,36 @@ def test_toda_fila_que_afirma_un_hecho_de_rig_declara_que_la_evidencia_es_extern
     resultado («midió»/«confirmó»/…) porque es la misma trampa que este patrón ya
     tuvo una vez: una lista cerrada de conectores dejó pasar «rig del 2026-08-10»
     (PR #485), y una lista cerrada de verbos dejaría pasar «según el rig» igual.
-    """
-    sin_marca = []
-    for item, fila in _tabla().items():
-        celdas = list(fila.values())
-        cita_un_rig = any(_CITA_DE_RIG_FECHADO.search(celda) for celda in celdas)
-        declara_la_marca = any(_MARCA_DE_EVIDENCIA_EXTERNA in celda for celda in celdas)
-        if cita_un_rig and not declara_la_marca:
-            sin_marca.append(item)
 
-    assert not sin_marca, (
-        "estas filas afirman un hecho medido en una corrida de rig fechada sin declarar que "
-        f"el informe está fuera del repo: {sorted(sin_marca)}"
+    Por eso el patrón NO es el gate: lo es
+    `_FILAS_CON_EVIDENCIA_DE_RIG_EXTERNA`, que se afirma en las dos direcciones.
+    Una fila declarada tiene que llevar la marca aunque el patrón no la vea, y una
+    fila que el patrón vea tiene que estar declarada. Lo que queda afuera —una fila
+    nueva, con evidencia de rig, redactada de una forma que el patrón no reconozca y
+    sin declarar— es el límite irreducible de medir esto sobre prosa, y está acá
+    escrito en vez de disimulado detrás de una regex cada vez más larga.
+    """
+    filas = _tabla()
+
+    declaradas_sin_marca = sorted(
+        item
+        for item in _FILAS_CON_EVIDENCIA_DE_RIG_EXTERNA
+        if not any(_MARCA_DE_EVIDENCIA_EXTERNA in celda for celda in filas[item].values())
+    )
+    assert not declaradas_sin_marca, (
+        f"estas filas se apoyan en un informe de rig fuera del repo y dejaron de declararlo: {declaradas_sin_marca}"
+    )
+
+    detectadas_sin_declarar = sorted(
+        item
+        for item, fila in filas.items()
+        if item not in _FILAS_CON_EVIDENCIA_DE_RIG_EXTERNA
+        and any(_CITA_DE_RIG_FECHADO.search(celda) for celda in fila.values())
+    )
+    assert not detectadas_sin_declarar, (
+        "estas filas citan una corrida de rig fechada y no están declaradas en "
+        f"_FILAS_CON_EVIDENCIA_DE_RIG_EXTERNA: {detectadas_sin_declarar}. Si afirman un hecho "
+        "medido, declaralas y poneles la marca; si solo planifican una corrida, reformulalas."
     )
 
 
