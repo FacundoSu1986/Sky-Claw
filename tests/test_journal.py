@@ -2,6 +2,8 @@
 
 import asyncio
 import contextlib
+import json
+import logging
 import pathlib
 import sqlite3
 from unittest.mock import AsyncMock
@@ -11,9 +13,11 @@ import pytest
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
 from sky_claw.app.db.journal import (
     JournalConnectionError,
+    NoOpJournal,
     OperationJournal,
     OperationStatus,
     OperationType,
+    StagingJournal,
     TransactionStatus,
 )
 from sky_claw.app.db.rollback_manager import RollbackManager
@@ -569,3 +573,596 @@ class TestJournalWriteLockCompartido:
             await j2.close()
         finally:
             await lifecycle.shutdown_all()
+
+
+# =============================================================================
+# fail_operation — EVIDENCIA DEL FALLO
+#
+# `fail_operation` es el *failure-reporting boundary* del journal: cuando una
+# operación falla, esta es la única pieza que deja constancia de POR QUÉ. El
+# defecto que estos tests cierran hacía que esa constancia se perdiera en el
+# 100% de las invocaciones de producción, y la suite quedaba verde porque el
+# único test del método afirmaba `status == FAILED` y nunca miraba la evidencia.
+#
+# Las TRES propiedades que se congelan acá:
+#
+#   P1 — Evidencia canónica. Si `error != ""`, la fila queda FAILED *y* con la
+#        clave `error`, con independencia de que se haya pasado `metadata`.
+#   P2 — Transición atómica. `status` y evidencia son UNA transición: nunca
+#        queda FAILED sin evidencia ni evidencia sin FAILED.
+#   P3 — Fusión no destructiva. previa + argumento + {"error": error}.
+#
+# **Por qué TODO se parametriza sobre las dos ramas.** `fail_operation` tiene
+# dos caminos —`self._lifecycle is not None` y el standalone pre-M-01— y son el
+# "hermano en el mismo archivo" que AGENTS.md nombra como la clase de defecto
+# dominante del repo: arreglar uno y dejar el otro. La parametrización es lo que
+# convierte "verificar el árbol de callers" en un test que falla. Arreglar una
+# sola rama tumba la mitad de esta clase.
+#
+# **Por qué se lee la fila con `sqlite3` crudo.** `_row_to_entry` hace
+# `json.loads` sin guarda: leer por la API pública mezclaría el defecto de
+# ESCRITURA que estos tests cubren con el de LECTURA, que es un hermano
+# preexistente y fuera de alcance. La fila cruda es la única evidencia que no
+# depende del camino auditado.
+# =============================================================================
+
+
+@pytest.fixture(params=["lifecycle", "standalone"])
+async def journal_ambas_ramas(request, tmp_path):
+    """Journal en las DOS ramas de `fail_operation`.
+
+    En producción siempre se inyecta lifecycle (``app_context`` y el bootloader
+    de la GUI), pero el camino standalone sigue vivo como fallback pre-M-01 y es
+    el que usan varios tests. Un contrato que sólo se cumple en uno de los dos
+    no está cumplido.
+    """
+    db_path = tmp_path / f"evidencia_{request.param}.db"
+    lifecycle = None
+    if request.param == "lifecycle":
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+    journal = OperationJournal(db_path, lifecycle=lifecycle)
+    await journal.open()
+    try:
+        yield journal
+    finally:
+        await journal.close()
+        if lifecycle is not None:
+            await lifecycle.shutdown_all()
+
+
+def _fila_cruda(journal, entry_id):
+    """(status, metadata) con una conexión INDEPENDIENTE, sin `_row_to_entry`."""
+    con = sqlite3.connect(str(journal._db_path))
+    try:
+        return con.execute(
+            "SELECT status, metadata FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+    finally:
+        con.close()
+
+
+def _evidencia(journal, entry_id):
+    """La metadata persistida, parseada. `None` si la columna está vacía."""
+    crudo = _fila_cruda(journal, entry_id)[1]
+    return json.loads(crudo) if crudo else None
+
+
+def _json_valido(journal, entry_id):
+    """Lo que SQLite piensa de la columna: `json_valid()` es la autoridad acá."""
+    con = sqlite3.connect(str(journal._db_path))
+    try:
+        return con.execute(
+            "SELECT json_valid(metadata) FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _escribir_metadata_cruda(journal, entry_id, valor):
+    """Inyecta una metadata que la API pública no podría escribir (fila legacy)."""
+    con = sqlite3.connect(str(journal._db_path))
+    try:
+        con.execute("UPDATE journal_entries SET metadata = ? WHERE id = ?", (valor, entry_id))
+        con.commit()
+    finally:
+        con.close()
+
+
+async def _entrada(journal, metadata=None):
+    """Una operación STARTED lista para fallar."""
+    tx_id = await journal.begin_transaction(description="tx de evidencia", mod_id=None)
+    return await journal.begin_operation(
+        agent_id="agente_evidencia",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path="/mods/objetivo.esp",
+        transaction_id=tx_id,
+        metadata=metadata,
+    )
+
+
+def _romper_el_write_de_evidencia(journal, excepcion):
+    """Hace fallar el UPDATE de la evidencia dejando pasar el del estado.
+
+    Es el fallo REAL del caso reproducido: con una fila legacy corrupta, el
+    `json_set` de la implementación vieja tiraba `malformed JSON` DESPUÉS de que
+    el estado ya estaba commiteado en su propia transacción.
+    """
+    real = journal._db.execute
+
+    def espia(sql, *args, **kwargs):
+        if isinstance(sql, str) and "SET metadata" in sql:
+            raise excepcion
+        return real(sql, *args, **kwargs)
+
+    journal._db.execute = espia
+
+
+def _cancelar_antes_del_write_de_evidencia(journal, tarea):
+    """Cancela la tarea en la ventana entre el UPDATE del estado y el de evidencia.
+
+    Es la ventana que la implementación de dos boundaries dejaba abierta: el
+    estado ya commiteado, la evidencia todavía no escrita. Se devuelve una
+    coroutine (no un proxy) porque ese UPDATE se consume con `await`, nunca con
+    `async with`.
+    """
+    real = journal._db.execute
+
+    def espia(sql, *args, **kwargs):
+        if isinstance(sql, str) and "SET metadata" in sql:
+
+            async def con_cancelacion():
+                tarea["t"].cancel()
+                await asyncio.sleep(0)  # punto de entrega de la cancelación
+                return await real(sql, *args, **kwargs)
+
+            return con_cancelacion()
+        return real(sql, *args, **kwargs)
+
+    journal._db.execute = espia
+
+
+class TestFailOperationEvidencia:
+    """P1 + P3: el error canónico y la fusión de la metadata."""
+
+    # -- P1: el error se persiste SIEMPRE -------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_error_sin_metadata_persiste_el_error(self, journal_ambas_ramas):
+        """P1. **La forma que usan los 4 call sites de producción**, ninguno de
+        los cuales pasa `metadata`: `sync_engine` (x2), `rollback_manager` —cuya
+        fachada no expone el parámetro— y `grass_cache_service`.
+
+        El gate era `if metadata:`, sobre una variable distinta de la que el
+        UPDATE escribía: sin metadata no se escribía nada, ni el error.
+        """
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+
+        await journal.fail_operation(entry_id, error="boom")
+
+        status, _ = _fila_cruda(journal, entry_id)
+        assert status == OperationStatus.FAILED.value
+        assert _evidencia(journal, entry_id) == {"error": "boom"}, "el error canónico se perdió"
+
+    @pytest.mark.asyncio
+    async def test_previa_con_metadata_y_sin_argumento_persiste_el_error(self, journal_ambas_ramas):
+        """P1. El caso de `grass_cache_service`: la FILA ya tiene metadata (la
+        puso `begin_operation`) pero el ARGUMENTO es None.
+
+        El gate mirando el argumento hacía que ni siquiera se intentara el
+        write, con la columna lista para recibir el error. Ese caller documenta
+        en `grass_cache_service.py:588` que mete la metadata estructurada en
+        `begin_operation` "porque fail_operation solo persiste $.error" — y ni
+        eso pasaba.
+        """
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal, metadata={"kind": "teardown_incompleto", "paths": ["/a"]})
+
+        await journal.fail_operation(entry_id, error="no se pudo borrar /a")
+
+        assert _evidencia(journal, entry_id) == {
+            "kind": "teardown_incompleto",
+            "paths": ["/a"],
+            "error": "no se pudo borrar /a",
+        }
+
+    @pytest.mark.asyncio
+    async def test_error_vacio_no_crea_la_clave(self, journal_ambas_ramas):
+        """P1. Ausencia de mensaje y mensaje vacío no son lo mismo: `{"error": ""}`
+        es ruido que no distingue ninguno de los dos casos."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+
+        await journal.fail_operation(entry_id)
+
+        status, metadata = _fila_cruda(journal, entry_id)
+        assert status == OperationStatus.FAILED.value, "el estado se registra igual"
+        assert metadata is None, f"no debe crearse la clave error: {metadata!r}"
+
+    @pytest.mark.asyncio
+    async def test_error_vacio_conserva_la_metadata_previa(self, journal_ambas_ramas):
+        """P1 + P3: un `error` vacío no crea la clave, pero tampoco destruye lo
+        que ya había."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal, metadata={"kind": "manifiesto"})
+
+        await journal.fail_operation(entry_id, error="")
+
+        assert _evidencia(journal, entry_id) == {"kind": "manifiesto"}
+
+    # -- P3: fusión y precedencia ---------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_metadata_argumento_sobrevive(self, journal_ambas_ramas):
+        """P3. El argumento se usaba SOLO como booleano: el UPDATE escribía
+        `$.error` y el dict nunca se serializaba."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"source": "test"})
+
+        assert _evidencia(journal, entry_id) == {"source": "test", "error": "boom"}
+
+    @pytest.mark.asyncio
+    async def test_metadata_previa_y_argumento_se_fusionan(self, journal_ambas_ramas):
+        """P3. Las tres fuentes coexisten. Nótese que la implementación vieja SÍ
+        conservaba la previa (`json_set` fusiona) — lo que perdía era el
+        argumento."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal, metadata={"before": "keep"})
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"after": "keep"})
+
+        assert _evidencia(journal, entry_id) == {
+            "before": "keep",
+            "after": "keep",
+            "error": "boom",
+        }
+
+    @pytest.mark.asyncio
+    async def test_argumento_pisa_la_previa(self, journal_ambas_ramas):
+        """P3. Precedencia: el argumento es información MÁS NUEVA sobre la misma
+        operación."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal, metadata={"intento": 1, "kind": "install"})
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"intento": 2})
+
+        assert _evidencia(journal, entry_id) == {"intento": 2, "kind": "install", "error": "boom"}
+
+    @pytest.mark.asyncio
+    async def test_error_canonico_pisa_metadata_con_clave_error(self, journal_ambas_ramas):
+        """P3. La clave `error` es canónica del PARÁMETRO `error` y se aplica al
+        final: un `metadata={"error": ...}` no puede sustituirla en silencio. Si
+        el caller quiere ese texto como mensaje, lo pasa por su parámetro."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+
+        await journal.fail_operation(
+            entry_id,
+            error="el error real",
+            metadata={"error": "impostor"},
+        )
+
+        assert _evidencia(journal, entry_id)["error"] == "el error real"
+
+    @pytest.mark.asyncio
+    async def test_valor_none_en_la_previa_no_se_borra(self, journal_ambas_ramas):
+        """P3. La fusión se resuelve en Python y NO con `json_patch` a propósito:
+        RFC 7396 **borra** las claves cuyo valor es `null`, que sería la misma
+        pérdida de evidencia que este contrato cierra."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        _escribir_metadata_cruda(journal, entry_id, json.dumps({"snapshot": None}))
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"aux": None})
+
+        assert _evidencia(journal, entry_id) == {"snapshot": None, "aux": None, "error": "boom"}
+
+    # -- representación -------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_evidencia_nace_json_valido(self, journal_ambas_ramas):
+        """La evidencia es dato NUEVO y debe nacer válida: el default de
+        `json.dumps` emite `NaN`/`Infinity`, que no son JSON válido — la columna
+        quedaría con `json_valid() == 0` y `json_extract` devolvería NULL en
+        silencio, otra pérdida de evidencia disfrazada de dato presente."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"ratio": 0.5})
+
+        assert _json_valido(journal, entry_id) == 1
+        assert _evidencia(journal, entry_id) == {"ratio": 0.5, "error": "boom"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "valor",
+        [
+            pytest.param(float("nan"), id="nan"),
+            pytest.param(float("inf"), id="infinity"),
+            pytest.param(float("-inf"), id="menos_infinity"),
+        ],
+    )
+    async def test_metadata_argumento_no_finita_propaga_sin_corromper_la_columna(self, journal_ambas_ramas, valor):
+        """La metadata del ARGUMENTO se mantiene estricta y propaga.
+
+        Es la asimetría deliberada con la metadata previa: ahí hay un dato
+        preexistente que rescatar y el fallo nuevo tiene prioridad; acá el dato es
+        del caller y tragárselo ocultaría un bug suyo — mismo criterio que
+        ``begin_operation``, el otro escritor de la columna.
+
+        Lo que **no** puede pasar es que la columna quede con JSON inválido: el
+        default de ``json.dumps`` emite ``NaN``/``Infinity``, que SQLite no
+        considera JSON (``json_valid() == 0``) y sobre los que ``json_extract``
+        devuelve NULL en silencio — evidencia perdida disfrazada de dato presente.
+
+        Además prueba P2 desde el otro lado: el fallo de serialización ocurre
+        DENTRO del boundary, así que el ``UPDATE`` del estado se deshace.
+        """
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+
+        with pytest.raises(ValueError):
+            await journal.fail_operation(entry_id, error="boom", metadata={"x": valor})
+
+        status, metadata = _fila_cruda(journal, entry_id)
+        assert status == OperationStatus.STARTED.value, "el UPDATE del estado no se deshizo"
+        assert metadata is None
+        assert _json_valido(journal, entry_id) is None, "la columna no puede quedar con JSON inválido"
+
+    @pytest.mark.asyncio
+    async def test_entrada_inexistente_es_no_op(self, journal_ambas_ramas):
+        """Contrato preexistente que no cambia: un `entry_id` que no existe no
+        crea filas ni propaga."""
+        journal = journal_ambas_ramas
+
+        await journal.fail_operation(999_999, error="boom", metadata={"k": "v"})
+
+        con = sqlite3.connect(str(journal._db_path))
+        try:
+            assert con.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0] == 0
+        finally:
+            con.close()
+
+
+class TestFailOperationAtomicidad:
+    """P2: `status` y evidencia forman UNA transición.
+
+    Antes eran dos: `_update_status` abría, commiteaba y cerraba su propia
+    transacción, y el write de evidencia era otra. El propio código lo declaraba
+    —"DOS boundaries separados (deuda #466 de atomicidad preservada, no resuelta
+    acá)"—, y la consecuencia observada era una fila FAILED con la evidencia
+    ausente de forma DURABLE.
+    """
+
+    @staticmethod
+    def _sin_estado_parcial(journal, entry_id, previa):
+        """El invariante de P2, en su forma observable.
+
+        No se afirma un desenlace único —según dónde caiga la cancelación, el
+        commit puede haber completado o no, y las dos cosas son correctas— sino
+        que el par (status, evidencia) es CONSISTENTE: o la transición se aplicó
+        entera, o no se aplicó. Lo prohibido es el estado intermedio.
+        """
+        status, metadata = _fila_cruda(journal, entry_id)
+        aplicado = status == OperationStatus.FAILED.value and metadata and "error" in json.loads(metadata)
+        intacto = status == OperationStatus.STARTED.value and metadata == previa
+        assert aplicado or intacto, f"estado PARCIAL: status={status!r} metadata={metadata!r} (previa={previa!r})"
+
+    @pytest.mark.asyncio
+    async def test_atomicidad_fail_operation(self, journal_ambas_ramas):
+        """P2. Si el write de la evidencia falla, el UPDATE del estado se
+        deshace: no queda FAILED sin su evidencia."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        previa = _fila_cruda(journal, entry_id)[1]
+
+        _romper_el_write_de_evidencia(journal, sqlite3.OperationalError("malformed JSON"))
+
+        with pytest.raises(sqlite3.OperationalError):
+            await journal.fail_operation(entry_id, error="boom", metadata={"k": "v"})
+
+        status, metadata = _fila_cruda(journal, entry_id)
+        assert status == OperationStatus.STARTED.value, "el UPDATE del estado no se deshizo"
+        assert metadata == previa
+
+    @pytest.mark.asyncio
+    async def test_sin_transaccion_colgante_tras_fallo(self, journal_ambas_ramas):
+        """P2. Soltar el boundary con la transacción abierta deja que el
+        siguiente escritor de la conexión compartida commitee el estado parcial
+        que este contrato descarta."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        _romper_el_write_de_evidencia(journal, sqlite3.OperationalError("boom"))
+
+        with pytest.raises(sqlite3.OperationalError):
+            await journal.fail_operation(entry_id, error="boom", metadata={"k": "v"})
+
+        assert journal._db.in_transaction is False
+
+    @pytest.mark.asyncio
+    async def test_cancelacion_antes_del_commit_no_deja_estado_parcial(self, journal_ambas_ramas):
+        """P2 bajo cancelación, en la ventana EXACTA que los dos boundaries
+        dejaban abierta: estado ya commiteado, evidencia todavía no escrita."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        previa = _fila_cruda(journal, entry_id)[1]
+
+        tarea = {}
+        _cancelar_antes_del_write_de_evidencia(journal, tarea)
+        tarea["t"] = asyncio.create_task(journal.fail_operation(entry_id, error="boom", metadata={"k": "v"}))
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await tarea["t"]
+
+        self._sin_estado_parcial(journal, entry_id, previa)
+
+    @pytest.mark.asyncio
+    async def test_la_cancelacion_no_se_convierte_en_exito(self, journal_ambas_ramas):
+        """Una cancelación no puede terminar como retorno normal: quien canceló
+        creería haber cancelado algo que siguió su curso."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+
+        tarea = {}
+        _cancelar_antes_del_write_de_evidencia(journal, tarea)
+        tarea["t"] = asyncio.create_task(journal.fail_operation(entry_id, error="boom", metadata={"k": "v"}))
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await tarea["t"]
+
+        assert tarea["t"].cancelled() or tarea["t"].exception() is not None, (
+            "la cancelación se absorbió y la tarea terminó como éxito"
+        )
+
+
+class TestFailOperationMetadataPreviaIlegible:
+    """Una fila con metadata que no se puede fusionar no puede impedir que se
+    registre el fallo.
+
+    Es una asimetría DELIBERADA con `begin_operation`, que valida estricto y
+    propaga: ese método *crea* una operación y no crearla ante datos malos es la
+    respuesta correcta. Este *reporta un fallo que ya ocurrió*: si tirara, la
+    operación quedaría en STARTED y el error real desaparecería del journal — el
+    reporte del fallo se convertiría en el fallo.
+
+    El alcance de la degradación es EXCLUSIVAMENTE la metadata previa ilegible.
+    Errores de SQLite, del commit o del rollback conservan su contrato y
+    propagan (`TestFailOperationAtomicidad`).
+    """
+
+    FORMAS_ILEGIBLES = [
+        pytest.param("texto plano no json", id="no_es_json"),
+        pytest.param("{trunca", id="json_truncado"),
+        pytest.param("[]", id="raiz_lista"),
+        pytest.param('"solo un string"', id="raiz_string"),
+        pytest.param("42", id="raiz_numero"),
+        pytest.param("null", id="raiz_null"),
+        pytest.param("true", id="raiz_bool"),
+        pytest.param('{"x": NaN}', id="nan_de_fila_legacy"),
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("crudo", FORMAS_ILEGIBLES)
+    async def test_registra_el_fallo_igual(self, journal_ambas_ramas, crudo):
+        """La fila queda FAILED y con el error canónico."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        _escribir_metadata_cruda(journal, entry_id, crudo)
+
+        await journal.fail_operation(entry_id, error="boom")
+
+        status, _ = _fila_cruda(journal, entry_id)
+        assert status == OperationStatus.FAILED.value
+        assert _evidencia(journal, entry_id) == {"error": "boom"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("crudo", FORMAS_ILEGIBLES)
+    async def test_no_propaga(self, journal_ambas_ramas, crudo):
+        """Reproducción del caso fatal: la implementación vieja tiraba
+        `sqlite3.OperationalError: malformed JSON` con el estado YA commiteado —
+        y en `sync_engine.py:428` esa excepción reemplaza la original y saltea el
+        `undo_operation` que revierte el archivo."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        _escribir_metadata_cruda(journal, entry_id, crudo)
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"aux": "v"})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("crudo", FORMAS_ILEGIBLES)
+    async def test_la_columna_queda_json_valido(self, journal_ambas_ramas, crudo):
+        """La fila se repara al pasar: deja de ser ilegible para el siguiente
+        lector."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        _escribir_metadata_cruda(journal, entry_id, crudo)
+
+        await journal.fail_operation(entry_id, error="boom", metadata={"aux": "v"})
+
+        assert _json_valido(journal, entry_id) == 1
+        assert _evidencia(journal, entry_id) == {"aux": "v", "error": "boom"}
+
+    @pytest.mark.asyncio
+    async def test_el_warning_no_filtra_el_contenido_descartado(self, journal_ambas_ramas, caplog):
+        """El blob descartado puede traer rutas, nombres de perfil de MO2 o
+        nombres de mod: sale el `entry_id` y el motivo, nunca el contenido."""
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        secreto = '{"perfil": "C:/Users/facundo/MO2/profiles/SECRETO"'
+        _escribir_metadata_cruda(journal, entry_id, secreto)
+
+        with caplog.at_level(logging.WARNING, logger="sky_claw.app.db.journal"):
+            await journal.fail_operation(entry_id, error="boom")
+
+        avisos = [r for r in caplog.records if getattr(r, "event", None) == "journal_metadata_previa_descartada"]
+        assert avisos, "descartar evidencia previa sin avisar la vuelve invisible"
+        texto_completo = " ".join([r.getMessage() for r in caplog.records] + [str(r.__dict__) for r in caplog.records])
+        assert "SECRETO" not in texto_completo, "el WARNING filtró el contenido descartado"
+        assert getattr(avisos[0], "entry_id", None) == entry_id
+        assert getattr(avisos[0], "motivo", None)
+
+
+class TestFailOperationHermanos:
+    """Los otros caminos que llegan al MISMO recurso.
+
+    Enumerados sobre el código actual, no heredados de una lista histórica. Las
+    tres variantes de journal y la fachada de `RollbackManager` deben satisfacer
+    P1 sin cambios propios: si alguna dejara de reenviar, este bloque lo detecta.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rollback_manager_fachada_persiste_el_error(self, tmp_path):
+        """El camino REAL de `sync_engine`: la fachada no expone `metadata`, así
+        que su única forma de uso es exactamente la que se perdía."""
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        journal = OperationJournal(tmp_path / "fachada.db", lifecycle=lifecycle)
+        await journal.open()
+        try:
+            rm = RollbackManager(
+                journal=journal,
+                snapshot_manager=FileSnapshotManager(snapshot_dir=tmp_path / "snaps"),
+            )
+            entry_id = await _entrada(journal)
+
+            await rm.fail_operation(entry_id, error="fallo via fachada")
+
+            assert _evidencia(journal, entry_id) == {"error": "fallo via fachada"}
+        finally:
+            await journal.close()
+            await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_staging_journal_hereda_el_contrato(self, tmp_path):
+        """Reenvía con `*args/**kwargs`: hereda el fix sin tocarse."""
+        lifecycle = DatabaseLifecycleManager(
+            db_paths=[],
+            config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+        )
+        real = OperationJournal(tmp_path / "staging.db", lifecycle=lifecycle)
+        await real.open()
+        try:
+            entry_id = await _entrada(real)
+            staging = StagingJournal(real)
+
+            await staging.fail_operation(entry_id, error="boom", metadata={"source": "staging"})
+
+            assert _evidencia(real, entry_id) == {"source": "staging", "error": "boom"}
+        finally:
+            await real.close()
+            await lifecycle.shutdown_all()
+
+    @pytest.mark.asyncio
+    async def test_noop_journal_firma_compatible(self):
+        """Firma idéntica y sin efecto: un `fail_operation` con metadata no puede
+        tirar `TypeError` en el modo no-op."""
+        await NoOpJournal().fail_operation(1, error="boom", metadata={"k": "v"})

@@ -42,11 +42,14 @@ from sky_claw.app.core.db_lifecycle import (
     DatabaseLifecycleShuttingDownError,
     DatabaseShutdownIncompleteError,
 )
+from sky_claw.app.db import journal as journal_mod
 from sky_claw.app.db.async_registry import AsyncModRegistry, DatabaseError
 from sky_claw.app.db.journal import (
     _FALLOS_DE_CLEANUP_ABSORBIBLES,
     JournalTransactionError,
     OperationJournal,
+    OperationStatus,
+    OperationType,
     TransactionStatus,
 )
 
@@ -1208,4 +1211,283 @@ def test_ancla_el_camino_de_admision_solo_levanta_rechazos_clasificados() -> Non
     assert levantados == clasificados, (
         "el camino de admisión del lifecycle levanta rechazos que el journal no "
         f"clasifica (o al revés): camino={sorted(levantados)} vs. clasificados={sorted(clasificados)}"
+    )
+
+
+# ===========================================================================
+# fail_operation BAJO EL BOUNDARY DEL LIFECYCLE
+#
+# `fail_operation` pasó a escribir estado + evidencia en UNA sola
+# `lifecycle.transaction()`. Eso le da, por construcción y sin código propio:
+# admisión (el shutdown la espera), fail-closed ante cuarentena, rollback que
+# TERMINA aunque cancelen al llamador, y preservación de la excepción primaria.
+#
+# Estos tests son la autoridad CONDUCTUAL de esa herencia. El ancla sintáctica
+# de más abajo impide que alguien saque el método del boundary sin que nada
+# falle — que era exactamente el estado anterior del repo.
+# ===========================================================================
+
+
+async def _operacion_started(journal: OperationJournal) -> int:
+    """Una operación STARTED lista para fallar."""
+    tx_id = await journal.begin_transaction("fallo bajo boundary")
+    return await journal.begin_operation(
+        agent_id="agente_boundary",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path="/mods/objetivo.esp",
+        transaction_id=tx_id,
+    )
+
+
+def _evidencia_independiente(db_path: Path, entry_id: int) -> tuple[str | None, str | None]:
+    """(status, metadata) con una conexión INDEPENDIENTE del lifecycle."""
+    conexion = sqlite3.connect(str(db_path))
+    try:
+        fila = conexion.execute("SELECT status, metadata FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
+    finally:
+        conexion.close()
+    return (None, None) if fila is None else (fila[0], fila[1])
+
+
+async def test_journal_fail_operation_en_vuelo_bloquea_el_shutdown(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """El registro de un fallo en vuelo cuenta como admitido: el shutdown lo
+    espera en vez de cerrar la conexión debajo.
+
+    Reversión: sacar `fail_operation` de `lifecycle.transaction()` (escribir con
+    `self._lock` + commit manual) → el shutdown completa con la escritura en
+    vuelo → ROJO.
+    """
+    journal = OperationJournal(tmp_path / "fail_admision.db", lifecycle=lifecycle)
+    await journal.open()
+    db = journal._db
+    assert db is not None
+    entry_id = await _operacion_started(journal)
+
+    entro, puerta = asyncio.Event(), asyncio.Event()
+    _ejecucion_con_barrera(db, "SET status", entro, puerta)
+
+    t_op = asyncio.create_task(journal.fail_operation(entry_id, error="boom", metadata={"k": "v"}))
+    await asyncio.wait_for(entro.wait(), timeout=DEADLINE)
+    try:
+        assert lifecycle._admitted >= 1, "la escritura del fallo no tomó admisión"
+        t_sd = asyncio.create_task(lifecycle.shutdown_all())
+        await ceder()
+        assert not t_sd.done(), "el shutdown completó con el registro de un fallo en vuelo"
+    finally:
+        puerta.set()
+
+    await asyncio.wait_for(t_op, timeout=DEADLINE)
+    await asyncio.wait_for(t_sd, timeout=DEADLINE)
+
+    # La evidencia sobrevivió al shutdown: es durable, no quedó en un buffer.
+    status, metadata = _evidencia_independiente(journal._db_path, entry_id)
+    assert status == OperationStatus.FAILED.value
+    assert metadata is not None and "boom" in metadata
+
+
+async def test_journal_fail_operation_durante_shutdown_es_fail_closed(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """Con el lifecycle cerrado, registrar un fallo propaga en vez de escribir a
+    ciegas sobre una conexión que ya nadie coordina."""
+    journal = OperationJournal(tmp_path / "fail_shutdown.db", lifecycle=lifecycle)
+    await journal.open()
+    entry_id = await _operacion_started(journal)
+    await lifecycle.shutdown_all()
+
+    with pytest.raises(DatabaseLifecycleShuttingDownError):
+        await journal.fail_operation(entry_id, error="boom")
+
+
+async def test_journal_fail_operation_con_path_en_cuarentena_es_fail_closed(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """Gemelo del anterior por la OTRA causa de rechazo del camino de admisión.
+
+    Que uno fuera fail-closed y el otro no es la forma exacta del hueco que
+    `_RECHAZOS_DE_ADMISION` existe para cerrar.
+    """
+    journal = OperationJournal(tmp_path / "fail_quarantine.db", lifecycle=lifecycle)
+    await journal.open()
+    entry_id = await _operacion_started(journal)
+    await _instalar_cuarentena_real(lifecycle, journal._db_path)
+
+    with pytest.raises(DatabaseConnectionQuarantinedError):
+        await journal.fail_operation(entry_id, error="boom")
+
+
+async def test_journal_fail_operation_cancelada_no_deja_estado_parcial(
+    tmp_path: Path, lifecycle: DatabaseLifecycleManager
+) -> None:
+    """Cancelación entre el UPDATE del estado y el commit: la fila no queda
+    FAILED sin su evidencia, y no sobrevive una transacción colgante en la
+    conexión COMPARTIDA.
+
+    Es la ventana que los dos boundaries dejaban abierta. No se afirma un
+    desenlace único —según dónde caiga la cancelación el commit puede haber
+    completado o no, y las dos cosas son correctas— sino que el par
+    (status, evidencia) es consistente.
+    """
+    journal = OperationJournal(tmp_path / "fail_cancel.db", lifecycle=lifecycle)
+    await journal.open()
+    db = journal._db
+    assert db is not None
+    entry_id = await _operacion_started(journal)
+
+    entro, puerta = asyncio.Event(), asyncio.Event()
+    _ejecucion_con_barrera(db, "SET status", entro, puerta, tras_ejecutar=True)
+
+    tarea = asyncio.create_task(journal.fail_operation(entry_id, error="boom", metadata={"k": "v"}))
+    await asyncio.wait_for(entro.wait(), timeout=DEADLINE)
+    assert db.in_transaction, "premisa: el UPDATE del estado abrió la transacción implícita"
+    tarea.cancel()
+    puerta.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+
+    assert db.in_transaction is False, "quedó una transacción colgante en la conexión compartida"
+    status, metadata = _evidencia_independiente(journal._db_path, entry_id)
+    aplicado = status == OperationStatus.FAILED.value and metadata is not None and "error" in metadata
+    intacto = status == OperationStatus.STARTED.value and metadata is None
+    assert aplicado or intacto, f"estado PARCIAL: status={status!r} metadata={metadata!r}"
+
+
+# ---------------------------------------------------------------------------
+# ANCLA ENUMERANTE — ningún mutador del journal sale del boundary del lifecycle
+#
+# El hueco que esto cierra, medido: hasta este PR NINGÚN test detectaba que un
+# método del journal dejara de pasar por `lifecycle.transaction()`. Sacar
+# `fail_operation` del boundary —que es exactamente lo que hacía la solución
+# histórica de #466, escrita antes de que el boundary existiera— pasaba en
+# verde, perdiendo admisión, fail-closed de cuarentena y gating de shutdown sin
+# una sola línea roja.
+#
+# Se congela por IGUALDAD LITERAL, no por muestreo, y en dos partes que se
+# necesitan mutuamente:
+#
+#   1. El inventario `{método: usa_el_boundary}` de todo el que emite SQL. Un
+#      método nuevo, o uno existente que deje de tomar el boundary, rompe acá.
+#   2. Los helpers que ASUMEN el boundary del llamador (hoy `_escribir_fallo`,
+#      que existe para que las dos ramas de `fail_operation` compartan un solo
+#      cuerpo de SQL). Sin esta parte, mover el SQL a un helper y quitarle el
+#      boundary al llamador pasaría el inventario: el helper no toma boundary
+#      "legítimamente" y el llamador ya no emite SQL directo.
+#
+# La autoridad sobre correctness siguen siendo los tests conductuales de arriba;
+# AST es inventario.
+# ---------------------------------------------------------------------------
+
+_ARCHIVO_JOURNAL = Path(journal_mod.__file__)
+
+# Métodos de `OperationJournal` que emiten SQL, y si toman el boundary del
+# lifecycle por su cuenta.
+_EMISORES_DE_SQL_ESPERADOS = {
+    # Helper compartido por las dos ramas de fail_operation: NO toma boundary a
+    # propósito —lo sostiene el llamador—, y por eso está en la lista de
+    # exenciones de abajo, que verifica a sus callers.
+    "_escribir_fallo": False,
+    "_update_status": True,
+    "begin_operation": True,
+    "begin_transaction": True,
+    "commit_transaction": True,
+    "get_last_operation": True,
+    "get_operation_by_id": True,
+    "get_operations_by_agent": True,
+    "get_operations_by_path": True,
+    "get_operations_by_transaction": True,
+    "get_transaction": True,
+    "list_recent_transactions": True,
+    "mark_rolled_back": True,
+    "mark_transaction_rolled_back": True,
+    "open": True,
+    "rollback_transaction": True,
+    "sweep_stale_pending": True,
+}
+
+# Helpers que emiten SQL ASUMIENDO el boundary del llamador. Cada uno obliga a
+# que TODOS sus callers dentro de la clase lo tomen.
+_HELPERS_QUE_ASUMEN_BOUNDARY = frozenset({"_escribir_fallo"})
+
+_METODOS_DE_EJECUCION = frozenset({"execute", "executescript", "executemany"})
+_BOUNDARIES_DEL_LIFECYCLE = frozenset({"transaction", "operation"})
+
+
+def _cuerpo_de_operation_journal() -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Los métodos definidos en `OperationJournal` (no en sus subclases)."""
+    arbol = ast.parse(_ARCHIVO_JOURNAL.read_text(encoding="utf-8"))
+    clase = next(nodo for nodo in arbol.body if isinstance(nodo, ast.ClassDef) and nodo.name == "OperationJournal")
+    return [nodo for nodo in clase.body if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _emite_sql(metodo: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return any(
+        isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr in _METODOS_DE_EJECUCION
+        for nodo in ast.walk(metodo)
+    )
+
+
+def _toma_boundary_del_lifecycle(metodo: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """``self._lifecycle.transaction(...)`` / ``.operation(...)`` en el cuerpo."""
+    for nodo in ast.walk(metodo):
+        if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute)):
+            continue
+        if nodo.func.attr not in _BOUNDARIES_DEL_LIFECYCLE:
+            continue
+        receptor = nodo.func.value
+        if isinstance(receptor, ast.Attribute) and receptor.attr == "_lifecycle":
+            return True
+    return False
+
+
+def _llama_a(metodo: ast.FunctionDef | ast.AsyncFunctionDef, nombre: str) -> bool:
+    return any(
+        isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == nombre
+        for nodo in ast.walk(metodo)
+    )
+
+
+def test_ancla_emisores_de_sql_del_journal_congelados() -> None:
+    """Igualdad literal de `{método: toma el boundary}` para todo emisor de SQL.
+
+    Reversión: quitarle `async with self._lifecycle.transaction(...)` a
+    cualquiera de los que hoy dicen True → ROJO. Agregar un método que emita SQL
+    sin declararse acá → ROJO, y quien lo agregue tiene que decidir a propósito
+    si participa del boundary o es una exención con callers verificados.
+    """
+    observado = {
+        metodo.name: _toma_boundary_del_lifecycle(metodo)
+        for metodo in _cuerpo_de_operation_journal()
+        if _emite_sql(metodo)
+    }
+    assert observado == _EMISORES_DE_SQL_ESPERADOS, (
+        "cambió qué métodos de OperationJournal emiten SQL bajo el boundary del "
+        "lifecycle: decidí si el método afectado participa del boundary o es una "
+        "exención que asume el del llamador (y entonces va a "
+        "_HELPERS_QUE_ASUMEN_BOUNDARY, con sus callers verificados)"
+    )
+
+
+def test_ancla_los_helpers_sin_boundary_solo_tienen_callers_que_lo_toman() -> None:
+    """Todo caller de un helper que ASUME el boundary debe tomarlo.
+
+    Es la mitad que ata el inventario a la semántica. Sin esto, sacar
+    `fail_operation` del boundary dejando el SQL en `_escribir_fallo` pasaría el
+    test de arriba sin cambiar una sola entrada del dict: `_escribir_fallo` ya
+    figura como exención legítima y `fail_operation` no emite SQL directo.
+    """
+    metodos = _cuerpo_de_operation_journal()
+    assert set(_HELPERS_QUE_ASUMEN_BOUNDARY) <= {m.name for m in metodos}, "helper inexistente en el ancla"
+
+    infractores: list[str] = []
+    for helper in sorted(_HELPERS_QUE_ASUMEN_BOUNDARY):
+        callers = [m for m in metodos if m.name != helper and _llama_a(m, helper)]
+        assert callers, f"{helper} quedó sin callers: revisá si sigue haciendo falta"
+        infractores += [f"{m.name} → {helper}" for m in callers if not _toma_boundary_del_lifecycle(m)]
+
+    assert infractores == [], (
+        "estos callers emiten SQL a través de un helper sin tomar el boundary del "
+        f"lifecycle: {infractores}. El helper asume un boundary que nadie sostiene."
     )
