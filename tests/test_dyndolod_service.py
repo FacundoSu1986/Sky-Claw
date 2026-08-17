@@ -30,6 +30,7 @@ from sky_claw.app.db.locks import (
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 from sky_claw.local.tools.dyndolod_runner import (
+    MARCADORES_DE_COMPLETITUD,
     DynDOLODConfig,
     DynDOLODExecutionError,
     DynDOLODPipelineResult,
@@ -1833,6 +1834,20 @@ def _escribir_log(tmp_path: pathlib.Path, tool: str, contenido: str) -> pathlib.
     return log
 
 
+def _log_completo(tool: str, extra: str = "") -> str:
+    """Un log al que NO le falta el marcador de completitud de ``tool``.
+
+    Desde T2 el veredicto exige que la herramienta declare que terminó: el gate
+    de frescura prueba que el artefacto cambió, no que la corrida haya llegado al
+    final. Los tests cuyo sujeto es la frescura, el staging o el empaquetado usan
+    este helper para no repetir el marcador —que es DISTINTO por herramienta— y,
+    sobre todo, para que agregar una herramienta nueva no los deje pasando por
+    omisión.
+    """
+    marcador = MARCADORES_DE_COMPLETITUD[tool][0]
+    return f"[00:00:01] Using Output Path: C:\\out\\\n{extra}[00:10:00] {marcador}\n"
+
+
 @pytest.mark.asyncio
 async def test_exit_cero_con_error_en_log_no_es_exito(tmp_path: pathlib.Path) -> None:
     """U-06: exit 0 + línea de error en el log real → success=False (TexGen)."""
@@ -1846,7 +1861,10 @@ async def test_exit_cero_con_error_en_log_no_es_exito(tmp_path: pathlib.Path) ->
         result = await runner.run_texgen()
 
     assert result.success is False
-    assert result.errors == ["object LOD generation failed"]
+    # Un `Error:` que NO está en `NO_FATALES_DEL_DOMINIO` se clasifica terminal por
+    # la regla fail-closed. Se reporta la LÍNEA COMPLETA, con timestamp: en un log
+    # de 121 líneas de error, el timestamp es cómo el operador la ubica.
+    assert result.errors == ["[00:00:01] Error: object LOD generation failed"]
     assert fake.argvs[0][0] == "-sse"
 
 
@@ -1863,14 +1881,14 @@ async def test_exit_cero_con_error_en_log_no_es_exito_dyndolod(tmp_path: pathlib
         result = await runner.run_dyndolod(preset="Medium")
 
     assert result.success is False
-    assert result.errors == ["exception while processing"]
+    assert result.errors == ["[00:00:10] Fatal: exception while processing"]
 
 
 @pytest.mark.asyncio
 async def test_exit_cero_sin_artefacto_no_es_exito(tmp_path: pathlib.Path) -> None:
     """U-06: exit 0 sin ``DynDOLOD.esp`` en el -o: → success=False."""
     _, runner = _runner_texgen(tmp_path)
-    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     fake = _EjecucionFalsa(return_code=0)
     with patch.object(runner, "_execute_process", fake):
@@ -1886,7 +1904,7 @@ async def test_exit_cero_con_artefacto_y_log_limpio_es_exito(tmp_path: pathlib.P
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
-    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
     with patch.object(runner, "_execute_process", fake):
@@ -1903,7 +1921,7 @@ async def test_warning_en_log_no_tumba_el_exito(tmp_path: pathlib.Path) -> None:
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    _escribir_log(tmp_path, "TexGen", "[00:00:02] Warning: 2 LOD textures skipped\n")
+    _escribir_log(tmp_path, "TexGen", _log_completo("TexGen", "[00:00:02] Warning: 2 LOD textures skipped\n"))
 
     fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "a.dds"))
     with patch.object(runner, "_execute_process", fake):
@@ -1914,8 +1932,21 @@ async def test_warning_en_log_no_tumba_el_exito(tmp_path: pathlib.Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_log_ausente_no_es_fallo_si_el_artefacto_existe(tmp_path: pathlib.Path) -> None:
-    """Sin log (el proceso no lo flusheó) el gate es el artefacto: success=True."""
+async def test_log_ausente_es_fallo_aunque_el_artefacto_exista(tmp_path: pathlib.Path) -> None:
+    """Sin log no hay completitud verificable, y eso es rojo. INVIERTE el contrato previo.
+
+    Hasta T2 esto era `success=True`: el SOP §2.9 punto 3 declaraba la ausencia
+    del log "a warning, not a failure — the hard gate is the artifact". El propio
+    §2.9 explicaba por qué esa regla no se sostiene: una app GUI que el operador
+    cerró a mitad **sale con código 0 sin flushear el log**, y el gate de frescura
+    solo prueba que el artefacto CAMBIÓ, no que la corrida haya terminado. Con las
+    dos cosas juntas —exit 0, artefacto tocado, sin log— el falso verde entra
+    entero, que es el modo de falla que la etapa 9 arrastra desde #440.
+
+    Fail-closed: "no pude verificar que terminó" no puede leerse como "terminó
+    bien". El SOP se enmendó en este mismo cambio; este test es lo que lo hace
+    ejecutable en vez de prosa.
+    """
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
@@ -1924,8 +1955,9 @@ async def test_log_ausente_no_es_fallo_si_el_artefacto_existe(tmp_path: pathlib.
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_texgen()
 
-    assert result.success is True
-    assert result.errors == []
+    assert result.success is False
+    assert result.errors
+    assert "no está o no se pudo leer" in result.errors[0]
 
 
 @pytest.mark.asyncio
@@ -1938,6 +1970,7 @@ async def test_la_herramienta_puede_escribir_directo_en_la_raiz(tmp_path: pathli
     config, runner = _runner_texgen(tmp_path)
     root = config.output_root
     assert root is not None
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(root, "DynDOLOD.esp"))
     with patch.object(runner, "_execute_process", fake):
@@ -2045,6 +2078,7 @@ async def test_escritura_durante_la_corrida_si_es_exito(tmp_path: pathlib.Path) 
     staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     staging.mkdir(parents=True)
     (staging / "DynDOLOD.esp").write_text("vieja", encoding="utf-8")
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     def _regenerar() -> None:
         """La herramienta reescribe el plugin, como en una corrida completa."""
@@ -2099,7 +2133,7 @@ async def test_elige_el_candidato_fresco_cuando_los_dos_coexisten(tmp_path: path
     assert root is not None
     viejo = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     _escribir_salida(viejo, "DynDOLOD.esp", b"corrida anterior")
-    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(root, "DynDOLOD.esp", b"fresco"))
     with patch.object(runner, "_execute_process", fake):
@@ -2162,7 +2196,7 @@ async def test_reescritura_con_el_mismo_mtime_sigue_siendo_fresca(tmp_path: path
     esp = staging / "DynDOLOD.esp"
     _escribir_salida(staging, "DynDOLOD.esp", b"corta")
     congelado = esp.stat().st_mtime
-    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     def _regenerar_en_el_mismo_tick() -> None:
         """Reescribe con contenido distinto pero el mismo mtime exacto."""
@@ -2193,7 +2227,7 @@ async def test_firma_previa_ilegible_no_cuenta_como_artefacto_fresco(tmp_path: p
     assert config.output_root is not None
     staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     _escribir_salida(staging, "DynDOLOD.esp", b"de la corrida anterior")
-    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     stat_real = pathlib.Path.stat
     ilegible = {"activo": True}
@@ -2233,7 +2267,7 @@ async def test_artefacto_previo_con_mtime_adelantado_no_descarta_la_corrida(tmp_
     _escribir_salida(staging, "DynDOLOD.esp", b"restaurada de un snapshot")
     futuro = time.time() + 86400
     os.utime(esp, (futuro, futuro))
-    _escribir_log(tmp_path, "DynDOLOD", "[00:00:05] LOD generation completed\n")
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     def _regenerar_con_fecha_de_hoy() -> None:
         """La corrida real reescribe el plugin: mtime de ahora, menor que el previo."""
@@ -2261,7 +2295,7 @@ async def test_esp_regenerado_dentro_de_un_arbol_existente_es_exito(tmp_path: pa
     meshes.mkdir(parents=True)
     (staging / "DynDOLOD.esp").write_text("vieja", encoding="utf-8")
     (meshes / "tree.nif").write_bytes(b"\x00")
-    _escribir_log(tmp_path, "DynDOLOD", "[00:00:45] LOD generation completed\n")
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     def _regenerar() -> None:
         """Corrida completa: reescribe los LODs Y el plugin."""
@@ -3451,15 +3485,27 @@ _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
     },
     "dyndolod_log_ausente": {
         "metodo": "_leer_log",
+        # RE-JUSTIFICADA en T2. La premisa anterior era el SOP §2.9 punto 3: "la
+        # ausencia del log es advertencia, no fallo". Esa regla se DEROGÓ — sin log
+        # no hay marcador de completitud, y ahora la corrida sale roja. Si el motivo
+        # se hubiera dejado como estaba, esta exención seguiría citando una regla que
+        # ya no existe, que es el drift que este dict existe para no tener.
+        #
+        # El fundamento nuevo es otro de los tres que ya usa este dict: SONDA, NO
+        # VEREDICTO. `_leer_log` no decide nada; devuelve `None` y el post-check lo
+        # agrega en `completo=False`, que el lanzador convierte en el registro
+        # etiquetado con etapa y tx_id. Un registro por incidente, emitido por quien
+        # tiene el exit code y la evidencia.
         "motivo": (
-            "El SOP §2.9 punto 3 lo declara explícitamente: la ausencia del log es advertencia, "
-            "no fallo — el gate duro es el artefacto en el -o:. Etiquetarlo contradiría el SOP "
-            "y contaría como fallo de etapa 9 corridas exitosas cuyo log no se escribió."
+            "Sonda y no veredicto: `_leer_log` devuelve None y el post-check lo agrega en "
+            "`completo=False`; la etapa la emite el lanzador con el resultado de la corrida. "
+            "Desde T2 la ausencia del log SÍ falla la corrida — lo que no cambia es quién "
+            "reporta la etapa."
         ),
     },
     "dyndolod_log_ilegible": {
         "metodo": "_leer_log",
-        "motivo": "Mismo criterio y misma fuente (SOP §2.9 punto 3) que dyndolod_log_ausente, para el OSError.",
+        "motivo": "Mismo criterio que dyndolod_log_ausente (sonda, no veredicto), para el OSError.",
     },
     "dyndolod_meta_ini_no_escrito": {
         "metodo": "_generate_meta_ini",
@@ -4198,6 +4244,10 @@ async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
     assert config.output_root is not None
     texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    # Las DOS herramientas declaran completitud: el sujeto de este test es el
+    # empaquetado, no el log, y sin los dos marcadores fallaría por otro motivo.
+    _escribir_log(tmp_path, "TexGen", _log_completo("TexGen"))
+    _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     corridas = {"n": 0}
 

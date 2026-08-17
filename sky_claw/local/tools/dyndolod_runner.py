@@ -149,6 +149,111 @@ _SIN_ARTEFACTO: tuple[float | int, ...] = ()
 
 
 # =============================================================================
+# TAXONOMÍA DEL LOG (etapa 9)
+# =============================================================================
+#
+# Los binarios son apps GUI sin stdout: la evidencia de una corrida vive en su
+# log. El gate anterior era `not errors` sobre un patrón que matchea `Error:`,
+# y el rig 2026-08-10 midió **121 líneas `Error:` en una corrida EXITOSA** de
+# DynDOLOD — o sea que rechazaba todo éxito real. Informe fuera del repo.
+#
+# La taxonomía tiene TRES cajas, no dos, y esa es la corrección de fondo:
+# completitud, no-fatal de dominio, y terminal. Ante duda, TERMINAL: un
+# no-fatal mal clasificado como terminal da un rojo revisable; al revés da un
+# verde falso, que es el defecto que esta etapa arrastró desde #440.
+
+#: Qué línea prueba que la herramienta TERMINÓ su trabajo, por herramienta.
+#: Son DISTINTOS por binario y ese es justo el riesgo de hermano: cablear el de
+#: DynDOLOD y dejar TexGen sin el suyo deja media etapa sin gate de completitud.
+#: Congelado por igualdad literal en `tests/test_dyndolod_taxonomia_log.py`.
+MARCADORES_DE_COMPLETITUD: dict[str, tuple[str, ...]] = {
+    "TexGen": ("TexGen completed successfully",),
+    "DynDOLOD": (
+        "DynDOLOD plugins generated successfully",
+        "Occlusion.esp completed successfully",
+        "generated object LOD for",
+    ),
+}
+
+#: Ruido de dominio que el binario emite en corridas buenas. Van a `warnings`:
+#: son información para el operador, no fallo. Medidos en rig (§11.4).
+NO_FATALES_DEL_DOMINIO: tuple[str, ...] = (
+    "Deleted reference",
+    "Unresolved FormID",
+    "LOD billboard(s) not found",
+    "No TexGen output detected",
+    "DynDOLOD.DLL",
+    "File not found SkyrimSE.exe",
+)
+
+#: Lo que aborta la corrida. Se evalúa ANTES que los no-fatales para que un
+#: `Fatal:` no se cuele por parecerse a uno de ellos.
+PATRONES_TERMINALES: tuple[str, ...] = (
+    "Fatal:",
+    "Can not create path",
+    "Path not allowed",
+    "core files are outdated",
+    "madExcept",
+    "Exception",
+)
+
+#: Orden determinista de decodificación del log, con `errors="replace"`
+#: reservado al ÚLTIMO recurso. `utf-8` va primero porque es el único
+#: autovalidante de los dos: `cp1252` acepta casi cualquier byte, así que
+#: intentarlo primero convierte un log utf-8 legítimo en mojibake silencioso y
+#: deja el fallback inalcanzable.
+_CODECS_DEL_LOG: tuple[str, ...] = ("utf-8", "cp1252")
+
+#: `Error:`/`FAIL:`/`Critical:` sueltos, para la regla fail-closed de abajo.
+_ERROR_SUELTO = re.compile(r"\b(?:ERROR|FAIL|Critical|FATAL)\s*:", re.IGNORECASE)
+
+
+def clasificar_log(texto: str, tool: str) -> tuple[list[str], list[str], bool]:
+    """Reparte las líneas del log en terminal / no-fatal, y busca la completitud.
+
+    Función de módulo y NO método del runner a propósito: es texto puro, sin
+    disco. La familia del post-check enumera los métodos que sondean el
+    filesystem para emitir el veredicto (`tests/test_dyndolod_service.py`,
+    `test_la_familia_del_post_check_esta_congelada`); meter acá un clasificador
+    sin I/O lo dejaría dentro de un ancla que no lo describe, o —peor— fuera de
+    toda ancla si su nombre no matchea los prefijos que el detector busca.
+
+    Args:
+        texto: contenido del log de la herramienta.
+        tool: ``"TexGen"`` o ``"DynDOLOD"``; elige los marcadores de completitud.
+
+    Returns:
+        ``(terminales, no_fatales, completo)``. `terminales` es lo que gatea el
+        veredicto; `no_fatales` es diagnóstico para el operador; `completo` dice
+        si la herramienta declaró haber terminado.
+    """
+    terminales: list[str] = []
+    no_fatales: list[str] = []
+
+    for linea in texto.splitlines():
+        limpia = linea.strip()
+        if not limpia:
+            continue
+        if any(patron in limpia for patron in PATRONES_TERMINALES):
+            if limpia not in terminales:
+                terminales.append(limpia)
+            continue
+        if any(patron in limpia for patron in NO_FATALES_DEL_DOMINIO):
+            if limpia not in no_fatales:
+                no_fatales.append(limpia)
+            continue
+        # Fail-closed: un `Error:` que no está en la lista de no-fatales conocidos
+        # se trata como terminal. La lista salió del §11.4 del informe, que enumera
+        # CATEGORÍAS y no las 121 ocurrencias, así que una categoría no prevista
+        # tiene que dar rojo revisable y no verde silencioso.
+        if _ERROR_SUELTO.search(limpia) and limpia not in terminales:
+            terminales.append(limpia)
+
+    completo = any(marcador in texto for marcador in MARCADORES_DE_COMPLETITUD[tool])
+    return terminales, no_fatales, completo
+
+
+# =============================================================================
 # EXCEPTIONS
 # =============================================================================
 
@@ -327,6 +432,14 @@ class _PostCheck:
     artefacto: bool
     errors: list[str]
     warnings: list[str]
+    #: ¿La herramienta declaró en su log que TERMINÓ? El gate de frescura prueba
+    #: que el artefacto cambió, no que la corrida haya llegado al final: una GUI
+    #: cerrada a mitad deja el árbol tocado y el trabajo incompleto.
+    completo: bool = False
+    #: Lo que aborta la corrida, ya separado del ruido de dominio. Es ESTO lo que
+    #: gatea el veredicto, no `errors` — que además lleva los diagnósticos que el
+    #: post-check redacta para el operador (artefacto rancio, staging no sondeable).
+    terminales: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,7 +636,13 @@ class DynDOLODRunner:
 
         post = await asyncio.to_thread(self._post_check, "TexGen", firmas_previas)
         errors, warnings, output_path = post.errors, post.warnings, post.output_path
-        success = return_code == 0 and post.artefacto and not errors
+        # Cuatro conjuntos, y ninguno es redundante: el exit code no alcanza en una
+        # app GUI, el artefacto fresco prueba que ALGO se escribió en esta corrida,
+        # el marcador prueba que la herramienta LLEGÓ AL FINAL, y la ausencia de
+        # terminales prueba que no abortó. Gatear por `not errors` —lo anterior—
+        # rechazaba todo éxito real: el rig midió 121 líneas `Error:` en una corrida
+        # buena. Ver `clasificar_log`. Idéntica a la de `run_dyndolod` a propósito.
+        success = return_code == 0 and post.artefacto and post.completo and not post.terminales
 
         result = ToolExecutionResult(
             success=success,
@@ -634,7 +753,11 @@ class DynDOLODRunner:
 
         post = await asyncio.to_thread(self._post_check, "DynDOLOD", firmas_previas)
         errors, warnings, output_path = post.errors, post.warnings, post.output_path
-        success = return_code == 0 and post.artefacto and not errors
+        # Ver `run_texgen`: misma fórmula, palabra por palabra. Que las dos sean
+        # literalmente iguales es el punto — los marcadores de completitud SÍ
+        # difieren por herramienta (`MARCADORES_DE_COMPLETITUD`), y ahí es donde
+        # el hermano se escapa si uno de los dos lanzadores no consulta el suyo.
+        success = return_code == 0 and post.artefacto and post.completo and not post.terminales
 
         result = ToolExecutionResult(
             success=success,
@@ -1613,11 +1736,31 @@ class DynDOLODRunner:
             y los errores/warnings del log.
         """
         texto = self._leer_log(tool)
-        errors, warnings = self._parse_log(texto) if texto is not None else ([], [])
+        if texto is None:
+            # Sin log no hay marcador de completitud, y el gate de frescura solo
+            # prueba que el artefacto CAMBIÓ, no que la corrida haya terminado.
+            # Fail-closed: "no pude verificar que terminó" no es "terminó bien".
+            terminales: list[str] = []
+            warnings: list[str] = []
+            completo = False
+            errors = [
+                f"El log de {tool} no está o no se pudo leer, así que no hay forma de verificar "
+                "que la corrida haya terminado. No se reporta éxito sobre completitud indeterminada."
+            ]
+        else:
+            terminales, warnings, completo = self._parse_log(texto, tool)
+            errors = list(terminales)
 
         candidatos = self._candidatos_de_salida(tool)
         if not candidatos:
-            return _PostCheck(output_path=None, artefacto=False, errors=errors, warnings=warnings)
+            return _PostCheck(
+                output_path=None,
+                artefacto=False,
+                errors=errors,
+                warnings=warnings,
+                completo=completo,
+                terminales=terminales,
+            )
 
         hubo_artefacto_rancio = False
         no_verificable = False
@@ -1642,7 +1785,14 @@ class DynDOLODRunner:
             # corrido dejan un .esp con fecha adelantada que una corrida real nunca
             # superaría — falso ROJO sobre una salida buena (review CodeRabbit #441).
             if actual != previa:
-                return _PostCheck(output_path=candidato, artefacto=True, errors=errors, warnings=warnings)
+                return _PostCheck(
+                    output_path=candidato,
+                    artefacto=True,
+                    errors=errors,
+                    warnings=warnings,
+                    completo=completo,
+                    terminales=terminales,
+                )
             hubo_artefacto_rancio = True
 
         if no_verificable:
@@ -1658,7 +1808,14 @@ class DynDOLODRunner:
 
         # Ninguno pasó: se reporta el candidato primario para que el operador
         # sepa dónde se buscó.
-        return _PostCheck(output_path=candidatos[0], artefacto=False, errors=errors, warnings=warnings)
+        return _PostCheck(
+            output_path=candidatos[0],
+            artefacto=False,
+            errors=errors,
+            warnings=warnings,
+            completo=completo,
+            terminales=terminales,
+        )
 
     def _tiene_artefacto(self, tool: str, candidato: pathlib.Path) -> bool:
         """¿``candidato`` contiene una salida válida de ``tool``?
@@ -1690,8 +1847,16 @@ class DynDOLODRunner:
 
         Los binarios son apps GUI (PE Subsystem 2): no escriben a stdout ni
         stderr, así que la evidencia de una corrida vive en su log. Ausencia del
-        log → ``None`` (warning, no fallo duro): el gate duro es el artefacto en
-        el ``-o:``.
+        log → ``None``, y desde T2 eso **falla la corrida**: sin log no hay
+        marcador de completitud, y "no pude verificar que terminó" no puede
+        significar "terminó bien". El veredicto lo emite el lanzador; acá solo
+        se sondea.
+
+        **Decodificación:** :data:`_CODECS_DEL_LOG` en orden, estrictos, y recién
+        si ninguno decodifica se cae a ``cp1252`` con ``errors="replace"``. Leer
+        ``cp1252`` primero —o pasarle ``errors="replace"`` al primer intento—
+        vuelve el fallback inalcanzable: ``cp1252`` acepta casi cualquier byte,
+        así que un log utf-8 legítimo salía mojibake y nadie se enteraba.
         """
         exe = (
             self._config.texgen_exe
@@ -1700,12 +1865,12 @@ class DynDOLODRunner:
         )
         log_path = exe.parent / "Logs" / f"{tool}_{self._modo()}_log.txt"
         try:
-            return log_path.read_text(encoding="utf-8", errors="replace")
+            crudo = log_path.read_bytes()
         except FileNotFoundError:
-            # SIN etapa por mandato explícito del SOP §2.9 punto 3: "A missing or
-            # unreadable log is a warning, not a failure — the hard gate is the
-            # artifact at the -o: root". Etiquetarlo contaría como fallo de la
-            # etapa 9 corridas exitosas cuyo log no se escribió.
+            # Registro de SONDA, no de veredicto: la etapa la emite el lanzador
+            # (`run_texgen`/`run_dyndolod`) al componer su resultado con la
+            # completitud que este `None` deja en False. Ver la exención de
+            # `dyndolod_log_ausente` en `tests/test_dyndolod_service.py`.
             logger.warning(
                 "Log de %s no encontrado: %s",
                 tool,
@@ -1723,21 +1888,32 @@ class DynDOLODRunner:
             )
             return None
 
-    def _parse_log(self, texto: str) -> tuple[list[str], list[str]]:
-        """Extrae errores/warnings del log REAL y registra las rutas resueltas.
+        for codec in _CODECS_DEL_LOG:
+            try:
+                return crudo.decode(codec)
+            except UnicodeDecodeError:
+                continue
+        return crudo.decode("cp1252", errors="replace")
 
-        Reutiliza los patrones que antes se aplicaban a stdout: el texto cambió,
-        el criterio no. Las rutas que la herramienta resolvió (``Using Temp
-        Path:``, ``Using plugin list:``) se loguean a info — evidencia de efecto,
-        mejor que un ``--help`` — para el post-check (U-06).
+    def _parse_log(self, texto: str, tool: str) -> tuple[list[str], list[str], bool]:
+        """Clasifica el log REAL en terminal / no-fatal / completitud.
+
+        Delega la clasificación en :func:`clasificar_log` —texto puro, sin
+        disco— y se queda con lo que sí necesita el runner: sumar los `Warning:`
+        que el binario emite explícitamente al ruido de dominio, y loguear las
+        rutas que la herramienta resolvió (``Using Temp Path:``, ``Using plugin
+        list:``) como evidencia de efecto para el post-check (U-06).
+
+        Args:
+            texto: contenido del log.
+            tool: ``"TexGen"`` o ``"DynDOLOD"`` — los marcadores de completitud
+                son distintos por binario y pasarlos mal deja media etapa sin gate.
+
+        Returns:
+            ``(terminales, warnings, completo)``.
         """
-        errors: list[str] = []
-        for match in self._ERROR_PATTERN.finditer(texto):
-            error_msg = match.group(1).strip()
-            if error_msg and error_msg not in errors:
-                errors.append(error_msg)
+        terminales, warnings, completo = clasificar_log(texto, tool)
 
-        warnings: list[str] = []
         for match in self._WARNING_PATTERN.finditer(texto):
             warning_msg = match.group(1).strip()
             if warning_msg and warning_msg not in warnings:
@@ -1747,8 +1923,14 @@ class DynDOLODRunner:
             if "Using" in linea:
                 logger.info("Rutas resueltas por la herramienta: %s", linea.strip())
 
-        logger.debug("Parse log: errors=%d, warnings=%d", len(errors), len(warnings))
-        return errors, warnings
+        logger.debug(
+            "Parse log de %s: terminales=%d, warnings=%d, completo=%s",
+            tool,
+            len(terminales),
+            len(warnings),
+            completo,
+        )
+        return terminales, warnings, completo
 
     def _generate_meta_ini(self, mod_path: pathlib.Path, mod_name: str) -> None:
         """
