@@ -1141,6 +1141,12 @@ class OperationJournal:
           ``NaN``/``Infinity`` que ``json.dumps`` estricto no emite, así que una
           fila legacy puede llegar acá con un ``float('nan')`` adentro y hacer
           fallar la re-serialización de la fusión.
+        - ``limite_de_recursion``: la estructura es demasiado profunda para el
+          parser o el serializador. ``RecursionError`` hereda de ``RuntimeError``,
+          **no** de ``ValueError``/``TypeError``, así que sin nombrarlo explícito
+          se escapaba del clasificador y hundía el reporte del fallo — justo lo
+          que este método promete que no pasa. Se nombra en vez de ensanchar el
+          ``except``: un ``BaseException`` acá se tragaría la cancelación.
 
         El WARNING no loguea el contenido descartado: puede traer rutas, nombres
         de perfil de MO2 o nombres de mod. Sale qué fila y por qué.
@@ -1156,6 +1162,8 @@ class OperationJournal:
         motivo = "json_invalido"
         try:
             valor = json.loads(crudo)
+        except RecursionError:
+            motivo = "limite_de_recursion"
         except (ValueError, TypeError):
             pass
         else:
@@ -1164,6 +1172,8 @@ class OperationJournal:
             else:
                 try:
                     json.dumps(valor, allow_nan=False)
+                except RecursionError:
+                    motivo = "limite_de_recursion"
                 except ValueError:
                     motivo = "no_reserializable"
                 else:
@@ -1178,6 +1188,45 @@ class OperationJournal:
             },
         )
         return {}
+
+    async def _retirar_conexion_propia(self, db: aiosqlite.Connection) -> None:
+        """Saca de circulación la conexión PROPIA que quedó con la transacción abierta.
+
+        Se invoca **solo** cuando el ``rollback`` del camino standalone falló: ahí
+        la conexión conserva el estado parcial y cualquier escritor posterior lo
+        commitea junto con su propio trabajo. Reproducido: un
+        ``complete_operation`` de una operación **no relacionada** dejaba durable
+        el ``FAILED`` sin evidencia de la primera.
+
+        Cerrar la conexión aborta la transacción, y soltar la referencia hace que
+        el próximo :meth:`_ensure_connected` reabra una limpia. Es best-effort y
+        nunca eclipsa el fallo original: el llamador ya está propagando la
+        excepción primaria, que es la que el consumidor necesita ver.
+
+        **Solo standalone, y a propósito.** Con lifecycle, ``transaction()`` ya
+        cierra la conexión y deja el path fail-closed vía
+        ``_invalidate_under_boundary`` (cerrar primero, mutar el registro después,
+        conservando ownership si el cierre no se confirma); duplicarlo acá
+        competiría con esa política. Tampoco se usa ``evict_connection``: está
+        congelada sin callers de producción y acá no hay lifecycle al que
+        pedírsela — la conexión es nuestra.
+        """
+        with contextlib.suppress(Exception):
+            await db.close()
+
+        # Guard de identidad: sostenemos el lock, pero no cuesta nada y evita
+        # retirar la conexión de otro dueño si esto se llamara desde otro sitio.
+        if self._db is db:
+            self._db = None
+            self._owns_conn = False
+
+        logger.warning(
+            "Conexión propia del journal retirada tras un rollback fallido; se reabrirá en el próximo uso",
+            extra={
+                "event": "journal_conexion_propia_retirada",
+                "db_path": str(self._db_path),
+            },
+        )
 
     async def _escribir_fallo(
         self,
@@ -1304,6 +1353,10 @@ class OperationJournal:
                             "El rollback de fail_operation falló; la transacción puede haber quedado sucia",
                             extra={"entry_id": entry_id},
                         )
+                        # Loguear y soltar el lock NO alcanza: la transacción
+                        # sigue abierta sobre la conexión y el siguiente escritor
+                        # la commitea junto con su trabajo. Se retira.
+                        await self._retirar_conexion_propia(db)
                     raise
 
         logger.error("Operation failed", extra={"entry_id": entry_id, "error": error})

@@ -1108,6 +1108,172 @@ class TestFailOperationMetadataPreviaIlegible:
         assert getattr(avisos[0], "entry_id", None) == entry_id
         assert getattr(avisos[0], "motivo", None)
 
+    # -- desborde de recursión (hallazgo de Codex en #487, reproducido) --------
+    #
+    # `RecursionError` hereda de `RuntimeError`, no de `ValueError`/`TypeError`:
+    # se escapaba del clasificador y hundía el reporte del fallo, que es
+    # exactamente lo que su docstring promete que no pasa. Y en
+    # `sync_engine.py:428` esa excepción además saltea el `undo_operation`.
+    #
+    # Se prueba INYECTANDO el error, no anidando 1000 niveles: el límite de
+    # recursión del parser JSON en C se separó del de Python en 3.12, así que un
+    # test atado a la profundidad pasa en verde SIN ejercitar el brazo en algunas
+    # versiones — cobertura fantasma. El test de profundidad real va aparte y se
+    # saltea explícitamente si el runtime no desborda, en vez de pasar en falso.
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("donde", ["loads", "dumps"])
+    async def test_desborde_de_recursion_no_impide_registrar_el_fallo(self, journal_ambas_ramas, monkeypatch, donde):
+        """El contrato, sin depender de cuántos frames consume el parser de C.
+
+        Los dos puntos donde la metadata previa puede desbordar: al DECODIFICARLA
+        y al RE-SERIALIZARLA para el chequeo de representabilidad.
+        """
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        centinela = {"profunda": True}
+        _escribir_metadata_cruda(journal, entry_id, json.dumps(centinela))
+
+        real = getattr(json, donde)
+
+        def desborda(valor, *args, **kwargs):
+            # Solo para NUESTRO payload: parchear json global sin filtro rompería
+            # a terceros durante el test.
+            if valor == (json.dumps(centinela) if donde == "loads" else centinela):
+                raise RecursionError("maximum recursion depth exceeded")
+            return real(valor, *args, **kwargs)
+
+        monkeypatch.setattr(json, donde, desborda)
+
+        await journal.fail_operation(entry_id, error="boom")
+
+        status, _ = _fila_cruda(journal, entry_id)
+        assert status == OperationStatus.FAILED.value, "el desborde hundió el reporte del fallo"
+        assert _evidencia(journal, entry_id) == {"error": "boom"}
+
+    @pytest.mark.asyncio
+    async def test_previa_realmente_profunda_no_impide_registrar_el_fallo(self, journal_ambas_ramas):
+        """Gemelo del anterior con profundidad REAL, no inyectada.
+
+        Verifica primero que el runtime actual desborde de verdad: si una versión
+        futura tolera esta profundidad, hace `skip` con el motivo en vez de pasar
+        en falso sin ejercitar nada.
+        """
+        niveles = 20_000
+        blob = '{"a":' * niveles + "null" + "}" * niveles
+        try:
+            json.loads(blob)
+        except RecursionError:
+            pass
+        else:  # pragma: no cover — depende de la versión de CPython
+            pytest.skip(f"este runtime no desborda con {niveles} niveles; el test inyectado cubre el contrato")
+
+        journal = journal_ambas_ramas
+        entry_id = await _entrada(journal)
+        _escribir_metadata_cruda(journal, entry_id, blob)
+
+        await journal.fail_operation(entry_id, error="boom")
+
+        assert _fila_cruda(journal, entry_id)[0] == OperationStatus.FAILED.value
+        assert _evidencia(journal, entry_id) == {"error": "boom"}
+
+
+class TestFailOperationRollbackFallidoStandalone:
+    """Rollback fallido en el camino standalone: la conexión se RETIRA.
+
+    Hallazgo de Codex en #487, reproducido antes de aceptarlo: si el write de
+    evidencia falla y el `rollback` TAMBIÉN falla, la transacción queda abierta
+    sobre la conexión propia y el siguiente escritor la commitea. Observado con
+    `complete_operation` de una operación **no relacionada**: el `FAILED` parcial
+    —sin su evidencia— quedaba durable.
+
+    Solo aplica al camino standalone. Con lifecycle, `transaction()` ya cierra la
+    conexión y pone el path en cuarentena vía `_invalidate_under_boundary`; hacer
+    lo mismo acá competiría con esa política. Y NO se usa `evict_connection`: esa
+    API está congelada sin callers de producción
+    (`test_g2_evict_connection_quedo_sin_callers_en_produccion`) y acá no hay
+    lifecycle al que pedírsela — la conexión es propia, alcanza cerrarla y soltar
+    la referencia para que `_ensure_connected()` reabra una limpia.
+
+    Invariante de `app/db/AGENTS.md`: *"un rollback fallido conserva evidencia y
+    no se reporta como éxito"*.
+    """
+
+    @staticmethod
+    def _romper_write_y_rollback(journal):
+        real_execute = journal._db.execute
+
+        def execute_que_falla(sql, *args, **kwargs):
+            if isinstance(sql, str) and "SET metadata" in sql:
+                raise sqlite3.OperationalError("write de evidencia falla")
+            return real_execute(sql, *args, **kwargs)
+
+        async def rollback_que_falla():
+            raise sqlite3.OperationalError("rollback falla")
+
+        journal._db.execute = execute_que_falla
+        journal._db.rollback = rollback_que_falla
+
+    @pytest.fixture
+    async def journal_standalone(self, tmp_path):
+        journal = OperationJournal(tmp_path / "rollback_sucio.db")
+        await journal.open()
+        try:
+            yield journal
+        finally:
+            await journal.close()
+
+    @pytest.mark.asyncio
+    async def test_conserva_la_excepcion_primaria(self, journal_standalone):
+        """El fallo del rollback no puede reemplazar el del write."""
+        journal = journal_standalone
+        entry_id = await _entrada(journal)
+        self._romper_write_y_rollback(journal)
+
+        with pytest.raises(sqlite3.OperationalError, match="write de evidencia falla"):
+            await journal.fail_operation(entry_id, error="boom", metadata={"k": "v"})
+
+    @pytest.mark.asyncio
+    async def test_retira_la_conexion(self, journal_standalone):
+        """La conexión sucia no queda instalada para el próximo escritor."""
+        journal = journal_standalone
+        entry_id = await _entrada(journal)
+        sucia = journal._db
+        self._romper_write_y_rollback(journal)
+
+        with contextlib.suppress(sqlite3.OperationalError):
+            await journal.fail_operation(entry_id, error="boom", metadata={"k": "v"})
+
+        assert journal._db is None, "la conexión con la transacción abierta quedó instalada"
+        assert journal._db is not sucia
+
+    @pytest.mark.asyncio
+    async def test_el_siguiente_escritor_no_commitea_el_fallo_parcial(self, journal_standalone):
+        """La propiedad que de verdad importa: sin contaminación cruzada.
+
+        Reproducido sobre el código sin este arreglo: `complete_operation` de otra
+        operación commiteaba el `FAILED` sin evidencia de la primera.
+        """
+        journal = journal_standalone
+        fallida = await _entrada(journal)
+        otra = await _entrada(journal)
+        self._romper_write_y_rollback(journal)
+
+        with contextlib.suppress(sqlite3.OperationalError):
+            await journal.fail_operation(fallida, error="boom", metadata={"k": "v"})
+
+        # El siguiente escritor reabre una conexión limpia y commitea LO SUYO.
+        await journal.complete_operation(otra)
+
+        status, metadata = _fila_cruda(journal, fallida)
+        assert status == OperationStatus.STARTED.value, (
+            f"el FAILED parcial se commiteó con el trabajo de otra operación: metadata={metadata!r}"
+        )
+        assert metadata is None
+        assert _fila_cruda(journal, otra)[0] == OperationStatus.COMPLETED.value, (
+            "retirar la conexión no puede impedir el trabajo posterior"
+        )
+
 
 class TestFailOperationHermanos:
     """Los otros caminos que llegan al MISMO recurso.
