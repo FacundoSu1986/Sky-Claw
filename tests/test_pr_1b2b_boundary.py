@@ -22,6 +22,7 @@ como yield del scheduler); los timeouts son watchdog.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
 import sqlite3
@@ -1100,3 +1101,111 @@ async def test_ancla_cleanup_preserva_primaria_para_todo_rechazo_de_admision(
     with pytest.raises(rechazo):
         async with lifecycle.transaction(journal._db_path):
             pass  # pragma: no cover — el __aenter__ ya rechaza
+
+
+# ---------------------------------------------------------------------------
+# Cierre del hueco: congelar los SITIOS de raise, no sólo el conjunto de clases
+#
+# El ancla de arriba detecta una excepción NUEVA en db_lifecycle, pero no que
+# una ya clasificada como exención empiece a levantarse desde el camino de
+# admisión (p.ej. `_resolve_connection` levantando DatabaseConnectionReplacedError):
+# el conjunto de clases no cambia y el contrato del journal queda corto igual.
+#
+# Es el mismo argumento con el que `test_db_connection_invariant.py` congela el
+# CONTEO por módulo y no los nombres: "agregar un segundo `connect()` dentro de
+# un módulo ya listado es el punto de extensión más probable, y con un set de
+# nombres pasaría sin romper nada". Acá el par (función, excepción) hace ese
+# papel. Escribir el párrafo explicando el hueco no lo verifica — AGENTS.md es
+# explícito en que eso no cuenta.
+# ---------------------------------------------------------------------------
+
+_ARCHIVO_DB_LIFECYCLE = Path(db_lifecycle_mod.__file__)
+
+# Eslabones de db_lifecycle que se atraviesan al entrar a `transaction()`:
+# transaction → operation → _admit / get_write_lock / _resolve_connection → _init_single.
+# Congelar estos nombres es deliberado y load-bearing: renombrar un eslabón
+# rompe el ancla y obliga a re-mirar qué puede levantar ahora ese camino.
+_CAMINO_DE_ADMISION = frozenset(
+    {"transaction", "operation", "_admit", "get_write_lock", "_resolve_connection", "_init_single"}
+)
+
+# Todo `raise <ClaseDeExcepción>` de db_lifecycle, por (función, excepción).
+_SITIOS_DE_RAISE_ESPERADOS = {
+    ("_admit", "DatabaseLifecycleShuttingDownError"),
+    ("_await_db_operation", "_DatabaseOperationCancelled"),
+    ("_await_db_operation", "_DatabaseOperationFailedAfterCancellation"),
+    ("_resolve_connection", "DatabaseConnectionQuarantinedError"),
+    ("_shutdown_all_under_transition", "DatabaseShutdownIncompleteError"),
+    ("init_all", "DatabaseLifecycleShuttingDownError"),
+    ("recover_connection", "DatabaseConnectionQuarantinedError"),
+    ("recover_connection", "DatabaseConnectionReplacedError"),
+}
+
+
+def _sitios_de_raise_del_lifecycle() -> set[tuple[str, str]]:
+    """(función, excepción) por cada ``raise <ClaseDeExcepción>`` de db_lifecycle.
+
+    AST para el sitio; introspección para quedarse SOLO con lo que de verdad es
+    una clase de excepción del módulo. Sin ese filtro, los ``raise
+    variable_local`` —re-raises de diagnóstico como ``raise diagnostic_error``—
+    entran al conjunto y lo vuelven ruido que nadie va a mantener.
+    """
+    arbol = ast.parse(_ARCHIVO_DB_LIFECYCLE.read_text(encoding="utf-8"))
+    pila: list[str] = []
+    sitios: set[tuple[str, str]] = set()
+
+    class _Visitante(ast.NodeVisitor):
+        def _entrar(self, nodo: Any) -> None:
+            pila.append(nodo.name)
+            self.generic_visit(nodo)
+            pila.pop()
+
+        def visit_FunctionDef(self, nodo: ast.FunctionDef) -> None:  # noqa: N802 — API de ast.NodeVisitor
+            self._entrar(nodo)
+
+        def visit_AsyncFunctionDef(self, nodo: ast.AsyncFunctionDef) -> None:  # noqa: N802 — API de ast.NodeVisitor
+            self._entrar(nodo)
+
+        def visit_Raise(self, nodo: ast.Raise) -> None:  # noqa: N802 — API de ast.NodeVisitor
+            if nodo.exc is not None:
+                objetivo = nodo.exc.func if isinstance(nodo.exc, ast.Call) else nodo.exc
+                if isinstance(objetivo, ast.Name):
+                    resuelto = getattr(db_lifecycle_mod, objetivo.id, None)
+                    if isinstance(resuelto, type) and issubclass(resuelto, BaseException):
+                        sitios.add((pila[-1] if pila else "<módulo>", objetivo.id))
+            self.generic_visit(nodo)
+
+    _Visitante().visit(arbol)
+    return sitios
+
+
+def test_ancla_sitios_de_raise_del_lifecycle_congelados() -> None:
+    """Igualdad literal de los pares (función, excepción) de db_lifecycle.
+
+    Un `raise` nuevo —clase nueva O una ya existente desde un sitio nuevo— rompe
+    esto hasta que alguien decida si ese camino alcanza `transaction().__aenter__`
+    y, si lo alcanza, lo agregue a `_RECHAZOS_DE_ADMISION` y a
+    `_FALLOS_DE_CLEANUP_ABSORBIBLES`.
+    """
+    assert _sitios_de_raise_del_lifecycle() == _SITIOS_DE_RAISE_ESPERADOS, (
+        "cambiaron los sitios de raise de db_lifecycle: decidí si el camino "
+        "afectado puede alcanzar transaction().__aenter__ y, si sí, que su "
+        "excepción quede cubierta por el contrato de cleanup del journal"
+    )
+
+
+def test_ancla_el_camino_de_admision_solo_levanta_rechazos_clasificados() -> None:
+    """Lo que el camino de admisión levanta == lo que el journal declara absorber.
+
+    Ata el ancla sintáctica a la semántica: cierra el caso que el conjunto de
+    clases no ve —una excepción ya clasificada como exención levantándose desde
+    el camino de admisión—, porque ahí el par cambia aunque el conjunto no.
+    """
+    levantados = {
+        excepcion for funcion, excepcion in _sitios_de_raise_del_lifecycle() if funcion in _CAMINO_DE_ADMISION
+    }
+    clasificados = {rechazo.__name__ for rechazo in _RECHAZOS_DE_ADMISION}
+    assert levantados == clasificados, (
+        "el camino de admisión del lifecycle levanta rechazos que el journal no "
+        f"clasifica (o al revés): camino={sorted(levantados)} vs. clasificados={sorted(clasificados)}"
+    )
