@@ -232,8 +232,13 @@ def test_todo_test_citado_como_verificacion_existe() -> None:
 # del …` y también `el 2026-08-10 el rig midió …`, sin enumerar conectores a mano.
 # La ventana es corta a propósito: es lo único que evita emparejar un "rig humano"
 # con una fecha que vive en otra parte de la misma celda.
+#
+# `IGNORECASE` porque "Rig" con mayúscula inicial es lo natural al empezar una
+# celda, y sin el flag esa fila no disparaba nada: evidencia de rig externa sin
+# declarar, con la suite en verde. Los negativos no se alteran — no llevan fecha.
 _CITA_DE_RIG_FECHADO = re.compile(
     r"rig\b.{0,25}?\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}.{0,25}?\brig\b",
+    re.IGNORECASE,
 )
 _MARCA_DE_EVIDENCIA_EXTERNA = "fuera del repo"
 
@@ -274,6 +279,7 @@ def test_el_patron_de_cita_de_rig_reconoce_las_variantes_que_se_escriben() -> No
         "rig de 2026-08-10",
         "rig, en la corrida del 2026-08-10, midió",
         "el 2026-08-10 el rig midió que DynDOLOD persiste el .esp",
+        "Rig 2026-08-10 midió que DynDOLOD persiste el .esp",
     )
     for cita in afirman_un_hecho:
         assert _CITA_DE_RIG_FECHADO.search(cita), f"debería exigir la marca: {cita!r}"
