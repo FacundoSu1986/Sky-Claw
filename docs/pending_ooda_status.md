@@ -47,7 +47,7 @@ confirmarlo contra código y tests.
 | U-03 | Cerrado | #356 | — | tests de reconciliación de precache |
 | U-04 | Parcial | #397, #399, salida administrada de Pandora y subárbol administrado por grupo de BodySlide | Smoke real de rollback de Pandora | `test_rollback_salida.py`, `test_pandora_service.py`, `test_bodyslide_lock.py` y humano |
 | U-05 | Cerrado | #354 | — | `test_vramr_service.py` |
-| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora; post-check por LOG **+ gate de frescura** de DynDOLOD/TexGen (binarios GUI sin stdout: ni el exit code ni un artefacto sin fecha alcanzan — el staging no se limpia entre corridas, así que la salida vieja satisfacía el gate) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean; **completitud** de la etapa 9: el gate prueba que el artefacto cambió, no que la corrida terminó. El rig 2026-08-10 **cerró** la incógnita que esta fila declaraba abierta — DynDOLOD persiste el `.esp` al final (t3 > t4), así que el criterio se puede apretar con marcadores de completitud del log; queda pendiente cablearlos, y TexGen sigue sin marcador. Ver la fila «Clasificación del log de la etapa 9» | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py`, `test_dyndolod_service.py` (post-check por log, frescura y ancla enumerativa de la familia) |
+| U-06 | Parcial | #375 para DynDOLOD; post-check de artefacto de BodySlide; veredicto por `Engine.log` de Pandora; post-check por LOG **+ gate de frescura** de DynDOLOD/TexGen (binarios GUI sin stdout: ni el exit code ni un artefacto sin fecha alcanzan — el staging no se limpia entre corridas, así que la salida vieja satisfacía el gate) | Post-check de Wrye Bash; criterio seguro para QuickAutoClean; **completitud** de la etapa 9: el gate prueba que el artefacto cambió, no que la corrida terminó. el rig 2026-08-10 midió que DynDOLOD persiste el `.esp` al final (t3 > t4), lo que abre la puerta a apretar el criterio con marcadores de completitud del log. **Esa medición no es auditable desde el árbol** — informe fuera del repo, una sola corrida — así que la fila NO la da por cerrada: es la premisa que T2 tiene que re-verificar con la fixture del log commiteada, no un hecho establecido. Queda pendiente cablear los marcadores, y TexGen sigue sin ninguno. Ver la fila «Clasificación del log de la etapa 9» | tests de cada runner, `test_bodyslide_postcheck_artefacto.py`, `test_pandora_runner.py`, `test_dyndolod_service.py` (post-check por log, frescura y ancla enumerativa de la familia) |
 | U-07 | Cerrado | #355 | — | tests de Job Object de DynDOLOD |
 | U-08 | Cerrado | #378 y reconciliador de arranque | — | `test_rollback_reconciler.py` |
 | U-09 | Cerrado | #376 | — | tests del journal de grass |
@@ -77,7 +77,7 @@ confirmarlo contra código y tests.
 | Smokes reales restantes | Bloqueado (rig humano) | — | NGIO, scripts `.pas`, GUI/FOMOD y Telegram end-to-end | humano |
 | Residuos OODA de bajo valor | Abierto | — | Solo retomar agrupados si cambia su relación esfuerzo/impacto | historial OODA §3 |
 | Residuos de crash logging | Abierto | #383 cerró F1/F2 reales | Cinco deudas sin víctima productiva actual | historial OODA, addendum #372 |
-| Preset de TexGen desvía `OutputPath` | Abierto | — | Determinar la precedencia `preset` vs `-o:` y decidir el mecanismo (limpiar/aislar, sembrar preset administrado, detectar en preflight o verificar el campo antes de Start) — ver sección propia abajo | rig T5 2026-08-11 (`INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` §7.3) |
+| Preset de TexGen desvía `OutputPath` | Abierto | — | Determinar la precedencia `preset` vs `-o:` y decidir el mecanismo (limpiar/aislar, sembrar preset administrado, detectar en preflight o verificar el campo antes de Start) — ver sección propia abajo | rig T5 2026-08-11 (`INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` §7.3 — informe fuera del repo, ver la sección propia abajo) |
 | Clasificación del log de la etapa 9 | Abierto | — | El gate `not errors` (`dyndolod_runner.py:526` y `:637`, patrón en `:416-419`) rechaza todo éxito real: el rig midió 121 líneas `Error:` en una corrida exitosa de DynDOLOD. Falta separar completitud / no-fatal de dominio / terminal, y leer el log en cp1252 (hoy `utf-8`, `:1703`). Enmendar el SOP §2.9 punto 3 en el mismo PR: hoy codifica el gate defectuoso y declara warning la ausencia de log, premisa de dos exenciones del dict del runner — ver `design/plans/2026-08-16-dyndolod-roadmap-v2.md` | `test_dyndolod_service.py`, `test_contrato_veredicto_de_exito.py`; rig 2026-08-10 (informe fuera del repo) |
 | Candidato de salida de TexGen | Abierto | — | `_candidatos_de_salida` (`dyndolod_runner.py:1472`) le da a TexGen el candidato único `root/TexGen_Output`, que según el rig no existe nunca: su gate de artefacto falla siempre. El fix no es agregar `root` como fallback (reintroduce el falso verde que cerró #440) sino gatear sobre `root/textures`. Acoplado al ítem del preset: hoy ese gate roto contiene el desvío por accidente — ver `design/plans/2026-08-16-dyndolod-roadmap-v2.md` | `test_dyndolod_service.py`, `test_output_targets.py`; rig 2026-08-10 (informe fuera del repo) |
 
@@ -134,13 +134,25 @@ gate de empaquetado en `run_full_pipeline` (`:870`, `if texgen_result.success
 and texgen_result.output_path`): el candidato administrado
 (`root/TexGen_Output`) se firma antes y después de lanzar, y si las escrituras
 reales van al path del preset en vez de ahí, esa firma no cambia. El
-post-check lo marca "artefacto rancio" → `success=False`, y
-`_package_output_as_mod` nunca corre. Por diseño, esto descarta dos
-consecuencias que una lectura apresurada del hallazgo sugeriría: un stale
-output **no puede** pasar por fresco, y Sky-Claw **no puede** empaquetar a MO2
-una superficie distinta de la generada — la corrida falla cerrada, no en
-silencio (hallazgo del revisor Codex en el PR #463, verificado contra el
-código antes de aceptarlo — no se listan acá como riesgos).
+post-check lo marca "artefacto rancio" → `success=False`, y **el empaquetado de
+TexGen** no corre. Por diseño, esto descarta dos consecuencias que una lectura
+apresurada del hallazgo sugeriría: un stale output **no puede** pasar por
+fresco, y Sky-Claw **no puede** empaquetar a MO2 una superficie distinta de la
+generada — la corrida falla cerrada, no en silencio (hallazgo del revisor Codex
+en el PR #463, verificado contra el código antes de aceptarlo — no se listan
+acá como riesgos).
+
+**Precisión sobre el alcance de esa contención** (revisor Codex, PR #485,
+verificado contra el código): el `_package_output_as_mod` que no corre es el de
+TexGen y **solo ese**. `run_full_pipeline` no corta ahí — sigue a
+`run_dyndolod` incondicionalmente (`dyndolod_runner.py:1088`) y, si DynDOLOD
+sale bien, **sí empaqueta su salida a `mods/`** (`:1094-1100`). El pipeline
+igual reporta `success=False` porque la fórmula exige `texgen_mod_path` cuando
+`run_texgen` (`:1160-1167`), pero para entonces ya hay un mod escrito en
+`mods/`, y retirarlo depende del rollback del servicio, no de este gate. La
+redacción anterior decía "`_package_output_as_mod` nunca corre", que es falso
+como enunciado general: hay **dos** call sites de empaquetado y toda tarea que
+razone sobre esta contención tiene que trazar los dos.
 
 Consecuencias **derivadas, no reproducidas** en el rig, que el gate de
 frescura **no** cubre porque ocurren en el path del preset — fuera de

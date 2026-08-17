@@ -86,7 +86,22 @@ lista plana que el veredicto trata como fatal.
 failure. Sigue cruzando el exit code con evidencia independiente, así que respeta
 `test_ningun_runner_deriva_el_exito_solo_del_exit_code`.
 
-**Encoding:** leer cp1252 con fallback a utf-8 y `errors="replace"`.
+**Encoding:** orden determinista con decodificación **estricta**, y `errors="replace"`
+reservado al último recurso:
+
+1. `utf-8` estricto — se queda con el resultado si decodifica;
+2. si no, `cp1252` estricto;
+3. si ninguno decodifica, `cp1252` con `errors="replace"`.
+
+El orden importa y la variante ingenua no funciona: `cp1252` acepta casi
+cualquier byte, así que "leer cp1252 con fallback a utf-8" **nunca alcanza el
+fallback** — un log utf-8 legítimo se decodifica igual y sale mojibake en
+silencio. Agregar `errors="replace"` al primer intento lo empeora: garantiza que
+no pueda fallar, y con eso mata cualquier fallback posterior. `utf-8` sí es
+autovalidante (una secuencia inválida levanta `UnicodeDecodeError`), y por eso
+va primero: es el único de los dos que sirve como detector. Fixtures: un log
+`cp1252` con acentos **y** uno `utf-8` válido, para anclar que cada uno se
+recupera intacto.
 
 ### Precondiciones que T2 debe resolver antes de tocar el veredicto
 
@@ -102,9 +117,21 @@ y manda lo contrario de la regla de completitud que T2 quiere introducir:
 > *"A missing or unreadable log is a **warning, not a failure**: the hard gate is
 > the artifact at the `-o:` root"*
 
-El PR de T2 **debe enmendar §2.9 junto con el código**. Enmendarlo antes deja al
-SOP describiendo código inexistente; no enmendarlo deja drift doc-vs-código — el
-modo de falla que ese archivo existe para atajar. El mismo §2.9 ya invita al
+El PR de T2 **debe enmendar §2.9 punto 3 junto con el código**. Enmendarlo antes
+deja al SOP describiendo código inexistente; no enmendarlo deja drift
+doc-vs-código — el modo de falla que ese archivo existe para atajar.
+
+> **Por qué el punto 1 sí se enmendó ya y el punto 3 no** (los dos son §2.9, así
+> que la asimetría hay que justificarla). El **punto 3 describe el comportamiento
+> actual del código**: hoy el veredicto realmente exige "no error lines", y
+> cambiar el texto antes que el código lo vuelve una descripción falsa. El
+> **acceptance gate del punto 1 no describe código: es una regla de proceso para
+> quien aprueba** ("do NOT approve or merge until…"), y ya estaba falsificada por
+> evidencia mergeada en #463 — le alcanzaba con que el log ecoara la ruta, que es
+> exactamente lo que el preset satisface sin escribir un solo archivo ahí. Dejarla
+> como estaba no era esperar a T2: era conservar un blocker que se puede cumplir
+> con un chequeo insuficiente. Se endureció a las tres condiciones (log + archivos
+> + sin desvío por preset) en este mismo cambio. El mismo §2.9 ya invita al
 cambio: *"there is no completeness marker other than the log … Anyone with a real
 rig: confirm when `DynDOLOD.esp` is written, and this criterion can be tightened."*
 El rig del 2026-08-10 lo confirmó (t3 > t4).
@@ -134,8 +161,26 @@ tratado como suficiente reconstituye el falso verde entero.
   de rig viven en la máquina del operador y un maintainer no puede auditarlos
   (hallazgo de Codex en #463). Las fixtures son lo que convierte evidencia externa
   en evidencia auditable. Mínimo: éxito de TexGen, éxito de DynDOLOD, cierre
-  mid-run (101 errores, **sin** marcador), las 6 no-fatales con marcador presente,
-  y un log cp1252 con acentos.
+  mid-run (101 errores, **sin** marcador), y los dos logs de encoding de arriba.
+- **Un caso que aísle la falta de marcador, y no solo el cierre mid-run.** El
+  fixture del cierre mid-run trae 101 errores *y* ausencia de marcador, así que
+  cae por el gate de terminales **aunque la implementación nunca mire la
+  completitud**: una mutación que borre el conjunto `AND completion marker`
+  seguiría verde y el ancla no lo notaría. Hace falta un caso limpio —`rc == 0`,
+  artefacto fresco, log sin ninguna línea terminal— al que **solo** le falte el
+  marcador, y que se exija REJECT. Es el único que hace fallar al conjunto nuevo
+  de forma independiente.
+- **La fixture del éxito de DynDOLOD va COMPLETA, con las 121 líneas `Error:`
+  reales.** No un extracto de las seis no-fatales conocidas. La regla "todo
+  `Error:` que no esté en la lista es terminal" solo es segura si está demostrado
+  que las 121 líneas medidas caen dentro de la lista, y eso **no está establecido
+  hoy**: la lista salió del §11.4 del informe, que enumera categorías, no las 121
+  ocurrencias. Una fixture recortada a las seis categorías esperadas pasa el test
+  y deja pasar una séptima categoría que en producción se clasifica terminal — el
+  mismo falso rojo que T2 viene a eliminar, ahora con un test verde encima.
+  **Precondición de T2: volcar las 121 líneas contra la taxonomía y anclar que el
+  log real completo clasifica como éxito.** Si aparece una categoría no prevista,
+  la decisión de ampliar la lista se toma con la línea real a la vista, no a mano.
 
 ### La regla que T2 puede violar
 
@@ -149,10 +194,24 @@ Enunciado como propiedad del mecanismo:
 
 ## T3-v2 — staging y salida (rebase requerido)
 
-El diseño de v1 sigue en pie: subcarpeta por herramienta (`<root>/TexGen`,
-`<root>/DynDOLOD`), gate de TexGen sobre `root/textures`, y revisión de **todas**
-las superficies que tocan la raíz administrada — rollback, preflight,
-journal/recovery, packaging y VFS — no solo el post-check.
+El diseño de v1 sigue en pie: subcarpeta por herramienta, gate de TexGen sobre su
+subárbol `textures`, y revisión de **todas** las superficies que tocan la raíz
+administrada — rollback, preflight, journal/recovery, packaging y VFS — no solo el
+post-check.
+
+**Nomenclatura, porque acá se cuela un off-by-one-nivel.** Con el layout nuevo hay
+DOS raíces y no son intercambiables:
+
+- `<raíz administrada>` — la que hoy devuelve `dyndolod_output_target`, compartida;
+- `<raíz de herramienta>` = `<raíz administrada>/TexGen` y
+  `<raíz administrada>/DynDOLOD` — **lo que viaja en el `-o:` de cada una**.
+
+El gate de artefacto de TexGen es entonces
+**`<raíz administrada>/TexGen/textures`**, no `<raíz administrada>/textures`:
+TexGen escribe directo en la raíz de SU `-o:`, así que sus texturas caen un nivel
+más adentro. Escribirlo con la raíz compartida deja el chequeo un nivel arriba y
+hace fallar cerradas las corridas buenas — el mismo falso rojo que T3 viene a
+eliminar. La firma de frescura se toma sobre ese mismo subárbol.
 
 Lo que cambió desde v1:
 
@@ -165,15 +224,29 @@ preset con exit 0, y **el log sigue ecoando el `Using Output Path:` del argv**.
 código por Codex en #463 y registrado en
 [`../../pending_ooda_status.md`](../../pending_ooda_status.md) (sección del
 preset): si las escrituras van a otro lado, la firma del candidato administrado no
-cambia, el post-check marca artefacto rancio, `success=False` y
-`_package_output_as_mod` nunca corre. La corrida falla cerrada, no en silencio.
+cambia y el post-check marca artefacto rancio → `success=False`. La corrida falla
+cerrada, no en silencio.
 
-**Pero hoy esa contención es accidental.** Como el candidato de TexGen apunta a
-`root/TexGen_Output` (Gap C), TexGen falla el gate *siempre*, por el motivo
-equivocado. Cuando T3 corrija el candidato a `root/textures`, la contención pasa a
-ser real **y portante**: a partir de ese momento, relajar artefacto+frescura
-reabre el agujero del preset. Es la razón por la que T3 no puede implementarse
-como estaba escrito en v1.
+**Pero la contención es más chica de lo que suena, y hay que decir cuánto.** El
+`_package_output_as_mod` que no corre es **el de TexGen, y solo ese**
+(`dyndolod_runner.py:1042`, condicionado a `texgen_result.success`).
+`run_full_pipeline` **no corta** ahí: sigue a `run_dyndolod` incondicionalmente
+(`:1088`) y, si DynDOLOD sale bien, **empaqueta su salida a `mods/`**
+(`:1094-1100`). El pipeline reporta `success=False` porque la fórmula exige
+`texgen_mod_path` cuando `run_texgen` (`:1160-1167`), pero para entonces ya se
+escribió un mod en `mods/`, y limpiarlo depende del rollback del servicio de
+afuera, no del gate. La afirmación de que "`_package_output_as_mod` nunca corre"
+—que este documento arrastraba del registro de #463— es falsa como enunciado
+general y T3 no puede apoyarse en ella: **hay dos call sites de empaquetado y hay
+que trazar los dos** antes de decidir el alcance de rollback.
+
+**Y la contención que sí existe es accidental.** Como el candidato de TexGen
+apunta a `<raíz administrada>/TexGen_Output` (Gap C), TexGen falla el gate
+*siempre*, por el motivo equivocado. Cuando T3 corrija el candidato a
+`<raíz administrada>/TexGen/textures`, la contención pasa a ser real **y
+portante**: a partir de ese momento, relajar artefacto+frescura reabre el agujero
+del preset. Es la razón por la que T3 no puede implementarse como estaba escrito
+en v1.
 
 **Consecuencia de ordenamiento:** T3 no arranca hasta que el ítem del preset tenga
 al menos decidida la precedencia `preset` vs `-o:` (paso 1 de su lista de
@@ -191,21 +264,51 @@ v1 aceptaba *"el log declara `Using Output Path:` igual a la raíz administrada"
 **Ese criterio ya no sirve**: el rig probó que el encabezado ecoa el argv mientras
 las escrituras van al preset. La aceptación pasa a exigir las cuatro cosas:
 
-1. argv correcto (cerrado por #462);
-2. log correcto — `Using Output Path:` igual a la subcarpeta administrada;
-3. **archivos efectivamente creados dentro del staging administrado**;
-4. **ninguna escritura desviada por preset**, verificado con un preset rancio
-   presente a propósito.
+El checklist va **completo y explícito**, no por referencia: v1 no está en el repo,
+así que "se conservan los criterios de v1" no le sirve a nadie que quiera ejecutar
+esto. Son diez, y ninguno es opcional:
 
-Y el criterio (4) se verifica en **TexGen Y DynDOLOD**. El rig del hallazgo corrió
-DynDOLOD *sin* preset: su asimetría no está verificada, solo no observada, y
-`Presets\DynDOLOD_SSE_Default.ini` persiste su propia clave `OutputPath` por el
-mismo mecanismo. Cerrar el ítem verificando solo TexGen es el patrón que
-`AGENTS.md` nombra como el más repetido del repo.
+**Cómo se corre**
 
-Se conservan de v1 los criterios de éxito con `Save and Exit`, staging disjunto,
-`exito_no_empaquetable` con `Zip and Exit`, dos mods de MO2 con contenidos
-disjuntos, y el invariante TexGen → DynDOLOD.
+1. las dos herramientas se lanzan **por el runner de Sky-Claw**, no por un harness
+   de rig — es lo que hace que la corrida pruebe el camino de producción;
+2. la raíz administrada **contiene espacios**, porque es la rama que siempre corre
+   en un rig real (`Skyrim Special Edition`, `My Games`) y la única donde el
+   quoting puede romperse.
+
+**Qué se exige del lanzamiento**
+
+3. argv correcto (cerrado por #462);
+4. `Using Output Path:` igual a la subcarpeta administrada de cada herramienta;
+5. **archivos efectivamente creados dentro de esa subcarpeta** — no basta el
+   encabezado del log;
+6. **ninguna escritura desviada por preset**, con un preset rancio presente a
+   propósito, y verificado en **TexGen Y DynDOLOD**. El rig del hallazgo corrió
+   DynDOLOD *sin* preset: su asimetría no está verificada, solo no observada, y
+   `Presets\DynDOLOD_SSE_Default.ini` persiste su propia clave `OutputPath` por el
+   mismo mecanismo. Cerrar esto verificando solo TexGen es el patrón que
+   `AGENTS.md` nombra como el más repetido del repo.
+
+**Qué se exige del resultado**
+
+7. cerrando con **`Save and Exit`**, las dos corridas dan `success=True`; TexGen
+   deja su subárbol `textures` y DynDOLOD su `DynDOLOD.esp`, **sin pisarse**;
+8. una corrida cerrada con `Zip and Exit` se reporta `exito_no_empaquetable`, no
+   un rojo genérico de artefacto ausente;
+9. `_package_output_as_mod` produce **dos** mods de MO2 con contenidos disjuntos.
+
+**El invariante que distingue copiar de que la herramienta lea**
+
+10. con `run_texgen=True`, el log de DynDOLOD **no** trae `No TexGen output
+    detected` ni `LOD billboard(s) not found`, y los billboards que TexGen acaba de
+    generar están **bajo la ruta que ese log declara como Data Path**. Copiar a
+    `MO2/mods` no demuestra activación ni visibilidad: un mod presente pero no
+    habilitado en el perfil —o sobrescrito por otro— es invisible para el `-d:`.
+    Si este criterio falla, el trabajo que sigue es investigar el perfil de MO2
+    (**T6**), no parchear T3.
+
+Sin (1)–(2) una corrida parcial satisface el resto sin haber probado nada del
+camino real.
 
 ## T7 y T8 — sin cambios de alcance
 
@@ -242,7 +345,8 @@ no tenía: automatizar la GUI con presets persistentes **antes** de resolver
 
 **Por qué T2 primero.** Es el único bloque cuya superficie no toca lifecycle,
 recovery ni journal: vive en `dyndolod_runner.py` y `tests/test_dyndolod_service.py`.
-#483 toca `db_lifecycle.py`, `async_registry.py` y `test_db_lifecycle_quarantine.py`
+El PR #483 toca `db_lifecycle.py`, `async_registry.py` y
+`test_db_lifecycle_quarantine.py`
 — cero solapamiento, por archivo y por contrato.
 
 **Por qué T3 espera.** No porque vaya a editar lifecycle, sino porque su propio

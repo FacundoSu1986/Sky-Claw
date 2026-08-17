@@ -227,6 +227,41 @@ def test_todo_test_citado_como_verificacion_existe() -> None:
     assert not faltantes, f"el inventario cita tests que no existen: {sorted(faltantes)}"
 
 
+_CITA_DE_RIG_FECHADO = re.compile(r"rig(?: T\d+)? \d{4}-\d{2}-\d{2}")
+_MARCA_DE_EVIDENCIA_EXTERNA = "fuera del repo"
+
+
+def test_toda_fila_que_afirma_un_hecho_de_rig_declara_que_la_evidencia_es_externa() -> None:
+    """Una corrida de rig fechada respalda una AFIRMACIÓN, y su informe no está en el árbol.
+
+    Los informes viven en la máquina del rig operador (hallazgo del revisor Codex
+    en el PR #463): un maintainer no puede auditarlos ni reproducirlos desde este
+    repo. Una fila que cita una corrida fechada sin decirlo convierte el inventario
+    en fuente de hechos que nadie puede verificar — justo lo que este documento
+    existe para no hacer.
+
+    Pasó en el PR #485: las dos filas nuevas de la etapa 9 llevaban la marca y
+    `U-06` —que en el MISMO diff pasó a afirmar que el rig había cerrado su
+    incógnita— quedó sin ella. El defecto hermano de `AGENTS.md` dentro de una sola
+    tabla, y lo atajó un revisor automático.
+
+    Se enumeran TODAS las filas: un caso escrito a mano para la que se acaba de
+    tocar no ataja a la próxima. Las filas que nombran trabajo de rig PENDIENTE
+    («rig humano», «rig real», sin fecha) no afirman ningún hecho y quedan fuera
+    por construcción del patrón, no por una excepción escrita a mano.
+    """
+    sin_marca = []
+    for item, fila in _tabla().items():
+        texto = " ".join(fila.values())
+        if _CITA_DE_RIG_FECHADO.search(texto) and _MARCA_DE_EVIDENCIA_EXTERNA not in texto:
+            sin_marca.append(item)
+
+    assert not sin_marca, (
+        "estas filas afirman un hecho medido en una corrida de rig fechada sin declarar que "
+        f"el informe está fuera del repo: {sorted(sin_marca)}"
+    )
+
+
 def test_los_smokes_sin_ancla_automatizable_declaran_verificacion_humana() -> None:
     filas = _tabla()
 
