@@ -28,6 +28,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     MARCADORES_DE_COMPLETITUD,
     NO_FATALES_DEL_DOMINIO,
     PATRONES_TERMINALES,
+    DynDOLODRunner,
     clasificar_log,
 )
 from tests.test_dyndolod_service import (
@@ -513,6 +514,116 @@ async def test_la_corrida_que_apendea_su_propio_marcador_sí_es_exito(
         result = await runner.run_dyndolod(preset="Medium")
 
     assert result.success is True, result.errors
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "marcador", "artefacto", "lanzar"),
+    [
+        ("TexGen", "TexGen completed successfully", "a.dds", lambda r: r.run_texgen()),
+        (
+            "DynDOLOD",
+            "DynDOLOD plugins generated successfully",
+            "DynDOLOD.esp",
+            lambda r: r.run_dyndolod(preset="Medium"),
+        ),
+    ],
+    ids=["TexGen", "DynDOLOD"],
+)
+async def test_un_terminal_de_una_sesion_anterior_no_enrojece_esta_corrida(
+    tmp_path: pathlib.Path,
+    tool: str,
+    marcador: str,
+    artefacto: str,
+    lanzar,
+) -> None:
+    """El hermano del scoping del marcador, en la OTRA dirección.
+
+    `600e48f` delimita el MARCADOR a los bytes que la corrida agregó, pero los
+    terminales se siguen clasificando sobre el log COMPLETO. La documentación
+    oficial dice que el log normal apendea entre sesiones (dyndolod.info/Messages:
+    "All messages are appended … when the tool is closed"), así que un `Fatal:`
+    de una sesión fallida anterior permanece en el prefijo y enrojece TODA
+    corrida buena posterior: falso rojo PERMANENTE hasta que el operador trunque
+    el log a mano, con un diagnóstico que muestra la línea vieja y su timestamp
+    como si fueran de hoy.
+
+    La propiedad: la evidencia de ESTA corrida —el marcador Y los terminales—
+    son los bytes que esta corrida agregó, bajo append y bajo truncado. Un
+    terminal heredado no puede tumbar una corrida que no lo emitió.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / (
+        DynDOLODRunner.TEXGEN_OUTPUT_NAME if tool == "TexGen" else DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    )
+
+    # Arrange: la sesión N dejó su terminal en el log acumulado.
+    log = _escribir_log(tmp_path, tool, "[00:07:45] Fatal: madExcept caught an access violation\n")
+
+    # Act: la sesión N+1 es una corrida buena: rc 0, artefacto fresco y su propio
+    # marcador apendeado DURANTE la corrida.
+    def _correr() -> None:
+        _escribir_salida(staging, artefacto)
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("[01:00:00] Building LOD for Tamriel\n")
+            fh.write(f"[01:30:00] {marcador}\n")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with patch.object(runner, "_execute_process", fake):
+        result = await lanzar(runner)
+
+    assert result.success is True, result.errors
+
+
+@pytest.mark.asyncio
+async def test_con_frontera_indeterminada_no_se_atribuyen_terminales_historicos(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si no se puede establecer qué bytes son de ESTA corrida, el run sigue
+    fail-closed por el motivo de sondeo, pero un terminal histórico no puede
+    aparecer en el diagnóstico como si lo hubiera emitido esta corrida.
+
+    ARRANGE: el log histórico contiene `Fatal: old failure`; la firma previa
+    del log falla (``None``) → la frontera temporal es indeterminada.
+    ACT: la corrida de hoy apendea su marcador y escribe su artefacto.
+    ASSERT: rojo POR el motivo de sondeo; el terminal histórico NO figura en
+    los errores de esta corrida.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = config.output_root / "DynDOLOD_Output"
+    log = _escribir_log(tmp_path, "DynDOLOD", "[00:07:45] Fatal: old failure\n")
+
+    def _correr() -> None:
+        _escribir_salida(staging, "DynDOLOD.esp")
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("[01:00:00] Building LOD for Tamriel\n")
+            fh.write("[01:30:00] DynDOLOD plugins generated successfully\n")
+
+    original = runner._firma_del_log
+    llamadas = {"n": 0}
+
+    def _firma_indeterminada_antes_de_lanzar(tool: str):
+        # SÓLO la firma que toma el LANZADOR antes de arrancar falla: no hay con
+        # qué delimitar qué bytes son de hoy. Cualquier firma posterior usa la
+        # implementación original — la rama fail-closed igual ya se disparó con
+        # la previa, pero el mock queda exacto a la propiedad del test.
+        if tool != "DynDOLOD":
+            return original(tool)
+        llamadas["n"] += 1
+        return None if llamadas["n"] == 1 else original(tool)
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with (
+        patch.object(runner, "_firma_del_log", _firma_indeterminada_antes_de_lanzar),
+        patch.object(runner, "_execute_process", fake),
+    ):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert any("No se pudo sondear el log de DynDOLOD ANTES" in e for e in result.errors), result.errors
+    assert not any("Fatal: old failure" in e for e in result.errors), result.errors
 
 
 def test_todo_lanzador_que_pide_veredicto_firma_el_log_antes_de_lanzar() -> None:

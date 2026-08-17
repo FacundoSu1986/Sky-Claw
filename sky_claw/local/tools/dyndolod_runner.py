@@ -1670,7 +1670,7 @@ class DynDOLODRunner:
         texto: str,
         marcador_en_el_archivo: bool,
         firma_previa_del_log: tuple[float | int, ...] | None,
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool, str | None, str]:
         """¿El marcador de completitud lo escribió ESTA corrida, o ya estaba?
 
         Comparar sólo la firma del archivo —mtime+tamaño— alcanza si el binario
@@ -1678,57 +1678,94 @@ class DynDOLODRunner:
         con append, una corrida anterior exitosa deja su marcador en el archivo,
         la de hoy apendea sus líneas de arranque (la firma CAMBIA), muere a mitad
         con `rc == 0` y toca la salida — los cuatro conjuntos satisfechos sobre
-        trabajo a medias. El modo de escritura real del binario no está
-        documentado ni es auditable desde el árbol, así que acá no se asume:
-        **el marcador se busca sólo en los bytes que no estaban antes**, que es
-        correcto bajo las DOS semánticas. (Revisores qodo y CodeRabbit, PR #488.)
+        trabajo a medias. El modo de escritura NORMAL del binario está
+        documentado y no hace falta asumirlo: el log normal apendea entre
+        sesiones (dyndolod.info/Messages, citado abajo). La firma mtime+tamaño
+        aísla correctamente ESE append documentado —y si no había log antes,
+        todo el archivo es de esta corrida—, pero NO distingue del todo una
+        reescritura: un archivo reemplazado/truncado que termine MÁS GRANDE que
+        el previo se recorta igual que un append y los primeros bytes de la
+        corrida actual quedan fuera de su evidencia. Es un riesgo de la
+        heurística bajo comportamiento no documentado, no un falso verde medido
+        en DynDOLOD real, y este commit no lo resuelve (está fuera de su
+        propiedad; ver el residual abajo). **El marcador se busca sólo en los
+        bytes que no estaban antes.** (Revisores qodo y CodeRabbit, PR #488.)
 
-        La asimetría con los terminales es deliberada: los `Error:` se clasifican
-        sobre el log ENTERO y el marcador sólo sobre la cola. Las dos decisiones
-        caen para el mismo lado — un terminal heredado da rojo, un marcador
-        heredado también—, y ese lado es el revisable.
+        **La misma delimitación vale para los terminales**, no sólo para el
+        marcador: la documentación oficial dice que el log normal apendea entre
+        sesiones (dyndolod.info/Messages: *"All messages are appended … when the
+        tool is closed"*), así que un `Fatal:` de una sesión fallida anterior
+        queda en el prefijo y, clasificado sobre el log completo, enrojecería
+        para siempre TODA corrida buena posterior — un falso rojo que no se
+        auto-repara hasta que el operador trunque el log a mano. Por eso esta
+        función devuelve además el TEXTO que esta corrida agregó: bajo el append
+        documentado es la cola a partir de la firma previa, y si no había log
+        antes es el archivo entero. El llamador clasifica el veredicto entero
+        —marcador y terminales— sobre ese texto.
 
-        **Lo que queda afuera, dicho y no disimulado:** si el log cambió de mtime
-        y NO creció, esto lo toma como truncado-y-reescrito y acepta el marcador.
-        Una corrida que abriera el log, no escribiera nada y saliera con `rc == 0`
-        cae en esa rama con el marcador viejo. Distinguirla exige firmar el
-        CONTENIDO previo (hash), y eso es una pasada completa por un archivo de
-        decenas de MB antes de cada lanzamiento. Se prefirió el rojo falso cero
-        sobre la corrida buena que reescribe su log al mismo tamaño —que es
-        frecuente— antes que cerrar un hueco que exige, además de todo lo demás,
-        un binario que no escriba absolutamente nada.
+        **Lo que queda afuera, dicho y no disimulado — la firma mtime+tamaño no
+        distingue todas las anomalías:** (a) si el log cambió de mtime y NO
+        creció, se lo toma como truncado-y-reescrito y acepta el marcador: una
+        corrida que abriera el log, no escribiera nada y saliera con `rc == 0`
+        cae en esa rama con el marcador viejo; (b) un archivo reemplazado que
+        termina MÁS GRANDE que el previo se recorta como si fuera append: los
+        primeros bytes de la corrida actual quedan fuera de su evidencia.
+        Distinguir esos casos exige firmar el CONTENIDO previo (hash), una
+        pasada completa por un archivo de decenas de MB antes de cada
+        lanzamiento. Se prefirió el rojo falso cero sobre la corrida buena que
+        reescribe su log al mismo tamaño —que es frecuente— antes que cerrar
+        huecos que exigen, además de todo lo demás, un binario que se comporte
+        fuera de lo documentado. Ninguno de los dos casos se resuelve en este
+        commit: están fuera de su propiedad.
 
         Returns:
-            ``(completo, motivo)``. `motivo` es ``None`` cuando no hay nada que
-            explicarle al operador: o la corrida está completa, o el marcador
-            simplemente no aparece y el diagnóstico genérico lo pone el llamador.
+            ``(completo, motivo, de_esta_corrida)``. `motivo` es ``None`` cuando
+            no hay nada que explicarle al operador: o la corrida está completa, o
+            el marcador simplemente no aparece y el diagnóstico genérico lo pone
+            el llamador. `de_esta_corrida` es el texto que esta corrida agregó
+            (puede ser el archivo completo, la cola, o ``""`` si no hay ventana
+            atribuible: el log no cambió o la frontera temporal es
+            indeterminada): es la evidencia sobre la que se clasifican los
+            terminales, y vacía significa que ninguna línea histórica se le
+            atribuye a esta corrida.
         """
-        # Si el marcador no está en NINGUNA parte del archivo, tampoco está en la
-        # cola: se corta acá para no releer un log de decenas de MB al pedo.
-        if not marcador_en_el_archivo:
-            return False, None
-
+        # Cuando la frontera temporal es INDETERMINADA, la ventana atribuible a
+        # esta corrida es vacía (``""``), no el archivo completo: sin frontera no
+        # hay con qué afirmar que UNA línea histórica es de esta corrida, y
+        # atribuirle un `Fatal:` viejo ensucia el diagnóstico con una falsa causa.
+        # El run sigue fail-closed por el motivo; la evidencia se declara
+        # indeterminada en vez de heredarse.
         if firma_previa_del_log is None:
-            return False, (
+            return (
+                False,
                 f"No se pudo sondear el log de {tool} ANTES de lanzar, así que el marcador de "
-                "completitud que tiene no se puede atribuir a esta corrida ni a una anterior."
+                "completitud que tiene no se puede atribuir a esta corrida ni a una anterior.",
+                "",
             )
 
         firma_actual = self._firma_del_log(tool)
         if firma_actual is None:
-            return False, (
+            return (
+                False,
                 f"No se pudo sondear el log de {tool} DESPUÉS de la corrida, así que no hay con qué "
-                "verificar que el marcador de completitud sea de ésta."
+                "verificar que el marcador de completitud sea de ésta.",
+                "",
             )
         if firma_actual == _SIN_ARTEFACTO:
-            return False, (
+            return (
+                False,
                 f"El log de {tool} desapareció entre que se leyó y que se verificó: no se reporta "
-                "éxito sobre evidencia que ya no está."
+                "éxito sobre evidencia que ya no está.",
+                "",
             )
         if firma_actual == firma_previa_del_log:
-            return False, (
+            # El log no cambió: esta corrida no escribió NADA, así que su evidencia
+            # es vacía — ni el marcador ni un terminal del archivo pueden ser de HOY.
+            return (
+                False,
                 f"El marcador de completitud de {tool} está en el log, pero el log no cambió "
-                "durante la corrida: es la evidencia de una corrida anterior, no de ésta."
+                "durante la corrida: es la evidencia de una corrida anterior, no de ésta.",
+                "",
             )
 
         # `_SIN_ARTEFACTO` acá significa "no había log antes": todo el archivo es
@@ -1746,13 +1783,24 @@ class DynDOLODRunner:
         # está leído: releer el archivo sería una segunda pasada por nada.
         de_esta_corrida = texto if desde == 0 else self._leer_log(tool, desde_byte=desde)
         if de_esta_corrida is None:
-            return False, (f"No se pudo releer el log de {tool} para aislar lo que escribió esta corrida.")
+            return (
+                False,
+                f"No se pudo releer el log de {tool} para aislar lo que escribió esta corrida.",
+                "",
+            )
+
+        # Si el marcador no está en NINGUNA parte del archivo, tampoco está en la
+        # cola: el diagnóstico genérico lo pone el llamador.
+        if not marcador_en_el_archivo:
+            return False, None, de_esta_corrida
 
         if any(marcador in de_esta_corrida for marcador in MARCADORES_DE_COMPLETITUD[tool]):
-            return True, None
-        return False, (
+            return True, None, de_esta_corrida
+        return (
+            False,
             f"El marcador de completitud de {tool} está en el log, pero en la parte que YA existía "
-            "antes de esta corrida: es de una corrida anterior. Ésta no declaró haber terminado."
+            "antes de esta corrida: es de una corrida anterior. Ésta no declaró haber terminado.",
+            de_esta_corrida,
         )
 
     def _candidatos_de_salida(self, tool: str) -> list[pathlib.Path]:
@@ -1931,14 +1979,21 @@ class DynDOLODRunner:
             ]
         else:
             terminales, warnings, marcador_en_el_archivo = self._parse_log(texto, tool)
-            errors = list(terminales)
 
             # El marcador tiene que ser de ESTA corrida, no de la anterior. Un log
             # viejo con marcador + una corrida que tocó la salida y murió antes de
             # reescribirlo satisface los cuatro conjuntos sobre trabajo a medias.
-            completo, motivo = self._validar_completitud_de_la_corrida(
+            completo, motivo, de_esta_corrida = self._validar_completitud_de_la_corrida(
                 tool, texto, marcador_en_el_archivo, firma_previa_del_log
             )
+            # La MISMA delimitación vale para los terminales: un `Fatal:` de una
+            # sesión anterior vive en el prefijo de un log que apendea y no puede
+            # enrojecer la corrida que no lo emitió (dyndolod.info/Messages: "All
+            # messages are appended … when the tool is closed"). Si la evidencia de
+            # esta corrida difiere del archivo completo, se reclasifica sobre ella.
+            if de_esta_corrida != texto:
+                terminales, warnings, _ = self._parse_log(de_esta_corrida, tool)
+            errors = list(terminales)
             if motivo:
                 errors.append(motivo)
 
