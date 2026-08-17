@@ -131,10 +131,19 @@ doc-vs-código — el modo de falla que ese archivo existe para atajar.
 > exactamente lo que el preset satisface sin escribir un solo archivo ahí. Dejarla
 > como estaba no era esperar a T2: era conservar un blocker que se puede cumplir
 > con un chequeo insuficiente. Se endureció a las tres condiciones (log + archivos
-> + sin desvío por preset) en este mismo cambio. El mismo §2.9 ya invita al
-cambio: *"there is no completeness marker other than the log … Anyone with a real
-rig: confirm when `DynDOLOD.esp` is written, and this criterion can be tightened."*
-El rig del 2026-08-10 lo confirmó (t3 > t4).
+> + sin desvío por preset) en este mismo cambio.
+
+El propio §2.9 punto 3 invita a apretar el criterio: *"there is no completeness
+marker other than the log … Anyone with a real rig: confirm when `DynDOLOD.esp` is
+written, and this criterion can be tightened."* El rig del 2026-08-10 **lo midió**
+(t3 > t4) — informe fuera del repo y una sola corrida, así que entra como premisa
+a re-verificar con la fixture commiteada, **no como hecho cerrado** (misma lectura
+que la fila `U-06` del inventario; decir "lo confirmó" contradiría ese registro).
+
+Y no alcanza para tachar la frase del SOP: §2.9 dice *"an assumption nobody has
+verified **against the binary**"*, y eso sigue siendo cierto — el rig observó
+*comportamiento* una vez, que es evidencia más débil que el análisis del binario.
+Las dos afirmaciones conviven; la del SOP no está vencida y por eso no se toca acá.
 
 **2. Hay una exención de ancla acoplada a esa misma regla.** En
 `tests/test_dyndolod_service.py:3452-3463`, los registros `dyndolod_log_ausente` y

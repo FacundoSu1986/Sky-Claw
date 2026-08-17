@@ -227,8 +227,43 @@ def test_todo_test_citado_como_verificacion_existe() -> None:
     assert not faltantes, f"el inventario cita tests que no existen: {sorted(faltantes)}"
 
 
-_CITA_DE_RIG_FECHADO = re.compile(r"rig(?: T\d+)? \d{4}-\d{2}-\d{2}")
+# "rig" seguido de una fecha a corta distancia. El hueco de hasta 15 caracteres es
+# el punto del patrón: cubre `rig 2026-08-10`, `rig T5 2026-08-11`, `rig del …`,
+# `rig, …` y `rig de …` sin enumerar conectores a mano. Exigir el formato canónico
+# dejaba pasar una fila que escribiera "rig del 2026-08-10" — variante que este
+# mismo repo ya usa en `docs/design/plans/` — con CI en verde (hallazgo del revisor
+# Regression & Test Oracle, PR #485). El límite es corto a propósito: sin él, una
+# fila con "rig humano" en una celda y una fecha cualquiera en otra pediría la
+# marca sin afirmar nada de rig.
+_CITA_DE_RIG_FECHADO = re.compile(r"rig\b.{0,15}?\d{4}-\d{2}-\d{2}")
 _MARCA_DE_EVIDENCIA_EXTERNA = "fuera del repo"
+
+
+def test_el_patron_de_cita_de_rig_reconoce_las_variantes_que_se_escriben() -> None:
+    """El ancla de evidencia externa vale lo que valga su patrón.
+
+    Un oráculo que solo reconoce el formato canónico deja el agujero justo donde
+    importa: la fila futura que escriba la fecha con otro conector pasa sin marca y
+    nadie se entera. Se enumeran las variantes que SÍ deben disparar y las frases
+    de trabajo pendiente que NO, porque las dos mitades son el contrato.
+    """
+    afirman_un_hecho = (
+        "rig 2026-08-10",
+        "rig T5 2026-08-11",
+        "rig del 2026-08-10",
+        "rig, 2026-08-10",
+        "rig de 2026-08-10",
+    )
+    for cita in afirman_un_hecho:
+        assert _CITA_DE_RIG_FECHADO.search(cita), f"debería exigir la marca: {cita!r}"
+
+    trabajo_pendiente = (
+        "Bloqueado (rig humano)",
+        "Verificar contra rig real qué severidad usa Pandora",
+        "humano",
+    )
+    for frase in trabajo_pendiente:
+        assert not _CITA_DE_RIG_FECHADO.search(frase), f"no afirma un hecho de rig: {frase!r}"
 
 
 def test_toda_fila_que_afirma_un_hecho_de_rig_declara_que_la_evidencia_es_externa() -> None:
