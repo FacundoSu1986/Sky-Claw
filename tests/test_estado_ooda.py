@@ -18,6 +18,7 @@ from tests.test_rollback_salida import MECANISMO_DE_ROLLBACK, MOTIVO
 
 _RAIZ = pathlib.Path(__file__).resolve().parent.parent
 _INVENTARIO = _RAIZ / "docs" / "pending_ooda_status.md"
+_SOP = _RAIZ / "sky_claw" / "local" / "AGENTS.md"
 _ESTADOS = {"Cerrado", "Parcial", "Abierto", "Bloqueado (rig humano)"}
 _COLUMNAS = ["Ítem", "Estado", "Cerrado en", "Qué falta", "Verificado por"]
 _ITEMS = frozenset(
@@ -291,6 +292,40 @@ def test_el_patron_de_cita_de_rig_reconoce_las_variantes_que_se_escriben() -> No
     )
     for frase in trabajo_pendiente:
         assert not _CITA_DE_RIG_FECHADO.search(frase), f"no afirma un hecho de rig: {frase!r}"
+
+
+def test_el_sop_declara_que_su_evidencia_de_rig_es_externa() -> None:
+    """La misma regla que el inventario, en el archivo que los agentes SÍ cargan.
+
+    `sky_claw/local/AGENTS.md` §2.9 apoya un **blocker de merge** en corridas de
+    rig cuyos informes viven en la máquina del operador. Sin declararlo, un agente
+    —o un maintainer— lee «Rig 2026-08-11 measured …» como hecho establecido y no
+    tiene cómo auditarlo desde el árbol.
+
+    Pasó en el PR #485, y de la peor forma: ese PR introdujo la regla, la cableó
+    sobre la tabla del inventario, y en el MISMO diff escribió una cita fechada
+    nueva en el SOP sin la marca. La regla propia, violada por su propio autor, en
+    el commit que la creaba. Lo atajó el revisor Regression & Test Oracle.
+
+    Se enumeran las fechas: una cita de rig con una fecha no declarada rompe el
+    test hasta que se la agregue a la declaración de la sección. `_tabla()` no
+    cubre este archivo —solo lee el inventario—, así que sin este ancla el SOP no
+    tenía ningún gate equivalente.
+    """
+    texto = _SOP.read_text(encoding="utf-8")
+
+    assert "Rig evidence in this section is EXTERNAL and not auditable from this repo." in texto, (
+        "§2.9 dejó de declarar que su evidencia de rig es externa"
+    )
+
+    citadas = {m.group(1) for m in re.finditer(r"rig[^.\n]{0,20}?(\d{4}-\d{2}-\d{2})", texto, re.IGNORECASE)}
+    citadas |= {m.group(1) for m in re.finditer(r"(\d{4}-\d{2}-\d{2})[^.\n]{0,20}?rig", texto, re.IGNORECASE)}
+    declaradas = {"2026-08-05", "2026-08-10", "2026-08-11"}
+
+    assert citadas == declaradas, (
+        f"el SOP cita corridas de rig fechadas que su declaración no cubre: {sorted(citadas - declaradas)}; "
+        f"o declara fechas que ya no cita: {sorted(declaradas - citadas)}"
+    )
 
 
 def test_la_cita_de_rig_no_se_arma_cruzando_dos_celdas() -> None:
