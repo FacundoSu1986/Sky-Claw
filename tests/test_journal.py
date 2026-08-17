@@ -1401,6 +1401,60 @@ class TestFailOperationRollbackFallidoStandalone:
         assert _fila_cruda(journal, otra)[0] == OperationStatus.COMPLETED.value
 
     @pytest.mark.asyncio
+    async def test_el_retiro_no_arrastra_a_un_fail_operation_concurrente(self, journal_standalone):
+        """Un segundo `fail_operation` en vuelo NO pierde su evidencia por el retiro.
+
+        El retiro introdujo un `resolve → await → stale`: la conexión se resolvía
+        ANTES de tomar el lock, así que una segunda llamada concurrente entraba con
+        la referencia ya cerrada, propagaba "no active connection" y dejaba SU
+        operación en `STARTED` — la misma pérdida de evidencia que este método
+        existe para cerrar, reintroducida por su propia limpieza.
+
+        Reproducido antes del arreglo: la segunda tarea terminaba con
+        `ValueError: no active connection` y su fila en `('started', None)`.
+        """
+        journal = journal_standalone
+        fallida = await _entrada(journal)
+        concurrente = await _entrada(journal)
+
+        real_execute = journal._db.execute
+
+        def execute_que_falla_solo_la_primera(sql, *args, **kwargs):
+            if isinstance(sql, str) and "SET metadata" in sql and args and args[0][1] == fallida:
+                raise sqlite3.OperationalError("write de la primera falla")
+            return real_execute(sql, *args, **kwargs)
+
+        async def rollback_que_falla():
+            raise sqlite3.OperationalError("rollback falla")
+
+        journal._db.execute = execute_que_falla_solo_la_primera
+        journal._db.rollback = rollback_que_falla
+
+        # La segunda tarea arranca mientras la primera sostiene el lock, así que
+        # resuelve su conexión antes de que el retiro ocurra.
+        primera_entro = asyncio.Event()
+        escribir_real = journal._escribir_fallo
+
+        async def escribir_con_barrera(conn, entry_id, evidencia):
+            if entry_id == fallida:
+                primera_entro.set()
+                await asyncio.sleep(0)
+            return await escribir_real(conn, entry_id, evidencia)
+
+        journal._escribir_fallo = escribir_con_barrera
+
+        t_fallida = asyncio.create_task(journal.fail_operation(fallida, error="boom1", metadata={"k": 1}))
+        await asyncio.wait_for(primera_entro.wait(), timeout=5.0)
+        t_concurrente = asyncio.create_task(journal.fail_operation(concurrente, error="boom2", metadata={"k": 2}))
+
+        resultados = await asyncio.gather(t_fallida, t_concurrente, return_exceptions=True)
+
+        assert isinstance(resultados[0], sqlite3.OperationalError), "la primera debía fallar"
+        assert resultados[1] is None, f"la concurrente perdió su evidencia por el retiro: {resultados[1]!r}"
+        assert _fila_cruda(journal, fallida)[0] == OperationStatus.STARTED.value
+        assert _evidencia(journal, concurrente) == {"k": 2, "error": "boom2"}
+
+    @pytest.mark.asyncio
     async def test_cancelacion_durante_el_cierre_igual_suelta_la_referencia(self, journal_standalone):
         """El cierre es best-effort; soltar la referencia NO.
 

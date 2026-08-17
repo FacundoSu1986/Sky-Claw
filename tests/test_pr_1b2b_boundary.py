@@ -1471,25 +1471,41 @@ def _toma_boundary_del_lifecycle(metodo: ast.FunctionDef | ast.AsyncFunctionDef)
     return False
 
 
+def _es_el_lock_de_self(nodo: ast.expr) -> bool:
+    """``self._lock`` exactamente — no cualquier atributo llamado ``_lock``.
+
+    El dueño importa: ``async with otro._lock`` serializa el lock de otro objeto y
+    deja la conexión de ESTE journal sin proteger. Un predicado único para los dos
+    sitios que lo consultan (item suelto y dentro de un ``Tuple``): duplicar la
+    condición es exactamente el hermano desalineado que este repo colecciona, y
+    acá el gemelo flojo dejaría pasar `otro._lock` agrupado.
+    """
+    return (
+        isinstance(nodo, ast.Attribute)
+        and nodo.attr == "_lock"
+        and isinstance(nodo.value, ast.Name)
+        and nodo.value.id == "self"
+    )
+
+
 def _toma_el_lock_local(metodo: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """``async with self._lock`` en el cuerpo — la serialización del standalone.
 
     Con lifecycle, ``open()`` reemplaza ``self._lock`` por el lock compartido por
     path del manager, así que este mismo ``async with`` sirve a las dos ramas; lo
-    que el ancla defiende es que el mutador tome ALGÚN lock, no cuál.
+    que el ancla defiende es que el mutador tome el lock DEL JOURNAL, sea cual sea
+    el objeto que ese atributo tenga en cada rama.
     """
     for nodo in ast.walk(metodo):
         if not isinstance(nodo, ast.AsyncWith):
             continue
         for item in nodo.items:
             objetivo = item.context_expr
-            if isinstance(objetivo, ast.Attribute) and objetivo.attr == "_lock":
+            if _es_el_lock_de_self(objetivo):
                 return True
             # `async with self._lock, db.execute(...) as cursor:` — el lock puede
             # venir como uno de varios items, y también dentro de un Tuple.
-            if isinstance(objetivo, ast.Tuple) and any(
-                isinstance(e, ast.Attribute) and e.attr == "_lock" for e in objetivo.elts
-            ):
+            if isinstance(objetivo, ast.Tuple) and any(_es_el_lock_de_self(elemento) for elemento in objetivo.elts):
                 return True
     return False
 
@@ -1539,24 +1555,59 @@ def test_ancla_emisores_de_sql_del_journal_congelados() -> None:
     )
 
 
+# Callers de los helpers de `_HELPERS_QUE_ASUMEN_BOUNDARY`, con la serialización
+# EXACTA que sostiene cada uno: `(boundary del lifecycle, lock local)`.
+#
+# Congelar el PAR y no sólo "toma alguno" es lo que cierra el hueco: la rama con
+# lifecycle se serializa con `transaction()` y la standalone con `self._lock`, así
+# que un caller que perdiera su mecanismo seguiría teniendo el otro en `True` y un
+# "toma alguno" pasaría en verde con la mitad de la protección borrada.
+_SERIALIZACION_DE_CALLERS_ESPERADA = {
+    # Rama con lifecycle: entra por `transaction()`. No toma el lock local porque
+    # `open()` ya lo reemplazó por el lock compartido del manager, y ese lo
+    # sostiene `operation()` por dentro.
+    "fail_operation": (True, False),
+    # Rama standalone: conexión propia, sin lifecycle que coordine. El lock local
+    # es el ÚNICO mecanismo que serializa acá.
+    "_escribir_fallo_standalone": (False, True),
+}
+
+
 def test_ancla_los_helpers_sin_boundary_solo_tienen_callers_que_lo_toman() -> None:
-    """Todo caller de un helper que ASUME el boundary debe tomarlo.
+    """Todo caller de un helper que ASUME serialización debe sostenerla.
 
     Es la mitad que ata el inventario a la semántica. Sin esto, sacar
     `fail_operation` del boundary dejando el SQL en `_escribir_fallo` pasaría el
     test de arriba sin cambiar una sola entrada del dict: `_escribir_fallo` ya
     figura como exención legítima y `fail_operation` no emite SQL directo.
+
+    Y se congela el PAR `(boundary, lock)` por igualdad, no un "toma alguno":
+    `fail_operation` delega la rama standalone en `_escribir_fallo_standalone`, y
+    cada uno sostiene un mecanismo distinto. Verificado por mutación: quitarle el
+    `async with self._lock` al helper standalone —el único que serializa la
+    conexión propia— rompe acá, y antes de este par no rompía nada.
     """
     metodos = _cuerpo_de_operation_journal()
     assert set(_HELPERS_QUE_ASUMEN_BOUNDARY) <= {m.name for m in metodos}, "helper inexistente en el ancla"
 
-    infractores: list[str] = []
+    observado: dict[str, tuple[bool, bool]] = {}
     for helper in sorted(_HELPERS_QUE_ASUMEN_BOUNDARY):
         callers = [m for m in metodos if m.name != helper and _llama_a(m, helper)]
         assert callers, f"{helper} quedó sin callers: revisá si sigue haciendo falta"
-        infractores += [f"{m.name} → {helper}" for m in callers if not _toma_boundary_del_lifecycle(m)]
+        for caller in callers:
+            observado[caller.name] = (
+                _toma_boundary_del_lifecycle(caller),
+                _toma_el_lock_local(caller),
+            )
 
-    assert infractores == [], (
-        "estos callers emiten SQL a través de un helper sin tomar el boundary del "
-        f"lifecycle: {infractores}. El helper asume un boundary que nadie sostiene."
+    assert observado == _SERIALIZACION_DE_CALLERS_ESPERADA, (
+        "cambió la serialización de los callers que emiten SQL a través de un "
+        f"helper: {observado}. Cada uno tiene que sostener el mecanismo que le "
+        "corresponde —boundary del lifecycle o lock local—; el helper asume una "
+        "protección que alguien debe estar sosteniendo."
+    )
+
+    sin_proteccion = [nombre for nombre, (bnd, lock) in observado.items() if not (bnd or lock)]
+    assert sin_proteccion == [], (
+        f"estos callers emiten SQL a través de un helper sin ninguna serialización: {sin_proteccion}"
     )

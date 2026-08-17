@@ -1350,13 +1350,45 @@ class OperationJournal:
         if error:
             evidencia["error"] = error
 
-        db = await self._ensure_connected()
+        await self._ensure_connected()
 
         if self._lifecycle is not None:
             async with self._lifecycle.transaction(self._db_path) as conn:
                 await self._escribir_fallo(conn, entry_id, evidencia)
         else:
+            await self._escribir_fallo_standalone(entry_id, evidencia)
+
+        logger.error("Operation failed", extra={"entry_id": entry_id, "error": error})
+
+    async def _escribir_fallo_standalone(self, entry_id: int, evidencia: dict[str, Any]) -> None:
+        """Rama sin lifecycle: lock local, un commit, y rollback explícito.
+
+        **La conexión se relee DENTRO del lock, y el reintento es load-bearing.**
+        Resolverla afuera y usarla adentro reintroduce resolve → await → stale —
+        la misma regla que enuncia ``DatabaseLifecycleManager.operation()``—, y
+        acá no es teórica: desde que un rollback fallido RETIRA la conexión, un
+        ``fail_operation`` concurrente que la hubiera resuelto antes del lock
+        entra con una conexión ya cerrada, propaga "no active connection" y deja
+        SU operación en ``STARTED`` sin evidencia. Reproducido con dos
+        ``fail_operation`` concurrentes.
+
+        Pero ``_ensure_connected()`` **no** puede llamarse con el lock tomado:
+        deriva en ``open()``, que termina en ``sweep_stale_pending()``, que pide
+        el mismo lock — y ``asyncio.Lock`` no es reentrante. Es el deadlock que el
+        docstring de ``open()`` ya advierte. Así que el ciclo es: reabrir AFUERA,
+        verificar ADENTRO, y reintentar si la retiraron en el medio. Dos intentos
+        alcanzan porque sólo se vuelve a iterar cuando la conexión fue retirada, y
+        reabrir la instala; el tope evita convertir un fallo repetido en un bucle.
+        """
+        for _ in range(2):
+            await self._ensure_connected()
             async with self._lock:
+                # Lectura fresca bajo el lock: `self._db`, no el valor que
+                # devolvió `_ensure_connected()` antes de esperarlo.
+                db = self._db
+                if db is None:
+                    # Retirada entre el reintento y el lock: reabrir y repetir.
+                    continue
                 try:
                     await self._escribir_fallo(db, entry_id, evidencia)
                     await db.commit()
@@ -1401,8 +1433,12 @@ class OperationJournal:
                         # la commitea junto con su trabajo. Se retira.
                         await self._retirar_conexion_propia(db)
                     raise
+                return
 
-        logger.error("Operation failed", extra={"entry_id": entry_id, "error": error})
+        raise JournalConnectionError(
+            f"La conexión del journal fue retirada dos veces consecutivas al "
+            f"registrar el fallo de la operación {entry_id}"
+        )
 
     async def log_operation(
         self,
