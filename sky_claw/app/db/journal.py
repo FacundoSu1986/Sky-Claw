@@ -1123,45 +1123,322 @@ class OperationJournal:
         )
         return op_id
 
+    @staticmethod
+    def _metadata_previa_fusionable(entry_id: int, crudo: Any) -> dict[str, Any]:
+        """La metadata ya presente en la fila, o ``{}`` si no se puede fusionar.
+
+        Es deliberadamente TOTAL: no propaga. Una fila cuya metadata no se puede
+        leer no puede impedir que se registre un fallo nuevo — el error que
+        :meth:`fail_operation` está intentando persistir tiene prioridad sobre el
+        defecto de la metadata vieja. Los tres motivos de descarte:
+
+        - ``json_invalido``: la columna no parsea (fila truncada, texto plano, o
+          un tipo que ``json.loads`` no acepta).
+        - ``raiz_no_objeto``: parsea, pero la raíz es ``[]`` / ``"texto"`` / un
+          número / ``null``. No hay claves que fusionar.
+        - ``no_reserializable``: es un objeto, pero no sobrevive a
+          ``allow_nan=False``. ``json.loads`` **acepta** los literales
+          ``NaN``/``Infinity`` que ``json.dumps`` estricto no emite, así que una
+          fila legacy puede llegar acá con un ``float('nan')`` adentro y hacer
+          fallar la re-serialización de la fusión.
+        - ``limite_de_recursion``: la estructura es demasiado profunda para el
+          parser o el serializador. ``RecursionError`` hereda de ``RuntimeError``,
+          **no** de ``ValueError``/``TypeError``, así que sin nombrarlo explícito
+          se escapaba del clasificador y hundía el reporte del fallo — justo lo
+          que este método promete que no pasa. Se nombra en vez de ensanchar el
+          ``except``: un ``BaseException`` acá se tragaría la cancelación.
+
+        El WARNING no loguea el contenido descartado: puede traer rutas, nombres
+        de perfil de MO2 o nombres de mod. Sale qué fila y por qué.
+
+        La degradación cubre **solo** esta metadata previa. La del argumento se
+        mantiene estricta y propaga, igual que en :meth:`begin_operation`: ahí no
+        hay dato preexistente que rescatar, y tragarse un argumento inválido
+        ocultaría un bug del caller.
+        """
+        if not crudo:
+            return {}
+
+        motivo = "json_invalido"
+        try:
+            valor = json.loads(crudo)
+        except RecursionError:
+            motivo = "limite_de_recursion"
+        except (ValueError, TypeError):
+            pass
+        else:
+            if not isinstance(valor, dict):
+                motivo = "raiz_no_objeto"
+            else:
+                try:
+                    json.dumps(valor, allow_nan=False)
+                except RecursionError:
+                    motivo = "limite_de_recursion"
+                except ValueError:
+                    motivo = "no_reserializable"
+                else:
+                    return valor
+
+        logger.warning(
+            "Metadata previa ilegible descartada al registrar el fallo de la operación",
+            extra={
+                "event": "journal_metadata_previa_descartada",
+                "entry_id": entry_id,
+                "motivo": motivo,
+            },
+        )
+        return {}
+
+    async def _retirar_conexion_propia(self, db: aiosqlite.Connection) -> None:
+        """Saca de circulación la conexión PROPIA que quedó con la transacción abierta.
+
+        Se invoca **solo** cuando el ``rollback`` del camino standalone falló: ahí
+        la conexión conserva el estado parcial y cualquier escritor posterior lo
+        commitea junto con su propio trabajo. Reproducido: un
+        ``complete_operation`` de una operación **no relacionada** dejaba durable
+        el ``FAILED`` sin evidencia de la primera.
+
+        Cerrar la conexión aborta la transacción, y soltar la referencia hace que
+        el próximo :meth:`_ensure_connected` reabra una limpia. Es best-effort y
+        nunca eclipsa el fallo original: el llamador ya está propagando la
+        excepción primaria, que es la que el consumidor necesita ver.
+
+        **Lo que no puede saltearse es soltar la referencia**, porque es el paso
+        que impide la reutilización. El cierre es un ``await`` y puede no
+        completar nunca si hay una cancelación pendiente; si queda a medias el fd
+        sobrevive hasta el GC, que es peor que un cierre limpio pero
+        incomparablemente mejor que dejar que el siguiente escritor commitee el
+        estado parcial.
+
+        Eso está protegido DOS veces, y son redundantes a propósito: la
+        referencia se suelta antes del ``await``, y el cierre va bajo
+        ``suppress(BaseException)`` para que tampoco importe si se invierte el
+        orden. Verificado por mutación: quitar una sola de las dos no rompe nada
+        —cada una alcanza—, y quitar ambas tumba
+        ``test_cancelacion_durante_el_cierre_igual_suelta_la_referencia``.
+
+        El orden es, además, el inverso al de ``_invalidate_under_boundary`` del
+        lifecycle —que cierra y después muta el registro— y las dos elecciones son
+        correctas para su dueño: ahí la conexión es COMPARTIDA, retener la entrada
+        es lo que permite que ``shutdown_all()`` reintente el cierre, y retirarla
+        antes dejaría un fd vivo sin dueño. Acá la conexión es propia y no hay
+        nadie que vaya a reintentar.
+
+        **Solo standalone, y a propósito.** Con lifecycle, ``transaction()`` ya
+        cierra la conexión y deja el path fail-closed vía
+        ``_invalidate_under_boundary`` (cerrar primero, mutar el registro después,
+        conservando ownership si el cierre no se confirma); duplicarlo acá
+        competiría con esa política. Tampoco se usa ``evict_connection``: está
+        congelada sin callers de producción y acá no hay lifecycle al que
+        pedírsela — la conexión es nuestra.
+        """
+        # Guard de identidad: sostenemos el lock, pero no cuesta nada y evita
+        # retirar la conexión de otro dueño si esto se llamara desde otro sitio.
+        if self._db is db:
+            self._db = None
+            self._owns_conn = False
+
+        # Best-effort, y DESPUÉS de soltar la referencia. `BaseException` para que
+        # una cancelación pendiente no impida el WARNING de abajo; no se absorbe
+        # nada que importe: el llamador ya está propagando su excepción y, si la
+        # cancelación es para esta tarea, el `raise` del llamador la entrega.
+        with contextlib.suppress(BaseException):
+            await db.close()
+
+        logger.warning(
+            "Conexión propia del journal retirada tras un rollback fallido; se reabrirá en el próximo uso",
+            extra={
+                "event": "journal_conexion_propia_retirada",
+                "db_path": str(self._db_path),
+            },
+        )
+
+    async def _escribir_fallo(
+        self,
+        conn: aiosqlite.Connection,
+        entry_id: int,
+        evidencia: dict[str, Any],
+    ) -> None:
+        """Emite el estado FAILED y su evidencia. ASUME el boundary sostenido.
+
+        No abre transacción ni commitea: eso es del llamador, y es lo que hace
+        que ambos ``UPDATE`` caigan en la MISMA unidad. Un solo cuerpo para las
+        dos ramas de :meth:`fail_operation` — dos copias del mismo SQL son
+        exactamente el hermano desalineado que este repo colecciona.
+
+        El ``UPDATE`` del estado va acá y **no** delegado en
+        :meth:`_update_status`: ese método abre su propio boundary, y
+        ``asyncio.Lock`` no es reentrante — anidarlo cuelga la operación para
+        siempre en vez de propagar.
+        """
+        await conn.execute(
+            "UPDATE journal_entries SET status = ? WHERE id = ?",
+            (OperationStatus.FAILED.value, entry_id),
+        )
+
+        if not evidencia:
+            return
+
+        # La previa se relee DENTRO del boundary, no antes: leerla afuera
+        # reintroduce read → await → stale, y otro escritor podría haber
+        # cambiado la columna en el medio.
+        async with conn.execute(
+            "SELECT metadata FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None:
+            # Entrada inexistente: el UPDATE de arriba tampoco afectó filas.
+            return
+
+        previa = self._metadata_previa_fusionable(entry_id, row[0])
+        await conn.execute(
+            "UPDATE journal_entries SET metadata = ? WHERE id = ?",
+            (json.dumps({**previa, **evidencia}, allow_nan=False), entry_id),
+        )
+
     async def fail_operation(self, entry_id: int, error: str = "", metadata: dict[str, Any] | None = None) -> None:
         """
-        Marcar una operación como fallida.
+        Marcar una operación como fallida, conservando su evidencia.
+
+        La evidencia final de la fila es::
+
+            metadata_previa + metadata (argumento) + {"error": error} si error != ""
+
+        **Precedencia.** El argumento ``metadata`` pisa las claves homónimas de
+        la metadata previa: es información más nueva sobre la misma operación. La
+        clave ``error`` es **canónica del parámetro ``error``** y se aplica al
+        final, así que un ``metadata={"error": ...}`` no puede sustituirla en
+        silencio. Un ``error`` vacío **no** crea la clave: ausencia de mensaje y
+        mensaje vacío no son lo mismo.
+
+        La fusión se resuelve en Python y **no** con ``json_patch`` a propósito:
+        RFC 7396 borra las claves cuyo valor es ``null``, que sería la misma
+        pérdida de evidencia que este método debe evitar.
+
+        **Atomicidad.** Estado y evidencia son UNA transición: un solo boundary,
+        un solo commit. Antes eran dos —``_update_status`` commiteaba y recién
+        después se tocaba la metadata—, y quedaba una fila ``FAILED`` con la
+        evidencia ausente de forma durable si algo caía en el medio.
+
+        **La cancelación, el rollback y la cuarentena NO se manejan acá.** Con
+        lifecycle, ``transaction()`` ya completa el rollback aunque cancelen al
+        llamador, conserva la identidad de la cancelación, preserva la excepción
+        primaria y pone el path en cuarentena si el cierre no se confirma.
+        Reimplementar eso en este método competiría con esa política; el camino
+        standalone —conexión propia, sin lifecycle que coordine— sí necesita su
+        rollback explícito.
 
         Args:
             entry_id: ID de la entrada a actualizar.
-            error: Mensaje de error.
-            metadata: Metadatos adicionales del error.
-        """
-        await self._update_status(entry_id, OperationStatus.FAILED)
+            error: Mensaje de error. Vacío = no se registra la clave ``error``.
+            metadata: Metadatos adicionales del error. Se fusionan con la
+                metadata previa de la fila.
 
-        if metadata:
-            db = await self._ensure_connected()
-            if self._lifecycle is not None:
-                # PR-1b2b: DOS boundaries separados (deuda #466 de atomicidad
-                # preservada, no resuelta acá): _update_status arriba ya fue su
-                # propia transaction; el write de metadata es otra.
-                async with self._lifecycle.transaction(self._db_path) as conn:
-                    await conn.execute(
-                        """
-                        UPDATE journal_entries
-                        SET metadata = json_set(COALESCE(metadata, '{}'), '$.error', ?)
-                        WHERE id = ?
-                        """,
-                        (error, entry_id),
-                    )
-            else:
-                async with self._lock:
-                    await db.execute(
-                        """
-                        UPDATE journal_entries
-                        SET metadata = json_set(COALESCE(metadata, '{}'), '$.error', ?)
-                        WHERE id = ?
-                        """,
-                        (error, entry_id),
-                    )
-                    await db.commit()
+        Raises:
+            sqlite3.Error: Si falla la escritura o el commit. La transacción se
+                deshace antes de propagar; no queda estado parcial.
+            ValueError: Si ``metadata`` contiene ``NaN``/``Infinity``, y
+                ``TypeError`` si contiene un valor que ``json.dumps`` no sabe
+                serializar. Mismo criterio estricto que ``begin_operation`` para
+                el dato que aporta el caller.
+        """
+        # La evidencia se compone ANTES de tocar la DB: es cálculo puro y no
+        # tiene por qué ocurrir con el boundary tomado.
+        evidencia: dict[str, Any] = dict(metadata) if metadata else {}
+        if error:
+            evidencia["error"] = error
+
+        await self._ensure_connected()
+
+        if self._lifecycle is not None:
+            async with self._lifecycle.transaction(self._db_path) as conn:
+                await self._escribir_fallo(conn, entry_id, evidencia)
+        else:
+            await self._escribir_fallo_standalone(entry_id, evidencia)
 
         logger.error("Operation failed", extra={"entry_id": entry_id, "error": error})
+
+    async def _escribir_fallo_standalone(self, entry_id: int, evidencia: dict[str, Any]) -> None:
+        """Rama sin lifecycle: lock local, un commit, y rollback explícito.
+
+        **La conexión se relee DENTRO del lock, y el reintento es load-bearing.**
+        Resolverla afuera y usarla adentro reintroduce resolve → await → stale —
+        la misma regla que enuncia ``DatabaseLifecycleManager.operation()``—, y
+        acá no es teórica: desde que un rollback fallido RETIRA la conexión, un
+        ``fail_operation`` concurrente que la hubiera resuelto antes del lock
+        entra con una conexión ya cerrada, propaga "no active connection" y deja
+        SU operación en ``STARTED`` sin evidencia. Reproducido con dos
+        ``fail_operation`` concurrentes.
+
+        Pero ``_ensure_connected()`` **no** puede llamarse con el lock tomado:
+        deriva en ``open()``, que termina en ``sweep_stale_pending()``, que pide
+        el mismo lock — y ``asyncio.Lock`` no es reentrante. Es el deadlock que el
+        docstring de ``open()`` ya advierte. Así que el ciclo es: reabrir AFUERA,
+        verificar ADENTRO, y reintentar si la retiraron en el medio. Dos intentos
+        alcanzan porque sólo se vuelve a iterar cuando la conexión fue retirada, y
+        reabrir la instala; el tope evita convertir un fallo repetido en un bucle.
+        """
+        for _ in range(2):
+            await self._ensure_connected()
+            async with self._lock:
+                # Lectura fresca bajo el lock: `self._db`, no el valor que
+                # devolvió `_ensure_connected()` antes de esperarlo.
+                db = self._db
+                if db is None:
+                    # Retirada entre el reintento y el lock: reabrir y repetir.
+                    continue
+                try:
+                    await self._escribir_fallo(db, entry_id, evidencia)
+                    await db.commit()
+                except BaseException as fallo_primario:
+                    # Soltar el lock con la transacción abierta dejaría que el
+                    # siguiente escritor commitee el estado parcial que este
+                    # boundary descarta. Hay TRES desenlaces y cada uno tiene su
+                    # respuesta; el invariante común es que la conexión no queda
+                    # instalada si el rollback no se pudo confirmar.
+                    rollback_confirmado = False
+                    try:
+                        await db.rollback()
+                        rollback_confirmado = True
+                    except Exception:
+                        # Invariante de `app/db/AGENTS.md`: "un rollback fallido
+                        # conserva evidencia y no se reporta como éxito". Se
+                        # loguea porque el `raise` de abajo propaga la excepción
+                        # PRIMARIA —la que el caller necesita— y ésta quedaría
+                        # invisible.
+                        logger.exception(
+                            "El rollback de fail_operation falló; la transacción puede haber quedado sucia",
+                            extra={"entry_id": entry_id},
+                        )
+                    except BaseException as fallo_de_cleanup:
+                        # Cancelación NUEVA durante el rollback (o cualquier otra
+                        # BaseException). NO se absorbe —conserva su identidad y se
+                        # re-lanza— pero tampoco puede saltear la limpieza: sin
+                        # esto, la conexión quedaba instalada con la transacción
+                        # abierta y el siguiente escritor commiteaba el FAILED
+                        # parcial. Reproducido con `complete_operation` de una
+                        # operación no relacionada.
+                        #
+                        # La primaria viaja como `__cause__` y no solo como
+                        # `__context__`: es el mismo criterio que
+                        # `_rollback_after_failure` del lifecycle, que también
+                        # hace `raise final_cancellation from diagnostic_error`.
+                        await self._retirar_conexion_propia(db)
+                        raise fallo_de_cleanup from fallo_primario
+                    if not rollback_confirmado:
+                        # Loguear y soltar el lock NO alcanza: la transacción
+                        # sigue abierta sobre la conexión y el siguiente escritor
+                        # la commitea junto con su trabajo. Se retira.
+                        await self._retirar_conexion_propia(db)
+                    raise
+                return
+
+        raise JournalConnectionError(
+            f"La conexión del journal fue retirada dos veces consecutivas al "
+            f"registrar el fallo de la operación {entry_id}"
+        )
 
     async def log_operation(
         self,
