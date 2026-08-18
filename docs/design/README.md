@@ -21,6 +21,7 @@ Diseño acordado antes de implementar: contexto, decisión y alcance.
 - [#411 — Salida administrada y reversible de Pandora](specs/2026-07-31-pandora-managed-output-design.md)
 - [#454 — Perfil FOMOD y frontera segura de resultados de tools](specs/2026-08-09-fomod-profile-and-tool-output-security-design.md)
 - [Knowledge Capture — captura local de casos verificables](specs/2026-08-11-knowledge-capture-design.md) — spec sin implementación: acompaña a [ADR 0008](../adr/0008-knowledge-case.md) y precede a su desarrollo, así que no lleva número de PR de implementación como el resto del índice.
+- [Game Design Profile — intención de diseño del usuario](specs/2026-08-18-game-design-profile-intent.md) — propuesta documental sin implementación: registra el boundary y las fases futuras para traducir objetivos de experiencia a un perfil validado antes de cualquier planificación o mutación.
 
 ## Planes de implementación (`plans/`)
 
