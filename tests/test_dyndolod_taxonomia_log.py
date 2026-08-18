@@ -333,23 +333,38 @@ async def test_falta_solo_el_marcador_y_la_corrida_sale_roja(tmp_path: pathlib.P
     """`rc == 0`, artefacto fresco, log sin terminales, y SOLO falta el marcador.
 
     Es el único caso que hace fallar al conjunto `AND completo` de forma
-    independiente. El fixture del cierre mid-run no sirve para esto: trae 101
-    errores *y* ausencia de marcador, así que cae por el gate de terminales
-    aunque la implementación nunca mire la completitud — una mutación que borre
-    el conjunto nuevo seguiría verde (revisor Codex, PR #485).
+    independiente. El fixture del cierre mid-run no sirve para esto: trae una
+    línea `Error:` y una `Fatal:` *y* ausencia de marcador, así que cae por el
+    gate de terminales aunque la implementación nunca mire la completitud — una
+    mutación que borre el conjunto nuevo seguiría verde (revisor Codex, PR #485).
+
+    El log lo escribe LA CORRIDA. Escribirlo antes del `patch` lo dejaba idéntico
+    entre las dos puntas, así que desde que la continuidad se demuestra por digest
+    el rojo venía de "el log no creció" y este caso no aislaba nada — el oráculo
+    se rompió por el otro lado (revisor CodeRabbit, PR #488; medido, no leído).
     """
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / "DynDOLOD_Output"
-    _escribir_log(tmp_path, "DynDOLOD", LOG_SIN_MARCADOR)
 
-    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path, "DynDOLOD", lambda: _escribir_salida(staging, "DynDOLOD.esp"), log=LOG_SIN_MARCADOR
+        ),
+    )
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_dyndolod(preset="Medium")
 
     assert result.success is False
-    # Y la prueba de que cae por completitud y no por otra cosa: no hay terminales.
-    assert not [e for e in result.errors if "Fatal" in e or "Exception" in e]
+    # Y cae POR completitud: el ÚNICO error es su diagnóstico. Sin terminales (el
+    # log está limpio) y sin motivo de continuidad (la corrida escribió su log),
+    # no queda otra causa posible. Aserción sobre la conducta REAL medida, no
+    # sobre `errors == []`: el contrato cambió y hoy la completitud ausente SÍ
+    # redacta un motivo, que es lo que el propio revisor pidió que no fuera
+    # "Unknown error".
+    assert len(result.errors) == 1, result.errors
+    assert "marcador de completitud" in result.errors[0], result.errors
 
 
 @pytest.mark.asyncio
@@ -370,19 +385,31 @@ async def test_la_corrida_cortada_despues_de_lodgen_sale_roja(tmp_path: pathlib.
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
     staging = config.output_root / "DynDOLOD_Output"
-    _escribir_log(
-        tmp_path,
-        "DynDOLOD",
-        "[00:00:01] Using Output Path: C:\\Modding\\out\\\n"
-        "[00:19:55] LODGenx64Win6.exe generated object LOD for Tamriel successfully\n",
-    )
 
-    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
+    # El log de LODGen lo escribe LA CORRIDA: escrito antes del `patch` queda
+    # idéntico entre las dos puntas y el rojo lo da la continuidad —"el log no
+    # creció"—, no la completitud. Así este caso volvía a pasar por la razón
+    # equivocada (revisor CodeRabbit, PR #488).
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "DynDOLOD",
+            lambda: _escribir_salida(staging, "DynDOLOD.esp"),
+            log=(
+                "[00:00:01] Using Output Path: C:\\Modding\\out\\\n"
+                "[00:19:55] LODGenx64Win6.exe generated object LOD for Tamriel successfully\n"
+            ),
+        ),
+    )
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_dyndolod(preset="Medium")
 
     assert result.success is False
     assert result.return_code == 0, "el exit code era 0: lo que falla es la completitud"
+    # Y cae POR la completitud: el hito de LODGen no es un marcador de fin.
+    assert len(result.errors) == 1, result.errors
+    assert "marcador de completitud" in result.errors[0], result.errors
 
 
 @pytest.mark.asyncio
