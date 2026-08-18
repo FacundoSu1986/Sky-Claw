@@ -160,6 +160,14 @@ Cuando esta feature llegue a mutar estado, deberá reutilizar los mecanismos exi
 
 No se debe permitir un camino `texto del usuario -> LLM -> xEdit/LOOT` que eluda estos boundaries.
 
+### Ruta LLM y aprobación humana
+
+Las superficies conversacionales actuales pueden interpretar la intención y producir un `GameDesignProfile`, análisis o propuestas declarativas. Eso **no** las autoriza a ejecutar una mutación.
+
+`AsyncToolRegistry` no debe convertirse implícitamente en una ruta mutante de Game Design ni usarse para eludir el approval gate. Si una futura propuesta requiere modificar estado, `GD-06`/`GD-07` deberán transferirla a la ruta de rituales/autorización que aplique `ActionManifest`/preview, HITL y los guardrails correspondientes antes de llegar a runners mutantes.
+
+Si en el futuro se decide habilitar otra superficie de ejecución, esa capacidad deberá tener un gate HITL explícito y documentarse mediante una decisión arquitectónica separada; no se asume por esta spec.
+
 ## Fases candidatas
 
 Este documento no abre implementación, pero registra una secuencia recomendada para futuras tareas:
@@ -167,11 +175,11 @@ Este documento no abre implementación, pero registra una secuencia recomendada 
 1. **GD-00 — Diseño:** ADR/spec del contrato y semántica exacta.
 2. **GD-01 — Perfil:** DTO `GameDesignProfile` inmutable, versionado y validado; sin LLM.
 3. **GD-02 — Interpreter:** lenguaje natural -> perfil estructurado; sin herramientas mutantes.
-4. **GD-03 — Capability Planner:** clasificar qué objetivos son soportados, parciales, desconocidos o requieren runtime/mods.
+4. **GD-03 — Capability Planner:** clasificar cada objetivo como `SUPPORTED`, `PARTIAL`, `REQUIRES_MOD`, `REQUIRES_RUNTIME`, `UNKNOWN` o `UNSUPPORTED`.
 5. **GD-04 — Modlist comparison:** comparar el perfil con mods, load order y evidencia xEdit disponible; solo lectura.
 6. **GD-05 — ModificationPlan:** producir propuestas declarativas sin ejecutarlas.
-7. **GD-06 — Preview/HITL:** integrar propuestas al manifiesto y aprobación existentes.
-8. **GD-07 — Execution adapters:** permitir mutaciones solo mediante los rituales y runners existentes.
+7. **GD-06 — Preview/HITL:** integrar propuestas al manifiesto y aprobación existentes; ninguna mutación parte directamente de la ruta LLM.
+8. **GD-07 — Execution adapters:** permitir mutaciones solo mediante la ruta autorizada de rituales, approval gate y runners existentes.
 9. **GD-08 — Post-validation:** medir resultado, FlightReport y rollback.
 10. **Futuro — Runtime policy:** contrato opcional para SkyClaw World Director.
 
