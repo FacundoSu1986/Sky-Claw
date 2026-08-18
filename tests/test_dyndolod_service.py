@@ -1960,16 +1960,45 @@ async def test_exit_cero_con_error_en_log_no_es_exito_dyndolod(tmp_path: pathlib
 
 
 @pytest.mark.asyncio
-async def test_exit_cero_sin_artefacto_no_es_exito(tmp_path: pathlib.Path) -> None:
-    """U-06: exit 0 sin ``DynDOLOD.esp`` en el -o: → success=False."""
+@pytest.mark.parametrize(
+    ("tool", "lanzar"),
+    [
+        ("TexGen", lambda r: r.run_texgen()),
+        ("DynDOLOD", lambda r: r.run_dyndolod(preset="Medium")),
+    ],
+    ids=["TexGen", "DynDOLOD"],
+)
+async def test_exit_cero_sin_artefacto_no_es_exito(tmp_path: pathlib.Path, tool: str, lanzar) -> None:
+    """U-06: exit 0 sin artefacto en el -o: → success=False, POR el artefacto.
+
+    El caso AÍSLA el conjunto de artefacto: la corrida sale con `rc == 0`, escribe
+    su log completo DURANTE la corrida —marcador actual, sin terminales— y no deja
+    artefacto. Los otros tres conjuntos están satisfechos, así que lo único que
+    puede tumbarla es el artefacto.
+
+    Antes no aislaba nada: la corrida no escribía tampoco el log, así que caía por
+    "log ausente" y el conjunto de artefacto no participaba. Medido por mutación:
+    borrar `post.artefacto` de LAS DOS fórmulas de éxito dejaba la suite entera
+    verde — el conjunto que contiene el defecto del preset (#463) no tenía ni un
+    ancla.
+
+    Parametrizado sobre los DOS lanzadores porque la fórmula está escrita dos
+    veces, palabra por palabra: con un solo caso, borrarla de `run_texgen` y
+    dejarla en `run_dyndolod` pasa sin que nadie lo vea.
+    """
     _, runner = _runner_texgen(tmp_path)
 
-    fake = _EjecucionFalsa(return_code=0)
+    # El log lo escribe LA CORRIDA: si se escribiera antes del `patch`, el veredicto
+    # caería por continuidad y volveríamos a probar otra cosa.
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_corrida_que_completa(tmp_path, tool, lambda: None))
     with patch.object(runner, "_execute_process", fake):
-        result = await runner.run_dyndolod(preset="Medium")
+        result = await lanzar(runner)
 
     assert result.success is False
+    assert result.return_code == 0, "el exit code era 0: lo que falla es el artefacto"
     assert result.output_path is not None  # el staging se resuelve aunque no exista
+    # Y cae POR el artefacto: ninguna de las otras tres razones aparece.
+    assert not [e for e in result.errors if "log" in e.lower() or "marcador" in e.lower()], result.errors
 
 
 @pytest.mark.asyncio
@@ -2332,8 +2361,14 @@ async def test_firma_previa_ilegible_no_cuenta_como_artefacto_fresco(tmp_path: p
         return stat_real(self, *args, **kwargs)  # type: ignore[arg-type]
 
     def _corrida_que_no_escribe() -> None:
-        """El proceso sale con 0 sin regenerar nada; el .esp vuelve a ser legible."""
+        """Sale con 0 sin regenerar el .esp; deja su log completo y el .esp legible.
+
+        El log SÍ se escribe: sin él la corrida caería por "log ausente" y el
+        conjunto de artefacto no participaría del veredicto — que es lo que este
+        test tiene que aislar.
+        """
         ilegible["activo"] = False
+        _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     fake = _EjecucionFalsa(return_code=0, al_ejecutar=_corrida_que_no_escribe)
     with patch.object(pathlib.Path, "stat", _stat_falible), patch.object(runner, "_execute_process", fake):

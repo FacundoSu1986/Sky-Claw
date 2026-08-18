@@ -226,6 +226,64 @@ def test_el_cierre_mid_run_es_terminal_y_no_completo() -> None:
     assert completo is False
 
 
+#: Severidades que declaran que la corrida se rompió, en las formas que el binario
+#: usa. `Fatal:` ya vive en `PATRONES_TERMINALES`; `Critical:` y `FAIL:` sólo
+#: vivían en `_ERROR_SUELTO`, que se evalúa DESPUÉS de las categorías de dominio.
+_SEVERIDADES_TERMINALES = ("Critical:", "Fatal:", "FATAL:", "FAIL:")
+
+
+def _id_de_categoria(categoria: tuple[str, ...]) -> str:
+    return "+".join(categoria)
+
+
+@pytest.mark.parametrize("severidad", _SEVERIDADES_TERMINALES)
+@pytest.mark.parametrize("categoria", NO_FATALES_DEL_DOMINIO, ids=_id_de_categoria)
+def test_la_severidad_terminal_le_gana_a_la_categoria_de_dominio(
+    categoria: tuple[str, ...],
+    severidad: str,
+) -> None:
+    """PRODUCTO EXHAUSTIVO: toda categoría no-fatal × toda severidad terminal.
+
+    Las tres cajas se evalúan en orden, y la caja de dominio estaba ANTES que el
+    barrido de severidades sueltas. Consecuencia: una línea que trae una
+    severidad terminal Y menciona una categoría conocida —`Critical: Deleted
+    reference […] is corrupt`— se clasificaba como ruido de dominio y la corrida
+    salía verde. La categoría describe DE QUÉ habla la línea; la severidad dice
+    si la corrida se rompió, y eso manda.
+
+    Enumerar el producto y no dos ejemplos es deliberado: la lista de categorías
+    crece cuando el rig aporta una nueva, y una categoría agregada sin esta
+    precedencia vuelve a abrir el agujero sin que ningún test la vea. Acá entra
+    sola al producto.
+    """
+    linea = f"[00:04:12] {severidad} {' '.join(categoria)} en Tamriel"
+    terminales, no_fatales, _ = clasificar_log(linea + "\n", "DynDOLOD")
+
+    assert terminales == [linea], f"{severidad} sobre {_id_de_categoria(categoria)} no salió terminal"
+    assert no_fatales == [], f"{severidad} sobre {_id_de_categoria(categoria)} se tragó como ruido: {no_fatales}"
+
+
+@pytest.mark.parametrize("categoria", NO_FATALES_DEL_DOMINIO, ids=_id_de_categoria)
+def test_un_error_suelto_sobre_categoria_conocida_sigue_siendo_no_fatal(
+    categoria: tuple[str, ...],
+) -> None:
+    """La contracara: `Error:` NO es una severidad terminal, y no puede volverse una.
+
+    El rig 2026-08-10 midió 121 líneas `Error:` en una corrida EXITOSA. Si la
+    precedencia de severidad se implementara barriendo todo `_ERROR_SUELTO` antes
+    de las categorías, cada una de esas 121 pasaría a terminal y ninguna corrida
+    buena volvería a salir verde — el falso rojo que T2 vino a cerrar.
+
+    Este test es el que impide arreglar de más, y por eso enumera las mismas
+    categorías que el de arriba.
+    """
+    linea = f"[00:04:12] Error: {' '.join(categoria)} en Tamriel"
+    terminales, no_fatales, _ = clasificar_log(linea + "\n", "DynDOLOD")
+
+    assert terminales == [], f"`Error:` sobre una categoría conocida salió terminal: {terminales}"
+    assert no_fatales == [linea]
+
+
 def test_una_categoria_no_prevista_sale_terminal_y_eso_es_deliberado() -> None:
     """Fail-closed sobre lo que la lista de no-fatales no contempla.
 

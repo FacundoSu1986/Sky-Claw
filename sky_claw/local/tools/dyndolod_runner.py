@@ -260,8 +260,22 @@ PATRONES_TERMINALES: tuple[str, ...] = (
 #: deja el fallback inalcanzable.
 _CODECS_DEL_LOG: tuple[str, ...] = ("utf-8", "cp1252")
 
-#: `Error:`/`FAIL:`/`Critical:` sueltos, para la regla fail-closed de abajo.
-_ERROR_SUELTO = re.compile(r"\b(?:ERROR|FAIL|Critical|FATAL)\s*:", re.IGNORECASE)
+#: Severidades que declaran que la corrida SE ROMPIÓ, sin importar de QUÉ hable la
+#: línea. Se evalúan en la MISMA caja que :data:`PATRONES_TERMINALES` —es decir,
+#: ANTES que las categorías de dominio— porque la categoría dice de qué habla la
+#: línea y la severidad dice si la corrida sigue viva. Sin esta precedencia,
+#: `Critical: Deleted reference […] is corrupt` cae en la caja de ruido por
+#: mencionar una categoría conocida, y una corrida que abortó sale verde.
+#:
+#: `ERROR` NO está acá y no puede estarlo: el rig 2026-08-10 midió 121 líneas
+#: `Error:` en una corrida EXITOSA. Barrer todo `Error:` antes de las categorías
+#: convertiría cada una de esas 121 en terminal y ninguna corrida buena volvería a
+#: salir verde — el falso rojo que T2 vino a cerrar, reintroducido por el otro lado.
+_SEVERIDAD_TERMINAL = re.compile(r"\b(?:FATAL|FAIL|Critical)\s*:", re.IGNORECASE)
+
+#: `Error:` suelto, para la regla fail-closed de abajo: se aplica DESPUÉS de las
+#: categorías, así que sólo alcanza a lo que ninguna categoría conocida explica.
+_ERROR_SUELTO = re.compile(r"\bERROR\s*:", re.IGNORECASE)
 
 
 def clasificar_log(texto: str, tool: str) -> tuple[list[str], list[str], bool]:
@@ -300,7 +314,10 @@ def clasificar_log(texto: str, tool: str) -> tuple[list[str], list[str], bool]:
         if not limpia:
             continue
         minuscula = limpia.lower()
-        if any(patron in minuscula for patron in terminales_en_minusculas):
+        # La severidad se evalúa junto con los patrones terminales y ANTES que las
+        # categorías: una línea puede mencionar una categoría conocida y aun así
+        # declarar que la corrida abortó.
+        if any(patron in minuscula for patron in terminales_en_minusculas) or _SEVERIDAD_TERMINAL.search(limpia):
             if limpia not in vistos_terminales:
                 vistos_terminales.add(limpia)
                 terminales.append(limpia)
@@ -2270,9 +2287,15 @@ class DynDOLODRunner:
         # dos fuentes: `"2 texturas omitidas"` nunca es igual a
         # `"[00:02] Warning: 2 texturas omitidas"`, así que un `Warning:` que además
         # fuera no-fatal de dominio aparecía dos veces, con dos formatos.
+        # El dedupe va contra un set y no contra la lista: `limpia not in warnings`
+        # es una búsqueda lineal por cada línea del log, y el log de DynDOLOD llega
+        # a decenas de MB. La lista se conserva porque el ORDEN es lo que el
+        # operador lee; el set sólo responde la pertenencia.
+        vistos_warnings = set(warnings)
         for linea in texto.splitlines():
             limpia = linea.strip()
-            if limpia and self._WARNING_PATTERN.search(limpia) and limpia not in warnings:
+            if limpia and self._WARNING_PATTERN.search(limpia) and limpia not in vistos_warnings:
+                vistos_warnings.add(limpia)
                 warnings.append(limpia)
 
         for linea in texto.splitlines():
