@@ -1834,6 +1834,22 @@ def _escribir_log(tmp_path: pathlib.Path, tool: str, contenido: str) -> pathlib.
     return log
 
 
+def _apendear_log(tmp_path: pathlib.Path, tool: str, contenido: str) -> pathlib.Path:
+    """Agrega al final del log, como hace el binario real entre sesiones.
+
+    `_escribir_log` TRUNCA, que es lo que hace falta para montar el estado previo
+    de un test. Para simular lo que escribe LA CORRIDA hay que apendear: el log
+    normal de DynDOLOD apendea entre sesiones (dyndolod.info/Messages), y desde
+    que el append se demuestra por digest del prefijo, reescribir los mismos
+    bytes ya no cuenta como evidencia nueva — mismo tamaño, sin bytes nuevos.
+    """
+    log = tmp_path / "DynDOLOD" / "Logs" / f"{tool}_SSE_log.txt"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(contenido)
+    return log
+
+
 #: El marcador de FIN DE CORRIDA de cada herramienta, elegido a propósito y NO por
 #: posición. `MARCADORES_DE_COMPLETITUD[tool][0]` ataba estos ~10 tests al orden de
 #: la tupla del runner: reordenarla les cambiaba el sujeto en silencio y seguían
@@ -4347,9 +4363,12 @@ async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
         _escribir_salida(texgen_staging, "textura.dds", b"\x00" * corridas["n"])
         _escribir_salida(dyndolod_staging, "DynDOLOD.esp", b"\x00" * corridas["n"])
         # Las DOS declaran completitud, y DURANTE la corrida: el marcador sólo
-        # cuenta si el log cambió respecto de la firma tomada antes de lanzar.
-        _escribir_log(tmp_path, "TexGen", _log_completo("TexGen"))
-        _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
+        # cuenta si esta corrida AGREGÓ bytes al log. Se apendea, como el binario
+        # real: reescribir el mismo contenido deja el tamaño igual, y desde que el
+        # append se demuestra por digest eso ya no es evidencia de nada. Antes
+        # pasaba sólo porque un `mtime` distinto se tomaba por reescritura.
+        _apendear_log(tmp_path, "TexGen", _log_completo("TexGen"))
+        _apendear_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     async def _empaquetar(output_path: pathlib.Path, mod_name: str) -> pathlib.Path:
         if mod_name == DynDOLODRunner.TEXGEN_MOD_NAME:

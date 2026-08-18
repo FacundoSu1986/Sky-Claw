@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import contextlib
+import hashlib
 import logging
 import pathlib
 import re
@@ -146,6 +147,38 @@ _GAME_MODE_SUELTO = re.compile(r"^\s*[-/]([A-Za-z0-9]+)\s*$")
 # frescura, porque "no lo pude mirar antes" pasa a leerse como "no había nada".
 # Tupla vacía: ninguna firma real lo es.
 _SIN_ARTEFACTO: tuple[float | int, ...] = ()
+
+#: Cuánto se lee por vuelta al firmar el log. El log de DynDOLOD llega a decenas
+#: de MB: se firma por chunks para no traerlo entero a memoria sólo para hashearlo.
+_CHUNK_DEL_DIGEST = 1024 * 1024
+
+
+#: Digest del CONTENIDO del log, no de su metadata: lo único que tiene que hacer
+#: es distinguir dos contenidos distintos del mismo tamaño, que es exactamente lo
+#: que `mtime + tamaño` no puede. `sha256` es de stdlib y criptográfico; se lo
+#: eligió MIDIENDO, no por costumbre: sobre un log sintético de 100 MiB da
+#: ~1100 MB/s contra ~570 MB/s de `blake2b`, porque las CPU con extensiones SHA
+#: lo aceleran por hardware. Coste real por corrida: dos pasadas —la firma previa
+#: y la re-firma del prefijo—, ~190 ms sobre 100 MiB, contra una corrida de
+#: DynDOLOD que dura horas.
+def _digest_de_stream(fh: Any, limite: int | None = None) -> tuple[int, str]:
+    """Firma por chunks lo que salga de ``fh``, hasta ``limite`` bytes si se pide.
+
+    Devuelve ``(bytes_leídos, digest)``. Los bytes leídos se cuentan acá y no con
+    un ``stat`` aparte a propósito: el tamaño que devuelve es el del contenido que
+    REALMENTE se firmó, así que la firma no puede quedar descalzada de su tamaño
+    si el archivo cambia entre una llamada y la otra.
+    """
+    acumulador = hashlib.sha256()
+    leidos = 0
+    while limite is None or leidos < limite:
+        pedido = _CHUNK_DEL_DIGEST if limite is None else min(_CHUNK_DEL_DIGEST, limite - leidos)
+        chunk = fh.read(pedido)
+        if not chunk:
+            break
+        leidos += len(chunk)
+        acumulador.update(chunk)
+    return leidos, acumulador.hexdigest()
 
 
 # =============================================================================
@@ -1632,8 +1665,8 @@ class DynDOLODRunner:
         )
         return exe.parent / "Logs" / f"{tool}_{self._modo()}_log.txt"
 
-    def _firma_del_log(self, tool: str) -> tuple[float | int, ...] | None:
-        """Firma del log ANTES de lanzar, para exigir que el marcador sea de ESTA corrida.
+    def _firma_del_log(self, tool: str) -> tuple[int | str, ...] | None:
+        """Firma de CONTINUIDAD del log ANTES de lanzar: ``(tamaño, digest)``.
 
         Sin esto el conjunto de completitud es falsificable con estado viejo, y de
         la peor manera: una corrida anterior exitosa deja su log CON el marcador;
@@ -1643,14 +1676,27 @@ class DynDOLODRunner:
         terminales) sobre una generación a medias, y el pipeline la empaqueta.
         Hallazgo P1 del revisor Codex en el PR #488.
 
-        Misma forma que :meth:`_firma_de_veredicto`, y por el mismo motivo: mtime
-        **y** tamaño, con ``None`` reservado a "no se pudo sondear" — distinto de
+        **Por qué NO es ``mtime + tamaño``, que es la forma de**
+        :meth:`_firma_de_veredicto`: para el artefacto alcanza con detectar que
+        CAMBIÓ, y `mtime + tamaño` lo detecta. Acá hace falta algo más fuerte —hay
+        que poder recortar el prefijo viejo para quedarse con lo que escribió esta
+        corrida—, y `mtime + tamaño` **no distingue un append de una reescritura
+        que termina más grande**: las dos crecen. Recortar sobre esa suposición
+        deja afuera bytes de la corrida actual, y si entre ellos hay un `Fatal:`
+        el veredicto sale verde sobre una corrida que abortó. El digest del
+        contenido previo convierte "supongo que apendeó" en algo demostrable:
+        después de la corrida se re-firma el prefijo y se compara.
+
+        El tamaño sale de contar lo que se firmó, no de un ``stat`` aparte: así la
+        firma y su tamaño no pueden descalzarse si el archivo cambia en el medio.
+        ``None`` sigue reservado a "no se pudo sondear" — distinto de
         :data:`_SIN_ARTEFACTO`, que acá significa "no había log". Colapsarlos haría
         fail-OPEN igual que en el artefacto.
         """
         log = self._ruta_del_log(tool)
         try:
-            estado = log.stat()
+            with log.open("rb") as fh:
+                tamano, digest = _digest_de_stream(fh)
         except FileNotFoundError:
             return _SIN_ARTEFACTO
         except OSError as e:
@@ -1662,84 +1708,111 @@ class DynDOLODRunner:
                 extra={"operation_type": "dyndolod_firma_de_log_fallida", "tx_id": _tx_id()},
             )
             return None
-        return (estado.st_mtime, estado.st_size)
+        return (tamano, digest)
+
+    def _digest_del_prefijo(self, tool: str, hasta_byte: int) -> str | None:
+        """Re-firma los primeros ``hasta_byte`` bytes del log, para probar el append.
+
+        Es la mitad que faltaba de :meth:`_firma_del_log`: si este digest coincide
+        con el de antes de lanzar, el prefijo llegó intacto al final de la corrida
+        y recortarlo es lícito. Si no coincide —o si el archivo ya no tiene ni
+        siquiera esos bytes—, hubo reescritura y no hay append que recortar.
+
+        ``None`` significa "no se pudo demostrar", nunca "está bien". No registra:
+        es SONDA y no veredicto, igual que :meth:`_leer_log` — el motivo se lo
+        pone :meth:`_validar_completitud_de_la_corrida` y la etapa la emite el
+        lanzador, con exit code, tx_id y evidencia. Un registro por incidente.
+        """
+        log = self._ruta_del_log(tool)
+        try:
+            with log.open("rb") as fh:
+                leidos, digest = _digest_de_stream(fh, limite=hasta_byte)
+        except OSError:
+            return None
+        if leidos != hasta_byte:
+            # El archivo achicó entre el sondeo del tamaño y esta relectura: no hay
+            # prefijo que comparar, así que no hay nada que demostrar.
+            return None
+        return digest
 
     def _validar_completitud_de_la_corrida(
         self,
         tool: str,
         texto: str,
         marcador_en_el_archivo: bool,
-        firma_previa_del_log: tuple[float | int, ...] | None,
+        firma_previa_del_log: tuple[int | str, ...] | None,
     ) -> tuple[bool, str | None, str]:
-        """¿El marcador de completitud lo escribió ESTA corrida, o ya estaba?
+        """¿Qué parte del log escribió ESTA corrida, y lo declaró terminado?
 
-        Comparar sólo la firma del archivo —mtime+tamaño— alcanza si el binario
-        TRUNCA su log en cada corrida, y no alcanza si lo abre en modo append:
-        con append, una corrida anterior exitosa deja su marcador en el archivo,
-        la de hoy apendea sus líneas de arranque (la firma CAMBIA), muere a mitad
-        con `rc == 0` y toca la salida — los cuatro conjuntos satisfechos sobre
-        trabajo a medias. El modo de escritura NORMAL del binario está
-        documentado y no hace falta asumirlo: el log normal apendea entre
-        sesiones (dyndolod.info/Messages, citado abajo). La firma mtime+tamaño
-        aísla correctamente ESE append documentado —y si no había log antes,
-        todo el archivo es de esta corrida—, pero NO distingue del todo una
-        reescritura: un archivo reemplazado/truncado que termine MÁS GRANDE que
-        el previo se recorta igual que un append y los primeros bytes de la
-        corrida actual quedan fuera de su evidencia. Es un riesgo de la
-        heurística bajo comportamiento no documentado, no un falso verde medido
-        en DynDOLOD real, y este commit no lo resuelve (está fuera de su
-        propiedad; ver el residual abajo). **El marcador se busca sólo en los
-        bytes que no estaban antes.** (Revisores qodo y CodeRabbit, PR #488.)
+        Comparar sólo la firma del archivo alcanza si el binario TRUNCA el log en
+        cada corrida, pero el log normal de DynDOLOD **apendea** entre sesiones
+        (dyndolod.info/Messages: *"All messages are appended … when the tool is
+        closed"*; sólo el debug log se reescribe por sesión). Con append, una
+        corrida anterior exitosa deja su marcador en el archivo, la de hoy apendea
+        sus líneas de arranque —la firma CAMBIA—, muere a mitad con `rc == 0` y
+        toca la salida: los cuatro conjuntos satisfechos sobre trabajo a medias.
+        Por eso el veredicto se evalúa sobre **los bytes que agregó esta corrida**.
+
+        **El append hay que demostrarlo, no suponerlo.** `mtime + tamaño` no
+        distingue un append de una reescritura que termina MÁS GRANDE que el
+        archivo previo: las dos crecen y las dos cambian de mtime. Recortar
+        ``bytes[:previo]`` sobre esa suposición deja afuera bytes que escribió la
+        corrida ACTUAL, y si entre ellos hay un `Fatal:` el resultado es un falso
+        verde sobre una corrida que abortó — medido, no hipotético. Por eso la
+        firma previa incluye el **digest del contenido** y acá se re-firma el
+        prefijo: recortar sólo es lícito cuando ``bytes[:previo]`` sigue siendo
+        exactamente lo que había antes de lanzar.
+
+        Los cuatro desenlaces posibles, y ninguno adivina:
+
+        - **No había log antes.** Todo el archivo es de esta corrida, sin frontera
+          que demostrar.
+        - **Creció y el prefijo coincide.** Append DEMOSTRADO: la evidencia es la
+          cola ``bytes[previo:]``.
+        - **Creció y el prefijo NO coincide.** Fue reescrito, no apendeado: no se
+          recorta un prefijo que cambió. Fail-closed.
+        - **Mismo tamaño, o más chico.** No hay bytes nuevos demostrables, o el
+          prefijo previo ya no está. Fail-closed. Un `mtime` distinto sobre el
+          mismo tamaño no prueba que la corrida haya escrito nada.
 
         **La misma delimitación vale para los terminales**, no sólo para el
-        marcador: la documentación oficial dice que el log normal apendea entre
-        sesiones (dyndolod.info/Messages: *"All messages are appended … when the
-        tool is closed"*), así que un `Fatal:` de una sesión fallida anterior
-        queda en el prefijo y, clasificado sobre el log completo, enrojecería
+        marcador: un `Fatal:` de una sesión fallida anterior queda en el prefijo
+        de un log que apendea y, clasificado sobre el log completo, enrojecería
         para siempre TODA corrida buena posterior — un falso rojo que no se
         auto-repara hasta que el operador trunque el log a mano. Por eso esta
-        función devuelve además el TEXTO que esta corrida agregó: bajo el append
-        documentado es la cola a partir de la firma previa, y si no había log
-        antes es el archivo entero. El llamador clasifica el veredicto entero
-        —marcador y terminales— sobre ese texto.
+        función devuelve además el TEXTO atribuible, y el llamador clasifica el
+        veredicto entero —marcador y terminales— sobre él. Las dos mitades tienen
+        que valer a la vez: un terminal heredado no tumba una corrida buena, un
+        marcador heredado no la aprueba, y un terminal ACTUAL nunca queda afuera
+        por haber supuesto un append que nadie demostró.
 
-        **Lo que queda afuera, dicho y no disimulado — la firma mtime+tamaño no
-        distingue todas las anomalías:** (a) si el log cambió de mtime y NO
-        creció, se lo toma como truncado-y-reescrito y acepta el marcador: una
-        corrida que abriera el log, no escribiera nada y saliera con `rc == 0`
-        cae en esa rama con el marcador viejo; (b) un archivo reemplazado que
-        termina MÁS GRANDE que el previo se recorta como si fuera append: los
-        primeros bytes de la corrida actual quedan fuera de su evidencia.
-        Distinguir esos casos exige firmar el CONTENIDO previo (hash), una
-        pasada completa por un archivo de decenas de MB antes de cada
-        lanzamiento. Se prefirió el rojo falso cero sobre la corrida buena que
-        reescribe su log al mismo tamaño —que es frecuente— antes que cerrar
-        huecos que exigen, además de todo lo demás, un binario que se comporte
-        fuera de lo documentado. Ninguno de los dos casos se resuelve en este
-        commit: están fuera de su propiedad.
+        *Revisores qodo y CodeRabbit, PR #488; el contraejemplo de la reescritura
+        que crece se reprodujo antes de escribir esto.*
 
         Returns:
             ``(completo, motivo, de_esta_corrida)``. `motivo` es ``None`` cuando
             no hay nada que explicarle al operador: o la corrida está completa, o
             el marcador simplemente no aparece y el diagnóstico genérico lo pone
             el llamador. `de_esta_corrida` es el texto que esta corrida agregó
-            (puede ser el archivo completo, la cola, o ``""`` si no hay ventana
-            atribuible: el log no cambió o la frontera temporal es
-            indeterminada): es la evidencia sobre la que se clasifican los
-            terminales, y vacía significa que ninguna línea histórica se le
-            atribuye a esta corrida.
+            —el archivo entero si no había log, la cola si el append quedó
+            demostrado, y ``""`` cuando no hay ventana atribuible—: es la
+            evidencia sobre la que se clasifican los terminales, y vacía significa
+            que ninguna línea histórica se le atribuye a esta corrida.
         """
-        # Cuando la frontera temporal es INDETERMINADA, la ventana atribuible a
-        # esta corrida es vacía (``""``), no el archivo completo: sin frontera no
-        # hay con qué afirmar que UNA línea histórica es de esta corrida, y
-        # atribuirle un `Fatal:` viejo ensucia el diagnóstico con una falsa causa.
-        # El run sigue fail-closed por el motivo; la evidencia se declara
-        # indeterminada en vez de heredarse.
+        # Cuando la frontera es INDETERMINADA la ventana atribuible es vacía
+        # (``""``), no el archivo completo: sin frontera no hay con qué afirmar que
+        # UNA línea histórica es de esta corrida, y atribuirle un `Fatal:` viejo
+        # ensucia el diagnóstico con una falsa causa. El run sigue fail-closed por
+        # el motivo; la evidencia se declara indeterminada en vez de heredarse.
+        #
+        # Ningún motivo de esta familia puede afirmar que el marcador está en el
+        # archivo: se emiten ANTES de mirarlo, así que la afirmación sería falsa
+        # justo cuando el log no lo tiene.
         if firma_previa_del_log is None:
             return (
                 False,
-                f"No se pudo sondear el log de {tool} ANTES de lanzar, así que el marcador de "
-                "completitud que tiene no se puede atribuir a esta corrida ni a una anterior.",
+                f"No se pudo sondear el log de {tool} ANTES de lanzar, así que no hay con qué "
+                "distinguir lo que escribió esta corrida de lo que ya estaba.",
                 "",
             )
 
@@ -1748,7 +1821,7 @@ class DynDOLODRunner:
             return (
                 False,
                 f"No se pudo sondear el log de {tool} DESPUÉS de la corrida, así que no hay con qué "
-                "verificar que el marcador de completitud sea de ésta.",
+                "verificar qué escribió.",
                 "",
             )
         if firma_actual == _SIN_ARTEFACTO:
@@ -1758,39 +1831,60 @@ class DynDOLODRunner:
                 "éxito sobre evidencia que ya no está.",
                 "",
             )
-        if firma_actual == firma_previa_del_log:
-            # El log no cambió: esta corrida no escribió NADA, así que su evidencia
-            # es vacía — ni el marcador ni un terminal del archivo pueden ser de HOY.
-            return (
-                False,
-                f"El marcador de completitud de {tool} está en el log, pero el log no cambió "
-                "durante la corrida: es la evidencia de una corrida anterior, no de ésta.",
-                "",
-            )
 
-        # `_SIN_ARTEFACTO` acá significa "no había log antes": todo el archivo es
-        # de esta corrida.
-        previo = 0 if firma_previa_del_log == _SIN_ARTEFACTO else int(firma_previa_del_log[1])
-        actual = int(firma_actual[1])
-        # Sólo un log que CRECIÓ puede conservar el prefijo viejo intacto, que es
-        # la premisa de recortarlo. Si no creció y aun así cambió —mismo tamaño,
-        # otro mtime—, el binario lo truncó y lo reescribió: lo que hay ahora lo
-        # puso esta corrida y recortarlo daría un rojo falso sobre una corrida
-        # buena, que es el defecto que T2 vino a cerrar, no a mover de lugar.
-        desde = previo if actual > previo else 0
+        if firma_previa_del_log == _SIN_ARTEFACTO:
+            # No había log antes: todo el archivo es de esta corrida y no hay
+            # frontera que demostrar.
+            de_esta_corrida = texto
+        else:
+            previo = int(firma_previa_del_log[0])
+            actual = int(firma_actual[0])
+            if actual < previo:
+                return (
+                    False,
+                    f"El log de {tool} es MÁS CHICO que antes de lanzar: fue truncado o reemplazado, "
+                    "así que no hay forma de delimitar qué escribió esta corrida.",
+                    "",
+                )
+            if actual == previo:
+                return (
+                    False,
+                    f"El log de {tool} no creció durante la corrida: sin bytes nuevos no hay evidencia "
+                    "que atribuirle, y un mtime distinto sobre el mismo tamaño no prueba que haya "
+                    "escrito algo.",
+                    "",
+                )
 
-        # `desde == 0` es el caso corriente (log truncado o nuevo) y el texto ya
-        # está leído: releer el archivo sería una segunda pasada por nada.
-        de_esta_corrida = texto if desde == 0 else self._leer_log(tool, desde_byte=desde)
-        if de_esta_corrida is None:
-            return (
-                False,
-                f"No se pudo releer el log de {tool} para aislar lo que escribió esta corrida.",
-                "",
-            )
+            # Creció. Que haya crecido NO prueba que sea un append: una reescritura
+            # que termina más grande tiene la misma firma. Se demuestra re-firmando
+            # el prefijo, y sólo si sigue intacto se lo recorta.
+            digest_del_prefijo = self._digest_del_prefijo(tool, previo)
+            if digest_del_prefijo is None:
+                return (
+                    False,
+                    f"No se pudo releer el prefijo del log de {tool} para verificar que la corrida lo "
+                    "haya apendeado en vez de reescribirlo.",
+                    "",
+                )
+            if digest_del_prefijo != str(firma_previa_del_log[1]):
+                return (
+                    False,
+                    f"El log de {tool} creció, pero sus primeros {previo} bytes ya no son los que "
+                    "tenía antes de lanzar: fue reescrito, no apendeado. No se recorta un prefijo "
+                    "que cambió, porque ahí puede haber quedado lo que escribió esta corrida.",
+                    "",
+                )
+
+            de_esta_corrida = self._leer_log(tool, desde_byte=previo)
+            if de_esta_corrida is None:
+                return (
+                    False,
+                    f"No se pudo releer el log de {tool} para aislar lo que escribió esta corrida.",
+                    "",
+                )
 
         # Si el marcador no está en NINGUNA parte del archivo, tampoco está en la
-        # cola: el diagnóstico genérico lo pone el llamador.
+        # ventana: el diagnóstico genérico lo pone el llamador.
         if not marcador_en_el_archivo:
             return False, None, de_esta_corrida
 
@@ -1936,7 +2030,7 @@ class DynDOLODRunner:
         self,
         tool: str,
         firmas_previas: dict[pathlib.Path, tuple[float | int, ...] | None],
-        firma_previa_del_log: tuple[float | int, ...] | None = None,
+        firma_previa_del_log: tuple[int | str, ...] | None = None,
     ) -> _PostCheck:
         """Veredicto de la corrida: log + artefacto + frescura. TODO el I/O, acá.
 

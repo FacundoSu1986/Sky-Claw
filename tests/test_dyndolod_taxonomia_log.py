@@ -18,6 +18,8 @@ fail-closed la clasifica terminal y la corrida buena sale roja.** Ver
 from __future__ import annotations
 
 import ast
+import hashlib
+import os
 import pathlib
 from unittest.mock import patch
 
@@ -32,6 +34,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     clasificar_log,
 )
 from tests.test_dyndolod_service import (
+    _MARCADOR_DE_FIN,
     _clase_runner_ast,
     _corre_en_hilo,
     _corrida_que_completa,
@@ -456,7 +459,10 @@ async def test_el_marcador_de_la_corrida_anterior_no_vale_si_el_log_no_cambio(
         result = await runner.run_dyndolod(preset="Medium")
 
     assert result.success is False
-    assert any("el log no cambió" in e for e in result.errors), result.errors
+    # El motivo dice "no creció", no "no cambió": desde que el append se demuestra
+    # por digest del prefijo, lo que descalifica la evidencia es la ausencia de
+    # BYTES NUEVOS, no la igualdad de la firma. La propiedad del test es la misma.
+    assert any("no creció" in e for e in result.errors), result.errors
 
 
 @pytest.mark.asyncio
@@ -624,6 +630,363 @@ async def test_con_frontera_indeterminada_no_se_atribuyen_terminales_historicos(
     assert result.success is False
     assert any("No se pudo sondear el log de DynDOLOD ANTES" in e for e in result.errors), result.errors
     assert not any("Fatal: old failure" in e for e in result.errors), result.errors
+
+
+# =============================================================================
+# CONTINUIDAD DEL LOG: el append hay que DEMOSTRARLO, no suponerlo
+# =============================================================================
+#
+# `mtime + tamaño` NO demuestra que un crecimiento sea un append: un archivo
+# truncado y reescrito que termine MÁS GRANDE que el previo tiene exactamente la
+# misma firma que un append legítimo. Recortar `bytes[:previo]` en ese caso deja
+# afuera bytes que escribió ESTA corrida — y si entre ellos hay un `Fatal:`, el
+# veredicto sale verde sobre una corrida que abortó.
+#
+# La documentación oficial de DynDOLOD dice que el log normal apendea entre
+# sesiones, y por eso el recorte es la semántica correcta en el caso corriente.
+# Pero una desviación de esa semántica no puede convertirse en falso verde: el
+# recorte sólo es lícito cuando se DEMOSTRÓ que el prefijo sigue intacto.
+#
+# Estos casos enumeran los cuatro desenlaces posibles de comparar el tamaño
+# actual contra el previo (crece-y-el-prefijo-coincide, crece-y-no-coincide,
+# igual, achica) sobre los DOS lanzadores, que es el hermano de este repo.
+
+#: Los dos lanzadores con lo que cada uno necesita para llegar al post-check.
+#: El camino de continuidad (`_validar_completitud_de_la_corrida`) es compartido,
+#: así que parametrizar no es ceremonia: es el defecto dominante del repo
+#: —cablear un hermano y no al otro— convertido en enumeración.
+_LANZADORES = [
+    pytest.param("TexGen", "a.dds", lambda r: r.run_texgen(), id="TexGen"),
+    pytest.param("DynDOLOD", "DynDOLOD.esp", lambda r: r.run_dyndolod(preset="Medium"), id="DynDOLOD"),
+]
+
+#: Prefijo inocuo de una sesión anterior. Doce líneas para que el recorte por
+#: tamaño tenga dónde equivocarse: con un prefijo de pocos bytes, un `Fatal:`
+#: escrito al principio de la reescritura caería igual del lado de la cola y el
+#: test pasaría por accidente.
+_PREFIJO_VIEJO = "[00:00:01] Building LOD for Tamriel\n" * 12
+
+
+def _staging_de(config: object, tool: str) -> pathlib.Path:
+    """Staging administrado de cada herramienta, por nombre y no por posición."""
+    nombre = DynDOLODRunner.TEXGEN_OUTPUT_NAME if tool == "TexGen" else DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    return config.output_root / nombre  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool", "artefacto", "lanzar"), _LANZADORES)
+async def test_una_reescritura_que_crece_no_se_toma_por_append(
+    tmp_path: pathlib.Path,
+    tool: str,
+    artefacto: str,
+    lanzar,
+) -> None:
+    """CASO A — el contraejemplo que `mtime + tamaño` no puede distinguir.
+
+    La corrida TRUNCA el log y lo reescribe terminando MÁS GRANDE que el previo.
+    Su firma es indistinguible de la de un append, así que recortar
+    ``bytes[:previo]`` descarta bytes de ESTA corrida. Entre los descartados hay
+    un `Fatal:` de HOY, y el marcador de fin queda en la cola: `rc == 0`,
+    artefacto fresco y completitud satisfecha sobre una corrida que abortó.
+
+    La propiedad: **un terminal ACTUAL no puede quedar fuera de la evidencia
+    porque se supuso un append que nadie demostró.** Si el prefijo no se puede
+    verificar intacto, la corrida falla cerrado — no se adivina qué parte es de
+    quién.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = _staging_de(config, tool)
+    log = _escribir_log(tmp_path, tool, _PREFIJO_VIEJO)
+    tamano_previo = len(_PREFIJO_VIEJO.encode())
+
+    def _correr() -> None:
+        _escribir_salida(staging, artefacto)
+        nuevo = (
+            "[01:00:00] Fatal: madExcept caught an access violation\n"
+            + "[01:00:01] Building LOD for Tamriel\n" * 20
+            + f"[01:30:00] {_MARCADOR_DE_FIN[tool]}\n"
+        )
+        crudo = nuevo.encode()
+        # El montaje tiene que ser el que dice el docstring, o el test prueba otra
+        # cosa: el Fatal ANTES del corte, y el archivo terminando más grande.
+        assert crudo.index(b"Fatal:") < tamano_previo, "el Fatal quedó fuera del prefijo recortado"
+        assert len(crudo) > tamano_previo, "la reescritura no terminó más grande"
+        log.write_text(nuevo, encoding="utf-8")  # `write_text` TRUNCA
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with patch.object(runner, "_execute_process", fake):
+        result = await lanzar(runner)
+
+    assert result.success is False, "falso verde: el `Fatal:` de ESTA corrida quedó fuera de la evidencia"
+    assert result.errors, "falla cerrado, pero sin decir por qué: eso es un 'Unknown error' nuevo"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool", "artefacto", "lanzar"), _LANZADORES)
+async def test_el_append_real_con_marcador_propio_sigue_siendo_exito(
+    tmp_path: pathlib.Path,
+    tool: str,
+    artefacto: str,
+    lanzar,
+) -> None:
+    """CASO B — contracara de A: el append legítimo no puede volverse rojo.
+
+    Sin este caso, A lo satisface cualquier implementación que falle cerrado ante
+    cualquier log con historia — incluida la que rompe el append documentado y
+    reintroduce el falso rojo permanente que este PR vino a cerrar.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = _staging_de(config, tool)
+    log = _escribir_log(tmp_path, tool, _PREFIJO_VIEJO)
+
+    def _correr() -> None:
+        _escribir_salida(staging, artefacto)
+        with log.open("a", encoding="utf-8") as fh:  # append REAL: el prefijo queda intacto
+            fh.write("[01:00:00] Building LOD for Tamriel\n")
+            fh.write(f"[01:30:00] {_MARCADOR_DE_FIN[tool]}\n")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with patch.object(runner, "_execute_process", fake):
+        result = await lanzar(runner)
+
+    assert result.success is True, result.errors
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool", "artefacto", "lanzar"), _LANZADORES)
+async def test_un_terminal_de_esta_corrida_en_la_cola_del_append_tumba_la_corrida(
+    tmp_path: pathlib.Path,
+    tool: str,
+    artefacto: str,
+    lanzar,
+) -> None:
+    """CASO C — el append demostrado no es un permiso para ignorar terminales.
+
+    Delimitar la evidencia sirve para no heredar culpas ajenas, no para dejar de
+    mirar. El `Fatal:` está en los bytes que agregó ESTA corrida, junto con su
+    propio marcador de fin: el marcador no puede taparlo.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = _staging_de(config, tool)
+    log = _escribir_log(tmp_path, tool, _PREFIJO_VIEJO)
+
+    def _correr() -> None:
+        _escribir_salida(staging, artefacto)
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("[01:00:00] Fatal: madExcept caught an access violation\n")
+            fh.write(f"[01:30:00] {_MARCADOR_DE_FIN[tool]}\n")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with patch.object(runner, "_execute_process", fake):
+        result = await lanzar(runner)
+
+    assert result.success is False
+    assert any("Fatal:" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool", "artefacto", "lanzar"), _LANZADORES)
+async def test_el_mtime_sin_crecimiento_no_es_evidencia_de_esta_corrida(
+    tmp_path: pathlib.Path,
+    tool: str,
+    artefacto: str,
+    lanzar,
+) -> None:
+    """CASO E — un `mtime` nuevo sobre el mismo tamaño no es evidencia de nada.
+
+    El log de AYER trae su marcador. La corrida de hoy toca la salida —así que el
+    gate de frescura del artefacto pasa— y al log sólo le cambia el `mtime` sin
+    escribirle un byte. Tomar eso por "lo truncó y lo reescribió" hereda el
+    marcador viejo y da verde sobre una corrida que no declaró haber terminado.
+
+    Sin bytes nuevos demostrables no hay evidencia: falla cerrado.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = _staging_de(config, tool)
+    log = _escribir_log(tmp_path, tool, _log_completo(tool))
+    estado = log.stat()
+
+    def _correr() -> None:
+        _escribir_salida(staging, artefacto)
+        os.utime(log, (estado.st_atime + 500, estado.st_mtime + 500))
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with patch.object(runner, "_execute_process", fake):
+        result = await lanzar(runner)
+
+    assert result.success is False, "falso verde: heredó el marcador de la corrida anterior"
+    assert log.stat().st_size == estado.st_size, "el montaje del test cambió el tamaño: prueba otra cosa"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool", "artefacto", "lanzar"), _LANZADORES)
+async def test_un_log_mas_chico_que_antes_de_lanzar_falla_cerrado(
+    tmp_path: pathlib.Path,
+    tool: str,
+    artefacto: str,
+    lanzar,
+) -> None:
+    """CASO F — si el log ACHICÓ, no hay forma de delimitar nada.
+
+    Truncado o reemplazo: el prefijo previo ya no está, así que no se puede
+    demostrar qué bytes son de esta corrida. Incluso con el marcador de fin
+    presente, "no pude verificarlo" no puede significar "terminó bien".
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = _staging_de(config, tool)
+    log = _escribir_log(tmp_path, tool, _PREFIJO_VIEJO)
+    tamano_previo = len(_PREFIJO_VIEJO.encode())
+
+    def _correr() -> None:
+        _escribir_salida(staging, artefacto)
+        nuevo = f"[01:30:00] {_MARCADOR_DE_FIN[tool]}\n"
+        assert len(nuevo.encode()) < tamano_previo, "el montaje no achicó el log"
+        log.write_text(nuevo, encoding="utf-8")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=_correr)
+    with patch.object(runner, "_execute_process", fake):
+        result = await lanzar(runner)
+
+    assert result.success is False
+    assert result.errors, "falla cerrado sin diagnóstico"
+
+
+@pytest.mark.asyncio
+async def test_un_prefijo_mas_corto_que_la_firma_previa_no_se_acepta_como_continuidad(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Short read: la firma previa dice N bytes y el archivo ya no los tiene.
+
+    Es el hueco entre el sondeo del tamaño y la re-firma del prefijo: el tamaño
+    se lee en un momento y el prefijo se hashea en otro, así que el archivo puede
+    haber achicado en el medio (rotación, truncado externo, otro proceso). El
+    chequeo ``actual < previo`` no lo ataja porque compara los tamaños SONDEADOS,
+    no lo que se pudo leer después.
+
+    **El montaje hace que el digest parcial COINCIDA a propósito:** la firma
+    previa lleva el sha256 del contenido corto real, así que si
+    `_digest_del_prefijo` devolviera el hash de menos de N bytes, la comparación
+    daría MATCH y el append quedaría "demostrado" sobre una lectura incompleta.
+    Lo único que lo impide es la guarda ``leidos != hasta_byte``.
+
+    Por eso el test no se conforma con el rojo: exige que el rojo sea POR no haber
+    podido verificar el prefijo. Si cayera por "el marcador es de una corrida
+    anterior", el hash parcial se habría aceptado como continuidad válida y el
+    recorte se habría hecho sobre una frontera inventada.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = _staging_de(config, "DynDOLOD")
+    log = _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
+
+    contenido_real = log.read_bytes()
+    digest_real = hashlib.sha256(contenido_real).hexdigest()
+    # N INFLADO: la firma previa reclama más bytes de los que el archivo tiene.
+    n_inflado = len(contenido_real) + 4096
+
+    llamadas = {"n": 0}
+
+    def _firma_inflada(tool: str):
+        if tool != "DynDOLOD":
+            return runner.__class__._firma_del_log(runner, tool)
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            # Antes de lanzar: tamaño inflado + digest del contenido REAL, para que
+            # un hash parcial coincida y sólo la guarda pueda distinguirlo.
+            return (n_inflado, digest_real)
+        # Después de la corrida: creció, así que se entra a la rama del append.
+        return (n_inflado + 1, "da-igual-no-se-compara")
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
+    with (
+        patch.object(runner, "_firma_del_log", _firma_inflada),
+        patch.object(runner, "_execute_process", fake),
+    ):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert any("prefijo" in e for e in result.errors), f"no falló por la verificación del prefijo: {result.errors}"
+    assert not any("parte que YA existía" in e for e in result.errors), (
+        f"aceptó como continuidad el hash de MENOS de {n_inflado} bytes: {result.errors}"
+    )
+    # Y el digest parcial habría coincidido: es lo que hace load-bearing a la guarda.
+    assert hashlib.sha256(log.read_bytes()[:n_inflado]).hexdigest() == digest_real
+
+
+#: Lo que ningún motivo puede afirmar cuando el marcador NO está en el archivo.
+#: Son las dos formas textuales que tenían las ramas de frontera: afirmaban la
+#: presencia del marcador para explicar por qué no se le podía atribuir a esta
+#: corrida, y esa explicación es falsa cuando el marcador no existe.
+_AFIRMA_QUE_HAY_MARCADOR = ("está en el log", "que tiene no se puede atribuir")
+
+
+@pytest.mark.asyncio
+async def test_sin_frontera_el_motivo_no_inventa_un_marcador_que_no_existe(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El diagnóstico no puede afirmar que el marcador existe si no existe.
+
+    Rama de frontera indeterminada (no se pudo sondear el log ANTES de lanzar)
+    sobre un log que NO tiene marcador. El veredicto correcto es rojo, y lo era
+    antes también; lo que se corrige es el texto, que le decía al operador que su
+    log tiene un marcador de completitud cuando no lo tiene.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = _staging_de(config, "DynDOLOD")
+    _escribir_log(tmp_path, "DynDOLOD", LOG_SIN_MARCADOR)
+
+    original = runner._firma_del_log
+    llamadas = {"n": 0}
+
+    def _sin_frontera(tool: str):
+        if tool != "DynDOLOD":
+            return original(tool)
+        llamadas["n"] += 1
+        return None if llamadas["n"] == 1 else original(tool)
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
+    with (
+        patch.object(runner, "_firma_del_log", _sin_frontera),
+        patch.object(runner, "_execute_process", fake),
+    ):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    assert "successfully" not in LOG_SIN_MARCADOR, "la fixture dejó de servir: ahora tiene marcador"
+    for error in result.errors:
+        for afirmacion in _AFIRMA_QUE_HAY_MARCADOR:
+            assert afirmacion not in error, f"el motivo afirma un marcador inexistente: {error!r}"
+
+
+@pytest.mark.asyncio
+async def test_sin_crecimiento_el_motivo_no_inventa_un_marcador_que_no_existe(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Hermano del anterior en la otra rama de frontera: log sin crecer.
+
+    Mismo defecto textual, otra rama. Escribirlo una sola vez dejaría la mitad
+    del arreglo sin ancla, que es exactamente la forma del defecto dominante de
+    este repo.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_root is not None
+    staging = _staging_de(config, "DynDOLOD")
+    _escribir_log(tmp_path, "DynDOLOD", LOG_SIN_MARCADOR)
+
+    fake = _EjecucionFalsa(return_code=0, al_ejecutar=lambda: _escribir_salida(staging, "DynDOLOD.esp"))
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_dyndolod(preset="Medium")
+
+    assert result.success is False
+    for error in result.errors:
+        for afirmacion in _AFIRMA_QUE_HAY_MARCADOR:
+            assert afirmacion not in error, f"el motivo afirma un marcador inexistente: {error!r}"
 
 
 def test_todo_lanzador_que_pide_veredicto_firma_el_log_antes_de_lanzar() -> None:
