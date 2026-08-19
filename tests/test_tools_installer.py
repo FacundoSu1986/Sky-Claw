@@ -2071,6 +2071,54 @@ class TestEnsureSkse:
         assert set(install_dir.iterdir()) == antes
 
     @pytest.mark.asyncio
+    async def test_edicion_explicita_no_exime_del_gate_si_hay_runtime_ilegible(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Quién nombra la EDICIÓN no decide si hace falta probar la VERSIÓN.
+
+        El gate se ató primero a `edition is None`, así que un caller que resolviera la
+        edición por su cuenta —config, snapshot, un consumidor futuro— se saltaba la
+        prueba de compatibilidad entera y llegaba a HITL, egress y escritura de DLLs
+        con el payload elegido solo por edición: el mismo fail-open que este PR cierra,
+        vivo en el camino gemelo.
+
+        La condición correcta es sobre el RUNTIME: si hay un ejecutable de Skyrim en
+        disco y no se le puede leer la versión, no se instala nada.
+        """
+        install_dir = self._skyrim_limpio(tmp_path)
+        antes = set(install_dir.iterdir())
+
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "")
+
+        hitl, egress = self._espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError, match="No pude leer la versión exacta"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        hitl.assert_not_awaited()
+        egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes
+
+    @pytest.mark.asyncio
+    async def test_edicion_explicita_con_runtime_incompatible_tambien_corta(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Y si la versión SÍ se lee y no matchea, el gate de mismatch tampoco se saltea."""
+        install_dir = self._skyrim_limpio(tmp_path)
+
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.6.640")
+
+        hitl, egress = self._espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError, match="1.6.640"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        hitl.assert_not_awaited()
+        egress.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_ya_instalado_con_version_ilegible_sigue_siendo_idempotente(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
