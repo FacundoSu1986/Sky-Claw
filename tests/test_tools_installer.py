@@ -2104,8 +2104,16 @@ class TestEnsureSkse:
     async def test_edicion_explicita_con_runtime_incompatible_tambien_corta(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Y si la versión SÍ se lee y no matchea, el gate de mismatch tampoco se saltea."""
+        """Y si la versión SÍ se lee y no matchea, el gate de mismatch tampoco se saltea.
+
+        Las tres aserciones van juntas por la misma razón en toda esta familia: HITL y
+        egress cubren las dos fronteras externas, y el snapshot del directorio cubre la
+        tercera. Sin la última, una regresión que escribiera en el juego ANTES de lanzar
+        el error pasaría en verde — que es precisamente el desenlace que el gate existe
+        para impedir.
+        """
         install_dir = self._skyrim_limpio(tmp_path)
+        antes = set(install_dir.iterdir())
 
         monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.6.640")
 
@@ -2117,6 +2125,7 @@ class TestEnsureSkse:
 
         hitl.assert_not_awaited()
         egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
 
     @pytest.mark.asyncio
     async def test_ya_instalado_con_version_ilegible_sigue_siendo_idempotente(
