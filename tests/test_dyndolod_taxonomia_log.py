@@ -154,13 +154,15 @@ def test_las_tres_cajas_estan_congeladas() -> None:
     # Cada entrada es una tupla de substrings que deben aparecer TODOS. La del DLL
     # lleva dos partes a propósito: exentar por `"DynDOLOD.DLL"` suelto declaraba
     # no-fatal a `Critical: DynDOLOD.DLL is corrupt` (revisor Codex, PR #488).
+    # La de SkyrimSE.exe también: `"File not found"` suelto volvía no-fatal a
+    # cualquier archivo faltante (rig Alpha-209).
     assert NO_FATALES_DEL_DOMINIO == (
         ("Deleted reference",),
         ("Unresolved FormID",),
         ("LOD billboard(s) not found",),
         ("No TexGen output detected",),
         ("DynDOLOD.DLL", "not found"),
-        ("File not found SkyrimSE.exe",),
+        ("File not found", "SkyrimSE.exe"),
     )
     assert PATRONES_TERMINALES == (
         "Fatal:",
@@ -299,6 +301,80 @@ def test_una_categoria_no_prevista_sale_terminal_y_eso_es_deliberado() -> None:
 
     assert terminales == ["[00:01:00] Error: something nobody transcribed from the rig"]
     assert no_fatales == []
+
+
+# ---------------------------------------------------------------------------
+# Categoría del rig Alpha-209: "File not found" + "SkyrimSE.exe"
+# ---------------------------------------------------------------------------
+
+#: La línea real del rig Alpha-209 (2026-08-19): la MISMA categoría histórica,
+#: pero con la ruta completa del exe en el medio. Con la categoría de UNA parte
+#: (`"File not found SkyrimSE.exe"`) no matcheaba —el texto intermedio rompe el
+#: substring— y la regla fail-closed la tumbaba como terminal. La categoría de
+#: DOS partes —`"File not found"` Y `"SkyrimSE.exe"`, TODOS obligatorios— cubre
+#: el texto/ruta intermedia sin declarar no-fatal a cualquier `File not found`.
+_LINEA_DEL_RIG_CON_RUTA = r"[00:08:03] Error: File not found C:\Modding\DynDOLOD RigTest\_rig_test\SkyrimSE.exe"
+
+#: La corrida REAL terminó bien: sus dos marcadores finales de DynDOLOD.
+_LOG_DEL_RIG_CON_RUTA = (
+    _LINEA_DEL_RIG_CON_RUTA
+    + "\n[00:20:10] DynDOLOD plugins generated successfully\n"
+    + "[00:20:12] Occlusion.esp completed successfully\n"
+)
+
+
+def test_la_linea_del_rig_con_ruta_completa_es_no_fatal() -> None:
+    """El único hueco del rig Alpha-209: 120 líneas `Error:`, 119 conocidas.
+
+    Ésta era la desconocida. La corrida real fue exitosa —ambos marcadores— y la
+    regla fail-closed la declaraba terminal, así que un éxito real salía rojo.
+    Con el fix, la corrida completa y sin terminales vuelve a su veredicto verde.
+    """
+    terminales, no_fatales, completo = clasificar_log(_LOG_DEL_RIG_CON_RUTA, "DynDOLOD")
+
+    assert completo is True
+    assert terminales == []
+    assert no_fatales == [_LINEA_DEL_RIG_CON_RUTA]
+
+
+#: Casos A–F: la ampliación no puede debilitar ni la forma histórica ni el
+#: fail-closed. `es_terminal` es el veredicto esperado de la línea.
+_CASOS_ADVERSARIALES_SKYRIMSE = [
+    # A: forma histórica sin ruta → no-fatal (la cobertura previa se conserva).
+    pytest.param("Error: File not found SkyrimSE.exe", False, id="A_forma_historica"),
+    # B: forma real del rig con ruta → no-fatal (el hueco cerrado).
+    pytest.param(r"Error: File not found C:\foo\bar\SkyrimSE.exe", False, id="B_ruta_real"),
+    # C: otro exe que comparte prefijo → terminal (fail-closed).
+    pytest.param(r"Error: File not found C:\foo\bar\SkyrimSELauncher.exe", True, id="C_otro_exe"),
+    # D: otra DLL → terminal (fail-closed).
+    pytest.param(r"Error: File not found C:\foo\SomeOther.dll", True, id="D_otra_dll"),
+    # E: severidad terminal + categoría conocida → terminal (la severidad manda).
+    pytest.param(r"Critical: File not found C:\foo\SkyrimSE.exe", True, id="E_critical"),
+    # F: FAIL + categoría conocida → terminal (ídem).
+    pytest.param(r"FAIL: File not found C:\foo\SkyrimSE.exe", True, id="F_fail"),
+]
+
+
+@pytest.mark.parametrize(("linea", "es_terminal"), _CASOS_ADVERSARIALES_SKYRIMSE)
+def test_la_ampliacion_de_file_not_found_no_debilita_el_fail_closed(
+    linea: str,
+    es_terminal: bool,
+) -> None:
+    """La exención nueva exige las DOS partes y respeta la precedencia de severidad.
+
+    `("File not found",)` suelto sería demasiado amplio: declararía no-fatal a
+    cualquier archivo faltante (casos C y D). Y la categoría describe de QUÉ
+    habla la línea; la severidad dice si la corrida se rompió, y eso se evalúa
+    ANTES de las categorías (casos E y F).
+    """
+    terminales, no_fatales, _ = clasificar_log(linea + "\n", "DynDOLOD")
+
+    if es_terminal:
+        assert terminales == [linea]
+        assert no_fatales == []
+    else:
+        assert terminales == []
+        assert no_fatales == [linea]
 
 
 @pytest.mark.parametrize(

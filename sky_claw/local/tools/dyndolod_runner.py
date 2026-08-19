@@ -234,7 +234,7 @@ NO_FATALES_DEL_DOMINIO: tuple[tuple[str, ...], ...] = (
     ("LOD billboard(s) not found",),
     ("No TexGen output detected",),
     ("DynDOLOD.DLL", "not found"),
-    ("File not found SkyrimSE.exe",),
+    ("File not found", "SkyrimSE.exe"),
 )
 
 #: Lo que aborta la corrida. Se evalúa ANTES que los no-fatales para que un
