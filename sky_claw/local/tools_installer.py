@@ -262,12 +262,24 @@ _NGIO_RELEASES_URL = "https://api.github.com/repos/DwemerEngineer/No-Grass-In-Ob
 # entrada acá y pasarle el `store` del snapshot a la selección de payload — no está
 # hecho porque no se quiere, no porque falte.
 #
-# El recorte ya es fail-closed sin costo: el gate de versión exacta de `ensure_skse`
-# corre ANTES del HITL y de la descarga, y GOG AE (1.6.1179) no matchea el 1.6.1170
-# del payload de Steam, así que un usuario de GOG recibe el error sin que se le pida
+# El recorte es fail-closed sin costo: el gate de versión exacta de `ensure_skse` corre
+# ANTES del HITL y de la descarga, y GOG AE (1.6.1179) no matchea el 1.6.1170 del
+# payload de Steam, así que un usuario de GOG recibe el error sin que se le pida
 # aprobación, sin egress y sin que se escriba nada en el directorio del juego. El
 # mensaje lo manda a https://skse.silverlock.org/, que es donde está su build.
+#
+# Esa garantía vale ahora en las DOS ramas del gate. Antes dependía de que la versión
+# se pudiera leer: con `read_skyrim_version` devolviendo "" (sin `pefile`, PE que no
+# parsea, PE sin recurso de versión) el mismatch no se evaluaba, la edición la decidía
+# una heurística de tamaño, y al usuario de GOG se le pedía aprobación y se le bajaba
+# el payload de Steam. La rama ilegible también corta.
 
+# `steam_loader` NO declara "este build lo trae": es el NOMBRE del componente para esa
+# familia, y lo usan dos consumidores distintos. `_cleanup_orphaned_skse_dlls` lo
+# protege del glob `skse*.dll` (borrarlo dejaría la instalación sin loader de Steam), y
+# `_verify_skse_installed` lo usa para nombrar el archivo — pero condiciona el aviso a
+# que el PAYLOAD lo haya traído, porque qué archivos incluye cada archive es propiedad
+# del build, no de la edición.
 SKSE_CONFIG: dict[str, dict[str, str | None]] = {
     "AE": {
         "url": "https://skse.silverlock.org/beta/skse64_2_02_06.7z",
@@ -1387,6 +1399,7 @@ class ToolsInstaller:
             # caller pasa `edition` explícito confiamos en su elección sin exigir un
             # .exe real en disco (staging, tests, instalación en curso).
             detected_version = ""
+            autodetectada = edition is None
             if edition is None:
                 edition, detected_version = await self._detect_skyrim_edition_from_exe(install_dir)
 
@@ -1402,10 +1415,29 @@ class ToolsInstaller:
 
             # Gate de versión exacta: SKSE está pinneado al BUILD exacto del juego, no
             # solo a su edición — dos AE distintos (1.6.640 vs 1.6.1170) comparten
-            # edición pero el DLL de uno no carga sobre el otro. Solo se evalúa cuando
-            # hay versión detectada (autodetección + pefile presente); si no, se
-            # degrada al comportamiento previo (edición sola) en vez de bloquear.
+            # edición pero el DLL de uno no carga sobre el otro. Corre ANTES del HITL,
+            # del egress y de cualquier escritura en el directorio del juego: la
+            # propiedad es "autoinstalar exige PODER PROBAR la compatibilidad", no
+            # "exige no haberla desmentido".
+            #
+            # De ahí que la versión ILEGIBLE también corte. Degradarse ahí "a edición
+            # sola" era fail-open: `read_skyrim_version` devuelve "" en tres casos
+            # reales (sin `pefile`, PE que no parsea, PE sin recurso de versión) y en
+            # esa MISMA rama la edición no sale del PE sino de una heurística de TAMAÑO
+            # de archivo (`scanner._detect_skyrim_version`: >60 MB ⇒ AE). O sea que lo
+            # que se instalaba era el payload de un build adivinado sobre un runtime
+            # desconocido — incluido el AE de GOG (1.6.1179), que el gate de mismatch
+            # solo ataja cuando la versión se pudo leer.
             expected_version = _skse_dll_game_version(dll_name)
+            if autodetectada and not detected_version:
+                raise ToolInstallError(
+                    f"No pude leer la versión exacta de tu Skyrim {ed_key} en {install_dir} "
+                    "(¿falta `pefile`, o el ejecutable no expone su recurso de versión?). "
+                    "SKSE está pinneado a la versión EXACTA del ejecutable, así que sin poder "
+                    "probar la compatibilidad no se instala nada: elegir el payload por edición "
+                    "sola escribe un DLL que puede no cargar. Instalá manualmente el build "
+                    "correspondiente desde https://skse.silverlock.org/."
+                )
             if detected_version and not _game_version_matches(detected_version, expected_version):
                 raise ToolInstallError(
                     f"Tu Skyrim {ed_key} está en la versión {detected_version}, pero el único "
@@ -1774,10 +1806,15 @@ class ToolsInstaller:
                 "Verifica que el archivo descargado contenga los binarios esperados."
             )
 
-        self._verify_skse_installed(game_dir, cfg)
+        self._verify_skse_installed(skse_root, game_dir, cfg)
         logger.info("SKSE: archivos copiados a %s", game_dir)
 
-    def _verify_skse_installed(self, game_dir: pathlib.Path, cfg: dict[str, str | None]) -> None:
+    def _verify_skse_installed(
+        self,
+        skse_root: pathlib.Path,
+        game_dir: pathlib.Path,
+        cfg: dict[str, str | None],
+    ) -> None:
         """Verifica en DESTINO que la instalación de SKSE quedó completa.
 
         Contar archivos copiados no alcanza: un payload con el loader y un ``Data/``
@@ -1797,8 +1834,18 @@ class ToolsInstaller:
         # El steam loader no entra en el corte duro: solo hace falta para arrancar desde
         # Steam, y MO2 lanza el loader directo. Fallar acá tiraría abajo una instalación
         # que funciona; avisar deja el rastro sin romperla.
+        #
+        # Pero la expectativa sale del PAYLOAD, no de `SKSE_CONFIG`: los archives no
+        # traen todos el mismo set de archivos, así que condicionar el aviso a la
+        # edición lo dispara en TODA instalación buena de un build que no lo incluye —
+        # y le dice al operador que le falta algo que su build nunca tuvo. Mirando el
+        # payload el aviso queda acotado a lo que sí es un defecto: el archive lo traía
+        # y no aterrizó (copia incompleta), que es el caso de los builds históricos que
+        # realmente lo necesitan. Se compara contra la raíz del payload porque es
+        # exactamente el nivel que `_copy_skse_files` recorre: si el archivo no está
+        # ahí, no había nada que copiar.
         steam_loader = cfg.get("steam_loader")
-        if steam_loader and not (game_dir / steam_loader).is_file():
+        if steam_loader and (skse_root / steam_loader).is_file() and not (game_dir / steam_loader).is_file():
             logger.warning(
                 "SKSE instalado sin %s: el arranque desde Steam puede no cargar SKSE "
                 "(lanzándolo desde MO2 o desde el loader funciona igual).",
