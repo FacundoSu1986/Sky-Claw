@@ -1429,7 +1429,18 @@ class ToolsInstaller:
             # desconocido — incluido el AE de GOG (1.6.1179), que el gate de mismatch
             # solo ataja cuando la versión se pudo leer.
             expected_version = _skse_dll_game_version(dll_name)
-            if autodetectada and not detected_version:
+            loader_path = install_dir / loader_name
+            dll_path = install_dir / dll_name
+            ya_instalado = loader_path.exists() and dll_path.exists()
+
+            # El corte por versión ilegible NO se le aplica a una instalación que ya
+            # está: ese camino no descarga ni escribe nada, así que negarle el no-op a
+            # una máquina cuyo PE no se puede leer rompe una instalación buena sin
+            # ganar ninguna garantía. Es la misma política que el hermano de detección
+            # ya documenta (`scanner.find_skse_installation`: versión vacía degrada a
+            # "loader + algún DLL de runtime", no falla cerrado), y acá vale por la
+            # misma razón: lo que exige prueba es MUTAR, no reportar.
+            if autodetectada and not detected_version and not ya_instalado:
                 raise ToolInstallError(
                     f"No pude leer la versión exacta de tu Skyrim {ed_key} en {install_dir} "
                     "(¿falta `pefile`, o el ejecutable no expone su recurso de versión?). "
@@ -1445,10 +1456,8 @@ class ToolsInstaller:
                     "a la versión EXACTA del ejecutable, no solo a la edición). Instalá "
                     "manualmente el build correspondiente desde https://skse.silverlock.org/."
                 )
-            loader_path = install_dir / loader_name
-            dll_path = install_dir / dll_name
 
-            if loader_path.exists() and dll_path.exists():
+            if ya_instalado:
                 logger.info("SKSE ya instalado en %s", loader_path)
                 return InstallResult(
                     tool_name="SKSE",

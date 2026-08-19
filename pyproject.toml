@@ -26,6 +26,13 @@ dependencies = [
     "sv-ttk>=2.5",
     "keyring>=24.0",
     "psutil>=5.8",
+    # Parser de PE, puro Python y sin binarios nativos. NO es opcional pese a que
+    # `scanner._read_pe_product_version` lo importe dentro de un try/ImportError: sin
+    # él `read_skyrim_version()` devuelve "" SIEMPRE, y el gate de runtime de
+    # `ensure_skse` —que es fail-closed— deja el autoinstalador de SKSE inalcanzable
+    # en vez de protegerlo. Un fail-closed sobre una señal que nunca llega no es
+    # fail-closed, es "fail". Anclado en tests/test_project_config.py.
+    "pefile>=2023.2.7",
     "websockets>=14.0",
     # F1b (informe #319): langgraph / langchain-core / langsmith se retiraron
     # con el SupervisorStateGraph muerto — no se importaban en ningún otro

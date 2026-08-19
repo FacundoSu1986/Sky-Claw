@@ -1985,6 +1985,10 @@ class TestEnsureSkse:
     # (`scanner._detect_skyrim_version`: >60 MB ⇒ AE), así que lo que se instalaba era
     # el payload de un build ADIVINADO sobre un runtime desconocido.
 
+    #: Sitio oficial al que TODO error de compatibilidad tiene que mandar al operador:
+    #: sin él el mensaje dice "no se puede" y no dice adónde ir.
+    _URL_OFICIAL = "https://skse.silverlock.org/"
+
     def _skyrim_limpio(self, tmp_path: pathlib.Path) -> pathlib.Path:
         """Raíz de juego con ejecutable y sin SKSE: es donde corre el gate."""
         install_dir = tmp_path / "skyrim"
@@ -2028,7 +2032,14 @@ class TestEnsureSkse:
         with pytest.raises(ToolInstallError, match="No pude leer la versión exacta") as exc_info:
             await installer.ensure_skse(install_dir, session)
 
-        assert "skse.silverlock.org" in str(exc_info.value), "el mensaje tiene que ser accionable"
+        # La pertenencia se afirma contando la URL oficial completa y no como
+        # `"skse.silverlock.org" in <mensaje>`: CodeQL lee ese `in` como el patrón de
+        # saneamiento de URLs por substring (`py/incomplete-url-substring-sanitization`)
+        # y lo reporta high, aunque acá el operando sea el TEXTO DE UN ERROR y no un
+        # guard de seguridad. Mismo precedente y mismo motivo que
+        # `test_el_host_de_skse_esta_habilitado_en_el_egress`. La aserción queda más
+        # fuerte, no más débil: exige la URL entera y exactamente una vez.
+        assert str(exc_info.value).count(self._URL_OFICIAL) == 1, "el mensaje tiene que ser accionable"
         hitl.assert_not_awaited(), "no se le pide aprobación al operador para algo que no se puede probar"
         egress.assert_not_awaited()
         assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
@@ -2058,6 +2069,62 @@ class TestEnsureSkse:
         hitl.assert_not_awaited()
         egress.assert_not_awaited()
         assert set(install_dir.iterdir()) == antes
+
+    @pytest.mark.asyncio
+    async def test_ya_instalado_con_version_ilegible_sigue_siendo_idempotente(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El corte por versión ilegible aplica a INSTALAR, no a reportar lo ya instalado.
+
+        El early-return de idempotencia no descarga ni escribe nada, así que negárselo
+        a una máquina cuyo PE no se puede leer rompería una instalación que funciona
+        sin ganar ninguna garantía. Misma política que el hermano de detección
+        (`scanner.find_skse_installation`), que ante versión vacía degrada en vez de
+        reportar faltante.
+
+        El gate de MISMATCH conserva su precedencia sobre la idempotencia y eso se
+        cubre aparte: ahí la incompatibilidad está demostrada.
+        """
+        install_dir = self._skyrim_limpio(tmp_path)
+        (install_dir / "skse64_loader.exe").write_bytes(b"MZ")
+        (install_dir / "skse64_1_6_1170.dll").write_bytes(b"MZ")
+        antes = set(install_dir.iterdir())
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "")
+
+        hitl, egress = self._espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        res = await installer.ensure_skse(install_dir, session)
+
+        assert res.already_existed is True
+        assert res.exe_path == install_dir / "skse64_loader.exe"
+        hitl.assert_not_awaited()
+        egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes
+
+    @pytest.mark.asyncio
+    async def test_ya_instalado_con_build_incompatible_sigue_cortando(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """La contracara: con mismatch DEMOSTRADO, tener archivos en disco no absuelve.
+
+        El DLL presente es el del build equivocado —no carga sobre ese runtime— y el
+        operador tiene que enterarse acá, no al arrancar el juego. Sin este test, mover
+        la idempotencia por encima de ambos gates pasaría en verde.
+        """
+        install_dir = self._skyrim_limpio(tmp_path)
+        (install_dir / "skse64_loader.exe").write_bytes(b"MZ")
+        (install_dir / "skse64_1_6_1170.dll").write_bytes(b"MZ")
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.6.640")
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError, match="1.6.640"):
+            await installer.ensure_skse(install_dir, session)
 
     @pytest.mark.asyncio
     async def test_runtime_exacto_soportado_sigue_instalando(
@@ -2105,7 +2172,7 @@ class TestEnsureSkse:
         with pytest.raises(ToolInstallError, match="1.6.1179") as exc_info:
             await installer.ensure_skse(install_dir, session)
 
-        assert "skse.silverlock.org" in str(exc_info.value)
+        assert str(exc_info.value).count(self._URL_OFICIAL) == 1  # ver nota de CodeQL arriba
         hitl.assert_not_awaited()
         egress.assert_not_awaited()
         assert set(install_dir.iterdir()) == antes
