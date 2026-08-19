@@ -12,9 +12,12 @@
 Sky-Claw automatiza el pipeline de modding de Skyrim SE/AE sobre MO2. Su DAG canónico
 (`sky_claw/local/AGENTS.md` §1) tiene 9 stages y termina en Stage 9 = TexGen → DynDOLOD.
 El ecosistema moderno de materiales (parallax / complex material / PBR / optimización de
-VRAM) vive **antes** del LOD y hoy **no existe en el repo**: `ParallaxR`, `BENDr`, `PGPatcher`,
-`ParallaxGen`, `TruePBR`, `parallax`, `complex material` y `texconv` tienen **cero ocurrencias**
-en todo el árbol (grep case-insensitive incluyendo docs y tests).
+VRAM) vive **antes** del LOD y **no existía en el repo** en el snapshot auditado: `ParallaxR`,
+`BENDr`, `PGPatcher`, `ParallaxGen`, `TruePBR`, `parallax`, `complex material` y `texconv` tenían
+**cero ocurrencias en `main @ fd1d3c6`** (grep case-insensitive incluyendo docs y tests), el árbol
+**anterior a incorporar este plan**. La afirmación está anclada a ese commit a propósito: esta
+misma rama ya contiene la v3, así que la búsqueda repetida sobre el árbol actual **devuelve
+coincidencias** (este documento), y no sería reproducible sin el ancla.
 
 El objetivo es una rama semántica pre-LOD, con adapters independientes bajo un orquestador, que
 converja antes de TexGen/DynDOLOD **sin renumerar Stage 9** y sin duplicar la infraestructura ya
@@ -44,11 +47,13 @@ está bien testeada**. El trabajo real es de **extensión y cableado**.
 
 ### Estado del documento versionado en el repo
 
-`docs/design/plans/2026-08-19-pre-lod-material-pipeline-v2.md` (commit `d596020`) contiene **v2**
-y por lo tanto **la afirmación errónea de H1**. Queda **stale** frente a este documento. Al
-versionar v3 hay que decidir: reemplazar ese archivo, o agregar uno nuevo dejando v2 como
-histórico. **Recomendación: reemplazarlo**, porque un plan con un hecho falso circulando en
-paralelo es peor que no tener el histórico — y el histórico ya vive en el git log.
+**Esta v3 es el único plan vigente en el árbol.** La v2
+(`docs/design/plans/2026-08-19-pre-lod-material-pipeline-v2.md`) contenía la afirmación errónea de
+H1 (`ExtractBSA.exe` como binario Rust/clap) y **fue retirada del árbol en el commit `92b2822`**,
+que la reemplazó por este archivo. La v2 **permanece únicamente en la historia de git**
+(recuperable desde el commit `d596020`, donde se versionó) para trazabilidad, y **no debe usarse
+como fuente técnica**: su H1 es falso. Cualquier referencia a "el plan" o "el roadmap" apunta a
+esta v3.
 
 ---
 
@@ -299,7 +304,7 @@ una propiedad falsa.*
 |---|---|---|
 | El DAG de 9 stages es prosa, no runtime | `sky_claw/local/AGENTS.md:35-82` (auto-declarado L70) | Alta |
 | `pipeline_stage` es un int suelto; 5 emisores | grep exhaustivo | Alta |
-| `ParallaxR`/`BENDr`/`PGPatcher`/`ParallaxGen`/`parallax`/`TruePBR`/`texconv`/`complex material` = 0 ocurrencias | `grep -ril` sobre todo el árbol | Alta |
+| `ParallaxR`/`BENDr`/`PGPatcher`/`ParallaxGen`/`parallax`/`TruePBR`/`texconv`/`complex material` = 0 ocurrencias **en `main @ fd1d3c6`** (antes de este plan; el árbol actual ya contiene la v3) | `grep -ril` sobre el árbol de `fd1d3c6` | Alta |
 | `VRAMrPipelineService` sin callers en `sky_claw/app/` | grep | Alta |
 | Éxito de VRAMr = solo exit code | `vramr_service.py:186-188` | Alta |
 | VRAMr devuelve `error`, no `message` | `vramr_service.py:444-468` | Alta |
