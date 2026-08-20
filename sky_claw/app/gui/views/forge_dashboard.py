@@ -227,9 +227,10 @@ def _vital_bar_width(value: float | None) -> int:
 def _ritual_status(snapshot: Any, tool_key: str) -> str:
     """Derive a ritual's tool state from the environment snapshot.
 
-    Returns ``"available"`` / ``"missing"`` / ``"present_unverified"`` when a scan
-    has run, or ``"unknown"`` before the first :class:`EnvironmentScanner` snapshot
-    lands in the store — so the UI never claims a tool is installed without proof.
+    Devuelve ``"available"`` / ``"missing"`` / ``"present_unverified"`` cuando
+    corrió un escaneo, o ``"unknown"`` antes de que el primer snapshot de
+    :class:`EnvironmentScanner` aterrice en la store — así la UI nunca afirma que
+    una herramienta está instalada sin prueba.
 
     ``"present_unverified"`` hoy solo lo puede producir SKSE: con la versión exacta
     de Skyrim ilegible, el scanner degrada su detección a "loader + algún DLL de
