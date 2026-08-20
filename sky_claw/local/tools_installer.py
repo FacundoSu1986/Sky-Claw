@@ -1530,6 +1530,25 @@ class ToolsInstaller:
                 # Buscar loader excluyendo __MACOSX
                 skse_root = self._find_skse_root(extract_path, cfg)
 
+                # SEGUNDO GATE, pegado a la primera escritura. El de arriba probó la
+                # compatibilidad al ARRANCAR la operación; desde entonces pasaron tres
+                # cosas que duran —la espera del HITL, la descarga y la extracción— y
+                # Skyrim es un ejecutable que otro proceso (Steam) actualiza sin
+                # avisarnos. Sin releer, lo que quedaba demostrado era "el runtime ERA
+                # compatible cuando empecé", y lo que decide si el DLL carga es si lo
+                # SIGUE siendo cuando escribo.
+                #
+                # Va acá y no antes de la descarga: cuanto más lejos de la copia, más
+                # ventana queda sin cubrir. Y va antes de `_copy_skse_files` porque esa
+                # es la primera mutación del directorio del juego — todo lo anterior
+                # (sandbox, archive, extracción) vive en staging temporal.
+                await self._revalidar_runtime_antes_de_mutar(
+                    install_dir,
+                    ed_key,
+                    expected_version,
+                    habia_ejecutable=hay_ejecutable,
+                )
+
                 # Copiar archivos al directorio del juego. `_copy_skse_files` solo toca
                 # nombres presentes en el payload nuevo (loader/dll de esta edición +
                 # Data) — no depende de que los DLL huérfanos ya estén borrados.
@@ -1550,6 +1569,59 @@ class ToolsInstaller:
                 exe_path=loader_path,
                 version=pathlib.Path(url).stem,
                 already_existed=False,
+            )
+
+    async def _revalidar_runtime_antes_de_mutar(
+        self,
+        game_dir: pathlib.Path,
+        ed_key: str,
+        expected_version: str,
+        *,
+        habia_ejecutable: bool,
+    ) -> None:
+        """Vuelve a probar la compatibilidad contra el ejecutable REAL, justo antes de escribir.
+
+        No confía en nada de la primera pasada: relee el PE del disco. Ni la versión
+        detectada al arrancar, ni la edición, ni el nombre del DLL elegido sirven acá
+        — todos son de antes de la ventana, y la ventana es justamente el problema.
+
+        ``habia_ejecutable`` es lo único que se hereda, y no es una versión sino un
+        hecho sobre la precondición: distingue "el juego se desinstaló o se movió a
+        mitad de la operación" (había uno, ya no) de "esta instalación nunca tuvo un
+        .exe acá", que es el camino legítimo de staging con ``edition`` explícita y
+        que el contrato existente permite.
+
+        Falla cerrado en las tres formas de no poder probar: sin ejecutable, sin
+        versión legible, o versión que no matchea el payload que se bajó.
+        """
+        hay_ejecutable, version_actual = await self._leer_version_del_ejecutable(game_dir)
+
+        if not hay_ejecutable:
+            if not habia_ejecutable:
+                # Nunca hubo ejecutable: staging con edición explícita. Nada cambió
+                # bajo nuestros pies, así que no hay TOCTOU que atajar.
+                return
+            raise ToolInstallError(
+                f"El payload de SKSE {ed_key} ya se descargó, pero ya no encuentro el ejecutable "
+                f"de Skyrim en {game_dir}: desapareció mientras se preparaba la instalación "
+                "(¿se desinstaló o se movió el juego?). No se copió nada."
+            )
+
+        if not version_actual:
+            raise ToolInstallError(
+                f"La compatibilidad de tu Skyrim {ed_key} en {game_dir} dejó de poder verificarse "
+                "mientras se preparaba la instalación: el ejecutable está pero ya no expone su "
+                "versión (¿una actualización en curso?). No se copió nada; reintentá cuando el "
+                "juego esté en reposo."
+            )
+
+        if not _game_version_matches(version_actual, expected_version):
+            raise ToolInstallError(
+                f"Tu Skyrim {ed_key} cambió de versión mientras se preparaba la instalación: "
+                f"ahora está en {version_actual} y el payload que se descargó es para "
+                f"{expected_version}. Copiarlo dejaría un SKSE que no carga, así que no se copió "
+                "nada. Volvé a intentarlo para que se elija el build correspondiente a "
+                f"{version_actual}."
             )
 
     async def _leer_version_del_ejecutable(self, game_dir: pathlib.Path) -> tuple[bool, str]:
