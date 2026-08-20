@@ -1212,3 +1212,55 @@ async def test_fallo_del_manifiesto_no_propaga_si_el_rollback_marking_falla(
     run_pipeline.assert_not_awaited()
     assert out["success"] is False
     assert out["reason"] == "ActionManifestFailed"  # la excepción secundaria no lo enmascaró
+
+
+# =============================================================================
+# Falso verde del runner (éxito textual sin output atribuible) → rollback
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_success_textual_sin_output_atribuible_dispara_rollback(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Runner REAL (sin mock de run_pipeline): exit 0 + texto de éxito +
+    ``Synthesis.esp`` preexistente SIN cambios → el runner no atribuye output
+    → el service convierte el resultado fallido en excepción DENTRO del lock
+    → rollback del snapshot + TX marcada rolled_back (contrato de éxito sin
+    falso verde, y sin sacar la decisión de fallo fuera del lock)."""
+    esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    original = b"TES4" + b"\x00" * 200
+    esp.write_bytes(original)
+
+    # El runner REAL construye el argv con el perfil activo (string, no MagicMock).
+    mock_path_resolver.get_active_profile = MagicMock(return_value="Default")
+
+    svc = _svc_real_journal(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, event_bus, tmp_path)
+
+    async def _phantom(_args: list[str], **_kwargs: object) -> tuple[bytes, bytes, int]:
+        # El proceso "corre" con éxito textual pero NO toca el esp.
+        return b"Successfully generated patch output", b"", 0
+
+    with (
+        patch("sky_claw.local.tools.synthesis_runner.run_capture", _phantom),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is False
+    assert "not attributable" in out["message"]
+    mock_journal.commit_transaction.assert_not_awaited()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
+    assert esp.read_bytes() == original  # el snapshot se restauró
