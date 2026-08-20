@@ -103,7 +103,7 @@ trabajo.
 | **Pandora** | `<juego resuelto>/Pandora_Output` — ruta absoluta explícita mediante `--output` |
 | **BodySlide** | `<juego>/<output_path>` — el `-o` es **relativo** al `cwd`, que es el juego |
 | **Synthesis** | Ruta explícita (caso (b)): el `overwrite` de MO2 si existe, si no `<mo2>/mods/Synthesis Output` |
-| **DynDOLOD / TexGen** | Staging crudo (`DynDOLOD_Output` / `TexGen_Output`) bajo la raíz MO2, el directorio del exe o el directorio de trabajo del proceso; los mods empaquetados van a `<mo2>/mods/` |
+| **DynDOLOD / TexGen** | Raíz explícita `<juego>/Sky-Claw/DynDOLOD` mediante `-o:`; DynDOLOD usa `DynDOLOD_Output` (o el root con `DynDOLOD.esp`) y TexGen usa `textures`; los mods empaquetados van a `<mo2>/mods/` |
 | **LOOT** | No produce artefacto nuevo: reordena el `plugins.txt` / `loadorder.txt` del perfil |
 | **xEdit (QuickAutoClean)** | Reescribe el plugin **in-place**, sobre su propia ruta de entrada |
 

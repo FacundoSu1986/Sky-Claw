@@ -589,7 +589,7 @@ class DynDOLODRunner:
     y texturas optimizadas para mejorar la visualización a larga distancia.
 
     Patrones de salida esperados:
-    - TexGen: <TexGen_Output>/ - Contiene texturas LOD
+    - TexGen: <output_root>/textures/ - Contiene texturas LOD
     - DynDOLOD: <DynDOLOD_Output>/ - Contiene DynDOLOD.esp y assets
 
     Usage:
@@ -624,8 +624,9 @@ class DynDOLODRunner:
         re.IGNORECASE | re.MULTILINE,
     )
 
-    # Nombres de directorios de salida estándar
-    TEXGEN_OUTPUT_NAME = "TexGen_Output"
+    # Contratos físicos de staging. Los nombres de mods MO2 son conceptos
+    # independientes y permanecen en *_MOD_NAME.
+    TEXGEN_OUTPUT_NAME = "textures"
     DYNDOLLOD_OUTPUT_NAME = "DynDOLOD_Output"
     TEXGEN_MOD_NAME = "TexGen Output"
     DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
@@ -1108,18 +1109,23 @@ class DynDOLODRunner:
         self,
         output_path: pathlib.Path,
         mod_name: str,
+        *,
+        preservar_directorio_raiz: bool = False,
     ) -> pathlib.Path:
         """
         Empaqueta la salida de una herramienta como un mod válido para MO2.
 
         Pasos:
         1. Crear directorio en self._config.mo2_mods_path / mod_name
-        2. Copiar todo el contenido de output_path al nuevo directorio
+        2. Copiar el contenido de output_path o preservar esa raíz Data-relative
         3. Generar meta.ini válido
 
         Args:
             output_path: Path al directorio de salida de la herramienta.
             mod_name: Nombre del mod a crear.
+            preservar_directorio_raiz: Si es True, copia ``output_path`` como
+                hijo del mod. TexGen lo necesita porque su artefacto físico es
+                ``root/textures`` y ``textures`` forma parte del layout Data.
 
         Returns:
             pathlib.Path: Ruta al directorio del mod creado.
@@ -1185,8 +1191,12 @@ class DynDOLODRunner:
 
                 mod_path.mkdir(parents=True, exist_ok=True)
 
-                # Copiar contenido
-                for item in output_path.iterdir():
+                # TexGen entrega ``root/textures`` como artefacto/fuente exacta,
+                # pero el root del mod MO2 tiene que conservar ``textures/``.
+                # DynDOLOD, en cambio, ya entrega un staging cuyo CONTENIDO es
+                # Data-relative y conserva el comportamiento histórico.
+                items = [output_path] if preservar_directorio_raiz else list(output_path.iterdir())
+                for item in items:
                     src = item
                     dst = mod_path / item.name
                     if src.is_dir():
@@ -1227,7 +1237,7 @@ class DynDOLODRunner:
 
         Flujo:
         1. Ejecutar TexGen (si run_texgen=True)
-        2. Empaquetar TexGen_Output como "TexGen Output"
+        2. Empaquetar ``textures`` como "TexGen Output", preservando esa raíz
         3. Ejecutar DynDOLOD (después de que TexGen esté listo)
         4. Empaquetar DynDOLOD_Output como "DynDOLOD Output"
 
@@ -1263,6 +1273,7 @@ class DynDOLODRunner:
                         texgen_mod_path = await self._package_output_as_mod(
                             texgen_result.output_path,
                             self.TEXGEN_MOD_NAME,
+                            preservar_directorio_raiz=True,
                         )
                     except DynDOLODValidationError as e:
                         errors.append(f"Failed to package TexGen output: {e}")
@@ -1302,7 +1313,7 @@ class DynDOLODRunner:
                 )
 
         # Paso 2: Ejecutar DynDOLOD
-        # Nota: DynDOLOD puede ejecutarse sin TexGen si ya existe TexGen_Output
+        # Nota: DynDOLOD puede ejecutarse sin TexGen si sus texturas ya existen.
         try:
             dyndolod_result = await self.run_dyndolod(
                 preset=preset,
@@ -1922,11 +1933,11 @@ class DynDOLODRunner:
         suyo es cómo se llega a que el preflight opine sobre un lugar donde el
         tool no escribe.
 
-        TexGen lleva UN solo candidato a propósito (review de #440): su salida son
-        texturas, sin artefacto con nombre propio que gatear, así que aceptar la
-        raíz como fallback dejaría pasar el ``DynDOLOD_Output`` de una corrida
-        previa como si fuera salida de TexGen. DynDOLOD sí puede caer en la raíz
-        (interpretación B de ``-o:``) porque su gate exige ``DynDOLOD.esp``.
+        TexGen lleva UN solo candidato a propósito (review de #440): el binario
+        escribe ``root/textures`` y aceptar la raíz como fallback dejaría pasar el
+        ``DynDOLOD_Output`` de una corrida previa como si fuera salida de TexGen.
+        DynDOLOD sí puede caer en la raíz (interpretación B de ``-o:``) porque su
+        gate exige ``DynDOLOD.esp``.
         """
         root = self._config.output_root
         if root is None:
@@ -2371,8 +2382,7 @@ class DynDOLODRunner:
             raise
 
     def _find_texgen_output(self) -> pathlib.Path | None:
-        """Staging de TexGen: SOLO ``root/TexGen_Output`` (la herramienta crea su
-        carpeta dentro del ``-o:`` — layout por default).
+        """Staging de TexGen: SOLO ``root/textures``.
 
         A diferencia de DynDOLOD, TexGen NO tiene un artefacto con nombre propio
         que gatear (su salida son texturas), así que un fallback a ``root`` sería
@@ -2380,7 +2390,7 @@ class DynDOLODRunner:
         ``root/DynDOLOD_Output``, ``any(root.iterdir())`` lo aceptaría como salida
         de TexGen y el empaquetado copiaría el staging de DynDOLOD dentro de
         "TexGen Output". Por eso ``_candidatos_de_salida`` le da UN solo
-        candidato: si no existe, el gate de artefacto falla (fail-closed).
+        candidato físico: si no existe, el gate de artefacto falla (fail-closed).
         """
         candidatos = self._candidatos_de_salida("TexGen")
         return candidatos[0] if candidatos else None

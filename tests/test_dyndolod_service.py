@@ -174,7 +174,7 @@ def _make_success_result(
             return_code=0,
             stdout="OK",
             stderr="",
-            output_path=pathlib.Path("/tmp/TexGen_Output"),
+            output_path=pathlib.Path("/tmp/textures"),
             duration_seconds=10.0,
         )
         if run_texgen
@@ -1512,7 +1512,8 @@ def test_permission_targets_incluye_staging_y_empaquetado(
     # Staging crudo bajo la raíz administrada única
     assert root in targets
     assert root / "DynDOLOD_Output" in targets
-    assert root / "TexGen_Output" in targets
+    assert root / "textures" in targets
+    assert root / "TexGen_Output" not in targets
     # El primer ancestro EXISTENTE se sondea para poder CREAR la raíz en el primer
     # run: `root.parent` (game/Sky-Claw) tampoco existe todavía, y el checker se
     # salta las rutas inexistentes.
@@ -1641,7 +1642,8 @@ async def test_dyndolod_persiste_manifiesto_y_informe(
     assert str(tmp_path / "mods" / "DynDOLOD Output") in manifest.files_touched
     # Staging crudo bajo la raíz administrada única (subcarpetas + la raíz)
     assert str(tmp_path / "DynDOLOD" / "DynDOLOD_Output") in manifest.files_touched
-    assert str(tmp_path / "DynDOLOD" / "TexGen_Output") in manifest.files_touched
+    assert str(tmp_path / "DynDOLOD" / "textures") in manifest.files_touched
+    assert str(tmp_path / "DynDOLOD" / "TexGen_Output") not in manifest.files_touched
     assert str(tmp_path / "DynDOLOD") in manifest.files_touched
     informes = await _informe_ultima_tx(real_journal)
     assert len(informes) == 1
@@ -2100,30 +2102,139 @@ async def test_la_herramienta_puede_escribir_directo_en_la_raiz(tmp_path: pathli
 
 
 @pytest.mark.asyncio
-async def test_texgen_no_acepta_el_staging_de_dyndolod_como_salida(tmp_path: pathlib.Path) -> None:
-    """Regresión (review PR #440, Major): el staging previo de DynDOLOD en la
-    raíz NO puede pasar por salida de TexGen.
+async def test_texgen_acepta_textures_generado_durante_la_corrida(tmp_path: pathlib.Path) -> None:
+    """T3: el artefacto físico real de TexGen es ``root/textures``."""
+    config, runner = _runner_texgen(tmp_path)
+    root = config.output_root
+    assert root is not None
+    artefacto = root / "textures" / "terrain" / "lodgen" / "example.dds"
 
-    Si ``root/TexGen_Output`` no existe y la raíz contiene ``DynDOLOD_Output``
-    de una corrida anterior, un fallback a ``root`` lo aceptaría como salida de
+    def _escribir_textura_real() -> None:
+        artefacto.parent.mkdir(parents=True)
+        artefacto.write_bytes(b"dds")
+
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(tmp_path, "TexGen", _escribir_textura_real),
+    )
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_texgen()
+
+    assert result.success is True
+    assert result.output_path == root / "textures"
+
+
+@pytest.mark.asyncio
+async def test_texgen_output_obsoleto_no_es_fallback(tmp_path: pathlib.Path) -> None:
+    """T3: crear el staging legado durante la corrida no satisface el contrato."""
+    config, runner = _runner_texgen(tmp_path)
+    root = config.output_root
+    assert root is not None
+    legado = root / "TexGen_Output"
+
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "TexGen",
+            lambda: _escribir_salida(legado, "legacy.dds"),
+        ),
+    )
+    with patch.object(runner, "_execute_process", fake):
+        result = await runner.run_texgen()
+
+    assert result.success is False
+    assert result.output_path == root / "textures"
+
+
+@pytest.mark.asyncio
+async def test_texgen_no_acepta_el_staging_de_dyndolod_como_salida(tmp_path: pathlib.Path) -> None:
+    """T3/M3: una escritura ajena bajo ``root`` no puede pasar por TexGen.
+
+    Si ``root/textures`` no existe y la raíz contiene ``DynDOLOD_Output``
+    escrito durante esta corrida, un fallback a ``root`` lo aceptaría como salida de
     TexGen y el empaquetado copiaría el staging de DynDOLOD dentro de
-    "TexGen Output". TexGen se resuelve SOLO bajo ``root/TexGen_Output``:
+    "TexGen Output". TexGen se resuelve SOLO bajo ``root/textures``:
     sin salida real, fail-closed.
     """
     config, runner = _runner_texgen(tmp_path)
     root = config.output_root
     assert root is not None
-    stale = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
-    stale.mkdir(parents=True)
-    (stale / "DynDOLOD.esp").write_text("stale", encoding="utf-8")
-    _escribir_log(tmp_path, "TexGen", "[00:00:02] TexGen completed\n")
+    ajeno = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
 
-    fake = _EjecucionFalsa(return_code=0)
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=_corrida_que_completa(
+            tmp_path,
+            "TexGen",
+            lambda: _escribir_salida(ajeno, "DynDOLOD.esp", b"ajeno"),
+        ),
+    )
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_texgen()
 
-    assert result.output_path == root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert result.output_path == root / "textures"
     assert result.success is False  # sin salida de TexGen real: fail-closed
+
+
+@pytest.mark.asyncio
+async def test_pipeline_entrega_a_packaging_la_fuente_texgen_exacta(tmp_path: pathlib.Path) -> None:
+    """T3/M4: frescura y packaging consumen el mismo ``root/textures`` exacto."""
+    config, runner = _runner_texgen(tmp_path)
+    root = config.output_root
+    assert root is not None
+    texgen = root / "textures"
+    dyndolod = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    llamadas: list[tuple[pathlib.Path, str, bool]] = []
+
+    async def _empaquetar(
+        output_path: pathlib.Path,
+        mod_name: str,
+        *,
+        preservar_directorio_raiz: bool = False,
+    ) -> pathlib.Path:
+        llamadas.append((output_path, mod_name, preservar_directorio_raiz))
+        return config.mo2_mods_path / mod_name
+
+    texgen_result = ToolExecutionResult(True, "TexGen", 0, "", "", output_path=texgen)
+    dyndolod_result = ToolExecutionResult(True, "DynDOLOD", 0, "", "", output_path=dyndolod)
+    with (
+        patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
+        patch.object(runner, "run_dyndolod", AsyncMock(return_value=dyndolod_result)),
+        patch.object(runner, "_package_output_as_mod", _empaquetar),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    assert result.success is True
+    assert llamadas == [
+        (texgen, DynDOLODRunner.TEXGEN_MOD_NAME, True),
+        (dyndolod, DynDOLODRunner.DYNDOLLOD_MOD_NAME, False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_preserva_textures_como_raiz_data_del_mod_mo2(tmp_path: pathlib.Path) -> None:
+    """T3: empaquetar ``root/textures`` no puede eliminar el prefijo Data-relative."""
+    config, runner = _runner_texgen(tmp_path)
+    root = config.output_root
+    assert root is not None
+    texgen = root / "textures"
+    dyndolod = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    _escribir_salida(texgen / "terrain", "example.dds", b"dds")
+    _escribir_salida(dyndolod, "DynDOLOD.esp", b"esp")
+
+    texgen_result = ToolExecutionResult(True, "TexGen", 0, "", "", output_path=texgen)
+    dyndolod_result = ToolExecutionResult(True, "DynDOLOD", 0, "", "", output_path=dyndolod)
+    with (
+        patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
+        patch.object(runner, "run_dyndolod", AsyncMock(return_value=dyndolod_result)),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    assert result.success is True
+    assert (mod_texgen / "textures" / "terrain" / "example.dds").read_bytes() == b"dds"
+    assert not (mod_texgen / "terrain").exists()
 
 
 # =============================================================================
@@ -2141,12 +2252,10 @@ async def test_texgen_no_acepta_el_staging_de_dyndolod_como_salida(tmp_path: pat
 
 @pytest.mark.asyncio
 async def test_staging_previo_sin_escritura_no_es_exito_texgen(tmp_path: pathlib.Path) -> None:
-    """Staging poblado por una corrida ANTERIOR + exit 0 + sin log → success=False.
+    """Staging previo intacto + exit 0 + marcador actual → success=False.
 
-    Es la secuencia exacta del hallazgo: corrida 1 deja ``TexGen_Output`` con
-    texturas; en la corrida 2 el operador cierra la ventana a los dos minutos, la
-    GUI sale con 0 y no flushea log. Nada en el disco cambió, así que no hay
-    salida nueva que empaquetar.
+    El log actual aísla el gate de frescura: nada en el artefacto cambió, así que
+    no hay salida nueva que empaquetar aunque TexGen declare haber terminado.
     """
     config, runner = _runner_texgen(tmp_path)
     assert config.output_root is not None
@@ -2154,7 +2263,10 @@ async def test_staging_previo_sin_escritura_no_es_exito_texgen(tmp_path: pathlib
     staging.mkdir(parents=True)
     (staging / "vieja.dds").write_bytes(b"\x00")
 
-    fake = _EjecucionFalsa(return_code=0)
+    fake = _EjecucionFalsa(
+        return_code=0,
+        al_ejecutar=lambda: _escribir_log(tmp_path, "TexGen", _log_completo("TexGen")),
+    )
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_texgen()
 
@@ -4405,7 +4517,13 @@ async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
         _apendear_log(tmp_path, "TexGen", _log_completo("TexGen"))
         _apendear_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
-    async def _empaquetar(output_path: pathlib.Path, mod_name: str) -> pathlib.Path:
+    async def _empaquetar(
+        output_path: pathlib.Path,
+        mod_name: str,
+        *,
+        preservar_directorio_raiz: bool = False,
+    ) -> pathlib.Path:
+        del output_path, preservar_directorio_raiz
         if mod_name == DynDOLODRunner.TEXGEN_MOD_NAME:
             raise DynDOLODValidationError("Permission denied creating mod: meta.ini")
         return tmp_path / "mods" / mod_name
@@ -4469,7 +4587,13 @@ async def test_el_empaquetado_fallido_de_texgen_no_commitea_la_transaccion(
         _escribir_salida(texgen_staging, "textura.dds", b"\x00" * corridas["n"])
         _escribir_salida(dyndolod_staging, "DynDOLOD.esp", b"\x00" * corridas["n"])
 
-    async def _empaquetar(output_path: pathlib.Path, mod_name: str) -> pathlib.Path:
+    async def _empaquetar(
+        output_path: pathlib.Path,
+        mod_name: str,
+        *,
+        preservar_directorio_raiz: bool = False,
+    ) -> pathlib.Path:
+        del output_path, preservar_directorio_raiz
         if mod_name == DynDOLODRunner.TEXGEN_MOD_NAME:
             raise DynDOLODValidationError("Permission denied creating mod: meta.ini")
         return tmp_path / "mods" / mod_name

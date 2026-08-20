@@ -267,7 +267,7 @@ class DynDOLODPipelineService:
         - El **staging crudo** bajo la raíz administrada única
           (``output_targets.dyndolod_output_target`` → ``game/Sky-Claw/DynDOLOD``):
           el primer ancestro EXISTENTE de la raíz (para poder CREARLA en el primer
-          run), ``root``, ``root/DynDOLOD_Output`` y ``root/TexGen_Output``. El
+          run), ``root``, ``root/DynDOLOD_Output`` y ``root/textures``. El
           cwd y la raíz MO2 dejaron de ser raíces de staging con ``-o:``, así que
           no se sondean.
         - El **directorio del ejecutable**: no es staging de salida, pero SÍ es
@@ -681,7 +681,7 @@ class DynDOLODPipelineService:
 
         # T-26: los paths que el ritual reescribe (independiente del snapshot) —
         # el files_touched del ActionManifest. Incluye los mods de salida
-        # empaquetados Y el staging crudo (DynDOLOD_Output/TexGen_Output) que la
+        # empaquetados Y el staging crudo (DynDOLOD_Output/textures) que la
         # herramienta escribe antes de empaquetar, bajo la raíz MO2 y el dir del
         # exe (review Codex #312): son mutaciones persistentes que el operador
         # puede necesitar auditar/limpiar tras un run fallido.
