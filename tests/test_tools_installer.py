@@ -1877,6 +1877,7 @@ class TestEnsureSkse:
         """
         install_dir = self._skyrim_limpio(tmp_path)
         exe = install_dir / "SkyrimSE.exe"
+        antes = set(install_dir.iterdir())
 
         monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
         monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.6.1170")
@@ -1897,6 +1898,11 @@ class TestEnsureSkse:
 
         copy.assert_not_awaited()
         cleanup.assert_not_awaited()
+        # El ancla resta el `.exe` porque el propio test lo borra para simular al
+        # proceso externo: omitirla por esa complicación dejaría este test sin la
+        # comprobación que sus hermanos sí tienen, que es cómo se cuela un hermano
+        # sin cablear.
+        assert set(install_dir.iterdir()) == antes - {exe}, "cero mutaciones más allá del exe que borró el test"
 
     @pytest.mark.asyncio
     async def test_runtime_estable_llega_a_la_copia(
@@ -1929,6 +1935,7 @@ class TestEnsureSkse:
         costaría al operador una aprobación y una descarga inútiles.
         """
         install_dir = self._skyrim_limpio(tmp_path)
+        antes = set(install_dir.iterdir())
 
         monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
         monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.6.640")
@@ -1944,6 +1951,7 @@ class TestEnsureSkse:
         hitl.assert_not_awaited()
         egress.assert_not_awaited()
         descarga.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
 
     def test_skse_dll_game_version_reconstruye_el_build_del_nombre(self) -> None:
         assert tools_installer._skse_dll_game_version("skse64_1_6_1170.dll") == "1.6.1170"
