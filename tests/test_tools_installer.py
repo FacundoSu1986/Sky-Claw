@@ -2656,6 +2656,10 @@ class TestEnsureSkse:
 
         assert res.version == "skse64_2_02_06"
         assert res.already_existed is False
+        # Con ejecutable detrás, la instalación fresca SÍ tiene prueba: los dos gates
+        # más la revalidación pegada a la copia. Sin esta aserción, degradar el
+        # veredicto de todo el camino de instalación pasaba en verde.
+        assert res.verification is InstallVerification.VERIFIED
 
     @pytest.mark.asyncio
     async def test_runtime_de_gog_no_cae_al_payload_de_steam(
@@ -3000,6 +3004,43 @@ class TestEnsureSkse:
         hitl.assert_not_awaited()
         egress.assert_not_awaited()
         assert set(install_dir.iterdir()) == antes, "ni se instala ni se limpia el DLL 'sobrante'"
+
+    @pytest.mark.asyncio
+    async def test_presencia_sin_verificar_reporta_el_loader_que_esta_en_disco(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El `exe_path` devuelto tiene que existir, y la edición adivinada no lo sabe.
+
+        Caso adversarial que sólo aparece cuando las dos familias de loader divergen:
+        en disco hay una instalación LE (`skse_loader.exe` + `skse_1_9_32.dll`) y la
+        heurística de tamaño —que es lo que corre cuando el PE no se puede leer—
+        clasifica AE. El loader de la edición adivinada (`skse64_loader.exe`) NO está
+        en disco: devolverlo sería entregarle al caller la ruta de un archivo
+        inexistente, y la GUI la usa para hablarle al operador.
+
+        El resto de la familia usa `skse64_loader.exe`, que coincide con el loader
+        supuesto para AE, así que ninguno de esos tests distingue "el loader que está"
+        de "el loader que suponía": este es el que ancla la diferencia.
+        """
+        install_dir = self._skyrim_limpio(tmp_path)
+        (install_dir / "skse_loader.exe").write_bytes(b"MZ")
+        (install_dir / "skse_1_9_32.dll").write_bytes(b"MZ")
+        antes = set(install_dir.iterdir())
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "")
+
+        hitl, egress = self._espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        res = await installer.ensure_skse(install_dir, session)
+
+        assert res.verification is InstallVerification.PRESENT_BUT_UNVERIFIED
+        assert res.exe_path == install_dir / "skse_loader.exe"
+        assert res.exe_path.is_file(), "no se le puede devolver al caller una ruta que no existe"
+        hitl.assert_not_awaited()
+        egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes
 
     def test_la_verificacion_por_defecto_no_le_cambia_el_contrato_a_los_otros_tools(self) -> None:
         """El campo nuevo es opcional y su default no toca a LOOT/xEdit/Pandora/BodySlide.

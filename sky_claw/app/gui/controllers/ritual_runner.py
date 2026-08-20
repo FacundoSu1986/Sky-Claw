@@ -636,18 +636,29 @@ async def run_ritual_install(
     # pero no quedó garantizada. `getattr` porque el campo es opcional en
     # `InstallResult` y los demás `ensure_*` no lo llenan.
     if getattr(result, "verification", None) is InstallVerification.PRESENT_BUT_UNVERIFIED:
-        store.set(
-            STORE_KEY_RITUAL_FEEDBACK,
-            {
-                "text": (
-                    f"«{tool_key}» detectado en el directorio del juego, pero no se pudo "
-                    "verificar su compatibilidad: no se pudo leer la versión exacta de "
-                    "Skyrim. No se descargó ni se modificó nada. Comprobá a mano que el "
-                    "build corresponda (https://skse.silverlock.org/)."
-                ),
-                "type": "warning",
-            },
-        )
+        # Dos situaciones distintas comparten el estado, y el cartel tiene que
+        # distinguirlas: "no pude probar nada" NO implica "no toqué nada". La
+        # idempotente encontró algo y no escribió; la fresca sin ejecutable descargó y
+        # copió, pero no había runtime contra el cual probar el build. Un texto único
+        # que afirme "no se modificó nada" le miente al operador en la segunda, y esa
+        # mentira lo empuja a reintentar una instalación que ya ocurrió.
+        # `already_existed` es exactamente la dimensión que las separa — por eso vive
+        # aparte de `verification` y acá se leen las dos.
+        if getattr(result, "already_existed", False):
+            aviso = (
+                f"«{tool_key}» detectado en el directorio del juego, pero no se pudo "
+                "verificar su compatibilidad: no se pudo leer la versión exacta de "
+                "Skyrim. No se descargó ni se modificó nada. Comprobá a mano que el "
+                "build corresponda (https://skse.silverlock.org/)."
+            )
+        else:
+            aviso = (
+                f"«{tool_key}» quedó instalado, pero su compatibilidad no se pudo "
+                "verificar: no hay un ejecutable de Skyrim en esa carpeta contra el "
+                "cual comprobar el build. Verificá a mano que corresponda "
+                "(https://skse.silverlock.org/)."
+            )
+        store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": aviso, "type": "warning"})
         return
 
     store.set(
