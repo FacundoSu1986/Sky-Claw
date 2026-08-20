@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.local.tools.tool_result import normalize_tool_result
+from sky_claw.local.tools_installer import InstallVerification
 
 if TYPE_CHECKING:
     from sky_claw.app.gui.state.reactive_store import ReactiveStore
@@ -624,6 +625,29 @@ async def run_ritual_install(
                     "type": "warning",
                 },
             )
+        return
+
+    # Presencia != compatibilidad probada. `ensure_skse` puede devolver una
+    # instalación que EXISTE en disco pero cuya compatibilidad no se pudo verificar
+    # porque el ejecutable de Skyrim no expone su versión exacta. Colapsar ese estado
+    # en el cartel verde le afirma al operador algo que nadie probó — el mismo falso
+    # positivo que el installer rechazó, una capa más arriba. Se reporta con el
+    # `warning` que la rama de Community Shaders ya usa para una operación que ocurrió
+    # pero no quedó garantizada. `getattr` porque el campo es opcional en
+    # `InstallResult` y los demás `ensure_*` no lo llenan.
+    if getattr(result, "verification", None) is InstallVerification.PRESENT_BUT_UNVERIFIED:
+        store.set(
+            STORE_KEY_RITUAL_FEEDBACK,
+            {
+                "text": (
+                    f"«{tool_key}» detectado en el directorio del juego, pero no se pudo "
+                    "verificar su compatibilidad: no se pudo leer la versión exacta de "
+                    "Skyrim. No se descargó ni se modificó nada. Comprobá a mano que el "
+                    "build corresponda (https://skse.silverlock.org/)."
+                ),
+                "type": "warning",
+            },
+        )
         return
 
     store.set(
