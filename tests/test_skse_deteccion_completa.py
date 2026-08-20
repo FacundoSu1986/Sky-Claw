@@ -16,7 +16,7 @@ import pathlib
 import pytest
 
 from sky_claw.local.discovery import scanner as scanner_mod
-from sky_claw.local.discovery.environment import SkyrimEdition
+from sky_claw.local.discovery.environment import HealthStatus, SkyrimEdition
 from sky_claw.local.discovery.scanner import EnvironmentScanner, find_skse_installation
 
 
@@ -94,6 +94,20 @@ class TestFindSkseInstallation:
         assert find_skse_installation(game, edition=SkyrimEdition.UNKNOWN, game_version="") == (
             game / "skse_loader.exe"
         )
+
+
+def _seed_generic_tools(tmp_path: pathlib.Path) -> dict[str, str]:
+    """Stubs de las tools genéricas para llegar a READY sin depender del host.
+
+    Un host sin LOOT (crítica) deja NEEDS_SETUP y el resumen cambia de mensaje;
+    sembrar las cinco herramientas hace determinista el estado global.
+    """
+    paths: dict[str, str] = {}
+    for key in ("loot", "xedit", "pandora", "wrye_bash", "dyndolod"):
+        exe = tmp_path / f"{key}.exe"
+        exe.write_bytes(b"MZ")
+        paths[key] = str(exe)
+    return paths
 
 
 class TestSnapshot:
@@ -178,3 +192,57 @@ class TestSnapshot:
 
         assert "skse" not in snap.tools
         assert any(m.technical_name.startswith("skse") for m in snap.missing)
+
+    async def test_skse_presente_con_version_ilegible_queda_marcado_sin_verificar(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El snapshot tiene que exponer la señal que el dashboard consume.
+
+        Con la versión exacta ilegible, `find_skse_installation` degrada a "loader +
+        algún DLL de runtime" (presencia). El snapshot NO puede afirmar
+        compatibilidad: ni en `health_messages` ("✅ SKSE encontrado") ni en el
+        resumen ("Todo listo para jugar"). La presencia sin verificar tampoco es
+        ausencia: el estado global sigue READY (semántica proporcional).
+        """
+        monkeypatch.setattr(scanner_mod, "_detect_skyrim_version", lambda _exe: ("", SkyrimEdition.AE))
+        game = _skyrim_dir(tmp_path)
+        _instalar_skse(game, loader="skse64_loader.exe", dll="skse64_1_5_97.dll")
+
+        snap = await self._scan(game, tool_paths=_seed_generic_tools(tmp_path))
+
+        assert snap.skse_present_but_unverified() is True  # type: ignore[attr-defined]
+        assert snap.health_status is HealthStatus.READY  # type: ignore[attr-defined]
+        assert not any("✅ SKSE" in m for m in snap.health_messages)  # type: ignore[attr-defined]
+        assert any("no se pudo verificar" in m.lower() for m in snap.health_messages)  # type: ignore[attr-defined]
+        assert not any("Todo listo para jugar" in m for m in snap.health_messages)  # type: ignore[attr-defined]
+
+    async def test_skse_verificado_no_queda_marcado_sin_verificar(self, tmp_path: pathlib.Path) -> None:
+        """CASO B a nivel snapshot: versión legible + build correcto = verificado,
+        y los mensajes positivos originales siguen intactos."""
+        game = _skyrim_dir(tmp_path)
+        _instalar_skse(game, loader="skse64_loader.exe", dll="skse64_1_6_1170.dll")
+
+        snap = await self._scan(game, tool_paths=_seed_generic_tools(tmp_path))
+
+        assert snap.skse_present_but_unverified() is False  # type: ignore[attr-defined]
+        assert any("✅ SKSE" in m for m in snap.health_messages)  # type: ignore[attr-defined]
+        assert any("Todo listo para jugar" in m for m in snap.health_messages)  # type: ignore[attr-defined]
+
+    async def test_skse_ausente_no_queda_marcado_sin_verificar(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CASO C a nivel snapshot: ausencia real no es presencia sin verificar.
+
+        La variante peligrosa es justamente la del finding —versión ilegible—: sin
+        el recorte de `has_tool`, una máquina SIN SKSE y con el PE ilegible quedaría
+        marcada "presente sin verificar" y la tarjeta le ofrecería "Verificar" en
+        vez de "Instalar".
+        """
+        monkeypatch.setattr(scanner_mod, "_detect_skyrim_version", lambda _exe: ("", SkyrimEdition.AE))
+        game = _skyrim_dir(tmp_path)
+
+        snap = await self._scan(game)
+
+        assert "skse" not in snap.tools  # type: ignore[attr-defined]
+        assert snap.skse_present_but_unverified() is False  # type: ignore[attr-defined]
+        assert any(m.technical_name.startswith("skse") for m in snap.missing)  # type: ignore[attr-defined]

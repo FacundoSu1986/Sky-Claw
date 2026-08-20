@@ -467,7 +467,17 @@ class EnvironmentScanner:
                     exe_path=found,
                     friendly_action=friendly,
                 )
-                snap.health_messages.append(f"✅ {human_name} encontrado")
+                if key == "skse" and snap.skse_present_but_unverified():
+                    # Presencia sin compatibilidad probada (#491): con la versión
+                    # exacta de Skyrim ilegible, `find_skse_installation` degradó a
+                    # "loader + algún DLL de runtime". El ✅ afirmaría una
+                    # verificación que nadie hizo.
+                    snap.health_messages.append(
+                        f"⚠️ {human_name} encontrado, pero no se pudo verificar su "
+                        "compatibilidad (versión de Skyrim ilegible)"
+                    )
+                else:
+                    snap.health_messages.append(f"✅ {human_name} encontrado")
             else:
                 human_name = key.upper().replace("_", " ")
                 snap.missing.append(
@@ -515,7 +525,12 @@ class EnvironmentScanner:
             snap.health_status = HealthStatus.READY
 
         if snap.health_status == HealthStatus.READY:
-            snap.health_messages.insert(0, "🟢 Todo listo para jugar")
+            snap.health_messages.insert(
+                0,
+                "🟢 Entorno detectado — SKSE presente sin verificar compatibilidad"
+                if snap.skse_present_but_unverified()
+                else "🟢 Todo listo para jugar",
+            )
         elif snap.health_status == HealthStatus.NEEDS_SETUP:
             snap.health_messages.insert(0, "🟡 Algunas herramientas faltan — puedes instalarlas abajo")
 

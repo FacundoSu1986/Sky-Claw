@@ -94,6 +94,19 @@ class EnvironmentSnapshot:
         """Check if a tool was detected (case-insensitive key)."""
         return name.lower() in self.tools
 
+    def skse_present_but_unverified(self) -> bool:
+        """SKSE detectado en disco pero sin compatibilidad verificable.
+
+        La señal reusa la MISMA evidencia que ya registró el scanner
+        (``tools["skse"]``, poblado por ``find_skse_installation``, y ``skyrim.version``):
+        con la versión exacta del ejecutable ilegible, ``find_skse_installation`` degrada
+        a "loader + algún DLL de runtime" — presencia — en vez de probar el build —
+        compatibilidad. No es una segunda lógica de detección: es la lectura del
+        estado que el scanner ya dejó en el snapshot, y la consumen el mensaje de
+        health del scanner y el estado de la tarjeta SKSE en el Forge dashboard.
+        """
+        return self.has_tool("skse") and self.skyrim is not None and self.skyrim.version == ""
+
     def get_tool(self, name: str) -> ToolInfo | None:
         """Get tool info or None."""
         return self.tools.get(name.lower())

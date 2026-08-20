@@ -227,16 +227,37 @@ def _vital_bar_width(value: float | None) -> int:
 def _ritual_status(snapshot: Any, tool_key: str) -> str:
     """Derive a ritual's tool state from the environment snapshot.
 
-    Returns ``"available"`` / ``"missing"`` when a scan has run, or
-    ``"unknown"`` before the first :class:`EnvironmentScanner` snapshot lands
-    in the store — so the UI never claims a tool is installed without proof.
+    Returns ``"available"`` / ``"missing"`` / ``"present_unverified"`` when a scan
+    has run, or ``"unknown"`` before the first :class:`EnvironmentScanner` snapshot
+    lands in the store — so the UI never claims a tool is installed without proof.
+
+    ``"present_unverified"`` hoy solo lo puede producir SKSE: con la versión exacta
+    de Skyrim ilegible, el scanner degrada su detección a "loader + algún DLL de
+    runtime" (presencia) y nadie probó el build. Colapsarlo en ``available`` le
+    mostraría al operador un cartel de compatibilidad que #491 rechazó.
     """
     if snapshot is None:
         return "unknown"
     has_tool = getattr(snapshot, "has_tool", None)
     if not callable(has_tool):
         return "unknown"
-    return "available" if has_tool(tool_key) else "missing"
+    if not has_tool(tool_key):
+        return "missing"
+    if tool_key == "skse" and _skse_present_but_unverified(snapshot):
+        return "present_unverified"
+    return "available"
+
+
+def _skse_present_but_unverified(snapshot: Any) -> bool:
+    """Lee la señal que calcula :class:`EnvironmentSnapshot` (evidencia ya escaneada).
+
+    ``getattr`` defensivo: la store puede traer objetos que no son snapshots reales
+    antes del primer scan, y ahí la señal no existe — sin evidencia no se degrada.
+    """
+    probe = getattr(snapshot, "skse_present_but_unverified", None)
+    if not callable(probe):
+        return False
+    return bool(probe())
 
 
 def _ritual_action(tool_key: str, state: str) -> str:
@@ -263,6 +284,12 @@ def _ritual_action(tool_key: str, state: str) -> str:
     """
     if state == "available":
         return "run" if tool_key in RITUAL_TOOL_MAP else "installed"
+    if state == "present_unverified":
+        # Presencia sin compatibilidad probada: la única acción honesta es el seam
+        # de verificación (`ensure_skse`), que en el caso idempotente devuelve
+        # PRESENT_BUT_UNVERIFIED sin HITL, sin egress y sin writes — y el runner lo
+        # publica como `warning`, no como éxito verde.
+        return "verify" if tool_key in RITUAL_INSTALLER_MAP else "none"
     if state == "missing" and tool_key in RITUAL_INSTALLER_MAP:
         return "install"
     return "none"
@@ -1018,6 +1045,14 @@ _RITUAL_STATE_STYLE: dict[str, dict[str, str]] = {
         "btn_label": "Ejecutar",
         "btn_style": "color:#d8c69a; border-color:rgba(156,122,64,.5);",
     },
+    "present_unverified": {
+        "opacity": "1",
+        "dot": "#e0a13c",
+        "label": "Presente, sin verificar",
+        "color": "#d9b078",
+        "btn_label": "Verificar",
+        "btn_style": "color:#ffb05a; border-color:rgba(200,140,20,.5);",
+    },
     "missing": {
         "opacity": "0.62",
         "dot": "#9c7a40",
@@ -1084,6 +1119,11 @@ def _ritual_card(
         if action == "run" and on_ritual_run is not None:
             b.on("click", lambda _=None, tool=r["tool"]: on_ritual_run(tool))
         elif action == "install" and on_ritual_install is not None:
+            b.on("click", lambda _=None, tool=r["tool"]: on_ritual_install(tool))
+        elif action == "verify" and on_ritual_install is not None:
+            # Mismo seam que "Instalar": `ensure_skse` decide entre verificar (caso
+            # idempotente → PRESENT_BUT_UNVERIFIED publicado como warning, sin HITL/
+            # egress/writes) o instalar de verdad. La tarjeta no promete resultado.
             b.on("click", lambda _=None, tool=r["tool"]: on_ritual_install(tool))
         elif action == "installed":
             # Rama propia, y no el aviso interino de abajo: ese le diría "disponible en
