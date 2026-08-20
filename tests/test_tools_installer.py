@@ -3042,6 +3042,52 @@ class TestEnsureSkse:
         egress.assert_not_awaited()
         assert set(install_dir.iterdir()) == antes
 
+    def test_todo_resultado_de_skse_declara_su_verificacion(self) -> None:
+        """Ancla enumerativa: el default de `verification` es fail-OPEN, así que SKSE no lo usa.
+
+        `InstallResult.verification` defaultea a `VERIFIED` porque los tools que no
+        están pinneados al build de ningún runtime —LOOT, xEdit, Pandora, BodySlide—
+        no tienen nada que probar y no deben aprender un campo que no les aplica. Pero
+        para el tool que SÍ está pinneado, ese default afirma compatibilidad probada
+        por omisión: exactamente el falso positivo que este contrato existe para
+        bloquear, y de la peor forma, porque se hereda en silencio.
+
+        Los dos returns de hoy lo declaran. Lo que esta comprobación cubre es el
+        TERCERO: un camino de retorno nuevo —o un refactor que mueva uno— hereda
+        `VERIFIED` sin que ningún test de comportamiento existente lo note, porque
+        ninguno puede anticipar una rama que todavía no existe. Se enumera la familia
+        en vez de escribir el caso del hermano que falta, que es el defecto #1 del
+        repo y lo que pide el template de PR.
+
+        Es el mismo patrón que `test_todo_test_de_aborto_ancla_sus_fronteras`, un
+        nivel más abajo: allá se enumeran tests, acá los puntos de retorno del
+        productor del estado.
+        """
+        import ast  # noqa: PLC0415 — solo lo usa esta ancla
+
+        fuente = pathlib.Path(tools_installer.__file__).read_text(encoding="utf-8")
+        metodo = next(
+            nodo
+            for nodo in ast.walk(ast.parse(fuente))
+            if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "ensure_skse"
+        )
+
+        construcciones = [
+            nodo
+            for nodo in ast.walk(metodo)
+            if isinstance(nodo, ast.Call) and getattr(nodo.func, "id", None) == "InstallResult"
+        ]
+
+        assert construcciones, "el ancla dejó de encontrar los returns de ensure_skse: ¿cambió el nombre?"
+
+        sin_declarar = [
+            nodo.lineno for nodo in construcciones if not any(kw.arg == "verification" for kw in nodo.keywords)
+        ]
+        assert not sin_declarar, (
+            "todo InstallResult de ensure_skse tiene que declarar `verification` explícito "
+            f"(el default es VERIFIED, que afirma lo que no se probó); sin declarar en líneas: {sin_declarar}"
+        )
+
     def test_la_verificacion_por_defecto_no_le_cambia_el_contrato_a_los_otros_tools(self) -> None:
         """El campo nuevo es opcional y su default no toca a LOOT/xEdit/Pandora/BodySlide.
 
