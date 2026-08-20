@@ -21,7 +21,7 @@ import zipfile
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiohttp
 
@@ -315,6 +315,9 @@ _SKSE_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 #: `_leer_version_del_ejecutable`): con dos listas separadas, agregar una edición a una
 #: y no a la otra deja el gate de compatibilidad ciego justo para esa edición.
 _SKYRIM_EXE_NAMES = ("SkyrimSE.exe", "SkyrimVR.exe", "Skyrim.exe")
+
+#: Lo que devuelve un lector de PE; el traductor compartido lo preserva.
+_T = TypeVar("_T")
 
 #: Techo absoluto de respaldo para ``_download_asset`` (helper GitHub compartido
 #: por todos los ``ensure_*``). Vale cuando la API no publica ``size`` (0): sin
@@ -1637,39 +1640,53 @@ class ToolsInstaller:
         for exe_name in _SKYRIM_EXE_NAMES:
             exe = game_dir / exe_name
             if exe.is_file():
-                try:
-                    # pefile hace I/O síncrono de PE: fuera del event loop.
-                    return True, await asyncio.to_thread(read_skyrim_version, exe)
-                except Exception as exc:
-                    # Se traduce SOLO el `Exception` pelado, que es exactamente lo que
-                    # `pefile` levanta en al menos un caso de acceso (ruta que resulta
-                    # ser un directorio) y que queda fuera de las tres ramas que
-                    # `_read_pe_product_version` captura. `is_file()` arriba no
-                    # alcanza: entre esa comprobación y la lectura la ruta puede
-                    # cambiar, y este helper corre precisamente cuando el juego se
-                    # está actualizando.
-                    #
-                    # Cualquier SUBTIPO se re-lanza: un `TypeError` por cambio de
-                    # firma o un `AttributeError` por una versión nueva de `pefile`
-                    # son defectos NUESTROS, y traducirlos a "versión ilegible" le
-                    # diría al operador que su Skyrim no se puede verificar cuando el
-                    # problema es de Sky-Claw — con el traceback real enterrado en un
-                    # warning y sin forma de distinguir una cosa de la otra.
-                    #
-                    # BLE001 está exento para este archivo en `pyproject.toml`, así
-                    # que ruff NO habría marcado el catch-all: el recorte por tipo
-                    # exacto está porque el gate no cubre este código, no porque lo
-                    # cubra.
-                    if type(exc) is not Exception:
-                        raise
-                    logger.warning(
-                        "No se pudo leer la versión de %s (%s: %s); se trata como versión ilegible.",
-                        exe,
-                        type(exc).__name__,
-                        exc,
-                    )
-                    return True, ""
+                return True, await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
         return False, ""
+
+    async def _leer_pe_tolerando_ilegible(
+        self,
+        lector: Callable[[pathlib.Path], _T],
+        exe: pathlib.Path,
+        *,
+        ilegible: _T,
+    ) -> _T:
+        """Corre un lector de PE fuera del event loop y traduce "no se pudo leer".
+
+        Punto ÚNICO de traducción, compartido por los dos caminos que leen el PE
+        —autodetección de edición y relectura de versión—. Estuvo primero solo en uno
+        de los dos y el revisor encontró el gemelo intacto: con la traducción repetida
+        en cada sitio, el tercero que lea un PE vuelve a olvidarla.
+        """
+        try:
+            # pefile hace I/O síncrono de PE: fuera del event loop.
+            return await asyncio.to_thread(lector, exe)
+        except Exception as exc:
+            # Se traduce SOLO el `Exception` pelado, que es exactamente lo que
+            # `pefile` levanta en al menos un caso de acceso (ruta que resulta ser un
+            # directorio) y que queda fuera de las tres ramas que
+            # `_read_pe_product_version` captura. El `is_file()` del caller no alcanza:
+            # entre esa comprobación y la lectura la ruta puede cambiar, y esto corre
+            # precisamente cuando el juego se está actualizando.
+            #
+            # Cualquier SUBTIPO se re-lanza: un `TypeError` por cambio de firma o un
+            # `AttributeError` por una versión nueva de `pefile` son defectos NUESTROS,
+            # y traducirlos a "ilegible" le diría al operador que su Skyrim no se puede
+            # verificar cuando el problema es de Sky-Claw — con el traceback real
+            # enterrado en un warning y sin forma de distinguir una cosa de la otra.
+            #
+            # BLE001 está exento para este archivo en `pyproject.toml`, así que ruff NO
+            # habría marcado el catch-all: el recorte por tipo exacto está porque el
+            # gate no cubre este código, no porque lo cubra.
+            if type(exc) is not Exception:
+                raise
+            logger.warning(
+                "No se pudo leer el PE de %s con %s (%s: %s); se trata como ilegible.",
+                exe,
+                getattr(lector, "__name__", lector),
+                type(exc).__name__,
+                exc,
+            )
+            return ilegible
 
     async def _detect_skyrim_edition_from_exe(self, game_dir: pathlib.Path) -> tuple[SkyrimEdition, str]:
         """Deriva edición y versión exacta leyendo el PE del ejecutable en *game_dir*.
@@ -1681,9 +1698,15 @@ class ToolsInstaller:
         for exe_name in _SKYRIM_EXE_NAMES:
             exe = game_dir / exe_name
             if exe.is_file():
-                # pefile hace I/O síncrono de PE: fuera del event loop.
-                edition = await asyncio.to_thread(detect_skyrim_edition, exe)
-                version = await asyncio.to_thread(read_skyrim_version, exe)
+                # Las dos lecturas van por el mismo traductor que la relectura del
+                # segundo gate: un PE que explota acá tiene que dar el mismo
+                # `ToolInstallError` accionable, no una excepción cruda por venir del
+                # camino de autodetección. Edición ilegible -> UNKNOWN, que
+                # `_edition_to_config_key` ya corta con su propio mensaje.
+                edition = await self._leer_pe_tolerando_ilegible(
+                    detect_skyrim_edition, exe, ilegible=SkyrimEdition.UNKNOWN
+                )
+                version = await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
                 return edition, version
 
         raise ToolInstallError(

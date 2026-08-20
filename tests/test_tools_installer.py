@@ -1958,17 +1958,80 @@ class TestEnsureSkse:
         cualquier subtipo es código nuestro fallando.
         """
         install_dir = self._skyrim_limpio(tmp_path)
+        antes = set(install_dir.iterdir())
 
         def _bug_nuestro(_exe: pathlib.Path) -> str:
             raise TypeError("read_skyrim_version() got an unexpected keyword argument")
 
         monkeypatch.setattr(tools_installer, "read_skyrim_version", _bug_nuestro)
 
-        self._espias_de_frontera(installer)
+        hitl, egress = self._espias_de_frontera(installer)
         session = MagicMock(spec=aiohttp.ClientSession)
 
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        # Que propague no alcanza: tiene que propagar SIN haber cruzado ninguna
+        # frontera. Una regresión que pidiera aprobación, bajara el payload y recién
+        # ahí explotara seguiría propagando el TypeError y pasaría este test.
+        hitl.assert_not_awaited()
+        egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
+
+    @pytest.mark.asyncio
+    async def test_el_parser_que_explota_tambien_se_traduce_en_autodeteccion(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El camino gemelo: sin `edition`, el mismo PE roto da el mismo error tipado.
+
+        La traducción vivió primero solo en `_leer_version_del_ejecutable`, que usa la
+        rama de edición explícita; `_detect_skyrim_edition_from_exe` leía el mismo
+        parser sin traducir. Con `edition=None` la excepción cruda escapaba de
+        `ensure_skse`: fallaba cerrado, pero rompía el contrato de errores tipados en
+        exactamente la mitad de los casos — y los dos tests del parser pasaban
+        `edition=AE`, así que ninguno lo tocaba.
+        """
+        install_dir = self._skyrim_limpio(tmp_path)
+        antes = set(install_dir.iterdir())
+
+        def _parser_que_explota(_exe: pathlib.Path) -> str:
+            raise Exception("Unable to access file: [Errno 21] Is a directory")
+
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", _parser_que_explota)
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", _parser_que_explota)
+
+        hitl, egress = self._espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError):
+            await installer.ensure_skse(install_dir, session)
+
+        hitl.assert_not_awaited()
+        egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
+
+    @pytest.mark.asyncio
+    async def test_un_bug_nuestro_tampoco_se_disfraza_en_autodeteccion(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Y su contracara en el gemelo: el subtipo propaga por los DOS caminos."""
+        install_dir = self._skyrim_limpio(tmp_path)
+        antes = set(install_dir.iterdir())
+
+        def _bug_nuestro(_exe: pathlib.Path) -> str:
+            raise AttributeError("module 'pefile' has no attribute 'PE'")
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", _bug_nuestro)
+
+        hitl, egress = self._espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(AttributeError, match="no attribute 'PE'"):
+            await installer.ensure_skse(install_dir, session)
+
+        hitl.assert_not_awaited()
+        egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
 
     @pytest.mark.asyncio
     async def test_runtime_estable_llega_a_la_copia(
@@ -2018,6 +2081,60 @@ class TestEnsureSkse:
         egress.assert_not_awaited()
         descarga.assert_not_awaited()
         assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
+
+    def test_todo_test_de_aborto_ancla_sus_fronteras(self) -> None:
+        """Ancla enumerativa: un test de aborto nuevo no puede entrar sin sus fronteras.
+
+        Esta comprobación existe porque el modo manual falló TRES veces en este mismo
+        PR: cada vez que se sumó un test de aborto a una de las dos familias, quedó
+        sin alguna de las aserciones que sus hermanos ya tenían, y lo encontró un
+        revisor automático en vez de la suite. Auditar a mano no escala; enumerar sí.
+
+        La regla, por familia de helper:
+
+        * ``_espias_de_frontera``      -> HITL y egress no invocados
+        * ``_instalador_hasta_la_copia`` -> copia y cleanup no invocados
+        * ambas                        -> el directorio del juego queda igual
+
+        Un test se considera "de aborto" si espera una excepción (`pytest.raises`).
+        El camino feliz no entra: verifica que la copia SÍ ocurre, no su ausencia.
+        """
+        import ast  # noqa: PLC0415 — solo lo usa esta ancla
+
+        fuente = pathlib.Path(__file__).read_text(encoding="utf-8")
+        arbol = ast.parse(fuente)
+
+        clase = next(
+            nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.ClassDef) and nodo.name == "TestEnsureSkse"
+        )
+
+        requisitos_por_helper = {
+            "_espias_de_frontera": ("hitl.assert_not_awaited()", "egress.assert_not_awaited()"),
+            "_instalador_hasta_la_copia": ("copy.assert_not_awaited()", "cleanup.assert_not_awaited()"),
+        }
+
+        incumplen: dict[str, list[str]] = {}
+        revisados: list[str] = []
+
+        for metodo in clase.body:
+            if not isinstance(metodo, ast.AsyncFunctionDef) or not metodo.name.startswith("test_"):
+                continue
+            cuerpo = ast.get_source_segment(fuente, metodo) or ""
+            helpers = [h for h in requisitos_por_helper if h in cuerpo]
+            if not helpers or "pytest.raises" not in cuerpo:
+                continue
+
+            revisados.append(metodo.name)
+            faltan = [marca for h in helpers for marca in requisitos_por_helper[h] if marca not in cuerpo]
+            if "iterdir()) == antes" not in cuerpo:
+                faltan.append("comparación del directorio contra su estado inicial")
+            if faltan:
+                incumplen[metodo.name] = faltan
+
+        assert revisados, "el ancla dejó de encontrar tests de aborto: revisá los nombres de los helpers"
+        assert not incumplen, "tests de aborto sin anclar todas sus fronteras: " + "; ".join(
+            f"{nombre} (falta {', '.join(marcas)})" for nombre, marcas in incumplen.items()
+        )
 
     def test_skse_dll_game_version_reconstruye_el_build_del_nombre(self) -> None:
         assert tools_installer._skse_dll_game_version("skse64_1_6_1170.dll") == "1.6.1170"
