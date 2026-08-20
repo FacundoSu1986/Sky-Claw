@@ -1943,6 +1943,34 @@ class TestEnsureSkse:
         assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
 
     @pytest.mark.asyncio
+    async def test_un_bug_del_parser_no_se_disfraza_de_runtime_incompatible(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """La contracara: un defecto NUESTRO tiene que propagarse, no traducirse.
+
+        Traducir todo a "versión ilegible" haría que un `TypeError` por cambio de
+        firma o un `AttributeError` por una versión nueva de `pefile` le lleguen al
+        operador como "tu Skyrim no se puede verificar" — culpando al juego del
+        jugador por un bug de Sky-Claw, con el traceback real enterrado en un
+        warning. El operador no podría distinguir un problema suyo de uno nuestro.
+
+        La distinción es por tipo EXACTO: `pefile` levanta `Exception` pelado, y
+        cualquier subtipo es código nuestro fallando.
+        """
+        install_dir = self._skyrim_limpio(tmp_path)
+
+        def _bug_nuestro(_exe: pathlib.Path) -> str:
+            raise TypeError("read_skyrim_version() got an unexpected keyword argument")
+
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", _bug_nuestro)
+
+        self._espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+    @pytest.mark.asyncio
     async def test_runtime_estable_llega_a_la_copia(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

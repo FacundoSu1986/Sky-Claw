@@ -1641,25 +1641,27 @@ class ToolsInstaller:
                     # pefile hace I/O síncrono de PE: fuera del event loop.
                     return True, await asyncio.to_thread(read_skyrim_version, exe)
                 except Exception as exc:
-                    # Catch-all deliberado, traducido a la señal de dominio del método
-                    # ("hay ejecutable, no pude leerle la versión") para que el caller
-                    # lo convierta en `ToolInstallError` accionable. NO es un
-                    # `except: pass`: el desenlace es fail-closed y el operador recibe
-                    # un mensaje que dice qué pasó.
+                    # Se traduce SOLO el `Exception` pelado, que es exactamente lo que
+                    # `pefile` levanta en al menos un caso de acceso (ruta que resulta
+                    # ser un directorio) y que queda fuera de las tres ramas que
+                    # `_read_pe_product_version` captura. `is_file()` arriba no
+                    # alcanza: entre esa comprobación y la lectura la ruta puede
+                    # cambiar, y este helper corre precisamente cuando el juego se
+                    # está actualizando.
                     #
-                    # Es catch-all y no una tupla de tipos porque `pefile` levanta un
-                    # `Exception` PELADO en al menos un caso de acceso (ruta que
-                    # resulta ser un directorio), fuera de las tres ramas que
-                    # `_read_pe_product_version` captura. Estrechar el except acá
-                    # dejaría escapar justamente el caso que motivó esta rama.
-                    #
-                    # `is_file()` arriba no alcanza: entre esa comprobación y la
-                    # lectura la ruta puede cambiar, y este helper corre precisamente
-                    # cuando el juego se está actualizando.
+                    # Cualquier SUBTIPO se re-lanza: un `TypeError` por cambio de
+                    # firma o un `AttributeError` por una versión nueva de `pefile`
+                    # son defectos NUESTROS, y traducirlos a "versión ilegible" le
+                    # diría al operador que su Skyrim no se puede verificar cuando el
+                    # problema es de Sky-Claw — con el traceback real enterrado en un
+                    # warning y sin forma de distinguir una cosa de la otra.
                     #
                     # BLE001 está exento para este archivo en `pyproject.toml`, así
-                    # que ruff NO habría marcado esto: el racional va escrito porque
-                    # el gate no cubre este código, no porque lo cubra.
+                    # que ruff NO habría marcado el catch-all: el recorte por tipo
+                    # exacto está porque el gate no cubre este código, no porque lo
+                    # cubra.
+                    if type(exc) is not Exception:
+                        raise
                     logger.warning(
                         "No se pudo leer la versión de %s (%s: %s); se trata como versión ilegible.",
                         exe,
