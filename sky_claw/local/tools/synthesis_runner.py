@@ -25,6 +25,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _esp_signature(esp_path: pathlib.Path) -> tuple[int, int] | None:
+    """Firma de producción ``(mtime_ns, size)`` del ESP esperado.
+
+    ``None`` si el archivo no existe (o el stat falla): el output puede haber
+    sido CREADO por esta corrida. Comparación pre/post LOCAL de Synthesis: un
+    run que no toca el archivo no deja evidencia atribuible a esta corrida.
+    """
+    try:
+        st = esp_path.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
 # =============================================================================
 # EXCEPTIONS
 # =============================================================================
@@ -218,6 +232,11 @@ class SynthesisRunner:
         # Construir argumentos del comando
         args = self._build_cli_args(patcher_ids, extra_args)
 
+        # Firma pre-run del artefacto esperado: evidencia de que ESTA corrida
+        # lo tocó. None = no existía antes del run (la corrida puede crearlo).
+        expected_esp = self._config.output_path / "Synthesis.esp"
+        esp_sig_before = _esp_signature(expected_esp)
+
         try:
             stdout, stderr, return_code = await self._execute_process(args)
         except SynthesisExecutionError:
@@ -237,24 +256,27 @@ class SynthesisRunner:
         # Parsear salida para determinar éxito y extraer información
         success, patchers_executed, errors = self.parse_output(stdout, stderr)
 
-        # Determinar path del ESP generado
+        # Atribución del output: el contrato del pipeline es UN solo nombre
+        # (`Synthesis.esp`, SOP §2.7; el service y el lock lo hardcodean). La
+        # presencia de un .esp (aunque sea `Synthesis.esp`) no prueba
+        # producción: sin evidencia de que ESTA corrida creó o modificó el
+        # archivo no hay output atribuible — exit 0 + texto de éxito NO
+        # alcanzan (fail-closed).
         output_esp: pathlib.Path | None = None
-        if success:
-            expected_esp = self._config.output_path / "Synthesis.esp"
+        if success and return_code == 0:
             if expected_esp.exists():
-                output_esp = expected_esp
-            else:
-                # Buscar cualquier .esp en el directorio de salida
-                esp_files = list(self._config.output_path.glob("*.esp"))
-                if esp_files:
-                    output_esp = esp_files[0]
-                    logger.warning(
-                        "Synthesis.esp no encontrado, usando: %s",
-                        output_esp,
+                esp_sig_after = _esp_signature(expected_esp)
+                if esp_sig_after is not None and (esp_sig_before is None or esp_sig_after != esp_sig_before):
+                    output_esp = expected_esp
+                else:
+                    errors.append(
+                        "Synthesis.esp was not modified by this run; the output is not attributable to this run"
                     )
+            else:
+                errors.append("Synthesis reported completion but Synthesis.esp was not produced")
 
         result = SynthesisResult(
-            success=success and return_code == 0,
+            success=success and return_code == 0 and output_esp is not None,
             output_esp=output_esp,
             return_code=return_code,
             stdout=stdout,
