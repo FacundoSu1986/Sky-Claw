@@ -21,6 +21,7 @@ import zipfile
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiohttp
@@ -41,6 +42,7 @@ from sky_claw.local.discovery.environment import SkyrimEdition
 from sky_claw.local.discovery.scanner import (
     PANDORA_EXE_NAMES,
     detect_skyrim_edition,
+    find_skse_installation,
     read_skyrim_version,
     skse_dll_game_version,
     skyrim_version_matches,
@@ -453,9 +455,45 @@ class ReleaseAsset:
     sha256: str = ""
 
 
+class InstallVerification(StrEnum):
+    """¿Se pudo PROBAR que lo que quedó en disco sirve para este sistema?
+
+    Es una dimensión distinta de ``already_existed``, que responde "¿la instalación
+    ya existía?". Una instalación puede existir y no poder verificarse: SKSE está
+    pinneado al BUILD exacto de Skyrim, y el ejecutable no siempre expone su versión
+    (sin ``pefile``, PE que no parsea, PE sin recurso de versión). En esa rama la
+    edición sale de una heurística de TAMAÑO de archivo, así que ni siquiera el
+    nombre del DLL en disco prueba nada: puede ser un leftover de un upgrade previo.
+
+    Sobrecargar ``already_existed`` para significar las dos cosas obliga al caller a
+    elegir entre dos mentiras —"ausente" sobre una instalación buena, o "compatible"
+    sobre un runtime desconocido—. Con el campo aparte puede decir lo que realmente
+    se sabe.
+
+    El tercer estado del contrato —"no hay instalación reconocible" y "hay una y el
+    mismatch está DEMOSTRADO"— NO es miembro de este enum a propósito: no son
+    resultados sino las dos formas en que ``ensure_skse`` corta (``ToolInstallError``)
+    o procede a instalar. Un ``InstallResult`` que existe ya pasó esos gates, así que
+    un miembro para representarlo sería inalcanzable por construcción.
+    """
+
+    #: Hay una prueba: se leyó la versión del ejecutable y el payload en disco la targetea.
+    VERIFIED = "verified"
+    #: Hay evidencia de PRESENCIA física (loader + DLL de runtime) y nada más.
+    PRESENT_BUT_UNVERIFIED = "present_but_unverified"
+
+
 @dataclass(frozen=True, slots=True)
 class InstallResult:
-    """Resultado de una operación de auto-instalación."""
+    """Resultado de una operación de auto-instalación.
+
+    Attributes:
+        verification: Ver :class:`InstallVerification`. El default vale para los
+            tools que no están pinneados al build de ningún runtime
+            (LOOT/xEdit/Pandora/BodySlide): no tienen nada que probar, así que su
+            resultado no arrastra incertidumbre y no tienen que aprender a llenar
+            este campo.
+    """
 
     tool_name: str
     exe_path: pathlib.Path
@@ -463,6 +501,7 @@ class InstallResult:
     already_existed: bool
     success: bool = True
     message: str = ""
+    verification: InstallVerification = InstallVerification.VERIFIED
 
 
 @dataclass(frozen=True, slots=True)
@@ -1459,6 +1498,43 @@ class ToolsInstaller:
             dll_path = install_dir / dll_name
             ya_instalado = loader_path.exists() and dll_path.exists()
 
+            # PRESENCIA, no compatibilidad. `ya_instalado` mira el par EXACTO que este
+            # payload instalaría, y ese nombre sale de la edición — que en la rama del
+            # PE ilegible no sale del PE sino de una heurística de TAMAÑO. Con el
+            # runtime ilegible y la heurística diciendo AE, una instalación SE buena
+            # (`skse64_1_5_97.dll`) no matchea el DLL AE buscado y el contrato viejo la
+            # reportaba AUSENTE: `ToolInstallError` mandando a instalar a mano algo que
+            # ya estaba. Ese es el falso negativo que queda de #490.
+            #
+            # Se pregunta por la presencia con la MISMA detección que usa el scanner
+            # (loader + algún DLL de runtime, excluyendo el steam loader, que no
+            # codifica versión de juego), importada en vez de duplicada por el mismo
+            # motivo que el decodificador de versión: dos globs divergen.
+            #
+            # Tres recortes, y cada uno cierra un falso positivo distinto:
+            #
+            # * `not detected_version` — si la versión se pudo LEER no hay nada que no
+            #   se haya podido probar, y el gate de mismatch de abajo conserva su
+            #   precedencia. La incertidumbre es un estado para lo que no se pudo
+            #   probar, nunca un lugar donde esconder lo que se probó y salió mal.
+            # * `hay_ejecutable` — sin runtime en disco estamos en staging con edición
+            #   explícita, un camino que el contrato de #490 permite instalar y que
+            #   este fix no toca.
+            # * `edition=UNKNOWN` — la edición adivinada es justamente lo que no se
+            #   puede creer acá; dejarla recortar qué loaders cuentan reintroduce el
+            #   mismo falso negativo un nivel más abajo.
+            #
+            # Lo que NO se hace es "loader + cualquier DLL ⇒ éxito": eso cambia este
+            # falso negativo por el falso positivo opuesto —runtime desconocido + DLL
+            # stale reportados como compatibles—. Se reporta PRESENCIA, y el estado
+            # dice que compatibilidad no hay ninguna probada.
+            presente_sin_verificar = (
+                hay_ejecutable
+                and not detected_version
+                and not ya_instalado
+                and find_skse_installation(install_dir, edition=SkyrimEdition.UNKNOWN, game_version="") is not None
+            )
+
             # El corte por versión ilegible NO se le aplica a una instalación que ya
             # está: ese camino no descarga ni escribe nada, así que negarle el no-op a
             # una máquina cuyo PE no se puede leer rompe una instalación buena sin
@@ -1466,7 +1542,7 @@ class ToolsInstaller:
             # ya documenta (`scanner.find_skse_installation`: versión vacía degrada a
             # "loader + algún DLL de runtime", no falla cerrado), y acá vale por la
             # misma razón: lo que exige prueba es MUTAR, no reportar.
-            if hay_ejecutable and not detected_version and not ya_instalado:
+            if hay_ejecutable and not detected_version and not ya_instalado and not presente_sin_verificar:
                 raise ToolInstallError(
                     f"No pude leer la versión exacta de tu Skyrim {ed_key} en {install_dir} "
                     "(¿falta `pefile`, o el ejecutable no expone su recurso de versión?). "
@@ -1483,13 +1559,32 @@ class ToolsInstaller:
                     "manualmente el build correspondiente desde https://skse.silverlock.org/."
                 )
 
-            if ya_instalado:
-                logger.info("SKSE ya instalado en %s", loader_path)
+            if ya_instalado or presente_sin_verificar:
+                # Verificado SOLO con una lectura del ejecutable detrás. Pasado el gate
+                # de mismatch, `detected_version` no vacía significa que el runtime en
+                # disco targetea el mismo build que `dll_name`, y `ya_instalado` dice
+                # que ese DLL exacto está puesto: ahí sí hay prueba. Con la versión
+                # ilegible no la hay ni aunque el DLL se llame como corresponde — el
+                # nombre del archivo no es evidencia del runtime que lo va a cargar.
+                verification = (
+                    InstallVerification.VERIFIED
+                    if detected_version and ya_instalado
+                    else InstallVerification.PRESENT_BUT_UNVERIFIED
+                )
+                # El loader REAL, no el de la edición adivinada: en el camino sin
+                # verificar son distintos justamente porque la edición no es confiable.
+                loader_en_disco = (
+                    loader_path
+                    if ya_instalado
+                    else (find_skse_installation(install_dir, edition=SkyrimEdition.UNKNOWN) or loader_path)
+                )
+                logger.info("SKSE ya instalado en %s (%s)", loader_en_disco, verification.value)
                 return InstallResult(
                     tool_name="SKSE",
-                    exe_path=loader_path,
+                    exe_path=loader_en_disco,
                     version="existing",
                     already_existed=True,
+                    verification=verification,
                 )
 
             url = _skse_cfg_field(cfg, "url")
