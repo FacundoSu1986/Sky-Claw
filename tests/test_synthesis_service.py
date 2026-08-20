@@ -1229,10 +1229,11 @@ async def test_success_textual_sin_output_atribuible_dispara_rollback(
     tmp_path: pathlib.Path,
 ) -> None:
     """Runner REAL (sin mock de run_pipeline): exit 0 + texto de éxito +
-    ``Synthesis.esp`` preexistente SIN cambios → el runner no atribuye output
-    → el service convierte el resultado fallido en excepción DENTRO del lock
-    → rollback del snapshot + TX marcada rolled_back (contrato de éxito sin
-    falso verde, y sin sacar la decisión de fallo fuera del lock)."""
+    ``Synthesis.esp`` preexistente retirado antes del run y NO re-creado por
+    la corrida → el runner no atribuye output → el service convierte el
+    resultado fallido en excepción DENTRO del lock → rollback del snapshot +
+    TX marcada rolled_back (contrato de éxito sin falso verde, y sin sacar la
+    decisión de fallo fuera del lock)."""
     esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
     original = b"TES4" + b"\x00" * 200
     esp.write_bytes(original)
@@ -1262,11 +1263,12 @@ async def test_success_textual_sin_output_atribuible_dispara_rollback(
         out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
 
     assert out["success"] is False
-    assert "not attributable" in out["message"]
+    assert "not produced" in out["message"]
     mock_journal.commit_transaction.assert_not_awaited()
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
     # El restore REAL fue invocado (spy sobre el snapshot_manager, no inferencia
-    # por contenido) y el esp volvió al estado snapshot-eado.
+    # por contenido). El esp fue RETIRADO antes del run y el restore lo
+    # re-materializó desde el snapshot: el read_bytes demuestra el restore.
     restore_spy.assert_awaited_once()
     assert esp.read_bytes() == original
 
@@ -1320,3 +1322,102 @@ async def test_fallo_tras_modificacion_real_restaura_el_snapshot(
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
     # Contenido realmente restaurado desde el snapshot (la corrida lo corrompió).
     assert esp.read_bytes() == original
+
+
+# =============================================================================
+# Idempotencia de reruns: mismos bytes + escritura real == SUCCESS
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_rerun_idempotente_con_mismos_bytes_es_exito(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    """CASO I — una corrida válida que regenera EXACTAMENTE los mismos bytes
+    que la corrida anterior es SUCCESS: la evidencia es que ESTA corrida
+    produjo el archivo (retirado antes del run y re-creado por él), no que los
+    bytes difieran. Runner REAL, sin mock de run_pipeline."""
+    esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    original = b"TES4" + b"\x00" * 200
+    esp.write_bytes(original)  # output de la corrida anterior
+
+    mock_path_resolver.get_active_profile = MagicMock(return_value="Default")
+
+    svc = _svc_real_journal(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, event_bus, tmp_path)
+
+    async def _reescribe_igual(_args: list[str], **_kwargs: object) -> tuple[bytes, bytes, int]:
+        # Mismo load order + mismos patchers → salida determinista idéntica.
+        esp.write_bytes(original)
+        return b"Successfully generated patch output", b"", 0
+
+    with (
+        patch("sky_claw.local.tools.synthesis_runner.run_capture", _reescribe_igual),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is True
+    assert out["output_esp"] == str(esp)
+    mock_journal.commit_transaction.assert_awaited_once_with(1)
+    mock_journal.mark_transaction_rolled_back.assert_not_awaited()
+    assert esp.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_stale_sin_escritura_tras_retirada_falla_y_restaura(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    """CASO II — el esp viejo se retira antes del run y la corrida NO escribe
+    nada: no existe producción demostrable → fail + rollback restaura el viejo.
+    El ``read_bytes`` final SÍ demuestra restore: el archivo fue retirado y el
+    restore lo volvió a materializar desde el snapshot."""
+    esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    original = b"TES4" + b"\x00" * 200
+    esp.write_bytes(original)
+
+    mock_path_resolver.get_active_profile = MagicMock(return_value="Default")
+
+    svc = _svc_real_journal(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, event_bus, tmp_path)
+
+    async def _phantom_no_escribe(_args: list[str], **_kwargs: object) -> tuple[bytes, bytes, int]:
+        # exit 0 + éxito textual, pero el proceso no produce el output.
+        return b"Successfully generated patch output", b"", 0
+
+    restore_spy = AsyncMock(wraps=snapshot_manager.restore_snapshot)
+    with (
+        patch.object(snapshot_manager, "restore_snapshot", restore_spy),
+        patch("sky_claw.local.tools.synthesis_runner.run_capture", _phantom_no_escribe),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is False
+    assert "not produced" in out["message"]
+    restore_spy.assert_awaited_once()
+    mock_journal.commit_transaction.assert_not_awaited()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
+    assert esp.read_bytes() == original  # re-materializado por el restore

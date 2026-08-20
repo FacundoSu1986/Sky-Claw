@@ -283,10 +283,12 @@ async def test_mismo_tamano_y_mismo_mtime_con_contenido_distinto_es_modificacion
     assert result.errors == []
 
 
-async def test_mismos_bytes_con_metadata_distinta_no_atribuye(tmp_path: pathlib.Path) -> None:
-    """Reescribir exactamente los mismos bytes (metadata nueva, contenido
-    idéntico) NO es producción nueva: el contenido es la evidencia, no la
-    metadata."""
+async def test_runner_standalone_reescritura_de_mismos_bytes_sin_retirada_no_atribuye(tmp_path: pathlib.Path) -> None:
+    """Contrato del runner SIN retirada previa: reescribir exactamente los
+    mismos bytes (metadata nueva, contenido idéntico) es indistinguible de no
+    tocar → fail-closed. La distinción written/untouched la resuelve el
+    service retirando el esp antes del run (atribución por existencia); el
+    runner standalone jamás atribuye por metadata."""
     (tmp_path / "out").mkdir()
     esp = tmp_path / "out" / "Synthesis.esp"
     esp.write_bytes(ESP_VALIDO)
