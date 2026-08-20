@@ -374,6 +374,11 @@ async def test_install_skse_presente_sin_verificar_no_se_anuncia_como_compatible
     # Lo que el cartel SÍ tiene que transmitir: detectado, sin verificar, y sin cambios.
     assert "detect" in fb["text"].lower()
     assert "verific" in fb["text"].lower()
+    # Contracara de la aserción positiva del hermano fresco: acá lo distintivo es que
+    # NO se tocó nada, y perder ese dato manda al operador a auditar el directorio a
+    # mano. Las dos ramas fijan su propio contenido, no sólo el del otro por ausencia.
+    assert "no se descargó ni se modificó nada" in fb["text"].lower()
+    assert "quedó instalado" not in fb["text"]
     assert not store.get("ritual_in_flight")
 
 
@@ -443,6 +448,12 @@ async def test_install_skse_fresco_sin_verificar_no_niega_la_instalacion_que_aca
     assert "no se descargó" not in fb["text"].lower(), "niega una instalación que acaba de ocurrir"
     assert "no se modificó" not in fb["text"].lower()
     assert "verific" in fb["text"].lower()
+    # Aserción POSITIVA, no sólo la ausencia de la negación: un texto genérico que ni
+    # afirme ni niegue la copia («estado no verificable») pasaría todo lo de arriba y
+    # dejaría al operador sin saber si se instaló algo. Lo que distingue esta rama de
+    # la idempotente es precisamente que la copia ocurrió, así que eso es lo que hay
+    # que fijar.
+    assert "quedó instalado" in fb["text"], "la rama fresca tiene que AFIRMAR que se instaló"
 
 
 # ── run_ritual_install: rama community_shaders ──────────────────────────────────
