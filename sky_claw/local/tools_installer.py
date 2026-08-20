@@ -1637,8 +1637,36 @@ class ToolsInstaller:
         for exe_name in _SKYRIM_EXE_NAMES:
             exe = game_dir / exe_name
             if exe.is_file():
-                # pefile hace I/O síncrono de PE: fuera del event loop.
-                return True, await asyncio.to_thread(read_skyrim_version, exe)
+                try:
+                    # pefile hace I/O síncrono de PE: fuera del event loop.
+                    return True, await asyncio.to_thread(read_skyrim_version, exe)
+                except Exception as exc:
+                    # Catch-all deliberado, traducido a la señal de dominio del método
+                    # ("hay ejecutable, no pude leerle la versión") para que el caller
+                    # lo convierta en `ToolInstallError` accionable. NO es un
+                    # `except: pass`: el desenlace es fail-closed y el operador recibe
+                    # un mensaje que dice qué pasó.
+                    #
+                    # Es catch-all y no una tupla de tipos porque `pefile` levanta un
+                    # `Exception` PELADO en al menos un caso de acceso (ruta que
+                    # resulta ser un directorio), fuera de las tres ramas que
+                    # `_read_pe_product_version` captura. Estrechar el except acá
+                    # dejaría escapar justamente el caso que motivó esta rama.
+                    #
+                    # `is_file()` arriba no alcanza: entre esa comprobación y la
+                    # lectura la ruta puede cambiar, y este helper corre precisamente
+                    # cuando el juego se está actualizando.
+                    #
+                    # BLE001 está exento para este archivo en `pyproject.toml`, así
+                    # que ruff NO habría marcado esto: el racional va escrito porque
+                    # el gate no cubre este código, no porque lo cubra.
+                    logger.warning(
+                        "No se pudo leer la versión de %s (%s: %s); se trata como versión ilegible.",
+                        exe,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    return True, ""
         return False, ""
 
     async def _detect_skyrim_edition_from_exe(self, game_dir: pathlib.Path) -> tuple[SkyrimEdition, str]:

@@ -1905,6 +1905,44 @@ class TestEnsureSkse:
         assert set(install_dir.iterdir()) == antes - {exe}, "cero mutaciones más allá del exe que borró el test"
 
     @pytest.mark.asyncio
+    async def test_lectura_de_version_que_explota_se_traduce_a_error_de_dominio(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Una excepción del parser no puede escaparse cruda del gate.
+
+        `_read_pe_product_version` captura `OSError`/`ValueError`/`PEFormatError`, y
+        con eso alcanza para el archivo inexistente, el PE corrupto y el truncado
+        —los tres devuelven `""`—. Pero `pefile` levanta un `Exception` PELADO en al
+        menos un caso de acceso (ruta que resulta ser un directorio), y ese no cae en
+        ninguna de las tres ramas. `_leer_version_del_ejecutable` mira `is_file()`
+        antes de leer, así que hace falta que la ruta cambie entre ambas cosas — una
+        ventana chica, pero es exactamente la clase de carrera que este gate existe
+        para cubrir, y el gate corre justo cuando el juego se está actualizando.
+
+        El contrato del método es `ToolInstallError`. Que escape un `Exception` crudo
+        conserva el fail-closed (nada se copia) pero le da al operador el texto
+        interno del parser en vez de un mensaje accionable, y rompe el contrato de
+        errores tipados del que depende la GUI.
+        """
+        install_dir = self._skyrim_limpio(tmp_path)
+        antes = set(install_dir.iterdir())
+
+        def _parser_que_explota(_exe: pathlib.Path) -> str:
+            raise Exception("Unable to access file: [Errno 21] Is a directory")
+
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", _parser_que_explota)
+
+        hitl, egress = self._espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        hitl.assert_not_awaited()
+        egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
+
+    @pytest.mark.asyncio
     async def test_runtime_estable_llega_a_la_copia(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
