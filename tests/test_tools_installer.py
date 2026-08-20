@@ -1758,6 +1758,53 @@ class TestEnsureSkse:
 
         assert res.version == "skse64_2_02_06"
 
+    @pytest.mark.asyncio
+    async def test_la_verificacion_no_depende_de_si_esta_corrida_copio(
+        self, installer: ToolsInstaller, tmp_path: pathlib.Path
+    ) -> None:
+        """El estado reportado es del RESULTADO en disco, no del camino que se recorrió.
+
+        Staging con edición explícita y sin ejecutable: no hay runtime contra el cual
+        probar nada, ni antes ni después de copiar. Aun así la instalación fresca
+        heredaba el default `VERIFIED` del dataclass mientras que la llamada
+        idempotente siguiente —mismos archivos, misma ausencia de runtime— reportaba
+        `PRESENT_BUT_UNVERIFIED`. O sea que el veredicto de compatibilidad dependía de
+        quién había hecho la copia, que es justo lo que un campo de verificación no
+        puede significar.
+
+        Las dos llamadas tienen que coincidir, y coincidir en el estado honesto: sin
+        ejecutable no hay prueba posible. Marcarlas `VERIFIED` para que empaten sería
+        el `UNKNOWN == COMPATIBLE` que este contrato existe para prohibir.
+        """
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._download_skse_archive = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        installer._extract = MagicMock(return_value=None)  # type: ignore[method-assign]
+        installer._find_skse_root = MagicMock(return_value=tmp_path / "root")  # type: ignore[method-assign]
+
+        # La copia real se simula dejando el par loader+DLL en disco, para que la
+        # SEGUNDA llamada encuentre exactamente lo que la primera instaló.
+        async def _copiar(_root: pathlib.Path, destino: pathlib.Path, _cfg: Any) -> None:
+            (destino / "skse64_loader.exe").write_bytes(b"MZ")
+            (destino / "skse64_1_6_1170.dll").write_bytes(b"MZ")
+
+        installer._copy_skse_files = _copiar  # type: ignore[method-assign]
+
+        fresca = await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+        idempotente = await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.AE)
+
+        assert fresca.already_existed is False
+        assert idempotente.already_existed is True
+        assert fresca.verification is idempotente.verification, (
+            "el mismo estado en disco no puede reportar dos veredictos distintos"
+        )
+        assert fresca.verification is InstallVerification.PRESENT_BUT_UNVERIFIED, (
+            "sin ejecutable no hay runtime contra el cual probar compatibilidad"
+        )
+
     # ── TOCTOU: el runtime puede cambiar entre el gate y la copia ────────────
     #
     # El gate pre-HITL prueba compatibilidad al ARRANCAR la operación. Entre ese

@@ -1662,11 +1662,26 @@ class ToolsInstaller:
                 await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
 
             logger.info("SKSE %s instalado en %s", ed_key, loader_path)
+            # Explícito, NO heredado del default del dataclass. El veredicto describe
+            # el RESULTADO en disco, no el camino que se recorrió para llegar: sin
+            # esto, una instalación fresca de staging (sin ejecutable, edición
+            # explícita) salía `VERIFIED` y la llamada idempotente siguiente —mismos
+            # archivos, misma ausencia de runtime— salía `PRESENT_BUT_UNVERIFIED`. Un
+            # campo de verificación no puede depender de quién hizo la copia.
+            #
+            # Con ejecutable, lo que hay detrás es la cadena entera: gate de versión
+            # ilegible, gate de mismatch y la revalidación pegada a la copia, que
+            # acaba de releer el PE del disco. Sin ejecutable no hay prueba posible y
+            # la revalidación se salta a propósito, así que decir `VERIFIED` ahí sería
+            # el `UNKNOWN == COMPATIBLE` que este contrato existe para prohibir.
             return InstallResult(
                 tool_name="SKSE",
                 exe_path=loader_path,
                 version=pathlib.Path(url).stem,
                 already_existed=False,
+                verification=(
+                    InstallVerification.VERIFIED if hay_ejecutable else InstallVerification.PRESENT_BUT_UNVERIFIED
+                ),
             )
 
     async def _revalidar_runtime_antes_de_mutar(
