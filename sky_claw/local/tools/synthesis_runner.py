@@ -12,6 +12,8 @@ Reference:
 from __future__ import annotations
 
 import asyncio
+import enum
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -25,18 +27,57 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _esp_signature(esp_path: pathlib.Path) -> tuple[int, int] | None:
-    """Firma de producción ``(mtime_ns, size)`` del ESP esperado.
+class _EspStatus(enum.Enum):
+    """Estado de un sondeo de ``Synthesis.esp`` — OSError nunca es ausencia."""
 
-    ``None`` si el archivo no existe (o el stat falla): el output puede haber
-    sido CREADO por esta corrida. Comparación pre/post LOCAL de Synthesis: un
-    run que no toca el archivo no deja evidencia atribuible a esta corrida.
+    ABSENT = "absent"  # el archivo no existe (la corrida puede haberlo creado)
+    PRESENT = "present"  # existe y su contenido fue hasheado
+    UNREADABLE = "unreadable"  # existe pero no pudo inspeccionarse: indeterminado
+
+
+@dataclass(frozen=True, slots=True)
+class _EspProbe:
+    """Sondeo de ``Synthesis.esp`` con los tres estados distinguibles.
+
+    ``digest`` es sha256 del contenido (streaming, 1 MiB) y solo se setea con
+    status PRESENT. La identidad de contenido prevalece sobre la metadata: un
+    reemplazo que conserva tamaño/timestamp pero cambia los bytes es
+    modificación, y reescribir los mismos bytes no es producción nueva.
     """
+
+    status: _EspStatus
+    digest: str | None = None
+
+
+_ESP_HASH_CHUNK = 1 << 20  # 1 MiB
+
+
+def _probe_esp_sync(esp_path: pathlib.Path) -> _EspProbe:
+    """Sondeo bloqueante (corre en executor): stat + sha256 streaming."""
     try:
-        st = esp_path.stat()
+        esp_path.stat()
+    except FileNotFoundError:
+        return _EspProbe(_EspStatus.ABSENT)
     except OSError:
-        return None
-    return st.st_mtime_ns, st.st_size
+        return _EspProbe(_EspStatus.UNREADABLE)
+    digest = hashlib.sha256()
+    try:
+        with esp_path.open("rb") as f:
+            for chunk in iter(lambda: f.read(_ESP_HASH_CHUNK), b""):
+                digest.update(chunk)
+    except OSError:
+        return _EspProbe(_EspStatus.UNREADABLE)
+    return _EspProbe(_EspStatus.PRESENT, digest.hexdigest())
+
+
+async def _probe_esp(esp_path: pathlib.Path) -> _EspProbe:
+    """Sondea el ESP esperado fuera del event loop.
+
+    Mismo patrón que ``validate_synthesis_esp`` (``run_in_executor`` sobre el
+    default executor): la lectura completa del archivo no bloquea el loop.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _probe_esp_sync, esp_path)
 
 
 # =============================================================================
@@ -232,10 +273,11 @@ class SynthesisRunner:
         # Construir argumentos del comando
         args = self._build_cli_args(patcher_ids, extra_args)
 
-        # Firma pre-run del artefacto esperado: evidencia de que ESTA corrida
-        # lo tocó. None = no existía antes del run (la corrida puede crearlo).
+        # Sondeo pre-run del artefacto esperado: evidencia de que ESTA corrida
+        # lo tocó. ABSENT = no existía antes (la corrida puede crearlo);
+        # UNREADABLE = evidencia indeterminada → jamás se atribuye.
         expected_esp = self._config.output_path / "Synthesis.esp"
-        esp_sig_before = _esp_signature(expected_esp)
+        probe_before = await _probe_esp(expected_esp)
 
         try:
             stdout, stderr, return_code = await self._execute_process(args)
@@ -260,20 +302,28 @@ class SynthesisRunner:
         # (`Synthesis.esp`, SOP §2.7; el service y el lock lo hardcodean). La
         # presencia de un .esp (aunque sea `Synthesis.esp`) no prueba
         # producción: sin evidencia de que ESTA corrida creó o modificó el
-        # archivo no hay output atribuible — exit 0 + texto de éxito NO
-        # alcanzan (fail-closed).
+        # contenido no hay output atribuible — exit 0 + texto de éxito NO
+        # alcanzan (fail-closed). Un sondeo indeterminado (stat/lectura
+        # fallida) tampoco demuestra nada y falla cerrado.
         output_esp: pathlib.Path | None = None
         if success and return_code == 0:
-            if expected_esp.exists():
-                esp_sig_after = _esp_signature(expected_esp)
-                if esp_sig_after is not None and (esp_sig_before is None or esp_sig_after != esp_sig_before):
-                    output_esp = expected_esp
-                else:
-                    errors.append(
-                        "Synthesis.esp was not modified by this run; the output is not attributable to this run"
-                    )
-            else:
+            probe_after = await _probe_esp(expected_esp)
+            if probe_before.status is _EspStatus.UNREADABLE:
+                errors.append(
+                    "Synthesis.esp could not be inspected before the run; the output is not attributable to this run"
+                )
+            elif probe_after.status is _EspStatus.UNREADABLE:
+                errors.append(
+                    "Synthesis.esp could not be inspected after the run; the output is not attributable to this run"
+                )
+            elif probe_after.status is _EspStatus.ABSENT:
                 errors.append("Synthesis reported completion but Synthesis.esp was not produced")
+            elif probe_before.status is _EspStatus.ABSENT:
+                output_esp = expected_esp  # creado por esta corrida
+            elif probe_after.digest != probe_before.digest:
+                output_esp = expected_esp  # contenido modificado por esta corrida
+            else:
+                errors.append("Synthesis.esp was not modified by this run; the output is not attributable to this run")
 
         result = SynthesisResult(
             success=success and return_code == 0 and output_esp is not None,

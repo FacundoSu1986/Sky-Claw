@@ -1246,7 +1246,9 @@ async def test_success_textual_sin_output_atribuible_dispara_rollback(
         # El proceso "corre" con éxito textual pero NO toca el esp.
         return b"Successfully generated patch output", b"", 0
 
+    restore_spy = AsyncMock(wraps=snapshot_manager.restore_snapshot)
     with (
+        patch.object(snapshot_manager, "restore_snapshot", restore_spy),
         patch("sky_claw.local.tools.synthesis_runner.run_capture", _phantom),
         patch.dict(
             "os.environ",
@@ -1263,4 +1265,58 @@ async def test_success_textual_sin_output_atribuible_dispara_rollback(
     assert "not attributable" in out["message"]
     mock_journal.commit_transaction.assert_not_awaited()
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
-    assert esp.read_bytes() == original  # el snapshot se restauró
+    # El restore REAL fue invocado (spy sobre el snapshot_manager, no inferencia
+    # por contenido) y el esp volvió al estado snapshot-eado.
+    restore_spy.assert_awaited_once()
+    assert esp.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_fallo_tras_modificacion_real_restaura_el_snapshot(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    """R13 — el rollback se observa sobre una modificación REAL del archivo
+    snapshot-eado: la corrida escribe un esp corrupto (runner REAL, sin mock de
+    run_pipeline) → el service lo valida (TES4) → falla DENTRO del lock →
+    restore_snapshot invocado → el contenido vuelve al original."""
+    esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    original = b"TES4" + b"\x00" * 200
+    esp.write_bytes(original)
+
+    mock_path_resolver.get_active_profile = MagicMock(return_value="Default")
+
+    svc = _svc_real_journal(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, event_bus, tmp_path)
+
+    async def _corrompe(_args: list[str], **_kwargs: object) -> tuple[bytes, bytes, int]:
+        # El run reescribe el esp (modificación real del snapshot target) con
+        # contenido inválido.
+        esp.write_bytes(b"CORRUPTED")
+        return b"Successfully generated patch output", b"", 0
+
+    restore_spy = AsyncMock(wraps=snapshot_manager.restore_snapshot)
+    with (
+        patch.object(snapshot_manager, "restore_snapshot", restore_spy),
+        patch("sky_claw.local.tools.synthesis_runner.run_capture", _corrompe),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is False
+    assert "validation failed" in out["message"] or "corrupted" in out["message"]
+    restore_spy.assert_awaited_once()
+    mock_journal.commit_transaction.assert_not_awaited()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
+    # Contenido realmente restaurado desde el snapshot (la corrida lo corrompió).
+    assert esp.read_bytes() == original
