@@ -2098,8 +2098,17 @@ class TestEnsureSkse:
 
         Un test se considera "de aborto" si espera una excepción (`pytest.raises`).
         El camino feliz no entra: verifica que la copia SÍ ocurre, no su ausencia.
+
+        Se enumeran los tests `async` y los sincrónicos: los dos helpers son
+        sincrónicos, así que un test sync que maneje su propio bucle de eventos
+        también puede provocar un aborto y debe anclar sus fronteras igual.
+        Esta misma función queda excluida por nombre dinámico: su fuente contiene
+        las marcas exigidas como literales, así que se cumpliría a sí misma y
+        —peor— mantendría `revisados` no vacío aunque desaparecieran todos los
+        tests de aborto reales, desactivando la comprobación de liveness.
         """
         import ast  # noqa: PLC0415 — solo lo usa esta ancla
+        import inspect  # noqa: PLC0415 — solo para excluirse a sí misma sin hardcodear el nombre
 
         fuente = pathlib.Path(__file__).read_text(encoding="utf-8")
         arbol = ast.parse(fuente)
@@ -2116,8 +2125,14 @@ class TestEnsureSkse:
         incumplen: dict[str, list[str]] = {}
         revisados: list[str] = []
 
+        marco = inspect.currentframe()
+        assert marco is not None
+        esta_ancla = marco.f_code.co_name
+
         for metodo in clase.body:
-            if not isinstance(metodo, ast.AsyncFunctionDef) or not metodo.name.startswith("test_"):
+            if not isinstance(metodo, ast.AsyncFunctionDef | ast.FunctionDef):
+                continue
+            if not metodo.name.startswith("test_") or metodo.name == esta_ancla:
                 continue
             cuerpo = ast.get_source_segment(fuente, metodo) or ""
             helpers = [h for h in requisitos_por_helper if h in cuerpo]
