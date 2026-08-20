@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from sky_claw.app.gui.controllers.ritual_runner import (
     RITUAL_INSTALLER_MAP,
     RITUAL_TOOL_MAP,
@@ -30,6 +32,9 @@ from sky_claw.app.gui.views.forge_dashboard import (
 from sky_claw.local.discovery import scanner as scanner_mod
 from sky_claw.local.discovery.environment import (
     EnvironmentSnapshot,
+    HealthStatus,
+    SkyrimEdition,
+    SkyrimInfo,
     ToolInfo,
 )
 
@@ -92,6 +97,135 @@ def test_ritual_status_available_when_tool_detected() -> None:
 
 def test_ritual_status_missing_when_tool_absent() -> None:
     assert _ritual_status(EnvironmentSnapshot(), "loot") == "missing"
+
+
+# ── SKSE presente sin verificar (PR #491: presencia != compatibilidad probada) ──
+def _snapshot_skse(version: str) -> EnvironmentSnapshot:
+    """Snapshot con SKSE detectado y la versión de Skyrim dada (``""`` = ilegible)."""
+    snap = EnvironmentSnapshot()
+    snap.skyrim = SkyrimInfo(
+        path=Path("D:/Steam/steamapps/common/Skyrim Special Edition"),
+        exe_name="SkyrimSE.exe",
+        edition=SkyrimEdition.AE,
+        version=version,
+    )
+    snap.tools["skse"] = ToolInfo(
+        name="SKSE",
+        exe_path=Path("D:/Steam/steamapps/common/Skyrim Special Edition/skse64_loader.exe"),
+    )
+    return snap
+
+
+def test_skse_presente_con_version_ilegible_no_se_reporta_available() -> None:
+    """CASO A: con la versión de Skyrim ilegible, `find_skse_installation` degrada a
+    "loader + algún DLL de runtime" — presencia, no compatibilidad. La tarjeta no
+    puede colapsarlo en ``available``/``installed`` (cartel positivo)."""
+    snap = _snapshot_skse(version="")
+
+    assert _ritual_status(snap, "skse") == "present_unverified"
+    assert _ritual_status(snap, "skse") != "available"
+
+
+def test_skse_presente_sin_verificar_ofrece_el_seam_de_verificacion_no_el_cartel_positivo() -> None:
+    """El estado no verificable tiene que llegar a `ensure_skse` (que devuelve
+    PRESENT_BUT_UNVERIFIED sin HITL/egress/writes y se publica como warning)."""
+    assert _ritual_action("skse", "present_unverified") == "verify"
+    assert _ritual_action("skse", "present_unverified") != "installed"
+
+
+def test_skse_verificado_sigue_available_sin_warning_espurio() -> None:
+    """CASO B: versión legible + build correcto sigue siendo el estado normal."""
+    snap = _snapshot_skse(version="1.6.1170")
+
+    assert _ritual_status(snap, "skse") == "available"
+    assert _ritual_action("skse", "available") == "installed"
+
+
+def test_skse_ausente_sigue_missing_y_ofrece_instalar() -> None:
+    """CASO C: ausencia real no se confunde con presencia sin verificar."""
+    snap = EnvironmentSnapshot()
+
+    assert _ritual_status(snap, "skse") == "missing"
+    assert _ritual_action("skse", "missing") == "install"
+
+
+def test_skse_ausente_con_version_ilegible_no_se_trata_como_presente_sin_verificar() -> None:
+    """La variante del finding con SKSE ausente: versión ilegible NO alcanza para
+    marcar presencia sin verificar — falta el tool en el snapshot, y el estado
+    tiene que seguir siendo "missing" (tarjeta "Instalar", no "Verificar")."""
+    snap = EnvironmentSnapshot()
+    snap.skyrim = SkyrimInfo(
+        path=Path("D:/Steam/steamapps/common/Skyrim Special Edition"),
+        exe_name="SkyrimSE.exe",
+        edition=SkyrimEdition.AE,
+        version="",
+    )
+
+    assert _ritual_status(snap, "skse") == "missing"
+    assert _ritual_action("skse", "missing") == "install"
+    assert _ritual_action("skse", _ritual_status(snap, "skse")) != "verify"
+
+
+def test_skse_presente_sin_evidencia_de_version_no_inventa_unverified() -> None:
+    """La señal exige las DOS evidencias del snapshot (tool detectado + versión
+    ilegible): sin `SkyrimInfo` no hay de qué dudar y no se degrada el estado."""
+    snap = _snapshot_with("skse")
+
+    assert _ritual_status(snap, "skse") == "available"
+
+
+def test_la_senal_de_skse_sin_verificar_no_cambia_el_contrato_de_otros_tools() -> None:
+    """La señal es de SKSE, no global: los demás tools conservan su contrato genérico."""
+    snap = _snapshot_skse(version="")
+    snap.tools["loot"] = ToolInfo(name="LOOT", exe_path=Path("/x/loot.exe"))
+
+    assert _ritual_status(snap, "loot") == "available"
+    assert _ritual_action("loot", "available") == "run"
+    assert _ritual_status(snap, "xedit") == "missing"
+    assert _ritual_action("xedit", "missing") == "install"
+
+
+async def test_cadena_scanner_a_dashboard_con_skse_sin_verificar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end del finding: el scanner registra SKSE presente (loader + DLL real,
+    versión ilegible) y el dashboard NO lo convierte en "available/installed"."""
+    from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+    game = tmp_path / "Skyrim Special Edition"
+    game.mkdir()
+    (game / "SkyrimSE.exe").write_bytes(b"MZ")
+    (game / "skse64_loader.exe").write_bytes(b"MZ")
+    (game / "skse64_1_5_97.dll").write_bytes(b"MZ")
+    monkeypatch.setattr(scanner_mod, "_detect_skyrim_version", lambda _exe: ("", SkyrimEdition.AE))
+
+    async def _find_mo2_none(_self: object) -> None:
+        return None
+
+    monkeypatch.setattr(EnvironmentScanner, "_find_mo2", _find_mo2_none)
+    monkeypatch.setattr(EnvironmentScanner, "_find_tool", lambda _self, _names, _roots: None)
+    # Las demás tools críticas (LOOT) presentes: así el escenario llega a READY y se
+    # ejercita el resumen — presencia sin verificar ≠ ausencia (no degrada el estado).
+    tool_paths = {
+        key: str(_touch_exe(tmp_path, f"{key}.exe")) for key in ("loot", "xedit", "pandora", "wrye_bash", "dyndolod")
+    }
+
+    snap = await EnvironmentScanner(skyrim_path=game, tool_paths=tool_paths).scan()
+
+    assert snap.has_tool("skse"), "el scanner registró la presencia física de SKSE"
+    assert _ritual_status(snap, "skse") == "present_unverified"
+    assert _ritual_action("skse", _ritual_status(snap, "skse")) == "verify"
+    # El mensaje del scanner tampoco puede afirmar compatibilidad que nadie probó.
+    assert not any("✅ SKSE" in m for m in snap.health_messages)
+    assert any("no se pudo verificar" in m.lower() for m in snap.health_messages)
+    assert snap.health_status is HealthStatus.READY, "presencia sin verificar ≠ ausencia"
+    assert not any("Todo listo para jugar" in m for m in snap.health_messages)
+
+
+def _touch_exe(directory: Path, name: str) -> Path:
+    exe = directory / name
+    exe.write_bytes(b"MZ")
+    return exe
 
 
 def test_every_ritual_maps_to_a_scanner_tool_key() -> None:
