@@ -2568,14 +2568,24 @@ class TestEnsureSkse:
         install_dir = self._skyrim_limpio(tmp_path)
         (install_dir / "skse64_loader.exe").write_bytes(b"MZ")
         (install_dir / "skse64_1_6_1170.dll").write_bytes(b"MZ")
+        antes = set(install_dir.iterdir())
 
         monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
         monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.6.640")
 
+        # Mismo hermano que `test_edicion_explicita_con_runtime_incompatible_tambien_corta`,
+        # pero por autodetección: sus tres aserciones de frontera van también acá, o el
+        # gemelo por parámetro queda cableado y este no. Al usar el helper, además, el
+        # ancla enumerativa deja de saltearlo por helper-less y lo empieza a exigir.
+        hitl, egress = self._espias_de_frontera(installer)
         session = MagicMock(spec=aiohttp.ClientSession)
 
         with pytest.raises(ToolInstallError, match="1.6.640"):
             await installer.ensure_skse(install_dir, session)
+
+        hitl.assert_not_awaited()
+        egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
 
     @pytest.mark.asyncio
     async def test_runtime_exacto_soportado_sigue_instalando(
