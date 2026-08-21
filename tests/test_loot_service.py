@@ -992,7 +992,9 @@ async def test_before_order_se_lee_dentro_del_lock_del_load_order(
     secuencia: list[str] = []
     acquire_original = DistributedLockManager.acquire_lock
 
-    async def acquire_spy(self: DistributedLockManager, resource_id: str, agent_id: str, ttl: float = 0) -> object:
+    async def acquire_spy(
+        self: DistributedLockManager, resource_id: str, agent_id: str, ttl: float | None = None
+    ) -> object:
         secuencia.append("lock")
         return await acquire_original(self, resource_id, agent_id, ttl=ttl)
 
