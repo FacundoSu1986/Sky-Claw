@@ -23,7 +23,12 @@ from sky_claw.app.core.event_payloads import (
     DynDOLODPipelineStartedPayload,
 )
 from sky_claw.app.core.path_resolver import PathResolutionService
-from sky_claw.app.db.handoffs import DeploymentHandoff, HandoffState, clave_de_artifact
+from sky_claw.app.db.handoffs import (
+    DeploymentHandoff,
+    HandoffState,
+    clave_de_artifact,
+    reconciliar_orphan_de_artifact,
+)
 from sky_claw.app.db.journal import JournalTransactionError, OperationJournal
 from sky_claw.app.db.locks import (
     DistributedLockManager,
@@ -412,21 +417,37 @@ class DynDOLODPipelineService:
     async def _consultar_resume(
         self,
         runner: DynDOLODRunner,
-    ) -> DeploymentHandoff | _ResumeBloqueado:
+    ) -> DeploymentHandoff | _ResumeBloqueado | None:
         """Decisión de resume por ESTADO DURABLE, nunca por ``Path.exists``.
 
         Devuelve el handoff ``AWAITING_DEPLOYMENT`` verificado (perfil + digest)
-        cuando el resume es legítimo, ``None`` cuando no hay handoff activo
-        (legacy verbatim), o un :class:`_ResumeBloqueado` fail-closed. El gate
-        de Data vive en el runner (byte a byte bajo el lock): acá se verifican
-        identidad de dueño e identidad del artifact, que son las mitades que el
-        runner no puede probar.
+        cuando el resume es legítimo, ``None`` cuando no hay handoff activo NI
+        evidencia durable de una corrida incompleta (legacy verbatim), o un
+        :class:`_ResumeBloqueado` fail-closed. El gate de Data vive en el
+        runner (byte a byte bajo el lock): acá se verifican identidad de dueño
+        e identidad del artifact, que son las mitades que el runner no puede
+        probar.
+
+        F-002: ``consultar_handoff_activo() == None`` NO alcanza para declarar
+        legacy. Antes del fallback se consulta la MISMA primitive que el
+        reconciler de arranque: si hay una TX PENDING/ROLLED_BACK cuyo
+        ActionManifest nombra el artifact y el mod sigue vivo, se materializa
+        un INDETERMINATE conservador y el resume falla cerrado.
         """
         mods_path = runner._config.mo2_mods_path
-        clave = clave_de_artifact(mods_path / DynDOLODRunner.TEXGEN_MOD_NAME)
-        activo = await self._journal.consultar_handoff_activo(clave)
+        mod_texgen = mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+        game_key, mods_root_key, data_key = self._keys_de_identidad(runner)
+        activo = await reconciliar_orphan_de_artifact(
+            journal=self._journal,
+            mod_texgen=mod_texgen,
+            game_key=game_key,
+            mods_root_key=mods_root_key,
+            data_key=data_key,
+            expected_profile=self._mo2_profile or "desconocido",
+            digest_arbol=digest_arbol,
+        )
         if activo is None:
-            return None  # legacy verbatim
+            return None  # legacy verbatim: sin handoff activo y sin evidencia durable
         if activo.state is HandoffState.INDETERMINATE:
             return _ResumeBloqueado(
                 "HandoffIndeterminate",
@@ -1638,12 +1659,21 @@ class DynDOLODPipelineService:
         from sky_claw.app.orchestrator.preview.manifest import LODPlan, StageChangeSet
 
         mo2_mods_path = self._path_resolver.get_mo2_mods_path()
-        dyndolod_dir = str(mo2_mods_path / "DynDOLOD Output") if mo2_mods_path else "DynDOLOD Output"
+        dyndolod_dir = (
+            str(mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME)
+            if mo2_mods_path
+            else DynDOLODRunner.DYNDOLLOD_MOD_NAME
+        )
 
         would_generate = ["DynDOLOD.esp"]
         output_dirs = [dyndolod_dir]
         if run_texgen:
-            texgen_dir = str(mo2_mods_path / "TexGen Output") if mo2_mods_path else "TexGen Output"
+            # F-007: el nombre del mod sale de la constante canónica del runner —
+            # el ancla AST de tests exige que el flujo durable no hardcodee el
+            # literal.
+            texgen_dir = (
+                str(mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME) if mo2_mods_path else DynDOLODRunner.TEXGEN_MOD_NAME
+            )
             would_generate.append("TexGen textures")
             output_dirs.append(texgen_dir)
 

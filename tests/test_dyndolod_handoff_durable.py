@@ -620,13 +620,317 @@ def test_digest_distingue_redistribucion_de_bytes(tmp_path: pathlib.Path) -> Non
     assert antes.digest != despues.digest
 
 
-def test_digest_excluye_meta_ini_del_scope(tmp_path: pathlib.Path) -> None:
+def test_digest_meta_ini_sibling_sigue_fuera_por_estructura(tmp_path: pathlib.Path) -> None:
+    """F-003: ``mods/TexGen Output/meta.ini`` (el que MO2 administra) queda fuera
+    del digest POR ESTRUCTURA — el scope es el subárbol ``textures/``, no el mod."""
     raiz = tmp_path / "mod" / "textures"
     _escribir_mod(tmp_path / "mod")
     antes = digest_arbol(raiz)
-    (raiz / "meta.ini").write_text("MO2 reescribe esto", encoding="utf-8")
+    (tmp_path / "mod" / "meta.ini").write_text("MO2 reescribe esto", encoding="utf-8")
     despues = digest_arbol(raiz)
     assert antes == despues
+
+
+def test_digest_meta_ini_dentro_de_textures_cambia_el_digest(tmp_path: pathlib.Path) -> None:
+    """F-003: ``textures/meta.ini`` NO lo administra MO2 — es un archivo regular
+    propio del artifact y DEBE entrar al digest. La exclusión nominal por nombre
+    fue removida."""
+    raiz = tmp_path / "mod" / "textures"
+    _escribir_mod(tmp_path / "mod")
+    antes = digest_arbol(raiz)
+    (raiz / "meta.ini").write_text("propio del artifact", encoding="utf-8")
+    despues = digest_arbol(raiz)
+    assert antes.digest != despues.digest
+    assert despues.files == antes.files + 1
+
+
+def test_digest_meta_ini_anidado_cambia_el_digest(tmp_path: pathlib.Path) -> None:
+    """F-003: ``textures/**/meta.ini`` también es propio y también entra."""
+    raiz = tmp_path / "mod" / "textures"
+    _escribir_mod(tmp_path / "mod")
+    antes = digest_arbol(raiz)
+    (raiz / "sub" / "meta.ini").write_text("propio anidado", encoding="utf-8")
+    despues = digest_arbol(raiz)
+    assert antes.digest != despues.digest
+
+
+def test_digest_symlink_en_el_subtree_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """F-004: un enlace dentro del subtree autorizado NO se sigue NI se ignora —
+    el artifact deja de ser autorizable y ``digest_arbol`` falla cerrado."""
+    raiz = tmp_path / "mod" / "textures"
+    _escribir_mod(tmp_path / "mod")
+    fuera = tmp_path / "fuera.txt"
+    fuera.write_bytes(b"externo")
+    try:
+        (raiz / "enlace.txt").symlink_to(fuera)
+    except (OSError, NotImplementedError):
+        pytest.skip("la plataforma no permite crear symlinks acá")
+    with pytest.raises(OSError):
+        digest_arbol(raiz)
+
+
+def test_digest_junction_en_el_subtree_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """F-004: misma política para un junction/reparse-point de directorio cuando
+    la plataforma permite crearlo."""
+    raiz = tmp_path / "mod" / "textures"
+    _escribir_mod(tmp_path / "mod")
+    destino = tmp_path / "otro-dir"
+    destino.mkdir()
+    try:
+        (raiz / "puente").symlink_to(destino, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("la plataforma no permite crear el reparse point acá")
+    with pytest.raises(OSError):
+        digest_arbol(raiz)
+
+
+def test_clave_de_artifact_sigue_la_semantica_de_la_plataforma(tmp_path: pathlib.Path) -> None:
+    """F-006: ``normcase`` es case-insensitive en Windows y case-preserving en
+    POSIX — el test afirma la semántica DE LA PLATAFORMA, no una exigencia
+    portátil que Windows cumple y Linux no."""
+    import os
+
+    clave_mayus = clave_de_artifact(tmp_path / "MO2" / "mods" / "TexGen Output")
+    clave_minus = clave_de_artifact(tmp_path / "MO2" / "mods" / "texgen output")
+    if os.name == "nt":
+        assert clave_mayus == clave_minus
+    else:
+        assert clave_mayus != clave_minus
+
+
+def test_los_estados_activos_del_sql_y_python_estan_alineados() -> None:
+    """F-008: el conjunto Python ``HANDOFF_STATES_ACTIVOS``, el ``WHERE`` del
+    SELECT activo y el ``WHERE`` del supersede nombran EXACTAMENTE los mismos
+    tres estados — una divergencia entre el enum y el SQL rompe acá antes de
+    llegar a una corrida."""
+    import re
+
+    from sky_claw.app.db import journal as journal_mod
+    from sky_claw.app.db.handoffs import (
+        _SELECT_HANDOFF_ACTIVO_SQL,
+        HANDOFF_STATES_ACTIVOS,
+        HandoffState,
+    )
+
+    select = _SELECT_HANDOFF_ACTIVO_SQL
+    m = re.search(r"state IN \(([^)]*)\)", select)
+    assert m is not None
+    estados_select = {s.strip().strip("'") for s in m.group(1).split(",")}
+    assert estados_select == {s.value for s in HANDOFF_STATES_ACTIVOS}
+
+    fuente_journal = pathlib.Path(journal_mod.__file__).read_text(encoding="utf-8")
+    m2 = re.search(
+        r"WHERE handoff_id = \? AND state IN \(([^)]*)\)",
+        fuente_journal,
+    )
+    assert m2 is not None, "el supersede debe declarar sus estados activos en SQL"
+    estados_supersede = {s.strip().strip("'") for s in m2.group(1).split(",")}
+    assert estados_supersede == {s.value for s in HANDOFF_STATES_ACTIVOS}
+    assert HandoffState.AWAITING_DEPLOYMENT.value == "awaiting_deployment"
+
+
+def test_el_literal_del_mod_texgen_solo_vive_en_la_constante_canonica() -> None:
+    """F-007: ``"TexGen Output"`` no se hardcodea en el CÓDIGO del flujo durable
+    — la fuente canónica es ``DynDOLODRunner.TEXGEN_MOD_NAME``. Los docstrings
+    (prosa) no cuentan: el ancla solo mira strings de código, no documentación."""
+    import ast
+
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
+
+    assert DynDOLODRunner.TEXGEN_MOD_NAME == "TexGen Output", "la constante canónica cambió de valor"
+
+    def _es_docstring(nodo: ast.expr, cuerpo: list[ast.stmt]) -> bool:
+        return (
+            bool(cuerpo)
+            and isinstance(cuerpo[0], ast.Expr)
+            and isinstance(cuerpo[0].value, ast.Constant)
+            and cuerpo[0].value is nodo
+        )
+
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    modulos_del_flujo = [
+        raiz / "app_context.py",
+        raiz / "app" / "db" / "handoffs.py",
+        raiz / "local" / "tools" / "dyndolod_service.py",
+    ]
+    infractores: list[str] = []
+    for archivo in modulos_del_flujo:
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        docstrings: set[ast.Constant] = set()
+        for padre in ast.walk(arbol):
+            cuerpo = getattr(padre, "body", None)
+            if isinstance(cuerpo, list) and cuerpo and isinstance(cuerpo[0], ast.Expr):
+                primer = cuerpo[0].value
+                if isinstance(primer, ast.Constant) and isinstance(primer.value, str):
+                    docstrings.add(primer)
+        for nodo in ast.walk(arbol):
+            if nodo in docstrings:
+                continue
+            if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str) and "TexGen Output" in nodo.value:
+                infractores.append(f"{archivo.name}:{nodo.lineno}")
+                break
+    assert infractores == [], f"literal hardcodeado fuera de la constante canónica: {infractores}"
+
+
+# =============================================================================
+# F-002 — ORPHAN SAME-SESSION (hot path)
+# =============================================================================
+
+
+async def _sembrar_tx_terminada(
+    journal: OperationJournal,
+    *,
+    mod_texgen: pathlib.Path,
+    estado: str,
+) -> int:
+    """TX con ActionManifest nombrando el mod, en el estado residual indicado.
+
+    Reproduce EXACTAMENTE el estado que dejan las ventanas A/B (PENDING tras
+    digest/DB failure) y C (ROLLED_BACK tras cancelación entre FS seal y DB
+    commit) — sin reiniciar el journal, que es la condición del harness."""
+    tx = await journal.begin_transaction("DynDOLOD pipeline (preset=Medium, texgen=True)", agent_id="test")
+    await journal.begin_operation(
+        agent_id="test",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(mod_texgen),
+        transaction_id=tx,
+        metadata={"files_touched": [str(mod_texgen), str(mod_texgen / "textures")]},
+    )
+    if estado == "rolled_back":
+        await journal.mark_transaction_rolled_back(tx)
+    return tx
+
+
+@pytest.mark.asyncio
+async def test_resume_same_session_con_tx_pending_huerfana_no_llama_dyndolod(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """F-002 ventana A/B (T-red-3/T-red-4): TX PENDING huérfana que nombra el
+    artifact + mod vivo → el hot path materializa INDETERMINATE y el resume
+    falla cerrado. NUNCA legacy."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="pending")
+
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate"
+    activo = await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.INDETERMINATE
+    assert activo.expected_digest is None, "la evidencia pre-mutación NUNCA fabrica identidad autorizada"
+
+
+@pytest.mark.asyncio
+async def test_resume_same_session_con_tx_rolled_back_huerfana_no_llama_dyndolod(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """F-002 ventana C (T-red-5): el estado residual de la cancelación — TX
+    ROLLED_BACK + mod preservado + sin handoff, SIN reinicio — también falla
+    cerrado en el hot path."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="rolled_back")
+
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate"
+
+
+@pytest.mark.asyncio
+async def test_resume_con_tx_committed_sin_handoff_no_es_orphan(tmp_path: pathlib.Path, journal_tmp) -> None:  # noqa: ANN001
+    """F-002 anti-falso-positivo: una TX COMMITTED (p. ej. un legacy exitoso
+    previo) con manifest nombrando el mod NO se convierte en orphan — el hot
+    path NO fabrica INDETERMINATE y el camino legacy queda preservado."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    _mirror_a_data(mod_texgen / "textures", config.data_dir)
+    tx = await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="pending")
+    await journal.commit_transaction(tx)  # COMMITTED sin handoff activo
+
+    svc = _svc(journal, runner=runner)
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    run_dyndolod = _dyndolod_ok(dyndolod_staging)
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert result["success"] is True, result.get("errors")
+    run_dyndolod.assert_awaited_once()
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
+
+
+@pytest.mark.asyncio
+async def test_resume_legacy_autentico_con_mod_vivo_y_sin_evidencia_sigue_legacy(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """Control (F-002): mod vivo SIN ninguna TX que lo nombre → legacy verbatim
+    (el runner gatea Data). El hot path no convierte todo ``activo is None`` en
+    fail-closed."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    _mirror_a_data(mod_texgen / "textures", config.data_dir)
+
+    svc = _svc(journal, runner=runner)
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    run_dyndolod = _dyndolod_ok(dyndolod_staging)
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert result["success"] is True, result.get("errors")
+    run_dyndolod.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconciliador_no_trata_una_tx_committed_como_orphan(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """La MISMA regla aplica al reconciler de arranque: tras un resume exitoso
+    (TX COMMITTED + handoff COMPLETED), el siguiente arranque NO degrada el
+    artifact a INDETERMINATE."""
+    journal, _ = journal_tmp
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+    tx = await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="pending")
+    await journal.commit_transaction(tx)
+
+    await reconciliar_handoffs_de_deployment(
+        journal=journal,
+        mod_texgen=mod_texgen,
+        game_key=clave_de_artifact(tmp_path / "game"),
+        mods_root_key=clave_de_artifact(tmp_path / "MO2" / "mods"),
+        data_key=clave_de_artifact(tmp_path / "game" / "Data"),
+        expected_profile="Perfil-A",
+        digest_arbol=digest_arbol,
+    )
+
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
 
 
 def test_digest_arbol_sin_archivos_propios_falla_cerrado(tmp_path: pathlib.Path) -> None:
@@ -1188,13 +1492,18 @@ def test_el_conjunto_de_estados_activos_esta_congelado() -> None:
     )
 
 
-def test_el_conjunto_de_exclusiones_del_digest_esta_congelado() -> None:
-    """La exclusión del digest es exactamente ``meta.ini``: una exclusión ad-hoc
-    nueva rompería el ancla y obliga a justificar por qué ese archivo no es
-    parte de la identidad del artifact."""
-    from sky_claw.local.tools.artifact_digest import EXCLUSIONES_DE_DIGEST
+def test_el_digest_no_tiene_exclusiones_nominales_dentro_del_scope() -> None:
+    """F-003: TODO archivo regular propio dentro de ``textures/`` entra al
+    digest, sin excepción por nombre. La única exclusión es ESTRUCTURAL: lo que
+    está fuera del subárbol (``mods/TexGen Output/meta.ini``). El ancla se
+    reduce a que el módulo de digest no importe/defina ningún conjunto de
+    exclusiones nominales."""
+    import sky_claw.local.tools.artifact_digest as digest_mod
 
-    assert frozenset({"meta.ini"}) == EXCLUSIONES_DE_DIGEST
+    assert not hasattr(digest_mod, "EXCLUSIONES_DE_DIGEST"), (
+        "F-003: la exclusión nominal por nombre fue removida — todo archivo propio "
+        "del subtree entra al digest; reintroducirla debe ser una decisión explícita"
+    )
 
 
 def test_los_escritores_de_la_tabla_deployment_handoffs_estan_congelados() -> None:

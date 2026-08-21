@@ -94,6 +94,9 @@ def mock_journal() -> AsyncMock:
     # D2 (PR #493): sin handoff activo por defecto — los tests preexistentes
     # ejercitan la semántica legacy ("sin handoff → camino histórico").
     journal.consultar_handoff_activo = AsyncMock(return_value=None)
+    # Post-D2 (F-002): sin evidencia huérfana por defecto — el hot path no debe
+    # correr el digest real del árbol en estos tests de comportamiento legacy.
+    journal.transacciones_que_nombran = AsyncMock(return_value=[])
     return journal
 
 

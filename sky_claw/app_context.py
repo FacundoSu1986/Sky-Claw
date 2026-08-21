@@ -1145,6 +1145,7 @@ class AppContext:
                     reconciliar_handoffs_de_deployment,
                 )
                 from sky_claw.local.tools.artifact_digest import digest_arbol
+                from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 
                 mods_root = pathlib.Path(mo2_root) / "mods" if mo2_root else None
                 game_path = configured_game if isinstance(configured_game, pathlib.Path) else None
@@ -1153,7 +1154,10 @@ class AppContext:
                     await self._await_startup(
                         reconciliar_handoffs_de_deployment(
                             journal=journal,
-                            mod_texgen=mods_root / "TexGen Output",
+                            # F-007: la fuente canónica del nombre del mod es
+                            # DynDOLODRunner.TEXGEN_MOD_NAME — el ancla AST de
+                            # tests exige que el wiring no hardcodee el literal.
+                            mod_texgen=mods_root / DynDOLODRunner.TEXGEN_MOD_NAME,
                             game_key=clave_de_artifact(game_path),
                             mods_root_key=clave_de_artifact(mods_root),
                             data_key=clave_de_artifact(data_dir),

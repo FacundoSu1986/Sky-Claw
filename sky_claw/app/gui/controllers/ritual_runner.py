@@ -72,6 +72,10 @@ def ritual_tab_id() -> str | None:
 # panels in forge_dashboard so the chat input is never reset).
 STORE_KEY_PENDING_HITL = "pending_hitl"
 STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
+# F-001 (post-D2): el RESULTADO estructural del último dispatch de Ritual
+# (dict crudo con ``needs_deployment``/``texgen_mod_path``) para que el panel
+# ofrezca la acción de Resume sin parsear el texto del feedback.
+STORE_KEY_RITUAL_LAST_RESULT = "ritual_last_result"
 
 
 #: Dueño de una aprobación pendiente: el ``tab_id`` de la pestaña que lanzó el
@@ -335,6 +339,7 @@ async def run_ritual(
     store: ReactiveStore,
     auto_approve: bool = False,
     tab_id: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> None:
     """Dispatch a Ritual's tool and publish a feedback message to the store.
 
@@ -348,6 +353,13 @@ async def run_ritual(
     aprobación de esta operación destructiva se parkea bajo ESE cliente, para
     que no sea accionable desde otra pestaña que no lanzó el Ritual.
 
+    ``payload`` (F-001, post-D2): el dict que viaja al dispatcher. ``None``
+    conserva el contrato histórico —payload vacío, defaults del service—, que
+    es la intención "Generar/regenerar" (``run_texgen`` default ``True``). La
+    intención "Continuar" pasa por :func:`run_ritual_resume` con el MISMO
+    camino y un payload explícito ``{"run_texgen": False}``: nunca se
+    re-significa el botón normal en auto-resume.
+
     Never raises: dispatch failures and a missing supervisor are converted into
     a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
     cannot crash the loop. The HITL gate inside ``dispatch_tool`` is what asks
@@ -357,6 +369,9 @@ async def run_ritual(
     # arranca sin panel stale (T-16b). Se re-puebla al final si el dispatch adjunta
     # un reporte (hoy solo el sort de LOOT lo hace).
     store.set(STORE_KEY_RITUAL_PREFLIGHT, None)
+    # F-001: el resultado ESTRUCTURAL (flag needs_deployment + path) se publica
+    # aparte del texto del toast — el panel consume el dict, no el string.
+    store.set(STORE_KEY_RITUAL_LAST_RESULT, None)
     tool_name = ritual_tool_name(tool_key)
     if tool_name is None:
         store.set(
@@ -396,13 +411,14 @@ async def run_ritual(
     # P1-7: mismo scoping por task para el dueño de la aprobación.
     cid_token = _ritual_tab_id.set(tab_id)
     try:
-        result = await supervisor.dispatch_tool(tool_name, {})
+        result = await supervisor.dispatch_tool(tool_name, dict(payload) if payload else {})
     except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
         logger.exception("Ritual %s (%s) dispatch failed", tool_key, tool_name)
         store.set(
             STORE_KEY_RITUAL_FEEDBACK,
             {"text": f"El ritual «{tool_key}» falló: {type(exc).__name__}", "type": "negative"},
         )
+        store.set(STORE_KEY_RITUAL_LAST_RESULT, None)
         return
     finally:
         _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
@@ -413,12 +429,65 @@ async def run_ritual(
         # — pero solo si es la propia: nunca una ajena que nadie respondió
         # todavía (review de PR #373).
         clear_owned_hitl(store, tab_id)
-    text, kind = summarize_ritual_result(tool_key, result if isinstance(result, dict) else {})
+    resultado = result if isinstance(result, dict) else {}
+    # F-001: el panel consume el dict ESTRUCTURAL — needs_deployment + path —
+    # para ofrecer la acción de Resume. Publicado ANTES del texto del toast.
+    store.set(STORE_KEY_RITUAL_LAST_RESULT, resultado)
+    text, kind = summarize_ritual_result(tool_key, resultado)
     store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": text, "type": kind})
     # Surface del reporte de preflight que el dispatch adjuntó (hoy solo LOOT): el
     # panel refrescable lo renderiza con create_preflight_panel (T-16b). Rojo = el
     # gate de loot_service ya frenó el sort; el panel lo hace visible al operador.
-    store.set(STORE_KEY_RITUAL_PREFLIGHT, preflight_from_result(result))
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, preflight_from_result(resultado))
+
+
+async def run_ritual_resume(
+    tool_key: str,
+    *,
+    supervisor: Any,
+    store: ReactiveStore,
+    auto_approve: bool = False,
+    tab_id: str | None = None,
+) -> None:
+    """Intención EXPLÍCITA de continuación post-deployment (F-001, post-D2).
+
+    Es la MISMA implementación que :func:`run_ritual` —mismo single-flight,
+    mismo HITL gate del dispatcher, mismo feedback— con UN payload explícito:
+    ``{"run_texgen": False}``. La GUI expresa la intención "Continuar DynDOLOD
+    después de materializar el artifact"; la validación durable del handoff
+    sigue siendo propiedad exclusiva de ``DynDOLODPipelineService.execute``
+    (acá no se consulta ni se duplica estado durable).
+
+    El botón normal "Generar" NO pasa por acá: ``run_texgen=True`` sigue siendo
+    la vía de regeneración/supersede y conserva su payload vacío histórico.
+    """
+    await run_ritual(
+        tool_key,
+        supervisor=supervisor,
+        store=store,
+        auto_approve=auto_approve,
+        tab_id=tab_id,
+        payload={"run_texgen": False},
+    )
+
+
+def resume_action_from_result(tool_key: str, result: dict[str, Any]) -> dict[str, Any] | None:
+    """Acción de Resume derivada ESTRUCTURALMENTE del resultado (F-001).
+
+    Sólo ``dyndolod`` + ``needs_deployment is True`` (el flag, nunca el texto
+    del ``message``) produce la acción. El dict devuelto es lo único que el
+    panel necesita para renderizar el botón; el payload es lo único que
+    :func:`run_ritual_resume` necesita para despachar.
+    """
+    if tool_key != "dyndolod" or result.get("needs_deployment") is not True:
+        return None
+    detail = result.get("texgen_mod_path")
+    return {
+        "tool_key": "dyndolod",
+        "label": "Continuar DynDOLOD",
+        "detail": str(detail) if detail else "",
+        "payload": {"run_texgen": False},
+    }
 
 
 async def run_ritual_install(

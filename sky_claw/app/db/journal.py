@@ -1126,16 +1126,33 @@ class OperationJournal:
                 raise JournalTransactionError(f"Failed to register indeterminate handoff: {e}") from e
 
     async def transacciones_que_nombran(self, objetivo: str) -> list[int]:
-        """IDs de transacciones cuyo ActionManifest nombra ``objetivo``.
+        """IDs de transacciones NO-TERMINALES cuyo ActionManifest nombra ``objetivo``.
 
-        Evidencia de reconciliación: el manifiesto es PRE-mutación, así que
-        esta consulta prueba intención, no provenance — el caller sólo puede
-        fabricar INDETERMINATE con ella, nunca identidad autorizada. El filtro
-        se hace en Python sobre el JSON de ``metadata``: un ``LIKE`` sobre
-        texto JSON sería ciego a los escapes de backslash de las rutas Windows.
+        Evidencia de reconciliación (F-002): el manifiesto es PRE-mutación, así
+        que esta consulta prueba intención, no provenance — el caller sólo puede
+        fabricar INDETERMINATE con ella, nunca identidad autorizada.
+
+        Filtra ``status IN ('pending','rolled_back')``:
+
+        - ``pending`` es la ventana viva (digest/DB failure del handoff);
+        - ``rolled_back`` es el estado residual de la cancelación entre FS seal
+          y DB commit (el sweep de arranque también lo usa post-24h);
+        - una TX ``committed`` NUNCA es orphan: cubre tanto el legacy exitoso
+          previo como el resume exitoso (TX2 COMMITTED + handoff COMPLETED) —
+          sin este filtro el reconciler degradaba ese artifact a INDETERMINATE
+          en el arranque siguiente.
+
+        El filtro de rutas se hace en Python sobre el JSON de ``metadata``: un
+        ``LIKE`` sobre texto JSON sería ciego a los escapes de backslash de las
+        rutas Windows.
         """
         db = await self._ensure_connected()
-        sql = "SELECT transaction_id, metadata FROM journal_entries WHERE metadata IS NOT NULL"
+        sql = """
+            SELECT je.transaction_id, je.metadata
+            FROM journal_entries je
+            JOIN transactions t ON t.transaction_id = je.transaction_id
+            WHERE je.metadata IS NOT NULL AND t.status IN ('pending', 'rolled_back')
+        """
         if self._lifecycle is not None:
             async with self._lifecycle.operation(self._db_path) as conn, conn.execute(sql) as cursor:
                 filas = [fila async for fila in cursor]

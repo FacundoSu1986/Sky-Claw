@@ -261,7 +261,7 @@ def fila_de_registro(registro: DeploymentHandoff) -> tuple[object, ...]:
 # =============================================================================
 
 
-async def reconciliar_handoffs_de_deployment(
+async def reconciliar_orphan_de_artifact(
     *,
     journal: object,
     mod_texgen: pathlib.Path,
@@ -270,30 +270,24 @@ async def reconciliar_handoffs_de_deployment(
     data_key: str,
     expected_profile: str,
     digest_arbol: object,
-) -> None:
-    """Reconcilia el estado durable del handoff con el filesystem al arrancar.
+) -> DeploymentHandoff | None:
+    """UNA sola primitive de detección/reconciliación de orphan — consumida por
+    el reconciler de arranque Y por el hot path del resume (F-002). No hay una
+    segunda heurística divergente.
 
-    Sólo CREA ``INDETERMINATE`` —nunca ``AWAITING_DEPLOYMENT``— y sólo con
-    evidencia de una corrida interrumpida: una transacción PENDING/ROLLED_BACK
-    cuyo ActionManifest (pre-mutación, por diseño) nombra el mod TexGen y el mod
-    sigue existiendo en disco. El manifiesto prueba INTENCIÓN, no provenance:
-    por eso el resultado es un bloqueo conservador sin identidad autorizada, que
-    falla cerrado en resume y se libera con una regeneración explícita.
+    Semántica:
 
-    Recuperaciones adicionales:
-
-    - ``SUPERSEDING`` huérfano (muerte dura en pleno supersede): si el árbol
-      actual sigue coincidiendo con la identidad esperada del handoff, vuelve a
-      su estado previo AWAITING; si no se puede probar, cae a INDETERMINATE.
-    - ``AWAITING`` sin artifact: no se cambia estado — se deja constancia
-      fail-closed para que el resume falle por ``ARTIFACT_MISSING``.
-
-    Best-effort por contrato: el caller (startup) loguea y continúa ante
-    cualquier excepción; un fallo de reconciliación jamás aborta el arranque.
+    - handoff ACTIVO para el artifact → se devuelve (reconciliando antes un
+      ``SUPERSEDING`` huérfano: vuelve a su estado previo si el árbol sigue
+      coincidiendo con su identidad esperada, o se degrada a INDETERMINATE);
+    - sin handoff activo + artifact vivo + evidencia durable de corrida
+      interrumpida (TX PENDING/ROLLED_BACK cuyo ActionManifest —pre-mutación,
+      prueba de INTENCIÓN— nombra el mod) → se crea **INDETERMINATE** (jamás
+      identidad autorizada) y se devuelve;
+    - sin handoff activo y sin evidencia → ``None`` (legacy auténtico).
     """
     clave = clave_de_artifact(mod_texgen)
     activo = await journal.consultar_handoff_activo(clave)  # type: ignore[attr-defined]
-
     textures = mod_texgen / "textures"
 
     if activo is not None and activo.state is HandoffState.SUPERSEDING:
@@ -316,48 +310,89 @@ async def reconciliar_handoffs_de_deployment(
             )
         else:
             await _degradar_a_indeterminate(journal, activo, observado)
-        return
+        return await journal.consultar_handoff_activo(clave)  # type: ignore[attr-defined]
 
-    if activo is not None and activo.state is HandoffState.AWAITING_DEPLOYMENT and not textures.is_dir():
-        import logging
+    if activo is not None:
+        if activo.state is HandoffState.AWAITING_DEPLOYMENT and not textures.is_dir():
+            import logging
 
-        logging.getLogger("SkyClaw.DeploymentHandoffs").warning(
-            "Handoff AWAITING_DEPLOYMENT %d sin artifact en '%s': el resume fallará cerrado "
-            "con ARTIFACT_MISSING hasta que exista evidencia nueva.",
-            activo.handoff_id,
-            mod_texgen,
-        )
-        return
-
-    if activo is None and textures.is_dir():
-        candidatas = await journal.transacciones_que_nombran(str(mod_texgen))  # type: ignore[attr-defined]
-        if not candidatas:
-            return
-        observado = None
-        try:
-            observado = await asyncio.to_thread(digest_arbol, textures)
-        except OSError:
-            observado = None
-        import logging
-
-        logging.getLogger("SkyClaw.DeploymentHandoffs").warning(
-            "Interrupción presumida de una corrida TexGen (TX %s) con artifact vivo en '%s': "
-            "se crea INDETERMINATE sin identidad autorizada. run_texgen=False fallará cerrado; "
-            "una regeneración explícita lo supersede.",
-            candidatas[0],
-            mod_texgen,
-        )
-        await journal.registrar_handoff_indeterminado(  # type: ignore[attr-defined]
-            registro=_registro_indeterminado(
-                source_tx_id=candidatas[0],
-                artifact_path=clave,
-                game_key=game_key,
-                mods_root_key=mods_root_key,
-                data_key=data_key,
-                expected_profile=expected_profile,
-                observado=observado,
+            logging.getLogger("SkyClaw.DeploymentHandoffs").warning(
+                "Handoff AWAITING_DEPLOYMENT %d sin artifact en '%s': el resume fallará cerrado "
+                "con ARTIFACT_MISSING hasta que exista evidencia nueva.",
+                activo.handoff_id,
+                mod_texgen,
             )
+        return activo
+
+    if not textures.is_dir():
+        return None
+
+    candidatas = await journal.transacciones_que_nombran(str(mod_texgen))  # type: ignore[attr-defined]
+    if not candidatas:
+        return None
+
+    observado = None
+    try:
+        observado = await asyncio.to_thread(digest_arbol, textures)
+    except OSError:
+        observado = None
+
+    import logging
+
+    logging.getLogger("SkyClaw.DeploymentHandoffs").warning(
+        "Interrupción presumida de una corrida TexGen (TX %s) con artifact vivo en '%s': "
+        "se crea INDETERMINATE sin identidad autorizada. run_texgen=False fallará cerrado; "
+        "una regeneración explícita lo supersede.",
+        candidatas[0],
+        mod_texgen,
+    )
+    handoff_id = await journal.registrar_handoff_indeterminado(  # type: ignore[attr-defined]
+        registro=_registro_indeterminado(
+            source_tx_id=candidatas[0],
+            artifact_path=clave,
+            game_key=game_key,
+            mods_root_key=mods_root_key,
+            data_key=data_key,
+            expected_profile=expected_profile,
+            observado=observado,
         )
+    )
+    if handoff_id is None:
+        # Perdió contra un owner concurrente: devolver el estado real.
+        return await journal.consultar_handoff_activo(clave)  # type: ignore[attr-defined]
+    return await journal.consultar_handoff_activo(clave)  # type: ignore[attr-defined]
+
+
+async def reconciliar_handoffs_de_deployment(
+    *,
+    journal: object,
+    mod_texgen: pathlib.Path,
+    game_key: str,
+    mods_root_key: str,
+    data_key: str,
+    expected_profile: str,
+    digest_arbol: object,
+) -> None:
+    """Reconcilia el estado durable del handoff con el filesystem al arrancar.
+
+    Delega TODA la lógica en :func:`reconciliar_orphan_de_artifact` — la misma
+    primitive que el hot path del resume consulta — para que startup y hot path
+    no puedan divergir. Sólo CREA ``INDETERMINATE``, y sólo con evidencia de
+    una corrida interrumpida; el manifiesto (pre-mutación) prueba INTENCIÓN, no
+    provenance.
+
+    Best-effort por contrato: el caller (startup) loguea y continúa ante
+    cualquier excepción; un fallo de reconciliación jamás aborta el arranque.
+    """
+    await reconciliar_orphan_de_artifact(
+        journal=journal,
+        mod_texgen=mod_texgen,
+        game_key=game_key,
+        mods_root_key=mods_root_key,
+        data_key=data_key,
+        expected_profile=expected_profile,
+        digest_arbol=digest_arbol,
+    )
 
 
 async def _degradar_a_indeterminate(journal: object, activo: DeploymentHandoff, observado: object) -> None:
@@ -416,4 +451,5 @@ __all__ = [
     "fila_de_registro",
     "handoff_desde_fila",
     "reconciliar_handoffs_de_deployment",
+    "reconciliar_orphan_de_artifact",
 ]
