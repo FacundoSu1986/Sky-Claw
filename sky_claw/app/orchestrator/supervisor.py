@@ -216,6 +216,7 @@ class SupervisorAgent:
             journal=self.journal,
             path_resolver=self._path_resolver,
             event_bus=self._event_bus,
+            mo2_profile=self.profile_name,  # D2 (PR #493): dueño del handoff durable
         )
 
         self._xedit_service = XEditPipelineService(

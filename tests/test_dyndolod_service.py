@@ -91,6 +91,9 @@ def mock_journal() -> AsyncMock:
     journal.commit_transaction = AsyncMock()
     journal.mark_transaction_rolled_back = AsyncMock()
     journal.log_operation = AsyncMock()
+    # D2 (PR #493): sin handoff activo por defecto — los tests preexistentes
+    # ejercitan la semántica legacy ("sin handoff → camino histórico").
+    journal.consultar_handoff_activo = AsyncMock(return_value=None)
     return journal
 
 
@@ -126,6 +129,7 @@ def service(
         journal=mock_journal,
         path_resolver=mock_path_resolver,
         event_bus=mock_event_bus,
+        mo2_profile="Default",  # D2: el gate de perfil exige identidad de dueño
     )
 
 
@@ -1324,6 +1328,7 @@ def _svc_with_preflight(
         path_resolver=mock_path_resolver,
         event_bus=mock_event_bus,
         preflight=preflight,  # type: ignore[arg-type]  # fake duck-typed en tests
+        mo2_profile="Default",  # D2: el gate de perfil exige identidad de dueño
     )
 
 
@@ -1476,12 +1481,14 @@ def _resolver_para_permisos(tmp_path: pathlib.Path) -> MagicMock:
 
 
 def _svc(resolver: MagicMock, mock_lock_manager, mock_snapshot_manager, mock_journal, mock_event_bus):
+
     return DynDOLODPipelineService(
         lock_manager=mock_lock_manager,
         snapshot_manager=mock_snapshot_manager,
         journal=mock_journal,
         path_resolver=resolver,
         event_bus=mock_event_bus,
+        mo2_profile="Default",  # D2: el gate de perfil exige identidad de dueño
     )
 
 
@@ -1601,6 +1608,7 @@ def _svc_real_journal(
         journal=real_journal,  # type: ignore[arg-type]
         path_resolver=mock_path_resolver,
         event_bus=mock_event_bus,
+        mo2_profile="Default",  # D2: el gate de perfil exige identidad de dueño
     )
 
 
@@ -3224,6 +3232,7 @@ def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
         "DynDOLODExecutionError",
         "DynDOLODExecutionError, DynDOLODTimeoutError",
         "Exception",
+        "JournalTransactionError, OSError",
         "LockAcquisitionError",
         "_ActionManifestError",
         "asyncio.CancelledError",

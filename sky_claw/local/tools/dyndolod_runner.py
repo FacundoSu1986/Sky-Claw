@@ -580,6 +580,9 @@ class DynDOLODPipelineResult:
             "esto está listo y espera un despliegue", que es la diferencia entre
             un rojo terminal y uno con continuación. El servicio la usa para
             decidir qué move-aside PRESERVA (review de #493, finding F1).
+        texgen_packaging_attempted: sube ANTES de invocar el empaquetado de
+            TexGen — la única mutación del artifact FINAL. Es la evidencia que
+            el servicio usa para la matriz de fallos del supersede (clases A/B/C).
     """
 
     success: bool
@@ -589,6 +592,7 @@ class DynDOLODPipelineResult:
     dyndolod_mod_path: pathlib.Path | None = None
     errors: list[str] = field(default_factory=list)
     needs_deployment: bool = False
+    texgen_packaging_attempted: bool = False
 
 
 # =============================================================================
@@ -1323,6 +1327,12 @@ class DynDOLODRunner:
         #: de TexGen, así que un `True` de más equivale a dejar en disco una
         #: mutación de una corrida fallida.
         needs_deployment = False
+        # D2 (PR #493): sube ANTES de invocar el empaquetado de TexGen. Es la
+        # evidencia que el servicio usa para distinguir la clase A del supersede
+        # ("el artifact empaquetado nunca se tocó") de B/C ("el reemplazo
+        # empezó y puede no ser restaurable"). El empaquetado es la ÚNICA
+        # mutación del artifact final; TexGen solo escribe el staging crudo.
+        texgen_packaging_attempted = False
 
         # Paso 1: Ejecutar TexGen si está habilitado
         if run_texgen:
@@ -1332,6 +1342,7 @@ class DynDOLODRunner:
                 if texgen_result.success and texgen_result.output_path:
                     # Empaquetar TexGen Output
                     try:
+                        texgen_packaging_attempted = True
                         texgen_mod_path = await self._package_output_as_mod(
                             texgen_result.output_path,
                             self.TEXGEN_MOD_NAME,
@@ -1603,6 +1614,7 @@ class DynDOLODRunner:
             # una mutación cuando lee este flag, y un futuro camino que lo prendiera
             # sobre una corrida exitosa dejaría un move-aside sin confirmar.
             needs_deployment=needs_deployment and not success,
+            texgen_packaging_attempted=texgen_packaging_attempted,
         )
 
         if result.success:
