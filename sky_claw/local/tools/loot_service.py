@@ -659,6 +659,14 @@ class LootSortingService:
                 if not result.success:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
                     raise _LootSortFailedError(result)
+                # T-28: el "después" real se lee del archivo que LOOT reescribió,
+                # DENTRO del lock (atribuible a esta corrida). `result.sorted_plugins`
+                # es telemetría opcional: con LOOT real llega vacía (la GUI no
+                # imprime la lista — upstream main.cpp) y usarla como "después"
+                # haría que el informe omita el diff aunque el orden haya cambiado.
+                # Misma fuente que `before_order` (loadorder.txt primero), así el
+                # diff compara archivo contra archivo.
+                after_order = _read_plugin_order(_primary_load_order_file(target_files))
                 # T-21: validar DENTRO del lock — con el lock liberado, otro
                 # Ritual concurrente podría mutar el load order antes de la
                 # lectura y el reporte quedaría atribuido a este sort (review
@@ -685,7 +693,7 @@ class LootSortingService:
                 await self._emit_flight_report(
                     journal_tx_id,
                     before_order=before_order,
-                    after_order=result.sorted_plugins,
+                    after_order=after_order,
                     post_run_validation=post_run_payload,
                 )
         except LockAcquisitionError as exc:
@@ -881,8 +889,12 @@ class LootSortingService:
         commit best-effort falló, el informe dirá ``pending``: verdad antes
         que optimismo). El manifiesto se emite ANTES del sort y es inmutable,
         así que no puede cargar el orden resultante; el diff real (orden antes
-        vs ``result.sorted_plugins``) se calcula acá y se adjunta al informe
-        (review Codex #249). Best-effort con la misma disciplina que el commit:
+        vs orden leído del archivo post-sort, ambos dentro del lock) se calcula
+        acá y se adjunta al informe (review Codex #249). ``after_order`` viene
+        del load order FÍSICO, no de ``sorted_plugins`` — con LOOT real esa
+        lista llega vacía (la GUI no la imprime) y el diff mentiría "sin
+        cambio" (review CodeRabbit #495).
+        Best-effort con la misma disciplina que el commit:
         un fallo se loguea y NO rompe el contrato "siempre devolver dict" ni
         revierte el sort exitoso.
         """

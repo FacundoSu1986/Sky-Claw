@@ -704,14 +704,25 @@ async def test_informe_registra_el_diff_real_de_orden(
     journal,  # noqa: ANN001
     tmp_path: pathlib.Path,
 ) -> None:
-    """El informe adjunta el diff REAL de orden (archivo antes vs
-    result.sorted_plugins después), aunque el manifiesto pre-vuelo — emitido
-    antes de mutar e inmutable — no lo tenga (review Codex #249)."""
+    """El informe adjunta el diff REAL de orden (archivo antes vs archivo
+    después, ambos leídos dentro del lock), aunque el manifiesto pre-vuelo —
+    emitido antes de mutar e inmutable — no lo tenga (review Codex #249).
+    El "después" sale del archivo que LOOT reescribió, no de
+    ``result.sorted_plugins``: con LOOT real esa lista llega vacía (review
+    CodeRabbit #495)."""
     from sky_claw.app.orchestrator.preview.flight_report import FlightReport
 
-    resolver, _plugins = _preparar_load_order(tmp_path)  # orden previo: Skyrim.esm, Original.esp
+    resolver, plugins = _preparar_load_order(tmp_path)  # orden previo: Skyrim.esm, Original.esp
+    orden_nuevo = "Original.esp\nSkyrim.esm\n"
     runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Original.esp", "Skyrim.esm"]))
+
+    async def sort_real(**_kwargs: object) -> LOOTResult:
+        # LOOT reescribe ambos archivos del load order (libloot save()).
+        for archivo in (plugins, plugins.with_name("loadorder.txt")):
+            archivo.write_text(orden_nuevo, encoding="utf-8")
+        return LOOTResult(return_code=0, sorted_plugins=["Original.esp", "Skyrim.esm"])
+
+    runner.sort = AsyncMock(side_effect=sort_real)
     svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
 
     result = await svc.sort_load_order()

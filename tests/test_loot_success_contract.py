@@ -115,6 +115,8 @@ async def test_sort_real_sin_lista_de_plugins_no_es_falso_fallo(
     result = await svc.sort_load_order()
 
     assert result["success"] is True
+    # Contrato canónico de tools: message vacío en éxito.
+    assert result["message"] == ""
     assert result["rolled_back"] is False
     assert plugins.read_text(encoding="utf-8") == orden_nuevo
 
