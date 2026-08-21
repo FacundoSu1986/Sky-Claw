@@ -33,6 +33,14 @@ from sky_claw.app.security.links import (
 )
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.output_targets import dyndolod_output_target
+
+# Import directo del MÓDULO y no del paquete `validators`: el gate sólo depende de
+# `app.security.links`, así que no reintroduce el ciclo que obliga a
+# `dyndolod_service` a importar `validators.preflight` de forma perezosa.
+from sky_claw.local.validators.texgen_visibility import (
+    TexGenVisibilityError,
+    verificar_visibilidad_de_texgen,
+)
 from sky_claw.logging_config import pipeline_tx_id_var, subprocess_error_extra
 
 logger = logging.getLogger(__name__)
@@ -1138,6 +1146,36 @@ class DynDOLODRunner:
         logger.info("Empaquetando mod: %s -> %s", output_path, mod_path)
 
         try:
+            # OWNERSHIP antes que existencia: la raíz administrada es un namespace
+            # COMPARTIDO —las dos herramientas reciben el mismo valor en ``-o:``—
+            # así que sus hijos no se pueden atribuir a una sola. Empaquetarla
+            # entera copiaba ``root/textures`` (el artefacto de TexGen) dentro de
+            # "DynDOLOD Output", y el operador terminaba con las mismas texturas
+            # desplegadas por dos mods distintos (review de #493, hallazgo A).
+            #
+            # Se prohíbe el OWNERSHIP, no la DETECCIÓN: ``_candidatos_de_salida``
+            # sigue reconociendo la raíz para DynDOLOD (interpretación B de
+            # ``-o:``, gateada por ``DynDOLOD.esp``), porque saber DÓNDE escribió
+            # la herramienta es una pregunta distinta de a quién pertenece lo que
+            # hay ahí. Y no se filtra por nombre: excluir ``textures`` dejaría
+            # pasar cualquier otro hijo ajeno de la raíz —el ``DynDOLOD_Output``
+            # de una corrida anterior, un backup de move-aside— con el mismo
+            # resultado. Lo que no es empaquetable es el DIRECTORIO, no una lista
+            # de sus hijos.
+            #
+            # Está PRIMERO, antes del chequeo de existencia, porque la respuesta no
+            # depende del estado del disco: la raíz compartida no es una unidad
+            # empaquetable ni cuando está poblada ni cuando no.
+            if self._es_la_raiz_administrada(output_path):
+                raise DynDOLODValidationError(
+                    f"'{output_path}' es la raíz administrada compartida por TexGen y DynDOLOD, "
+                    f"no una salida propia de una herramienta: no se puede empaquetar como "
+                    f"'{mod_name}' sin atribuirle hijos que pueden ser de la otra. La herramienta "
+                    "escribió directo en el namespace compartido en vez de en su subcarpeta de "
+                    "staging; revisá el destino real de la corrida antes de reintentar.",
+                    output_path=output_path,
+                )
+
             # Verificar que el directorio de salida existe
             if not output_path.exists():
                 raise DynDOLODValidationError(
@@ -1238,8 +1276,12 @@ class DynDOLODRunner:
         Flujo:
         1. Ejecutar TexGen (si run_texgen=True)
         2. Empaquetar ``textures`` como "TexGen Output", preservando esa raíz
-        3. Ejecutar DynDOLOD (después de que TexGen esté listo)
-        4. Empaquetar DynDOLOD_Output como "DynDOLOD Output"
+        3. Verificar que esa salida sea VISIBLE bajo el ``-d:<Data>`` que DynDOLOD
+           va a abrir. Empaquetar en ``mods/`` no lo demuestra: Sky-Claw corre
+           standalone y no hereda la USVFS de MO2. Sin esa prueba, fail-closed —
+           DynDOLOD no se lanza.
+        4. Ejecutar DynDOLOD (después de que TexGen esté listo Y sea visible)
+        5. Empaquetar DynDOLOD_Output como "DynDOLOD Output"
 
         Args:
             run_texgen: Si True, ejecuta TexGen antes de DynDOLOD.
@@ -1261,6 +1303,14 @@ class DynDOLODRunner:
         dyndolod_result: ToolExecutionResult | None = None
         texgen_mod_path: pathlib.Path | None = None
         dyndolod_mod_path: pathlib.Path | None = None
+        # C: si el handoff con TexGen no se puede DEMOSTRAR, DynDOLOD no se lanza.
+        # Arranca en True porque sin `run_texgen` no hay salida nueva cuya
+        # visibilidad afirmar: el gate mide "el TexGen que ESTA corrida generó", y
+        # con la etapa apagada esa proposición no tiene sujeto. Sólo lo baja el
+        # propio gate — un fallo previo de TexGen o de su empaquetado deja el
+        # camino como estaba (el pipeline ya sale rojo por su cuenta) y cambiar
+        # eso sería otra decisión, no la de este fix.
+        handoff_verificado = True
 
         # Paso 1: Ejecutar TexGen si está habilitado
         if run_texgen:
@@ -1290,6 +1340,52 @@ class DynDOLODRunner:
                             e,
                             extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
                         )
+
+                    # C (review de #493): empaquetar NO es desplegar, y ÉSTE es el
+                    # único momento en que la diferencia se puede afirmar — con la
+                    # salida de esta corrida ya en la mano y ANTES de gastar los
+                    # 30+ min de DynDOLOD.
+                    #
+                    # Sky-Claw corre standalone: no hereda la USVFS de MO2 y lanza
+                    # DynDOLOD contra el `-d:<Data>` FÍSICO, así que el mod que
+                    # acabamos de dejar en `<mo2>/mods` le es invisible salvo que
+                    # el operador haya materializado su árbol de mods. Sin este
+                    # gate, DynDOLOD generaba LODs contra texturas que nunca vio,
+                    # salía con código 0 y el pipeline reportaba verde.
+                    #
+                    # Cuelga de `texgen_mod_path`, o sea de la cadena completa
+                    # (corrida → veredicto → empaquetado → visibilidad): si el
+                    # empaquetado ya falló, el pipeline sale rojo por su cuenta y
+                    # esa consecuencia transaccional está decidida aparte (review
+                    # Qodo #471). Este gate agrega UN corte nuevo, no reabre ése.
+                    #
+                    # `to_thread`: el gate recorre el árbol y, cuando la identidad
+                    # física no alcanza, hashea archivos de decenas de MB. En el
+                    # hilo del event loop eso congela la UI de NiceGUI — misma
+                    # frontera que `_post_check` y `_empaquetar_sincrono`.
+                    if texgen_mod_path is not None:
+                        data_dir = self._config.data_dir
+                        if data_dir is None:
+                            handoff_verificado = False
+                            errors.append(
+                                "No hay un Data configurado contra el cual verificar que la salida "
+                                "de TexGen sea visible para DynDOLOD."
+                            )
+                        else:
+                            try:
+                                await asyncio.to_thread(
+                                    verificar_visibilidad_de_texgen,
+                                    staging=texgen_result.output_path,
+                                    data_dir=data_dir,
+                                )
+                            except TexGenVisibilityError as e:
+                                handoff_verificado = False
+                                errors.append(str(e))
+                                logger.error(
+                                    "TexGen no es visible para DynDOLOD: %s",
+                                    e,
+                                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                                )
                 elif not texgen_result.success:
                     errors.extend(texgen_result.errors)
 
@@ -1312,58 +1408,87 @@ class DynDOLODRunner:
                     errors=[str(e)],
                 )
 
-        # Paso 2: Ejecutar DynDOLOD
+        # Paso 2: Ejecutar DynDOLOD — SÓLO si el handoff quedó demostrado.
         # Nota: DynDOLOD puede ejecutarse sin TexGen si sus texturas ya existen.
-        try:
-            dyndolod_result = await self.run_dyndolod(
-                preset=preset,
-                extra_args=dyndolod_args,
-            )
-
-            if dyndolod_result.success and dyndolod_result.output_path:
-                # Empaquetar DynDOLOD Output
-                try:
-                    dyndolod_mod_path = await self._package_output_as_mod(
-                        dyndolod_result.output_path,
-                        self.DYNDOLLOD_MOD_NAME,
-                    )
-                except DynDOLODValidationError as e:
-                    errors.append(f"Failed to package DynDOLOD output: {e}")
-                    logger.error(
-                        "Error empaquetando DynDOLOD: %s",
-                        e,
-                        extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
-                    )
-            elif not dyndolod_result.success:
-                errors.extend(dyndolod_result.errors)
-
-        except DynDOLODExecutionError as e:
-            errors.append(f"DynDOLOD execution failed: {e}")
-            # Ver el gemelo de TexGen: `run_dyndolod` relanza esta familia sin
-            # loguear, así que la etapa sale de acá.
+        #
+        # El guard cuelga de todo el paso y no del `run_dyndolod` solo: si el
+        # handoff no se pudo probar, tampoco hay nada que empaquetar ni veredicto
+        # que emitir sobre una corrida que no ocurrió. `dyndolod_result` queda en
+        # `None` y la fórmula de `success` de más abajo ya lo exige no-nulo, así
+        # que el pipeline sale rojo sin ninguna rama nueva.
+        if not handoff_verificado:
             logger.error(
-                "Error ejecutando DynDOLOD: %s",
-                e,
+                "DynDOLOD no se lanza: la salida de TexGen no es visible en %s. La etapa se corta "
+                "ANTES del spawn — es el único punto donde el fallo cuesta segundos y no 30+ min.",
+                self._config.data_dir,
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
             )
-            dyndolod_result = ToolExecutionResult(
-                success=False,
-                tool_name="DynDOLOD",
-                return_code=e.return_code or -1,
-                stdout="",
-                stderr=e.stderr or "",
-                errors=[str(e)],
-            )
+        else:
+            try:
+                dyndolod_result = await self.run_dyndolod(
+                    preset=preset,
+                    extra_args=dyndolod_args,
+                )
+
+                if dyndolod_result.success and dyndolod_result.output_path:
+                    # Empaquetar DynDOLOD Output
+                    try:
+                        dyndolod_mod_path = await self._package_output_as_mod(
+                            dyndolod_result.output_path,
+                            self.DYNDOLLOD_MOD_NAME,
+                        )
+                    except DynDOLODValidationError as e:
+                        errors.append(f"Failed to package DynDOLOD output: {e}")
+                        logger.error(
+                            "Error empaquetando DynDOLOD: %s",
+                            e,
+                            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                        )
+                elif not dyndolod_result.success:
+                    errors.extend(dyndolod_result.errors)
+
+            except DynDOLODExecutionError as e:
+                errors.append(f"DynDOLOD execution failed: {e}")
+                # Ver el gemelo de TexGen: `run_dyndolod` relanza esta familia sin
+                # loguear, así que la etapa sale de acá.
+                logger.error(
+                    "Error ejecutando DynDOLOD: %s",
+                    e,
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                )
+                dyndolod_result = ToolExecutionResult(
+                    success=False,
+                    tool_name="DynDOLOD",
+                    return_code=e.return_code or -1,
+                    stdout="",
+                    stderr=e.stderr or "",
+                    errors=[str(e)],
+                )
 
         # Determinar éxito general.
         #
         # Las DOS ramas exigen lo mismo: que la herramienta haya andado Y que su
         # mod se haya empaquetado. La rama de TexGen pedía solo lo primero, y esa
-        # asimetría dentro de una sola expresión era un falso verde: DynDOLOD lee
-        # las texturas de TexGen del staging crudo (`-o:`), no de `mods/`, así que
-        # su corrida sale bien y el pipeline reportaba éxito mientras el mod nunca
-        # llegaba a `mods/` — MO2 no lo despliega y el juego queda con los meshes
-        # de LOD sin las texturas que les corresponden.
+        # asimetría dentro de una sola expresión era un falso verde: la corrida de
+        # DynDOLOD sale bien igual y el pipeline reportaba éxito mientras el mod de
+        # TexGen nunca llegaba a `mods/` — MO2 no lo despliega y el juego queda con
+        # los meshes de LOD sin las texturas que les corresponden.
+        #
+        # **Este comentario decía que DynDOLOD lee las texturas de TexGen del
+        # staging crudo del `-o:` y eso es FALSO para el deployment soportado.**
+        # `-o:` es la salida de cada herramienta, no una entrada de la otra:
+        # DynDOLOD lee lo que haya en el `-d:<Data>` que recibe, y Sky-Claw corre
+        # standalone, así que ese `Data` es el FÍSICO y un mod bajo `<mo2>/mods` no
+        # está ahí. La premisa hacía invisible el hallazgo C de #493 — mientras
+        # pareciera que el handoff viajaba por el `-o:` compartido, no había nada
+        # que verificar. La afirmación correcta es que **empaquetar no es
+        # visibilidad**, y por eso DynDOLOD ahora sólo se lanza después de que
+        # `verificar_visibilidad_de_texgen` demuestre que la salida de ESTA corrida
+        # está, con los mismos bytes, bajo el `Data` que el binario va a abrir.
+        # No se reemplaza una afirmación por otra sin ancla: la sostienen
+        # `test_no_se_lanza_dyndolod_si_texgen_no_es_visible_en_data` (sin
+        # visibilidad no hay spawn) y `test_se_lanza_dyndolod_cuando_texgen_es_
+        # visible_en_data` (con visibilidad, sí).
         #
         # Se corrige acá (y no en un PR aparte) porque es este PR el que vuelve la
         # contradicción OBSERVABLE: desde que el fallo del empaquetado lleva
@@ -1945,6 +2070,39 @@ class DynDOLODRunner:
         if tool == "TexGen":
             return [root / self.TEXGEN_OUTPUT_NAME]
         return [root / self.DYNDOLLOD_OUTPUT_NAME, root]
+
+    def _es_la_raiz_administrada(self, candidato: pathlib.Path) -> bool:
+        """¿``candidato`` ES la raíz administrada compartida (y no una salida propia)?
+
+        Vive al lado de :meth:`_candidatos_de_salida` porque es su contracara: ahí
+        se decide dónde puede haber aterrizado una salida, acá cuál de esos lugares
+        pertenece a UNA herramienta. La raíz llega a la lista de candidatos a
+        propósito —DynDOLOD puede escribir directo en ella— y por eso hace falta un
+        predicado aparte en vez de sacarla de la lista.
+
+        Se compara sobre rutas RESUELTAS y no léxicamente: la raíz sale de
+        ``dyndolod_output_target``, que construye sobre ``game.resolve()``, mientras
+        que un ``output_path`` puede llegar con un junction o un ``..`` en el medio;
+        ``Path.__eq__`` es léxico y diría "no son la misma" sobre el mismo
+        directorio. Mismo motivo por el que ``_primer_ancestro_existente`` resuelve
+        su tope antes de comparar.
+
+        Fail-closed si no se puede resolver: "no pude decidir de quién es" no
+        habilita empaquetarlo.
+        """
+        raiz = self._config.output_root
+        if raiz is None:
+            return False
+        try:
+            return candidato.resolve() == raiz.resolve()
+        except OSError as e:
+            logger.warning(
+                "No se pudo resolver '%s' contra la raíz administrada: %s",
+                candidato,
+                e,
+                extra={"operation_type": "dyndolod_resolucion_de_ownership_fallida", "tx_id": _tx_id()},
+            )
+            return True
 
     def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, tuple[float | int, ...] | None]:
         """Firma de cada candidato ANTES de lanzar, para comparar contra la de después.

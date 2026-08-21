@@ -679,6 +679,39 @@ class DynDOLODPipelineService:
             if run_texgen:
                 rollback_dirs.append(mods_path / runner.TEXGEN_MOD_NAME)
 
+        # B (review de #493): el staging CRUDO de TexGen también entra al
+        # move-aside, y esta línea es lo que hace que el árbol pertenezca a ESTA
+        # corrida en vez de sólo haber cambiado durante ella.
+        #
+        # El gate de frescura del runner es un predicado ∃ —"algo se escribió"—
+        # y nunca pudo ser ∀: con un ``old.dds`` de la corrida anterior y un
+        # ``new.dds`` de ésta, la firma agregada del árbol cambia igual, el gate
+        # pasa, y el empaquetado copia los DOS al mod. Apartar el staging antes de
+        # lanzar lo vuelve vacío por construcción, y a partir de ahí "lo que hay
+        # adentro" y "lo que esta corrida generó" son el mismo conjunto.
+        #
+        # **No cuelga de ``create_snapshot``, y la asimetría es deliberada.** Los
+        # otros dos destinos son comodidad de rollback: el operador puede
+        # renunciar a ellos. Éste no protege nada — establece la precondición de
+        # que el staging sea de la corrida, que es una propiedad del resultado y
+        # no una preferencia. Un `create_snapshot=False` que reintrodujera el
+        # árbol heredado devolvería el mismo mod contaminado por otra puerta.
+        #
+        # A-min es su precondición y el orden importa: el backup de move-aside
+        # queda de HERMANO del staging, o sea colgando de la raíz administrada,
+        # que es exactamente el directorio que el fallback de DynDOLOD podía
+        # empaquetar entero. Con la raíz ya declarada no empaquetable, ese residuo
+        # es inerte. Su barrido tras una muerte dura lo declara
+        # ``rollback_reconciler.construir_productores_de_move_aside``.
+        #
+        # ``isinstance`` y no ``is not None``: en producción
+        # ``DynDOLODConfig.__post_init__`` garantiza un ``Path`` (deriva de un
+        # ``game_path`` que ya validó que existe), así que la rama negativa sólo
+        # la toman los dobles de test con un ``_config`` mockeado.
+        raiz_administrada = runner._config.output_root
+        if run_texgen and isinstance(raiz_administrada, pathlib.Path):
+            rollback_dirs.append(raiz_administrada / DynDOLODRunner.TEXGEN_OUTPUT_NAME)
+
         # T-26: los paths que el ritual reescribe (independiente del snapshot) —
         # el files_touched del ActionManifest. Incluye los mods de salida
         # empaquetados Y el staging crudo (DynDOLOD_Output/textures) que la

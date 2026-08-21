@@ -216,9 +216,40 @@ al copiarla a `mods/TexGen Output`, el pipeline preserva el directorio
 Data-relative y produce `mods/TexGen Output/textures/...`, no
 `mods/TexGen Output/...` sin el prefijo.
 
-El rollback no cambia: protege los mods empaquetados bajo `mods/`, mientras el
-staging crudo sigue declarado fuera de la cobertura move-aside total
-(`mutation_coverage_complete = False`). No se amplía ownership sin evidencia.
+**Corregir el nivel destapó tres agujeros que el candidato roto contenía por
+accidente, y los tres se cierran en el mismo trabajo, fail-closed:**
+
+- **A — ownership.** La raíz administrada la comparten las dos herramientas, así
+  que el fallback de DynDOLOD a la raíz podía empaquetarla entera y llevarse
+  `root/textures` adentro de "DynDOLOD Output". La raíz deja de ser una unidad
+  empaquetable; la DETECCIÓN no cambia (el gate de `DynDOLOD.esp` sigue igual).
+  La regla es *namespace compartido ≠ namespace empaquetable*, **no** un filtro
+  por el nombre `textures`: excluir un nombre dejaría pasar cualquier otro hijo
+  ajeno.
+- **B — propiedad.** El staging de TexGen entra al move-aside **antes** de
+  lanzar, así que nace vacío. La frescura era un predicado ∃ ("algo cambió") y
+  nunca pudo ser ∀; con el árbol vacío por construcción, "lo que hay adentro" y
+  "lo que esta corrida generó" pasan a ser el mismo conjunto. El destino exacto
+  queda declarado en `rollback_reconciler` — el ancla vieja se afirma sobre
+  MÓDULOS y `dyndolod_service` ya figuraba, así que no habría avisado.
+- **C — visibilidad.** Empaquetar en `mods/` no dice nada sobre lo que DynDOLOD
+  lee: corre standalone contra el `-d:<Data>` físico. Antes del spawn se exige
+  que TODO el staging esté visible ahí con los mismos bytes (identidad física o
+  sha256, completo sobre el árbol, sin muestreo). Sin prueba, no hay spawn.
+
+El rollback se amplía SÓLO al staging de TexGen, y no como cobertura sino como
+precondición de B. `mutation_coverage_complete` **sigue en `False`**: el dir del
+ejecutable (log + INI) y el temporal quedan afuera, y no se amplía ownership sin
+evidencia.
+
+Lo que estas tres NO son: la solución definitiva de A. Esa son los **subroots
+exclusivos por herramienta** (`<raíz>/TexGen` y `<raíz>/DynDOLOD` como el `-o:`
+de cada una), que eliminan la clase en vez de la instancia — la raíz compartida
+dejaría de ser candidata de nadie. Siguen ABIERTOS y bloqueados: cambian el
+`-o:`, así que caen bajo el gate de aceptación de `sky_claw/local/AGENTS.md` §1
+(dos corridas de rig separadas, root con espacios, con preset rancio presente).
+La nomenclatura de v1 sigue siendo la correcta para ese trabajo: la evidencia
+T5-B fija la regla RELATIVA (`-o:X` → `X/textures`), no el valor de X.
 
 Lo que T3 no cambia:
 
@@ -248,10 +279,13 @@ general y T3 no puede apoyarse en ella: **hay dos call sites de empaquetado y ha
 que trazar los dos** antes de decidir el alcance de rollback.
 
 **La contención ahora es real, pero no resuelve T5.** Si un preset desvía las
-escrituras, la firma de `root/textures` no cambia y TexGen falla cerrado; eso no
-determina la precedencia `preset` vs `-o:`, no neutraliza presets rancios y no
-demuestra el comportamiento de DynDOLOD. Relajar artefacto o frescura reabriría
-ese agujero, por lo que ambos gates siguen siendo invariantes de T3.
+escrituras, `root/textures` queda AUSENTE —el move-aside se lo llevó y nada lo
+repuso— y TexGen falla cerrado; eso no determina la precedencia `preset` vs
+`-o:`, no neutraliza presets rancios y no demuestra el comportamiento de
+DynDOLOD. Relajar artefacto o frescura reabriría ese agujero, por lo que ambos
+gates siguen siendo invariantes de T3. **Y el síntoma cambió de forma con el
+move-aside** (staging ausente en vez de rancio): el mensaje del veredicto tiene
+que distinguirlos o el operador depura el lugar equivocado.
 
 Se conserva de v1, sin cambios: el alcance de Gap B (Zip & Exit reporta
 `exito_no_empaquetable`, aceptar el `.zip` como artefacto queda fuera), y el
