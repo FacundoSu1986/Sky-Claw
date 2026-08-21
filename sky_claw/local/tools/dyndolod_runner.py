@@ -574,6 +574,12 @@ class DynDOLODPipelineResult:
         texgen_mod_path: Path al mod empaquetado de TexGen.
         dyndolod_mod_path: Path al mod empaquetado de DynDOLOD.
         errors: Lista de errores acumulados del pipeline.
+        needs_deployment: el corte NO fue un fallo de herramienta — TexGen corrió,
+            su mod se empaquetó y lo único que falta es que el operador lo
+            materialice en el ``Data`` físico. Distingue "esto se rompió" de
+            "esto está listo y espera un despliegue", que es la diferencia entre
+            un rojo terminal y uno con continuación. El servicio la usa para
+            decidir qué move-aside PRESERVA (review de #493, finding F1).
     """
 
     success: bool
@@ -582,6 +588,7 @@ class DynDOLODPipelineResult:
     texgen_mod_path: pathlib.Path | None = None
     dyndolod_mod_path: pathlib.Path | None = None
     errors: list[str] = field(default_factory=list)
+    needs_deployment: bool = False
 
 
 # =============================================================================
@@ -1311,6 +1318,11 @@ class DynDOLODRunner:
         # camino como estaba (el pipeline ya sale rojo por su cuenta) y cambiar
         # eso sería otra decisión, no la de este fix.
         handoff_verificado = True
+        #: F1: sube SÓLO cuando el corte es "falta desplegar", nunca cuando algo
+        #: se rompió. Es la condición que autoriza al servicio a preservar el mod
+        #: de TexGen, así que un `True` de más equivale a dejar en disco una
+        #: mutación de una corrida fallida.
+        needs_deployment = False
 
         # Paso 1: Ejecutar TexGen si está habilitado
         if run_texgen:
@@ -1380,6 +1392,18 @@ class DynDOLODRunner:
                                 )
                             except TexGenVisibilityError as e:
                                 handoff_verificado = False
+                                # F1 (review de #493): acá —y sólo acá— el rojo NO
+                                # es un fallo de herramienta. TexGen corrió, su
+                                # veredicto pasó y su mod quedó empaquetado y
+                                # validado en `mods/`; lo único que falta es un
+                                # despliegue que Sky-Claw deliberadamente no hace.
+                                # Marcarlo es lo que le permite al servicio
+                                # PRESERVAR ese mod en vez de revertirlo: sin esta
+                                # distinción, el rollback borraba exactamente el
+                                # artefacto que el mensaje de error manda
+                                # materializar, y el reintento regeneraba lo mismo
+                                # para volver a fallar.
+                                needs_deployment = True
                                 errors.append(str(e))
                                 logger.error(
                                     "TexGen no es visible para DynDOLOD: %s",
@@ -1407,6 +1431,51 @@ class DynDOLODRunner:
                     stderr=e.stderr or "",
                     errors=[str(e)],
                 )
+        else:
+            # F1-resume: la continuación después de un despliegue. Sin `run_texgen`
+            # no hay salida NUEVA que gatear, pero sí puede haber una salida
+            # PRESERVADA de una corrida anterior que cortó por visibilidad — y ésa
+            # es justamente la que el operador acaba de materializar. Verificarla
+            # contra el `Data` cierra el ciclo sin volver a correr TexGen, que es
+            # lo que exige no depender de que el binario sea determinista: la
+            # autoridad es el artefacto guardado, no una regeneración que podría
+            # diferir.
+            #
+            # Cuelga de que el mod EXISTA, y ése es el recorte que no rompe el uso
+            # legítimo preexistente: "DynDOLOD sin TexGen porque sus texturas ya
+            # existen" sigue funcionando igual cuando Sky-Claw nunca empaquetó un
+            # TexGen Output. Si el mod está, en cambio, es el artefacto de este
+            # pipeline y DynDOLOD tiene que ver EXACTAMENTE esos bytes: dejarlo
+            # pasar por `exists()` sería el mismo falso verde que el gate C cierra
+            # una capa más arriba.
+            mods_path = self._config.mo2_mods_path
+            data_dir = self._config.data_dir
+            staging_preservado = (
+                mods_path / self.TEXGEN_MOD_NAME / self.TEXGEN_OUTPUT_NAME if mods_path is not None else None
+            )
+            if staging_preservado is not None and staging_preservado.is_dir():
+                if data_dir is None:
+                    handoff_verificado = False
+                    errors.append(
+                        "Hay un TexGen Output empaquetado pero no hay un Data configurado contra el "
+                        "cual verificar que sea visible para DynDOLOD."
+                    )
+                else:
+                    try:
+                        await asyncio.to_thread(
+                            verificar_visibilidad_de_texgen,
+                            staging=staging_preservado,
+                            data_dir=data_dir,
+                        )
+                    except TexGenVisibilityError as e:
+                        handoff_verificado = False
+                        needs_deployment = True
+                        errors.append(str(e))
+                        logger.error(
+                            "El TexGen Output empaquetado no es visible para DynDOLOD: %s",
+                            e,
+                            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                        )
 
         # Paso 2: Ejecutar DynDOLOD — SÓLO si el handoff quedó demostrado.
         # Nota: DynDOLOD puede ejecutarse sin TexGen si sus texturas ya existen.
@@ -1527,6 +1596,13 @@ class DynDOLODRunner:
             texgen_mod_path=texgen_mod_path,
             dyndolod_mod_path=dyndolod_mod_path,
             errors=errors,
+            # `and not success` es defensa en profundidad, no adorno: "hay algo que
+            # desplegar" y "el pipeline salió bien" son mutuamente excluyentes por
+            # construcción —el gate que lo prende también baja `handoff_verificado`
+            # y sin él `dyndolod_result` queda en None—, pero el servicio PRESERVA
+            # una mutación cuando lee este flag, y un futuro camino que lo prendiera
+            # sobre una corrida exitosa dejaría un move-aside sin confirmar.
+            needs_deployment=needs_deployment and not success,
         )
 
         if result.success:

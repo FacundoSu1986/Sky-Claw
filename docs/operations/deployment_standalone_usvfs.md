@@ -84,6 +84,48 @@ una sola corrida, así que "parcial" no es ambiguo — o desplegaste esta salida
 no. **Sky-Claw no materializa nada por su cuenta:** no copia a `Data`, no edita
 el modlist y no lanza `ModOrganizer.exe`. Sólo se niega a seguir sin evidencia.
 
+### Cuando ese gate corta, la salida de TexGen te queda esperando
+
+El corte por visibilidad no es un fallo de herramienta: TexGen corrió bien y su
+mod quedó empaquetado y validado. Por eso la etapa **preserva**
+`<mo2>/mods/TexGen Output` en vez de revertirlo, aunque el resto de la corrida sí
+revierta. Es deliberado y acotado:
+
+| Destino | Qué pasa tras un corte por visibilidad |
+|---|---|
+| `<mo2>/mods/TexGen Output` | **se conserva** con la salida de ESTA corrida — es lo que tenés que desplegar |
+| `<raíz administrada>/textures` (staging crudo) | **revierte**, como siempre: que nazca vacío es la precondición de que su contenido sea el de la corrida |
+| `<mo2>/mods/DynDOLOD Output` | revierte — DynDOLOD no llegó a correr |
+
+La transacción queda **PENDIENTE**, no marcada como revertida, y el registro
+nombra el directorio preservado: hay una mutación viva en disco y el journal lo
+dice. `rolled_back` en el resultado es `False` por la misma razón.
+
+El ciclo completo, entonces:
+
+```
+TexGen corre  →  TexGen Output empaquetado  →  gate de visibilidad FALLA
+                                                      ↓
+                       resultado: success=False, needs_deployment=True,
+                                  texgen_mod_path=<mo2>/mods/TexGen Output
+                                                      ↓
+                          MATERIALIZÁS ese árbol en el Data del juego
+                                                      ↓
+                    volvés a correr la etapa con TexGen DESACTIVADO
+                                                      ↓
+             se verifica el mod preservado contra el Data, byte a byte
+                                                      ↓
+                                DynDOLOD arranca
+```
+
+Correr la continuación **sin** TexGen es lo correcto y no un atajo: la autoridad
+es el artefacto que ya se generó y desplegaste, no una regeneración que podría
+producir bytes distintos. Esa continuación tiene su propio gate — si el mod
+empaquetado existe, DynDOLOD no se lanza hasta que el `Data` lo espeje
+exactamente; que el archivo *exista* con el tamaño correcto no alcanza. Y si
+nunca empaquetaste un `TexGen Output` con Sky-Claw, el uso de siempre —DynDOLOD
+solo, porque tus texturas ya están— sigue funcionando igual.
+
 ## Qué tenés que hacer
 
 **Materializá a disco el árbol de mods del perfil activo**, en el `Data` del

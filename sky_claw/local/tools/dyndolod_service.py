@@ -448,6 +448,39 @@ class DynDOLODPipelineService:
                 extra={"operation_type": "dyndolod_flight_report_persist_failed", "tx_id": tx_id},
             )
 
+    async def _preservar_mod_de_texgen(
+        self,
+        dir_rollbacks: list[DirectoryRollback],
+        objetivo: pathlib.Path,
+        *,
+        tx_id: int | None,
+    ) -> pathlib.Path | None:
+        """Confirma el move-aside de ``objetivo`` para que sobreviva al fallo (F1).
+
+        ``commit()`` sella ESE protector: descarta su backup y deja su ``__aexit__``
+        en no-op, así que el desenrollado del ``AsyncExitStack`` restaura todo lo
+        demás y deja este directorio como quedó. Es deliberadamente quirúrgico —un
+        solo destino, nunca el lote— porque el staging crudo tiene que seguir
+        revirtiendo.
+
+        Devuelve el path preservado, o ``None`` si el protector no estaba en el
+        lote. ``None`` NO significa que el mod no exista: con
+        ``create_snapshot=False`` nunca se apartó y sobrevive sin intervención. Lo
+        que el path expresa es "esta corrida confirmó una mutación", que es lo que
+        el journal necesita saber para no afirmar un rollback total.
+        """
+        for rollback in dir_rollbacks:
+            if rollback.target == objetivo:
+                await rollback.commit()
+                logger.warning(
+                    "DynDOLOD (stage 9): se PRESERVA '%s' pese al fallo — es la salida de TexGen "
+                    "que el operador tiene que materializar en el Data para poder continuar.",
+                    objetivo,
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                )
+                return objetivo
+        return None
+
     async def _cerrar_tx_tras_rollback(
         self,
         tx_id: int | None,
@@ -457,6 +490,7 @@ class DynDOLODPipelineService:
         mutation_started: bool,
         mutation_coverage_complete: bool,
         contexto: str,
+        preservado_para_deployment: pathlib.Path | None = None,
     ) -> bool:
         """Marca ROLLED_BACK sólo cuando todos los move-aside quedaron resueltos.
 
@@ -470,14 +504,34 @@ class DynDOLODPipelineService:
         """
         if journal_committed:
             return False
+        # F1: un protector CONFIRMADO a propósito no es un rollback que falló, así
+        # que no entra en la pregunta "¿se resolvió todo?" — su `rollback_completed`
+        # quedó en False justamente porque NO revirtió, que es lo que se quería. Se
+        # excluye del universo medido y se reporta aparte; mezclarlos convertía una
+        # decisión deliberada en una alarma de inconsistencia.
+        pendientes = [dr for dr in dir_rollbacks if dr.target != preservado_para_deployment]
         # No usar ``all([])`` como prueba: lista vacía sólo es honesta antes de
         # que el runner pueda mutar. Después de empezarlo, ausencia de protectores
         # observados es falta de cobertura, no rollback exitoso.
-        rollbacks_resueltos = (
-            all(dr.rollback_completed for dr in dir_rollbacks) if dir_rollbacks else not mutation_started
-        )
+        rollbacks_resueltos = all(dr.rollback_completed for dr in pendientes) if pendientes else not mutation_started
         rolled_back = rollbacks_resueltos and (not mutation_started or mutation_coverage_complete)
         if tx_id is None:
+            return rolled_back
+        if preservado_para_deployment is not None:
+            # La TX queda PENDIENTE y `rolled_back` en False, que es la verdad: hay
+            # una mutación viva en disco. El registro la NOMBRA para que el journal
+            # y el filesystem cuenten la misma historia — sin esto, la TX pendiente
+            # parecía un rollback a medio hacer y no un handoff esperando al
+            # operador.
+            logger.warning(
+                "DynDOLOD (stage 9): TX %d queda PENDIENTE con una mutación PRESERVADA a propósito "
+                "tras %s: '%s' contiene la salida de TexGen de esta corrida y espera que el operador "
+                "la materialice en el Data. NO es un rollback incompleto.",
+                tx_id,
+                contexto,
+                preservado_para_deployment,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
             return rolled_back
         if not rolled_back:
             if mutation_started and not mutation_coverage_complete and rollbacks_resueltos:
@@ -595,6 +649,12 @@ class DynDOLODPipelineService:
         # El AsyncExitStack ejecuta los __aexit__ (restore) ANTES de que corran los
         # except handlers, así que el flag ya está seteado cuando se leen.
         dir_rollbacks: list[DirectoryRollback] = []
+        # F1: se leen desde el `except` de error de dominio, que es por donde sale
+        # el corte por visibilidad. Viven acá afuera por la misma razón que
+        # `mutation_started`: el handler no puede depender de que una variable
+        # asignada dentro del `try` haya llegado a existir.
+        needs_deployment = False
+        texgen_mod_preservado: pathlib.Path | None = None
 
         logger.info(
             "Iniciando pipeline DynDOLOD: preset=%s, texgen=%s, snapshot=%s",
@@ -843,6 +903,30 @@ class DynDOLODPipelineService:
                             raise DynDOLODExecutionError(msg)  # el handler loguea, ver guard anterior
 
                 if not result.success:
+                    # F1 (review de #493): el corte por visibilidad deja un mod de
+                    # TexGen empaquetado y VALIDADO que es exactamente lo que el
+                    # operador tiene que materializar para poder seguir. Revertirlo
+                    # junto con el resto borraba ese artefacto, y como el mensaje de
+                    # error le pide precisamente desplegarlo, el reintento
+                    # regeneraba lo mismo para volver a fallar: un callejón sin
+                    # salida en el default de la GUI (`create_snapshot=True`).
+                    #
+                    # Se confirma UN move-aside, no el lote: el staging crudo
+                    # (`output_root/textures`) sigue revirtiendo, porque su
+                    # move-aside no es comodidad de rollback sino la precondición
+                    # de B — que el árbol nazca vacío y su contenido sea el de la
+                    # corrida. Preservarlo reintroduciría el mod contaminado.
+                    #
+                    # Con `create_snapshot=False` el mod nunca entró al lote y
+                    # sobrevive solo; el bucle no encuentra nada y no hay caso
+                    # especial que escribir.
+                    if result.needs_deployment:
+                        texgen_mod_preservado = await self._preservar_mod_de_texgen(
+                            dir_rollbacks,
+                            mods_path / runner.TEXGEN_MOD_NAME,
+                            tx_id=tx_id,
+                        )
+                        needs_deployment = True
                     errors_str = "; ".join(result.errors) if result.errors else "Unknown error"
                     raise DynDOLODExecutionError(f"DynDOLOD pipeline failed: {errors_str}")
 
@@ -1009,6 +1093,7 @@ class DynDOLODPipelineService:
                 mutation_started=mutation_started,
                 mutation_coverage_complete=mutation_coverage_complete,
                 contexto="error de dominio",
+                preservado_para_deployment=texgen_mod_preservado,
             )
             duration = time.monotonic() - start_time
 
@@ -1023,16 +1108,24 @@ class DynDOLODPipelineService:
                 duration_seconds=duration,
                 rolled_back=rolled_back,
             )
-            return _attach_preflight(
-                {
-                    "success": False,
-                    "message": str(exc),
-                    "errors": [str(exc)],
-                    "duration_seconds": duration,
-                    "rolled_back": rolled_back,
-                },
-                preflight_report,
-            )
+            # F1: el payload distingue "se rompió" de "está listo y falta
+            # desplegarlo". `success` sigue en False —DynDOLOD no corrió y no hay
+            # LODs— pero un rojo con `needs_deployment` tiene continuación, y el
+            # path es la autoridad de esa continuación: es el artefacto que hay que
+            # materializar, no una regeneración futura que podría diferir.
+            payload: dict[str, Any] = {
+                "success": False,
+                "message": str(exc),
+                "errors": [str(exc)],
+                "duration_seconds": duration,
+                "rolled_back": rolled_back,
+            }
+            if needs_deployment:
+                payload["needs_deployment"] = True
+                payload["dyndolod_started"] = False
+                if texgen_mod_preservado is not None:
+                    payload["texgen_mod_path"] = str(texgen_mod_preservado)
+            return _attach_preflight(payload, preflight_report)
 
         except asyncio.CancelledError:
             # Cancelación de task — hacer cleanup mínimo y re-lanzar.
