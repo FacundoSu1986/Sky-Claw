@@ -16,8 +16,10 @@ gap so a real sort serializes against:
 existentes en LOCALAPPDATA (LOOT corre fuera del VFS con ``--game-path``), el
 profile de MO2 y un override explícito. Un sort que lanza (timeout) o sale con
 error restaura el snapshot; si no se encuentra ningún candidato (entorno no
-configurado), se degrada a serialización-sola con warning, el comportamiento
-previo al T-06.
+configurado), el sort se rechaza tras la corrida: sin targets observables no
+hay evidencia para atribuir ni verificar el éxito (fail-closed — review
+adversarial #495; el "serialización-sola con warning" previo al T-06 reportaba
+éxito sin haber podido observar nada).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sky_claw.app.db.locks import (
@@ -153,46 +155,68 @@ def _read_plugin_order(path: pathlib.Path | None) -> list[str]:
     return plugins
 
 
+@dataclass(frozen=True, slots=True)
+class _EstadoDeArchivo:
+    """Evidencia física de un target: presente (con metadata), ausente o ilegible.
+
+    La distinción importa para el gate de atribución: "ausente" es un estado
+    observable; "ilegible" (``stat`` falló por permisos/IO, no por ausencia) es
+    NO observabilidad — indistinguible en runtime de un archivo presente cuya
+    metadata no se pudo leer. Mapear "ilegible" a "ausente" (o a "cambió") es
+    un falso verde: el gate nunca deduce mutación de un ``stat`` fallido
+    (review adversarial #495 P1).
+    """
+
+    tipo: str  # "presente" | "ausente" | "ilegible"
+    mtime_ns: int = 0
+    size: int = 0
+
+
+def _capturar_estado_de_un_archivo(path: pathlib.Path) -> _EstadoDeArchivo:
+    """Tri-estado de un target: presente/ausente/ilegible (nunca confundidos)."""
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return _EstadoDeArchivo(tipo="ausente")
+    except OSError:
+        return _EstadoDeArchivo(tipo="ilegible")
+    return _EstadoDeArchivo(tipo="presente", mtime_ns=st.st_mtime_ns, size=st.st_size)
+
+
 def _capturar_estado_de_archivos(
     paths: list[pathlib.Path],
-) -> dict[pathlib.Path, tuple[bool, int, int]]:
-    """Estado observable de cada archivo: ``(existe, mtime_ns, tamaño)``.
+) -> dict[pathlib.Path, _EstadoDeArchivo]:
+    """Evidencia pre-sort de cada target, para la atribución post-sort.
 
-    Evidencia pre-sort para la atribución post-sort: LOOT real reescribe
-    plugins.txt/loadorder.txt al aplicar (libloot ``set_load_order`` →
-    ``save()`` incondicional, más el backup del GUI), incluso cuando el orden
-    no cambia. Una corrida que salió 0 SIN tocar ninguno de los targets no
-    aplicó el sort (p. ej. otra instancia de LOOT ya abierta se quedó con el
-    mutex de aplicación — loot/loot ``src/gui/qt/main.cpp`` sale 0 enfocando
-    la ventana existente).
+    LOOT real reescribe plugins.txt/loadorder.txt al aplicar (libloot
+    ``set_load_order`` → ``save()`` incondicional, más el backup del GUI),
+    incluso cuando el orden no cambia. Una corrida que salió 0 SIN tocar
+    ninguno de los targets no aplicó el sort (p. ej. otra instancia de LOOT
+    ya abierta se quedó con el mutex de aplicación — loot/loot
+    ``src/gui/qt/main.cpp`` sale 0 enfocando la ventana existente).
     """
-    estado: dict[pathlib.Path, tuple[bool, int, int]] = {}
-    for path in paths:
-        try:
-            st = path.stat()
-        except OSError:
-            estado[path] = (False, 0, 0)
-        else:
-            estado[path] = (True, st.st_mtime_ns, st.st_size)
-    return estado
+    return {path: _capturar_estado_de_un_archivo(path) for path in paths}
 
 
-def _archivos_cambiaron(
-    antes: dict[pathlib.Path, tuple[bool, int, int]],
+def _evaluar_evidencia(
+    antes: dict[pathlib.Path, _EstadoDeArchivo],
     paths: list[pathlib.Path],
-) -> bool:
-    """True si AL MENOS un target cambió (creado, reescrito o redimensionado)
-    desde la captura ``antes``."""
+) -> tuple[bool, pathlib.Path | None]:
+    """Devuelve ``(hubo_cambio, ilegible)`` comparando estado pre vs post.
+
+    ``ilegible is not None`` → la evidencia NO es verificable (estado previo o
+    final inobservable) y el caller debe fallar cerrado: nunca se deduce
+    "cambió" ni "no cambió" de un ``stat`` fallido.
+    """
+    cambio = False
     for path in paths:
-        try:
-            st = path.stat()
-        except OSError:
-            actual = (False, 0, 0)
-        else:
-            actual = (True, st.st_mtime_ns, st.st_size)
-        if actual != antes.get(path):
-            return True
-    return False
+        estado_post = _capturar_estado_de_un_archivo(path)
+        estado_pre = antes.get(path)
+        if estado_post.tipo == "ilegible" or (estado_pre is not None and estado_pre.tipo == "ilegible"):
+            return False, path
+        if estado_pre is None or estado_post != estado_pre:
+            cambio = True
+    return cambio, None
 
 
 class _LootSortFailedError(Exception):
@@ -658,19 +682,14 @@ class LootSortingService:
             return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
 
         # T-06: snapshotear lo que LOOT realmente puede reescribir. Sin
-        # candidatos (entorno no configurado) se degrada a serialización-sola,
-        # el comportamiento previo — el resolver ya lo dejó logueado.
+        # candidatos (entorno no configurado) el sort se rechaza tras la
+        # corrida: sin targets observables no hay evidencia para atribuir el
+        # éxito (fail-closed — review adversarial #495).
         load_order = await self._resolve_load_order_for_runner(runner)
         target_files = list(load_order.files)
         rolled_back = False
         # T-21: se llena solo en el path de éxito (el validador es post-vuelo).
         post_run_payload: dict[str, Any] | None = None
-
-        # Orden ANTES del sort para el diff del informe post-vuelo (T-28): se
-        # lee acá porque LOOT reescribe el archivo al ordenar. El "después" será
-        # ``result.sorted_plugins``. Best-effort: si no se puede leer, el informe
-        # simplemente no lleva load_order_diff (nunca rompe el sort).
-        before_order = _read_plugin_order(_primary_load_order_file(target_files))
 
         # Referencia al lock fuera del with: rolled_back se deriva del resultado
         # REAL del rollback (tx.rollback_completed) — un restore fallido en la
@@ -696,20 +715,53 @@ class LootSortingService:
         journal_committed = False
         try:
             async with tx:
+                # T-28: el "antes" se lee DENTRO del lock, en el mismo dominio
+                # de serialización que el "después" y la evidencia física — una
+                # lectura pre-lock podría atribuir a este sort un cambio que
+                # otro Ritual hizo antes de que adquiriéramos (review
+                # adversarial #495). Best-effort: si no se puede leer, el
+                # informe no lleva diff.
+                before_order = _read_plugin_order(_primary_load_order_file(target_files))
                 # T-26 (ADR 0002): emitir la "caja negra de vuelo" ANTES de
                 # mutar. Si el journal está cableado y la emisión falla, el sort
                 # NO procede (se lanza dentro del lock → __aexit__ revierte).
                 if self._journal is not None:
                     journal_tx_id = await self._emit_action_manifest(tx, target_files, loot_version)
                 # Evidencia física pre-sort (DENTRO del lock, atribuible a esta
-                # corrida). Con target_files vacíos (entorno no configurado,
-                # degradación T-06) no hay nada observable y el gate se salta.
+                # corrida).
                 estado_pre_sort = _capturar_estado_de_archivos(target_files)
                 result = await runner.sort(update_masterlist=update_masterlist)
                 if not result.success:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
                     raise _LootSortFailedError(result)
-                if target_files and not _archivos_cambiaron(estado_pre_sort, target_files):
+                if not target_files:
+                    # Sin targets observables no hay evidencia para verificar
+                    # ni atribuir el sort: incertidumbre → fallo, nunca éxito
+                    # ciego (review adversarial #495). El mutex de main.cpp
+                    # también sale 0 sin sortear en este entorno.
+                    raise _LootSortFailedError(
+                        result,
+                        detail=(
+                            "No hay archivos de load order observables (plugins.txt/"
+                            "loadorder.txt) para verificar ni atribuir el sort: sin "
+                            "evidencia no se puede confirmar que LOOT aplicó el orden. "
+                            "Configurá LOCALAPPDATA/MO2 (o el override) para que el "
+                            "servicio pueda snapshotear y validar los targets."
+                        ),
+                    )
+                cambiaron, ilegible = _evaluar_evidencia(estado_pre_sort, target_files)
+                if ilegible is not None:
+                    # Estado previo o final inobservable: no se deduce mutación
+                    # (ni su ausencia) de un stat fallido — fail-closed.
+                    raise _LootSortFailedError(
+                        result,
+                        detail=(
+                            f"No se pudo inspeccionar el estado del load order "
+                            f"({ilegible}) tras la corrida: sin evidencia verificable "
+                            "no se puede confirmar que LOOT aplicó el orden."
+                        ),
+                    )
+                if not cambiaron:
                     # rc=0 sin mutación observable: LOOT no aplicó. Caso real
                     # (main.cpp): con otra instancia ya abierta, el proceso sale
                     # 0 enfocando la ventana existente SIN sortear. Incertidumbre
@@ -828,14 +880,18 @@ class LootSortingService:
         # en stderr no estructurado (errors=[] del parser) — review Codex #222.
         # Si nada de eso existe (LOOT GUI no imprime por consola — upstream
         # main.cpp), el mensaje mínimo accionable es el exit code: nunca dejar
-        # success=False con message vacío cuando la causa es identificable.
+        # success=False con message vacío cuando la causa es identificable. El
+        # strip evita que un stderr/stdout solo-whitespace cuente como mensaje
+        # visualmente vacío (review adversarial #495).
+        stderr_text = result.raw_stderr.strip()
+        stdout_text = result.raw_stdout.strip()
         message = (
             ""
             if result.success
             else (
                 "; ".join(str(e) for e in result.errors)
-                or result.raw_stderr
-                or result.raw_stdout
+                or stderr_text
+                or stdout_text
                 or f"LOOT sort failed with exit code {result.return_code}."
             )
         )

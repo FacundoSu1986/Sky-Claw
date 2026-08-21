@@ -128,6 +128,15 @@ class TestCableadoPerezoso:
         game = tmp_path / "Skyrim"
         game.mkdir()
         (tmp_path / "snapshots").mkdir()
+        # Targets observables + runner que reescribe: el gate físico del
+        # servicio exige evidencia de mutación para reportar éxito (review
+        # adversarial #495 — sin targets el sort se rechaza fail-closed).
+        load_order_dir = tmp_path / "load_order"
+        load_order_dir.mkdir()
+        plugins_txt = load_order_dir / "plugins.txt"
+        plugins_txt.write_text("Skyrim.esm\n", encoding="utf-8")
+        loadorder_txt = load_order_dir / "loadorder.txt"
+        loadorder_txt.write_text("Skyrim.esm\n", encoding="utf-8")
 
         resolver = MagicMock()
         resolver.get_skyrim_path_raw = MagicMock(return_value=game)
@@ -136,10 +145,17 @@ class TestCableadoPerezoso:
         resolver.detect_mo2_path = MagicMock(return_value=None)
         resolver.get_loot_exe = MagicMock(return_value=None)
 
+        async def sort_real(**_kwargs: object) -> LOOTResult:
+            for archivo in (plugins_txt, loadorder_txt):
+                archivo.write_text("Skyrim.esm\n", encoding="utf-8")
+            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+
         runner = MagicMock()
-        runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+        runner.sort = AsyncMock(side_effect=sort_real)
         load_order = MagicMock()
-        load_order.resolve.return_value = LoadOrderPaths(files=(), sources=())
+        load_order.resolve.return_value = LoadOrderPaths(
+            files=(plugins_txt.resolve(), loadorder_txt.resolve()), sources=()
+        )
 
         # Lock manager real: el camino verde llega hasta el lock (a diferencia
         # del bloqueado, que corta antes).

@@ -112,32 +112,40 @@ def _make_service(
 
 @pytest.mark.asyncio
 async def test_sort_runs_and_returns_success(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
 ) -> None:
-    runner = _runner_returning()
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
 
     result = await svc.sort_load_order()
 
     assert result["success"] is True
-    assert result["sorted_plugins"] == ["Skyrim.esm", "Update.esm"]
+    assert result["sorted_plugins"] == ["Skyrim.esm"]
     runner.sort.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_holds_load_order_lock_during_sort(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
 ) -> None:
     """While LOOT sorts, the shared load-order lock is held by this service."""
     seen: dict[str, object] = {}
+    resolver, plugins = _preparar_load_order(tmp_path)
 
     async def on_sort(**_kwargs: object) -> LOOTResult:
         seen["info"] = await lock_manager.get_lock_info(LOAD_ORDER_RESOURCE_ID)
+        for archivo in (plugins, plugins.with_name("loadorder.txt")):
+            archivo.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
         return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
 
     runner = MagicMock()
     runner.sort = AsyncMock(side_effect=on_sort)
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
 
     await svc.sort_load_order()
 
@@ -181,10 +189,13 @@ async def test_releases_lock_on_runner_failure(
 
 @pytest.mark.asyncio
 async def test_forwards_update_masterlist_flag(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
 ) -> None:
-    runner = _runner_returning()
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
     params = MagicMock(update_masterlist=True)
 
     await svc.sort_load_order(params)
@@ -211,6 +222,8 @@ async def test_builds_runner_from_resolver_with_preserved_timeout(
     # Sin MO2 configurado: el resolver de load order no debe inventar rutas.
     resolver.get_mo2_path = MagicMock(return_value=None)
 
+    load_order_resolver, plugins = _preparar_load_order(tmp_path)
+
     captured: dict[str, object] = {}
 
     class _FakeRunner:
@@ -218,12 +231,15 @@ async def test_builds_runner_from_resolver_with_preserved_timeout(
             captured["config"] = config
 
         async def sort(self, *, update_masterlist: bool = False) -> LOOTResult:
+            for archivo in (plugins, plugins.with_name("loadorder.txt")):
+                archivo.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
             return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
 
     svc = LootSortingService(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
         path_resolver=resolver,
+        load_order_resolver=load_order_resolver,
         preflight=_preflight_verde(),
     )
     with patch("sky_claw.local.tools.loot_service.LOOTRunner", _FakeRunner):
@@ -733,7 +749,10 @@ async def test_informe_registra_el_diff_real_de_orden(
         # LOOT reescribe ambos archivos del load order (libloot save()).
         for archivo in (plugins, plugins.with_name("loadorder.txt")):
             archivo.write_text(orden_nuevo, encoding="utf-8")
-        return LOOTResult(return_code=0, sorted_plugins=["Original.esp", "Skyrim.esm"])
+        # Deliberadamente SIN telemetría: el diff debe salir del archivo
+        # físico; una regresión a result.sorted_plugins daría diff vacío y
+        # rompería este test (review adversarial #495).
+        return LOOTResult(return_code=0, sorted_plugins=[], errors=[])
 
     runner.sort = AsyncMock(side_effect=sort_real)
     svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
@@ -952,3 +971,44 @@ async def test_post_run_corre_dentro_del_lock_del_load_order(
 
     assert result["success"] is True
     assert lock_tomado_durante_post_run == [True]
+
+
+@pytest.mark.asyncio
+async def test_before_order_se_lee_dentro_del_lock_del_load_order(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """review adversarial #495: una lectura del "antes" pre-lock podría atribuir
+    a este sort un cambio que otro Ritual hizo antes de adquirir. El spy de
+    secuencia ancla que TODAS las lecturas de ``_read_plugin_order`` ocurren
+    DESPUÉS de la adquisición del lock (la primera observación es el acquire)."""
+    from sky_claw.local.tools import loot_service as loot_service_module
+
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    secuencia: list[str] = []
+    acquire_original = DistributedLockManager.acquire_lock
+
+    async def acquire_spy(self: DistributedLockManager, resource_id: str, agent_id: str, ttl: float = 0) -> object:
+        secuencia.append("lock")
+        return await acquire_original(self, resource_id, agent_id, ttl=ttl)
+
+    read_original = loot_service_module._read_plugin_order
+
+    def read_spy(path: object) -> list[str]:
+        secuencia.append("read")
+        return read_original(path)  # type: ignore[arg-type]
+
+    with (
+        patch.object(DistributedLockManager, "acquire_lock", acquire_spy),
+        patch.object(loot_service_module, "_read_plugin_order", read_spy),
+    ):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert secuencia[0] == "lock"  # ninguna lectura antes de adquirir
+    assert secuencia.count("lock") == 1
+    assert secuencia.count("read") == 2  # antes + después, ambas dentro

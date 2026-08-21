@@ -10,15 +10,17 @@ convertirse en fallo ni en rollback del sort válido.
 
 from __future__ import annotations
 
+import pathlib
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.loot.parser import LOOTResult
-from sky_claw.local.mo2.load_order import LoadOrderFileResolver
+from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
+from sky_claw.local.tools import loot_service as loot_service_module
 from sky_claw.local.tools.loot_service import LootSortingService
 
 if TYPE_CHECKING:
@@ -199,4 +201,156 @@ async def test_fallo_con_output_vacio_lleva_mensaje_accionable(
     assert result["success"] is False
     assert result["message"] == "LOOT sort failed with exit code 7."
     assert result["rolled_back"] is True
-    assert plugins.read_text(encoding="utf-8") == _CONTENIDO_ORIGINAL
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_output_solo_whitespace_lleva_mensaje_accionable(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un stderr/stdout solo-whitespace no cuenta como mensaje: el fallback del
+    exit code sigue siendo el diagnóstico mínimo (review adversarial #495)."""
+    resolver, plugins = _preparar_load_order(tmp_path)
+
+    async def sort_fallido(**_kwargs: object) -> LOOTResult:
+        plugins.write_text("CORRUPTO\n", encoding="utf-8")
+        return LOOTResult(return_code=7, sorted_plugins=[], errors=[], raw_stderr="\n  \n", raw_stdout="")
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort_fallido)
+    svc = _make_service(lock_manager, snapshot_manager, runner, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert result["message"] == "LOOT sort failed with exit code 7."
+
+
+@pytest.mark.asyncio
+async def test_rc0_sin_targets_observables_falla_cerrado(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+) -> None:
+    """Sin archivos de load order observables no hay evidencia que atribuir:
+    rc=0 (incluido el mutex early-exit de main.cpp) NO se reporta como éxito
+    (review adversarial #495 — incertidumbre → fallo cerrado)."""
+    resolver = MagicMock()
+    resolver.resolve.return_value = LoadOrderPaths(files=(), sources=())
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=[], errors=[]))
+    svc = _make_service(lock_manager, snapshot_manager, runner, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert "No hay archivos de load order observables" in result["message"]
+    assert result["rolled_back"] is False  # nada que restaurar: snapshot vacío
+
+
+@pytest.mark.asyncio
+async def test_stat_ilegible_en_post_falla_cerrado(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si el estado FINAL no se puede inspeccionar (stat falla por permisos/IO),
+    no se deduce "cambió" ni "no cambió": fail-closed con detalle (review
+    adversarial #495 — UNREADABLE ≠ ABSENT ≠ changed)."""
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=[], errors=[]))
+    svc = _make_service(lock_manager, snapshot_manager, runner, resolver)
+
+    real_capture = loot_service_module._capturar_estado_de_un_archivo
+    llamadas = {"n": 0}
+
+    def captura_spy(path: pathlib.Path):
+        llamadas["n"] += 1
+        # PRE captura los 2 targets (calls 1-2, legibles); POST los evalúa
+        # (calls 3-4): simular ilegible solo en la re-evaluación.
+        if llamadas["n"] >= 3:
+            return loot_service_module._EstadoDeArchivo(tipo="ilegible")
+        return real_capture(path)
+
+    with patch.object(loot_service_module, "_capturar_estado_de_un_archivo", captura_spy):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert "No se pudo inspeccionar el estado del load order" in result["message"]
+    assert "tras la corrida" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_stat_ilegible_en_pre_falla_cerrado(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si la evidencia BASE (pre-sort) no se pudo capturar para un target, la
+    comparación posterior no es verificable: fail-closed (review adversarial
+    #495 — PRE UNREADABLE → FAIL CLOSED)."""
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=[], errors=[]))
+    svc = _make_service(lock_manager, snapshot_manager, runner, resolver)
+
+    real_capture = loot_service_module._capturar_estado_de_un_archivo
+    llamadas = {"n": 0}
+
+    def captura_spy(path: pathlib.Path):
+        llamadas["n"] += 1
+        # El primer target capturado en PRE es ilegible: la baseline queda
+        # incompleta y la evaluación debe fallar cerrada.
+        if llamadas["n"] == 1:
+            return loot_service_module._EstadoDeArchivo(tipo="ilegible")
+        return real_capture(path)
+
+    with patch.object(loot_service_module, "_capturar_estado_de_un_archivo", captura_spy):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert "No se pudo inspeccionar el estado del load order" in result["message"]
+
+
+def test_tri_estado_distingue_ausente_de_ilegible(tmp_path: pathlib.Path) -> None:
+    """Unit: FileNotFoundError → ausente; PermissionError → ilegible; stat OK →
+    presente. Nunca se confunden (review adversarial #495 P1)."""
+    f = tmp_path / "plugins.txt"
+
+    assert loot_service_module._capturar_estado_de_un_archivo(f).tipo == "ausente"
+
+    with patch.object(pathlib.Path, "stat", side_effect=PermissionError("denied")):
+        assert loot_service_module._capturar_estado_de_un_archivo(f).tipo == "ilegible"
+
+    f.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
+    presente = loot_service_module._capturar_estado_de_un_archivo(f)
+    assert presente.tipo == "presente"
+    # size = bytes REALES en disco (write_text traduce a \r\n en Windows).
+    assert presente.size == len(f.read_bytes())
+
+
+def test_evaluar_evidencia_ilegible_nunca_cuenta_como_cambio(tmp_path: pathlib.Path) -> None:
+    """Unit: pre/posta ilegible → (False, path); pre ausente + post presente →
+    cambio; pre presente + post igual → sin cambio."""
+    from sky_claw.local.tools.loot_service import _EstadoDeArchivo, _evaluar_evidencia
+
+    f = tmp_path / "loadorder.txt"
+    f.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
+
+    # Ilegible en el post: no verificable → (False, path).
+    with patch.object(pathlib.Path, "stat", side_effect=PermissionError("denied")):
+        assert _evaluar_evidencia({f: _EstadoDeArchivo(tipo="presente", mtime_ns=1, size=1)}, [f]) == (
+            False,
+            f,
+        )
+
+    # Ilegible en el pre: no verificable → (False, path).
+    estado_actual = loot_service_module._capturar_estado_de_un_archivo(f)
+    assert _evaluar_evidencia({f: _EstadoDeArchivo(tipo="ilegible")}, [f]) == (False, f)
+
+    # Pre ausente + post presente: creación observada → cambio.
+    assert _evaluar_evidencia({f: _EstadoDeArchivo(tipo="ausente")}, [f]) == (True, None)
+
+    # Pre y post idénticos: sin cambio.
+    assert _evaluar_evidencia({f: estado_actual}, [f]) == (False, None)
