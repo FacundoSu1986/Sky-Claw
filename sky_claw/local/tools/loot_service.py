@@ -746,10 +746,18 @@ class LootSortingService:
         # estructurados; en éxito queda vacío (el consumidor arma su copy). En
         # fallo, incluir raw_stderr: LOOT puede salir non-zero con el error solo
         # en stderr no estructurado (errors=[] del parser) — review Codex #222.
+        # Si nada de eso existe (LOOT GUI no imprime por consola — upstream
+        # main.cpp), el mensaje mínimo accionable es el exit code: nunca dejar
+        # success=False con message vacío cuando la causa es identificable.
         message = (
             ""
             if result.success
-            else ("; ".join(str(e) for e in result.errors) or result.raw_stderr or result.raw_stdout or "")
+            else (
+                "; ".join(str(e) for e in result.errors)
+                or result.raw_stderr
+                or result.raw_stdout
+                or f"LOOT sort failed with exit code {result.return_code}."
+            )
         )
         response: dict[str, Any] = {
             "status": "success" if result.success else "error",

@@ -61,8 +61,10 @@ class TestLOOTOutputParser:
         assert result.sorted_plugins == []
         assert result.warnings == []
         assert result.errors == []
-        # Golden Master: success requires plugins > 0
-        assert result.success is False
+        # LOOT no imprime la lista de plugins (verificado contra upstream:
+        # loot/loot src/gui/qt/main.cpp + docs/app/usage/initialisation.rst).
+        # rc=0 sin errores es una corrida exitosa aunque no haya lista.
+        assert result.success is True
 
     def test_parse_mixed_output(self) -> None:
         stdout = (
@@ -97,6 +99,18 @@ class TestLOOTOutputParser:
         assert len(result.errors) >= 1
         assert "CRITICAL" in result.errors[0]
         assert "crashed natively" in result.errors[0]
+
+    def test_parse_rc0_con_error_semantico_falla(self) -> None:
+        """CASO D: rc=0 con evidencia de error real en el output NO es éxito.
+
+        El contrato nuevo no convierte rc=0 en éxito ciego: una firma de crash
+        (o línea de error) en la salida sigue fallando aunque el proceso haya
+        salido 0.
+        """
+        stdout = "FATAL ERROR: access violation at 0xDEADBEEF\n"
+        result = LOOTOutputParser.parse(stdout=stdout, stderr="", return_code=0)
+        assert result.success is False
+        assert "CRITICAL" in result.errors[0]
 
 
 # ------------------------------------------------------------------

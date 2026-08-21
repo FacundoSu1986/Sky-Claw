@@ -18,7 +18,7 @@ import pytest
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.loot.parser import LOOTResult
-from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
+from sky_claw.local.mo2.load_order import LoadOrderFileResolver
 from sky_claw.local.tools.loot_service import LootSortingService
 
 if TYPE_CHECKING:
@@ -117,3 +117,30 @@ async def test_sort_real_sin_lista_de_plugins_no_es_falso_fallo(
     assert result["success"] is True
     assert result["rolled_back"] is False
     assert plugins.read_text(encoding="utf-8") == orden_nuevo
+
+
+@pytest.mark.asyncio
+async def test_fallo_con_output_vacio_lleva_mensaje_accionable(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un exit non-zero sin texto parseable (LOOT GUI no imprime por consola)
+    no puede dejar ``success=False`` con ``message`` vacío: el código de salida
+    es la causa mínima identificable."""
+    resolver, plugins = _preparar_load_order(tmp_path)
+
+    async def sort_fallido(**_kwargs: object) -> LOOTResult:
+        plugins.write_text("CORRUPTO\n", encoding="utf-8")
+        return LOOTResult(return_code=7, sorted_plugins=[], errors=[])
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort_fallido)
+    svc = _make_service(lock_manager, snapshot_manager, runner, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert result["message"] == "LOOT sort failed with exit code 7."
+    assert result["rolled_back"] is True
+    assert plugins.read_text(encoding="utf-8") == _CONTENIDO_ORIGINAL
