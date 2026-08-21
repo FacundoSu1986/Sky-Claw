@@ -122,6 +122,60 @@ async def test_sort_real_sin_lista_de_plugins_no_es_falso_fallo(
 
 
 @pytest.mark.asyncio
+async def test_rc0_sin_mutacion_no_se_reporta_como_exito(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """CASO mutex (loot/loot ``src/gui/qt/main.cpp``): con otra instancia de
+    LOOT ya abierta, el proceso nuevo sale 0 enfocando la ventana existente
+    SIN sortear. rc=0 sin mutación observable de los targets es incertidumbre:
+    se falla con mensaje accionable y el snapshot se restaura (no-op aquí,
+    pero el estado reportado es verdadero).
+    """
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=[], errors=[]))
+    svc = _make_service(lock_manager, snapshot_manager, runner, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is False
+    assert result["rolled_back"] is True
+    assert "ningún archivo del load order cambió" in result["message"]
+    assert plugins.read_text(encoding="utf-8") == _CONTENIDO_ORIGINAL
+
+
+@pytest.mark.asyncio
+async def test_no_op_idempotente_con_reescritura_es_exito(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """CASO B (idempotencia): el orden ya era el correcto y LOOT igual reescribe
+    los archivos al aplicar (libloot ``set_load_order`` → ``save()``
+    incondicional). La reescritura ES la evidencia física: éxito sin rollback
+    aunque el contenido no cambie.
+    """
+    resolver, plugins = _preparar_load_order(tmp_path)
+
+    async def sort_idempotente(**_kwargs: object) -> LOOTResult:
+        for archivo in (plugins, plugins.with_name("loadorder.txt")):
+            archivo.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
+        return LOOTResult(return_code=0, sorted_plugins=[], errors=[])
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort_idempotente)
+    svc = _make_service(lock_manager, snapshot_manager, runner, resolver)
+
+    result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert result["rolled_back"] is False
+    assert plugins.read_text(encoding="utf-8") == _CONTENIDO_ORIGINAL
+
+
+@pytest.mark.asyncio
 async def test_fallo_con_output_vacio_lleva_mensaje_accionable(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,

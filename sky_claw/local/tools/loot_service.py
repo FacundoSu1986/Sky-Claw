@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sky_claw.app.db.locks import (
@@ -152,14 +153,59 @@ def _read_plugin_order(path: pathlib.Path | None) -> list[str]:
     return plugins
 
 
-class _LootSortFailedError(Exception):
-    """Interno: un sort con exit non-zero debe lanzar DENTRO del lock para que
-    ``SnapshotTransactionLock.__aexit__`` restaure el load order; el resultado
-    original viaja en la excepción para armar la respuesta al caller."""
+def _capturar_estado_de_archivos(
+    paths: list[pathlib.Path],
+) -> dict[pathlib.Path, tuple[bool, int, int]]:
+    """Estado observable de cada archivo: ``(existe, mtime_ns, tamaño)``.
 
-    def __init__(self, result: LOOTResult) -> None:
-        super().__init__(f"LOOT sort failed with return code {result.return_code}")
+    Evidencia pre-sort para la atribución post-sort: LOOT real reescribe
+    plugins.txt/loadorder.txt al aplicar (libloot ``set_load_order`` →
+    ``save()`` incondicional, más el backup del GUI), incluso cuando el orden
+    no cambia. Una corrida que salió 0 SIN tocar ninguno de los targets no
+    aplicó el sort (p. ej. otra instancia de LOOT ya abierta se quedó con el
+    mutex de aplicación — loot/loot ``src/gui/qt/main.cpp`` sale 0 enfocando
+    la ventana existente).
+    """
+    estado: dict[pathlib.Path, tuple[bool, int, int]] = {}
+    for path in paths:
+        try:
+            st = path.stat()
+        except OSError:
+            estado[path] = (False, 0, 0)
+        else:
+            estado[path] = (True, st.st_mtime_ns, st.st_size)
+    return estado
+
+
+def _archivos_cambiaron(
+    antes: dict[pathlib.Path, tuple[bool, int, int]],
+    paths: list[pathlib.Path],
+) -> bool:
+    """True si AL MENOS un target cambió (creado, reescrito o redimensionado)
+    desde la captura ``antes``."""
+    for path in paths:
+        try:
+            st = path.stat()
+        except OSError:
+            actual = (False, 0, 0)
+        else:
+            actual = (True, st.st_mtime_ns, st.st_size)
+        if actual != antes.get(path):
+            return True
+    return False
+
+
+class _LootSortFailedError(Exception):
+    """Interno: un sort que no puede confirmarse como exitoso debe lanzar
+    DENTRO del lock para que ``SnapshotTransactionLock.__aexit__`` restaure el
+    load order; el resultado original viaja en la excepción para armar la
+    respuesta al caller. ``detail`` (opcional) reemplaza la inferencia de
+    ``message`` cuando la causa no está en ``errors``/stderr/stdout."""
+
+    def __init__(self, result: LOOTResult, detail: str | None = None) -> None:
+        super().__init__(detail or f"LOOT sort failed with return code {result.return_code}")
         self.result = result
+        self.detail = detail
 
 
 class _ActionManifestError(Exception):
@@ -655,10 +701,29 @@ class LootSortingService:
                 # NO procede (se lanza dentro del lock → __aexit__ revierte).
                 if self._journal is not None:
                     journal_tx_id = await self._emit_action_manifest(tx, target_files, loot_version)
+                # Evidencia física pre-sort (DENTRO del lock, atribuible a esta
+                # corrida). Con target_files vacíos (entorno no configurado,
+                # degradación T-06) no hay nada observable y el gate se salta.
+                estado_pre_sort = _capturar_estado_de_archivos(target_files)
                 result = await runner.sort(update_masterlist=update_masterlist)
                 if not result.success:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
                     raise _LootSortFailedError(result)
+                if target_files and not _archivos_cambiaron(estado_pre_sort, target_files):
+                    # rc=0 sin mutación observable: LOOT no aplicó. Caso real
+                    # (main.cpp): con otra instancia ya abierta, el proceso sale
+                    # 0 enfocando la ventana existente SIN sortear. Incertidumbre
+                    # → fallo (nunca éxito ciego): el snapshot se restaura (no-op
+                    # si nada cambió) y el caller recibe un mensaje accionable.
+                    raise _LootSortFailedError(
+                        result,
+                        detail=(
+                            "LOOT salió con código 0 pero ningún archivo del load order "
+                            "cambió durante la corrida: el sort no aplicó (¿otra instancia "
+                            "de LOOT ya abierta se quedó con el mutex?) o los archivos "
+                            "resueltos no cubren los que LOOT reescribió."
+                        ),
+                    )
                 # T-28: el "después" real se lee del archivo que LOOT reescribió,
                 # DENTRO del lock (atribuible a esta corrida). `result.sorted_plugins`
                 # es telemetría opcional: con LOOT real llega vacía (la GUI no
@@ -715,6 +780,13 @@ class LootSortingService:
             await self._mark_journal_rolled_back(journal_tx_id)
             result = exc.result
             rolled_back = tx.rollback_completed
+            if exc.detail is not None:
+                # rc=0 sin mutación observable: el resultado de PROCESO es
+                # "exitoso" pero el contrato lo rechaza. Degradar a fallo con el
+                # detalle como error para que status/success/message/errors de la
+                # respuesta no mientan (el return_code queda en 0: es la verdad
+                # del proceso, el detalle explica el rechazo).
+                result = replace(result, errors=[*result.errors, exc.detail])
         except (LOOTNotFoundError, LOOTTimeoutError) as exc:
             await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("LOOT sort failed: %s", exc)
