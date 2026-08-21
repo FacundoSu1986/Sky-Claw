@@ -151,30 +151,52 @@ class TestContratoDeDatos:
 class TestBloqueoDeMutantes:
     """El primer mutante cableado: LootSortingService respeta el semáforo."""
 
-    def _loot_service(self, reporte: PreflightReport):
+    def _loot_service(self, reporte: PreflightReport, tmp_path: pathlib.Path):
         from sky_claw.app.db.locks import DistributedLockManager
-        from sky_claw.local.mo2.load_order import LoadOrderPaths
+        from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+        from sky_claw.local.mo2.load_order import LoadOrderFileResolver
         from sky_claw.local.tools.loot_service import LootSortingService
+
+        # Targets observables: el gate físico del servicio exige evidencia de
+        # mutación para reportar éxito (review adversarial #495).
+        load_order_dir = tmp_path / "load_order"
+        load_order_dir.mkdir()
+        plugins_txt = load_order_dir / "plugins.txt"
+        plugins_txt.write_text("Skyrim.esm\n", encoding="utf-8")
+        loadorder_txt = load_order_dir / "loadorder.txt"
+        loadorder_txt.write_text("Skyrim.esm\n", encoding="utf-8")
 
         runner = MagicMock()
         runner.sort = AsyncMock()
         preflight = MagicMock()
         preflight.run = AsyncMock(return_value=reporte)
-        resolver = MagicMock()
-        resolver.resolve.return_value = LoadOrderPaths(files=(), sources=())
+        resolver = LoadOrderFileResolver(explicit_dir=load_order_dir)
         svc = LootSortingService(
             lock_manager=MagicMock(spec=DistributedLockManager),
-            snapshot_manager=MagicMock(),
+            # spec → create_snapshot/delete_snapshot se mockean como AsyncMock
+            # (con spec, los métodos coroutine de la clase se detectan).
+            snapshot_manager=MagicMock(spec=FileSnapshotManager),
             path_resolver=MagicMock(),
             loot_runner=runner,
             load_order_resolver=resolver,
             preflight=preflight,
         )
-        return svc, runner
+        return svc, runner, (plugins_txt, loadorder_txt)
 
-    async def test_preflight_rojo_bloquea_el_sort(self) -> None:
+    @staticmethod
+    def _runner_que_reescribe(runner: MagicMock, archivos: tuple[pathlib.Path, pathlib.Path]) -> None:
+        from sky_claw.local.loot.parser import LOOTResult
+
+        async def sort_real(**_kwargs: object) -> LOOTResult:
+            for archivo in archivos:
+                archivo.write_text("Skyrim.esm\n", encoding="utf-8")
+            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+
+        runner.sort = AsyncMock(side_effect=sort_real)
+
+    async def test_preflight_rojo_bloquea_el_sort(self, tmp_path: pathlib.Path) -> None:
         reporte = await _servicio(issues=[_issue("warning")], version=(0, 28, 0)).run()
-        svc, runner = self._loot_service(reporte)
+        svc, runner, _archivos = self._loot_service(reporte, tmp_path)
 
         resultado = await svc.sort_load_order()
 
@@ -183,24 +205,20 @@ class TestBloqueoDeMutantes:
         assert resultado["preflight"]["status"] == "red"
         runner.sort.assert_not_awaited()
 
-    async def test_override_explicito_permite_correr(self) -> None:
+    async def test_override_explicito_permite_correr(self, tmp_path: pathlib.Path) -> None:
         reporte = await _servicio(issues=[_issue("warning")], version=(0, 28, 0)).run()
-        svc, runner = self._loot_service(reporte)
-        from sky_claw.local.loot.parser import LOOTResult
-
-        runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+        svc, runner, archivos = self._loot_service(reporte, tmp_path)
+        self._runner_que_reescribe(runner, archivos)
 
         resultado = await svc.sort_load_order(override_preflight=True)
 
         assert resultado["success"] is True
         runner.sort.assert_awaited_once()
 
-    async def test_preflight_amarillo_no_bloquea(self) -> None:
+    async def test_preflight_amarillo_no_bloquea(self, tmp_path: pathlib.Path) -> None:
         reporte = await _servicio(issues=[], version=(0, 28, 0)).run()
-        svc, runner = self._loot_service(reporte)
-        from sky_claw.local.loot.parser import LOOTResult
-
-        runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+        svc, runner, archivos = self._loot_service(reporte, tmp_path)
+        self._runner_que_reescribe(runner, archivos)
 
         resultado = await svc.sort_load_order()
 
@@ -210,14 +228,12 @@ class TestBloqueoDeMutantes:
         # aviso debe viajar en la respuesta exitosa — si no, el operador nunca lo ve.
         assert resultado["preflight"]["status"] == "yellow"
 
-    async def test_preflight_verde_no_ensucia_la_respuesta(self) -> None:
+    async def test_preflight_verde_no_ensucia_la_respuesta(self, tmp_path: pathlib.Path) -> None:
         """Simétrico: un preflight verde no agrega la clave 'preflight' al
         success (solo se superficie lo accionable)."""
         reporte = await _servicio(issues=[], version=(0, 29, 0)).run()
-        svc, runner = self._loot_service(reporte)
-        from sky_claw.local.loot.parser import LOOTResult
-
-        runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+        svc, runner, archivos = self._loot_service(reporte, tmp_path)
+        self._runner_que_reescribe(runner, archivos)
 
         resultado = await svc.sort_load_order()
 

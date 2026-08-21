@@ -16,8 +16,10 @@ gap so a real sort serializes against:
 existentes en LOCALAPPDATA (LOOT corre fuera del VFS con ``--game-path``), el
 profile de MO2 y un override explícito. Un sort que lanza (timeout) o sale con
 error restaura el snapshot; si no se encuentra ningún candidato (entorno no
-configurado), se degrada a serialización-sola con warning, el comportamiento
-previo al T-06.
+configurado), el sort se rechaza tras la corrida: sin targets observables no
+hay evidencia para atribuir ni verificar el éxito (fail-closed — review
+adversarial #495; el "serialización-sola con warning" previo al T-06 reportaba
+éxito sin haber podido observar nada).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sky_claw.app.db.locks import (
@@ -38,6 +41,7 @@ from sky_claw.local.loot.cli import (
     LOOTRunner,
     LOOTTimeoutError,
 )
+from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
 
 if TYPE_CHECKING:
@@ -46,7 +50,6 @@ if TYPE_CHECKING:
     from sky_claw.app.db.journal import OperationJournal
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager
     from sky_claw.app.security.path_validator import PathValidator
-    from sky_claw.local.loot.parser import LOOTResult
     from sky_claw.local.mo2.brokered_loot import VfsBrokerProtocol
     from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
     from sky_claw.local.validators.preflight import (
@@ -152,14 +155,81 @@ def _read_plugin_order(path: pathlib.Path | None) -> list[str]:
     return plugins
 
 
-class _LootSortFailedError(Exception):
-    """Interno: un sort con exit non-zero debe lanzar DENTRO del lock para que
-    ``SnapshotTransactionLock.__aexit__`` restaure el load order; el resultado
-    original viaja en la excepción para armar la respuesta al caller."""
+@dataclass(frozen=True, slots=True)
+class _EstadoDeArchivo:
+    """Evidencia física de un target: presente (con metadata), ausente o ilegible.
 
-    def __init__(self, result: LOOTResult) -> None:
-        super().__init__(f"LOOT sort failed with return code {result.return_code}")
+    La distinción importa para el gate de atribución: "ausente" es un estado
+    observable; "ilegible" (``stat`` falló por permisos/IO, no por ausencia) es
+    NO observabilidad — indistinguible en runtime de un archivo presente cuya
+    metadata no se pudo leer. Mapear "ilegible" a "ausente" (o a "cambió") es
+    un falso verde: el gate nunca deduce mutación de un ``stat`` fallido
+    (review adversarial #495 P1).
+    """
+
+    tipo: str  # "presente" | "ausente" | "ilegible"
+    mtime_ns: int = 0
+    size: int = 0
+
+
+def _capturar_estado_de_un_archivo(path: pathlib.Path) -> _EstadoDeArchivo:
+    """Tri-estado de un target: presente/ausente/ilegible (nunca confundidos)."""
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return _EstadoDeArchivo(tipo="ausente")
+    except OSError:
+        return _EstadoDeArchivo(tipo="ilegible")
+    return _EstadoDeArchivo(tipo="presente", mtime_ns=st.st_mtime_ns, size=st.st_size)
+
+
+def _capturar_estado_de_archivos(
+    paths: list[pathlib.Path],
+) -> dict[pathlib.Path, _EstadoDeArchivo]:
+    """Evidencia pre-sort de cada target, para la atribución post-sort.
+
+    LOOT real reescribe plugins.txt/loadorder.txt al aplicar (libloot
+    ``set_load_order`` → ``save()`` incondicional, más el backup del GUI),
+    incluso cuando el orden no cambia. Una corrida que salió 0 SIN tocar
+    ninguno de los targets no aplicó el sort (p. ej. otra instancia de LOOT
+    ya abierta se quedó con el mutex de aplicación — loot/loot
+    ``src/gui/qt/main.cpp`` sale 0 enfocando la ventana existente).
+    """
+    return {path: _capturar_estado_de_un_archivo(path) for path in paths}
+
+
+def _evaluar_evidencia(
+    antes: dict[pathlib.Path, _EstadoDeArchivo],
+    paths: list[pathlib.Path],
+) -> tuple[bool, pathlib.Path | None]:
+    """Devuelve ``(hubo_cambio, ilegible)`` comparando estado pre vs post.
+
+    ``ilegible is not None`` → la evidencia NO es verificable (estado previo o
+    final inobservable) y el caller debe fallar cerrado: nunca se deduce
+    "cambió" ni "no cambió" de un ``stat`` fallido.
+    """
+    cambio = False
+    for path in paths:
+        estado_post = _capturar_estado_de_un_archivo(path)
+        estado_pre = antes.get(path)
+        if estado_post.tipo == "ilegible" or (estado_pre is not None and estado_pre.tipo == "ilegible"):
+            return False, path
+        if estado_pre is None or estado_post != estado_pre:
+            cambio = True
+    return cambio, None
+
+
+class _LootSortFailedError(Exception):
+    """Interno: un sort que no puede confirmarse como exitoso debe lanzar
+    DENTRO del lock para que ``SnapshotTransactionLock.__aexit__`` restaure el
+    load order; el resultado original viaja en la excepción para armar la
+    respuesta al caller. ``detail`` (opcional) reemplaza la inferencia de
+    ``message`` cuando la causa no está en ``errors``/stderr/stdout."""
+
+    def __init__(self, result: LOOTResult, detail: str | None = None) -> None:
+        super().__init__(detail or f"LOOT sort failed with return code {result.return_code}")
         self.result = result
+        self.detail = detail
 
 
 class _ActionManifestError(Exception):
@@ -612,19 +682,14 @@ class LootSortingService:
             return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
 
         # T-06: snapshotear lo que LOOT realmente puede reescribir. Sin
-        # candidatos (entorno no configurado) se degrada a serialización-sola,
-        # el comportamiento previo — el resolver ya lo dejó logueado.
+        # candidatos (entorno no configurado) el sort se rechaza tras la
+        # corrida: sin targets observables no hay evidencia para atribuir el
+        # éxito (fail-closed — review adversarial #495).
         load_order = await self._resolve_load_order_for_runner(runner)
         target_files = list(load_order.files)
         rolled_back = False
         # T-21: se llena solo en el path de éxito (el validador es post-vuelo).
         post_run_payload: dict[str, Any] | None = None
-
-        # Orden ANTES del sort para el diff del informe post-vuelo (T-28): se
-        # lee acá porque LOOT reescribe el archivo al ordenar. El "después" será
-        # ``result.sorted_plugins``. Best-effort: si no se puede leer, el informe
-        # simplemente no lleva load_order_diff (nunca rompe el sort).
-        before_order = _read_plugin_order(_primary_load_order_file(target_files))
 
         # Referencia al lock fuera del with: rolled_back se deriva del resultado
         # REAL del rollback (tx.rollback_completed) — un restore fallido en la
@@ -650,6 +715,48 @@ class LootSortingService:
         journal_committed = False
         try:
             async with tx:
+                # PRECONDICIONES ANTES DE MUTAR (review adversarial #495 ronda 3):
+                # toda incertidumbre conocida antes de ejecutar LOOT debe bloquear
+                # ANTES — correr LOOT igual dejaría una mutación sin red (cero
+                # snapshots si no hay targets; baseline inverificable si es
+                # ilegible) y un rollback que no restaura nada.
+                if not target_files:
+                    # El mutex early-exit de main.cpp también sale 0 sin sortear
+                    # en este entorno, pero eso ya no importa: sin targets
+                    # observables el sort NI SE EJECUTA.
+                    raise _LootSortFailedError(
+                        LOOTResult(return_code=-1, errors=[]),
+                        detail=(
+                            "No hay archivos de load order observables (plugins.txt/"
+                            "loadorder.txt) para snapshotear, verificar ni atribuir el "
+                            "sort: LOOT no se ejecutó. Configurá LOCALAPPDATA/MO2 (o el "
+                            "override) para que el servicio pueda proteger y validar los "
+                            "targets."
+                        ),
+                    )
+                estado_pre_sort = _capturar_estado_de_archivos(target_files)
+                pre_ilegible = next(
+                    (path for path, estado in estado_pre_sort.items() if estado.tipo == "ilegible"),
+                    None,
+                )
+                if pre_ilegible is not None:
+                    # Sin baseline verificable no hay evidencia con qué comparar:
+                    # abortar ANTES de mutar (el post solo puede detectarse después).
+                    raise _LootSortFailedError(
+                        LOOTResult(return_code=-1, errors=[]),
+                        detail=(
+                            f"No se pudo establecer la evidencia base del load order "
+                            f"({pre_ilegible}) antes de correr LOOT: sin baseline "
+                            "verificable, el sort no se ejecutó."
+                        ),
+                    )
+                # T-28: el "antes" se lee DENTRO del lock, en el mismo dominio
+                # de serialización que el "después" y la evidencia física — una
+                # lectura pre-lock podría atribuir a este sort un cambio que
+                # otro Ritual hizo antes de que adquiriéramos (review
+                # adversarial #495). Best-effort: si no se puede leer, el
+                # informe no lleva diff.
+                before_order = _read_plugin_order(_primary_load_order_file(target_files))
                 # T-26 (ADR 0002): emitir la "caja negra de vuelo" ANTES de
                 # mutar. Si el journal está cableado y la emisión falla, el sort
                 # NO procede (se lanza dentro del lock → __aexit__ revierte).
@@ -659,6 +766,42 @@ class LootSortingService:
                 if not result.success:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
                     raise _LootSortFailedError(result)
+                cambiaron, ilegible = _evaluar_evidencia(estado_pre_sort, target_files)
+                if ilegible is not None:
+                    # Estado final inobservable (el previo ya se validó antes de
+                    # mutar): no se deduce mutación (ni su ausencia) de un stat
+                    # fallido — fail-closed + rollback.
+                    raise _LootSortFailedError(
+                        result,
+                        detail=(
+                            f"No se pudo inspeccionar el estado del load order "
+                            f"({ilegible}) tras la corrida: sin evidencia verificable "
+                            "no se puede confirmar que LOOT aplicó el orden."
+                        ),
+                    )
+                if not cambiaron:
+                    # rc=0 sin mutación observable: LOOT no aplicó. Caso real
+                    # (main.cpp): con otra instancia ya abierta, el proceso sale
+                    # 0 enfocando la ventana existente SIN sortear. Incertidumbre
+                    # → fallo (nunca éxito ciego): el snapshot se restaura (no-op
+                    # si nada cambió) y el caller recibe un mensaje accionable.
+                    raise _LootSortFailedError(
+                        result,
+                        detail=(
+                            "LOOT salió con código 0 pero ningún archivo del load order "
+                            "cambió durante la corrida: el sort no aplicó (¿otra instancia "
+                            "de LOOT ya abierta se quedó con el mutex?) o los archivos "
+                            "resueltos no cubren los que LOOT reescribió."
+                        ),
+                    )
+                # T-28: el "después" real se lee del archivo que LOOT reescribió,
+                # DENTRO del lock (atribuible a esta corrida). `result.sorted_plugins`
+                # es telemetría opcional: con LOOT real llega vacía (la GUI no
+                # imprime la lista — upstream main.cpp) y usarla como "después"
+                # haría que el informe omita el diff aunque el orden haya cambiado.
+                # Misma fuente que `before_order` (loadorder.txt primero), así el
+                # diff compara archivo contra archivo.
+                after_order = _read_plugin_order(_primary_load_order_file(target_files))
                 # T-21: validar DENTRO del lock — con el lock liberado, otro
                 # Ritual concurrente podría mutar el load order antes de la
                 # lectura y el reporte quedaría atribuido a este sort (review
@@ -685,7 +828,7 @@ class LootSortingService:
                 await self._emit_flight_report(
                     journal_tx_id,
                     before_order=before_order,
-                    after_order=result.sorted_plugins,
+                    after_order=after_order,
                     post_run_validation=post_run_payload,
                 )
         except LockAcquisitionError as exc:
@@ -707,6 +850,13 @@ class LootSortingService:
             await self._mark_journal_rolled_back(journal_tx_id)
             result = exc.result
             rolled_back = tx.rollback_completed
+            if exc.detail is not None:
+                # rc=0 sin mutación observable: el resultado de PROCESO es
+                # "exitoso" pero el contrato lo rechaza. Degradar a fallo con el
+                # detalle como error para que status/success/message/errors de la
+                # respuesta no mientan (el return_code queda en 0: es la verdad
+                # del proceso, el detalle explica el rechazo).
+                result = replace(result, errors=[*result.errors, exc.detail])
         except (LOOTNotFoundError, LOOTTimeoutError) as exc:
             await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("LOOT sort failed: %s", exc)
@@ -746,10 +896,22 @@ class LootSortingService:
         # estructurados; en éxito queda vacío (el consumidor arma su copy). En
         # fallo, incluir raw_stderr: LOOT puede salir non-zero con el error solo
         # en stderr no estructurado (errors=[] del parser) — review Codex #222.
+        # Si nada de eso existe (LOOT GUI no imprime por consola — upstream
+        # main.cpp), el mensaje mínimo accionable es el exit code: nunca dejar
+        # success=False con message vacío cuando la causa es identificable. El
+        # strip evita que un stderr/stdout solo-whitespace cuente como mensaje
+        # visualmente vacío (review adversarial #495).
+        stderr_text = result.raw_stderr.strip()
+        stdout_text = result.raw_stdout.strip()
         message = (
             ""
             if result.success
-            else ("; ".join(str(e) for e in result.errors) or result.raw_stderr or result.raw_stdout or "")
+            else (
+                "; ".join(str(e) for e in result.errors)
+                or stderr_text
+                or stdout_text
+                or f"LOOT sort failed with exit code {result.return_code}."
+            )
         )
         response: dict[str, Any] = {
             "status": "success" if result.success else "error",
@@ -873,8 +1035,12 @@ class LootSortingService:
         commit best-effort falló, el informe dirá ``pending``: verdad antes
         que optimismo). El manifiesto se emite ANTES del sort y es inmutable,
         así que no puede cargar el orden resultante; el diff real (orden antes
-        vs ``result.sorted_plugins``) se calcula acá y se adjunta al informe
-        (review Codex #249). Best-effort con la misma disciplina que el commit:
+        vs orden leído del archivo post-sort, ambos dentro del lock) se calcula
+        acá y se adjunta al informe (review Codex #249). ``after_order`` viene
+        del load order FÍSICO, no de ``sorted_plugins`` — con LOOT real esa
+        lista llega vacía (la GUI no la imprime) y el diff mentiría "sin
+        cambio" (review CodeRabbit #495).
+        Best-effort con la misma disciplina que el commit:
         un fallo se loguea y NO rompe el contrato "siempre devolver dict" ni
         revierte el sort exitoso.
         """

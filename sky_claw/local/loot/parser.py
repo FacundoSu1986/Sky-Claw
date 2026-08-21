@@ -4,7 +4,8 @@ Golden Master hardening:
 - ANSI escape stripping to handle corrupted terminal output.
 - Native crash signature detection (fatal, exception, stack trace, etc.).
 - Strict plugin-line regex to avoid false positives.
-- ``success`` flag requires return_code == 0, no errors, AND plugins found.
+- ``success`` flag requires return_code == 0 AND no errors; ``sorted_plugins``
+  is optional telemetry, NOT a success postcondition.
 """
 
 from __future__ import annotations
@@ -27,8 +28,17 @@ class LOOTResult:
 
     @property
     def success(self) -> bool:
-        """Golden Master: strict success requires code 0, no errors, AND plugins."""
-        return self.return_code == 0 and not self.errors and len(self.sorted_plugins) > 0
+        """Éxito de proceso: ``return_code == 0`` y sin errores semánticos.
+
+        ``sorted_plugins`` NO es postcondición. Verificado contra upstream
+        (loot/loot ``src/gui/qt/main.cpp`` + ``docs/app/usage/initialisation.rst``):
+        ``--auto-sort`` ordena, aplica el load order y cierra la GUI sin
+        imprimir ninguna lista numerada por stdout/stderr — una corrida real
+        exitosa llega con output vacío. Exigir ``len(sorted_plugins) > 0``
+        convertía CADA sort real válido en fallo (falso rojo con rollback).
+        La lista queda como telemetría opcional para UI/reporte.
+        """
+        return self.return_code == 0 and not self.errors
 
 
 # Golden Master: Module-level compiled regexes.
