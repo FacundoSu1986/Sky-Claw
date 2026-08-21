@@ -34,13 +34,21 @@ async def test_loot_service_runner_no_disponible_cumple_contrato() -> None:
     _assert_contract_error(result, "LOOT.exe no encontrado")
 
 
-async def test_loot_fallo_con_solo_raw_stderr_no_es_error_desconocido() -> None:
+async def test_loot_fallo_con_solo_raw_stderr_no_es_error_desconocido(tmp_path) -> None:
     """LOOT non-zero con el error solo en stderr no estructurado (errors=[] y
     stdout vacío) debe surfear el stderr en message (review Codex #222)."""
     from sky_claw.local.loot.parser import LOOTResult
+    from sky_claw.local.mo2.load_order import LoadOrderPaths
     from sky_claw.local.tools.loot_service import LootSortingService
 
-    service = LootSortingService(lock_manager=MagicMock(), snapshot_manager=MagicMock())
+    # Resolver con targets observables: la precondición del servicio exige
+    # targets para llegar al runner (review adversarial #495); los archivos no
+    # necesitan existir — el lock está mockeado y el capture los marca ausentes.
+    resolver = MagicMock()
+    resolver.resolve.return_value = LoadOrderPaths(
+        files=(tmp_path / "plugins.txt", tmp_path / "loadorder.txt"), sources=()
+    )
+    service = LootSortingService(lock_manager=MagicMock(), snapshot_manager=MagicMock(), load_order_resolver=resolver)
     failed = LOOTResult(return_code=1, sorted_plugins=[], errors=[], raw_stdout="", raw_stderr="boost::bad_alloc")
     runner = MagicMock()
     runner.sort = AsyncMock(return_value=failed)

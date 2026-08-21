@@ -41,6 +41,7 @@ from sky_claw.local.loot.cli import (
     LOOTRunner,
     LOOTTimeoutError,
 )
+from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
 
 if TYPE_CHECKING:
@@ -49,7 +50,6 @@ if TYPE_CHECKING:
     from sky_claw.app.db.journal import OperationJournal
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager
     from sky_claw.app.security.path_validator import PathValidator
-    from sky_claw.local.loot.parser import LOOTResult
     from sky_claw.local.mo2.brokered_loot import VfsBrokerProtocol
     from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
     from sky_claw.local.validators.preflight import (
@@ -715,6 +715,41 @@ class LootSortingService:
         journal_committed = False
         try:
             async with tx:
+                # PRECONDICIONES ANTES DE MUTAR (review adversarial #495 ronda 3):
+                # toda incertidumbre conocida antes de ejecutar LOOT debe bloquear
+                # ANTES — correr LOOT igual dejaría una mutación sin red (cero
+                # snapshots si no hay targets; baseline inverificable si es
+                # ilegible) y un rollback que no restaura nada.
+                if not target_files:
+                    # El mutex early-exit de main.cpp también sale 0 sin sortear
+                    # en este entorno, pero eso ya no importa: sin targets
+                    # observables el sort NI SE EJECUTA.
+                    raise _LootSortFailedError(
+                        LOOTResult(return_code=-1, errors=[]),
+                        detail=(
+                            "No hay archivos de load order observables (plugins.txt/"
+                            "loadorder.txt) para snapshotear, verificar ni atribuir el "
+                            "sort: LOOT no se ejecutó. Configurá LOCALAPPDATA/MO2 (o el "
+                            "override) para que el servicio pueda proteger y validar los "
+                            "targets."
+                        ),
+                    )
+                estado_pre_sort = _capturar_estado_de_archivos(target_files)
+                pre_ilegible = next(
+                    (path for path, estado in estado_pre_sort.items() if estado.tipo == "ilegible"),
+                    None,
+                )
+                if pre_ilegible is not None:
+                    # Sin baseline verificable no hay evidencia con qué comparar:
+                    # abortar ANTES de mutar (el post solo puede detectarse después).
+                    raise _LootSortFailedError(
+                        LOOTResult(return_code=-1, errors=[]),
+                        detail=(
+                            f"No se pudo establecer la evidencia base del load order "
+                            f"({pre_ilegible}) antes de correr LOOT: sin baseline "
+                            "verificable, el sort no se ejecutó."
+                        ),
+                    )
                 # T-28: el "antes" se lee DENTRO del lock, en el mismo dominio
                 # de serialización que el "después" y la evidencia física — una
                 # lectura pre-lock podría atribuir a este sort un cambio que
@@ -727,32 +762,15 @@ class LootSortingService:
                 # NO procede (se lanza dentro del lock → __aexit__ revierte).
                 if self._journal is not None:
                     journal_tx_id = await self._emit_action_manifest(tx, target_files, loot_version)
-                # Evidencia física pre-sort (DENTRO del lock, atribuible a esta
-                # corrida).
-                estado_pre_sort = _capturar_estado_de_archivos(target_files)
                 result = await runner.sort(update_masterlist=update_masterlist)
                 if not result.success:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
                     raise _LootSortFailedError(result)
-                if not target_files:
-                    # Sin targets observables no hay evidencia para verificar
-                    # ni atribuir el sort: incertidumbre → fallo, nunca éxito
-                    # ciego (review adversarial #495). El mutex de main.cpp
-                    # también sale 0 sin sortear en este entorno.
-                    raise _LootSortFailedError(
-                        result,
-                        detail=(
-                            "No hay archivos de load order observables (plugins.txt/"
-                            "loadorder.txt) para verificar ni atribuir el sort: sin "
-                            "evidencia no se puede confirmar que LOOT aplicó el orden. "
-                            "Configurá LOCALAPPDATA/MO2 (o el override) para que el "
-                            "servicio pueda snapshotear y validar los targets."
-                        ),
-                    )
                 cambiaron, ilegible = _evaluar_evidencia(estado_pre_sort, target_files)
                 if ilegible is not None:
-                    # Estado previo o final inobservable: no se deduce mutación
-                    # (ni su ausencia) de un stat fallido — fail-closed.
+                    # Estado final inobservable (el previo ya se validó antes de
+                    # mutar): no se deduce mutación (ni su ausencia) de un stat
+                    # fallido — fail-closed + rollback.
                     raise _LootSortFailedError(
                         result,
                         detail=(

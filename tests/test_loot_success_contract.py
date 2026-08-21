@@ -232,9 +232,11 @@ async def test_rc0_sin_targets_observables_falla_cerrado(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
 ) -> None:
-    """Sin archivos de load order observables no hay evidencia que atribuir:
-    rc=0 (incluido el mutex early-exit de main.cpp) NO se reporta como éxito
-    (review adversarial #495 — incertidumbre → fallo cerrado)."""
+    """Sin archivos de load order observables no hay evidencia que atribuir NI
+    red de restauración (cero snapshots): la precondición falla ANTES de
+    ejecutar LOOT — una corrida igual habría dejado una mutación sin proteger
+    (review adversarial #495 ronda 3). ``assert_not_awaited`` es el ancla
+    central: LOOT no debe arrancar."""
     resolver = MagicMock()
     resolver.resolve.return_value = LoadOrderPaths(files=(), sources=())
     runner = MagicMock()
@@ -245,7 +247,10 @@ async def test_rc0_sin_targets_observables_falla_cerrado(
 
     assert result["success"] is False
     assert "No hay archivos de load order observables" in result["message"]
+    assert "no se ejecutó" in result["message"]
+    assert result["return_code"] == -1  # LOOT nunca corrió
     assert result["rolled_back"] is False  # nada que restaurar: snapshot vacío
+    runner.sort.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -288,8 +293,9 @@ async def test_stat_ilegible_en_pre_falla_cerrado(
     tmp_path: pathlib.Path,
 ) -> None:
     """Si la evidencia BASE (pre-sort) no se pudo capturar para un target, la
-    comparación posterior no es verificable: fail-closed (review adversarial
-    #495 — PRE UNREADABLE → FAIL CLOSED)."""
+    incertidumbre ya se conoce ANTES de mutar: fail-closed SIN ejecutar LOOT
+    (review adversarial #495 ronda 3 — el post-ilegible, en cambio, solo puede
+    detectarse después y ahí sí va con rollback)."""
     resolver, plugins = _preparar_load_order(tmp_path)
     runner = MagicMock()
     runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=[], errors=[]))
@@ -301,7 +307,7 @@ async def test_stat_ilegible_en_pre_falla_cerrado(
     def captura_spy(path: pathlib.Path):
         llamadas["n"] += 1
         # El primer target capturado en PRE es ilegible: la baseline queda
-        # incompleta y la evaluación debe fallar cerrada.
+        # incompleta y la precondición debe abortar antes de lanzar LOOT.
         if llamadas["n"] == 1:
             return loot_service_module._EstadoDeArchivo(tipo="ilegible")
         return real_capture(path)
@@ -310,7 +316,9 @@ async def test_stat_ilegible_en_pre_falla_cerrado(
         result = await svc.sort_load_order()
 
     assert result["success"] is False
-    assert "No se pudo inspeccionar el estado del load order" in result["message"]
+    assert "No se pudo establecer la evidencia base" in result["message"]
+    assert result["return_code"] == -1  # LOOT nunca corrió
+    runner.sort.assert_not_awaited()
 
 
 def test_tri_estado_distingue_ausente_de_ilegible(tmp_path: pathlib.Path) -> None:

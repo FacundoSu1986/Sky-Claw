@@ -866,7 +866,9 @@ class TestRunLootSortLock:
         assert "no se pudo resolver el perfil" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_locked_path_returns_json_on_unexpected_error(self, tmp_path: pathlib.Path) -> None:
+    async def test_locked_path_returns_json_on_unexpected_error(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An unexpected subprocess error (e.g. OSError) is returned as JSON, not raised.
 
         Preserves the AsyncToolRegistry.execute() contract on the locked live path
@@ -874,6 +876,10 @@ class TestRunLootSortLock:
         """
         lm, sm = await self._managers(tmp_path)
         try:
+            # Targets observables: con la precondición nueva (sin targets →
+            # fail antes de LOOT), el error del runner debe seguir siendo lo
+            # que este test ejercita.
+            self._localappdata_con_load_order(monkeypatch, tmp_path)
             runner = MagicMock()
             runner.sort = AsyncMock(side_effect=OSError("loot.exe is not executable"))
             result = json.loads(
