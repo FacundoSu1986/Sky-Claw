@@ -223,7 +223,7 @@ Los timestamps se conservan únicamente como reconstrucción de esta corrida; no
 |---|---|---|
 | `MO2_EXTERNAL_RUNTIME` | `PROVEN` | MO2 ejecutó `SkyrimSE.exe` físicamente desde el Stock externo. |
 | `MO2_EXTERNAL_LAUNCHER` | `PROVEN` | MO2 ejecutó `SkyrimSELauncher.exe` físicamente desde el Stock externo. |
-| `STEAM_AUTH_EXTERNAL_RUNTIME` | `PROVEN` para esta corrida | Steam reconoció AppID 489830/overlay mientras el ejecutable estaba fuera del directorio Steam. |
+| `STEAM_PARTICIPATION_EXTERNAL_RUNTIME` | `PROVEN` para esta corrida | Steam reconoció AppID `489830`, reportó estado `App Running` y cargó el overlay mientras el ejecutable estaba fuera del directorio Steam. Esta evidencia no demuestra autenticación, validación de licencia ni éxito de DRM. |
 | `STEAM_UPDATE_FAILURE_WITH_MANIFEST_READONLY` | `OBSERVED` | Steam registró `Disk write failure` mientras el manifest permanecía ReadOnly. |
 | `UPDATE_GUARD_CAUSALITY` | `NOT_PROVEN` | La evidencia preservada no identifica con suficiente precisión la operación/path que falló; no atribuye causalmente el fallo al atributo ReadOnly. |
 | `GOLDEN_EXECUTION_CAN_CAUSE_WRITES` | `PROVEN` | Durante RUN_A/RUN_B se observaron escrituras/touches físicos dentro del Stock; esta propiedad no se fundamenta únicamente en los dos mismatches post-lanzamiento. |
