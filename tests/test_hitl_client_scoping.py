@@ -281,9 +281,7 @@ async def test_un_dispatch_concurrente_no_hereda_el_cliente() -> None:
 #: ``run_ritual_resume`` (post-D2, F-001) es el tercer miembro: atraviesa el
 #: MISMO dispatcher HITL-gated de generate_lods con un payload resume, así que
 #: comparte exactamente la misma obligación de scoping que sus hermanos.
-LANZADORES_QUE_PARKEAN_APROBACION = frozenset(
-    {"run_ritual", "run_ritual_install", "run_ritual_resume"}
-)
+LANZADORES_QUE_PARKEAN_APROBACION = frozenset({"run_ritual", "run_ritual_install", "run_ritual_resume"})
 
 
 def _lanzadores_detectados() -> frozenset[str]:

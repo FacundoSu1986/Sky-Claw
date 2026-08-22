@@ -14,7 +14,7 @@ import json
 import logging
 import pathlib
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -32,6 +32,7 @@ from sky_claw.app.db.handoffs import (
     HANDOFFS_SCHEMA_SQL,
     DeploymentHandoff,
     HandoffState,
+    clave_canonica_de_path,
     fila_de_registro,
     handoff_desde_fila,
 )
@@ -304,6 +305,21 @@ class OperationJournal:
         # seguir siendo independiente por instancia.
         self._lock = asyncio.Lock()
         self._current_transaction: int | None = None
+        # F-002b (PR #493): IDs EXACTOS de TX PENDING que ``sweep_stale_pending``
+        # convirtió a ROLLED_BACK en ESTE open. Se resetea al iniciar cada
+        # open/sweep. Es la única ventana que le da al reconciler de arranque
+        # acceso a evidencia ROLLED_BACK — la que acaba de convertir ÉL — sin
+        # reintroducir historia arbitraria.
+        self._swept_pending_transaction_ids_this_open: set[int] = set()
+
+    @property
+    def swept_pending_transaction_ids_this_open(self) -> frozenset[int]:
+        """IDs exactos de PENDING barridas → ROLLED_BACK en el open actual.
+
+        Read-only: la mutación es exclusiva de :meth:`sweep_stale_pending` (y el
+        reset de ``open()``), que es el único actor que convierte esos estados.
+        """
+        return frozenset(self._swept_pending_transaction_ids_this_open)
 
     async def open(self) -> None:
         """Abre la conexión a la base de datos y crea el schema si es necesario.
@@ -414,6 +430,9 @@ class OperationJournal:
 
         # Mantenimiento best-effort: transacciones PENDING huérfanas de sesiones
         # anteriores (crash / excepción sin rollback) se barren al arrancar.
+        # F-002b: el conjunto de IDs barridos pertenece a ESTE open — se resetea
+        # acá y el sweep de abajo lo repuebla con los IDs que realmente convierte.
+        self._swept_pending_transaction_ids_this_open = set()
         try:
             await self.sweep_stale_pending()
         except (JournalError, sqlite3.Error):
@@ -742,63 +761,58 @@ class OperationJournal:
         Una fila PENDING que sobrevive de una sesión anterior es una transacción
         huérfana (crash o excepción sin rollback): nunca va a confirmarse.
 
+        F-002b: además registra en ``swept_pending_transaction_ids_this_open``
+        los IDs EXACTOS de las filas realmente actualizadas pending →
+        rolled_back en este barrido (``RETURNING``), para que el reconciler de
+        arranque pueda tratar esa conversión recién hecha como evidencia del
+        open actual sin reintoxicar con historia ROLLED_BACK arbitraria. El
+        conjunto se resetea al iniciar cada sweep.
+
         Args:
             max_age_hours: Antigüedad mínima (horas) para considerar huérfana.
 
         Returns:
             Cantidad de transacciones barridas.
         """
+        self._swept_pending_transaction_ids_this_open = set()
         db = await self._ensure_connected()
+
+        # Un solo literal SQL para las dos ramas (defecto #1 del repo: dos
+        # hermanos del mismo UPDATE terminan desalineados). RETURNING devuelve
+        # los IDs realmente actualizados, en el mismo boundary que la mutación.
+        sql = """
+            UPDATE transactions
+            SET status = ?, rolled_back_at = datetime('now')
+            WHERE status = ? AND created_at < datetime('now', ?)
+            RETURNING transaction_id
+        """
+        params = (
+            TransactionStatus.ROLLED_BACK.value,
+            TransactionStatus.PENDING.value,
+            f"-{max_age_hours} hours",
+        )
 
         if self._lifecycle is not None:
             # PR-1b2b: un solo boundary lifecycle para la mutación, sin tomar
             # self._lock (es el MISMO lock de path; asyncio.Lock no es reentrante).
-            # El rowcount se captura dentro del body, con el cursor válido.
             try:
                 async with self._lifecycle.transaction(self._db_path) as conn:
-                    cursor = await conn.execute(
-                        """
-                        UPDATE transactions
-                        SET status = ?, rolled_back_at = datetime('now')
-                        WHERE status = ? AND created_at < datetime('now', ?)
-                        """,
-                        (
-                            TransactionStatus.ROLLED_BACK.value,
-                            TransactionStatus.PENDING.value,
-                            f"-{max_age_hours} hours",
-                        ),
-                    )
-                    count = cursor.rowcount
+                    cursor = await conn.execute(sql, params)
+                    filas = [fila async for fila in cursor]
             except sqlite3.Error as e:
                 raise JournalTransactionError(f"Failed to sweep stale transactions: {e}") from e
+        else:
+            async with self._lock:
+                try:
+                    cursor = await db.execute(sql, params)
+                    filas = [fila async for fila in cursor]
+                    await db.commit()
+                except sqlite3.Error as e:
+                    raise JournalTransactionError(f"Failed to sweep stale transactions: {e}") from e
 
-            if count > 0:
-                logger.warning(
-                    "Journal: %d stale PENDING transaction(s) swept to ROLLED_BACK (older than %.1fh)",
-                    count,
-                    max_age_hours,
-                )
-            return count
-
-        async with self._lock:
-            try:
-                cursor = await db.execute(
-                    """
-                    UPDATE transactions
-                    SET status = ?, rolled_back_at = datetime('now')
-                    WHERE status = ? AND created_at < datetime('now', ?)
-                    """,
-                    (
-                        TransactionStatus.ROLLED_BACK.value,
-                        TransactionStatus.PENDING.value,
-                        f"-{max_age_hours} hours",
-                    ),
-                )
-                await db.commit()
-            except sqlite3.Error as e:
-                raise JournalTransactionError(f"Failed to sweep stale transactions: {e}") from e
-
-        count = cursor.rowcount
+        ids_barridos = {int(fila[0]) for fila in filas}
+        self._swept_pending_transaction_ids_this_open.update(ids_barridos)
+        count = len(ids_barridos)
         if count > 0:
             logger.warning(
                 "Journal: %d stale PENDING transaction(s) swept to ROLLED_BACK (older than %.1fh)",
@@ -1125,22 +1139,29 @@ class OperationJournal:
             except sqlite3.Error as e:
                 raise JournalTransactionError(f"Failed to register indeterminate handoff: {e}") from e
 
-    async def transacciones_que_nombran(self, objetivo: str) -> list[int]:
-        """IDs de transacciones NO-TERMINALES cuyo ActionManifest nombra ``objetivo``.
+    async def transacciones_que_nombran(self, objetivo: str, ids_extra: Iterable[int] = ()) -> list[int]:
+        """IDs de transacciones cuya ActionManifest nombra ``objetivo``, acotadas
+        a EVIDENCIA VIGENTE (F-002b).
+
+        Devuelve las TX PENDING que nombran el artifact más, si el caller los
+        pasa, los ``ids_extra`` — los IDs EXACTOS que ``sweep_stale_pending``
+        barrió en ESTE open (pendientes huérfanas de la sesión anterior,
+        convertidas a ROLLED_BACK justo ahora). Cualquier OTRO ROLLED_BACK —
+        historia vieja, incluso con un COMMITTED posterior— NO es evidencia por
+        sí mismo: reintroducirlo intoxicaba artifacts legítimos actuales con
+        un INDETERMINATE falso.
 
         Evidencia de reconciliación (F-002): el manifiesto es PRE-mutación, así
         que esta consulta prueba intención, no provenance — el caller sólo puede
         fabricar INDETERMINATE con ella, nunca identidad autorizada.
 
-        Filtra ``status IN ('pending','rolled_back')``:
-
-        - ``pending`` es la ventana viva (digest/DB failure del handoff);
-        - ``rolled_back`` es el estado residual de la cancelación entre FS seal
-          y DB commit (el sweep de arranque también lo usa post-24h);
-        - una TX ``committed`` NUNCA es orphan: cubre tanto el legacy exitoso
-          previo como el resume exitoso (TX2 COMMITTED + handoff COMPLETED) —
-          sin este filtro el reconciler degradaba ese artifact a INDETERMINATE
-          en el arranque siguiente.
+        R-006: la comparación de paths se hace sobre la forma canónica
+        link-safe (:func:`~sky_claw.app.db.handoffs.clave_canonica_de_path`) de
+        AMBOS lados — el entry histórico del manifest y el objetivo — para que
+        dos representaciones del mismo path no puedan producir un hit en el
+        lookup del handoff y un miss acá (separador de cola, caso Windows,
+        variantes sintácticas resolubles). El manifiesto no se reescribe: los
+        strings originales quedan intactos.
 
         El filtro de rutas se hace en Python sobre el JSON de ``metadata``: un
         ``LIKE`` sobre texto JSON sería ciego a los escapes de backslash de las
@@ -1148,7 +1169,7 @@ class OperationJournal:
         """
         db = await self._ensure_connected()
         sql = """
-            SELECT je.transaction_id, je.metadata
+            SELECT je.transaction_id, t.status, je.metadata
             FROM journal_entries je
             JOIN transactions t ON t.transaction_id = je.transaction_id
             WHERE je.metadata IS NOT NULL AND t.status IN ('pending', 'rolled_back')
@@ -1160,15 +1181,20 @@ class OperationJournal:
             async with self._lock, db.execute(sql) as cursor:
                 filas = [fila async for fila in cursor]
 
+        extra = set(ids_extra)
         coincidencias: set[int] = set()
-        prefijo = objetivo + ("\\" if "\\" in objetivo else "/")
-        for tx_id, metadata in filas:
+        objetivo_canonico = clave_canonica_de_path(objetivo)
+        prefijo = objetivo_canonico + ("\\" if "\\" in objetivo_canonico else "/")
+        for tx_id, status, metadata in filas:
+            if status != TransactionStatus.PENDING.value and int(tx_id) not in extra:
+                continue
             try:
                 files_touched = json.loads(metadata).get("files_touched") or []
             except (TypeError, json.JSONDecodeError):
                 continue
             for ruta in files_touched:
-                if str(ruta) == objetivo or str(ruta).startswith(prefijo):
+                canonica = clave_canonica_de_path(str(ruta))
+                if canonica == objetivo_canonico or canonica.startswith(prefijo):
                     coincidencias.add(int(tx_id))
                     break
         return sorted(coincidencias)
@@ -2311,7 +2337,7 @@ class NoOpJournal(OperationJournal):
     async def registrar_handoff_indeterminado(self, *, registro: DeploymentHandoff) -> None:
         return None
 
-    async def transacciones_que_nombran(self, objetivo: str) -> list[int]:
+    async def transacciones_que_nombran(self, objetivo: str, ids_extra: Iterable[int] = ()) -> list[int]:
         return []
 
 

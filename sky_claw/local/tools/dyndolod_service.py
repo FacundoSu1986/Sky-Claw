@@ -430,9 +430,11 @@ class DynDOLODPipelineService:
 
         F-002: ``consultar_handoff_activo() == None`` NO alcanza para declarar
         legacy. Antes del fallback se consulta la MISMA primitive que el
-        reconciler de arranque: si hay una TX PENDING/ROLLED_BACK cuyo
-        ActionManifest nombra el artifact y el mod sigue vivo, se materializa
-        un INDETERMINATE conservador y el resume falla cerrado.
+        reconciler de arranque: si hay una TX PENDING cuyo ActionManifest
+        nombra el artifact y el mod sigue vivo, se materializa un INDETERMINATE
+        conservador y el resume falla cerrado. Un ROLLED_BACK —por más reciente—
+        NO es evidencia por sí solo (R-002A): las ventanas de cancelación dejan
+        la TX PENDING cuando la mutación preservada no se puede resolver.
         """
         mods_path = runner._config.mo2_mods_path
         mod_texgen = mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
@@ -873,6 +875,11 @@ class DynDOLODPipelineService:
         # que `needs_deployment`.
         handoff_resume: DeploymentHandoff | None = None
         handoff_en_supersede: DeploymentHandoff | None = None
+        # R-002B: un handoff INDETERMINATE previo NO transiciona antes a
+        # SUPERSEDING (el CHECK del esquema lo rechaza: expected_* NULL). El old
+        # permanece INDETERMINATE durante la regeneración y sólo el boundary de
+        # reemplazo —éxito o needs_deployment— lo cierra a SUPERSEDED.
+        handoff_previo_indeterminado: DeploymentHandoff | None = None
         texgen_packaging_intentado = False
 
         logger.info(
@@ -1128,10 +1135,22 @@ class DynDOLODPipelineService:
                 # SUPERSEDING ANTES de la primera mutación de FS. Si la
                 # transición no se puede hacer (estado concurrente), se aborta
                 # sin mutar — nunca dos generaciones sobre el mismo owner.
+                #
+                # R-002B: la EXCEPCIÓN es INDETERMINATE — su expected_* NULL
+                # viola el CHECK del esquema fuera de 'indeterminate', así que
+                # la transición previa levantaba JournalTransactionError y
+                # dejaba el estado activo sin salida. El old PERMANECE
+                # INDETERMINATE durante la corrida; si ésta produce y empaqueta
+                # un artifact autorizado, el boundary de reemplazo lo supersede
+                # (INDETERMINATE → SUPERSEDED + INSERT del nuevo). La identidad
+                # nueva sale EXCLUSIVAMENTE del artifact generado, nunca de
+                # ``observed_*`` del old.
                 if run_texgen:
                     clave_artifact = clave_de_artifact(mods_path / DynDOLODRunner.TEXGEN_MOD_NAME)
                     activo = await self._journal.consultar_handoff_activo(clave_artifact)
-                    if activo is not None:
+                    if activo is not None and activo.state is HandoffState.INDETERMINATE:
+                        handoff_previo_indeterminado = activo
+                    elif activo is not None:
                         ok = await self._journal.transicionar_handoff(
                             activo.handoff_id,
                             desde=activo.state,
@@ -1254,7 +1273,12 @@ class DynDOLODPipelineService:
                     await _commit_directory_rollbacks(dir_rollbacks)
                     await self._journal.completar_handoff_de_resume(tx_id, handoff_resume.handoff_id)
                     journal_committed = True
-                elif handoff_en_supersede is not None:
+                elif handoff_en_supersede is not None or handoff_previo_indeterminado is not None:
+                    # R-002B: el MISMO boundary cierra tanto al SUPERSEDING
+                    # real como al INDETERMINATE previo (que nunca pre-transicionó):
+                    # old → SUPERSEDED enlazado al nuevo autorizado.
+                    handoff_previo = handoff_en_supersede or handoff_previo_indeterminado
+                    assert handoff_previo is not None
                     mod_textures = mods_path / DynDOLODRunner.TEXGEN_MOD_NAME / DynDOLODRunner.TEXGEN_OUTPUT_NAME
                     digest_final = await asyncio.to_thread(digest_arbol, mod_textures)
                     game_key, mods_root_key, data_key = self._keys_de_identidad(runner)
@@ -1284,7 +1308,7 @@ class DynDOLODPipelineService:
                         tx_id,
                         descripcion=None,
                         registro=registro_completado,
-                        viejo=handoff_en_supersede,
+                        viejo=handoff_previo,
                     )
                     journal_committed = True
                 else:
@@ -1480,7 +1504,10 @@ class DynDOLODPipelineService:
                             "TexGen generado y empaquetado; esperando deployment en el Data (DynDOLOD pendiente)"
                         ),
                         registro=registro,
-                        viejo=handoff_en_supersede,
+                        # R-002B: también el INDETERMINATE previo se cierra acá
+                        # (→ SUPERSEDED) — sin esto, el old activo rechazaba el
+                        # INSERT del nuevo por el índice único de ownership.
+                        viejo=handoff_en_supersede or handoff_previo_indeterminado,
                     )
                 except (OSError, JournalTransactionError) as e:
                     # Ventana honesta: el artifact vive pero no se pudo autorizar.

@@ -74,8 +74,16 @@ STORE_KEY_PENDING_HITL = "pending_hitl"
 STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
 # F-001 (post-D2): el RESULTADO estructural del último dispatch de Ritual
 # (dict crudo con ``needs_deployment``/``texgen_mod_path``) para que el panel
-# ofrezca la acción de Resume sin parsear el texto del feedback.
+# ofrezca la acción de Resume sin parsear el texto del feedback. R-004/R-005:
+# viaja en ENVELOPE — dueño (``owner_tab``) + ``tool_key`` real de la corrida +
+# dict — para que una acción destructiva no migre entre pestañas ni se derive
+# con un literal de tool desde la vista.
 STORE_KEY_RITUAL_LAST_RESULT = "ritual_last_result"
+
+#: Claves del envelope publicado bajo ``STORE_KEY_RITUAL_LAST_RESULT``.
+RITUAL_RESULT_OWNER_TAB = "owner_tab"
+RITUAL_RESULT_TOOL_KEY = "tool_key"
+RITUAL_RESULT_PAYLOAD_KEY = "result"
 
 
 #: Dueño de una aprobación pendiente: el ``tab_id`` de la pestaña que lanzó el
@@ -136,6 +144,55 @@ def resolve_pending_hitl(store: ReactiveStore, tab_id: str | None) -> dict[str, 
     if owner is None or owner == tab_id:
         return pending
     return None
+
+
+def publicar_resultado_de_ritual(
+    store: ReactiveStore,
+    *,
+    tool_key: str,
+    resultado: dict[str, Any],
+    tab_id: str | None,
+) -> None:
+    """Publica el resultado estructural bajo la clave accionable (R-004/R-005).
+
+    El envelope persiste juntos el ``owner_tab``, el ``tool_key`` REAL de la
+    corrida y el dict estructurado — no sólo el result. Con eso, la acción de
+    Resume sólo puede resolverse/consumirse desde la pestaña dueña, y la vista
+    nunca hardcodea "dyndolod": el tool sale del dato, no de un literal.
+    """
+    store.set(
+        STORE_KEY_RITUAL_LAST_RESULT,
+        {
+            RITUAL_RESULT_OWNER_TAB: tab_id,
+            RITUAL_RESULT_TOOL_KEY: tool_key,
+            RITUAL_RESULT_PAYLOAD_KEY: resultado,
+        },
+    )
+
+
+def resolve_ritual_resume_action(store: ReactiveStore, tab_id: str | None) -> dict[str, Any] | None:
+    """La acción de Resume que ESTA pestaña puede resolver/consumir, o ``None``.
+
+    R-004: espeja :func:`resolve_pending_hitl` — una acción DESTRUCTIVA no
+    migra entre pestañas. Sólo el ``owner_tab`` del envelope la ve; un
+    resultado sin dueño (agente/backend, o dispatch sin contexto de pestaña)
+    lo ve cualquiera, con el mismo criterio del modal HITL.
+
+    R-005: el ``tool_key`` sale del envelope publicado por la corrida — un
+    resultado de otro ritual con ``needs_deployment`` de fixture NO produce una
+    acción de DynDOLOD. Seam puro, testeable sin NiceGUI.
+    """
+    publicado = store.get(STORE_KEY_RITUAL_LAST_RESULT)
+    if not isinstance(publicado, dict):
+        return None
+    owner = publicado.get(RITUAL_RESULT_OWNER_TAB)
+    if owner is not None and owner != tab_id:
+        return None
+    tool_key = publicado.get(RITUAL_RESULT_TOOL_KEY)
+    resultado = publicado.get(RITUAL_RESULT_PAYLOAD_KEY)
+    if not isinstance(tool_key, str) or not isinstance(resultado, dict):
+        return None
+    return resume_action_from_result(tool_key, resultado)
 
 
 #: Per-client "Modo local" toggle, stored in ``app.storage.client`` (server-side,
@@ -431,8 +488,9 @@ async def run_ritual(
         clear_owned_hitl(store, tab_id)
     resultado = result if isinstance(result, dict) else {}
     # F-001: el panel consume el dict ESTRUCTURAL — needs_deployment + path —
-    # para ofrecer la acción de Resume. Publicado ANTES del texto del toast.
-    store.set(STORE_KEY_RITUAL_LAST_RESULT, resultado)
+    # para ofrecer la acción de Resume. R-004/R-005: se publica en ENVELOPE
+    # (dueño + tool_key real + dict), ANTES del texto del toast.
+    publicar_resultado_de_ritual(store, tool_key=tool_key, resultado=resultado, tab_id=tab_id)
     text, kind = summarize_ritual_result(tool_key, resultado)
     store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": text, "type": kind})
     # Surface del reporte de preflight que el dispatch adjuntó (hoy solo LOOT): el

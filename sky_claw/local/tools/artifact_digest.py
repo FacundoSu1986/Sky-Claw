@@ -23,7 +23,11 @@ artifact y se incluye.
 **F-004**: un enlace (symlink/junction/reparse-point) dentro del subtree
 autorizado NO se sigue NI se ignora: el árbol deja de ser autorizable y el
 digest FALLA CERRADO. La detección es local a este módulo (no cambia la
-semántica global de ``iter_archivos_propios``).
+semántica global de ``iter_archivos_propios``) y es **best-effort ante
+mutación concurrente del filesystem**: se inspecciona entrada por entrada sin
+handles ``O_NOFOLLOW``, así que no se promete una garantía TOCTOU-fuerte — una
+carrera que reemplace un archivo regular por un enlace entre la inspección y
+la apertura no está cubierta por este diseño.
 """
 
 from __future__ import annotations
@@ -69,6 +73,11 @@ def _enlaces_dentro(raiz: pathlib.Path) -> list[str]:
 
     Un árbol ilegible también falla cerrado: no se puede firmar como propio lo
     que no se pudo inspeccionar.
+
+    **Best-effort ante mutación concurrente**: la clasificación es por
+    ``DirEntry``/``lstat`` por entrada, sin handles ``O_NOFOLLOW`` — una
+    carrera que reemplace una entrada por un enlace entre la inspección y el
+    uso posterior no queda cubierta por este recorrido.
     """
     enlaces: list[str] = []
     pendientes: list[pathlib.Path] = [raiz]
@@ -109,7 +118,9 @@ def digest_arbol(raiz: pathlib.Path) -> TreeDigest:
     identidad que afirmar, así que lanza ``OSError`` en vez de devolver un
     digest vacío que parecería válido (mismo criterio que el gate C para un
     staging sin archivos propios). Igual con un enlace dentro del scope (F-004):
-    no se sigue ni se ignora — no hay identidad que firmar.
+    no se sigue ni se ignora — no hay identidad que firmar. La detección de
+    enlaces es best-effort ante mutación concurrente del filesystem (ver el
+    docstring del módulo).
 
     Fórmula (por archivo, en orden lexicográfico del relpath canónico):
 

@@ -100,8 +100,9 @@ async def test_run_ritual_generar_conserva_el_payload_vacio() -> None:
 
 async def test_run_ritual_publica_el_resultado_estructural_para_el_panel() -> None:
     """F-001 GUI actionability: el panel consume el RESULTADO (flag + path), no
-    el texto. ``run_ritual`` publica el dict crudo bajo la clave estructural y
-    el resume lo re-publica igual."""
+    el texto. ``run_ritual`` publica el envelope con dueño + tool_key + dict
+    crudo bajo la clave estructural (R-004/R-005) y el resume lo re-publica
+    igual."""
     sup = _FakeSupervisor(
         {
             "success": False,
@@ -116,8 +117,14 @@ async def test_run_ritual_publica_el_resultado_estructural_para_el_panel() -> No
 
     publicado = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
     assert publicado is not None
-    assert publicado.get("needs_deployment") is True
-    assert publicado.get("texgen_mod_path") == "C:/MO2/mods/TexGen Output"
+    assert publicado.get(rr_mod.RITUAL_RESULT_TOOL_KEY) == "dyndolod", (
+        "el tool_key de la corrida no viaja con el resultado"
+    )
+    assert publicado.get(rr_mod.RITUAL_RESULT_OWNER_TAB) is None, "sin tab_id el resultado no tiene dueño"
+    resultado = publicado.get(rr_mod.RITUAL_RESULT_PAYLOAD_KEY)
+    assert resultado is not None
+    assert resultado.get("needs_deployment") is True
+    assert resultado.get("texgen_mod_path") == "C:/MO2/mods/TexGen Output"
 
 
 async def test_run_ritual_resume_usa_el_mismo_single_flight_y_feedback() -> None:
@@ -132,6 +139,139 @@ async def test_run_ritual_resume_usa_el_mismo_single_flight_y_feedback() -> None
     assert sup.calls == []
     fb = store.get(rr_mod.STORE_KEY_RITUAL_FEEDBACK)
     assert fb is not None and fb["type"] == "warning"
+
+
+# ── R-004/R-005: ownership del resultado accionable entre pestañas ────────────
+
+
+def _resultado_needs_deployment() -> dict:
+    return {
+        "success": False,
+        "needs_deployment": True,
+        "texgen_mod_path": "C:/MO2/mods/TexGen Output",
+        "message": "materializá el árbol antes de reintentar",
+    }
+
+
+def test_solo_la_pestana_duena_resuelve_la_accion_de_resume() -> None:
+    """R-004: la acción destructiva de Resume no migra entre pestañas — sólo el
+    ``owner_tab`` la puede resolver/consumir."""
+    store = ReactiveStore()
+    rr_mod.publicar_resultado_de_ritual(
+        store,
+        tool_key="dyndolod",
+        resultado=_resultado_needs_deployment(),
+        tab_id="tab-A",
+    )
+
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is not None
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-B") is None, (
+        "una pestaña que NO lanzó el ritual puede consumir la acción destructiva de Resume"
+    )
+
+
+def test_la_accion_sin_dueno_la_resuelve_cualquier_pestana() -> None:
+    """Un resultado sin pestaña lanzadora (agente/backend, o dispatch sin
+    contexto) queda sin dueño y lo ve cualquiera — el mismo criterio que
+    ``resolve_pending_hitl``."""
+    store = ReactiveStore()
+    rr_mod.publicar_resultado_de_ritual(
+        store,
+        tool_key="dyndolod",
+        resultado=_resultado_needs_deployment(),
+        tab_id=None,
+    )
+
+    for pestana in ("tab-A", "tab-B", None):
+        assert rr_mod.resolve_ritual_resume_action(store, pestana) is not None, (
+            f"{pestana} no vería una acción sin dueño"
+        )
+
+
+def test_el_resultado_de_otro_ritual_no_produce_accion_dyndolod() -> None:
+    """R-005: un ``needs_deployment`` accidental/fixture de OTRO ritual no
+    produce una acción de DynDOLOD — el tool_key real de la corrida viaja con
+    el resultado y decide."""
+    store = ReactiveStore()
+    rr_mod.publicar_resultado_de_ritual(
+        store,
+        tool_key="loot",
+        resultado=_resultado_needs_deployment(),
+        tab_id="tab-A",
+    )
+
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is None, (
+        "un resultado de otro ritual con needs_deployment de fixture produjo una acción de DynDOLOD"
+    )
+
+
+def test_tras_consumir_la_accion_desaparece() -> None:
+    """El consumo de la vista limpia las dos claves: la acción deja de
+    resolverse para cualquiera (incluida la dueña)."""
+    store = ReactiveStore()
+    rr_mod.publicar_resultado_de_ritual(
+        store,
+        tool_key="dyndolod",
+        resultado=_resultado_needs_deployment(),
+        tab_id="tab-A",
+    )
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is not None
+
+    store.set(rr_mod.STORE_KEY_RITUAL_FEEDBACK, None)
+    store.set(rr_mod.STORE_KEY_RITUAL_LAST_RESULT, None)
+
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is None
+
+
+async def test_tras_un_success_la_accion_desaparece() -> None:
+    """El resultado del nuevo run reemplaza al viejo: un success no ofrece
+    acción, ni siquiera a la pestaña dueña del resultado anterior."""
+    store = ReactiveStore()
+    rr_mod.publicar_resultado_de_ritual(
+        store,
+        tool_key="dyndolod",
+        resultado=_resultado_needs_deployment(),
+        tab_id="tab-A",
+    )
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is not None
+
+    await rr_mod.run_ritual("dyndolod", supervisor=_FakeSupervisor({"success": True}), store=store, tab_id="tab-A")
+
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is None, (
+        "un success dejó consumible la acción de Resume del resultado viejo"
+    )
+
+
+async def test_una_nueva_generacion_no_consume_el_resultado_viejo() -> None:
+    """El arranque de un run nuevo limpia la clave antes de despachar: el
+    resultado VIEJO no se consume ni se re-resuelve tras la nueva generación."""
+    store = ReactiveStore()
+    viejo = dict(_resultado_needs_deployment())
+    rr_mod.publicar_resultado_de_ritual(store, tool_key="dyndolod", resultado=viejo, tab_id="tab-A")
+
+    await rr_mod.run_ritual("dyndolod", supervisor=_FakeSupervisor({"success": True}), store=store, tab_id="tab-A")
+
+    publicado = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
+    assert publicado is not None
+    assert publicado.get(rr_mod.RITUAL_RESULT_PAYLOAD_KEY) != viejo
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is None
+
+
+def test_la_vista_no_deriva_la_accion_con_literal_de_tool() -> None:
+    """R-005/M5-8: la vista debe resolver la acción por el seam
+    ``resolve_ritual_resume_action`` (que lee el tool_key del envelope), nunca
+    derivarla directo con un literal ``"dyndolod"``. El ancla por AST congela
+    la ausencia del call directo en el módulo de la vista."""
+    import pathlib
+
+    vista = pathlib.Path(__file__).resolve().parents[1] / "sky_claw" / "app" / "gui" / "views" / "forge_dashboard.py"
+    fuente = vista.read_text(encoding="utf-8")
+
+    assert "resolve_ritual_resume_action" in fuente, "la vista no usa el seam de ownership del resume"
+    assert "resume_action_from_result(" not in fuente, (
+        "la vista deriva la acción con un call directo (y por lo tanto un tool_key literal): "
+        "el tool_key debe salir del envelope publicado por la corrida"
+    )
 
 
 # ── Ancla del tramo dispatcher→strategy→service ──────────────────────────────

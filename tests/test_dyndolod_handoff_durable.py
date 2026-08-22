@@ -15,6 +15,7 @@ Los únicos que pueden pasar por construcción son los anclas de contrato puro
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sqlite3
 from collections.abc import Callable
@@ -282,6 +283,25 @@ async def test_esquema_acepta_indeterminate_con_expected_null(journal_tmp) -> No
             observed_digest, observed_files, observed_bytes)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (tx, "indeterminate", "A", "G", "M", "D", "Perfil-A", "d", 1, 1),
+    )
+    assert handoff_id > 0
+
+
+@pytest.mark.asyncio
+async def test_esquema_acepta_superseded_sin_expected_como_historia_de_indeterminate(
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R-002B: una fila INDETERMINATE reemplazada termina SUPERSEDED con
+    expected_* NULL — historia de auditoría, no una reclamación de identidad.
+    El CHECK lo admite (sólo awaiting/superseding/completed exigen identidad)."""
+    journal, db_path = journal_tmp
+    tx = await journal.begin_transaction("evidencia", agent_id="test")
+    handoff_id = await _insert_raw(
+        db_path,
+        """INSERT INTO deployment_handoffs
+           (source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile)
+           VALUES (?, 'superseded', 'A', 'G', 'M', 'D', 'Perfil-A')""",
+        (tx,),
     )
     assert handoff_id > 0
 
@@ -830,28 +850,34 @@ async def test_resume_same_session_con_tx_pending_huerfana_no_llama_dyndolod(
 
 
 @pytest.mark.asyncio
-async def test_resume_same_session_con_tx_rolled_back_huerfana_no_llama_dyndolod(
+async def test_resume_same_session_con_tx_rolled_back_sin_otra_evidencia_sigue_legacy(
     tmp_path: pathlib.Path,
     journal_tmp,  # noqa: ANN001
 ) -> None:
-    """F-002 ventana C (T-red-5): el estado residual de la cancelación — TX
-    ROLLED_BACK + mod preservado + sin handoff, SIN reinicio — también falla
-    cerrado en el hot path."""
+    """R-002A (contrato revisado de F-002 ventana C): una TX ROLLED_BACK por sí
+    sola —sin PENDING relevante y sin IDs barridos en este open— NO es evidencia
+    de orphan. La ventana C de cancelación (FS seal → DB) sigue bloqueando en
+    producción MEDIANTE SU TX PENDING: ``_cerrar_tx_tras_rollback`` deja la TX
+    PENDING cuando la mutación preservada no puede resolverse (ver el test
+    PENDING de arriba). Acá el resume sin otra evidencia vigente sigue legacy."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None
+    assert config.data_dir is not None and config.output_root is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
+    _mirror_a_data(mod_texgen / "textures", config.data_dir)
     await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="rolled_back")
 
     svc = _svc(journal, runner=runner)
-    run_dyndolod = AsyncMock()
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
 
-    run_dyndolod.assert_not_awaited()
-    assert result.get("reason") == "HandoffIndeterminate"
+    assert result["success"] is True, result.get("errors")
+    run_dyndolod.assert_awaited_once()
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
 
 
 @pytest.mark.asyncio
@@ -940,10 +966,213 @@ def test_digest_arbol_sin_archivos_propios_falla_cerrado(tmp_path: pathlib.Path)
         digest_arbol(vacio)
 
 
-def test_clave_de_artifact_es_normcase(tmp_path: pathlib.Path) -> None:
-    assert clave_de_artifact(tmp_path / "MO2" / "mods" / "TexGen Output") == clave_de_artifact(
-        tmp_path / "MO2" / "mods" / "texgen output"
+# =============================================================================
+# F-002b — PROVENANCE DEL ORPHAN (R-002A): historia vs evidencia vigente
+# =============================================================================
+#
+# El contrato original de F-002 tomaba "TX PENDING o ROLLED_BACK que nombra el
+# mod" como evidencia de corrida interrumpida. Demasiado ancho: un ROLLED_BACK
+# de hace 90 días —incluso con un COMMITTED posterior— intoxicaba un artifact
+# legítimo actual con un INDETERMINATE falso. La evidencia vigente es:
+#
+# - hot path (run_texgen=False, sin handoff activo): TX PENDING relevante, y
+#   NADA de historia ROLLED_BACK;
+# - arranque: PENDING relevantes ∪ los IDs EXACTOS que ``sweep_stale_pending``
+#   barrió en ESTE open (``swept_pending_transaction_ids_this_open``) — porque
+#   una PENDING huérfana de la sesión anterior se convierte a ROLLED_BACK justo
+#   en ese open y debe seguir bloqueando, sin reintoxicar para siempre.
+
+
+async def _envejecer_tx(journal: OperationJournal, tx_id: int, horas: int = 2160) -> None:
+    """Corre ``created_at`` de una TX al pasado (2160h = 90 días por defecto)."""
+    await journal._db.execute(  # noqa: SLF001
+        "UPDATE transactions SET created_at = datetime('now', ?) WHERE transaction_id = ?",
+        (f"-{horas} hours", tx_id),
     )
+    await journal._db.commit()
+
+
+@pytest.mark.asyncio
+async def test_rolled_back_historica_no_es_orphan_por_si_sola(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R2-1: TX ROLLED_BACK de hace 90 días + manifest que nombra el artifact +
+    artifact legítimo vivo + sin handoff → NO INDETERMINATE: el hot path sigue
+    legacy. La historia no es evidencia vigente."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    _mirror_a_data(mod_texgen / "textures", config.data_dir)
+    tx = await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="rolled_back")
+    await _envejecer_tx(journal, tx)
+
+    svc = _svc(journal, runner=runner)
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    run_dyndolod = _dyndolod_ok(dyndolod_staging)
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert result["success"] is True, result.get("errors")
+    run_dyndolod.assert_awaited_once()
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None, (
+        "un ROLLED_BACK histórico fabricó un INDETERMINATE falso"
+    )
+
+
+@pytest.mark.asyncio
+async def test_multiples_rolled_back_historicas_no_son_evidencia(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R2-2: varias ROLLED_BACK viejas nombrando el artifact — NINGUNA es
+    evidencia actual (ni la primera ni la última candidata)."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    _mirror_a_data(mod_texgen / "textures", config.data_dir)
+    for _ in range(3):
+        tx = await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="rolled_back")
+        await _envejecer_tx(journal, tx)
+
+    svc = _svc(journal, runner=runner)
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    run_dyndolod = _dyndolod_ok(dyndolod_staging)
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert result["success"] is True, result.get("errors")
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
+
+
+@pytest.mark.asyncio
+async def test_rolled_back_vieja_mas_committed_nueva_no_es_orphan(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R2-3: ROLLED_BACK histórica + COMMITTED posterior, ambas nombrando el
+    mismo artifact → no hay orphan falso (ninguna es evidencia de interrupción)."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    _mirror_a_data(mod_texgen / "textures", config.data_dir)
+    tx_old = await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="rolled_back")
+    await _envejecer_tx(journal, tx_old)
+    tx_new = await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="pending")
+    await journal.commit_transaction(tx_new)
+
+    svc = _svc(journal, runner=runner)
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    run_dyndolod = _dyndolod_ok(dyndolod_staging)
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    assert result["success"] is True, result.get("errors")
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
+
+
+@pytest.mark.asyncio
+async def test_swept_this_open_es_evidencia_del_arranque_y_no_persiste(
+    tmp_path: pathlib.Path,
+) -> None:
+    """R2-5: una PENDING huérfana >24h se convierte a ROLLED_BACK en el open y
+    SU ID exacto queda en ``swept_pending_transaction_ids_this_open`` — el
+    reconciler de arranque lo usa como evidencia → INDETERMINATE. Reabrir el
+    journal sin PENDING nueva: el ID NO vuelve a aparecer (no intoxica para
+    siempre)."""
+    db_path = tmp_path / "swept.db"
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+
+    j1 = OperationJournal(db_path)
+    await j1.open()
+    tx = await _sembrar_tx_terminada(j1, mod_texgen=mod_texgen, estado="pending")
+    await _envejecer_tx(j1, tx, horas=48)
+    await j1.close()
+
+    j2 = OperationJournal(db_path)
+    await j2.open()
+    assert tx in j2.swept_pending_transaction_ids_this_open, (
+        "el sweep no registró el ID exacto de la PENDING barrida en este open"
+    )
+    barrida = await j2.get_transaction(tx)
+    assert barrida is not None and barrida.status is TransactionStatus.ROLLED_BACK
+
+    await reconciliar_handoffs_de_deployment(
+        journal=j2,
+        mod_texgen=mod_texgen,
+        game_key=clave_de_artifact(tmp_path / "game"),
+        mods_root_key=clave_de_artifact(tmp_path / "MO2" / "mods"),
+        data_key=clave_de_artifact(tmp_path / "game" / "Data"),
+        expected_profile="Perfil-A",
+        digest_arbol=digest_arbol,
+    )
+    activo = await j2.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.INDETERMINATE, (
+        "el ID barrido en este open no fue evidencia para el reconciler de arranque"
+    )
+    await j2.close()
+
+    # Reabrir la MISMA instancia tampoco conserva el ID (M5-4): el conjunto
+    # refleja sólo el barrido del open que lo produjo, no historia acumulada.
+    await j2.open()
+    assert tx not in j2.swept_pending_transaction_ids_this_open, (
+        "el ID barrido persiste al reabrir la misma instancia: reintoxicaría el artifact"
+    )
+    await j2.close()
+
+    j3 = OperationJournal(db_path)
+    await j3.open()
+    assert tx not in j3.swept_pending_transaction_ids_this_open, (
+        "el ID barrido persiste entre opens: reintoxicaría el artifact para siempre"
+    )
+    await j3.close()
+
+
+@pytest.mark.asyncio
+async def test_rolled_back_previa_al_open_no_entra_al_conjunto_swept_ni_es_candidata(
+    tmp_path: pathlib.Path,
+) -> None:
+    """R2-6: una TX que YA estaba ROLLED_BACK antes del open no aparece en
+    ``swept_pending_transaction_ids_this_open`` (el sweep sólo registra lo que
+    él convierte) y el reconciler de arranque no la toma como candidata."""
+    db_path = tmp_path / "swept-previo.db"
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+
+    j1 = OperationJournal(db_path)
+    await j1.open()
+    tx = await _sembrar_tx_terminada(j1, mod_texgen=mod_texgen, estado="rolled_back")
+    await _envejecer_tx(j1, tx, horas=48)
+    await j1.close()
+
+    j2 = OperationJournal(db_path)
+    await j2.open()
+    assert tx not in j2.swept_pending_transaction_ids_this_open, (
+        "una ROLLED_BACK previa al open apareció como barrida en este open"
+    )
+    await reconciliar_handoffs_de_deployment(
+        journal=j2,
+        mod_texgen=mod_texgen,
+        game_key=clave_de_artifact(tmp_path / "game"),
+        mods_root_key=clave_de_artifact(tmp_path / "MO2" / "mods"),
+        data_key=clave_de_artifact(tmp_path / "game" / "Data"),
+        expected_profile="Perfil-A",
+        digest_arbol=digest_arbol,
+    )
+    assert await j2.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None, (
+        "una ROLLED_BACK previa al open se volvió candidata orphan del arranque"
+    )
+    await j2.close()
 
 
 # =============================================================================
@@ -1470,6 +1699,393 @@ async def test_supersede_fallo_clase_c_sin_snapshot_cae_a_indeterminate_y_resume
 
 
 # =============================================================================
+# R-002B — ESCAPE DESDE INDETERMINATE (regeneración explícita)
+# =============================================================================
+#
+# INDETERMINATE + run_texgen=True NO puede transicionar antes a SUPERSEDING:
+# el CHECK del esquema exige expected_* NOT NULL fuera de 'indeterminate', así
+# que la transición previa levantaba JournalTransactionError y dejaba el estado
+# activo sin salida. El contrato nuevo: el old PERMANECE INDETERMINATE durante
+# la regeneración; si la corrida produce y empaqueta un artifact autorizado, el
+# boundary de reemplazo existente lo cierra (old → SUPERSEDED + INSERT nuevo).
+# La identidad nueva sale EXCLUSIVAMENTE del artifact generado.
+
+
+async def _sembrar_indeterminado(
+    journal: OperationJournal,
+    *,
+    mod_texgen: pathlib.Path,
+    game: pathlib.Path,
+    mods: pathlib.Path,
+    data: pathlib.Path,
+    profile: str = "Perfil-A",
+    observado: TreeDigest | None = None,
+) -> tuple[int, DeploymentHandoff]:
+    """Handoff INDETERMINATE activo (sin identidad esperada), como lo deja el
+    reconciler de arranque o la clase C del supersede."""
+    tx = await journal.begin_transaction("evidencia indeterminada", agent_id="test")
+    await journal.commit_transaction(tx)
+    registro = DeploymentHandoff(
+        handoff_id=0,
+        source_tx_id=tx,
+        state=HandoffState.INDETERMINATE,
+        artifact_path=clave_de_artifact(mod_texgen),
+        game_key=clave_de_artifact(game),
+        mods_root_key=clave_de_artifact(mods),
+        data_key=clave_de_artifact(data),
+        expected_profile=profile,
+        expected_digest=None,
+        expected_files=None,
+        expected_bytes=None,
+        observed_digest=observado.digest if observado is not None else None,
+        observed_files=observado.files if observado is not None else None,
+        observed_bytes=observado.bytes if observado is not None else None,
+        created_at="",
+        updated_at="",
+        completed_at=None,
+        superseded_at=None,
+        superseded_by=None,
+    )
+    handoff_id = await journal.registrar_handoff_indeterminado(registro=registro)
+    activo = await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.handoff_id == handoff_id
+    return tx, activo
+
+
+def _preparar_data_para_generacion(data_dir: pathlib.Path, *, marca: bytes) -> None:
+    """Espeja en el Data físico los bytes exactos que ``_texgen_que_genera`` va a
+    producir, para que el gate de visibilidad deje correr DynDOLOD."""
+    destino = data_dir / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    (destino / "a.dds").parent.mkdir(parents=True, exist_ok=True)
+    (destino / "a.dds").write_bytes(marca)
+    (destino / "sub").mkdir(parents=True, exist_ok=True)
+    (destino / "sub" / "b.dds").write_bytes(b"CURRENT-SUB")
+
+
+@pytest.mark.asyncio
+async def test_regen_desde_indeterminate_supersede_en_boundary_de_reemplazo(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R2-7: INDETERMINATE + run_texgen=True → NO hay transición previa a
+    SUPERSEDING ni CHECK failure; el boundary de reemplazo (needs_deployment)
+    cierra old → SUPERSEDED e INSERTA el nuevo AWAITING autorizado."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    _escribir_mod(mod_texgen, contenido=b"GEN-1")
+    _tx0, viejo = await _sembrar_indeterminado(
+        journal,
+        mod_texgen=mod_texgen,
+        game=config.game_path,
+        mods=config.mo2_mods_path,
+        data=config.data_dir,
+        observado=digest_arbol(mod_texgen / "textures"),
+    )
+    svc = _svc(journal, runner=runner)
+
+    with (
+        patch.object(
+            runner,
+            "_execute_process",
+            _ProcesoFalso(al_ejecutar=_texgen_que_genera(tmp_path, staging, marca=b"GEN-2")),
+        ),
+        patch.object(runner, "run_dyndolod", AsyncMock()),
+    ):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["needs_deployment"] is True
+    activo = await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.AWAITING_DEPLOYMENT
+    assert activo.handoff_id != viejo.handoff_id
+    cur = await journal._db.execute(  # noqa: SLF001
+        "SELECT state, superseded_by FROM deployment_handoffs WHERE handoff_id = ?",
+        (viejo.handoff_id,),
+    )
+    fila = await cur.fetchone()
+    assert fila is not None and fila[0] == HandoffState.SUPERSEDED.value
+    assert fila[1] == activo.handoff_id
+
+
+@pytest.mark.asyncio
+async def test_regen_desde_indeterminate_exitosa_terminaliza_con_completed(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R2-7 (éxito total): el mismo escape por el boundary de éxito completo —
+    old INDETERMINATE → SUPERSEDED, nuevo COMPLETED, y el old deja de reclamar
+    ownership activo."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    _escribir_mod(mod_texgen, contenido=b"GEN-1")
+    _tx0, viejo = await _sembrar_indeterminado(
+        journal,
+        mod_texgen=mod_texgen,
+        game=config.game_path,
+        mods=config.mo2_mods_path,
+        data=config.data_dir,
+        observado=digest_arbol(mod_texgen / "textures"),
+    )
+    _preparar_data_para_generacion(config.data_dir, marca=b"GEN-2")
+    svc = _svc(journal, runner=runner)
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+
+    with (
+        patch.object(
+            runner,
+            "_execute_process",
+            _ProcesoFalso(al_ejecutar=_texgen_que_genera(tmp_path, staging, marca=b"GEN-2")),
+        ),
+        patch.object(runner, "run_dyndolod", _dyndolod_ok(dyndolod_staging)),
+    ):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["success"] is True, result.get("errors")
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None, (
+        "el old sigue reclamando ownership activo tras el reemplazo"
+    )
+    cur = await journal._db.execute(  # noqa: SLF001
+        "SELECT state, superseded_by FROM deployment_handoffs WHERE handoff_id = ?",
+        (viejo.handoff_id,),
+    )
+    fila = await cur.fetchone()
+    assert fila is not None and fila[0] == HandoffState.SUPERSEDED.value
+
+
+@pytest.mark.asyncio
+async def test_regen_desde_indeterminate_falla_y_old_sigue_indeterminate(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R2-8: TexGen falla antes de producir un artifact autorizado → el old
+    sigue INDETERMINATE, sin identidad esperada inventada, y run_texgen=False
+    continúa fail-closed."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen, contenido=b"GEN-1")
+    _tx0, viejo = await _sembrar_indeterminado(
+        journal,
+        mod_texgen=mod_texgen,
+        game=config.game_path,
+        mods=config.mo2_mods_path,
+        data=config.data_dir,
+        observado=digest_arbol(mod_texgen / "textures"),
+    )
+    svc = _svc(journal, runner=runner)
+
+    with (
+        patch.object(runner, "_execute_process", _ProcesoFalso(return_code=1)),
+        patch.object(runner, "run_dyndolod", _dyndolod_falla()),
+    ):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["success"] is False
+    assert result.get("needs_deployment") is not True
+    activo = await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.INDETERMINATE
+    assert activo.handoff_id == viejo.handoff_id, "la regeneración fallida reemplazó al old"
+    assert activo.expected_digest is None, "se inventó identidad esperada en un fallo"
+    # La TX de la regeneración fallida queda PENDING (la corrida ya había
+    # empezado a mutar): es la evidencia vigente que sostiene el fail-closed
+    # del próximo arranque. En el bug pre-fix, el CHECK la tiraba al handler
+    # genérico con mutation_started=False y quedaba ROLLED_BACK — historia.
+    corridas = [
+        t
+        for t in await journal.list_recent_transactions(limit=10)
+        if t.description == "DynDOLOD pipeline (preset=Medium, texgen=True)"
+    ]
+    assert corridas, "no se encontró la TX de la regeneración fallida"
+    assert corridas[0].status is TransactionStatus.PENDING, (
+        "la TX de una regeneración fallida post-mutación quedó ROLLED_BACK: pierde la evidencia vigente del fail-closed"
+    )
+
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        resultado_resume = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    run_dyndolod.assert_not_awaited()
+    assert resultado_resume.get("reason") == "HandoffIndeterminate"
+
+
+@pytest.mark.asyncio
+async def test_la_identidad_nueva_nunca_promociona_el_observed_del_viejo(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R2-9: INDETERMINATE con observed_digest=X + regeneración → la identidad
+    esperada nueva es la del artifact generado (Y), NUNCA X."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    _escribir_mod(mod_texgen, contenido=b"GEN-1")
+    x = digest_arbol(mod_texgen / "textures")
+    _tx0, viejo = await _sembrar_indeterminado(
+        journal,
+        mod_texgen=mod_texgen,
+        game=config.game_path,
+        mods=config.mo2_mods_path,
+        data=config.data_dir,
+        observado=x,
+    )
+    svc = _svc(journal, runner=runner)
+
+    with (
+        patch.object(
+            runner,
+            "_execute_process",
+            _ProcesoFalso(al_ejecutar=_texgen_que_genera(tmp_path, staging, marca=b"GEN-2")),
+        ),
+        patch.object(runner, "run_dyndolod", AsyncMock()),
+    ):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["needs_deployment"] is True
+    activo = await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.handoff_id != viejo.handoff_id
+    y = digest_arbol(mod_texgen / "textures")
+    assert y.digest != x.digest, "la generación no cambió el artifact: el test no prueba nada"
+    assert activo.expected_digest == y.digest
+    assert activo.expected_digest != x.digest, "la identidad nueva promovió el observed del viejo"
+
+
+@pytest.mark.asyncio
+async def test_regen_desde_superseding_reafirma_y_supersede(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """Receta congelada para SUPERSEDING (ancla R-002B): la regeneración
+    reafirma la transición (idempotente) y el boundary de reemplazo cierra
+    old → SUPERSEDED con el nuevo autorizado."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    _escribir_mod(mod_texgen, contenido=b"GEN-1")
+    _tx1, viejo = await _sembrar_awaiting(
+        journal,
+        mod_texgen=mod_texgen,
+        game=config.game_path,
+        mods=config.mo2_mods_path,
+        data=config.data_dir,
+    )
+    await journal.transicionar_handoff(
+        viejo.handoff_id,
+        desde=HandoffState.AWAITING_DEPLOYMENT,
+        hacia=HandoffState.SUPERSEDING,
+    )
+    svc = _svc(journal, runner=runner)
+
+    with (
+        patch.object(
+            runner,
+            "_execute_process",
+            _ProcesoFalso(al_ejecutar=_texgen_que_genera(tmp_path, staging, marca=b"GEN-2")),
+        ),
+        patch.object(runner, "run_dyndolod", AsyncMock()),
+    ):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["needs_deployment"] is True
+    activo = await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.AWAITING_DEPLOYMENT
+    assert activo.handoff_id != viejo.handoff_id
+
+
+# =============================================================================
+# R-006 — CANONICALIZACIÓN DE PATHS DEL ORACLE
+# =============================================================================
+
+
+def test_clave_canonica_de_path_colapsa_variantes_sintacticas() -> None:
+    """R-006: la forma canónica de comparación colapsa separador de cola,
+    segmentos ``.``/``..`` y mezclas de separadores, sin resolver symlinks."""
+    import os
+
+    from sky_claw.app.db.handoffs import clave_canonica_de_path
+
+    base = "C:" + os.sep + os.path.join("MO2", "mods", "TexGen Output")
+    assert clave_canonica_de_path(base + os.sep) == clave_canonica_de_path(base)
+    assert clave_canonica_de_path(os.path.join(base, "textures", "..", "textures", "a.dds")) == (
+        clave_canonica_de_path(os.path.join(base, "textures", "a.dds"))
+    )
+    assert clave_canonica_de_path("C:/MO2/mods/TexGen Output") == clave_canonica_de_path(base)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="la semántica de caso de Windows sólo aplica en nt")
+@pytest.mark.asyncio
+async def test_oracle_alinea_variantes_de_caso_en_windows(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R-006 (Windows): una entrada del manifest con distinto caso sigue
+    siendo la MISMA identidad que el lookup del handoff."""
+    journal, _ = journal_tmp
+    mod = tmp_path / "MO2" / "mods" / "TexGen Output"
+    tx = await journal.begin_transaction("caso", agent_id="test")
+    await journal.begin_operation(
+        agent_id="test",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(mod),
+        transaction_id=tx,
+        metadata={"files_touched": [str(mod).upper()]},
+    )
+    assert tx in await journal.transacciones_que_nombran(clave_de_artifact(mod))
+
+
+@pytest.mark.asyncio
+async def test_oracle_reconoce_variante_sintactica_resoluble(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R-006: un entry del manifest con segmentos ``..`` que resuelve al árbol
+    del artifact es la MISMA identidad que el lookup del handoff."""
+    journal, _ = journal_tmp
+    mod = tmp_path / "MO2" / "mods" / "TexGen Output"
+    tx = await journal.begin_transaction("variante", agent_id="test")
+    await journal.begin_operation(
+        agent_id="test",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(mod),
+        transaction_id=tx,
+        metadata={"files_touched": [str(mod / "textures" / ".." / "textures" / "a.dds")]},
+    )
+    assert tx in await journal.transacciones_que_nombran(clave_de_artifact(mod))
+
+
+@pytest.mark.asyncio
+async def test_oracle_ignora_separador_de_cola_en_el_entry(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """R-006: un entry con separador de cola nombra el artifact igual."""
+    journal, _ = journal_tmp
+    mod = tmp_path / "MO2" / "mods" / "TexGen Output"
+    tx = await journal.begin_transaction("cola", agent_id="test")
+    await journal.begin_operation(
+        agent_id="test",
+        operation_type=OperationType.FILE_MODIFY,
+        target_path=str(mod),
+        transaction_id=tx,
+        metadata={"files_touched": [str(mod) + os.sep]},
+    )
+    assert tx in await journal.transacciones_que_nombran(clave_de_artifact(mod))
+
+
+# =============================================================================
 # ANCLAS ENUMERATIVAS (D2 §26) — congelan conjuntos, no muestran
 # =============================================================================
 
@@ -1490,6 +2106,28 @@ def test_el_conjunto_de_estados_activos_esta_congelado() -> None:
         )
         == HANDOFF_STATES_ACTIVOS
     )
+
+
+def test_los_estados_con_escape_de_regen_tienen_receta_congelada() -> None:
+    """Ancla enumerativa (R-002B): cada estado desde el cual una regeneración
+    explícita DEBE tener una salida, con su receta congelada por igualdad
+    literal. Un docstring que prometa escape sin test conductual no alcanza:
+    cada receta tiene su test de comportamiento en este archivo (AWAITING →
+    ``test_segundo_texgen_supersede_el_handoff_activo``; INDETERMINATE →
+    ``test_regen_desde_indeterminate_*``; SUPERSEDING →
+    ``test_regen_desde_superseding_reafirma_y_supersede``)."""
+    from sky_claw.app.db.handoffs import HandoffState
+
+    recetas_de_escape = {
+        HandoffState.AWAITING_DEPLOYMENT.value: "pre-mutación → SUPERSEDING → boundary de reemplazo",
+        HandoffState.INDETERMINATE.value: "sin pre-transición (CHECK) → boundary de reemplazo",
+        HandoffState.SUPERSEDING.value: "reafirma SUPERSEDING → boundary de reemplazo",
+    }
+    assert recetas_de_escape == {
+        "awaiting_deployment": "pre-mutación → SUPERSEDING → boundary de reemplazo",
+        "indeterminate": "sin pre-transición (CHECK) → boundary de reemplazo",
+        "superseding": "reafirma SUPERSEDING → boundary de reemplazo",
+    }
 
 
 def test_el_digest_no_tiene_exclusiones_nominales_dentro_del_scope() -> None:

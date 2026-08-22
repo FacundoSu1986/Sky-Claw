@@ -53,8 +53,13 @@ CREATE TABLE IF NOT EXISTS deployment_handoffs (
     CONSTRAINT chk_handoff_state CHECK (
         state IN ('awaiting_deployment','indeterminate','superseding','superseded','completed')
     ),
+    -- R-002B: los estados que reclaman identidad autorizada (awaiting,
+    -- superseding, completed) la exigen NOT NULL; 'indeterminate' no la tiene
+    -- POR CONTRATO, y 'superseded' es historia de auditoría — una fila que
+    -- quedó INDETERMINATE y luego fue reemplazada legítimamente llega a
+    -- 'superseded' con expected_* NULL y debe poder terminar así.
     CONSTRAINT chk_handoff_expected_identity CHECK (
-        state = 'indeterminate'
+        state IN ('indeterminate', 'superseded')
         OR (expected_digest IS NOT NULL AND expected_files IS NOT NULL AND expected_bytes IS NOT NULL)
     ),
     CONSTRAINT chk_handoff_indeterminate_sin_autoridad CHECK (
@@ -158,6 +163,25 @@ def clave_de_artifact(ruta: pathlib.Path) -> str:
     identidad, que es la semántica correcta de su filesystem.
     """
     return os.path.normcase(os.path.normpath(str(ruta.resolve(strict=False))))
+
+
+def clave_canonica_de_path(ruta: str | pathlib.Path) -> str:
+    """Forma canónica link-safe de una ruta para COMPARACIONES de identidad.
+
+    ``abspath`` + ``normpath`` colapsan separadores de cola y segmentos
+    ``.``/``..`` SIN resolver symlinks — a diferencia de :func:`clave_de_artifact`,
+    que SÍ resuelve porque el handoff sigue al recurso físico. ``normcase``
+    alinea el caso en Windows (identidad en POSIX, misma semántica de
+    plataforma que ``clave_de_artifact``).
+
+    Es la forma que usa el oracle de orphans para comparar los strings
+    HISTÓRICOS del ActionManifest contra la identidad del artifact: el
+    manifiesto guarda strings originales que no se reescriben, y su
+    canonicalización no puede depender del estado actual del filesystem
+    (resolver symlinks de una ruta histórica la re-mapa según lo que exista
+    HOY). Por eso link-safe: colapsar sintaxis, nunca seguir enlaces.
+    """
+    return os.path.normcase(os.path.normpath(os.path.abspath(str(ruta))))
 
 
 # =============================================================================
@@ -270,6 +294,7 @@ async def reconciliar_orphan_de_artifact(
     data_key: str,
     expected_profile: str,
     digest_arbol: object,
+    incluir_swept_del_open: bool = False,
 ) -> DeploymentHandoff | None:
     """UNA sola primitive de detección/reconciliación de orphan — consumida por
     el reconciler de arranque Y por el hot path del resume (F-002). No hay una
@@ -280,11 +305,16 @@ async def reconciliar_orphan_de_artifact(
     - handoff ACTIVO para el artifact → se devuelve (reconciliando antes un
       ``SUPERSEDING`` huérfano: vuelve a su estado previo si el árbol sigue
       coincidiendo con su identidad esperada, o se degrada a INDETERMINATE);
-    - sin handoff activo + artifact vivo + evidencia durable de corrida
-      interrumpida (TX PENDING/ROLLED_BACK cuyo ActionManifest —pre-mutación,
-      prueba de INTENCIÓN— nombra el mod) → se crea **INDETERMINATE** (jamás
-      identidad autorizada) y se devuelve;
-    - sin handoff activo y sin evidencia → ``None`` (legacy auténtico).
+    - sin handoff activo + artifact vivo + evidencia VIGENTE de corrida
+      interrumpida (TX PENDING cuyo ActionManifest —pre-mutación, prueba de
+      INTENCIÓN— nombra el mod) → se crea **INDETERMINATE** (jamás identidad
+      autorizada) y se devuelve;
+    - ``incluir_swept_del_open`` (sólo el ARRANQUE lo activa): además de las
+      PENDING, son evidencia los IDs EXACTOS que ``sweep_stale_pending`` barrió
+      en ESTE open (``swept_pending_transaction_ids_this_open``) — una PENDING
+      huérfana de la sesión anterior convertida a ROLLED_BACK justo en ese open
+      debe seguir bloqueando. Nunca: historia ROLLED_BACK arbitraria (R-002A);
+    - sin handoff activo y sin evidencia vigente → ``None`` (legacy auténtico).
     """
     clave = clave_de_artifact(mod_texgen)
     activo = await journal.consultar_handoff_activo(clave)  # type: ignore[attr-defined]
@@ -327,7 +357,14 @@ async def reconciliar_orphan_de_artifact(
     if not textures.is_dir():
         return None
 
-    candidatas = await journal.transacciones_que_nombran(str(mod_texgen))  # type: ignore[attr-defined]
+    # R-006: el oracle recibe la MISMA identidad canónica que el lookup del
+    # handoff, y compara contra los strings históricos del manifest con la
+    # forma link-safe — dos representaciones del mismo path no pueden producir
+    # un hit acá arriba y un miss en el manifest (o viceversa).
+    ids_extra: frozenset[int] = frozenset()
+    if incluir_swept_del_open:
+        ids_extra = getattr(journal, "swept_pending_transaction_ids_this_open", frozenset())  # type: ignore[attr-defined]
+    candidatas = await journal.transacciones_que_nombran(clave, ids_extra=ids_extra)  # type: ignore[attr-defined]
     if not candidatas:
         return None
 
@@ -378,8 +415,9 @@ async def reconciliar_handoffs_de_deployment(
     Delega TODA la lógica en :func:`reconciliar_orphan_de_artifact` — la misma
     primitive que el hot path del resume consulta — para que startup y hot path
     no puedan divergir. Sólo CREA ``INDETERMINATE``, y sólo con evidencia de
-    una corrida interrumpida; el manifiesto (pre-mutación) prueba INTENCIÓN, no
-    provenance.
+    una corrida interrumpida: TX PENDING que nombra el mod o los IDs EXACTOS
+    barridos en ESTE open (F-002b/R-002A); el manifiesto (pre-mutación) prueba
+    INTENCIÓN, no provenance.
 
     Best-effort por contrato: el caller (startup) loguea y continúa ante
     cualquier excepción; un fallo de reconciliación jamás aborta el arranque.
@@ -392,6 +430,7 @@ async def reconciliar_handoffs_de_deployment(
         data_key=data_key,
         expected_profile=expected_profile,
         digest_arbol=digest_arbol,
+        incluir_swept_del_open=True,
     )
 
 
@@ -447,6 +486,7 @@ __all__ = [
     "HANDOFF_STATES_ACTIVOS",
     "DeploymentHandoff",
     "HandoffState",
+    "clave_canonica_de_path",
     "clave_de_artifact",
     "fila_de_registro",
     "handoff_desde_fila",

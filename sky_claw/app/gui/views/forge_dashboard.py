@@ -30,7 +30,7 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_RITUAL_PREFLIGHT,
     clear_answered_hitl,
     resolve_pending_hitl,
-    resume_action_from_result,
+    resolve_ritual_resume_action,
 )
 from sky_claw.app.gui.state import get_store
 
@@ -784,9 +784,12 @@ def _ritual_feedback_panel() -> None:
         )
         # F-001: la acción de Resume se deriva del dict ESTRUCTURAL del último
         # resultado — el panel no parsea el message ni decide por strings.
-        ultimo = get_store().get(STORE_KEY_RITUAL_LAST_RESULT)
-        accion = resume_action_from_result("dyndolod", ultimo) if isinstance(ultimo, dict) else None
+        # R-004/R-005: se resuelve por el seam de ownership — sólo la pestaña
+        # dueña la ve — y el tool_key sale del envelope publicado por la
+        # corrida, nunca de un literal acá (ancla AST en test_resume_hardening).
+        accion = resolve_ritual_resume_action(get_store(), current_tab_id())
         if accion is not None:
+            tool_key_de_la_corrida = str(accion.get("tool_key", ""))
             detalle = _e(str(accion.get("detail", "")))
             resume_fn = _RITUAL_RESUME_CALLBACKS.get("resume")
 
@@ -797,7 +800,7 @@ def _ritual_feedback_panel() -> None:
                 get_store().set(STORE_KEY_RITUAL_LAST_RESULT, None)
                 _ritual_feedback_panel.refresh()
                 if callable(fn):
-                    fn("dyndolod")
+                    fn(tool_key_de_la_corrida)
 
             if callable(resume_fn):
                 r = ui.element("button").style(
