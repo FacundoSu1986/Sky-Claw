@@ -10,14 +10,22 @@ ancla ``tests/test_links.py`` rompe ante copias).
 
 El inventario es COMPLETO (no muestreado) y determinista (orden lexicográfico
 del relpath posix). La identidad de cada archivo es (relpath, size, sha256);
-el mtime no participa. El tamaño sale de los bytes leídos junto al digest.
+el mtime no participa de la identidad persistente ni del tree digest. El
+tamaño sale de los bytes leídos junto al digest.
+
+La observación de cada archivo queda SELLADA alrededor de su lectura
+(PRE/READ/POST): se re-inspecciona la entrada después de leer y la
+observación sólo se acepta si demuestra haber sido estable — misma identidad
+de entrada, bytes leídos igual al tamaño final y mtime sin cambios durante la
+captura. El mtime actúa acá como evidence gate de captura, NO como identidad.
 
 Límites declarados: la inspección es best-effort ante mutación concurrente del
 filesystem — se inspecciona entrada por entrada sin handles ``O_NOFOLLOW`` y se
 revalida la identidad de cada directorio tras abrirlo, pero no se promete una
-garantía TOCTOU-fuerte. Cualquier señal de mutación que el recorrido SÍ vea
-(entrada desaparecida, identidad cambiada) es un error, no un inventario
-parcial.
+garantía TOCTOU-fuerte (un doble overwrite que restaure mtime dentro de la
+misma granularidad no es distinguible). Cualquier señal de mutación que el
+recorrido SÍ vea (entrada desaparecida, identidad cambiada, tamaño o mtime
+distintos tras la lectura) es un error, no un inventario parcial.
 """
 
 from __future__ import annotations
@@ -26,6 +34,7 @@ import hashlib
 import os
 import pathlib
 import stat
+from collections.abc import Callable
 
 from sky_claw.app.security.links import link_kind_and_identity_or_raise, same_file_identity
 from sky_claw.local.runtime_vault.models import FileIdentity, InventoryError, InventoryLinkError
@@ -34,20 +43,69 @@ from sky_claw.local.runtime_vault.models import FileIdentity, InventoryError, In
 #: sostiene un archivo completo en memoria.
 _CHUNK = 1024 * 1024
 
+#: Hooks de sincronización para los tests de estabilidad de captura (F1).
+#: No-op por defecto; los tests los reemplazan con funciones que mutan el
+#: archivo en el punto exacto de la ventana PRE/READ/POST. Son la única forma
+#: determinista (sin sleeps) de ejercitar una carrera real del filesystem.
+_HOOK_ANTES_DE_ABRIR: Callable[[pathlib.Path], None] | None = None
+_HOOK_DURANTE_LA_LECTURA: Callable[[pathlib.Path], None] | None = None
 
-def _digest_de_archivo(ruta: pathlib.Path) -> tuple[int, str]:
-    """(bytes leídos, sha256 hex) de un archivo regular, por chunks.
 
-    El tamaño devuelto sale de la MISMA lectura que alimenta el digest, de modo
-    que un ``FileIdentity`` nunca pueda combinar el tamaño de una versión del
-    archivo con el digest de otra.
+def _digest_estable(ruta: pathlib.Path, identidad_pre: os.stat_result) -> tuple[int, str]:
+    """(bytes leídos, sha256 hex) sellando la observación alrededor de la lectura.
+
+    PRE: ``identidad_pre`` es el MISMO ``lstat`` con el que el recorrido decidió
+    que ``ruta`` era un archivo regular propio. READ: streaming por chunks con
+    conteo de bytes realmente leídos. POST: nuevo ``lstat`` (sin seguir
+    enlaces) y tres gates, todos necesarios:
+
+    - ``same_file_identity(pre, post)``: la entrada de directorio siguió siendo
+      la misma (mismo tipo, mismo reparse tag, mismo file id) — un reemplazo
+      por otro archivo o por un enlace rompe acá, y un ``post`` con tipo de
+      enlace se rechaza con :class:`InventoryLinkError` ANTES de que la lectura
+      del target pueda darse por válida (la ventana lstat → reemplazo por
+      symlink/junction → open no sigue al nuevo target: la observación se
+      descarta);
+    - bytes leídos == ``post.st_size``: sin crecimiento ni truncamiento
+      durante la lectura;
+    - ``pre.st_mtime_ns == post.st_mtime_ns``: sin overwrite same-size ni
+      modificación observada durante la lectura. El mtime es SOLO evidence
+      gate de captura: no entra al ``FileIdentity`` ni al digest del árbol.
+
+    Límite declarado: no es una garantía TOCTOU-fuerte — un doble overwrite
+    que restaura el mtime dentro de la granularidad del filesystem no es
+    distinguible. Todo lo que SÍ se observa falla cerrado.
     """
     acumulador = hashlib.sha256()
     total = 0
+    if _HOOK_ANTES_DE_ABRIR is not None:
+        _HOOK_ANTES_DE_ABRIR(ruta)
     with ruta.open("rb") as fh:
         while chunk := fh.read(_CHUNK):
             acumulador.update(chunk)
             total += len(chunk)
+            if _HOOK_DURANTE_LA_LECTURA is not None:
+                _HOOK_DURANTE_LA_LECTURA(ruta)
+    tipo_post, identidad_post = _clasificar(ruta)
+    if identidad_post is None:
+        raise InventoryError(f"'{ruta}' desapareció durante la lectura: la observación no es estable")
+    if tipo_post is not None:
+        raise InventoryLinkError(
+            f"'{ruta}' fue reemplazado por un enlace ({tipo_post}) durante la lectura: "
+            "no se sigue el nuevo target — la observación se descarta"
+        )
+    if not same_file_identity(identidad_pre, identidad_post):
+        raise InventoryError(f"'{ruta}' fue reemplazado durante la lectura: la observación no es estable")
+    if total != identidad_post.st_size:
+        raise InventoryError(
+            f"'{ruta}' cambió de tamaño durante la lectura ({total} bytes leídos vs "
+            f"{identidad_post.st_size} finales): la observación no es estable"
+        )
+    if identidad_pre.st_mtime_ns != identidad_post.st_mtime_ns:
+        raise InventoryError(
+            f"'{ruta}' fue modificado durante la lectura (mtime {identidad_pre.st_mtime_ns} → "
+            f"{identidad_post.st_mtime_ns}): la observación no es estable"
+        )
     return total, acumulador.hexdigest()
 
 
@@ -100,7 +158,7 @@ def inventory_tree(root: pathlib.Path) -> tuple[FileIdentity, ...]:
             )
         if stat.S_ISREG(identidad.st_mode):
             try:
-                size, digest = _digest_de_archivo(actual)
+                size, digest = _digest_estable(actual, identidad)
             except OSError as exc:
                 raise InventoryError(f"No se pudo leer '{actual}' para el inventario: {exc}") from exc
             encontrados.append(FileIdentity(rel_path=actual.relative_to(root).as_posix(), size=size, digest=digest))

@@ -7,7 +7,10 @@ archivo es (relpath canónico, size, sha256). Mutation checks del contrato:
 - un enlace (symlink/junction/reparse point) dentro del scope es FAIL CLOSED:
   no se sigue NI se ignora — el inventario se rehúsa;
 - un árbol ausente, no-directorio o sin archivos propios NO produce un
-  inventario vacío que parezca válido (UNKNOWN != VERIFIED).
+  inventario vacío que parezca válido (UNKNOWN != VERIFIED);
+- F1: la observación de cada archivo queda SELLADA alrededor de su lectura
+  (PRE/READ/POST) — un archivo que crece, se sobrescribe o se reemplaza
+  durante la captura falla cerrado.
 """
 
 from __future__ import annotations
@@ -18,8 +21,10 @@ import pathlib
 
 import pytest
 
+import sky_claw.local.runtime_vault.inventory as modulo_inv
 from sky_claw.local.runtime_vault.inventory import inventory_tree
 from sky_claw.local.runtime_vault.models import InventoryError, InventoryLinkError
+from sky_claw.local.runtime_vault.verification import tree_digest_from_files
 from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 
@@ -99,12 +104,10 @@ class TestFailClosed:
             inventory_tree(vacio)
 
     def test_entrada_ilegible_es_error(self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        import sky_claw.local.runtime_vault.inventory as modulo
-
-        def _lectura_falla(_ruta: pathlib.Path) -> tuple[int, str]:
+        def _lectura_falla(_ruta: pathlib.Path, _identidad: os.stat_result) -> tuple[int, str]:
             raise OSError("permiso denegado")
 
-        monkeypatch.setattr(modulo, "_digest_de_archivo", _lectura_falla)
+        monkeypatch.setattr(modulo_inv, "_digest_estable", _lectura_falla)
 
         with pytest.raises(InventoryError):
             inventory_tree(arbol)
@@ -134,4 +137,162 @@ class TestFailClosed:
         assert motivo is None, motivo
 
         with pytest.raises(InventoryLinkError):
+            inventory_tree(arbol)
+
+
+#: Golden del árbol del fixture ``arbol`` producido por fa920c08 (commit
+#: original de RV-1). El fix F1 refuerza la ESTABILIDAD de captura, no la
+#: fórmula de identidad: este valor no puede cambiar.
+_GOLDEN_DIGEST_FA920C08 = "b4a5db127fba31e714bfd36ed5f19b6b26e78d508194c386caff1575cbdcf2fa"
+
+
+class TestEstabilidadDeCaptura:
+    """F1 — la observación de un archivo queda sellada alrededor de su lectura.
+
+    Los tests montan hooks controlados en los puntos exactos de la ventana de
+    captura (antes del open, tras el último chunk) en vez de depender de
+    sleeps: la carrera es determinista porque el hook se ejecuta SIEMPRE en el
+    mismo punto del recorrido, no en un momento aleatorio del scheduler.
+    """
+
+    @staticmethod
+    def _montar_hook_durante(monkeypatch: pytest.MonkeyPatch, fn) -> None:
+        # raising=False: en la fase roja (fa920c08) el atributo aún no existe;
+        # el test falla igual por la propiedad (no hay fail-closed).
+        monkeypatch.setattr(modulo_inv, "_HOOK_DURANTE_LA_LECTURA", fn, raising=False)
+
+    @staticmethod
+    def _montar_hook_antes(monkeypatch: pytest.MonkeyPatch, fn) -> None:
+        monkeypatch.setattr(modulo_inv, "_HOOK_ANTES_DE_ABRIR", fn, raising=False)
+
+    def test_archivo_crece_durante_el_hashing_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-F1-A: el crecimiento ocurre tras el último chunk, antes del POST."""
+        objetivo = arbol / "a.txt"
+        disparado = {"ya": False}
+
+        def _crecer(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                with objetivo.open("ab") as fh:
+                    fh.write(b"bytes-extra-durante-la-captura")
+
+        self._montar_hook_durante(monkeypatch, _crecer)
+
+        with pytest.raises(InventoryError):
+            inventory_tree(arbol)
+
+    def test_archivo_sobrescrito_mismo_tamano_durante_el_hashing_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-F1-B: overwrite same-size: mismo inode y mismo tamaño — sólo el
+        evidence gate de mtime lo delata. El utime final fuerza la semántica
+        del overwrite para eliminar la colisión de granularidad de 100 ns de
+        NTFS entre dos writes separados por microsegundos."""
+        objetivo = arbol / "a.txt"
+        original = objetivo.read_bytes()
+        reemplazo = bytes(reversed(original))
+        assert len(reemplazo) == len(original) > 0
+        disparado = {"ya": False}
+
+        def _sobrescribir(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                with objetivo.open("wb") as fh:
+                    fh.write(reemplazo)
+                estado = objetivo.stat()
+                os.utime(objetivo, ns=(estado.st_atime_ns, estado.st_mtime_ns + 60_000_000_000))
+
+        self._montar_hook_durante(monkeypatch, _sobrescribir)
+
+        with pytest.raises(InventoryError):
+            inventory_tree(arbol)
+
+    def test_archivo_reemplazado_antes_de_la_lectura_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-F1-C: entre el PRE y el open, el archivo pasa a ser OTRO archivo."""
+        objetivo = arbol / "a.txt"
+        disparado = {"ya": False}
+
+        def _reemplazar(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                objetivo.unlink()
+                objetivo.write_bytes(b"reemplazo-total-distinto")
+
+        self._montar_hook_antes(monkeypatch, _reemplazar)
+
+        with pytest.raises(InventoryError):
+            inventory_tree(arbol)
+
+    @symlink_guard
+    def test_archivo_reemplazado_por_symlink_antes_de_la_lectura_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """La ventana lstat → reemplazo por symlink → open no sigue al target:
+        el POST detecta el enlace y descarta la observación."""
+        objetivo = arbol / "a.txt"
+        destino = arbol / "sub" / "b.bin"
+        disparado = {"ya": False}
+
+        def _poner_enlace(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                objetivo.unlink()
+                objetivo.symlink_to(destino)
+
+        self._montar_hook_antes(monkeypatch, _poner_enlace)
+
+        with pytest.raises(InventoryLinkError):
+            inventory_tree(arbol)
+
+    @junction_guard
+    def test_archivo_reemplazado_por_junction_antes_de_la_lectura_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El reemplazo por junction (reparse point) tampoco se sigue ni se acepta."""
+        objetivo = arbol / "a.txt"
+        destino_dir = arbol / "sub"
+        disparado = {"ya": False}
+
+        def _poner_junction(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                objetivo.unlink()
+                motivo = crear_junction(objetivo, destino_dir)
+                assert motivo is None, motivo
+
+        self._montar_hook_antes(monkeypatch, _poner_junction)
+
+        with pytest.raises(InventoryError):
+            inventory_tree(arbol)
+
+    def test_arbol_estable_produce_el_mismo_digest_que_fa920c08(self, arbol: pathlib.Path) -> None:
+        """T-F1-D: regression contract — el fix no versiona el formato de identidad."""
+        esperado = tree_digest_from_files(inventory_tree(arbol))
+
+        assert esperado.digest == _GOLDEN_DIGEST_FA920C08
+        assert esperado.files == 2
+        assert esperado.bytes == 14
+
+    def test_mtime_cambia_sin_contenido_durante_la_lectura_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T-F1-E: una captura inestable no se acepta en silencio aunque los
+        bytes no hayan cambiado: el mtime es evidence gate DURANTE la captura
+        (sigue sin formar parte de la identidad persistente)."""
+        objetivo = arbol / "a.txt"
+        estado = objetivo.stat()
+        disparado = {"ya": False}
+
+        def _tocar_mtime(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                os.utime(objetivo, ns=(estado.st_atime_ns, estado.st_mtime_ns + 60_000_000_000))
+
+        self._montar_hook_durante(monkeypatch, _tocar_mtime)
+
+        with pytest.raises(InventoryError):
             inventory_tree(arbol)
