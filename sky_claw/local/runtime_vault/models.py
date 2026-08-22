@@ -14,6 +14,8 @@ posible (UNKNOWN != VERIFIED).
 
 from __future__ import annotations
 
+import pathlib
+import string
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -101,6 +103,119 @@ class RuntimeVerificationResult:
         return self.state is VerificationState.VERIFIED
 
 
+def _validar_y_normalizar_relpath(rel_path: str) -> str:
+    """Valida y normaliza un relpath de archivo crítico para evitar path traversal o absolute path."""
+    if not isinstance(rel_path, str):
+        raise ValueError("rel_path debe ser un string")
+    rel_limpio = rel_path.strip()
+    if not rel_limpio:
+        raise ValueError("El path crítico no puede ser vacío ni whitespace-only")
+    if "\x00" in rel_limpio:
+        raise ValueError("El path crítico no puede contener bytes NUL")
+    if ":" in rel_limpio:
+        raise ValueError("El path crítico no puede contener dos puntos ni letras de unidad de Windows")
+    if rel_limpio.startswith(("\\\\", "//")):
+        raise ValueError("El path crítico no puede ser una ruta UNC")
+    if rel_limpio.startswith(("/", "\\")):
+        raise ValueError("El path crítico no puede ser absoluto")
+
+    partes = [p for p in rel_limpio.replace("\\", "/").split("/") if p and p != "."]
+    if not partes:
+        raise ValueError("El path crítico no contiene segmentos válidos")
+    if any(p == ".." for p in partes):
+        raise ValueError("El path crítico no puede contener '..' (escape de directorio / traversal)")
+
+    return "/".join(partes)
+
+
+def _validar_y_normalizar_sha256(digest: str) -> str:
+    """Valida y normaliza un digest sha256 a 64 caracteres hex en minúsculas."""
+    if not isinstance(digest, str):
+        raise ValueError("El digest esperado debe ser un string")
+    digest_limpio = digest.strip().lower()
+    if len(digest_limpio) != 64 or not all(c in string.hexdigits for c in digest_limpio):
+        raise ValueError(f"El digest esperado '{digest}' no es un sha256 hexadecimal válido de 64 caracteres")
+    return digest_limpio
+
+
+@dataclass(frozen=True, slots=True)
+class CriticalFileExpectation:
+    """Expectativa sobre un archivo crítico del árbol verificado.
+
+    Args:
+        rel_path: path relativo canónico dentro del árbol (anti-traversal).
+        expected_digest: hash sha256 esperado (hex 64 chars).
+        expected_size: tamaño esperado en bytes (opcional, >= 0).
+    """
+
+    rel_path: str
+    expected_digest: str
+    expected_size: int | None = None
+
+    def __post_init__(self) -> None:
+        rel_norm = _validar_y_normalizar_relpath(self.rel_path)
+        digest_norm = _validar_y_normalizar_sha256(self.expected_digest)
+        if self.expected_size is not None and self.expected_size < 0:
+            raise ValueError("expected_size no puede ser negativo")
+        object.__setattr__(self, "rel_path", rel_norm)
+        object.__setattr__(self, "expected_digest", digest_norm)
+
+
+@dataclass(frozen=True, slots=True)
+class CriticalFileEvidence:
+    """Resultado de contrastar la evidencia observada de un archivo crítico contra su expectativa."""
+
+    rel_path: str
+    state: VerificationState
+    message: str = ""
+    expected_digest: str | None = None
+    observed_digest: str | None = None
+    expected_size: int | None = None
+    observed_size: int | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.state is VerificationState.VERIFIED
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenMasterCandidate:
+    """Candidato a Golden Master: ubicación física + identidad de runtime observada."""
+
+    location: pathlib.Path
+    observed_runtime: RuntimeIdentity | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenMasterDescriptor:
+    """Descriptor inmutable de un Golden Master verificado en memoria (rol REFERENCE_ONLY)."""
+
+    location: pathlib.Path
+    runtime_identity: RuntimeIdentity
+    tree_digest: TreeDigest
+    role: str = "reference_only"
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenMasterVerificationResult:
+    """Resultado de la verificación completa de un candidato a Golden Master.
+
+    Solo alcanza VERIFIED si el árbol, la identidad de runtime y todos los
+    archivos críticos requeridos están en estado VERIFIED.
+    """
+
+    state: VerificationState
+    message: str = ""
+    tree_result: TreeVerificationResult | None = None
+    runtime_result: RuntimeVerificationResult | None = None
+    critical_results: tuple[CriticalFileEvidence, ...] = ()
+    descriptor: GoldenMasterDescriptor | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.state is VerificationState.VERIFIED
+
+
 class RuntimeVaultError(Exception):
     """Base de las excepciones de dominio del Runtime Vault."""
 
@@ -123,7 +238,12 @@ class InventoryLinkError(InventoryError):
 
 
 __all__ = [
+    "CriticalFileEvidence",
+    "CriticalFileExpectation",
     "FileIdentity",
+    "GoldenMasterCandidate",
+    "GoldenMasterDescriptor",
+    "GoldenMasterVerificationResult",
     "InventoryError",
     "InventoryLinkError",
     "RuntimeIdentity",

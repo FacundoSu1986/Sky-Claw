@@ -102,6 +102,26 @@ class TestFormaDeLosModelos:
         assert issubclass(InventoryError, RuntimeVaultError)
         assert issubclass(InventoryLinkError, InventoryError)
 
+    def test_success_solo_en_verified_para_golden_y_criticos(self) -> None:
+        from sky_claw.local.runtime_vault.models import (
+            CriticalFileEvidence,
+            GoldenMasterVerificationResult,
+        )
+
+        crit_verificado = CriticalFileEvidence(rel_path="a.txt", state=VerificationState.VERIFIED)
+        crit_desconocido = CriticalFileEvidence(rel_path="a.txt", state=VerificationState.UNKNOWN)
+        crit_fallido = CriticalFileEvidence(rel_path="a.txt", state=VerificationState.FAILED)
+        assert crit_verificado.success is True
+        assert crit_desconocido.success is False
+        assert crit_fallido.success is False
+
+        golden_verificado = GoldenMasterVerificationResult(state=VerificationState.VERIFIED)
+        golden_desconocido = GoldenMasterVerificationResult(state=VerificationState.UNKNOWN)
+        golden_fallido = GoldenMasterVerificationResult(state=VerificationState.FAILED)
+        assert golden_verificado.success is True
+        assert golden_desconocido.success is False
+        assert golden_fallido.success is False
+
 
 class TestSinCodigoCandidateOnlyDePr493:
     """Gate del preflight: RV-1 no importa primitives que solo existen en #493."""
