@@ -26,9 +26,9 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     RITUAL_INSTALLER_MAP,
     RITUAL_TOOL_MAP,
     STORE_KEY_RITUAL_FEEDBACK,
-    STORE_KEY_RITUAL_LAST_RESULT,
     STORE_KEY_RITUAL_PREFLIGHT,
     clear_answered_hitl,
+    clear_ritual_result_owned,
     resolve_pending_hitl,
     resolve_ritual_resume_action,
 )
@@ -797,7 +797,7 @@ def _ritual_feedback_panel() -> None:
                 # Cerrar el toast antes de despachar: el nuevo run publicará su
                 # propio feedback; este quedó consumido por la acción.
                 get_store().set(STORE_KEY_RITUAL_FEEDBACK, None)
-                get_store().set(STORE_KEY_RITUAL_LAST_RESULT, None)
+                clear_ritual_result_owned(get_store(), current_tab_id())
                 _ritual_feedback_panel.refresh()
                 if callable(fn):
                     fn(tool_key_de_la_corrida)
@@ -823,7 +823,9 @@ def _ritual_feedback_panel() -> None:
             "click",
             lambda _=None: (
                 get_store().set(STORE_KEY_RITUAL_FEEDBACK, None),
-                get_store().set(STORE_KEY_RITUAL_LAST_RESULT, None),
+                # F-004: el dismiss del resultado accionable respeta el dueño —
+                # una pestaña ajena no desaloja el resultado de otra.
+                clear_ritual_result_owned(get_store(), current_tab_id()),
                 _ritual_feedback_panel.refresh(),
             ),
         )

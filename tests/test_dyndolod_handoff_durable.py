@@ -28,10 +28,11 @@ from sky_claw.app.core.event_bus import CoreEventBus
 from sky_claw.app.db.handoffs import (
     DeploymentHandoff,
     HandoffState,
+    SweepReceiptState,
     clave_de_artifact,
     reconciliar_handoffs_de_deployment,
 )
-from sky_claw.app.db.journal import OperationJournal, OperationType, TransactionStatus
+from sky_claw.app.db.journal import JournalTransactionError, OperationJournal, OperationType, TransactionStatus
 from sky_claw.app.db.locks import DistributedLockManager, LockInfo
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
@@ -2010,19 +2011,16 @@ async def test_regen_desde_superseding_reafirma_y_supersede(
 # =============================================================================
 
 
-def test_clave_canonica_de_path_colapsa_variantes_sintacticas() -> None:
-    """R-006: la forma canónica de comparación colapsa separador de cola,
-    segmentos ``.``/``..`` y mezclas de separadores, sin resolver symlinks."""
-    import os
-
-    from sky_claw.app.db.handoffs import clave_canonica_de_path
-
-    base = "C:" + os.sep + os.path.join("MO2", "mods", "TexGen Output")
-    assert clave_canonica_de_path(base + os.sep) == clave_canonica_de_path(base)
-    assert clave_canonica_de_path(os.path.join(base, "textures", "..", "textures", "a.dds")) == (
-        clave_canonica_de_path(os.path.join(base, "textures", "a.dds"))
+def test_clave_de_artifact_colapsa_variantes_sintacticas(tmp_path: pathlib.Path) -> None:
+    """R-006/F-002 (0006): la ÚNICA identidad física —``clave_de_artifact``,
+    resolve + normcase, la MISMA que el ownership lookup— colapsa separador de
+    cola y segmentos ``.``/``..`` sin reescribir la historia almacenada."""
+    base = tmp_path / "MO2" / "mods" / "TexGen Output"
+    assert clave_de_artifact(pathlib.Path(str(base) + os.sep)) == clave_de_artifact(base)
+    assert clave_de_artifact(base / "textures" / ".." / "textures" / "a.dds") == clave_de_artifact(
+        base / "textures" / "a.dds"
     )
-    assert clave_canonica_de_path("C:/MO2/mods/TexGen Output") == clave_canonica_de_path(base)
+    assert clave_de_artifact(base / "textures" / "." / "a.dds") == clave_de_artifact(base / "textures" / "a.dds")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="la semántica de caso de Windows sólo aplica en nt")
@@ -2083,6 +2081,433 @@ async def test_oracle_ignora_separador_de_cola_en_el_entry(
         metadata={"files_touched": [str(mod) + os.sep]},
     )
     assert tx in await journal.transacciones_que_nombran(clave_de_artifact(mod))
+
+
+# =============================================================================
+# F-001 (0006) — DURABLE SWEEP RECEIPTS: la causalidad sobrevive al crash
+# =============================================================================
+#
+# 0005 guardaba la memoria de "esta TX fue barrida por el sweep" SOLO en RAM
+# (``swept_pending_transaction_ids_this_open``). Un crash después del sweep, un
+# arranque sin config (reconciler omitido) o una excepción best-effort del
+# reconciler perdían esa memoria y el hot resume salía legacy → DynDOLOD
+# llamada sobre un artifact cuya corrida quedó interrumpida (false green).
+#
+# El fix (Principio 1/2): el sweep INSERTA un receipt DURABLE por TX barrida
+# en el MISMO boundary que el UPDATE PENDING→ROLLED_BACK. El receipt prueba
+# SOLO causalidad (esta TX fue stale-swept), jamás identidad autorizada
+# (Principio 3), y se consume/cierra con una semántica durable (Principio 4).
+
+
+async def _sembrar_pending_vieja(journal: OperationJournal, mod_texgen: pathlib.Path, *, horas: int = 48) -> int:
+    """TX PENDING con manifest nombrando el mod, envejecida más allá del umbral."""
+    tx = await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="pending")
+    await _envejecer_tx(journal, tx, horas=horas)
+    return tx
+
+
+async def _estado_de_receipt(journal: OperationJournal, tx_id: int) -> str | None:
+    cur = await journal._db.execute(  # noqa: SLF001
+        "SELECT state FROM stale_pending_sweep_receipts WHERE transaction_id = ?",
+        (tx_id,),
+    )
+    fila = await cur.fetchone()
+    return None if fila is None else str(fila[0])
+
+
+@pytest.mark.asyncio
+async def test_sweep_crea_receipt_durable_por_cada_tx_barrida(journal_tmp) -> None:  # noqa: ANN001
+    """Ancla 1 (Principio 2): TODA transición stale-sweep PENDING→ROLLED_BACK
+    deja su receipt durable UNRESOLVED en la DB; la PENDING fresca no genera
+    receipt y no se toca."""
+    journal, _ = journal_tmp
+    tx_a = await _sembrar_pending_vieja(journal, pathlib.Path("X:/mods/TexGen Output"))
+    tx_b = await _sembrar_pending_vieja(journal, pathlib.Path("X:/mods/TexGen Output"))
+    tx_fresca = await journal.begin_transaction("fresca", agent_id="test")
+
+    barridas = await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    assert barridas == 2
+    cur = await journal._db.execute(  # noqa: SLF001
+        "SELECT transaction_id, state FROM stale_pending_sweep_receipts ORDER BY transaction_id"
+    )
+    filas = await cur.fetchall()
+    assert [fila[0] for fila in filas] == [tx_a, tx_b], "no hay un receipt por cada TX barrida"
+    assert all(fila[1] == SweepReceiptState.UNRESOLVED.value for fila in filas)
+    assert (await journal.get_transaction(tx_fresca)).status is TransactionStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_sweep_fallo_entre_update_e_insert_no_deja_rolled_back_sin_receipt(
+    journal_tmp,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Principio 2 (fallo entre UPDATE e INSERT): si el INSERT del receipt
+    falla, el UPDATE PENDING→ROLLED_BACK también se deshace — nunca queda un
+    ROLLED_BACK durable sin su receipt."""
+    journal, _ = journal_tmp
+    tx = await _sembrar_pending_vieja(journal, pathlib.Path("X:/mods/TexGen Output"))
+
+    async def _raiser(_conn: object, _ids: object) -> None:
+        raise sqlite3.IntegrityError("receipt roto")
+
+    monkeypatch.setattr(OperationJournal, "_escribir_receipts_de_sweep", staticmethod(_raiser))
+    with pytest.raises(JournalTransactionError):
+        await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    estado = await journal.get_transaction(tx)
+    assert estado is not None and estado.status is TransactionStatus.PENDING, (
+        "el ROLLED_BACK sobrevivió sin su receipt durable"
+    )
+    assert await _estado_de_receipt(journal, tx) is None
+
+
+@pytest.mark.asyncio
+async def test_sweep_fallo_al_commit_no_deja_estado_parcial(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Principio 2 (fallo entre INSERT y COMMIT): si el commit falla, ni el
+    ROLLED_BACK ni el receipt quedan durables (verificado desde OTRA conexión)."""
+    journal, db_path = journal_tmp
+    tx = await _sembrar_pending_vieja(journal, pathlib.Path("X:/mods/TexGen Output"))
+
+    async def _commit_fallido() -> None:
+        raise sqlite3.OperationalError("commit roto")
+
+    monkeypatch.setattr(journal._db, "commit", _commit_fallido)  # noqa: SLF001
+    with pytest.raises(JournalTransactionError):
+        await journal.sweep_stale_pending(max_age_hours=24.0)
+    monkeypatch.undo()
+    # Rejuvenecer la TX: si quedara vieja y PENDING, el sweep del open de abajo
+    # la volvería a convertir y el test no distinguiría el estado real.
+    await journal._db.execute(  # noqa: SLF001
+        "UPDATE transactions SET created_at = datetime('now') WHERE transaction_id = ?", (tx,)
+    )
+    await journal._db.commit()  # noqa: SLF001
+
+    j2 = OperationJournal(db_path)
+    await j2.open()
+    estado = await j2.get_transaction(tx)
+    assert estado is not None and estado.status is TransactionStatus.PENDING
+    assert await _estado_de_receipt(j2, tx) is None
+    await j2.close()
+
+
+@pytest.mark.asyncio
+async def test_receipt_sobrevive_al_crash_y_bloquea_el_resume(tmp_path: pathlib.Path) -> None:
+    """S6-1: crash después del sweep — el receipt DURABLE sigue UNRESOLVED en el
+    open siguiente y el resume run_texgen=False falla cerrado (DynDOLOD NOT
+    CALLED); el INDETERMINATE resultante jamás lleva identidad autorizada."""
+    db_path = tmp_path / "crash.db"
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+
+    j1 = OperationJournal(db_path)
+    await j1.open()
+    tx = await _sembrar_pending_vieja(j1, mod_texgen)
+    await j1.sweep_stale_pending(max_age_hours=24.0)
+    await j1.close()  # la instancia muere; lo durable ya está en la DB
+
+    j2 = OperationJournal(db_path)
+    await j2.open()
+    assert await _estado_de_receipt(j2, tx) == SweepReceiptState.UNRESOLVED.value, (
+        "el receipt no sobrevivió al crash: la causalidad del sweep se perdió"
+    )
+
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    svc = _svc(j2, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate"
+    activo = await j2.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.INDETERMINATE
+    assert activo.expected_digest is None, "el receipt NUNCA fabrica identidad autorizada (Principio 3)"
+    assert await _estado_de_receipt(j2, tx) == SweepReceiptState.CONSUMED.value, (
+        "el receipt no se consumió al materializar el INDETERMINATE (Principio 4)"
+    )
+    await j2.close()
+
+
+@pytest.mark.asyncio
+async def test_receipt_bloquea_sin_reconciler_de_arranque(tmp_path: pathlib.Path) -> None:
+    """S6-2: startup sin configuración omite el reconciler (sin crash) — el
+    receipt durable sigue y el resume posterior NO llama a DynDOLOD."""
+    db_path = tmp_path / "sin-config.db"
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+
+    j1 = OperationJournal(db_path)
+    await j1.open()
+    tx = await _sembrar_pending_vieja(j1, mod_texgen)
+    await j1.close()
+
+    j2 = OperationJournal(db_path)
+    await j2.open()  # open → sweep → receipt; el reconciler de arranque NO corre
+    assert await _estado_de_receipt(j2, tx) == SweepReceiptState.UNRESOLVED.value
+
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    svc = _svc(j2, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate"
+    await j2.close()
+
+
+@pytest.mark.asyncio
+async def test_receipt_bloquea_tras_excepcion_del_reconciler(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """S6-3: el reconciler lanza una excepción (AppContext la absorbe
+    best-effort) — el receipt durable sigue bloqueando el resume posterior."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    real = journal.transacciones_que_nombran
+
+    async def _boom(_objetivo: str) -> list[int]:  # noqa: ANN001
+        raise RuntimeError("reconciler roto")
+
+    journal.transacciones_que_nombran = _boom  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="reconciler roto"):
+            await reconciliar_handoffs_de_deployment(
+                journal=journal,
+                mod_texgen=mod_texgen,
+                game_key=clave_de_artifact(config.game_path),
+                mods_root_key=clave_de_artifact(config.mo2_mods_path),
+                data_key=clave_de_artifact(config.data_dir),
+                expected_profile="Perfil-A",
+                digest_arbol=digest_arbol,
+            )
+    finally:
+        journal.transacciones_que_nombran = real  # type: ignore[method-assign]
+
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate"
+
+
+@pytest.mark.asyncio
+async def test_receipt_sobrevive_multiples_reinicios(tmp_path: pathlib.Path) -> None:
+    """S6-4: open A (sweep) → open B (sin reconciliación) → open C (resume):
+    la provenance no se pierde ni depende de ``this_open``."""
+    db_path = tmp_path / "multi.db"
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+
+    j1 = OperationJournal(db_path)
+    await j1.open()
+    tx = await _sembrar_pending_vieja(j1, mod_texgen)
+    await j1.sweep_stale_pending(max_age_hours=24.0)
+    await j1.close()
+
+    j2 = OperationJournal(db_path)
+    await j2.open()
+    assert await _estado_de_receipt(j2, tx) == SweepReceiptState.UNRESOLVED.value
+    await j2.close()
+
+    j3 = OperationJournal(db_path)
+    await j3.open()
+    assert await _estado_de_receipt(j3, tx) == SweepReceiptState.UNRESOLVED.value, (
+        "el receipt no sobrevivió los reinicios: la provenance se perdió"
+    )
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    svc = _svc(j3, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate"
+    await j3.close()
+
+
+@pytest.mark.asyncio
+async def test_receipt_se_cierra_no_artifact_cuando_el_artifact_no_existe(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """Principio 4 (no-artifact): paths resolubles + artifact PROBADAMENTE
+    ausente → el receipt se cierra NO_ARTIFACT (no queda mutación física
+    preservada que proteger) y NO se crea INDETERMINATE."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    # El mod NUNCA se crea: ausencia demostrable.
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    await reconciliar_handoffs_de_deployment(
+        journal=journal,
+        mod_texgen=mod_texgen,
+        game_key=clave_de_artifact(config.game_path),
+        mods_root_key=clave_de_artifact(config.mo2_mods_path),
+        data_key=clave_de_artifact(config.data_dir),
+        expected_profile="Perfil-A",
+        digest_arbol=digest_arbol,
+    )
+
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.NO_ARTIFACT.value
+
+
+@pytest.mark.asyncio
+async def test_receipt_viejo_no_intoxica_tras_provenance_autorizada(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """Principio "nueva corrida autorizada": receipt viejo + corrida autorizada
+    posterior (handoff AWAITING) + resume (COMPLETED) → un resume posterior NO
+    recrea INDETERMINATE desde el receipt viejo: el reemplazo lo dejó SUPERSEDED."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    _escribir_mod(mod_texgen, contenido=b"GEN-1")
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value
+    svc = _svc(journal, runner=runner)
+
+    # Corrida autorizada posterior: needs_deployment → handoff AWAITING nuevo.
+    with (
+        patch.object(
+            runner,
+            "_execute_process",
+            _ProcesoFalso(al_ejecutar=_texgen_que_genera(tmp_path, staging, marca=b"GEN-2")),
+        ),
+        patch.object(runner, "run_dyndolod", AsyncMock()),
+    ):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["needs_deployment"] is True
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.SUPERSEDED.value, (
+        "la provenance autorizada posterior no dejó obsoleto el receipt viejo"
+    )
+
+    # Resume → COMPLETED (la identidad del handoff es la de GEN-2).
+    _mirror_a_data(mod_texgen / "textures", config.data_dir)
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    run_dyndolod = _dyndolod_ok(dyndolod_staging)
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        resultado_resume = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    assert resultado_resume["success"] is True, resultado_resume.get("errors")
+    run_dyndolod.assert_awaited_once()
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
+
+    # Segundo resume: legacy legítimo — el receipt viejo NO recrea INDETERMINATE.
+    run_dyndolod2 = _dyndolod_ok(dyndolod_staging)
+    with patch.object(runner, "run_dyndolod", run_dyndolod2):
+        segundo = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    assert segundo["success"] is True, segundo.get("errors")
+    run_dyndolod2.assert_awaited_once()
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
+
+
+# =============================================================================
+# F-002 (0006) — UNA SOLA IDENTIDAD FÍSICA (ownership y oracle)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_oracle_matchea_manifest_no_resuelto_con_mo2_via_symlink(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """S6-5: el MO2 configurado atraviesa un symlink de directorio — el manifest
+    guarda la representación configurada (sin resolver) y el lookup usa la
+    resuelta. El oracle usa la MISMA identidad física: match, INDETERMINATE,
+    DynDOLOD NOT CALLED. RED en 0005 (``clave_canonica_de_path`` no resolvía)."""
+    journal, _ = journal_tmp
+    real_mods = tmp_path / "real-mods"
+    real_mods.mkdir()
+    mod_texgen = real_mods / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    alias = tmp_path / "MO2" / "mods"
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        alias.symlink_to(real_mods, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("la plataforma no permite crear el symlink de directorio")
+    await _sembrar_tx_terminada(journal, mod_texgen=alias / DynDOLODRunner.TEXGEN_MOD_NAME, estado="pending")
+
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate", result.get("errors")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="los junctions son específicos de Windows")
+@pytest.mark.asyncio
+async def test_oracle_matchea_manifest_no_resuelto_con_junction(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """S6-6: el mismo contrato con un junction de Windows (reparse point) en el
+    camino configurado de MO2. Skip honesto si el entorno no deja crearlo."""
+    import subprocess
+
+    journal, _ = journal_tmp
+    real_mods = tmp_path / "real-mods"
+    real_mods.mkdir()
+    mod_texgen = real_mods / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    alias = tmp_path / "MO2" / "mods"
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    creado = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(alias), str(real_mods)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if creado.returncode != 0:
+        pytest.skip(f"no se pudo crear el junction: {creado.stderr!r}")
+    await _sembrar_tx_terminada(journal, mod_texgen=alias / DynDOLODRunner.TEXGEN_MOD_NAME, estado="pending")
+
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate", result.get("errors")
 
 
 # =============================================================================
@@ -2167,3 +2592,70 @@ def test_los_escritores_de_la_tabla_deployment_handoffs_estan_congelados() -> No
         "app/db/journal.py",
         "app/db/handoffs.py",
     }
+
+
+def _cuerpo_de_funcion(modulo: pathlib.Path, nombre: str) -> str:
+    """Fuente del cuerpo de una función/método de un módulo (por AST)."""
+    import ast
+
+    fuente = modulo.read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and nodo.name == nombre:
+            return ast.get_source_segment(fuente, nodo) or ""
+    return ""
+
+
+def test_la_fuente_durable_del_oracle_es_pending_mas_receipts_unresolved() -> None:
+    """Ancla 2 (0006): el oracle nombra EXACTAMENTE sus dos fuentes durables —
+    TX PENDING y receipts UNRESOLVED de stale sweep — y la tabla de receipts
+    existe en el contrato. Nunca: ROLLED_BACK arbitrario."""
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    cuerpo = _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", "transacciones_que_nombran")
+    assert "stale_pending_sweep_receipts" in cuerpo, "el oracle no consulta los receipts durables"
+    assert "TransactionStatus.PENDING" in cuerpo, "el oracle perdió la ventana PENDING"
+    assert "SweepReceiptState.UNRESOLVED" in cuerpo, "el oracle no filtra por receipt UNRESOLVED"
+
+    contrato = (raiz / "app" / "db" / "handoffs.py").read_text(encoding="utf-8")
+    assert "stale_pending_sweep_receipts" in contrato, "la tabla de receipts no vive en el contrato D2"
+
+
+def test_startup_y_hot_path_consumen_la_misma_primitive() -> None:
+    """Ancla 3 (0006): el reconciler de arranque Y el hot path del resume
+    invocan la MISMA primitive ``reconciliar_orphan_de_artifact`` — una
+    divergencia entre las dos superficies rompe acá."""
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    cuerpo_startup = _cuerpo_de_funcion(raiz / "app" / "db" / "handoffs.py", "reconciliar_handoffs_de_deployment")
+    assert "reconciliar_orphan_de_artifact" in cuerpo_startup, "el arranque dejó de usar la primitive"
+
+    cuerpo_hot = _cuerpo_de_funcion(raiz / "local" / "tools" / "dyndolod_service.py", "_consultar_resume")
+    assert "reconciliar_orphan_de_artifact" in cuerpo_hot, "el hot path dejó de usar la primitive"
+
+
+def test_una_sola_identidad_fisica_para_ownership_y_oracle() -> None:
+    """Ancla 4 (0006/Principio 5): ownership y oracle comparan con la MISMA
+    función de identidad física — ``clave_de_artifact``. La normalización
+    hermana link-safe de 0005 causó F-002 (miss del oracle con MO2 vía
+    symlink) y ya no existe en ningún módulo."""
+    import ast
+
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    definiciones: set[str] = set()
+    menciones: set[str] = set()
+    for archivo in raiz.rglob("*.py"):
+        try:
+            fuente = archivo.read_text(encoding="utf-8")
+            arbol = ast.parse(fuente)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and nodo.name == "clave_canonica_de_path":
+                definiciones.add(archivo.relative_to(raiz).as_posix())
+        if "clave_canonica_de_path" in fuente:
+            menciones.add(archivo.relative_to(raiz).as_posix())
+
+    assert definiciones == set(), "reapareció la normalización hermana: la identidad física es UNA (clave_de_artifact)"
+    assert menciones == set(), "quedan referencias a la normalización hermana"
+
+    cuerpo_oracle = _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", "transacciones_que_nombran")
+    assert "clave_de_artifact" in cuerpo_oracle, "el oracle ya no compara con la identidad física del ownership"

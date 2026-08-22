@@ -195,6 +195,23 @@ def resolve_ritual_resume_action(store: ReactiveStore, tab_id: str | None) -> di
     return resume_action_from_result(tool_key, resultado)
 
 
+def clear_ritual_result_owned(store: ReactiveStore, tab_id: str | None) -> None:
+    """Limpia el resultado accionable SOLO si su dueño coincide (F-004).
+
+    Tab B no puede CONSUMIR la acción de A, y tampoco borrarla con el ``×``:
+    el clear/dismiss respeta el mismo ``owner_tab`` del envelope. Un resultado
+    sin dueño conserva la política ya aceptada — lo limpia cualquiera. El
+    ``tab_id=None`` (sin contexto de pestaña) sólo puede limpiar resultados sin
+    dueño, igual que en :func:`resolve_pending_hitl`.
+    """
+    publicado = store.get(STORE_KEY_RITUAL_LAST_RESULT)
+    if isinstance(publicado, dict):
+        owner = publicado.get(RITUAL_RESULT_OWNER_TAB)
+        if owner is not None and owner != tab_id:
+            return
+    store.set(STORE_KEY_RITUAL_LAST_RESULT, None)
+
+
 #: Per-client "Modo local" toggle, stored in ``app.storage.client`` (server-side,
 #: one entry per browser connection, auto-cleared on disconnect) — NOT the global
 #: store. So one window's choice never enables auto-approval for another client

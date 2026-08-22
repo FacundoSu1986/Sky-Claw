@@ -430,11 +430,14 @@ class DynDOLODPipelineService:
 
         F-002: ``consultar_handoff_activo() == None`` NO alcanza para declarar
         legacy. Antes del fallback se consulta la MISMA primitive que el
-        reconciler de arranque: si hay una TX PENDING cuyo ActionManifest
-        nombra el artifact y el mod sigue vivo, se materializa un INDETERMINATE
-        conservador y el resume falla cerrado. Un ROLLED_BACK —por más reciente—
-        NO es evidencia por sí solo (R-002A): las ventanas de cancelación dejan
-        la TX PENDING cuando la mutación preservada no se puede resolver.
+        reconciler de arranque: si hay evidencia VIGENTE y DURABLE —una TX
+        PENDING que nombra el artifact, o un receipt UNRESOLVED de stale sweep
+        (F-001, patch 0006), que sobrevive crash, reconciler omitido y
+        reconciler con excepción— y el mod sigue vivo, se materializa un
+        INDETERMINATE conservador y el resume falla cerrado. Un ROLLED_BACK
+        —por más reciente— NO es evidencia por sí solo (R-002A): las ventanas
+        de cancelación dejan la TX PENDING cuando la mutación preservada no se
+        puede resolver.
         """
         mods_path = runner._config.mo2_mods_path
         mod_texgen = mods_path / DynDOLODRunner.TEXGEN_MOD_NAME

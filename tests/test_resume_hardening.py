@@ -274,6 +274,58 @@ def test_la_vista_no_deriva_la_accion_con_literal_de_tool() -> None:
     )
 
 
+# ── F-004: el clear del resultado accionable también respeta el dueño ─────────
+
+
+def test_otra_pestana_no_puede_clear_el_resultado_con_dueno() -> None:
+    """F-004: Tab B no puede consumir la acción de A, y tampoco borrarla con el
+    `×` — el clear respeta el mismo ``owner_tab`` del envelope."""
+    store = ReactiveStore()
+    rr_mod.publicar_resultado_de_ritual(
+        store,
+        tool_key="dyndolod",
+        resultado=_resultado_needs_deployment(),
+        tab_id="tab-A",
+    )
+
+    rr_mod.clear_ritual_result_owned(store, "tab-B")
+
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is not None, (
+        "una pestaña ajena desalojó el resultado accionable de la dueña"
+    )
+
+
+def test_la_pestana_duena_si_puede_clear_su_resultado() -> None:
+    """El camino inverso de F-004: el dueño sí desaloja su propio resultado."""
+    store = ReactiveStore()
+    rr_mod.publicar_resultado_de_ritual(
+        store,
+        tool_key="dyndolod",
+        resultado=_resultado_needs_deployment(),
+        tab_id="tab-A",
+    )
+
+    rr_mod.clear_ritual_result_owned(store, "tab-A")
+
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is None
+
+
+def test_sin_dueno_cualquier_pestana_puede_clear() -> None:
+    """Ownerless conserva la política ya aceptada: lo limpia cualquiera."""
+    store = ReactiveStore()
+    rr_mod.publicar_resultado_de_ritual(
+        store,
+        tool_key="dyndolod",
+        resultado=_resultado_needs_deployment(),
+        tab_id=None,
+    )
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-B") is not None
+
+    rr_mod.clear_ritual_result_owned(store, "tab-B")
+
+    assert rr_mod.resolve_ritual_resume_action(store, "tab-B") is None
+
+
 # ── Ancla del tramo dispatcher→strategy→service ──────────────────────────────
 
 

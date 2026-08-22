@@ -84,6 +84,37 @@ CREATE INDEX IF NOT EXISTS idx_handoffs_source_tx
 """
 
 # =============================================================================
+# RECEIPTS DE STALE SWEEP (F-001, PR #493 patch 0006)
+# =============================================================================
+#
+# El sweep convierte PENDING→ROLLED_BACK en el arranque. El receipt es la
+# marca DURABLE de esa causalidad: "esta TX fue convertida POR stale sweep".
+# Sin ella, la única memoria del barrido vivía en RAM (``swept_this_open``) y
+# un crash posterior —o un arranque sin configuración que omite el reconciler,
+# o una excepción best-effort— dejaba un resume falso-verde (DynDOLOD llamada
+# sobre un artifact cuya corrida quedó interrumpida).
+#
+# El receipt prueba SOLO causalidad: jamás identidad autorizada (Principio 3),
+# por eso un receipt + manifest relevante únicamente puede conducir a
+# INDETERMINATE, nunca a expected_*.
+
+SWEEP_RECEIPTS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS stale_pending_sweep_receipts (
+    receipt_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id INTEGER NOT NULL UNIQUE REFERENCES transactions(transaction_id),
+    state          TEXT NOT NULL DEFAULT 'unresolved',
+    swept_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at    TEXT,
+    CONSTRAINT chk_sweep_receipt_state CHECK (
+        state IN ('unresolved','consumed','no_artifact','superseded')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_sweep_receipts_state
+    ON stale_pending_sweep_receipts(state);
+"""
+
+# =============================================================================
 # ESTADOS
 # =============================================================================
 
@@ -110,6 +141,25 @@ class HandoffState(StrEnum):
 HANDOFF_STATES_ACTIVOS: frozenset[HandoffState] = frozenset(
     {HandoffState.AWAITING_DEPLOYMENT, HandoffState.INDETERMINATE, HandoffState.SUPERSEDING}
 )
+
+
+class SweepReceiptState(StrEnum):
+    """Estados del receipt durable de stale sweep (F-001, patch 0006).
+
+    - ``UNRESOLVED``: la conversión PENDING→ROLLED_BACK por sweep quedó
+      registrada y su evidencia aún no se resolvió — el oracle la cuenta;
+    - ``CONSUMED``: el reconciler materializó un INDETERMINATE con ella
+      (INSERT del handoff + consumo en el MISMO boundary);
+    - ``NO_ARTIFACT``: con paths resolubles se demostró que el artifact NO
+      existe — no hay mutación física preservada que proteger;
+    - ``SUPERSEDED``: una provenance autorizada posterior reemplazó ese
+      intento interrumpido — el receipt viejo no intoxica el futuro.
+    """
+
+    UNRESOLVED = "unresolved"
+    CONSUMED = "consumed"
+    NO_ARTIFACT = "no_artifact"
+    SUPERSEDED = "superseded"
 
 
 # =============================================================================
@@ -161,27 +211,16 @@ def clave_de_artifact(ruta: pathlib.Path) -> str:
     son el mismo conflicto de ownership. ``normcase`` hace que las variantes de
     caso del mismo path colisionen en el índice único (Windows); en POSIX es
     identidad, que es la semántica correcta de su filesystem.
+
+    F-002 (patch 0006): es la ÚNICA identidad física del sistema — el
+    ownership lookup Y el oracle de orphans comparan con esta misma función
+    (resolve + normcase), incluidos los strings históricos del ActionManifest
+    (que se canonicalizan al LEERSE; la historia almacenada no se reescribe).
+    Una normalización hermana link-safe hizo que un MO2 configurado vía
+    symlink/junction matcheara en el lookup y fallara en el oracle; no volver
+    a introducir una segunda definición de identidad.
     """
     return os.path.normcase(os.path.normpath(str(ruta.resolve(strict=False))))
-
-
-def clave_canonica_de_path(ruta: str | pathlib.Path) -> str:
-    """Forma canónica link-safe de una ruta para COMPARACIONES de identidad.
-
-    ``abspath`` + ``normpath`` colapsan separadores de cola y segmentos
-    ``.``/``..`` SIN resolver symlinks — a diferencia de :func:`clave_de_artifact`,
-    que SÍ resuelve porque el handoff sigue al recurso físico. ``normcase``
-    alinea el caso en Windows (identidad en POSIX, misma semántica de
-    plataforma que ``clave_de_artifact``).
-
-    Es la forma que usa el oracle de orphans para comparar los strings
-    HISTÓRICOS del ActionManifest contra la identidad del artifact: el
-    manifiesto guarda strings originales que no se reescriben, y su
-    canonicalización no puede depender del estado actual del filesystem
-    (resolver symlinks de una ruta histórica la re-mapa según lo que exista
-    HOY). Por eso link-safe: colapsar sintaxis, nunca seguir enlaces.
-    """
-    return os.path.normcase(os.path.normpath(os.path.abspath(str(ruta))))
 
 
 # =============================================================================
@@ -294,7 +333,6 @@ async def reconciliar_orphan_de_artifact(
     data_key: str,
     expected_profile: str,
     digest_arbol: object,
-    incluir_swept_del_open: bool = False,
 ) -> DeploymentHandoff | None:
     """UNA sola primitive de detección/reconciliación de orphan — consumida por
     el reconciler de arranque Y por el hot path del resume (F-002). No hay una
@@ -305,16 +343,20 @@ async def reconciliar_orphan_de_artifact(
     - handoff ACTIVO para el artifact → se devuelve (reconciliando antes un
       ``SUPERSEDING`` huérfano: vuelve a su estado previo si el árbol sigue
       coincidiendo con su identidad esperada, o se degrada a INDETERMINATE);
-    - sin handoff activo + artifact vivo + evidencia VIGENTE de corrida
-      interrumpida (TX PENDING cuyo ActionManifest —pre-mutación, prueba de
-      INTENCIÓN— nombra el mod) → se crea **INDETERMINATE** (jamás identidad
-      autorizada) y se devuelve;
-    - ``incluir_swept_del_open`` (sólo el ARRANQUE lo activa): además de las
-      PENDING, son evidencia los IDs EXACTOS que ``sweep_stale_pending`` barrió
-      en ESTE open (``swept_pending_transaction_ids_this_open``) — una PENDING
-      huérfana de la sesión anterior convertida a ROLLED_BACK justo en ese open
-      debe seguir bloqueando. Nunca: historia ROLLED_BACK arbitraria (R-002A);
-    - sin handoff activo y sin evidencia vigente → ``None`` (legacy auténtico).
+    - sin handoff activo + artifact vivo + evidencia VIGENTE y DURABLE de
+      corrida interrumpida → se crea **INDETERMINATE** (jamás identidad
+      autorizada) y se devuelve. Las fuentes de evidencia son las del oracle:
+      TX PENDING que nombra el mod, o receipt UNRESOLVED de stale sweep
+      (F-001, patch 0006) — la causalidad del barrido sobrevive crash,
+      reconciler omitido y reconciler con excepción. Nunca: historia
+      ROLLED_BACK arbitraria (R-002A);
+    - sin handoff activo y sin evidencia → ``None`` (legacy auténtico).
+
+    Lifecycle de los receipts (Principio 4): al materializar el INDETERMINATE,
+    el receipt UNRESOLVED que aportó la evidencia se CONSUME en el MISMO
+    boundary; si el artifact está PROBADAMENTE ausente (paths resolubles — esta
+    primitive sólo se invoca con configuración resuelta), el receipt se cierra
+    NO_ARTIFACT: no queda mutación física preservada que proteger.
     """
     clave = clave_de_artifact(mod_texgen)
     activo = await journal.consultar_handoff_activo(clave)  # type: ignore[attr-defined]
@@ -354,18 +396,15 @@ async def reconciliar_orphan_de_artifact(
             )
         return activo
 
-    if not textures.is_dir():
+    # La evidencia se consulta ANTES del gate del filesystem: sin ella no hay
+    # nada que resolver, y con ella un artifact probadamente ausente permite
+    # cerrar los receipts como NO_ARTIFACT en vez de dejar residuo eterno.
+    candidatas = await journal.transacciones_que_nombran(clave)  # type: ignore[attr-defined]
+    if not candidatas:
         return None
 
-    # R-006: el oracle recibe la MISMA identidad canónica que el lookup del
-    # handoff, y compara contra los strings históricos del manifest con la
-    # forma link-safe — dos representaciones del mismo path no pueden producir
-    # un hit acá arriba y un miss en el manifest (o viceversa).
-    ids_extra: frozenset[int] = frozenset()
-    if incluir_swept_del_open:
-        ids_extra = getattr(journal, "swept_pending_transaction_ids_this_open", frozenset())  # type: ignore[attr-defined]
-    candidatas = await journal.transacciones_que_nombran(clave, ids_extra=ids_extra)  # type: ignore[attr-defined]
-    if not candidatas:
+    if not textures.is_dir():
+        await journal.cerrar_receipts_como_no_artifact(candidatas)  # type: ignore[attr-defined]
         return None
 
     observado = None
@@ -392,7 +431,11 @@ async def reconciliar_orphan_de_artifact(
             data_key=data_key,
             expected_profile=expected_profile,
             observado=observado,
-        )
+        ),
+        # Principio 4: INDETERMINATE + receipts → CONSUMED en UN boundary —
+        # si el INSERT pierde contra un owner concurrente, el consumo tampoco
+        # queda afirmado a medias.
+        consumir_receipts_de=candidatas,
     )
     if handoff_id is None:
         # Perdió contra un owner concurrente: devolver el estado real.
@@ -414,9 +457,9 @@ async def reconciliar_handoffs_de_deployment(
 
     Delega TODA la lógica en :func:`reconciliar_orphan_de_artifact` — la misma
     primitive que el hot path del resume consulta — para que startup y hot path
-    no puedan divergir. Sólo CREA ``INDETERMINATE``, y sólo con evidencia de
-    una corrida interrumpida: TX PENDING que nombra el mod o los IDs EXACTOS
-    barridos en ESTE open (F-002b/R-002A); el manifiesto (pre-mutación) prueba
+    no puedan divergir. Sólo CREA ``INDETERMINATE``, y sólo con evidencia
+    VIGENTE y DURABLE: TX PENDING que nombra el mod o receipt UNRESOLVED de
+    stale sweep (F-001, patch 0006); el manifiesto (pre-mutación) prueba
     INTENCIÓN, no provenance.
 
     Best-effort por contrato: el caller (startup) loguea y continúa ante
@@ -430,7 +473,6 @@ async def reconciliar_handoffs_de_deployment(
         data_key=data_key,
         expected_profile=expected_profile,
         digest_arbol=digest_arbol,
-        incluir_swept_del_open=True,
     )
 
 
@@ -484,9 +526,10 @@ def _registro_indeterminado(
 __all__ = [
     "HANDOFFS_SCHEMA_SQL",
     "HANDOFF_STATES_ACTIVOS",
+    "SWEEP_RECEIPTS_SCHEMA_SQL",
     "DeploymentHandoff",
     "HandoffState",
-    "clave_canonica_de_path",
+    "SweepReceiptState",
     "clave_de_artifact",
     "fila_de_registro",
     "handoff_desde_fila",
