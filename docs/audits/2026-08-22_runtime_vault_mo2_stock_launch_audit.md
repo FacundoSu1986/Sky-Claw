@@ -4,6 +4,7 @@
 > **Estado:** evidencia histórica fechada; no fuente viva por sí sola.  
 > **Ámbito:** comportamiento real de MO2 + Skyrim SE 1.6.1170 + Steam durante dos lanzamientos desde un Stock/Golden externo.  
 > **Modo de la auditoría original:** read-only/forense después de los lanzamientos.  
+> **Contexto del repositorio al publicar esta evidencia:** `main @ 0e80fd0552e547aaefbe0dde0d55982c4e0f984c`. Este SHA contextualiza el estado de Sky-Claw; el objeto auditado fue el rig físico MO2/Skyrim/Steam, no una ejecución del código de Sky-Claw desde ese commit.  
 > **Objetivo:** preservar evidencia de rig que sirva de referencia para Runtime Vault sin versionar logs crudos ni payloads de Creation Club.
 
 ## 1. Resumen ejecutivo
@@ -22,7 +23,7 @@ Los dos ejecutables se originaron físicamente desde ese árbol, no desde la ins
 El resultado más importante para Runtime Vault es doble:
 
 1. MO2 puede ejecutar un runtime de Skyrim ubicado fuera del directorio administrado por Steam.
-2. El Stock/Golden no debe considerarse un runtime operativo inmutable: la prueba observó escrituras reales dentro de `Data`, además de escrituras de estado redirigidas por MO2.
+2. El Stock/Golden no debe considerarse un runtime operativo inmutable: la prueba observó escrituras físicas dentro del árbol del Stock, además de escrituras de estado redirigidas por MO2.
 
 ## 2. Entorno observado
 
@@ -34,11 +35,15 @@ Steam Game:              G:\SteamLibrary\steamapps\common\Skyrim Special Edition
 MO2 base:                G:\Modding\MO2\SkyrimSE
 MO2 profile:             Default
 MO2 game path:           G:\Modding\Skyrim_Stock_1.6.1170
+MO2 version:             NOT_CAPTURED
+USVFS version:           NOT_CAPTURED
 Manifest:                G:\SteamLibrary\steamapps\appmanifest_489830.acf
 Manifest ReadOnly:       True
 Manifest buildid:        13189953
 Manifest StateFlags:     518
 ```
+
+El transcript fuente no contiene metadata suficiente para recuperar retrospectivamente la versión exacta de MO2 ni del componente USVFS utilizado. No se infiere una versión a partir de la instalación actual.
 
 La ruta del archivo de configuración de MO2 se sanitiza en este documento como:
 
@@ -81,11 +86,11 @@ Durante la ventana auditada:
 ```text
 STEAM_PROCESS_PRESENT=YES
 STEAM_PARENT_OF_GAME=NO
-STEAM_UPDATE_ACTIVITY=BLOCKED
+STEAM_UPDATE_FAILURE_OBSERVED=YES
 MANIFEST_READONLY=True
 ```
 
-Se observaron cambios de estado de AppID `489830` y carga del overlay sobre `SkyrimSE.exe`. También se observaron intentos de actualización que terminaron en `Disk write failure` mientras el `appmanifest_489830.acf` permanecía con atributo ReadOnly.
+Se observaron cambios de estado de AppID `489830` y carga del overlay sobre `SkyrimSE.exe`. También se observó actividad de actualización que terminó en `Disk write failure` mientras el `appmanifest_489830.acf` permanecía con atributo ReadOnly.
 
 Extracto mínimo preservado del reporte original:
 
@@ -95,7 +100,7 @@ AppID 489830 state changed : Update Required,Fully Installed,Update Queued,App R
 Disk write failure
 ```
 
-Esto demuestra el comportamiento observado en esta corrida; no constituye una garantía universal de que ReadOnly pueda bloquear cualquier comportamiento futuro de Steam.
+La evidencia preservada establece **correlación**, no causalidad: esta auditoría no conserva la operación fallida con path/error suficiente para demostrar que el atributo ReadOnly del manifest fue la causa del `Disk write failure`. Por tanto, esta corrida no valida por sí sola el mecanismo de Update Guard.
 
 ## 5. Escrituras de usuario y VFS de MO2
 
@@ -166,16 +171,18 @@ Por tanto:
 HASH_IDENTICAL=16205/16207
 ```
 
-Los dos mismatches de contenido fueron:
+Los dos mismatches de contenido observados después de los lanzamientos fueron:
 
 ```text
 Data/ccbgssse037-curios.bsa
 Data/ccbgssse037-curios.esl
 ```
 
-Ambos conservaban el mismo tamaño que su referencia, pero su SHA-256 era distinto después de la ejecución.
+Ambos conservaban el mismo tamaño que su referencia Steam, pero su SHA-256 era distinto en la comparación post-lanzamiento.
 
-La auditoría los clasificó como `CONTENT_CHANGE` producido durante la actividad in-engine de Creation Club/Bethesda.
+La auditoría original los clasificó como `CONTENT_CHANGE` asociado temporalmente a la actividad in-engine de Creation Club/Bethesda: ambos mostraron `CreationTime=11:35:29`, dentro de RUN_B y de la ventana observada de actividad de Creation Club. Sin embargo, el transcript preservado no contiene un hash pre-lanzamiento individual de esos dos archivos. Por ello, **la comparación post-lanzamiento por sí sola no demuestra que esos dos hashes fueran iguales inmediatamente antes de RUN_A/RUN_B ni atribuye causalmente la divergencia de contenido al motor**.
+
+Sí se observaron escrituras/touches físicos dentro del Stock durante la ventana de ejecución —por ejemplo `Debug.log` y entradas de Creation Club con timestamps dentro de RUN_A/RUN_B—, por lo que la conclusión de que ejecutar el Stock permite escrituras observables no depende exclusivamente de los dos mismatches SHA-256.
 
 Otros archivos de Creation Club mostraron cambios de timestamps/metadata pero conservaron hashes idénticos a la referencia Steam. `Debug.log` también fue escrito/tocado por el Launcher pero terminó con contenido/hash idéntico al archivo de referencia.
 
@@ -187,13 +194,13 @@ El reporte original incluyó el rótulo:
 STOCK_CONTENT_INTEGRITY=METADATA_TOUCHED_CONTENT_UNCHANGED
 ```
 
-Ese rótulo no describe correctamente el árbol completo, porque la misma auditoría demostró dos `HASH_MISMATCH` reales. Para esta evidencia histórica se adopta la clasificación coherente con los datos:
+Ese rótulo no describe correctamente la comparación post-lanzamiento del árbol completo, porque la misma auditoría encontró dos `HASH_MISMATCH` reales. Para esta evidencia histórica se adopta una clasificación que no presupone causalidad pre/post no preservada:
 
 ```text
-STOCK_LAUNCH_AUDIT_FOUND_STOCK_WRITES
+STOCK_LAUNCH_AUDIT_FOUND_STOCK_WRITES_AND_POSTRUN_MISMATCHES
 ```
 
-No se afirma que el Stock permaneciera byte-for-byte intacto.
+No se afirma que el Stock permaneciera byte-for-byte intacto, ni que la sola comparación post-lanzamiento pruebe cuándo se originaron los dos mismatches.
 
 ## 8. Timeline resumido
 
@@ -203,10 +210,10 @@ No se afirma que el Stock permaneciera byte-for-byte intacto.
 | 11:30 | Steam | Steam se inicia/invoca para AppID 489830. |
 | 11:32 | MO2/USVFS | RUN_B inicia `SkyrimSE.exe` desde el Stock. |
 | 11:32 | Steam | AppID 489830 pasa a estado `App Running`; overlay engancha `SkyrimSE.exe`. |
-| 11:32–11:35 | MO2 overwrite / Stock | Actividad de Creation Club; 140 archivos quedan en `overwrite`. |
-| 11:35 | Stock `Data` | `ccbgssse037-curios.bsa/.esl` cambian de contenido. |
+| 11:32–11:35 | MO2 overwrite / Stock | Actividad de Creation Club; 140 archivos quedan en `overwrite` y se observan timestamps/touches dentro del Stock. |
+| 11:35 | Stock `Data` | `ccbgssse037-curios.bsa/.esl` muestran `CreationTime=11:35:29`; posteriormente se observan dos mismatches SHA-256 frente a la referencia Steam. |
 | 11:36 | MO2 profile | Se actualizan preferencias/archives al cerrar Skyrim. |
-| 12:37 | Steam content log | Intento de actualización termina en `Disk write failure`. |
+| 12:37 | Steam content log | Actividad de actualización termina en `Disk write failure` con el manifest aún ReadOnly; causalidad no establecida por esta evidencia. |
 
 Los timestamps se conservan únicamente como reconstrucción de esta corrida; no son parte de una identidad persistente de Runtime Vault.
 
@@ -217,9 +224,11 @@ Los timestamps se conservan únicamente como reconstrucción de esta corrida; no
 | `MO2_EXTERNAL_RUNTIME` | `PROVEN` | MO2 ejecutó `SkyrimSE.exe` físicamente desde el Stock externo. |
 | `MO2_EXTERNAL_LAUNCHER` | `PROVEN` | MO2 ejecutó `SkyrimSELauncher.exe` físicamente desde el Stock externo. |
 | `STEAM_AUTH_EXTERNAL_RUNTIME` | `PROVEN` para esta corrida | Steam reconoció AppID 489830/overlay mientras el ejecutable estaba fuera del directorio Steam. |
-| `UPDATE_GUARD_BLOCKED_STEAM_WRITE` | `OBSERVED` | Los intentos registrados terminaron en `Disk write failure` con el manifest ReadOnly. |
-| `GOLDEN_EXECUTION_CAN_CAUSE_WRITES` | `PROVEN` | Dos archivos de `Data` terminaron con hashes diferentes. |
-| `GOLDEN_SHOULD_NOT_BE_USED_AS_RUNTIME` | `SUPPORTED` | Consecuencia arquitectónica respaldada por esta prueba; no una garantía universal. |
+| `STEAM_UPDATE_FAILURE_WITH_MANIFEST_READONLY` | `OBSERVED` | Steam registró `Disk write failure` mientras el manifest permanecía ReadOnly. |
+| `UPDATE_GUARD_CAUSALITY` | `NOT_PROVEN` | La evidencia preservada no identifica con suficiente precisión la operación/path que falló; no atribuye causalmente el fallo al atributo ReadOnly. |
+| `GOLDEN_EXECUTION_CAN_CAUSE_WRITES` | `PROVEN` | Durante RUN_A/RUN_B se observaron escrituras/touches físicos dentro del Stock; esta propiedad no se fundamenta únicamente en los dos mismatches post-lanzamiento. |
+| `POSTRUN_CURIOS_HASH_DIVERGENCE_CAUSED_BY_RUN` | `NOT_PROVEN` | La comparación posterior encontró 2 hashes distintos y timestamps correlacionados con RUN_B, pero no se preservó un hash individual inmediatamente pre-lanzamiento de esos archivos. |
+| `GOLDEN_SHOULD_NOT_BE_USED_AS_RUNTIME` | `SUPPORTED` | Consecuencia arquitectónica respaldada por las escrituras físicas observadas; no una garantía universal. |
 | `GOLDEN_RUNTIME_SEPARATION_REQUIRED` | `SUPPORTED` | Refuerza el diseño Golden Master → copia Runtime independiente. |
 
 Esta auditoría no implementa ni valida por sí sola RV-1/RV-2. Es evidencia de rig para orientar y posteriormente validar esos contratos.
@@ -243,7 +252,9 @@ Los hashes SHA-256 de los **logs crudos locales individuales** no estaban dispon
 ## 11. Límites
 
 - Una corrida física no prueba comportamiento universal de todas las versiones de MO2, Steam o Skyrim.
-- `ReadOnly` en el manifest fue efectivo en los intentos observados, no se presenta como garantía contractual de Valve.
+- Las versiones exactas de MO2 y USVFS no fueron capturadas en el transcript preservado; no se reconstruyen retrospectivamente sin evidencia.
+- `ReadOnly` y `Disk write failure` fueron observados simultáneamente, pero esta auditoría no demuestra que el atributo ReadOnly causara el fallo.
+- La comparación Stock ↔ Steam fue post-lanzamiento; sin hashes individuales pre-lanzamiento preservados para `ccbgssse037-curios.*`, no se atribuye causalmente su divergencia de contenido a RUN_A/RUN_B.
 - Los 140 archivos de Creation Club observados en `overwrite` se describen como payload de Anniversary Edition/Creation Club, no como corrupción.
 - El Stock usado en esta prueba debe volver a verificarse/restaurarse antes de volver a declararlo Golden Master byte-for-byte.
 - Este documento es evidencia histórica. Antes de convertir una conclusión en comportamiento productivo de Sky-Claw, debe revisarse código, tests, ADRs y estado vigente del proyecto.
@@ -252,7 +263,7 @@ Los hashes SHA-256 de los **logs crudos locales individuales** no estaban dispon
 
 ```text
 MO2_EXTERNAL_STOCK_LAUNCH_CONFIRMED
-STOCK_LAUNCH_AUDIT_FOUND_STOCK_WRITES
+STOCK_LAUNCH_AUDIT_FOUND_STOCK_WRITES_AND_POSTRUN_MISMATCHES
 ```
 
-La prueba confirma que MO2 puede lanzar un runtime externo y, al mismo tiempo, demuestra que ejecutar directamente el Golden/Stock permite escrituras observables. Runtime Vault debe preservar la separación entre una referencia verificada y una copia operativa destinada a ejecución.
+La prueba confirma que MO2 puede lanzar un runtime externo y que durante esas ejecuciones hubo escrituras físicas observables dentro del Stock. La comparación posterior encontró además dos divergencias SHA-256 cuya causalidad pre/post no queda demostrada por el transcript preservado. Runtime Vault debe preservar la separación entre una referencia verificada y una copia operativa destinada a ejecución.
