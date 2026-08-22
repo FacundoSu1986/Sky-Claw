@@ -1144,10 +1144,21 @@ class OperationJournal:
                     )
                     await db.commit()
                 except sqlite3.Error as e:
+                    # F-02 (patch 0007): la conexión propia no puede quedar con
+                    # la transacción implícita abierta — el siguiente escritor
+                    # committearía el trabajo parcial de ESTE intento.
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
                     raise JournalTransactionError(
                         f"Failed to commit transaction with deployment handoff: {e}",
                         transaction_id=transaction_id,
                     ) from e
+                except JournalTransactionError:
+                    # El helper rechazó a mitad de la secuencia multi-paso:
+                    # mismo tratamiento — el trabajo parcial se deshace.
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise
 
         if self._current_transaction == transaction_id:
             self._current_transaction = None
@@ -1179,9 +1190,16 @@ class OperationJournal:
                     await self._escribir_resume_completado(db, transaction_id=transaction_id, handoff_id=handoff_id)
                     await db.commit()
                 except sqlite3.Error as e:
+                    # F-02 (patch 0007): ídem crear_handoff_de_deployment.
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
                     raise JournalTransactionError(
                         f"Failed to complete deployment handoff: {e}", transaction_id=transaction_id
                     ) from e
+                except JournalTransactionError:
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise
 
         if self._current_transaction == transaction_id:
             self._current_transaction = None
@@ -1226,6 +1244,9 @@ class OperationJournal:
                     tocadas = await self._escribir_transicion_de_handoff(db, sql=sql, valores=tuple(valores))
                     await db.commit()
                 except sqlite3.Error as e:
+                    # F-02 (patch 0007): ídem los demás escritores standalone.
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
                     raise JournalTransactionError(f"Failed to transition handoff: {e}") from e
         return tocadas == 1
 

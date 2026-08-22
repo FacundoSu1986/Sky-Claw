@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import os
 import pathlib
+import stat
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -223,6 +224,78 @@ def clave_de_artifact(ruta: pathlib.Path) -> str:
     return os.path.normcase(os.path.normpath(str(ruta.resolve(strict=False))))
 
 
+class ArtifactReachability(StrEnum):
+    """Resultado tri-state del alcance físico del artifact (F-01, patch 0007).
+
+    Un booleano ``exists()``/``is_dir()`` NO sirve para decidir provenance:
+    devuelve False tanto para "no existe" como para "no alcanzable", y
+    ``NO_ARTIFACT`` es una afirmación TERMINAL que sólo puede emitirse con
+    ausencia DEMOSTRADA (Principio 2).
+
+    - ``PRESENT``: el artifact existe y es alcanzable;
+    - ``ABSENT``: la ausencia fue positivamente demostrada — el contenedor
+      físico esperado es alcanzable y válido, y el target no existe;
+    - ``UNKNOWN``: no se puede afirmar ausencia (root inaccesible,
+      PermissionError, device offline, share no disponible, OSError genérico,
+      error de resolución, reparse point colgante…). UNKNOWN jamás autoriza
+      cerrar un receipt: queda UNRESOLVED.
+    """
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    UNKNOWN = "unknown"
+
+
+def alcance_del_artifact(artifact_path: pathlib.Path) -> ArtifactReachability:
+    """Reachability tri-state del artifact físico (F-01, patch 0007).
+
+    Verifica el MISMO recurso físico que :func:`clave_de_artifact` (Principio
+    3): resuelve igual (``resolve(strict=False)`` + normcase en el caller), sin
+    una tercera normalización. La probe es síncrona a propósito (syscalls de
+    FS): el reconciler la invoca vía ``asyncio.to_thread``.
+
+    Contrato 7-4 C: el artifact protegido es el MOD (``mods/TexGen Output``) —
+    el mismo target que el handoff ownership. Un mod presente con ``textures``
+    ausente o a medias es PRESENTE (evidencia de mutación inconclusa, no
+    ausencia): el reconciler fabrica INDETERMINATE fail-closed, jamás
+    NO_ARTIFACT.
+    """
+    try:
+        resuelto = artifact_path.resolve(strict=False)
+    except OSError:
+        # Resolución fallida (reparse point roto, etc.): incierto.
+        return ArtifactReachability.UNKNOWN
+    try:
+        info = resuelto.stat()
+    except FileNotFoundError:
+        return _ausencia_demostrada(resuelto)
+    except OSError:
+        # PermissionError, device offline, IO error: incierto.
+        return ArtifactReachability.UNKNOWN
+    if not stat.S_ISDIR(info.st_mode):
+        # Existe algo en el lugar del artifact pero no es el directorio que el
+        # contrato protege: la ausencia del artifact esperado queda demostrada
+        # (el contenedor respondió a stat()).
+        return ArtifactReachability.ABSENT
+    return ArtifactReachability.PRESENT
+
+
+def _ausencia_demostrada(resuelto: pathlib.Path) -> ArtifactReachability:
+    """El target no existe; la ausencia sólo es DEMOSTRABLE si el contenedor
+    físico esperado es alcanzable y válido. Cualquier ambigüedad → UNKNOWN."""
+    try:
+        info_padre = resuelto.parent.stat()
+    except OSError:
+        # El contenedor no responde (ausente o inaccesible): no se puede
+        # demostrar que el artifact no exista. Confundir "no puedo
+        # encontrarlo" con "probé que no existe" es el false-green.
+        return ArtifactReachability.UNKNOWN
+    if stat.S_ISDIR(info_padre.st_mode):
+        return ArtifactReachability.ABSENT
+    # El contenedor existe pero no es un directorio: configuración ambigua.
+    return ArtifactReachability.UNKNOWN
+
+
 # =============================================================================
 # SQL compartido — el ÚNICO dueño de las columnas de la tabla es este módulo;
 # OperationJournal compone estos fragmentos, no escribe su propia variante.
@@ -354,9 +427,11 @@ async def reconciliar_orphan_de_artifact(
 
     Lifecycle de los receipts (Principio 4): al materializar el INDETERMINATE,
     el receipt UNRESOLVED que aportó la evidencia se CONSUME en el MISMO
-    boundary; si el artifact está PROBADAMENTE ausente (paths resolubles — esta
-    primitive sólo se invoca con configuración resuelta), el receipt se cierra
-    NO_ARTIFACT: no queda mutación física preservada que proteger.
+    boundary. ``NO_ARTIFACT`` es terminal y sólo se emite con ausencia
+    DEMOSTRADA por la probe tri-state :func:`alcance_del_artifact` (F-01,
+    patch 0007): contenedor accesible y válido + target realmente ausente.
+    Un root inaccesible o un error ambiguo deja el receipt UNRESOLVED — jamás
+    NO_ARTIFACT.
     """
     clave = clave_de_artifact(mod_texgen)
     activo = await journal.consultar_handoff_activo(clave)  # type: ignore[attr-defined]
@@ -397,16 +472,27 @@ async def reconciliar_orphan_de_artifact(
         return activo
 
     # La evidencia se consulta ANTES del gate del filesystem: sin ella no hay
-    # nada que resolver, y con ella un artifact probadamente ausente permite
-    # cerrar los receipts como NO_ARTIFACT en vez de dejar residuo eterno.
+    # nada que resolver, y con ella la decisión de ausencia pasa por la probe
+    # tri-state (F-01, patch 0007) — jamás por un booleano ``is_dir()``.
     candidatas = await journal.transacciones_que_nombran(clave)  # type: ignore[attr-defined]
     if not candidatas:
         return None
 
-    if not textures.is_dir():
+    alcance = await asyncio.to_thread(alcance_del_artifact, mod_texgen)
+    if alcance is ArtifactReachability.UNKNOWN:
+        # Root inaccesible / error ambiguo: NO se afirma nada terminal — los
+        # receipts siguen UNRESOLVED y vuelven a ser evidencia cuando el
+        # artifact sea alcanzable de nuevo.
+        return None
+    if alcance is ArtifactReachability.ABSENT:
+        # Ausencia DEMOSTRADA (contenedor accesible y válido + target
+        # realmente ausente): no queda mutación física preservada que
+        # proteger — el receipt puede cerrarse como NO_ARTIFACT.
         await journal.cerrar_receipts_como_no_artifact(candidatas)  # type: ignore[attr-defined]
         return None
 
+    # PRESENT (contrato 7-4 C): el mod existe aunque ``textures`` esté a
+    # medias o falte — es evidencia de mutación inconclusa, no ausencia.
     observado = None
     try:
         observado = await asyncio.to_thread(digest_arbol, textures)
@@ -527,9 +613,11 @@ __all__ = [
     "HANDOFFS_SCHEMA_SQL",
     "HANDOFF_STATES_ACTIVOS",
     "SWEEP_RECEIPTS_SCHEMA_SQL",
+    "ArtifactReachability",
     "DeploymentHandoff",
     "HandoffState",
     "SweepReceiptState",
+    "alcance_del_artifact",
     "clave_de_artifact",
     "fila_de_registro",
     "handoff_desde_fila",

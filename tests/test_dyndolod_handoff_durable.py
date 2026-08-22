@@ -26,9 +26,11 @@ import pytest
 
 from sky_claw.app.core.event_bus import CoreEventBus
 from sky_claw.app.db.handoffs import (
+    ArtifactReachability,
     DeploymentHandoff,
     HandoffState,
     SweepReceiptState,
+    alcance_del_artifact,
     clave_de_artifact,
     reconciliar_handoffs_de_deployment,
 )
@@ -2359,7 +2361,9 @@ async def test_receipt_se_cierra_no_artifact_cuando_el_artifact_no_existe(
     assert config.data_dir is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    # El mod NUNCA se crea: ausencia demostrable.
+    # 7-3: el contenedor (mods root) SÍ existe y es accesible; el mod NUNCA se
+    # crea — la ausencia queda DEMOSTRADA y el receipt se cierra NO_ARTIFACT.
+    config.mo2_mods_path.mkdir(parents=True, exist_ok=True)
     tx = await _sembrar_pending_vieja(journal, mod_texgen)
     await journal.sweep_stale_pending(max_age_hours=24.0)
 
@@ -2511,6 +2515,456 @@ async def test_oracle_matchea_manifest_no_resuelto_con_junction(
 
 
 # =============================================================================
+# F-01 (0007) — TRI-STATE REACHABILITY: ausencia ≠ inalcanzable
+# =============================================================================
+#
+# 0006 decidía ``if not textures.is_dir(): receipt → NO_ARTIFACT``, y un
+# ``is_dir()`` False no distingue "no existe" de "no alcanzable": con el root
+# de MO2 temporalmente inaccesible el reconciler cerraba el receipt como
+# NO_ARTIFACT TERMINAL, y al volver el disco el resume salía legacy → DynDOLOD
+# llamada (false green). La probe tri-state sólo permite emitir NO_ARTIFACT
+# con ausencia DEMOSTRADA (contenedor accesible + target realmente ausente);
+# lo incierto deja el receipt UNRESOLVED.
+
+
+def test_probe_presente_con_artifact_alcanzable(tmp_path: pathlib.Path) -> None:
+    mod = tmp_path / "MO2" / "mods" / "TexGen Output"
+    mod.mkdir(parents=True)
+    assert alcance_del_artifact(mod) is ArtifactReachability.PRESENT
+
+
+def test_probe_absent_con_contenedor_accesible(tmp_path: pathlib.Path) -> None:
+    """7-3 (unidad): mods root accesible + mod realmente ausente → ABSENT."""
+    mod = tmp_path / "MO2" / "mods" / "TexGen Output"
+    (tmp_path / "MO2" / "mods").mkdir(parents=True)
+    assert alcance_del_artifact(mod) is ArtifactReachability.ABSENT
+
+
+def test_probe_unknown_con_raiz_ausente(tmp_path: pathlib.Path) -> None:
+    """7-4 A: el contenedor mismo no existe → no se puede DEMOSTRAR ausencia."""
+    mod = tmp_path / "MO2" / "mods" / "TexGen Output"
+    assert alcance_del_artifact(mod) is ArtifactReachability.UNKNOWN
+
+
+def test_probe_unknown_con_oserror_o_permission(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """7-2 (unidad): cualquier error ambiguo al consultar el artifact/parent
+    → UNKNOWN, jamás ABSENT."""
+    mod = tmp_path / "MO2" / "mods" / "TexGen Output"
+    mod.mkdir(parents=True)
+
+    def _permission_denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "access denied")
+
+    monkeypatch.setattr(os, "stat", _permission_denied)
+    assert alcance_del_artifact(mod) is ArtifactReachability.UNKNOWN
+
+    def _io_roto(*_args: object, **_kwargs: object) -> None:
+        raise OSError("io roto")
+
+    monkeypatch.setattr(os, "stat", _io_roto)
+    assert alcance_del_artifact(mod) is ArtifactReachability.UNKNOWN
+
+
+def test_probe_presente_con_mod_sin_textures(tmp_path: pathlib.Path) -> None:
+    """7-4 C (contrato explícito): el artifact protegido es el MOD — si el mod
+    existe pero ``textures`` falta, hay evidencia de mutación a medias, NO
+    ausencia. La probe da PRESENT y el reconciler fabrica INDETERMINATE."""
+    mod = tmp_path / "MO2" / "mods" / "TexGen Output"
+    mod.mkdir(parents=True)
+    assert alcance_del_artifact(mod) is ArtifactReachability.PRESENT
+
+
+@pytest.mark.asyncio
+async def test_receipt_sigue_unresolved_con_raiz_inaccesible_y_bloquea_al_volver(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """7-1: root de MO2 temporalmente inalcanzable durante el reconciler → el
+    receipt NO se cierra; al volver el disco, el resume bloquea (NOT CALLED)."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value
+
+    root_mo2 = tmp_path / "MO2"
+    raiz_oculta = tmp_path / "MO2-away"
+    root_mo2.rename(raiz_oculta)
+    try:
+        await reconciliar_handoffs_de_deployment(
+            journal=journal,
+            mod_texgen=mod_texgen,
+            game_key=clave_de_artifact(config.game_path),
+            mods_root_key=clave_de_artifact(config.mo2_mods_path),
+            data_key=clave_de_artifact(config.data_dir),
+            expected_profile="Perfil-A",
+            digest_arbol=digest_arbol,
+        )
+        assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value, (
+            "un root inalcanzable se trató como ausencia y cerró el receipt"
+        )
+        assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
+    finally:
+        raiz_oculta.rename(root_mo2)
+
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate", result.get("errors")
+
+
+@pytest.mark.asyncio
+async def test_receipt_sigue_unresolved_con_oserror_en_la_probe(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """7-2 (servicio): PermissionError/OSError en la probe → UNKNOWN → el
+    receipt queda UNRESOLVED (jamás NO_ARTIFACT); restaurado el acceso, el
+    resume bloquea."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    def _stat_fallido(*_args: object, **_kwargs: object) -> None:
+        raise OSError("device offline")
+
+    monkeypatch.setattr(os, "stat", _stat_fallido)
+    await reconciliar_handoffs_de_deployment(
+        journal=journal,
+        mod_texgen=mod_texgen,
+        game_key=clave_de_artifact(config.game_path),
+        mods_root_key=clave_de_artifact(config.mo2_mods_path),
+        data_key=clave_de_artifact(config.data_dir),
+        expected_profile="Perfil-A",
+        digest_arbol=digest_arbol,
+    )
+    monkeypatch.undo()
+
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value, (
+        "un OSError ambiguo cerró el receipt como NO_ARTIFACT"
+    )
+    assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
+
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate", result.get("errors")
+
+
+@pytest.mark.asyncio
+async def test_mod_presente_sin_textures_es_evidencia_no_ausencia(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """7-4 C (contrato): mod presente con ``textures`` ausente NO es ausencia
+    demostrada — el reconciler fabrica INDETERMINATE fail-closed (observado
+    None) y consume el receipt, en vez de cerrarlo NO_ARTIFACT."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    mod_texgen.mkdir(parents=True)  # mod SIN textures
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    await reconciliar_handoffs_de_deployment(
+        journal=journal,
+        mod_texgen=mod_texgen,
+        game_key=clave_de_artifact(config.game_path),
+        mods_root_key=clave_de_artifact(config.mo2_mods_path),
+        data_key=clave_de_artifact(config.data_dir),
+        expected_profile="Perfil-A",
+        digest_arbol=digest_arbol,
+    )
+
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.CONSUMED.value, (
+        "un mod a medias se trató como ausencia y cerró el receipt sin evidencia"
+    )
+    activo = await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.INDETERMINATE
+    assert activo.expected_digest is None and activo.observed_digest is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="los junctions son específicos de Windows")
+@pytest.mark.asyncio
+async def test_junction_colgante_es_unknown_y_no_cierra_el_receipt(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """7-5: junction cuyo target fue renombrado (reparse point inaccesible)
+    → UNKNOWN → el receipt queda UNRESOLVED; restaurado el target, el resume
+    bloquea."""
+    import subprocess
+
+    journal, _ = journal_tmp
+    real_mods = tmp_path / "real-mods"
+    real_mods.mkdir()
+    mod_texgen = real_mods / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    alias = tmp_path / "MO2" / "mods"
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    creado = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(alias), str(real_mods)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if creado.returncode != 0:
+        pytest.skip(f"no se pudo crear el junction: {creado.stderr!r}")
+
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen_alias = alias / DynDOLODRunner.TEXGEN_MOD_NAME
+    tx = await _sembrar_pending_vieja(journal, mod_texgen_alias)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    objetivo_oculto = tmp_path / "real-mods-away"
+    real_mods.rename(objetivo_oculto)
+    try:
+        await reconciliar_handoffs_de_deployment(
+            journal=journal,
+            mod_texgen=mod_texgen_alias,
+            game_key=clave_de_artifact(config.game_path),
+            mods_root_key=clave_de_artifact(alias),
+            data_key=clave_de_artifact(config.data_dir),
+            expected_profile="Perfil-A",
+            digest_arbol=digest_arbol,
+        )
+        assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value, (
+            "un junction colgante se trató como ausencia demostrada"
+        )
+    finally:
+        objetivo_oculto.rename(real_mods)
+
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate", result.get("errors")
+
+
+# =============================================================================
+# F-02 (0007) — el branch standalone de los handoff writers no deja boundary
+# =============================================================================
+#
+# ``except sqlite3.Error: raise`` SIN rollback dejaba la transacción implícita
+# de la conexión propia ABIERTA con trabajo parcial — el siguiente escritor
+# sobre esa conexión commiteaba los dos juntos (leak, P2, no producción).
+# Se cierra el par por igual en los tres hermanos que faltaban (el cuarto,
+# ``registrar_handoff_indeterminado``, ya lo tenía desde 0006).
+
+
+async def _handoff_awaiting_para_leak(journal: OperationJournal, mod_texgen: pathlib.Path) -> int:
+    _tx, viejo = await _sembrar_awaiting(
+        journal,
+        mod_texgen=mod_texgen,
+        game=pathlib.Path("X:/game"),
+        mods=pathlib.Path("X:/MO2/mods"),
+        data=pathlib.Path("X:/game/Data"),
+    )
+    return viejo.handoff_id
+
+
+@pytest.mark.asyncio
+async def test_crear_handoff_standalone_sin_leak_al_fallar_el_commit(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, db_path = journal_tmp
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+    viejo_id = await _handoff_awaiting_para_leak(journal, mod_texgen)
+    tx2 = await journal.begin_transaction("corrida nueva", agent_id="test")
+
+    async def _commit_fallido() -> None:
+        raise sqlite3.OperationalError("commit roto")
+
+    monkeypatch.setattr(journal._db, "commit", _commit_fallido)  # noqa: SLF001
+    with pytest.raises(JournalTransactionError):
+        await journal.crear_handoff_de_deployment(
+            tx2,
+            descripcion=None,
+            registro=DeploymentHandoff(
+                handoff_id=0,
+                source_tx_id=tx2,
+                state=HandoffState.AWAITING_DEPLOYMENT,
+                artifact_path=clave_de_artifact(mod_texgen),
+                game_key=clave_de_artifact(pathlib.Path("X:/game")),
+                mods_root_key=clave_de_artifact(pathlib.Path("X:/MO2/mods")),
+                data_key=clave_de_artifact(pathlib.Path("X:/game/Data")),
+                expected_profile="Perfil-A",
+                expected_digest="d",
+                expected_files=1,
+                expected_bytes=1,
+                observed_digest=None,
+                observed_files=None,
+                observed_bytes=None,
+                created_at="",
+                updated_at="",
+                completed_at=None,
+                superseded_at=None,
+                superseded_by=None,
+            ),
+            viejo=None,
+        )
+    monkeypatch.undo()
+
+    assert journal._db.in_transaction is False, "la transacción implícita quedó ABIERTA (leak)"  # noqa: SLF001
+    j2 = OperationJournal(db_path)
+    await j2.open()
+    assert (await j2.get_transaction(tx2)).status is TransactionStatus.PENDING
+    activo = await j2.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.handoff_id == viejo_id
+    await j2.close()
+
+
+@pytest.mark.asyncio
+async def test_completar_resume_standalone_sin_leak_al_fallar_el_commit(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, db_path = journal_tmp
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+    viejo_id = await _handoff_awaiting_para_leak(journal, mod_texgen)
+    tx2 = await journal.begin_transaction("resume", agent_id="test")
+
+    async def _commit_fallido() -> None:
+        raise sqlite3.OperationalError("commit roto")
+
+    monkeypatch.setattr(journal._db, "commit", _commit_fallido)  # noqa: SLF001
+    with pytest.raises(JournalTransactionError):
+        await journal.completar_handoff_de_resume(tx2, viejo_id)
+    monkeypatch.undo()
+
+    assert journal._db.in_transaction is False  # noqa: SLF001
+    j2 = OperationJournal(db_path)
+    await j2.open()
+    assert (await j2.get_transaction(tx2)).status is TransactionStatus.PENDING
+    activo = await j2.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.AWAITING_DEPLOYMENT
+    await j2.close()
+
+
+@pytest.mark.asyncio
+async def test_transicionar_handoff_standalone_sin_leak_al_fallar_el_commit(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal, db_path = journal_tmp
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+    viejo_id = await _handoff_awaiting_para_leak(journal, mod_texgen)
+
+    async def _commit_fallido() -> None:
+        raise sqlite3.OperationalError("commit roto")
+
+    monkeypatch.setattr(journal._db, "commit", _commit_fallido)  # noqa: SLF001
+    with pytest.raises(JournalTransactionError):
+        await journal.transicionar_handoff(
+            viejo_id,
+            desde=HandoffState.AWAITING_DEPLOYMENT,
+            hacia=HandoffState.SUPERSEDING,
+        )
+    monkeypatch.undo()
+
+    assert journal._db.in_transaction is False  # noqa: SLF001
+    j2 = OperationJournal(db_path)
+    await j2.open()
+    activo = await j2.consultar_handoff_activo(clave_de_artifact(mod_texgen))
+    assert activo is not None and activo.state is HandoffState.AWAITING_DEPLOYMENT
+    await j2.close()
+
+
+@pytest.mark.asyncio
+async def test_crear_handoff_standalone_sin_leak_cuando_el_helper_rechaza(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """El helper también puede rechazar (JournalTransactionError) a mitad de la
+    secuencia multi-paso; la conexión propia no puede quedar con el trabajo
+    parcial abierto."""
+    journal, _ = journal_tmp
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+    tx2 = await journal.begin_transaction("corrida", agent_id="test")
+
+    with pytest.raises(JournalTransactionError):
+        await journal.crear_handoff_de_deployment(
+            tx2,
+            descripcion=None,
+            registro=DeploymentHandoff(
+                handoff_id=0,
+                source_tx_id=tx2,
+                state=HandoffState.AWAITING_DEPLOYMENT,
+                artifact_path=clave_de_artifact(mod_texgen),
+                game_key=clave_de_artifact(pathlib.Path("X:/game")),
+                mods_root_key=clave_de_artifact(pathlib.Path("X:/MO2/mods")),
+                data_key=clave_de_artifact(pathlib.Path("X:/game/Data")),
+                expected_profile="Perfil-A",
+                expected_digest="d",
+                expected_files=1,
+                expected_bytes=1,
+                observed_digest=None,
+                observed_files=None,
+                observed_bytes=None,
+                created_at="",
+                updated_at="",
+                completed_at=None,
+                superseded_at=None,
+                superseded_by=None,
+            ),
+            viejo=DeploymentHandoff(
+                handoff_id=999,
+                source_tx_id=tx2,
+                state=HandoffState.AWAITING_DEPLOYMENT,
+                artifact_path=clave_de_artifact(mod_texgen),
+                game_key="",
+                mods_root_key="",
+                data_key="",
+                expected_profile="",
+                expected_digest="d",
+                expected_files=1,
+                expected_bytes=1,
+                observed_digest=None,
+                observed_files=None,
+                observed_bytes=None,
+                created_at="",
+                updated_at="",
+                completed_at=None,
+                superseded_at=None,
+                superseded_by=None,
+            ),
+        )
+
+    assert journal._db.in_transaction is False, "el rechazo del helper dejó la transacción ABIERTA"  # noqa: SLF001
+    assert (await journal.get_transaction(tx2)).status is TransactionStatus.PENDING
+
+
+# =============================================================================
 # ANCLAS ENUMERATIVAS (D2 §26) — congelan conjuntos, no muestran
 # =============================================================================
 
@@ -2659,3 +3113,138 @@ def test_una_sola_identidad_fisica_para_ownership_y_oracle() -> None:
 
     cuerpo_oracle = _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", "transacciones_que_nombran")
     assert "clave_de_artifact" in cuerpo_oracle, "el oracle ya no compara con la identidad física del ownership"
+
+    # F-01 (0007): la probe de reachability también resuelve IGUAL que
+    # clave_de_artifact — sin una tercera normalización. Chequeo por AST del
+    # CALL (no por substring: un docstring que lo mencione no es implementación).
+    import ast
+
+    fuente_handoffs = (raiz / "app" / "db" / "handoffs.py").read_text(encoding="utf-8")
+    arbol_handoffs = ast.parse(fuente_handoffs)
+    probe = next(
+        nodo
+        for nodo in ast.walk(arbol_handoffs)
+        if isinstance(nodo, ast.FunctionDef) and nodo.name == "alcance_del_artifact"
+    )
+    resuelve_con_resolve = any(
+        isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == "resolve"
+        and any(isinstance(kw, ast.keyword) and kw.arg == "strict" for kw in nodo.keywords)
+        for nodo in ast.walk(probe)
+    )
+    assert resuelve_con_resolve, "la probe dejó de resolver con la identidad física del contrato"
+
+
+def test_no_artifact_solo_puede_emitirse_tras_absencia_demostrada() -> None:
+    """Ancla F-01 (0007): ``NO_ARTIFACT`` es terminal y sólo lo emite UNA
+    primitive — ``reconciliar_orphan_de_artifact`` — y únicamente bajo un
+    resultado ABSENT explícito de la probe tri-state. Un
+    ``if not path.exists(): close_no_artifact()`` disperso rompe acá."""
+    import ast
+
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    fuente = (raiz / "app" / "db" / "handoffs.py").read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+
+    class _Visitante(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.calls: list[ast.Call] = []
+            self.funciones: list[str] = []
+
+        def visit_Call(self, nodo: ast.Call) -> None:  # noqa: N802
+            if isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "cerrar_receipts_como_no_artifact":
+                self.calls.append(nodo)
+            self.generic_visit(nodo)
+
+        def visit_FunctionDef(self, nodo: ast.FunctionDef) -> None:  # noqa: N802
+            if any(
+                isinstance(hijo, ast.Call)
+                and isinstance(hijo.func, ast.Attribute)
+                and hijo.func.attr == "cerrar_receipts_como_no_artifact"
+                for hijo in ast.walk(nodo)
+            ):
+                self.funciones.append(nodo.name)
+            self.generic_visit(nodo)
+
+        visit_AsyncFunctionDef = visit_FunctionDef  # noqa: N815
+
+    visitante = _Visitante()
+    visitante.visit(arbol)
+    assert len(visitante.calls) == 1, "la emisión de NO_ARTIFACT se dispersó fuera de la primitive"
+    assert visitante.funciones == ["reconciliar_orphan_de_artifact"], (
+        "cerrar_receipts_como_no_artifact se invoca desde otra función"
+    )
+
+    # El único call está bajo un If que compara contra ArtifactReachability.ABSENT.
+    padres: dict[ast.AST, ast.AST] = {}
+    for nodo in ast.walk(arbol):
+        for hijo in ast.iter_child_nodes(nodo):
+            padres[hijo] = nodo
+    actual: ast.AST = visitante.calls[0]
+    guard_absent = False
+    while actual in padres:
+        actual = padres[actual]
+        if isinstance(actual, ast.If):
+            condicion = ast.get_source_segment(fuente, actual.test) or ""
+            guard_absent = "ArtifactReachability.ABSENT" in condicion
+            break
+        if isinstance(actual, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            break
+    assert guard_absent, "NO_ARTIFACT se emite sin un resultado ABSENT explícito de la probe"
+
+
+def test_los_callers_del_reconciler_de_orphan_estan_congelados() -> None:
+    """Ancla F-03 (0007): congela el conjunto EXACTO de callers de
+    ``reconciliar_orphan_de_artifact`` y que todos reconcilian el MISMO
+    resource — ``DynDOLODRunner.TEXGEN_MOD_NAME``, directo o en su cadena de
+    callers (el arranque lo enlaza en ``app_context``). El receipt es por TX y
+    una TX puede nombrar varios recursos: agregar un segundo artifact (p. ej.
+    DynDOLOD Output) rompe acá y obliga a decidir la cardinalidad
+    receipt→artifact antes de que exista un false-green."""
+    import ast
+
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    cuerpos: dict[tuple[str, str], str] = {}
+    sitios: dict[str, set[tuple[str, str]]] = {}
+
+    for archivo in raiz.rglob("*.py"):
+        try:
+            fuente = archivo.read_text(encoding="utf-8")
+            arbol = ast.parse(fuente)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        clave = archivo.relative_to(raiz).as_posix()
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            cuerpo = ast.get_source_segment(fuente, nodo) or ""
+            cuerpos[(clave, nodo.name)] = cuerpo
+            for hijo in ast.walk(nodo):
+                if isinstance(hijo, ast.Call):
+                    if isinstance(hijo.func, ast.Name):
+                        sitios.setdefault(hijo.func.id, set()).add((clave, nodo.name))
+                    elif isinstance(hijo.func, ast.Attribute):
+                        sitios.setdefault(hijo.func.attr, set()).add((clave, nodo.name))
+
+    callers = sitios.get("reconciliar_orphan_de_artifact", set())
+    assert callers == {
+        ("app/db/handoffs.py", "reconciliar_handoffs_de_deployment"),
+        ("local/tools/dyndolod_service.py", "_consultar_resume"),
+    }, "cambió el conjunto de callers del reconciler de orphan: decidí la cardinalidad receipt→artifact antes de seguir"
+
+    def _cadena_nombra_texgen(clave: str, nombre: str, visitados: frozenset[tuple[str, str]]) -> bool:
+        if (clave, nombre) in visitados:
+            return False
+        if "TEXGEN_MOD_NAME" in cuerpos[(clave, nombre)]:
+            return True
+        for sitio_clave, sitio_fn in sorted(sitios.get(nombre, set())):
+            if _cadena_nombra_texgen(sitio_clave, sitio_fn, visitados | {(clave, nombre)}):
+                return True
+        return False
+
+    for clave, nombre in sorted(callers):
+        assert _cadena_nombra_texgen(clave, nombre, frozenset()), (
+            f"{clave}:{nombre} reconcilia orphans sin nombrar DynDOLODRunner.TEXGEN_MOD_NAME "
+            "en su cadena de callers: decidí la cardinalidad receipt→artifact"
+        )
