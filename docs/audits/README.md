@@ -23,9 +23,10 @@ ejecución. Un hallazgo puede haber sido corregido después. Antes de actuar:
 
 Archivos actuales:
 
+- `2026-08-22_runtime_vault_mo2_stock_launch_audit.md`
+- `2026-08-04_wrye_bash_headless_snippet.md`
 - `2026-07-18_orchestrator_resilience_audit.md`
 - `2026-07-18_zero_trust_network_gateway_audit.md`
-- `2026-08-04_wrye_bash_headless_snippet.md`
 - `2026-07_historial_ooda.md`
 - `auditoria_03_pipeline_consolidada.md`
 - `auditoria_prs_300-304_verificacion.md`
