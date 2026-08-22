@@ -47,6 +47,7 @@ from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.output_targets import (
     BODYSLIDE_MESHES_RESOURCE_ID,
     bodyslide_output_root,
+    dyndolod_output_target,
     pandora_output_target,
 )
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
@@ -224,20 +225,34 @@ def construir_productores_de_move_aside(
     el resto barre igual.
     """
     productores: list[ProductorDeMoveAside] = []
+    # DynDOLOD/TexGen mueven aparte TRES destinos, y no todos cuelgan de la misma
+    # raíz: los dos mods de salida empaquetados viven bajo `<mo2>/mods`, y el
+    # staging crudo de TexGen bajo la raíz administrada del juego. Las constantes
+    # son las mismas que consume `dyndolod_service` al construir sus
+    # `DirectoryRollback`; declarar el padre daría autoridad sobre otros
+    # directorios con un sufijo de rollback válido.
+    destinos_dyndolod: list[pathlib.Path] = []
     if mo2_root is not None:
-        # DynDOLOD/TexGen mueven aparte estos dos mods de salida empaquetados. Las
-        # constantes son las mismas que consume `dyndolod_service` al construir
-        # sus `DirectoryRollback`; declarar el padre daría autoridad sobre otros
-        # mods con un sufijo de rollback válido.
         mods = mo2_root / "mods"
+        destinos_dyndolod += [
+            mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME,
+            mods / DynDOLODRunner.TEXGEN_MOD_NAME,
+        ]
+    # El staging crudo entró al move-aside con el fix B del review de #493, y sin
+    # declararlo acá su residuo quedaría fuera del barrido: tras una muerte dura,
+    # el backup del staging bajo la raíz administrada es la ÚNICA copia del árbol
+    # previo. La raíz se deriva de la MISMA función que usa el servicio —igual que
+    # Pandora— para que un cambio del destino administrado no haya que replicarlo
+    # acá (hermano del defecto #388).
+    raiz_administrada = dyndolod_output_target(game=game)
+    if raiz_administrada is not None:
+        destinos_dyndolod.append(raiz_administrada / DynDOLODRunner.TEXGEN_OUTPUT_NAME)
+    if destinos_dyndolod:
         productores.append(
             ProductorDeMoveAside(
                 nombre="dyndolod",
                 lock_resource_id="dyndolod-pipeline",
-                destinos=(
-                    mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME,
-                    mods / DynDOLODRunner.TEXGEN_MOD_NAME,
-                ),
+                destinos=tuple(destinos_dyndolod),
             )
         )
 

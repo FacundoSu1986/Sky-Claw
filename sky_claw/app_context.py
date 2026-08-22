@@ -1132,6 +1132,50 @@ class AppContext:
             self._push_startup_cleanup(journal.close)
             await self._await_startup(journal.open())
 
+            # D2 (PR #493): reconciliar el handoff durable de deployment contra el
+            # filesystem ANTES de que cualquier resume lo consulte. Corre después
+            # del sweep del journal y ANTES del barrido de rollback_reconciler
+            # (orden congelado por test): la evidencia de corrida interrumpida se
+            # lee del journal, y el residuo move-aside todavía está en su lugar.
+            # Best-effort: nunca aborta el arranque. Sólo degrada a INDETERMINATE
+            # con evidencia; jamás fabrica identidad autorizada.
+            try:
+                from sky_claw.app.db.handoffs import (
+                    clave_de_artifact,
+                    reconciliar_handoffs_de_deployment,
+                )
+                from sky_claw.local.tools.artifact_digest import digest_arbol
+                from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
+
+                mods_root = pathlib.Path(mo2_root) / "mods" if mo2_root else None
+                game_path = configured_game if isinstance(configured_game, pathlib.Path) else None
+                data_dir = game_path / "Data" if game_path is not None else None
+                if game_path is not None and data_dir is not None and mods_root is not None:
+                    await self._await_startup(
+                        reconciliar_handoffs_de_deployment(
+                            journal=journal,
+                            # F-007: la fuente canónica del nombre del mod es
+                            # DynDOLODRunner.TEXGEN_MOD_NAME — el ancla AST de
+                            # tests exige que el wiring no hardcodee el literal.
+                            mod_texgen=mods_root / DynDOLODRunner.TEXGEN_MOD_NAME,
+                            game_key=clave_de_artifact(game_path),
+                            mods_root_key=clave_de_artifact(mods_root),
+                            data_key=clave_de_artifact(data_dir),
+                            expected_profile=active_profile,
+                            digest_arbol=digest_arbol,
+                        )
+                    )
+                else:
+                    logger.warning(
+                        "Reconciliación del handoff de deployment omitida: no hay juego/MO2 "
+                        "resolubles para ubicar el artifact físico (best-effort, no bloquea el arranque)"
+                    )
+            except Exception:
+                logger.warning(
+                    "Reconciliación del handoff de deployment falló (no bloquea el arranque)",
+                    exc_info=True,
+                )
+
             # Auditoría FOMOD: el motor (parser/resolver/installer) existía pero
             # nunca se cableó — las tools preview_mod_installer /
             # install_mod_from_archive / resolve_fomod respondían "not configured".
