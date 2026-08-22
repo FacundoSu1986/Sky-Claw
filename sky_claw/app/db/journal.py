@@ -246,6 +246,29 @@ class RollbackResult:
 
 
 # =============================================================================
+# ALLOWLIST DE COLUMNAS DE TRANSICIÓN DE HANDOFF (D2, post-push 0009)
+# =============================================================================
+#
+# ``transicionar_handoff`` compone un UPDATE dinámico a partir de kwargs. La
+# composición NUNCA interpola una clave arbitraria: cada campo se resuelve por
+# LOOKUP contra esta allowlist cerrada — ``campo → fragmento SQL literal`` — y
+# cualquier clave ajena se rechaza con ``JournalTransactionError`` ANTES de
+# construir o ejecutar SQL. Con eso, los fragmentos estructurales del statement
+# salen exclusivamente de literales de este módulo y los valores viajan
+# parametrizados por posición (el ``# nosec B608`` localizado de abajo es
+# honesto). Un campo nuevo rompe el ancla de
+# ``tests/test_handoff_sql_hardening.py`` hasta que se autorice acá.
+_CAMPOS_TRANSICION_HANDOFF: dict[str, str] = {
+    "expected_digest": "expected_digest = ?",
+    "expected_files": "expected_files = ?",
+    "expected_bytes": "expected_bytes = ?",
+    "observed_digest": "observed_digest = ?",
+    "observed_files": "observed_files = ?",
+    "observed_bytes": "observed_bytes = ?",
+}
+
+
+# =============================================================================
 # OPERATION JOURNAL
 # =============================================================================
 
@@ -1220,17 +1243,29 @@ class OperationJournal:
 
         El ``WHERE state = desde`` es la guarda: si el estado real difiere
         (concurrencia, reconciler previo), devuelve ``False`` sin mutar. Los
-        ``campos`` son nombres de columna INTERNOS de este módulo — nunca input
-        externo — y se parametrizan por posición.
+        ``campos`` se resuelven contra :data:`_CAMPOS_TRANSICION_HANDOFF` — una
+        allowlist cerrada de fragmentos SQL estructurales — ANTES de construir
+        o ejecutar cualquier SQL: una clave ajena es un error de contrato del
+        caller y se rechaza con ``JournalTransactionError``, jamás se interpola
+        como identificador. Los valores siguen parametrizados por posición.
         """
         columnas = ["state = ?", "updated_at = datetime('now')"]
         valores: list[object] = [hacia.value]
         for nombre, valor in campos.items():
-            columnas.append(f"{nombre} = ?")
+            fragmento = _CAMPOS_TRANSICION_HANDOFF.get(nombre)
+            if fragmento is None:
+                raise JournalTransactionError(
+                    f"Columna de handoff no permitida en una transición: {nombre!r}",
+                    transaction_id=None,
+                )
+            columnas.append(fragmento)
             valores.append(valor)
         valores.append(handoff_id)
         valores.append(desde.value)
-        sql = f"UPDATE deployment_handoffs SET {', '.join(columnas)} WHERE handoff_id = ? AND state = ?"
+        # nosec B608 — los fragmentos estructurales del SET salen EXCLUSIVAMENTE
+        # de _CAMPOS_TRANSICION_HANDOFF (allowlist cerrada de literales del
+        # módulo, validada arriba); los valores viajan parametrizados por posición.
+        sql = f"UPDATE deployment_handoffs SET {', '.join(columnas)} WHERE handoff_id = ? AND state = ?"  # nosec B608
         db = await self._ensure_connected()
         if self._lifecycle is not None:
             try:

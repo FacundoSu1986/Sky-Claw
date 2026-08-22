@@ -103,7 +103,7 @@ dice. `rolled_back` en el resultado es `False` por la misma razón.
 
 El ciclo completo, entonces:
 
-```
+```text
 TexGen corre  →  TexGen Output empaquetado  →  gate de visibilidad FALLA
                                                       ↓
                        resultado: success=False, needs_deployment=True,

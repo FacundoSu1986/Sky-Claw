@@ -328,13 +328,16 @@ _COLUMNAS_HANDOFF = (
     "created_at, updated_at, completed_at, superseded_at, superseded_by"
 )
 
+# nosec B608: _COLUMNAS_HANDOFF es un literal cerrado de este módulo (única
+# asignación, materializado en import time, sin input de caller) y los datos de
+# runtime siguen parametrizados con placeholders ``?`` en el WHERE.
 _SELECT_HANDOFF_ACTIVO_SQL = f"""
     SELECT {_COLUMNAS_HANDOFF}
     FROM deployment_handoffs
     WHERE artifact_path = ?
       AND state IN ('awaiting_deployment','indeterminate','superseding')
     LIMIT 1
-"""
+"""  # nosec B608
 
 _INSERT_HANDOFF_SQL = """
     INSERT INTO deployment_handoffs (

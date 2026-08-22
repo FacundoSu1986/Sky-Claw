@@ -1082,41 +1082,6 @@ class AppContext:
                         exc_info=True,
                     )
 
-            # U-08 (mitad 2): reconciliar el residuo de rollback que sobrevive a una
-            # muerte dura. La mitad 1 (#378) cubrió la cancelación cooperativa en
-            # clone(); un SIGKILL/OOM/corte de luz evade TODO finally e __aexit__, así
-            # que la única red posible es al arrancar. Comparte hook y lock_manager con
-            # la reconciliación de U-03 de arriba — mismo guard: si el ritual que
-            # produce el residuo está en curso (aun en otra instancia), no se toca.
-            # Best-effort: NO debe abortar el arranque.
-            try:
-                from sky_claw.local.tools.rollback_reconciler import (
-                    construir_productores_de_move_aside,
-                    reconcile_orphan_rollback_backups,
-                )
-
-                await self._await_startup(
-                    reconcile_orphan_rollback_backups(
-                        # Las raíces y el lock de CADA ritual salen del constructor, no
-                        # de acá: barrer el residuo de un ritual mirando el lock de otro
-                        # restauraría un backup con la corrida todavía en vuelo. Pandora
-                        # además NO deja su residuo bajo `<mo2>/mods` sino junto al
-                        # juego, así que sin esa raíz su backup queda huérfano para
-                        # siempre.
-                        productores=construir_productores_de_move_aside(
-                            mo2_root=mo2_root,
-                            game=configured_game,
-                        ),
-                        sandbox_root=mo2_root / ".skyclaw_sandbox",
-                        lock_manager=lock_manager,
-                    )
-                )
-            except Exception:
-                logger.warning(
-                    "Reconciliación de backups de rollback huérfanos falló (no bloquea el arranque)",
-                    exc_info=True,
-                )
-
             # T-26 (ADR 0002, follow-up de #243): journal para que run_loot_sort
             # de este path del agente también emita+persista el ActionManifest
             # ("caja negra de vuelo") antes de mutar — cerrando el hueco donde la
@@ -1133,10 +1098,20 @@ class AppContext:
             await self._await_startup(journal.open())
 
             # D2 (PR #493): reconciliar el handoff durable de deployment contra el
-            # filesystem ANTES de que cualquier resume lo consulte. Corre después
-            # del sweep del journal y ANTES del barrido de rollback_reconciler
-            # (orden congelado por test): la evidencia de corrida interrumpida se
-            # lee del journal, y el residuo move-aside todavía está en su lugar.
+            # filesystem ANTES de que cualquier resume lo consulte. El orden del
+            # arranque está congelado por tests (test_startup_recovery_order.py):
+            #
+            #   1. journal.open() — incluye el stale sweep de TX PENDING;
+            #   2. esta reconciliación de handoff (evidencia del journal);
+            #   3. barrido de rollback_reconciler (U-08, más abajo).
+            #
+            # El barrido de residuos corre DESPUÉS a propósito: el reconciler
+            # restaura/desplaza evidencia física (``mods/TexGen Output``,
+            # ``managed_root/textures``) que ESTE oracle inspecciona. Ejecutarlo
+            # primero restauraría la generación previa y el oracle —mirando ya el
+            # artifact restaurado— fabricaría un INDETERMINATE espurio con la
+            # identidad observada de la generación vieja y consumiría los receipts
+            # sobre ese estado contaminado (reproducido en el post-push 0009).
             # Best-effort: nunca aborta el arranque. Sólo degrada a INDETERMINATE
             # con evidencia; jamás fabrica identidad autorizada.
             try:
@@ -1173,6 +1148,47 @@ class AppContext:
             except Exception:
                 logger.warning(
                     "Reconciliación del handoff de deployment falló (no bloquea el arranque)",
+                    exc_info=True,
+                )
+
+            # U-08 (mitad 2): reconciliar el residuo de rollback que sobrevive a una
+            # muerte dura. La mitad 1 (#378) cubrió la cancelación cooperativa en
+            # clone(); un SIGKILL/OOM/corte de luz evade TODO finally e __aexit__, así
+            # que la única red posible es al arrancar. Comparte hook y lock_manager con
+            # la reconciliación de U-03 de arriba — mismo guard: si el ritual que
+            # produce el residuo está en curso (aun en otra instancia), no se toca.
+            # Best-effort: NO debe abortar el arranque.
+            #
+            # Corre DESPUÉS de la reconciliación de handoff de D2 (orden congelado
+            # por test_startup_recovery_order.py): el oracle ya decidió sobre la
+            # evidencia física PREVIA a la restauración, y recién ahora este
+            # barrido devuelve la generación anterior a su lugar — convergiendo
+            # con lo que el camino de cancelación cooperativa ya produce.
+            try:
+                from sky_claw.local.tools.rollback_reconciler import (
+                    construir_productores_de_move_aside,
+                    reconcile_orphan_rollback_backups,
+                )
+
+                await self._await_startup(
+                    reconcile_orphan_rollback_backups(
+                        # Las raíces y el lock de CADA ritual salen del constructor, no
+                        # de acá: barrer el residuo de un ritual mirando el lock de otro
+                        # restauraría un backup con la corrida todavía en vuelo. Pandora
+                        # además NO deja su residuo bajo `<mo2>/mods` sino junto al
+                        # juego, así que sin esa raíz su backup queda huérfano para
+                        # siempre.
+                        productores=construir_productores_de_move_aside(
+                            mo2_root=mo2_root,
+                            game=configured_game,
+                        ),
+                        sandbox_root=mo2_root / ".skyclaw_sandbox",
+                        lock_manager=lock_manager,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Reconciliación de backups de rollback huérfanos falló (no bloquea el arranque)",
                     exc_info=True,
                 )
 
