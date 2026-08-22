@@ -43,16 +43,18 @@ from sky_claw.local.runtime_vault.models import FileIdentity, InventoryError, In
 #: sostiene un archivo completo en memoria.
 _CHUNK = 1024 * 1024
 
-#: Hooks de sincronización para los tests de estabilidad de captura (F1).
+#: Hooks de sincronización para los tests de estabilidad de captura (F1/A).
 #: No-op por defecto; los tests los reemplazan con funciones que mutan el
-#: archivo en el punto exacto de la ventana PRE/READ/POST. Son la única forma
-#: determinista (sin sleeps) de ejercitar una carrera real del filesystem.
+#: archivo en el punto exacto de la ventana PRE/READ/POST o de la pasada
+#: estructural. Son la única forma determinista (sin sleeps) de ejercitar una
+#: carrera real del filesystem.
 _HOOK_ANTES_DE_ABRIR: Callable[[pathlib.Path], None] | None = None
 _HOOK_DURANTE_LA_LECTURA: Callable[[pathlib.Path], None] | None = None
+_HOOK_TRAS_LA_LECTURA: Callable[[pathlib.Path], None] | None = None
 
 
-def _digest_estable(ruta: pathlib.Path, identidad_pre: os.stat_result) -> tuple[int, str]:
-    """(bytes leídos, sha256 hex) sellando la observación alrededor de la lectura.
+def _digest_estable(ruta: pathlib.Path, identidad_pre: os.stat_result) -> tuple[int, str, int]:
+    """(bytes leídos, sha256 hex, mtime_ns del POST) sellando la observación.
 
     PRE: ``identidad_pre`` es el MISMO ``lstat`` con el que el recorrido decidió
     que ``ruta`` era un archivo regular propio. READ: streaming por chunks con
@@ -72,6 +74,9 @@ def _digest_estable(ruta: pathlib.Path, identidad_pre: os.stat_result) -> tuple[
       modificación observada durante la lectura. El mtime es SOLO evidence
       gate de captura: no entra al ``FileIdentity`` ni al digest del árbol.
 
+    El mtime del POST se devuelve como evidencia efímera para la pasada
+    estructural final del árbol; tampoco se persiste.
+
     Límite declarado: no es una garantía TOCTOU-fuerte — un doble overwrite
     que restaura el mtime dentro de la granularidad del filesystem no es
     distinguible. Todo lo que SÍ se observa falla cerrado.
@@ -86,6 +91,8 @@ def _digest_estable(ruta: pathlib.Path, identidad_pre: os.stat_result) -> tuple[
             total += len(chunk)
             if _HOOK_DURANTE_LA_LECTURA is not None:
                 _HOOK_DURANTE_LA_LECTURA(ruta)
+    if _HOOK_TRAS_LA_LECTURA is not None:
+        _HOOK_TRAS_LA_LECTURA(ruta)
     tipo_post, identidad_post = _clasificar(ruta)
     if identidad_post is None:
         raise InventoryError(f"'{ruta}' desapareció durante la lectura: la observación no es estable")
@@ -106,7 +113,7 @@ def _digest_estable(ruta: pathlib.Path, identidad_pre: os.stat_result) -> tuple[
             f"'{ruta}' fue modificado durante la lectura (mtime {identidad_pre.st_mtime_ns} → "
             f"{identidad_post.st_mtime_ns}): la observación no es estable"
         )
-    return total, acumulador.hexdigest()
+    return total, acumulador.hexdigest(), identidad_post.st_mtime_ns
 
 
 def _clasificar(ruta: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
@@ -116,6 +123,84 @@ def _clasificar(ruta: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
     except OSError as exc:
         raise InventoryError(f"No se pudo inspeccionar '{ruta}' para el inventario: {exc}") from exc
     return tipo, identidad
+
+
+def _estructura_efimera(root: pathlib.Path) -> tuple[dict[str, tuple[int, int]], dict[str, int]]:
+    """Recorrido estructural (solo lstat, sin hashing) del árbol.
+
+    Devuelve la evidencia efímera con la que la pasada final compara la
+    captura: archivos → ``relpath: (size, mtime_ns)`` y subdirectorios →
+    ``relpath: mtime_ns``. Misma política de enlaces que el recorrido de
+    captura (la detección NO se reimplementa: usa ``_clasificar``), pero sin
+    tocar contenido: es la "FINAL STRUCTURAL VALIDATION PASS" del seal de
+    árbol.
+    """
+    archivos: dict[str, tuple[int, int]] = {}
+    dirs: dict[str, int] = {}
+    pendientes: list[pathlib.Path] = [root]
+    while pendientes:
+        actual = pendientes.pop()
+        tipo, identidad = _clasificar(actual)
+        if identidad is None:
+            raise InventoryError(f"'{actual}' desapareció durante la validación final: el árbol está cambiando")
+        if tipo is not None:
+            raise InventoryLinkError(
+                f"Enlace inesperado durante la validación final: '{actual}' ({tipo}) — no se sigue ni se ignora"
+            )
+        if stat.S_ISREG(identidad.st_mode):
+            archivos[actual.relative_to(root).as_posix()] = (identidad.st_size, identidad.st_mtime_ns)
+            continue
+        if not stat.S_ISDIR(identidad.st_mode):
+            raise InventoryError(
+                f"Entrada inesperada durante la validación final: '{actual}' no es archivo regular ni directorio"
+            )
+        try:
+            with os.scandir(actual) as entradas:
+                hijos = [pathlib.Path(entrada.path) for entrada in entradas]
+        except OSError as exc:
+            raise InventoryError(f"No se pudo recorrer '{actual}' durante la validación final: {exc}") from exc
+        if actual != root:
+            dirs[actual.relative_to(root).as_posix()] = identidad.st_mtime_ns
+        pendientes.extend(hijos)
+    return archivos, dirs
+
+
+def _validar_estabilidad_final(
+    root: pathlib.Path,
+    archivos_capturados: dict[str, tuple[int, int]],
+    dirs_capturados: dict[str, int],
+) -> None:
+    """Tree-level stability seal: la captura debe coincidir con el árbol final.
+
+    Re-recorre el árbol (sin hashing) y exige igualdad EXACTA de membership y
+    de evidencia efímera contra lo capturado. Cubre las mutaciones que el
+    recorrido de captura ya pasó: una entrada agregada tras el snapshot del
+    directorio, un archivo eliminado o renombrado después de ser procesado, un
+    archivo ya hasheado que se modifica después, y directorios que aparecen o
+    desaparecen. Cualquier diferencia es fail-closed: nunca una identidad
+    incompleta como válida.
+    """
+    archivos_finales, dirs_finales = _estructura_efimera(root)
+    if archivos_finales != archivos_capturados:
+        solo_finales = set(archivos_finales) - set(archivos_capturados)
+        solo_captura = set(archivos_capturados) - set(archivos_finales)
+        cambiados = {
+            r for r in set(archivos_capturados) & set(archivos_finales) if archivos_capturados[r] != archivos_finales[r]
+        }
+        detalle: list[str] = []
+        if solo_finales:
+            detalle.append(f"aparecieron {sorted(solo_finales)[:3]}")
+        if solo_captura:
+            detalle.append(f"desaparecieron {sorted(solo_captura)[:3]}")
+        if cambiados:
+            detalle.append(f"cambiaron {sorted(cambiados)[:3]}")
+        raise InventoryError(
+            f"El árbol bajo '{root}' cambió durante la captura ({'; '.join(detalle)}): la identidad no es estable"
+        )
+    if dirs_finales != dirs_capturados:
+        raise InventoryError(
+            f"La estructura de directorios bajo '{root}' cambió durante la captura: la identidad no es estable"
+        )
 
 
 def inventory_tree(root: pathlib.Path) -> tuple[FileIdentity, ...]:
@@ -145,6 +230,8 @@ def inventory_tree(root: pathlib.Path) -> tuple[FileIdentity, ...]:
         raise InventoryError(f"La raíz '{root}' no es un directorio: no hay árbol que inventariar")
 
     encontrados: list[FileIdentity] = []
+    archivos_capturados: dict[str, tuple[int, int]] = {}
+    dirs_capturados: dict[str, int] = {}
     pendientes: list[pathlib.Path] = [root]
     while pendientes:
         actual = pendientes.pop()
@@ -158,10 +245,14 @@ def inventory_tree(root: pathlib.Path) -> tuple[FileIdentity, ...]:
             )
         if stat.S_ISREG(identidad.st_mode):
             try:
-                size, digest = _digest_estable(actual, identidad)
+                size, digest, mtime_post = _digest_estable(actual, identidad)
             except OSError as exc:
                 raise InventoryError(f"No se pudo leer '{actual}' para el inventario: {exc}") from exc
-            encontrados.append(FileIdentity(rel_path=actual.relative_to(root).as_posix(), size=size, digest=digest))
+            rel = actual.relative_to(root).as_posix()
+            encontrados.append(FileIdentity(rel_path=rel, size=size, digest=digest))
+            # Evidencia efímera para la pasada estructural final: (size, mtime)
+            # del MISMO lstat con el que el seal por archivo cerró la lectura.
+            archivos_capturados[rel] = (size, mtime_post)
             continue
         if not stat.S_ISDIR(identidad.st_mode):
             raise InventoryError(f"Entrada inesperada dentro del scope: '{actual}' no es archivo regular ni directorio")
@@ -183,12 +274,19 @@ def inventory_tree(root: pathlib.Path) -> tuple[FileIdentity, ...]:
             )
         if not same_file_identity(identidad, identidad_despues):
             raise InventoryError(f"'{actual}' cambió mientras se abría: el árbol está cambiando")
+        if actual != root:
+            # El mtime de un directorio cambia con mutations de membership:
+            # evidencia efímera adicional para la pasada estructural final.
+            dirs_capturados[actual.relative_to(root).as_posix()] = identidad_despues.st_mtime_ns
         pendientes.extend(hijos)
 
     if not encontrados:
         raise InventoryError(
             f"El árbol bajo '{root}' no tiene archivos propios que identificar: un árbol vacío no tiene identidad"
         )
+    # Tree-level stability seal: ninguna mutación observable durante la
+    # captura completa puede dejar una identidad incompleta como válida.
+    _validar_estabilidad_final(root, archivos_capturados, dirs_capturados)
     return tuple(sorted(encontrados, key=lambda f: f.rel_path))
 
 

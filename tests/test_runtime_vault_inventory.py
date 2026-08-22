@@ -104,7 +104,7 @@ class TestFailClosed:
             inventory_tree(vacio)
 
     def test_entrada_ilegible_es_error(self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _lectura_falla(_ruta: pathlib.Path, _identidad: os.stat_result) -> tuple[int, str]:
+        def _lectura_falla(_ruta: pathlib.Path, _identidad: os.stat_result) -> tuple[int, str, int]:
             raise OSError("permiso denegado")
 
         monkeypatch.setattr(modulo_inv, "_digest_estable", _lectura_falla)
@@ -165,20 +165,30 @@ class TestEstabilidadDeCaptura:
     def _montar_hook_antes(monkeypatch: pytest.MonkeyPatch, fn) -> None:
         monkeypatch.setattr(modulo_inv, "_HOOK_ANTES_DE_ABRIR", fn, raising=False)
 
-    def test_archivo_crece_durante_el_hashing_falla_cerrado(
+    @staticmethod
+    def _montar_hook_tras(monkeypatch: pytest.MonkeyPatch, fn) -> None:
+        monkeypatch.setattr(modulo_inv, "_HOOK_TRAS_LA_LECTURA", fn, raising=False)
+
+    def test_archivo_crece_despues_de_cerrar_el_descriptor_falla_por_conteo_de_bytes(
         self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """T-F1-A: el crecimiento ocurre tras el último chunk, antes del POST."""
+        """T-F1-A: el crecimiento ocurre TRAS cerrar el descriptor de lectura y
+        se restaura el mtime — el ÚNICO gate que puede disparar es el de bytes
+        leídos vs tamaño final. La versión anterior de este test hacía append
+        con el reader aún abierto, que absorbía los bytes nuevos y disparaba
+        solo el gate de mtime (hallazgo del review)."""
         objetivo = arbol / "a.txt"
+        estado = objetivo.stat()
         disparado = {"ya": False}
 
-        def _crecer(ruta: pathlib.Path) -> None:
+        def _crecer_tras_lectura(ruta: pathlib.Path) -> None:
             if ruta == objetivo and not disparado["ya"]:
                 disparado["ya"] = True
                 with objetivo.open("ab") as fh:
-                    fh.write(b"bytes-extra-durante-la-captura")
+                    fh.write(b"bytes-extra-despues-de-cerrar-el-reader")
+                os.utime(objetivo, ns=(estado.st_atime_ns, estado.st_mtime_ns))
 
-        self._montar_hook_durante(monkeypatch, _crecer)
+        self._montar_hook_tras(monkeypatch, _crecer_tras_lectura)
 
         with pytest.raises(InventoryError):
             inventory_tree(arbol)
@@ -293,6 +303,121 @@ class TestEstabilidadDeCaptura:
                 os.utime(objetivo, ns=(estado.st_atime_ns, estado.st_mtime_ns + 60_000_000_000))
 
         self._montar_hook_durante(monkeypatch, _tocar_mtime)
+
+        with pytest.raises(InventoryError):
+            inventory_tree(arbol)
+
+
+class TestSelladoDeArbol:
+    """A — tree-level stability seal.
+
+    Invariante: al regresar ``inventory_tree()``, ninguna mutación observable
+    ocurrida durante la captura completa puede dejar una identidad incompleta
+    como válida. El seal por archivo (F1) cubre la ventana de cada lectura;
+    estos tests cubren las mutaciones que el recorrido ya pasó: membership que
+    aparece, desaparece o cambia, y contenido de archivos ya hasheados.
+
+    El orden LIFO del walk procesa ``sub/b.bin`` ANTES que ``a.txt``, así que
+    el hook montado durante ``a.txt`` muta siempre algo que ya fue capturado —
+    y si alguna vez el orden cambiara, el walk lo detectaría igual por
+    "desapareció durante el recorrido": ambos desenlaces son fail-closed.
+    """
+
+    @staticmethod
+    def _montar_hook_durante(monkeypatch: pytest.MonkeyPatch, fn) -> None:
+        monkeypatch.setattr(modulo_inv, "_HOOK_DURANTE_LA_LECTURA", fn, raising=False)
+
+    def test_archivo_agregado_durante_la_captura_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """El caso del review: el dir ya fue esnapshotado; la entrada nueva no
+        está en el recorrido y solo la validación estructural final la detecta."""
+        objetivo = arbol / "a.txt"
+        disparado = {"ya": False}
+
+        def _agregar(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                (arbol / "nuevo.txt").write_bytes(b"aparecio-tarde")
+
+        self._montar_hook_durante(monkeypatch, _agregar)
+
+        with pytest.raises(InventoryError):
+            inventory_tree(arbol)
+
+    def test_archivo_eliminado_durante_la_captura_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        objetivo = arbol / "a.txt"
+        eliminado = arbol / "sub" / "b.bin"
+        disparado = {"ya": False}
+
+        def _eliminar(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                eliminado.unlink()
+
+        self._montar_hook_durante(monkeypatch, _eliminar)
+
+        with pytest.raises(InventoryError):
+            inventory_tree(arbol)
+
+    def test_archivo_renombrado_durante_la_captura_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        objetivo = arbol / "a.txt"
+        renombrado = arbol / "sub" / "b.bin"
+        disparado = {"ya": False}
+
+        def _renombrar(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                renombrado.rename(arbol / "sub" / "b2.bin")
+
+        self._montar_hook_durante(monkeypatch, _renombrar)
+
+        with pytest.raises(InventoryError):
+            inventory_tree(arbol)
+
+    def test_archivo_ya_hasheado_modificado_despues_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Overwrite same-size de un archivo ya hasheadado, detectado por la
+        pasada final estructural (mtime de la captura vs el observado)."""
+        objetivo = arbol / "a.txt"
+        victima = arbol / "sub" / "b.bin"
+        original = victima.read_bytes()
+        reemplazo = bytes(reversed(original))
+        assert len(reemplazo) == len(original) > 0
+        disparado = {"ya": False}
+
+        def _sobrescribir(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                with victima.open("wb") as fh:
+                    fh.write(reemplazo)
+                estado = victima.stat()
+                os.utime(victima, ns=(estado.st_atime_ns, estado.st_mtime_ns + 60_000_000_000))
+
+        self._montar_hook_durante(monkeypatch, _sobrescribir)
+
+        with pytest.raises(InventoryError):
+            inventory_tree(arbol)
+
+    def test_directorio_agregado_durante_la_captura_falla_cerrado(
+        self, arbol: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        objetivo = arbol / "a.txt"
+        disparado = {"ya": False}
+
+        def _agregar_dir(ruta: pathlib.Path) -> None:
+            if ruta == objetivo and not disparado["ya"]:
+                disparado["ya"] = True
+                nuevo = arbol / "nuevo_dir"
+                nuevo.mkdir()
+                (nuevo / "c.txt").write_bytes(b"c")
+
+        self._montar_hook_durante(monkeypatch, _agregar_dir)
 
         with pytest.raises(InventoryError):
             inventory_tree(arbol)

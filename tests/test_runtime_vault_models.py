@@ -14,6 +14,7 @@ import ast
 import dataclasses
 import pathlib
 
+from sky_claw.local.runtime_vault import models as modelos
 from sky_claw.local.runtime_vault.models import (
     FileIdentity,
     InventoryError,
@@ -21,7 +22,6 @@ from sky_claw.local.runtime_vault.models import (
     RuntimeIdentity,
     RuntimeVaultError,
     RuntimeVerificationResult,
-    TreeDigest,
     TreeVerificationResult,
     VerificationState,
 )
@@ -48,9 +48,13 @@ class TestFormaDeLosModelos:
     """Los DTOs del vault son frozen+slots y no conocen el mtime."""
 
     def test_los_dtos_son_frozen_y_slots(self) -> None:
-        tipos = (RuntimeIdentity, FileIdentity, TreeDigest, TreeVerificationResult, RuntimeVerificationResult)
+        # Introspección, no muestra manual: un DTO nuevo en models.__all__
+        # queda cubierto por construcción (ancla enumerativa del repo).
+        tipos = tuple(
+            objeto for nombre in modelos.__all__ if dataclasses.is_dataclass(objeto := getattr(modelos, nombre))
+        )
+        assert tipos, "no se descubrió ningún DTO en sky_claw.local.runtime_vault.models"
         for tipo in tipos:
-            assert dataclasses.is_dataclass(tipo), tipo
             # frozen se ve en los parámetros; slots (Python 3.11) se ve en que
             # la clase define __slots__ con los nombres de sus campos.
             assert tipo.__dataclass_params__.frozen, tipo

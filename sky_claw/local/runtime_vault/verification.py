@@ -109,13 +109,25 @@ def verify_runtime_identity(
     """Compara la identidad de runtime esperada contra la observada (datos de entrada).
 
     El vault no escanea el host: ambas identidades llegan observadas. Sin
-    alguna de las dos, o sin versión en cualquiera de ellas, no hay VERIFIED
-    posible: una comparación a medias es UNKNOWN, no verde.
+    alguna de las dos, o sin game_key/versión válidos (vacíos o
+    whitespace-only) en cualquiera de ellas, no hay VERIFIED posible: una
+    comparación a medias es UNKNOWN, no verde.
     """
     if expected is None or observed is None:
         return RuntimeVerificationResult(
             state=VerificationState.UNKNOWN,
             message="Sin identidad esperada u observada: no hay comparación que afirmar (UNKNOWN != VERIFIED).",
+            expected=expected,
+            observed=observed,
+        )
+    # Validación de completitud ANTES de comparar: un game_key o una versión
+    # vacía (o whitespace-only) no identifica nada, así que la evidencia es
+    # incompleta y el resultado es UNKNOWN — nunca VERIFIED ni un mismatch
+    # definitivo entre observaciones a medias.
+    if not expected.game_key.strip() or not observed.game_key.strip():
+        return RuntimeVerificationResult(
+            state=VerificationState.UNKNOWN,
+            message="Sin game_key válido (esperado u observado): no se puede afirmar VERIFIED.",
             expected=expected,
             observed=observed,
         )
@@ -126,7 +138,7 @@ def verify_runtime_identity(
             expected=expected,
             observed=observed,
         )
-    if not expected.game_version or not observed.game_version:
+    if not expected.game_version.strip() or not observed.game_version.strip():
         return RuntimeVerificationResult(
             state=VerificationState.UNKNOWN,
             message="Sin versión observada (esperada o del host): no se puede afirmar VERIFIED.",

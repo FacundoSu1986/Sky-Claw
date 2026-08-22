@@ -240,3 +240,37 @@ class TestVerifyRuntimeIdentity:
         assert verify_runtime_identity(None, observada).state is VerificationState.UNKNOWN
         assert verify_runtime_identity(observada, None).state is VerificationState.UNKNOWN
         assert verify_runtime_identity(None, None).state is VerificationState.UNKNOWN
+
+    def test_game_key_vacio_en_ambos_unknown(self) -> None:
+        """Un game_key vacío no identifica ningún juego: con evidencia incompleta
+        NO hay VERIFIED posible, aunque las versiones coincidan."""
+        esperada = RuntimeIdentity(game_key="", game_version="1.6.1170.0")
+        observada = RuntimeIdentity(game_key="", game_version="1.6.1170.0")
+
+        resultado = verify_runtime_identity(esperada, observada)
+
+        assert resultado.state is VerificationState.UNKNOWN
+        assert resultado.success is False
+
+    def test_game_key_vacio_en_uno_unknown(self) -> None:
+        esperada = RuntimeIdentity(game_key="", game_version="1.6.1170.0")
+        observada = RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0")
+
+        resultado = verify_runtime_identity(esperada, observada)
+
+        assert resultado.state is VerificationState.UNKNOWN
+
+    def test_game_key_whitespace_unknown(self) -> None:
+        esperada = RuntimeIdentity(game_key="   ", game_version="1.6.1170.0")
+        observada = RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0")
+
+        assert verify_runtime_identity(esperada, observada).state is VerificationState.UNKNOWN
+
+    def test_version_whitespace_unknown_cierra_f3(self) -> None:
+        """F3: una versión whitespace-only es igual de incompleta que una vacía."""
+        esperada = RuntimeIdentity(game_key="skyrimse", game_version="   ")
+        observada = RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0")
+
+        resultado = verify_runtime_identity(esperada, observada)
+
+        assert resultado.state is VerificationState.UNKNOWN
