@@ -78,12 +78,24 @@ STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
 # viaja en ENVELOPE — dueño (``owner_tab``) + ``tool_key`` real de la corrida +
 # dict — para que una acción destructiva no migre entre pestañas ni se derive
 # con un literal de tool desde la vista.
+#
+# PATCH 0010 (CROSS_TAB_RITUAL_RESULT_EVICTION): la clave sigue siendo UNA —
+# los subscribers de ``ReactiveStore`` son estrictamente por clave y la página
+# refresca el panel sobre cambios del valor — pero el valor ahora es un
+# CONTENEDOR multi-owner: un envelope POR ``owner_tab``. Cada pestaña sustituye
+# o limpia SÓLO su slot; dos pestañas pueden conservar resultados pendientes
+# simultáneamente. El single-flight global (``STORE_KEY_RITUAL_IN_FLIGHT``)
+# serializa la EJECUCIÓN y no se toca: el estado POST-run es el multi-owner.
 STORE_KEY_RITUAL_LAST_RESULT = "ritual_last_result"
 
 #: Claves del envelope publicado bajo ``STORE_KEY_RITUAL_LAST_RESULT``.
 RITUAL_RESULT_OWNER_TAB = "owner_tab"
 RITUAL_RESULT_TOOL_KEY = "tool_key"
 RITUAL_RESULT_PAYLOAD_KEY = "result"
+#: Clave INTERNA del contenedor multi-owner (PATCH 0010): mapea ``owner_tab``
+#: (o ``None`` para el resultado sin dueño) → envelope. Nunca se manipula desde
+#: la vista; todo read/write/delete pasa por los helpers de este módulo.
+RITUAL_RESULTS_BY_OWNER = "results_by_owner"
 
 
 #: Dueño de una aprobación pendiente: el ``tab_id`` de la pestaña que lanzó el
@@ -146,6 +158,54 @@ def resolve_pending_hitl(store: ReactiveStore, tab_id: str | None) -> dict[str, 
     return None
 
 
+def _es_envelope_legacy(raw: Any) -> bool:
+    """True si ``raw`` es el envelope simple pre-multi-owner (PATCH 0010).
+
+    El store es efímero en proceso, pero un hot reload o una corrida larga
+    puede dejar publicado el shape anterior ``{owner_tab, tool_key, result}``.
+    El reader lo adopta en transición en vez de descartar el resultado
+    accionable que ya tenía un dueño legítimo.
+    """
+    return isinstance(raw, dict) and RITUAL_RESULT_TOOL_KEY in raw and RITUAL_RESULT_PAYLOAD_KEY in raw
+
+
+def _resultados_por_owner(store: ReactiveStore) -> dict[str | None, dict[str, Any]]:
+    """Resultados vigentes por ``owner_tab`` (``None`` = sin dueño).
+
+    Normaliza el contenedor multi-owner y adopta el envelope legacy si aparece
+    (transición sin migración durable). Devuelve el dict interno SÓLO para
+    lectura: quien muta hace una copia antes (``dict(...)``) y escribe por
+    :func:`_escribir_resultados_de_ritual`.
+    """
+    raw = store.get(STORE_KEY_RITUAL_LAST_RESULT)
+    if _es_envelope_legacy(raw):
+        owner = raw.get(RITUAL_RESULT_OWNER_TAB)
+        return {owner: raw}
+    if isinstance(raw, dict):
+        resultados = raw.get(RITUAL_RESULTS_BY_OWNER)
+        if isinstance(resultados, dict):
+            return resultados
+    return {}
+
+
+def _escribir_resultados_de_ritual(
+    store: ReactiveStore,
+    resultados: dict[str | None, dict[str, Any]],
+) -> None:
+    """ÚNICO punto de producción que escribe ``STORE_KEY_RITUAL_LAST_RESULT``.
+
+    Escribe el contenedor completo (o ``None`` si quedó vacío) como UNA
+    mutación de la clave, para conservar el mecanismo de subscriptions del
+    ``ReactiveStore``. Ancla por AST en ``test_ritual_result_cross_tab``: un
+    ``store.set`` directo a esta clave fuera de acá es un clear/replace global
+    accidental (el bug cross-tab) y rompe el test.
+    """
+    if resultados:
+        store.set(STORE_KEY_RITUAL_LAST_RESULT, {RITUAL_RESULTS_BY_OWNER: dict(resultados)})
+    else:
+        store.set(STORE_KEY_RITUAL_LAST_RESULT, None)
+
+
 def publicar_resultado_de_ritual(
     store: ReactiveStore,
     *,
@@ -153,21 +213,27 @@ def publicar_resultado_de_ritual(
     resultado: dict[str, Any],
     tab_id: str | None,
 ) -> None:
-    """Publica el resultado estructural bajo la clave accionable (R-004/R-005).
+    """Publica el resultado estructural en el slot del dueño (R-004/R-005).
 
     El envelope persiste juntos el ``owner_tab``, el ``tool_key`` REAL de la
     corrida y el dict estructurado — no sólo el result. Con eso, la acción de
     Resume sólo puede resolverse/consumirse desde la pestaña dueña, y la vista
     nunca hardcodea "dyndolod": el tool sale del dato, no de un literal.
+
+    PATCH 0010: la publicación es PER-OWNER — cada pestaña sustituye SÓLO su
+    resultado anterior. Un ritual de B ya no puede reemplazar el envelope
+    accionable de A (CROSS_TAB_RITUAL_RESULT_EVICTION); dos pestañas pueden
+    tener resultados pendientes simultáneamente. Un dispatch sin pestaña
+    lanzadora (agente LLM, Telegram, backend) ocupa el slot sin dueño
+    (``None``), visible para cualquiera como siempre.
     """
-    store.set(
-        STORE_KEY_RITUAL_LAST_RESULT,
-        {
-            RITUAL_RESULT_OWNER_TAB: tab_id,
-            RITUAL_RESULT_TOOL_KEY: tool_key,
-            RITUAL_RESULT_PAYLOAD_KEY: resultado,
-        },
-    )
+    resultados = dict(_resultados_por_owner(store))
+    resultados[tab_id] = {
+        RITUAL_RESULT_OWNER_TAB: tab_id,
+        RITUAL_RESULT_TOOL_KEY: tool_key,
+        RITUAL_RESULT_PAYLOAD_KEY: resultado,
+    }
+    _escribir_resultados_de_ritual(store, resultados)
 
 
 def resolve_ritual_resume_action(store: ReactiveStore, tab_id: str | None) -> dict[str, Any] | None:
@@ -181,35 +247,44 @@ def resolve_ritual_resume_action(store: ReactiveStore, tab_id: str | None) -> di
     R-005: el ``tool_key`` sale del envelope publicado por la corrida — un
     resultado de otro ritual con ``needs_deployment`` de fixture NO produce una
     acción de DynDOLOD. Seam puro, testeable sin NiceGUI.
+
+    PATCH 0010 (precedencia multi-owner): la pestaña ve SU último resultado; si
+    no tiene ninguno propio, ve el resultado sin dueño (política vigente:
+    ownerless es visible para cualquiera). Nunca el de OTRA pestaña — con dos
+    resultados pendientes, cada tab resuelve exactamente el suyo.
     """
-    publicado = store.get(STORE_KEY_RITUAL_LAST_RESULT)
-    if not isinstance(publicado, dict):
+    resultados = _resultados_por_owner(store)
+    envelope = resultados.get(tab_id)
+    if envelope is None:
+        envelope = resultados.get(None)
+    if not isinstance(envelope, dict):
         return None
-    owner = publicado.get(RITUAL_RESULT_OWNER_TAB)
-    if owner is not None and owner != tab_id:
-        return None
-    tool_key = publicado.get(RITUAL_RESULT_TOOL_KEY)
-    resultado = publicado.get(RITUAL_RESULT_PAYLOAD_KEY)
+    tool_key = envelope.get(RITUAL_RESULT_TOOL_KEY)
+    resultado = envelope.get(RITUAL_RESULT_PAYLOAD_KEY)
     if not isinstance(tool_key, str) or not isinstance(resultado, dict):
         return None
     return resume_action_from_result(tool_key, resultado)
 
 
 def clear_ritual_result_owned(store: ReactiveStore, tab_id: str | None) -> None:
-    """Limpia el resultado accionable SOLO si su dueño coincide (F-004).
+    """Limpia el resultado accionable que ESTA pestaña puede desalojar (F-004).
 
     Tab B no puede CONSUMIR la acción de A, y tampoco borrarla con el ``×``:
     el clear/dismiss respeta el mismo ``owner_tab`` del envelope. Un resultado
     sin dueño conserva la política ya aceptada — lo limpia cualquiera. El
     ``tab_id=None`` (sin contexto de pestaña) sólo puede limpiar resultados sin
     dueño, igual que en :func:`resolve_pending_hitl`.
+
+    PATCH 0010 (multi-owner): borra el slot PROPIO de ``tab_id``; si la pestaña
+    no tiene slot propio, cae al slot sin dueño (política vigente). NUNCA borra
+    el resultado de OTRA pestaña, ni siquiera un ``tab_id=None`` de contexto.
     """
-    publicado = store.get(STORE_KEY_RITUAL_LAST_RESULT)
-    if isinstance(publicado, dict):
-        owner = publicado.get(RITUAL_RESULT_OWNER_TAB)
-        if owner is not None and owner != tab_id:
-            return
-    store.set(STORE_KEY_RITUAL_LAST_RESULT, None)
+    resultados = dict(_resultados_por_owner(store))
+    if tab_id in resultados:
+        del resultados[tab_id]
+    elif None in resultados:
+        del resultados[None]
+    _escribir_resultados_de_ritual(store, resultados)
 
 
 #: Per-client "Modo local" toggle, stored in ``app.storage.client`` (server-side,
@@ -443,9 +518,6 @@ async def run_ritual(
     # arranca sin panel stale (T-16b). Se re-puebla al final si el dispatch adjunta
     # un reporte (hoy solo el sort de LOOT lo hace).
     store.set(STORE_KEY_RITUAL_PREFLIGHT, None)
-    # F-001: el resultado ESTRUCTURAL (flag needs_deployment + path) se publica
-    # aparte del texto del toast — el panel consume el dict, no el string.
-    store.set(STORE_KEY_RITUAL_LAST_RESULT, None)
     tool_name = ritual_tool_name(tool_key)
     if tool_name is None:
         store.set(
@@ -468,6 +540,13 @@ async def run_ritual(
             {"text": "Ya hay un ritual en curso o esperando aprobación. Esperá a que termine.", "type": "warning"},
         )
         return
+    # F-001/PATCH 0010: una generación nueva sustituye el resultado accionable
+    # ANTERIOR de la MISMA pestaña — y sólo el propio. El clear global que vivía
+    # acá desalojaba la acción de Resume pendiente de OTRA pestaña al arrancar
+    # este run (CROSS_TAB_RITUAL_RESULT_EVICTION). Va DESPUÉS de los guards: un
+    # click rechazado (single-flight / sin supervisor / ritual no cableado) no
+    # consume la acción propia, porque la corrida ni siquiera empieza.
+    clear_ritual_result_owned(store, tab_id)
     store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
     # F1a: un click del operador ES intervención humana — rearmar el
     # cortacircuitos cognitivo del dispatcher antes de despachar, para que
@@ -492,7 +571,11 @@ async def run_ritual(
             STORE_KEY_RITUAL_FEEDBACK,
             {"text": f"El ritual «{tool_key}» falló: {type(exc).__name__}", "type": "negative"},
         )
-        store.set(STORE_KEY_RITUAL_LAST_RESULT, None)
+        # PATCH 0010: el clear de arranque ya desalojó el resultado PROPIO antes
+        # de despachar; el fallo de ESTE run sólo publica su feedback y NUNCA
+        # limpia el resultado accionable de otra pestaña — el ``store.set(KEY,
+        # None)`` global que vivía acá era la segunda pata del
+        # CROSS_TAB_RITUAL_RESULT_EVICTION.
         return
     finally:
         _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)

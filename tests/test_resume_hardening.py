@@ -117,11 +117,17 @@ async def test_run_ritual_publica_el_resultado_estructural_para_el_panel() -> No
 
     publicado = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
     assert publicado is not None
-    assert publicado.get(rr_mod.RITUAL_RESULT_TOOL_KEY) == "dyndolod", (
+    # PATCH 0010: la clave es un contenedor multi-owner; sin tab_id el run
+    # publica en el slot sin dueño (None).
+    resultados = publicado.get(rr_mod.RITUAL_RESULTS_BY_OWNER)
+    assert isinstance(resultados, dict)
+    envelope = resultados.get(None)
+    assert envelope is not None
+    assert envelope.get(rr_mod.RITUAL_RESULT_TOOL_KEY) == "dyndolod", (
         "el tool_key de la corrida no viaja con el resultado"
     )
-    assert publicado.get(rr_mod.RITUAL_RESULT_OWNER_TAB) is None, "sin tab_id el resultado no tiene dueño"
-    resultado = publicado.get(rr_mod.RITUAL_RESULT_PAYLOAD_KEY)
+    assert envelope.get(rr_mod.RITUAL_RESULT_OWNER_TAB) is None, "sin tab_id el resultado no tiene dueño"
+    resultado = envelope.get(rr_mod.RITUAL_RESULT_PAYLOAD_KEY)
     assert resultado is not None
     assert resultado.get("needs_deployment") is True
     assert resultado.get("texgen_mod_path") == "C:/MO2/mods/TexGen Output"
@@ -217,8 +223,9 @@ def test_tras_consumir_la_accion_desaparece() -> None:
     )
     assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is not None
 
+    # El consumo de la vista: mismo camino que el botón (feedback + clear owned).
     store.set(rr_mod.STORE_KEY_RITUAL_FEEDBACK, None)
-    store.set(rr_mod.STORE_KEY_RITUAL_LAST_RESULT, None)
+    rr_mod.clear_ritual_result_owned(store, "tab-A")
 
     assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is None
 
@@ -253,7 +260,13 @@ async def test_una_nueva_generacion_no_consume_el_resultado_viejo() -> None:
 
     publicado = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
     assert publicado is not None
-    assert publicado.get(rr_mod.RITUAL_RESULT_PAYLOAD_KEY) != viejo
+    # PATCH 0010: el slot de la dueña fue reemplazado por el resultado del run
+    # nuevo — el payload viejo ya no está en ningún envelope.
+    resultados = publicado.get(rr_mod.RITUAL_RESULTS_BY_OWNER)
+    assert isinstance(resultados, dict)
+    envelope_a = resultados.get("tab-A")
+    assert envelope_a is not None
+    assert envelope_a.get(rr_mod.RITUAL_RESULT_PAYLOAD_KEY) != viejo
     assert rr_mod.resolve_ritual_resume_action(store, "tab-A") is None
 
 
