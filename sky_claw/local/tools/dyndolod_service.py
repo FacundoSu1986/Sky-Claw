@@ -26,6 +26,7 @@ from sky_claw.app.core.path_resolver import PathResolutionService
 from sky_claw.app.db.handoffs import (
     DeploymentHandoff,
     HandoffState,
+    OrphanEvidenceUnresolved,
     clave_de_artifact,
     reconciliar_orphan_de_artifact,
 )
@@ -423,7 +424,10 @@ class DynDOLODPipelineService:
         Devuelve el handoff ``AWAITING_DEPLOYMENT`` verificado (perfil + digest)
         cuando el resume es legítimo, ``None`` cuando no hay handoff activo NI
         evidencia durable de una corrida incompleta (legacy verbatim), o un
-        :class:`_ResumeBloqueado` fail-closed. El gate de Data vive en el
+        :class:`_ResumeBloqueado` fail-closed. En particular, evidencia durable
+        con alcance UNKNOWN (``OrphanEvidenceUnresolved`` de la primitive)
+        bloquea con la razón estable ``OrphanEvidenceUnresolved`` — jamás se
+        colapsa en legacy. El gate de Data vive en el
         runner (byte a byte bajo el lock): acá se verifican identidad de dueño
         e identidad del artifact, que son las mitades que el runner no puede
         probar.
@@ -453,6 +457,19 @@ class DynDOLODPipelineService:
         )
         if activo is None:
             return None  # legacy verbatim: sin handoff activo y sin evidencia durable
+        if isinstance(activo, OrphanEvidenceUnresolved):
+            # F-01b (patch 0008): evidencia durable + alcance UNKNOWN — el
+            # None de arriba ya NO carga con este significado. Fail-closed:
+            # DynDOLOD no se lanza sobre un artifact inverificable cuya corrida
+            # quedó interrumpida; el receipt sigue UNRESOLVED y el próximo
+            # resume reintenta la reconciliación.
+            return _ResumeBloqueado(
+                "OrphanEvidenceUnresolved",
+                "Existe evidencia durable de una corrida TexGen interrumpida, pero el artifact "
+                "no puede verificarse actualmente (alcance UNKNOWN: root inaccesible, permisos, "
+                "dispositivo offline u otra ambigüedad de filesystem). DynDOLOD no se lanza. "
+                "Reintentá cuando el root de MO2 sea alcanzable o regenerá TexGen.",
+            )
         if activo.state is HandoffState.INDETERMINATE:
             return _ResumeBloqueado(
                 "HandoffIndeterminate",

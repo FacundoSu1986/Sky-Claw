@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import sqlite3
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2962,6 +2963,293 @@ async def test_crear_handoff_standalone_sin_leak_cuando_el_helper_rechaza(
 
     assert journal._db.in_transaction is False, "el rechazo del helper dejó la transacción ABIERTA"  # noqa: SLF001
     assert (await journal.get_transaction(tx2)).status is TransactionStatus.PENDING
+
+
+# =============================================================================
+# F-01c (0008) — UNRESOLVED BLOQUEA EL HOT RESUME (evidence + UNKNOWN)
+# =============================================================================
+#
+# 0007 conservaba el receipt ante UNKNOWN pero la primitive devolvía ``None``,
+# y el hot path interpretaba ``None`` == "sin evidencia" == legacy: DynDOLOD
+# arrancaba sobre un artifact inverificable con evidencia durable de una
+# corrida interrumpida (ARTIFACT_UNREACHABLE_RESUME_FALSE_GREEN). El fix:
+# ``None`` conserva UN único significado ("no hay evidencia durable") y el
+# caso "evidencia + alcance UNKNOWN" produce un resultado explícito que el
+# hot path mapea a un bloqueo fail-closed con razón ESTABLE; el startup lo
+# trata como "todavía no resoluble" sin volverlo fatal.
+
+
+@pytest.mark.asyncio
+async def test_resume_bloqueado_con_evidencia_y_artifact_inaccesible(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """8-1 (probe del reviewer): receipt UNRESOLVED relevante + sin handoff +
+    root de MO2 inaccesible DURANTE el resume → DynDOLOD NOT CALLED,
+    ``success=False``, ``reason='OrphanEvidenceUnresolved'`` y el receipt sigue
+    UNRESOLVED. El root NO se restaura antes de ``execute`` (F2: contrato
+    distinto del test 0007 que restaura antes)."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    root_mo2 = tmp_path / "MO2"
+    raiz_oculta = tmp_path / "MO2-away"
+    root_mo2.rename(raiz_oculta)
+    try:
+        svc = _svc(journal, runner=runner)
+        run_dyndolod = AsyncMock()
+        with patch.object(runner, "run_dyndolod", run_dyndolod):
+            result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+        run_dyndolod.assert_not_awaited()
+        assert result["success"] is False
+        assert result.get("reason") == "OrphanEvidenceUnresolved"
+        assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value
+    finally:
+        raiz_oculta.rename(root_mo2)
+
+
+@pytest.mark.asyncio
+async def test_resume_bloqueado_con_permission_error_en_la_probe(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """8-2: PermissionError en la reachability probe durante el hot resume →
+    _ResumeBloqueado con la MISMA razón estable, DynDOLOD NOT CALLED."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    def _permission_denied(path: object, *args: object, **kwargs: object) -> object:
+        if "MO2" in os.fspath(path):
+            raise PermissionError(13, "access denied")
+        return real_stat(path, *args, **kwargs)
+
+    real_stat = os.stat
+    monkeypatch.setattr(os, "stat", _permission_denied)
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    monkeypatch.undo()
+
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "OrphanEvidenceUnresolved"
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value
+
+
+@pytest.mark.asyncio
+async def test_resume_bloqueado_con_oserror_generico_en_la_probe(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """8-3: OSError genérico en la probe → idéntico contrato que 8-2 (la
+    incertidumbre de filesystem jamás se convierte en legacy)."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    def _io_roto(path: object, *args: object, **kwargs: object) -> object:
+        if "MO2" in os.fspath(path):
+            raise OSError("device offline")
+        return real_stat(path, *args, **kwargs)
+
+    real_stat = os.stat
+    monkeypatch.setattr(os, "stat", _io_roto)
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    monkeypatch.undo()
+
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "OrphanEvidenceUnresolved"
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value
+
+
+@pytest.mark.asyncio
+async def test_absencia_legitima_sigue_permitiendo_legacy(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """8-4: receipt + ausencia DEMOSTRADA (root accesible, mod ausente) →
+    NO_ARTIFACT + legacy permitido — ABSENT jamás se convierte en bloqueo
+    permanente."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    config.mo2_mods_path.mkdir(parents=True, exist_ok=True)  # root accesible; mod ausente
+    _mirror_a_data(mod_texgen / "textures", config.data_dir)
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    svc = _svc(journal, runner=runner)
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    run_dyndolod = _dyndolod_ok(dyndolod_staging)
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+
+    run_dyndolod.assert_awaited_once()
+    assert result["success"] is True, result.get("errors")
+    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.NO_ARTIFACT.value
+
+
+@pytest.mark.asyncio
+async def test_sin_receipt_y_root_inaccesible_el_legacy_no_se_bloquea(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """8-5: SIN evidencia durable + root inaccesible → la primitive devuelve
+    None y el legacy NO queda bloqueado por provenance (DynDOLOD puede
+    ejecutarse). La regla es exactamente "evidencia durable + UNKNOWN →
+    block", no "todo UNKNOWN → block"."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    _mirror_a_data(mod_texgen / "textures", config.data_dir)
+    # SIN receipt: la TX queda PENDING fresca (el sweep no la convierte).
+
+    root_mo2 = tmp_path / "MO2"
+    raiz_oculta = tmp_path / "MO2-away"
+    root_mo2.rename(raiz_oculta)
+    try:
+        svc = _svc(journal, runner=runner)
+        dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+        run_dyndolod = _dyndolod_ok(dyndolod_staging)
+        with patch.object(runner, "run_dyndolod", run_dyndolod):
+            result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+        run_dyndolod.assert_awaited_once()
+        assert result["success"] is True, result.get("errors")
+    finally:
+        # El run legacy puede recrear el root de MO2 durante el pipeline; el
+        # backup real es el renombrado, así que se descarta el recreado.
+        if root_mo2.exists():
+            shutil.rmtree(root_mo2)
+        raiz_oculta.rename(root_mo2)
+
+
+@pytest.mark.asyncio
+async def test_startup_no_lanza_con_evidencia_no_resoluble(
+    tmp_path: pathlib.Path,
+    journal_tmp,  # noqa: ANN001
+) -> None:
+    """8-7: ``reconciliar_handoffs_de_deployment`` con alcance UNKNOWN NO
+    aborta el arranque — receipt UNRESOLVED, sin handoff inventado, sin
+    NO_ARTIFACT — y al restaurar el root el resume reconcilia normalmente."""
+    journal, _ = journal_tmp
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_mod(mod_texgen)
+    tx = await _sembrar_pending_vieja(journal, mod_texgen)
+    await journal.sweep_stale_pending(max_age_hours=24.0)
+
+    root_mo2 = tmp_path / "MO2"
+    raiz_oculta = tmp_path / "MO2-away"
+    root_mo2.rename(raiz_oculta)
+    try:
+        # El startup consume el resultado UNRESOLVED como "todavía no
+        # resoluble": jamás lo convierte en excepción fatal.
+        await reconciliar_handoffs_de_deployment(
+            journal=journal,
+            mod_texgen=mod_texgen,
+            game_key=clave_de_artifact(config.game_path),
+            mods_root_key=clave_de_artifact(config.mo2_mods_path),
+            data_key=clave_de_artifact(config.data_dir),
+            expected_profile="Perfil-A",
+            digest_arbol=digest_arbol,
+        )
+        assert await _estado_de_receipt(journal, tx) == SweepReceiptState.UNRESOLVED.value
+        assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
+    finally:
+        raiz_oculta.rename(root_mo2)
+
+    svc = _svc(journal, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate", result.get("errors")
+
+
+@pytest.mark.asyncio
+async def test_multi_restart_con_unknown_en_el_medio_preserva_el_receipt(
+    tmp_path: pathlib.Path,
+) -> None:
+    """8-8: sweep → restart → open sin reconciler → restart → root UNKNOWN
+    (resume bloqueado, receipt UNRESOLVED) → restart → root PRESENT → resume
+    reconcilia. El receipt sobrevive hasta poder resolverse (no regresión de
+    0006)."""
+    db_path = tmp_path / "multi8.db"
+    mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
+    _escribir_mod(mod_texgen)
+    config, runner = _runner_real(tmp_path)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+
+    j1 = OperationJournal(db_path)
+    await j1.open()
+    tx = await _sembrar_pending_vieja(j1, mod_texgen)
+    await j1.sweep_stale_pending(max_age_hours=24.0)
+    await j1.close()
+
+    j2 = OperationJournal(db_path)
+    await j2.open()
+    assert await _estado_de_receipt(j2, tx) == SweepReceiptState.UNRESOLVED.value
+    await j2.close()
+
+    root_mo2 = tmp_path / "MO2"
+    raiz_oculta = tmp_path / "MO2-away"
+    root_mo2.rename(raiz_oculta)
+    try:
+        j3 = OperationJournal(db_path)
+        await j3.open()
+        svc = _svc(j3, runner=runner)
+        run_dyndolod = AsyncMock()
+        with patch.object(runner, "run_dyndolod", run_dyndolod):
+            result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+        run_dyndolod.assert_not_awaited()
+        assert result.get("reason") == "OrphanEvidenceUnresolved"
+        assert await _estado_de_receipt(j3, tx) == SweepReceiptState.UNRESOLVED.value
+        await j3.close()
+    finally:
+        if root_mo2.exists():
+            shutil.rmtree(root_mo2)
+        raiz_oculta.rename(root_mo2)
+
+    j4 = OperationJournal(db_path)
+    await j4.open()
+    assert await _estado_de_receipt(j4, tx) == SweepReceiptState.UNRESOLVED.value
+    svc = _svc(j4, runner=runner)
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+    run_dyndolod.assert_not_awaited()
+    assert result.get("reason") == "HandoffIndeterminate", result.get("errors")
+    await j4.close()
 
 
 # =============================================================================

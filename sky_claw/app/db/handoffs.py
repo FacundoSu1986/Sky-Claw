@@ -246,6 +246,26 @@ class ArtifactReachability(StrEnum):
     UNKNOWN = "unknown"
 
 
+@dataclass(frozen=True, slots=True)
+class OrphanEvidenceUnresolved:
+    """Evidencia durable de orphan SIN estado de artifact determinable (0008).
+
+    ``reconciliar_orphan_de_artifact`` devuelve esto — y NO ``None`` — cuando
+    EXISTE evidencia vigente (TX PENDING o receipt UNRESOLVED que nombra el
+    artifact) pero ``alcance_del_artifact()`` es UNKNOWN: no se puede afirmar
+    ni PRESENT ni ABSENT, y por tanto tampoco se puede cerrar el receipt ni
+    declarar legacy.
+
+    ``None`` queda reservado para UN único significado: no existe evidencia
+    durable que obligue a bloquear (o la que existía se cerró legítimamente
+    como NO_ARTIFACT). Los callers aplican su política: el hot path lo mapea
+    a un bloqueo fail-closed; el startup lo trata como "todavía no resoluble"
+    y continúa best-effort.
+    """
+
+    candidatas: tuple[int, ...] = ()
+
+
 def alcance_del_artifact(artifact_path: pathlib.Path) -> ArtifactReachability:
     """Reachability tri-state del artifact físico (F-01, patch 0007).
 
@@ -406,24 +426,23 @@ async def reconciliar_orphan_de_artifact(
     data_key: str,
     expected_profile: str,
     digest_arbol: object,
-) -> DeploymentHandoff | None:
+) -> DeploymentHandoff | OrphanEvidenceUnresolved | None:
     """UNA sola primitive de detección/reconciliación de orphan — consumida por
     el reconciler de arranque Y por el hot path del resume (F-002). No hay una
     segunda heurística divergente.
 
-    Semántica:
+    Semántica (tres resultados DISJUNTOS, patch 0008):
 
-    - handoff ACTIVO para el artifact → se devuelve (reconciliando antes un
-      ``SUPERSEDING`` huérfano: vuelve a su estado previo si el árbol sigue
-      coincidiendo con su identidad esperada, o se degrada a INDETERMINATE);
-    - sin handoff activo + artifact vivo + evidencia VIGENTE y DURABLE de
-      corrida interrumpida → se crea **INDETERMINATE** (jamás identidad
-      autorizada) y se devuelve. Las fuentes de evidencia son las del oracle:
-      TX PENDING que nombra el mod, o receipt UNRESOLVED de stale sweep
-      (F-001, patch 0006) — la causalidad del barrido sobrevive crash,
-      reconciler omitido y reconciler con excepción. Nunca: historia
-      ROLLED_BACK arbitraria (R-002A);
-    - sin handoff activo y sin evidencia → ``None`` (legacy auténtico).
+    - ``None``: no existe evidencia durable que obligue a bloquear (o la que
+      existía se cerró legítimamente como NO_ARTIFACT) — el caller puede
+      declarar legacy. UN único significado;
+    - ``DeploymentHandoff``: existe/se creó un handoff durable relevante;
+    - ``OrphanEvidenceUnresolved``: existe evidencia vigente y durable (TX
+      PENDING que nombra el mod, o receipt UNRESOLVED de stale sweep) pero
+      ``alcance_del_artifact()`` es UNKNOWN — no se puede afirmar ni PRESENT
+      ni ABSENT. El receipt NO se cierra. La política la pone el caller: el
+      hot path lo mapea a un bloqueo fail-closed; el startup lo trata como
+      "todavía no resoluble" y continúa.
 
     Lifecycle de los receipts (Principio 4): al materializar el INDETERMINATE,
     el receipt UNRESOLVED que aportó la evidencia se CONSUME en el MISMO
@@ -481,9 +500,10 @@ async def reconciliar_orphan_de_artifact(
     alcance = await asyncio.to_thread(alcance_del_artifact, mod_texgen)
     if alcance is ArtifactReachability.UNKNOWN:
         # Root inaccesible / error ambiguo: NO se afirma nada terminal — los
-        # receipts siguen UNRESOLVED y vuelven a ser evidencia cuando el
-        # artifact sea alcanzable de nuevo.
-        return None
+        # receipts siguen UNRESOLVED y el resultado NO se colapsa en None: el
+        # caller debe distinguir "sin evidencia" (legacy) de "evidencia no
+        # resoluble ahora" (bloqueo fail-closed en el hot path).
+        return OrphanEvidenceUnresolved(candidatas=tuple(candidatas))
     if alcance is ArtifactReachability.ABSENT:
         # Ausencia DEMOSTRADA (contenedor accesible y válido + target
         # realmente ausente): no queda mutación física preservada que
@@ -548,10 +568,15 @@ async def reconciliar_handoffs_de_deployment(
     stale sweep (F-001, patch 0006); el manifiesto (pre-mutación) prueba
     INTENCIÓN, no provenance.
 
+    F-01b (patch 0008): un resultado ``OrphanEvidenceUnresolved`` (evidencia +
+    alcance UNKNOWN) se consume acá como "todavía no resoluble" — se loguea y
+    el arranque CONTINÚA; el receipt queda UNRESOLVED para el próximo intento.
+    Jamás se convierte en excepción fatal.
+
     Best-effort por contrato: el caller (startup) loguea y continúa ante
     cualquier excepción; un fallo de reconciliación jamás aborta el arranque.
     """
-    await reconciliar_orphan_de_artifact(
+    resultado = await reconciliar_orphan_de_artifact(
         journal=journal,
         mod_texgen=mod_texgen,
         game_key=game_key,
@@ -560,6 +585,16 @@ async def reconciliar_handoffs_de_deployment(
         expected_profile=expected_profile,
         digest_arbol=digest_arbol,
     )
+    if isinstance(resultado, OrphanEvidenceUnresolved):
+        import logging
+
+        logging.getLogger("SkyClaw.DeploymentHandoffs").warning(
+            "Evidencia de orphan para '%s' (TX %s) no resoluble ahora: el artifact no es "
+            "alcanzable (UNKNOWN) y los receipts siguen UNRESOLVED. Se reintentará en el "
+            "próximo arranque/resume.",
+            mod_texgen,
+            resultado.candidatas,
+        )
 
 
 async def _degradar_a_indeterminate(journal: object, activo: DeploymentHandoff, observado: object) -> None:
@@ -616,6 +651,7 @@ __all__ = [
     "ArtifactReachability",
     "DeploymentHandoff",
     "HandoffState",
+    "OrphanEvidenceUnresolved",
     "SweepReceiptState",
     "alcance_del_artifact",
     "clave_de_artifact",
