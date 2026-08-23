@@ -181,6 +181,13 @@ def _resultados_por_owner(store: ReactiveStore) -> dict[str | None, dict[str, An
     raw = store.get(STORE_KEY_RITUAL_LAST_RESULT)
     if _es_envelope_legacy(raw):
         owner = raw.get(RITUAL_RESULT_OWNER_TAB)
+        if owner is not None and not isinstance(owner, str):
+            # Review PR #501 (CR-2): un dueño malformado no puede usarse como
+            # clave ({[]: raw} lanza TypeError unhashable ANTES de cualquier
+            # chequeo del reader). Fail-closed sin excepción: ningún slot,
+            # ninguna acción, nada mutado. Dueño válido: ``str`` o ``None``;
+            # no se repara, ni se convierte, ni se descarta el resto del store.
+            return {}
         return {owner: raw}
     if isinstance(raw, dict):
         resultados = raw.get(RITUAL_RESULTS_BY_OWNER)
@@ -237,6 +244,46 @@ def publicar_resultado_de_ritual(
     _escribir_resultados_de_ritual(store, resultados)
 
 
+def _seleccionar_resultado_owned(
+    resultados: dict[str | None, dict[str, Any]],
+    tab_id: str | None,
+) -> tuple[str | None, dict[str, Any]] | None:
+    """Selección ÚNICA de ownership para los DOS hermanos que consumen un
+    resultado por dueño (:func:`resolve_ritual_resume_action` y
+    :func:`clear_ritual_result_owned`).
+
+    Devuelve ``(owner_del_slot, envelope)`` o ``None`` si nada es seleccionable:
+
+    1. Pertenencia, no valor (review PR #501): si ``tab_id`` existe como clave
+       se selecciona EXACTAMENTE ese slot — aunque su valor sea ``None`` o
+       basura; un slot propio presente pero inválido NUNCA cae al ownerless
+       (``dict.get`` confundía ausencia con valor ``None``);
+    2. sólo si el slot propio NO existe se intenta el slot sin dueño;
+    3. el valor debe ser un ``dict``;
+    4. el ``owner_tab`` declarado debe coincidir EXACTAMENTE con el dueño del
+       slot por el que fue seleccionado (ausente ≡ ``None``, la convención con
+       la que :func:`_resultados_por_owner` re-indexa envelopes legacy);
+    5. cualquier otra forma → ``None``.
+
+    Puro: no muta, no repara, no borra, no convierte tipos. Centralizar acá la
+    regla evita el defecto hermano clásico del repo (resolver y limpiar con
+    semánticas distintas): un cambio de política de ownership toca UN punto y
+    las dos superficies lo heredan. El ancla AST de callers en
+    ``test_ritual_result_cross_tab`` congela quién participa.
+    """
+    owner_seleccionado: str | None = tab_id
+    if tab_id in resultados:
+        envelope = resultados[tab_id]
+    else:
+        owner_seleccionado = None
+        envelope = resultados.get(None)
+    if not isinstance(envelope, dict):
+        return None
+    if envelope.get(RITUAL_RESULT_OWNER_TAB) != owner_seleccionado:
+        return None
+    return owner_seleccionado, envelope
+
+
 def resolve_ritual_resume_action(store: ReactiveStore, tab_id: str | None) -> dict[str, Any] | None:
     """La acción de Resume que ESTA pestaña puede resolver/consumir, o ``None``.
 
@@ -253,13 +300,27 @@ def resolve_ritual_resume_action(store: ReactiveStore, tab_id: str | None) -> di
     no tiene ninguno propio, ve el resultado sin dueño (política vigente:
     ownerless es visible para cualquiera). Nunca el de OTRA pestaña — con dos
     resultados pendientes, cada tab resuelve exactamente el suyo.
+
+    Follow-up de PR #493 (RITUAL_RESULT_OWNER_KEY_MISMATCH), fail-closed: el
+    envelope seleccionado por un slot debe declarar como ``owner_tab`` al MISMO
+    dueño del slot por el que fue seleccionado (``owner_tab`` ausente ≡
+    ``None``, la misma convención con la que ``_resultados_por_owner``
+    re-indexa envelopes legacy). Si no coincide, el estado es internamente
+    inconsistente — ningún writer productivo lo produce hoy, y el reader no
+    repara, ni reubica, ni limpia nada: devuelve ``None`` sin derivar la
+    acción. «Slot ausente» y «slot presente con valor inválido» siguen siendo
+    cosas distintas: sólo la AUSENCIA del slot propio habilita el fallback
+    ownerless; un slot presente pero inválido —incluido el valor ``None``, que
+    ``dict.get`` no distingue de la ausencia— se rechaza sin caer al resultado
+    sin dueño. Por eso la selección es por PERTENENCIA (``tab_id in
+    resultados``) y vive en :func:`_seleccionar_resultado_owned`, la MISMA
+    política —y la MISMA función— que usa :func:`clear_ritual_result_owned`
+    para decidir qué borrar.
     """
-    resultados = _resultados_por_owner(store)
-    envelope = resultados.get(tab_id)
-    if envelope is None:
-        envelope = resultados.get(None)
-    if not isinstance(envelope, dict):
+    seleccion = _seleccionar_resultado_owned(_resultados_por_owner(store), tab_id)
+    if seleccion is None:
         return None
+    _owner_seleccionado, envelope = seleccion
     tool_key = envelope.get(RITUAL_RESULT_TOOL_KEY)
     resultado = envelope.get(RITUAL_RESULT_PAYLOAD_KEY)
     if not isinstance(tool_key, str) or not isinstance(resultado, dict):
@@ -279,12 +340,25 @@ def clear_ritual_result_owned(store: ReactiveStore, tab_id: str | None) -> None:
     PATCH 0010 (multi-owner): borra el slot PROPIO de ``tab_id``; si la pestaña
     no tiene slot propio, cae al slot sin dueño (política vigente). NUNCA borra
     el resultado de OTRA pestaña, ni siquiera un ``tab_id=None`` de contexto.
+
+    Review PR #501 (hermano del resolver): usa la MISMA selección validada de
+    :func:`_seleccionar_resultado_owned` — un slot presente pero inválido
+    (``None``, basura, dueño declarado ajeno al slot, incluido el slot ``None``
+    con un envelope de otra pestaña) NO se borra NI cae al ownerless. Y un
+    rechazo NO reescribe el contenedor: acá no hay ``store.set``, así que el
+    store queda byte-idéntico y sin notifications (el ``×`` del panel llama a
+    esta función con o sin acción de Resume pendiente).
     """
+    seleccion = _seleccionar_resultado_owned(_resultados_por_owner(store), tab_id)
+    if seleccion is None:
+        # Rechazo: ni borrado ni reescritura idéntica del contenedor — toda
+        # escritura del resultado es una mutación observable del store.
+        return
+    owner_seleccionado, _envelope = seleccion
     resultados = dict(_resultados_por_owner(store))
-    if tab_id in resultados:
-        del resultados[tab_id]
-    elif None in resultados:
-        del resultados[None]
+    # La validación del selector garantiza slot == owner_tab == owner_seleccionado,
+    # así que borrar por dueño seleccionado borra exactamente el slot elegido.
+    del resultados[owner_seleccionado]
     _escribir_resultados_de_ritual(store, resultados)
 
 
