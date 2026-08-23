@@ -24,6 +24,7 @@ from sky_claw.local.runtime_vault.golden import (
     verify_golden_master,
 )
 from sky_claw.local.runtime_vault.inventory import inventory_tree
+from sky_claw.local.runtime_vault.locking import destination_lock
 from sky_claw.local.runtime_vault.models import (
     CriticalFileEvidence,
     CriticalFileExpectation,
@@ -34,6 +35,7 @@ from sky_claw.local.runtime_vault.models import (
     GoldenMasterVerificationResult,
     InventoryError,
     InventoryLinkError,
+    PhysicalIndependenceResult,
     RuntimeCloneDescriptor,
     RuntimeCloneError,
     RuntimeCloneResult,
@@ -60,6 +62,7 @@ __all__ = [
     "GoldenMasterVerificationResult",
     "InventoryError",
     "InventoryLinkError",
+    "PhysicalIndependenceResult",
     "RuntimeCloneDescriptor",
     "RuntimeCloneError",
     "RuntimeCloneResult",
@@ -70,6 +73,7 @@ __all__ = [
     "TreeVerificationResult",
     "VerificationState",
     "create_runtime_clone",
+    "destination_lock",
     "inventory_tree",
     "tree_digest_from_files",
     "verify_critical_files",

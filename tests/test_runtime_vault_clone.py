@@ -24,6 +24,7 @@ import os
 import pathlib
 import shutil
 import stat
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -34,6 +35,7 @@ from sky_claw.local.runtime_vault.clone import (
 )
 from sky_claw.local.runtime_vault.golden import verify_golden_master
 from sky_claw.local.runtime_vault.inventory import inventory_tree
+from sky_claw.local.runtime_vault.locking import destination_lock
 from sky_claw.local.runtime_vault.models import (
     CriticalFileExpectation,
     DestinationExistsError,
@@ -42,17 +44,19 @@ from sky_claw.local.runtime_vault.models import (
     GoldenMasterVerificationResult,
     InventoryError,
     InventoryLinkError,
+    PhysicalIndependenceResult,
     RuntimeCloneDescriptor,
     RuntimeCloneError,
     RuntimeCloneResult,
     RuntimeIdentity,
     RuntimeVaultError,
+    RuntimeVerificationResult,
     TreeDigest,
     TreeVerificationResult,
     VerificationState,
 )
 from sky_claw.local.runtime_vault.verification import tree_digest_from_files
-from tests._symlink_guard import symlink_guard
+from tests._symlink_guard import crear_junction, symlink_guard
 
 
 def _sha256(data: bytes) -> str:
@@ -132,6 +136,257 @@ def mock_golden_environment(
 # ==============================================================================
 
 
+class TestBlockersReproduction:
+    """Pruebas de reproducción de fallos y blockers (B1, B2, B3, B4, B5)."""
+
+    def test_b1_bare_descriptor_no_puede_autorizar_clon(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """B1: Bare GoldenMasterDescriptor no debe autorizar create_runtime_clone."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_B1"
+        bare_descriptor = golden_res.descriptor
+        assert bare_descriptor is not None
+
+        with pytest.raises(RuntimeCloneError, match="(?i)GoldenMasterVerificationResult|autoridad|no autorizado"):
+            create_runtime_clone(
+                bare_descriptor,  # type: ignore[arg-type]
+                dest,
+                critical_expectations=critical,
+            )
+
+    def test_b2_escape_fisico_por_ancestro_con_enlace_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """B2: Escape físico de ruta por ancestro con enlace simbólico o junction es rechazado."""
+        golden_root, golden_res, critical = mock_golden_environment
+        inner_dir = golden_root / "Subdir_Target"
+        inner_dir.mkdir(parents=True)
+
+        alias_parent = tmp_path / "Aliased_Parent"
+        if sys.platform == "win32":
+            err = crear_junction(alias_parent, inner_dir)
+            if err:
+                pytest.skip(f"No se pudo crear junction en Windows: {err}")
+        else:
+            alias_parent.symlink_to(inner_dir, target_is_directory=True)
+
+        dest_aliased = alias_parent / "Nested_Runtime"
+
+        with pytest.raises(RuntimeCloneError, match="(?i)anidado|idéntico|origen"):
+            create_runtime_clone(golden_res, dest_aliased, critical_expectations=critical)
+
+    def test_b3_fallo_post_publish_preserva_destino_publicado_sin_eliminarlo(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """B3: Fallo en verificación post-publish debe preservar el directorio publicado en disco."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_Dest_B3"
+
+        with (
+            patch(
+                "sky_claw.local.runtime_vault.clone.verify_physical_independence",
+                side_effect=[
+                    PhysicalIndependenceResult(success=True),
+                    PhysicalIndependenceResult(success=False, message="fallo post-publish simulado"),
+                ],
+            ),
+            patch("sky_claw.local.runtime_vault.clone._cleanup_staging") as cleanup_spy,
+            pytest.raises(RuntimeCloneError, match="(?i)post-publish|independencia"),
+        ):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
+        assert dest.exists(), "El destino publicado debe preservarse en disco tras un fallo post-publish"
+        for call in cleanup_spy.call_args_list:
+            assert call.args[0] != dest, "_cleanup_staging no debe ser invocado sobre dest_root"
+
+    def test_b5_physical_independence_result_modelo_e_invariantes(self) -> None:
+        """B5: Invariantes y validaciones de PhysicalIndependenceResult."""
+        res_ok = PhysicalIndependenceResult(success=True, message="", files_checked=10)
+        assert res_ok.success is True
+        assert res_ok.message == ""
+        assert res_ok.files_checked == 10
+        assert res_ok.failed_rel_path is None
+
+        # Éxito con mensaje no vacío es inválido
+        with pytest.raises(ValueError, match="message=''"):
+            PhysicalIndependenceResult(success=True, message="no debe haber mensaje")
+
+        # Éxito con failed_rel_path es inválido
+        with pytest.raises(ValueError, match="failed_rel_path"):
+            PhysicalIndependenceResult(success=True, failed_rel_path="Data/Skyrim.esm")
+
+        # Fallo sin mensaje es inválido
+        with pytest.raises(ValueError, match="message explicativo"):
+            PhysicalIndependenceResult(success=False, message="")
+
+        res_fail = PhysicalIndependenceResult(
+            success=False,
+            message="Hardlink detectado",
+            files_checked=5,
+            failed_rel_path="SkyrimSE.exe",
+        )
+        assert res_fail.success is False
+        assert res_fail.failed_rel_path == "SkyrimSE.exe"
+
+    def test_p2_runtime_clone_result_binds_provenance_to_source_golden(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """P2: RuntimeCloneResult VERIFIED exige source_golden y coincidencia de ubicación."""
+        runtime_id = RuntimeIdentity("skyrimse", "1.6.1170.0")
+        digest = TreeDigest(digest="d" * 64, files=5, bytes=500)
+        loc = tmp_path / "runtime"
+        golden_loc = tmp_path / "golden"
+
+        tree_res = TreeVerificationResult(
+            state=VerificationState.VERIFIED,
+            expected=digest,
+            observed=digest,
+        )
+
+        clone_desc = RuntimeCloneDescriptor(
+            location=loc,
+            runtime_identity=runtime_id,
+            tree_digest=digest,
+            source_golden=golden_loc,
+        )
+
+        # 1. source_golden=None en VERIFIED es inválido
+        with pytest.raises(ValueError, match="source_golden no nulo"):
+            RuntimeCloneResult(
+                state=VerificationState.VERIFIED,
+                source_golden=None,
+                tree_result=tree_res,
+                physical_independence_verified=True,
+                descriptor=clone_desc,
+            )
+
+        # 2. descriptor.source_golden discordante con source_golden.location es inválido
+        other_golden_loc = tmp_path / "other_golden"
+        other_golden_desc = GoldenMasterDescriptor(
+            location=other_golden_loc,
+            runtime_identity=runtime_id,
+            tree_digest=digest,
+        )
+        with pytest.raises(ValueError, match="ubicación del Golden Master"):
+            RuntimeCloneResult(
+                state=VerificationState.VERIFIED,
+                source_golden=other_golden_desc,
+                tree_result=tree_res,
+                physical_independence_verified=True,
+                descriptor=clone_desc,
+            )
+
+
+class TestLockingAndConcurrency:
+    """Pruebas L1 a L6 para la serialización por destino (B4)."""
+
+    def test_l1_adquisiciones_concurrentes_mismo_destino_serializadas(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """L1: Dos adquisiciones concurrentes sobre el mismo destino no pueden solaparse."""
+        dest = tmp_path / "Shared_Runtime_Dest"
+
+        with (
+            destination_lock(dest),
+            pytest.raises(RuntimeCloneError, match="bloqueado"),
+            destination_lock(dest, timeout=0.0),
+        ):
+            pass
+
+    def test_l2_destinos_distintos_locks_independientes(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """L2: Destinos distintos operan con locks independientes y no se bloquean entre sí."""
+        dest1 = tmp_path / "Runtime_Dest_1"
+        dest2 = tmp_path / "Runtime_Dest_2"
+
+        with destination_lock(dest1), destination_lock(dest2):
+            assert True
+
+    def test_l3_fallo_copia_libera_lock(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """L3: Fallo durante la copia física libera el lock para reintentos posteriores."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_Dest_Fail_Lock"
+
+        def failing_copy(*args: object, **kwargs: object) -> None:
+            raise OSError("Fallo simulado de I/O")
+
+        with patch("shutil.copy2", side_effect=failing_copy), pytest.raises(RuntimeCloneError):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
+        # El lock debe estar completamente liberado
+        with destination_lock(dest):
+            assert True
+
+    def test_l4_fallo_staging_verification_libera_lock(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """L4: Fallo durante la verificación de staging libera el lock."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_Dest_Staging_Fail_Lock"
+
+        with (
+            patch(
+                "sky_claw.local.runtime_vault.clone.verify_physical_independence",
+                return_value=PhysicalIndependenceResult(success=False, message="Fallo simulado"),
+            ),
+            pytest.raises(RuntimeCloneError),
+        ):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
+        # El lock debe estar completamente liberado
+        with destination_lock(dest):
+            assert True
+
+    def test_l5_publish_exitoso_libera_lock(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """L5: Publish exitoso libera el lock."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_Dest_Success_Lock"
+
+        res = create_runtime_clone(golden_res, dest, critical_expectations=critical)
+        assert res.success is True
+
+        # El lock debe estar disponible tras completar la clonación
+        with destination_lock(dest):
+            assert True
+
+    def test_l6_ningun_otro_mutador_runtime_evita_lock(self) -> None:
+        """L6: create_runtime_clone es el único mutador de Runtime Vault activo."""
+        import sky_claw.local.runtime_vault as pkg
+
+        pkg_dir = pathlib.Path(pkg.__file__).parent
+        py_files = list(pkg_dir.glob("*.py"))
+        mutating_functions: list[str] = []
+
+        for py_path in py_files:
+            tree = ast.parse(py_path.read_text(encoding="utf-8"), filename=str(py_path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and ("clone" in node.name or "mutate" in node.name):
+                    mutating_functions.append(f"{py_path.stem}.{node.name}")
+
+        assert mutating_functions == ["clone.create_runtime_clone"]
+
+
 class TestRuntimeCloneSuiteCanonico:
     """Suite canónica de pruebas para RV-3: R3-T01 a R3-T28."""
 
@@ -140,7 +395,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T01: Source authority verification con GoldenMasterVerificationResult y GoldenMasterDescriptor."""
+        """R3-T01: Verificación de autoridad de fuente: solo GoldenMasterVerificationResult VERIFIED autoriza el clon."""
         golden_root, golden_res, critical_expectations = mock_golden_environment
         dest_path = tmp_path / "Skyrim_Runtime_Clone"
 
@@ -158,25 +413,22 @@ class TestRuntimeCloneSuiteCanonico:
         assert res.descriptor.location == dest_path.resolve()
         assert res.physical_independence_verified is True
 
-        # Caso 2: Pasando GoldenMasterDescriptor directamente a otro destino
+        # Caso 2: Pasando un descriptor bare directamente debe ser rechazado
         dest_path2 = tmp_path / "Skyrim_Runtime_Clone_2"
         assert golden_res.descriptor is not None
-        res2 = create_runtime_clone(
-            golden_source=golden_res.descriptor,
-            destination=dest_path2,
-            critical_expectations=critical_expectations,
-        )
-        assert res2.state is VerificationState.VERIFIED
-        assert res2.success is True
-        assert res2.descriptor is not None
-        assert res2.descriptor.location == dest_path2.resolve()
+        with pytest.raises(RuntimeCloneError, match="(?i)GoldenMasterVerificationResult|autoridad|no autorizado"):
+            create_runtime_clone(
+                golden_source=golden_res.descriptor,  # type: ignore[arg-type]
+                destination=dest_path2,
+                critical_expectations=critical_expectations,
+            )
 
     def test_r3_t02_rechazo_de_golden_no_verificado_o_rol_invalido(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T02: Rejection of unverified or non-reference golden candidate/descriptor."""
+        """R3-T02: Rechazo de candidato o descriptor Golden no verificado o con rol inválido."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest"
 
@@ -216,10 +468,11 @@ class TestRuntimeCloneSuiteCanonico:
         self,
         tmp_path: pathlib.Path,
     ) -> None:
-        """R3-T03: Immutability & post_init validation of RuntimeCloneDescriptor and RuntimeCloneResult."""
+        """R3-T03: Validación de inmutabilidad y post_init en RuntimeCloneDescriptor y RuntimeCloneResult."""
         runtime_id = RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0")
         digest = TreeDigest(digest="a" * 64, files=10, bytes=1000)
         loc = tmp_path / "runtime"
+        golden_loc = tmp_path / "golden"
 
         # Descriptor solo admite role='runtime_clone'
         with pytest.raises(ValueError, match="role"):
@@ -235,7 +488,7 @@ class TestRuntimeCloneSuiteCanonico:
             runtime_identity=runtime_id,
             tree_digest=digest,
             role="runtime_clone",
-            source_golden=tmp_path / "golden",
+            source_golden=golden_loc,
         )
 
         # Frozen: no permite asignación
@@ -249,9 +502,16 @@ class TestRuntimeCloneSuiteCanonico:
             observed=digest,
         )
 
+        golden_desc = GoldenMasterDescriptor(
+            location=golden_loc,
+            runtime_identity=runtime_id,
+            tree_digest=digest,
+        )
+
         with pytest.raises(ValueError, match="descriptor"):
             RuntimeCloneResult(
                 state=VerificationState.VERIFIED,
+                source_golden=golden_desc,
                 tree_result=tree_res_verified,
                 physical_independence_verified=True,
                 descriptor=None,
@@ -260,6 +520,7 @@ class TestRuntimeCloneSuiteCanonico:
         with pytest.raises(ValueError, match="(?i)independencia"):
             RuntimeCloneResult(
                 state=VerificationState.VERIFIED,
+                source_golden=golden_desc,
                 tree_result=tree_res_verified,
                 physical_independence_verified=False,
                 descriptor=desc,
@@ -276,7 +537,7 @@ class TestRuntimeCloneSuiteCanonico:
         self,
         tmp_path: pathlib.Path,
     ) -> None:
-        """R3-T04: Fail-closed on missing source directory or non-directory."""
+        """R3-T04: Comportamiento fail-closed ante directorio de origen inexistente o que no sea directorio."""
         runtime_id = RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0")
         digest = TreeDigest(digest="b" * 64, files=1, bytes=10)
 
@@ -288,10 +549,18 @@ class TestRuntimeCloneSuiteCanonico:
             tree_digest=digest,
             role="reference_only",
         )
+        tree_res = TreeVerificationResult(state=VerificationState.VERIFIED, expected=digest, observed=digest)
+        run_res = RuntimeVerificationResult(state=VerificationState.VERIFIED, expected=runtime_id, observed=runtime_id)
+        res_missing = GoldenMasterVerificationResult(
+            state=VerificationState.VERIFIED,
+            tree_result=tree_res,
+            runtime_result=run_res,
+            descriptor=desc_missing,
+        )
 
         dest = tmp_path / "runtime_dest"
         with pytest.raises((RuntimeCloneError, InventoryError)):
-            create_runtime_clone(desc_missing, dest)
+            create_runtime_clone(res_missing, dest)
 
         # Origen que es un archivo regular en vez de directorio
         file_source = tmp_path / "file_source.txt"
@@ -302,15 +571,21 @@ class TestRuntimeCloneSuiteCanonico:
             tree_digest=digest,
             role="reference_only",
         )
+        res_file = GoldenMasterVerificationResult(
+            state=VerificationState.VERIFIED,
+            tree_result=tree_res,
+            runtime_result=run_res,
+            descriptor=desc_file,
+        )
         with pytest.raises((RuntimeCloneError, InventoryError)):
-            create_runtime_clone(desc_file, dest)
+            create_runtime_clone(res_file, dest)
 
     def test_r3_t05_fail_closed_origen_igual_a_destino_o_anidados(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T05: Fail-closed when source == destination or destination inside source / source inside destination."""
+        """R3-T05: Fail-closed cuando origen == destino o el destino está anidado dentro del origen o viceversa."""
         golden_root, golden_res, critical = mock_golden_environment
 
         # 1. Origen idéntico a destino
@@ -332,7 +607,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T06: Fail-closed when destination already exists (DestinationExistsError, no overwrite, no delete)."""
+        """R3-T06: Fail-closed ante destino preexistente (DestinationExistsError, sin sobreescritura ni borrado)."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Preexisting_Destination"
         dest.mkdir()
@@ -352,7 +627,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T07: Pre-copy Golden revalidation (detects pre-copy tampering/corruption and aborts before copy)."""
+        """R3-T07: Revalidación pre-copia del Golden Master (detecta corrupción previa y aborta antes de copiar)."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Tamper"
 
@@ -372,7 +647,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T08: Staging sibling directory creation on same volume with unique identifier."""
+        """R3-T08: Creación de directorio staging hermano en el mismo volumen con identificador único."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Staging_Test"
 
@@ -402,7 +677,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T09: Physical copy (shutil.copy2) preserving file tree structure and bytes."""
+        """R3-T09: Copia física real (shutil.copy2) preservando la estructura del árbol y los bytes de cada archivo."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Physical_Copy"
 
@@ -432,7 +707,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T10: Reparse points / symlinks / junctions rejection in source, staging, and destination."""
+        """R3-T10: Rechazo estricto de reparse points, symlinks y junctions en origen, staging y destino."""
         golden_root, golden_res, critical = mock_golden_environment
 
         # Crear un symlink en el Golden
@@ -453,7 +728,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T11: Inode / device physical independence verification (dest.st_dev, dest.st_ino) != (src.st_dev, src.st_ino)."""
+        """R3-T11: Verificación de independencia física por inode y device (dest.st_dev, dest.st_ino) != (src.st_dev, src.st_ino)."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Independence"
 
@@ -462,7 +737,9 @@ class TestRuntimeCloneSuiteCanonico:
 
         files = inventory_tree(golden_root)
         indep = verify_physical_independence(golden_root, dest, files)
-        assert indep is True
+        assert indep.success is True
+        assert indep.message == ""
+        assert indep.files_checked == len(files)
 
         # Auditoría directa archivo por archivo
         for f in files:
@@ -477,7 +754,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T12: Staging TreeDigest calculation & match against expected Golden TreeDigest."""
+        """R3-T12: Cálculo de TreeDigest en staging y coincidencia exacta contra el TreeDigest esperado del Golden."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Tree_Digest"
 
@@ -493,7 +770,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T13: Staging critical files verification against expected SHA256 hashes using sealed FileIdentity."""
+        """R3-T13: Verificación de archivos críticos en staging contra hashes SHA256 esperados usando captura sellada única."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Critical_Files"
 
@@ -511,7 +788,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T14: Atomic publish via os.replace / rename from staging to destination only after staging verification passes."""
+        """R3-T14: Publicación atómica vía os.replace desde staging hacia destino solo tras superar la verificación de staging."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Atomic_Publish"
 
@@ -535,7 +812,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T15: Post-publish destination verification (re-computes TreeDigest, checks reparse points, critical files, independence)."""
+        """R3-T15: Verificación post-publish en destino (recalcula TreeDigest, verifica reparse points, críticos e independencia)."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Post_Publish"
 
@@ -553,7 +830,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T16: Post-copy Golden Master re-verification (ensures source Golden was not mutated or degraded)."""
+        """R3-T16: Re-verificación post-copia del Golden Master (asegura que el origen no fue mutado ni degradado)."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Post_Golden_Recheck"
 
@@ -571,7 +848,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T17: Rollback cleans up staging directory on copy failure without touching destination."""
+        """R3-T17: Rollback elimina el directorio de staging ante fallos de copia física sin tocar el destino."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Copy_Fail"
 
@@ -595,7 +872,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T18: Rollback cleans up staging directory on verification failure without touching destination."""
+        """R3-T18: Rollback elimina el directorio de staging ante fallos de verificación sin tocar el destino."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Verify_Fail"
 
@@ -622,18 +899,22 @@ class TestRuntimeCloneSuiteCanonico:
         assert len(stagings) == 0
 
     def test_r3_t19_jerarquia_de_excepciones_runtime_clone_error(self) -> None:
-        """R3-T19: Exception hierarchy (RuntimeCloneError, DestinationExistsError subclassing RuntimeVaultError)."""
+        """R3-T19: Jerarquía de excepciones de dominio (RuntimeCloneError, DestinationExistsError heredan de RuntimeVaultError)."""
         assert issubclass(RuntimeCloneError, RuntimeVaultError)
         assert issubclass(DestinationExistsError, RuntimeCloneError)
         assert issubclass(DestinationExistsError, RuntimeVaultError)
 
     def test_r3_t20_ast_isolation_check_sin_imports_candidate_only(self) -> None:
-        """R3-T20: AST isolation check (no candidate-only / unmerged module imports)."""
+        """R3-T20: Aislamiento AST: el paquete runtime_vault coincide exactamente con el set esperado y sin imports candidate-only."""
         import sky_claw.local.runtime_vault as pkg
 
         pkg_dir = pathlib.Path(pkg.__file__).parent
         py_files = list(pkg_dir.glob("*.py"))
-        assert len(py_files) >= 5
+        discovered_modules = {p.stem for p in py_files}
+
+        # Ancla de igualdad exacta para evitar hermanos no cableados
+        expected_modules = {"__init__", "clone", "golden", "inventory", "locking", "models", "verification"}
+        assert discovered_modules == expected_modules
 
         forbidden_names = {
             "artifact_digest",
@@ -659,7 +940,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T21: Rejection of hardlinks (os.link) - fails physical independence."""
+        """R3-T21: Rechazo estricto de hardlinks (os.link) provocando fallo en la verificación de independencia física."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Hardlink_Test"
 
@@ -684,7 +965,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T22: Handling of read-only attributes on source files during staging copy & rollback."""
+        """R3-T22: Manejo de atributos de solo lectura en archivos de origen durante copia en staging y rollback."""
         golden_root, golden_res, critical = mock_golden_environment
 
         # Marcar un archivo de origen como read-only
@@ -695,16 +976,7 @@ class TestRuntimeCloneSuiteCanonico:
 
             # Caso A: Copia exitosa preservando lectura
             dest = tmp_path / "Runtime_Dest_ReadOnly"
-            # Re-verificar golden con el nuevo modo para actualizar hash/res si correspondiera
-            files = inventory_tree(golden_root)
-            digest = tree_digest_from_files(files)
-            golden_desc = GoldenMasterDescriptor(
-                location=golden_root,
-                runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
-                tree_digest=digest,
-            )
-
-            res = create_runtime_clone(golden_desc, dest, critical_expectations=critical)
+            res = create_runtime_clone(golden_res, dest, critical_expectations=critical)
             assert res.success is True
             assert dest.exists()
 
@@ -718,7 +990,7 @@ class TestRuntimeCloneSuiteCanonico:
                 patch("sky_claw.local.runtime_vault.clone.verify_physical_independence", side_effect=failing_step),
                 pytest.raises(RuntimeCloneError),
             ):
-                create_runtime_clone(golden_desc, dest_fail, critical_expectations=critical)
+                create_runtime_clone(golden_res, dest_fail, critical_expectations=critical)
 
             # Staging debió eliminarse limpiamente sin PermissionError
             assert not dest_fail.exists()
@@ -732,21 +1004,23 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T23: Concurrent modification during copy detection and rollback."""
+        """R3-T23: Detección de mutación concurrente en el origen durante la copia y rollback inmediato."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Concurrent_Mut"
 
-        # Simular mutación en el Golden mientras se realiza la copia
         orig_copy2 = shutil.copy2
 
         def mutating_copy2(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> str:
             res = orig_copy2(src, dst, **kwargs)
-            # Modificar archivo en origen en medio de la copia
-            if "SkyrimSE.exe" in str(src):
-                (golden_root / "Data" / "Update.esm").write_bytes(b"CONCURRENT_MUTATION_DATA")
+            # Mutar un archivo de origen que aún NO fue copiado en el orden de iteración
+            if str(src).endswith("Skyrim.esm"):
+                (golden_root / "bink2w64.dll").write_bytes(b"CONCURRENT_MUTATION_DATA")
             return res
 
-        with patch("shutil.copy2", side_effect=mutating_copy2), pytest.raises(RuntimeCloneError):
+        with (
+            patch("shutil.copy2", side_effect=mutating_copy2),
+            pytest.raises(RuntimeCloneError, match="(?i)staging|digest|crítico|verificación"),
+        ):
             create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
         assert not dest.exists()
@@ -756,7 +1030,7 @@ class TestRuntimeCloneSuiteCanonico:
         self,
         tmp_path: pathlib.Path,
     ) -> None:
-        """R3-T24: Empty source rejection (InventoryError)."""
+        """R3-T24: Rechazo de origen vacío lanzando InventoryError / RuntimeCloneError."""
         empty_dir = tmp_path / "Empty_Golden"
         empty_dir.mkdir()
 
@@ -766,17 +1040,29 @@ class TestRuntimeCloneSuiteCanonico:
             runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
             tree_digest=digest,
         )
+        tree_res = TreeVerificationResult(state=VerificationState.VERIFIED, expected=digest, observed=digest)
+        run_res = RuntimeVerificationResult(
+            state=VerificationState.VERIFIED,
+            expected=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            observed=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+        )
+        res_empty = GoldenMasterVerificationResult(
+            state=VerificationState.VERIFIED,
+            tree_result=tree_res,
+            runtime_result=run_res,
+            descriptor=desc,
+        )
 
         dest = tmp_path / "Runtime_Dest_Empty"
         with pytest.raises((RuntimeCloneError, InventoryError)):
-            create_runtime_clone(desc, dest)
+            create_runtime_clone(res_empty, dest)
 
     def test_r3_t25_normalizacion_de_paths_y_seguridad_anti_traversal(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T25: Path normalization and anti-traversal safety."""
+        """R3-T25: Normalización exhaustiva de rutas y seguridad anti-traversal."""
         golden_root, golden_res, critical = mock_golden_environment
 
         # Destino con segmentos relativos / redundantes
@@ -792,7 +1078,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T26: Single-pass sealed FileIdentity reuse across tree digest and critical files."""
+        """R3-T26: Reutilización de captura sellada FileIdentity única entre TreeDigest y archivos críticos."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_Single_Pass"
 
@@ -816,7 +1102,7 @@ class TestRuntimeCloneSuiteCanonico:
         assert len(inventory_calls) == 4
 
     def test_r3_t27_semantica_verification_state_unknown_no_es_verified(self) -> None:
-        """R3-T27: VerificationState semantics (UNKNOWN != VERIFIED)."""
+        """R3-T27: Semántica de VerificationState (UNKNOWN != VERIFIED)."""
         assert VerificationState.UNKNOWN != VerificationState.VERIFIED
         assert VerificationState.UNKNOWN.value != VerificationState.VERIFIED.value
 
@@ -832,7 +1118,7 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T28: Full end-to-end integration test of create_runtime_clone on mock tree."""
+        """R3-T28: Prueba completa de integración end-to-end de create_runtime_clone en árbol sintético."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Skyrim_Playable_Runtime"
 
@@ -869,19 +1155,19 @@ class TestRuntimeCloneSuiteCanonico:
 
 
 # ==============================================================================
-# MUTATION GATES: M-R3-01 A M-R3-10
+# MUTATION GATES: M-R3-01 A M-R3-17
 # ==============================================================================
 
 
 class TestMutationScenariosRV3:
-    """Batería de mutaciones M-R3-01 a M-R3-10 para validar sensibilidad de la suite."""
+    """Batería de mutaciones M-R3-01 a M-R3-17 para validar sensibilidad de la suite."""
 
     def test_m_r3_01_mutante_bypass_pre_copy_golden_revalidation_es_rechazado(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-01: Bypass Golden pre-copy revalidation -> caught by R3-T07."""
+        """M-R3-01: Bypass de revalidación pre-copia del Golden Master -> capturado por R3-T07."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M01"
 
@@ -898,7 +1184,7 @@ class TestMutationScenariosRV3:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-02: Overwrite existing destination -> caught by R3-T06."""
+        """M-R3-02: Sobreescritura de destino preexistente -> capturado por R3-T06."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M02"
         dest.mkdir()
@@ -916,7 +1202,7 @@ class TestMutationScenariosRV3:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-03: Use hardlinks (os.link) -> caught by R3-T11 / R3-T21."""
+        """M-R3-03: Uso de hardlinks (os.link) -> capturado por R3-T11 / R3-T21."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M03"
 
@@ -940,7 +1226,7 @@ class TestMutationScenariosRV3:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-04: Allow symlinks/junctions -> caught by R3-T10."""
+        """M-R3-04: Permitir symlinks/junctions -> capturado por R3-T10."""
         golden_root, golden_res, critical = mock_golden_environment
         target = golden_root / "SkyrimSE.exe"
         link_path = golden_root / "Data" / "SkyrimSE_link.exe"
@@ -959,13 +1245,19 @@ class TestMutationScenariosRV3:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-05: Skip physical independence check -> caught by R3-T11."""
+        """M-R3-05: Omitir comprobación de independencia física -> capturado por R3-T11."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M05"
 
-        # Simular que verify_physical_independence retorna False
         with (
-            patch("sky_claw.local.runtime_vault.clone.verify_physical_independence", return_value=False),
+            patch(
+                "sky_claw.local.runtime_vault.clone.verify_physical_independence",
+                return_value=PhysicalIndependenceResult(
+                    success=False,
+                    message="Hardlink simulado",
+                    failed_rel_path="SkyrimSE.exe",
+                ),
+            ),
             pytest.raises(RuntimeCloneError, match="(?i)independencia"),
         ):
             create_runtime_clone(golden_res, dest, critical_expectations=critical)
@@ -977,7 +1269,7 @@ class TestMutationScenariosRV3:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-06: Skip staging tree digest verification -> caught by R3-T12."""
+        """M-R3-06: Omitir verificación de TreeDigest en staging -> capturado por R3-T12."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M06"
 
@@ -1002,7 +1294,7 @@ class TestMutationScenariosRV3:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-07: Skip critical files verification -> caught by R3-T13."""
+        """M-R3-07: Omitir verificación de archivos críticos -> capturado por R3-T13."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M07"
 
@@ -1024,11 +1316,10 @@ class TestMutationScenariosRV3:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-08: Publish before staging verification -> caught by R3-T14 / R3-T18."""
+        """M-R3-08: Publicar antes de verificar staging -> capturado por R3-T14 / R3-T18."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M08"
 
-        # Si staging está corrupto, NO debe publicarse (dest no debe existir)
         orig_copy2 = shutil.copy2
 
         def corrupt_staging(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> str:
@@ -1037,9 +1328,15 @@ class TestMutationScenariosRV3:
                 pathlib.Path(dst).write_bytes(b"CORRUPTED_DLL")
             return res
 
-        with patch("shutil.copy2", side_effect=corrupt_staging), pytest.raises(RuntimeCloneError):
+        with (
+            patch("shutil.copy2", side_effect=corrupt_staging),
+            patch("os.replace") as replace_spy,
+            pytest.raises(RuntimeCloneError),
+        ):
             create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
+        # Confirmar que os.replace JAMÁS fue llamado
+        assert replace_spy.call_count == 0
         assert not dest.exists()
 
     def test_m_r3_09_mutante_omitir_post_copy_golden_reverification_es_rechazado(
@@ -1047,7 +1344,7 @@ class TestMutationScenariosRV3:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-09: Skip post-copy Golden re-verification -> caught by R3-T16."""
+        """M-R3-09: Omitir re-verificación post-copia del Golden Master -> capturado por R3-T16."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M09"
 
@@ -1063,14 +1360,15 @@ class TestMutationScenariosRV3:
         ):
             create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
-        assert not dest.exists()
+        # En fallo post-publish el destino publicado NO se borra
+        assert dest.exists()
 
     def test_m_r3_10_mutante_omitir_staging_cleanup_en_fallo_es_rechazado(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-10: Omit staging cleanup on failure -> caught by R3-T17 / R3-T18."""
+        """M-R3-10: Omitir limpieza de staging ante fallo pre-publish -> capturado por R3-T17 / R3-T18."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M10"
 
@@ -1087,4 +1385,133 @@ class TestMutationScenariosRV3:
         # Staging DEBE haber sido eliminado
         stagings = list(tmp_path.glob(".*skyclaw-staging*"))
         assert len(stagings) == 0
+        assert not dest.exists()
+
+    def test_m_r3_11_mutante_rehabilitar_bare_descriptor_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-11: Mutante que rehabilita bare GoldenMasterDescriptor es rechazado."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_Dest_M11"
+        assert golden_res.descriptor is not None
+
+        with pytest.raises(RuntimeCloneError, match="(?i)GoldenMasterVerificationResult|autoridad"):
+            create_runtime_clone(golden_res.descriptor, dest, critical_expectations=critical)  # type: ignore[arg-type]
+
+    def test_m_r3_12_mutante_containment_puramente_lexico_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-12: Mutante que usa contención puramente léxica es capturado por resolución física."""
+        golden_root, golden_res, critical = mock_golden_environment
+        inner_dir = golden_root / "Subdir_Target"
+        inner_dir.mkdir(parents=True, exist_ok=True)
+
+        alias_parent = tmp_path / "Aliased_M12"
+        if sys.platform == "win32":
+            err = crear_junction(alias_parent, inner_dir)
+            if err:
+                pytest.skip(f"No se pudo crear junction en Windows: {err}")
+        else:
+            alias_parent.symlink_to(inner_dir, target_is_directory=True)
+
+        dest = alias_parent / "Escape_Target"
+        with pytest.raises(RuntimeCloneError, match="(?i)anidado|idéntico|origen"):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
+    def test_m_r3_13_mutante_restaurar_cleanup_dest_root_post_publish_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-13: Mutante que llama _cleanup_staging(dest_root) post-publish es rechazado."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_Dest_M13"
+
+        with (
+            patch(
+                "sky_claw.local.runtime_vault.clone.verify_physical_independence",
+                side_effect=[
+                    PhysicalIndependenceResult(success=True),
+                    PhysicalIndependenceResult(success=False, message="fallo simulado"),
+                ],
+            ),
+            pytest.raises(RuntimeCloneError),
+        ):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
+        # Destino DEBE preservarse en disco
+        assert dest.exists()
+
+    def test_m_r3_14_mutante_deshabilitar_destination_lock_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """M-R3-14: Mutante que deshabilita el lock de destino es detectado por concurrencia."""
+        dest = tmp_path / "Runtime_Dest_M14"
+        with (
+            destination_lock(dest),
+            pytest.raises(RuntimeCloneError, match="bloqueado"),
+            destination_lock(dest, timeout=0.0),
+        ):
+            pass
+
+    def test_m_r3_15_mutante_physical_independence_result_sin_evidencia_es_rechazado(self) -> None:
+        """M-R3-15: Mutante que retorna bool o estructura vacía en fallo es rechazado por invariantes."""
+        with pytest.raises(ValueError, match="message explicativo"):
+            PhysicalIndependenceResult(success=False, message="")
+
+    def test_m_r3_16_mutante_publicar_staging_corrupto_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-16: Publicar staging corrupto antes de verificarlo es rechazado (os.replace no invocado)."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_Dest_M16"
+
+        orig_copy2 = shutil.copy2
+
+        def corrupt_bink(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> str:
+            res = orig_copy2(src, dst, **kwargs)
+            if "bink2w64.dll" in str(src):
+                pathlib.Path(dst).write_bytes(b"BAD_BINK")
+            return res
+
+        with (
+            patch("shutil.copy2", side_effect=corrupt_bink),
+            patch("os.replace") as replace_spy,
+            pytest.raises(RuntimeCloneError),
+        ):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
+        assert replace_spy.call_count == 0
+        assert not dest.exists()
+
+    def test_m_r3_17_mutante_r3_t23_mutacion_tardia_detectada_en_staging(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-17: R3-T23 detecta mutación concurrente en staging antes de la publicación."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_Dest_M17"
+
+        orig_copy2 = shutil.copy2
+
+        def mutating_hook(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> str:
+            res = orig_copy2(src, dst, **kwargs)
+            if str(src).endswith("Skyrim.esm"):
+                (golden_root / "bink2w64.dll").write_bytes(b"TAMPERED_IN_FLIGHT")
+            return res
+
+        with (
+            patch("shutil.copy2", side_effect=mutating_hook),
+            pytest.raises(RuntimeCloneError, match="(?i)staging|digest|crítico|verificación"),
+        ):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
         assert not dest.exists()

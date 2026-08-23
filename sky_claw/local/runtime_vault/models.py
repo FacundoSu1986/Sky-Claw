@@ -272,6 +272,26 @@ class GoldenMasterVerificationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PhysicalIndependenceResult:
+    """Resultado estructurado de la verificación de independencia física entre árboles."""
+
+    success: bool
+    message: str = ""
+    files_checked: int = 0
+    failed_rel_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.success:
+            if self.message != "":
+                raise ValueError("PhysicalIndependenceResult exitoso debe tener message=''")
+            if self.failed_rel_path is not None:
+                raise ValueError("PhysicalIndependenceResult exitoso no puede tener failed_rel_path")
+        else:
+            if self.message == "":
+                raise ValueError("PhysicalIndependenceResult fallido debe tener un message explicativo")
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeCloneDescriptor:
     """Descriptor inmutable de un Runtime Clone operativo (rol runtime_clone)."""
 
@@ -300,6 +320,8 @@ class RuntimeCloneResult:
 
     def __post_init__(self) -> None:
         if self.state is VerificationState.VERIFIED:
+            if self.source_golden is None:
+                raise ValueError("RuntimeCloneResult VERIFIED requiere source_golden no nulo")
             if self.tree_result is None or self.tree_result.state is not VerificationState.VERIFIED:
                 raise ValueError("RuntimeCloneResult VERIFIED requiere tree_result en estado VERIFIED")
             if (
@@ -318,11 +340,10 @@ class RuntimeCloneResult:
                 )
             if self.descriptor.tree_digest != self.tree_result.observed:
                 raise ValueError("El descriptor debe coincidir con el árbol observado")
-            if (
-                self.source_golden is not None
-                and self.descriptor.runtime_identity != self.source_golden.runtime_identity
-            ):
+            if self.descriptor.runtime_identity != self.source_golden.runtime_identity:
                 raise ValueError("El descriptor debe coincidir con el runtime del Golden Master de origen")
+            if self.descriptor.source_golden != self.source_golden.location:
+                raise ValueError("El descriptor debe coincidir con la ubicación del Golden Master de origen")
         else:
             if self.descriptor is not None:
                 raise ValueError(f"RuntimeCloneResult en estado '{self.state.value}' no puede tener descriptor")
@@ -371,6 +392,7 @@ __all__ = [
     "GoldenMasterVerificationResult",
     "InventoryError",
     "InventoryLinkError",
+    "PhysicalIndependenceResult",
     "RuntimeCloneDescriptor",
     "RuntimeCloneError",
     "RuntimeCloneResult",
