@@ -300,7 +300,10 @@ class TestPendingFindingsReproduction:
         golden_root, golden_res, critical = mock_golden_environment
         assert golden_res.descriptor is not None
 
-        rel_location = pathlib.Path(os.path.relpath(golden_root, os.getcwd()))
+        try:
+            rel_location = pathlib.Path(os.path.relpath(golden_root, os.getcwd()))
+        except ValueError:
+            pytest.skip("No se puede construir una ruta relativa entre unidades distintas")
 
         relative_desc = GoldenMasterDescriptor(
             location=rel_location,
@@ -1801,7 +1804,10 @@ class TestMutationScenariosRV3:
         golden_root, golden_res, critical = mock_golden_environment
         assert golden_res.descriptor is not None
 
-        rel_loc = pathlib.Path(os.path.relpath(golden_root, os.getcwd()))
+        try:
+            rel_loc = pathlib.Path(os.path.relpath(golden_root, os.getcwd()))
+        except ValueError:
+            pytest.skip("No se puede construir una ruta relativa entre unidades distintas")
         rel_desc = GoldenMasterDescriptor(
             location=rel_loc,
             runtime_identity=golden_res.descriptor.runtime_identity,
@@ -1845,26 +1851,39 @@ class TestMutationScenariosRV3:
         """M-R3-26: destination_lock con timeout > 0 debe reintentar hasta el deadline."""
         dest = tmp_path / "Runtime_M26"
 
-        # Simular que un primer intento falla pero el segundo (tras liberar) tiene éxito
         attempts = 0
 
-        def fake_locking(fd: int, mode: int, nbytes: int) -> None:
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise OSError("Bloqueado")
-            # Segundo intento tiene éxito (no-op)
-
         if sys.platform == "win32":
+            import msvcrt
+
+            def fake_msvcrt_locking(fd: int, mode: int, nbytes: int) -> None:
+                nonlocal attempts
+                if mode == msvcrt.LK_UNLCK:
+                    return
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("Bloqueado")
+
             with (
-                patch("msvcrt.locking", side_effect=fake_locking),
+                patch("msvcrt.locking", side_effect=fake_msvcrt_locking),
                 destination_lock(dest, timeout=0.2),
             ):
                 pass
             assert attempts >= 2
         else:
+            import fcntl
+
+            def fake_flock(fd: int, operation: int) -> None:
+                nonlocal attempts
+                if operation == fcntl.LOCK_UN:
+                    return
+                assert operation & fcntl.LOCK_EX
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("Bloqueado")
+
             with (
-                patch("fcntl.flock", side_effect=fake_locking),
+                patch("fcntl.flock", side_effect=fake_flock),
                 destination_lock(dest, timeout=0.2),
             ):
                 pass
