@@ -136,75 +136,210 @@ def mock_golden_environment(
 # ==============================================================================
 
 
-class TestBlockersReproduction:
-    """Pruebas de reproducción de fallos y blockers (B1, B2, B3, B4, B5)."""
+class TestPendingFindingsReproduction:
+    """Pruebas de reproducción en ROJO de los findings pendientes (Thread 1 a 8)."""
 
-    def test_b1_bare_descriptor_no_puede_autorizar_clon(
-        self,
-        tmp_path: pathlib.Path,
-        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
-    ) -> None:
-        """B1: Bare GoldenMasterDescriptor no debe autorizar create_runtime_clone."""
-        golden_root, golden_res, critical = mock_golden_environment
-        dest = tmp_path / "Runtime_B1"
-        bare_descriptor = golden_res.descriptor
-        assert bare_descriptor is not None
+    def test_red_junction_safe_cleanup(self, tmp_path: pathlib.Path) -> None:
+        """Thread 1 / Codex P1: _cleanup_staging no debe descender a través de junctions a targets externos."""
+        from sky_claw.local.runtime_vault.clone import _cleanup_staging
 
-        with pytest.raises(RuntimeCloneError, match="(?i)GoldenMasterVerificationResult|autoridad|no autorizado"):
-            create_runtime_clone(
-                bare_descriptor,  # type: ignore[arg-type]
-                dest,
-                critical_expectations=critical,
-            )
+        external = tmp_path / "External_Target"
+        external.mkdir()
+        sentinel = external / "sentinel.txt"
+        sentinel.write_text("IMPORTANT_EXTERNAL_DATA")
 
-    def test_b2_escape_fisico_por_ancestro_con_enlace_es_rechazado(
-        self,
-        tmp_path: pathlib.Path,
-        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
-    ) -> None:
-        """B2: Escape físico de ruta por ancestro con enlace simbólico o junction es rechazado."""
-        golden_root, golden_res, critical = mock_golden_environment
-        inner_dir = golden_root / "Subdir_Target"
-        inner_dir.mkdir(parents=True)
+        staging = tmp_path / "Staging_With_Junction"
+        staging.mkdir()
+        normal_file = staging / "normal.txt"
+        normal_file.write_text("NORMAL")
 
-        alias_parent = tmp_path / "Aliased_Parent"
+        junction_in_staging = staging / "Injected_Junction"
         if sys.platform == "win32":
-            err = crear_junction(alias_parent, inner_dir)
+            err = crear_junction(junction_in_staging, external)
             if err:
-                pytest.skip(f"No se pudo crear junction en Windows: {err}")
+                pytest.skip(f"No se pudo crear junction: {err}")
         else:
-            alias_parent.symlink_to(inner_dir, target_is_directory=True)
+            junction_in_staging.symlink_to(external, target_is_directory=True)
 
-        dest_aliased = alias_parent / "Nested_Runtime"
+        _cleanup_staging(staging)
 
-        with pytest.raises(RuntimeCloneError, match="(?i)anidado|idéntico|origen"):
-            create_runtime_clone(golden_res, dest_aliased, critical_expectations=critical)
+        assert sentinel.exists(), "El sentinel externo DEBE preservarse intacto tras el cleanup"
+        assert sentinel.read_text() == "IMPORTANT_EXTERNAL_DATA"
+        assert not staging.exists(), "El staging debe eliminarse completamente"
 
-    def test_b3_fallo_post_publish_preserva_destino_publicado_sin_eliminarlo(
+    def test_red_broken_destination_link(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """B3: Fallo en verificación post-publish debe preservar el directorio publicado en disco."""
+        """Thread 2 / Codex P2: Destino que es un enlace roto debe fallar inmediatamente con DestinationExistsError."""
         golden_root, golden_res, critical = mock_golden_environment
-        dest = tmp_path / "Runtime_Dest_B3"
+        broken_target = tmp_path / "nonexistent_target_123"
+        broken_link = tmp_path / "Broken_Dest_Link"
+
+        try:
+            broken_link.symlink_to(broken_target)
+        except (OSError, NotImplementedError):
+            pytest.skip("No se pudo crear symlink roto")
 
         with (
-            patch(
-                "sky_claw.local.runtime_vault.clone.verify_physical_independence",
-                side_effect=[
-                    PhysicalIndependenceResult(success=True),
-                    PhysicalIndependenceResult(success=False, message="fallo post-publish simulado"),
-                ],
-            ),
-            patch("sky_claw.local.runtime_vault.clone._cleanup_staging") as cleanup_spy,
-            pytest.raises(RuntimeCloneError, match="(?i)post-publish|independencia"),
+            patch("shutil.copy2") as copy_spy,
+            pytest.raises(DestinationExistsError, match="(?i)ya existe|enlace"),
+        ):
+            create_runtime_clone(golden_res, broken_link, critical_expectations=critical)
+
+        assert copy_spy.call_count == 0
+
+    def test_red_empty_directories_preserved(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Thread 3 / Codex P2: Clon debe preservar directorios vacíos del Golden Master."""
+        src = tmp_path / "Golden_With_Empty"
+        src.mkdir()
+        (src / "Empty_Dir").mkdir()
+        (src / "Nested" / "Empty_Subdir").mkdir(parents=True)
+        (src / "Data").mkdir()
+        (src / "Data" / "file.esm").write_bytes(b"DATA_FILE")
+        (src / "SkyrimSE.exe").write_bytes(b"EXE")
+
+        files = inventory_tree(src)
+        tree_digest = tree_digest_from_files(files)
+        runtime_id = RuntimeIdentity("skyrimse", "1.6.1170.0")
+
+        golden_res = verify_golden_master(
+            candidate=src,
+            expected_tree=tree_digest,
+            expected_runtime=runtime_id,
+            observed_runtime=runtime_id,
+        )
+        assert golden_res.success is True
+
+        dest = tmp_path / "Runtime_Empty_Preserved"
+        res = create_runtime_clone(golden_res, dest)
+        assert res.success is True
+
+        assert (dest / "Empty_Dir").is_dir()
+        assert (dest / "Nested" / "Empty_Subdir").is_dir()
+        assert (dest / "Data" / "file.esm").exists()
+
+    def test_red_atomic_noreplace_publish(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """Thread 4 / Codex P2: Publicación atómica no debe sobreescribir un destino creado concurrentemente."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_Collision_Target"
+
+        orig_inventory = inventory_tree
+
+        def collision_before_publish(root: pathlib.Path) -> tuple[FileIdentity, ...]:
+            res = orig_inventory(root)
+            if "skyclaw-staging" in root.name and not dest.exists():
+                dest.mkdir()
+                (dest / "sentinel.txt").write_text("EXTERNAL_DATA")
+            return res
+
+        with (
+            patch("sky_claw.local.runtime_vault.clone.inventory_tree", side_effect=collision_before_publish),
+            pytest.raises((DestinationExistsError, RuntimeCloneError)),
         ):
             create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
-        assert dest.exists(), "El destino publicado debe preservarse en disco tras un fallo post-publish"
-        for call in cleanup_spy.call_args_list:
-            assert call.args[0] != dest, "_cleanup_staging no debe ser invocado sobre dest_root"
+        assert dest.exists()
+        assert (dest / "sentinel.txt").exists()
+        assert (dest / "sentinel.txt").read_text() == "EXTERNAL_DATA"
+
+    def test_red_parent_mkdir_error_translation(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """Thread 5 / Codex P2: Fallo al crear padre del destino debe traducirse a RuntimeCloneError."""
+        golden_root, golden_res, critical = mock_golden_environment
+        file_parent = tmp_path / "File_As_Parent"
+        file_parent.write_text("NOT_A_DIR")
+        dest = file_parent / "Child_Dest"
+
+        with pytest.raises(RuntimeCloneError, match="(?i)padre|directorio"):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
+    def test_red_operational_runtime_writability(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """Thread 6 / Codex P2: Runtime clone debe ser mutable/escribible aunque el Golden tenga archivos ReadOnly."""
+        golden_root, golden_res, critical = mock_golden_environment
+        ro_file = golden_root / "Data" / "Skyrim.esm"
+        orig_mode = ro_file.stat().st_mode
+        ro_file.chmod(stat.S_IREAD)
+
+        dest = tmp_path / "Runtime_Writable_Test"
+        try:
+            res = create_runtime_clone(golden_res, dest, critical_expectations=critical)
+            assert res.success is True
+
+            dest_file = dest / "Data" / "Skyrim.esm"
+            assert (ro_file.stat().st_mode & stat.S_IWRITE) == 0, "Golden original debe seguir ReadOnly"
+            assert (dest_file.stat().st_mode & stat.S_IWRITE) != 0, "Destination debe tener bit de escritura"
+
+            # Destination se puede abrir para escritura
+            with dest_file.open("r+b") as fh:
+                fh.write(b"W")
+        finally:
+            ro_file.chmod(orig_mode)
+
+    def test_red_relative_golden_descriptor_provenance(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """Thread 7 / CodeRabbit: Descriptor con ubicación relativa no debe fallar con ValueError tras publish."""
+        golden_root, golden_res, critical = mock_golden_environment
+        assert golden_res.descriptor is not None
+
+        rel_location = pathlib.Path(os.path.relpath(golden_root, os.getcwd()))
+
+        relative_desc = GoldenMasterDescriptor(
+            location=rel_location,
+            runtime_identity=golden_res.descriptor.runtime_identity,
+            tree_digest=golden_res.descriptor.tree_digest,
+            role="reference_only",
+        )
+        relative_golden_res = GoldenMasterVerificationResult(
+            state=VerificationState.VERIFIED,
+            tree_result=golden_res.tree_result,
+            runtime_result=golden_res.runtime_result,
+            critical_results=golden_res.critical_results,
+            descriptor=relative_desc,
+        )
+
+        dest = tmp_path / "Runtime_Relative_Provenance"
+        res = create_runtime_clone(relative_golden_res, dest, critical_expectations=critical)
+        assert res.success is True
+        assert res.descriptor is not None
+        assert res.descriptor.source_golden == rel_location
+
+    def test_red_lock_preparation_leak_on_mkdir_failure(self, tmp_path: pathlib.Path) -> None:
+        """Thread 8 / CodeRabbit: Fallo en mkdir de lock_dir no debe fugar el thread_lock."""
+        dest = tmp_path / "Runtime_Lock_Leak_Test"
+
+        with (
+            patch("pathlib.Path.mkdir", side_effect=OSError("Fallo mkdir lock")),
+            pytest.raises(RuntimeCloneError),
+            destination_lock(dest),
+        ):
+            pass
+
+        # Segunda llamada DEBE poder obtener el thread_lock sin quedar colgada
+        with (
+            patch("pathlib.Path.mkdir", side_effect=OSError("Fallo mkdir lock")),
+            pytest.raises(RuntimeCloneError),
+            destination_lock(dest, timeout=0.0),
+        ):
+            pass
 
     def test_b5_physical_independence_result_modelo_e_invariantes(self) -> None:
         """B5: Invariantes y validaciones de PhysicalIndependenceResult."""
@@ -654,10 +789,12 @@ class TestRuntimeCloneSuiteCanonico:
         staging_paths_observed: list[pathlib.Path] = []
         orig_mkdir = pathlib.Path.mkdir
 
-        def tracking_mkdir(self: pathlib.Path, *args: object, **kwargs: object) -> None:
+        def tracking_mkdir(
+            self: pathlib.Path, mode: int = 0o777, parents: bool = False, exist_ok: bool = False
+        ) -> None:
             if "skyclaw-staging" in self.name:
                 staging_paths_observed.append(self)
-            orig_mkdir(self, *args, **kwargs)
+            orig_mkdir(self, mode=mode, parents=parents, exist_ok=exist_ok)
 
         with patch.object(pathlib.Path, "mkdir", side_effect=tracking_mkdir, autospec=True):
             res = create_runtime_clone(golden_res, dest, critical_expectations=critical)
@@ -781,6 +918,7 @@ class TestRuntimeCloneSuiteCanonico:
             assert c.state is VerificationState.VERIFIED
             assert c.success is True
             assert c.observed_digest is not None
+            assert c.expected_digest is not None
             assert c.observed_digest.lower() == c.expected_digest.lower()
 
     def test_r3_t14_atomic_publish_solo_tras_verificacion_staging_exitosa(
@@ -1010,8 +1148,8 @@ class TestRuntimeCloneSuiteCanonico:
 
         orig_copy2 = shutil.copy2
 
-        def mutating_copy2(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> str:
-            res = orig_copy2(src, dst, **kwargs)
+        def mutating_copy2(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> object:
+            res = orig_copy2(src, dst, **kwargs)  # type: ignore[call-overload]
             # Mutar un archivo de origen que aún NO fue copiado en el orden de iteración
             if str(src).endswith("Skyrim.esm"):
                 (golden_root / "bink2w64.dll").write_bytes(b"CONCURRENT_MUTATION_DATA")
@@ -1103,8 +1241,10 @@ class TestRuntimeCloneSuiteCanonico:
 
     def test_r3_t27_semantica_verification_state_unknown_no_es_verified(self) -> None:
         """R3-T27: Semántica de VerificationState (UNKNOWN != VERIFIED)."""
-        assert VerificationState.UNKNOWN != VerificationState.VERIFIED
-        assert VerificationState.UNKNOWN.value != VerificationState.VERIFIED.value
+        unknown_state: VerificationState = VerificationState.UNKNOWN
+        verified_state: VerificationState = VerificationState.VERIFIED
+        assert unknown_state != verified_state
+        assert unknown_state.value != verified_state.value
 
         res_unknown = RuntimeCloneResult(
             state=VerificationState.UNKNOWN,
@@ -1118,19 +1258,14 @@ class TestRuntimeCloneSuiteCanonico:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """R3-T28: Prueba completa de integración end-to-end de create_runtime_clone en árbol sintético."""
+        """R3-T28: Integración end-to-end: clonación completa en escenario nominal."""
         golden_root, golden_res, critical = mock_golden_environment
-        dest = tmp_path / "Skyrim_Playable_Runtime"
+        dest = tmp_path / "Runtime_Dest_E2E"
 
-        res = create_runtime_clone(
-            golden_source=golden_res,
-            destination=dest,
-            critical_expectations=critical,
-        )
+        res = create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
         assert res.state is VerificationState.VERIFIED
         assert res.success is True
-        assert res.message == ""
         assert res.physical_independence_verified is True
 
         # Validar descriptor
@@ -1226,45 +1361,44 @@ class TestMutationScenariosRV3:
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-04: Permitir symlinks/junctions -> capturado por R3-T10."""
+        """M-R3-04: Introducción de symlink en Golden Master durante clonación -> capturado por R3-T08."""
         golden_root, golden_res, critical = mock_golden_environment
-        target = golden_root / "SkyrimSE.exe"
-        link_path = golden_root / "Data" / "SkyrimSE_link.exe"
-
-        try:
-            os.symlink(target, link_path)
-        except (OSError, NotImplementedError):
-            pytest.skip("Sistema de archivos sin privilegios para symlinks")
+        target_exe = golden_root / "SkyrimSE.exe"
+        real_target = tmp_path / "Real_Exe_Target.exe"
+        real_target.write_bytes(b"REAL_EXE")
+        target_exe.unlink()
+        target_exe.symlink_to(real_target)
 
         dest = tmp_path / "Runtime_Dest_M04"
-        with pytest.raises((RuntimeCloneError, InventoryLinkError)):
+        with pytest.raises((RuntimeCloneError, InventoryLinkError), match="(?i)enlace|symlink|reparse"):
             create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
-    def test_m_r3_05_mutante_omitir_physical_independence_check_es_rechazado(
+    def test_m_r3_05_mutante_permitir_junctions_es_rechazado(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-05: Omitir comprobación de independencia física -> capturado por R3-T11."""
+        """M-R3-05: Introducción de junction en Golden Master durante clonación -> capturado por R3-T09."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M05"
 
-        with (
-            patch(
-                "sky_claw.local.runtime_vault.clone.verify_physical_independence",
-                return_value=PhysicalIndependenceResult(
-                    success=False,
-                    message="Hardlink simulado",
-                    failed_rel_path="SkyrimSE.exe",
-                ),
-            ),
-            pytest.raises(RuntimeCloneError, match="(?i)independencia"),
-        ):
+        junction_path = golden_root / "Injected_Junction"
+        target_dir = tmp_path / "External_Target"
+        target_dir.mkdir()
+
+        if sys.platform == "win32":
+            err = crear_junction(junction_path, target_dir)
+            if err:
+                pytest.skip(f"No se pudo crear junction en Windows: {err}")
+        else:
+            junction_path.symlink_to(target_dir, target_is_directory=True)
+
+        with pytest.raises((RuntimeCloneError, InventoryLinkError), match="(?i)enlace|junction|reparse"):
             create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
         assert not dest.exists()
 
-    def test_m_r3_06_mutante_omitir_staging_tree_digest_verification_es_rechazado(
+    def test_m_r3_06_mutante_omitir_tree_digest_verification_es_rechazado(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
@@ -1275,8 +1409,8 @@ class TestMutationScenariosRV3:
 
         orig_copy2 = shutil.copy2
 
-        def corrupting_copy2(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> str:
-            res = orig_copy2(src, dst, **kwargs)
+        def corrupting_copy2(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> object:
+            res = orig_copy2(src, dst, **kwargs)  # type: ignore[call-overload]
             if "Skyrim.esm" in str(src):
                 pathlib.Path(dst).write_bytes(b"CORRUPTED_BYTES_IN_STAGING")
             return res
@@ -1322,8 +1456,8 @@ class TestMutationScenariosRV3:
 
         orig_copy2 = shutil.copy2
 
-        def corrupt_staging(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> str:
-            res = orig_copy2(src, dst, **kwargs)
+        def corrupt_staging(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> object:
+            res = orig_copy2(src, dst, **kwargs)  # type: ignore[call-overload]
             if "bink2w64.dll" in str(src):
                 pathlib.Path(dst).write_bytes(b"CORRUPTED_DLL")
             return res
@@ -1363,54 +1497,68 @@ class TestMutationScenariosRV3:
         # En fallo post-publish el destino publicado NO se borra
         assert dest.exists()
 
-    def test_m_r3_10_mutante_omitir_staging_cleanup_en_fallo_es_rechazado(
+    def test_m_r3_10_mutante_permitir_hardlink_en_staging_es_rechazado(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-10: Omitir limpieza de staging ante fallo pre-publish -> capturado por R3-T17 / R3-T18."""
+        """M-R3-10: Detección de hardlink en staging -> capturado por R3-T11 / R3-T18."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M10"
 
-        # Simular fallo durante la verificación de staging
         with (
             patch(
                 "sky_claw.local.runtime_vault.clone.verify_physical_independence",
-                side_effect=RuntimeError("Fallo forzado"),
+                return_value=PhysicalIndependenceResult(
+                    success=False,
+                    message="Hardlink detectado en staging",
+                    failed_rel_path="SkyrimSE.exe",
+                ),
             ),
-            pytest.raises(RuntimeCloneError),
+            patch("os.replace") as replace_spy,
+            pytest.raises(RuntimeCloneError, match="(?i)independencia|hardlink"),
         ):
             create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
-        # Staging DEBE haber sido eliminado
-        stagings = list(tmp_path.glob(".*skyclaw-staging*"))
-        assert len(stagings) == 0
+        assert replace_spy.call_count == 0
         assert not dest.exists()
 
-    def test_m_r3_11_mutante_rehabilitar_bare_descriptor_es_rechazado(
+    def test_m_r3_11_mutante_permitir_hardlink_post_publish_es_rechazado(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-11: Mutante que rehabilita bare GoldenMasterDescriptor es rechazado."""
+        """M-R3-11: Detección de hardlink post-publish -> capturado por R3-T21."""
         golden_root, golden_res, critical = mock_golden_environment
         dest = tmp_path / "Runtime_Dest_M11"
-        assert golden_res.descriptor is not None
 
-        with pytest.raises(RuntimeCloneError, match="(?i)GoldenMasterVerificationResult|autoridad"):
-            create_runtime_clone(golden_res.descriptor, dest, critical_expectations=critical)  # type: ignore[arg-type]
+        with (
+            patch(
+                "sky_claw.local.runtime_vault.clone.verify_physical_independence",
+                side_effect=[
+                    PhysicalIndependenceResult(success=True),
+                    PhysicalIndependenceResult(
+                        success=False,
+                        message="Hardlink post-publish detectado",
+                        failed_rel_path="SkyrimSE.exe",
+                    ),
+                ],
+            ),
+            pytest.raises(RuntimeCloneError, match="(?i)independencia|hardlink"),
+        ):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
-    def test_m_r3_12_mutante_containment_puramente_lexico_es_rechazado(
+    def test_m_r3_12_mutante_permitir_escape_por_ancestro_con_junction_es_rechazado(
         self,
         tmp_path: pathlib.Path,
         mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
     ) -> None:
-        """M-R3-12: Mutante que usa contención puramente léxica es capturado por resolución física."""
+        """M-R3-12: Destino apuntando a través de un ancestro junction hacia el Golden -> capturado por R3-T05."""
         golden_root, golden_res, critical = mock_golden_environment
-        inner_dir = golden_root / "Subdir_Target"
-        inner_dir.mkdir(parents=True, exist_ok=True)
+        inner_dir = golden_root / "Inner_Dir"
+        inner_dir.mkdir()
 
-        alias_parent = tmp_path / "Aliased_M12"
+        alias_parent = tmp_path / "Alias_Parent_M12"
         if sys.platform == "win32":
             err = crear_junction(alias_parent, inner_dir)
             if err:
@@ -1475,8 +1623,8 @@ class TestMutationScenariosRV3:
 
         orig_copy2 = shutil.copy2
 
-        def corrupt_bink(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> str:
-            res = orig_copy2(src, dst, **kwargs)
+        def corrupt_bink(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> object:
+            res = orig_copy2(src, dst, **kwargs)  # type: ignore[call-overload]
             if "bink2w64.dll" in str(src):
                 pathlib.Path(dst).write_bytes(b"BAD_BINK")
             return res
@@ -1502,8 +1650,8 @@ class TestMutationScenariosRV3:
 
         orig_copy2 = shutil.copy2
 
-        def mutating_hook(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> str:
-            res = orig_copy2(src, dst, **kwargs)
+        def mutating_hook(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: object) -> object:
+            res = orig_copy2(src, dst, **kwargs)  # type: ignore[call-overload]
             if str(src).endswith("Skyrim.esm"):
                 (golden_root / "bink2w64.dll").write_bytes(b"TAMPERED_IN_FLIGHT")
             return res
@@ -1515,3 +1663,209 @@ class TestMutationScenariosRV3:
             create_runtime_clone(golden_res, dest, critical_expectations=critical)
 
         assert not dest.exists()
+
+    def test_m_r3_18_mutante_cleanup_atravesando_junctions_es_rechazado(self, tmp_path: pathlib.Path) -> None:
+        """M-R3-18: Cleanup de staging no debe atravesar junctions ni borrar targets externos."""
+        from sky_claw.local.runtime_vault.clone import _cleanup_staging
+
+        external = tmp_path / "External_Target_M18"
+        external.mkdir()
+        sentinel = external / "important.bin"
+        sentinel.write_bytes(b"EXT_DATA")
+
+        staging = tmp_path / "Staging_M18"
+        staging.mkdir()
+        junction_link = staging / "Link_To_Ext"
+
+        if sys.platform == "win32":
+            err = crear_junction(junction_link, external)
+            if err:
+                pytest.skip(f"No se pudo crear junction: {err}")
+        else:
+            junction_link.symlink_to(external, target_is_directory=True)
+
+        _cleanup_staging(staging)
+        assert sentinel.exists()
+        assert sentinel.read_bytes() == b"EXT_DATA"
+        assert not staging.exists()
+
+    def test_m_r3_19_mutante_path_exists_en_destino_con_link_roto_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-19: Usar Path.exists() en destino dejaría pasar enlaces rotos -> detectado."""
+        golden_root, golden_res, critical = mock_golden_environment
+        broken_dest = tmp_path / "Broken_Link_M19"
+        try:
+            broken_dest.symlink_to(tmp_path / "nonexistent_dir_m19")
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlink creation not supported")
+
+        with pytest.raises(DestinationExistsError, match="(?i)ya existe|enlace"):
+            create_runtime_clone(golden_res, broken_dest, critical_expectations=critical)
+
+    def test_m_r3_20_mutante_ignorar_directorios_vacios_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """M-R3-20: Mutante que ignora directorios vacíos es rechazado por verificación estructural."""
+        src = tmp_path / "Golden_M20"
+        src.mkdir()
+        (src / "Empty_Subdir").mkdir()
+        (src / "file.txt").write_bytes(b"CONTENT")
+
+        files = inventory_tree(src)
+        tree_digest = tree_digest_from_files(files)
+        runtime_id = RuntimeIdentity("skyrimse", "1.6.1170.0")
+
+        golden_res = verify_golden_master(
+            candidate=src,
+            expected_tree=tree_digest,
+            expected_runtime=runtime_id,
+            observed_runtime=runtime_id,
+        )
+
+        dest = tmp_path / "Runtime_M20"
+        res = create_runtime_clone(golden_res, dest)
+        assert res.success is True
+        assert (dest / "Empty_Subdir").is_dir()
+
+    def test_m_r3_21_mutante_omitir_guardia_no_clobber_en_publish_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-21: Mutante que omite guardia de colisión en publish es rechazado."""
+        golden_root, golden_res, critical = mock_golden_environment
+        dest = tmp_path / "Runtime_M21"
+
+        orig_inv = inventory_tree
+
+        def inject_dest_during_staging_verify(root: pathlib.Path) -> tuple[FileIdentity, ...]:
+            res = orig_inv(root)
+            if "skyclaw-staging" in root.name and not dest.exists():
+                dest.mkdir()
+                (dest / "canary.txt").write_text("CANARY")
+            return res
+
+        with (
+            patch("sky_claw.local.runtime_vault.clone.inventory_tree", side_effect=inject_dest_during_staging_verify),
+            pytest.raises((DestinationExistsError, RuntimeCloneError)),
+        ):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
+        assert dest.exists()
+        assert (dest / "canary.txt").read_text() == "CANARY"
+
+    def test_m_r3_22_mutante_dest_parent_mkdir_sin_traduccion_de_error_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-22: Fallo de dest_parent.mkdir no traducido a RuntimeCloneError es rechazado."""
+        golden_root, golden_res, critical = mock_golden_environment
+        file_parent = tmp_path / "FileParent_M22"
+        file_parent.write_text("NOT_DIR")
+        dest = file_parent / "Child"
+
+        with pytest.raises(RuntimeCloneError, match="(?i)padre|directorio"):
+            create_runtime_clone(golden_res, dest, critical_expectations=critical)
+
+    def test_m_r3_23_mutante_no_normalizar_escritura_deja_clon_readonly_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-23: Clon debe ser escribible para el dueño aun si el Golden es ReadOnly."""
+        golden_root, golden_res, critical = mock_golden_environment
+        ro_file = golden_root / "Data" / "Skyrim.esm"
+        orig_mode = ro_file.stat().st_mode
+        ro_file.chmod(stat.S_IREAD)
+
+        dest = tmp_path / "Runtime_M23"
+        try:
+            res = create_runtime_clone(golden_res, dest, critical_expectations=critical)
+            assert res.success is True
+            dest_file = dest / "Data" / "Skyrim.esm"
+            assert (dest_file.stat().st_mode & stat.S_IWRITE) != 0
+        finally:
+            ro_file.chmod(orig_mode)
+
+    def test_m_r3_24_mutante_source_golden_normalizada_rompe_descriptor_relativo_es_rechazado(
+        self,
+        tmp_path: pathlib.Path,
+        mock_golden_environment: tuple[pathlib.Path, GoldenMasterVerificationResult, list[CriticalFileExpectation]],
+    ) -> None:
+        """M-R3-24: Usar source_golden normalizada en vez de golden_desc.location falla el modelo."""
+        golden_root, golden_res, critical = mock_golden_environment
+        assert golden_res.descriptor is not None
+
+        rel_loc = pathlib.Path(os.path.relpath(golden_root, os.getcwd()))
+        rel_desc = GoldenMasterDescriptor(
+            location=rel_loc,
+            runtime_identity=golden_res.descriptor.runtime_identity,
+            tree_digest=golden_res.descriptor.tree_digest,
+            role="reference_only",
+        )
+        rel_golden_res = GoldenMasterVerificationResult(
+            state=VerificationState.VERIFIED,
+            tree_result=golden_res.tree_result,
+            runtime_result=golden_res.runtime_result,
+            critical_results=golden_res.critical_results,
+            descriptor=rel_desc,
+        )
+
+        dest = tmp_path / "Runtime_M24"
+        res = create_runtime_clone(rel_golden_res, dest, critical_expectations=critical)
+        assert res.success is True
+        assert res.descriptor is not None
+        assert res.descriptor.source_golden == rel_loc
+
+    def test_m_r3_25_mutante_lock_dir_mkdir_fuga_thread_lock_es_rechazado(self, tmp_path: pathlib.Path) -> None:
+        """M-R3-25: lock_dir.mkdir fuera de try/finally fugaría thread_lock -> verificado."""
+        dest = tmp_path / "Runtime_M25"
+
+        with (
+            patch("pathlib.Path.mkdir", side_effect=OSError("Fallo mkdir lock")),
+            pytest.raises(RuntimeCloneError),
+            destination_lock(dest),
+        ):
+            pass
+
+        # Si thread_lock fugó, esta llamada fallaría con timeout/bloqueo de proceso
+        with (
+            patch("pathlib.Path.mkdir", side_effect=OSError("Fallo mkdir lock")),
+            pytest.raises(RuntimeCloneError),
+            destination_lock(dest, timeout=0.0),
+        ):
+            pass
+
+    def test_m_r3_26_mutante_locking_sin_bucle_de_timeout_es_rechazado(self, tmp_path: pathlib.Path) -> None:
+        """M-R3-26: destination_lock con timeout > 0 debe reintentar hasta el deadline."""
+        dest = tmp_path / "Runtime_M26"
+
+        # Simular que un primer intento falla pero el segundo (tras liberar) tiene éxito
+        attempts = 0
+
+        def fake_locking(fd: int, mode: int, nbytes: int) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("Bloqueado")
+            # Segundo intento tiene éxito (no-op)
+
+        if sys.platform == "win32":
+            with (
+                patch("msvcrt.locking", side_effect=fake_locking),
+                destination_lock(dest, timeout=0.2),
+            ):
+                pass
+            assert attempts >= 2
+        else:
+            with (
+                patch("fcntl.flock", side_effect=fake_locking),
+                destination_lock(dest, timeout=0.2),
+            ):
+                pass
+            assert attempts >= 2

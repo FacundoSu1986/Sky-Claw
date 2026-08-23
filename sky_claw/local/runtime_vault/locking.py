@@ -14,6 +14,7 @@ import pathlib
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Generator
 
 from sky_claw.local.runtime_vault.models import RuntimeCloneError
@@ -69,6 +70,9 @@ def destination_lock(destination: pathlib.Path | str, *, timeout: float = 0.0) -
     norm_path, key_hash = _canonical_lock_key(destination)
     thread_lock = _get_thread_lock(norm_path)
 
+    start_time = time.monotonic()
+    deadline = start_time + timeout if timeout > 0 else start_time
+
     # 1. Lock a nivel de hilos (dentro del mismo proceso)
     acquired_thread = thread_lock.acquire(blocking=(timeout > 0), timeout=timeout if timeout > 0 else -1)
     if not acquired_thread:
@@ -76,34 +80,45 @@ def destination_lock(destination: pathlib.Path | str, *, timeout: float = 0.0) -
             f"El destino '{destination}' está actualmente bloqueado por otra operación en este proceso."
         )
 
-    lock_dir = pathlib.Path(tempfile.gettempdir()) / ".skyclaw_vault_locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_file_path = lock_dir / f"skyclaw_clone_{key_hash[:16]}.lock"
-
     fd: int | None = None
     try:
-        fd = os.open(os.fspath(lock_file_path), os.O_RDWR | os.O_CREAT, 0o600)
+        lock_dir = pathlib.Path(tempfile.gettempdir()) / ".skyclaw_vault_locks"
+        try:
+            lock_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeCloneError(f"No se pudo preparar el directorio de locks '{lock_dir}': {exc}") from exc
 
-        # 2. Lock a nivel de SO (interproceso)
-        if sys.platform == "win32":
-            import msvcrt
+        lock_file_path = lock_dir / f"skyclaw_clone_{key_hash[:16]}.lock"
 
+        try:
+            fd = os.open(os.fspath(lock_file_path), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:
+            raise RuntimeCloneError(f"No se pudo abrir el lockfile '{lock_file_path}': {exc}") from exc
+
+        # 2. Lock a nivel de SO (interproceso) con reintentos hasta el deadline si timeout > 0
+        while True:
             try:
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            except OSError as exc:
-                raise RuntimeCloneError(
-                    f"El destino '{destination}' está actualmente bloqueado por otro proceso."
-                ) from exc
-        else:
-            import fcntl
+                if sys.platform == "win32":
+                    import msvcrt
 
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
             except OSError as exc:
-                raise RuntimeCloneError(
-                    f"El destino '{destination}' está actualmente bloqueado por otro proceso."
-                ) from exc
+                now = time.monotonic()
+                if now >= deadline:
+                    msg = (
+                        f"El destino '{destination}' está actualmente bloqueado por otro proceso "
+                        f"(timeout de {timeout}s expirado)."
+                        if timeout > 0
+                        else f"El destino '{destination}' está actualmente bloqueado por otro proceso."
+                    )
+                    raise RuntimeCloneError(msg) from exc
+                time.sleep(min(0.05, max(0.001, deadline - now)))
 
         yield
 

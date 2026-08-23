@@ -11,7 +11,7 @@ verificado, garantizando:
   protocolo mutador para evitar carreras de publicación.
 - Pre-copy y post-copy Golden Master re-verification.
 - Creación de staging temporal hermano en el mismo volumen y publicación atómica
-  vía os.replace solo tras superar la verificación completa de staging.
+  no destructiva (no-clobber) solo tras superar la verificación completa de staging.
 - Prohibición estricta de hardlinks, symlinks, junctions y reparse points.
 - Independencia física absoluta comprobada por inodos: PhysicalIndependenceResult.
 - Rollback determinista de staging propio en fallos pre-publish; preservación
@@ -28,6 +28,11 @@ import stat
 import uuid
 from collections.abc import Sequence
 
+from sky_claw.app.security.links import (
+    link_kind_and_identity_or_raise,
+    path_present,
+    rmtree_link_aware,
+)
 from sky_claw.local.runtime_vault.golden import verify_critical_files
 from sky_claw.local.runtime_vault.inventory import inventory_tree
 from sky_claw.local.runtime_vault.locking import destination_lock
@@ -104,44 +109,10 @@ def verify_physical_independence(
 def _cleanup_staging(staging_path: pathlib.Path) -> None:
     """Elimina de forma segura y determinista el directorio de staging temporal propio.
 
-    Recorrido postorden iterativo que no atraviesa symlinks ni junctions y maneja
-    archivos con atributo read-only en Windows.
+    Utiliza rmtree_link_aware con limpieza de read-only para no descender a través
+    de junctions o enlaces simbólicos inyectados hacia árboles externos.
     """
-    if not staging_path.exists():
-        return
-
-    def _eliminar_entrada(ruta: pathlib.Path) -> None:
-        try:
-            if ruta.is_dir() and not ruta.is_symlink():
-                ruta.rmdir()
-            else:
-                ruta.unlink()
-        except OSError:
-            with contextlib.suppress(OSError):
-                os.chmod(ruta, stat.S_IWRITE | stat.S_IREAD)
-                if ruta.is_dir() and not ruta.is_symlink():
-                    ruta.rmdir()
-                else:
-                    ruta.unlink()
-
-    pendientes: list[tuple[pathlib.Path, bool]] = [(staging_path, False)]
-    while pendientes:
-        actual, procesado = pendientes.pop()
-        if procesado:
-            _eliminar_entrada(actual)
-            continue
-
-        try:
-            if actual.is_symlink() or not actual.is_dir():
-                _eliminar_entrada(actual)
-                continue
-
-            with os.scandir(actual) as entradas:
-                hijos = [pathlib.Path(e.path) for e in entradas]
-            pendientes.append((actual, True))
-            pendientes.extend((h, False) for h in reversed(hijos))
-        except OSError:
-            _eliminar_entrada(actual)
+    rmtree_link_aware(staging_path, limpiar_readonly=True)
 
 
 def _resolve_physical_path(p: pathlib.Path) -> pathlib.Path:
@@ -163,6 +134,63 @@ def _resolve_physical_path(p: pathlib.Path) -> pathlib.Path:
     for parte in partes_inexistentes:
         resultado = resultado / parte
     return resultado
+
+
+def _capture_directory_structure(root: pathlib.Path) -> frozenset[str]:
+    """Captura el conjunto de rutas relativas de todos los subdirectorios bajo root de forma link-aware."""
+    dirs: set[str] = set()
+    pendientes = [root]
+    while pendientes:
+        actual = pendientes.pop()
+        tipo, st = link_kind_and_identity_or_raise(actual)
+        if st is None:
+            raise InventoryError(f"El directorio '{actual}' desapareció durante la captura de directorios")
+        if tipo is not None:
+            raise InventoryLinkError(f"Enlace inesperado ({tipo}) en '{actual}': no se sigue ni se ignora")
+        if not stat.S_ISDIR(st.st_mode):
+            continue
+        if actual != root:
+            dirs.add(actual.relative_to(root).as_posix())
+        try:
+            with os.scandir(actual) as entries:
+                hijos = [pathlib.Path(e.path) for e in entries]
+        except OSError as exc:
+            raise InventoryError(f"No se pudo recorrer '{actual}' para capturar directorios: {exc}") from exc
+        pendientes.extend(hijos)
+    return frozenset(dirs)
+
+
+def _make_tree_writable(root: pathlib.Path) -> None:
+    """Asegura permisos de escritura para el propietario en todos los archivos y directorios del árbol."""
+    pendientes = [root]
+    while pendientes:
+        actual = pendientes.pop()
+        tipo, st = link_kind_and_identity_or_raise(actual)
+        if st is None or tipo is not None:
+            continue
+        with contextlib.suppress(OSError):
+            os.chmod(actual, st.st_mode | stat.S_IWRITE)
+        if stat.S_ISDIR(st.st_mode):
+            try:
+                with os.scandir(actual) as entries:
+                    pendientes.extend(pathlib.Path(e.path) for e in entries)
+            except OSError:
+                continue
+
+
+def _publish_directory_noreplace(staging_dir: pathlib.Path, dest_root: pathlib.Path) -> None:
+    """Publica atómicamente staging_dir en dest_root garantizando no sobreescribir un destino concurrente."""
+    if path_present(dest_root):
+        raise DestinationExistsError(f"Destino '{dest_root}' apareció concurrentemente antes del publish. Abortando.")
+
+    try:
+        os.replace(os.fspath(staging_dir), os.fspath(dest_root))
+    except OSError as exc:
+        if path_present(dest_root):
+            raise DestinationExistsError(
+                f"Destino '{dest_root}' colisionó concurrentemente durante el publish. Abortando."
+            ) from exc
+        raise RuntimeCloneError(f"No se pudo publicar staging en destino: {exc}") from exc
 
 
 def create_runtime_clone(
@@ -244,15 +272,17 @@ def create_runtime_clone(
 
     # 3. Adquisición de lock interproceso por destino antes del protocolo mutador (B4)
     with destination_lock(dest_root):
-        # Fail-closed ante destino preexistente bajo lock
-        if dest_root.exists():
+        # Fail-closed ante destino preexistente bajo lock (incluyendo enlaces rotos)
+        if path_present(dest_root):
             raise DestinationExistsError(
-                f"El destino '{dest_root}' ya existe. Fail-closed: no se sobrescribe ni se elimina."
+                f"El destino '{dest_root}' ya existe o es un enlace preexistente. "
+                f"Fail-closed: no se sobrescribe ni se elimina."
             )
 
         # 4. Pre-copy Golden revalidation (detecta tampering o corrupción previa a la copia)
         try:
             src_files = inventory_tree(src_root)
+            source_dirs = _capture_directory_structure(src_root)
         except (InventoryError, InventoryLinkError) as exc:
             raise RuntimeCloneError(f"Pre-copy revalidation falló al inventariar Golden Master: {exc}") from exc
 
@@ -269,7 +299,13 @@ def create_runtime_clone(
 
         # 5. Creación de directorio staging hermano en el mismo volumen
         dest_parent = dest_root.parent
-        dest_parent.mkdir(parents=True, exist_ok=True)
+        try:
+            dest_parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeCloneError(
+                f"No se pudo preparar el directorio padre del destino '{dest_parent}': {exc}"
+            ) from exc
+
         staging_name = f".{dest_root.name}.skyclaw-staging-{uuid.uuid4().hex[:12]}"
         staging_dir = dest_parent / staging_name
 
@@ -279,7 +315,10 @@ def create_runtime_clone(
             raise RuntimeCloneError(f"No se pudo crear el directorio de staging '{staging_dir}': {exc}") from exc
 
         try:
-            # 6. Copia física real (shutil.copy2)
+            # 6. Recrear estructura de directorios y copia física real (shutil.copy2)
+            for rel_dir in sorted(source_dirs):
+                (staging_dir / rel_dir).mkdir(parents=True, exist_ok=True)
+
             for f in src_files:
                 rel = pathlib.Path(f.rel_path)
                 src_file_path = src_root / rel
@@ -288,7 +327,14 @@ def create_runtime_clone(
                 dest_file_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_file_path, dest_file_path)
 
+            # Normalizar permisos de escritura para que el clon sea operativo
+            _make_tree_writable(staging_dir)
+
             # 7. Verificación de Staging
+            staging_dirs = _capture_directory_structure(staging_dir)
+            if staging_dirs != source_dirs:
+                raise RuntimeCloneError("Verificación de estructura de directorios en staging falló")
+
             staging_files = inventory_tree(staging_dir)
             staging_digest = tree_digest_from_files(staging_files)
 
@@ -308,13 +354,8 @@ def create_runtime_clone(
                     f"Verificación de independencia física falló en staging: {staging_indep.message}"
                 )
 
-            # 8. Atomic Publish vía os.replace
-            if dest_root.exists():
-                raise DestinationExistsError(
-                    f"Destino '{dest_root}' apareció concurrentemente antes del publish. Abortando."
-                )
-
-            os.replace(os.fspath(staging_dir), os.fspath(dest_root))
+            # 8. Atomic Publish no-clobber
+            _publish_directory_noreplace(staging_dir, dest_root)
 
         except Exception as exc:
             _cleanup_staging(staging_dir)
@@ -324,6 +365,10 @@ def create_runtime_clone(
 
         # 9. Post-publish Destination Verification (B3: NO cleanup de dest_root en fallo)
         try:
+            dest_dirs = _capture_directory_structure(dest_root)
+            if dest_dirs != source_dirs:
+                raise RuntimeCloneError("Verificación de estructura de directorios post-publish en destino falló")
+
             dest_files = inventory_tree(dest_root)
             dest_digest = tree_digest_from_files(dest_files)
 
@@ -339,6 +384,10 @@ def create_runtime_clone(
                 raise RuntimeCloneError(f"Independencia física post-publish en destino falló: {dest_indep.message}")
 
             # 10. Post-copy Golden Master Re-verification
+            post_golden_dirs = _capture_directory_structure(src_root)
+            if post_golden_dirs != source_dirs:
+                raise RuntimeCloneError("La estructura de directorios del Golden Master original fue modificada")
+
             post_golden_files = inventory_tree(src_root)
             post_golden_digest = tree_digest_from_files(post_golden_files)
             if post_golden_digest != golden_desc.tree_digest:
@@ -353,30 +402,35 @@ def create_runtime_clone(
             raise RuntimeCloneError(f"Fallo en la verificación post-publish: {exc}") from exc
 
         # 11. Construcción del resultado final y descriptor inmutable
-        clone_desc = RuntimeCloneDescriptor(
-            location=dest_root,
-            runtime_identity=golden_desc.runtime_identity,
-            tree_digest=dest_digest,
-            role="runtime_clone",
-            source_golden=src_root,
-        )
+        try:
+            clone_desc = RuntimeCloneDescriptor(
+                location=dest_root,
+                runtime_identity=golden_desc.runtime_identity,
+                tree_digest=dest_digest,
+                role="runtime_clone",
+                source_golden=golden_desc.location,
+            )
 
-        tree_res = TreeVerificationResult(
-            state=VerificationState.VERIFIED,
-            message="",
-            expected=golden_desc.tree_digest,
-            observed=dest_digest,
-        )
+            tree_res = TreeVerificationResult(
+                state=VerificationState.VERIFIED,
+                message="",
+                expected=golden_desc.tree_digest,
+                observed=dest_digest,
+            )
 
-        return RuntimeCloneResult(
-            state=VerificationState.VERIFIED,
-            message="",
-            source_golden=golden_desc,
-            tree_result=tree_res,
-            critical_results=dest_crit,
-            physical_independence_verified=True,
-            descriptor=clone_desc,
-        )
+            return RuntimeCloneResult(
+                state=VerificationState.VERIFIED,
+                message="",
+                source_golden=golden_desc,
+                tree_result=tree_res,
+                critical_results=dest_crit,
+                physical_independence_verified=True,
+                descriptor=clone_desc,
+            )
+        except Exception as exc:
+            if isinstance(exc, (RuntimeCloneError, DestinationExistsError, InventoryError)):
+                raise
+            raise RuntimeCloneError(f"Fallo al construir el resultado de clonación: {exc}") from exc
 
 
 __all__ = [
