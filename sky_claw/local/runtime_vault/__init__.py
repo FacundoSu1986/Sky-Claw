@@ -15,9 +15,18 @@ mantiene independiente.
 
 from __future__ import annotations
 
+from sky_claw.local.runtime_vault.golden import (
+    verify_critical_files,
+    verify_golden_master,
+)
 from sky_claw.local.runtime_vault.inventory import inventory_tree
 from sky_claw.local.runtime_vault.models import (
+    CriticalFileEvidence,
+    CriticalFileExpectation,
     FileIdentity,
+    GoldenMasterCandidate,
+    GoldenMasterDescriptor,
+    GoldenMasterVerificationResult,
     InventoryError,
     InventoryLinkError,
     RuntimeIdentity,
@@ -34,7 +43,12 @@ from sky_claw.local.runtime_vault.verification import (
 )
 
 __all__ = [
+    "CriticalFileEvidence",
+    "CriticalFileExpectation",
     "FileIdentity",
+    "GoldenMasterCandidate",
+    "GoldenMasterDescriptor",
+    "GoldenMasterVerificationResult",
     "InventoryError",
     "InventoryLinkError",
     "RuntimeIdentity",
@@ -45,6 +59,8 @@ __all__ = [
     "VerificationState",
     "inventory_tree",
     "tree_digest_from_files",
+    "verify_critical_files",
+    "verify_golden_master",
     "verify_runtime_identity",
     "verify_tree",
 ]
