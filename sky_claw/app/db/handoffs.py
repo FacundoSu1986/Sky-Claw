@@ -116,6 +116,49 @@ CREATE INDEX IF NOT EXISTS idx_sweep_receipts_state
 """
 
 # =============================================================================
+# ABSORCIÓN DURABLE DE EVIDENCIA ORPHAN (PATCH 0011)
+# =============================================================================
+#
+# Un INDETERMINATE materializado CONSUME la evidencia de TODAS sus candidatas
+# PARA UN ARTIFACT FÍSICO CONCRETO — identidad (transaction_id, artifact_path) —
+# en el MISMO boundary que el INSERT y el consumo de receipts (Principio 4).
+#
+# ¿Por qué per-artifact y no por TX? Una corrida del pipeline emite UN ActionManifest
+# que nombra VARIOS artifacts físicos (mods/DynDOLOD Output, mods/TexGen Output y el
+# staging crudo): absorber la TX globalmente destruiría evidencia legítima de otro
+# artifact que todavía no fue reconciliado.
+#
+# ¿Por qué relación y no PENDING→ROLLED_BACK? Una TX PENDING puede pertenecer a una
+# CORRIDA REALMENTE VIVA (candidata espuria demostrada: el gate de resume consulta
+# el estado durable ANTES del lock, y el startup de otra instancia corre sin lock).
+# La relación consume la evidencia SIN tocar el lifecycle de la TX — live-safe por
+# construcción. La exclusión posterior vive en el oracle (transacciones_que_nombran),
+# que deja de readmitir la candidata PARA ESE artifact en ambas fuentes (PENDING y
+# ROLLED_BACK+receipt UNRESOLVED). El stale sweep queda intacto.
+#
+# FKs SIN ON DELETE: borrar la historia de handoffs (que no ocurre productivamente)
+# mientras exista la relación debe ser IMPOSSIBLE (IntegrityError, fail-closed) —
+# jamás un CASCADE que resucite evidencia vieja. La relación es historia terminal:
+# sobrevive a SUPERSEDED/COMPLETED porque ése es exactamente el punto del bug.
+#
+# CREATE IF NOT EXISTS: una DB pre-0011 abre sin migración destructiva y conserva su
+# conducta (sin absorciones históricas, la evidencia histórica sigue vigente).
+
+ORPHAN_ABSORPTIONS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS orphan_evidence_absorptions (
+    absorption_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id INTEGER NOT NULL REFERENCES transactions(transaction_id),
+    artifact_path TEXT NOT NULL,
+    handoff_id INTEGER NOT NULL REFERENCES deployment_handoffs(handoff_id),
+    absorbed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    CONSTRAINT uq_absorpcion_tx_artifact UNIQUE (transaction_id, artifact_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_orphan_absorptions_artifact_tx
+    ON orphan_evidence_absorptions(artifact_path, transaction_id);
+"""
+
+# =============================================================================
 # ESTADOS
 # =============================================================================
 
@@ -541,10 +584,16 @@ async def reconciliar_orphan_de_artifact(
             expected_profile=expected_profile,
             observado=observado,
         ),
-        # Principio 4: INDETERMINATE + receipts → CONSUMED en UN boundary —
-        # si el INSERT pierde contra un owner concurrente, el consumo tampoco
-        # queda afirmado a medias.
+        # Principio 4 + PATCH 0011: INDETERMINATE + receipts → CONSUMED +
+        # absorción durable de la evidencia de TODAS las candidatas PARA ESTE
+        # artifact — identidad (transaction_id, artifact_path) — en UN boundary.
+        # Si el INSERT pierde contra un owner concurrente, ni el consumo ni las
+        # absorciones quedan afirmados. ``transactions.status`` queda intacto:
+        # una candidata puede ser una corrida viva; su lifecycle no es de este
+        # boundary. Sin absorber, el P1 original re-fabricaría orphans desde
+        # evidencia ya consumida tras un ciclo regen→deployment→resume exitoso.
         consumir_receipts_de=candidatas,
+        absorber_evidencia_de=candidatas,
     )
     if handoff_id is None:
         # Perdió contra un owner concurrente: devolver el estado real.
@@ -650,6 +699,7 @@ def _registro_indeterminado(
 __all__ = [
     "HANDOFFS_SCHEMA_SQL",
     "HANDOFF_STATES_ACTIVOS",
+    "ORPHAN_ABSORPTIONS_SCHEMA_SQL",
     "SWEEP_RECEIPTS_SCHEMA_SQL",
     "ArtifactReachability",
     "DeploymentHandoff",

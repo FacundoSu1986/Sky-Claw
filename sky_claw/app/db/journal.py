@@ -30,6 +30,7 @@ from sky_claw.app.db.handoffs import (
     _INSERT_HANDOFF_SQL,
     _SELECT_HANDOFF_ACTIVO_SQL,
     HANDOFFS_SCHEMA_SQL,
+    ORPHAN_ABSORPTIONS_SCHEMA_SQL,
     SWEEP_RECEIPTS_SCHEMA_SQL,
     DeploymentHandoff,
     HandoffState,
@@ -72,6 +73,14 @@ def _nombra_objetivo(ruta: object, objetivo_fisico: str, prefijo: str) -> bool:
 
 #: INSERT del receipt durable de stale sweep (F-001, patch 0006).
 _INSERT_SWEEP_RECEIPT_SQL = "INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (?, 'unresolved')"
+
+#: INSERT de la absorción durable de evidencia orphan (PATCH 0011). La identidad
+#: es (transaction_id, artifact_path) — ver ORPHAN_ABSORPTIONS_SCHEMA_SQL; una
+#: violación del UNIQUE levanta DENTRO del boundary y revierte todo el bloque
+#: (INSERT del handoff + absorciones + consumo de receipts caen juntos).
+_INSERT_ABSORCION_EVIDENCIA_SQL = (
+    "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) VALUES (?, ?, ?)"
+)
 
 
 # =============================================================================
@@ -328,6 +337,7 @@ class OperationJournal:
     """
         + HANDOFFS_SCHEMA_SQL
         + SWEEP_RECEIPTS_SCHEMA_SQL
+        + ORPHAN_ABSORPTIONS_SCHEMA_SQL
     )
 
     def __init__(
@@ -1083,13 +1093,29 @@ class OperationJournal:
         *,
         registro: DeploymentHandoff,
         ids_receipts: Iterable[int] = (),
+        ids_absorcion: Iterable[int] | None = None,
     ) -> int | None:
-        """INSERT del INDETERMINATE + consumo de receipts en el MISMO boundary
-        (Principio 4); ASUME el boundary del caller. Levanta
-        ``sqlite3.IntegrityError`` si ya hay owner activo del artifact — y
-        entonces el consumo tampoco queda afirmado (el boundary revierte)."""
+        """INSERT del INDETERMINATE + absorción de evidencia per-artifact +
+        consumo de receipts en el MISMO boundary (Principio 4 y PATCH 0011);
+        ASUME el boundary del caller. Levanta ``sqlite3.IntegrityError`` si ya
+        hay owner activo del artifact — o si una absorción duplica su identidad
+        ``(transaction_id, artifact_path)`` — y entonces NADA del bloque queda
+        afirmado (el boundary revierte completo).
+
+        La absorción (PATCH 0011) consume la EVIDENCIA — nunca el lifecycle de
+        la TX: una candidata puede ser una corrida realmente viva (candidata
+        espuria demostrada), así que ``transactions.status`` queda intacto y la
+        exclusión posterior vive en el oracle, per-artifact.
+        """
         cursor = await conn.execute(_INSERT_HANDOFF_SQL, fila_de_registro(registro))
         nuevo_id = int(cursor.lastrowid or 0) or None
+        if nuevo_id is not None:
+            absorciones = list(ids_absorcion) if ids_absorcion is not None else list(ids_receipts)
+            if absorciones:
+                await conn.executemany(
+                    _INSERT_ABSORCION_EVIDENCIA_SQL,
+                    [(int(tx_id), registro.artifact_path, int(nuevo_id)) for tx_id in sorted(set(absorciones))],
+                )
         ids = list(ids_receipts)
         if nuevo_id is not None and ids:
             await conn.executemany(
@@ -1290,6 +1316,7 @@ class OperationJournal:
         *,
         registro: DeploymentHandoff,
         consumir_receipts_de: Iterable[int] = (),
+        absorber_evidencia_de: Iterable[int] | None = None,
     ) -> int | None:
         """INSERT de un INDETERMINATE conservador (reconciler de arranque).
 
@@ -1298,11 +1325,20 @@ class OperationJournal:
         pisar a nadie. El registro NO puede traer identidad esperada (CHECK).
 
         Principio 4 (F-001, patch 0006): los receipts UNRESOLVED de las TX
-        usadas como evidencia se CONSUMEN en el MISMO boundary que el INSERT —
-        si el INSERT pierde contra un owner concurrente, el consumo tampoco
-        queda afirmado a medias.
+        usadas como evidencia se CONSUMEN en el MISMO boundary que el INSERT.
+
+        PATCH 0011: ``absorber_evidencia_de`` es el conjunto COMPLETO de
+        candidatas cuya evidencia queda consumida PARA EL ARTIFACT del registro
+        — identidad ``(transaction_id, artifact_path)`` — en ese mismo boundary.
+        No toca ``transactions.status``: una candidata puede ser una corrida
+        viva (LIVE_SAFE_BY_CONSTRUCTION). Si se omite, absorbe el mismo conjunto
+        de ``consumir_receipts_de`` para que ningún caller que consume evidencia
+        pueda dejar de absorberla (un solo concepto: "evidencia consumida aquí").
         """
         ids_receipts = sorted({int(tx_id) for tx_id in consumir_receipts_de})
+        ids_absorcion = (
+            sorted({int(tx_id) for tx_id in absorber_evidencia_de}) if absorber_evidencia_de is not None else None
+        )
         db = await self._ensure_connected()
         if self._lifecycle is not None:
             try:
@@ -1311,6 +1347,7 @@ class OperationJournal:
                         conn,
                         registro=registro,
                         ids_receipts=ids_receipts,
+                        ids_absorcion=ids_absorcion,
                     )
             except sqlite3.IntegrityError:
                 logger.warning(
@@ -1322,7 +1359,12 @@ class OperationJournal:
                 raise JournalTransactionError(f"Failed to register indeterminate handoff: {e}") from e
         async with self._lock:
             try:
-                nuevo_id = await self._escribir_handoff_indeterminado(db, registro=registro, ids_receipts=ids_receipts)
+                nuevo_id = await self._escribir_handoff_indeterminado(
+                    db,
+                    registro=registro,
+                    ids_receipts=ids_receipts,
+                    ids_absorcion=ids_absorcion,
+                )
                 await db.commit()
                 return nuevo_id
             except sqlite3.IntegrityError:
@@ -1370,11 +1412,23 @@ class OperationJournal:
         que esta consulta prueba intención, no provenance — el caller sólo puede
         fabricar INDETERMINATE con ella, nunca identidad autorizada.
 
+        PATCH 0011 — absorción durable per-artifact: una candidata con relación
+        vigente en ``orphan_evidence_absorptions`` para EL OBJETIVO FÍSICO
+        canónico (identidad ``(transaction_id, artifact_path)``) deja de ser
+        evidencia — aplica a AMBAS fuentes: PENDING y ROLLED_BACK+receipt
+        UNRESOLVED. La exclusión es PER-ARTIFACT: si la TX nombra otro artifact
+        sin absorber, ese otro artifact sigue viendo su evidencia. El stale
+        sweep queda intacto: puede convertir la TX barrida a ROLLED_BACK+receipt
+        UNRESOLVD como siempre; el oracle simplemente ya no la readmite para el
+        artifact absorbido.
+
         El filtro de rutas se hace en Python sobre el JSON de ``metadata``: un
         ``LIKE`` sobre texto JSON sería ciego a los escapes de backslash de las
-        rutas Windows.
+        rutas Windows. La exclusión de absorciones se precarga con UNA query
+        parametrizada por el objetivo canónico — sin N+1 por candidata.
         """
         db = await self._ensure_connected()
+        objetivo_fisico, prefijo = _canonica_y_prefijo(objetivo)
         sql = """
             SELECT je.transaction_id, t.status, je.metadata, r.state
             FROM journal_entries je
@@ -1382,15 +1436,23 @@ class OperationJournal:
             LEFT JOIN stale_pending_sweep_receipts r ON r.transaction_id = je.transaction_id
             WHERE je.metadata IS NOT NULL AND t.status IN ('pending', 'rolled_back')
         """
+        sql_absorbidas = "SELECT transaction_id FROM orphan_evidence_absorptions WHERE artifact_path = ?"
+        filas: list[tuple[Any, ...]] = []
+        absorbidas: set[int] = set()
         if self._lifecycle is not None:
-            async with self._lifecycle.operation(self._db_path) as conn, conn.execute(sql) as cursor:
-                filas = [fila async for fila in cursor]
+            async with self._lifecycle.operation(self._db_path) as conn:
+                async with conn.execute(sql) as cursor:
+                    filas = [tuple(fila) async for fila in cursor]
+                async with conn.execute(sql_absorbidas, (objetivo_fisico,)) as cursor:
+                    absorbidas = {int(fila[0]) async for fila in cursor}
         else:
-            async with self._lock, db.execute(sql) as cursor:
-                filas = [fila async for fila in cursor]
+            async with self._lock:
+                async with db.execute(sql) as cursor:
+                    filas = [tuple(fila) async for fila in cursor]
+                async with db.execute(sql_absorbidas, (objetivo_fisico,)) as cursor:
+                    absorbidas = {int(fila[0]) async for fila in cursor}
 
         coincidencias: set[int] = set()
-        objetivo_fisico, prefijo = _canonica_y_prefijo(objetivo)
         for tx_id, status, metadata, receipt_state in filas:
             if status != TransactionStatus.PENDING.value and receipt_state != SweepReceiptState.UNRESOLVED.value:
                 continue
@@ -1402,6 +1464,7 @@ class OperationJournal:
                 if _nombra_objetivo(ruta, objetivo_fisico, prefijo):
                     coincidencias.add(int(tx_id))
                     break
+        coincidencias -= absorbidas
         return sorted(coincidencias)
 
     async def get_transaction(self, transaction_id: int) -> Transaction | None:
