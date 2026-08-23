@@ -1036,10 +1036,17 @@ class TestGeneratorsDefensiveMaterialization:
         assert res.state is VerificationState.FAILED
         assert res.success is False
         assert res.descriptor is None
-        assert len(res.critical_results) == 1
-        assert res.critical_results[0].state is VerificationState.FAILED
-        assert res.critical_results[0].expected_digest == "0" * 64
-        assert res.critical_results[0].observed_digest == real_digest
+        assert res.critical_results == (
+            CriticalFileEvidence(
+                rel_path="SkyrimSE.exe",
+                state=VerificationState.FAILED,
+                message=f"Archivo crítico 'SkyrimSE.exe' no coincide: sha256 ({real_digest} vs {'0' * 64}), tamaño (24 vs 100 bytes)",
+                expected_digest="0" * 64,
+                observed_digest=real_digest,
+                expected_size=100,
+                observed_size=24,
+            ),
+        )
 
     def test_g2_direct_verify_critical_files_con_generator(self) -> None:
         files = [FileIdentity(rel_path="SkyrimSE.exe", size=10, digest="a" * 64)]
@@ -1080,8 +1087,19 @@ class TestGeneratorsDefensiveMaterialization:
         assert res.state is VerificationState.VERIFIED
         assert res.success is True
         assert res.descriptor is not None
-        assert len(res.critical_results) == len(critical)
-        assert all(c.state is VerificationState.VERIFIED for c in res.critical_results)
+        expected_critical_results = tuple(
+            CriticalFileEvidence(
+                rel_path=exp.rel_path,
+                state=VerificationState.VERIFIED,
+                message="",
+                expected_digest=exp.expected_digest,
+                observed_digest=exp.expected_digest,
+                expected_size=exp.expected_size,
+                observed_size=exp.expected_size,
+            )
+            for exp in critical
+        )
+        assert res.critical_results == expected_critical_results
 
     def test_g4_duplicate_critical_generator_levanta_error(
         self,
@@ -1133,19 +1151,20 @@ class TestSameCaptureOracle:
         original_inventory = golden_module.inventory_tree
         original_verify_critical = golden_module.verify_critical_files
 
-        capturas: list[tuple[Sequence[FileIdentity], Sequence[FileIdentity]]] = []
+        inventarios: list[Sequence[FileIdentity]] = []
+        capturas_criticas: list[Sequence[FileIdentity]] = []
 
         def spy_inventory_tree(path: pathlib.Path) -> Sequence[FileIdentity]:
             files = original_inventory(path)
+            inventarios.append(files)
             return files
 
         def spy_verify_critical(
             files: Sequence[FileIdentity],
             expectations: Sequence[CriticalFileExpectation],
         ) -> tuple[CriticalFileEvidence, ...]:
-            evidencias = original_verify_critical(files, expectations)
-            capturas.append((files, files))
-            return evidencias
+            capturas_criticas.append(files)
+            return original_verify_critical(files, expectations)
 
         monkeypatch.setattr(golden_module, "inventory_tree", spy_inventory_tree)
         monkeypatch.setattr(golden_module, "verify_critical_files", spy_verify_critical)
@@ -1158,5 +1177,6 @@ class TestSameCaptureOracle:
             critical_expectations=critical,
         )
         assert res.state is VerificationState.VERIFIED
-        assert len(capturas) == 1
-        assert capturas[0][0] is capturas[0][1]
+        assert len(inventarios) == 1
+        assert len(capturas_criticas) == 1
+        assert capturas_criticas[0] is inventarios[0]
