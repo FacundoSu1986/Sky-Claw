@@ -145,7 +145,7 @@ más para usar AccessCheck sobre la superficie completa {root, parent}.
 | Directorio descendiente con herencia deshabilitada (protected DACL) | Se evalúa el SD propio de CADA nodo (cobertura exhaustiva §5) | Clasificado por su propio descriptor; sin efecto ciego de herencia | Alta | Bajo: el hueco root-only fue eliminado en la revisión 2 |
 | DELETE permitido vía padre pese a file-DACL restrictiva | Parent con FILE_DELETE_CHILD efectivo | UNPROTECTED | Alta | Bajo: el padre ES parte de la superficie evaluada |
 | DACL NULL | AccessCheck concede todo lo pedido [^accesscheck] [^acllists] | UNPROTECTED | Alta | Bajo |
-| DACL vacía (sin ACEs) | Se niega todo [^acllists]; sin derechos ni siquiera de lectura | WRITE_PROTECTED (lectura registrada como evidencia, no como gate) | Alta | Documentado en §5 |
+| DACL vacía (sin ACEs) | Descriptor OBSERVADO con DACL presente-vacía ⇒ niega todo salvo los derechos implícitos del dueño [^acllists]; clasificación sólo tras completar TODAS las checks de mutación incluida la regla del dueño (§5) | WRITE_PROTECTED posible; dueño atribuible ⇒ regla OWNER SELF-REWRITE manda (UNPROTECTED); descriptor ilegible ⇒ UNKNOWN, nunca protegido | Alta | Corregido en revisión 3 (thread CodeRabbit u6B) |
 
 Hardlinks: crear un hardlink externo hacia un archivo del Golden no muta contenido; abrirlo
 para escritura o borrar cualquiera de sus nombres pasa por el mismo chequeo del archivo/directorio
@@ -155,7 +155,7 @@ para escritura o borrar cualquiera de sus nombres pasa por el mismo chequeo del 
 
 **La protección del Golden es una propiedad del ÁRBOL.** Conceptualmente:
 
-```
+```text
 GoldenProtection(tree) = aggregate(
     estado de seguridad de CADA nodo del subtree,
     superficie de delete/rename del root vía su parent,
@@ -221,7 +221,7 @@ semántica FS [^ifspriv]):
   ni contenido ni DACL). Ningún otro privilegio entra al contrato sin investigación con
   fuente primaria; presencia de otros queda fuera del modelo v1.
 
-```
+```text
 SYNCHRONIZE, TRAVERSE, READ_CONTROL, lecturas: contexto operacional, no deciden estado
 (excepto READ_CONTROL necesario para leer el SD: si falta → UNKNOWN).
 ```
@@ -287,8 +287,12 @@ clasificación.
 Refinamiento estricto de WRITE_PROTECTED (elección OPTION A, análisis completo en §9).
 HARDENED ⇔ WRITE_PROTECTED sobre TODO el subtree (§5) **y además**:
 
-1. el token evaluado no está elevado (`TokenElevation != TokenElevated`; equivalente a
-   `TokenElevationType ∈ {Default, Limited}` [^teletype]); y
+1. el token evaluado no está elevado. Gate ÚNICO: `GetTokenInformation(TokenElevation)`
+   con `TokenIsElevated == FALSE` [^teletype]. `TokenElevationType` queda como evidencia
+   DIAGNÓSTICA exclusivamente y JAMÁS decide el gate: `Default` sólo significa "sin token
+   vinculado", condición que ocurre tanto para usuarios estándar como para administradores
+   con UAC deshabilitada ejecutándose con privilegios plenos — no es equivalente a
+   no-elevado; y
 2. `owner_sid` de CADA nodo relevante no es atribuible al token evaluado —no es el user SID
    del token ni ningún grupo del token que no esté marcado deny-only (identidades por SID;
    well-known SIDs por fuente primaria [^wellknown])— o, si algún nodo es propiedad del
@@ -391,6 +395,8 @@ FORBIDDEN_IN_GP1.
 | `GetNamedSecurityInfoW` | Sí | owner/group/DACL de cada nodo | Ninguno intrínseco (variante Get) |
 | `AccessCheck` | Sí | acceso efectivo del token | Ninguno |
 | `GetTokenInformation` | Sí | user/grupos/elevación/privilegios | Ninguno |
+| `OpenProcessToken` / `OpenThreadToken` | Sí | obtener el handle del token propio (proceso; thread impersonante como vía preferente), acceso restringido a `TOKEN_QUERY` | Ninguno con `TOKEN_QUERY` |
+| `CloseHandle` | Sí | liberar TODO handle obtenido (abiertos y duplicados) | Ninguno (su ausencia sería leak de handles) |
 | `DuplicateTokenEx` | Sí* | duplicar token propio a impersonación para AccessCheck | *No altera privilegios ni grupos (copia); prohibido usarlo como base de AdjustTokenPrivileges en GP1 |
 | `GetVolumeInformationByHandleW` | Sí | nombre FS + FILE_PERSISTENT_ACLS | Ninguno |
 | `GetDriveTypeW` | Sí | gate de localidad (DRIVE_FIXED) | Ninguno |
@@ -447,7 +453,10 @@ filesystem → ACLs persistentes.
 ## 9. Decisión semántica de HARDENED
 
 **OPTION A — "Endurecido frente al token actual no elevado"** (ELEGIDA).
-HARDENED ⇔ WRITE_PROTECTED ∧ token-no-elevado ∧ owner-no-attribuible (§5).
+HARDENED ⇔ la definición completa de §5 HARDENED: WRITE_PROTECTED sobre TODO el subtree ∧
+gate único de no-elevación (`TokenElevation`) ∧ sin vías efectivas de reescritura
+DACL/ownership ∧ relación de ownership sin camino de auto-reescritura —incluida la
+excepción Owner Rights S-1-3-4— ∧ ningún privilegio mutation-enabling presente.
 Demostrable 100% read-only; portable (SIDs, sin nombres); no promete nada contra UAC/admin/
 SYSTEM; útil para UI futura (un verde honesto); testeable de punta a punta con DACLs
 sintéticas en temp dirs + clasificador puro.
@@ -497,7 +506,7 @@ Invarianzas estructurales (a anclar en `__post_init__`, patrón `PhysicalIndepen
 
 Ejemplos normativos (el safety qualifier vive en metadata estructurada, NUNCA en message):
 
-```
+```text
 success=True  state=UNPROTECTED      message=""   # válido: inspección exitosa que descubre vulnerabilidad
 success=True  state=WRITE_PROTECTED  message=""   # válido; scope en assurance_scope/scan_scope
 success=True  state=HARDENED         message=""   # válido; NO implica admin-proof (§5)
@@ -546,14 +555,14 @@ class GoldenProtectionState(StrEnum):
 
 class GoldenProtectionRight(StrEnum):
     """Derechos efectivos relevantes, ya resueltos por AccessCheck por nodo."""
-    READ_DATA           # FILE_READ_DATA / FILE_LIST_DIRECTORY
-    EXECUTE             # FILE_EXECUTE / FILE_TRAVERSE
-    WRITE_CONTENT       # WRITE_DATA+APPEND ≡ ADD_FILE+ADD_SUBDIR según nodo
-    DELETE              # DELETE del nodo
-    DELETE_CHILD        # FILE_DELETE_CHILD del directorio evaluado
-    WRITE_METADATA      # FILE_WRITE_ATTRIBUTES + FILE_WRITE_EA
-    CHANGE_PERMISSIONS  # WRITE_DAC (incluye la vía implícita del dueño si aplica)
-    CHANGE_OWNER        # WRITE_OWNER
+    READ_DATA = "read_data"             # FILE_READ_DATA / FILE_LIST_DIRECTORY
+    EXECUTE = "execute"                 # FILE_EXECUTE / FILE_TRAVERSE
+    WRITE_CONTENT = "write_content"     # WRITE_DATA+APPEND ≡ ADD_FILE+ADD_SUBDIR según nodo
+    DELETE = "delete"                   # DELETE del nodo
+    DELETE_CHILD = "delete_child"       # FILE_DELETE_CHILD del directorio evaluado
+    WRITE_METADATA = "write_metadata"   # FILE_WRITE_ATTRIBUTES + FILE_WRITE_EA
+    CHANGE_PERMISSIONS = "change_permissions"  # WRITE_DAC (incluye la vía implícita del dueño)
+    CHANGE_OWNER = "change_owner"       # WRITE_OWNER
 
 
 @dataclass(frozen=True, slots=True)
@@ -584,8 +593,8 @@ class GoldenProtectionEvidence:
 @dataclass(frozen=True, slots=True)
 class GoldenProtectionResult:
     state: GoldenProtectionState
-    message: str = ""
     evidence: GoldenProtectionEvidence                    # siempre presente; campos None-ables
+    message: str = ""                                     # "" en success (contrato repo)
     scan_scope: str = "FULL_SUBTREE_AND_PARENT"           # constante v1 (nombre definitivo abierto)
     assurance_scope: str = "CURRENT_EFFECTIVE_UNELEVATED_TOKEN"  # constante v1; transporta el
     # calificador de HARDENED ESTRUCTURADAMENTE: nunca en message, nunca inferido por el lector.
@@ -658,7 +667,7 @@ temp dirs es legítimo); variaciones de token/elevación se testean a nivel clas
 | GP-T27 | privilegio mutation-enabling presente aunque disabled (`SeRestorePrivilege`/`SeTakeOwnershipPrivilege`) en evidencia → UNPROTECTED, nunca WRITE_PROTECTED | adversarial/false-green |
 | GP-T28 | evidencia de token elevado → nunca HARDENED | adversarial |
 | GP-T29 | parent con FILE_DELETE_CHILD efectivo aunque root restrictivo → UNPROTECTED | adversarial/false-green |
-| GP-T30 | DACL NULL → UNPROTECTED; DACL vacía → WRITE_PROTECTED con lecturas en None/false | adversarial |
+| GP-T30 | DACL NULL → UNPROTECTED; DACL vacía OBSERVADA + todas las checks de mutación completas incluida la regla del dueño → WRITE_PROTECTED; descriptor ilegible (sin READ_CONTROL ni ownership) → UNKNOWN, jamás protegido | adversarial |
 | GP-T31 | idempotencia: dos inspecciones consecutivas producen resultados iguales y el árbol no cambia | estabilidad |
 | GP-T32 | owner SID no resoluble a string → UNKNOWN | observación |
 | GP-T33 | UNC path → UNSUPPORTED | matriz |

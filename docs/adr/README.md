@@ -1,6 +1,7 @@
 # Architecture Decision Records
 
-> **Estado:** decisiones aceptadas; cada ADR conserva su contexto histórico.
+> **Estado:** decisiones aceptadas; los ADR en revisión declaran `Propuesta` en su
+> encabezado. Cada ADR conserva su contexto histórico.
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
