@@ -1405,6 +1405,20 @@ _EMISORES_DE_SQL_ESPERADOS = {
     "open": True,
     "rollback_transaction": True,
     "sweep_stale_pending": True,
+    # D2 (PR #493): lecturas del handoff durable — toman operation() con
+    # lifecycle y self._lock en standalone, como sus pares de get_*.
+    "consultar_handoff_activo": True,
+    "transacciones_que_nombran": True,
+    # D2 (PR #493 patch 0006): escritor de receipts de stale sweep — boundary
+    # propio en las dos ramas, igual que los demás mutadores.
+    "cerrar_receipts_como_no_artifact": True,
+    # D2: los helpers de pasos SQL ASUMEN el boundary del escritor
+    # público (ver _HELPERS_QUE_ASUMEN_BOUNDARY): por eso False acá.
+    "_escribir_handoff_de_deployment": False,
+    "_escribir_resume_completado": False,
+    "_escribir_transicion_de_handoff": False,
+    "_escribir_handoff_indeterminado": False,
+    "_escribir_receipts_de_sweep": False,
 }
 
 # Segunda dimensión, y hace falta: `_EMISORES_DE_SQL_ESPERADOS` solo mira el
@@ -1434,11 +1448,37 @@ _EMISORES_CON_LOCK_LOCAL_ESPERADOS = {
     "mark_transaction_rolled_back": True,
     "rollback_transaction": True,
     "sweep_stale_pending": True,
+    # D2 (PR #493): lecturas del handoff — self._lock en standalone.
+    "consultar_handoff_activo": True,
+    "transacciones_que_nombran": True,
+    "cerrar_receipts_como_no_artifact": True,
+    # D2: helpers que asumen la serialización del caller (False acá; el par
+    # exacto de cada caller se congela en _SERIALIZACION_DE_CALLERS_ESPERADA).
+    "_escribir_handoff_de_deployment": False,
+    "_escribir_resume_completado": False,
+    "_escribir_transicion_de_handoff": False,
+    "_escribir_handoff_indeterminado": False,
+    "_escribir_receipts_de_sweep": False,
 }
 
 # Helpers que emiten SQL ASUMIENDO el boundary del llamador. Cada uno obliga a
 # que TODOS sus callers dentro de la clase lo tomen.
-_HELPERS_QUE_ASUMEN_BOUNDARY = frozenset({"_escribir_fallo"})
+_HELPERS_QUE_ASUMEN_BOUNDARY = frozenset(
+    {
+        "_escribir_fallo",
+        # D2 (PR #493): los pasos SQL del handoff durable. Los escritores
+        # públicos sostienen las DOS serializaciones en su cuerpo — boundary
+        # del lifecycle para la rama compartida, self._lock para la propia — y
+        # el par exacto por caller queda congelado abajo.
+        "_escribir_handoff_de_deployment",
+        "_escribir_resume_completado",
+        "_escribir_transicion_de_handoff",
+        "_escribir_handoff_indeterminado",
+        # D2 (PR #493 patch 0006): el INSERT de receipts del sweep asume el
+        # boundary del sweep (Principio 2: receipt y ROLLED_BACK caen juntos).
+        "_escribir_receipts_de_sweep",
+    }
+)
 
 _METODOS_DE_EJECUCION = frozenset({"execute", "executescript", "executemany"})
 _BOUNDARIES_DEL_LIFECYCLE = frozenset({"transaction", "operation"})
@@ -1570,6 +1610,18 @@ _SERIALIZACION_DE_CALLERS_ESPERADA = {
     # Rama standalone: conexión propia, sin lifecycle que coordine. El lock local
     # es el ÚNICO mecanismo que serializa acá.
     "_escribir_fallo_standalone": (False, True),
+    # D2 (PR #493): los escritores del handoff sostienen las DOS ramas en su
+    # propio cuerpo — `transaction()` con lifecycle y `self._lock` con conexión
+    # propia — porque el mismo método debe cerrar la TX y el handoff en un
+    # único boundary en ambos modos de operación.
+    "crear_handoff_de_deployment": (True, True),
+    "completar_handoff_de_resume": (True, True),
+    "transicionar_handoff": (True, True),
+    "registrar_handoff_indeterminado": (True, True),
+    # D2 (PR #493 patch 0006): el sweep sostiene las DOS ramas — boundary del
+    # lifecycle con conexión compartida, self._lock con conexión propia — y
+    # delega el INSERT de receipts en el helper que asume esa serialización.
+    "sweep_stale_pending": (True, True),
 }
 
 

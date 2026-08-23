@@ -201,28 +201,57 @@ Enunciado como propiedad del mecanismo:
 > **Un veredicto solo es sound si TODA herramienta lanzada por este runner declara
 > su marcador de completitud y su artefacto.**
 
-## T3-v2 — staging y salida (rebase requerido)
+## T3-v2 — staging y salida (contrato corregido)
 
-El diseño de v1 sigue en pie: subcarpeta por herramienta, gate de TexGen sobre su
-subárbol `textures`, y revisión de **todas** las superficies que tocan la raíz
-administrada — rollback, preflight, journal/recovery, packaging y VFS — no solo el
-post-check.
+La evidencia física T5-B con TexGen Alpha-209 fijó el nivel exacto: el argv recibe
+`<raíz administrada>` mediante `-o:` y TexGen escribe en
+**`<raíz administrada>/textures`**. No existe una raíz intermedia `TexGen/` ni un
+staging físico `TexGen_Output/`. DynDOLOD conserva su contrato independiente
+(`DynDOLOD_Output` y el fallback acotado que exige `DynDOLOD.esp`).
 
-**Nomenclatura, porque acá se cuela un off-by-one-nivel.** Con el layout nuevo hay
-DOS raíces y no son intercambiables:
+T3 alinea todas las superficies con una sola constante física: candidato del
+runner, firma pre/post, preflight y manifest apuntan a `root/textures`. El
+`ToolExecutionResult.output_path` exitoso entrega esa ruta exacta al empaquetado;
+al copiarla a `mods/TexGen Output`, el pipeline preserva el directorio
+Data-relative y produce `mods/TexGen Output/textures/...`, no
+`mods/TexGen Output/...` sin el prefijo.
 
-- `<raíz administrada>` — la que hoy devuelve `dyndolod_output_target`, compartida;
-- `<raíz de herramienta>` = `<raíz administrada>/TexGen` y
-  `<raíz administrada>/DynDOLOD` — **lo que viaja en el `-o:` de cada una**.
+**Corregir el nivel destapó tres agujeros que el candidato roto contenía por
+accidente, y los tres se cierran en el mismo trabajo, fail-closed:**
 
-El gate de artefacto de TexGen es entonces
-**`<raíz administrada>/TexGen/textures`**, no `<raíz administrada>/textures`:
-TexGen escribe directo en la raíz de SU `-o:`, así que sus texturas caen un nivel
-más adentro. Escribirlo con la raíz compartida deja el chequeo un nivel arriba y
-hace fallar cerradas las corridas buenas — el mismo falso rojo que T3 viene a
-eliminar. La firma de frescura se toma sobre ese mismo subárbol.
+- **A — ownership.** La raíz administrada la comparten las dos herramientas, así
+  que el fallback de DynDOLOD a la raíz podía empaquetarla entera y llevarse
+  `root/textures` adentro de "DynDOLOD Output". La raíz deja de ser una unidad
+  empaquetable; la DETECCIÓN no cambia (el gate de `DynDOLOD.esp` sigue igual).
+  La regla es *namespace compartido ≠ namespace empaquetable*, **no** un filtro
+  por el nombre `textures`: excluir un nombre dejaría pasar cualquier otro hijo
+  ajeno.
+- **B — propiedad.** El staging de TexGen entra al move-aside **antes** de
+  lanzar, así que nace vacío. La frescura era un predicado ∃ ("algo cambió") y
+  nunca pudo ser ∀; con el árbol vacío por construcción, "lo que hay adentro" y
+  "lo que esta corrida generó" pasan a ser el mismo conjunto. El destino exacto
+  queda declarado en `rollback_reconciler` — el ancla vieja se afirma sobre
+  MÓDULOS y `dyndolod_service` ya figuraba, así que no habría avisado.
+- **C — visibilidad.** Empaquetar en `mods/` no dice nada sobre lo que DynDOLOD
+  lee: corre standalone contra el `-d:<Data>` físico. Antes del spawn se exige
+  que TODO el staging esté visible ahí con los mismos bytes (identidad física o
+  sha256, completo sobre el árbol, sin muestreo). Sin prueba, no hay spawn.
 
-Lo que cambió desde v1:
+El rollback se amplía SÓLO al staging de TexGen, y no como cobertura sino como
+precondición de B. `mutation_coverage_complete` **sigue en `False`**: el dir del
+ejecutable (log + INI) y el temporal quedan afuera, y no se amplía ownership sin
+evidencia.
+
+Lo que estas tres NO son: la solución definitiva de A. Esa son los **subroots
+exclusivos por herramienta** (`<raíz>/TexGen` y `<raíz>/DynDOLOD` como el `-o:`
+de cada una), que eliminan la clase en vez de la instancia — la raíz compartida
+dejaría de ser candidata de nadie. Siguen ABIERTOS y bloqueados: cambian el
+`-o:`, así que caen bajo el gate de aceptación de `sky_claw/local/AGENTS.md` §1
+(dos corridas de rig separadas, root con espacios, con preset rancio presente).
+La nomenclatura de v1 sigue siendo la correcta para ese trabajo: la evidencia
+T5-B fija la regla RELATIVA (`-o:X` → `X/textures`), no el valor de X.
+
+Lo que T3 no cambia:
 
 **El preset es una restricción de diseño, no una nota al pie.** El rig midió que
 `Presets\DynDOLOD_SSE_TexGen.ini` guarda `OutputPath=` y que la GUI pre-carga el
@@ -249,18 +278,14 @@ afuera, no del gate. La afirmación de que "`_package_output_as_mod` nunca corre
 general y T3 no puede apoyarse en ella: **hay dos call sites de empaquetado y hay
 que trazar los dos** antes de decidir el alcance de rollback.
 
-**Y la contención que sí existe es accidental.** Como el candidato de TexGen
-apunta a `<raíz administrada>/TexGen_Output` (Gap C), TexGen falla el gate
-*siempre*, por el motivo equivocado. Cuando T3 corrija el candidato a
-`<raíz administrada>/TexGen/textures`, la contención pasa a ser real **y
-portante**: a partir de ese momento, relajar artefacto+frescura reabre el agujero
-del preset. Es la razón por la que T3 no puede implementarse como estaba escrito
-en v1.
-
-**Consecuencia de ordenamiento:** T3 no arranca hasta que el ítem del preset tenga
-al menos decidida la precedencia `preset` vs `-o:` (paso 1 de su lista de
-investigación previa). Diseñar el layout de staging sin saber quién gana es
-diseñar sobre una premisa abierta.
+**La contención ahora es real, pero no resuelve T5.** Si un preset desvía las
+escrituras, `root/textures` queda AUSENTE —el move-aside se lo llevó y nada lo
+repuso— y TexGen falla cerrado; eso no determina la precedencia `preset` vs
+`-o:`, no neutraliza presets rancios y no demuestra el comportamiento de
+DynDOLOD. Relajar artefacto o frescura reabriría ese agujero, por lo que ambos
+gates siguen siendo invariantes de T3. **Y el síntoma cambió de forma con el
+move-aside** (staging ausente en vez de rancio): el mensaje del veredicto tiene
+que distinguirlos o el operador depura el lugar equivocado.
 
 Se conserva de v1, sin cambios: el alcance de Gap B (Zip & Exit reporta
 `exito_no_empaquetable`, aceptar el `.zip` como artefacto queda fuera), y el

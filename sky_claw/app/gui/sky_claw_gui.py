@@ -43,6 +43,7 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_RITUAL_PREFLIGHT,
     run_ritual,
     run_ritual_install,
+    run_ritual_resume,
 )
 from sky_claw.app.gui.gui_event_adapter import (
     EventBus,
@@ -709,6 +710,21 @@ def main_page() -> None:
             tab_id=current_tab_id(),
         ),
         name="gui-ritual-run",
+    )
+
+    # F-001 (post-D2): la acción "Continuar DynDOLOD" del toast de feedback. Es
+    # el MISMO dispatcher/supervisor que "Generar" — la vista sólo expresa la
+    # intención resume; el payload ``run_texgen=False`` es fijo y la validación
+    # durable del handoff queda en DynDOLODPipelineService.execute.
+    callbacks["on_ritual_resume"] = lambda tool_key: create_tracked_task(
+        run_ritual_resume(
+            tool_key,
+            supervisor=runtime.supervisor,
+            store=get_store(),
+            auto_approve=modo_local_enabled(),
+            tab_id=current_tab_id(),
+        ),
+        name="gui-ritual-resume",
     )
 
     # Follow-up C: the "Instalar" button (Ritual in "No instalado" state) downloads

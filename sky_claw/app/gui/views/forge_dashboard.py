@@ -28,7 +28,9 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
     clear_answered_hitl,
+    clear_ritual_result_owned,
     resolve_pending_hitl,
+    resolve_ritual_resume_action,
 )
 from sky_claw.app.gui.state import get_store
 
@@ -38,6 +40,12 @@ from .sections import create_preflight_panel
 # reach it (set per render in render_forge_dashboard, like the live panels read
 # the global store). Keyed to keep the indirection explicit.
 _HITL_CALLBACKS: dict[str, Callable] = {}
+
+# F-001 (post-D2): el MISMO patrón de stash para la acción de Resume del panel
+# de feedback — el botón "Continuar DynDOLOD" no llama al service directamente:
+# invoca el callback que el page cablea a ``run_ritual_resume`` (mismo
+# dispatcher, mismo HITL, mismo single-flight).
+_RITUAL_RESUME_CALLBACKS: dict[str, Callable] = {}
 
 # Guard en app.storage.client (P1-7): render_forge_dashboard puede re-ejecutarse
 # muchas veces en la vida de una pestaña — main_page es @ui.refreshable y hay
@@ -348,6 +356,10 @@ def render_forge_dashboard(
     )
     # Fase 2: expose the HITL respond callback to the module-level modal panel.
     _HITL_CALLBACKS["respond"] = _cb(callbacks, "on_hitl_respond")
+    # F-001 (post-D2): expone la acción de Resume al panel de feedback. El
+    # callback lo cablea el page (sky_claw_gui) a run_ritual_resume — la GUI
+    # expresa intención y nada más.
+    _RITUAL_RESUME_CALLBACKS["resume"] = _cb(callbacks, "on_ritual_resume")
     with ui.element("div").style(root):
         # Live heartbeat for the vitals bars + header HUD. Refresh ONLY those two
         # @ui.refreshable containers (never the whole page), so CPU/GPU/RAM pulse
@@ -773,7 +785,14 @@ def _hitl_modal_panel() -> None:
 
 @ui.refreshable
 def _ritual_feedback_panel() -> None:
-    """Dismissible toast (bottom-right) showing the last Ritual's result."""
+    """Dismissible toast (bottom-right) showing the last Ritual's result.
+
+    F-001 (post-D2): cuando el RESULTADO estructural dice
+    ``needs_deployment`` (flag, nunca texto), el toast además ofrece la acción
+    explícita "Continuar DynDOLOD" — que despacha ``generate_lods`` con
+    ``run_texgen=False`` por el MISMO dispatcher, sin tocar el service desde
+    la vista y sin duplicar lógica de handoff.
+    """
     fb = get_store().get(STORE_KEY_RITUAL_FEEDBACK)
     if not fb:
         return
@@ -781,7 +800,7 @@ def _ritual_feedback_panel() -> None:
     kind = str(fb.get("type", "info"))
     accent = {"positive": GREEN, "negative": RED, "warning": "#e0b341"}.get(kind, ACCENT)
     wrap = (
-        "position:fixed; right:22px; bottom:22px; z-index:1000; max-width:380px; display:flex; align-items:flex-start; gap:10px;"
+        "position:fixed; right:22px; bottom:22px; z-index:1000; max-width:420px; display:flex; align-items:flex-start; gap:10px;"
         "padding:13px 15px; border-radius:5px; color:#e8e2d4;"
         f"background:linear-gradient(168deg, rgba(30,22,14,.97), rgba(14,10,7,.98)); border:1px solid {accent};"
         "box-shadow:0 18px 40px -18px rgba(0,0,0,.85);"
@@ -791,11 +810,52 @@ def _ritual_feedback_panel() -> None:
             f'<span style="width:8px; height:8px; margin-top:5px; flex-shrink:0; border-radius:50%; background:{accent}; box-shadow:0 0 7px {accent};"></span>'
             f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.4;\">{_e(text)}</span>"
         )
+        # F-001: la acción de Resume se deriva del dict ESTRUCTURAL del último
+        # resultado — el panel no parsea el message ni decide por strings.
+        # R-004/R-005: se resuelve por el seam de ownership — sólo la pestaña
+        # dueña la ve — y el tool_key sale del envelope publicado por la
+        # corrida, nunca de un literal acá (ancla AST en test_resume_hardening).
+        accion = resolve_ritual_resume_action(get_store(), current_tab_id())
+        if accion is not None:
+            tool_key_de_la_corrida = str(accion.get("tool_key", ""))
+            detalle = _e(str(accion.get("detail", "")))
+            resume_fn = _RITUAL_RESUME_CALLBACKS.get("resume")
+
+            def _on_resume(_: Any = None, fn: Callable | None = resume_fn) -> None:
+                # Cerrar el toast antes de despachar: el nuevo run publicará su
+                # propio feedback; este quedó consumido por la acción.
+                get_store().set(STORE_KEY_RITUAL_FEEDBACK, None)
+                clear_ritual_result_owned(get_store(), current_tab_id())
+                _ritual_feedback_panel.refresh()
+                if callable(fn):
+                    fn(tool_key_de_la_corrida)
+
+            if callable(resume_fn):
+                r = ui.element("button").style(
+                    "cursor:pointer; margin-top:0; padding:6px 12px; font-family:'Cinzel',serif; font-size:11px;"
+                    "font-weight:700; letter-spacing:.06em; color:#1c130a;"
+                    "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+                )
+                r.on("click", _on_resume)
+                with r:
+                    ui.html(str(accion.get("label", "Continuar DynDOLOD")))
+                if detalle:
+                    ui.html(
+                        f"<div style=\"font-family:'EB Garamond',serif; font-size:11px; color:#8a8270; line-height:1.3;\">"
+                        f"TexGen Output listo en: {detalle}</div>"
+                    )
         x = ui.element("button").style(
             "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
         )
         x.on(
-            "click", lambda _=None: (get_store().set(STORE_KEY_RITUAL_FEEDBACK, None), _ritual_feedback_panel.refresh())
+            "click",
+            lambda _=None: (
+                get_store().set(STORE_KEY_RITUAL_FEEDBACK, None),
+                # F-004: el dismiss del resultado accionable respeta el dueño —
+                # una pestaña ajena no desaloja el resultado de otra.
+                clear_ritual_result_owned(get_store(), current_tab_id()),
+                _ritual_feedback_panel.refresh(),
+            ),
         )
         with x:
             ui.html("&times;")

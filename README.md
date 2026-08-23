@@ -1,4 +1,8 @@
-# Sky-Claw
+# Sky-Claw — AI-assisted Skyrim Mod Manager for Mod Organizer 2
+
+**Local AI-assisted Skyrim SE/AE mod management and automation for Mod Organizer 2 (MO2), LOOT, xEdit, FOMOD and Nexus Mods.**
+
+Sky-Claw is a local, AI-assisted control plane for Skyrim Special Edition and Anniversary Edition modding. It combines natural-language workflows with human approval gates, traceability and integrations around the existing Skyrim modding toolchain instead of replacing it with an unrestricted autonomous agent.
 
 > **Audiencia:** usuarios, operadores y contribuidores.
 >
@@ -28,6 +32,15 @@ Skyrim SE/AE a través de Mod Organizer 2 (MO2). Permite buscar, descargar,
 instalar y analizar conflictos usando lenguaje natural, con locks, trazabilidad
 y gates humanos en las operaciones que los requieren. Su norte es una
 **caja negra de vuelo**, no un agente autónomo irrestricto.
+
+### Capacidades principales
+
+- **Skyrim SE/AE + Mod Organizer 2:** automatización orientada a perfiles y flujos de modding sobre MO2.
+- **LOOT y xEdit:** ejecución integrada para ordenar plugins y analizar o transformar datos del load order.
+- **FOMOD y Nexus Mods:** resolución de instaladores FOMOD y flujos de descarga controlados.
+- **IA local o por API:** proveedores Anthropic, OpenAI, DeepSeek y Ollama detrás de una interfaz unificada.
+- **Human-in-the-loop (HITL):** operaciones sensibles pueden requerir aprobación humana antes de ejecutarse.
+- **GUI, CLI y Telegram:** varias superficies de interacción sobre el mismo plano de control.
 
 **Novedades de la Versión Moderna:**
 - **Soporte Multi-LLM**: Elegí entre Anthropic (Claude), OpenAI (GPT-4), DeepSeek o ejecución local con Ollama.
