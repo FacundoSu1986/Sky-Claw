@@ -253,12 +253,28 @@ def resolve_ritual_resume_action(store: ReactiveStore, tab_id: str | None) -> di
     no tiene ninguno propio, ve el resultado sin dueño (política vigente:
     ownerless es visible para cualquiera). Nunca el de OTRA pestaña — con dos
     resultados pendientes, cada tab resuelve exactamente el suyo.
+
+    Follow-up de PR #493 (RITUAL_RESULT_OWNER_KEY_MISMATCH), fail-closed: el
+    envelope seleccionado por un slot debe declarar como ``owner_tab`` al MISMO
+    dueño del slot por el que fue seleccionado (``owner_tab`` ausente ≡
+    ``None``, la misma convención con la que ``_resultados_por_owner``
+    re-indexa envelopes legacy). Si no coincide, el estado es internamente
+    inconsistente — ningún writer productivo lo produce hoy, y el reader no
+    repara, ni reubica, ni limpia nada: devuelve ``None`` sin derivar la
+    acción. «Slot ausente» y «slot presente con valor inválido» siguen siendo
+    cosas distintas: sólo la AUSENCIA del slot propio habilita el fallback
+    ownerless; un slot presente pero inválido se rechaza sin caer al
+    resultado sin dueño.
     """
     resultados = _resultados_por_owner(store)
     envelope = resultados.get(tab_id)
+    owner_seleccionado: str | None = tab_id
     if envelope is None:
+        owner_seleccionado = None
         envelope = resultados.get(None)
     if not isinstance(envelope, dict):
+        return None
+    if envelope.get(RITUAL_RESULT_OWNER_TAB) != owner_seleccionado:
         return None
     tool_key = envelope.get(RITUAL_RESULT_TOOL_KEY)
     resultado = envelope.get(RITUAL_RESULT_PAYLOAD_KEY)

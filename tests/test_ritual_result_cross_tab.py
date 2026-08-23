@@ -422,6 +422,234 @@ async def test_acceptance_dos_tabs_mismo_store() -> None:
     assert _accion(store, "tab-B") is not None, "el consumo de A desalojó la acción pendiente de B"
 
 
+# ── HARDENING follow-up #493: el reader valida el dueño del slot ───────────────
+
+
+def _publicar_contenedor_crudo(
+    store: ReactiveStore,
+    resultados: dict[str | None, dict[str, Any]],
+) -> None:
+    """Escribe el contenedor multi-owner SIN pasar por el writer productivo.
+
+    Sólo para tests: simula estados internamente inconsistentes que ningún
+    writer productivo produce hoy (por eso el finding es hardening defensivo
+    y no un bug con productor demostrado). El ancla AST del writer queda
+    intacta: este helper vive en tests, no en ``ritual_runner``.
+    """
+    store.set(rr_mod.STORE_KEY_RITUAL_LAST_RESULT, {rr_mod.RITUAL_RESULTS_BY_OWNER: dict(resultados)})
+
+
+def _envelope_dyndolod(
+    owner: str | None,
+    texgen_mod_path: str = "C:/MO2/mods/TexGen Output",
+) -> dict[str, Any]:
+    """Envelope bien formado de ``dyndolod`` con ``needs_deployment``.
+
+    ``texgen_mod_path`` distinguible permite afirmar QUÉ envelope se resolvió
+    cuando hay varios slots pendientes (precedencia own vs ownerless)."""
+    return {
+        rr_mod.RITUAL_RESULT_OWNER_TAB: owner,
+        rr_mod.RITUAL_RESULT_TOOL_KEY: "dyndolod",
+        rr_mod.RITUAL_RESULT_PAYLOAD_KEY: _resultado_needs_deployment(texgen_mod_path),
+    }
+
+
+def test_resume_action_rejects_owner_slot_mismatch() -> None:
+    """Follow-up de PR #493 (RITUAL_RESULT_OWNER_KEY_MISMATCH): el envelope
+    seleccionado por el slot ``tab-B`` declara ``owner_tab="tab-A"``. Ningún
+    writer productivo produce este estado hoy, pero si aparece, la acción de
+    Resume NO puede derivarse desde la pestaña equivocada: fail-closed →
+    ``None``, sin reparar el store ni consumir nada ajeno."""
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(store, {"tab-B": _envelope_dyndolod("tab-A")})
+    antes = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
+
+    accion = _accion(store, "tab-B")
+
+    assert accion is None, "un envelope con owner_tab ajeno produjo una acción de Resume"
+    assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) == antes, (
+        "el rechazo mutó el store: el reader es defensivo y no repara nada"
+    )
+
+
+# ── Matriz de regresión del hardening (casos A–J del follow-up #493) ───────────
+
+
+def test_hardening_a_slot_propio_consistente_resuelve_su_accion() -> None:
+    """Caso A: slot ``tab-A`` con envelope dueño ``tab-A`` sigue resolviendo la
+    acción propia — el hardening no castiga el estado bien formado."""
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(store, {"tab-A": _envelope_dyndolod("tab-A")})
+
+    accion = _accion(store, "tab-A")
+
+    assert accion is not None
+    assert accion["tool_key"] == "dyndolod"
+
+
+def test_hardening_b_aislamiento_cross_tab_preservado() -> None:
+    """Caso B: con SÓLO el resultado con dueño de A presente, B no resuelve
+    nada — y el hardening tampoco convierte ese rechazo en consumo ajeno."""
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(store, {"tab-A": _envelope_dyndolod("tab-A")})
+    antes = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
+
+    assert _accion(store, "tab-B") is None
+    assert _accion(store, None) is None
+    assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) == antes, "la lectura mutó el store"
+
+
+def test_hardening_d_ownerless_valido_sigue_resolviendo() -> None:
+    """Caso D: slot ``None`` con envelope sin dueño — cualquier pestaña lo ve
+    por fallback (política vigente), porque dueño declarado == slot."""
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(store, {None: _envelope_dyndolod(None)})
+
+    assert _accion(store, "tab-A") is not None
+    assert _accion(store, None) is not None
+
+
+def test_hardening_e_slot_none_con_envelope_ajeno_rechaza() -> None:
+    """Caso E: el slot ``None`` contiene un envelope que declara dueño
+    ``tab-A``. NO es un resultado sin dueño: ninguna pestaña puede derivar la
+    acción de otro desde el fallback — fail-closed."""
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(store, {None: _envelope_dyndolod("tab-A")})
+
+    assert _accion(store, "tab-B") is None
+    assert _accion(store, "tab-A") is None, (
+        "el envelope está en el slot equivocado: ni siquiera su dueño declarado"
+        " lo consume desde acá (el writer productivo nunca publica así)"
+    )
+
+
+def test_hardening_f_precedencia_del_resultado_propio_intacta() -> None:
+    """Caso F: con resultado propio Y ownerless pendientes, la pestaña sigue
+    viendo EL SUYO (precedencia fijada por PATCH 0010)."""
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(
+        store,
+        {
+            "tab-A": _envelope_dyndolod("tab-A"),
+            None: _envelope_dyndolod(None, "C:/mods/TexGen Ownerless"),
+        },
+    )
+
+    accion = _accion(store, "tab-A")
+
+    assert accion is not None
+    assert "TexGen Output" in str(accion.get("detail", "")), "A dejó de ver su resultado propio y cayó al ownerless"
+    assert _accion(store, "tab-B") is not None, "sin resultado propio, B sigue viendo el ownerless"
+
+
+def test_hardening_g_slot_propio_corrupto_no_cae_al_ownerless() -> None:
+    """Caso G — decisión de contrato: «slot ausente» y «slot presente con valor
+    inválido» son cosas distintas. Si el slot explícito de A existe pero su
+    envelope es inconsistente (dueño ajeno, o basura no-dict), el resolver
+    rechaza y NO salta silenciosamente al ownerless: saltar escondería la
+    corrupción detrás de una acción que nadie publicó para esta pestaña."""
+    # Envelope con dueño ajeno en el slot propio + ownerless válido disponible.
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(
+        store,
+        {
+            "tab-A": _envelope_dyndolod("tab-Otra"),
+            None: _envelope_dyndolod(None),
+        },
+    )
+    assert _accion(store, "tab-A") is None, "el slot corrupto de A delegó en el ownerless"
+
+    # Valor no-dict en el slot propio + ownerless válido disponible.
+    store2 = ReactiveStore()
+    _publicar_contenedor_crudo(
+        store2,
+        {
+            "tab-A": {"tool_key": "dyndolod"},  # sin result: malformado
+            None: _envelope_dyndolod(None),
+        },
+    )
+    assert _accion(store2, "tab-A") is None
+
+    # Slot presente con valor no-dict crudo + ownerless válido disponible.
+    store3 = ReactiveStore()
+    _publicar_contenedor_crudo(store3, {"tab-A": "basura", None: _envelope_dyndolod(None)})
+    assert _accion(store3, "tab-A") is None
+
+    # El contraste: slot AUSENTE sí cae al ownerless (comportamiento vigente).
+    store4 = ReactiveStore()
+    _publicar_contenedor_crudo(store4, {None: _envelope_dyndolod(None)})
+    assert _accion(store4, "tab-A") is not None
+
+
+def test_hardening_h_envelope_legacy_sigue_adoptandose() -> None:
+    """Caso H: el envelope simple pre-0010 se re-indexa por SU ``owner_tab`` y
+    tras el hardening conserva exactamente el mismo scoping: la dueña lo
+    resuelve, otra pestaña no."""
+    store = ReactiveStore()
+    store.set(
+        rr_mod.STORE_KEY_RITUAL_LAST_RESULT,
+        {
+            rr_mod.RITUAL_RESULT_OWNER_TAB: "tab-A",
+            rr_mod.RITUAL_RESULT_TOOL_KEY: "dyndolod",
+            rr_mod.RITUAL_RESULT_PAYLOAD_KEY: _resultado_needs_deployment(),
+        },
+    )
+
+    assert _accion(store, "tab-A") is not None, "el hardening rompió la adopción del envelope legacy"
+    assert _accion(store, "tab-B") is None
+
+
+def test_hardening_i_tipos_malformados_de_owner_fallan_cerrados() -> None:
+    """Caso I: ``owner_tab`` con tipos que ningún writer produce (lista, dict,
+    int) no debe derivar acción NI lanzar excepción — la comparación de
+    desigualdad falla cerrada sola."""
+    for owner_malformado in ([], {}, 123):
+        store = ReactiveStore()
+        _publicar_contenedor_crudo(store, {"tab-B": _envelope_dyndolod(owner_malformado)})  # type: ignore[arg-type]
+        assert _accion(store, "tab-B") is None, f"owner malformado {owner_malformado!r} derivó acción"
+
+        store2 = ReactiveStore()
+        _publicar_contenedor_crudo(store2, {None: _envelope_dyndolod(owner_malformado)})  # type: ignore[arg-type]
+        assert _accion(store2, "tab-B") is None, f"owner malformado {owner_malformado!r} pasó como ownerless"
+
+
+def test_hardening_j_owner_ausente_envelope_explicito_rechaza() -> None:
+    """Caso J: envelope SIN clave ``owner_tab`` en un slot EXPLÍCITO es
+    malformado → ``None``. No se acepta silenciosamente como resultado de esa
+    pestaña: la ausencia no prueba ownership.
+
+    Contraste documentado (decisión de contrato): bajo el slot ``None``, un
+    envelope sin ``owner_tab`` SÍ se trata como ownerless — es exactamente la
+    semántica que ``_resultados_por_owner`` ya aplica al re-indexar envelopes
+    legacy sin dueño (``raw.get(RITUAL_RESULT_OWNER_TAB)`` → clave ``None``).
+    Una sola regla uniforme: falta de dueño ≡ dueño ``None``."""
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(
+        store,
+        {
+            "tab-B": {
+                rr_mod.RITUAL_RESULT_TOOL_KEY: "dyndolod",
+                rr_mod.RITUAL_RESULT_PAYLOAD_KEY: _resultado_needs_deployment(),
+            },
+        },
+    )
+    assert _accion(store, "tab-B") is None, "un envelope sin dueño fue aceptado como resultado de tab-B"
+
+    store2 = ReactiveStore()
+    _publicar_contenedor_crudo(
+        store2,
+        {
+            None: {
+                rr_mod.RITUAL_RESULT_TOOL_KEY: "dyndolod",
+                rr_mod.RITUAL_RESULT_PAYLOAD_KEY: _resultado_needs_deployment(),
+            },
+        },
+    )
+    assert _accion(store2, "tab-B") is not None, (
+        "bajo el slot None, sin owner_tab declarado, la semántica legacy lo trata como ownerless"
+    )
+
+
 # ── Ancla enumerativa: ningún write directo fuera del writer del contenedor ────
 
 
