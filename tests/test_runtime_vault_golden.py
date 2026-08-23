@@ -19,12 +19,14 @@ import shutil
 import pytest
 
 from sky_claw.local.runtime_vault.golden import (
+    verify_critical_files,
     verify_golden_master,
 )
 from sky_claw.local.runtime_vault.inventory import inventory_tree
 from sky_claw.local.runtime_vault.models import (
     CriticalFileEvidence,
     CriticalFileExpectation,
+    FileIdentity,
     GoldenMasterCandidate,
     GoldenMasterDescriptor,
     GoldenMasterVerificationResult,
@@ -881,6 +883,7 @@ class TestP21StableAbsoluteLocation:
         assert res.state is VerificationState.VERIFIED
         assert res.descriptor is not None
         assert res.descriptor.location.is_absolute()
+        assert res.descriptor.location == root.resolve()
 
     def test_a3_root_symlink_sigue_fail_closed_sin_ocultar_enlace(
         self,
@@ -914,3 +917,67 @@ class TestP21StableAbsoluteLocation:
         assert res.state is VerificationState.UNKNOWN
         assert "symlink" in res.message.lower() or "enlace" in res.message.lower()
         assert res.descriptor is None
+
+
+class TestVerifyCriticalFilesDirecto:
+    """Tests directos D1-D6 sobre la función pública verify_critical_files."""
+
+    def test_d1_expectations_vacias_devuelve_tupla_vacia(self) -> None:
+        files = [FileIdentity(rel_path="SkyrimSE.exe", size=10, digest="a" * 64)]
+        res = verify_critical_files(files, ())
+        assert res == ()
+
+    def test_d2_duplicated_rel_path_levanta_value_error(self) -> None:
+        files = [FileIdentity(rel_path="SkyrimSE.exe", size=10, digest="a" * 64)]
+        expectations = [
+            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64),
+            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64),
+        ]
+        with pytest.raises(ValueError, match="duplicadas"):
+            verify_critical_files(files, expectations)
+
+    def test_d3_critical_missing_produce_failed(self) -> None:
+        files = [FileIdentity(rel_path="Other.exe", size=10, digest="a" * 64)]
+        expectations = [
+            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64),
+        ]
+        res = verify_critical_files(files, expectations)
+        assert len(res) == 1
+        assert res[0].state is VerificationState.FAILED
+        assert res[0].rel_path == "SkyrimSE.exe"
+        assert res[0].observed_digest is None
+        assert "ausente" in res[0].message.lower()
+
+    def test_d4_digest_mismatch_produce_failed(self) -> None:
+        files = [FileIdentity(rel_path="SkyrimSE.exe", size=10, digest="b" * 64)]
+        expectations = [
+            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64),
+        ]
+        res = verify_critical_files(files, expectations)
+        assert len(res) == 1
+        assert res[0].state is VerificationState.FAILED
+        assert res[0].observed_digest == "b" * 64
+        assert "no coincide" in res[0].message.lower()
+
+    def test_d5_digest_correcto_pero_size_incorrecto_produce_failed(self) -> None:
+        files = [FileIdentity(rel_path="SkyrimSE.exe", size=20, digest="a" * 64)]
+        expectations = [
+            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64, expected_size=10),
+        ]
+        res = verify_critical_files(files, expectations)
+        assert len(res) == 1
+        assert res[0].state is VerificationState.FAILED
+        assert res[0].observed_size == 20
+        assert "tamaño" in res[0].message.lower()
+
+    def test_d6_digest_y_size_correctos_produce_verified(self) -> None:
+        files = [FileIdentity(rel_path="SkyrimSE.exe", size=10, digest="a" * 64)]
+        expectations = [
+            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="A" * 64, expected_size=10),
+        ]
+        res = verify_critical_files(files, expectations)
+        assert len(res) == 1
+        assert res[0].state is VerificationState.VERIFIED
+        assert res[0].message == ""
+        assert res[0].observed_digest == "a" * 64
+        assert res[0].observed_size == 10

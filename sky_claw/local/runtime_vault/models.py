@@ -173,6 +173,19 @@ class CriticalFileEvidence:
     expected_size: int | None = None
     observed_size: int | None = None
 
+    def __post_init__(self) -> None:
+        if self.state is VerificationState.VERIFIED:
+            if self.expected_digest is None or self.observed_digest is None:
+                raise ValueError("CriticalFileEvidence VERIFIED requiere expected_digest y observed_digest no nulos")
+            if self.expected_digest.lower() != self.observed_digest.lower():
+                raise ValueError(
+                    "CriticalFileEvidence VERIFIED requiere que expected_digest coincida con observed_digest"
+                )
+            if self.expected_size is not None and (
+                self.observed_size is None or self.observed_size != self.expected_size
+            ):
+                raise ValueError("CriticalFileEvidence VERIFIED requiere que observed_size coincida con expected_size")
+
     @property
     def success(self) -> bool:
         return self.state is VerificationState.VERIFIED
@@ -215,14 +228,34 @@ class GoldenMasterVerificationResult:
         if self.state is VerificationState.VERIFIED:
             if self.tree_result is None or self.tree_result.state is not VerificationState.VERIFIED:
                 raise ValueError("GoldenMasterVerificationResult VERIFIED requiere tree_result en estado VERIFIED")
+            if (
+                self.tree_result.expected is None
+                or self.tree_result.observed is None
+                or self.tree_result.expected != self.tree_result.observed
+            ):
+                raise ValueError(
+                    "GoldenMasterVerificationResult VERIFIED requiere tree_result con expected == observed"
+                )
             if self.runtime_result is None or self.runtime_result.state is not VerificationState.VERIFIED:
                 raise ValueError("GoldenMasterVerificationResult VERIFIED requiere runtime_result en estado VERIFIED")
+            if (
+                self.runtime_result.expected is None
+                or self.runtime_result.observed is None
+                or self.runtime_result.expected != self.runtime_result.observed
+            ):
+                raise ValueError(
+                    "GoldenMasterVerificationResult VERIFIED requiere runtime_result con expected == observed"
+                )
             if not all(c.state is VerificationState.VERIFIED for c in self.critical_results):
                 raise ValueError(
                     "GoldenMasterVerificationResult VERIFIED requiere que toda evidencia crítica esté en estado VERIFIED"
                 )
             if self.descriptor is None:
                 raise ValueError("GoldenMasterVerificationResult VERIFIED requiere descriptor no nulo")
+            if self.descriptor.tree_digest != self.tree_result.observed:
+                raise ValueError("El descriptor debe coincidir con el árbol observado")
+            if self.descriptor.runtime_identity != self.runtime_result.observed:
+                raise ValueError("El descriptor debe coincidir con el runtime observado")
         else:
             if self.descriptor is not None:
                 raise ValueError(

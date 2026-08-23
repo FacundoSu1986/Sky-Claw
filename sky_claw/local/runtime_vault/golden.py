@@ -242,8 +242,15 @@ def verify_golden_master(
         and all(c.state is VerificationState.VERIFIED for c in crit_res)
     )
     if todos_verified:
-        assert runtime_res.observed is not None
-        assert tree_res.observed is not None
+        if runtime_res.observed is None or tree_res.observed is None:
+            return GoldenMasterVerificationResult(
+                state=VerificationState.UNKNOWN,
+                message="Evidencia observada incompleta para generar el descriptor de Golden Master.",
+                tree_result=tree_res,
+                runtime_result=runtime_res,
+                critical_results=crit_res,
+                descriptor=None,
+            )
         descriptor = GoldenMasterDescriptor(
             location=root,
             runtime_identity=runtime_res.observed,
