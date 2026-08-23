@@ -137,7 +137,7 @@ más para usar AccessCheck sobre la superficie completa {root, parent}.
 | Owner = SID del usuario actual, sin ACE del Owner Rights SID | Dueño atribuible ⇒ WRITE_DAC efectivo implícito (medido por AccessCheck o asumido fail-closed) [^msadts] [^ontt] [^ownerrights] | UNPROTECTED | Alta | Ninguno: la regla normativa "CHANGE_PERMISSIONS efectivo ⇒ UNPROTECTED" se aplica a CUALQUIER vía, incluida la del dueño |
 | Owner = usuario actual + ACE del Owner Rights SID (S-1-3-4) restringiendo al dueño [^ownerrights] | AccessCheck mide el WRITE_DAC que la ACE Owner Rights concede/niega | Según medición: WRITE_PROTECTED/HARDENED posible; ambigüedad → UNKNOWN | Alta | Bajo: el caso es explícito y medido, nunca inferido |
 | Owner = Administrators/SYSTEM/TrustedInstaller | Owner no atribuible al token evaluado | Compatible con HARDENED | Alta | Bajo: condición negativa portable, sin allowlist de nombres |
-| ACE allow heredada amplia (p. ej. Users:Modify) en root o en CUALQUIER descendiente | AccessCheck concede WRITE_CONTENT en ese nodo | UNPROTECTED (agregación ANY_MUTABLE_NODE sobre el árbol) | Alta | Bajo: herencia ya resuelta dentro de cada SD; cobertura exhaustiva elimina el hueco de descendientes |
+| ACE allow heredada amplia (p. ej. Users:Modify) en root o en CUALQUIER descendiente | AccessCheck concede WRITE_DATA/APPEND o ADD_FILE/ADD_SUBDIR en ese nodo | UNPROTECTED (agregación ANY_MUTABLE_NODE sobre el árbol) | Alta | Bajo: herencia ya resuelta dentro de cada SD; cobertura exhaustiva elimina el hueco de descendientes |
 | Deny explícita al usuario + Allow amplia a Everyone | Deny precede: corta evaluación para ese derecho [^accesscheck] [^aceorder] | Según resto de derechos: WRITE_PROTECTED/HARDENED posible | Alta | Bajo: AccessCheck aplica precedencia canónica por nosotros |
 | Descriptor ilegible/malformado | ERROR_ACCESS_DENIED / ERROR_INVALID_SECURITY_DESCR | UNKNOWN (success=False) | n/a | Cero por diseño: jamás promovido |
 | FAT/exFAT | Volumen sin `FILE_PERSISTENT_ACLS` [^gvi] | UNSUPPORTED | Alta | Cero: capability inexistente declarada |
@@ -395,9 +395,11 @@ FORBIDDEN_IN_GP1.
 | `GetNamedSecurityInfoW` | Sí | owner/group/DACL de cada nodo | Ninguno intrínseco (variante Get) |
 | `AccessCheck` | Sí | acceso efectivo del token | Ninguno |
 | `GetTokenInformation` | Sí | user/grupos/elevación/privilegios | Ninguno |
-| `OpenProcessToken` / `OpenThreadToken` | Sí | obtener el handle del token propio (proceso; thread impersonante como vía preferente), acceso restringido a `TOKEN_QUERY` | Ninguno con `TOKEN_QUERY` |
+| `OpenProcessToken` / `OpenThreadToken` | Sí | obtener el handle del token propio (thread impersonante como vía preferente, proceso como fallback); `TOKEN_QUERY`, y `TOKEN_DUPLICATE` añadido SOLO al handle fuente que deba duplicarse | Ninguno con esos derechos |
 | `CloseHandle` | Sí | liberar TODO handle obtenido (abiertos y duplicados) | Ninguno (su ausencia sería leak de handles) |
-| `DuplicateTokenEx` | Sí* | duplicar token propio a impersonación para AccessCheck | *No altera privilegios ni grupos (copia); prohibido usarlo como base de AdjustTokenPrivileges en GP1 |
+| `DuplicateTokenEx` | Sí* | duplicar el token propio a impersonación para AccessCheck: `TokenType = TokenImpersonation`, nivel `SecurityImpersonation`; el handle resultado se usa con `TOKEN_QUERY`. No existe parámetro `EffectiveOnly` en esta API y no debe suponerse filtrado alguno: la copia conserva grupos y privilegios | *No altera privilegios ni grupos (copia); prohibido usarlo como base de AdjustTokenPrivileges en GP1 |
+| `GetSecurityDescriptorDacl` | Sí | distinguir estructuralmente DACL ausente / NULL / presente (semántica NULL-DACL ⇒ concede todo vs vacía ⇒ niega salvo dueño, §4/§5); AccessCheck no expone esta distinción | Ninguno |
+| `GetAclInformation` / `GetAce` | Sí | contar ACEs y detectar la ACE del Owner Rights SID S-1-3-4 (`owner_rights_ace_present`, §12); hecho estructural requerido por la regla owner-self-rewrite | Ninguno |
 | `GetVolumeInformationByHandleW` | Sí | nombre FS + FILE_PERSISTENT_ACLS | Ninguno |
 | `GetDriveTypeW` | Sí | gate de localidad (DRIVE_FIXED) | Ninguno |
 | `CreateFileW` | Sólo con parameterización fija: desired access `0` o `FILE_READ_ATTRIBUTES`, flags `FILE_FLAG_BACKUP_SEMANTICS` | handle para metadatos de volumen | CUALQUIER otro disposition/access/flags está FORBIDDEN (sería apertura mutadora) — anclado por test |
@@ -557,7 +559,10 @@ class GoldenProtectionRight(StrEnum):
     """Derechos efectivos relevantes, ya resueltos por AccessCheck por nodo."""
     READ_DATA = "read_data"             # FILE_READ_DATA / FILE_LIST_DIRECTORY
     EXECUTE = "execute"                 # FILE_EXECUTE / FILE_TRAVERSE
-    WRITE_CONTENT = "write_content"     # WRITE_DATA+APPEND ≡ ADD_FILE+ADD_SUBDIR según nodo
+    WRITE_DATA = "write_data"           # FILE_WRITE_DATA sobre archivo
+    APPEND_DATA = "append_data"         # FILE_APPEND_DATA sobre archivo
+    ADD_FILE = "add_file"               # FILE_ADD_FILE sobre directorio
+    ADD_SUBDIRECTORY = "add_subdirectory"  # FILE_APPEND_DATA ≡ crear subdirectorio
     DELETE = "delete"                   # DELETE del nodo
     DELETE_CHILD = "delete_child"       # FILE_DELETE_CHILD del directorio evaluado
     WRITE_METADATA = "write_metadata"   # FILE_WRITE_ATTRIBUTES + FILE_WRITE_EA
