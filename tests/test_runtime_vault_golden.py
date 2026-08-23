@@ -1075,7 +1075,16 @@ class TestGeneratorsDefensiveMaterialization:
         mock_candidate: tuple[pathlib.Path, TreeDigest, RuntimeIdentity, list[CriticalFileExpectation]],
     ) -> None:
         root, tree_digest, runtime_id, critical = mock_candidate
-        generator_exp = (exp for exp in critical)
+        critical_for_g3 = [
+            critical[0],
+            critical[1],
+            CriticalFileExpectation(
+                rel_path=critical[2].rel_path,
+                expected_digest=critical[2].expected_digest,
+                expected_size=None,
+            ),
+        ]
+        generator_exp = (exp for exp in critical_for_g3)
 
         res = verify_golden_master(
             candidate=root,
@@ -1087,19 +1096,34 @@ class TestGeneratorsDefensiveMaterialization:
         assert res.state is VerificationState.VERIFIED
         assert res.success is True
         assert res.descriptor is not None
-        expected_critical_results = tuple(
-            CriticalFileEvidence(
-                rel_path=exp.rel_path,
-                state=VerificationState.VERIFIED,
-                message="",
-                expected_digest=exp.expected_digest,
-                observed_digest=exp.expected_digest,
-                expected_size=exp.expected_size,
-                observed_size=exp.expected_size,
+
+        expected_evidencias: list[CriticalFileEvidence] = []
+        for exp in critical_for_g3:
+            physical_path = root.joinpath(*pathlib.PurePosixPath(exp.rel_path).parts)
+            data = physical_path.read_bytes()
+            real_digest = _sha256(data)
+            real_size = len(data)
+
+            expected_evidencias.append(
+                CriticalFileEvidence(
+                    rel_path=exp.rel_path,
+                    state=VerificationState.VERIFIED,
+                    message="",
+                    expected_digest=exp.expected_digest,
+                    observed_digest=real_digest,
+                    expected_size=exp.expected_size,
+                    observed_size=real_size,
+                )
             )
-            for exp in critical
+
+        assert res.critical_results == tuple(expected_evidencias)
+
+        evidence_no_expected_size = res.critical_results[2]
+        assert evidence_no_expected_size.expected_size is None
+        assert evidence_no_expected_size.observed_size is not None
+        assert evidence_no_expected_size.observed_size == len(
+            root.joinpath(*pathlib.PurePosixPath(critical_for_g3[2].rel_path).parts).read_bytes()
         )
-        assert res.critical_results == expected_critical_results
 
     def test_g4_duplicate_critical_generator_levanta_error(
         self,
