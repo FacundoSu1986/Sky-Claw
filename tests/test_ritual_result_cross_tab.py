@@ -700,6 +700,125 @@ def test_legacy_con_owner_malformado_falla_cerrado_sin_excepcion() -> None:
         assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) == antes, "el rechazo mutó el store"
 
 
+class _StoreEspia(ReactiveStore):
+    """ReactiveStore que registra cada ``set`` para probar que un rechazo de
+    ownership NO escribe nada (ni reescrituras idénticas del contenedor)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sets: list[tuple[str, Any]] = []
+
+    def set(self, key: str, value: Any) -> None:
+        self.sets.append((key, value))
+        super().set(key, value)
+
+
+def _store_espia_con_notificaciones() -> tuple[_StoreEspia, list[int]]:
+    """Store espía + contador de notifications sobre la clave del resultado."""
+    store = _StoreEspia()
+    notificaciones: list[int] = []
+    store.subscribe(rr_mod.STORE_KEY_RITUAL_LAST_RESULT, lambda: notificaciones.append(1))
+    return store, notificaciones
+
+
+# ── Matriz del clear (review PR #501: el hermano de resolve) ───────────────────
+
+
+def test_clear_rechaza_envelope_cuyo_owner_no_coincide_con_el_slot() -> None:
+    """Review PR #501 (Codex P2): B no puede CONSUMIR la acción de A y tampoco
+    puede BORRARLA. El ``×`` del panel de feedback llama al clear SIN importar
+    si hay acción de Resume (el botón vive fuera del guard de la acción), así
+    que el reachability GUI es real: con el envelope de A alojado en el slot de
+    B, el clear debe rechazar SIN escribir nada — ni borrado, ni reescritura
+    idéntica del contenedor, ni notification."""
+    store, notificaciones = _store_espia_con_notificaciones()
+    _publicar_contenedor_crudo(store, {"tab-B": _envelope_dyndolod("tab-A")})
+    antes = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
+    store.sets.clear()
+    notificaciones.clear()
+
+    rr_mod.clear_ritual_result_owned(store, "tab-B")
+
+    assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) == antes, (
+        "el clear eliminó un envelope cuyo dueño declarado no coincide con el slot"
+    )
+    assert store.sets == [], "el rechazo escribió en el store"
+    assert notificaciones == [], "el rechazo disparó notifications del store"
+
+
+def test_clear_con_slot_propio_presente_invalido_no_mutar() -> None:
+    """C3: slot propio PRESENTE con valor inválido (None) + ownerless válido.
+    El clear no puede caer al ownerless ni reescribir el contenedor para
+    recortar la basura propia: presencia ≠ ausencia, misma regla del resolver."""
+    store, notificaciones = _store_espia_con_notificaciones()
+    _publicar_contenedor_crudo(store, {"tab-A": None, None: _envelope_dyndolod(None)})
+    antes = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
+    store.sets.clear()
+    notificaciones.clear()
+
+    rr_mod.clear_ritual_result_owned(store, "tab-A")
+
+    assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) == antes, (
+        "el clear recortó/mutó ante slot propio presente-inválido"
+    )
+    assert store.sets == []
+    assert notificaciones == []
+
+
+def test_clear_sin_slot_propio_sigue_limpiando_el_ownerless_valido() -> None:
+    """C4 (+C7 válido): sin slot propio, la política vigente se conserva —
+    cualquier pestaña limpia el resultado sin dueño bien formado."""
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(store, {None: _envelope_dyndolod(None)})
+
+    rr_mod.clear_ritual_result_owned(store, "tab-A")
+
+    assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) is None, "el ownerless válido dejó de ser limpiable"
+
+
+def test_clear_de_slot_none_con_dueno_ajeno_no_muta() -> None:
+    """C5: el slot ``None`` contiene un envelope que declara dueño ``tab-A``;
+    B no puede desalojarlo vía fallback — el owner declarado no coincide con
+    el dueño del slot seleccionado."""
+    store, notificaciones = _store_espia_con_notificaciones()
+    _publicar_contenedor_crudo(store, {None: _envelope_dyndolod("tab-A")})
+    antes = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
+    store.sets.clear()
+    notificaciones.clear()
+
+    rr_mod.clear_ritual_result_owned(store, "tab-B")
+
+    assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) == antes, (
+        "B desalojó por fallback un envelope con dueño declarado ajeno"
+    )
+    assert store.sets == []
+    assert notificaciones == []
+
+
+def test_clear_tab_id_none_respeta_el_dueno_declarado() -> None:
+    """C7: ``tab_id=None`` selecciona DIRECTAMENTE el slot sin dueño (no hay
+    fallback posible). Ownerless bien formado → se limpia; el slot ``None``
+    con dueño declarado ajeno → rechazo sin mutación."""
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(store, {None: _envelope_dyndolod(None)})
+    rr_mod.clear_ritual_result_owned(store, None)
+    assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) is None
+
+    store2, notificaciones = _store_espia_con_notificaciones()
+    _publicar_contenedor_crudo(store2, {None: _envelope_dyndolod("tab-A")})
+    antes = store2.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
+    store2.sets.clear()
+    notificaciones.clear()
+
+    rr_mod.clear_ritual_result_owned(store2, None)
+
+    assert store2.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) == antes, (
+        "tab_id=None desalojó un envelope cuyo dueño declarado es una pestaña"
+    )
+    assert store2.sets == []
+    assert notificaciones == []
+
+
 # ── Ancla enumerativa: ningún write directo fuera del writer del contenedor ────
 
 
@@ -740,3 +859,54 @@ def test_ningun_camino_productivo_escribe_la_clave_fuera_del_writer() -> None:
     assert escritores == {"_escribir_resultados_de_ritual"}, (
         f"writes directos a STORE_KEY_RITUAL_LAST_RESULT fuera del writer: {sorted(escritores)}"
     )
+
+
+def _llamadores_directos(nombre_funcion: str, ruta: pathlib.Path) -> set[str]:
+    """Funciones top-level de ``ritual_runner`` que llaman ``nombre_funcion(...)``, por AST.
+
+    Igualdad exacta, no muestreo: el conjunto completo de callers es la
+    superficie hermana que AGENTS.md exige enumerar."""
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+    llamadores: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == nombre_funcion:
+            dueña = next(
+                (
+                    fn.name
+                    for fn in arbol.body
+                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and any(hijo is nodo for hijo in ast.walk(fn))
+                ),
+                "<modulo>",
+            )
+            llamadores.add(dueña)
+    return llamadores
+
+
+def test_ancla_llamadores_de_resultados_por_owner() -> None:
+    """Ancla por AST, igualdad EXACTA: TODAS las funciones productivas que leen
+    el contenedor multi-owner. Si aparece un nuevo caller de
+    ``_resultados_por_owner``, este test rompe hasta que ese sibling sea
+    clasificado y reciba cobertura de ownership propia — leer el contenedor sin
+    la receta de validación es exactamente como nacen los caminos gemelos sin
+    cablear (la clase de defecto dominante del repo)."""
+    ruta = pathlib.Path(rr_mod.__file__).resolve()
+    llamadores = _llamadores_directos("_resultados_por_owner", ruta)
+    assert llamadores == {
+        "publicar_resultado_de_ritual",
+        "resolve_ritual_resume_action",
+        "clear_ritual_result_owned",
+    }, f"caller nuevo (o ausente) de _resultados_por_owner sin clasificar: {sorted(llamadores)}"
+
+
+def test_ancla_llamadores_del_selector_compartido() -> None:
+    """Ancla por AST, igualdad EXACTA: resolver Y limpiar comparten la MISMA
+    política vía ``_seleccionar_resultado_owned``. Un sibling que vuelva a
+    seleccionar por su cuenta (o que deje de usar el selector) diverge de su
+    gemelo y rompe acá antes de poder hacerlo en producción."""
+    ruta = pathlib.Path(rr_mod.__file__).resolve()
+    llamadores = _llamadores_directos("_seleccionar_resultado_owned", ruta)
+    assert llamadores == {
+        "resolve_ritual_resume_action",
+        "clear_ritual_result_owned",
+    }, f"hermano desconectado del selector compartido de ownership: {sorted(llamadores)}"
