@@ -1,7 +1,10 @@
 # ADR 0009 — RV-GP1: Estado de protección filesystem del Golden Master
 
 **Fecha:** 2026-08-23
-**Estado:** Propuesta (design-only; prohibida la implementación en este PR)
+**Estado:** Propuesta (design-only; prohibida la implementación en este PR). Revisión 2:
+ronda de corrección sobre los review threads del PR #504 (cobertura de subtree, composición
+de derechos, privilegios, backend AccessCheck, drives remotos, scope estructurado de
+HARDENED, anclas anti-mutación nativa, ortogonalidad completa, inventario GP2 por nodo).
 **Contexto de origen:** tarea RV-GP1 sobre `origin/main` `da017348fb545626c8b6f853ef9c16738882a9a1`
 (merge de PR #502, RV-3). Trabajo exclusivamente read-only: sin modificar Golden, Runtime,
 ACLs, Steam ni MO2; sin pruebas mutadoras sobre el filesystem real; sin elevación.
@@ -57,16 +60,29 @@ nomenclatura queda anclada acá, dentro del ADR, evitando la colisión con RV-4.
 2. **Fail closed.** Evidencia ausente o ambigua produce UNKNOWN; nunca se promueve a un
    estado protegido por omisión (`UNKNOWN != WRITE_PROTECTED != HARDENED`, mismo principio
    que `UNKNOWN != VERIFIED` en RV-1).
-3. **Backend Windows v1 = AccessCheck nativo + introspección de token**, vía `ctypes` sobre
-   advapi32/kernel32. Sin dependencia Python nueva, sin subprocess, sin parseo de salida
-   localizada (análisis completo en §7).
-4. **Cinco estados** con definiciones operativas y evidencia objetiva exigente (§5):
-   `UNSUPPORTED`, `UNPROTECTED`, `WRITE_PROTECTED`, `HARDENED`, `UNKNOWN`.
-5. **HARDENED elegido = OPTION A** (§9): endurecido frente al token interactivo actual no
-   elevado, demostrable al 100% read-only, con threat model explícito y límites honestos.
-6. **Ortogonalidad total** respecto de RV-1/RV-2/RV-3 (§11): la protección no autoriza ni
+3. **La protección del Golden es una propiedad del ÁRBOL completo**, no del root (§5).
+   Un estado protegido (`WRITE_PROTECTED`/`HARDENED`) sólo puede emitirse tras inspección
+   EXHAUSTIVA de la superficie `PROTECTED_SCAN_SCOPE` = root + todo directorio descendiente
+   + todo archivo descendiente + el parent inmediato del root (por la semántica
+   delete/rename del propio root). Sin sampling, sin "archivos representativos", sin
+   inferencia "root ⇒ descendientes". Escaneo parcial JAMÁS emite estado protegido.
+4. **Backend Windows v1 = AccessCheck nativo + introspección de token**, vía `ctypes` sobre
+   advapi32/kernel32, solicitando `OWNER|GROUP|DACL_SECURITY_INFORMATION` (el SD debe tener
+   owner y group para AccessCheck [^accesscheck]). Gate previo de localidad con
+   `GetDriveTypeW` (§7-8). Sin dependencia Python nueva, sin subprocess, sin parseo de
+   salida localizada (análisis completo en §7).
+5. **Cinco estados** con definiciones operativas y evidencia exigente (§5):
+   `UNSUPPORTED`, `UNPROTECTED`, `WRITE_PROTECTED`, `HARDENED`, `UNKNOWN`. Agregación
+   determinista sobre el árbol: capability gate → UNKNOWN ante cualquier fallo/drift →
+   UNPROTECTED ante cualquier nodo/superficie compuesta mutable → HARDENED si además se
+   cumplen todas sus conjunciones → si no, WRITE_PROTECTED.
+6. **HARDENED elegido = OPTION A** (§9): endurecido frente al token interactivo actual no
+   elevado sobre TODO el subtree, demostrable al 100% read-only. El calificador viaja en
+   metadata estructurada (`assurance_scope`), NUNCA en `message` (§12).
+   `HARDENED != ADMIN_PROOF != SYSTEM_PROOF`.
+7. **Ortogonalidad total** respecto de RV-1/RV-2/RV-3 (§11): la protección no autoriza ni
    bloquea clonación, ni degrada verificación, ni depende de la versión del juego.
-7. **Semántica success/state desacoplada** (§10): `success=True` con `UNPROTECTED` es válido
+8. **Semántica success/state desacoplada** (§10): `success=True` con `UNPROTECTED` es válido
    (la inspección tuvo éxito y descubrió falta de protección).
 
 ## 3. Non-goals
@@ -118,14 +134,15 @@ más para usar AccessCheck sobre la superficie completa {root, parent}.
 | Usuario estándar, sólo lectura efectiva en root+parent | AccessCheck: sin derechos de mutación; sin privilegios bypass | WRITE_PROTECTED | Alta | Bajo: medido sobre token real, no inferido de ACEs |
 | Admin filtrado (B), DACL restrictiva | SIDs Administrators deny-only no conceden; mutación denegada; owner no atribuible | WRITE_PROTECTED o HARDENED (según owner/elevación) | Alta | Bajo: deny-only es comportamiento del sistema, no parsing |
 | Admin elevado (C) ejecutando Sky-Claw | Token Full; típicamente derechos amplios o privilegio bypass presente | UNPROTECTED | Alta | Ninguno: nunca HARDENED con token elevado (regla dura) |
-| Owner = SID del usuario actual | Owner atribuible al token → camino implícito READ_CONTROL+WRITE_DAC del dueño [^msadts] [^ontt] | No HARDENED (WRITE_PROTECTED si la mutación de contenido está cerrada) | Alta | Ninguno: el check de owner es comparación de SIDs del token |
+| Owner = SID del usuario actual, sin ACE del Owner Rights SID | Dueño atribuible ⇒ WRITE_DAC efectivo implícito (medido por AccessCheck o asumido fail-closed) [^msadts] [^ontt] [^ownerrights] | UNPROTECTED | Alta | Ninguno: la regla normativa "CHANGE_PERMISSIONS efectivo ⇒ UNPROTECTED" se aplica a CUALQUIER vía, incluida la del dueño |
+| Owner = usuario actual + ACE del Owner Rights SID (S-1-3-4) restringiendo al dueño [^ownerrights] | AccessCheck mide el WRITE_DAC que la ACE Owner Rights concede/niega | Según medición: WRITE_PROTECTED/HARDENED posible; ambigüedad → UNKNOWN | Alta | Bajo: el caso es explícito y medido, nunca inferido |
 | Owner = Administrators/SYSTEM/TrustedInstaller | Owner no atribuible al token evaluado | Compatible con HARDENED | Alta | Bajo: condición negativa portable, sin allowlist de nombres |
-| ACE allow heredada amplia (p. ej. Users:Modify) | AccessCheck concede WRITE_CONTENT | UNPROTECTED | Alta | Bajo: la heredad ya está resuelta dentro del SD devuelto por el sistema |
+| ACE allow heredada amplia (p. ej. Users:Modify) en root o en CUALQUIER descendiente | AccessCheck concede WRITE_CONTENT en ese nodo | UNPROTECTED (agregación ANY_MUTABLE_NODE sobre el árbol) | Alta | Bajo: herencia ya resuelta dentro de cada SD; cobertura exhaustiva elimina el hueco de descendientes |
 | Deny explícita al usuario + Allow amplia a Everyone | Deny precede: corta evaluación para ese derecho [^accesscheck] [^aceorder] | Según resto de derechos: WRITE_PROTECTED/HARDENED posible | Alta | Bajo: AccessCheck aplica precedencia canónica por nosotros |
 | Descriptor ilegible/malformado | ERROR_ACCESS_DENIED / ERROR_INVALID_SECURITY_DESCR | UNKNOWN (success=False) | n/a | Cero por diseño: jamás promovido |
 | FAT/exFAT | Volumen sin `FILE_PERSISTENT_ACLS` [^gvi] | UNSUPPORTED | Alta | Cero: capability inexistente declarada |
 | Plataforma no-Windows | `sys.platform != "win32"` | UNSUPPORTED | Alta | Cero |
-| Directorio con herencia deshabilitada (protected DACL) | SD propio del root sin ACEs heredadas | Se evalúa el SD efectivo del root; la superficie profunda queda limitación declarada (§14) | Media para el subtree | Medio: mitigado por digest RV-2 como backstop de detección |
+| Directorio descendiente con herencia deshabilitada (protected DACL) | Se evalúa el SD propio de CADA nodo (cobertura exhaustiva §5) | Clasificado por su propio descriptor; sin efecto ciego de herencia | Alta | Bajo: el hueco root-only fue eliminado en la revisión 2 |
 | DELETE permitido vía padre pese a file-DACL restrictiva | Parent con FILE_DELETE_CHILD efectivo | UNPROTECTED | Alta | Bajo: el padre ES parte de la superficie evaluada |
 | DACL NULL | AccessCheck concede todo lo pedido [^accesscheck] [^acllists] | UNPROTECTED | Alta | Bajo |
 | DACL vacía (sin ACEs) | Se niega todo [^acllists]; sin derechos ni siquiera de lectura | WRITE_PROTECTED (lectura registrada como evidencia, no como gate) | Alta | Documentado en §5 |
@@ -136,102 +153,164 @@ para escritura o borrar cualquiera de sus nombres pasa por el mismo chequeo del 
 
 ## 5. Estados (definiciones normativas)
 
-Los cinco estados son exhaustivos y excluyentes. Todos los juicios de "derecho efectivo"
-significan: resultado de AccessCheck con el token evaluado, sobre la superficie inspeccionada
-{root del Golden, parent inmediato del root}, con generic-mapping de archivos aplicado
-(§7). Derechos relevantes agrupados:
+**La protección del Golden es una propiedad del ÁRBOL.** Conceptualmente:
 
-- **Mutación de contenido**: `FILE_WRITE_DATA`+`FILE_APPEND_DATA` sobre archivos ≡
-  `FILE_ADD_FILE`+`FILE_ADD_SUBDIRECTORY` sobre directorios [^filear]; `DELETE`;
-  `FILE_DELETE_CHILD` (sólo tiene sentido en directorios) [^filear]. RENAME es derivado:
-  `DELETE` (o `DELETE_CHILD` en el padre fuente) + derecho de creación en el padre destino.
-- **Mutación de metadata**: `FILE_WRITE_ATTRIBUTES`, `FILE_WRITE_EA`. Cambiar timestamps o
-  EAs no altera el digest de RV-2 pero sí es mutación accidental real de un activo
-  reference-only; se incluye para no prometer de más.
-- **Reescritura de la propia protección**: `WRITE_DAC`, `WRITE_OWNER`.
-- **Bypass por privilegio**: presencia en el token de `SeBackupPrivilege`,
-  `SeRestorePrivilege` o `SeTakeOwnershipPrivilege` (§6).
+```
+GoldenProtection(tree) = aggregate(
+    estado de seguridad de CADA nodo del subtree,
+    superficie de delete/rename del root vía su parent,
+    token evaluado,
+    privilegios relevantes del token
+)
+```
+
+Superficie obligatoria para estados definitivos (`PROTECTED_SCAN_SCOPE`): el root, TODO
+directorio descendiente, TODO archivo descendiente, y el parent inmediato del root (sólo
+por los vectores delete/rename/replace del propio root: `FILE_DELETE_CHILD` se evalúa sobre
+el directorio contenedor inmediato [^filear], así que ancestros más altos no aportan
+vectores de un paso contra el root). Sin sampling ni inferencia por herencia: un
+descendiente con herencia deshabilitada, ACE explícita escribible u owner distinto es un
+caso de primera clase (agregación `ANY_MUTABLE_NODE`). Costo O(nodos) declarado; el rig de
+referencia (~16k archivos) es factible y cacheable por descriptor único.
+
+Observación sellada best-effort (mismo principio RV-1, sin prometer atomicidad real):
+
+1. **PRE**: recorrido estructural completo del subtree (identidad de cada nodo vía la
+   primitiva canónica de links);
+2. **EVIDENCE**: lectura del security descriptor + AccessCheck de cada nodo;
+3. **POST**: re-recorrido estructural — cualquier diferencia (archivo agregado o borrado,
+   nodo reemplazado, drift de directorios) o cualquier evidencia ilegible ⇒ `UNKNOWN`.
+   Nunca un escaneo parcial produce WRITE_PROTECTED ni HARDENED.
+
+Todos los juicios de "derecho efectivo" significan: resultado de AccessCheck con el token
+evaluado sobre el security descriptor del nodo, con generic-mapping de archivos/directorios
+aplicado (§7).
+
+### Capacidades compuestas (composición operacional, no bits sueltos)
+
+La clasificación NO usa unión "el más permisivo gana" sobre derechos aislados; compone
+capacidades con semántica Windows:
+
+| Capacidad | Composición | Consecuencia |
+|---|---|---|
+| DIRECT CONTENT/METADATA MUTATION (por nodo) | `WRITE_DATA`/`APPEND` sobre archivo; `WRITE_ATTRIBUTES`/`WRITE_EA` sobre nodo | Nodo mutable |
+| CREATE WITHIN GOLDEN | `FILE_ADD_FILE` o `FILE_ADD_SUBDIRECTORY` sobre un directorio DEL SUBTREE golden | Nodo mutable (altera membresía del árbol) |
+| DELETE OBJECT | `DELETE` sobre el nodo ∨ `FILE_DELETE_CHILD` sobre su directorio contenedor inmediato [^filear] | Nodo mutable |
+| REPLACE / RENAME (cadena) | capacidad DELETE OBJECT sobre la fuente ∧ derecho de creación de entrada (`ADD_FILE`/`ADD_SUBDIR`) en el directorio destino | Nodo mutable |
+| OWNER SELF-REWRITE | `CHANGE_PERMISSIONS` (`WRITE_DAC`) efectivo por CUALQUIER vía —explícita, heredada o implícita del dueño— salvo ACE del Owner Rights SID que la restrinja [^ownerrights] | Nodo mutable |
+| OWNER CHANGE PATH | `WRITE_OWNER` efectivo ∨ privilegio `SeTakeOwnershipPrivilege` presente | Nodo mutable |
+| PRIVILEGED WRITE BYPASS | privilegio `SeRestorePrivilege` presente en el token [^ifspriv] [^evt4661] | Todo el árbol mutable |
+| PROTECCIÓN DEL ROOT vía parent | parent con `FILE_DELETE_CHILD` (borrar root), o cadena rename del root (delete-child/delete en parent ∧ add en parent) | Árbol comprometido como unidad |
+| ESCALATION POR PARENT | `WRITE_DAC`/`WRITE_OWNER` del parent cuando el root depende de herencia del parent (flags de herencia activos): reescribir el parent reescribe lo heredado por el root | Árbol mutable |
+
+Un derecho de creación en el parent FUERA del Golden (crear hermanos del Golden) NO muta el
+Golden por sí solo y no dispara UNPROTECTED sin una cadena delete/replace hacia dentro
+(GP-T55). Los derechos del parent sólo participan por: delete/rename del root, y escalation
+de herencia según la tabla.
+
+Clasificación de privilegios (fuente primaria de máscaras auto-concedidas [^evt4661],
+semántica FS [^ifspriv]):
+
+- **Mutation-enabling** (presencia ⇒ UNPROTECTED): `SeRestorePrivilege` (concede
+  `GENERIC_WRITE`, `DELETE`, `FILE_ADD_FILE`, `FILE_ADD_SUBDIRECTORY`, `WRITE_DAC`,
+  `WRITE_OWNER` saltándose chequeos); `SeTakeOwnershipPrivilege` (permite convertirse en
+  dueño → camino dueño→`WRITE_DAC`→reescribir DACL→mutar [^ontt]).
+- **Diagnósticos solamentemente** (NO disparan UNPROTECTED; se registran como evidencia):
+  `SeBackupPrivilege` (bypass de LECTURA: `READ_CONTROL`, `GENERIC_READ`, `TRAVERSE` — sin
+  cadena mutadora por sí solo [^evt4661]); `SeSecurityPrivilege` (acceso a SACL/auditoría:
+  ni contenido ni DACL). Ningún otro privilegio entra al contrato sin investigación con
+  fuente primaria; presencia de otros queda fuera del modelo v1.
 
 ```
 SYNCHRONIZE, TRAVERSE, READ_CONTROL, lecturas: contexto operacional, no deciden estado
-(excepto READ_CONTROL implícito necesario para leer el SD: si falta → UNKNOWN).
+(excepto READ_CONTROL necesario para leer el SD: si falta → UNKNOWN).
 ```
 
 ### UNSUPPORTED
 
 Sky-Claw reconoce que **no posee un mecanismo probado** para evaluar la protección en esa
 plataforma/filesystem. Es una limitación conocida de capability, decidida en código, no un
-resultado observacional. Casos v1 (§8): plataforma no-Windows; volumen sin ACLs persistentes
-(FAT/exFAT); filesystem no admitido en la matriz de soporte; ruta UNC/red; unidad no local.
-Regla: **UNSUPPORTED != UNKNOWN**. No bloquea golden verification, clone ni nada del vault.
+resultado observacional. Se decide ANTES de enumerar el árbol (capability gate primero).
+Casos v1 (§8): plataforma no-Windows; tipo de unidad no local-fija (`DRIVE_REMOTE` —incluye
+toda letra mapeada a share SMB—, `DRIVE_UNKNOWN`, `DRIVE_NO_ROOT_DIR`, etc. [^drivetype]);
+ruta UNC; volumen sin ACLs persistentes (FAT/exFAT) [^gvi]; filesystem fuera de la matriz
+admitida. Regla: **UNSUPPORTED != UNKNOWN**. No bloquea golden verification, clone ni nada
+del vault.
 
 ### UNKNOWN
 
 La plataforma/backend **podría** observar el estado, pero evidencia necesaria no pudo
-obtenerse o quedó ambigua. Casos: security descriptor ilegible o malformado
-(`ERROR_ACCESS_DENIED` / `ERROR_INVALID_SECURITY_DESCR` al leerlo [^accesscheck]); consulta
-de token fallida; fallo de la llamada AccessCheck; filesystem no determinable tras pasar el
-gate de plataforma; root o parent que resultan symlink/junction/reparse point (la identidad
-del objeto inspeccionado difiere del path: fail closed, misma política que
-`InventoryLinkError` en RV-1); inconsistencia de metadata entre lstat y apertura (señal
-TOCTOU). Regla dura: **UNKNOWN jamás se promueve a estado protegido**.
+obtenerse o quedó ambigua. Casos sobre CUALQUIER nodo de la superficie (root, descendientes,
+parent): security descriptor ilegible o malformado (`ERROR_ACCESS_DENIED` /
+`ERROR_INVALID_SECURITY_DESCR` al leerlo [^accesscheck]); consulta de token fallida; fallo
+de la llamada AccessCheck; filesystem/drive no determinable tras pasar el gate de plataforma;
+nodo que resulta symlink/junction/reparse point no aceptado (la identidad del objeto
+inspeccionado difiere del path: fail closed, misma política que `InventoryLinkError` en
+RV-1); inconsistencia de metadata entre lstat y apertura; nodo que no puede enumerarse;
+drift del árbol entre PRE y POST (entrada agregada, desaparecida o reemplazada); dueño
+atribuible con CHANGE_PERMISSIONS medido-denegado sin ACE Owner Rights que lo explique
+(§5, owner self-rewrite). Regla dura: **UNKNOWN jamás se promueve a estado protegido**, y
+`ANY_UNKNOWN → estado global UNKNOWN`.
 
 ### UNPROTECTED
 
 Existe evidencia suficiente de que el token evaluado conserva alguna **capacidad relevante
-de mutación** sobre el Golden. Es UNPROTECTED si cualquiera de estas condiciones se cumple
-(en root o parent, la más permisiva gana):
-
-1. Algún derecho de mutación de contenido efectivamente concedido (write/append/add/delete/
-   delete-child/rename-viable);
-2. algún derecho de mutación de metadata concedido (`WRITE_ATTRIBUTES`/`WRITE_EA`);
-3. `WRITE_DAC` o `WRITE_OWNER` efectivos (el token puede reescribir su propio acceso: la
-   restricción presente no es sostenible) [^msadts];
-4. presencia en el token de alguno de los tres privilegios de bypass (un privilegio
-   presente-aunque-deshabilitado cuenta: el propio proceso puede habilitarlo sin elevación
-   mediante AdjustTokenPrivileges; el sistema exige "hold AND enable", y el hold ya está)
-   [^ifspriv];
-5. parent con `FILE_DELETE_CHILD` efectivo (borrado del propio root o de hijos por encima
-   del DACL individual).
+de mutación** sobre ALGÚN punto del árbol o sobre su superficie compuesta. Agregación
+`ANY_MUTABLE_NODE` (más las capacidades compuestas del parent/root de §5): basta UN nodo
+mutable, UNA cadena replace viable, UN privilegio mutation-enabling presente, o UN vector
+delete/rename/escalation del root vía parent. La evaluación es por nodo según la tabla de
+capacidades compuestas; nunca por unión ciega de bits aislados (GP-T55: crear hermanos en
+el parent no muta el Golden).
 
 ### WRITE_PROTECTED
 
-Contrato mínimo: el token normal/no elevado evaluado **no posee derechos efectivos** para
-ninguna capacidad relevante de mutación de las listadas arriba (contenido, metadata,
-reescritura de protección, bypass por privilegio, delete-vía-parent), sobre toda la
-superficie evaluada. Lecturas (`READ_DATA`/`LIST_DIRECTORY`/`EXECUTE`/`TRAVERSE`) quedan
-**registradas como campos de evidencia**, pero su presencia o ausencia NO decide el estado:
-protección y legibilidad son capacidades ortogonales (decisión documentada; alternativa
-rechazada: exigir `read_allowed=True`, que mezclaría dos ejes y clasificaría un directorio
-totalmente inaccesible como no-protegido).
+Contrato mínimo: tras inspección EXHAUSTIVA de `PROTECTED_SCAN_SCOPE` (§5), el token normal/
+no elevado evaluado **no posee derechos efectivos** para ninguna capacidad relevante de
+mutación en NINGÚN nodo del subtree ni en la superficie compuesta del parent (contenido,
+metadata, reescritura de protección, cadena replace, delete-vía-parent, escalation por
+herencia), y ningún privilegio mutation-enabling está presente en el token. Lecturas
+(`READ_DATA`/`LIST_DIRECTORY`/`EXECUTE`/`TRAVERSE`) quedan registradas como campos de
+evidencia, pero su presencia o ausencia NO decide el estado: protección y legibilidad son
+capacidades ortogonales (decisión documentada; alternativa rechazada: exigir
+`read_allowed=True`, que mezclaría dos ejes y clasificaría un directorio totalmente
+inaccesible como no-protegido).
 
 Regla anti-falso-verde central: **"una ACE parece negar WRITE" no es evidencia**. Sólo el
 resultado de AccessCheck —que incorpora orden canónico de ACEs [^aceorder], precedencia de
 deny [^accesscheck], SIDs deny-only del token filtrado [^uac] [^sidattrs], expansión de
-generic rights y mapping archivo/directorio— demuestra capacidad efectiva. Inferencias
-textuales del DACL están prohibidas como base de clasificación.
+generic rights, semántica Owner Rights [^ownerrights] y mapping archivo/directorio— demuestra
+capacidad efectiva. Inferencias textuales del DACL están prohibidas como base de
+clasificación.
 
 ### HARDENED
 
-Definido como refinamiento estricto de WRITE_PROTECTED (elección OPTION A, análisis completo
-en §9). HARDENED ⇔ WRITE_PROTECTED **y además**:
+Refinamiento estricto de WRITE_PROTECTED (elección OPTION A, análisis completo en §9).
+HARDENED ⇔ WRITE_PROTECTED sobre TODO el subtree (§5) **y además**:
 
 1. el token evaluado no está elevado (`TokenElevation != TokenElevated`; equivalente a
    `TokenElevationType ∈ {Default, Limited}` [^teletype]); y
-2. `owner_sid` del root **no es atribuible** al token evaluado: no es el user SID del token
-   ni ningún grupo del token que no esté marcado deny-only (identidades por SID; los
-   well-known SIDs relevantes se toman de la fuente primaria [^wellknown]). Esto cierra el camino implícito
-   dueño→`READ_CONTROL`+`WRITE_DAC` [^msadts] [^ontt] y el camino explícito
-   takeown→setowner→reescribir DACL [^ontt], porque los tres privilegios que alimentan ese
-   camino ya fueron excluidos por la conjunción WRITE_PROTECTED.
+2. `owner_sid` de CADA nodo relevante no es atribuible al token evaluado —no es el user SID
+   del token ni ningún grupo del token que no esté marcado deny-only (identidades por SID;
+   well-known SIDs por fuente primaria [^wellknown])— o, si algún nodo es propiedad del
+   usuario, una ACE del Owner Rights SID (S-1-3-4) restringe explícitamente los derechos
+   implícitos del dueño y AccessCheck mide sin `WRITE_DAC` [^ownerrights]. Esto cierra el
+   camino implícito dueño→`READ_CONTROL`+`WRITE_DAC` [^msadts] [^ontt] y el camino explícito
+   takeown→setowner→reescribir DACL, porque el privilegio que lo alimenta ya fue excluido
+   por la conjunción WRITE_PROTECTED.
 
 HARDENED significa exactamente: *contra este token, sin elevación, no existe vía directa
-demostrable para mutar contenido ni para retirar la protección*. NO significa "imposible de
-desproteger": si el usuario pertenece a Administrators y puede aprobar UAC, un proceso
-elegido por él puede elevarse y revertir todo. El nombre se conserva (`HARDENED`) con este
-threat model documentado; la alternativa `HARDENED_AGAINST_CURRENT_UNELEVATED_TOKEN` fue
-evaluada y rechazada por verbosa para UI sin añadir precisión — el calificador vive en este
-ADR y en el campo `message`/docs, no en el identificador del enum.
+demostrable para mutar ningún punto del Golden ni para retirar la protección*. NO significa
+"imposible de desproteger": si el usuario pertenece a Administrators y puede aprobar UAC, un
+proceso elegido por él puede elevarse y revertir todo.
+
+**Transporte estructurado del calificador** (no textual): el resultado lleva
+`assurance_scope = CURRENT_EFFECTIVE_UNELEVATED_TOKEN` como campo estructurado (§12); el
+`message` queda vacío en éxito por contrato. Queda fijado normativamente:
+`HARDENED != ADMIN_PROOF`, `HARDENED != SYSTEM_PROOF`, `HARDENED` no afirma resistencia a
+elevación UAC posterior ni a compromiso administrativo. El nombre público se conserva
+(`HARDENED`) con este scope estructurado; renombrarlo a
+`HARDENED_AGAINST_CURRENT_UNELEVATED_TOKEN` fue evaluado y rechazado: verboso para UI sin
+añadir precisión que el campo estructurado ya transporta.
 
 ## 6. Modelo de evidencia (y FASE active-probes)
 
@@ -261,13 +340,16 @@ clasifica UNKNOWN/no demostrable con el backend v1 — no se agrega la escritura
 
 | Pieza | Fuente (todas read-only) | Notas |
 |---|---|---|
-| Tipo/identidad del nodo y detección de reparse points | primitiva canónica `sky_claw.app.security.links` (lstat + `st_reparse_tag`) — la MISMA que usa `inventory_tree`; prohibido reimplementar (ancla `tests/test_links.py`) | Root o parent como enlace → UNKNOWN |
+| Tipo/identidad de CADA nodo de la superficie y detección de reparse points | primitiva canónica `sky_claw.app.security.links` (lstat + `st_reparse_tag`) — la MISMA que usa `inventory_tree`; prohibido reimplementar (ancla `tests/test_links.py`) | Cualquier nodo (root, descendiente o parent) como enlace → UNKNOWN |
+| Enumeración estructural PRE/POST del subtree | recorrido read-only equivalente al inventario RV-1 (sin leer contenido); dos pasadas selladas | Drift entre pasadas → UNKNOWN (GP-T39/T40/T41) |
+| Localidad del volumen (gate previo) | `GetDriveTypeW` sobre la raíz de la unidad: sólo `DRIVE_FIXED` admitido v1; `DRIVE_REMOTE`, `DRIVE_UNKNOWN`, `DRIVE_NO_ROOT_DIR`, etc. → UNSUPPORTED [^drivetype] | Atrapa letras mapeadas a SMB aunque el FS reporte NTFS |
 | Filesystem del volumen | `CreateFileW` (0 access + `FILE_FLAG_BACKUP_SEMANTICS`) + `GetVolumeInformationByHandleW`: nombre FS + flag `FILE_PERSISTENT_ACLS` [^gvi] | Por handle: correcto ante mount points |
-| Security descriptor (owner + DACL) | `GetNamedSecurityInfoW(SE_FILE_OBJECT, OWNER\|DACL)` [^gerfa-ej] | Requiere READ_CONTROL; denegado → UNKNOWN |
-| Token: user, grupos y atributos | `GetTokenInformation(TokenUser/TokenGroups)`; grupos deny-only distinguibles por atributos [^sidattrs] | Base del check de owner-atributable |
+| Security descriptor (owner + group + DACL) | `GetNamedSecurityInfoW(SE_FILE_OBJECT, OWNER\|GROUP\|DACL_SECURITY_INFORMATION)` [^gerfa-ej] [^accesscheck] | AccessCheck exige owner y group en el SD (`ERROR_INVALID_SECURITY_DESCR` si faltan); sin SACL (evita requerir SeSecurityPrivilege); READ_CONTROL denegado → UNKNOWN |
+| Token: user, grupos y atributos | `GetTokenInformation(TokenUser/TokenGroups)`; grupos deny-only distinguibles por atributos [^sidattrs] | Base del check de owner-attribuable |
 | Token: elevación | `GetTokenInformation(TokenElevation)` (+ `TokenElevationType` diagnóstico) [^teletype] | |
-| Token: privilegios presentes | `GetTokenInformation(TokenPrivileges)`; LUID resuelto con `LookupPrivilegeValue` (los LUID varían por boot [^priv]) | Presencia, no sólo estado enabled |
-| Acceso efectivo | `AccessCheck` con token de impersonación duplicado (`DuplicateTokenEx`), desired `MAXIMUM_ALLOWED` con `MapGenericMask`, `GENERIC_MAPPING` de archivos [^accesscheck] | Devuelve máscara concedida real |
+| Token: privilegios presentes | `GetTokenInformation(TokenPrivileges)`; LUID resuelto con `LookupPrivilegeValue` (los LUID varían por boot [^priv]) | Presencia, no sólo estado enabled; separados en mutation-enabling vs diagnósticos (§5) |
+| ACE Owner Rights (S-1-3-4) presente | hecho estructural del DACL, usado EXCLUSIVAMENTE para interpretar el caso dueño-atribuible-con-WD-denegado (desambiguación, nunca para inferir mutación) | Caso normativo en §5 HARDENED conjunct 2 |
+| Acceso efectivo | `AccessCheck` con token de impersonación duplicado (`DuplicateTokenEx`), desired `MAXIMUM_ALLOWED` con `MapGenericMask`, `GENERIC_MAPPING` de archivos [^accesscheck] | Devuelve máscara concedida real; chequeo dirigido adicional de `WRITE_DAC` para el camino implícito del dueño (GP-T47) |
 
 **Evidencia insuficiente (prohibida como base de estado)**: strings de nombres de cuenta;
 salida parseada de icacls/cacls; atributo ReadOnly del filesystem; `os.access`; bits POSIX
@@ -298,24 +380,68 @@ Nota de implementación (para el PR futuro): el módulo debe entrar a la lista s
 como hizo `sky_claw.app.security.links`, porque `sky_claw.local.runtime_vault.*` hereda
 estándares estrictos y `app/security/*` está exento de mypy/BLE001.
 
+### 7.b Allowlist de APIs Win32 / prohibición de mutadores
+
+Contrato NORMATIVO para la futura implementación GP1 y ancla de code-review. El backend GP1
+sólo puede invocar APIs de esta lista; cualquier otra API Win32 con potencial mutador queda
+FORBIDDEN_IN_GP1.
+
+| API | READ_ONLY | Por qué la necesita GP1 | Riesgo de mutación si se abusa |
+|---|---|---|---|
+| `GetNamedSecurityInfoW` | Sí | owner/group/DACL de cada nodo | Ninguno intrínseco (variante Get) |
+| `AccessCheck` | Sí | acceso efectivo del token | Ninguno |
+| `GetTokenInformation` | Sí | user/grupos/elevación/privilegios | Ninguno |
+| `DuplicateTokenEx` | Sí* | duplicar token propio a impersonación para AccessCheck | *No altera privilegios ni grupos (copia); prohibido usarlo como base de AdjustTokenPrivileges en GP1 |
+| `GetVolumeInformationByHandleW` | Sí | nombre FS + FILE_PERSISTENT_ACLS | Ninguno |
+| `GetDriveTypeW` | Sí | gate de localidad (DRIVE_FIXED) | Ninguno |
+| `CreateFileW` | Sólo con parameterización fija: desired access `0` o `FILE_READ_ATTRIBUTES`, flags `FILE_FLAG_BACKUP_SEMANTICS` | handle para metadatos de volumen | CUALQUIER otro disposition/access/flags está FORBIDDEN (sería apertura mutadora) — anclado por test |
+| `ConvertSidToStringSidW` | Sí | render S-1-… sin nombres localizados | Ninguno |
+| `LookupPrivilegeValueW` / `LookupPrivilegeNameW` | Sí | resolver LUID↔constante de privilegio [^priv] | Ninguno |
+| `LocalFree` / gestión de memoria | Sí | liberar buffers devueltos | Ninguno |
+
+FORBIDDEN_IN_GP1 (lista no exhaustiva; la regla general es "toda API que no esté en la
+allowlist"): `SetNamedSecurityInfoW`, `SetFileSecurityW`, `SetSecurityInfo`, `SetFileAttributesW`,
+`DeleteFileW`, `RemoveDirectoryW`, `MoveFileW*`, `CreateHardLinkW`, `CreateSymbolicLinkW`,
+`SetFileInformationByHandle`, `AdjustTokenPrivileges`, `InitiateSystemShutdown*`, y
+`CreateFileW` fuera de la parameterización permitida. `AdjustTokenPrivileges` es doblemente
+prohibido: además de mutar el propio token, sería la vía para habilitar un privilegio
+mutation-enabling presente-aunque-deshabilitado durante la inspección, invalidando la
+medición.
+
+Anclas de test asociadas: GP-T20 (allowlist AST + monkeypatch Python-level), GP-T49
+(invocación de API nativa mutadora ⇒ fallo), GP-T50 (SD/metadata del árbol idénticos antes/
+después; TreeDigest ≠ integridad de ACL).
+
 ## 8. Capability del filesystem
 
-1. **¿Cómo saber qué filesystem contiene el path?** Handle propio del path +
-   `GetVolumeInformationByHandleW` → nombre ("NTFS", "ReFS", "exFAT", …) y flags, entre
-   ellos `FILE_PERSISTENT_ACLS` = "el volumen preserva y hace cumplir ACLs (NTFS sí, FAT
-   no)" [^gvi].
-2. **Matriz v1**: se proclama soporte sólo donde el contrato puede demostrarse y testearse:
+Orden de gates (todos ANTES de enumerar el árbol): plataforma → localidad de la unidad →
+filesystem → ACLs persistentes.
+
+1. **¿Cómo saber qué unidad/volumen contiene el path?** `GetDriveTypeW` sobre la raíz:
+   sólo `DRIVE_FIXED` es candidato v1. `DRIVE_REMOTE` (toda letra mapeada a una share SMB,
+   aunque el servidor reporte NTFS y el SD llegue legible) → UNSUPPORTED: el chequeo de
+   acceso lo ejecuta el servidor contra SU representación del token, así que el modelo de
+   acceso local no representa al consumidor real [^drivetype]. `DRIVE_UNKNOWN`,
+   `DRIVE_NO_ROOT_DIR`, `DRIVE_CDROM`, `DRIVE_RAMDISK`, `DRIVE_REMOVABLE` → UNSUPPORTED v1
+   (fail closed). Rutas `\\?\`/subst que resuelven a volumen fijo local heredan la decisión
+   del volumen real vía los APIs por-handle.
+2. **¿Qué filesystem?** Handle propio del path + `GetVolumeInformationByHandleW` → nombre
+   ("NTFS", "ReFS", "exFAT", …) y flags, entre ellos `FILE_PERSISTENT_ACLS` = "el volumen
+   preserva y hace cumplir ACLs (NTFS sí, FAT no)" [^gvi].
+3. **Matriz v1**: se proclama soporte sólo donde el contrato puede demostrarse y testearse:
 
 | Entorno | Estado v1 | Razón |
 |---|---|---|
-| NTFS local (letra de unidad) | SOPORTADO | Modelo ACL completo; único validable en CI/rig hoy |
-| ReFS | UNSUPPORTED (candidato GP1.1) | Estructuralmente mantiene ACLs (flag persistente y soporte documentado de la API [^gvi]), pero v1 no admite capabilities sin validación de rig — regla anti-optimismo |
+| Windows + unidad `DRIVE_FIXED` + NTFS + `FILE_PERSISTENT_ACLS` | SOPORTADO | Modelo ACL completo, acceso local al objeto; único combinación validable en CI/rig hoy (`LOCAL_WINDOWS_NTFS_ONLY`) |
+| Letra mapeada a share SMB (aunque reporte NTFS) | UNSUPPORTED | `DRIVE_REMOTE` [^drivetype]; autoridad de acceso remota (GP-T35) |
+| UNC / red / SMB directo | UNSUPPORTED | Ídem anterior |
 | exFAT/FAT | UNSUPPORTED estructural | Sin ACLs persistentes [^gvi]: no hay nada que evaluar |
+| ReFS | UNSUPPORTED (candidato GP1.1) | Mantiene ACLs (flag persistente y soporte documentado de la API [^gvi]), PERO el flag por sí solo NO proclama soporte: exige investigación formal + validación en rig antes de entrar a la matriz — regla anti-optimismo |
 | FS desconocido/tercero con flag de ACLs | UNSUPPORTED | Fail closed: nombre fuera de matriz |
-| UNC / red / SMB | UNSUPPORTED | El chequeo de acceso es del servidor; la evaluación local no representa al consumidor real |
+| Unidad no fija / tipo indeterminable | UNSUPPORTED | Gate de localidad [^drivetype] |
 | Linux/macOS | UNSUPPORTED | Backend v1 es Windows-only; el vault sigue funcionando sin esta capability |
 
-3. **NTFS no es requisito del Runtime Vault**: `UNSUPPORTED_BLOCKS_RUNTIME_VAULT=NO`;
+4. **NTFS no es requisito del Runtime Vault**: `UNSUPPORTED_BLOCKS_RUNTIME_VAULT=NO`;
    verification/clone no consultan esta capability jamás (§11).
 
 ## 9. Decisión semántica de HARDENED
@@ -342,6 +468,14 @@ contrato normativo. Si una implementación futura no pudiera obtener ALGUNA de l
 de la conjunción (owner, elevación, privilegios, acceso efectivo), el resultado es UNKNOWN —
 nunca HARDENED parcial.
 
+**Revalidación tras la ronda de corrección (#504)**: con (a) cobertura exhaustiva del
+subtree, (b) capacidades compuestas en vez de bits sueltos, (c) separación de privilegios
+mutation-enabling vs diagnósticos, (d) semántica Owner Rights documentada y (e) transporte
+estructurado del scope, la definición A sigue siendo 100% demostrable read-only y sin
+sobreafirmaciones. Resultado: `HARDENED_DEFINITION_STATUS=RETAINED_WITH_STRUCTURED_SCOPE`.
+La definición vigente es la de §5 HARDENED; su alcance viaja en `assurance_scope`
+(§12), jamás en texto humano.
+
 ## 10. Taxonomía de errores y semántica success/state
 
 Aplicando el principio del repo (`success: bool` + `message` canónico vacío en éxito):
@@ -360,6 +494,16 @@ Invarianzas estructurales (a anclar en `__post_init__`, patrón `PhysicalIndepen
 - `success=False ⇒ state=UNKNOWN ∧ message≠""`; `success=True ⇒ message==""`;
 - `state=UNKNOWN ⇒ ¬success` (jamás un UNKNOWN "informativo exitoso");
 - nunca `success == protected`: son conceptos distintos (§11 muestra `VERIFIED + UNPROTECTED`).
+
+Ejemplos normativos (el safety qualifier vive en metadata estructurada, NUNCA en message):
+
+```
+success=True  state=UNPROTECTED      message=""   # válido: inspección exitosa que descubre vulnerabilidad
+success=True  state=WRITE_PROTECTED  message=""   # válido; scope en assurance_scope/scan_scope
+success=True  state=HARDENED         message=""   # válido; NO implica admin-proof (§5)
+success=True  state=UNSUPPORTED      message=""   # válido: capability probe exitoso y concluyente
+success=False state=UNKNOWN          message≠""   # único estado con success=False
+```
 
 ## 11. Independencia del Runtime Vault (no-acoplamiento RV-3)
 
@@ -383,8 +527,11 @@ GoldenMasterVerificationResult, destination, ...)`):
   trabajo se detiene con veredicto `STOP_RV4_ARCHITECTURAL_COUPLING` y justificación
   arquitectónica extraordinaria en un ADR nuevo.
 
-Anclas de test que congelan esta ortogonalidad: GP-T19 (comportamiento) y GP-T34 (AST:
-`runtime_vault.clone` no importa el módulo de protección — patrón enumerativo del repo).
+Anclas de test que congelan esta ortogonalidad: GP-T19 y GP-T51/T52/T53 (comportamental:
+ningún estado de protección altera VERIFIED ni la elegibilidad de clone), GP-T34 (AST:
+`runtime_vault.clone`/`models`) y GP-T54 (AST/import-graph sobre TODO el core
+`inventory`/`verification`/`golden`/`clone`/`models`, con la regla de dirección §13 —
+patrón enumerativo del repo).
 
 ## 12. API/modelo propuesto (sin implementar)
 
@@ -398,61 +545,80 @@ class GoldenProtectionState(StrEnum):
 
 
 class GoldenProtectionRight(StrEnum):
-    """Derechos efectivos relevantes, ya resueltos por AccessCheck."""
+    """Derechos efectivos relevantes, ya resueltos por AccessCheck por nodo."""
     READ_DATA           # FILE_READ_DATA / FILE_LIST_DIRECTORY
     EXECUTE             # FILE_EXECUTE / FILE_TRAVERSE
     WRITE_CONTENT       # WRITE_DATA+APPEND ≡ ADD_FILE+ADD_SUBDIR según nodo
     DELETE              # DELETE del nodo
-    DELETE_CHILD        # FILE_DELETE_CHILD del directorio evaluado (parent/root)
+    DELETE_CHILD        # FILE_DELETE_CHILD del directorio evaluado
     WRITE_METADATA      # FILE_WRITE_ATTRIBUTES + FILE_WRITE_EA
-    CHANGE_PERMISSIONS  # WRITE_DAC
+    CHANGE_PERMISSIONS  # WRITE_DAC (incluye la vía implícita del dueño si aplica)
     CHANGE_OWNER        # WRITE_OWNER
 
 
 @dataclass(frozen=True, slots=True)
+class NodeProtectionObservation:
+    """Evidencia cruda de UN nodo; campo None = no observable (posible causa UNKNOWN)."""
+    relative_path: str
+    node_kind: str                                        # "dir" | "file"
+    owner_sid: str | None                                 # S-1-… (ConvertSidToStringSid)
+    granted_rights: frozenset[GoldenProtectionRight] | None
+    owner_rights_ace_present: bool | None                 # ACE S-1-3-4 en el DACL (diagnóstico §5)
+
+
+@dataclass(frozen=True, slots=True)
 class GoldenProtectionEvidence:
-    """Evidencia cruda observada; cada campo None = no observable (posible causa UNKNOWN)."""
-    platform: str                                  # p.ej. "windows"; siempre observable
-    filesystem: str | None                         # nombre del volumen según GetVolumeInformationByHandleW
-    filesystem_persistent_acls: bool | None        # flag FILE_PERSISTENT_ACLS
-    owner_sid: str | None                          # S-1-… del root (ConvertSidToStringSid)
-    current_user_sid: str | None                   # user SID del token evaluado
-    current_token_elevated: bool | None            # TokenElevation
-    bypass_privileges_present: frozenset[str] | None  # {"SeTakeOwnershipPrivilege",...} presentes
-    granted_rights_root: frozenset[GoldenProtectionRight] | None
-    granted_rights_parent: frozenset[GoldenProtectionRight] | None
+    platform: str                                         # p.ej. "windows"; siempre observable
+    drive_type: int | None                                # GetDriveTypeW (gate de localidad §8)
+    filesystem: str | None                                # GetVolumeInformationByHandleW
+    filesystem_persistent_acls: bool | None               # flag FILE_PERSISTENT_ACLS
+    current_user_sid: str | None                          # user SID del token evaluado
+    current_token_elevated: bool | None                   # TokenElevation
+    mutation_privileges_present: frozenset[str] | None    # {"SeRestorePrivilege","SeTakeOwnershipPrivilege"}
+    diagnostic_privileges_present: frozenset[str] | None  # {"SeBackupPrivilege","SeSecurityPrivilege"} (§5)
+    parent_observation: NodeProtectionObservation | None  # parent del root (delete/rename del root)
+    nodes: tuple[NodeProtectionObservation, ...] | None   # TODO el subtree, orden determinista
+    pre_post_structural_match: bool | None                # sello best-effort PRE==POST (§5)
 
 
 @dataclass(frozen=True, slots=True)
 class GoldenProtectionResult:
     state: GoldenProtectionState
     message: str = ""
-    evidence: GoldenProtectionEvidence            # siempre presente; campos None-ables
-    scope: str = "root_and_parent"                # constante v1; documenta el límite del subtree
+    evidence: GoldenProtectionEvidence                    # siempre presente; campos None-ables
+    scan_scope: str = "FULL_SUBTREE_AND_PARENT"           # constante v1 (nombre definitivo abierto)
+    assurance_scope: str = "CURRENT_EFFECTIVE_UNELEVATED_TOKEN"  # constante v1; transporta el
+    # calificador de HARDENED ESTRUCTURADAMENTE: nunca en message, nunca inferido por el lector.
 
     @property
-    def success(self) -> bool: ...                # True SOLO en los 4 estados definitivos (§10)
+    def success(self) -> bool: ...                        # True SOLO en los 4 estados definitivos (§10)
 ```
 
 Justificación campo por campo (los `*_allowed` booleanos propuestos en la tarea se
-RECHAZAN como 12 campos planos: el frozenset es la misma información sin duplicación, y
-cada booleano sería derivable con `right in evidence.granted_rights_*`):
+RECHAZAN como campos planos duplicados: los derechos viajan como frozenset por nodo y cada
+booleano es derivable con `right in observation.granted_rights`):
 
 | Campo | ¿Necesario? | ¿Evidence o derivado? | ¿None posible? | Invariante |
 |---|---|---|---|---|
-| state/message/success | contrato del repo | derivado de la clasificación | message="" salvo UNKNOWN | §10 |
+| state/message/success | contrato del repo | derivado de la clasificación agregada | message="" salvo UNKNOWN | §10 |
 | evidence.platform | gate de UNSUPPORTED | evidence | no | `"windows"` ⇒ backend disponible |
-| filesystem, filesystem_persistent_acls | gate de matriz §8 | evidence | sí (si no llegó a observarse) | ambos None juntos o juntos informados |
-| owner_sid | conjunción HARDENED + diagnóstico | evidence | sí (ilegible ⇒ UNKNOWN) | string SIDL, jamás nombre de cuenta |
-| current_user_sid | check owner-attribuable + tests T14–T16 | evidence | sí | idem |
-| current_token_elevated | conjunción HARDENED | evidence | sí | coherente con HARDENED: `HARDENED ⇒ current_token_elevated is False` |
-| bypass_privileges_present | anti-bypass (UNPROTECTED/WRITE_PROTECTED) | evidence | sí | HARDENED/WRITE_PROTECTED ⇒ conjunto vacío |
-| granted_rights_root / _parent | clasificación + diff pre/post GP2/GP3 | derivado de AccessCheck, conservado crudo | sí | `WRITE_PROTECTED/HARDENED ⇒ ∩ mutación = ∅` sobre ambos sets |
-| scope | honestidad del límite subtree (§14) | constante v1 | no | literal `"root_and_parent"` en v1 |
+| drive_type | gate de localidad §8 (mapped SMB ≠ NTFS local) | evidence | sí (si no llegó a observarse) | estado protegido ⇒ `DRIVE_FIXED` |
+| filesystem, filesystem_persistent_acls | gate de matriz §8 | evidence | sí | ambos None juntos o juntos informados |
+| nodes[].owner_sid | conjunción HARDENED + diagnóstico | evidence | sí (ilegible ⇒ UNKNOWN) | string SIDL, jamás nombre de cuenta |
+| nodes[].granted_rights | clasificación compuesta §5 + diff pre/post GP2/GP3 | derivado de AccessCheck, conservado crudo | sí | `WRITE_PROTECTED/HARDENED ⇒ ninguna capacidad compuesta mutable en ningún nodo` |
+| nodes[].owner_rights_ace_present | desambiguación del caso dueño-con-WD-denegado (§5) | evidence estructural | sí | jamás usado para inferir mutación |
+| current_user_sid | check owner-attribuable + tests T14–T16 | evidence | sí | idem SID string |
+| current_token_elevated | conjunción HARDENED | evidence | sí | `HARDENED ⇒ current_token_elevated is False` |
+| mutation_privileges_present | anti-bypass (SeRestore/SeTakeOwnership) | evidence | sí | `WRITE_PROTECTED/HARDENED ⇒ conjunto vacío` |
+| diagnostic_privileges_present | contexto operacional (lectura backup, SACL) sin efecto en estado | evidence | sí | NO participa de la clasificación (GP-T44) |
+| parent_observation | vectores delete/rename del root + escalation por herencia | evidence | sí | cubierto por capacidades compuestas §5 |
+| nodes / pre_post_structural_match | propiedad del árbol + sello fail-closed | evidence | sí | estados protegidos ⇒ `pre_post_structural_match is True` ∧ cobertura completa |
+| scan_scope / assurance_scope | transporte estructurado del calificador (Finding HARDENED-scope) | constantes v1 | no | nombres definitivos decidibles al implementar; semántica normativa fijada en §5 |
 
 Firmas propuestas (sólo diseño): `inspect_golden_protection(path: pathlib.Path) ->
-GoldenProtectionResult` (sync, blocking I/O corto; el caller async envuelve con to_thread,
-patrón del repo) y excepción `GoldenProtectionInputError(RuntimeVaultError)`.
+GoldenProtectionResult` (sync; O(nodos) declarado, I/O bloqueante corto — el caller async
+envuelve con to_thread, patrón del repo) y excepción
+`GoldenProtectionInputError(RuntimeVaultError)`.
 
 ## 13. Plan de tests (para la implementación futura; NO se implementan acá)
 
@@ -482,14 +648,14 @@ temp dirs es legítimo); variaciones de token/elevación se testean a nivel clas
 | GP-T17 | token admin FILTRADO distinguido de token ELEVADO: deny-only groups + sin privilegios admin vs Full | unit/clasificador |
 | GP-T18 | UNKNOWN jamás se vuelve protegido: paramétrico sobre todas las causas de UNKNOWN | false-green |
 | GP-T19 | el estado de protección no cambia la autorización de Runtime Clone (VERIFIED+UNPROTECTED clona igual que VERIFIED+HARDENED) | ortogonalidad |
-| GP-T20 | el inspector no ejecuta ningún syscall de escritura/creación/borrado/renombrado (monkeypatch de os/open/subprocess + digest del árbol idéntico pre/post) | false-green |
+| GP-T20 | el inspector no usa APIs de mutación a nivel Python (monkeypatch de `os.*`, `pathlib`, `open`, builtins) NI APIs Win32 nativas fuera de la allowlist §7.b (ancla enumerativa sobre la lista FORBIDDEN_IN_GP1) | false-green |
 | GP-T21 | sin dependencia de subprocess/icacls si el backend es API (AST anchor: módulo sin `subprocess`, sin literales "icacls"/"takeown") | ancla |
 | GP-T22 | el inspector no recomputa el tree digest (AST: protection no importa verification/inventory) | rendimiento/frontera |
-| GP-T23 | symlink/junction en root o parent → UNKNOWN (fail closed), usando la primitiva canónica de links | fail-closed |
+| GP-T23 | symlink/junction en CUALQUIER nodo de la superficie (root, descendiente o parent) → UNKNOWN (fail closed), usando la primitiva canónica de links | fail-closed |
 | GP-T24 | path inexistente → excepción input-error; path-file → excepción input-error; nunca result verde | taxonomía |
 | GP-T25 | invarianzas success/state paramétricas sobre los 5 estados (§10) | contracto |
 | GP-T26 | deny explícita precede allow amplia → derecho denegado pese al allow (DACL sintética) | adversarial/false-green |
-| GP-T27 | privilegio bypass presente (aunque disabled) en evidencia → UNPROTECTED, nunca WRITE_PROTECTED | adversarial/false-green |
+| GP-T27 | privilegio mutation-enabling presente aunque disabled (`SeRestorePrivilege`/`SeTakeOwnershipPrivilege`) en evidencia → UNPROTECTED, nunca WRITE_PROTECTED | adversarial/false-green |
 | GP-T28 | evidencia de token elevado → nunca HARDENED | adversarial |
 | GP-T29 | parent con FILE_DELETE_CHILD efectivo aunque root restrictivo → UNPROTECTED | adversarial/false-green |
 | GP-T30 | DACL NULL → UNPROTECTED; DACL vacía → WRITE_PROTECTED con lecturas en None/false | adversarial |
@@ -497,25 +663,52 @@ temp dirs es legítimo); variaciones de token/elevación se testean a nivel clas
 | GP-T32 | owner SID no resoluble a string → UNKNOWN | observación |
 | GP-T33 | UNC path → UNSUPPORTED | matriz |
 | GP-T34 | AST: `runtime_vault.clone` y `runtime_vault.models` no referencian el módulo de protección (ortogonalidad enumerada, estilo test_ritual_dispatch) | ortogonalidad/ancla |
+| GP-T35 | unidad mapeada remota (SMB montado como letra, p.ej. Z:\) → UNSUPPORTED aunque el FS reporte NTFS (`DRIVE_REMOTE`) | matriz/windows |
+| GP-T36 | descendiente con ACE explícita escribible (herencia intacta en el resto) → UNPROTECTED | subtree/false-green |
+| GP-T37 | descendiente con herencia deshabilitada + acceso efectivo escribible → UNPROTECTED | subtree/false-green |
+| GP-T38 | security descriptor de un descendiente ilegible → UNKNOWN global | subtree/fail-closed |
+| GP-T39 | descendiente aparece durante la inspección (drift PRE/POST) → UNKNOWN | subtree/fail-closed |
+| GP-T40 | descendiente desaparece durante la inspección (drift PRE/POST) → UNKNOWN | subtree/fail-closed |
+| GP-T41 | descendiente reemplazado por nodo de identidad distinta durante la inspección → UNKNOWN | subtree/fail-closed |
+| GP-T42 | todos los descendientes protegidos (+root+parent OK) → elegible WRITE_PROTECTED | subtree |
+| GP-T43 | todos los descendientes protegidos + conjunciones HARDENED → HARDENED | subtree |
+| GP-T44 | `SeBackupPrivilege` solo NO produce UNPROTECTED (queda como evidencia diagnóstica) | privilegios/false-green |
+| GP-T45 | `SeRestorePrivilege` presente bloquea estado protegido (capacidad de mutación) | privilegios |
+| GP-T46 | `SeTakeOwnershipPrivilege` presente bloquea estado protegido según contrato final | privilegios |
+| GP-T47 | owner implícito: directorio propiedad del usuario actual con DACL que no le concede WD ⇒ CHANGE_PERMISSIONS efectivo por vía del dueño → UNPROTECTED (y con ACE Owner Rights restrictiva, se respeta la medición) | owner/false-green |
+| GP-T48 | el descriptor construido para AccessCheck incluye OWNER+GROUP+DACL (sin SACL); SD sin group → UNKNOWN, no crash | backend |
+| GP-T49 | invocación de cualquier API nativa mutadora (FORBIDDEN_IN_GP1 §7.b) durante la inspección ⇒ fallo de test | anti-mutación |
+| GP-T50 | security descriptors y metadata relevante del árbol IDÉNTICOS antes/después de la inspección (TreeDigest ≠ integridad de ACL: se comparan ambos ejes) | anti-mutación |
+| GP-T51 | VERIFIED + protection=UNPROTECTED no altera el resultado RV-2 (sigue VERIFIED) | ortogonalidad/comportamental |
+| GP-T52 | VERIFIED + protection=UNKNOWN no bloquea RV-3 clone | ortogonalidad/comportamental |
+| GP-T53 | VERIFIED + protection=UNSUPPORTED no bloquea RV-3 clone | ortogonalidad/comportamental |
+| GP-T54 | AST/import-graph: NINGUNO de `inventory.py`, `verification.py`, `golden.py`, `clone.py`, `models.py` importa el módulo de protección (extiende GP-T34 a todo el core RV-1/RV-2/RV-3) | ortogonalidad/ancla |
+| GP-T55 | parent permite sólo crear hermanos (ADD_FILE/ADD_SUBDIR), sin delete-child ni cadena replace hacia el Golden → NO se clasifica UNPROTECTED por ese hecho | composición/false-green |
 
-Resumen: 34 tests propuestos; false-green explícitos: T18, T20, T26, T27, T29, T30;
-Windows-específicos: T04–T12, T13, T17, T23, T29, T30, T33 (skipif no-win32 donde corresponda);
-portabilidad: T01, T02, T03, T24, T25, T34 corren en cualquier plataforma.
+Regla de dependencias que GP-T54 congela (dirección única): el inspector de protección PUEDE
+reutilizar helpers read-only del core Runtime Vault; el core
+(`inventory.py`/`verification.py`/`golden.py`/`clone.py`/`models.py`) NO DEBE importar ni
+exigir estado de protección para sus contratos existentes de autorización/integridad.
+Complementos comportamentales: T51/T52/T53.
+
+Resumen: **55 tests** propuestos; false-green explícitos: T18, T20, T26, T27, T29, T30,
+T36, T37, T38–T41 (drift→UNKNOWN), T44, T47, T49, T50, T55; Windows-específicos: T04–T12,
+T13, T17, T23, T29, T30, T33, T35, T36–T46, T47–T50 (skipif no-win32 donde corresponda);
+portabilidad: T01, T02, T03, T24, T25, T34, T51–T54 corren en cualquier plataforma.
 
 ## 14. Limitaciones de seguridad (declaradas)
 
 1. **No protege contra C/E/F**: un proceso elevado por consentimiento del usuario, SYSTEM u
    otro servicio privilegiado puede reescribir owner/DACL y saltarse toda la protección
    [^ontt] [^ifspriv]. HARDENED es un statement sobre el token evaluado, no sobre el mundo.
-2. **Scope v1 = {root, parent}**: captura todos los vectores de un paso contra el propio
-   root (incluido delete/rename del root vía parent). Los descendientes se asumen amparados
-   por herencia del root; ACEs explícitas no heredadas más profundas NO son auditadas en v1.
-   Mitigaciones: campo `scope` explícito en el resultado (nada sobrepromete), y RV-2 tree
-   digest como detector post-hoc completo. Un deep-scan opcional de security descriptors por
-   subárbol queda como candidato GP1.1 (read-only, costoso, cacheable por descriptor único).
-3. **TOCTOU best-effort**: entre la lectura del SD y cualquier uso posterior, un actor con
-   derecho de cambio podría alterarlo; la política de enlaces y la revalidación reducen la
-   ventana sin eliminarla (mismo límite declarado que `inventory_tree`).
+2. **Costo O(nodos) del escaneo exhaustivo**: la cobertura total del subtree es el precio
+   de no prometer "root protegido ⇒ Golden protegido" (falso verde eliminado por diseño).
+   Para ~16k nodos es factible; cacheable por hash de descriptor único si hiciera falta.
+   La observación es best-effort sellada (PRE/evidencia/POST): NO afirma snapshot atómico;
+   cualquier drift detectado degrada a UNKNOWN (§5).
+3. **TOCTOU residual**: entre el sello POST y cualquier uso posterior del resultado, un actor
+   con derecho de cambio podría alterarlo; la revalidación reduce la ventana sin eliminarla
+   (mismo límite declarado que `inventory_tree`).
 4. **UAC puede revertir HARDENED**: la pertenencia potencial a Administrators + aprobación
    UAC no es observable de forma confiable y NO participa del contrato (OPTION C rechazada).
 5. Los atributos ReadOnly del filesystem NO cuentan como protección (cualquier herramienta
@@ -525,16 +718,24 @@ portabilidad: T01, T02, T03, T24, T25, T34 corren en cualquier plataforma.
 
 **GP2 — Protect Golden** (MUTATING, futuro): HITL obligatorio; autorización EXCLUSIVAMENTE
 vía UAC/elevación de Windows (consentimiento del SO). **Nunca** pedir, escribir ni guardar
-passwords/credenciales en Sky-Claw (coherente con la política lock-only de la capa agente).
-Debe: capturar ANTES el descriptor de seguridad original (rollback serializado, p. ej. SDDL),
-aplicar protección uniformemente heredable al subtree (cerrando el hueco de profundidad de
-§14.2), re-inspeccionar con GP1 esperando HARDENED, re-verificar digest RV-2 intacto, y
-fail-closed con journal si la verificación post-cambio no cuadra (patrones existentes del
-repo). El schema de evidencia de GP1 (granted_rights sets comparables) está diseñado para el
-diff pre/post.
+passwords/credenciales en Sky-Claw. Restricciones de seguridad registradas para su diseño
+futuro (NO se diseña acá):
 
-**GP3 — Restore/Unprotect** (MUTATING, futuro): HITL + UAC; restaura el descriptor original
-capturado por GP2 y re-verifica digest VERIFIED. Verified recovery, sin atajos.
+1. **Inventario pre-mutación COMPLETO por nodo**: antes de cualquier mutación, capturar el
+   security descriptor de TODOS los nodos que GP2 pueda modificar (no sólo el root), cada
+   registro ligado como mínimo a: relative path, identidad de filesystem, tipo de nodo,
+   descriptor original y estado de herencia.
+2. **Inventario sellado**: el inventario queda cerrado antes de la primera mutación; si un
+   nodo cambia después de la captura → fail closed.
+3. Representación del descriptor original (self-relative SD serializado vs representación
+   canónica segura): decisión abierta, deliberadamente no tomada acá.
+4. Aplicar protección uniformemente heredable al subtree; re-inspeccionar con GP1 esperando
+   HARDENED; re-verificar digest RV-2 intacto; journal de mutación; fail-closed si la
+   verificación post-cambio no cuadra.
+
+**GP3 — Restore/Unprotect** (MUTATING, futuro): HITL + UAC; restaura el estado POR NODO del
+inventario capturado por GP2 (jamás "aplicar ACL del root recursivamente" ni inferir desde
+el root), re-inspecciona con GP1 y re-verifica digest VERIFIED. Verified recovery, sin atajos.
 
 **Execution Guard** (feature futura, fuera de GP1 y de RV-3): `reference_only` → no
 seleccionable como execution target. Es una decisión de la capa de selección/lanzamiento de
@@ -546,13 +747,16 @@ la nomenclatura RV-4, y su backend read-only es subconjunto del que GP2/GP3 nece
 
 ## 16. Preguntas abiertas
 
-1. Actualizar el índice de `docs/adr/README.md` (lista + línea "Última verificación") quedó
-   FUERA del write-set autorizado de esta tarea; hacerlo en merge review o follow-up.
-2. Validar ReFS en rig real para promoverlo a matriz de soporte en GP1.1.
-3. ¿Deep-scan de descriptores por subtree en GP1.1, o suficiente el backstop RV-2?
+1. ~~Actualizar el índice de `docs/adr/README.md`~~ → resuelto en la ronda de corrección
+   (índice actualizado a 0001–0009 en el mismo PR).
+2. Validar ReFS en rig real para promoverlo a matriz de soporte en GP1.1 (el flag
+   FILE_PERSISTENT_ACLS por sí solo NO proclama soporte, §8).
+3. ¿Cache por hash de descriptor único para acelerar re-inspecciones del subtree completo?
+   (optimización, no contrato).
 4. Redacción final del mensaje de UI para HARDENED (debe transmitir "frente al uso normal",
-   no "intocable").
-5. Nombre definitivo de la excepción de input (`GoldenProtectionInputError` propuesto).
+   no "intocable"); el dato estructurado ya no depende del texto.
+5. Nombre definitivo de la excepción de input (`GoldenProtectionInputError` propuesto) y de
+   los enums `scan_scope`/`assurance_scope` (semántica ya normativa en §5/§10).
 
 ## Referencias (fuentes primarias Microsoft)
 
@@ -572,3 +776,5 @@ la nomenclatura RV-4, y su backend read-only es subconjunto del que GP2/GP3 nece
 [^ontt]: The Old New Thing, 2024-10-30 — devblogs.microsoft.com/oldnewthing/20241030-00 (SeTakeOwnershipPrivilege gobierna SetNamedSecurityInfo(OWNER_...); ownership ⇒ READ_CONTROL+WRITE_DAC automáticos; cadena takeown→setowner→rewrite-DACL→write).
 [^acllists]: Access Control Lists — learn.microsoft.com/windows/win32/secauthz/access-control-lists (DACL NULL concede a everyone; DACL vacía niega todo).
 [^sidattrs]: SID Attributes in an Access Token — learn.microsoft.com/windows/win32/secauthz/sid-attributes-in-an-access-token (SE_GROUP_USE_FOR_DENY_ONLY del token filtrado).
+[^ownerrights]: WELL_KNOWN_SID_TYPE — learn.microsoft.com/windows/win32/api/winnt/ne-winnt-well_known_sid_type (`WinCreatorOwnerRightsSid = 71`, el Owner Rights SID S-1-3-4); semántica documentada en la tabla de well-known SIDs de Windows: cuando un ACE con este SID aplica al objeto, el sistema ignora los permisos implícitos READ_CONTROL y WRITE_DAC del dueño.
+[^drivetype]: GetDriveTypeW — learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getdrivetypew (DRIVE_FIXED=3; DRIVE_REMOTE=4 unidad remota/de red; DRIVE_UNKNOWN=0; DRIVE_NO_ROOT_DIR=1).
