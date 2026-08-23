@@ -211,6 +211,24 @@ class GoldenMasterVerificationResult:
     critical_results: tuple[CriticalFileEvidence, ...] = ()
     descriptor: GoldenMasterDescriptor | None = None
 
+    def __post_init__(self) -> None:
+        if self.state is VerificationState.VERIFIED:
+            if self.tree_result is None or self.tree_result.state is not VerificationState.VERIFIED:
+                raise ValueError("GoldenMasterVerificationResult VERIFIED requiere tree_result en estado VERIFIED")
+            if self.runtime_result is None or self.runtime_result.state is not VerificationState.VERIFIED:
+                raise ValueError("GoldenMasterVerificationResult VERIFIED requiere runtime_result en estado VERIFIED")
+            if not all(c.state is VerificationState.VERIFIED for c in self.critical_results):
+                raise ValueError(
+                    "GoldenMasterVerificationResult VERIFIED requiere que toda evidencia crítica esté en estado VERIFIED"
+                )
+            if self.descriptor is None:
+                raise ValueError("GoldenMasterVerificationResult VERIFIED requiere descriptor no nulo")
+        else:
+            if self.descriptor is not None:
+                raise ValueError(
+                    f"GoldenMasterVerificationResult en estado '{self.state.value}' no puede tener descriptor"
+                )
+
     @property
     def success(self) -> bool:
         return self.state is VerificationState.VERIFIED

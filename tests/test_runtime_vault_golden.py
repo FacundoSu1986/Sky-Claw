@@ -822,3 +822,95 @@ class TestMutationScenarios:
         for bad_path in traversal_cases:
             with pytest.raises(ValueError, match="El path crítico"):
                 CriticalFileExpectation(rel_path=bad_path, expected_digest="a" * 64)
+
+
+class TestP21StableAbsoluteLocation:
+    """P2-1: La ubicación almacenada en el descriptor debe ser absoluta y estable ante cambios de CWD."""
+
+    def test_a1_candidate_relativo_produce_descriptor_absoluto_estable(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import os
+
+        dir_a = tmp_path / "dir_a"
+        dir_a.mkdir()
+        golden_dir = dir_a / "golden_relative"
+        golden_dir.mkdir()
+        (golden_dir / "SkyrimSE.exe").write_bytes(b"MZ_EXE")
+
+        files = inventory_tree(golden_dir)
+        tree_digest = tree_digest_from_files(files)
+        runtime_id = RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0")
+
+        # CWD = dir_a, pasar candidato relativo "golden_relative"
+        monkeypatch.chdir(dir_a)
+        res = verify_golden_master(
+            candidate=pathlib.Path("golden_relative"),
+            expected_tree=tree_digest,
+            expected_runtime=runtime_id,
+            observed_runtime=runtime_id,
+        )
+        assert res.state is VerificationState.VERIFIED
+        assert res.descriptor is not None
+        assert res.descriptor.location.is_absolute()
+        assert str(res.descriptor.location) == os.path.abspath("golden_relative")
+
+        # Cambiar CWD = dir_b
+        dir_b = tmp_path / "dir_b"
+        dir_b.mkdir()
+        monkeypatch.chdir(dir_b)
+
+        # El descriptor debe seguir apuntando a dir_a/golden_relative
+        assert str(res.descriptor.location) == os.path.abspath(str(golden_dir))
+        assert (res.descriptor.location / "SkyrimSE.exe").is_file()
+
+    def test_a2_candidate_absoluto_preserva_ubicacion_absoluta(
+        self,
+        mock_candidate: tuple[pathlib.Path, TreeDigest, RuntimeIdentity, list[CriticalFileExpectation]],
+    ) -> None:
+        root, tree_digest, runtime_id, critical = mock_candidate
+        res = verify_golden_master(
+            candidate=root.resolve(),
+            expected_tree=tree_digest,
+            expected_runtime=runtime_id,
+            observed_runtime=runtime_id,
+            critical_expectations=critical,
+        )
+        assert res.state is VerificationState.VERIFIED
+        assert res.descriptor is not None
+        assert res.descriptor.location.is_absolute()
+
+    def test_a3_root_symlink_sigue_fail_closed_sin_ocultar_enlace(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        symlink_guard()
+        target_dir = tmp_path / "real_golden"
+        target_dir.mkdir()
+        (target_dir / "SkyrimSE.exe").write_bytes(b"MZ_EXE")
+
+        link_dir = tmp_path / "link_golden"
+        try:
+            link_dir.symlink_to(target_dir, target_is_directory=True)
+        except OSError:
+            pytest.skip("No se pueden crear symlinks en este entorno")
+
+        files = inventory_tree(target_dir)
+        tree_digest = tree_digest_from_files(files)
+        runtime_id = RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0")
+
+        # CWD = tmp_path, candidate relativo apuntando al enlace
+        monkeypatch.chdir(tmp_path)
+        res = verify_golden_master(
+            candidate=pathlib.Path("link_golden"),
+            expected_tree=tree_digest,
+            expected_runtime=runtime_id,
+            observed_runtime=runtime_id,
+        )
+        # La canonicalización lexical NO debe seguir el symlink; inventory_tree debe fail-closed
+        assert res.state is VerificationState.UNKNOWN
+        assert "symlink" in res.message.lower() or "enlace" in res.message.lower()
+        assert res.descriptor is None

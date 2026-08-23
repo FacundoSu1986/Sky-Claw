@@ -15,6 +15,7 @@ garantizando atomicidad y eficiencia (sin doble hashing ni TOCTOU).
 
 from __future__ import annotations
 
+import os
 import pathlib
 from collections.abc import Sequence
 
@@ -125,10 +126,10 @@ def verify_golden_master(
     UNKNOWN o FAILED (nunca auto-trust ni falso verde).
     """
     if isinstance(candidate, GoldenMasterCandidate):
-        root = candidate.location
+        root = pathlib.Path(os.path.abspath(os.fspath(candidate.location)))
         obs_runtime = candidate.observed_runtime if observed_runtime is None else observed_runtime
     else:
-        root = pathlib.Path(candidate)
+        root = pathlib.Path(os.path.abspath(os.fspath(candidate)))
         obs_runtime = observed_runtime
 
     # Validar que no haya duplicados en expectativas críticas antes de empezar

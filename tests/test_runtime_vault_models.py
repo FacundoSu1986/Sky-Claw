@@ -14,14 +14,20 @@ import ast
 import dataclasses
 import pathlib
 
+import pytest
+
 from sky_claw.local.runtime_vault import models as modelos
 from sky_claw.local.runtime_vault.models import (
+    CriticalFileEvidence,
     FileIdentity,
+    GoldenMasterDescriptor,
+    GoldenMasterVerificationResult,
     InventoryError,
     InventoryLinkError,
     RuntimeIdentity,
     RuntimeVaultError,
     RuntimeVerificationResult,
+    TreeDigest,
     TreeVerificationResult,
     VerificationState,
 )
@@ -103,11 +109,6 @@ class TestFormaDeLosModelos:
         assert issubclass(InventoryLinkError, InventoryError)
 
     def test_success_solo_en_verified_para_golden_y_criticos(self) -> None:
-        from sky_claw.local.runtime_vault.models import (
-            CriticalFileEvidence,
-            GoldenMasterVerificationResult,
-        )
-
         crit_verificado = CriticalFileEvidence(rel_path="a.txt", state=VerificationState.VERIFIED)
         crit_desconocido = CriticalFileEvidence(rel_path="a.txt", state=VerificationState.UNKNOWN)
         crit_fallido = CriticalFileEvidence(rel_path="a.txt", state=VerificationState.FAILED)
@@ -115,12 +116,163 @@ class TestFormaDeLosModelos:
         assert crit_desconocido.success is False
         assert crit_fallido.success is False
 
-        golden_verificado = GoldenMasterVerificationResult(state=VerificationState.VERIFIED)
+        tree_res = TreeVerificationResult(state=VerificationState.VERIFIED)
+        runtime_res = RuntimeVerificationResult(state=VerificationState.VERIFIED)
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        golden_verificado = GoldenMasterVerificationResult(
+            state=VerificationState.VERIFIED,
+            tree_result=tree_res,
+            runtime_result=runtime_res,
+            critical_results=(crit_verificado,),
+            descriptor=desc,
+        )
         golden_desconocido = GoldenMasterVerificationResult(state=VerificationState.UNKNOWN)
         golden_fallido = GoldenMasterVerificationResult(state=VerificationState.FAILED)
         assert golden_verificado.success is True
         assert golden_desconocido.success is False
         assert golden_fallido.success is False
+
+
+class TestInvarianteResultadoGolden:
+    """Valida la invariante estructural de GoldenMasterVerificationResult en __post_init__."""
+
+    def test_b1_verified_sin_tree_result_levanta_error(self) -> None:
+        runtime_res = RuntimeVerificationResult(state=VerificationState.VERIFIED)
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        with pytest.raises(ValueError, match="tree_result en estado VERIFIED"):
+            GoldenMasterVerificationResult(
+                state=VerificationState.VERIFIED,
+                tree_result=None,
+                runtime_result=runtime_res,
+                descriptor=desc,
+            )
+
+    def test_b2_verified_sin_runtime_result_levanta_error(self) -> None:
+        tree_res = TreeVerificationResult(state=VerificationState.VERIFIED)
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        with pytest.raises(ValueError, match="runtime_result en estado VERIFIED"):
+            GoldenMasterVerificationResult(
+                state=VerificationState.VERIFIED,
+                tree_result=tree_res,
+                runtime_result=None,
+                descriptor=desc,
+            )
+
+    def test_b3_verified_con_tree_unknown_levanta_error(self) -> None:
+        tree_res = TreeVerificationResult(state=VerificationState.UNKNOWN)
+        runtime_res = RuntimeVerificationResult(state=VerificationState.VERIFIED)
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        with pytest.raises(ValueError, match="tree_result en estado VERIFIED"):
+            GoldenMasterVerificationResult(
+                state=VerificationState.VERIFIED,
+                tree_result=tree_res,
+                runtime_result=runtime_res,
+                descriptor=desc,
+            )
+
+    def test_b4_verified_con_runtime_failed_levanta_error(self) -> None:
+        tree_res = TreeVerificationResult(state=VerificationState.VERIFIED)
+        runtime_res = RuntimeVerificationResult(state=VerificationState.FAILED)
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        with pytest.raises(ValueError, match="runtime_result en estado VERIFIED"):
+            GoldenMasterVerificationResult(
+                state=VerificationState.VERIFIED,
+                tree_result=tree_res,
+                runtime_result=runtime_res,
+                descriptor=desc,
+            )
+
+    def test_b5_verified_con_critical_failed_levanta_error(self) -> None:
+        tree_res = TreeVerificationResult(state=VerificationState.VERIFIED)
+        runtime_res = RuntimeVerificationResult(state=VerificationState.VERIFIED)
+        crit_failed = (CriticalFileEvidence(rel_path="a.txt", state=VerificationState.FAILED),)
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        with pytest.raises(ValueError, match="toda evidencia crítica esté en estado VERIFIED"):
+            GoldenMasterVerificationResult(
+                state=VerificationState.VERIFIED,
+                tree_result=tree_res,
+                runtime_result=runtime_res,
+                critical_results=crit_failed,
+                descriptor=desc,
+            )
+
+    def test_b6_verified_sin_descriptor_levanta_error(self) -> None:
+        tree_res = TreeVerificationResult(state=VerificationState.VERIFIED)
+        runtime_res = RuntimeVerificationResult(state=VerificationState.VERIFIED)
+        with pytest.raises(ValueError, match="requiere descriptor no nulo"):
+            GoldenMasterVerificationResult(
+                state=VerificationState.VERIFIED,
+                tree_result=tree_res,
+                runtime_result=runtime_res,
+                descriptor=None,
+            )
+
+    def test_b7_unknown_con_descriptor_levanta_error(self) -> None:
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        with pytest.raises(ValueError, match="no puede tener descriptor"):
+            GoldenMasterVerificationResult(
+                state=VerificationState.UNKNOWN,
+                descriptor=desc,
+            )
+
+    def test_b8_failed_con_descriptor_levanta_error(self) -> None:
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        with pytest.raises(ValueError, match="no puede tener descriptor"):
+            GoldenMasterVerificationResult(
+                state=VerificationState.FAILED,
+                descriptor=desc,
+            )
+
+    def test_b9_verified_con_criticos_vacios_y_descriptor_es_valido(self) -> None:
+        tree_res = TreeVerificationResult(state=VerificationState.VERIFIED)
+        runtime_res = RuntimeVerificationResult(state=VerificationState.VERIFIED)
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        res = GoldenMasterVerificationResult(
+            state=VerificationState.VERIFIED,
+            tree_result=tree_res,
+            runtime_result=runtime_res,
+            critical_results=(),
+            descriptor=desc,
+        )
+        assert res.state is VerificationState.VERIFIED
+        assert res.success is True
+        assert res.descriptor == desc
 
 
 class TestSinCodigoCandidateOnlyDePr493:
