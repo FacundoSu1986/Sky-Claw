@@ -268,16 +268,21 @@ def test_esquema_declara_tabla_absorciones_con_identidad_tx_artifact() -> None:
 
 def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
     """Ancla M11-4 (estilo AST del repo): ``_INSERT_ABSORCION_EVIDENCIA_SQL``
-    tiene EXACTAMENTE un sitio de escritura — dentro de
-    ``_escribir_handoff_indeterminado``, que ASUME el boundary del caller — y
-    ambas ramas de ``registrar_handoff_indeterminado`` (lifecycle/standalone)
-    pasan el conjunto completo al helper. Un escritor fuera del boundary
-    (segunda conexión, post-commit, path paralelo) rompe el ancla a propósito:
-    la ventana 'handoff durable sin absorciones' resucitaría la evidencia."""
+    tiene EXACTAMENTE DOS sitios de escritura, ambos DENTRO de helpers que
+    ASUMEN el boundary del caller:
+
+    - ``_escribir_handoff_indeterminado`` (materialización del INDETERMINATE);
+    - ``_escribir_handoff_de_deployment`` (POST493_ACTIVE_INDETERMINATE_
+      EVIDENCE: absorción de la evidencia histórica al reemplazar un handoff).
+
+    Un tercer escritor —segunda conexión, post-commit, path paralelo— rompe el
+    ancla a propósito: la ventana 'evidencia sin boundary durable' resucitaría
+    la evidencia o la consumiría sin handoff detrás."""
     fuente = pathlib.Path(sky_claw_app_db_journal_path()).read_text(encoding="utf-8")
-    # Definición + UN único uso como executemany.
-    assert fuente.count("_INSERT_ABSORCION_EVIDENCIA_SQL") == 2
-    # Las dos ramas del boundary delegan en el MISMO helper con el conjunto.
+    # Definición + DOS usos como executemany (uno por boundary).
+    assert fuente.count("_INSERT_ABSORCION_EVIDENCIA_SQL") == 3
+    # Las dos ramas del boundary indeterminado delegan en el MISMO helper con
+    # el conjunto.
     assert fuente.count("ids_absorcion=ids_absorcion") >= 2
 
 

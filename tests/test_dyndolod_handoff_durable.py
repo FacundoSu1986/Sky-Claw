@@ -3351,12 +3351,23 @@ def _cuerpo_de_funcion(modulo: pathlib.Path, nombre: str) -> str:
 def test_la_fuente_durable_del_oracle_es_pending_mas_receipts_unresolved() -> None:
     """Ancla 2 (0006): el oracle nombra EXACTAMENTE sus dos fuentes durables —
     TX PENDING y receipts UNRESOLVED de stale sweep — y la tabla de receipts
-    existe en el contrato. Nunca: ROLLED_BACK arbitrario."""
+    existe en el contrato. Nunca: ROLLED_BACK arbitrario.
+
+    POST493_ACTIVE_INDETERMINATE_EVIDENCE (fix): la semántica vive en el
+    helper compartido ``_candidatas_orphan_en_conn`` — la MISMA función que
+    ejecuta la absorción del boundary de reemplazo, para que oracle y
+    absorción no puedan divergir. El ancla mira ese cuerpo."""
     raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
-    cuerpo = _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", "transacciones_que_nombran")
+    fuente = (raiz / "app" / "db" / "journal.py").read_text(encoding="utf-8")
+    cuerpo = _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", "_candidatas_orphan_en_conn")
     assert "stale_pending_sweep_receipts" in cuerpo, "el oracle no consulta los receipts durables"
     assert "TransactionStatus.PENDING" in cuerpo, "el oracle perdió la ventana PENDING"
     assert "SweepReceiptState.UNRESOLVED" in cuerpo, "el oracle no filtra por receipt UNRESOLVED"
+    # Una sola definición de candidata: transacciones_que_nombran delega en el
+    # helper y ya no duplica la enumeración.
+    assert fuente.count("_candidatas_orphan_en_conn(") >= 3, (
+        "oracle y absorción deben compartir el MISMO selector de candidatas"
+    )
 
     contrato = (raiz / "app" / "db" / "handoffs.py").read_text(encoding="utf-8")
     assert "stale_pending_sweep_receipts" in contrato, "la tabla de receipts no vive en el contrato D2"

@@ -1408,7 +1408,11 @@ _EMISORES_DE_SQL_ESPERADOS = {
     # D2 (PR #493): lecturas del handoff durable — toman operation() con
     # lifecycle y self._lock en standalone, como sus pares de get_*.
     "consultar_handoff_activo": True,
-    "transacciones_que_nombran": True,
+    # POST493_ACTIVE_INDETERMINATE_EVIDENCE (fix): transacciones_que_nombran
+    # dejó de emitir SQL propio — su semántica vive en el helper de módulo
+    # _candidatas_orphan_en_conn, compartido con el boundary de reemplazo.
+    # Sigue tomando self._lock / operation() por sí misma, pero ya no es un
+    # emisor directo y sale de este inventario por definición.
     # D2 (PR #493 patch 0006): escritor de receipts de stale sweep — boundary
     # propio en las dos ramas, igual que los demás mutadores.
     "cerrar_receipts_como_no_artifact": True,
@@ -1450,7 +1454,9 @@ _EMISORES_CON_LOCK_LOCAL_ESPERADOS = {
     "sweep_stale_pending": True,
     # D2 (PR #493): lecturas del handoff — self._lock en standalone.
     "consultar_handoff_activo": True,
-    "transacciones_que_nombran": True,
+    # POST493_ACTIVE_INDETERMINATE_EVIDENCE (fix): ver el gemelo de arriba —
+    # transacciones_que_nombran ya no emite SQL directo (helper compartido
+    # _candidatas_orphan_en_conn) y sale de este inventario.
     "cerrar_receipts_como_no_artifact": True,
     # D2: helpers que asumen la serialización del caller (False acá; el par
     # exacto de cada caller se congela en _SERIALIZACION_DE_CALLERS_ESPERADA).

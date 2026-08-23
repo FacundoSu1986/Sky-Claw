@@ -71,6 +71,57 @@ def _nombra_objetivo(ruta: object, objetivo_fisico: str, prefijo: str) -> bool:
     return canonica == objetivo_fisico or canonica.startswith(prefijo)
 
 
+async def _candidatas_orphan_en_conn(
+    conn: aiosqlite.Connection,
+    *,
+    objetivo_fisico: str,
+    prefijo: str,
+) -> set[int]:
+    """LA definición de candidata orphan para un artifact físico — operable
+    dentro de una conexión existente.
+
+    Semántica congelada (única fuente de verdad; ``transacciones_que_nombran``
+    y el boundary de reemplazo la comparten para que no puedan divergir):
+
+    - TX PENDING cuyo ActionManifest nombra el objetivo, O
+    - TX ROLLED_BACK con receipt UNRESOLVED de stale sweep que lo nombra;
+    - MINUS las que ya tienen absorción vigente ``(transaction_id,
+      artifact_path)`` para ESTE objetivo (exclusión per-artifact).
+
+    Corre sobre el ``conn`` del caller SIN commitear ni abrir boundaries:
+    dentro del boundary de reemplazo ve las escrituras aún no confirmadas de
+    esa misma conexión (p. ej. la TX actual ya marcada COMMITTED deja de ser
+    candidata), que es exactamente la propiedad que necesita la absorción
+    atómica.
+    """
+    sql = """
+        SELECT je.transaction_id, t.status, je.metadata, r.state
+        FROM journal_entries je
+        JOIN transactions t ON t.transaction_id = je.transaction_id
+        LEFT JOIN stale_pending_sweep_receipts r ON r.transaction_id = je.transaction_id
+        WHERE je.metadata IS NOT NULL AND t.status IN ('pending', 'rolled_back')
+    """
+    sql_absorbidas = "SELECT transaction_id FROM orphan_evidence_absorptions WHERE artifact_path = ?"
+    async with conn.execute(sql) as cursor:
+        filas = [tuple(fila) async for fila in cursor]
+    async with conn.execute(sql_absorbidas, (objetivo_fisico,)) as cursor:
+        absorbidas = {int(fila[0]) async for fila in cursor}
+
+    coincidencias: set[int] = set()
+    for tx_id, status, metadata, receipt_state in filas:
+        if status != TransactionStatus.PENDING.value and receipt_state != SweepReceiptState.UNRESOLVED.value:
+            continue
+        try:
+            files_touched = json.loads(metadata).get("files_touched") or []
+        except (TypeError, json.JSONDecodeError):
+            continue
+        for ruta in files_touched:
+            if _nombra_objetivo(ruta, objetivo_fisico, prefijo):
+                coincidencias.add(int(tx_id))
+                break
+    return coincidencias - absorbidas
+
+
 #: INSERT del receipt durable de stale sweep (F-001, patch 0006).
 _INSERT_SWEEP_RECEIPT_SQL = "INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (?, 'unresolved')"
 
@@ -967,7 +1018,32 @@ class OperationJournal:
         registro: DeploymentHandoff,
         viejo: DeploymentHandoff | None,
     ) -> int:
-        """Pasos SQL del cierre RUN 1/supersede; ASUME el boundary del caller."""
+        """Pasos SQL del cierre RUN 1/supersede; ASUME el boundary del caller.
+
+        POST493_ACTIVE_INDETERMINATE_EVIDENCE_REUSE (follow-up de #493): cuando
+        hay ``viejo``, el MISMO boundary que reemplaza el handoff absorbe TODA
+        la evidencia histórica vigente PARA ESTE ARTIFACT — candidatas del
+        oracle compartido :func:`_candidatas_orphan_en_conn` — referenciando
+        ``viejo.handoff_id``. Mientras un owner activo existió, el reconciler
+        retornaba ese owner ANTES de materializar evidencia nueva
+        (short-circuit de ``reconciliar_orphan_de_artifact``), así que las
+        corridas fallidas de esa época quedaban PENDING sin absorción y el
+        siguiente resume/startup las re-fabricaba como INDETERMINATE falso.
+        La exclusión es per-artifact ``(transaction_id, artifact_path)``,
+        sobrevive a SUPERSEDED/COMPLETED, aplica a ambas fuentes del oracle
+        (PENDING y ROLLED_BACK+receipt UNRESOLVED) y NO toca
+        ``transactions.status`` — una PENDING absorbida puede seguir siendo una
+        corrida viva (LIVE_SAFE_BY_CONSTRUCTION); el stale sweep administra el
+        lifecycle, la absorción administra la evidencia.
+
+        Orden interno (la posición importa): la enumeración corre DESPUÉS del
+        UPDATE que commitea la TX actual (así la generación nueva jamás se
+        absorbe a sí misma — la ve COMMITTED su propia conexión) y DESPUÉS del
+        INSERT del nuevo handoff, pero ANTES de obsoletar receipts: los
+        candidatos ROLLED_BACK+UNRESOLVED deben ser visibles acá, y el bloque
+        de receipts de abajo los marca SUPERSEDED en el mismo boundary (nunca
+        CONSUMED: no crearon ningún INDETERMINATE).
+        """
         cursor = await conn.execute(
             """
             UPDATE transactions
@@ -1010,10 +1086,25 @@ class OperationJournal:
                 "UPDATE deployment_handoffs SET superseded_by = ? WHERE handoff_id = ?",
                 (nuevo_id, viejo.handoff_id),
             )
+        objetivo_fisico, prefijo = _canonica_y_prefijo(registro.artifact_path)
+        if viejo is not None:
+            candidatas = await _candidatas_orphan_en_conn(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
+            # Congelado explícito: la TX de esta generación jamás recibe
+            # absorción por el artifact que acaba de producir (hoy ya es
+            # imposible — arriba quedó COMMITTED en esta misma conexión y por
+            # tanto no es candidata — pero el guard no cuesta y blinda contra
+            # reordenamientos futuros del helper).
+            candidatas.discard(transaction_id)
+            if candidatas:
+                await conn.executemany(
+                    _INSERT_ABSORCION_EVIDENCIA_SQL,
+                    [(int(tx_id), registro.artifact_path, int(viejo.handoff_id)) for tx_id in sorted(candidatas)],
+                )
         # F-001 (patch 0006): una provenance autorizada NUEVA para este artifact
         # deja SUPERSEDED todo receipt UNRESOLVED cuyo TX lo nombra — el receipt
         # viejo no intoxica el futuro. Mismo boundary: si el INSERT falla, la
-        # obsoletización tampoco queda afirmada.
+        # obsoletización tampoco queda afirmada. Las candidatas absorbidas
+        # arriba reciben exactamente este destino (SUPERSEDED, no CONSUMED).
         objetivo_fisico, prefijo = _canonica_y_prefijo(registro.artifact_path)
         cursor_r = await conn.execute(
             "SELECT r.transaction_id, je.metadata "
@@ -1158,11 +1249,15 @@ class OperationJournal:
         1. ``transactions`` → COMMITTED (con descripción estrechada si se pasó);
         2. si ``viejo``, ``deployment_handoffs`` → SUPERSEDED (sin ``superseded_by``);
         3. INSERT del handoff nuevo;
-        4. si ``viejo``, ``viejo.superseded_by = nuevo``.
+        4. si ``viejo``, ``viejo.superseded_by = nuevo``;
+        5. si ``viejo``, absorción de la evidencia histórica vigente PARA ESTE
+           ARTIFACT (oracle compartido, provenance ``viejo.handoff_id``) +
+           obsoletización de sus receipts UNRESOLVED — todo en ESTE boundary.
 
         Cualquier guard que falle revierte el boundary entero (con lifecycle) o
         deja la conexión sin commit (standalone): nunca queda una TX
-        COMMITTED sin su handoff ni una historia partida. El estado Python
+        COMMITTED sin su handoff, una historia partida, ni evidencia absorbida
+        sin el handoff de reemplazo durable detrás. El estado Python
         ``_current_transaction`` se limpia sólo después del commit durable.
         """
         db = await self._ensure_connected()
@@ -1426,45 +1521,20 @@ class OperationJournal:
         ``LIKE`` sobre texto JSON sería ciego a los escapes de backslash de las
         rutas Windows. La exclusión de absorciones se precarga con UNA query
         parametrizada por el objetivo canónico — sin N+1 por candidata.
+
+        La semántica vive en :func:`_candidatas_orphan_en_conn` — el MISMO
+        helper que ejecuta la absorción del boundary de reemplazo — para que
+        oracle y absorción no puedan divergir (una sola definición de
+        "candidata").
         """
         db = await self._ensure_connected()
         objetivo_fisico, prefijo = _canonica_y_prefijo(objetivo)
-        sql = """
-            SELECT je.transaction_id, t.status, je.metadata, r.state
-            FROM journal_entries je
-            JOIN transactions t ON t.transaction_id = je.transaction_id
-            LEFT JOIN stale_pending_sweep_receipts r ON r.transaction_id = je.transaction_id
-            WHERE je.metadata IS NOT NULL AND t.status IN ('pending', 'rolled_back')
-        """
-        sql_absorbidas = "SELECT transaction_id FROM orphan_evidence_absorptions WHERE artifact_path = ?"
-        filas: list[tuple[Any, ...]] = []
-        absorbidas: set[int] = set()
         if self._lifecycle is not None:
             async with self._lifecycle.operation(self._db_path) as conn:
-                async with conn.execute(sql) as cursor:
-                    filas = [tuple(fila) async for fila in cursor]
-                async with conn.execute(sql_absorbidas, (objetivo_fisico,)) as cursor:
-                    absorbidas = {int(fila[0]) async for fila in cursor}
+                coincidencias = await _candidatas_orphan_en_conn(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
         else:
             async with self._lock:
-                async with db.execute(sql) as cursor:
-                    filas = [tuple(fila) async for fila in cursor]
-                async with db.execute(sql_absorbidas, (objetivo_fisico,)) as cursor:
-                    absorbidas = {int(fila[0]) async for fila in cursor}
-
-        coincidencias: set[int] = set()
-        for tx_id, status, metadata, receipt_state in filas:
-            if status != TransactionStatus.PENDING.value and receipt_state != SweepReceiptState.UNRESOLVED.value:
-                continue
-            try:
-                files_touched = json.loads(metadata).get("files_touched") or []
-            except (TypeError, json.JSONDecodeError):
-                continue
-            for ruta in files_touched:
-                if _nombra_objetivo(ruta, objetivo_fisico, prefijo):
-                    coincidencias.add(int(tx_id))
-                    break
-        coincidencias -= absorbidas
+                coincidencias = await _candidatas_orphan_en_conn(db, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
         return sorted(coincidencias)
 
     async def get_transaction(self, transaction_id: int) -> Transaction | None:
