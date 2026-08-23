@@ -127,11 +127,12 @@ DELETE/RENAME se analizan considerando semántica del directorio padre: borrar r
 (incluye read-only files) [^filear]; renombrar exige además derecho de creación en el padre
 destino (`FILE_ADD_FILE`/`FILE_ADD_SUBDIRECTORY`) [^filear]. La fuente primaria confirma que
 GetEffectiveRightsFromAcl **no ve** estos derechos provistos por el padre [^gerfa], razón
-más para usar AccessCheck sobre la superficie completa {root, parent}.
+adicional para evaluar con AccessCheck cada nodo del subtree y, además, el parent inmediato
+del root para los vectores delete/rename/replace del propio root.
 
 | Escenario | Evidencia observada | Estado | Confianza | Riesgo falso verde |
 |---|---|---|---|---|
-| Usuario estándar, sólo lectura efectiva en root+parent | AccessCheck: sin derechos de mutación; sin privilegios bypass | WRITE_PROTECTED | Alta | Bajo: medido sobre token real, no inferido de ACEs |
+| Usuario estándar, sólo lectura efectiva en TODO el subtree y sin vector mutador vía el parent inmediato del root | AccessCheck exhaustivo sobre cada nodo del subtree y sobre el parent: sin derechos de mutación; sin privilegios bypass | WRITE_PROTECTED | Alta | Bajo: medido sobre token real, no inferido de ACEs |
 | Admin filtrado (B), DACL restrictiva | SIDs Administrators deny-only no conceden; mutación denegada; owner no atribuible | WRITE_PROTECTED o HARDENED (según owner/elevación) | Alta | Bajo: deny-only es comportamiento del sistema, no parsing |
 | Admin elevado (C) ejecutando Sky-Claw | Token Full; típicamente derechos amplios o privilegio bypass presente | UNPROTECTED | Alta | Ninguno: nunca HARDENED con token elevado (regla dura) |
 | Owner = SID del usuario actual, sin ACE del Owner Rights SID | Dueño atribuible ⇒ WRITE_DAC efectivo implícito (medido por AccessCheck o asumido fail-closed) [^msadts] [^ontt] [^ownerrights] | UNPROTECTED | Alta | Ninguno: la regla normativa "CHANGE_PERMISSIONS efectivo ⇒ UNPROTECTED" se aplica a CUALQUIER vía, incluida la del dueño |
