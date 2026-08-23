@@ -454,7 +454,7 @@ def _envelope_dyndolod(
     }
 
 
-def test_resume_action_rejects_owner_slot_mismatch() -> None:
+def test_la_accion_de_resume_rechaza_owner_distinto_del_slot() -> None:
     """Follow-up de PR #493 (RITUAL_RESULT_OWNER_KEY_MISMATCH): el envelope
     seleccionado por el slot ``tab-B`` declara ``owner_tab="tab-A"``. Ningún
     writer productivo produce este estado hoy, pero si aparece, la acción de
@@ -648,6 +648,56 @@ def test_hardening_j_owner_ausente_envelope_explicito_rechaza() -> None:
     assert _accion(store2, "tab-B") is not None, (
         "bajo el slot None, sin owner_tab declarado, la semántica legacy lo trata como ownerless"
     )
+
+
+def test_slot_propio_presente_con_none_no_cae_al_ownerless() -> None:
+    """Review PR #501 (CR-1): «slot ausente» y «slot presente con valor
+    inválido» son cosas distintas TAMBIÉN cuando el valor es ``None``.
+    ``resultados.get(tab_id)`` confunde ambos y habilitaba el fallback
+    ownerless para un slot que EXISTE. La selección es por pertenencia — la
+    misma semántica que ``clear_ritual_result_owned`` ya usa para borrar."""
+    # Slot presente con valor None + ownerless válido disponible.
+    store = ReactiveStore()
+    _publicar_contenedor_crudo(store, {"tab-A": None, None: _envelope_dyndolod(None)})
+    antes = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
+
+    assert _accion(store, "tab-A") is None, "el slot propio existe (con valor None): no puede caer al ownerless"
+    assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) == antes, "el rechazo mutó el store"
+
+    # Slot presente con valor no-dict ([]), mismo contrato.
+    store2 = ReactiveStore()
+    _publicar_contenedor_crudo(store2, {"tab-A": [], None: _envelope_dyndolod(None)})
+    assert _accion(store2, "tab-A") is None
+
+    # El contraste sigue vigente: slot AUSENTE sí cae al ownerless.
+    store3 = ReactiveStore()
+    _publicar_contenedor_crudo(store3, {None: _envelope_dyndolod(None)})
+    assert _accion(store3, "tab-A") is not None
+
+
+def test_legacy_con_owner_malformado_falla_cerrado_sin_excepcion() -> None:
+    """Review PR #501 (CR-2): el envelope legacy se re-indexa usando su
+    ``owner_tab`` como clave del dict de slots; con un valor unhashable
+    ([], {}) ``_resultados_por_owner`` lanzaba TypeError ANTES de llegar a
+    cualquier chequeo — todo el panel dejaba de refrescar en vez de fallar
+    cerrado. Dueño válido: ``str`` o ``None``; lo demás rechaza sin excepción."""
+    for owner_malformado in ([], {}, 123):
+        store = ReactiveStore()
+        store.set(
+            rr_mod.STORE_KEY_RITUAL_LAST_RESULT,
+            {
+                rr_mod.RITUAL_RESULT_OWNER_TAB: owner_malformado,
+                rr_mod.RITUAL_RESULT_TOOL_KEY: "dyndolod",
+                rr_mod.RITUAL_RESULT_PAYLOAD_KEY: _resultado_needs_deployment(),
+            },
+        )
+        antes = store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT)
+
+        assert _accion(store, "tab-B") is None, f"legacy con owner {owner_malformado!r} derivó acción"
+        assert _accion(store, "tab-A") is None, f"legacy con owner {owner_malformado!r} derivó acción"
+        assert _accion(store, None) is None, f"legacy con owner {owner_malformado!r} se resolvió como sin dueño"
+        assert rr_mod.publicar_resultado_de_ritual is not None  # el módulo quedó importable/operativo
+        assert store.get(rr_mod.STORE_KEY_RITUAL_LAST_RESULT) == antes, "el rechazo mutó el store"
 
 
 # ── Ancla enumerativa: ningún write directo fuera del writer del contenedor ────

@@ -181,6 +181,13 @@ def _resultados_por_owner(store: ReactiveStore) -> dict[str | None, dict[str, An
     raw = store.get(STORE_KEY_RITUAL_LAST_RESULT)
     if _es_envelope_legacy(raw):
         owner = raw.get(RITUAL_RESULT_OWNER_TAB)
+        if owner is not None and not isinstance(owner, str):
+            # Review PR #501 (CR-2): un dueño malformado no puede usarse como
+            # clave ({[]: raw} lanza TypeError unhashable ANTES de cualquier
+            # chequeo del reader). Fail-closed sin excepción: ningún slot,
+            # ninguna acción, nada mutado. Dueño válido: ``str`` o ``None``;
+            # no se repara, ni se convierte, ni se descarta el resto del store.
+            return {}
         return {owner: raw}
     if isinstance(raw, dict):
         resultados = raw.get(RITUAL_RESULTS_BY_OWNER)
@@ -263,13 +270,23 @@ def resolve_ritual_resume_action(store: ReactiveStore, tab_id: str | None) -> di
     repara, ni reubica, ni limpia nada: devuelve ``None`` sin derivar la
     acción. «Slot ausente» y «slot presente con valor inválido» siguen siendo
     cosas distintas: sólo la AUSENCIA del slot propio habilita el fallback
-    ownerless; un slot presente pero inválido se rechaza sin caer al
-    resultado sin dueño.
+    ownerless; un slot presente pero inválido —incluido el valor ``None``, que
+    ``dict.get`` no distingue de la ausencia— se rechaza sin caer al resultado
+    sin dueño. Por eso la selección es por PERTENENCIA (``tab_id in
+    resultados``), la misma semántica con la que
+    :func:`clear_ritual_result_owned` decide qué borrar.
     """
     resultados = _resultados_por_owner(store)
-    envelope = resultados.get(tab_id)
     owner_seleccionado: str | None = tab_id
-    if envelope is None:
+    if tab_id in resultados:
+        # Review PR #501 (CR-1): pertenencia, no valor. ``resultados.get``
+        # confundía «slot ausente» con «slot presente con valor None» y
+        # habilitaba el fallback ownerless para un slot que EXISTE; un slot
+        # propio presente pero inválido (None, basura, dueño ajeno) se valida
+        # y rechaza acá mismo. Misma semántica de pertenencia que usa
+        # ``clear_ritual_result_owned`` para borrar.
+        envelope = resultados[tab_id]
+    else:
         owner_seleccionado = None
         envelope = resultados.get(None)
     if not isinstance(envelope, dict):
