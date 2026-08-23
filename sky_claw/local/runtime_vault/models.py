@@ -208,6 +208,10 @@ class GoldenMasterDescriptor:
     tree_digest: TreeDigest
     role: str = "reference_only"
 
+    def __post_init__(self) -> None:
+        if self.role != "reference_only":
+            raise ValueError("GoldenMasterDescriptor solo admite role='reference_only'")
+
 
 @dataclass(frozen=True, slots=True)
 class GoldenMasterVerificationResult:

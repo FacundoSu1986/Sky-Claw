@@ -939,25 +939,38 @@ class TestVerifyCriticalFilesDirecto:
     def test_d3_critical_missing_produce_failed(self) -> None:
         files = [FileIdentity(rel_path="Other.exe", size=10, digest="a" * 64)]
         expectations = [
-            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64),
+            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64, expected_size=10),
         ]
         res = verify_critical_files(files, expectations)
-        assert len(res) == 1
-        assert res[0].state is VerificationState.FAILED
-        assert res[0].rel_path == "SkyrimSE.exe"
-        assert res[0].observed_digest is None
-        assert "ausente" in res[0].message.lower()
+        assert res == (
+            CriticalFileEvidence(
+                rel_path="SkyrimSE.exe",
+                state=VerificationState.FAILED,
+                message="Archivo crítico ausente en el árbol: 'SkyrimSE.exe'",
+                expected_digest="a" * 64,
+                observed_digest=None,
+                expected_size=10,
+                observed_size=None,
+            ),
+        )
 
     def test_d4_digest_mismatch_produce_failed(self) -> None:
         files = [FileIdentity(rel_path="SkyrimSE.exe", size=10, digest="b" * 64)]
         expectations = [
-            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64),
+            CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64, expected_size=10),
         ]
         res = verify_critical_files(files, expectations)
-        assert len(res) == 1
-        assert res[0].state is VerificationState.FAILED
-        assert res[0].observed_digest == "b" * 64
-        assert "no coincide" in res[0].message.lower()
+        assert res == (
+            CriticalFileEvidence(
+                rel_path="SkyrimSE.exe",
+                state=VerificationState.FAILED,
+                message=f"Archivo crítico 'SkyrimSE.exe' no coincide: sha256 ({'b' * 64} vs {'a' * 64})",
+                expected_digest="a" * 64,
+                observed_digest="b" * 64,
+                expected_size=10,
+                observed_size=10,
+            ),
+        )
 
     def test_d5_digest_correcto_pero_size_incorrecto_produce_failed(self) -> None:
         files = [FileIdentity(rel_path="SkyrimSE.exe", size=20, digest="a" * 64)]
@@ -965,10 +978,17 @@ class TestVerifyCriticalFilesDirecto:
             CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="a" * 64, expected_size=10),
         ]
         res = verify_critical_files(files, expectations)
-        assert len(res) == 1
-        assert res[0].state is VerificationState.FAILED
-        assert res[0].observed_size == 20
-        assert "tamaño" in res[0].message.lower()
+        assert res == (
+            CriticalFileEvidence(
+                rel_path="SkyrimSE.exe",
+                state=VerificationState.FAILED,
+                message="Archivo crítico 'SkyrimSE.exe' no coincide: tamaño (20 vs 10 bytes)",
+                expected_digest="a" * 64,
+                observed_digest="a" * 64,
+                expected_size=10,
+                observed_size=20,
+            ),
+        )
 
     def test_d6_digest_y_size_correctos_produce_verified(self) -> None:
         files = [FileIdentity(rel_path="SkyrimSE.exe", size=10, digest="a" * 64)]
@@ -976,8 +996,14 @@ class TestVerifyCriticalFilesDirecto:
             CriticalFileExpectation(rel_path="SkyrimSE.exe", expected_digest="A" * 64, expected_size=10),
         ]
         res = verify_critical_files(files, expectations)
-        assert len(res) == 1
-        assert res[0].state is VerificationState.VERIFIED
-        assert res[0].message == ""
-        assert res[0].observed_digest == "a" * 64
-        assert res[0].observed_size == 10
+        assert res == (
+            CriticalFileEvidence(
+                rel_path="SkyrimSE.exe",
+                state=VerificationState.VERIFIED,
+                message="",
+                expected_digest="a" * 64,
+                observed_digest="a" * 64,
+                expected_size=10,
+                observed_size=10,
+            ),
+        )

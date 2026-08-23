@@ -625,6 +625,93 @@ class TestInvarianteResultadoGolden:
         assert res.descriptor.runtime_identity == runtime_id
 
 
+class TestInvarianteRoleDescriptor:
+    """Valida la invariante del rol en GoldenMasterDescriptor.__post_init__."""
+
+    def test_r1_role_runtime_clone_levanta_error(self) -> None:
+        with pytest.raises(ValueError, match="role='reference_only'"):
+            GoldenMasterDescriptor(
+                location=pathlib.Path("G:/game"),
+                runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+                tree_digest=TreeDigest("a" * 64, 1, 10),
+                role="runtime_clone",
+            )
+
+    def test_r2_role_vacio_levanta_error(self) -> None:
+        with pytest.raises(ValueError, match="role='reference_only'"):
+            GoldenMasterDescriptor(
+                location=pathlib.Path("G:/game"),
+                runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+                tree_digest=TreeDigest("a" * 64, 1, 10),
+                role="",
+            )
+
+    def test_r3_role_uppercase_levanta_error(self) -> None:
+        with pytest.raises(ValueError, match="role='reference_only'"):
+            GoldenMasterDescriptor(
+                location=pathlib.Path("G:/game"),
+                runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+                tree_digest=TreeDigest("a" * 64, 1, 10),
+                role="REFERENCE_ONLY",
+            )
+
+    def test_r4_role_con_espacios_levanta_error(self) -> None:
+        with pytest.raises(ValueError, match="role='reference_only'"):
+            GoldenMasterDescriptor(
+                location=pathlib.Path("G:/game"),
+                runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+                tree_digest=TreeDigest("a" * 64, 1, 10),
+                role=" reference_only ",
+            )
+
+    def test_r5_role_reference_only_explicito_es_valido(self) -> None:
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+            role="reference_only",
+        )
+        assert desc.role == "reference_only"
+
+    def test_r6_role_default_es_reference_only(self) -> None:
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=RuntimeIdentity("skyrimse", "1.6.1170.0"),
+            tree_digest=TreeDigest("a" * 64, 1, 10),
+        )
+        assert desc.role == "reference_only"
+
+    def test_r7_integracion_descriptor_valido_en_resultado_verified(self) -> None:
+        tree_digest = TreeDigest("a" * 64, 1, 10)
+        tree_res = TreeVerificationResult(
+            state=VerificationState.VERIFIED,
+            expected=tree_digest,
+            observed=tree_digest,
+        )
+        runtime_id = RuntimeIdentity("skyrimse", "1.6.1170.0")
+        runtime_res = RuntimeVerificationResult(
+            state=VerificationState.VERIFIED,
+            expected=runtime_id,
+            observed=runtime_id,
+        )
+        desc = GoldenMasterDescriptor(
+            location=pathlib.Path("G:/game"),
+            runtime_identity=runtime_id,
+            tree_digest=tree_digest,
+            role="reference_only",
+        )
+        res = GoldenMasterVerificationResult(
+            state=VerificationState.VERIFIED,
+            tree_result=tree_res,
+            runtime_result=runtime_res,
+            critical_results=(),
+            descriptor=desc,
+        )
+        assert res.state is VerificationState.VERIFIED
+        assert res.descriptor is not None
+        assert res.descriptor.role == "reference_only"
+
+
 class TestSinCodigoCandidateOnlyDePr493:
     """Gate del preflight: RV-1 no importa primitives que solo existen en #493."""
 
