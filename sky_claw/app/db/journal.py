@@ -14,7 +14,7 @@ import json
 import logging
 import pathlib
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -26,8 +26,61 @@ from sky_claw.app.core.db_lifecycle import (
     DatabaseConnectionQuarantinedError,
     DatabaseLifecycleShuttingDownError,
 )
+from sky_claw.app.db.handoffs import (
+    _INSERT_HANDOFF_SQL,
+    _SELECT_HANDOFF_ACTIVO_SQL,
+    HANDOFFS_SCHEMA_SQL,
+    ORPHAN_ABSORPTIONS_SCHEMA_SQL,
+    SWEEP_RECEIPTS_SCHEMA_SQL,
+    DeploymentHandoff,
+    HandoffState,
+    SweepReceiptState,
+    clave_de_artifact,
+    fila_de_registro,
+    handoff_desde_fila,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# IDENTIDAD FÍSICA ÚNICA (F-002, patch 0006) y SQL de receipts
+# =============================================================================
+#
+# El ownership del handoff y el oracle de orphans comparan con la MISMA
+# función — ``clave_de_artifact`` (resolve + normcase) — para el target
+# configurado y para cada string histórico del ActionManifest (que se
+# canonicaliza al LEERSE; la historia almacenada no se toca). Una
+# normalización hermana que NO resolvía links hizo que un MO2 configurado vía
+# symlink/junction diera hit en el lookup y miss en el oracle (false green).
+
+
+def _canonica_y_prefijo(objetivo: str) -> tuple[str, str]:
+    """Identidad física del objetivo + su prefijo para el matching por subtree."""
+    canonica = clave_de_artifact(pathlib.Path(objetivo))
+    return canonica, canonica + ("\\" if "\\" in canonica else "/")
+
+
+def _nombra_objetivo(ruta: object, objetivo_fisico: str, prefijo: str) -> bool:
+    """¿Este string del manifest (sin resolver) nombra el objetivo físico?
+
+    El entry se canonicaliza al leerse con la MISMA identidad física; nunca se
+    modifica la historia almacenada.
+    """
+    canonica = clave_de_artifact(pathlib.Path(str(ruta)))
+    return canonica == objetivo_fisico or canonica.startswith(prefijo)
+
+
+#: INSERT del receipt durable de stale sweep (F-001, patch 0006).
+_INSERT_SWEEP_RECEIPT_SQL = "INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (?, 'unresolved')"
+
+#: INSERT de la absorción durable de evidencia orphan (PATCH 0011). La identidad
+#: es (transaction_id, artifact_path) — ver ORPHAN_ABSORPTIONS_SCHEMA_SQL; una
+#: violación del UNIQUE levanta DENTRO del boundary y revierte todo el bloque
+#: (INSERT del handoff + absorciones + consumo de receipts caen juntos).
+_INSERT_ABSORCION_EVIDENCIA_SQL = (
+    "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) VALUES (?, ?, ?)"
+)
 
 
 # =============================================================================
@@ -202,6 +255,29 @@ class RollbackResult:
 
 
 # =============================================================================
+# ALLOWLIST DE COLUMNAS DE TRANSICIÓN DE HANDOFF (D2, post-push 0009)
+# =============================================================================
+#
+# ``transicionar_handoff`` compone un UPDATE dinámico a partir de kwargs. La
+# composición NUNCA interpola una clave arbitraria: cada campo se resuelve por
+# LOOKUP contra esta allowlist cerrada — ``campo → fragmento SQL literal`` — y
+# cualquier clave ajena se rechaza con ``JournalTransactionError`` ANTES de
+# construir o ejecutar SQL. Con eso, los fragmentos estructurales del statement
+# salen exclusivamente de literales de este módulo y los valores viajan
+# parametrizados por posición (el ``# nosec B608`` localizado de abajo es
+# honesto). Un campo nuevo rompe el ancla de
+# ``tests/test_handoff_sql_hardening.py`` hasta que se autorice acá.
+_CAMPOS_TRANSICION_HANDOFF: dict[str, str] = {
+    "expected_digest": "expected_digest = ?",
+    "expected_files": "expected_files = ?",
+    "expected_bytes": "expected_bytes = ?",
+    "observed_digest": "observed_digest = ?",
+    "observed_files": "observed_files = ?",
+    "observed_bytes": "observed_bytes = ?",
+}
+
+
+# =============================================================================
 # OPERATION JOURNAL
 # =============================================================================
 
@@ -227,7 +303,8 @@ class OperationJournal:
             await journal.close()
     """
 
-    _SCHEMA_SQL = """
+    _SCHEMA_SQL = (
+        """
     CREATE TABLE IF NOT EXISTS transactions (
         transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
         mod_id INTEGER,
@@ -258,6 +335,10 @@ class OperationJournal:
     CREATE INDEX IF NOT EXISTS idx_journal_timestamp ON journal_entries(timestamp);
     CREATE INDEX IF NOT EXISTS idx_journal_path ON journal_entries(target_path);
     """
+        + HANDOFFS_SCHEMA_SQL
+        + SWEEP_RECEIPTS_SCHEMA_SQL
+        + ORPHAN_ABSORPTIONS_SCHEMA_SQL
+    )
 
     def __init__(
         self,
@@ -292,6 +373,21 @@ class OperationJournal:
         # seguir siendo independiente por instancia.
         self._lock = asyncio.Lock()
         self._current_transaction: int | None = None
+        # F-002b (PR #493): IDs EXACTOS de TX PENDING que ``sweep_stale_pending``
+        # convirtió a ROLLED_BACK en ESTE open. Se resetea al iniciar cada
+        # open/sweep. Es la única ventana que le da al reconciler de arranque
+        # acceso a evidencia ROLLED_BACK — la que acaba de convertir ÉL — sin
+        # reintroducir historia arbitraria.
+        self._swept_pending_transaction_ids_this_open: set[int] = set()
+
+    @property
+    def swept_pending_transaction_ids_this_open(self) -> frozenset[int]:
+        """IDs exactos de PENDING barridas → ROLLED_BACK en el open actual.
+
+        Read-only: la mutación es exclusiva de :meth:`sweep_stale_pending` (y el
+        reset de ``open()``), que es el único actor que convierte esos estados.
+        """
+        return frozenset(self._swept_pending_transaction_ids_this_open)
 
     async def open(self) -> None:
         """Abre la conexión a la base de datos y crea el schema si es necesario.
@@ -402,6 +498,9 @@ class OperationJournal:
 
         # Mantenimiento best-effort: transacciones PENDING huérfanas de sesiones
         # anteriores (crash / excepción sin rollback) se barren al arrancar.
+        # F-002b: el conjunto de IDs barridos pertenece a ESTE open — se resetea
+        # acá y el sweep de abajo lo repuebla con los IDs que realmente convierte.
+        self._swept_pending_transaction_ids_this_open = set()
         try:
             await self.sweep_stale_pending()
         except (JournalError, sqlite3.Error):
@@ -730,63 +829,71 @@ class OperationJournal:
         Una fila PENDING que sobrevive de una sesión anterior es una transacción
         huérfana (crash o excepción sin rollback): nunca va a confirmarse.
 
+        F-001 (patch 0006): la conversión PENDING→ROLLED_BACK y el INSERT del
+        receipt durable de CADA ID barrido ocurren en el MISMO boundary
+        SQLite — nunca un ROLLED_BACK durable sin su receipt, nunca un receipt
+        sin el UPDATE. El receipt prueba causalidad (esta TX fue stale-swept),
+        jamás identidad autorizada, y es la fuente que el oracle usa para
+        sobrevivir crash, reconciler omitido o reconciler con excepción.
+        ``swept_pending_transaction_ids_this_open`` sigue como telemetría de
+        RAM; ya no es la fuente de seguridad.
+
         Args:
             max_age_hours: Antigüedad mínima (horas) para considerar huérfana.
 
         Returns:
             Cantidad de transacciones barridas.
         """
+        self._swept_pending_transaction_ids_this_open = set()
         db = await self._ensure_connected()
 
+        # Un solo literal SQL para las dos ramas (defecto #1 del repo: dos
+        # hermanos del mismo UPDATE terminan desalineados). RETURNING devuelve
+        # los IDs realmente actualizados, en el mismo boundary que la mutación.
+        sql = """
+            UPDATE transactions
+            SET status = ?, rolled_back_at = datetime('now')
+            WHERE status = ? AND created_at < datetime('now', ?)
+            RETURNING transaction_id
+        """
+        params = (
+            TransactionStatus.ROLLED_BACK.value,
+            TransactionStatus.PENDING.value,
+            f"-{max_age_hours} hours",
+        )
+
+        ids_barridos: set[int] = set()
         if self._lifecycle is not None:
             # PR-1b2b: un solo boundary lifecycle para la mutación, sin tomar
             # self._lock (es el MISMO lock de path; asyncio.Lock no es reentrante).
-            # El rowcount se captura dentro del body, con el cursor válido.
             try:
                 async with self._lifecycle.transaction(self._db_path) as conn:
-                    cursor = await conn.execute(
-                        """
-                        UPDATE transactions
-                        SET status = ?, rolled_back_at = datetime('now')
-                        WHERE status = ? AND created_at < datetime('now', ?)
-                        """,
-                        (
-                            TransactionStatus.ROLLED_BACK.value,
-                            TransactionStatus.PENDING.value,
-                            f"-{max_age_hours} hours",
-                        ),
-                    )
-                    count = cursor.rowcount
+                    cursor = await conn.execute(sql, params)
+                    filas = [fila async for fila in cursor]
+                    ids_barridos = {int(fila[0]) for fila in filas}
+                    if ids_barridos:
+                        await self._escribir_receipts_de_sweep(conn, ids_barridos)
             except sqlite3.Error as e:
                 raise JournalTransactionError(f"Failed to sweep stale transactions: {e}") from e
+        else:
+            async with self._lock:
+                try:
+                    cursor = await db.execute(sql, params)
+                    filas = [fila async for fila in cursor]
+                    ids_barridos = {int(fila[0]) for fila in filas}
+                    if ids_barridos:
+                        await self._escribir_receipts_de_sweep(db, ids_barridos)
+                    await db.commit()
+                except sqlite3.Error as e:
+                    # Principio 2: el UPDATE y el INSERT caen JUNTOS — un fallo
+                    # del commit/receipt deshace también la conversión, y la
+                    # conexión no queda con una transacción a medias.
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise JournalTransactionError(f"Failed to sweep stale transactions: {e}") from e
 
-            if count > 0:
-                logger.warning(
-                    "Journal: %d stale PENDING transaction(s) swept to ROLLED_BACK (older than %.1fh)",
-                    count,
-                    max_age_hours,
-                )
-            return count
-
-        async with self._lock:
-            try:
-                cursor = await db.execute(
-                    """
-                    UPDATE transactions
-                    SET status = ?, rolled_back_at = datetime('now')
-                    WHERE status = ? AND created_at < datetime('now', ?)
-                    """,
-                    (
-                        TransactionStatus.ROLLED_BACK.value,
-                        TransactionStatus.PENDING.value,
-                        f"-{max_age_hours} hours",
-                    ),
-                )
-                await db.commit()
-            except sqlite3.Error as e:
-                raise JournalTransactionError(f"Failed to sweep stale transactions: {e}") from e
-
-        count = cursor.rowcount
+        self._swept_pending_transaction_ids_this_open.update(ids_barridos)
+        count = len(ids_barridos)
         if count > 0:
             logger.warning(
                 "Journal: %d stale PENDING transaction(s) swept to ROLLED_BACK (older than %.1fh)",
@@ -794,6 +901,571 @@ class OperationJournal:
                 max_age_hours,
             )
         return count
+
+    @staticmethod
+    async def _escribir_receipts_de_sweep(conn: aiosqlite.Connection, ids_barridos: Iterable[int]) -> None:
+        """INSERT de los receipts UNRESOLVED de los IDs barridos; ASUME el
+        boundary del caller (Principio 2: receipt y ROLLED_BACK caen juntos)."""
+        await conn.executemany(_INSERT_SWEEP_RECEIPT_SQL, [(int(tx_id),) for tx_id in ids_barridos])
+
+    async def cerrar_receipts_como_no_artifact(self, tx_ids: Iterable[int]) -> None:
+        """Cierra receipts UNRESOLVED como NO_ARTIFACT (Principio 4).
+
+        Sólo lo invoca la primitive de reconciliación cuando los paths son
+        resolubles y el artifact está PROBADAMENTE ausente: no queda mutación
+        física preservada que proteger, y el receipt no debe quedar residuo
+        eterno. "No puedo encontrarlo" jamás llega acá — si la configuración no
+        resuelve, la primitive ni se ejecuta y el receipt sigue UNRESOLVED.
+        """
+        ids = sorted({int(tx_id) for tx_id in tx_ids})
+        if not ids:
+            return
+        sql = (
+            "UPDATE stale_pending_sweep_receipts SET state = ?, resolved_at = datetime('now') "
+            "WHERE transaction_id = ? AND state = 'unresolved'"
+        )
+        params = [(SweepReceiptState.NO_ARTIFACT.value, tx_id) for tx_id in ids]
+        db = await self._ensure_connected()
+        if self._lifecycle is not None:
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    await conn.executemany(sql, params)
+            except sqlite3.Error as e:
+                raise JournalTransactionError(f"Failed to close sweep receipts: {e}") from e
+        else:
+            async with self._lock:
+                try:
+                    await db.executemany(sql, params)
+                    await db.commit()
+                except sqlite3.Error as e:
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise JournalTransactionError(f"Failed to close sweep receipts: {e}") from e
+
+    # =========================================================================
+    # HANDOFF DE DEPLOYMENT (D2, PR #493)
+    # =========================================================================
+    #
+    # La invariante que esta sección protege (principio 5) es que el cierre
+    # atómico "TX + handoff" pasa SIEMPRE por esta clase: nadie actualiza
+    # ``transactions`` en crudo desde otro módulo, y ``_current_transaction``
+    # (estado Python) sólo se limpia DESPUÉS del commit durable — igual que
+    # ``commit_transaction``. Los tests lo anclan (T-D21).
+    #
+    # Estructura conforme al ancla PR-1b2b: los escritores públicos toman el
+    # boundary DIRECTAMENTE (lifecycle.transaction o self._lock, ambas ramas
+    # congeladas en test_pr_1b2b_boundary) y delegan los pasos SQL en helpers
+    # que ASUMEN ese boundary (`_HELPERS_QUE_ASUMEN_BOUNDARY`), para no
+    # duplicar las secuencias multi-paso en cuatro copias divergibles.
+
+    @staticmethod
+    async def _escribir_handoff_de_deployment(
+        conn: aiosqlite.Connection,
+        *,
+        transaction_id: int,
+        descripcion: str | None,
+        registro: DeploymentHandoff,
+        viejo: DeploymentHandoff | None,
+    ) -> int:
+        """Pasos SQL del cierre RUN 1/supersede; ASUME el boundary del caller."""
+        cursor = await conn.execute(
+            """
+            UPDATE transactions
+            SET description = COALESCE(?, description),
+                status = ?, committed_at = datetime('now')
+            WHERE transaction_id = ? AND status = ?
+            """,
+            (
+                descripcion,
+                TransactionStatus.COMMITTED.value,
+                transaction_id,
+                TransactionStatus.PENDING.value,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise JournalTransactionError(
+                f"Transaction {transaction_id} not found or not pending",
+                transaction_id=transaction_id,
+            )
+        if viejo is not None:
+            cursor_v = await conn.execute(
+                """
+                UPDATE deployment_handoffs
+                SET state = ?, superseded_at = datetime('now'), updated_at = datetime('now')
+                WHERE handoff_id = ? AND state IN ('awaiting_deployment','indeterminate','superseding')
+                """,
+                (HandoffState.SUPERSEDED.value, viejo.handoff_id),
+            )
+            if cursor_v.rowcount == 0:
+                raise JournalTransactionError(
+                    f"Handoff {viejo.handoff_id} ya no está activo: no se puede superseder",
+                    transaction_id=transaction_id,
+                )
+        cursor_i = await conn.execute(_INSERT_HANDOFF_SQL, fila_de_registro(registro))
+        nuevo_id = cursor_i.lastrowid
+        if nuevo_id is None:
+            raise JournalTransactionError("Failed to get handoff ID after insert", transaction_id=transaction_id)
+        if viejo is not None:
+            await conn.execute(
+                "UPDATE deployment_handoffs SET superseded_by = ? WHERE handoff_id = ?",
+                (nuevo_id, viejo.handoff_id),
+            )
+        # F-001 (patch 0006): una provenance autorizada NUEVA para este artifact
+        # deja SUPERSEDED todo receipt UNRESOLVED cuyo TX lo nombra — el receipt
+        # viejo no intoxica el futuro. Mismo boundary: si el INSERT falla, la
+        # obsoletización tampoco queda afirmada.
+        objetivo_fisico, prefijo = _canonica_y_prefijo(registro.artifact_path)
+        cursor_r = await conn.execute(
+            "SELECT r.transaction_id, je.metadata "
+            "FROM stale_pending_sweep_receipts r "
+            "JOIN journal_entries je ON je.transaction_id = r.transaction_id "
+            "WHERE r.state = 'unresolved' AND je.metadata IS NOT NULL"
+        )
+        ids_obsoletos: list[int] = []
+        async for tx_id, metadata in cursor_r:
+            try:
+                files_touched = json.loads(metadata).get("files_touched") or []
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if any(_nombra_objetivo(ruta, objetivo_fisico, prefijo) for ruta in files_touched):
+                ids_obsoletos.append(int(tx_id))
+        if ids_obsoletos:
+            await conn.executemany(
+                "UPDATE stale_pending_sweep_receipts SET state = ?, resolved_at = datetime('now') "
+                "WHERE transaction_id = ? AND state = 'unresolved'",
+                [(SweepReceiptState.SUPERSEDED.value, tx_id) for tx_id in ids_obsoletos],
+            )
+        return nuevo_id
+
+    @staticmethod
+    async def _escribir_resume_completado(
+        conn: aiosqlite.Connection,
+        *,
+        transaction_id: int,
+        handoff_id: int,
+    ) -> None:
+        """Pasos SQL del resume exitoso; ASUME el boundary del caller."""
+        cursor = await conn.execute(
+            """
+            UPDATE transactions
+            SET status = ?, committed_at = datetime('now')
+            WHERE transaction_id = ? AND status = ?
+            """,
+            (
+                TransactionStatus.COMMITTED.value,
+                transaction_id,
+                TransactionStatus.PENDING.value,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise JournalTransactionError(
+                f"Transaction {transaction_id} not found or not pending",
+                transaction_id=transaction_id,
+            )
+        cursor_h = await conn.execute(
+            """
+            UPDATE deployment_handoffs
+            SET state = ?, completed_at = datetime('now'), updated_at = datetime('now')
+            WHERE handoff_id = ? AND state = ?
+            """,
+            (HandoffState.COMPLETED.value, handoff_id, HandoffState.AWAITING_DEPLOYMENT.value),
+        )
+        if cursor_h.rowcount == 0:
+            raise JournalTransactionError(
+                f"Handoff {handoff_id} not found or not awaiting_deployment",
+                transaction_id=transaction_id,
+            )
+
+    @staticmethod
+    async def _escribir_transicion_de_handoff(
+        conn: aiosqlite.Connection,
+        *,
+        sql: str,
+        valores: tuple[object, ...],
+    ) -> int:
+        """Ejecuta la transición guardada; ASUME el boundary del caller."""
+        cursor = await conn.execute(sql, valores)
+        return cursor.rowcount
+
+    @staticmethod
+    async def _escribir_handoff_indeterminado(
+        conn: aiosqlite.Connection,
+        *,
+        registro: DeploymentHandoff,
+        ids_receipts: Iterable[int] = (),
+        ids_absorcion: Iterable[int] | None = None,
+    ) -> int | None:
+        """INSERT del INDETERMINATE + absorción de evidencia per-artifact +
+        consumo de receipts en el MISMO boundary (Principio 4 y PATCH 0011);
+        ASUME el boundary del caller. Levanta ``sqlite3.IntegrityError`` si ya
+        hay owner activo del artifact — o si una absorción duplica su identidad
+        ``(transaction_id, artifact_path)`` — y entonces NADA del bloque queda
+        afirmado (el boundary revierte completo).
+
+        La absorción (PATCH 0011) consume la EVIDENCIA — nunca el lifecycle de
+        la TX: una candidata puede ser una corrida realmente viva (candidata
+        espuria demostrada), así que ``transactions.status`` queda intacto y la
+        exclusión posterior vive en el oracle, per-artifact.
+        """
+        cursor = await conn.execute(_INSERT_HANDOFF_SQL, fila_de_registro(registro))
+        nuevo_id = int(cursor.lastrowid or 0) or None
+        if nuevo_id is not None:
+            absorciones = list(ids_absorcion) if ids_absorcion is not None else list(ids_receipts)
+            if absorciones:
+                await conn.executemany(
+                    _INSERT_ABSORCION_EVIDENCIA_SQL,
+                    [(int(tx_id), registro.artifact_path, int(nuevo_id)) for tx_id in sorted(set(absorciones))],
+                )
+        ids = list(ids_receipts)
+        if nuevo_id is not None and ids:
+            await conn.executemany(
+                "UPDATE stale_pending_sweep_receipts SET state = 'consumed', resolved_at = datetime('now') "
+                "WHERE transaction_id = ? AND state = 'unresolved'",
+                [(int(tx_id),) for tx_id in ids],
+            )
+        return nuevo_id
+
+    async def consultar_handoff_activo(self, artifact_path: str) -> DeploymentHandoff | None:
+        """El handoff ACTIVO del artifact físico canónico, o ``None``.
+
+        El índice único parcial garantiza a lo sumo una fila activa por
+        ``artifact_path``; ``LIMIT 1`` es defensa en profundidad, no la garantía.
+        """
+        db = await self._ensure_connected()
+        if self._lifecycle is not None:
+            async with (
+                self._lifecycle.operation(self._db_path) as conn,
+                conn.execute(_SELECT_HANDOFF_ACTIVO_SQL, (artifact_path,)) as cursor,
+            ):
+                fila = await cursor.fetchone()
+        else:
+            async with self._lock, db.execute(_SELECT_HANDOFF_ACTIVO_SQL, (artifact_path,)) as cursor:
+                fila = await cursor.fetchone()
+        return handoff_desde_fila(fila) if fila is not None else None
+
+    async def crear_handoff_de_deployment(
+        self,
+        transaction_id: int,
+        *,
+        descripcion: str | None,
+        registro: DeploymentHandoff,
+        viejo: DeploymentHandoff | None = None,
+    ) -> int:
+        """Cierra la TX y crea el handoff en UN boundary SQLite (RUN 1 / supersede).
+
+        Orden interno (principio 9 para el supersede):
+
+        1. ``transactions`` → COMMITTED (con descripción estrechada si se pasó);
+        2. si ``viejo``, ``deployment_handoffs`` → SUPERSEDED (sin ``superseded_by``);
+        3. INSERT del handoff nuevo;
+        4. si ``viejo``, ``viejo.superseded_by = nuevo``.
+
+        Cualquier guard que falle revierte el boundary entero (con lifecycle) o
+        deja la conexión sin commit (standalone): nunca queda una TX
+        COMMITTED sin su handoff ni una historia partida. El estado Python
+        ``_current_transaction`` se limpia sólo después del commit durable.
+        """
+        db = await self._ensure_connected()
+        if self._lifecycle is not None:
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    nuevo_id = await self._escribir_handoff_de_deployment(
+                        conn,
+                        transaction_id=transaction_id,
+                        descripcion=descripcion,
+                        registro=registro,
+                        viejo=viejo,
+                    )
+            except sqlite3.Error as e:
+                raise JournalTransactionError(
+                    f"Failed to commit transaction with deployment handoff: {e}",
+                    transaction_id=transaction_id,
+                ) from e
+        else:
+            async with self._lock:
+                try:
+                    nuevo_id = await self._escribir_handoff_de_deployment(
+                        db,
+                        transaction_id=transaction_id,
+                        descripcion=descripcion,
+                        registro=registro,
+                        viejo=viejo,
+                    )
+                    await db.commit()
+                except sqlite3.Error as e:
+                    # F-02 (patch 0007): la conexión propia no puede quedar con
+                    # la transacción implícita abierta — el siguiente escritor
+                    # committearía el trabajo parcial de ESTE intento.
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise JournalTransactionError(
+                        f"Failed to commit transaction with deployment handoff: {e}",
+                        transaction_id=transaction_id,
+                    ) from e
+                except JournalTransactionError:
+                    # El helper rechazó a mitad de la secuencia multi-paso:
+                    # mismo tratamiento — el trabajo parcial se deshace.
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise
+
+        if self._current_transaction == transaction_id:
+            self._current_transaction = None
+        logger.info(
+            "Transaction committed with deployment handoff",
+            extra={"transaction_id": transaction_id, "handoff_id": nuevo_id},
+        )
+        return nuevo_id
+
+    async def completar_handoff_de_resume(self, transaction_id: int, handoff_id: int) -> None:
+        """Cierra un resume exitoso en UN boundary: TX2 → COMMITTED + handoff → COMPLETED.
+
+        PRECONDICIÓN del caller (principio 10): el filesystem ya está sellado
+        (todos los DirectoryRollback del éxito confirmados) ANTES de llamar acá.
+        Nunca queda una TX committeada sin su handoff completado, ni al revés.
+        """
+        db = await self._ensure_connected()
+        if self._lifecycle is not None:
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    await self._escribir_resume_completado(conn, transaction_id=transaction_id, handoff_id=handoff_id)
+            except sqlite3.Error as e:
+                raise JournalTransactionError(
+                    f"Failed to complete deployment handoff: {e}", transaction_id=transaction_id
+                ) from e
+        else:
+            async with self._lock:
+                try:
+                    await self._escribir_resume_completado(db, transaction_id=transaction_id, handoff_id=handoff_id)
+                    await db.commit()
+                except sqlite3.Error as e:
+                    # F-02 (patch 0007): ídem crear_handoff_de_deployment.
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise JournalTransactionError(
+                        f"Failed to complete deployment handoff: {e}", transaction_id=transaction_id
+                    ) from e
+                except JournalTransactionError:
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise
+
+        if self._current_transaction == transaction_id:
+            self._current_transaction = None
+        logger.info(
+            "Deployment handoff completed",
+            extra={"transaction_id": transaction_id, "handoff_id": handoff_id},
+        )
+
+    async def transicionar_handoff(
+        self,
+        handoff_id: int,
+        *,
+        desde: HandoffState,
+        hacia: HandoffState,
+        **campos: object,
+    ) -> bool:
+        """Transición guardada ``desde → hacia`` con columnas extra opcionales.
+
+        El ``WHERE state = desde`` es la guarda: si el estado real difiere
+        (concurrencia, reconciler previo), devuelve ``False`` sin mutar. Los
+        ``campos`` se resuelven contra :data:`_CAMPOS_TRANSICION_HANDOFF` — una
+        allowlist cerrada de fragmentos SQL estructurales — ANTES de construir
+        o ejecutar cualquier SQL: una clave ajena es un error de contrato del
+        caller y se rechaza con ``JournalTransactionError``, jamás se interpola
+        como identificador. Los valores siguen parametrizados por posición.
+        """
+        columnas = ["state = ?", "updated_at = datetime('now')"]
+        valores: list[object] = [hacia.value]
+        for nombre, valor in campos.items():
+            fragmento = _CAMPOS_TRANSICION_HANDOFF.get(nombre)
+            if fragmento is None:
+                raise JournalTransactionError(
+                    f"Columna de handoff no permitida en una transición: {nombre!r}",
+                    transaction_id=None,
+                )
+            columnas.append(fragmento)
+            valores.append(valor)
+        valores.append(handoff_id)
+        valores.append(desde.value)
+        # nosec B608 — los fragmentos estructurales del SET salen EXCLUSIVAMENTE
+        # de _CAMPOS_TRANSICION_HANDOFF (allowlist cerrada de literales del
+        # módulo, validada arriba); los valores viajan parametrizados por posición.
+        sql = f"UPDATE deployment_handoffs SET {', '.join(columnas)} WHERE handoff_id = ? AND state = ?"  # nosec B608
+        db = await self._ensure_connected()
+        if self._lifecycle is not None:
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    tocadas = await self._escribir_transicion_de_handoff(conn, sql=sql, valores=tuple(valores))
+            except sqlite3.Error as e:
+                raise JournalTransactionError(f"Failed to transition handoff: {e}") from e
+        else:
+            async with self._lock:
+                try:
+                    tocadas = await self._escribir_transicion_de_handoff(db, sql=sql, valores=tuple(valores))
+                    await db.commit()
+                except sqlite3.Error as e:
+                    # F-02 (patch 0007): ídem los demás escritores standalone.
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise JournalTransactionError(f"Failed to transition handoff: {e}") from e
+        return tocadas == 1
+
+    async def registrar_handoff_indeterminado(
+        self,
+        *,
+        registro: DeploymentHandoff,
+        consumir_receipts_de: Iterable[int] = (),
+        absorber_evidencia_de: Iterable[int] | None = None,
+    ) -> int | None:
+        """INSERT de un INDETERMINATE conservador (reconciler de arranque).
+
+        Nunca compite: si ya existe un owner activo del artifact físico, el
+        índice único parcial rechaza el INSERT y se devuelve ``None`` en vez de
+        pisar a nadie. El registro NO puede traer identidad esperada (CHECK).
+
+        Principio 4 (F-001, patch 0006): los receipts UNRESOLVED de las TX
+        usadas como evidencia se CONSUMEN en el MISMO boundary que el INSERT.
+
+        PATCH 0011: ``absorber_evidencia_de`` es el conjunto COMPLETO de
+        candidatas cuya evidencia queda consumida PARA EL ARTIFACT del registro
+        — identidad ``(transaction_id, artifact_path)`` — en ese mismo boundary.
+        No toca ``transactions.status``: una candidata puede ser una corrida
+        viva (LIVE_SAFE_BY_CONSTRUCTION). Si se omite, absorbe el mismo conjunto
+        de ``consumir_receipts_de`` para que ningún caller que consume evidencia
+        pueda dejar de absorberla (un solo concepto: "evidencia consumida aquí").
+        """
+        ids_receipts = sorted({int(tx_id) for tx_id in consumir_receipts_de})
+        ids_absorcion = (
+            sorted({int(tx_id) for tx_id in absorber_evidencia_de}) if absorber_evidencia_de is not None else None
+        )
+        db = await self._ensure_connected()
+        if self._lifecycle is not None:
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    return await self._escribir_handoff_indeterminado(
+                        conn,
+                        registro=registro,
+                        ids_receipts=ids_receipts,
+                        ids_absorcion=ids_absorcion,
+                    )
+            except sqlite3.IntegrityError:
+                logger.warning(
+                    "Handoff INDETERMINATE para '%s' no insertado: ya hay un owner activo",
+                    registro.artifact_path,
+                )
+                return None
+            except sqlite3.Error as e:
+                raise JournalTransactionError(f"Failed to register indeterminate handoff: {e}") from e
+        async with self._lock:
+            try:
+                nuevo_id = await self._escribir_handoff_indeterminado(
+                    db,
+                    registro=registro,
+                    ids_receipts=ids_receipts,
+                    ids_absorcion=ids_absorcion,
+                )
+                await db.commit()
+                return nuevo_id
+            except sqlite3.IntegrityError:
+                # El INSERT perdió contra un owner concurrente: el consumo de
+                # receipts (ya emitido en la transacción) tampoco debe quedar
+                # afirmado — se deshace junto con el INSERT.
+                with contextlib.suppress(sqlite3.Error):
+                    await db.rollback()
+                logger.warning(
+                    "Handoff INDETERMINATE para '%s' no insertado: ya hay un owner activo",
+                    registro.artifact_path,
+                )
+                return None
+            except sqlite3.Error as e:
+                with contextlib.suppress(sqlite3.Error):
+                    await db.rollback()
+                raise JournalTransactionError(f"Failed to register indeterminate handoff: {e}") from e
+
+    async def transacciones_que_nombran(self, objetivo: str) -> list[int]:
+        """IDs de transacciones cuya ActionManifest nombra ``objetivo``, acotadas
+        a EVIDENCIA VIGENTE Y DURABLE (F-001/F-002, patch 0006).
+
+        Las ÚNICAS fuentes de evidencia del oracle:
+
+        - TX PENDING que nombra el artifact (ventanas vivas: digest/DB failure
+          del handoff, cancelación con mutación preservada);
+        - TX con receipt UNRESOLVED de stale sweep
+          (``stale_pending_sweep_receipts``): la conversión
+          PENDING→ROLLED_BACK hecha por el sweep quedó PROBADA en la DB — la
+          causalidad sobrevive crash, reconciler omitido (arranque sin config)
+          y reconciler con excepción, y la ve tanto el arranque como el hot
+          path del resume (misma primitive).
+
+        Cualquier OTRO ROLLED_BACK —historia vieja sin receipt, incluso con un
+        COMMITTED posterior— NO es evidencia (control R-002A).
+
+        F-002 (patch 0006): la comparación usa la MISMA identidad física que el
+        ownership lookup — ``clave_de_artifact`` (resolve + normcase) — para el
+        objetivo Y para cada entry histórico del manifest, que se canonicaliza
+        al LEERSE (la historia almacenada no se reescribe). Así un MO2
+        configurado vía symlink/junction no puede dar hit en el lookup y miss
+        acá (o viceversa).
+
+        Evidencia de reconciliación (F-002): el manifiesto es PRE-mutación, así
+        que esta consulta prueba intención, no provenance — el caller sólo puede
+        fabricar INDETERMINATE con ella, nunca identidad autorizada.
+
+        PATCH 0011 — absorción durable per-artifact: una candidata con relación
+        vigente en ``orphan_evidence_absorptions`` para EL OBJETIVO FÍSICO
+        canónico (identidad ``(transaction_id, artifact_path)``) deja de ser
+        evidencia — aplica a AMBAS fuentes: PENDING y ROLLED_BACK+receipt
+        UNRESOLVED. La exclusión es PER-ARTIFACT: si la TX nombra otro artifact
+        sin absorber, ese otro artifact sigue viendo su evidencia. El stale
+        sweep queda intacto: puede convertir la TX barrida a ROLLED_BACK+receipt
+        UNRESOLVD como siempre; el oracle simplemente ya no la readmite para el
+        artifact absorbido.
+
+        El filtro de rutas se hace en Python sobre el JSON de ``metadata``: un
+        ``LIKE`` sobre texto JSON sería ciego a los escapes de backslash de las
+        rutas Windows. La exclusión de absorciones se precarga con UNA query
+        parametrizada por el objetivo canónico — sin N+1 por candidata.
+        """
+        db = await self._ensure_connected()
+        objetivo_fisico, prefijo = _canonica_y_prefijo(objetivo)
+        sql = """
+            SELECT je.transaction_id, t.status, je.metadata, r.state
+            FROM journal_entries je
+            JOIN transactions t ON t.transaction_id = je.transaction_id
+            LEFT JOIN stale_pending_sweep_receipts r ON r.transaction_id = je.transaction_id
+            WHERE je.metadata IS NOT NULL AND t.status IN ('pending', 'rolled_back')
+        """
+        sql_absorbidas = "SELECT transaction_id FROM orphan_evidence_absorptions WHERE artifact_path = ?"
+        filas: list[tuple[Any, ...]] = []
+        absorbidas: set[int] = set()
+        if self._lifecycle is not None:
+            async with self._lifecycle.operation(self._db_path) as conn:
+                async with conn.execute(sql) as cursor:
+                    filas = [tuple(fila) async for fila in cursor]
+                async with conn.execute(sql_absorbidas, (objetivo_fisico,)) as cursor:
+                    absorbidas = {int(fila[0]) async for fila in cursor}
+        else:
+            async with self._lock:
+                async with db.execute(sql) as cursor:
+                    filas = [tuple(fila) async for fila in cursor]
+                async with db.execute(sql_absorbidas, (objetivo_fisico,)) as cursor:
+                    absorbidas = {int(fila[0]) async for fila in cursor}
+
+        coincidencias: set[int] = set()
+        for tx_id, status, metadata, receipt_state in filas:
+            if status != TransactionStatus.PENDING.value and receipt_state != SweepReceiptState.UNRESOLVED.value:
+                continue
+            try:
+                files_touched = json.loads(metadata).get("files_touched") or []
+            except (TypeError, json.JSONDecodeError):
+                continue
+            for ruta in files_touched:
+                if _nombra_objetivo(ruta, objetivo_fisico, prefijo):
+                    coincidencias.add(int(tx_id))
+                    break
+        coincidencias -= absorbidas
+        return sorted(coincidencias)
 
     async def get_transaction(self, transaction_id: int) -> Transaction | None:
         """
@@ -1905,6 +2577,42 @@ class NoOpJournal(OperationJournal):
     async def mark_transaction_rolled_back(self, transaction_id: int) -> None:
         pass
 
+    # D2 (PR #493): sin DB no hay handoff durable — no-op honestos para el
+    # sandbox (nunca consultar `_ensure_connected` acá: abriría una conexión
+    # real bajo la instancia no-op).
+
+    async def consultar_handoff_activo(self, artifact_path: str) -> None:
+        return None
+
+    async def crear_handoff_de_deployment(
+        self,
+        transaction_id: int,
+        *,
+        descripcion: str | None,
+        registro: DeploymentHandoff,
+        viejo: DeploymentHandoff | None = None,
+    ) -> int:
+        return 999999
+
+    async def completar_handoff_de_resume(self, transaction_id: int, handoff_id: int) -> None:
+        pass
+
+    async def transicionar_handoff(
+        self, handoff_id: int, *, desde: HandoffState, hacia: HandoffState, **campos: object
+    ) -> bool:
+        return True
+
+    async def registrar_handoff_indeterminado(
+        self, *, registro: DeploymentHandoff, consumir_receipts_de: Iterable[int] = ()
+    ) -> None:
+        return None
+
+    async def transacciones_que_nombran(self, objetivo: str) -> list[int]:
+        return []
+
+    async def cerrar_receipts_como_no_artifact(self, tx_ids: Iterable[int]) -> None:
+        return None
+
 
 class StagingJournal(OperationJournal):
     """Journal que difiere el commit de la transacción en el journal real
@@ -1979,6 +2687,31 @@ class StagingJournal(OperationJournal):
 
     async def mark_rolled_back(self, *args: Any, **kwargs: Any) -> None:
         await self._real_journal.mark_rolled_back(*args, **kwargs)
+
+    # D2 (PR #493): el handoff durable vive en el journal REAL — el sandbox no
+    # crea identidad durable hasta la promoción. Las lecturas se delegan sin
+    # diferir: un resume no ocurre dentro del sandbox.
+
+    async def consultar_handoff_activo(self, *args: Any, **kwargs: Any) -> DeploymentHandoff | None:
+        return await self._real_journal.consultar_handoff_activo(*args, **kwargs)
+
+    async def crear_handoff_de_deployment(self, *args: Any, **kwargs: Any) -> int:
+        return await self._real_journal.crear_handoff_de_deployment(*args, **kwargs)
+
+    async def completar_handoff_de_resume(self, *args: Any, **kwargs: Any) -> None:
+        await self._real_journal.completar_handoff_de_resume(*args, **kwargs)
+
+    async def transicionar_handoff(self, *args: Any, **kwargs: Any) -> bool:
+        return await self._real_journal.transicionar_handoff(*args, **kwargs)
+
+    async def registrar_handoff_indeterminado(self, *args: Any, **kwargs: Any) -> int | None:
+        return await self._real_journal.registrar_handoff_indeterminado(*args, **kwargs)
+
+    async def transacciones_que_nombran(self, *args: Any, **kwargs: Any) -> list[int]:
+        return await self._real_journal.transacciones_que_nombran(*args, **kwargs)
+
+    async def cerrar_receipts_como_no_artifact(self, *args: Any, **kwargs: Any) -> None:
+        await self._real_journal.cerrar_receipts_como_no_artifact(*args, **kwargs)
 
     async def commit_staged(self) -> None:
         """Confirma la transacción diferida en el journal real."""

@@ -68,6 +68,13 @@ _ITEMS = frozenset(
         # `docs/design/plans/2026-08-16-dyndolod-roadmap-v2.md`.
         "Clasificación del log de la etapa 9",
         "Candidato de salida de TexGen",
+        # Los tres agujeros que destapó corregir el candidato: el gate roto los
+        # contenía por accidente (TexGen fallaba SIEMPRE, así que nunca se llegaba
+        # a empaquetar su salida ni a leerla desde DynDOLOD). Fila propia y no un
+        # apéndice de la anterior porque son propiedades distintas —ownership del
+        # namespace compartido, propiedad del staging y visibilidad en el Data
+        # físico— y cada una tiene su propio conjunto de anclas.
+        "Fronteras del handoff TexGen → DynDOLOD",
     }
 )
 

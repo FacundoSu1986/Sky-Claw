@@ -88,10 +88,9 @@ BODYSLIDE_MESHES_RESOURCE_ID = "bodyslide-meshes"
 SKY_CLAW_MANAGED_DIR = "Sky-Claw"
 
 #: Raíz administrada única de Sky-Claw para la salida de DynDOLOD/TexGen. Lleva
-#: el nombre de la FAMILIA, no el de una salida: la herramienta crea sus propias
-#: carpetas (``DynDOLOD_Output``/``TexGen_Output``) DENTRO del valor de ``-o:`` —
-#: el layout por default (la salida aparece junto al exe) lo confirma. Nombrarla
-#: con el staging anidaría ``DynDOLOD_Output/DynDOLOD_Output``.
+#: el nombre de la FAMILIA, no el de una salida: DynDOLOD crea
+#: ``DynDOLOD_Output`` y TexGen escribe ``textures`` DENTRO del valor de ``-o:``.
+#: Nombrarla con el staging anidaría ``DynDOLOD_Output/DynDOLOD_Output``.
 DYNDOLOD_OUTPUT_ROOT = "DynDOLOD"
 
 
@@ -191,16 +190,16 @@ def bodyslide_output_target(*, game: pathlib.Path | None, group: str) -> pathlib
 def dyndolod_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
     """Raíz administrada única de Sky-Claw para la salida de DynDOLOD/TexGen.
 
-    Los binarios la reciben vía ``-o:`` (patrón (b): ruta explícita en el comando)
-    y crean sus carpetas de salida —``DynDOLOD_Output``/``TexGen_Output``, las
-    constantes del runner— adentro. Que el destino sea único y conocido reemplaza
-    la adivinanza entre tres raíces (MO2, dir del exe, cwd) y es lo que habilita
-    el post-check de artefacto (U-06) sobre un target administrado.
+    Los binarios la reciben vía ``-o:`` (patrón (b): ruta explícita en el comando).
+    DynDOLOD crea ``DynDOLOD_Output`` y TexGen escribe ``textures`` adentro. Que
+    el destino sea único y conocido reemplaza la adivinanza entre tres raíces
+    (MO2, dir del exe, cwd) y habilita el post-check de artefacto (U-06) sobre un
+    target administrado.
 
-    El runner resuelve el staging real con un fallback acotado a esta raíz
-    (``root/<StagingName>`` y, si la herramienta escribiera directo, ``root``);
-    acá vive solo la raíz. ``None`` sin juego, mismo contrato que
-    :func:`pandora_output_target`.
+    El runner resuelve cada contrato por separado: TexGen sólo
+    ``root/textures``; DynDOLOD ``root/DynDOLOD_Output`` y, si escribiera directo,
+    ``root`` como fallback acotado. Acá vive sólo la raíz. ``None`` sin juego,
+    mismo contrato que :func:`pandora_output_target`.
 
     **Cuelga del namespace** ``Sky-Claw/`` porque el nombre pelado colisiona:
     ``game/DynDOLOD`` es la carpeta a la que extrae el archivo DynDOLOD

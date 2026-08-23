@@ -278,7 +278,10 @@ async def test_un_dispatch_concurrente_no_hereda_el_cliente() -> None:
 
 #: Recibir ``tab_id`` ES la firma de un lanzador: significa que su dispatch
 #: puede terminar parkeando una aprobación con dueño en el store compartido.
-LANZADORES_QUE_PARKEAN_APROBACION = frozenset({"run_ritual", "run_ritual_install"})
+#: ``run_ritual_resume`` (post-D2, F-001) es el tercer miembro: atraviesa el
+#: MISMO dispatcher HITL-gated de generate_lods con un payload resume, así que
+#: comparte exactamente la misma obligación de scoping que sus hermanos.
+LANZADORES_QUE_PARKEAN_APROBACION = frozenset({"run_ritual", "run_ritual_install", "run_ritual_resume"})
 
 
 def _lanzadores_detectados() -> frozenset[str]:
@@ -311,6 +314,20 @@ async def _invocar_run_ritual(store: ReactiveStore, tab_id: str | None, espia: C
     await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id=tab_id)
 
 
+async def _invocar_run_ritual_resume(store: ReactiveStore, tab_id: str | None, espia: Callable[[], None]) -> None:
+    """Misma receta que ``run_ritual``: el resume despacha por el MISMO
+    dispatcher HITL-gated, así que el espía debe correr en la task del
+    lanzador y la aprobación debe quedar scoped al mismo ``tab_id``."""
+    from sky_claw.app.gui.controllers.ritual_runner import run_ritual_resume
+
+    class _Supervisor:
+        async def dispatch_tool(self, _name: str, _args: dict) -> dict:
+            espia()  # acá corre el gate HITL, inline en esta misma task
+            return {"success": True}
+
+    await run_ritual_resume("dyndolod", supervisor=_Supervisor(), store=store, tab_id=tab_id)
+
+
 async def _invocar_run_ritual_install(store: ReactiveStore, tab_id: str | None, espia: Callable[[], None]) -> None:
     from sky_claw.app.gui.controllers.ritual_runner import run_ritual_install
 
@@ -331,6 +348,7 @@ async def _invocar_run_ritual_install(store: ReactiveStore, tab_id: str | None, 
 RECETAS_DE_INVOCACION = {
     "run_ritual": _invocar_run_ritual,
     "run_ritual_install": _invocar_run_ritual_install,
+    "run_ritual_resume": _invocar_run_ritual_resume,
 }
 
 
