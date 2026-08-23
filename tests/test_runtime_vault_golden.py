@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import pathlib
 import shutil
+from collections.abc import Sequence
 
 import pytest
 
@@ -1007,3 +1008,155 @@ class TestVerifyCriticalFilesDirecto:
                 observed_size=10,
             ),
         )
+
+
+class TestGeneratorsDefensiveMaterialization:
+    """Valida que iterables de una sola pasada (generators) sean materializados defensivamente."""
+
+    def test_g1_bad_critical_generator_produce_failed_y_no_falso_verde(
+        self,
+        mock_candidate: tuple[pathlib.Path, TreeDigest, RuntimeIdentity, list[CriticalFileExpectation]],
+    ) -> None:
+        root, tree_digest, runtime_id, critical = mock_candidate
+        real_digest = critical[0].expected_digest
+        bad_exp = CriticalFileExpectation(
+            rel_path="SkyrimSE.exe",
+            expected_digest="0" * 64,
+            expected_size=100,
+        )
+        generator_exp = (exp for exp in [bad_exp])
+
+        res = verify_golden_master(
+            candidate=root,
+            expected_tree=tree_digest,
+            expected_runtime=runtime_id,
+            observed_runtime=runtime_id,
+            critical_expectations=generator_exp,
+        )
+        assert res.state is VerificationState.FAILED
+        assert res.success is False
+        assert res.descriptor is None
+        assert len(res.critical_results) == 1
+        assert res.critical_results[0].state is VerificationState.FAILED
+        assert res.critical_results[0].expected_digest == "0" * 64
+        assert res.critical_results[0].observed_digest == real_digest
+
+    def test_g2_direct_verify_critical_files_con_generator(self) -> None:
+        files = [FileIdentity(rel_path="SkyrimSE.exe", size=10, digest="a" * 64)]
+        bad_exp = CriticalFileExpectation(
+            rel_path="SkyrimSE.exe",
+            expected_digest="0" * 64,
+            expected_size=10,
+        )
+        generator_exp = (exp for exp in [bad_exp])
+
+        res = verify_critical_files(files, generator_exp)
+        assert res == (
+            CriticalFileEvidence(
+                rel_path="SkyrimSE.exe",
+                state=VerificationState.FAILED,
+                message=f"Archivo crítico 'SkyrimSE.exe' no coincide: sha256 ({'a' * 64} vs {'0' * 64})",
+                expected_digest="0" * 64,
+                observed_digest="a" * 64,
+                expected_size=10,
+                observed_size=10,
+            ),
+        )
+
+    def test_g3_valid_critical_generator_produce_verified(
+        self,
+        mock_candidate: tuple[pathlib.Path, TreeDigest, RuntimeIdentity, list[CriticalFileExpectation]],
+    ) -> None:
+        root, tree_digest, runtime_id, critical = mock_candidate
+        generator_exp = (exp for exp in critical)
+
+        res = verify_golden_master(
+            candidate=root,
+            expected_tree=tree_digest,
+            expected_runtime=runtime_id,
+            observed_runtime=runtime_id,
+            critical_expectations=generator_exp,
+        )
+        assert res.state is VerificationState.VERIFIED
+        assert res.success is True
+        assert res.descriptor is not None
+        assert len(res.critical_results) == len(critical)
+        assert all(c.state is VerificationState.VERIFIED for c in res.critical_results)
+
+    def test_g4_duplicate_critical_generator_levanta_error(
+        self,
+        mock_candidate: tuple[pathlib.Path, TreeDigest, RuntimeIdentity, list[CriticalFileExpectation]],
+    ) -> None:
+        root, tree_digest, runtime_id, critical = mock_candidate
+        generator_exp = (exp for exp in (critical[0], critical[0]))
+
+        with pytest.raises(ValueError, match="duplicadas"):
+            verify_golden_master(
+                candidate=root,
+                expected_tree=tree_digest,
+                expected_runtime=runtime_id,
+                observed_runtime=runtime_id,
+                critical_expectations=generator_exp,
+            )
+
+    def test_g5_empty_critical_generator_produce_verified(
+        self,
+        mock_candidate: tuple[pathlib.Path, TreeDigest, RuntimeIdentity, list[CriticalFileExpectation]],
+    ) -> None:
+        root, tree_digest, runtime_id, _ = mock_candidate
+        empty_gen = iter(())
+
+        res = verify_golden_master(
+            candidate=root,
+            expected_tree=tree_digest,
+            expected_runtime=runtime_id,
+            observed_runtime=runtime_id,
+            critical_expectations=empty_gen,
+        )
+        assert res.state is VerificationState.VERIFIED
+        assert res.success is True
+        assert res.descriptor is not None
+        assert res.critical_results == ()
+
+
+class TestSameCaptureOracle:
+    """Ancla que verify_critical_files recibe exactamente el mismo objeto capturado en inventory_tree."""
+
+    def test_verify_critical_files_recibe_mismo_objeto_capturado(
+        self,
+        mock_candidate: tuple[pathlib.Path, TreeDigest, RuntimeIdentity, list[CriticalFileExpectation]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import sky_claw.local.runtime_vault.golden as golden_module
+
+        root, tree_digest, runtime_id, critical = mock_candidate
+        original_inventory = golden_module.inventory_tree
+        original_verify_critical = golden_module.verify_critical_files
+
+        capturas: list[tuple[Sequence[FileIdentity], Sequence[FileIdentity]]] = []
+
+        def spy_inventory_tree(path: pathlib.Path) -> Sequence[FileIdentity]:
+            files = original_inventory(path)
+            return files
+
+        def spy_verify_critical(
+            files: Sequence[FileIdentity],
+            expectations: Sequence[CriticalFileExpectation],
+        ) -> tuple[CriticalFileEvidence, ...]:
+            evidencias = original_verify_critical(files, expectations)
+            capturas.append((files, files))
+            return evidencias
+
+        monkeypatch.setattr(golden_module, "inventory_tree", spy_inventory_tree)
+        monkeypatch.setattr(golden_module, "verify_critical_files", spy_verify_critical)
+
+        res = verify_golden_master(
+            candidate=root,
+            expected_tree=tree_digest,
+            expected_runtime=runtime_id,
+            observed_runtime=runtime_id,
+            critical_expectations=critical,
+        )
+        assert res.state is VerificationState.VERIFIED
+        assert len(capturas) == 1
+        assert capturas[0][0] is capturas[0][1]

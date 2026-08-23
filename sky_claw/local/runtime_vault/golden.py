@@ -49,6 +49,7 @@ def verify_critical_files(
     durante el inventario, garantizando atomicidad de evidencia y eliminando
     la posibilidad de TOCTOU entre tree digest y critical files.
     """
+    expectations = tuple(expectations)
     vistos: set[str] = set()
     for exp in expectations:
         if exp.rel_path in vistos:
@@ -131,6 +132,8 @@ def verify_golden_master(
     else:
         root = pathlib.Path(os.path.abspath(os.fspath(candidate)))
         obs_runtime = observed_runtime
+
+    critical_expectations = tuple(critical_expectations)
 
     # Validar que no haya duplicados en expectativas críticas antes de empezar
     vistos_criticos: set[str] = set()
