@@ -82,7 +82,12 @@ def _rutas_de_metadata(metadata: object) -> tuple[str, ...]:
     ``files_touched`` lista de strings:
 
     - JSON no-objeto (``[]`` / ``"str"`` / ``42`` / ``null``);
-    - metadata no-texto (la columna SQLite es de tipo dinámico) o JSON inválido;
+    - metadata no-str (la columna SQLite es de tipo dinámico) o JSON inválido.
+      F1 INVALID_UTF8_BLOB: los bytes NO se decodifican — todos los productores
+      sanos persisten ``json.dumps(...)``/``json_set`` TEXT (``begin_operation``,
+      ``fail_operation``, rollback details), así que un BLOB es corrupción
+      durable y se ignora sin intentar rescatarlo: ``json.loads(b"\xff")``
+      lanza ``UnicodeDecodeError``, que ni siquiera es ``JSONDecodeError``;
     - ``files_touched`` ausente o no-lista (string, int, dict): JAMÁS se itera
       carácter por carácter ni por claves;
     - elementos no-string dentro de la lista: se descartan sin coerción.
@@ -93,11 +98,11 @@ def _rutas_de_metadata(metadata: object) -> tuple[str, ...]:
     (``ActionManifest`` / ``FlightReport``, ambos ``files_touched: list[str]``)
     conservan su comportamiento; el resto es corrupción durable y se ignora.
     """
-    if not isinstance(metadata, (str, bytes, bytearray)):
+    if not isinstance(metadata, str):
         return ()
     try:
         decoded = json.loads(metadata)
-    except (TypeError, json.JSONDecodeError):
+    except json.JSONDecodeError:
         return ()
     if not isinstance(decoded, dict):
         return ()

@@ -27,6 +27,7 @@ TX + ActionManifest existen — mismo patrón productivo de los tests de #493.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sqlite3
 from datetime import datetime
@@ -1071,9 +1072,12 @@ async def test_reemplazo_con_receipt_unresolved_lo_marca_superseded(tmp_path: pa
 # =============================================================================
 
 
-async def _tx_pending_con_metadata_cruda(tmp_path: pathlib.Path, metadata_cruda: str) -> tuple[pathlib.Path, str, int]:
+async def _tx_pending_con_metadata_cruda(
+    tmp_path: pathlib.Path, metadata_cruda: str | bytes
+) -> tuple[pathlib.Path, str, int]:
     """Deja una TX PENDING cuya ÚNICA entrada con metadata lleva ``metadata_cruda``
-    (JSON crudo posiblemente corrupto). Devuelve (db_path, clave_A, tx)."""
+    (JSON crudo posiblemente corrupto; ``bytes`` se persiste como BLOB real).
+    Devuelve (db_path, clave_A, tx)."""
     db_path = tmp_path / "journal.db"
     config, _ = _entorno(tmp_path)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
@@ -1146,6 +1150,45 @@ async def test_metadata_corrupta_no_escapa_ni_fabrica_evidencia(
         assert tx not in reportadas, f"{caso}: metadata corrupta no puede fabricarse como evidencia de A"
 
 
+async def test_metadata_blob_no_escapa_ni_fabrica_evidencia(tmp_path: pathlib.Path) -> None:
+    """F1 INVALID_UTF8_BLOB sobre el oracle durable.
+
+    La columna ``journal_entries.metadata`` es SQLite de tipo dinámico: una fila
+    legacy puede traer la metadata como BLOB. Con el guard del candidato,
+    ``json.loads(b"\xff")`` lanza ``UnicodeDecodeError`` —que NO es
+    ``JSONDecodeError`` ni ``TypeError``— DENTRO de ``transacciones_que_nombran``
+    y tumba el boundary de recovery; y un BLOB de UTF-8 válido con JSON perfecto
+    se contaría como evidencia sin que ningún productor sano haya autorizado
+    bytes (los tres escritores persisten ``json.dumps(...)``/``json_set`` TEXT).
+    Congela ambos cierres:
+
+    - el BLOB corrupto no lanza;
+    - NINGÚN BLOB —corrupto o válido— fabrica evidencia.
+    """
+    sub = tmp_path / "blob"
+    sub.mkdir()
+    config, _ = _entorno(sub)
+    clave = clave_de_artifact(config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME)
+    casos = [
+        ("utf8-invalido", b"\xff"),
+        ("json-valido-en-blob", json.dumps({"files_touched": [clave]}).encode("utf-8")),
+    ]
+    for nombre, blob in casos:
+        caso_dir = sub / nombre
+        caso_dir.mkdir()
+        db_path, clave_caso, tx = await _tx_pending_con_metadata_cruda(caso_dir, blob)
+
+        journal = _registrar(OperationJournal(db_path))
+        await journal.open()
+        try:
+            # NO debe lanzar UnicodeDecodeError (ni nada) para ninguna forma.
+            reportadas = await journal.transacciones_que_nombran(clave_caso)
+        finally:
+            await journal.close()
+
+        assert tx not in reportadas, f"{nombre}: un BLOB no puede fabricarse como evidencia de A"
+
+
 def test_rutas_de_metadata_contrato_exhaustivo() -> None:
     """Contrato del primitivo compartido de parsing durable (igualdad literal).
 
@@ -1170,6 +1213,15 @@ def test_rutas_de_metadata_contrato_exhaustivo() -> None:
     # tipos no-str en la columna (SQLite dinámico) tampoco lanzan:
     assert _rutas_de_metadata(None) == ()
     assert _rutas_de_metadata(42) == ()
+    # F1 INVALID_UTF8_BLOB: bytes/bytearray NO se decodifican. Todos los
+    # productores sanos persisten ``json.dumps(...)`` TEXT (begin_operation,
+    # fail_operation, rollback_details) sobre una columna TEXT declarada;
+    # un BLOB es corrupción durable y fail-closed significa ignorarlo, no
+    # rescatarlo: ni el UTF-8 inválido lanza, ni el JSON válido fabrica.
+    assert _rutas_de_metadata(b"\xff") == ()
+    assert _rutas_de_metadata(bytearray(b"\xff")) == ()
+    assert _rutas_de_metadata(b'{"files_touched": ["C:\\\\artifact"]}') == ()
+    assert _rutas_de_metadata(bytearray(b"[]")) == ()
 
 
 async def _inyectar_fallo_inesperado_en_candidatas():  # noqa: ANN202
