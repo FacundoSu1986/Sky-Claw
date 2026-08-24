@@ -390,13 +390,17 @@ def test_todo_boundary_que_extingue_un_handoff_sella_la_evidencia() -> None:
     )
 
 
-def _destinos_de_transicionar_handoff() -> set[str]:
-    """Destino (``hacia=``) de CADA call site de ``transicionar_handoff`` en
-    ``sky_claw/``, como texto, detectado por AST."""
+def _call_sites_de_transicionar_handoff() -> set[tuple[str, int, str]]:
+    """``(ruta_relativa, linea, destino)`` de CADA call site de
+    ``transicionar_handoff`` en ``sky_claw/``, detectado por AST.
+
+    Identidad POR CALL SITE, no por destino: un ``set`` de destinos colapsa dos
+    llamadas que van al mismo estado, así que un caller nuevo con un ``hacia``
+    ya presente no movería el conjunto y el ancla no lo vería."""
     import ast
 
     raiz = pathlib.Path(sky_claw_app_db_journal_path()).resolve().parents[2]  # sky_claw/, NO el repo
-    destinos: set[str] = set()
+    sites: set[tuple[str, int, str]] = set()
     for archivo in sorted(raiz.rglob("*.py")):
         fuente = archivo.read_text(encoding="utf-8")
         if "transicionar_handoff" not in fuente:
@@ -410,8 +414,8 @@ def _destinos_de_transicionar_handoff() -> set[str]:
                 continue
             for kw in nodo.keywords:
                 if kw.arg == "hacia":
-                    destinos.add(ast.unparse(kw.value))
-    return destinos
+                    sites.add((archivo.relative_to(raiz).as_posix(), nodo.lineno, ast.unparse(kw.value)))
+    return sites
 
 
 def test_transicionar_handoff_nunca_lleva_a_un_estado_terminal() -> None:
@@ -436,14 +440,18 @@ def test_transicionar_handoff_nunca_lleva_a_un_estado_terminal() -> None:
     actor externo robando el ownership, el escenario de race que debe fallar
     CERRADO. Por eso el barrido es sobre ``sky_claw/``, no sobre ``tests/``.
     """
-    destinos = _destinos_de_transicionar_handoff()
-    assert destinos == {
-        "HandoffState.AWAITING_DEPLOYMENT",
-        "HandoffState.INDETERMINATE",
-        "HandoffState.SUPERSEDING",
-        "estado_previo",  # dyndolod_service: AWAITING o INDETERMINATE, siempre activo
-    }, f"cambiaron los destinos de transicionar_handoff: {sorted(destinos)}"
-    terminales = {d for d in destinos if d in {"HandoffState.SUPERSEDED", "HandoffState.COMPLETED"}}
+    sites = _call_sites_de_transicionar_handoff()
+    assert {(archivo, destino) for archivo, _, destino in sites} == {
+        ("app/db/handoffs.py", "HandoffState.AWAITING_DEPLOYMENT"),
+        ("app/db/handoffs.py", "HandoffState.INDETERMINATE"),
+        ("local/tools/dyndolod_service.py", "HandoffState.INDETERMINATE"),
+        ("local/tools/dyndolod_service.py", "HandoffState.SUPERSEDING"),
+        # dyndolod_service.py lo fija en el sitio: AWAITING o INDETERMINATE, siempre activo.
+        ("local/tools/dyndolod_service.py", "estado_previo"),
+    }, f"cambiaron los call sites de transicionar_handoff: {sorted(sites)}"
+    # Conteo POR call site: detecta un caller nuevo aunque repita un `hacia` existente.
+    assert len(sites) == 6, f"cambió el número de call sites de transicionar_handoff: {sorted(sites)}"
+    terminales = {s for s in sites if s[2] in {"HandoffState.SUPERSEDED", "HandoffState.COMPLETED"}}
     assert not terminales, f"transicionar_handoff extingue un handoff sin sellar su evidencia: {sorted(terminales)}"
 
 
