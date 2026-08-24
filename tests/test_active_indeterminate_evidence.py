@@ -1,6 +1,6 @@
 """POST493_ACTIVE_INDETERMINATE_EVIDENCE_REUSE — absorción en el boundary de reemplazo.
 
-Finding confirmado conductualmente (triage post-#493): una regeneración fallida
+Hallazgo confirmado conductualmente (triage post-#493): una regeneración fallida
 durante un handoff activo deja una TX PENDING que nombra el artifact; el oracle
 la ve, pero el reconciler retorna el owner activo ANTES de materializar la
 evidencia (handoffs.py, short-circuit S1) y ningún boundary crea su absorción.
