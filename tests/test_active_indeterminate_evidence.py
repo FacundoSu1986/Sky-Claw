@@ -1063,3 +1063,215 @@ async def test_reemplazo_con_receipt_unresolved_lo_marca_superseded(tmp_path: pa
         "el receipt UNRESOLVED consumido por el reemplazo debe quedar SUPERSEDED (no CONSUMED)"
     )
     assert tx_fail not in await journal.transacciones_que_nombran(clave)
+
+
+# =============================================================================
+# FINDING A — NON_OBJECT_JSON_CAN_ESCAPE_RECOVERY_BOUNDARY
+#   parser durable a prueba de corrupción + atomicidad del boundary standalone
+# =============================================================================
+
+
+async def _tx_pending_con_metadata_cruda(tmp_path: pathlib.Path, metadata_cruda: str) -> tuple[pathlib.Path, str, int]:
+    """Deja una TX PENDING cuya ÚNICA entrada con metadata lleva ``metadata_cruda``
+    (JSON crudo posiblemente corrupto). Devuelve (db_path, clave_A, tx)."""
+    db_path = tmp_path / "journal.db"
+    config, _ = _entorno(tmp_path)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    clave = clave_de_artifact(mod_texgen)
+    journal = _registrar(OperationJournal(db_path))
+    await journal.open()
+    try:
+        # Entrada real con metadata (para tener una fila que el oracle escanee),
+        # luego se sobrescribe con la forma cruda bajo prueba.
+        tx = await _evidencia(journal, [mod_texgen], "metadata-cruda")
+        async with journal._db.execute(  # noqa: SLF001
+            "UPDATE journal_entries SET metadata = ? WHERE transaction_id = ? AND metadata IS NOT NULL",
+            (metadata_cruda, tx),
+        ):
+            pass
+        await journal._db.commit()  # noqa: SLF001
+    finally:
+        await journal.close()
+    return db_path, clave, tx
+
+
+# (id, metadata cruda, ¿debe el oracle reportar la TX para el artifact A?)
+_CASOS_METADATA = [
+    ("A1_lista", "[]", False),
+    ("A2_string", '"texto"', False),
+    ("A3_int", "42", False),
+    ("A4_null", "null", False),
+    ("A5_invalido", "{no es json", False),
+    ("A6_ft_null", '{"files_touched": null}', False),
+    ("A7_ft_string", '{"files_touched": "__CLAVE__"}', False),
+    ("A8_ft_int", '{"files_touched": 123}', False),
+    ("A9_ft_dict_vacio", '{"files_touched": {}}', False),
+    ("A9b_ft_dict", '{"files_touched": {"a": 1}}', False),
+    ("A10_ft_lista_valida", '{"files_touched": ["__CLAVE__"]}', True),
+]
+
+
+@pytest.mark.parametrize(("caso", "cruda", "debe_reportar"), _CASOS_METADATA, ids=[c[0] for c in _CASOS_METADATA])
+async def test_metadata_corrupta_no_escapa_ni_fabrica_evidencia(
+    tmp_path: pathlib.Path, caso: str, cruda: str, debe_reportar: bool
+) -> None:
+    """El oracle durable (``transacciones_que_nombran`` → ``_candidatas_orphan_en_conn``)
+    NUNCA lanza por la forma del metadata, y sólo cuenta como evidencia un
+    ActionManifest válido (objeto JSON + ``files_touched`` lista de strings).
+
+    JSON no-objeto (``[]``/``"str"``/``42``/``null``), ``files_touched`` no-lista
+    (string, int, dict) y JSON inválido: la fila se ignora, no se interpreta
+    carácter por carácter, y no crashea el boundary de recovery.
+    """
+    sub = tmp_path / caso
+    sub.mkdir()
+    # el placeholder se resuelve a la clave física real del artifact A
+    config, _ = _entorno(sub)
+    clave = clave_de_artifact(config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME)
+    db_path, clave, tx = await _tx_pending_con_metadata_cruda(
+        sub, cruda.replace("__CLAVE__", clave.replace("\\", "\\\\"))
+    )
+
+    journal = _registrar(OperationJournal(db_path))
+    await journal.open()
+    try:
+        # NO debe lanzar (ni AttributeError ni TypeError) para ninguna forma.
+        reportadas = await journal.transacciones_que_nombran(clave)
+    finally:
+        await journal.close()
+
+    if debe_reportar:
+        assert tx in reportadas, f"{caso}: un manifest válido nombrando A debe reportarse"
+    else:
+        assert tx not in reportadas, f"{caso}: metadata corrupta no puede fabricarse como evidencia de A"
+
+
+def test_rutas_de_metadata_contrato_exhaustivo() -> None:
+    """Contrato del primitivo compartido de parsing durable (igualdad literal).
+
+    Un mutante que acepte string como iterable de ``files_touched`` (interpretación
+    carácter-por-carácter) o que no filtre elementos no-string rompe este ancla.
+    """
+    from sky_claw.app.db.journal import _rutas_de_metadata
+
+    assert _rutas_de_metadata("[]") == ()
+    assert _rutas_de_metadata('"texto"') == ()
+    assert _rutas_de_metadata("42") == ()
+    assert _rutas_de_metadata("null") == ()
+    assert _rutas_de_metadata("{no es json") == ()
+    assert _rutas_de_metadata('{"files_touched": null}') == ()
+    assert _rutas_de_metadata('{"files_touched": "C:\\\\foo"}') == ()  # string NO se itera como chars
+    assert _rutas_de_metadata('{"files_touched": 123}') == ()
+    assert _rutas_de_metadata('{"files_touched": {}}') == ()
+    assert _rutas_de_metadata('{"files_touched": {"a": 1}}') == ()  # dict NO se itera como keys
+    assert _rutas_de_metadata('{"files_touched": ["C:\\\\artifact"]}') == ("C:\\artifact",)
+    # elementos no-string dentro de una lista válida se descartan (sin coerción):
+    assert _rutas_de_metadata('{"files_touched": ["ok", 123, null, {"x": 1}]}') == ("ok",)
+    # tipos no-str en la columna (SQLite dinámico) tampoco lanzan:
+    assert _rutas_de_metadata(None) == ()
+    assert _rutas_de_metadata(42) == ()
+
+
+async def _inyectar_fallo_inesperado_en_candidatas():  # noqa: ANN202
+    """Parcha ``_candidatas_orphan_en_conn`` para lanzar un fallo inesperado
+    DESPUÉS de que el boundary ya empezó a mutar (se llama tras el INSERT del
+    handoff nuevo, dentro del sello)."""
+
+    async def _boom(*_a: object, **_k: object) -> set[int]:
+        raise RuntimeError("fallo inesperado en candidate processing")
+
+    return patch("sky_claw.app.db.journal._candidatas_orphan_en_conn", _boom)
+
+
+async def test_standalone_fallo_inesperado_no_deja_mutacion_parcial_durable(tmp_path: pathlib.Path) -> None:
+    """ATOMICIDAD (standalone): un fallo inesperado dentro del write boundary
+    debe revertir TODO y re-lanzar; un escritor posterior sobre la MISMA conexión
+    no puede committear el trabajo parcial del boundary roto."""
+    esc = await _sembrar_escenario_para_faults(tmp_path / "atomic-standalone")
+    journal, db_path = esc["journal"], esc["db_path"]
+    assert journal._lifecycle is None  # noqa: SLF001  — este escenario es standalone
+
+    tx2 = await journal.begin_transaction("reemplazo", agent_id="test")
+    with await _inyectar_fallo_inesperado_en_candidatas(), pytest.raises(RuntimeError):
+        await journal.crear_handoff_de_deployment(tx2, descripcion=None, registro=esc["registro"], viejo=esc["h1"])
+
+    # Escritor posterior sobre la MISMA conexión: si el boundary roto quedó con
+    # la transacción implícita abierta, este commit la volvería durable.
+    tx3 = await journal.begin_transaction("escritor-posterior", agent_id="test")
+    await journal.commit_transaction(tx3)
+    await journal.close()
+
+    # Reabrir fresco: nada del boundary roto puede haberse vuelto durable.
+    j2 = _registrar(OperationJournal(db_path))
+    await j2.open()
+    try:
+        estado_h1, superseded_by = await _estado_handoff(j2, esc["h1_id"])
+        assert estado_h1 == HandoffState.AWAITING_DEPLOYMENT.value, "el viejo handoff no debió cambiar"
+        assert superseded_by is None
+        assert await _estado_tx(j2, tx2) != TransactionStatus.COMMITTED.value, "la TX del reemplazo no debió committear"
+        assert await _absorciones(db_path) == [], "no debió quedar ninguna absorción"
+        async with j2._db.execute("SELECT COUNT(*) FROM deployment_handoffs") as cur:  # noqa: SLF001
+            (n_handoffs,) = await cur.fetchone()
+        assert n_handoffs == 1, "no debió crearse el handoff nuevo (sólo H1)"
+    finally:
+        await j2.close()
+
+
+async def test_lifecycle_fallo_inesperado_revierte_igual_que_standalone(tmp_path: pathlib.Path) -> None:
+    """PARIDAD lifecycle: el mismo fallo inesperado bajo el boundary lifecycle
+    ya revierte (el CM de ``transaction`` captura ``BaseException``). Congela la
+    paridad: standalone debe comportarse igual."""
+    from sky_claw.app.core.db_lifecycle import DatabaseLifecycleConfig, DatabaseLifecycleManager
+
+    db_path = tmp_path / "journal.db"
+    config, _ = _entorno(tmp_path)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    clave = clave_de_artifact(mod_texgen)
+    lifecycle = DatabaseLifecycleManager(
+        db_paths=[],
+        config=DatabaseLifecycleConfig(enable_signal_handlers=False),
+    )
+    journal = _registrar(OperationJournal(db_path, lifecycle=lifecycle))
+    await journal.open()
+    try:
+        _escribir_mod(mod_texgen)
+        tx1 = await journal.begin_transaction("texgen entregado", agent_id="test")
+        d1 = digest_arbol(mod_texgen / "textures")
+        registro = DeploymentHandoff(
+            handoff_id=0,
+            source_tx_id=tx1,
+            state=HandoffState.AWAITING_DEPLOYMENT,
+            artifact_path=clave,
+            game_key=clave_de_artifact(config.game_path),
+            mods_root_key=clave_de_artifact(config.mo2_mods_path),
+            data_key=clave_de_artifact(config.data_dir),
+            expected_profile="Perfil-A",
+            expected_digest=d1.digest,
+            expected_files=d1.files,
+            expected_bytes=d1.bytes,
+            observed_digest=None,
+            observed_files=None,
+            observed_bytes=None,
+            created_at="",
+            updated_at="",
+            completed_at=None,
+            superseded_at=None,
+            superseded_by=None,
+        )
+        h1_id = await journal.crear_handoff_de_deployment(tx1, descripcion=None, registro=registro, viejo=None)
+        h1 = await journal.consultar_handoff_activo(clave)
+        assert h1 is not None
+
+        tx2 = await journal.begin_transaction("reemplazo", agent_id="test")
+        with await _inyectar_fallo_inesperado_en_candidatas(), pytest.raises(RuntimeError):
+            await journal.crear_handoff_de_deployment(tx2, descripcion=None, registro=registro, viejo=h1)
+
+        # El boundary lifecycle ya revirtió: estado intacto sin escritor posterior.
+        estado_h1, superseded_by = await _estado_handoff(journal, h1_id)
+        assert estado_h1 == HandoffState.AWAITING_DEPLOYMENT.value
+        assert superseded_by is None
+        assert await _estado_tx(journal, tx2) != TransactionStatus.COMMITTED.value
+        assert await _absorciones(db_path) == []
+    finally:
+        await journal.close()
+        await lifecycle.shutdown_all()

@@ -984,3 +984,71 @@ async def test_restart_no_refabrica_tras_absorcion_pre_y_post_threshold(tmp_path
         assert await _absorciones(db) == absorciones_antes
     finally:
         await j3.close()
+
+
+# =============================================================================
+# FINDING B — PREMATURE_LIVE_PENDING_ABSORPTION: REFUTED_BY_SERIALIZATION
+#
+# Una PENDING viva sólo podría absorberse anticipadamente si un SEGUNDO
+# productor del artifact corriera concurrente con el boundary que lo extingue.
+# Hoy imposible: el ÚNICO productor de transacciones/manifiestos que nombran el
+# artifact de TexGen/DynDOLOD —y el único que invoca los boundaries absorbentes
+# (`crear_handoff_de_deployment` / `completar_handoff_de_resume`)— es el pipeline
+# de DynDOLOD, que corre begin_transaction + persist_action_manifest + boundary
+# DENTRO de UN mismo lease cross-process `dyndolod-pipeline` (SQLite
+# `resource_locks`, `ON CONFLICT ... WHERE expires_at < ?`; liberado último por
+# el AsyncExitStack; lease-loss ⇒ fail-closed vía `tx_lock.lease_lost`). Dos
+# titulares del lease no coexisten, así que ninguna PENDING viva de otra corrida
+# coexiste con el boundary. No se agrega código productivo para B (REFUTADO):
+# sólo se congela el linchpin de la serialización.
+# =============================================================================
+
+
+def _modulos_que_invocan_boundary_absorbente() -> set[str]:
+    """Módulos de PRODUCCIÓN bajo ``sky_claw/`` que invocan un boundary que
+    extingue un handoff (y por tanto ejecuta la absorción), detectados por AST.
+
+    Excluye ``journal.py`` (la DEFINICIÓN de los boundaries y el proxy interno
+    ``StagingJournal`` que delega al journal real — no es un productor externo
+    del artifact)."""
+    import ast
+
+    journal_path = pathlib.Path(sky_claw_app_db_journal_path()).resolve()
+    raiz = journal_path.parents[2]  # .../sky_claw
+    boundaries = {"crear_handoff_de_deployment", "completar_handoff_de_resume"}
+    modulos: set[str] = set()
+    for archivo in sorted(raiz.rglob("*.py")):
+        if archivo == journal_path:
+            continue
+        fuente = archivo.read_text(encoding="utf-8")
+        if not any(b in fuente for b in boundaries):
+            continue
+        for nodo in ast.walk(ast.parse(fuente)):
+            if not isinstance(nodo, ast.Call):
+                continue
+            fn = nodo.func
+            nombre = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if nombre in boundaries:
+                modulos.add(archivo.relative_to(raiz).as_posix())
+    return modulos
+
+
+def test_absorcion_solo_alcanzable_desde_el_pipeline_unico_serializado() -> None:
+    """REFUTACIÓN de PREMATURE_LIVE_PENDING_ABSORPTION por serialización.
+
+    Congela que la absorción sólo se alcanza desde el pipeline de DynDOLOD, único
+    productor del artifact y único titular del lease `dyndolod-pipeline`. Un módulo
+    NUEVO que invoque un boundary absorbente fuera de ese contrato rompe el ancla
+    hasta que se demuestre que comparte el lease (o se rediseñe la absorción con
+    provenance causal durable)."""
+    modulos = _modulos_que_invocan_boundary_absorbente()
+    assert modulos == {"local/tools/dyndolod_service.py"}, (
+        f"un productor nuevo invoca la absorción fuera del pipeline serializado: {sorted(modulos)}"
+    )
+    # El lease que serializa TODA la corrida (TX + manifest + boundary) sigue
+    # siendo `dyndolod-pipeline`: sin él, dos corridas del artifact podrían
+    # intercalar una PENDING viva con el boundary de la otra.
+    dyndolod = (
+        pathlib.Path(sky_claw_app_db_journal_path()).resolve().parents[2] / "local" / "tools" / "dyndolod_service.py"
+    ).read_text(encoding="utf-8")
+    assert '"dyndolod-pipeline"' in dyndolod, "el pipeline dejó de nombrar el lease de serialización cross-process"

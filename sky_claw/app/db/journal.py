@@ -71,6 +71,42 @@ def _nombra_objetivo(ruta: object, objetivo_fisico: str, prefijo: str) -> bool:
     return canonica == objetivo_fisico or canonica.startswith(prefijo)
 
 
+def _rutas_de_metadata(metadata: object) -> tuple[str, ...]:
+    """Rutas de ``files_touched`` de una metadata durable, a prueba de corrupción.
+
+    LA única interpretación de ``metadata`` para el oracle
+    (:func:`_candidatas_orphan_en_conn`) y la obsoletización de receipts
+    (:func:`_obsoletar_receipts_de_artifact`) — ambos la comparten para que no
+    puedan divergir. Devuelve ``()`` —la fila no demuestra evidencia de
+    artifact— ante CUALQUIER forma que no sea un objeto JSON con
+    ``files_touched`` lista de strings:
+
+    - JSON no-objeto (``[]`` / ``"str"`` / ``42`` / ``null``);
+    - metadata no-texto (la columna SQLite es de tipo dinámico) o JSON inválido;
+    - ``files_touched`` ausente o no-lista (string, int, dict): JAMÁS se itera
+      carácter por carácter ni por claves;
+    - elementos no-string dentro de la lista: se descartan sin coerción.
+
+    Nunca lanza por la FORMA de los datos: un dato corrupto no puede escapar del
+    boundary de recovery (``AttributeError``/``TypeError`` que crasheaba el
+    oracle) ni convertirse en evidencia por coerción. Los productores sanos
+    (``ActionManifest`` / ``FlightReport``, ambos ``files_touched: list[str]``)
+    conservan su comportamiento; el resto es corrupción durable y se ignora.
+    """
+    if not isinstance(metadata, (str, bytes, bytearray)):
+        return ()
+    try:
+        decoded = json.loads(metadata)
+    except (TypeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(decoded, dict):
+        return ()
+    files = decoded.get("files_touched")
+    if not isinstance(files, list):
+        return ()
+    return tuple(ruta for ruta in files if isinstance(ruta, str))
+
+
 async def _candidatas_orphan_en_conn(
     conn: aiosqlite.Connection,
     *,
@@ -111,11 +147,7 @@ async def _candidatas_orphan_en_conn(
     for tx_id, status, metadata, receipt_state in filas:
         if status != TransactionStatus.PENDING.value and receipt_state != SweepReceiptState.UNRESOLVED.value:
             continue
-        try:
-            files_touched = json.loads(metadata).get("files_touched") or []
-        except (TypeError, json.JSONDecodeError):
-            continue
-        for ruta in files_touched:
+        for ruta in _rutas_de_metadata(metadata):
             if _nombra_objetivo(ruta, objetivo_fisico, prefijo):
                 coincidencias.add(int(tx_id))
                 break
@@ -213,11 +245,7 @@ async def _obsoletar_receipts_de_artifact(
     )
     ids_obsoletos: list[int] = []
     async for tx_id, metadata in cursor_r:
-        try:
-            files_touched = json.loads(metadata).get("files_touched") or []
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if any(_nombra_objetivo(ruta, objetivo_fisico, prefijo) for ruta in files_touched):
+        if any(_nombra_objetivo(ruta, objetivo_fisico, prefijo) for ruta in _rutas_de_metadata(metadata)):
             ids_obsoletos.append(int(tx_id))
     if ids_obsoletos:
         await conn.executemany(
@@ -1407,6 +1435,7 @@ class OperationJournal:
                 ) from e
         else:
             async with self._lock:
+                commit_exitoso = False
                 try:
                     nuevo_id = await self._escribir_handoff_de_deployment(
                         db,
@@ -1416,22 +1445,26 @@ class OperationJournal:
                         viejo=viejo,
                     )
                     await db.commit()
+                    commit_exitoso = True
                 except sqlite3.Error as e:
-                    # F-02 (patch 0007): la conexión propia no puede quedar con
-                    # la transacción implícita abierta — el siguiente escritor
-                    # committearía el trabajo parcial de ESTE intento.
-                    with contextlib.suppress(sqlite3.Error):
-                        await db.rollback()
                     raise JournalTransactionError(
                         f"Failed to commit transaction with deployment handoff: {e}",
                         transaction_id=transaction_id,
                     ) from e
-                except JournalTransactionError:
-                    # El helper rechazó a mitad de la secuencia multi-paso:
-                    # mismo tratamiento — el trabajo parcial se deshace.
-                    with contextlib.suppress(sqlite3.Error):
-                        await db.rollback()
-                    raise
+                finally:
+                    # F-02 (patch 0007) + hardening de atomicidad: CUALQUIER
+                    # salida sin commit exitoso —sqlite3.Error, el rechazo
+                    # multi-paso del helper (JournalTransactionError), un fallo
+                    # INESPERADO del candidate processing, o CancelledError— no
+                    # puede dejar la transacción implícita abierta: el siguiente
+                    # escritor de la conexión propia committearía el trabajo
+                    # parcial de ESTE intento. `finally` revierte y deja que la
+                    # excepción original se propague intacta (no la captura),
+                    # respetando la cancelación. Paridad con el boundary
+                    # lifecycle, que ya revierte ante ``BaseException``.
+                    if not commit_exitoso:
+                        with contextlib.suppress(sqlite3.Error):
+                            await db.rollback()
 
         if self._current_transaction == transaction_id:
             self._current_transaction = None
@@ -1459,20 +1492,23 @@ class OperationJournal:
                 ) from e
         else:
             async with self._lock:
+                commit_exitoso = False
                 try:
                     await self._escribir_resume_completado(db, transaction_id=transaction_id, handoff_id=handoff_id)
                     await db.commit()
+                    commit_exitoso = True
                 except sqlite3.Error as e:
-                    # F-02 (patch 0007): ídem crear_handoff_de_deployment.
-                    with contextlib.suppress(sqlite3.Error):
-                        await db.rollback()
                     raise JournalTransactionError(
                         f"Failed to complete deployment handoff: {e}", transaction_id=transaction_id
                     ) from e
-                except JournalTransactionError:
-                    with contextlib.suppress(sqlite3.Error):
-                        await db.rollback()
-                    raise
+                finally:
+                    # F-02 (patch 0007) + hardening: ídem crear_handoff_de_deployment
+                    # — cualquier salida sin commit exitoso revierte el trabajo
+                    # parcial (incluido un fallo inesperado del candidate
+                    # processing del sello y la cancelación), y re-lanza intacto.
+                    if not commit_exitoso:
+                        with contextlib.suppress(sqlite3.Error):
+                            await db.rollback()
 
         if self._current_transaction == transaction_id:
             self._current_transaction = None
