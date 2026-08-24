@@ -1,28 +1,28 @@
-"""POST493_ACTIVE_INDETERMINATE_EVIDENCE_REUSE â€” absorciÃ³n en el boundary de reemplazo.
+"""POST493_ACTIVE_INDETERMINATE_EVIDENCE_REUSE — absorción en el boundary de reemplazo.
 
-Finding confirmado conductualmente (triage post-#493): una regeneraciÃ³n fallida
+Finding confirmado conductualmente (triage post-#493): una regeneración fallida
 durante un handoff activo deja una TX PENDING que nombra el artifact; el oracle
 la ve, pero el reconciler retorna el owner activo ANTES de materializar la
-evidencia (handoffs.py, short-circuit S1) y ningÃºn boundary crea su absorciÃ³n.
-El reemplazo posterior (`_escribir_handoff_de_deployment`) sÃ³lo obsoleta
-receipts UNRESOLVED â€” las PENDING quedan intactas â€” asÃ­ que tras un ciclo
-regenâ†’deploymentâ†’resume 100% exitoso, la TX_FAIL histÃ³rica sigue siendo
-evidencia vigente y el prÃ³ximo resume/startup fabrica un INDETERMINATE falso
+evidencia (handoffs.py, short-circuit S1) y ningún boundary crea su absorción.
+El reemplazo posterior (`_escribir_handoff_de_deployment`) sólo obsoleta
+receipts UNRESOLVED — las PENDING quedan intactas — así que tras un ciclo
+regen→deployment→resume 100% exitoso, la TX_FAIL histórica sigue siendo
+evidencia vigente y el próximo resume/startup fabrica un INDETERMINATE falso
 (`HandoffIndeterminate`, DynDOLOD no ejecuta).
 
-Invariante nuevo (Â§3): cuando una generaciÃ³n autorizada reemplaza durablemente
-un handoff activo, TODA evidencia histÃ³rica vigente PARA ESE ARTIFACT queda
+Invariante nuevo (§3): cuando una generación autorizada reemplaza durablemente
+un handoff activo, TODA evidencia histórica vigente PARA ESE ARTIFACT queda
 absorbida EN EL MISMO boundary, referenciando `viejo.handoff_id`:
 
 - NO modifica ``transactions.status`` (LIVE_SAFE_BY_CONSTRUCTION);
 - NO deshabilita el stale sweep;
 - es per-artifact: identidad ``(transaction_id, artifact_path)``;
-- incluye TODAS las candidatas (no sÃ³lo source_tx_id);
+- incluye TODAS las candidatas (no sólo source_tx_id);
 - sobrevive SUPERSEDED/COMPLETED;
 - no toca evidencia de otro artifact.
 
-Fault injection Ãºnico permitido: el proceso TexGen falla (rc=1) DESPUÃ‰S de que
-TX + ActionManifest existen â€” mismo patrÃ³n productivo de los tests de #493.
+Fault injection único permitido: el proceso TexGen falla (rc=1) DESPUÉS de que
+TX + ActionManifest existen — mismo patrón productivo de los tests de #493.
 """
 
 from __future__ import annotations
@@ -62,8 +62,8 @@ from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 
 # Los escenarios de este archivo abren journals por cuenta propia (ciclos de
 # vida completos sobre la misma DB); el registro garantiza su cierre aunque un
-# assert corte a mitad â€” los worker threads de aiosqlite son non-daemon y un
-# sÃ³lo leak cuelga el fail-fast de fin de sesiÃ³n.
+# assert corte a mitad — los worker threads de aiosqlite son non-daemon y un
+# sólo leak cuelga el fail-fast de fin de sesión.
 _JOURNALS: list[OperationJournal] = []
 
 
@@ -146,7 +146,7 @@ def _svc(journal: object, runner: DynDOLODRunner, *, perfil: str | None = "Perfi
 
 
 class _ProcesoFalso:
-    """Fake de ``DynDOLODRunner._execute_process`` (patrÃ³n de los tests #493)."""
+    """Fake de ``DynDOLODRunner._execute_process`` (patrón de los tests #493)."""
 
     def __init__(self, return_code: int = 0, al_ejecutar=None) -> None:  # noqa: ANN001
         self.return_code = return_code
@@ -186,8 +186,8 @@ def _dyn_ok(staging: pathlib.Path):  # noqa: ANN202
 
 
 def _dyn_falla() -> AsyncMock:
-    """DynDOLOD reporta fallo de herramienta (patrÃ³n T-D22 de #493). Con TexGen
-    caÃ­do el pipeline sigue hasta acÃ¡ (el gate de visibilidad sÃ³lo corta por
+    """DynDOLOD reporta fallo de herramienta (patrón T-D22 de #493). Con TexGen
+    caído el pipeline sigue hasta acá (el gate de visibilidad sólo corta por
     despliegue); un resultado fallido mantiene el camino en el handler de
     dominio, que es el estado productivo que deja la TX PENDING."""
 
@@ -214,7 +214,7 @@ def _mirror_a_data(origen: pathlib.Path, data_dir: pathlib.Path) -> None:
 
 
 async def _evidencia(journal: OperationJournal, artifacts: list[pathlib.Path], descripcion: str = "corrida") -> int:
-    """TX PENDING cuyo ActionManifest REAL nombra los artifacts (vÃ­a productiva)."""
+    """TX PENDING cuyo ActionManifest REAL nombra los artifacts (vía productiva)."""
     tx = await journal.begin_transaction(f"DynDOLOD pipeline ({descripcion})", agent_id="dyndolod-pipeline-service")
     manifest = build_action_manifest(
         ritual_id=f"dyndolod-pipeline-{tx}",
@@ -241,11 +241,13 @@ async def _reconciliar(journal: OperationJournal, config: DynDOLODConfig):  # no
 
 
 async def _absorciones(db: pathlib.Path) -> list[tuple[int, str, int]]:
-    async with aiosqlite.connect(str(db)) as conn:
-        cur = await conn.execute(
+    async with (
+        aiosqlite.connect(str(db)) as conn,
+        conn.execute(
             "SELECT transaction_id, artifact_path, handoff_id FROM orphan_evidence_absorptions "
             "ORDER BY transaction_id, artifact_path"
-        )
+        ) as cur,
+    ):
         return [(int(r[0]), str(r[1]), int(r[2])) for r in await cur.fetchall()]
 
 
@@ -288,8 +290,8 @@ async def _max_tx_id(journal: OperationJournal) -> int:
 
 
 async def _regen_fallida(journal: OperationJournal, runner: DynDOLODRunner) -> int:
-    """run_texgen=True que falla DESPUÃ‰S de TX+ActionManifest (fault injection
-    Ãºnica: proceso TexGen rc=1). Devuelve el id de la TX_FAIL quedada PENDING."""
+    """run_texgen=True que falla DESPUÉS de TX+ActionManifest (fault injection
+    única: proceso TexGen rc=1). Devuelve el id de la TX_FAIL quedada PENDING."""
     svc = _svc(journal, runner)
     with (
         patch.object(runner, "_execute_process", _ProcesoFalso(return_code=1)),
@@ -325,7 +327,7 @@ async def _resume_exitoso(journal: OperationJournal, runner: DynDOLODRunner, con
 
 
 async def _lifecycle_completo(tmp_path: pathlib.Path, *, fallos_previos: int = 1) -> dict:
-    """H1 INDETERMINATE â†’ N regens fallidas â†’ regen exitosa â†’ deployment+resume.
+    """H1 INDETERMINATE → N regens fallidas → regen exitosa → deployment+resume.
     Deja el journal ABIERTO y devuelve el contexto."""
     db_path = tmp_path / "journal.db"
     config, runner = _entorno(tmp_path)
@@ -352,7 +354,7 @@ async def _lifecycle_completo(tmp_path: pathlib.Path, *, fallos_previos: int = 1
 
     resume = await _resume_exitoso(journal, runner, config)
     assert resume["resultado"]["success"] is True, resume["resultado"]
-    assert await journal.consultar_handoff_activo(clave) is None, "H2 debiÃ³ quedar COMPLETED"
+    assert await journal.consultar_handoff_activo(clave) is None, "H2 debió quedar COMPLETED"
 
     return {
         "db_path": db_path,
@@ -368,7 +370,7 @@ async def _lifecycle_completo(tmp_path: pathlib.Path, *, fallos_previos: int = 1
 
 
 # =============================================================================
-# RED principal (Â§4) â€” el finding completo end-to-end
+# RED principal (§4) — el finding completo end-to-end
 # =============================================================================
 
 
@@ -376,26 +378,26 @@ async def test_regen_fallida_durante_indeterminate_no_reaparece_tras_reemplazo_e
     tmp_path: pathlib.Path,
 ) -> None:
     """Secuencia completa del finding: regen fallida durante H1 INDETERMINATE,
-    reemplazo exitoso, deployment+resume OK â†’ la TX_FAIL histÃ³rica NO vuelve a
+    reemplazo exitoso, deployment+resume OK → la TX_FAIL histórica NO vuelve a
     fabricar un INDETERMINATE en el segundo resume."""
     ctx = await _lifecycle_completo(tmp_path, fallos_previos=1)
     journal, clave, runner = ctx["journal"], ctx["clave"], ctx["runner"]
     tx_fail = ctx["tx_fails"][0]
 
-    # Estado intermedio congelado: TX_FAIL vive como PENDING sin absorciÃ³n
+    # Estado intermedio congelado: TX_FAIL vive como PENDING sin absorción
     # mientras H1 era el owner (el lifecycle no toca statuses ajenos).
     assert await _estado_tx(journal, tx_fail) == TransactionStatus.PENDING.value, (
-        "absorber evidencia jamÃ¡s debe tocar el lifecycle de la TX"
+        "absorber evidencia jamás debe tocar el lifecycle de la TX"
     )
 
-    # Â§4.8: el oracle ya NO devuelve la TX_FAIL histÃ³rica para este artifact.
+    # §4.8: el oracle ya NO devuelve la TX_FAIL histórica para este artifact.
     candidatas = await journal.transacciones_que_nombran(clave)
     assert tx_fail not in candidatas, (
         f"POST493_ACTIVE_INDETERMINATE_EVIDENCE_REUSE: TX_FAIL {tx_fail} sigue siendo "
-        f"evidencia tras un reemplazo exitoso â€” oracle={candidatas}"
+        f"evidencia tras un reemplazo exitoso — oracle={candidatas}"
     )
 
-    # Â§4.9: el segundo resume NO puede fallar por HandoffIndeterminate.
+    # §4.9: el segundo resume NO puede fallar por HandoffIndeterminate.
     run_dyndolod = _dyn_ok(ctx["config"].output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME)
     svc = _svc(journal, runner)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
@@ -407,34 +409,35 @@ async def test_regen_fallida_durante_indeterminate_no_reaparece_tras_reemplazo_e
 
 
 async def test_la_absorcion_del_reemplazo_referencia_el_viejo_handoff(tmp_path: pathlib.Path) -> None:
-    """Â§9 provenance: absorption(TX_FAIL, artifact).handoff_id == viejo.handoff_id;
+    """§9 provenance: absorption(TX_FAIL, artifact).handoff_id == viejo.handoff_id;
     la fila sobrevive a H1 SUPERSEDED y H2 COMPLETED (FK sin ON DELETE)."""
     ctx = await _lifecycle_completo(tmp_path, fallos_previos=1)
     journal, db_path, clave = ctx["journal"], ctx["db_path"], ctx["clave"]
     tx_fail = ctx["tx_fails"][0]
 
     filas = [a for a in await _absorciones(db_path) if a[0] == tx_fail]
-    assert filas, "la TX_FAIL histÃ³rica quedÃ³ sin absorciÃ³n en el reemplazo"
+    assert filas, "la TX_FAIL histórica quedó sin absorción en el reemplazo"
     assert filas[0][1] == clave
     assert filas[0][2] == ctx["h1"].handoff_id, (
-        "la absorciÃ³n debe referenciar al viejo INDETERMINATE (dueÃ±o del recovery context "
-        "cuando la evidencia se acumulÃ³), no al AWAITING/COMPLETED que lo reemplazÃ³"
+        "la absorción debe referenciar al viejo INDETERMINATE (dueño del recovery context "
+        "cuando la evidencia se acumuló), no al AWAITING/COMPLETED que lo reemplazó"
     )
-    # La fila permanece despuÃ©s de que ambos handoffs sean historia terminal.
-    cur = await journal._db.execute(
+    # La fila permanece después de que ambos handoffs sean historia terminal.
+    async with journal._db.execute(  # noqa: SLF001
         "SELECT state FROM deployment_handoffs WHERE handoff_id = ?", (ctx["h1"].handoff_id,)
-    )  # noqa: SLF001
-    assert (await cur.fetchone())[0] == HandoffState.SUPERSEDED.value
+    ) as cur:
+        fila_h1 = await cur.fetchone()
+    assert fila_h1 is not None and fila_h1[0] == HandoffState.SUPERSEDED.value
 
 
 # =============================================================================
-# Startup (Â§5) â€” A fresh / B stale
+# Startup (§5) — A fresh / B stale
 # =============================================================================
 
 
 async def test_startup_no_refabrica_desde_tx_fail_fresh_tras_lifecycle(tmp_path: pathlib.Path) -> None:
-    """Â§5A: lifecycle exitoso â†’ cerrar â†’ reabrir â†’ startup reconciliation NO
-    fabrica INDETERMINATE desde la TX_FAIL histÃ³rica (todavÃ­a PENDING/fresh)."""
+    """§5A: lifecycle exitoso → cerrar → reabrir → startup reconciliation NO
+    fabrica INDETERMINATE desde la TX_FAIL histórica (todavía PENDING/fresh)."""
     tmp_startup = tmp_path / "startup-fresh"
     tmp_startup.mkdir()
     ctx = await _lifecycle_completo(tmp_startup, fallos_previos=1)
@@ -456,14 +459,14 @@ async def test_startup_no_refabrica_desde_tx_fail_fresh_tras_lifecycle(tmp_path:
             digest_arbol=digest_arbol,
         )
         activo = await j2.consultar_handoff_activo(clave)
-        assert activo is None, f"STARTUP fabricÃ³ INDETERMINATE falso desde TX_FAIL histÃ³rica: {activo}"
+        assert activo is None, f"STARTUP fabricó INDETERMINATE falso desde TX_FAIL histórica: {activo}"
     finally:
         await j2.close()
 
 
 async def test_startup_no_refabrica_con_tx_fail_stale_rolled_back(tmp_path: pathlib.Path) -> None:
-    """Â§5B: igual que A pero la TX_FAIL pasÃ³ stale sweep DESPUÃ‰S del lifecycle
-    (ROLLED_BACK + receipt UNRESOLVED): la absorciÃ³n existente sigue excluyÃ©ndola."""
+    """§5B: igual que A pero la TX_FAIL pasó stale sweep DESPUÉS del lifecycle
+    (ROLLED_BACK + receipt UNRESOLVED): la absorción existente sigue excluyéndola."""
     tmp_stale = tmp_path / "startup-stale"
     tmp_stale.mkdir()
     ctx = await _lifecycle_completo(tmp_stale, fallos_previos=1)
@@ -479,7 +482,7 @@ async def test_startup_no_refabrica_con_tx_fail_stale_rolled_back(tmp_path: path
         await conn.commit()
 
     j2 = _registrar(OperationJournal(ctx["db_path"]))
-    await j2.open()  # el sweep convierte la TXFAIL vieja â†’ ROLLED_BACK + receipt UNRESOLVED
+    await j2.open()  # el sweep convierte la TXFAIL vieja → ROLLED_BACK + receipt UNRESOLVED
     try:
         assert tx_fail in j2.swept_pending_transaction_ids_this_open
         assert await _estado_tx(j2, tx_fail) == TransactionStatus.ROLLED_BACK.value
@@ -495,51 +498,50 @@ async def test_startup_no_refabrica_con_tx_fail_stale_rolled_back(tmp_path: path
             digest_arbol=digest_arbol,
         )
         assert await j2.consultar_handoff_activo(clave) is None, (
-            "la absorciÃ³n hecha en el reemplazo debiÃ³ excluir la evidencia tambiÃ©n "
-            "en su forma ROLLED_BACK+UNRESOLVED"
+            "la absorción hecha en el reemplazo debió excluir la evidencia también en su forma ROLLED_BACK+UNRESOLVED"
         )
         assert await _receipt(j2, tx_fail) == SweepReceiptState.UNRESOLVED.value, (
             "el fix no debe cerrar receipts por fuera del contrato (SUPERSEDED lo hace "
-            "el boundary de reemplazo; acÃ¡ la evidencia ya estaba absorbida)"
+            "el boundary de reemplazo; acá la evidencia ya estaba absorbida)"
         )
     finally:
         await j2.close()
 
 
 # =============================================================================
-# MÃºltiples regens fallidas (Â§6) y multi-artifact (Â§7)
+# Múltiples regens fallidas (§6) y multi-artifact (§7)
 # =============================================================================
 
 
 async def test_dos_regens_fallidas_quedan_absorbidas_en_el_reemplazo(tmp_path: pathlib.Path) -> None:
-    """Â§6: ambas TX_FAIL reciben absorption(TX_FAIL_n, artifact, viejo) y el
-    oracle no devuelve ninguna. Una soluciÃ³n basada sÃ³lo en source_tx_id es
+    """§6: ambas TX_FAIL reciben absorption(TX_FAIL_n, artifact, viejo) y el
+    oracle no devuelve ninguna. Una solución basada sólo en source_tx_id es
     insuficiente."""
     ctx = await _lifecycle_completo(tmp_path, fallos_previos=2)
     journal, db_path, clave = ctx["journal"], ctx["db_path"], ctx["clave"]
     f1, f2 = ctx["tx_fails"]
 
     filas = {(a[0], a[2]) for a in await _absorciones(db_path) if a[1] == clave}
-    assert (f1, ctx["h1"].handoff_id) in filas, f"TX_FAIL_1={f1} sin absorciÃ³n"
-    assert (f2, ctx["h1"].handoff_id) in filas, f"TX_FAIL_2={f2} sin absorciÃ³n"
+    assert (f1, ctx["h1"].handoff_id) in filas, f"TX_FAIL_1={f1} sin absorción"
+    assert (f2, ctx["h1"].handoff_id) in filas, f"TX_FAIL_2={f2} sin absorción"
 
     candidatas = await journal.transacciones_que_nombran(clave)
     assert f1 not in candidatas and f2 not in candidatas, candidatas
 
 
 async def test_la_absorcion_del_reemplazo_es_per_artifact(tmp_path: pathlib.Path) -> None:
-    """Â§7: la TX_FAIL nombra A (TexGen Output) y B (DynDOLOD Output); el
+    """§7: la TX_FAIL nombra A (TexGen Output) y B (DynDOLOD Output); el
     reemplazo del handoff de A absorbe SOLO (TX_FAIL, A): oracle(A) la excluye y
-    oracle(B) sigue pudiendo devolverla. Prohibida la absorciÃ³n global por tx."""
+    oracle(B) sigue pudiendo devolverla. Prohibida la absorción global por tx."""
     ctx = await _lifecycle_completo(tmp_path, fallos_previos=1)
     journal, db_path, clave_a = ctx["journal"], ctx["db_path"], ctx["clave"]
     cfg = ctx["config"]
     tx_fail = ctx["tx_fails"][0]
     clave_b = clave_de_artifact(cfg.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME)
 
-    # PrecondiciÃ³n del escenario: el manifest productivo nombrÃ³ ambos artifacts.
+    # Precondición del escenario: el manifest productivo nombró ambos artifacts.
     assert tx_fail in await journal.transacciones_que_nombran(clave_b), (
-        "el escenario requiere una TX_FAIL cuyo manifest nombre tambiÃ©n el artifact B"
+        "el escenario requiere una TX_FAIL cuyo manifest nombre también el artifact B"
     )
 
     absorbidas_a = {a[0] for a in await _absorciones(db_path) if a[1] == clave_a}
@@ -547,47 +549,47 @@ async def test_la_absorcion_del_reemplazo_es_per_artifact(tmp_path: pathlib.Path
 
     assert tx_fail not in await journal.transacciones_que_nombran(clave_a), "oracle(A) debe excluirla"
     assert tx_fail in await journal.transacciones_que_nombran(clave_b), (
-        "absorber A NO debe silenciar la evidencia legÃ­tima de B (prohibido absorber por tx global)"
+        "absorber A NO debe silenciar la evidencia legítima de B (prohibido absorber por tx global)"
     )
 
 
 # =============================================================================
-# Self-absorption (Â§11) y live-safety (M-F6 guard)
+# Self-absorption (§11) y live-safety (M-F6 guard)
 # =============================================================================
 
 
 async def test_current_generation_no_recibe_absorption(tmp_path: pathlib.Path) -> None:
-    """Â§11: la TX_OK del reemplazo jamÃ¡s recibe absorption por el artifact que
+    """§11: la TX_OK del reemplazo jamás recibe absorption por el artifact que
     acaba de producir (CURRENT_GENERATION_SELF_ABSORPTION = blocker)."""
     ctx = await _lifecycle_completo(tmp_path, fallos_previos=1)
     db_path, clave = ctx["db_path"], ctx["clave"]
     tx_ok = ctx["tx_ok"]
 
     absorbidas = {a[0] for a in await _absorciones(db_path) if a[1] == clave}
-    assert tx_ok not in absorbidas, "la generaciÃ³n actual fue absorbida por sÃ­ misma"
+    assert tx_ok not in absorbidas, "la generación actual fue absorbida por sí misma"
 
 
 async def test_replacement_no_convierte_pending_en_rolled_back(tmp_path: pathlib.Path) -> None:
-    """Â§12 LIVE_SAFE_BY_CONSTRUCTION: el boundary de reemplazo consume EVIDENCIA,
+    """§12 LIVE_SAFE_BY_CONSTRUCTION: el boundary de reemplazo consume EVIDENCIA,
     nunca lifecycle. La TX_FAIL absorbida sigue PENDING y elegible para el stale
     sweep futuro."""
     ctx = await _lifecycle_completo(tmp_path, fallos_previos=1)
     journal = ctx["journal"]
     tx_fail = ctx["tx_fails"][0]
     assert await _estado_tx(journal, tx_fail) == TransactionStatus.PENDING.value
-    assert await _receipt(journal, tx_fail) is None, "una PENDING fresca jamÃ¡s recibe receipt en el reemplazo"
+    assert await _receipt(journal, tx_fail) is None, "una PENDING fresca jamás recibe receipt en el reemplazo"
 
 
 # =============================================================================
-# Â§21 â€” el mecanismo es del OWNER ACTIVO, no sÃ³lo de INDETERMINATE
+# §21 — el mecanismo es del OWNER ACTIVO, no sólo de INDETERMINATE
 # =============================================================================
 
 
 async def test_regens_fallidas_durante_awaiting_tambien_quedan_absorbidas(tmp_path: pathlib.Path) -> None:
-    """Razonamiento de mÃ¡quina de estados (Â§21): el short-circuit S1 del
+    """Razonamiento de máquina de estados (§21): el short-circuit S1 del
     reconciler retorna el owner activo ANTES de materializar evidencia sea
-    cual sea su estado â€” AWAITING_DEPLOYMENT tambiÃ©n es un recovery context
-    donde la evidencia se acumula sin absorciÃ³n. El reemplazo de un AWAITING
+    cual sea su estado — AWAITING_DEPLOYMENT también es un recovery context
+    donde la evidencia se acumula sin absorción. El reemplazo de un AWAITING
     debe absorber igual (mismo invariant, cero casos especiales)."""
     tmp_awaiting = tmp_path / "awaiting-viejo"
     tmp_awaiting.mkdir()
@@ -601,7 +603,7 @@ async def test_regens_fallidas_durante_awaiting_tambien_quedan_absorbidas(tmp_pa
     journal = _registrar(OperationJournal(db_path))
     await journal.open()
 
-    # H1 = AWAITING_DEPLOYMENT legÃ­timo (receta T-D11: TexGen entregado).
+    # H1 = AWAITING_DEPLOYMENT legítimo (receta T-D11: TexGen entregado).
     _escribir_mod(mod_texgen, contenido=b"GEN-1")
     tx1 = await journal.begin_transaction("texgen entregado", agent_id="test")
     d1 = digest_arbol(mod_texgen / "textures")
@@ -641,7 +643,7 @@ async def test_regens_fallidas_durante_awaiting_tambien_quedan_absorbidas(tmp_pa
     assert h2 is not None and h2.state is HandoffState.AWAITING_DEPLOYMENT and h2.handoff_id != h1_id
 
     filas = {(a[0], a[2]) for a in await _absorciones(db_path) if a[1] == clave}
-    assert (tx_fail, h1_id) in filas, "el reemplazo de un AWAITING dejÃ³ la TX_FAIL sin absorber"
+    assert (tx_fail, h1_id) in filas, "el reemplazo de un AWAITING dejó la TX_FAIL sin absorber"
     assert tx_ok not in {a[0] for a in filas}, "CURRENT_GENERATION_SELF_ABSORPTION"
     assert tx_fail not in await journal.transacciones_que_nombran(clave)
     assert await _estado_tx(journal, tx_fail) == TransactionStatus.PENDING.value
@@ -725,7 +727,7 @@ async def test_resume_que_completa_el_handoff_tambien_absorbe_la_evidencia(tmp_p
 
 
 # =============================================================================
-# Fault injection â€” all-or-nothing del boundary extendido (Â§16â€“Â§19)
+# Fault injection — all-or-nothing del boundary extendido (§16–§19)
 # =============================================================================
 
 
@@ -782,22 +784,22 @@ async def _sembrar_escenario_para_faults(tmp_path: pathlib.Path) -> dict:
 
 
 async def _estado_handoff(journal: OperationJournal, handoff_id: int) -> tuple[str, int | None]:
-    cur = await journal._db.execute(  # noqa: SLF001
+    async with journal._db.execute(  # noqa: SLF001
         "SELECT state, superseded_by FROM deployment_handoffs WHERE handoff_id = ?", (handoff_id,)
-    )
-    fila = await cur.fetchone()
+    ) as cur:
+        fila = await cur.fetchone()
     assert fila is not None
     return str(fila[0]), (int(fila[1]) if fila[1] is not None else None)
 
 
 async def test_old_handoff_pierde_ownership_antes_del_supersede_todo_o_nada(tmp_path: pathlib.Path) -> None:
-    """Â§16 (C4): si el viejo ya no estÃ¡ activo cuando corre el guard del
+    """§16 (C4): si el viejo ya no está activo cuando corre el guard del
     supersede, TODO el boundary revierte: ni handoff nuevo, ni absorciones, ni
     receipts tocados, ni TX actual committeada."""
     esc = await _sembrar_escenario_para_faults(tmp_path / "race")
     journal, clave = esc["journal"], esc["clave"]
 
-    # PÃ©rdida de ownership externa entre la lectura del caller y el boundary.
+    # Pérdida de ownership externa entre la lectura del caller y el boundary.
     assert await journal.transicionar_handoff(
         esc["h1_id"], desde=HandoffState.AWAITING_DEPLOYMENT, hacia=HandoffState.SUPERSEDED
     )
@@ -810,7 +812,7 @@ async def test_old_handoff_pierde_ownership_antes_del_supersede_todo_o_nada(tmp_
     assert estado == HandoffState.SUPERSEDED.value and superseded_by is None, (
         "el handoff viejo no debe ganar un supersede_by del boundary fallido"
     )
-    assert await _estado_tx(journal, tx2) == TransactionStatus.PENDING.value, "la TX actual quedÃ³ COMMITTED"
+    assert await _estado_tx(journal, tx2) == TransactionStatus.PENDING.value, "la TX actual quedó COMMITTED"
     assert await journal.consultar_handoff_activo(clave) is None, (
         "el owner externo pasó a SUPERSEDED: no puede quedar un handoff activo del artifact"
     )
@@ -819,8 +821,8 @@ async def test_old_handoff_pierde_ownership_antes_del_supersede_todo_o_nada(tmp_
 
 
 async def test_fallo_del_insert_del_nuevo_handoff_revierte_todo(tmp_path: pathlib.Path) -> None:
-    """Â§17 (C1/C2): fallo despuÃ©s del supersede UPDATE y antes/durante el INSERT
-    â†’ rollback completo; el viejo conserva su estado previo y la TX no se
+    """§17 (C1/C2): fallo después del supersede UPDATE y antes/durante el INSERT
+    → rollback completo; el viejo conserva su estado previo y la TX no se
     commitea."""
     esc = await _sembrar_escenario_para_faults(tmp_path / "insert-fail")
     journal = esc["journal"]
@@ -842,7 +844,7 @@ async def test_fallo_del_insert_del_nuevo_handoff_revierte_todo(tmp_path: pathli
     assert journal_mod.fila_de_registro is original
 
     estado, _ = await _estado_handoff(journal, esc["h1_id"])
-    assert estado == HandoffState.AWAITING_DEPLOYMENT.value, "el viejo fue superseded sin handoff durable detrÃ¡s"
+    assert estado == HandoffState.AWAITING_DEPLOYMENT.value, "el viejo fue superseded sin handoff durable detrás"
     assert await _estado_tx(journal, tx2) == TransactionStatus.PENDING.value
     assert await _estado_tx(journal, tx_fail) == TransactionStatus.PENDING.value
     assert await _absorciones(esc["db_path"]) == []
@@ -850,8 +852,8 @@ async def test_fallo_del_insert_del_nuevo_handoff_revierte_todo(tmp_path: pathli
 
 
 async def test_fallo_insertando_absorpcion_revierte_todo(tmp_path: pathlib.Path) -> None:
-    """Â§18 (C2/C3): fallo DURANTE el lote de absorciones (tras el INSERT del
-    nuevo handoff) â†’ rollback total: viejo intacto, nuevo ausente, cero
+    """§18 (C2/C3): fallo DURANTE el lote de absorciones (tras el INSERT del
+    nuevo handoff) → rollback total: viejo intacto, nuevo ausente, cero
     absorciones parciales, receipts intactos, TX no committeada."""
     esc = await _sembrar_escenario_para_faults(tmp_path / "absorption-fail")
     journal, clave = esc["journal"], esc["clave"]
@@ -874,12 +876,12 @@ async def test_fallo_insertando_absorpcion_revierte_todo(tmp_path: pathlib.Path)
         (await journal.consultar_handoff_activo(clave)).handoff_id == esc["h1_id"]  # type: ignore[union-attr]
     )
     assert await _estado_tx(journal, tx2) == TransactionStatus.PENDING.value
-    assert await _absorciones(esc["db_path"]) == [], "quedÃ³ una absorciÃ³n parcial"
+    assert await _absorciones(esc["db_path"]) == [], "quedó una absorción parcial"
     assert await _receipt(journal, tx_fail) is None
 
 
 async def test_fallo_de_commit_no_deja_cambios_y_es_reintentable(tmp_path: pathlib.Path) -> None:
-    """Â§19 (C3): commit roto â†’ cero cambios durables del replacement; un retry
+    """§19 (C3): commit roto → cero cambios durables del replacement; un retry
     limpio completa el reemplazo CON sus absorciones (idempotencia operativa)."""
     esc = await _sembrar_escenario_para_faults(tmp_path / "commit-fail")
     journal, db_path, cfg = esc["journal"], esc["db_path"], esc["config"]
@@ -894,10 +896,10 @@ async def test_fallo_de_commit_no_deja_cambios_y_es_reintentable(tmp_path: pathl
     ):
         await journal.crear_handoff_de_deployment(tx2, descripcion=None, registro=esc["registro"], viejo=esc["h1"])
 
-    # Post-fallo: nada afirmado en esta conexiÃ³nâ€¦
+    # Post-fallo: nada afirmado en esta conexión…
     estado, _ = await _estado_handoff(journal, esc["h1_id"])
     assert estado == HandoffState.AWAITING_DEPLOYMENT.value
-    # â€¦ni en disco (otra instancia ve el MISMO estado previo).
+    # …ni en disco (otra instancia ve el MISMO estado previo).
     await journal.close()
     j2 = _registrar(OperationJournal(db_path))
     await j2.open()
@@ -907,7 +909,7 @@ async def test_fallo_de_commit_no_deja_cambios_y_es_reintentable(tmp_path: pathl
         assert await _estado_tx(j2, tx2) == TransactionStatus.PENDING.value
         assert await _absorciones(db_path) == []
 
-        # Retry limpio: reemplazo completo + absorciÃ³n de la evidencia histÃ³rica.
+        # Retry limpio: reemplazo completo + absorción de la evidencia histórica.
         d_nuevo = digest_arbol(cfg.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME / "textures")
         registro_nuevo = DeploymentHandoff(
             handoff_id=0,
@@ -933,28 +935,28 @@ async def test_fallo_de_commit_no_deja_cambios_y_es_reintentable(tmp_path: pathl
         nuevo_id = await j2.crear_handoff_de_deployment(tx2, descripcion=None, registro=registro_nuevo, viejo=esc["h1"])
         assert nuevo_id != esc["h1_id"]
         filas = {(a[0], a[2]) for a in await _absorciones(db_path)}
-        assert (esc["tx_fail"], esc["h1_id"]) in filas, "el retry no absorbiÃ³ la evidencia histÃ³rica"
+        assert (esc["tx_fail"], esc["h1_id"]) in filas, "el retry no absorbió la evidencia histórica"
         assert esc["tx_fail"] not in await j2.transacciones_que_nombran(esc["clave"])
     finally:
         await j2.close()
 
 
 # =============================================================================
-# Â§13/Â§22 â€” receipt ROLLED_BACK+UNRESOLVD presente AL MOMENTO del reemplazo
+# §13/§22 — receipt ROLLED_BACK+UNRESOLVD presente AL MOMENTO del reemplazo
 # =============================================================================
 
 
 async def test_reemplazo_con_receipt_unresolved_lo_marca_superseded(tmp_path: pathlib.Path) -> None:
-    """Si la evidencia ya pasÃ³ stale sweep ANTES de la regeneraciÃ³n exitosa
+    """Si la evidencia ya pasó stale sweep ANTES de la regeneración exitosa
     (ROLLED_BACK + UNRESOLVED), el reemplazo la absorbe Y marca su receipt
-    SUPERSEDED en el MISMO boundary â€” nunca CONSUMED (no creÃ³ INDETERMINATE)."""
+    SUPERSEDED en el MISMO boundary — nunca CONSUMED (no creó INDETERMINATE)."""
     tmp_rc = tmp_path / "receipt-unresolved"
     tmp_rc.mkdir()
     esc = await _sembrar_escenario_para_faults(tmp_rc)
     journal, clave = esc["journal"], esc["clave"]
     tx_fail = esc["tx_fail"]
 
-    # Envejecer + sweepear: TX_FAIL â†’ ROLLED_BACK + receipt UNRESOLVED.
+    # Envejecer + sweepear: TX_FAIL → ROLLED_BACK + receipt UNRESOLVED.
     async with aiosqlite.connect(str(esc["db_path"])) as conn:
         await conn.execute(
             "UPDATE transactions SET created_at = datetime('now', '-48 hours') WHERE transaction_id = ?",

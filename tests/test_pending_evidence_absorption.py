@@ -309,6 +309,27 @@ def _funciones_que_extinguen_un_handoff(modulo: pathlib.Path) -> set[str]:
     return encontradas
 
 
+def _llamadas_a_escribir_indeterminado(modulo: pathlib.Path) -> list[set[str]]:
+    """Kwargs de CADA llamada a ``_escribir_handoff_indeterminado``, por AST.
+
+    Una entrada por rama (lifecycle y standalone de
+    ``registrar_handoff_indeterminado``); enumera en vez de contar ocurrencias
+    del texto.
+    """
+    import ast
+
+    fuente = modulo.read_text(encoding="utf-8")
+    llamadas: list[set[str]] = []
+    for nodo in ast.walk(ast.parse(fuente)):
+        if not isinstance(nodo, ast.Call):
+            continue
+        fn = nodo.func
+        nombre = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+        if nombre == "_escribir_handoff_indeterminado":
+            llamadas.append({kw.arg for kw in nodo.keywords if kw.arg})
+    return llamadas
+
+
 def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
     """Ancla M11-4 (estilo AST del repo): ``_INSERT_ABSORCION_EVIDENCIA_SQL``
     se emite desde EXACTAMENTE DOS funciones, ambas asumiendo el boundary del
@@ -327,10 +348,15 @@ def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
         "_escribir_handoff_indeterminado",
         "_sellar_evidencia_de_artifact",
     }
-    # Las dos ramas del boundary indeterminado delegan en el MISMO helper con
-    # el conjunto.
-    fuente = modulo.read_text(encoding="utf-8")
-    assert fuente.count("ids_absorcion=ids_absorcion") >= 2
+    # Las dos ramas del boundary indeterminado (lifecycle y standalone) delegan
+    # en el MISMO helper propagando el conjunto. Se enumeran por AST: el
+    # `count(...) >= 2` anterior no distinguía "ambas ramas propagan" de "una
+    # rama lo hace dos veces", así que una rama que dejara de propagar podía
+    # quedar tapada por una coincidencia extra en la otra.
+    ramas = _llamadas_a_escribir_indeterminado(modulo)
+    assert len(ramas) == 2, f"cambió el número de ramas del boundary indeterminado: {len(ramas)}"
+    sin_propagar = [i for i, kwargs in enumerate(ramas) if "ids_absorcion" not in kwargs]
+    assert not sin_propagar, f"ramas de registrar_handoff_indeterminado que no propagan ids_absorcion: {sin_propagar}"
 
 
 def test_todo_boundary_que_extingue_un_handoff_sella_la_evidencia() -> None:
