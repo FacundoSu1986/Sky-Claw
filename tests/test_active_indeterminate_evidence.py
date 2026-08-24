@@ -647,6 +647,83 @@ async def test_regens_fallidas_durante_awaiting_tambien_quedan_absorbidas(tmp_pa
     assert await _estado_tx(journal, tx_fail) == TransactionStatus.PENDING.value
 
 
+async def test_resume_que_completa_el_handoff_tambien_absorbe_la_evidencia(tmp_path: pathlib.Path) -> None:
+    """HERMANO del boundary de reemplazo (AGENTS.md, defecto dominante del repo).
+
+    La propiedad autorizada de un artifact se extingue por DOS caminos, no uno:
+    reemplazándola (supersede) y CONSUMIÉNDOLA (resume completado). El
+    short-circuit S1 del reconciler acumula evidencia sin absorber mientras el
+    owner está activo, así que si el resume no sella lo acumulado, el siguiente
+    startup ya no encuentra owner, relee la TX_FAIL y fabrica el INDETERMINATE
+    falso que bloquea DynDOLOD sin una corrida nueva.
+
+    Sin regen exitosa intermedia: el usuario despliega lo que ya tenía y
+    retoma. Es el camino que el fix de reemplazo NO cubre.
+    """
+    tmp_resume = tmp_path / "resume-sin-reemplazo"
+    tmp_resume.mkdir()
+    db_path = tmp_resume / "journal.db"
+    config, runner = _entorno(tmp_resume)
+    assert config.data_dir is not None and config.output_root is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    clave = clave_de_artifact(mod_texgen)
+
+    journal = _registrar(OperationJournal(db_path))
+    await journal.open()
+
+    # H1 = AWAITING_DEPLOYMENT legítimo (misma receta T-D11 que el hermano).
+    _escribir_mod(mod_texgen, contenido=b"GEN-1")
+    tx1 = await journal.begin_transaction("texgen entregado", agent_id="test")
+    d1 = digest_arbol(mod_texgen / "textures")
+    registro = DeploymentHandoff(
+        handoff_id=0,
+        source_tx_id=tx1,
+        state=HandoffState.AWAITING_DEPLOYMENT,
+        artifact_path=clave,
+        game_key=clave_de_artifact(config.game_path),
+        mods_root_key=clave_de_artifact(config.mo2_mods_path),
+        data_key=clave_de_artifact(config.data_dir),
+        expected_profile="Perfil-A",
+        expected_digest=d1.digest,
+        expected_files=d1.files,
+        expected_bytes=d1.bytes,
+        observed_digest=None,
+        observed_files=None,
+        observed_bytes=None,
+        created_at="",
+        updated_at="",
+        completed_at=None,
+        superseded_at=None,
+        superseded_by=None,
+    )
+    h1_id = await journal.crear_handoff_de_deployment(tx1, descripcion=None, registro=registro, viejo=None)
+
+    # Regen fallida bajo el owner activo: TX_FAIL queda PENDING sin absorber.
+    tx_fail = await _regen_fallida(journal, runner)
+    assert tx_fail in await journal.transacciones_que_nombran(clave), (
+        "precondición: la TX_FAIL es evidencia vigente mientras el owner está activo"
+    )
+
+    # Resume SIN regen exitosa previa: consume el handoff (COMPLETED).
+    resume = await _resume_exitoso(journal, runner, config)
+    assert resume["resultado"]["success"] is True, resume["resultado"]
+    assert await journal.consultar_handoff_activo(clave) is None, "H1 debió quedar COMPLETED"
+
+    # El sello ocurrió en ESE boundary, con la provenance del handoff consumido.
+    filas = {(a[0], a[2]) for a in await _absorciones(db_path) if a[1] == clave}
+    assert (tx_fail, h1_id) in filas, "el resume completado dejó la TX_FAIL sin absorber"
+    assert tx_fail not in await journal.transacciones_que_nombran(clave)
+    # La absorción consume EVIDENCIA, nunca lifecycle.
+    assert await _estado_tx(journal, tx_fail) == TransactionStatus.PENDING.value
+
+    # El bug visible: el startup siguiente no debe fabricar INDETERMINATE.
+    assert await _reconciliar(journal, config) is None, (
+        "startup re-fabricó un INDETERMINATE falso desde evidencia ya consumida por el resume"
+    )
+    assert await journal.consultar_handoff_activo(clave) is None
+
+
 # =============================================================================
 # Fault injection â€” all-or-nothing del boundary extendido (Â§16â€“Â§19)
 # =============================================================================
@@ -734,7 +811,9 @@ async def test_old_handoff_pierde_ownership_antes_del_supersede_todo_o_nada(tmp_
         "el handoff viejo no debe ganar un supersede_by del boundary fallido"
     )
     assert await _estado_tx(journal, tx2) == TransactionStatus.PENDING.value, "la TX actual quedÃ³ COMMITTED"
-    assert await journal.consultar_handoff_activo(clave) is None or True  # el owner externo ya no existe: historia
+    assert await journal.consultar_handoff_activo(clave) is None, (
+        "el owner externo pasó a SUPERSEDED: no puede quedar un handoff activo del artifact"
+    )
     assert await _absorciones(esc["db_path"]) == [], "quedaron absorciones de un boundary revertido"
     assert len(await journal.list_recent_transactions(limit=10)) >= 3  # sanidad: la DB sigue viva
 

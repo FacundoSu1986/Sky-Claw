@@ -266,24 +266,97 @@ def test_esquema_declara_tabla_absorciones_con_identidad_tx_artifact() -> None:
     assert "uq_absorpcion_tx_artifact" in OperationJournal._SCHEMA_SQL
 
 
+def _funciones_que_mencionan(modulo: pathlib.Path, aguja: str) -> set[str]:
+    """Nombres de las funciones cuyo cuerpo menciona ``aguja`` (por AST).
+
+    Enumera en vez de muestrear: un escritor nuevo aparece en el conjunto y
+    rompe la igualdad literal del ancla, en vez de colarse bajo un ``count()``
+    que ya estaba satisfecho.
+    """
+    import ast
+
+    fuente = modulo.read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    encontradas: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if aguja in (ast.get_source_segment(fuente, nodo) or ""):
+            encontradas.add(nodo.name)
+    return encontradas
+
+
+def _funciones_que_extinguen_un_handoff(modulo: pathlib.Path) -> set[str]:
+    """Funciones que hacen pasar una fila de ``deployment_handoffs`` a un
+    estado TERMINAL (COMPLETED / SUPERSEDED), detectadas por AST.
+
+    Es el conjunto que la invariante POST493 obliga a sellar. Se detecta, no se
+    enumera a mano: así un boundary nuevo entra solo.
+    """
+    import ast
+
+    fuente = modulo.read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    encontradas: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        seg = ast.get_source_segment(fuente, nodo) or ""
+        if "UPDATE deployment_handoffs" not in seg:
+            continue
+        if any(f"HandoffState.{estado}" in seg for estado in ("COMPLETED", "SUPERSEDED")):
+            encontradas.add(nodo.name)
+    return encontradas
+
+
 def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
     """Ancla M11-4 (estilo AST del repo): ``_INSERT_ABSORCION_EVIDENCIA_SQL``
-    tiene EXACTAMENTE DOS sitios de escritura, ambos DENTRO de helpers que
-    ASUMEN el boundary del caller:
+    se emite desde EXACTAMENTE DOS funciones, ambas asumiendo el boundary del
+    caller:
 
     - ``_escribir_handoff_indeterminado`` (materialización del INDETERMINATE);
-    - ``_escribir_handoff_de_deployment`` (POST493_ACTIVE_INDETERMINATE_
-      EVIDENCE: absorción de la evidencia histórica al reemplazar un handoff).
+    - ``_sellar_evidencia_de_artifact`` (POST493_ACTIVE_INDETERMINATE_EVIDENCE:
+      el sello compartido que usan los DOS boundaries que extinguen un handoff
+      — reemplazo y resume completado).
 
     Un tercer escritor —segunda conexión, post-commit, path paralelo— rompe el
     ancla a propósito: la ventana 'evidencia sin boundary durable' resucitaría
     la evidencia o la consumiría sin handoff detrás."""
-    fuente = pathlib.Path(sky_claw_app_db_journal_path()).read_text(encoding="utf-8")
-    # Definición + DOS usos como executemany (uno por boundary).
-    assert fuente.count("_INSERT_ABSORCION_EVIDENCIA_SQL") == 3
+    modulo = pathlib.Path(sky_claw_app_db_journal_path())
+    assert _funciones_que_mencionan(modulo, "_INSERT_ABSORCION_EVIDENCIA_SQL") == {
+        "_escribir_handoff_indeterminado",
+        "_sellar_evidencia_de_artifact",
+    }
     # Las dos ramas del boundary indeterminado delegan en el MISMO helper con
     # el conjunto.
+    fuente = modulo.read_text(encoding="utf-8")
     assert fuente.count("ids_absorcion=ids_absorcion") >= 2
+
+
+def test_todo_boundary_que_extingue_un_handoff_sella_la_evidencia() -> None:
+    """Ancla POST493 — enunciada como propiedad del MECANISMO:
+
+        la propiedad autorizada de un artifact se extingue por DOS caminos
+        (reemplazo y resume completado) y AMBOS tienen que sellar la evidencia
+        acumulada bajo ella, o el siguiente startup la re-fabrica como
+        INDETERMINATE falso.
+
+    El conjunto NO se escribe a mano: se DETECTA por AST —toda función que
+    hace pasar una fila de ``deployment_handoffs`` a un estado terminal
+    (COMPLETED o SUPERSEDED)— y se congela por igualdad literal. Un tercer
+    camino aparece solo en el conjunto detectado y rompe el ancla hasta que se
+    decida si sella o es una exención explícita. Un caso escrito a mano para el
+    hermano que faltó no ataja al tercero (AGENTS.md)."""
+    modulo = pathlib.Path(sky_claw_app_db_journal_path())
+    extinguen = _funciones_que_extinguen_un_handoff(modulo)
+    assert extinguen == {
+        "_escribir_handoff_de_deployment",  # reemplazo: viejo → SUPERSEDED
+        "_escribir_resume_completado",  # resume: handoff → COMPLETED
+    }, f"cambió el conjunto de boundaries que extinguen un handoff: {sorted(extinguen)}"
+    sellan = _funciones_que_mencionan(modulo, "_sellar_evidencia_de_artifact")
+    assert extinguen <= sellan, (
+        f"boundaries que extinguen un handoff sin sellar su evidencia: {sorted(extinguen - sellan)}"
+    )
 
 
 def sky_claw_app_db_journal_path() -> str:

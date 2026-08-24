@@ -3358,16 +3358,19 @@ def test_la_fuente_durable_del_oracle_es_pending_mas_receipts_unresolved() -> No
     ejecuta la absorción del boundary de reemplazo, para que oracle y
     absorción no puedan divergir. El ancla mira ese cuerpo."""
     raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
-    fuente = (raiz / "app" / "db" / "journal.py").read_text(encoding="utf-8")
     cuerpo = _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", "_candidatas_orphan_en_conn")
     assert "stale_pending_sweep_receipts" in cuerpo, "el oracle no consulta los receipts durables"
     assert "TransactionStatus.PENDING" in cuerpo, "el oracle perdió la ventana PENDING"
     assert "SweepReceiptState.UNRESOLVED" in cuerpo, "el oracle no filtra por receipt UNRESOLVED"
-    # Una sola definición de candidata: transacciones_que_nombran delega en el
-    # helper y ya no duplica la enumeración.
-    assert fuente.count("_candidatas_orphan_en_conn(") >= 3, (
-        "oracle y absorción deben compartir el MISMO selector de candidatas"
-    )
+    # Una sola definición de candidata: el oracle público Y el sello de
+    # evidencia de los boundaries delegan en el helper, sin duplicar la
+    # enumeración. Se ancla por CUERPO, no por conteo: `>= 3` lo satisfacían ya
+    # la definición más las dos ramas de ``transacciones_que_nombran``, así que
+    # el sello podía inlinear una query divergente sin romper nada.
+    for funcion in ("transacciones_que_nombran", "_sellar_evidencia_de_artifact"):
+        assert "_candidatas_orphan_en_conn(" in _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", funcion), (
+            f"{funcion} no comparte el selector de candidatas del oracle"
+        )
 
     contrato = (raiz / "app" / "db" / "handoffs.py").read_text(encoding="utf-8")
     assert "stale_pending_sweep_receipts" in contrato, "la tabla de receipts no vive en el contrato D2"

@@ -134,6 +134,90 @@ _INSERT_ABSORCION_EVIDENCIA_SQL = (
 )
 
 
+async def _sellar_evidencia_de_artifact(
+    conn: aiosqlite.Connection,
+    *,
+    objetivo_fisico: str,
+    prefijo: str,
+    handoff_id: int,
+    excluir: int | None = None,
+) -> None:
+    """Sella la evidencia orphan vigente de un artifact: la absorbe con
+    provenance ``handoff_id`` y obsoleta sus receipts. ASUME el boundary del
+    caller.
+
+    POST493_ACTIVE_INDETERMINATE_EVIDENCE — enunciado como propiedad del
+    MECANISMO, no como recordatorio de proceso:
+
+        mientras un handoff activo existe, ``reconciliar_orphan_de_artifact``
+        retorna ese owner ANTES de materializar evidencia nueva
+        (short-circuit), así que las corridas fallidas de esa época quedan
+        PENDING sin absorber. Por lo tanto TODO boundary que EXTINGA esa
+        propiedad autorizada —reemplazándola (supersede) o consumiéndola
+        (resume completado)— debe sellar la evidencia acumulada bajo ella, o
+        el siguiente startup/Resume la re-fabrica como INDETERMINATE falso.
+
+    Un solo boundary sellando no alcanza: la propiedad se extingue por DOS
+    caminos y ambos tienen que participar. El ancla
+    ``test_todo_boundary_que_extingue_un_handoff_sella_la_evidencia`` los
+    enumera por AST y se rompe si aparece un tercero sin sellar.
+
+    ``excluir`` descarta la TX de la generación en curso: jamás se absorbe a
+    sí misma por el artifact que acaba de producir.
+
+    El ``artifact_path`` que se persiste es el CANÓNICO (``objetivo_fisico``),
+    la misma identidad con la que ``_candidatas_orphan_en_conn`` filtra las
+    absorciones vigentes — ver :func:`clave_de_artifact`, que prohíbe una
+    segunda definición de identidad física. Escribir la ruta cruda del
+    registro dejaría la fila invisible para el oracle ante cualquier caller
+    que no canonicalice, y el fix no tendría efecto.
+    """
+    candidatas = await _candidatas_orphan_en_conn(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
+    if excluir is not None:
+        candidatas.discard(excluir)
+    if candidatas:
+        await conn.executemany(
+            _INSERT_ABSORCION_EVIDENCIA_SQL,
+            [(int(tx_id), objetivo_fisico, int(handoff_id)) for tx_id in sorted(candidatas)],
+        )
+    # Las candidatas absorbidas arriba reciben exactamente este destino
+    # (SUPERSEDED, no CONSUMED: no crearon ningún INDETERMINATE).
+    await _obsoletar_receipts_de_artifact(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
+
+
+async def _obsoletar_receipts_de_artifact(
+    conn: aiosqlite.Connection,
+    *,
+    objetivo_fisico: str,
+    prefijo: str,
+) -> None:
+    """F-001 (patch 0006): una provenance autorizada para este artifact deja
+    SUPERSEDED todo receipt UNRESOLVED cuyo TX lo nombra — el receipt viejo no
+    intoxica el futuro. ASUME el boundary del caller: si algo falla después,
+    la obsoletización tampoco queda afirmada.
+    """
+    cursor_r = await conn.execute(
+        "SELECT r.transaction_id, je.metadata "
+        "FROM stale_pending_sweep_receipts r "
+        "JOIN journal_entries je ON je.transaction_id = r.transaction_id "
+        "WHERE r.state = 'unresolved' AND je.metadata IS NOT NULL"
+    )
+    ids_obsoletos: list[int] = []
+    async for tx_id, metadata in cursor_r:
+        try:
+            files_touched = json.loads(metadata).get("files_touched") or []
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if any(_nombra_objetivo(ruta, objetivo_fisico, prefijo) for ruta in files_touched):
+            ids_obsoletos.append(int(tx_id))
+    if ids_obsoletos:
+        await conn.executemany(
+            "UPDATE stale_pending_sweep_receipts SET state = ?, resolved_at = datetime('now') "
+            "WHERE transaction_id = ? AND state = 'unresolved'",
+            [(SweepReceiptState.SUPERSEDED.value, tx_id) for tx_id in ids_obsoletos],
+        )
+
+
 # =============================================================================
 # EXCEPCIONES JERÁRQUICAS
 # =============================================================================
@@ -1088,44 +1172,25 @@ class OperationJournal:
             )
         objetivo_fisico, prefijo = _canonica_y_prefijo(registro.artifact_path)
         if viejo is not None:
-            candidatas = await _candidatas_orphan_en_conn(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
-            # Congelado explícito: la TX de esta generación jamás recibe
-            # absorción por el artifact que acaba de producir (hoy ya es
-            # imposible — arriba quedó COMMITTED en esta misma conexión y por
-            # tanto no es candidata — pero el guard no cuesta y blinda contra
-            # reordenamientos futuros del helper).
-            candidatas.discard(transaction_id)
-            if candidatas:
-                await conn.executemany(
-                    _INSERT_ABSORCION_EVIDENCIA_SQL,
-                    [(int(tx_id), registro.artifact_path, int(viejo.handoff_id)) for tx_id in sorted(candidatas)],
-                )
-        # F-001 (patch 0006): una provenance autorizada NUEVA para este artifact
-        # deja SUPERSEDED todo receipt UNRESOLVED cuyo TX lo nombra — el receipt
-        # viejo no intoxica el futuro. Mismo boundary: si el INSERT falla, la
-        # obsoletización tampoco queda afirmada. Las candidatas absorbidas
-        # arriba reciben exactamente este destino (SUPERSEDED, no CONSUMED).
-        objetivo_fisico, prefijo = _canonica_y_prefijo(registro.artifact_path)
-        cursor_r = await conn.execute(
-            "SELECT r.transaction_id, je.metadata "
-            "FROM stale_pending_sweep_receipts r "
-            "JOIN journal_entries je ON je.transaction_id = r.transaction_id "
-            "WHERE r.state = 'unresolved' AND je.metadata IS NOT NULL"
-        )
-        ids_obsoletos: list[int] = []
-        async for tx_id, metadata in cursor_r:
-            try:
-                files_touched = json.loads(metadata).get("files_touched") or []
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if any(_nombra_objetivo(ruta, objetivo_fisico, prefijo) for ruta in files_touched):
-                ids_obsoletos.append(int(tx_id))
-        if ids_obsoletos:
-            await conn.executemany(
-                "UPDATE stale_pending_sweep_receipts SET state = ?, resolved_at = datetime('now') "
-                "WHERE transaction_id = ? AND state = 'unresolved'",
-                [(SweepReceiptState.SUPERSEDED.value, tx_id) for tx_id in ids_obsoletos],
+            # Reemplazo: la propiedad autorizada del artifact se EXTINGUE acá,
+            # así que este boundary sella la evidencia que se acumuló bajo ella
+            # (``excluir`` congela explícitamente que la TX de esta generación
+            # jamás se absorbe a sí misma por el artifact que acaba de
+            # producir — hoy ya es imposible porque arriba quedó COMMITTED en
+            # esta misma conexión, pero el guard blinda contra reordenamientos
+            # futuros del helper).
+            await _sellar_evidencia_de_artifact(
+                conn,
+                objetivo_fisico=objetivo_fisico,
+                prefijo=prefijo,
+                handoff_id=viejo.handoff_id,
+                excluir=transaction_id,
             )
+        else:
+            # RUN 1 sin owner previo: no hubo short-circuit del reconciler que
+            # dejara evidencia sin absorber, pero la provenance autorizada NUEVA
+            # sí obsoleta los receipts que nombran el objetivo.
+            await _obsoletar_receipts_de_artifact(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
         return nuevo_id
 
     @staticmethod
@@ -1135,7 +1200,30 @@ class OperationJournal:
         transaction_id: int,
         handoff_id: int,
     ) -> None:
-        """Pasos SQL del resume exitoso; ASUME el boundary del caller."""
+        """Pasos SQL del resume exitoso; ASUME el boundary del caller.
+
+        POST493_ACTIVE_INDETERMINATE_EVIDENCE — el hermano del boundary de
+        reemplazo. Completar el handoff EXTINGUE la propiedad autorizada del
+        artifact igual que reemplazarlo: mientras estuvo activa, el
+        short-circuit de ``reconciliar_orphan_de_artifact`` devolvió al owner
+        sin materializar la evidencia de las regeneraciones fallidas de esa
+        época, que quedaron PENDING sin absorber. Si este boundary no las
+        sella, el siguiente startup ya no encuentra owner activo, las vuelve a
+        leer con ``transacciones_que_nombran`` y fabrica el INDETERMINATE falso
+        que bloquea DynDOLOD sin una corrida nueva — el MISMO defecto que el
+        camino de reemplazo arregla, alcanzado por Resume en vez de por regen.
+
+        Es seguro absorber acá porque llegar a este boundary PRUEBA que el
+        artifact en disco coincide con la identidad autorizada del handoff: el
+        preflight del resume compara ``(digest, files, bytes)`` contra
+        ``expected_*`` y corta con ``DigestMismatch`` si difieren. Una corrida
+        fallida intermedia no dejó mutación sobreviviente, así que su evidencia
+        es genuinamente vieja.
+
+        La provenance es el handoff que se completa y el ``artifact_path`` sale
+        de SU fila (no de un parámetro): el sello usa la misma identidad física
+        con la que el oracle filtra.
+        """
         cursor = await conn.execute(
             """
             UPDATE transactions
@@ -1166,6 +1254,25 @@ class OperationJournal:
                 f"Handoff {handoff_id} not found or not awaiting_deployment",
                 transaction_id=transaction_id,
             )
+        async with conn.execute(
+            "SELECT artifact_path FROM deployment_handoffs WHERE handoff_id = ?", (handoff_id,)
+        ) as cursor_a:
+            fila = await cursor_a.fetchone()
+        if fila is None:  # pragma: no cover - el UPDATE de arriba ya probó que existe
+            raise JournalTransactionError(
+                f"Handoff {handoff_id} disappeared mid-boundary",
+                transaction_id=transaction_id,
+            )
+        objetivo_fisico, prefijo = _canonica_y_prefijo(str(fila[0]))
+        # La TX del resume ya quedó COMMITTED arriba (no es candidata), pero se
+        # excluye explícitamente por la misma razón que en el reemplazo.
+        await _sellar_evidencia_de_artifact(
+            conn,
+            objetivo_fisico=objetivo_fisico,
+            prefijo=prefijo,
+            handoff_id=handoff_id,
+            excluir=transaction_id,
+        )
 
     @staticmethod
     async def _escribir_transicion_de_handoff(
@@ -1197,15 +1304,22 @@ class OperationJournal:
         la TX: una candidata puede ser una corrida realmente viva (candidata
         espuria demostrada), así que ``transactions.status`` queda intacto y la
         exclusión posterior vive en el oracle, per-artifact.
+
+        El ``artifact_path`` persistido es el CANÓNICO, la misma identidad con
+        la que el oracle filtra las absorciones vigentes (ver
+        :func:`_sellar_evidencia_de_artifact`): una fila escrita con la ruta
+        cruda del registro sería invisible para
+        ``_candidatas_orphan_en_conn``.
         """
         cursor = await conn.execute(_INSERT_HANDOFF_SQL, fila_de_registro(registro))
         nuevo_id = int(cursor.lastrowid or 0) or None
         if nuevo_id is not None:
             absorciones = list(ids_absorcion) if ids_absorcion is not None else list(ids_receipts)
             if absorciones:
+                objetivo_fisico, _ = _canonica_y_prefijo(registro.artifact_path)
                 await conn.executemany(
                     _INSERT_ABSORCION_EVIDENCIA_SQL,
-                    [(int(tx_id), registro.artifact_path, int(nuevo_id)) for tx_id in sorted(set(absorciones))],
+                    [(int(tx_id), objetivo_fisico, int(nuevo_id)) for tx_id in sorted(set(absorciones))],
                 )
         ids = list(ids_receipts)
         if nuevo_id is not None and ids:
