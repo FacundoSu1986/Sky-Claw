@@ -1,12 +1,13 @@
 # Architecture Decision Records
 
-> **Estado:** decisiones aceptadas; cada ADR conserva su contexto histórico.
+> **Estado:** decisiones aceptadas; los ADR en revisión declaran `Propuesta` en su
+> encabezado. Cada ADR conserva su contexto histórico.
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
-> **Fuentes canónicas:** ADR 0001–0007 en este directorio.
+> **Fuentes canónicas:** ADR 0001–0009 en este directorio.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación:** 2026-08-23 sobre `origin/main` `da017348`.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
@@ -16,6 +17,7 @@
 - [0006 — Guardrail en dispatcher](0006-retiro-stategraph-guardrail-en-dispatcher.md)
 - [0007 — MO2 broker USVFS](0007-mo2-broker-usvfs.md)
 - [0008 — El KnowledgeCase](0008-knowledge-case.md)
+- [0009 — RV-GP1: Golden Protection Status](0009-runtime-vault-golden-protection-status.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.
