@@ -726,6 +726,92 @@ async def test_resume_que_completa_el_handoff_tambien_absorbe_la_evidencia(tmp_p
     assert await journal.consultar_handoff_activo(clave) is None
 
 
+async def test_resume_no_silencia_la_evidencia_de_otro_artifact(tmp_path: pathlib.Path) -> None:
+    """REGRESIÓN (hallazgo del revisor adversarial sobre este mismo PR).
+
+    El receipt de stale sweep es UNA FILA POR TX; la absorción, per-artifact.
+    Si el boundary del resume obsoletara receipts, sellar el artifact A dejaría
+    a la TX barrida sin poder contar como evidencia de B —que nadie absorbió—
+    porque el oracle exige receipt UNRESOLVED para admitir una ROLLED_BACK.
+
+    Orden deliberado: la TX_FAIL se barre DESPUÉS de crear el handoff, así el
+    único boundary que corre tras el sweep es el resume. Con la obsoletización
+    dentro del sello, este test veía `oracle(B) == []`; en main, `[tx_fail]`.
+    """
+    tmp_multi = tmp_path / "resume-multi-artifact"
+    tmp_multi.mkdir()
+    db_path = tmp_multi / "journal.db"
+    config, runner = _entorno(tmp_multi)
+    assert config.data_dir is not None
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    art_a = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    art_b = config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME
+    clave_a, clave_b = clave_de_artifact(art_a), clave_de_artifact(art_b)
+
+    journal = _registrar(OperationJournal(db_path))
+    await journal.open()
+    _escribir_mod(art_a, contenido=b"GEN-1")
+    tx_h = await journal.begin_transaction("texgen entregado", agent_id="test")
+    d1 = digest_arbol(art_a / "textures")
+    registro = DeploymentHandoff(
+        handoff_id=0,
+        source_tx_id=tx_h,
+        state=HandoffState.AWAITING_DEPLOYMENT,
+        artifact_path=clave_a,
+        game_key=clave_de_artifact(config.game_path),
+        mods_root_key=clave_de_artifact(config.mo2_mods_path),
+        data_key=clave_de_artifact(config.data_dir),
+        expected_profile="Perfil-A",
+        expected_digest=d1.digest,
+        expected_files=d1.files,
+        expected_bytes=d1.bytes,
+        observed_digest=None,
+        observed_files=None,
+        observed_bytes=None,
+        created_at="",
+        updated_at="",
+        completed_at=None,
+        superseded_at=None,
+        superseded_by=None,
+    )
+    h_id = await journal.crear_handoff_de_deployment(tx_h, descripcion=None, registro=registro, viejo=None)
+    # La TX_FAIL nace DESPUÉS del handoff: su receipt no pasa por el boundary
+    # de creación, sólo puede tocarlo el resume.
+    tx_fail = await _evidencia(journal, [art_a, art_b], "fallida-multi-artifact")
+    await journal.close()
+
+    async with aiosqlite.connect(str(db_path)) as conn:
+        await conn.execute(
+            "UPDATE transactions SET created_at = datetime('now', '-48 hours') WHERE transaction_id = ?",
+            (tx_fail,),
+        )
+        await conn.commit()
+
+    j2 = _registrar(OperationJournal(db_path))
+    await j2.open()  # el sweep la deja ROLLED_BACK + receipt UNRESOLVED
+    try:
+        assert await _receipt(j2, tx_fail) == SweepReceiptState.UNRESOLVED.value
+        assert tx_fail in await j2.transacciones_que_nombran(clave_a)
+        assert tx_fail in await j2.transacciones_que_nombran(clave_b), (
+            "precondición: la TX barrida es evidencia de AMBOS artifacts"
+        )
+
+        tx_resume = await j2.begin_transaction("resume", agent_id="test")
+        await j2.completar_handoff_de_resume(tx_resume, h_id)
+
+        assert tx_fail not in await j2.transacciones_que_nombran(clave_a), (
+            "el resume debe absorber la evidencia del artifact que sella"
+        )
+        assert tx_fail in await j2.transacciones_que_nombran(clave_b), (
+            "sellar A NO puede silenciar la evidencia de B: el receipt es global por TX, la absorción es per-artifact"
+        )
+        assert await _receipt(j2, tx_fail) == SweepReceiptState.UNRESOLVED.value, (
+            "el resume no emite provenance autorizada nueva: no obsoleta receipts (F-001)"
+        )
+    finally:
+        await j2.close()
+
+
 # =============================================================================
 # Fault injection — all-or-nothing del boundary extendido (§16–§19)
 # =============================================================================

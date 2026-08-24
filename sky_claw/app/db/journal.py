@@ -168,9 +168,21 @@ async def _sellar_evidencia_de_artifact(
     El ``artifact_path`` que se persiste es el CANÓNICO (``objetivo_fisico``),
     la misma identidad con la que ``_candidatas_orphan_en_conn`` filtra las
     absorciones vigentes — ver :func:`clave_de_artifact`, que prohíbe una
-    segunda definición de identidad física. Escribir la ruta cruda del
-    registro dejaría la fila invisible para el oracle ante cualquier caller
-    que no canonicalice, y el fix no tendría efecto.
+    segunda definición de identidad física. Hoy TODOS los constructores de
+    producción ya pasan esa forma (``handoffs.py`` vía ``clave``,
+    ``dyndolod_service`` vía ``clave_de_artifact``), así que no hay filas
+    legadas que migrar: canonicalizar acá elimina la posibilidad de que un
+    caller futuro divergiera, no repara nada existente.
+
+    NO obsoleta receipts, a propósito. El receipt de stale sweep es UNA FILA
+    POR TRANSACCIÓN, no por artifact: marcarlo SUPERSEDED desde el boundary
+    del artifact A silencia a esa TX como evidencia de TODOS los artifacts que
+    nombra —incluido B, que nadie absorbió— porque el oracle exige receipt
+    UNRESOLVED para admitir una TX ROLLED_BACK. La absorción sí es
+    per-artifact, así que alcanza sola para excluir la TX del oracle DE ESTE
+    artifact sin tocar los demás. Quien necesite obsoletar receipts (la
+    provenance autorizada NUEVA del contrato F-001) llama explícitamente a
+    :func:`_obsoletar_receipts_de_artifact`.
     """
     candidatas = await _candidatas_orphan_en_conn(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
     if excluir is not None:
@@ -180,9 +192,6 @@ async def _sellar_evidencia_de_artifact(
             _INSERT_ABSORCION_EVIDENCIA_SQL,
             [(int(tx_id), objetivo_fisico, int(handoff_id)) for tx_id in sorted(candidatas)],
         )
-    # Las candidatas absorbidas arriba reciben exactamente este destino
-    # (SUPERSEDED, no CONSUMED: no crearon ningún INDETERMINATE).
-    await _obsoletar_receipts_de_artifact(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
 
 
 async def _obsoletar_receipts_de_artifact(
@@ -1186,11 +1195,11 @@ class OperationJournal:
                 handoff_id=viejo.handoff_id,
                 excluir=transaction_id,
             )
-        else:
-            # RUN 1 sin owner previo: no hubo short-circuit del reconciler que
-            # dejara evidencia sin absorber, pero la provenance autorizada NUEVA
-            # sí obsoleta los receipts que nombran el objetivo.
-            await _obsoletar_receipts_de_artifact(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
+        # F-001 (patch 0006), SIN cambios: una provenance autorizada NUEVA para
+        # este artifact obsoleta los receipts que lo nombran, haya o no `viejo`.
+        # Se llama acá y no dentro del sello porque el resume NO debe hacerlo
+        # (ver _sellar_evidencia_de_artifact).
+        await _obsoletar_receipts_de_artifact(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
         return nuevo_id
 
     @staticmethod
@@ -1223,6 +1232,12 @@ class OperationJournal:
         La provenance es el handoff que se completa y el ``artifact_path`` sale
         de SU fila (no de un parámetro): el sello usa la misma identidad física
         con la que el oracle filtra.
+
+        Este boundary NO obsoleta receipts de stale sweep — antes de este fix
+        tampoco lo hacía, y hacerlo perdería la evidencia de los OTROS
+        artifacts que la misma TX nombra (el receipt es global por TX; la
+        absorción, per-artifact). Completar un resume no emite una provenance
+        autorizada nueva: consume la que ya existía.
         """
         cursor = await conn.execute(
             """
