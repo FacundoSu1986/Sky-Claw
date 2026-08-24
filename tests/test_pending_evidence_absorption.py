@@ -346,7 +346,12 @@ def test_todo_boundary_que_extingue_un_handoff_sella_la_evidencia() -> None:
     (COMPLETED o SUPERSEDED)— y se congela por igualdad literal. Un tercer
     camino aparece solo en el conjunto detectado y rompe el ancla hasta que se
     decida si sella o es una exención explícita. Un caso escrito a mano para el
-    hermano que faltó no ataja al tercero (AGENTS.md)."""
+    hermano que faltó no ataja al tercero (AGENTS.md).
+
+    PUNTO CIEGO CONOCIDO: esta detección busca el literal del estado, así que
+    NO ve a ``transicionar_handoff``, que lo recibe como parámetro. Esa rama la
+    cubre ``test_transicionar_handoff_nunca_lleva_a_un_estado_terminal`` — no
+    un párrafo explicando por qué se excluye."""
     modulo = pathlib.Path(sky_claw_app_db_journal_path())
     extinguen = _funciones_que_extinguen_un_handoff(modulo)
     assert extinguen == {
@@ -357,6 +362,63 @@ def test_todo_boundary_que_extingue_un_handoff_sella_la_evidencia() -> None:
     assert extinguen <= sellan, (
         f"boundaries que extinguen un handoff sin sellar su evidencia: {sorted(extinguen - sellan)}"
     )
+
+
+def _destinos_de_transicionar_handoff() -> set[str]:
+    """Destino (``hacia=``) de CADA call site de ``transicionar_handoff`` en
+    ``sky_claw/``, como texto, detectado por AST."""
+    import ast
+
+    raiz = pathlib.Path(sky_claw_app_db_journal_path()).resolve().parents[2]  # sky_claw/, NO el repo
+    destinos: set[str] = set()
+    for archivo in sorted(raiz.rglob("*.py")):
+        fuente = archivo.read_text(encoding="utf-8")
+        if "transicionar_handoff" not in fuente:
+            continue
+        for nodo in ast.walk(ast.parse(fuente)):
+            if not isinstance(nodo, ast.Call):
+                continue
+            fn = nodo.func
+            nombre = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if nombre != "transicionar_handoff":
+                continue
+            for kw in nodo.keywords:
+                if kw.arg == "hacia":
+                    destinos.add(ast.unparse(kw.value))
+    return destinos
+
+
+def test_transicionar_handoff_nunca_lleva_a_un_estado_terminal() -> None:
+    """Cierra el punto ciego del ancla de arriba (hallazgo del revisor
+    adversarial sobre este mismo PR).
+
+    ``transicionar_handoff`` aplica el estado como PARÁMETRO, así que su cuerpo
+    no contiene el literal ``HandoffState.SUPERSEDED``/``COMPLETED`` y la
+    detección por AST de ``_funciones_que_extinguen_un_handoff`` no lo ve. Si
+    algún caller lo usara para extinguir un handoff, se saltearía el sello sin
+    romper nada.
+
+    Hoy NO pasa —los seis call sites de producción van a AWAITING_DEPLOYMENT,
+    INDETERMINATE, SUPERSEDING o al estado previo (activo por construcción)— y
+    ESTE test es lo que lo verifica, en vez de un párrafo explicando por qué la
+    rama estaba excluida: escribir el racional de una exclusión no cuenta como
+    verificarla (AGENTS.md). El conjunto se congela por igualdad literal, así
+    que un call site nuevo rompe el ancla aunque su destino sea inocuo, y
+    obliga a decidir si sella.
+
+    ``hacia=SUPERSEDED`` sí aparece en los tests, deliberadamente: simula a un
+    actor externo robando el ownership, el escenario de race que debe fallar
+    CERRADO. Por eso el barrido es sobre ``sky_claw/``, no sobre ``tests/``.
+    """
+    destinos = _destinos_de_transicionar_handoff()
+    assert destinos == {
+        "HandoffState.AWAITING_DEPLOYMENT",
+        "HandoffState.INDETERMINATE",
+        "HandoffState.SUPERSEDING",
+        "estado_previo",  # dyndolod_service: AWAITING o INDETERMINATE, siempre activo
+    }, f"cambiaron los destinos de transicionar_handoff: {sorted(destinos)}"
+    terminales = {d for d in destinos if d in {"HandoffState.SUPERSEDED", "HandoffState.COMPLETED"}}
+    assert not terminales, f"transicionar_handoff extingue un handoff sin sellar su evidencia: {sorted(terminales)}"
 
 
 def sky_claw_app_db_journal_path() -> str:
