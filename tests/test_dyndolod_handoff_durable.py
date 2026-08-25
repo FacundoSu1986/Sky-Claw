@@ -3351,6 +3351,40 @@ def _cuerpo_de_funcion(modulo: pathlib.Path, nombre: str) -> str:
     return ""
 
 
+def _llamadas_por_superficie(raiz: pathlib.Path, callee: str) -> dict[tuple[str, str], int]:
+    """Sitios de llamada a ``callee`` bajo ``raiz``, agrupados por la función o
+    método contenedor MÁS CERCANO — ``(ruta_relativa, nombre_cualificado)`` —
+    detectados por AST.
+
+    La identidad es estructural: nunca texto de comentarios/docstrings ni
+    números de línea. El valor cuenta SITIOS por superficie, así que perder una
+    rama baja el conteo aunque el conjunto de superficies no cambie."""
+    import ast
+
+    hallazgos: dict[tuple[str, str], int] = {}
+
+    def _visitar(nodo: ast.AST, superficie: str, ruta: str) -> None:
+        for hijo in ast.iter_child_nodes(nodo):
+            nueva = superficie
+            if isinstance(hijo, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                nueva = f"{superficie}.{hijo.name}" if superficie else hijo.name
+            if isinstance(hijo, ast.Call):
+                func = hijo.func
+                nombre = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if nombre == callee:
+                    clave = (ruta, superficie or "<módulo>")
+                    hallazgos[clave] = hallazgos.get(clave, 0) + 1
+            _visitar(hijo, nueva, ruta)
+
+    for archivo in sorted(raiz.rglob("*.py")):
+        try:
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        _visitar(arbol, "", archivo.relative_to(raiz).as_posix())
+    return hallazgos
+
+
 def test_la_fuente_durable_del_oracle_es_pending_mas_receipts_unresolved() -> None:
     """Ancla 2 (0006): el oracle nombra EXACTAMENTE sus dos fuentes durables —
     TX PENDING y receipts UNRESOLVED de stale sweep — y la tabla de receipts
@@ -3367,16 +3401,45 @@ def test_la_fuente_durable_del_oracle_es_pending_mas_receipts_unresolved() -> No
     assert "SweepReceiptState.UNRESOLVED" in cuerpo, "el oracle no filtra por receipt UNRESOLVED"
     # Una sola definición de candidata: el oracle público Y el sello de
     # evidencia de los boundaries delegan en el helper, sin duplicar la
-    # enumeración. Se ancla por CUERPO, no por conteo: `>= 3` lo satisfacían ya
-    # la definición más las dos ramas de ``transacciones_que_nombran``, así que
-    # el sello podía inlinear una query divergente sin romper nada.
-    for funcion in ("transacciones_que_nombran", "_sellar_evidencia_de_artifact"):
-        assert "_candidatas_orphan_en_conn(" in _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", funcion), (
-            f"{funcion} no comparte el selector de candidatas del oracle"
-        )
+    # enumeración. QUIÉNES son esos callers se congela por AST —igualdad
+    # literal del conjunto y multiplicidad por superficie— en
+    # ``test_los_callers_del_oracle_de_candidatas_orphan_estan_congelados``:
+    # la búsqueda textual de acá no distinguía una llamada real de su mención
+    # en un comentario ni veía a un caller nuevo fuera de los dos esperados.
 
     contrato = (raiz / "app" / "db" / "handoffs.py").read_text(encoding="utf-8")
     assert "stale_pending_sweep_receipts" in contrato, "la tabla de receipts no vive en el contrato D2"
+
+
+def test_los_callers_del_oracle_de_candidatas_orphan_estan_congelados() -> None:
+    """El helper compartido ``_candidatas_orphan_en_conn`` —la ÚNICA definición
+    de "candidata orphan", compartida por oracle y absorción para que no puedan
+    divergir— sólo puede invocarse desde las superficies revisadas.
+
+    Se enumera por AST sobre TODO ``sky_claw/`` y se congela por igualdad
+    literal con multiplicidad: un caller nuevo no revisado, uno requerido que
+    desaparece o una llamada que migra a otra superficie rompen el ancla. No se
+    acepta un conteo ``>= N`` ni una búsqueda textual: ambos quedaban satisfechos
+    con menciones en comentarios o con una query duplicada en un tercer sitio."""
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    llamadas = _llamadas_por_superficie(raiz, "_candidatas_orphan_en_conn")
+
+    assert set(llamadas) == {
+        ("app/db/journal.py", "_sellar_evidencia_de_artifact"),
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran"),
+    }, (
+        "cambió el conjunto de superficies que ejecutan el oracle de candidatas "
+        f"orphan: {sorted(set(llamadas))} — decidí si la nueva superficie comparte "
+        "este selector o define candidatas divergentes antes de seguir"
+    )
+    assert llamadas == {
+        ("app/db/journal.py", "_sellar_evidencia_de_artifact"): 1,
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran"): 2,
+    }, (
+        "cambiaron los sitios de llamada del oracle por superficie: el oracle "
+        "público lo invoca en sus DOS ramas (lifecycle y standalone); perder una "
+        f"rama baja este conteo sin mover el conjunto. Hoy: {llamadas}"
+    )
 
 
 def test_startup_y_hot_path_consumen_la_misma_primitive() -> None:

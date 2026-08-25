@@ -312,25 +312,41 @@ def _funciones_que_extinguen_un_handoff(modulo: pathlib.Path) -> set[str]:
     return encontradas
 
 
-def _llamadas_a_escribir_indeterminado(modulo: pathlib.Path) -> list[set[str]]:
-    """Kwargs de CADA llamada a ``_escribir_handoff_indeterminado``, por AST.
+def _ramas_del_boundary_indeterminado() -> list[tuple[str, str, str, tuple[str, ...]]]:
+    """CADA llamada al escritor ``_escribir_handoff_indeterminado`` bajo
+    ``sky_claw/``, como identidad estructural ``(ruta_relativa, superficie
+    contenedora cualificada, callee, kwargs ordenados)``, detectada por AST.
 
-    Una entrada por rama (lifecycle y standalone de
-    ``registrar_handoff_indeterminado``); enumera en vez de contar ocurrencias
-    del texto.
-    """
+    Una entrada por RAMA del boundary: ni strings, ni comentarios, ni números
+    de línea. Una rama que deje de propagar ``ids_absorcion``, un sibling nuevo
+    sin cablear o una llamada migrada a otra superficie cambian esta lista y
+    rompen la igualdad literal del ancla."""
     import ast
 
-    fuente = modulo.read_text(encoding="utf-8")
-    llamadas: list[set[str]] = []
-    for nodo in ast.walk(ast.parse(fuente)):
-        if not isinstance(nodo, ast.Call):
+    escritor = "_escribir_handoff_indeterminado"
+    ramas: list[tuple[str, str, str, tuple[str, ...]]] = []
+
+    def _visitar(nodo: ast.AST, superficie: str, ruta: str) -> None:
+        for hijo in ast.iter_child_nodes(nodo):
+            nueva = superficie
+            if isinstance(hijo, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                nueva = f"{superficie}.{hijo.name}" if superficie else hijo.name
+            if isinstance(hijo, ast.Call):
+                func = hijo.func
+                nombre = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if nombre == escritor:
+                    kwargs = tuple(sorted(kw.arg for kw in hijo.keywords if kw.arg is not None))
+                    ramas.append((ruta, superficie or "<módulo>", escritor, kwargs))
+            _visitar(hijo, nueva, ruta)
+
+    raiz = pathlib.Path(sky_claw_app_db_journal_path()).resolve().parents[2]  # sky_claw/, NO el repo
+    for archivo in sorted(raiz.rglob("*.py")):
+        try:
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
             continue
-        fn = nodo.func
-        nombre = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
-        if nombre == "_escribir_handoff_indeterminado":
-            llamadas.append({kw.arg for kw in nodo.keywords if kw.arg})
-    return llamadas
+        _visitar(arbol, "", archivo.relative_to(raiz).as_posix())
+    return ramas
 
 
 def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
@@ -352,14 +368,23 @@ def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
         "_sellar_evidencia_de_artifact",
     }
     # Las dos ramas del boundary indeterminado (lifecycle y standalone) delegan
-    # en el MISMO helper propagando el conjunto. Se enumeran por AST: el
-    # `count(...) >= 2` anterior no distinguía "ambas ramas propagan" de "una
-    # rama lo hace dos veces", así que una rama que dejara de propagar podía
-    # quedar tapada por una coincidencia extra en la otra.
-    ramas = _llamadas_a_escribir_indeterminado(modulo)
-    assert len(ramas) == 2, f"cambió el número de ramas del boundary indeterminado: {len(ramas)}"
-    sin_propagar = [i for i, kwargs in enumerate(ramas) if "ids_absorcion" not in kwargs]
-    assert not sin_propagar, f"ramas de registrar_handoff_indeterminado que no propagan ids_absorcion: {sin_propagar}"
+    # en el MISMO helper propagando el conjunto. Se congela la identidad
+    # estructural POR RAMA —(ruta, superficie, callee, kwargs)— con igualdad
+    # literal: el `count(...) >= 2` original no distinguía "ambas ramas
+    # propagan" de "una rama lo hace dos veces", y el set de kwargs posterior
+    # no anclaba EN QUÉ superficie vive cada llamada, así que una rama que
+    # dejara de propagar o una llamada migrada podían quedar tapadas.
+    ramas = _ramas_del_boundary_indeterminado()
+    rama_esperada = (
+        "app/db/journal.py",
+        "OperationJournal.registrar_handoff_indeterminado",
+        "_escribir_handoff_indeterminado",
+        ("ids_absorcion", "ids_receipts", "registro"),
+    )
+    assert ramas == [rama_esperada, rama_esperada], (
+        "cambiaron las ramas del boundary indeterminado: CADA rama aprobada "
+        f"(lifecycle y standalone) debe propagar ids_absorcion al escritor; hoy: {ramas}"
+    )
 
 
 def test_todo_boundary_que_extingue_un_handoff_sella_la_evidencia() -> None:
