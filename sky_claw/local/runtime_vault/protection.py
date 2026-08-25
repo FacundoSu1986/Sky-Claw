@@ -66,7 +66,20 @@ class NodeProtectionObservation:
     node_kind: str  # "dir" | "file"
     owner_sid: str | None
     granted_rights: frozenset[GoldenProtectionRight] | None
-    owner_rights_ace_present: bool | None = None
+    owner_rights_ace_present: bool | None = False
+    dacl_inheritance_protected: bool | None = True
+
+
+@dataclass(frozen=True, slots=True)
+class _TokenInspection:
+    """Resultado estructurado completo de la inspección del token nativo."""
+
+    user_sid: str
+    group_sids: frozenset[str]
+    elevated: bool
+    elevation_type: int | None
+    mutation_privileges: frozenset[str]
+    diagnostic_privileges: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +129,8 @@ class GoldenProtectionResult:
 # Constantes y mappings Win32 nativos
 _DRIVE_FIXED = 3
 _FILE_PERSISTENT_ACLS = 0x00000008
+_ERROR_NO_TOKEN = 1008
+_SE_DACL_PROTECTED = 0x1000
 
 _MUTATION_ENABLING_PRIVILEGES = frozenset({"SeRestorePrivilege", "SeTakeOwnershipPrivilege"})
 _DIAGNOSTIC_PRIVILEGES = frozenset({"SeBackupPrivilege", "SeSecurityPrivilege"})
@@ -158,7 +173,7 @@ def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionR
     if evidence.filesystem != "NTFS" or not evidence.filesystem_persistent_acls:
         return GoldenProtectionResult(state=GoldenProtectionState.UNSUPPORTED, evidence=evidence, message="")
 
-    # 2. Fallas de observación / drift / enlaces
+    # 2. Fallas de observación / drift / enlaces / cardinalidad de evidencia
     if evidence.observation_error is not None:
         return GoldenProtectionResult(
             state=GoldenProtectionState.UNKNOWN,
@@ -166,23 +181,47 @@ def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionR
             message=evidence.observation_error,
         )
 
-    if evidence.pre_post_structural_match is not True or evidence.nodes is None:
+    if evidence.pre_post_structural_match is not True or not evidence.nodes:
         return GoldenProtectionResult(
             state=GoldenProtectionState.UNKNOWN,
             evidence=evidence,
-            message="Observación no sellada o incompleta: drift o fallo estructural detectado",
+            message="Observación no sellada o incompleta: drift, fallo estructural o lista de nodos vacía",
+        )
+
+    if evidence.parent_observation is None:
+        return GoldenProtectionResult(
+            state=GoldenProtectionState.UNKNOWN,
+            evidence=evidence,
+            message="Evidencia incompleta: parent_observation es requerido para evaluar alcance protegido",
+        )
+
+    if evidence.current_user_sid is None:
+        return GoldenProtectionResult(
+            state=GoldenProtectionState.UNKNOWN,
+            evidence=evidence,
+            message="No se pudo determinar el SID del usuario en el token efectivo",
         )
 
     # 3. Validar que todos los nodos tienen evidencia completa
     for nodo in evidence.nodes:
-        if nodo.granted_rights is None or nodo.owner_sid is None:
+        if (
+            nodo.granted_rights is None
+            or nodo.owner_sid is None
+            or nodo.owner_rights_ace_present is None
+            or nodo.dacl_inheritance_protected is None
+        ):
             return GoldenProtectionResult(
                 state=GoldenProtectionState.UNKNOWN,
                 evidence=evidence,
                 message=f"Evidencia incompleta en nodo '{nodo.relative_path}'",
             )
 
-    if evidence.parent_observation is not None and evidence.parent_observation.granted_rights is None:
+    if (
+        evidence.parent_observation.granted_rights is None
+        or evidence.parent_observation.owner_sid is None
+        or evidence.parent_observation.owner_rights_ace_present is None
+        or evidence.parent_observation.dacl_inheritance_protected is None
+    ):
         return GoldenProtectionResult(
             state=GoldenProtectionState.UNKNOWN,
             evidence=evidence,
@@ -205,28 +244,40 @@ def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionR
                 return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
 
         # Chequeo owner self-rewrite: si el usuario es owner y tiene CHANGE_PERMISSIONS (WRITE_DAC)
-        if evidence.current_user_sid is not None and nodo.owner_sid is not None:
+        if nodo.owner_sid is not None:
             es_owner = nodo.owner_sid == evidence.current_user_sid or nodo.owner_sid in evidence.current_group_sids
             if es_owner and GoldenProtectionRight.CHANGE_PERMISSIONS in rights and not nodo.owner_rights_ace_present:
                 return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
 
-    # 6. Comprobar superficie del Parent
-    if evidence.parent_observation is not None and evidence.parent_observation.granted_rights is not None:
-        parent_rights = evidence.parent_observation.granted_rights
-        root_obs = evidence.nodes[0] if evidence.nodes else None
-        root_rights = root_obs.granted_rights if root_obs and root_obs.granted_rights else frozenset()
+    # 6. Comprobar superficie del Parent y escalación por herencia
+    parent_obs = evidence.parent_observation
+    parent_rights = parent_obs.granted_rights
+    assert parent_rights is not None
 
-        # Delete del root: parent DELETE_CHILD o root DELETE
-        root_deletable = (GoldenProtectionRight.DELETE_CHILD in parent_rights) or (
-            GoldenProtectionRight.DELETE in root_rights
-        )
-        if GoldenProtectionRight.DELETE_CHILD in parent_rights:
+    root_obs = evidence.nodes[0]
+    root_rights = root_obs.granted_rights or frozenset()
+
+    # 6a. Delete del root: parent DELETE_CHILD o root DELETE
+    if GoldenProtectionRight.DELETE_CHILD in parent_rights:
+        return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
+
+    # 6b. Rename del root: root deletable AND parent add_file/add_sub
+    root_deletable = (GoldenProtectionRight.DELETE_CHILD in parent_rights) or (
+        GoldenProtectionRight.DELETE in root_rights
+    )
+    if root_deletable and (
+        GoldenProtectionRight.ADD_FILE in parent_rights or GoldenProtectionRight.ADD_SUBDIRECTORY in parent_rights
+    ):
+        return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
+
+    # 6c. Escalación por herencia desde parent:
+    # Si root hereda DACL del parent (dacl_inheritance_protected is False):
+    #   - Si parent tiene CHANGE_PERMISSIONS (WRITE_DAC) -> UNPROTECTED
+    #   - Si parent tiene CHANGE_OWNER (WRITE_OWNER) -> UNPROTECTED
+    if root_obs.dacl_inheritance_protected is False:
+        if GoldenProtectionRight.CHANGE_PERMISSIONS in parent_rights:
             return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
-
-        # Rename del root: root deletable AND parent add_file/add_sub
-        if root_deletable and (
-            GoldenProtectionRight.ADD_FILE in parent_rights or GoldenProtectionRight.ADD_SUBDIRECTORY in parent_rights
-        ):
+        if GoldenProtectionRight.CHANGE_OWNER in parent_rights:
             return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
 
     # 7. Si llegamos acá, el árbol es WRITE_PROTECTED. Evaluar HARDENED
@@ -237,7 +288,7 @@ def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionR
         return GoldenProtectionResult(state=GoldenProtectionState.WRITE_PROTECTED, evidence=evidence, message="")
 
     for nodo in evidence.nodes:
-        if evidence.current_user_sid is not None and nodo.owner_sid is not None:
+        if nodo.owner_sid is not None:
             es_owner = nodo.owner_sid == evidence.current_user_sid or nodo.owner_sid in evidence.current_group_sids
             if es_owner and not nodo.owner_rights_ace_present:
                 return GoldenProtectionResult(
@@ -363,6 +414,13 @@ if sys.platform == "win32":
     ]
     _advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
 
+    _advapi32.GetSecurityDescriptorControl.argtypes = [
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.WORD),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+
     _advapi32.GetSecurityDescriptorDacl.argtypes = [
         wintypes.LPVOID,
         ctypes.POINTER(wintypes.BOOL),
@@ -445,13 +503,17 @@ def _obtener_token_efectivo() -> tuple[Any, Any]:
         return None, None
 
     token_raw = wintypes.HANDLE()
-    # 1. Intentar token del thread
     token_query_dup = 0x0008 | 0x0002  # TOKEN_QUERY | TOKEN_DUPLICATE
     res = _advapi32.OpenThreadToken(_kernel32.GetCurrentThread(), token_query_dup, True, ctypes.byref(token_raw))
     if not res:
-        # 2. Fallback a token del proceso
-        res = _advapi32.OpenProcessToken(_kernel32.GetCurrentProcess(), token_query_dup, ctypes.byref(token_raw))
-        if not res:
+        err = ctypes.get_last_error()
+        if err == _ERROR_NO_TOKEN:
+            # 2. Fallback a token del proceso únicamente si el thread no tiene token de impersonación
+            res = _advapi32.OpenProcessToken(_kernel32.GetCurrentProcess(), token_query_dup, ctypes.byref(token_raw))
+            if not res:
+                return None, None
+        else:
+            # El thread tiene token pero falló la apertura -> fail-closed, no caer al proceso
             return None, None
 
     # Duplicar a SecurityImpersonation / TokenImpersonation
@@ -475,46 +537,58 @@ def _obtener_token_efectivo() -> tuple[Any, Any]:
 
 def _inspeccionar_token(
     token_raw: Any,
-) -> tuple[str | None, frozenset[str], bool | None, int | None, frozenset[str], frozenset[str]]:
-    """Inspecciona user, groups, elevación y privilegios del token."""
+) -> tuple[_TokenInspection | None, str | None]:
+    """Inspecciona user, groups, elevación y privilegios del token con canal de error explícito."""
     if sys.platform != "win32" or not token_raw:
-        return None, frozenset(), None, None, frozenset(), frozenset()
+        return None, "Token inválido o plataforma no Windows"
 
     # User SID
     user_sid_str: str | None = None
     buf_size = wintypes.DWORD()
     _advapi32.GetTokenInformation(token_raw, 1, None, 0, ctypes.byref(buf_size))  # TokenUser = 1
-    if buf_size.value > 0:
-        buf_user = ctypes.create_string_buffer(buf_size.value)
-        if _advapi32.GetTokenInformation(token_raw, 1, buf_user, buf_size.value, ctypes.byref(buf_size)):
-            user_struct = ctypes.cast(buf_user, ctypes.POINTER(_TokenUser)).contents
-            user_sid_str = _sid_to_str(user_struct.User.Sid)
+    if buf_size.value <= 0:
+        err = ctypes.get_last_error()
+        return None, f"GetTokenInformation(TokenUser tamaño) falló con error {err}"
+    buf_user = ctypes.create_string_buffer(buf_size.value)
+    if not _advapi32.GetTokenInformation(token_raw, 1, buf_user, buf_size.value, ctypes.byref(buf_size)):
+        err = ctypes.get_last_error()
+        return None, f"GetTokenInformation(TokenUser) falló con error {err}"
+    user_struct = ctypes.cast(buf_user, ctypes.POINTER(_TokenUser)).contents
+    user_sid_str = _sid_to_str(user_struct.User.Sid)
+    if not user_sid_str:
+        return None, "No se pudo convertir el SID del usuario a cadena"
 
     # Groups SIDs (excluyendo deny-only)
     group_sids: set[str] = set()
-    _advapi32.GetTokenInformation(token_raw, 2, None, 0, ctypes.byref(buf_size))  # TokenGroups = 2
-    if buf_size.value > 0:
-        buf_groups = ctypes.create_string_buffer(buf_size.value)
-        if _advapi32.GetTokenInformation(token_raw, 2, buf_groups, buf_size.value, ctypes.byref(buf_size)):
-            tg = ctypes.cast(buf_groups, ctypes.POINTER(_TokenGroups)).contents
-            count = tg.GroupCount
-            groups_ptr = ctypes.cast(ctypes.byref(tg.Groups), ctypes.POINTER(_SidAndAttributes))
-            for i in range(count):
-                item = groups_ptr[i]
-                is_deny_only = bool(item.Attributes & 0x00000010)  # SE_GROUP_USE_FOR_DENY_ONLY
-                if not is_deny_only:
-                    sid_s = _sid_to_str(item.Sid)
-                    if sid_s:
-                        group_sids.add(sid_s)
+    buf_size_grp = wintypes.DWORD()
+    _advapi32.GetTokenInformation(token_raw, 2, None, 0, ctypes.byref(buf_size_grp))  # TokenGroups = 2
+    if buf_size_grp.value <= 0:
+        err = ctypes.get_last_error()
+        return None, f"GetTokenInformation(TokenGroups tamaño) falló con error {err}"
+    buf_groups = ctypes.create_string_buffer(buf_size_grp.value)
+    if not _advapi32.GetTokenInformation(token_raw, 2, buf_groups, buf_size_grp.value, ctypes.byref(buf_size_grp)):
+        err = ctypes.get_last_error()
+        return None, f"GetTokenInformation(TokenGroups) falló con error {err}"
+    tg = ctypes.cast(buf_groups, ctypes.POINTER(_TokenGroups)).contents
+    count = tg.GroupCount
+    groups_ptr = ctypes.cast(ctypes.byref(tg.Groups), ctypes.POINTER(_SidAndAttributes))
+    for i in range(count):
+        item = groups_ptr[i]
+        is_deny_only = bool(item.Attributes & 0x00000010)  # SE_GROUP_USE_FOR_DENY_ONLY
+        if not is_deny_only:
+            sid_s = _sid_to_str(item.Sid)
+            if sid_s:
+                group_sids.add(sid_s)
 
     # Elevation
-    is_elevated: bool | None = None
     elev_struct = _TokenElevation()
     ret_len = wintypes.DWORD()
-    if _advapi32.GetTokenInformation(
+    if not _advapi32.GetTokenInformation(
         token_raw, 20, ctypes.byref(elev_struct), ctypes.sizeof(elev_struct), ctypes.byref(ret_len)
     ):  # TokenElevation = 20
-        is_elevated = bool(elev_struct.TokenIsElevated != 0)
+        err = ctypes.get_last_error()
+        return None, f"GetTokenInformation(TokenElevation) falló con error {err}"
+    is_elevated = bool(elev_struct.TokenIsElevated != 0)
 
     # ElevationType (diagnóstico)
     elev_type: int | None = None
@@ -532,26 +606,43 @@ def _inspeccionar_token(
     known_luids: dict[str, _Luid] = {}
     for priv_name in _MUTATION_ENABLING_PRIVILEGES | _DIAGNOSTIC_PRIVILEGES:
         luid = _Luid()
-        if _advapi32.LookupPrivilegeValueW(None, priv_name, ctypes.byref(luid)):
-            known_luids[priv_name] = luid
+        if not _advapi32.LookupPrivilegeValueW(None, priv_name, ctypes.byref(luid)):
+            err = ctypes.get_last_error()
+            return None, f"LookupPrivilegeValueW({priv_name}) falló con error {err}"
+        known_luids[priv_name] = luid
 
-    _advapi32.GetTokenInformation(token_raw, 3, None, 0, ctypes.byref(buf_size))  # TokenPrivileges = 3
-    if buf_size.value > 0:
-        buf_privs = ctypes.create_string_buffer(buf_size.value)
-        if _advapi32.GetTokenInformation(token_raw, 3, buf_privs, buf_size.value, ctypes.byref(buf_size)):
-            tp = ctypes.cast(buf_privs, ctypes.POINTER(_TokenPrivileges)).contents
-            priv_count = tp.PrivilegeCount
-            priv_ptr = ctypes.cast(ctypes.byref(tp.Privileges), ctypes.POINTER(_LuidAndAttributes))
-            for i in range(priv_count):
-                entry = priv_ptr[i]
-                for name, luid in known_luids.items():
-                    if entry.Luid.LowPart == luid.LowPart and entry.Luid.HighPart == luid.HighPart:
-                        if name in _MUTATION_ENABLING_PRIVILEGES:
-                            mutation_privs.add(name)
-                        elif name in _DIAGNOSTIC_PRIVILEGES:
-                            diag_privs.add(name)
+    buf_size_priv = wintypes.DWORD()
+    _advapi32.GetTokenInformation(token_raw, 3, None, 0, ctypes.byref(buf_size_priv))  # TokenPrivileges = 3
+    if buf_size_priv.value <= 0:
+        err = ctypes.get_last_error()
+        return None, f"GetTokenInformation(TokenPrivileges tamaño) falló con error {err}"
+    buf_privs = ctypes.create_string_buffer(buf_size_priv.value)
+    if not _advapi32.GetTokenInformation(token_raw, 3, buf_privs, buf_size_priv.value, ctypes.byref(buf_size_priv)):
+        err = ctypes.get_last_error()
+        return None, f"GetTokenInformation(TokenPrivileges) falló con error {err}"
+    tp = ctypes.cast(buf_privs, ctypes.POINTER(_TokenPrivileges)).contents
+    priv_count = tp.PrivilegeCount
+    priv_ptr = ctypes.cast(ctypes.byref(tp.Privileges), ctypes.POINTER(_LuidAndAttributes))
+    for i in range(priv_count):
+        entry = priv_ptr[i]
+        for name, luid in known_luids.items():
+            if entry.Luid.LowPart == luid.LowPart and entry.Luid.HighPart == luid.HighPart:
+                if name in _MUTATION_ENABLING_PRIVILEGES:
+                    mutation_privs.add(name)
+                elif name in _DIAGNOSTIC_PRIVILEGES:
+                    diag_privs.add(name)
 
-    return user_sid_str, frozenset(group_sids), is_elevated, elev_type, frozenset(mutation_privs), frozenset(diag_privs)
+    return (
+        _TokenInspection(
+            user_sid=user_sid_str,
+            group_sids=frozenset(group_sids),
+            elevated=is_elevated,
+            elevation_type=elev_type,
+            mutation_privileges=frozenset(mutation_privs),
+            diagnostic_privileges=frozenset(diag_privs),
+        ),
+        None,
+    )
 
 
 def _evaluar_acceso_nodo(
@@ -586,35 +677,52 @@ def _evaluar_acceso_nodo(
         # Owner SID
         owner_sid = _sid_to_str(owner_ptr)
 
+        # Control y protección contra herencia (SE_DACL_PROTECTED = 0x1000)
+        sd_control = wintypes.WORD()
+        sd_rev = wintypes.DWORD()
+        if not _advapi32.GetSecurityDescriptorControl(sd_ptr, ctypes.byref(sd_control), ctypes.byref(sd_rev)):
+            err = ctypes.get_last_error()
+            return None, f"GetSecurityDescriptorControl falló con error {err} en '{path}'"
+
+        dacl_inheritance_protected = bool(sd_control.value & _SE_DACL_PROTECTED)
+
         # DACL inspection
         dacl_present = wintypes.BOOL()
         dacl_defaulted = wintypes.BOOL()
         dacl_out = wintypes.LPVOID()
-        _advapi32.GetSecurityDescriptorDacl(
+        if not _advapi32.GetSecurityDescriptorDacl(
             sd_ptr,
             ctypes.byref(dacl_present),
             ctypes.byref(dacl_out),
             ctypes.byref(dacl_defaulted),
-        )
+        ):
+            err = ctypes.get_last_error()
+            return None, f"GetSecurityDescriptorDacl falló con error {err} en '{path}'"
 
-        owner_rights_ace_present = False
-        if dacl_present and dacl_out:
+        owner_rights_ace_present: bool | None = False
+        if dacl_present.value != 0 and dacl_out.value:
             acl_info = _AclSizeInformation()
-            if _advapi32.GetAclInformation(
+            if not _advapi32.GetAclInformation(
                 dacl_out, ctypes.byref(acl_info), ctypes.sizeof(acl_info), 2
             ):  # AclSizeInformation = 2
-                for i in range(acl_info.AceCount):
-                    ace_ptr = wintypes.LPVOID()
-                    if _advapi32.GetAce(dacl_out, i, ctypes.byref(ace_ptr)):
-                        header = ctypes.cast(ace_ptr, ctypes.POINTER(_AceHeader)).contents
-                        if header.AceType in (0, 1):  # ACCESS_ALLOWED / ACCESS_DENIED
-                            ace_raw = ctypes.cast(ace_ptr, ctypes.c_void_p).value
-                            if ace_raw:
-                                # SidStart está a offset 8 (Header 4 bytes + Mask 4 bytes)
-                                ace_sid_ptr = ace_raw + 8
-                                ace_sid_str = _sid_to_str(ace_sid_ptr)
-                                if ace_sid_str == _OWNER_RIGHTS_SID:
-                                    owner_rights_ace_present = True
+                err = ctypes.get_last_error()
+                return None, f"GetAclInformation falló con error {err} en '{path}'"
+
+            for i in range(acl_info.AceCount):
+                ace_ptr = wintypes.LPVOID()
+                if not _advapi32.GetAce(dacl_out, i, ctypes.byref(ace_ptr)) or not ace_ptr.value:
+                    err = ctypes.get_last_error()
+                    return None, f"GetAce({i}) falló con error {err} en '{path}'"
+
+                header = ctypes.cast(ace_ptr, ctypes.POINTER(_AceHeader)).contents
+                if header.AceType in (0, 1):  # ACCESS_ALLOWED / ACCESS_DENIED
+                    ace_raw = ctypes.cast(ace_ptr, ctypes.c_void_p).value
+                    if ace_raw:
+                        # SidStart está a offset 8 (Header 4 bytes + Mask 4 bytes)
+                        ace_sid_ptr = ace_raw + 8
+                        ace_sid_str = _sid_to_str(ace_sid_ptr)
+                        if ace_sid_str == _OWNER_RIGHTS_SID:
+                            owner_rights_ace_present = True
 
         # Generic Mapping
         # Standard Rights: Read/Write/Execute = 0x00020000 (READ_CONTROL)
@@ -653,7 +761,7 @@ def _evaluar_acceso_nodo(
             err = ctypes.get_last_error()
             return None, f"AccessCheck falló con código {err} en '{path}'"
 
-        mask = granted_mask.value if access_status else 0
+        mask = granted_mask.value if access_status.value != 0 else 0
 
         # Mapear bits de máscara a derechos
         rights: set[GoldenProtectionRight] = set()
@@ -694,6 +802,7 @@ def _evaluar_acceso_nodo(
                 owner_sid=owner_sid,
                 granted_rights=frozenset(rights),
                 owner_rights_ace_present=owner_rights_ace_present,
+                dacl_inheritance_protected=dacl_inheritance_protected,
             ),
             None,
         )
@@ -750,26 +859,47 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
         0x02000000,  # FILE_FLAG_BACKUP_SEMANTICS
         None,
     )
+    if h_file == wintypes.HANDLE(-1).value or h_file == 0:
+        err = ctypes.get_last_error()
+        return GoldenProtectionResult(
+            state=GoldenProtectionState.UNKNOWN,
+            evidence=GoldenProtectionEvidence(
+                platform="windows",
+                drive_type=drive_type,
+                observation_error=f"CreateFileW falló al abrir volumen '{path}' con error {err}",
+            ),
+            message=f"CreateFileW falló al abrir volumen '{path}' con error {err}",
+        )
+
     fs_name: str | None = None
     persistent_acls: bool | None = None
-    if h_file != wintypes.HANDLE(-1).value and h_file != 0:
-        try:
-            fs_buf = ctypes.create_unicode_buffer(260)
-            flags_val = wintypes.DWORD()
-            if _kernel32.GetVolumeInformationByHandleW(
-                h_file,
-                None,
-                0,
-                None,
-                None,
-                ctypes.byref(flags_val),
-                fs_buf,
-                260,
-            ):
-                fs_name = fs_buf.value
-                persistent_acls = bool(flags_val.value & _FILE_PERSISTENT_ACLS)
-        finally:
-            _kernel32.CloseHandle(h_file)
+    try:
+        fs_buf = ctypes.create_unicode_buffer(260)
+        flags_val = wintypes.DWORD()
+        if not _kernel32.GetVolumeInformationByHandleW(
+            h_file,
+            None,
+            0,
+            None,
+            None,
+            ctypes.byref(flags_val),
+            fs_buf,
+            260,
+        ):
+            err = ctypes.get_last_error()
+            return GoldenProtectionResult(
+                state=GoldenProtectionState.UNKNOWN,
+                evidence=GoldenProtectionEvidence(
+                    platform="windows",
+                    drive_type=drive_type,
+                    observation_error=f"GetVolumeInformationByHandleW falló con error {err}",
+                ),
+                message=f"GetVolumeInformationByHandleW falló con error {err}",
+            )
+        fs_name = fs_buf.value
+        persistent_acls = bool(flags_val.value & _FILE_PERSISTENT_ACLS)
+    finally:
+        _kernel32.CloseHandle(h_file)
 
     if fs_name != "NTFS" or not persistent_acls:
         return GoldenProtectionResult(
@@ -799,14 +929,46 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
         )
 
     try:
-        user_sid, group_sids, is_elevated, elev_type, mutation_privs, diag_privs = _inspeccionar_token(token_raw)
+        token_inspection, token_err = _inspeccionar_token(token_raw)
+        if token_err or not token_inspection:
+            return GoldenProtectionResult(
+                state=GoldenProtectionState.UNKNOWN,
+                evidence=GoldenProtectionEvidence(
+                    platform="windows",
+                    drive_type=drive_type,
+                    filesystem=fs_name,
+                    filesystem_persistent_acls=persistent_acls,
+                    observation_error=token_err or "Fallo de inspección de token",
+                ),
+                message=token_err or "Fallo de inspección de token",
+            )
+
+        user_sid = token_inspection.user_sid
+        group_sids = token_inspection.group_sids
+        is_elevated = token_inspection.elevated
+        elev_type = token_inspection.elevation_type
+        mutation_privs = token_inspection.mutation_privileges
+        diag_privs = token_inspection.diagnostic_privileges
 
         # 5. PRE-Scan: recorrido estructural y detección de reparse points
         pre_entries: dict[str, tuple[pathlib.Path, str, os.stat_result]] = {}
         pending = [path]
         while pending:
             curr = pending.pop()
-            link_k, st = link_kind_and_identity_or_raise(curr)
+            try:
+                link_k, st = link_kind_and_identity_or_raise(curr)
+            except OSError as exc:
+                return GoldenProtectionResult(
+                    state=GoldenProtectionState.UNKNOWN,
+                    evidence=GoldenProtectionEvidence(
+                        platform="windows",
+                        drive_type=drive_type,
+                        filesystem=fs_name,
+                        filesystem_persistent_acls=persistent_acls,
+                        observation_error=f"Error de lstat en '{curr}': {exc}",
+                    ),
+                    message=f"Error de lstat en '{curr}': {exc}",
+                )
             if link_k is not None:
                 return GoldenProtectionResult(
                     state=GoldenProtectionState.UNKNOWN,
@@ -889,6 +1051,7 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
                     owner_sid=obs.owner_sid,
                     granted_rights=obs.granted_rights,
                     owner_rights_ace_present=obs.owner_rights_ace_present,
+                    dacl_inheritance_protected=obs.dacl_inheritance_protected,
                 )
             )
 
@@ -896,7 +1059,20 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
         parent_obs: NodeProtectionObservation | None = None
         parent_path = path.parent
         if parent_path != path and parent_path.exists():
-            p_link, p_st = link_kind_and_identity_or_raise(parent_path)
+            try:
+                p_link, p_st = link_kind_and_identity_or_raise(parent_path)
+            except OSError as exc:
+                return GoldenProtectionResult(
+                    state=GoldenProtectionState.UNKNOWN,
+                    evidence=GoldenProtectionEvidence(
+                        platform="windows",
+                        drive_type=drive_type,
+                        filesystem=fs_name,
+                        filesystem_persistent_acls=persistent_acls,
+                        observation_error=f"Error de lstat en parent '{parent_path}': {exc}",
+                    ),
+                    message=f"Error de lstat en parent '{parent_path}': {exc}",
+                )
             if p_link is not None:
                 return GoldenProtectionResult(
                     state=GoldenProtectionState.UNKNOWN,
@@ -909,6 +1085,7 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
                     ),
                     message=f"Parent '{parent_path}' es un enlace '{p_link}'",
                 )
+
             p_obs, p_err = _evaluar_acceso_nodo(parent_path, "dir", token_imp)
             if p_err or p_obs is None:
                 return GoldenProtectionResult(
@@ -928,6 +1105,7 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
                 owner_sid=p_obs.owner_sid,
                 granted_rights=p_obs.granted_rights,
                 owner_rights_ace_present=p_obs.owner_rights_ace_present,
+                dacl_inheritance_protected=p_obs.dacl_inheritance_protected,
             )
 
         # 7. POST-Scan: re-verificación estructural para sellar observación
@@ -935,7 +1113,11 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
         pending = [path]
         while pending:
             curr = pending.pop()
-            link_k, st = link_kind_and_identity_or_raise(curr)
+            try:
+                link_k, st = link_kind_and_identity_or_raise(curr)
+            except OSError:
+                drift_match = False
+                break
             if link_k is not None or st is None:
                 drift_match = False
                 break

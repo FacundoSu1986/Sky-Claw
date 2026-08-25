@@ -15,10 +15,12 @@ Principios:
 from __future__ import annotations
 
 import ast
+import ctypes
 import dataclasses
 import os
 import pathlib
 import sys
+from typing import Any
 
 import pytest
 
@@ -257,6 +259,7 @@ class TestClasificadorPuro:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-111-222-333-1001",
             mutation_privileges_present=frozenset({"SeRestorePrivilege"}),
             nodes=(
                 NodeProtectionObservation(
@@ -287,6 +290,7 @@ class TestClasificadorPuro:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-111-222-333-1001",
             mutation_privileges_present=frozenset({"SeTakeOwnershipPrivilege"}),
             nodes=(
                 NodeProtectionObservation(
@@ -361,6 +365,7 @@ class TestClasificadorPuro:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-111-222-333-1001",
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
@@ -409,6 +414,7 @@ class TestClasificadorPuro:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-111-222-333-1001",
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
@@ -445,6 +451,7 @@ class TestClasificadorPuro:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-111-222-333-1001",
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
@@ -474,6 +481,7 @@ class TestClasificadorPuro:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-111-222-333-1001",
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
@@ -812,6 +820,7 @@ class TestClasificadorPuro:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-111-222-333-1001",
             nodes=(
                 NodeProtectionObservation(
                     relative_path="",
@@ -941,7 +950,9 @@ class TestIntegracionWindowsYBackend:
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
     def test_gp_t50_metadata_identica_antes_despues(self, tmp_path: pathlib.Path) -> None:
-        """GP-T50: inspect no muta metadata, mtime, ni tamaño en ningún nodo."""
+        """GP-T50: inspect no muta metadata, mtime, tamaño ni Security Descriptors en ningún nodo ni parent."""
+        from sky_claw.local.runtime_vault import protection
+
         sub = tmp_path / "golden_meta"
         sub.mkdir()
         f1 = sub / "f1.txt"
@@ -951,19 +962,59 @@ class TestIntegracionWindowsYBackend:
         f2 = d1 / "f2.txt"
         f2.write_text("contenido 2", encoding="utf-8")
 
-        stats_antes = {
-            "sub": sub.stat(),
-            "f1": f1.stat(),
-            "d1": d1.stat(),
-            "f2": f2.stat(),
-        }
+        all_paths = [tmp_path, sub, f1, d1, f2]
+        stats_antes = {p: p.stat() for p in all_paths}
 
-        inspect_golden_protection(sub)
+        # Capturar token de prueba para evaluar observaciones de DACL antes
+        t_raw, t_imp = protection._obtener_token_efectivo()
+        assert t_imp is not None
+        try:
+            sd_obs_antes = {}
+            for p in all_paths:
+                kind = "dir" if p.is_dir() else "file"
+                obs, err = protection._evaluar_acceso_nodo(p, kind, t_imp)
+                assert err is None
+                assert obs is not None
+                sd_obs_antes[p] = (
+                    obs.owner_sid,
+                    obs.granted_rights,
+                    obs.owner_rights_ace_present,
+                    obs.dacl_inheritance_protected,
+                )
+        finally:
+            protection._kernel32.CloseHandle(t_raw)
+            protection._kernel32.CloseHandle(t_imp)
 
-        assert sub.stat().st_mtime_ns == stats_antes["sub"].st_mtime_ns
-        assert f1.stat().st_mtime_ns == stats_antes["f1"].st_mtime_ns
-        assert d1.stat().st_mtime_ns == stats_antes["d1"].st_mtime_ns
-        assert f2.stat().st_mtime_ns == stats_antes["f2"].st_mtime_ns
+        # Ejecutar inspección
+        res = inspect_golden_protection(sub)
+        assert isinstance(res, GoldenProtectionResult)
+
+        # Verificar stats después
+        for p in all_paths:
+            st_despues = p.stat()
+            assert st_despues.st_mtime_ns == stats_antes[p].st_mtime_ns
+            assert st_despues.st_size == stats_antes[p].st_size
+            assert st_despues.st_mode == stats_antes[p].st_mode
+
+        # Verificar Security Descriptors después
+        t_raw, t_imp = protection._obtener_token_efectivo()
+        assert t_imp is not None
+        try:
+            for p in all_paths:
+                kind = "dir" if p.is_dir() else "file"
+                obs, err = protection._evaluar_acceso_nodo(p, kind, t_imp)
+                assert err is None
+                assert obs is not None
+                sd_obs_despues = (
+                    obs.owner_sid,
+                    obs.granted_rights,
+                    obs.owner_rights_ace_present,
+                    obs.dacl_inheritance_protected,
+                )
+                assert sd_obs_despues == sd_obs_antes[p], f"Security descriptor mutó en '{p}' tras inspección"
+        finally:
+            protection._kernel32.CloseHandle(t_raw)
+            protection._kernel32.CloseHandle(t_imp)
 
 
 # ============================================================================
@@ -974,6 +1025,45 @@ class TestIntegracionWindowsYBackend:
 class TestAntiMutacionYAllowlist:
     """Anclas de seguridad anti-mutación y AST."""
 
+    _ALLOWED_WIN32_APIS = {
+        "GetDriveTypeW",
+        "CreateFileW",
+        "GetVolumeInformationByHandleW",
+        "CloseHandle",
+        "LocalFree",
+        "GetCurrentProcess",
+        "GetCurrentThread",
+        "OpenThreadToken",
+        "OpenProcessToken",
+        "DuplicateTokenEx",
+        "GetTokenInformation",
+        "LookupPrivilegeValueW",
+        "ConvertSidToStringSidW",
+        "GetNamedSecurityInfoW",
+        "GetSecurityDescriptorControl",
+        "GetSecurityDescriptorDacl",
+        "GetAclInformation",
+        "GetAce",
+        "AccessCheck",
+    }
+
+    def test_gp_t20_positive_allowlist_ast_de_win32_apis(self) -> None:
+        """GP-T20 / GP-T49: positive allowlist estricta: sólo APIs explícitamente permitidas son referenciadas."""
+        mod_path = pathlib.Path(rv_pkg.__file__).parent / "protection.py"
+        arbol = ast.parse(mod_path.read_text(encoding="utf-8"), filename=str(mod_path))
+
+        observed_apis: set[str] = set()
+        for nodo in ast.walk(arbol):
+            if (
+                isinstance(nodo, ast.Attribute)
+                and isinstance(nodo.value, ast.Name)
+                and nodo.value.id in ("_advapi32", "_kernel32")
+            ):
+                observed_apis.add(nodo.attr)
+
+        extra_apis = observed_apis - self._ALLOWED_WIN32_APIS
+        assert not extra_apis, f"APIs Win32 fuera de la positive allowlist detectadas: {extra_apis}"
+
     def test_gp_t20_allowlist_ast_de_win32_apis(self) -> None:
         """GP-T20 / GP-T49: protection.py no importa ni llama a APIs Win32 fuera de la allowlist."""
         mod_path = pathlib.Path(rv_pkg.__file__).parent / "protection.py"
@@ -981,6 +1071,42 @@ class TestAntiMutacionYAllowlist:
 
         for mutador in _FORBIDDEN_MUTATORS:
             assert mutador not in contenido, f"API Win32 mutadora prohibida encontrada en protection.py: {mutador}"
+
+    def test_gp_t20_create_file_arguments_ast_anchored(self) -> None:
+        """GP-T20: CreateFileW se invoca estrictamente con desired_access=0, OPEN_EXISTING=3, FILE_FLAG_BACKUP_SEMANTICS."""
+        mod_path = pathlib.Path(rv_pkg.__file__).parent / "protection.py"
+        arbol = ast.parse(mod_path.read_text(encoding="utf-8"), filename=str(mod_path))
+
+        create_file_calls = []
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Call):
+                func = nodo.func
+                if isinstance(func, ast.Attribute) and func.attr == "CreateFileW":
+                    create_file_calls.append(nodo)
+
+        assert len(create_file_calls) == 1, "Debe haber exactamente 1 invocación de CreateFileW"
+        call = create_file_calls[0]
+        # Arg 1: str(path)
+        # Arg 2: dwDesiredAccess (0)
+        # Arg 3: dwShareMode (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        # Arg 4: lpSecurityAttributes (None)
+        # Arg 5: dwCreationDisposition (3 = OPEN_EXISTING)
+        # Arg 6: dwFlagsAndAttributes (0x02000000 = FILE_FLAG_BACKUP_SEMANTICS)
+        # Arg 7: hTemplateFile (None)
+        desired_access_arg = call.args[1]
+        assert isinstance(desired_access_arg, ast.Constant) and desired_access_arg.value == 0, (
+            "CreateFileW dwDesiredAccess debe ser exactamente 0 (read-only volume query)"
+        )
+
+        creation_disp_arg = call.args[4]
+        assert isinstance(creation_disp_arg, ast.Constant) and creation_disp_arg.value == 3, (
+            "CreateFileW dwCreationDisposition debe ser exactamente 3 (OPEN_EXISTING)"
+        )
+
+        flags_arg = call.args[5]
+        assert isinstance(flags_arg, ast.Constant) and flags_arg.value == 0x02000000, (
+            "CreateFileW dwFlagsAndAttributes debe ser exactamente 0x02000000 (FILE_FLAG_BACKUP_SEMANTICS)"
+        )
 
     def test_gp_t21_sin_subprocess_ni_icacls(self) -> None:
         """GP-T21: protection.py no importa subprocess ni usa icacls/takeown/powershell."""
@@ -1181,6 +1307,7 @@ class TestMutacionesAdversariales:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
             nodes=(
                 NodeProtectionObservation(
                     relative_path="",
@@ -1317,6 +1444,7 @@ class TestMutacionesAdversariales:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
             mutation_privileges_present=frozenset({"SeRestorePrivilege"}),
             nodes=(
                 NodeProtectionObservation(
@@ -1344,6 +1472,7 @@ class TestMutacionesAdversariales:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
             mutation_privileges_present=frozenset({"SeTakeOwnershipPrivilege"}),
             nodes=(
                 NodeProtectionObservation(
@@ -1433,6 +1562,7 @@ class TestMutacionesAdversariales:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
@@ -1490,6 +1620,7 @@ class TestMutacionesAdversariales:
             filesystem="NTFS",
             filesystem_persistent_acls=True,
             pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
             nodes=(
                 NodeProtectionObservation(
                     relative_path="",
@@ -1574,3 +1705,609 @@ class TestMutacionesAdversariales:
         assert res.state is GoldenProtectionState.HARDENED
         assert res.assurance_scope == "CURRENT_EFFECTIVE_UNELEVATED_TOKEN"
         assert res.scan_scope == "FULL_SUBTREE_AND_PARENT"
+
+    def test_m_gp1_27_current_user_sid_none_unknown(self) -> None:
+        """M-GP1-27: current_user_sid ausente debe retornar UNKNOWN (fail-closed), nunca WRITE_PROTECTED."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid=None,
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path="",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "token" in res.message.lower() or "sid" in res.message.lower()
+
+    def test_m_gp1_28_empty_nodes_unknown(self) -> None:
+        """M-GP1-28: nodes=() debe retornar UNKNOWN, nunca WRITE_PROTECTED."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNKNOWN
+
+    def test_m_gp1_29_missing_parent_observation_unknown(self) -> None:
+        """M-GP1-29: parent_observation=None debe retornar UNKNOWN (scope protegido incompleto)."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path="",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                ),
+            ),
+            parent_observation=None,
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "parent" in res.message.lower()
+
+    def test_m_gp1_30_root_hereda_parent_write_dac_unprotected(self) -> None:
+        """M-GP1-30: root hereda DACL (dacl_inheritance_protected=False) y parent tiene WRITE_DAC -> UNPROTECTED."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path="",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    dacl_inheritance_protected=False,  # Hereda del parent
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_PERMISSIONS}),
+                dacl_inheritance_protected=True,
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNPROTECTED
+
+    def test_m_gp1_31_root_hereda_parent_write_owner_unprotected(self) -> None:
+        """M-GP1-31: root hereda DACL y parent tiene WRITE_OWNER -> UNPROTECTED."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path="",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    dacl_inheritance_protected=False,
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_OWNER}),
+                dacl_inheritance_protected=True,
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNPROTECTED
+
+    def test_m_gp1_32_root_protegido_parent_write_dac_no_unprotected(self) -> None:
+        """M-GP1-32: root protegido contra herencia (dacl_inheritance_protected=True) no se muta por parent WRITE_DAC."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            current_token_elevated=False,
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path="",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    dacl_inheritance_protected=True,  # Protegido explícito
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_PERMISSIONS}),
+                dacl_inheritance_protected=True,
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is not GoldenProtectionState.UNPROTECTED
+        assert res.state is GoldenProtectionState.HARDENED
+
+    def test_m_gp1_33_volume_info_failure_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-33: fallo en GetVolumeInformationByHandleW debe producir UNKNOWN, no UNSUPPORTED."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        monkeypatch.setattr(protection._kernel32, "GetVolumeInformationByHandleW", lambda *args: False)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert res.state is not GoldenProtectionState.UNSUPPORTED
+        assert "GetVolumeInformationByHandleW" in res.message
+
+    def test_m_gp1_34_create_file_failure_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-34: fallo en CreateFileW debe producir UNKNOWN, no UNSUPPORTED."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        monkeypatch.setattr(protection._kernel32, "CreateFileW", lambda *args: 0)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert res.state is not GoldenProtectionState.UNSUPPORTED
+        assert "CreateFileW" in res.message
+
+    def test_m_gp1_35_open_thread_token_error_non_1008_no_process_fallback(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-35: OpenThreadToken con error != 1008 no debe caer al token de proceso -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        def _mock_ott(th: Any, access: int, self_imp: bool, out_h: Any) -> bool:
+            ctypes.set_last_error(5)  # ERROR_ACCESS_DENIED
+            return False
+
+        process_token_called = False
+
+        def _mock_opt(proc: Any, access: int, out_h: Any) -> bool:
+            nonlocal process_token_called
+            process_token_called = True
+            return False
+
+        monkeypatch.setattr(protection._advapi32, "OpenThreadToken", _mock_ott)
+        monkeypatch.setattr(protection._advapi32, "OpenProcessToken", _mock_opt)
+
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert process_token_called is False
+
+    def test_m_gp1_36_token_user_failure_unknown(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """M-GP1-36: fallo en TokenUser -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        orig = protection._advapi32.GetTokenInformation
+
+        def _mock_gti(h: Any, info_cls: int, buf: Any, buf_sz: int, ret_sz: Any) -> bool:
+            if info_cls == 1:
+                return False
+            return orig(h, info_cls, buf, buf_sz, ret_sz)
+
+        monkeypatch.setattr(protection._advapi32, "GetTokenInformation", _mock_gti)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "TokenUser" in res.message
+
+    def test_m_gp1_37_token_groups_failure_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-37: fallo en TokenGroups -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        orig = protection._advapi32.GetTokenInformation
+
+        def _mock_gti(h: Any, info_cls: int, buf: Any, buf_sz: int, ret_sz: Any) -> bool:
+            if info_cls == 2:
+                return False
+            return orig(h, info_cls, buf, buf_sz, ret_sz)
+
+        monkeypatch.setattr(protection._advapi32, "GetTokenInformation", _mock_gti)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "TokenGroups" in res.message
+
+    def test_m_gp1_38_token_elevation_failure_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-38: fallo en TokenElevation -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        orig = protection._advapi32.GetTokenInformation
+
+        def _mock_gti(h: Any, info_cls: int, buf: Any, buf_sz: int, ret_sz: Any) -> bool:
+            if info_cls == 20:
+                return False
+            return orig(h, info_cls, buf, buf_sz, ret_sz)
+
+        monkeypatch.setattr(protection._advapi32, "GetTokenInformation", _mock_gti)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "TokenElevation" in res.message
+
+    def test_m_gp1_39_token_privileges_failure_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-39: fallo en TokenPrivileges -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        orig = protection._advapi32.GetTokenInformation
+
+        def _mock_gti(h: Any, info_cls: int, buf: Any, buf_sz: int, ret_sz: Any) -> bool:
+            if info_cls == 3:
+                return False
+            return orig(h, info_cls, buf, buf_sz, ret_sz)
+
+        monkeypatch.setattr(protection._advapi32, "GetTokenInformation", _mock_gti)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "TokenPrivileges" in res.message
+
+    def test_m_gp1_40_lookup_privilege_value_failure_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-40: fallo en LookupPrivilegeValueW -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        def _mock_lpv(sys_name: Any, priv_name: str, luid_ptr: Any) -> bool:
+            return priv_name != "SeTakeOwnershipPrivilege"
+
+        monkeypatch.setattr(protection._advapi32, "LookupPrivilegeValueW", _mock_lpv)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "LookupPrivilegeValueW" in res.message
+
+    def test_m_gp1_41_get_security_descriptor_control_failure_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-41: fallo en GetSecurityDescriptorControl -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        monkeypatch.setattr(protection._advapi32, "GetSecurityDescriptorControl", lambda *args: False)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "GetSecurityDescriptorControl" in res.message
+
+    def test_m_gp1_42_get_ace_middle_index_failure_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-42: fallo en GetAce en un índice intermedio -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        orig_get_ace = protection._advapi32.GetAce
+
+        def _mock_get_ace(dacl: Any, idx: int, out_ace: Any) -> bool:
+            if idx == 1:
+                return False
+            return orig_get_ace(dacl, idx, out_ace)
+
+        monkeypatch.setattr(protection._advapi32, "GetAce", _mock_get_ace)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+
+    def test_m_gp1_43_mutator_prohibited_api_in_ast(self) -> None:
+        """M-GP1-43: si un mutador se introduce en protection.py, el AST allowlist lo detecta."""
+        mod_path = pathlib.Path(rv_pkg.__file__).parent / "protection.py"
+        arbol = ast.parse(mod_path.read_text(encoding="utf-8"), filename=str(mod_path))
+        prohibited = {"WriteFile", "SetFileSecurityW", "SetNamedSecurityInfoW", "DeleteFileW", "AdjustTokenPrivileges"}
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Attribute) and isinstance(nodo.value, ast.Name):
+                assert nodo.attr not in prohibited
+
+    def test_m_gp1_44_create_file_desired_access_non_zero(self) -> None:
+        """M-GP1-44: dwDesiredAccess != 0 en CreateFileW debe fallar el ancla AST."""
+        mod_path = pathlib.Path(rv_pkg.__file__).parent / "protection.py"
+        arbol = ast.parse(mod_path.read_text(encoding="utf-8"), filename=str(mod_path))
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "CreateFileW":
+                assert isinstance(nodo.args[1], ast.Constant) and nodo.args[1].value == 0
+
+    def test_m_gp1_45_create_file_creation_disposition_not_open_existing(self) -> None:
+        """M-GP1-45: dwCreationDisposition != 3 (OPEN_EXISTING) debe fallar el ancla AST."""
+        mod_path = pathlib.Path(rv_pkg.__file__).parent / "protection.py"
+        arbol = ast.parse(mod_path.read_text(encoding="utf-8"), filename=str(mod_path))
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "CreateFileW":
+                assert isinstance(nodo.args[4], ast.Constant) and nodo.args[4].value == 3
+
+    def test_m_gp1_46_reparse_tag_no_cero_unknown(self) -> None:
+        """M-GP1-46: reparse tag != 0 debe reportarse como UNKNOWN."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            observation_error="Punto de reanálisis no link (tag 0xA0000010) en 'path'",
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "reanálisis" in res.message or "reparse" in res.message.lower()
+
+
+# ============================================================================
+# 7. Fail-Closed Detallado de Backend Win32 (Token, DACL, Lstat, Reparse)
+# ============================================================================
+
+
+class TestTokenInspectionFailClosed:
+    """Demuestra que cualquier fallo en la cadena de inspección de token produce UNKNOWN."""
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_token_user_falla_retorna_unknown(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Fallo en TokenUser -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        orig = protection._advapi32.GetTokenInformation
+
+        def _mock_gti(h: Any, info_cls: int, buf: Any, buf_sz: int, ret_sz: Any) -> bool:
+            if info_cls == 1:  # TokenUser
+                return False
+            return orig(h, info_cls, buf, buf_sz, ret_sz)
+
+        monkeypatch.setattr(protection._advapi32, "GetTokenInformation", _mock_gti)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "TokenUser" in res.message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_token_groups_falla_retorna_unknown(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Fallo en TokenGroups -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        orig = protection._advapi32.GetTokenInformation
+
+        def _mock_gti(h: Any, info_cls: int, buf: Any, buf_sz: int, ret_sz: Any) -> bool:
+            if info_cls == 2:  # TokenGroups
+                return False
+            return orig(h, info_cls, buf, buf_sz, ret_sz)
+
+        monkeypatch.setattr(protection._advapi32, "GetTokenInformation", _mock_gti)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "TokenGroups" in res.message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_token_elevation_falla_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fallo en TokenElevation -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        orig = protection._advapi32.GetTokenInformation
+
+        def _mock_gti(h: Any, info_cls: int, buf: Any, buf_sz: int, ret_sz: Any) -> bool:
+            if info_cls == 20:  # TokenElevation
+                return False
+            return orig(h, info_cls, buf, buf_sz, ret_sz)
+
+        monkeypatch.setattr(protection._advapi32, "GetTokenInformation", _mock_gti)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "TokenElevation" in res.message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_token_privileges_falla_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fallo en TokenPrivileges -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        orig = protection._advapi32.GetTokenInformation
+
+        def _mock_gti(h: Any, info_cls: int, buf: Any, buf_sz: int, ret_sz: Any) -> bool:
+            if info_cls == 3:  # TokenPrivileges
+                return False
+            return orig(h, info_cls, buf, buf_sz, ret_sz)
+
+        monkeypatch.setattr(protection._advapi32, "GetTokenInformation", _mock_gti)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "TokenPrivileges" in res.message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_lookup_privilege_value_falla_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fallo en LookupPrivilegeValueW -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        def _mock_lpv(sys_name: Any, priv_name: str, luid_ptr: Any) -> bool:
+            return priv_name != "SeRestorePrivilege"
+
+        monkeypatch.setattr(protection._advapi32, "LookupPrivilegeValueW", _mock_lpv)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "LookupPrivilegeValueW" in res.message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_open_thread_token_error_distinto_1008_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OpenThreadToken fallando con ERROR_ACCESS_DENIED (5) no cae al token de proceso -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        def _mock_ott(th: Any, access: int, self_imp: bool, out_h: Any) -> bool:
+            ctypes.set_last_error(5)  # ERROR_ACCESS_DENIED
+            return False
+
+        monkeypatch.setattr(protection._advapi32, "OpenThreadToken", _mock_ott)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "token" in res.message.lower()
+
+
+class TestDaclCallsFailClosed:
+    """Demuestra que fallos en llamadas individuales de DACL producen UNKNOWN."""
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_get_security_descriptor_control_falla_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fallo en GetSecurityDescriptorControl -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        monkeypatch.setattr(protection._advapi32, "GetSecurityDescriptorControl", lambda *args: False)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "GetSecurityDescriptorControl" in res.message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_get_security_descriptor_dacl_falla_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fallo en GetSecurityDescriptorDacl -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        monkeypatch.setattr(protection._advapi32, "GetSecurityDescriptorDacl", lambda *args: False)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "GetSecurityDescriptorDacl" in res.message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_get_acl_information_falla_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fallo en GetAclInformation -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        monkeypatch.setattr(protection._advapi32, "GetAclInformation", lambda *args: False)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "GetAclInformation" in res.message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_get_ace_primer_indice_falla_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fallo en GetAce(0) -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        def _mock_get_ace(dacl: Any, idx: int, out_ace: Any) -> bool:
+            return idx != 0
+
+        monkeypatch.setattr(protection._advapi32, "GetAce", _mock_get_ace)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "GetAce" in res.message
+
+
+class TestLstatAndReparseFailClosed:
+    """Demuestra que fallos de lstat o reparse tags en PRE, POST o Parent producen UNKNOWN."""
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_pre_lstat_oserror_retorna_unknown(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OSError durante PRE-scan lstat -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        def _mock_lstat(p: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+            if p == tmp_path:
+                raise OSError("Fallo simulado de disco")
+            return None, None
+
+        monkeypatch.setattr(protection, "link_kind_and_identity_or_raise", _mock_lstat)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "lstat" in res.message.lower()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_reparse_tag_inesperado_pre_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reparse point inesperado detectado por link_kind -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        real_st = tmp_path.stat()
+
+        def _mock_link(p: pathlib.Path) -> tuple[str | None, Any]:
+            if p == tmp_path:
+                return "reparse_point_0xA0000010", real_st
+            return None, real_st
+
+        monkeypatch.setattr(protection, "link_kind_and_identity_or_raise", _mock_link)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "enlace" in res.message.lower() or "reparse" in res.message.lower()
+
+
+class TestNativeWindowsAclOracles:
+    """Oráculos nativos en Windows con DACLs controladas en tmp_path."""
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_oracle_controlled_writable_temp_dir_unprotected(self, tmp_path: pathlib.Path) -> None:
+        """Directorio temporal estándar en Windows tiene write data para el usuario -> exact UNPROTECTED."""
+        sub = tmp_path / "oracle_writable"
+        sub.mkdir()
+        (sub / "test.txt").write_text("data", encoding="utf-8")
+
+        res = inspect_golden_protection(sub)
+        assert res.state is GoldenProtectionState.UNPROTECTED
+        assert res.success is True
+        assert res.evidence.nodes is not None
+        # Validar que al menos un nodo tiene derechos de escritura
+        any_writable = any(
+            GoldenProtectionRight.WRITE_DATA in (n.granted_rights or set())
+            or GoldenProtectionRight.ADD_FILE in (n.granted_rights or set())
+            for n in res.evidence.nodes
+        )
+        assert any_writable is True
