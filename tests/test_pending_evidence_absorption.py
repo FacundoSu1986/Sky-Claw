@@ -312,19 +312,24 @@ def _funciones_que_extinguen_un_handoff(modulo: pathlib.Path) -> set[str]:
     return encontradas
 
 
-def _ramas_del_boundary_indeterminado() -> list[tuple[str, str, str, tuple[str, ...]]]:
+def _ramas_del_boundary_indeterminado() -> list[tuple[str, str, str, str, tuple[str, ...]]]:
     """CADA llamada al escritor ``_escribir_handoff_indeterminado`` bajo
     ``sky_claw/``, como identidad estructural ``(ruta_relativa, superficie
-    contenedora cualificada, callee, kwargs ordenados)``, detectada por AST.
+    contenedora cualificada, callee, rama, kwargs ordenados)``, detectada por
+    AST.
 
-    Una entrada por RAMA del boundary: ni strings, ni comentarios, ni números
-    de línea. Una rama que deje de propagar ``ids_absorcion``, un sibling nuevo
-    sin cablear o una llamada migrada a otra superficie cambian esta lista y
-    rompen la igualdad literal del ancla."""
+    Una entrada por LLAMADA del boundary: ni strings, ni comentarios, ni
+    números de línea. La RAMA es el primer argumento posicional —``conn``
+    (boundary del lifecycle manager) o ``db`` (conexión propia standalone)— y
+    es el único discriminador entre las dos superficies cuando el resto de la
+    identidad es idéntico: sin él, un mutante con dos llamadas lifecycle y
+    cero standalone conserva la misma lista. Una rama que deje de propagar
+    ``ids_absorcion``, un sibling nuevo sin cablear o una llamada migrada
+    cambian esta lista y rompen la igualdad literal del ancla."""
     import ast
 
     escritor = "_escribir_handoff_indeterminado"
-    ramas: list[tuple[str, str, str, tuple[str, ...]]] = []
+    ramas: list[tuple[str, str, str, str, tuple[str, ...]]] = []
 
     def _visitar(nodo: ast.AST, superficie: str, ruta: str) -> None:
         for hijo in ast.iter_child_nodes(nodo):
@@ -335,8 +340,9 @@ def _ramas_del_boundary_indeterminado() -> list[tuple[str, str, str, tuple[str, 
                 func = hijo.func
                 nombre = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
                 if nombre == escritor:
+                    rama = ast.unparse(hijo.args[0]) if hijo.args else "<sin-posicional>"
                     kwargs = tuple(sorted(kw.arg for kw in hijo.keywords if kw.arg is not None))
-                    ramas.append((ruta, superficie or "<módulo>", escritor, kwargs))
+                    ramas.append((ruta, superficie or "<módulo>", escritor, rama, kwargs))
             _visitar(hijo, nueva, ruta)
 
     raiz = pathlib.Path(sky_claw_app_db_journal_path()).resolve().parents[2]  # sky_claw/, NO el repo
@@ -367,23 +373,33 @@ def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
         "_escribir_handoff_indeterminado",
         "_sellar_evidencia_de_artifact",
     }
-    # Las dos ramas del boundary indeterminado (lifecycle y standalone) delegan
-    # en el MISMO helper propagando el conjunto. Se congela la identidad
-    # estructural POR RAMA —(ruta, superficie, callee, kwargs)— con igualdad
-    # literal: el `count(...) >= 2` original no distinguía "ambas ramas
-    # propagan" de "una rama lo hace dos veces", y el set de kwargs posterior
-    # no anclaba EN QUÉ superficie vive cada llamada, así que una rama que
-    # dejara de propagar o una llamada migrada podían quedar tapadas.
+    # Las dos ramas del boundary indeterminado delegan en el MISMO helper
+    # propagando el conjunto. Se congela la identidad estructural POR LLAMADA
+    # —(ruta, superficie, callee, rama, kwargs)— con igualdad literal: el
+    # `count(...) >= 2` original no distinguía "ambas ramas propagan" de "una
+    # rama lo hace dos veces"; el set de kwargs no anclaba EN QUÉ superficie
+    # vive cada llamada; y la tupla SIN discriminador de rama colapsaba
+    # lifecycle (conn) y standalone (db), así que un mutante con dos llamadas
+    # lifecycle y cero standalone conservaba la misma lista.
     ramas = _ramas_del_boundary_indeterminado()
-    rama_esperada = (
+    rama_lifecycle = (
         "app/db/journal.py",
         "OperationJournal.registrar_handoff_indeterminado",
         "_escribir_handoff_indeterminado",
+        "conn",
         ("ids_absorcion", "ids_receipts", "registro"),
     )
-    assert ramas == [rama_esperada, rama_esperada], (
-        "cambiaron las ramas del boundary indeterminado: CADA rama aprobada "
-        f"(lifecycle y standalone) debe propagar ids_absorcion al escritor; hoy: {ramas}"
+    rama_standalone = (
+        "app/db/journal.py",
+        "OperationJournal.registrar_handoff_indeterminado",
+        "_escribir_handoff_indeterminado",
+        "db",
+        ("ids_absorcion", "ids_receipts", "registro"),
+    )
+    assert ramas == [rama_lifecycle, rama_standalone], (
+        "cambiaron las ramas del boundary indeterminado: EXACTAMENTE una llamada "
+        "lifecycle (conn) y una standalone (db), CADA una propagando "
+        f"ids_absorcion al escritor; hoy: {ramas}"
     )
 
 

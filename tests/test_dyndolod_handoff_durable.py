@@ -3351,17 +3351,21 @@ def _cuerpo_de_funcion(modulo: pathlib.Path, nombre: str) -> str:
     return ""
 
 
-def _llamadas_por_superficie(raiz: pathlib.Path, callee: str) -> dict[tuple[str, str], int]:
+def _llamadas_por_superficie(raiz: pathlib.Path, callee: str) -> dict[tuple[str, str, str], int]:
     """Sitios de llamada a ``callee`` bajo ``raiz``, agrupados por la función o
-    método contenedor MÁS CERCANO — ``(ruta_relativa, nombre_cualificado)`` —
-    detectados por AST.
+    método contenedor MÁS CERCANO y por RAMA del boundary — ``(ruta_relativa,
+    nombre_cualificado, primer_posicional)`` — detectados por AST.
 
     La identidad es estructural: nunca texto de comentarios/docstrings ni
-    números de línea. El valor cuenta SITIOS por superficie, así que perder una
-    rama baja el conteo aunque el conjunto de superficies no cambie."""
+    números de línea. El tercer elemento es el PRIMER ARGUMENTO POSICIONAL de
+    la llamada (``conn``: boundary del lifecycle manager; ``db``: conexión
+    propia standalone): es el único discriminador entre las dos ramas cuando el
+    resto de la identidad es idéntico — sin él, un mutante con dos llamadas en
+    lifecycle y cero en standalone conserva el mismo inventario. El valor
+    cuenta SITIOS por identidad completa."""
     import ast
 
-    hallazgos: dict[tuple[str, str], int] = {}
+    hallazgos: dict[tuple[str, str, str], int] = {}
 
     def _visitar(nodo: ast.AST, superficie: str, ruta: str) -> None:
         for hijo in ast.iter_child_nodes(nodo):
@@ -3372,7 +3376,8 @@ def _llamadas_por_superficie(raiz: pathlib.Path, callee: str) -> dict[tuple[str,
                 func = hijo.func
                 nombre = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
                 if nombre == callee:
-                    clave = (ruta, superficie or "<módulo>")
+                    rama = ast.unparse(hijo.args[0]) if hijo.args else "<sin-posicional>"
+                    clave = (ruta, superficie or "<módulo>", rama)
                     hallazgos[clave] = hallazgos.get(clave, 0) + 1
             _visitar(hijo, nueva, ruta)
 
@@ -3414,31 +3419,37 @@ def test_la_fuente_durable_del_oracle_es_pending_mas_receipts_unresolved() -> No
 def test_los_callers_del_oracle_de_candidatas_orphan_estan_congelados() -> None:
     """El helper compartido ``_candidatas_orphan_en_conn`` —la ÚNICA definición
     de "candidata orphan", compartida por oracle y absorción para que no puedan
-    divergir— sólo puede invocarse desde las superficies revisadas.
+    divergir— sólo puede invocarse desde las superficies y ramas revisadas.
 
     Se enumera por AST sobre TODO ``sky_claw/`` y se congela por igualdad
-    literal con multiplicidad: un caller nuevo no revisado, uno requerido que
-    desaparece o una llamada que migra a otra superficie rompen el ancla. No se
-    acepta un conteo ``>= N`` ni una búsqueda textual: ambos quedaban satisfechos
-    con menciones en comentarios o con una query duplicada en un tercer sitio."""
+    literal con multiplicidad POR RAMA (``conn`` lifecycle / ``db`` standalone):
+    un caller nuevo no revisado, uno requerido que desaparece, una llamada que
+    migra a otra superficie o a la otra rama —o una rama duplicada mientras la
+    hermana se elimina, invisible sin el discriminador del primer posicional—
+    rompen el ancla. No se acepta un conteo ``>= N`` ni una búsqueda textual:
+    ambos quedaban satisfechos con menciones en comentarios o con una query
+    duplicada en un tercer sitio."""
     raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
     llamadas = _llamadas_por_superficie(raiz, "_candidatas_orphan_en_conn")
 
     assert set(llamadas) == {
-        ("app/db/journal.py", "_sellar_evidencia_de_artifact"),
-        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran"),
+        ("app/db/journal.py", "_sellar_evidencia_de_artifact", "conn"),
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran", "conn"),
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran", "db"),
     }, (
-        "cambió el conjunto de superficies que ejecutan el oracle de candidatas "
-        f"orphan: {sorted(set(llamadas))} — decidí si la nueva superficie comparte "
-        "este selector o define candidatas divergentes antes de seguir"
+        "cambió el conjunto de superficies/ramas que ejecutan el oracle de "
+        f"candidatas orphan: {sorted(set(llamadas))} — decidí si la nueva "
+        "superficie comparte este selector o define candidatas divergentes antes de seguir"
     )
     assert llamadas == {
-        ("app/db/journal.py", "_sellar_evidencia_de_artifact"): 1,
-        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran"): 2,
+        ("app/db/journal.py", "_sellar_evidencia_de_artifact", "conn"): 1,
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran", "conn"): 1,
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran", "db"): 1,
     }, (
-        "cambiaron los sitios de llamada del oracle por superficie: el oracle "
-        "público lo invoca en sus DOS ramas (lifecycle y standalone); perder una "
-        f"rama baja este conteo sin mover el conjunto. Hoy: {llamadas}"
+        "cambiaron los sitios de llamada del oracle por superficie Y rama: el "
+        "oracle público lo invoca UNA vez en su rama lifecycle (conn) y UNA vez "
+        "en la standalone (db); duplicar una rama mientras se elimina la otra "
+        f"conserva el total pero rompe acá. Hoy: {llamadas}"
     )
 
 
