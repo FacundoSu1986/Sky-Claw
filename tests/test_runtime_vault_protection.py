@@ -15,6 +15,7 @@ Principios:
 from __future__ import annotations
 
 import ast
+import contextlib
 import ctypes
 import dataclasses
 import os
@@ -69,6 +70,22 @@ _FORBIDDEN_MUTATORS = frozenset(
         "InitiateSystemShutdownExW",
     }
 )
+
+
+def _capturar_raw_security_descriptor_bytes(p: pathlib.Path) -> bytes:
+    """Helper de test para capturar los bytes crudos del security descriptor (OWNER | GROUP | DACL)."""
+    import ctypes.wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    sec_info = 1 | 2 | 4  # OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
+    needed = ctypes.wintypes.DWORD(0)
+    advapi32.GetFileSecurityW(str(p), sec_info, None, 0, ctypes.byref(needed))
+    if needed.value == 0:
+        raise OSError(f"No se pudo determinar tamaño de descriptor para '{p}': error {ctypes.get_last_error()}")
+    buf = (ctypes.c_ubyte * needed.value)()
+    if not advapi32.GetFileSecurityW(str(p), sec_info, buf, needed.value, ctypes.byref(needed)):
+        raise OSError(f"GetFileSecurityW falló para '{p}': error {ctypes.get_last_error()}")
+    return bytes(buf)
 
 
 # ============================================================================
@@ -953,7 +970,22 @@ class TestIntegracionWindowsYBackend:
             GoldenProtectionState.UNSUPPORTED,
         }
         assert res.evidence.platform == "windows"
-        assert res.evidence.nodes is not None
+        if res.state is not GoldenProtectionState.UNSUPPORTED:
+            assert res.evidence.nodes is not None
+
+    def test_gp_t08_unsupported_evidence_nodes_may_be_none(self) -> None:
+        """GP-T08 capability gate: en estado UNSUPPORTED, evidence.nodes puede ser None."""
+        ev = GoldenProtectionEvidence(
+            platform="linux",  # Plataforma no soportada
+            drive_type=None,
+            filesystem=None,
+            filesystem_persistent_acls=None,
+            nodes=None,  # Ningún nodo inspeccionado
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNSUPPORTED
+        assert res.success is True
+        assert res.evidence.nodes is None
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
     def test_gp_t31_idempotencia(self, tmp_path: pathlib.Path) -> None:
@@ -994,9 +1026,7 @@ class TestIntegracionWindowsYBackend:
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
     def test_gp_t50_metadata_identica_antes_despues(self, tmp_path: pathlib.Path) -> None:
-        """GP-T50: inspect no muta metadata, mtime, tamaño ni Security Descriptors en ningún nodo ni parent."""
-        from sky_claw.local.runtime_vault import protection
-
+        """GP-T50: inspect no muta metadata, mtime, tamaño ni bytes crudos de Security Descriptors en ningún nodo ni parent."""
         sub = tmp_path / "golden_meta"
         sub.mkdir()
         f1 = sub / "f1.txt"
@@ -1009,25 +1039,8 @@ class TestIntegracionWindowsYBackend:
         all_paths = [tmp_path, sub, f1, d1, f2]
         stats_antes = {p: p.stat() for p in all_paths}
 
-        # Capturar token de prueba para evaluar observaciones de DACL antes
-        t_raw, t_imp = protection._obtener_token_efectivo()
-        assert t_imp is not None
-        try:
-            sd_obs_antes = {}
-            for p in all_paths:
-                kind = "dir" if p.is_dir() else "file"
-                obs, err = protection._evaluar_acceso_nodo(p, kind, t_imp)
-                assert err is None
-                assert obs is not None
-                sd_obs_antes[p] = (
-                    obs.owner_sid,
-                    obs.granted_rights,
-                    obs.owner_rights_ace_present,
-                    obs.dacl_inheritance_protected,
-                )
-        finally:
-            protection._kernel32.CloseHandle(t_raw)
-            protection._kernel32.CloseHandle(t_imp)
+        # Capturar bytes crudos de Security Descriptor (OWNER | GROUP | DACL) antes de la inspección
+        raw_sd_antes = {p: _capturar_raw_security_descriptor_bytes(p) for p in all_paths}
 
         # Ejecutar inspección
         res = inspect_golden_protection(sub)
@@ -1040,25 +1053,54 @@ class TestIntegracionWindowsYBackend:
             assert st_despues.st_size == stats_antes[p].st_size
             assert st_despues.st_mode == stats_antes[p].st_mode
 
-        # Verificar Security Descriptors después
-        t_raw, t_imp = protection._obtener_token_efectivo()
-        assert t_imp is not None
+        # Verificar bytes crudos de Security Descriptor después (byte por byte exacto)
+        raw_sd_despues = {p: _capturar_raw_security_descriptor_bytes(p) for p in all_paths}
+        for p in all_paths:
+            assert raw_sd_despues[p] == raw_sd_antes[p], (
+                f"Security descriptor crudo mutó byte-a-byte en '{p}' tras inspect_golden_protection"
+            )
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_gp_t50_oraculo_detecta_mutacion_real(self, tmp_path: pathlib.Path) -> None:
+        """GP-T50: demuestra que el oráculo de SD crudo es sensible y detecta una mutación deliberada de DACL."""
+        sub = tmp_path / "golden_mut_oracle"
+        sub.mkdir()
+        f1 = sub / "file.txt"
+        f1.write_text("data", encoding="utf-8")
+
+        raw_sd_antes = _capturar_raw_security_descriptor_bytes(f1)
+
+        # Mutador deliberado sólo en test
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        fn_convert_sddl = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        fn_convert_sddl.argtypes = [
+            ctypes.wintypes.LPCWSTR,
+            ctypes.wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.wintypes.ULONG),
+        ]
+        fn_convert_sddl.restype = ctypes.wintypes.BOOL
+        fn_set_file_sec = advapi32.SetFileSecurityW
+        fn_set_file_sec.argtypes = [ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD, ctypes.c_void_p]
+        fn_set_file_sec.restype = ctypes.wintypes.BOOL
+        fn_local_free = kernel32.LocalFree
+
+        p_sd = ctypes.c_void_p()
+        fn_convert_sddl("D:P(A;;GA;;;WD)", 1, ctypes.byref(p_sd), None)
         try:
-            for p in all_paths:
-                kind = "dir" if p.is_dir() else "file"
-                obs, err = protection._evaluar_acceso_nodo(p, kind, t_imp)
-                assert err is None
-                assert obs is not None
-                sd_obs_despues = (
-                    obs.owner_sid,
-                    obs.granted_rights,
-                    obs.owner_rights_ace_present,
-                    obs.dacl_inheritance_protected,
-                )
-                assert sd_obs_despues == sd_obs_antes[p], f"Security descriptor mutó en '{p}' tras inspección"
+            ok = fn_set_file_sec(str(f1), 4 | 0x80000000, p_sd)
+            assert ok, "Fallo al aplicar ACL mutada de prueba"
+            raw_sd_mutated = _capturar_raw_security_descriptor_bytes(f1)
+            # El oráculo DEBE detectar que los bytes crudos difieren
+            assert raw_sd_mutated != raw_sd_antes, "El oráculo de SD crudo no detectó la mutación de DACL"
         finally:
-            protection._kernel32.CloseHandle(t_raw)
-            protection._kernel32.CloseHandle(t_imp)
+            fn_local_free(p_sd)
+            # Restaurar control total para cleanup limpio
+            p_sd_restore = ctypes.c_void_p()
+            fn_convert_sddl("D:P(A;OICI;GA;;;WD)", 1, ctypes.byref(p_sd_restore), None)
+            fn_set_file_sec(str(f1), 4 | 0x80000000, p_sd_restore)
+            fn_local_free(p_sd_restore)
 
 
 # ============================================================================
@@ -2725,23 +2767,268 @@ class TestLstatAndReparseFailClosed:
 
 
 class TestNativeWindowsAclOracles:
-    """Oráculos nativos en Windows con DACLs controladas en tmp_path."""
+    """Oráculos nativos en Windows con DACLs controladas determinísticamente en tmp_path.
+
+    Escenarios requeridos:
+    A. DACL explícita con permisos de escritura -> exact UNPROTECTED
+    B. Parent explícito con DELETE_CHILD -> exact UNPROTECTED
+    C. NULL DACL (acceso total incondicional) -> exact UNPROTECTED
+    D. Token / Owner con WRITE_DAC efectivo -> exact UNPROTECTED
+    E. DACL restrictiva protegida de herencia -> evidencia exacta; WRITE_PROTECTED/HARDENED
+    """
+
+    @staticmethod
+    def _set_sddl_dacl(path: pathlib.Path, sddl: str) -> None:
+        """Aplica una DACL especificada por SDDL a un objeto del sistema de archivos."""
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        fn_convert_sddl = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        fn_convert_sddl.argtypes = [
+            ctypes.wintypes.LPCWSTR,
+            ctypes.wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.wintypes.ULONG),
+        ]
+        fn_convert_sddl.restype = ctypes.wintypes.BOOL
+        fn_set_file_sec = advapi32.SetFileSecurityW
+        fn_set_file_sec.argtypes = [ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD, ctypes.c_void_p]
+        fn_set_file_sec.restype = ctypes.wintypes.BOOL
+        fn_local_free = kernel32.LocalFree
+
+        p_sd = ctypes.c_void_p()
+        if not fn_convert_sddl(sddl, 1, ctypes.byref(p_sd), None):
+            raise OSError(
+                f"ConvertStringSecurityDescriptorToSecurityDescriptorW falló para '{sddl}': error {ctypes.get_last_error()}"
+            )
+        try:
+            # DACL_SECURITY_INFORMATION (4) | PROTECTED_DACL_SECURITY_INFORMATION (0x80000000)
+            if not fn_set_file_sec(str(path), 4 | 0x80000000, p_sd):
+                raise OSError(f"SetFileSecurityW falló para '{path}': error {ctypes.get_last_error()}")
+        finally:
+            fn_local_free(p_sd)
+
+    @staticmethod
+    def _set_null_dacl(path: pathlib.Path) -> None:
+        """Aplica una NULL DACL explícita (acceso incondicional sin restricciones)."""
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        fn_init_sd = advapi32.InitializeSecurityDescriptor
+        fn_init_sd.argtypes = [ctypes.c_void_p, ctypes.wintypes.DWORD]
+        fn_init_sd.restype = ctypes.wintypes.BOOL
+        fn_set_dacl = advapi32.SetSecurityDescriptorDacl
+        fn_set_dacl.argtypes = [
+            ctypes.wintypes.LPVOID,
+            ctypes.wintypes.BOOL,
+            ctypes.wintypes.LPVOID,
+            ctypes.wintypes.BOOL,
+        ]
+        fn_set_dacl.restype = ctypes.wintypes.BOOL
+        fn_set_file_sec = advapi32.SetFileSecurityW
+        fn_set_file_sec.argtypes = [ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD, ctypes.c_void_p]
+        fn_set_file_sec.restype = ctypes.wintypes.BOOL
+
+        sd_buf = (ctypes.c_ubyte * 64)()
+        p_sd = ctypes.cast(sd_buf, ctypes.c_void_p)
+        fn_init_sd(p_sd, 1)  # SECURITY_DESCRIPTOR_REVISION = 1
+        # NULL DACL: bDaclPresent=True, pDacl=None, bDaclDefaulted=False
+        fn_set_dacl(p_sd, True, None, False)
+        if not fn_set_file_sec(str(path), 4 | 0x80000000, p_sd):
+            raise OSError(f"SetFileSecurityW falló al setear NULL DACL en '{path}': error {ctypes.get_last_error()}")
+
+    @staticmethod
+    def _restore_full_control(paths: list[pathlib.Path]) -> None:
+        """Restaura control total a todos los paths para permitir la limpieza del fixture temporal."""
+        for p in paths:
+            with contextlib.suppress(Exception):
+                TestNativeWindowsAclOracles._set_sddl_dacl(p, "D:P(A;OICI;GA;;;WD)")
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
-    def test_oracle_controlled_writable_temp_dir_unprotected(self, tmp_path: pathlib.Path) -> None:
-        """Directorio temporal estándar en Windows tiene write data para el usuario -> exact UNPROTECTED."""
-        sub = tmp_path / "oracle_writable"
+    def test_oracle_controlled_explicit_writable_dacl_unprotected(self, tmp_path: pathlib.Path) -> None:
+        """Escenario A: DACL explícita con permisos mutadores (GA) -> exact UNPROTECTED."""
+        sub = tmp_path / "oracle_writable_a"
         sub.mkdir()
-        (sub / "test.txt").write_text("data", encoding="utf-8")
+        f = sub / "test.txt"
+        f.write_text("data", encoding="utf-8")
+        paths = [sub, f]
 
-        res = inspect_golden_protection(sub)
-        assert res.state is GoldenProtectionState.UNPROTECTED
-        assert res.success is True
-        assert res.evidence.nodes is not None
-        # Validar que al menos un nodo tiene derechos de escritura
-        any_writable = any(
-            GoldenProtectionRight.WRITE_DATA in (n.granted_rights or set())
-            or GoldenProtectionRight.ADD_FILE in (n.granted_rights or set())
-            for n in res.evidence.nodes
-        )
-        assert any_writable is True
+        try:
+            for p in paths:
+                self._set_sddl_dacl(p, "D:P(A;OICI;GA;;;WD)")
+
+            res = inspect_golden_protection(sub)
+            assert res.state is GoldenProtectionState.UNPROTECTED
+            assert res.success is True
+            assert res.evidence.nodes is not None
+            # Validar que efectivamente hay derechos de escritura concedidos
+            any_writable = any(
+                GoldenProtectionRight.WRITE_DATA in (n.granted_rights or set())
+                or GoldenProtectionRight.ADD_FILE in (n.granted_rights or set())
+                for n in res.evidence.nodes
+            )
+            assert any_writable is True
+        finally:
+            self._restore_full_control(paths)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_oracle_controlled_explicit_parent_delete_child_unprotected(self, tmp_path: pathlib.Path) -> None:
+        """Escenario B: parent con permiso explícito DELETE_CHILD -> exact UNPROTECTED."""
+        parent_dir = tmp_path / "parent_b"
+        parent_dir.mkdir()
+        sub = parent_dir / "golden_b"
+        sub.mkdir()
+        f = sub / "test.txt"
+        f.write_text("data", encoding="utf-8")
+        paths = [parent_dir, sub, f]
+
+        try:
+            # Parent tiene Read + FILE_DELETE_CHILD (0x40): 0x1200A9 | 0x40 = 0x1200E9
+            self._set_sddl_dacl(parent_dir, "D:P(A;OICI;0x1200E9;;;WD)")
+            # Sub y archivo tienen DACL de solo lectura protegida: 0x1200A9
+            self._set_sddl_dacl(sub, "D:P(A;OICI;0x1200A9;;;WD)")
+            self._set_sddl_dacl(f, "D:P(A;;0x1200A9;;;WD)")
+
+            res = inspect_golden_protection(sub)
+            assert res.state is GoldenProtectionState.UNPROTECTED
+            assert res.success is True
+            assert res.evidence.parent_observation is not None
+            assert GoldenProtectionRight.DELETE_CHILD in (res.evidence.parent_observation.granted_rights or set())
+        finally:
+            self._restore_full_control(paths)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_oracle_controlled_null_dacl_unprotected(self, tmp_path: pathlib.Path) -> None:
+        """Escenario C: NULL DACL explícita (acceso incondicional para todos) -> exact UNPROTECTED."""
+        sub = tmp_path / "oracle_null_c"
+        sub.mkdir()
+        f = sub / "test.txt"
+        f.write_text("data", encoding="utf-8")
+        paths = [sub, f]
+
+        try:
+            for p in paths:
+                self._set_null_dacl(p)
+
+            res = inspect_golden_protection(sub)
+            assert res.state is GoldenProtectionState.UNPROTECTED
+            assert res.success is True
+            assert res.evidence.nodes is not None
+            # En NULL DACL se conceden todos los derechos
+            any_writable = any(
+                GoldenProtectionRight.WRITE_DATA in (n.granted_rights or set()) for n in res.evidence.nodes
+            )
+            assert any_writable is True
+        finally:
+            self._restore_full_control(paths)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_oracle_controlled_owner_token_write_dac_unprotected(self, tmp_path: pathlib.Path) -> None:
+        """Escenario D: objeto con WRITE_DAC (0x40000) concedido al usuario -> exact UNPROTECTED."""
+        parent_dir = tmp_path / "parent_d"
+        parent_dir.mkdir()
+        sub = parent_dir / "golden_d"
+        sub.mkdir()
+        f = sub / "test.txt"
+        f.write_text("data", encoding="utf-8")
+        paths = [parent_dir, sub, f]
+
+        try:
+            # Parent solo lectura
+            self._set_sddl_dacl(parent_dir, "D:P(A;OICI;0x1200A9;;;WD)")
+            # Sub tiene Read + WRITE_DAC (0x40000): 0x1200A9 | 0x40000 = 0x1600A9
+            self._set_sddl_dacl(sub, "D:P(A;OICI;0x1600A9;;;WD)")
+            self._set_sddl_dacl(f, "D:P(A;;0x1200A9;;;WD)")
+
+            res = inspect_golden_protection(sub)
+            assert res.state is GoldenProtectionState.UNPROTECTED
+            assert res.success is True
+            # Debe registrar CHANGE_PERMISSIONS (WRITE_DAC)
+            root_node = next((n for n in (res.evidence.nodes or ()) if n.relative_path == "."), None)
+            assert root_node is not None
+            assert GoldenProtectionRight.CHANGE_PERMISSIONS in (root_node.granted_rights or set())
+        finally:
+            self._restore_full_control(paths)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_oracle_controlled_restrictive_dacl_protected_inheritance(self, tmp_path: pathlib.Path) -> None:
+        """Escenario E: DACL restrictiva protegida de herencia con OWNER_RIGHTS read-only -> WRITE_PROTECTED/HARDENED."""
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        fn_convert_sddl = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        fn_convert_sddl.argtypes = [
+            ctypes.wintypes.LPCWSTR,
+            ctypes.wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.wintypes.ULONG),
+        ]
+        fn_convert_sddl.restype = ctypes.wintypes.BOOL
+        fn_set_kernel_sec = advapi32.SetKernelObjectSecurity
+        fn_set_kernel_sec.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD, ctypes.c_void_p]
+        fn_set_kernel_sec.restype = ctypes.wintypes.BOOL
+        fn_create_file = kernel32.CreateFileW
+        fn_create_file.argtypes = [
+            ctypes.wintypes.LPCWSTR,
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.HANDLE,
+        ]
+        fn_create_file.restype = ctypes.wintypes.HANDLE
+        fn_close_handle = kernel32.CloseHandle
+        fn_close_handle.argtypes = [ctypes.wintypes.HANDLE]
+        fn_local_free = kernel32.LocalFree
+
+        parent_dir = tmp_path / "parent_e"
+        parent_dir.mkdir()
+        sub = parent_dir / "golden_e"
+        sub.mkdir()
+        f = sub / "test.txt"
+        f.write_text("data", encoding="utf-8")
+        paths = [parent_dir, sub, f]
+
+        # Abrir handles con WRITE_DAC (0x40000) ANTES de restringir los derechos del token/owner
+        handles = {}
+        for p in paths:
+            h = fn_create_file(str(p), 0x40000, 7, None, 3, 0x02000000, None)
+            assert h != -1 and h != 0, f"No se pudo abrir handle WRITE_DAC para '{p}'"
+            handles[p] = h
+
+        try:
+            # Aplicar DACL restrictiva protegida con OWNER_RIGHTS read-only (0x1200A9)
+            sddl = "D:P(A;OICI;0x1200A9;;;WD)(A;OICI;0x1200A9;;;OW)"
+            p_sd = ctypes.c_void_p()
+            if not fn_convert_sddl(sddl, 1, ctypes.byref(p_sd), None):
+                raise OSError(f"ConvertStringSecurityDescriptorToSecurityDescriptorW falló: {ctypes.get_last_error()}")
+            for p in paths:
+                ok = fn_set_kernel_sec(handles[p], 4 | 0x80000000, p_sd)
+                assert ok, f"SetKernelObjectSecurity falló para '{p}'"
+            fn_local_free(p_sd)
+
+            res = inspect_golden_protection(sub)
+            assert res.success is True
+            assert res.state in {GoldenProtectionState.WRITE_PROTECTED, GoldenProtectionState.HARDENED}
+
+            # Demostración explícita de prerrequisitos de HARDENED:
+            # Si el token no está elevado y no tiene privilegios de mutación, el estado es HARDENED
+            if res.evidence.current_token_elevated is False and not res.evidence.mutation_privileges_present:
+                assert res.state is GoldenProtectionState.HARDENED
+            else:
+                assert res.state is GoldenProtectionState.WRITE_PROTECTED
+
+            # Verificar que ningún nodo en evidence tiene derechos de escritura
+            for n in res.evidence.nodes or ():
+                rights = n.granted_rights or set()
+                assert GoldenProtectionRight.WRITE_DATA not in rights
+                assert GoldenProtectionRight.ADD_FILE not in rights
+                assert GoldenProtectionRight.APPEND_DATA not in rights
+                assert GoldenProtectionRight.DELETE not in rights
+                assert GoldenProtectionRight.CHANGE_PERMISSIONS not in rights
+                assert GoldenProtectionRight.CHANGE_OWNER not in rights
+        finally:
+            # Restaurar control total a través de los handles abiertos con WRITE_DAC
+            p_sd_full = ctypes.c_void_p()
+            fn_convert_sddl("D:P(A;OICI;GA;;;WD)", 1, ctypes.byref(p_sd_full), None)
+            for p in paths:
+                fn_set_kernel_sec(handles[p], 4 | 0x80000000, p_sd_full)
+                fn_close_handle(handles[p])
+            fn_local_free(p_sd_full)
