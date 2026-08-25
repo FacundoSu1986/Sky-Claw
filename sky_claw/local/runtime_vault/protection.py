@@ -17,11 +17,16 @@ import os
 import pathlib
 import stat
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from sky_claw.app.security.links import link_kind_and_identity_or_raise, same_file_identity
+from sky_claw.app.security.links import (
+    link_kind_and_identity_or_raise,
+    reparse_tag_or_zero,
+    same_file_identity,
+)
 from sky_claw.local.runtime_vault.models import RuntimeVaultError
 
 if TYPE_CHECKING:
@@ -66,8 +71,8 @@ class NodeProtectionObservation:
     node_kind: str  # "dir" | "file"
     owner_sid: str | None
     granted_rights: frozenset[GoldenProtectionRight] | None
-    owner_rights_ace_present: bool | None = False
-    dacl_inheritance_protected: bool | None = True
+    owner_rights_ace_present: bool | None = None
+    dacl_inheritance_protected: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +166,21 @@ _DIR_MUTATION_RIGHTS = frozenset(
 )
 
 
+def _find_root_observation(
+    nodes: Sequence[NodeProtectionObservation],
+) -> tuple[NodeProtectionObservation | None, str | None]:
+    """Busca y valida exactamente una observación del root canónico ('.' o '')."""
+    roots = [n for n in nodes if n.relative_path in (".", "")]
+    if not roots:
+        return None, "No se encontró observación del root en la evidencia"
+    if len(roots) > 1:
+        return None, f"Se encontraron múltiples observaciones de root ({len(roots)}) en la evidencia"
+    root = roots[0]
+    if root.node_kind != "dir":
+        return None, f"El root observado debe ser de tipo directorio ('dir'), se obtuvo '{root.node_kind}'"
+    return root, None
+
+
 def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionResult:
     """Clasificador determinista puro sobre la evidencia observada (sin I/O)."""
     # 1. Capability gates de plataforma y filesystem
@@ -228,6 +248,15 @@ def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionR
             message="Evidencia incompleta en parent del Golden",
         )
 
+    # Identificar y validar observación exacta de Root
+    root_obs, root_err = _find_root_observation(evidence.nodes)
+    if root_obs is None or root_err:
+        return GoldenProtectionResult(
+            state=GoldenProtectionState.UNKNOWN,
+            evidence=evidence,
+            message=root_err or "Observación de root ausente o ambigua",
+        )
+
     # 4. Privilegios mutation-enabling en el token
     if evidence.mutation_privileges_present:
         return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
@@ -254,7 +283,6 @@ def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionR
     parent_rights = parent_obs.granted_rights
     assert parent_rights is not None
 
-    root_obs = evidence.nodes[0]
     root_rights = root_obs.granted_rights or frozenset()
 
     # 6a. Delete del root: parent DELETE_CHILD o root DELETE
@@ -994,6 +1022,20 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
                     message=f"No se pudo obtener stat de '{curr}'",
                 )
 
+            tag = reparse_tag_or_zero(st)
+            if tag != 0:
+                return GoldenProtectionResult(
+                    state=GoldenProtectionState.UNKNOWN,
+                    evidence=GoldenProtectionEvidence(
+                        platform="windows",
+                        drive_type=drive_type,
+                        filesystem=fs_name,
+                        filesystem_persistent_acls=persistent_acls,
+                        observation_error=f"Punto de reanálisis no link (tag 0x{tag:08X}) en '{curr}'",
+                    ),
+                    message=f"Punto de reanálisis no link (tag 0x{tag:08X}) en '{curr}'",
+                )
+
             rel = curr.relative_to(path).as_posix()
             if curr == path or stat.S_ISDIR(st.st_mode):
                 pre_entries[rel] = (curr, "dir", st)
@@ -1085,6 +1127,19 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
                     ),
                     message=f"Parent '{parent_path}' es un enlace '{p_link}'",
                 )
+            p_tag = reparse_tag_or_zero(p_st)
+            if p_tag != 0:
+                return GoldenProtectionResult(
+                    state=GoldenProtectionState.UNKNOWN,
+                    evidence=GoldenProtectionEvidence(
+                        platform="windows",
+                        drive_type=drive_type,
+                        filesystem=fs_name,
+                        filesystem_persistent_acls=persistent_acls,
+                        observation_error=f"Parent '{parent_path}' es un reparse point (tag 0x{p_tag:08X})",
+                    ),
+                    message=f"Parent '{parent_path}' es un reparse point (tag 0x{p_tag:08X})",
+                )
 
             p_obs, p_err = _evaluar_acceso_nodo(parent_path, "dir", token_imp)
             if p_err or p_obs is None:
@@ -1118,9 +1173,10 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
             except OSError:
                 drift_match = False
                 break
-            if link_k is not None or st is None:
+            if link_k is not None or st is None or reparse_tag_or_zero(st) != 0:
                 drift_match = False
                 break
+
             rel = curr.relative_to(path).as_posix()
             if curr == path or stat.S_ISDIR(st.st_mode):
                 post_entries[rel] = (curr, "dir", st)

@@ -239,11 +239,12 @@ class TestClasificadorPuro:
             pre_post_structural_match=False,  # Drift
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
         )
@@ -263,11 +264,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset({"SeRestorePrivilege"}),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -276,6 +278,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -294,11 +297,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset({"SeTakeOwnershipPrivilege"}),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -307,6 +311,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -326,11 +331,12 @@ class TestClasificadorPuro:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.EXECUTE}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -339,6 +345,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -369,11 +376,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="Skyrim.exe",
@@ -381,6 +389,7 @@ class TestClasificadorPuro:
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, right_mutador}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -389,6 +398,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -418,11 +428,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="Data",
@@ -430,6 +441,7 @@ class TestClasificadorPuro:
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, right_mutador}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -438,6 +450,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -455,11 +468,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -468,6 +482,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.DELETE_CHILD}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -485,11 +500,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.DELETE}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -498,6 +514,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.ADD_FILE}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -516,11 +533,12 @@ class TestClasificadorPuro:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.EXECUTE}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -529,6 +547,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.ADD_FILE}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -548,13 +567,14 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid=user_sid,
                     granted_rights=frozenset(
                         {GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_PERMISSIONS}
                     ),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -563,6 +583,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -582,11 +603,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid=user_sid,
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.EXECUTE}),
                     owner_rights_ace_present=True,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -595,6 +617,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -613,11 +636,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -626,6 +650,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -644,11 +669,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.EXECUTE}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="Data",
@@ -656,6 +682,7 @@ class TestClasificadorPuro:
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.EXECUTE}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="Data/Skyrim.esm",
@@ -663,6 +690,7 @@ class TestClasificadorPuro:
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -671,6 +699,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -691,11 +720,12 @@ class TestClasificadorPuro:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",  # Administrators
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.EXECUTE}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="SkyrimSE.exe",
@@ -703,6 +733,7 @@ class TestClasificadorPuro:
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.EXECUTE}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -711,6 +742,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -732,11 +764,12 @@ class TestClasificadorPuro:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -745,6 +778,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -763,11 +797,12 @@ class TestClasificadorPuro:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-18",  # LocalSystem
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -776,6 +811,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-18",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -794,11 +830,12 @@ class TestClasificadorPuro:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",  # Administrators
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -807,6 +844,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -823,11 +861,12 @@ class TestClasificadorPuro:
             current_user_sid="S-1-5-21-111-222-333-1001",
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="Data/Meshes/file.nif",
@@ -835,6 +874,7 @@ class TestClasificadorPuro:
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.WRITE_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -843,6 +883,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -858,11 +899,12 @@ class TestClasificadorPuro:
             pre_post_structural_match=True,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="Data/Textures/secret.dds",
@@ -870,6 +912,7 @@ class TestClasificadorPuro:
                     owner_sid=None,  # No observable
                     granted_rights=None,
                     owner_rights_ace_present=None,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -878,6 +921,7 @@ class TestClasificadorPuro:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1310,11 +1354,12 @@ class TestMutacionesAdversariales:
             current_user_sid="S-1-5-21-1-2-3-1001",
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="Data/sub.esp",
@@ -1322,6 +1367,7 @@ class TestMutacionesAdversariales:
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.WRITE_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1330,6 +1376,7 @@ class TestMutacionesAdversariales:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1346,17 +1393,20 @@ class TestMutacionesAdversariales:
             pre_post_structural_match=True,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="Data/bloqueado.esm",
                     node_kind="file",
                     owner_sid=None,
                     granted_rights=None,
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1365,6 +1415,7 @@ class TestMutacionesAdversariales:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1381,10 +1432,12 @@ class TestMutacionesAdversariales:
             pre_post_structural_match=False,  # Drift
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
         )
@@ -1417,11 +1470,12 @@ class TestMutacionesAdversariales:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1430,6 +1484,7 @@ class TestMutacionesAdversariales:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1448,10 +1503,12 @@ class TestMutacionesAdversariales:
             mutation_privileges_present=frozenset({"SeRestorePrivilege"}),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1459,6 +1516,8 @@ class TestMutacionesAdversariales:
                 node_kind="dir",
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1476,10 +1535,12 @@ class TestMutacionesAdversariales:
             mutation_privileges_present=frozenset({"SeTakeOwnershipPrivilege"}),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1487,6 +1548,8 @@ class TestMutacionesAdversariales:
                 node_kind="dir",
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1505,10 +1568,12 @@ class TestMutacionesAdversariales:
             token_elevation_type=1,  # Default
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1516,6 +1581,8 @@ class TestMutacionesAdversariales:
                 node_kind="dir",
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1535,13 +1602,14 @@ class TestMutacionesAdversariales:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid=user_sid,
                     granted_rights=frozenset(
                         {GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_PERMISSIONS}
                     ),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1549,6 +1617,8 @@ class TestMutacionesAdversariales:
                 node_kind="dir",
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1566,11 +1636,12 @@ class TestMutacionesAdversariales:
             mutation_privileges_present=frozenset(),
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.WRITE_DATA, GoldenProtectionRight.ADD_FILE}),
                     owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1579,6 +1650,7 @@ class TestMutacionesAdversariales:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                 owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1596,10 +1668,12 @@ class TestMutacionesAdversariales:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1607,6 +1681,8 @@ class TestMutacionesAdversariales:
                 node_kind="dir",
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.ADD_FILE}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1623,16 +1699,20 @@ class TestMutacionesAdversariales:
             current_user_sid="S-1-5-21-1-2-3-1001",
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
                 NodeProtectionObservation(
                     relative_path="Data/Scripts/test.pex",
                     node_kind="file",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.WRITE_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1640,6 +1720,8 @@ class TestMutacionesAdversariales:
                 node_kind="dir",
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1688,10 +1770,12 @@ class TestMutacionesAdversariales:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1699,6 +1783,8 @@ class TestMutacionesAdversariales:
                 node_kind="dir",
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1717,10 +1803,12 @@ class TestMutacionesAdversariales:
             current_user_sid=None,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1728,6 +1816,8 @@ class TestMutacionesAdversariales:
                 node_kind="dir",
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1749,6 +1839,8 @@ class TestMutacionesAdversariales:
                 node_kind="dir",
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
             ),
         )
         res = classify_protection(ev)
@@ -1765,10 +1857,12 @@ class TestMutacionesAdversariales:
             current_user_sid="S-1-5-21-1-2-3-1001",
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
                 ),
             ),
             parent_observation=None,
@@ -1788,11 +1882,12 @@ class TestMutacionesAdversariales:
             current_user_sid="S-1-5-21-1-2-3-1001",
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
-                    dacl_inheritance_protected=False,  # Hereda del parent
+                    dacl_inheritance_protected=False,  # Hereda del parent,
+                    owner_rights_ace_present=False,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1801,6 +1896,7 @@ class TestMutacionesAdversariales:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_PERMISSIONS}),
                 dacl_inheritance_protected=True,
+                owner_rights_ace_present=False,
             ),
         )
         res = classify_protection(ev)
@@ -1817,11 +1913,12 @@ class TestMutacionesAdversariales:
             current_user_sid="S-1-5-21-1-2-3-1001",
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
                     dacl_inheritance_protected=False,
+                    owner_rights_ace_present=False,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1830,6 +1927,7 @@ class TestMutacionesAdversariales:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_OWNER}),
                 dacl_inheritance_protected=True,
+                owner_rights_ace_present=False,
             ),
         )
         res = classify_protection(ev)
@@ -1847,11 +1945,12 @@ class TestMutacionesAdversariales:
             current_token_elevated=False,
             nodes=(
                 NodeProtectionObservation(
-                    relative_path="",
+                    relative_path=".",
                     node_kind="dir",
                     owner_sid="S-1-5-32-544",
                     granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
-                    dacl_inheritance_protected=True,  # Protegido explícito
+                    dacl_inheritance_protected=True,  # Protegido explícito,
+                    owner_rights_ace_present=False,
                 ),
             ),
             parent_observation=NodeProtectionObservation(
@@ -1860,6 +1959,7 @@ class TestMutacionesAdversariales:
                 owner_sid="S-1-5-32-544",
                 granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_PERMISSIONS}),
                 dacl_inheritance_protected=True,
+                owner_rights_ace_present=False,
             ),
         )
         res = classify_protection(ev)
@@ -2071,18 +2171,297 @@ class TestMutacionesAdversariales:
             if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "CreateFileW":
                 assert isinstance(nodo.args[4], ast.Constant) and nodo.args[4].value == 3
 
-    def test_m_gp1_46_reparse_tag_no_cero_unknown(self) -> None:
-        """M-GP1-46: reparse tag != 0 debe reportarse como UNKNOWN."""
+    def test_m_gp1_46_real_reparse_tag_pre_scan_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-46: reparse tag != 0 en PRE scan (p. ej. OneDrive Cloud 0x9000001A) -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        real_st = tmp_path.stat()
+
+        class _MockStatWithReparse:
+            st_mode = real_st.st_mode
+            st_reparse_tag = 0x9000001A
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(real_st, name)
+
+        def _mock_link(p: pathlib.Path) -> tuple[str | None, Any]:
+            if p == tmp_path:
+                return None, _MockStatWithReparse()
+            return None, real_st
+
+        monkeypatch.setattr(protection, "link_kind_and_identity_or_raise", _mock_link)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "0x9000001A" in res.message or "reanálisis" in res.message or "reparse" in res.message.lower()
+
+    def test_m_gp1_47_real_reparse_tag_parent_scan_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-47: reparse tag != 0 en Parent scan -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        sub = tmp_path / "golden_sub"
+        sub.mkdir()
+        parent_st = tmp_path.stat()
+
+        class _MockParentStat:
+            st_mode = parent_st.st_mode
+            st_reparse_tag = 0x9000001A
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(parent_st, name)
+
+        def _mock_link(p: pathlib.Path) -> tuple[str | None, Any]:
+            if p == tmp_path:
+                return None, _MockParentStat()
+            return None, p.stat()
+
+        monkeypatch.setattr(protection, "link_kind_and_identity_or_raise", _mock_link)
+        res = inspect_golden_protection(sub)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "0x9000001A" in res.message or "Parent" in res.message
+
+    def test_m_gp1_48_real_reparse_tag_post_scan_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-GP1-48: reparse tag != 0 apareciendo durante POST scan genera drift estructural -> UNKNOWN."""
+        if sys.platform != "win32":
+            pytest.skip("Requiere Windows")
+        from sky_claw.local.runtime_vault import protection
+
+        call_count = 0
+        real_st = tmp_path.stat()
+
+        class _MockDriftStat:
+            st_mode = real_st.st_mode
+            st_reparse_tag = 0x9000001A
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(real_st, name)
+
+        def _mock_link(p: pathlib.Path) -> tuple[str | None, Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count > 2 and p == tmp_path:
+                return None, _MockDriftStat()
+            return None, p.stat()
+
+        monkeypatch.setattr(protection, "link_kind_and_identity_or_raise", _mock_link)
+        res = inspect_golden_protection(tmp_path)
+        assert res.state is GoldenProtectionState.UNKNOWN
+
+    def test_m_gp1_49_root_identity_not_first_in_nodes_order_inherits_parent_unprotected(self) -> None:
+        """M-GP1-49: root '.' no es el primer elemento de nodes y hereda DACL -> detecta UNPROTECTED vía parent."""
         ev = GoldenProtectionEvidence(
             platform="windows",
             drive_type=3,
             filesystem="NTFS",
             filesystem_persistent_acls=True,
-            observation_error="Punto de reanálisis no link (tag 0xA0000010) en 'path'",
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path="!Extra",
+                    node_kind="file",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
+                ),
+                NodeProtectionObservation(
+                    relative_path=".",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=False,  # Root hereda
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_PERMISSIONS}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNPROTECTED
+
+    def test_m_gp1_50_nodes_missing_root_observation_unknown(self) -> None:
+        """M-GP1-50: lista de nodes sin observación de root (solo descendientes) -> UNKNOWN."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path="Data/sub.esp",
+                    node_kind="file",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
+            ),
         )
         res = classify_protection(ev)
         assert res.state is GoldenProtectionState.UNKNOWN
-        assert "reanálisis" in res.message or "reparse" in res.message.lower()
+        assert "root" in res.message.lower()
+
+    def test_m_gp1_51_nodes_ambiguous_multiple_roots_unknown(self) -> None:
+        """M-GP1-51: múltiples observaciones de root ambiguas ('.' y '') -> UNKNOWN."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path=".",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
+                ),
+                NodeProtectionObservation(
+                    relative_path="",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "múltiples" in res.message.lower() or "root" in res.message.lower()
+
+    def test_m_gp1_52_node_owner_rights_ace_present_omitted_unknown(self) -> None:
+        """M-GP1-52: owner_rights_ace_present omitido (None) en un nodo -> UNKNOWN."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path=".",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=None,  # Omitido
+                    dacl_inheritance_protected=True,
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "incompleta" in res.message.lower()
+
+    def test_m_gp1_53_node_dacl_inheritance_protected_omitted_unknown(self) -> None:
+        """M-GP1-53: dacl_inheritance_protected omitido (None) en un nodo -> UNKNOWN."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path=".",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=None,  # Omitido
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=True,
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "incompleta" in res.message.lower()
+
+    def test_m_gp1_54_parent_security_evidence_omitted_unknown(self) -> None:
+        """M-GP1-54: dacl_inheritance_protected omitido (None) en parent_observation -> UNKNOWN."""
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path=".",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    owner_rights_ace_present=False,
+                    dacl_inheritance_protected=True,
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                owner_rights_ace_present=False,
+                dacl_inheritance_protected=None,  # Omitido en parent
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "incompleta" in res.message.lower()
 
 
 # ============================================================================
@@ -2271,23 +2650,78 @@ class TestLstatAndReparseFailClosed:
         assert "lstat" in res.message.lower()
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_parent_lstat_oserror_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OSError durante Parent lstat -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        sub = tmp_path / "sub_dir"
+        sub.mkdir()
+
+        def _mock_lstat(p: pathlib.Path) -> tuple[str | None, os.stat_result | None]:
+            if p == tmp_path:
+                raise OSError("Fallo simulado en parent")
+            return None, p.stat()
+
+        monkeypatch.setattr(protection, "link_kind_and_identity_or_raise", _mock_lstat)
+        res = inspect_golden_protection(sub)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "parent" in res.message.lower() or "lstat" in res.message.lower()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
     def test_reparse_tag_inesperado_pre_retorna_unknown(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Reparse point inesperado detectado por link_kind -> UNKNOWN."""
+        """Reparse point inesperado (tag 0x9000001A) detectado en PRE -> UNKNOWN."""
         from sky_claw.local.runtime_vault import protection
 
         real_st = tmp_path.stat()
 
+        class _MockReparseStat:
+            st_mode = real_st.st_mode
+            st_reparse_tag = 0x9000001A
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(real_st, name)
+
         def _mock_link(p: pathlib.Path) -> tuple[str | None, Any]:
             if p == tmp_path:
-                return "reparse_point_0xA0000010", real_st
+                return None, _MockReparseStat()
             return None, real_st
 
         monkeypatch.setattr(protection, "link_kind_and_identity_or_raise", _mock_link)
         res = inspect_golden_protection(tmp_path)
         assert res.state is GoldenProtectionState.UNKNOWN
-        assert "enlace" in res.message.lower() or "reparse" in res.message.lower()
+        assert "0x9000001A" in res.message or "reanálisis" in res.message or "reparse" in res.message.lower()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
+    def test_reparse_tag_inesperado_parent_retorna_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reparse point inesperado (tag 0x9000001A) detectado en Parent -> UNKNOWN."""
+        from sky_claw.local.runtime_vault import protection
+
+        sub = tmp_path / "sub_dir"
+        sub.mkdir()
+        parent_st = tmp_path.stat()
+
+        class _MockParentReparseStat:
+            st_mode = parent_st.st_mode
+            st_reparse_tag = 0x9000001A
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(parent_st, name)
+
+        def _mock_link(p: pathlib.Path) -> tuple[str | None, Any]:
+            if p == tmp_path:
+                return None, _MockParentReparseStat()
+            return None, p.stat()
+
+        monkeypatch.setattr(protection, "link_kind_and_identity_or_raise", _mock_link)
+        res = inspect_golden_protection(sub)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert "0x9000001A" in res.message or "Parent" in res.message
 
 
 class TestNativeWindowsAclOracles:

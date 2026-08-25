@@ -240,6 +240,8 @@ class TestLinkKind:
 
         assert link_kind(real) is None
         assert is_link(real) is False
+        assert links.reparse_tag_or_zero(_LstatConTagAjeno()) == 0x9000001A
+        assert links.reparse_tag_or_zero(None) == 0
 
 
 class TestPathPresent:
