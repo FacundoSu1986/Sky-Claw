@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pathlib
 import sqlite3
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -76,14 +77,16 @@ def _entorno(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner]:
 
 def _svc(journal: object, runner: DynDOLODRunner, *, perfil: str | None = "Perfil-A") -> DynDOLODPipelineService:
     lock_mgr = AsyncMock(spec=DistributedLockManager)
-    lock_mgr.acquire_lock = AsyncMock(
-        return_value=LockInfo(
-            resource_id="dyndolod-pipeline",
-            agent_id="dyndolod-pipeline-service",
-            acquired_at=1000.0,
-            expires_at=1600.0,
-        )
+    # Par acquire/get_lock_info COHERENTES para assert_owned (mismo objeto ⇒
+    # token acquired_at matchea).
+    lock_info_fija = LockInfo(
+        resource_id="dyndolod-pipeline",
+        agent_id="dyndolod-pipeline-service",
+        acquired_at=time.time(),
+        expires_at=time.time() + 3600.0,
     )
+    lock_mgr.acquire_lock = AsyncMock(return_value=lock_info_fija)
+    lock_mgr.get_lock_info = AsyncMock(return_value=lock_info_fija)
     lock_mgr.release_lock = AsyncMock(return_value=True)
 
     def _snap() -> SnapshotInfo:

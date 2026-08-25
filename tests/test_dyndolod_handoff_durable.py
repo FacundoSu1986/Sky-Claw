@@ -19,6 +19,7 @@ import os
 import pathlib
 import shutil
 import sqlite3
+import time
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -63,14 +64,16 @@ async def journal_tmp(tmp_path: pathlib.Path):  # noqa: ANN201
 
 def _lock_manager() -> AsyncMock:
     mgr = AsyncMock(spec=DistributedLockManager)
-    mgr.acquire_lock = AsyncMock(
-        return_value=LockInfo(
-            resource_id="dyndolod-pipeline",
-            agent_id="dyndolod-pipeline-service",
-            acquired_at=1000.0,
-            expires_at=1600.0,
-        )
+    # Par acquire/get_lock_info COHERENTES para assert_owned (mismo objeto ⇒
+    # token acquired_at matchea).
+    lock_info_fija = LockInfo(
+        resource_id="dyndolod-pipeline",
+        agent_id="dyndolod-pipeline-service",
+        acquired_at=time.time(),
+        expires_at=time.time() + 3600.0,
     )
+    mgr.acquire_lock = AsyncMock(return_value=lock_info_fija)
+    mgr.get_lock_info = AsyncMock(return_value=lock_info_fija)
     mgr.release_lock = AsyncMock(return_value=True)
     return mgr
 

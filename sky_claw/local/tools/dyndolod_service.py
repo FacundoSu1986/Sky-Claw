@@ -34,6 +34,7 @@ from sky_claw.app.db.journal import JournalTransactionError, OperationJournal
 from sky_claw.app.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
+    LockLeaseLostError,
     SnapshotTransactionLock,
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
@@ -96,6 +97,19 @@ class _ActionManifestError(Exception):
     del lock (antes de mutar) para que el Ritual NO proceda sin manifiesto — la
     caja negra no es opcional cuando el journal está cableado (espejo de
     ``loot_service``/``xedit_service``/``synthesis_service._ActionManifestError``)."""
+
+
+class _CertificacionPreservadaError(Exception):
+    """Sentinela interna (POST_RELEASE_ARTIFACT_PROVENANCE_RACE, PR #503): la
+    certificación needs_deployment YA ocurrió BAJO el lease —digest del
+    artifact → crear_handoff_de_deployment → sellado de evidencia— y la
+    excepción de dominio original quedó resuelta durablemente. El handler
+    externo sólo construye la respuesta: JAMÁS repite la decisión durable
+    (exactly-once)."""
+
+    def __init__(self, mensaje: str, handoff_id: int | None) -> None:
+        super().__init__(mensaje)
+        self.handoff_id = handoff_id
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1279,6 +1293,97 @@ class DynDOLODPipelineService:
                             tx_id=tx_id,
                         )
                         needs_deployment = True
+                        # POST_RELEASE_ARTIFACT_PROVENANCE_RACE (PR #503): la
+                        # certificación durable —digest del artifact, handoff y
+                        # sellado de evidencia— ocurre AQUÍ, todavía DENTRO del
+                        # lease. El mod ya fue confirmado arriba (commit() ⇒
+                        # inmune al unwind), así que los bytes que certifica
+                        # son exactamente los de ESTA corrida aunque una
+                        # generación posterior adquiera el lease después del
+                        # release. El handler externo sólo responde.
+                        mod_texgen_cert = mods_path / runner.TEXGEN_MOD_NAME
+                        mod_textures_cert = mod_texgen_cert / runner.TEXGEN_OUTPUT_NAME
+                        handoff_preservacion: int | None = None
+                        try:
+                            # POST_RELEASE_ARTIFACT_PROVENANCE_RACE — ownership
+                            # REAL contra la fila de locks, no el espejo en
+                            # memoria: _RENEW_SQL matchea resource_id+agent_id+
+                            # expiración SIN token de adquisición y el agent_id
+                            # del servicio es constante, así que un proceso
+                            # zombie con TTL vencido puede RENOVAR CON ÉXITO la
+                            # fila re-adquirida por un hermano sin que el flag
+                            # lease_lost flippee jamás (hazard documentado en
+                            # locks.py). assert_owned() compara el token
+                            # acquired_at contra la DB fresca y flippea
+                            # lease_lost al fallar — manteniendo coherente el
+                            # veto de los DirectoryRollback y el __aexit__.
+                            await tx_lock.assert_owned()
+                            digest_final = await asyncio.to_thread(digest_arbol, mod_textures_cert)
+                            game_key, mods_root_key, data_key = self._keys_de_identidad(runner)
+                            registro = DeploymentHandoff(
+                                handoff_id=0,
+                                source_tx_id=tx_id,
+                                state=HandoffState.AWAITING_DEPLOYMENT,
+                                artifact_path=clave_de_artifact(mod_texgen_cert),
+                                game_key=game_key,
+                                mods_root_key=mods_root_key,
+                                data_key=data_key,
+                                expected_profile=self._mo2_profile or "desconocido",
+                                expected_digest=digest_final.digest,
+                                expected_files=digest_final.files,
+                                expected_bytes=digest_final.bytes,
+                                observed_digest=None,
+                                observed_files=None,
+                                observed_bytes=None,
+                                created_at="",
+                                updated_at="",
+                                completed_at=None,
+                                superseded_at=None,
+                                superseded_by=None,
+                            )
+                            handoff_preservacion = await self._journal.crear_handoff_de_deployment(
+                                tx_id,
+                                descripcion=(
+                                    "TexGen generado y empaquetado; esperando deployment en el Data "
+                                    "(DynDOLOD pendiente)"
+                                ),
+                                registro=registro,
+                                # R-002B: también el INDETERMINATE previo se cierra acá
+                                # (→ SUPERSEDED) — sin esto, el old activo rechazaba el
+                                # INSERT del nuevo por el índice único de ownership.
+                                viejo=handoff_en_supersede or handoff_previo_indeterminado,
+                            )
+                        except (OSError, JournalTransactionError, LockLeaseLostError) as e:
+                            # Ventana honesta: el artifact vive pero no se pudo autorizar
+                            # (digest falló, SQLite falló, o assert_owned detectó la
+                            # pérdida —LockLeaseLostError se mapea acá DELIBERADAMENTE
+                            # para no perder el payload needs_deployment en el handler
+                            # genérico—). TX1 queda PENDING y el reconciler de arranque
+                            # la degrada a INDETERMINATE (evidencia: TX que nombra el mod
+                            # + mod vivo).
+                            logger.critical(
+                                "DynDOLOD (stage 9): '%s' quedó PRESERVADA a propósito pero el handoff "
+                                "durable NO se pudo crear (%s): la TX queda para el reconciler de arranque.",
+                                mod_texgen_cert,
+                                e,
+                                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                            )
+                        rolled_back = False
+                        logger.warning(
+                            "DynDOLOD (stage 9): '%s' queda PRESERVADA a propósito — %s. Es el artifact "
+                            "que el operador tiene que materializar en el Data para poder continuar.",
+                            mod_texgen_cert,
+                            (
+                                f"TX {tx_id} COMMITTED con handoff {handoff_preservacion} AWAITING_DEPLOYMENT"
+                                if handoff_preservacion is not None
+                                else "sin handoff durable (lo degradará el reconciler de arranque)"
+                            ),
+                            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                        )
+                        raise _CertificacionPreservadaError(
+                            f"DynDOLOD pipeline failed: {'; '.join(result.errors) if result.errors else 'Unknown error'}",
+                            handoff_id=handoff_preservacion,
+                        ) from None
                     errors_str = "; ".join(result.errors) if result.errors else "Unknown error"
                     raise DynDOLODExecutionError(f"DynDOLOD pipeline failed: {errors_str}")
 
@@ -1467,6 +1572,41 @@ class DynDOLODPipelineService:
                 preflight_report,
             )
 
+        except _CertificacionPreservadaError as pres:
+            # Respuesta PURA (exactly-once): la certificación durable ya ocurrió
+            # BAJO el lease dentro del cuerpo; aquí sólo se reporta.
+            logger.error(
+                "DynDOLOD (stage 9): artifact preservado y certificado bajo lease: %s",
+                pres,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
+            rolled_back = False
+            duration = time.monotonic() - start_time
+            await self._log_result_error(preset, str(pres), tx_id, False)
+            await self._publish_completed(
+                preset=preset,
+                run_texgen=run_texgen,
+                success=False,
+                texgen_success=False,
+                dyndolod_success=False,
+                errors=(str(pres),),
+                duration_seconds=duration,
+                rolled_back=False,
+            )
+            payload: dict[str, Any] = {
+                "success": False,
+                "message": str(pres),
+                "errors": [str(pres)],
+                "duration_seconds": duration,
+                "rolled_back": False,
+                "needs_deployment": True,
+                "dyndolod_started": False,
+            }
+            mod_texgen_resp = mods_path / runner.TEXGEN_MOD_NAME
+            if mod_texgen_resp.is_dir():
+                payload["texgen_mod_path"] = str(mod_texgen_resp)
+            return _attach_preflight(payload, preflight_report)
+
         except (DynDOLODExecutionError, DynDOLODTimeoutError) as exc:
             # El logger.error del incidente va PRIMERO, antes de cualquier await
             # cancelable (review Qodo, PR #464, "Pérdida de señal"): con el log
@@ -1485,97 +1625,29 @@ class DynDOLODPipelineService:
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
 
-            if needs_deployment and run_texgen:
-                # D2 (PR #493): el veredicto needs_deployment cierra TX1 y crea el
-                # handoff durable en UN boundary — TX1 nunca queda PENDING ni
-                # ROLLED_BACK: su producto real (TexGen generado y empaquetado)
-                # está vivo y autorizado. Si el supersede de un handoff previo
-                # estaba en curso, la MISMA frontera lo resuelve (viejo →
-                # SUPERSEDED enlazado al nuevo).
-                mod_texgen = mods_path / runner.TEXGEN_MOD_NAME
-                mod_textures = mod_texgen / runner.TEXGEN_OUTPUT_NAME
-                try:
-                    digest_final = await asyncio.to_thread(digest_arbol, mod_textures)
-                    game_key, mods_root_key, data_key = self._keys_de_identidad(runner)
-                    registro = DeploymentHandoff(
-                        handoff_id=0,
-                        source_tx_id=tx_id,
-                        state=HandoffState.AWAITING_DEPLOYMENT,
-                        artifact_path=clave_de_artifact(mod_texgen),
-                        game_key=game_key,
-                        mods_root_key=mods_root_key,
-                        data_key=data_key,
-                        expected_profile=self._mo2_profile or "desconocido",
-                        expected_digest=digest_final.digest,
-                        expected_files=digest_final.files,
-                        expected_bytes=digest_final.bytes,
-                        observed_digest=None,
-                        observed_files=None,
-                        observed_bytes=None,
-                        created_at="",
-                        updated_at="",
-                        completed_at=None,
-                        superseded_at=None,
-                        superseded_by=None,
-                    )
-                    handoff_id = await self._journal.crear_handoff_de_deployment(
-                        tx_id,
-                        descripcion=(
-                            "TexGen generado y empaquetado; esperando deployment en el Data (DynDOLOD pendiente)"
-                        ),
-                        registro=registro,
-                        # R-002B: también el INDETERMINATE previo se cierra acá
-                        # (→ SUPERSEDED) — sin esto, el old activo rechazaba el
-                        # INSERT del nuevo por el índice único de ownership.
-                        viejo=handoff_en_supersede or handoff_previo_indeterminado,
-                    )
-                except (OSError, JournalTransactionError) as e:
-                    # Ventana honesta: el artifact vive pero no se pudo autorizar.
-                    # TX1 queda PENDING y el reconciler de arranque la degrada a
-                    # INDETERMINATE (evidencia: TX que nombra el mod + mod vivo).
-                    logger.critical(
-                        "DynDOLOD (stage 9): '%s' quedó PRESERVADA a propósito pero el handoff "
-                        "durable NO se pudo crear (%s): la TX queda para el reconciler de arranque.",
-                        mod_texgen,
-                        e,
-                        extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
-                    )
-                    handoff_id = None
-                rolled_back = False
-                logger.warning(
-                    "DynDOLOD (stage 9): '%s' queda PRESERVADA a propósito — %s. Es el artifact "
-                    "que el operador tiene que materializar en el Data para poder continuar.",
-                    mod_texgen,
-                    (
-                        f"TX {tx_id} COMMITTED con handoff {handoff_id} AWAITING_DEPLOYMENT"
-                        if handoff_id is not None
-                        else "sin handoff durable (lo degradará el reconciler de arranque)"
-                    ),
-                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            # POST_RELEASE_ARTIFACT_PROVENANCE_RACE: la rama needs_deployment
+            # vive ahora DENTRO del lease (certificación + sentinela
+            # ``_CertificacionPreservadaError``); por este handler sólo pasan fallos
+            # de dominio SIN artifact preservado — jamás repite la decisión
+            # durable (exactly-once).
+            rolled_back = await self._cerrar_tx_tras_rollback(
+                tx_id,
+                dir_rollbacks,
+                journal_committed=journal_committed,
+                mutation_started=mutation_started,
+                mutation_coverage_complete=mutation_coverage_complete,
+                contexto="error de dominio",
+            )
+            # D2: un supersede en curso que NO terminó en needs_deployment
+            # resuelve su matriz de fallos A/B/C contra la identidad durable.
+            if handoff_en_supersede is not None:
+                await self._resolver_fallo_de_supersede(
+                    runner=runner,
+                    handoff_previo=handoff_en_supersede,
+                    packaging_intentado=texgen_packaging_intentado,
+                    create_snapshot=create_snapshot,
+                    tx_id=tx_id,
                 )
-            else:
-                # M-7: reportar el resultado REAL del rollback. Los __aexit__ de los
-                # DirectoryRollback ya corrieron (restore best-effort); rolled_back es
-                # True sólo si TODOS completaron. Un rmtree/rename fallido deja el output
-                # parcial en disco y debe reflejarse como rolled_back=False.
-                rolled_back = await self._cerrar_tx_tras_rollback(
-                    tx_id,
-                    dir_rollbacks,
-                    journal_committed=journal_committed,
-                    mutation_started=mutation_started,
-                    mutation_coverage_complete=mutation_coverage_complete,
-                    contexto="error de dominio",
-                )
-                # D2: un supersede en curso que NO terminó en needs_deployment
-                # resuelve su matriz de fallos A/B/C contra la identidad durable.
-                if handoff_en_supersede is not None:
-                    await self._resolver_fallo_de_supersede(
-                        runner=runner,
-                        handoff_previo=handoff_en_supersede,
-                        packaging_intentado=texgen_packaging_intentado,
-                        create_snapshot=create_snapshot,
-                        tx_id=tx_id,
-                    )
 
             duration = time.monotonic() - start_time
 
@@ -1602,6 +1674,9 @@ class DynDOLODPipelineService:
                 "duration_seconds": duration,
                 "rolled_back": rolled_back,
             }
+            # Rama defensiva INALCANZABLE hoy: needs_deployment=True lanza el
+            # sentinela dentro del lease (exactly-once); si algún día llega
+            # acá, es señal de un segundo camino durable no revisado.
             if needs_deployment:
                 payload["needs_deployment"] = True
                 payload["dyndolod_started"] = False

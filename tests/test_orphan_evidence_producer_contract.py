@@ -44,16 +44,15 @@ Cuatro capas, cada una con su mutante que mata:
    M-F6 (comentario/string con el lock correcto) mueren acá: la traza graba
    llamadas reales, no texto.
 
-   ZONAS DE HANDOFF (medido, no asumido): ``completar_handoff_de_resume`` y
-   el ``crear_handoff_de_deployment`` de REEMPLAZO ocurren DENTRO del lease
-   (L4); el ``crear_handoff_de_deployment`` de PRESERVACIÓN del camino
-   ``needs_deployment`` ocurre DESPUÉS del release por diseño (post-COMMIT,
-   en el handler de dominio: decide preservar el artifact justo porque el
-   desenrollado ya restauró todo lo demás). Esa zona post-release está
-   congelada como EXCLUSIVA de ese desenlace y NUNCA admite un
-   ``handoff-resume`` ni una segunda emisión de manifest: el contrato que
-   refuta PREMATURE_LIVE_PENDING_ABSORPTION (toda FABRICACIÓN de evidencia
-   —manifests/FlightReports— bajo lease) queda intacto.
+   CERTIFICACIÓN BAJO LEASE (POST_RELEASE_ARTIFACT_PROVENANCE_RACE, PR #503):
+   TODA decisión durable sobre el artifact —resume, reemplazo Y preservación
+   needs_deployment— ocurre DENTRO del lease, en el orden
+   digest < handoff-deploy < release. La exención que antes toleraba el
+   handoff de preservación post-release fue ELIMINADA: congelaba como segura
+   la ventana de dos carreras confirmadas (absorción de TX viva y firma de
+   bytes de la generación siguiente). El contrato que refuta
+   PREMATURE_LIVE_PENDING_ABSORPTION queda ahora respaldado por serialización
+   REAL de fabricación Y consumo.
 
 L7 (``lease_lost`` veta el restore) ya tiene ancla AST exhaustiva propia en
 ``test_dir_rollback.py::_llamadas_sin_veto``; este archivo NO la duplica.
@@ -64,6 +63,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import time
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -386,15 +386,19 @@ async def test_orden_real_del_lease_en_execute(tmp_path: pathlib.Path, monkeypat
         monkeypatch.setattr(journal, "completar_handoff_de_resume", _resume_grabando)
         monkeypatch.setattr(journal, "crear_handoff_de_deployment", _deploy_grabando)
 
+        # Par acquire/get_lock_info COHERENTES: assert_owned compara la fila
+        # fresca contra el token de acquire — mismo objeto ⇒ match garantizado.
+        lock_info_fija = LockInfo(
+            resource_id="dyndolod-pipeline",
+            agent_id="dyndolod-pipeline-service",
+            acquired_at=time.time(),
+            expires_at=time.time() + 3600.0,
+        )
+
         async def _acquire_grabando(**k: object) -> LockInfo:
             traza.append("lock-acquire")
             resource_ids.append(str(k.get("resource_id")))
-            return LockInfo(
-                resource_id="dyndolod-pipeline",
-                agent_id="dyndolod-pipeline-service",
-                acquired_at=1000.0,
-                expires_at=1600.0,
-            )
+            return lock_info_fija
 
         async def _release_grabando(*a: object, **k: object) -> bool:
             traza.append("release")
@@ -402,6 +406,7 @@ async def test_orden_real_del_lease_en_execute(tmp_path: pathlib.Path, monkeypat
 
         lock_mgr = AsyncMock(spec=DistributedLockManager)
         lock_mgr.acquire_lock = AsyncMock(side_effect=_acquire_grabando)
+        lock_mgr.get_lock_info = AsyncMock(return_value=lock_info_fija)
         lock_mgr.release_lock = AsyncMock(side_effect=_release_grabando)
 
         snap_mgr = AsyncMock(spec=FileSnapshotManager)
@@ -432,6 +437,19 @@ async def test_orden_real_del_lease_en_execute(tmp_path: pathlib.Path, monkeypat
 
         monkeypatch.setattr(DirectoryRollback, "__aenter__", _dr_enter_grabando)
         monkeypatch.setattr(DirectoryRollback, "__aexit__", _dr_exit_grabando)
+
+        # Certificación del artifact: grabar el digest (corre en worker thread;
+        # list.append es thread-safe bajo GIL y el orden relativo alcanza).
+        import sky_claw.local.tools.dyndolod_service as dyndolod_service_mod
+
+        digest_original_contrato = dyndolod_service_mod.digest_arbol
+
+        def _digest_grabando(ruta: object) -> object:
+            resultado = digest_original_contrato(ruta)
+            traza.append("digest")
+            return resultado
+
+        monkeypatch.setattr(dyndolod_service_mod, "digest_arbol", _digest_grabando)
 
         bus = AsyncMock(spec=CoreEventBus)
         bus.publish = AsyncMock()
@@ -469,23 +487,22 @@ async def test_orden_real_del_lease_en_execute(tmp_path: pathlib.Path, monkeypat
         handoffs_post = [e for i, e in enumerate(traza) if e.startswith("handoff-") and i > i_release_final]
         exits = [i for i, e in enumerate(traza) if e == "dr-exit"]
 
-        # L4 (zona dentro del lease): los boundaries que EXTIINGUEN propiedad
-        # activa — resume completado, reemplazo/supersede — ocurren mientras el
-        # stack aún posee el lease. Nada que NO sea el handoff de PRESERVACIÓN
-        # del desenlace needs_deployment puede colgar después del release.
-        assert all(e != "handoff-resume" for e in handoffs_post), (
-            f"completar_handoff_de_resume tras soltar el lease: {traza}"
-        )
-        assert set(handoffs_post) <= {"handoff-deploy"} and (
-            not handoffs_post or res.get("needs_deployment") is True
-        ), f"handoff post-release sin desenlace de preservación: {traza}"
+        # L4 (POST_RELEASE_ARTIFACT_PROVENANCE_RACE, PR #503): NINGÚN boundary
+        # durable —resume, reemplazo NI preservación needs_deployment— puede
+        # colgar después del release. La certificación completa ocurre dentro
+        # del lease; la exención anterior para el handoff de preservación fue
+        # ELIMINADA: congelaba como segura la ventana de la carrera.
+        assert not handoffs_post, f"boundary durable tras soltar el lease: {traza}"
+
+        # Certificación bajo lease: digest < handoff < release.
+        if "digest" in traza:
+            i_digest = traza.index("digest")
+            assert i_digest < traza.index("handoff-deploy") < i_release_final, f"certificación fuera de orden: {traza}"
 
         # L6: los DirectoryRollback se desmontan ANTES de soltar el lock.
         assert all(e < i_release_final for e in exits), f"rollback desmontado tras el release: {traza}"
 
-        # L5: el lease se libera último (ningún evento trazado después).
-        assert traza[-1] == "release" or (traza[-1].startswith("handoff-") and res.get("needs_deployment") is True), (
-            f"el lease no se liberó al final de la región serializada: {traza}"
-        )
+        # L5: el lease se libera ÚLTIMO, sin excepciones.
+        assert traza[-1] == "release", f"el lease no se liberó al final: {traza}"
     finally:
         await journal.close()
