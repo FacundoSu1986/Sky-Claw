@@ -100,12 +100,21 @@ class _ActionManifestError(Exception):
 
 
 class _CertificacionPreservadaError(Exception):
-    """Sentinela interna (POST_RELEASE_ARTIFACT_PROVENANCE_RACE, PR #503): la
-    certificación needs_deployment YA ocurrió BAJO el lease —digest del
-    artifact → crear_handoff_de_deployment → sellado de evidencia— y la
-    excepción de dominio original quedó resuelta durablemente. El handler
-    externo sólo construye la respuesta: JAMÁS repite la decisión durable
-    (exactly-once)."""
+    """Sentinela interna (POST_RELEASE_ARTIFACT_PROVENANCE_RACE, PR #503).
+
+    Dos únicos orígenes legítimos:
+
+    - ``handoff_id`` != None: la certificación needs_deployment YA ocurrió BAJO
+      el lease —digest + crear_handoff + sellado— o el handflow conservó un
+      owner previo ya durable (run_texgen=False con AWAITING activo). El
+      handler externo sólo construye respuesta (exactly-once).
+    - ``handoff_id`` is None: EXCLUSIVAMENTE el camino legacy pre-#493
+      (run_texgen=False sin handoff previo), donde needs_deployment es el
+      reporte factual heredado y NO existe certificación nueva que mentiría.
+
+    PROHIBIDO usarla para fallos de certificación de una generación nueva:
+    esos viajan por DynDOLODExecutionError como fallo recuperable sin clave
+    needs_deployment (F-02, round-2 review)."""
 
     def __init__(self, mensaje: str, handoff_id: int | None) -> None:
         super().__init__(mensaje)
@@ -1293,6 +1302,7 @@ class DynDOLODPipelineService:
                             tx_id=tx_id,
                         )
                         needs_deployment = True
+                    if result.needs_deployment and run_texgen:
                         # POST_RELEASE_ARTIFACT_PROVENANCE_RACE (PR #503): la
                         # certificación durable —digest del artifact, handoff y
                         # sellado de evidencia— ocurre AQUÍ, todavía DENTRO del
@@ -1304,21 +1314,29 @@ class DynDOLODPipelineService:
                         mod_texgen_cert = mods_path / runner.TEXGEN_MOD_NAME
                         mod_textures_cert = mod_texgen_cert / runner.TEXGEN_OUTPUT_NAME
                         handoff_preservacion: int | None = None
+                        cert_error: Exception | None = None
                         try:
-                            # POST_RELEASE_ARTIFACT_PROVENANCE_RACE — ownership
-                            # REAL contra la fila de locks, no el espejo en
-                            # memoria: _RENEW_SQL matchea resource_id+agent_id+
-                            # expiración SIN token de adquisición y el agent_id
-                            # del servicio es constante, así que un proceso
-                            # zombie con TTL vencido puede RENOVAR CON ÉXITO la
-                            # fila re-adquirida por un hermano sin que el flag
+                            # FENCING #1 (pre-read): ownership REAL contra la
+                            # fila de locks, no el espejo en memoria —
+                            # _RENEW_SQL matchea resource_id+agent_id+expiración
+                            # SIN token de adquisición y el agent_id del servicio
+                            # es constante, así que un proceso zombie con TTL
+                            # vencido puede RENOVAR CON ÉXITO la fila
+                            # re-adquirida por un hermano sin que el flag
                             # lease_lost flippee jamás (hazard documentado en
                             # locks.py). assert_owned() compara el token
-                            # acquired_at contra la DB fresca y flippea
-                            # lease_lost al fallar — manteniendo coherente el
-                            # veto de los DirectoryRollback y el __aexit__.
+                            # acquired_at contra la DB fresca.
                             await tx_lock.assert_owned()
                             digest_final = await asyncio.to_thread(digest_arbol, mod_textures_cert)
+                            # FENCING #2 (post-read, pre-durable-write): el
+                            # digest corre en worker thread y puede tardar; el
+                            # TTL puede vencer y la generación siguiente
+                            # ADQUIRIR Y MUTAR el artifact mientras leíamos sus
+                            # bytes. Sin este segundo fence firmaríamos un
+                            # handoff cuyo expected_digest describe bytes ajenos
+                            # (provenance falsa). Lo más cerca posible del
+                            # boundary durable.
+                            await tx_lock.assert_owned()
                             game_key, mods_root_key, data_key = self._keys_de_identidad(runner)
                             registro = DeploymentHandoff(
                                 handoff_id=0,
@@ -1354,35 +1372,87 @@ class DynDOLODPipelineService:
                                 viejo=handoff_en_supersede or handoff_previo_indeterminado,
                             )
                         except (OSError, JournalTransactionError, LockLeaseLostError) as e:
-                            # Ventana honesta: el artifact vive pero no se pudo autorizar
-                            # (digest falló, SQLite falló, o assert_owned detectó la
-                            # pérdida —LockLeaseLostError se mapea acá DELIBERADAMENTE
-                            # para no perder el payload needs_deployment en el handler
-                            # genérico—). TX1 queda PENDING y el reconciler de arranque
-                            # la degrada a INDETERMINATE (evidencia: TX que nombra el mod
-                            # + mod vivo).
+                            # F-02: fallo de certificación (digest, SQLite o
+                            # fencing) ⇒ NO es needs_deployment. El artifact
+                            # vive preservado pero NADIE lo autorizó: firmar
+                            # AWAITING_DEPLOYMENT aquí haría que la GUI ofreciera
+                            # Resume/“Continuar DynDOLOD” sobre identidad no
+                            # certificada. Se degrada a fallo recuperable: TX1
+                            # PENDING y el reconciler de arranque la degrada a
+                            # INDETERMINATE (evidencia: TX que nombra el mod +
+                            # mod vivo). LockLeaseLostError se mapea acá
+                            # deliberadamente para no perder la señal en el
+                            # handler genérico.
+                            cert_error = e
                             logger.critical(
-                                "DynDOLOD (stage 9): '%s' quedó PRESERVADA a propósito pero el handoff "
-                                "durable NO se pudo crear (%s): la TX queda para el reconciler de arranque.",
+                                "DynDOLOD (stage 9): '%s' quedó PRESERVADA a propósito pero la "
+                                "certificación bajo lease FALLÓ (%s): sin handoff durable — TX queda "
+                                "para el reconciler de arranque.",
                                 mod_texgen_cert,
                                 e,
                                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                             )
+                        if handoff_preservacion is not None:
+                            rolled_back = False
+                            logger.warning(
+                                "DynDOLOD (stage 9): '%s' queda PRESERVADA a propósito y CERTIFICADA "
+                                "bajo lease — TX %d COMMITTED con handoff %d AWAITING_DEPLOYMENT. Es el "
+                                "artifact que el operador tiene que materializar en el Data para poder "
+                                "continuar.",
+                                mod_texgen_cert,
+                                tx_id,
+                                handoff_preservacion,
+                                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                            )
+                            raise _CertificacionPreservadaError(
+                                f"DynDOLOD pipeline failed: {'; '.join(result.errors) if result.errors else 'Unknown error'}",
+                                handoff_id=handoff_preservacion,
+                            ) from None
+                        # F-02: certificación fallida ⇒ needs_deployment NO es
+                        # accionable. Se re-lanza el error de dominio original
+                        # enriquecido para que el handler externo lo trate como
+                        # fallo recuperable estándar (TX PENDING, sin clave
+                        # needs_deployment en el payload).
+                        needs_deployment = False
+                        base_msg = "; ".join(result.errors) if result.errors else "Unknown error"
+                        raise DynDOLODExecutionError(
+                            f"DynDOLOD pipeline failed: {base_msg}. Certificación bajo lease falló: {cert_error}"
+                        ) from cert_error
+                    elif result.needs_deployment and not run_texgen:
+                        # T-D6 (run_texgen=False): NO hubo generación nueva — el
+                        # ownership previo sigue VÁLIDO y su handoff durable se
+                        # CONSERVA tal cual. La sentinela apunta a ESE handoff
+                        # preexistente (certificación previa, no una nueva).
+                        activo_cons = await self._journal.consultar_handoff_activo(
+                            clave_de_artifact(mods_path / runner.TEXGEN_MOD_NAME)
+                        )
+                        base_msg = "; ".join(result.errors) if result.errors else "Unknown error"
                         rolled_back = False
+                        if activo_cons is not None:
+                            logger.warning(
+                                "DynDOLOD (stage 9): '%s' queda PRESERVADA a propósito — se CONSERVA el "
+                                "handoff %d AWAITING_DEPLOYMENT del owner previo (sin generación nueva).",
+                                mods_path / runner.TEXGEN_MOD_NAME,
+                                activo_cons.handoff_id,
+                                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+                            )
+                            raise _CertificacionPreservadaError(
+                                f"DynDOLOD pipeline failed: {base_msg}",
+                                handoff_id=activo_cons.handoff_id,
+                            ) from None
+                        # Legacy pre-#493 (T-F1-resume-stale): sin handoff previo
+                        # no hay nada que certificar ni conservar — needs=True es
+                        # el reporte factual heredado y la continuación falla
+                        # cerrada aguas abajo al no existir owner durable.
                         logger.warning(
-                            "DynDOLOD (stage 9): '%s' queda PRESERVADA a propósito — %s. Es el artifact "
-                            "que el operador tiene que materializar en el Data para poder continuar.",
-                            mod_texgen_cert,
-                            (
-                                f"TX {tx_id} COMMITTED con handoff {handoff_preservacion} AWAITING_DEPLOYMENT"
-                                if handoff_preservacion is not None
-                                else "sin handoff durable (lo degradará el reconciler de arranque)"
-                            ),
+                            "DynDOLOD (stage 9): '%s' queda PRESERVADA a propósito sin handoff previo "
+                            "(camino legacy run_texgen=False).",
+                            mods_path / runner.TEXGEN_MOD_NAME,
                             extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                         )
                         raise _CertificacionPreservadaError(
-                            f"DynDOLOD pipeline failed: {'; '.join(result.errors) if result.errors else 'Unknown error'}",
-                            handoff_id=handoff_preservacion,
+                            f"DynDOLOD pipeline failed: {base_msg}",
+                            handoff_id=None,
                         ) from None
                     errors_str = "; ".join(result.errors) if result.errors else "Unknown error"
                     raise DynDOLODExecutionError(f"DynDOLOD pipeline failed: {errors_str}")

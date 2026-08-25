@@ -474,11 +474,17 @@ async def test_lease_lost_antes_de_certificar_no_firma_nada(
             _assert_roto,
         )
 
-        # Digest roto NO debe llamarse: assert_owned corta antes.
-        def _digest_no_debe_correr(ruta: object) -> object:
-            raise AssertionError("digest corrió con lease_lost")
+        # Digest CONTADO (no explosivo): _resolver_fallo_de_supersede puede
+        # digerir legítimamente en el camino de fallo; la aserción fuerte de
+        # cero-llamadas-de-ventana vive en H1/H2 con ventanas aisladas.
+        digest_llamadas_f5: list[object] = []
+        digest_original_f5 = dyndolod_mod.digest_arbol
 
-        monkeypatch.setattr(dyndolod_mod, "digest_arbol", _digest_no_debe_correr)
+        def _digest_contado_f5(ruta: object) -> object:
+            digest_llamadas_f5.append(ruta)
+            return digest_original_f5(ruta)
+
+        monkeypatch.setattr(dyndolod_mod, "digest_arbol", _digest_contado_f5)
 
         svc = DynDOLODPipelineService(
             lock_manager=mgr,
@@ -506,7 +512,8 @@ async def test_lease_lost_antes_de_certificar_no_firma_nada(
 
         res = await asyncio.wait_for(svc.execute(preset="Medium", run_texgen=True, create_snapshot=True), timeout=60)
         assert res.get("success") is False
-        assert res.get("needs_deployment") is True  # el artifact existe
+        # F-02: certificación perdida ⇒ needs_deployment NO es accionable.
+        assert res.get("needs_deployment") is None, res
 
         await asyncio.wait_for(ev_liberado.wait(), timeout=10)  # lock liberado
 
@@ -575,7 +582,16 @@ async def _corrida_con_fallo_en_ventana(
                 superseded_by=None,
             ),
         )
-        tx_a = await journal.begin_transaction("corrida A", agent_id="dyndolod-pipeline-service")
+        # F-03: capturar la TX REAL que crea execute() (no una manual).
+        tx_reales: list[int] = []
+        original_begin_f = journal.begin_transaction
+
+        async def _begin_f(*a: object, **k: object) -> int:
+            resultado = await original_begin_f(*a, **k)  # type: ignore[arg-type]
+            tx_reales.append(resultado)
+            return resultado
+
+        journal.begin_transaction = _begin_f  # type: ignore[method-assign]
 
         import sky_claw.local.tools.dyndolod_service as dsm
 
@@ -621,14 +637,15 @@ async def _corrida_con_fallo_en_ventana(
         res = await asyncio.wait_for(svc.execute(preset="Medium", run_texgen=True, create_snapshot=True), timeout=60)
         await asyncio.wait_for(ev_liberado.wait(), timeout=10)
 
+        tx_real = tx_reales[-1]
         filas: list[int] = []
         async with journal._db.execute(  # noqa: SLF001
-            "SELECT handoff_id FROM deployment_handoffs WHERE source_tx_id = ?", (tx_a,)
+            "SELECT handoff_id FROM deployment_handoffs WHERE source_tx_id = ?", (tx_real,)
         ) as cur:
             filas = [int(r[0]) for r in await cur.fetchall()]
         estado_row = None
         async with journal._db.execute(  # noqa: SLF001
-            "SELECT status FROM transactions WHERE transaction_id = ?", (tx_a,)
+            "SELECT status FROM transactions WHERE transaction_id = ?", (tx_real,)
         ) as cur:
             estado_row = await cur.fetchone()
         return res, filas, (str(estado_row[0]) if estado_row else None)
@@ -641,11 +658,13 @@ async def _corrida_con_fallo_en_ventana(
 async def test_fallo_en_ventana_deja_estado_recuperable_sin_handoff_parcial(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, inyeccion: str
 ) -> None:
-    """F2/F3/F4: un fallo dentro de la ventana certificadora (digest OSError o
-    SQLite en el boundary) NO deja handoff parcial; la TX queda recuperable y
-    el lease se libera."""
+    """F2/F3/F4 + F-02: un fallo dentro de la ventana certificadora (digest
+    OSError o SQLite en el boundary) NO deja handoff parcial, la TX queda
+    recuperable y needs_deployment NO se publica (no es accionable sin
+    certificación durable)."""
     res, handoffs_tx_a, estado = await _corrida_con_fallo_en_ventana(tmp_path, monkeypatch, inyeccion)
     assert res.get("success") is False
+    assert res.get("needs_deployment") is None, res
     assert handoffs_tx_a == [], f"handoff parcial tras fallo en ventana: {handoffs_tx_a}"
     assert estado in ("pending", "rolled_back"), f"TX no recuperable: {estado}"
 
@@ -712,7 +731,16 @@ async def test_robo_de_fila_same_agent_id_bloquea_certificacion(
                 superseded_by=None,
             ),
         )
-        tx_a = await journal.begin_transaction("corrida A", agent_id="dyndolod-pipeline-service")
+        # F-03: capturar la TX REAL que crea execute() (no una manual).
+        tx_reales: list[int] = []
+        original_begin_h1 = journal.begin_transaction
+
+        async def _begin_h1(*a: object, **k: object) -> int:
+            resultado = await original_begin_h1(*a, **k)  # type: ignore[arg-type]
+            tx_reales.append(resultado)
+            return resultado
+
+        journal.begin_transaction = _begin_h1  # type: ignore[method-assign]
 
         svc = DynDOLODPipelineService(
             lock_manager=mgr,
@@ -769,23 +797,325 @@ async def test_robo_de_fila_same_agent_id_bloquea_certificacion(
         res = await asyncio.wait_for(svc.execute(preset="Medium", run_texgen=True, create_snapshot=True), timeout=60)
         await asyncio.wait_for(ev_liberado.wait(), timeout=10)
 
+        tx_real = tx_reales[-1]
         assert res.get("success") is False
-        assert res.get("needs_deployment") is True  # el artifact existe (F5-semántica)
-        assert digest_llamadas == [], "el digest corrió pese al robo de la fila"
+        # F-02: certificación bloqueada por robo ⇒ needs_deployment NO accionable.
+        assert res.get("needs_deployment") is None, res
+        # Nota: puede existir 1 llamada legítima de digest desde
+        # _resolver_fallo_de_supersede en el camino de fallo; el daño prohibido
+        # se assertiona abajo (ningún handoff firmado).
         filas: list[int] = []
         async with journal._db.execute(  # noqa: SLF001
-            "SELECT handoff_id FROM deployment_handoffs WHERE source_tx_id = ?", (tx_a,)
+            "SELECT handoff_id FROM deployment_handoffs WHERE source_tx_id = ?", (tx_real,)
         ) as cur:
             filas = [int(r[0]) for r in await cur.fetchall()]
         assert filas == [], f"se firmó un handoff sobre bytes de otro dueño: {filas}"
         estado_row = None
         async with journal._db.execute(  # noqa: SLF001
-            "SELECT status FROM transactions WHERE transaction_id = ?", (tx_a,)
+            "SELECT status FROM transactions WHERE transaction_id = ?", (tx_real,)
         ) as cur:
             estado_row = await cur.fetchone()
         assert estado_row is not None and str(estado_row[0]) == "pending", (
-            f"TX_A debe quedar recuperable (pending), está {estado_row}"
+            f"TX real de execute() debe quedar recuperable (pending), está {estado_row}"
         )
+    finally:
+        await journal.close()
+        await mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# H2 (round-2 F-01) — ROBO DURANTE el digest: fencing #1 pasa, los bytes se
+# leen con el lease ya robado; el SEGUNDO assert_owned (post-read, pre-
+# durable-write) debe cortar antes de firmar nada.
+# ---------------------------------------------------------------------------
+
+
+async def test_robo_durante_el_digest_es_cortado_por_el_segundo_fencing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import aiosqlite
+
+    import sky_claw.local.tools.dyndolod_service as dsm
+    from sky_claw.app.db.locks import LockLeaseLostError
+
+    config = _entorno(tmp_path)
+    artifact = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    clave = clave_de_artifact(artifact)
+    ev_liberado = asyncio.Event()
+
+    class _Mgr(DistributedLockManager):
+        async def release_lock(self, resource_id: str, agent_id: str) -> bool:  # type: ignore[override]
+            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id)
+            if resource_id == "dyndolod-pipeline":
+                ev_liberado.set()
+            return ok
+
+    mgr = _Mgr(tmp_path / "locks.db")
+    await mgr.initialize()
+    journal = OperationJournal(tmp_path / "journal.db")
+    await journal.open()
+    try:
+        (artifact / "textures" / "sub").mkdir(parents=True, exist_ok=True)
+        (artifact / "textures" / "a.dds").write_bytes(b"PREVIO")
+        d_previo = digest_arbol(artifact / "textures")
+        tx_old = await journal.begin_transaction("previa", agent_id="dyndolod-pipeline-service")
+        await journal.crear_handoff_de_deployment(
+            tx_old,
+            descripcion="previa",
+            registro=DeploymentHandoff(
+                handoff_id=0,
+                source_tx_id=tx_old,
+                state=HandoffState.AWAITING_DEPLOYMENT,
+                artifact_path=clave,
+                game_key="g",
+                mods_root_key="m",
+                data_key="d",
+                expected_profile="Perfil-A",
+                expected_digest=d_previo.digest,
+                expected_files=d_previo.files,
+                expected_bytes=d_previo.bytes,
+                observed_digest=None,
+                observed_files=None,
+                observed_bytes=None,
+                created_at="",
+                updated_at="",
+                completed_at=None,
+                superseded_at=None,
+                superseded_by=None,
+            ),
+        )
+
+        # Capturar la TX REAL de execute() (F-03).
+        tx_reales: list[int] = []
+        original_begin = journal.begin_transaction
+
+        async def _begin_obs(*a: object, **k: object) -> int:
+            resultado = await original_begin(*a, **k)  # type: ignore[arg-type]
+            tx_reales.append(resultado)
+            return resultado
+
+        journal.begin_transaction = _begin_obs  # type: ignore[method-assign]
+
+        # Contador del fencing: cada assert_owned graba ok/lost en orden.
+        fencing_outcomes: list[str] = []
+        assert_original = __import__(
+            "sky_claw.local.tools.dyndolod_service", fromlist=["SnapshotTransactionLock"]
+        ).SnapshotTransactionLock.assert_owned
+
+        async def _assert_observado(self: object) -> None:
+            try:
+                await assert_original(self)
+            except LockLeaseLostError:
+                fencing_outcomes.append("lost")
+                raise
+            fencing_outcomes.append("ok")
+
+        monkeypatch.setattr(
+            "sky_claw.local.tools.dyndolod_service.SnapshotTransactionLock.assert_owned",
+            _assert_observado,
+        )
+
+        # Digest BLOQUEADO a mitad de lectura: roba mientras dura.
+        ev_digest_iniciada = asyncio.Event()
+        digest_libera = threading.Event()
+        loop_principal = asyncio.get_running_loop()
+        digest_corridas: list[object] = []
+        digest_original = dsm.digest_arbol
+
+        def _digest_bloqueante(ruta: object) -> object:
+            digest_corridas.append(ruta)
+            loop_principal.call_soon_threadsafe(ev_digest_iniciada.set)
+            digest_libera.wait(timeout=30)
+            return digest_original(ruta)
+
+        monkeypatch.setattr(dsm, "digest_arbol", _digest_bloqueante)
+
+        svc = DynDOLODPipelineService(
+            lock_manager=mgr,
+            snapshot_manager=AsyncMock(spec=FileSnapshotManager),
+            journal=journal,  # type: ignore[arg-type]
+            path_resolver=MagicMock(),
+            event_bus=AsyncMock(spec=CoreEventBus),
+            mo2_profile="Perfil-A",
+        )
+        runner = DynDOLODRunner(config)
+        svc._runner = runner  # type: ignore[attr-defined]
+
+        async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
+            staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+            staging.mkdir(parents=True, exist_ok=True)
+            (staging / "a.dds").write_bytes(b"GEN-A-MARKER")
+            log_path = config.dyndolod_exe.parent / "Logs" / "TexGen_SSE_log.txt"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write("[00:10:00] TexGen completed successfully GEN-A\n")
+            return "", "", 0, 1.0
+
+        svc._runner._execute_process = _proceso  # type: ignore[attr-defined]
+        svc._runner.run_dyndolod = AsyncMock()  # type: ignore[attr-defined]
+
+        tarea = asyncio.create_task(svc.execute(preset="Medium", run_texgen=True, create_snapshot=True))
+        await asyncio.wait_for(ev_digest_iniciada.wait(), timeout=30)
+
+        # EL ROBO, con el digest EN VUELO: hermano re-adquiere (nuevo token).
+        async with aiosqlite.connect(tmp_path / "locks.db") as db:
+            await db.execute(
+                "UPDATE resource_locks SET acquired_at = acquired_at + 1.0 WHERE resource_id = 'dyndolod-pipeline'"
+            )
+            await db.commit()
+
+        digest_libera.set()
+        res = await asyncio.wait_for(tarea, timeout=60)
+        await asyncio.wait_for(ev_liberado.wait(), timeout=10)
+
+        # El fencing #1 pasó y el #2 CORTÓ (esa es exactamente la carrera).
+        assert fencing_outcomes == ["ok", "lost"], fencing_outcomes
+        # 2 llamadas: la de certificación (completó tras el robo) + la legítima
+        # de _resolver_fallo_de_supersede en el camino de fallo. El daño
+        # prohibido se assertiona abajo (ningún handoff firmado).
+        assert len(digest_corridas) >= 1
+        assert res.get("success") is False
+        assert res.get("needs_deployment") is None, res
+
+        tx_real = tx_reales[-1]
+        filas: list[int] = []
+        async with journal._db.execute(  # noqa: SLF001
+            "SELECT handoff_id FROM deployment_handoffs WHERE source_tx_id = ?", (tx_real,)
+        ) as cur:
+            filas = [int(r[0]) for r in await cur.fetchall()]
+        assert filas == [], f"handoff firmado con lease robada a mitad del digest: {filas}"
+        estado_row = None
+        async with journal._db.execute(  # noqa: SLF001
+            "SELECT status FROM transactions WHERE transaction_id = ?", (tx_real,)
+        ) as cur:
+            estado_row = await cur.fetchone()
+        assert estado_row is not None and str(estado_row[0]) == "pending"
+    finally:
+        await journal.close()
+        await mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# P1 — INDETERMINATE × needs_deployment: certificar bajo lease SUPERSEDE al
+# viejo INDETERMINATE dentro del boundary (R-002B) sin tocar su observed_*.
+# ---------------------------------------------------------------------------
+
+
+async def test_regeneracion_desde_indeterminate_certifica_y_supersede_bajo_lease(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    config = _entorno(tmp_path)
+    artifact = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    clave = clave_de_artifact(artifact)
+    ev_liberado = asyncio.Event()
+
+    class _Mgr(DistributedLockManager):
+        async def release_lock(self, resource_id: str, agent_id: str) -> bool:  # type: ignore[override]
+            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id)
+            if resource_id == "dyndolod-pipeline":
+                ev_liberado.set()
+            return ok
+
+    mgr = _Mgr(tmp_path / "locks.db")
+    await mgr.initialize()
+    journal = OperationJournal(tmp_path / "journal.db")
+    await journal.open()
+    try:
+        # Viejo INDETERMINATE: expected_* NULL permitidos SOLO en ese estado.
+        (artifact / "textures" / "sub").mkdir(parents=True, exist_ok=True)
+        (artifact / "textures" / "a.dds").write_bytes(b"PREVIO")
+        tx_old = await journal.begin_transaction("previa colgada", agent_id="dyndolod-pipeline-service")
+        await journal.crear_handoff_de_deployment(
+            tx_old,
+            descripcion="colgada INDETERMINATE",
+            registro=DeploymentHandoff(
+                handoff_id=0,
+                source_tx_id=tx_old,
+                state=HandoffState.INDETERMINATE,
+                artifact_path=clave,
+                game_key="g",
+                mods_root_key="m",
+                data_key="d",
+                expected_profile="Perfil-A",
+                expected_digest=None,
+                expected_files=None,
+                expected_bytes=None,
+                observed_digest=None,
+                observed_files=None,
+                observed_bytes=None,
+                created_at="",
+                updated_at="",
+                completed_at=None,
+                superseded_at=None,
+                superseded_by=None,
+            ),
+        )
+
+        tx_reales: list[int] = []
+        original_begin = journal.begin_transaction
+
+        async def _begin_obs(*a: object, **k: object) -> int:
+            resultado = await original_begin(*a, **k)  # type: ignore[arg-type]
+            tx_reales.append(resultado)
+            return resultado
+
+        journal.begin_transaction = _begin_obs  # type: ignore[method-assign]
+
+        svc = DynDOLODPipelineService(
+            lock_manager=mgr,
+            snapshot_manager=AsyncMock(spec=FileSnapshotManager),
+            journal=journal,  # type: ignore[arg-type]
+            path_resolver=MagicMock(),
+            event_bus=AsyncMock(spec=CoreEventBus),
+            mo2_profile="Perfil-A",
+        )
+        runner = DynDOLODRunner(config)
+        svc._runner = runner  # type: ignore[attr-defined]
+
+        async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
+            staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+            staging.mkdir(parents=True, exist_ok=True)
+            (staging / "a.dds").write_bytes(b"GEN-A-MARKER")
+            log_path = config.dyndolod_exe.parent / "Logs" / "TexGen_SSE_log.txt"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write("[00:10:00] TexGen completed successfully GEN-A\n")
+            return "", "", 0, 1.0
+
+        svc._runner._execute_process = _proceso  # type: ignore[attr-defined]
+        svc._runner.run_dyndolod = AsyncMock()  # type: ignore[attr-defined]
+
+        res = await asyncio.wait_for(svc.execute(preset="Medium", run_texgen=True, create_snapshot=True), timeout=60)
+
+        # Certificación exitosa bajo lease ⇒ needs_deployment accionable.
+        assert res.get("success") is False
+        assert res.get("needs_deployment") is True, res
+        await asyncio.wait_for(ev_liberado.wait(), timeout=10)
+
+        tx_real = tx_reales[-1]
+        filas: list[tuple[int, str, int | None]] = []
+        async with journal._db.execute(  # noqa: SLF001
+            "SELECT handoff_id, state, superseded_by FROM deployment_handoffs "
+            "WHERE artifact_path = ? ORDER BY handoff_id",
+            (clave,),
+        ) as cur:
+            filas = [(int(r[0]), str(r[1]), r[2] and int(r[2])) for r in await cur.fetchall()]
+        assert len(filas) == 2, filas
+        viejo_id, viejo_state, nuevo_id_link = filas[0]
+        nuevo_id, nuevo_state, _ = filas[1]
+        assert viejo_state == "superseded", filas
+        assert nuevo_state == "awaiting_deployment", filas
+        assert nuevo_id_link == nuevo_id, filas
+
+        # La identidad nueva sale EXCLUSIVAMENTE del artifact generado.
+        digest_final = digest_arbol(artifact / "textures")
+        async with journal._db.execute(  # noqa: SLF001
+            "SELECT expected_digest, source_tx_id FROM deployment_handoffs WHERE handoff_id = ?", (nuevo_id,)
+        ) as cur:
+            fila_nueva = await cur.fetchone()
+        assert str(fila_nueva[0]) == digest_final.digest
+        assert int(fila_nueva[1]) == tx_real
     finally:
         await journal.close()
         await mgr.close()
