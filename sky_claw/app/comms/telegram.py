@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 
+from sky_claw.app.security.network_gateway import EgressViolationError, NetworkGatewayTimeoutError
 from sky_claw.logging_config import correlation_id_var
 
 logger = logging.getLogger(__name__)
@@ -196,10 +197,7 @@ class TelegramWebhook:
 
         try:
             data: dict[str, Any] = await request.json()
-            if "callback_query" in data:
-                await self._handle_callback_query(data["callback_query"])
-            else:
-                await self.process_update(data)
+            await self.process_update(data)
         except (ValueError, TypeError):
             logger.warning("Invalid JSON in Telegram update")
         except Exception as exc:
@@ -208,9 +206,11 @@ class TelegramWebhook:
         return web.Response(status=200)
 
     async def process_update(self, data: dict[str, Any]) -> None:
-        """Process a single Telegram update dict.
+        """Procesa un update de Telegram mediante el dispatcher autoritativo.
 
-        This can be called from the webhook handler or a polling loop.
+        Webhook y long polling usan esta misma ruta. La deduplicación y la
+        autorización ocurren antes de enrutar mensajes o callbacks, de modo
+        que un callback no pueda eludir el límite HITL.
         """
         correlation_id_var.set(str(uuid.uuid4()))
         update_id = data.get("update_id")
@@ -227,7 +227,13 @@ class TelegramWebhook:
         while len(self._seen_updates) > _DEDUP_MAX_SIZE:
             self._seen_updates.popitem(last=False)
 
-        # Extract chat_id and text from message.
+        # Enruta callbacks por el mismo boundary que los mensajes.
+        callback_query = data.get("callback_query")
+        if isinstance(callback_query, dict):
+            await self._handle_callback_query(callback_query)
+            return
+
+        # Extrae chat_id y texto del mensaje.
         message = data.get("message", {})
         text = message.get("text", "")
         chat = message.get("chat", {})
@@ -240,7 +246,7 @@ class TelegramWebhook:
             logger.warning("Telegram update rechazado: el operador debe usar su chat privado autorizado.")
             return
 
-        # Intercept HITL operator commands before routing to the LLM.
+        # Intercepta comandos HITL antes de enrutar al LLM.
         if self._hitl is not None:
             parsed = _parse_hitl_command(text)
             if parsed is not None:
@@ -250,14 +256,14 @@ class TelegramWebhook:
                 task.add_done_callback(self._tasks.discard)
                 return
 
-        # Intercept update command
+        # Intercepta el comando de actualización.
         if text.strip() == "/update_mods":
             task = asyncio.create_task(self._handle_update_mods_command(chat_id))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
             return
 
-        # Fire-and-forget background processing via LLM.
+        # Procesamiento en segundo plano mediante el LLM.
         task = asyncio.create_task(self._process_bg(chat_id, text, update_id))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -305,15 +311,23 @@ class TelegramWebhook:
             logging.getLogger(__name__).exception("Falla en /update_mods: %s", exc)
             await self._sender.send(chat_id, "❌ Ocurrió un error crítico durante la actualización.")
 
+    async def _answer_callback_query_safely(self, query: dict[str, Any], text: str | None = None) -> None:
+        """Confirma un callback sin ocultar la decisión autoritativa de HITL."""
+        callback_id = query.get("id")
+        if not callback_id:
+            return
+        try:
+            await self._sender.answer_callback_query(callback_id, text=text)
+        except (aiohttp.ClientError, OSError, TimeoutError, EgressViolationError, NetworkGatewayTimeoutError):
+            # Un fallo de transporte no revierte una decisión ya comprometida.
+            logger.warning("No se pudo confirmar el callback de Telegram %s", callback_id, exc_info=True)
+
     async def _handle_callback_query(self, query: dict[str, Any]) -> None:
-        """Handle an operator clicking an inline button (Approve/Deny)."""
+        """Procesa el clic de un operador en un botón inline (aprobar/denegar)."""
         # H-03: Validación anti-spoofing
         if not self._validate_private_operator(query):
             logger.warning("Intento de spoofing HITL detectado y bloqueado en callback_query.")
-            callback_id = query.get("id")
-            if callback_id:
-                # Egress por el gateway (allow-list/SSRF/timeout) + async with → sin fuga.
-                await self._sender.answer_callback_query(callback_id, text="Unauthorized")
+            await self._answer_callback_query_safely(query, text="Unauthorized")
             return
 
         data = query.get("data", "")
@@ -321,38 +335,50 @@ class TelegramWebhook:
         chat_id = chat.get("id")
         message_id = query.get("message", {}).get("message_id")
 
-        if not data or not chat_id or not message_id:
+        if not data or chat_id is None or message_id is None:
+            await self._answer_callback_query_safely(query, text="Invalid callback")
             return
 
-        # Format: "hitl:approve:<request_id>" or "hitl:deny:<request_id>"
-        if not data.startswith("hitl:"):
-            return
-
+        # Formato: "hitl:approve:<request_id>" o "hitl:deny:<request_id>".
         parts = data.split(":")
-        if len(parts) != 3:
+        if len(parts) != 3 or parts[0] != "hitl":
+            logger.warning("Invalid HITL callback format received")
+            await self._answer_callback_query_safely(query, text="Invalid callback")
             return
 
         action, request_id = parts[1], parts[2]
+        if action not in {"approve", "deny"} or not request_id.strip():
+            # Una acción desconocida o un ID vacío nunca deben convertirse
+            # implícitamente en denegación ni en otro identificador.
+            logger.warning("Unknown or empty HITL callback action received: %r", data)
+            await self._answer_callback_query_safely(query, text="Invalid HITL action")
+            return
+
         approved = action == "approve"
 
-        if self._hitl is not None:
-            found = await self._hitl.respond(request_id, approved)
-            verb = "Approved" if approved else "Denied"
+        if self._hitl is None:
+            logger.error("Se recibió un callback HITL válido sin HITLGuard inicializado")
+            await self._answer_callback_query_safely(query, text="HITL unavailable")
+            return
 
-            # Answer callback to remove loading state in Telegram
-            callback_id = query.get("id")
-            if callback_id:
-                # Egress por el gateway (allow-list/SSRF/timeout) + async with → sin fuga.
-                await self._sender.answer_callback_query(callback_id)
+        found = await self._hitl.respond(request_id, approved)
+        verb = "Approved" if approved else "Denied"
 
-            if found:
-                text = f"Request '{request_id}' {verb.lower()} by operator."
+        # Confirma el callback para quitar el estado de carga. Un fallo de
+        # entrega se observa, pero no cambia el resultado HITL comprometido.
+        await self._answer_callback_query_safely(query)
+
+        if found:
+            text = f"Request '{request_id}' {verb.lower()} by operator."
+            try:
                 await self._sender.edit_message(chat_id, message_id, text, reply_markup=None)
-            else:
-                await self._sender.send(
-                    chat_id,
-                    f"Error: Request '{request_id}' not found or already processed.",
-                )
+            except Exception:
+                logger.exception("No se pudo editar el mensaje HITL terminal para %s", request_id)
+        else:
+            await self._sender.send(
+                chat_id,
+                f"Error: Request '{request_id}' not found or already processed.",
+            )
 
     async def _handle_hitl_command(
         self,
@@ -373,7 +399,10 @@ class TelegramWebhook:
             logger.warning("Intento de spoofing HITL detectado y bloqueado.")
             return
 
-        assert self._hitl is not None
+        if self._hitl is None:
+            logger.error("HITL command received without an initialized HITL guard")
+            return
+
         found = await self._hitl.respond(request_id, approved)
         verb = "approved" if approved else "denied"
         try:
