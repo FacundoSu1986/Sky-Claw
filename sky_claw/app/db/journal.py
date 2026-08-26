@@ -29,9 +29,11 @@ from sky_claw.app.core.db_lifecycle import (
 from sky_claw.app.db.handoffs import (
     _INSERT_HANDOFF_SQL,
     _SELECT_HANDOFF_ACTIVO_SQL,
+    ARTIFACT_RESOLUTIONS_SCHEMA_SQL,
     HANDOFFS_SCHEMA_SQL,
     ORPHAN_ABSORPTIONS_SCHEMA_SQL,
     SWEEP_RECEIPTS_SCHEMA_SQL,
+    ArtifactResolutionKind,
     DeploymentHandoff,
     HandoffState,
     SweepReceiptState,
@@ -121,54 +123,106 @@ async def _candidatas_orphan_en_conn(
     """LA definición de candidata orphan para un artifact físico — operable
     dentro de una conexión existente.
 
-    Semántica congelada (única fuente de verdad; ``transacciones_que_nombran``
-    y el boundary de reemplazo la comparten para que no puedan divergir):
+    Semántica Issue #506 (D4):
 
     - TX PENDING cuyo ActionManifest nombra el objetivo, O
-    - TX ROLLED_BACK con receipt UNRESOLVED de stale sweep que lo nombra;
-    - MINUS las que ya tienen absorción vigente ``(transaction_id,
-      artifact_path)`` para ESTE objetivo (exclusión per-artifact).
+    - TX ROLLED_BACK con sweep receipt existente que lo nombra (causalidad de stale sweep);
+    - MINUS las que ya tienen resolución vigente en ``artifact_evidence_resolutions``
+      para ESTE objetivo físico (exclusión per-artifact).
 
     Corre sobre el ``conn`` del caller SIN commitear ni abrir boundaries:
     dentro del boundary de reemplazo ve las escrituras aún no confirmadas de
     esa misma conexión (p. ej. la TX actual ya marcada COMMITTED deja de ser
-    candidata), que es exactamente la propiedad que necesita la absorción
+    candidata), que es exactamente la propiedad que necesita la resolución
     atómica.
     """
     sql = """
-        SELECT je.transaction_id, t.status, je.metadata, r.state
+        SELECT je.transaction_id, t.status, je.metadata, r.receipt_id
         FROM journal_entries je
         JOIN transactions t ON t.transaction_id = je.transaction_id
         LEFT JOIN stale_pending_sweep_receipts r ON r.transaction_id = je.transaction_id
         WHERE je.metadata IS NOT NULL AND t.status IN ('pending', 'rolled_back')
     """
-    sql_absorbidas = "SELECT transaction_id FROM orphan_evidence_absorptions WHERE artifact_path = ?"
+    sql_resueltas = "SELECT transaction_id FROM artifact_evidence_resolutions WHERE artifact_path = ?"
     async with conn.execute(sql) as cursor:
         filas = [tuple(fila) async for fila in cursor]
-    async with conn.execute(sql_absorbidas, (objetivo_fisico,)) as cursor:
-        absorbidas = {int(fila[0]) async for fila in cursor}
+    async with conn.execute(sql_resueltas, (objetivo_fisico,)) as cursor:
+        resueltas = {int(fila[0]) async for fila in cursor}
 
     coincidencias: set[int] = set()
-    for tx_id, status, metadata, receipt_state in filas:
-        if status != TransactionStatus.PENDING.value and receipt_state != SweepReceiptState.UNRESOLVED.value:
+    for tx_id, status, metadata, receipt_id in filas:
+        if status == TransactionStatus.PENDING.value or (
+            status == TransactionStatus.ROLLED_BACK.value and receipt_id is not None
+        ):
+            es_candidata_causal = True
+        else:
+            es_candidata_causal = False
+
+        if not es_candidata_causal:
             continue
+
         for ruta in _rutas_de_metadata(metadata):
             if _nombra_objetivo(ruta, objetivo_fisico, prefijo):
                 coincidencias.add(int(tx_id))
                 break
-    return coincidencias - absorbidas
+    return coincidencias - resueltas
 
 
 #: INSERT del receipt durable de stale sweep (F-001, patch 0006).
 _INSERT_SWEEP_RECEIPT_SQL = "INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (?, 'unresolved')"
 
-#: INSERT de la absorción durable de evidencia orphan (PATCH 0011). La identidad
-#: es (transaction_id, artifact_path) — ver ORPHAN_ABSORPTIONS_SCHEMA_SQL; una
-#: violación del UNIQUE levanta DENTRO del boundary y revierte todo el bloque
-#: (INSERT del handoff + absorciones + consumo de receipts caen juntos).
+#: INSERT de absorción legacy (compatibilidad).
 _INSERT_ABSORCION_EVIDENCIA_SQL = (
     "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) VALUES (?, ?, ?)"
 )
+
+#: INSERT de la resolución durable de evidencia per-artifact (D4, Issue #506).
+_INSERT_RESOLUCION_EVIDENCIA_SQL = (
+    "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
+    "VALUES (?, ?, ?, ?)"
+)
+
+
+async def _registrar_resoluciones_de_artifact_en_conn(
+    conn: aiosqlite.Connection,
+    *,
+    transaction_ids: Iterable[int],
+    artifact_path: str,
+    resolution_kind: ArtifactResolutionKind | str,
+    handoff_id: int | None = None,
+) -> None:
+    """Registra resoluciones durables per-artifact en ``artifact_evidence_resolutions``.
+    Garantiza idempotencia ante reintentos exactos y falla cerrado (IntegrityError)
+    ante conflictos de provenance semántica. ASUME el boundary del caller.
+    """
+    ids = sorted({int(tx_id) for tx_id in transaction_ids})
+    if not ids:
+        return
+    objetivo_fisico, _ = _canonica_y_prefijo(artifact_path)
+    kind_str = str(resolution_kind)
+
+    for tx_id in ids:
+        async with conn.execute(
+            "SELECT resolution_kind, handoff_id FROM artifact_evidence_resolutions "
+            "WHERE transaction_id = ? AND artifact_path = ?",
+            (tx_id, objetivo_fisico),
+        ) as cur:
+            fila = await cur.fetchone()
+
+        if fila is not None:
+            exist_kind, exist_handoff = str(fila[0]), (int(fila[1]) if fila[1] is not None else None)
+            if exist_kind == kind_str and exist_handoff == handoff_id:
+                continue  # Idempotente exacto
+            raise JournalTransactionError(
+                f"Conflicto de resolución para TX {tx_id} en '{objetivo_fisico}': "
+                f"existente=({exist_kind}, {exist_handoff}), nueva=({kind_str}, {handoff_id})",
+                transaction_id=tx_id,
+            )
+
+        await conn.execute(
+            _INSERT_RESOLUCION_EVIDENCIA_SQL,
+            (tx_id, objetivo_fisico, kind_str, handoff_id),
+        )
 
 
 async def _sellar_evidencia_de_artifact(
@@ -176,58 +230,23 @@ async def _sellar_evidencia_de_artifact(
     *,
     objetivo_fisico: str,
     prefijo: str,
-    handoff_id: int,
+    handoff_id: int | None = None,
+    resolution_kind: ArtifactResolutionKind | str = ArtifactResolutionKind.ABSORBED_BY_HANDOFF,
     excluir: int | None = None,
 ) -> None:
-    """Sella la evidencia orphan vigente de un artifact: la absorbe con
-    provenance ``handoff_id`` y obsoleta sus receipts. ASUME el boundary del
-    caller.
-
-    POST493_ACTIVE_INDETERMINATE_EVIDENCE — enunciado como propiedad del
-    MECANISMO, no como recordatorio de proceso:
-
-        mientras un handoff activo existe, ``reconciliar_orphan_de_artifact``
-        retorna ese owner ANTES de materializar evidencia nueva
-        (short-circuit), así que las corridas fallidas de esa época quedan
-        PENDING sin absorber. Por lo tanto TODO boundary que EXTINGA esa
-        propiedad autorizada —reemplazándola (supersede) o consumiéndola
-        (resume completado)— debe sellar la evidencia acumulada bajo ella, o
-        el siguiente startup/Resume la re-fabrica como INDETERMINATE falso.
-
-    Un solo boundary sellando no alcanza: la propiedad se extingue por DOS
-    caminos y ambos tienen que participar. El ancla
-    ``test_todo_boundary_que_extingue_un_handoff_sella_la_evidencia`` los
-    enumera por AST y se rompe si aparece un tercero sin sellar.
-
-    ``excluir`` descarta la TX de la generación en curso: jamás se absorbe a
-    sí misma por el artifact que acaba de producir.
-
-    El ``artifact_path`` que se persiste es el CANÓNICO (``objetivo_fisico``),
-    la misma identidad con la que ``_candidatas_orphan_en_conn`` filtra las
-    absorciones vigentes — ver :func:`clave_de_artifact`, que prohíbe una
-    segunda definición de identidad física. Hoy TODOS los constructores de
-    producción ya pasan esa forma (``handoffs.py`` vía ``clave``,
-    ``dyndolod_service`` vía ``clave_de_artifact``), así que no hay filas
-    legadas que migrar: canonicalizar acá elimina la posibilidad de que un
-    caller futuro divergiera, no repara nada existente.
-
-    NO obsoleta receipts, a propósito. El receipt de stale sweep es UNA FILA
-    POR TRANSACCIÓN, no por artifact: marcarlo SUPERSEDED desde el boundary
-    del artifact A silencia a esa TX como evidencia de TODOS los artifacts que
-    nombra —incluido B, que nadie absorbió— porque el oracle exige receipt
-    UNRESOLVED para admitir una TX ROLLED_BACK. La absorción sí es
-    per-artifact, así que alcanza sola para excluir la TX del oracle DE ESTE
-    artifact sin tocar los demás. Quien necesite obsoletar receipts (la
-    provenance autorizada NUEVA del contrato F-001) llama explícitamente a
-    :func:`_obsoletar_receipts_de_artifact`.
+    """Sella la evidencia orphan vigente de un artifact: la resuelve en
+    ``artifact_evidence_resolutions``. ASUME el boundary del caller.
     """
     candidatas = await _candidatas_orphan_en_conn(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
     if excluir is not None:
         candidatas.discard(excluir)
     if candidatas:
-        await conn.executemany(
-            _INSERT_ABSORCION_EVIDENCIA_SQL,
-            [(int(tx_id), objetivo_fisico, int(handoff_id)) for tx_id in sorted(candidatas)],
+        await _registrar_resoluciones_de_artifact_en_conn(
+            conn,
+            transaction_ids=candidatas,
+            artifact_path=objetivo_fisico,
+            resolution_kind=resolution_kind,
+            handoff_id=handoff_id,
         )
 
 
@@ -257,6 +276,48 @@ async def _obsoletar_receipts_de_artifact(
             "UPDATE stale_pending_sweep_receipts SET state = ?, resolved_at = datetime('now') "
             "WHERE transaction_id = ? AND state = 'unresolved'",
             [(SweepReceiptState.SUPERSEDED.value, tx_id) for tx_id in ids_obsoletos],
+        )
+
+
+async def _migrar_resoluciones_legacy_en_conn(conn: aiosqlite.Connection) -> None:
+    """Migra filas históricas de ``orphan_evidence_absorptions`` a
+    ``artifact_evidence_resolutions`` de forma idempotente y con validación
+    exacta fail-closed (Issue #506 D4).
+    """
+    # 1. Backfill idempotente: ON CONFLICT DO NOTHING
+    sql_backfill = """
+        INSERT INTO artifact_evidence_resolutions (
+            transaction_id,
+            artifact_path,
+            resolution_kind,
+            handoff_id,
+            resolved_at
+        )
+        SELECT
+            transaction_id,
+            artifact_path,
+            'absorbed_by_handoff',
+            handoff_id,
+            absorbed_at
+        FROM orphan_evidence_absorptions
+        WHERE true
+        ON CONFLICT(transaction_id, artifact_path) DO NOTHING
+    """
+    await conn.execute(sql_backfill)
+
+    # 2. Validación posterior exacta fail-closed:
+    sql_validar = """
+        SELECT o.transaction_id, o.artifact_path, o.handoff_id, r.resolution_kind, r.handoff_id
+        FROM orphan_evidence_absorptions o
+        JOIN artifact_evidence_resolutions r
+          ON r.transaction_id = o.transaction_id AND r.artifact_path = o.artifact_path
+        WHERE r.resolution_kind != 'absorbed_by_handoff' OR r.handoff_id != o.handoff_id
+    """
+    async with conn.execute(sql_validar) as cursor:
+        discrepancias = [tuple(row) async for row in cursor]
+    if discrepancias:
+        raise JournalTransactionError(
+            f"Corrupción detectada durante backfill de resoluciones: discrepancia en {discrepancias}"
         )
 
 
@@ -515,6 +576,7 @@ class OperationJournal:
         + HANDOFFS_SCHEMA_SQL
         + SWEEP_RECEIPTS_SCHEMA_SQL
         + ORPHAN_ABSORPTIONS_SCHEMA_SQL
+        + ARTIFACT_RESOLUTIONS_SCHEMA_SQL
     )
 
     def __init__(
@@ -662,8 +724,9 @@ class OperationJournal:
                 if self._lifecycle is not None:
                     self._db = db
                 await db.executescript(self._SCHEMA_SQL)
+                await _migrar_resoluciones_legacy_en_conn(db)
             logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
-        except sqlite3.Error as e:
+        except (sqlite3.Error, JournalError) as e:
             if self._db is not None and self._owns_conn:
                 with contextlib.suppress(Exception):
                     await self._db.close()
@@ -1085,6 +1148,48 @@ class OperationJournal:
         boundary del caller (Principio 2: receipt y ROLLED_BACK caen juntos)."""
         await conn.executemany(_INSERT_SWEEP_RECEIPT_SQL, [(int(tx_id),) for tx_id in ids_barridos])
 
+    async def resolver_evidencia_como_no_artifact(
+        self,
+        artifact_path: str,
+        tx_ids: Iterable[int],
+    ) -> None:
+        """Registra resoluciones durables de ausencia demostrada (NO_ARTIFACT)
+        para un artifact específico y sus transacciones huérfanas candidatas
+        (Issue #506 D4).
+        """
+        ids = sorted({int(tx_id) for tx_id in tx_ids})
+        if not ids:
+            return
+        objetivo_fisico, _ = _canonica_y_prefijo(artifact_path)
+        db = await self._ensure_connected()
+        if self._lifecycle is not None:
+            try:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    await _registrar_resoluciones_de_artifact_en_conn(
+                        conn,
+                        transaction_ids=ids,
+                        artifact_path=objetivo_fisico,
+                        resolution_kind=ArtifactResolutionKind.NO_ARTIFACT_DEMONSTRATED,
+                        handoff_id=None,
+                    )
+            except sqlite3.Error as e:
+                raise JournalTransactionError(f"Failed to record no_artifact resolutions: {e}") from e
+        else:
+            async with self._lock:
+                try:
+                    await _registrar_resoluciones_de_artifact_en_conn(
+                        db,
+                        transaction_ids=ids,
+                        artifact_path=objetivo_fisico,
+                        resolution_kind=ArtifactResolutionKind.NO_ARTIFACT_DEMONSTRATED,
+                        handoff_id=None,
+                    )
+                    await db.commit()
+                except sqlite3.Error as e:
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
+                    raise JournalTransactionError(f"Failed to record no_artifact resolutions: {e}") from e
+
     async def cerrar_receipts_como_no_artifact(self, tx_ids: Iterable[int]) -> None:
         """Cierra receipts UNRESOLVED como NO_ARTIFACT (Principio 4).
 
@@ -1226,13 +1331,20 @@ class OperationJournal:
                 objetivo_fisico=objetivo_fisico,
                 prefijo=prefijo,
                 handoff_id=viejo.handoff_id,
+                resolution_kind=ArtifactResolutionKind.ABSORBED_BY_HANDOFF,
                 excluir=transaction_id,
             )
-        # F-001 (patch 0006), SIN cambios: una provenance autorizada NUEVA para
-        # este artifact obsoleta los receipts que lo nombran, haya o no `viejo`.
-        # Se llama acá y no dentro del sello porque el resume NO debe hacerlo
-        # (ver _sellar_evidencia_de_artifact).
-        await _obsoletar_receipts_de_artifact(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
+        else:
+            # RUN 1 (Issue #506 D4): la nueva corrida autorizada resuelve la evidencia
+            # previa de este artifact físico (SUPERSEDED_BY_RUN) sin mutar receipts globales.
+            await _sellar_evidencia_de_artifact(
+                conn,
+                objetivo_fisico=objetivo_fisico,
+                prefijo=prefijo,
+                handoff_id=nuevo_id,
+                resolution_kind=ArtifactResolutionKind.SUPERSEDED_BY_RUN,
+                excluir=transaction_id,
+            )
         return nuevo_id
 
     @staticmethod
@@ -1341,23 +1453,11 @@ class OperationJournal:
         ids_receipts: Iterable[int] = (),
         ids_absorcion: Iterable[int] | None = None,
     ) -> int | None:
-        """INSERT del INDETERMINATE + absorción de evidencia per-artifact +
-        consumo de receipts en el MISMO boundary (Principio 4 y PATCH 0011);
-        ASUME el boundary del caller. Levanta ``sqlite3.IntegrityError`` si ya
-        hay owner activo del artifact — o si una absorción duplica su identidad
-        ``(transaction_id, artifact_path)`` — y entonces NADA del bloque queda
-        afirmado (el boundary revierte completo).
-
-        La absorción (PATCH 0011) consume la EVIDENCIA — nunca el lifecycle de
-        la TX: una candidata puede ser una corrida realmente viva (candidata
-        espuria demostrada), así que ``transactions.status`` queda intacto y la
-        exclusión posterior vive en el oracle, per-artifact.
-
-        El ``artifact_path`` persistido es el CANÓNICO, la misma identidad con
-        la que el oracle filtra las absorciones vigentes (ver
-        :func:`_sellar_evidencia_de_artifact`): una fila escrita con la ruta
-        cruda del registro sería invisible para
-        ``_candidatas_orphan_en_conn``.
+        """INSERT del INDETERMINATE + resolución de evidencia per-artifact en el
+        MISMO boundary (Principio 4 e Issue #506 D4); ASUME el boundary del caller.
+        Levanta ``sqlite3.IntegrityError`` si ya hay owner activo del artifact — o
+        si una resolución duplica o entra en conflicto — y entonces NADA del
+        bloque queda afirmado (el boundary revierte completo).
         """
         cursor = await conn.execute(_INSERT_HANDOFF_SQL, fila_de_registro(registro))
         nuevo_id = int(cursor.lastrowid or 0) or None
@@ -1365,17 +1465,13 @@ class OperationJournal:
             absorciones = list(ids_absorcion) if ids_absorcion is not None else list(ids_receipts)
             if absorciones:
                 objetivo_fisico, _ = _canonica_y_prefijo(registro.artifact_path)
-                await conn.executemany(
-                    _INSERT_ABSORCION_EVIDENCIA_SQL,
-                    [(int(tx_id), objetivo_fisico, int(nuevo_id)) for tx_id in sorted(set(absorciones))],
+                await _registrar_resoluciones_de_artifact_en_conn(
+                    conn,
+                    transaction_ids=absorciones,
+                    artifact_path=objetivo_fisico,
+                    resolution_kind=ArtifactResolutionKind.ABSORBED_BY_HANDOFF,
+                    handoff_id=nuevo_id,
                 )
-        ids = list(ids_receipts)
-        if nuevo_id is not None and ids:
-            await conn.executemany(
-                "UPDATE stale_pending_sweep_receipts SET state = 'consumed', resolved_at = datetime('now') "
-                "WHERE transaction_id = ? AND state = 'unresolved'",
-                [(int(tx_id),) for tx_id in ids],
-            )
         return nuevo_id
 
     async def consultar_handoff_activo(self, artifact_path: str) -> DeploymentHandoff | None:
@@ -2850,6 +2946,9 @@ class NoOpJournal(OperationJournal):
     async def transacciones_que_nombran(self, objetivo: str) -> list[int]:
         return []
 
+    async def resolver_evidencia_como_no_artifact(self, artifact_path: str, tx_ids: Iterable[int]) -> None:
+        return None
+
     async def cerrar_receipts_como_no_artifact(self, tx_ids: Iterable[int]) -> None:
         return None
 
@@ -2949,6 +3048,9 @@ class StagingJournal(OperationJournal):
 
     async def transacciones_que_nombran(self, *args: Any, **kwargs: Any) -> list[int]:
         return await self._real_journal.transacciones_que_nombran(*args, **kwargs)
+
+    async def resolver_evidencia_como_no_artifact(self, *args: Any, **kwargs: Any) -> None:
+        await self._real_journal.resolver_evidencia_como_no_artifact(*args, **kwargs)
 
     async def cerrar_receipts_como_no_artifact(self, *args: Any, **kwargs: Any) -> None:
         await self._real_journal.cerrar_receipts_como_no_artifact(*args, **kwargs)
