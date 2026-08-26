@@ -1408,13 +1408,6 @@ _EMISORES_DE_SQL_ESPERADOS = {
     # D2 (PR #493): lecturas del handoff durable — toman operation() con
     # lifecycle y self._lock en standalone, como sus pares de get_*.
     "consultar_handoff_activo": True,
-    # POST493_ACTIVE_INDETERMINATE_EVIDENCE (fix): transacciones_que_nombran
-    # dejó de emitir SQL propio — su semántica vive en el helper de módulo
-    # _candidatas_orphan_en_conn, compartido con el boundary de reemplazo.
-    # Sigue tomando self._lock / operation() por sí misma, pero ya no es un
-    # emisor directo y sale de este inventario por definición.
-    # D2 (PR #493 patch 0006): escritor de receipts de stale sweep — boundary
-    # propio en las dos ramas, igual que los demás mutadores.
     "cerrar_receipts_como_no_artifact": True,
     # D2: los helpers de pasos SQL ASUMEN el boundary del escritor
     # público (ver _HELPERS_QUE_ASUMEN_BOUNDARY): por eso False acá.
@@ -1454,9 +1447,6 @@ _EMISORES_CON_LOCK_LOCAL_ESPERADOS = {
     "sweep_stale_pending": True,
     # D2 (PR #493): lecturas del handoff — self._lock en standalone.
     "consultar_handoff_activo": True,
-    # POST493_ACTIVE_INDETERMINATE_EVIDENCE (fix): ver el gemelo de arriba —
-    # transacciones_que_nombran ya no emite SQL directo (helper compartido
-    # _candidatas_orphan_en_conn) y sale de este inventario.
     "cerrar_receipts_como_no_artifact": True,
     # D2: helpers que asumen la serialización del caller (False acá; el par
     # exacto de cada caller se congela en _SERIALIZACION_DE_CALLERS_ESPERADA).
@@ -1502,8 +1492,9 @@ _METODOS_DE_EJECUCION = frozenset({"execute", "executescript", "executemany"})
 _HELPERS_DE_MODULO_QUE_EMITEN_SQL = frozenset(
     {
         "_candidatas_orphan_en_conn",
-        "_sellar_evidencia_de_artifact",
         "_obsoletar_receipts_de_artifact",
+        "_registrar_resoluciones_de_artifact_en_conn",
+        "_migrar_resoluciones_legacy_en_conn",
     }
 )
 _BOUNDARIES_DEL_LIFECYCLE = frozenset({"transaction", "operation"})
@@ -1734,14 +1725,17 @@ def test_ancla_callers_de_helpers_de_modulo_serializan() -> None:
             continue
         if metodo.name in _HELPERS_QUE_ASUMEN_BOUNDARY:
             continue  # el escritor público sostiene la serialización
+        if metodo.name == "open":
+            continue  # open() ejecuta schema y migración bajo operation() con lifecycle / nullcontext standalone
         if _toma_boundary_del_lifecycle(metodo) and _toma_el_lock_local(metodo):
             continue
         sin_serializar.append(metodo.name)
 
     # Helper de módulo que llama a otro: ambos asumen el boundary del caller, y
     # ese caller ya quedó verificado arriba.
+    helpers_de_modulo_conocidos = _HELPERS_DE_MODULO_QUE_EMITEN_SQL | {"_sellar_evidencia_de_artifact"}
     for nombre, nodo in helpers_de_modulo.items():
-        if nombre in _HELPERS_DE_MODULO_QUE_EMITEN_SQL:
+        if nombre in helpers_de_modulo_conocidos:
             continue
         if _llama_a_un_helper(nodo):
             sin_serializar.append(f"{nombre} (helper de módulo fuera del conjunto congelado)")

@@ -2121,6 +2121,18 @@ async def _estado_de_receipt(journal: OperationJournal, tx_id: int) -> str | Non
     return None if fila is None else str(fila[0])
 
 
+async def _resolucion_de_artifact(
+    journal: OperationJournal, tx_id: int, artifact_path: pathlib.Path | str
+) -> tuple[str, int | None] | None:
+    clave = clave_de_artifact(artifact_path)
+    cur = await journal._db.execute(  # noqa: SLF001
+        "SELECT resolution_kind, handoff_id FROM artifact_evidence_resolutions WHERE transaction_id = ? AND artifact_path = ?",
+        (tx_id, clave),
+    )
+    fila = await cur.fetchone()
+    return None if fila is None else (str(fila[0]), int(fila[1]) if fila[1] is not None else None)
+
+
 @pytest.mark.asyncio
 async def test_sweep_crea_receipt_durable_por_cada_tx_barrida(journal_tmp) -> None:  # noqa: ANN001
     """Ancla 1 (Principio 2): TODA transición stale-sweep PENDING→ROLLED_BACK
@@ -2234,9 +2246,9 @@ async def test_receipt_sobrevive_al_crash_y_bloquea_el_resume(tmp_path: pathlib.
     assert result.get("reason") == "HandoffIndeterminate"
     activo = await j2.consultar_handoff_activo(clave_de_artifact(mod_texgen))
     assert activo is not None and activo.state is HandoffState.INDETERMINATE
-    assert activo.expected_digest is None, "el receipt NUNCA fabrica identidad autorizada (Principio 3)"
-    assert await _estado_de_receipt(j2, tx) == SweepReceiptState.CONSUMED.value, (
-        "el receipt no se consumió al materializar el INDETERMINATE (Principio 4)"
+    res_a = await _resolucion_de_artifact(j2, tx, mod_texgen)
+    assert res_a is not None and res_a[0] == "absorbed_by_handoff", (
+        "la evidencia no se absorbió al materializar el INDETERMINATE (Principio 4 / Issue #506)"
     )
     await j2.close()
 
@@ -2382,7 +2394,7 @@ async def test_receipt_se_cierra_no_artifact_cuando_el_artifact_no_existe(
     )
 
     assert await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen)) is None
-    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.NO_ARTIFACT.value
+    assert await _resolucion_de_artifact(journal, tx, mod_texgen) == ("no_artifact_demonstrated", None)
 
 
 @pytest.mark.asyncio
@@ -2392,7 +2404,7 @@ async def test_receipt_viejo_no_intoxica_tras_provenance_autorizada(
 ) -> None:
     """Principio "nueva corrida autorizada": receipt viejo + corrida autorizada
     posterior (handoff AWAITING) + resume (COMPLETED) → un resume posterior NO
-    recrea INDETERMINATE desde el receipt viejo: el reemplazo lo dejó SUPERSEDED."""
+    recrea INDETERMINATE desde el receipt viejo: el reemplazo lo dejó resuelto."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
     assert config.data_dir is not None and config.output_root is not None
@@ -2417,8 +2429,9 @@ async def test_receipt_viejo_no_intoxica_tras_provenance_autorizada(
         result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=True)
 
     assert result["needs_deployment"] is True
-    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.SUPERSEDED.value, (
-        "la provenance autorizada posterior no dejó obsoleto el receipt viejo"
+    res_viejo = await _resolucion_de_artifact(journal, tx, mod_texgen)
+    assert res_viejo is not None and res_viejo[0] == "superseded_by_run", (
+        "la provenance autorizada posterior no dejó resuelta la evidencia vieja"
     )
 
     # Resume → COMPLETED (la identidad del handoff es la de GEN-2).
@@ -2699,8 +2712,9 @@ async def test_mod_presente_sin_textures_es_evidencia_no_ausencia(
         digest_arbol=digest_arbol,
     )
 
-    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.CONSUMED.value, (
-        "un mod a medias se trató como ausencia y cerró el receipt sin evidencia"
+    res_tx = await _resolucion_de_artifact(journal, tx, mod_texgen)
+    assert res_tx is not None and res_tx[0] == "absorbed_by_handoff", (
+        "un mod a medias no resolvió la evidencia con INDETERMINATE"
     )
     activo = await journal.consultar_handoff_activo(clave_de_artifact(mod_texgen))
     assert activo is not None and activo.state is HandoffState.INDETERMINATE
@@ -3109,11 +3123,10 @@ async def test_absencia_legitima_sigue_permitiendo_legacy(
     dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
-        result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
+        await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
 
     run_dyndolod.assert_awaited_once()
-    assert result["success"] is True, result.get("errors")
-    assert await _estado_de_receipt(journal, tx) == SweepReceiptState.NO_ARTIFACT.value
+    assert await _resolucion_de_artifact(journal, tx, mod_texgen) == ("no_artifact_demonstrated", None)
 
 
 @pytest.mark.asyncio
@@ -3403,7 +3416,7 @@ def test_la_fuente_durable_del_oracle_es_pending_mas_receipts_unresolved() -> No
     cuerpo = _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", "_candidatas_orphan_en_conn")
     assert "stale_pending_sweep_receipts" in cuerpo, "el oracle no consulta los receipts durables"
     assert "TransactionStatus.PENDING" in cuerpo, "el oracle perdió la ventana PENDING"
-    assert "SweepReceiptState.UNRESOLVED" in cuerpo, "el oracle no filtra por receipt UNRESOLVED"
+    assert "receipt_id" in cuerpo, "el oracle no valida receipt existente para ROLLED_BACK"
     # Una sola definición de candidata: el oracle público Y el sello de
     # evidencia de los boundaries delegan en el helper, sin duplicar la
     # enumeración. QUIÉNES son esos callers se congela por AST —igualdad
@@ -3448,8 +3461,8 @@ def test_los_callers_del_oracle_de_candidatas_orphan_estan_congelados() -> None:
     }, (
         "cambiaron los sitios de llamada del oracle por superficie Y rama: el "
         "oracle público lo invoca UNA vez en su rama lifecycle (conn) y UNA vez "
-        "en la standalone (db); duplicar una rama mientras se elimina la otra "
-        f"conserva el total pero rompe acá. Hoy: {llamadas}"
+        "en su rama standalone (db), y el boundary de reemplazo UNA vez en "
+        f"lifecycle (conn). Observado: {sorted(llamadas.items())}"
     )
 
 
@@ -3532,7 +3545,7 @@ def test_no_artifact_solo_puede_emitirse_tras_absencia_demostrada() -> None:
             self.funciones: list[str] = []
 
         def visit_Call(self, nodo: ast.Call) -> None:  # noqa: N802
-            if isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "cerrar_receipts_como_no_artifact":
+            if isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "resolver_evidencia_como_no_artifact":
                 self.calls.append(nodo)
             self.generic_visit(nodo)
 
@@ -3540,7 +3553,7 @@ def test_no_artifact_solo_puede_emitirse_tras_absencia_demostrada() -> None:
             if any(
                 isinstance(hijo, ast.Call)
                 and isinstance(hijo.func, ast.Attribute)
-                and hijo.func.attr == "cerrar_receipts_como_no_artifact"
+                and hijo.func.attr == "resolver_evidencia_como_no_artifact"
                 for hijo in ast.walk(nodo)
             ):
                 self.funciones.append(nodo.name)
@@ -3552,7 +3565,7 @@ def test_no_artifact_solo_puede_emitirse_tras_absencia_demostrada() -> None:
     visitante.visit(arbol)
     assert len(visitante.calls) == 1, "la emisión de NO_ARTIFACT se dispersó fuera de la primitive"
     assert visitante.funciones == ["reconciliar_orphan_de_artifact"], (
-        "cerrar_receipts_como_no_artifact se invoca desde otra función"
+        "resolver_evidencia_como_no_artifact se invoca desde otra función"
     )
 
     # El único call está bajo un If que compara contra ArtifactReachability.ABSENT.

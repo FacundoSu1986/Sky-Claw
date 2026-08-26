@@ -198,7 +198,8 @@ async def _reconciliar(journal: OperationJournal, config: DynDOLODConfig) -> obj
 async def _absorciones(db: pathlib.Path) -> list[tuple[int, str, int]]:
     async with aiosqlite.connect(str(db)) as conn:
         cur = await conn.execute(
-            "SELECT transaction_id, artifact_path, handoff_id FROM orphan_evidence_absorptions "
+            "SELECT transaction_id, artifact_path, handoff_id FROM artifact_evidence_resolutions "
+            "WHERE resolution_kind = 'absorbed_by_handoff' "
             "ORDER BY transaction_id, artifact_path"
         )
         filas = [(int(r[0]), str(r[1]), int(r[2])) for r in await cur.fetchall()]
@@ -369,9 +370,11 @@ def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
     ancla a propósito: la ventana 'evidencia sin boundary durable' resucitaría
     la evidencia o la consumiría sin handoff detrás."""
     modulo = pathlib.Path(sky_claw_app_db_journal_path())
-    assert _funciones_que_mencionan(modulo, "_INSERT_ABSORCION_EVIDENCIA_SQL") == {
+    assert _funciones_que_mencionan(modulo, "_registrar_resoluciones_de_artifact_en_conn") == {
         "_escribir_handoff_indeterminado",
         "_sellar_evidencia_de_artifact",
+        "resolver_evidencia_como_no_artifact",
+        "_registrar_resoluciones_de_artifact_en_conn",
     }
     # Las dos ramas del boundary indeterminado delegan en el MISMO helper
     # propagando el conjunto. Se congela la identidad estructural POR LLAMADA
@@ -794,7 +797,12 @@ async def test_absent_preserva_contrato_sin_absorcion(journal_tmp) -> None:  # n
     try:
         res = await _reconciliar(journal, config)
         assert res is None
-        assert await _receipt(journal, tx1) == SweepReceiptState.NO_ARTIFACT.value
+        cur = await journal._db.execute(  # noqa: SLF001
+            "SELECT resolution_kind, handoff_id FROM artifact_evidence_resolutions WHERE transaction_id = ? AND artifact_path = ?",
+            (tx1, clave),
+        )
+        fila = await cur.fetchone()
+        assert fila == ("no_artifact_demonstrated", None)
         assert await journal.consultar_handoff_activo(clave) is None
         assert await _absorciones(db) == []
     finally:
@@ -836,8 +844,8 @@ async def test_insert_duplicado_falla_ruidoso(journal_tmp) -> None:  # noqa: ANN
     async with aiosqlite.connect(str(db)) as conn:
         with pytest.raises(sqlite3.IntegrityError):
             await conn.execute(
-                "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) "
-                "VALUES (?, ?, 999)",
+                "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
+                "VALUES (?, ?, 'absorbed_by_handoff', 999)",
                 (tx1, clave),
             )
 
@@ -861,7 +869,7 @@ async def test_db_pre_0011_abre_y_conserva_comportamiento(journal_tmp) -> None: 
 
     # Simular DB pre-0011: sin la tabla nueva, CON historia.
     async with aiosqlite.connect(str(db)) as conn:
-        await conn.execute("DROP TABLE orphan_evidence_absorptions")
+        await conn.execute("DROP TABLE artifact_evidence_resolutions")
         await conn.commit()
 
     journal = OperationJournal(db)

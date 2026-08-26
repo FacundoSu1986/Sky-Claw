@@ -250,7 +250,8 @@ async def _absorciones(db: pathlib.Path) -> list[tuple[int, str, int]]:
     async with (
         aiosqlite.connect(str(db)) as conn,
         conn.execute(
-            "SELECT transaction_id, artifact_path, handoff_id FROM orphan_evidence_absorptions "
+            "SELECT transaction_id, artifact_path, handoff_id FROM artifact_evidence_resolutions "
+            "WHERE resolution_kind = 'absorbed_by_handoff' "
             "ORDER BY transaction_id, artifact_path"
         ) as cur,
     ):
@@ -956,7 +957,7 @@ async def test_fallo_insertando_absorpcion_revierte_todo(tmp_path: pathlib.Path)
     tx2 = await journal.begin_transaction("reemplazo", agent_id="test")
     sql_roto = "INSERT INTO tabla_inexistente_por_fault_injection (a) VALUES (?)"
     with (
-        patch.object(journal_mod, "_INSERT_ABSORCION_EVIDENCIA_SQL", sql_roto),
+        patch.object(journal_mod, "_INSERT_RESOLUCION_EVIDENCIA_SQL", sql_roto),
         pytest.raises(JournalTransactionError),
     ):
         await journal.crear_handoff_de_deployment(tx2, descripcion=None, registro=esc["registro"], viejo=esc["h1"])
@@ -1065,8 +1066,8 @@ async def test_reemplazo_con_receipt_unresolved_lo_marca_superseded(tmp_path: pa
 
     filas = {(a[0], a[2]) for a in await _absorciones(esc["db_path"]) if a[1] == clave}
     assert (tx_fail, esc["h1_id"]) in filas, "la evidencia ROLLED_BACK+UNRESOLVED no fue absorbida en el reemplazo"
-    assert await _receipt(journal, tx_fail) == SweepReceiptState.SUPERSEDED.value, (
-        "el receipt UNRESOLVED consumido por el reemplazo debe quedar SUPERSEDED (no CONSUMED)"
+    assert await _receipt(journal, tx_fail) == SweepReceiptState.UNRESOLVED.value, (
+        "la causalidad del sweep receipt permanece intacta (Issue #506 D4)"
     )
     assert tx_fail not in await journal.transacciones_que_nombran(clave)
 
