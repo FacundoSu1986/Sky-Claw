@@ -182,7 +182,7 @@ En el modelo de seguridad de Windows ([MS-ADTS] §6.1.3.4, [MS-DTYP] §2.4.6):
 4. El clasificador GP1 (`protection.py`, líneas 275-280 y 350-357) valida expresamente que si `owner_rights_ace_present == True` y `WRITE_DAC` no es concedido por `AccessCheck`, la relación de ownership no degrada el estado a `UNPROTECTED` y permite la promoción a `HARDENED`.
 
 ### 8.3 Excepciones y Restricciones
-- Si durante la preparación del plan se detecta un nodo cuyo `owner_sid` es corrupto, no resoluble a SID string o no presente en el SD, la fase de planificación falla con `PLAN_CREATION_FAILED`.
+- Si durante la preparación del plan se detecta un nodo cuyo `owner_sid` es corrupto, no resoluble a SID string o no presente en el SD, la fase de planificación falla con `PlanCreationError` (desenlace `REFUSE_TO_APPLY`).
 - GP2 v1 no intenta transferir la propiedad a `TrustedInstaller` ni a `SYSTEM`, eliminando la necesidad de adquirir o retener `SeTakeOwnershipPrivilege` o `SeRestorePrivilege` durante la operación normal de protección.
 
 ---
@@ -231,7 +231,7 @@ Antes de cualquier mutación en el filesystem, GP2 construye y sella el **Plan d
 2. **SECURITY CAPTURE:** Lectura de `NodeSecurityBackup` para cada nodo del subárbol.
 3. **IDENTITY ANCHOR:** Vinculación de cada nodo con su `(VolumeSerialNumber, FileId)` obtenido mediante `GetFileInformationByHandle`.
 4. **TARGET DACL SYNTHESIS:** Construcción de la Target DACL canónica y de la estructura semántica esperada (`expected_post_owner`, `expected_post_group`, `expected_post_dacl_protected`, `expected_post_dacl_aces`).
-5. **POST-INVENTORY STRUCTURAL PASS:** Re-verificación estructural completa (sin drift de archivos, mtime ni identidad). Si el árbol muta durante la captura -> `InventoryError` -> aborto inmediato sin mutar nada.
+5. **POST-INVENTORY STRUCTURAL PASS:** Re-verificación estructural completa (sin drift de archivos, mtime ni identidad). Si el árbol muta durante la captura -> `InventoryError` -> aborto inmediato con estado `REFUSE_TO_APPLY` sin mutar nada.
 6. **CANONICAL MANIFEST WRITING:** Serialización determinista del manifiesto en JSON canónico (claves ordenadas, sin espacios redundantes, UTF-8).
 7. **MANIFEST DIGEST COMPUTATION:** Cálculo del `manifest_digest = sha256(manifest_bytes)`.
 
@@ -319,11 +319,11 @@ Queda terminantemente prohibido degradar esta condición a una advertencia permi
 
 ---
 
-## 15. Reparse Policy
+## 15. Reparse Policy (Normativa Unificada)
 
-- **Tolerancia Cero:** La presencia de cualquier reparse tag (`st_reparse_tag != 0`), symlink, junction, volume mount point o placeholder en el root, en cualquier nodo descendiente o en el parent inmediato produce la denegación inmediata de la operación (`REFUSE_TO_APPLY`).
+- **Tolerancia Cero y Estado Terminal Único:** La presencia de cualquier reparse tag (`st_reparse_tag != 0`), symlink, junction, volume mount point o placeholder en el root, en cualquier nodo descendiente o en el parent inmediato produce de forma canónica y exclusiva el estado **`REFUSE_TO_APPLY`** con `success=False` y excepción `InventoryLinkError`.
 - **Primitiva Única:** La detección utiliza exclusivamente `sky_claw.app.security.links.link_kind_and_identity_or_raise`. Prohibido reimplementar inspecciones ad-hoc.
-- **Race Condition Gate:** Si un archivo o directorio es reemplazado por un enlace entre la fase de planificación y la ejecución del helper, el chequeo de `FileId` y `reparse_tag` del helper detecta la colisión antes de mutar y aborta la transacción.
+- **Race Condition Gate:** Si un archivo o directorio es reemplazado por un enlace entre la fase de planificación y la ejecución del helper, el chequeo de `FileId` y `reparse_tag` del helper detecta la colisión antes de mutar y aborta la transacción con `REFUSE_TO_APPLY` / rollback.
 
 ---
 
@@ -380,9 +380,9 @@ Para evitar cualquier interferencia con el trabajo paralelo del Issue #506 en `s
 
 ```text
 PREPARING -> PREPARED -> AWAITING_ELEVATION -> APPLYING -> VERIFYING_GP1 -> VERIFYING_RV2 -> ARCHIVING_BACKUP -> COMMITTED
-   |            |              |                 |               |               |                 |
-   v            v              v                 v               v               v                 v
-FAILED      CANCELLED      REJECTED         ROLLBACK_REQ    ROLLBACK_REQ    ROLLBACK_REQ      RETRY_ARCHIVE
+   |            |               |                 |               |               |                 |
+   v            v               v                 v               v               v                 v
+REFUSE_TO_APPLY CANCELLED ELEVATION_REJECTED ROLLBACK_REQ   ROLLBACK_REQ    ROLLBACK_REQ      RETRY_ARCHIVE
                                                  |               |               |
                                                  +---------------+---------------+
                                                                  |
@@ -449,11 +449,11 @@ GP2 se diseña para garantizar plena compatibilidad con la futura capability GP3
 
 ## 24. Taxonomía de Errores
 
-| Error de Dominio | Causa / Condición | Consecuencia |
+| Error de Dominio | Causa / Condición | Estado FSM / Desenlace |
 |---|---|---|
-| `ProtectionPrecheckError` | Path inválido, no absoluto, no directorio, o plataforma no-Windows | Aborto inmediato sin iniciar transacción |
+| `ProtectionPrecheckError` | Path inválido, no absoluto, no directorio, o plataforma no-Windows | `REFUSE_TO_APPLY` (sin mutación, sin UAC) |
 | `UnsafeParentError` | Parent con `DELETE_CHILD`, `WRITE_DAC` o rename viable | `REFUSE_TO_APPLY` (sin mutación, sin UAC) |
-| `PlanCreationError` | Error al leer SDs originales, reparse point detectado, o drift PRE/POST | `FAILED_PREPARATION` (sin mutación) |
+| `InventoryLinkError` / `PlanCreationError` | Error al leer SDs originales, reparse point detectado, o drift PRE/POST | `REFUSE_TO_APPLY` (sin mutación, sin UAC) |
 | `ElevationRejectedError` | Usuario canceló o denegó el prompt de UAC | `ELEVATION_REJECTED` (sin mutación) |
 | `HelperExecutionError` | Helper falló durante la mutación de nodos | Transición a `ROLLBACK_REQUIRED` |
 | `PostVerificationError` | GP1 no emitió `HARDENED` o RV2 no emitió `VERIFIED` | Transición a `ROLLBACK_REQUIRED` |
@@ -468,11 +468,18 @@ Los tests de GP2 se implementarán en módulos dedicados bajo `tests/`:
 - `tests/test_runtime_vault_protection_apply_fsm.py` (Unit tests de la máquina de estados y crash recovery).
 - `tests/test_runtime_vault_protection_apply_integration.py` (Tests de integración en Windows TEMP únicamente, sin tocar Golden real).
 
+### Configuración Canónica de Fixture para Tests de Integración en Windows TEMP
+Para evitar que los tests de integración en `%TEMP%` aborten falsamente por `UnsafeParentError` (dado que el usuario creador de una carpeta temporal en Windows recibe implícitamente `WRITE_DAC` sobre el parent):
+- El fixture de test `temp_golden_harness` crea un subdirectorio contenedor `fixture_parent/golden_root`.
+- El fixture aplica sobre `fixture_parent` una DACL con la Owner Rights ACE `S-1-3-4` restrictiva (`FILE_GENERIC_READ | FILE_TRAVERSE`, sin `WRITE_DAC` ni `DELETE_CHILD`).
+- **GP2-T00** verifica de forma explícita que el parent del fixture es seguro conforme al clasificador GP1 antes de invocar la protección del Golden.
+
 ### Casos de Test Obligatorios:
+- **GP2-T00:** El fixture de test prepara y certifica un parent seguro con Owner Rights ACE antes de ejecutar mutaciones.
 - **GP2-T01:** Planificación exitosa genera manifiesto canónico con SDs self-relative y FileIds.
-- **GP2-T02:** Reparse point en cualquier nodo del árbol aborta la planificación (`REFUSE_TO_APPLY`).
-- **GP2-T03:** Parent con `FILE_DELETE_CHILD` aborta la planificación (`UnsafeParentError`).
-- **GP2-T04:** Parent con `WRITE_DAC` aborta la planificación (`UnsafeParentError`).
+- **GP2-T02:** Reparse point en cualquier nodo del árbol aborta la planificación con excepción `InventoryLinkError` y estado `REFUSE_TO_APPLY`.
+- **GP2-T03:** Parent con `FILE_DELETE_CHILD` aborta la planificación (`UnsafeParentError`, estado `REFUSE_TO_APPLY`).
+- **GP2-T04:** Parent con `WRITE_DAC` aborta la planificación (`UnsafeParentError`, estado `REFUSE_TO_APPLY`).
 - **GP2-T05:** Parent seguro permite generar plan con orden Bottom-Up estricto.
 - **GP2-T06:** Target DACL contiene exactamente la Owner Rights ACE `S-1-3-4` con `FILE_GENERIC_READ`.
 - **GP2-T07:** Target DACL no contiene ACEs de denegación ni flags de herencia.
@@ -483,7 +490,7 @@ Los tests de GP2 se implementarán en módulos dedicados bajo `tests/`:
 - **GP2-T12:** Rollback restaura exactamente los campos `OWNER`, `GROUP`, `DACL` y flags de herencia de DACL originales; fixture con SACL presente valida que la SACL se mantiene inalterada.
 - **GP2-T13:** Fallo en post-verificación GP1 dispara rollback automático.
 - **GP2-T14:** Fallo en post-verificación RV-2 (digest alterado) dispara rollback automático.
-- **GP2-T15:** Simulación de crash en cada estado del FSM (incluyendo crash entre mutación y registro con WAL, y crash en `ARCHIVING_BACKUP`) recupera la acción segura correcta.
+- **GP2-T15:** Simulación de crash en cada estado del FSM (incluyendo crash entre mutación y registro con WAL, rechazo de UAC resultando en `ELEVATION_REJECTED`, y crash en `ARCHIVING_BACKUP`) recupera la acción segura correcta.
 - **GP2-T16:** AST Anchor: `protection_journal.py` no importa `sky_claw.app.db.journal`.
 - **GP2-T17:** AST Anchor: El módulo no utiliza strings de cuentas localizadas ("Todos", "Administradores"), solo SIDs.
 
@@ -507,7 +514,7 @@ Los tests de GP2 se implementarán en módulos dedicados bajo `tests/`:
 | **M12** | Omitir verificación RV-2 post-mutación | Test de contrato GP2 exige `post_rv2_result` verificado |
 | **M13** | Perder registro de nodos mutados en crash | Protocolo WAL (`MUTATING`) y re-escaneo de diferencias restauran todos los nodos tocados |
 | **M14** | Reset recursivo de ACLs desde el root en rollback | Test de rollback valida que cada nodo recibe su SD individual |
-| **M15** | Seguir reparse point durante inventario o aplicación | Primitiva canónica lanza `InventoryLinkError` / Helper aborta |
+| **M15** | Seguir reparse point durante inventario o aplicación | Primitiva canónica lanza `InventoryLinkError` / Helper aborta con `REFUSE_TO_APPLY` |
 | **M16** | Helper acepta manifiesto no sellado | Helper exige coincidencia con `--manifest-digest` |
 | **M17** | Helper acepta manifiesto con hash discrepante | Helper aborta con `ManifestDigestMismatchError` |
 | **M18** | Helper acepta ruta arbitraria por CLI | CLI de helper solo acepta `--operation-id` y `--manifest-digest` |
