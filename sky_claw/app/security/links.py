@@ -58,6 +58,13 @@ _LINK_INSPECTION_RETRIES = 5
 _LINK_INSPECTION_BACKOFF_SECONDS = 0.1
 
 
+def reparse_tag_or_zero(st: os.stat_result | None) -> int:
+    """Devuelve el ``st_reparse_tag`` de *st* o 0 si no es reparse point o no está disponible."""
+    if st is None:
+        return 0
+    return getattr(st, "st_reparse_tag", 0)
+
+
 def link_kind_and_identity_or_raise(
     path: pathlib.Path,
 ) -> tuple[str | None, os.stat_result | None]:

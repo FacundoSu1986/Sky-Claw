@@ -240,6 +240,10 @@ class TestLinkKind:
 
         assert link_kind(real) is None
         assert is_link(real) is False
+        assert links.reparse_tag_or_zero(_LstatConTagAjeno()) == 0x9000001A
+        assert links.reparse_tag_or_zero(None) == 0
+        # Objeto sin el atributo ``st_reparse_tag``: el fallback a 0 del getattr debe cubrirse.
+        assert links.reparse_tag_or_zero(SimpleNamespace()) == 0
 
 
 class TestPathPresent:

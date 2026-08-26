@@ -1054,7 +1054,16 @@ class TestRuntimeCloneSuiteCanonico:
         discovered_modules = {p.stem for p in py_files}
 
         # Ancla de igualdad exacta para evitar hermanos no cableados
-        expected_modules = {"__init__", "clone", "golden", "inventory", "locking", "models", "verification"}
+        expected_modules = {
+            "__init__",
+            "clone",
+            "golden",
+            "inventory",
+            "locking",
+            "models",
+            "protection",
+            "verification",
+        }
         assert discovered_modules == expected_modules
 
         forbidden_names = {
