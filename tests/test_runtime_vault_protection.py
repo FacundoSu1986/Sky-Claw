@@ -1981,8 +1981,15 @@ class TestMutacionesAdversariales:
         res = classify_protection(ev)
         assert res.state is GoldenProtectionState.UNPROTECTED
 
-    def test_m_gp1_32_root_protegido_parent_write_dac_no_unprotected(self) -> None:
-        """M-GP1-32: root protegido contra herencia (dacl_inheritance_protected=True) no se muta por parent WRITE_DAC."""
+    def test_m_gp1_32_root_protegido_parent_write_dac_unprotected(self) -> None:
+        """M-GP1-32: root protegido contra herencia PERO parent con WRITE_DAC efectivo -> UNPROTECTED.
+
+        Un token con CHANGE_PERMISSIONS (WRITE_DAC) sobre el parent puede reescribir la DACL del
+        parent para auto-concederse FILE_DELETE_CHILD, que borra hijos ignorando su propia DACL.
+        Por eso el estado no puede ser protegido aunque el root tenga la DACL protegida contra
+        herencia (dacl_inheritance_protected=True). El chequeo de escalación del parent NO depende
+        de la protección de herencia del root.
+        """
         ev = GoldenProtectionEvidence(
             platform="windows",
             drive_type=3,
@@ -2011,8 +2018,45 @@ class TestMutacionesAdversariales:
             ),
         )
         res = classify_protection(ev)
-        assert res.state is not GoldenProtectionState.UNPROTECTED
-        assert res.state is GoldenProtectionState.HARDENED
+        assert res.state is GoldenProtectionState.UNPROTECTED
+
+    def test_m_gp1_55_root_protegido_parent_write_owner_unprotected(self) -> None:
+        """M-GP1-55: root protegido contra herencia PERO parent con WRITE_OWNER efectivo -> UNPROTECTED.
+
+        Hermano de M-GP1-32 para CHANGE_OWNER: un token con WRITE_OWNER sobre el parent puede
+        tomar posesión del parent y, por esa vía, reescribir su DACL y borrar el Golden. Igual que
+        con WRITE_DAC, no puede clasificarse como protegido aunque el root esté protegido contra
+        herencia.
+        """
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            current_token_elevated=False,
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path=".",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    dacl_inheritance_protected=True,  # Protegido explícito
+                    owner_rights_ace_present=False,
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_OWNER}),
+                dacl_inheritance_protected=True,
+                owner_rights_ace_present=False,
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.state is GoldenProtectionState.UNPROTECTED
 
     def test_m_gp1_33_volume_info_failure_unknown(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch

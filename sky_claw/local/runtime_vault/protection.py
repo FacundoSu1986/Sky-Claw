@@ -298,15 +298,18 @@ def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionR
     ):
         return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
 
-    # 6c. Escalación por herencia desde parent:
-    # Si root hereda DACL del parent (dacl_inheritance_protected is False):
-    #   - Si parent tiene CHANGE_PERMISSIONS (WRITE_DAC) -> UNPROTECTED
-    #   - Si parent tiene CHANGE_OWNER (WRITE_OWNER) -> UNPROTECTED
-    if root_obs.dacl_inheritance_protected is False:
-        if GoldenProtectionRight.CHANGE_PERMISSIONS in parent_rights:
-            return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
-        if GoldenProtectionRight.CHANGE_OWNER in parent_rights:
-            return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
+    # 6c. Escalación de permisos/propietario desde el parent.
+    # Un token con WRITE_DAC efectivo sobre el parent puede reescribir su DACL para
+    # auto-concederse FILE_DELETE_CHILD, que borra hijos IGNORANDO su propia DACL; con
+    # WRITE_OWNER puede tomar posesión del parent y llegar a lo mismo. Esa vía existe aunque
+    # el root esté protegido contra herencia (dacl_inheritance_protected=True) — FILE_DELETE_CHILD
+    # sobre el parent no consulta la DACL del root — así que el chequeo NO se condiciona a la
+    # protección de herencia del root (ver M-GP1-30/31 para el caso heredado y M-GP1-32/55 para
+    # el caso protegido).
+    if GoldenProtectionRight.CHANGE_PERMISSIONS in parent_rights:
+        return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
+    if GoldenProtectionRight.CHANGE_OWNER in parent_rights:
+        return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
 
     # 7. Si llegamos acá, el árbol es WRITE_PROTECTED. Evaluar HARDENED
     # HARDENED requiere:
