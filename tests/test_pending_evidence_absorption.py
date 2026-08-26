@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pathlib
 import sqlite3
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -76,14 +77,16 @@ def _entorno(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner]:
 
 def _svc(journal: object, runner: DynDOLODRunner, *, perfil: str | None = "Perfil-A") -> DynDOLODPipelineService:
     lock_mgr = AsyncMock(spec=DistributedLockManager)
-    lock_mgr.acquire_lock = AsyncMock(
-        return_value=LockInfo(
-            resource_id="dyndolod-pipeline",
-            agent_id="dyndolod-pipeline-service",
-            acquired_at=1000.0,
-            expires_at=1600.0,
-        )
+    # Par acquire/get_lock_info COHERENTES para assert_owned (mismo objeto ⇒
+    # token acquired_at matchea).
+    lock_info_fija = LockInfo(
+        resource_id="dyndolod-pipeline",
+        agent_id="dyndolod-pipeline-service",
+        acquired_at=time.time(),
+        expires_at=time.time() + 3600.0,
     )
+    lock_mgr.acquire_lock = AsyncMock(return_value=lock_info_fija)
+    lock_mgr.get_lock_info = AsyncMock(return_value=lock_info_fija)
     lock_mgr.release_lock = AsyncMock(return_value=True)
 
     def _snap() -> SnapshotInfo:
@@ -266,19 +269,234 @@ def test_esquema_declara_tabla_absorciones_con_identidad_tx_artifact() -> None:
     assert "uq_absorpcion_tx_artifact" in OperationJournal._SCHEMA_SQL
 
 
+def _funciones_que_mencionan(modulo: pathlib.Path, aguja: str) -> set[str]:
+    """Nombres de las funciones cuyo cuerpo menciona ``aguja`` (por AST).
+
+    Enumera en vez de muestrear: un escritor nuevo aparece en el conjunto y
+    rompe la igualdad literal del ancla, en vez de colarse bajo un ``count()``
+    que ya estaba satisfecho.
+    """
+    import ast
+
+    fuente = modulo.read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    encontradas: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if aguja in (ast.get_source_segment(fuente, nodo) or ""):
+            encontradas.add(nodo.name)
+    return encontradas
+
+
+def _funciones_que_extinguen_un_handoff(modulo: pathlib.Path) -> set[str]:
+    """Funciones que hacen pasar una fila de ``deployment_handoffs`` a un
+    estado TERMINAL (COMPLETED / SUPERSEDED), detectadas por AST.
+
+    Es el conjunto que la invariante POST493 obliga a sellar. Se detecta, no se
+    enumera a mano: así un boundary nuevo entra solo.
+    """
+    import ast
+
+    fuente = modulo.read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    encontradas: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        seg = ast.get_source_segment(fuente, nodo) or ""
+        if "UPDATE deployment_handoffs" not in seg:
+            continue
+        if any(f"HandoffState.{estado}" in seg for estado in ("COMPLETED", "SUPERSEDED")):
+            encontradas.add(nodo.name)
+    return encontradas
+
+
+def _ramas_del_boundary_indeterminado() -> list[tuple[str, str, str, str, tuple[str, ...]]]:
+    """CADA llamada al escritor ``_escribir_handoff_indeterminado`` bajo
+    ``sky_claw/``, como identidad estructural ``(ruta_relativa, superficie
+    contenedora cualificada, callee, rama, kwargs ordenados)``, detectada por
+    AST.
+
+    Una entrada por LLAMADA del boundary: ni strings, ni comentarios, ni
+    números de línea. La RAMA es el primer argumento posicional —``conn``
+    (boundary del lifecycle manager) o ``db`` (conexión propia standalone)— y
+    es el único discriminador entre las dos superficies cuando el resto de la
+    identidad es idéntico: sin él, un mutante con dos llamadas lifecycle y
+    cero standalone conserva la misma lista. Una rama que deje de propagar
+    ``ids_absorcion``, un sibling nuevo sin cablear o una llamada migrada
+    cambian esta lista y rompen la igualdad literal del ancla."""
+    import ast
+
+    escritor = "_escribir_handoff_indeterminado"
+    ramas: list[tuple[str, str, str, str, tuple[str, ...]]] = []
+
+    def _visitar(nodo: ast.AST, superficie: str, ruta: str) -> None:
+        for hijo in ast.iter_child_nodes(nodo):
+            nueva = superficie
+            if isinstance(hijo, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                nueva = f"{superficie}.{hijo.name}" if superficie else hijo.name
+            if isinstance(hijo, ast.Call):
+                func = hijo.func
+                nombre = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if nombre == escritor:
+                    rama = ast.unparse(hijo.args[0]) if hijo.args else "<sin-posicional>"
+                    kwargs = tuple(sorted(kw.arg for kw in hijo.keywords if kw.arg is not None))
+                    ramas.append((ruta, superficie or "<módulo>", escritor, rama, kwargs))
+            _visitar(hijo, nueva, ruta)
+
+    raiz = pathlib.Path(sky_claw_app_db_journal_path()).resolve().parents[2]  # sky_claw/, NO el repo
+    for archivo in sorted(raiz.rglob("*.py")):
+        try:
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        _visitar(arbol, "", archivo.relative_to(raiz).as_posix())
+    return ramas
+
+
 def test_la_absorcion_solo_se_escribe_en_el_boundary_del_insert() -> None:
     """Ancla M11-4 (estilo AST del repo): ``_INSERT_ABSORCION_EVIDENCIA_SQL``
-    tiene EXACTAMENTE un sitio de escritura — dentro de
-    ``_escribir_handoff_indeterminado``, que ASUME el boundary del caller — y
-    ambas ramas de ``registrar_handoff_indeterminado`` (lifecycle/standalone)
-    pasan el conjunto completo al helper. Un escritor fuera del boundary
-    (segunda conexión, post-commit, path paralelo) rompe el ancla a propósito:
-    la ventana 'handoff durable sin absorciones' resucitaría la evidencia."""
-    fuente = pathlib.Path(sky_claw_app_db_journal_path()).read_text(encoding="utf-8")
-    # Definición + UN único uso como executemany.
-    assert fuente.count("_INSERT_ABSORCION_EVIDENCIA_SQL") == 2
-    # Las dos ramas del boundary delegan en el MISMO helper con el conjunto.
-    assert fuente.count("ids_absorcion=ids_absorcion") >= 2
+    se emite desde EXACTAMENTE DOS funciones, ambas asumiendo el boundary del
+    caller:
+
+    - ``_escribir_handoff_indeterminado`` (materialización del INDETERMINATE);
+    - ``_sellar_evidencia_de_artifact`` (POST493_ACTIVE_INDETERMINATE_EVIDENCE:
+      el sello compartido que usan los DOS boundaries que extinguen un handoff
+      — reemplazo y resume completado).
+
+    Un tercer escritor —segunda conexión, post-commit, path paralelo— rompe el
+    ancla a propósito: la ventana 'evidencia sin boundary durable' resucitaría
+    la evidencia o la consumiría sin handoff detrás."""
+    modulo = pathlib.Path(sky_claw_app_db_journal_path())
+    assert _funciones_que_mencionan(modulo, "_INSERT_ABSORCION_EVIDENCIA_SQL") == {
+        "_escribir_handoff_indeterminado",
+        "_sellar_evidencia_de_artifact",
+    }
+    # Las dos ramas del boundary indeterminado delegan en el MISMO helper
+    # propagando el conjunto. Se congela la identidad estructural POR LLAMADA
+    # —(ruta, superficie, callee, rama, kwargs)— con igualdad literal: el
+    # `count(...) >= 2` original no distinguía "ambas ramas propagan" de "una
+    # rama lo hace dos veces"; el set de kwargs no anclaba EN QUÉ superficie
+    # vive cada llamada; y la tupla SIN discriminador de rama colapsaba
+    # lifecycle (conn) y standalone (db), así que un mutante con dos llamadas
+    # lifecycle y cero standalone conservaba la misma lista.
+    ramas = _ramas_del_boundary_indeterminado()
+    rama_lifecycle = (
+        "app/db/journal.py",
+        "OperationJournal.registrar_handoff_indeterminado",
+        "_escribir_handoff_indeterminado",
+        "conn",
+        ("ids_absorcion", "ids_receipts", "registro"),
+    )
+    rama_standalone = (
+        "app/db/journal.py",
+        "OperationJournal.registrar_handoff_indeterminado",
+        "_escribir_handoff_indeterminado",
+        "db",
+        ("ids_absorcion", "ids_receipts", "registro"),
+    )
+    assert ramas == [rama_lifecycle, rama_standalone], (
+        "cambiaron las ramas del boundary indeterminado: EXACTAMENTE una llamada "
+        "lifecycle (conn) y una standalone (db), CADA una propagando "
+        f"ids_absorcion al escritor; hoy: {ramas}"
+    )
+
+
+def test_todo_boundary_que_extingue_un_handoff_sella_la_evidencia() -> None:
+    """Ancla POST493 — enunciada como propiedad del MECANISMO:
+
+        la propiedad autorizada de un artifact se extingue por DOS caminos
+        (reemplazo y resume completado) y AMBOS tienen que sellar la evidencia
+        acumulada bajo ella, o el siguiente startup la re-fabrica como
+        INDETERMINATE falso.
+
+    El conjunto NO se escribe a mano: se DETECTA por AST —toda función que
+    hace pasar una fila de ``deployment_handoffs`` a un estado terminal
+    (COMPLETED o SUPERSEDED)— y se congela por igualdad literal. Un tercer
+    camino aparece solo en el conjunto detectado y rompe el ancla hasta que se
+    decida si sella o es una exención explícita. Un caso escrito a mano para el
+    hermano que faltó no ataja al tercero (AGENTS.md).
+
+    PUNTO CIEGO CONOCIDO: esta detección busca el literal del estado, así que
+    NO ve a ``transicionar_handoff``, que lo recibe como parámetro. Esa rama la
+    cubre ``test_transicionar_handoff_nunca_lleva_a_un_estado_terminal`` — no
+    un párrafo explicando por qué se excluye."""
+    modulo = pathlib.Path(sky_claw_app_db_journal_path())
+    extinguen = _funciones_que_extinguen_un_handoff(modulo)
+    assert extinguen == {
+        "_escribir_handoff_de_deployment",  # reemplazo: viejo → SUPERSEDED
+        "_escribir_resume_completado",  # resume: handoff → COMPLETED
+    }, f"cambió el conjunto de boundaries que extinguen un handoff: {sorted(extinguen)}"
+    sellan = _funciones_que_mencionan(modulo, "_sellar_evidencia_de_artifact")
+    assert extinguen <= sellan, (
+        f"boundaries que extinguen un handoff sin sellar su evidencia: {sorted(extinguen - sellan)}"
+    )
+
+
+def _call_sites_de_transicionar_handoff() -> set[tuple[str, int, str]]:
+    """``(ruta_relativa, linea, destino)`` de CADA call site de
+    ``transicionar_handoff`` en ``sky_claw/``, detectado por AST.
+
+    Identidad POR CALL SITE, no por destino: un ``set`` de destinos colapsa dos
+    llamadas que van al mismo estado, así que un caller nuevo con un ``hacia``
+    ya presente no movería el conjunto y el ancla no lo vería."""
+    import ast
+
+    raiz = pathlib.Path(sky_claw_app_db_journal_path()).resolve().parents[2]  # sky_claw/, NO el repo
+    sites: set[tuple[str, int, str]] = set()
+    for archivo in sorted(raiz.rglob("*.py")):
+        fuente = archivo.read_text(encoding="utf-8")
+        if "transicionar_handoff" not in fuente:
+            continue
+        for nodo in ast.walk(ast.parse(fuente)):
+            if not isinstance(nodo, ast.Call):
+                continue
+            fn = nodo.func
+            nombre = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if nombre != "transicionar_handoff":
+                continue
+            for kw in nodo.keywords:
+                if kw.arg == "hacia":
+                    sites.add((archivo.relative_to(raiz).as_posix(), nodo.lineno, ast.unparse(kw.value)))
+    return sites
+
+
+def test_transicionar_handoff_nunca_lleva_a_un_estado_terminal() -> None:
+    """Cierra el punto ciego del ancla de arriba (hallazgo del revisor
+    adversarial sobre este mismo PR).
+
+    ``transicionar_handoff`` aplica el estado como PARÁMETRO, así que su cuerpo
+    no contiene el literal ``HandoffState.SUPERSEDED``/``COMPLETED`` y la
+    detección por AST de ``_funciones_que_extinguen_un_handoff`` no lo ve. Si
+    algún caller lo usara para extinguir un handoff, se saltearía el sello sin
+    romper nada.
+
+    Hoy NO pasa —los seis call sites de producción van a AWAITING_DEPLOYMENT,
+    INDETERMINATE, SUPERSEDING o al estado previo (activo por construcción)— y
+    ESTE test es lo que lo verifica, en vez de un párrafo explicando por qué la
+    rama estaba excluida: escribir el racional de una exclusión no cuenta como
+    verificarla (AGENTS.md). El conjunto se congela por igualdad literal, así
+    que un call site nuevo rompe el ancla aunque su destino sea inocuo, y
+    obliga a decidir si sella.
+
+    ``hacia=SUPERSEDED`` sí aparece en los tests, deliberadamente: simula a un
+    actor externo robando el ownership, el escenario de race que debe fallar
+    CERRADO. Por eso el barrido es sobre ``sky_claw/``, no sobre ``tests/``.
+    """
+    sites = _call_sites_de_transicionar_handoff()
+    assert {(archivo, destino) for archivo, _, destino in sites} == {
+        ("app/db/handoffs.py", "HandoffState.AWAITING_DEPLOYMENT"),
+        ("app/db/handoffs.py", "HandoffState.INDETERMINATE"),
+        ("local/tools/dyndolod_service.py", "HandoffState.INDETERMINATE"),
+        ("local/tools/dyndolod_service.py", "HandoffState.SUPERSEDING"),
+        # dyndolod_service.py lo fija en el sitio: AWAITING o INDETERMINATE, siempre activo.
+        ("local/tools/dyndolod_service.py", "estado_previo"),
+    }, f"cambiaron los call sites de transicionar_handoff: {sorted(sites)}"
+    # Conteo POR call site: detecta un caller nuevo aunque repita un `hacia` existente.
+    assert len(sites) == 6, f"cambió el número de call sites de transicionar_handoff: {sorted(sites)}"
+    terminales = {s for s in sites if s[2] in {"HandoffState.SUPERSEDED", "HandoffState.COMPLETED"}}
+    assert not terminales, f"transicionar_handoff extingue un handoff sin sellar su evidencia: {sorted(terminales)}"
 
 
 def sky_claw_app_db_journal_path() -> str:
@@ -810,3 +1028,71 @@ async def test_restart_no_refabrica_tras_absorcion_pre_y_post_threshold(tmp_path
         assert await _absorciones(db) == absorciones_antes
     finally:
         await j3.close()
+
+
+# =============================================================================
+# FINDING B — PREMATURE_LIVE_PENDING_ABSORPTION: REFUTED_BY_SERIALIZATION
+#
+# Una PENDING viva sólo podría absorberse anticipadamente si un SEGUNDO
+# productor del artifact corriera concurrente con el boundary que lo extingue.
+# Hoy imposible: el ÚNICO productor de transacciones/manifiestos que nombran el
+# artifact de TexGen/DynDOLOD —y el único que invoca los boundaries absorbentes
+# (`crear_handoff_de_deployment` / `completar_handoff_de_resume`)— es el pipeline
+# de DynDOLOD, que corre begin_transaction + persist_action_manifest + boundary
+# DENTRO de UN mismo lease cross-process `dyndolod-pipeline` (SQLite
+# `resource_locks`, `ON CONFLICT ... WHERE expires_at < ?`; liberado último por
+# el AsyncExitStack; lease-loss ⇒ fail-closed vía `tx_lock.lease_lost`). Dos
+# titulares del lease no coexisten, así que ninguna PENDING viva de otra corrida
+# coexiste con el boundary. No se agrega código productivo para B (REFUTADO):
+# sólo se congela el linchpin de la serialización.
+# =============================================================================
+
+
+def _modulos_que_invocan_boundary_absorbente() -> set[str]:
+    """Módulos de PRODUCCIÓN bajo ``sky_claw/`` que invocan un boundary que
+    extingue un handoff (y por tanto ejecuta la absorción), detectados por AST.
+
+    Excluye ``journal.py`` (la DEFINICIÓN de los boundaries y el proxy interno
+    ``StagingJournal`` que delega al journal real — no es un productor externo
+    del artifact)."""
+    import ast
+
+    journal_path = pathlib.Path(sky_claw_app_db_journal_path()).resolve()
+    raiz = journal_path.parents[2]  # .../sky_claw
+    boundaries = {"crear_handoff_de_deployment", "completar_handoff_de_resume"}
+    modulos: set[str] = set()
+    for archivo in sorted(raiz.rglob("*.py")):
+        if archivo == journal_path:
+            continue
+        fuente = archivo.read_text(encoding="utf-8")
+        if not any(b in fuente for b in boundaries):
+            continue
+        for nodo in ast.walk(ast.parse(fuente)):
+            if not isinstance(nodo, ast.Call):
+                continue
+            fn = nodo.func
+            nombre = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if nombre in boundaries:
+                modulos.add(archivo.relative_to(raiz).as_posix())
+    return modulos
+
+
+def test_absorcion_solo_alcanzable_desde_el_pipeline_unico_serializado() -> None:
+    """REFUTACIÓN de PREMATURE_LIVE_PENDING_ABSORPTION por serialización.
+
+    Congela que la absorción sólo se alcanza desde el pipeline de DynDOLOD, único
+    productor del artifact y único titular del lease `dyndolod-pipeline`. Un módulo
+    NUEVO que invoque un boundary absorbente fuera de ese contrato rompe el ancla
+    hasta que se demuestre que comparte el lease (o se rediseñe la absorción con
+    provenance causal durable)."""
+    modulos = _modulos_que_invocan_boundary_absorbente()
+    assert modulos == {"local/tools/dyndolod_service.py"}, (
+        f"un productor nuevo invoca la absorción fuera del pipeline serializado: {sorted(modulos)}"
+    )
+    # El lease que serializa TODA la corrida (TX + manifest + boundary) sigue
+    # siendo `dyndolod-pipeline`: sin él, dos corridas del artifact podrían
+    # intercalar una PENDING viva con el boundary de la otra.
+    dyndolod = (
+        pathlib.Path(sky_claw_app_db_journal_path()).resolve().parents[2] / "local" / "tools" / "dyndolod_service.py"
+    ).read_text(encoding="utf-8")
+    assert '"dyndolod-pipeline"' in dyndolod, "el pipeline dejó de nombrar el lease de serialización cross-process"

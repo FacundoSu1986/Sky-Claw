@@ -54,14 +54,16 @@ from sky_claw.logging_config import correlacion_de_transaccion, pipeline_tx_id_v
 @pytest.fixture
 def mock_lock_manager() -> AsyncMock:
     mgr = AsyncMock(spec=DistributedLockManager)
-    mgr.acquire_lock = AsyncMock(
-        return_value=LockInfo(
-            resource_id="dyndolod-pipeline",
-            agent_id="dyndolod-pipeline-service",
-            acquired_at=1000.0,
-            expires_at=1600.0,
-        )
+    # Par acquire/get_lock_info COHERENTES para assert_owned (mismo objeto ⇒
+    # token acquired_at matchea).
+    lock_info_fija = LockInfo(
+        resource_id="dyndolod-pipeline",
+        agent_id="dyndolod-pipeline-service",
+        acquired_at=time.time(),
+        expires_at=time.time() + 3600.0,
     )
+    mgr.acquire_lock = AsyncMock(return_value=lock_info_fija)
+    mgr.get_lock_info = AsyncMock(return_value=lock_info_fija)
     mgr.release_lock = AsyncMock(return_value=True)
     return mgr
 
@@ -3235,9 +3237,10 @@ def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
         "DynDOLODExecutionError",
         "DynDOLODExecutionError, DynDOLODTimeoutError",
         "Exception",
-        "JournalTransactionError, OSError",
+        "JournalTransactionError, LockLeaseLostError, OSError",
         "LockAcquisitionError",
         "_ActionManifestError",
+        "_CertificacionPreservadaError",
         "asyncio.CancelledError",
     ]
 
