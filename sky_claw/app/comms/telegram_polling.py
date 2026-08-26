@@ -46,6 +46,7 @@ class TelegramPolling:
         self._handler = webhook_handler
         self._gateway = gateway
         self._session = session
+        self._owns_session = False
         self._interval = interval
         self._authorized_chat_id = authorized_chat_id
         # review #257: loguear el fail-closed una sola vez por instancia (evita
@@ -55,8 +56,7 @@ class TelegramPolling:
         self._running = False
         self._url = TELEGRAM_API_GET_UPDATES.format(token=token)
         self._dlq: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._session: aiohttp.ClientSession | None = None
-        self._polling_task: asyncio.Task | None = None
+        self._polling_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         """Start the polling loop."""
@@ -67,28 +67,50 @@ class TelegramPolling:
         self._polling_task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
-        """Stop the polling loop."""
+        """Stop the polling loop and await the task's cleanup.
+
+        The method is idempotent.  It absorbs cancellation only when the
+        polling task itself was cancelled; unexpected task failures propagate
+        to the caller instead of being silently discarded.
+        """
         self._running = False
-        if self._polling_task:
-            self._polling_task.cancel()
+        task = self._polling_task
+        if task is None:
+            logger.info("Telegram long polling stopped")
+            return
+
+        if task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            # Do not hide cancellation of this stop() call itself.  Only the
+            # task that stop() explicitly owns may be cancelled quietly.
+            if not task.cancelled():
+                raise
+        finally:
+            if self._polling_task is task:
+                self._polling_task = None
+
         logger.info("Telegram long polling stopped")
 
     async def _run_loop(self) -> None:
         """Internal polling loop."""
-        own_session = False
-        if self._session is None:
-            # S1-FIX: Route through GatewayTCPConnector for DNS pinning/SSRF protection.
-            from sky_claw.app.security.network_gateway import GatewayTCPConnector
+        own_session = self._session is None
+        try:
+            if self._gateway is None:
+                raise RuntimeError("TelegramPolling requires a NetworkGateway for outbound traffic")
 
-            if self._gateway is not None:
+            if own_session:
+                # S1-FIX: Route through GatewayTCPConnector for DNS pinning/SSRF protection.
+                from sky_claw.app.security.network_gateway import GatewayTCPConnector
+
                 self._session = aiohttp.ClientSession(
                     connector=GatewayTCPConnector(self._gateway, limit=10),
                 )
-            else:
-                logger.warning("TelegramPolling started without gateway — creating unprotected session")
-                self._session = aiohttp.ClientSession()
-            own_session = True
-        try:
+                self._owns_session = True
+
             while self._running:
                 try:
                     await self._poll_once()
@@ -100,13 +122,16 @@ class TelegramPolling:
                 await asyncio.sleep(self._interval)
         finally:
             self._running = False
-            if own_session and self._session and not self._session.closed:
-                await self._session.close()
+            if own_session:
+                session = self._session
                 self._session = None
+                self._owns_session = False
+                if session is not None and not session.closed:
+                    await session.close()
 
     async def _poll_once(self) -> None:
         """Perform a single getUpdates request."""
-        if not self._session:
+        if self._session is None:
             return
 
         params = {
@@ -137,7 +162,7 @@ class TelegramPolling:
                     )
                     await self._dlq.put(update)
 
-                if update_id:
+                if update_id is not None:
                     self._last_update_id = update_id
 
     async def _process_raw_update(self, update: dict[str, Any]) -> None:
