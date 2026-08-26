@@ -1,4 +1,4 @@
-"""Regression tests for Telegram polling transport and HITL lifecycle."""
+"""Pruebas de transporte de Telegram y lifecycle de HITL por polling."""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ from sky_claw.app.comms.telegram_polling import TelegramPolling
 from sky_claw.app.security.hitl import Decision, HITLGuard
 
 
-async def _wait_for_notification(notification_sent: asyncio.Event) -> None:
-    await asyncio.wait_for(notification_sent.wait(), timeout=1)
+async def _esperar_notificacion(notificacion_enviada: asyncio.Event) -> None:
+    await asyncio.wait_for(notificacion_enviada.wait(), timeout=1)
 
 
-def _callback_update(
+def _crear_update_callback(
     update_id: int,
-    action: str,
+    accion: str,
     request_id: str,
     *,
     user_id: int = 123,
@@ -31,12 +31,12 @@ def _callback_update(
             "id": f"callback-{update_id}",
             "from": {"id": user_id},
             "message": {"chat": {"id": chat_id}, "message_id": 77},
-            "data": f"hitl:{action}:{request_id}",
+            "data": f"hitl:{accion}:{request_id}",
         },
     }
 
 
-def _make_transport(hitl: HITLGuard) -> tuple[TelegramPolling, MagicMock, MagicMock]:
+def _crear_transporte(hitl: HITLGuard) -> tuple[TelegramPolling, MagicMock, MagicMock]:
     router = MagicMock()
     sender = MagicMock()
     sender.answer_callback_query = AsyncMock()
@@ -62,20 +62,20 @@ def _make_transport(hitl: HITLGuard) -> tuple[TelegramPolling, MagicMock, MagicM
 
 
 @pytest.mark.asyncio
-async def test_polling_callback_approve_resolves_pending_hitl() -> None:
-    notification_sent = asyncio.Event()
+async def test_callback_approve_por_polling_resuelve_hitl_pendiente() -> None:
+    notificacion_enviada = asyncio.Event()
 
-    async def notify(_request) -> None:
-        notification_sent.set()
+    async def notificar(_request) -> None:
+        notificacion_enviada.set()
 
-    hitl = HITLGuard(notify_fn=notify, timeout=1)
-    polling, sender, _session = _make_transport(hitl)
-    pending = asyncio.create_task(hitl.request_approval(request_id="req-approve"))
+    hitl = HITLGuard(notify_fn=notificar, timeout=1)
+    polling, sender, _session = _crear_transporte(hitl)
+    pendiente = asyncio.create_task(hitl.request_approval(request_id="req-approve"))
 
-    await _wait_for_notification(notification_sent)
-    await polling._process_raw_update(_callback_update(1, "approve", "req-approve"))
+    await _esperar_notificacion(notificacion_enviada)
+    await polling._process_raw_update(_crear_update_callback(1, "approve", "req-approve"))
 
-    assert await pending is Decision.APPROVED
+    assert await pendiente is Decision.APPROVED
     sender.answer_callback_query.assert_awaited_once_with("callback-1", text=None)
     sender.edit_message.assert_awaited_once_with(
         123,
@@ -86,117 +86,118 @@ async def test_polling_callback_approve_resolves_pending_hitl() -> None:
 
 
 @pytest.mark.asyncio
-async def test_polling_callback_deny_resolves_pending_hitl() -> None:
-    notification_sent = asyncio.Event()
+async def test_callback_deny_por_polling_resuelve_hitl_pendiente() -> None:
+    notificacion_enviada = asyncio.Event()
 
-    async def notify(_request) -> None:
-        notification_sent.set()
+    async def notificar(_request) -> None:
+        notificacion_enviada.set()
 
-    hitl = HITLGuard(notify_fn=notify, timeout=1)
-    polling, _sender, _session = _make_transport(hitl)
-    pending = asyncio.create_task(hitl.request_approval(request_id="req-deny"))
+    hitl = HITLGuard(notify_fn=notificar, timeout=1)
+    polling, _sender, _session = _crear_transporte(hitl)
+    pendiente = asyncio.create_task(hitl.request_approval(request_id="req-deny"))
 
-    await _wait_for_notification(notification_sent)
-    await polling._process_raw_update(_callback_update(2, "deny", "req-deny"))
+    await _esperar_notificacion(notificacion_enviada)
+    await polling._process_raw_update(_crear_update_callback(2, "deny", "req-deny"))
 
-    assert await pending is Decision.DENIED
+    assert await pendiente is Decision.DENIED
 
 
 @pytest.mark.asyncio
-async def test_polling_unknown_callback_action_does_not_resolve_request() -> None:
-    notification_sent = asyncio.Event()
+async def test_accion_callback_desconocida_por_polling_no_resuelve_hitl() -> None:
+    notificacion_enviada = asyncio.Event()
 
-    async def notify(_request) -> None:
-        notification_sent.set()
+    async def notificar(_request) -> None:
+        notificacion_enviada.set()
 
-    hitl = HITLGuard(notify_fn=notify, timeout=1)
-    polling, sender, _session = _make_transport(hitl)
-    pending = asyncio.create_task(hitl.request_approval(request_id="req-unknown"))
+    hitl = HITLGuard(notify_fn=notificar, timeout=1)
+    polling, sender, _session = _crear_transporte(hitl)
+    pendiente = asyncio.create_task(hitl.request_approval(request_id="req-unknown"))
 
-    await _wait_for_notification(notification_sent)
-    await polling._process_raw_update(_callback_update(3, "escalate", "req-unknown"))
+    await _esperar_notificacion(notificacion_enviada)
+    await polling._process_raw_update(_crear_update_callback(3, "escalate", "req-unknown"))
 
-    assert not pending.done()
+    assert not pendiente.done()
     sender.answer_callback_query.assert_awaited_once_with("callback-3", text="Invalid HITL action")
-    pending.cancel()
+    pendiente.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await pending
+        await pendiente
 
 
 @pytest.mark.asyncio
-async def test_polling_unauthorized_callback_does_not_resolve_request() -> None:
-    notification_sent = asyncio.Event()
+async def test_callback_no_autorizado_por_polling_no_resuelve_hitl() -> None:
+    notificacion_enviada = asyncio.Event()
 
-    async def notify(_request) -> None:
-        notification_sent.set()
+    async def notificar(_request) -> None:
+        notificacion_enviada.set()
 
-    hitl = HITLGuard(notify_fn=notify, timeout=1)
-    polling, sender, _session = _make_transport(hitl)
-    pending = asyncio.create_task(hitl.request_approval(request_id="req-unauthorized"))
+    hitl = HITLGuard(notify_fn=notificar, timeout=1)
+    polling, sender, _session = _crear_transporte(hitl)
+    pendiente = asyncio.create_task(hitl.request_approval(request_id="req-unauthorized"))
 
-    await _wait_for_notification(notification_sent)
-    await polling._process_raw_update(_callback_update(4, "approve", "req-unauthorized", user_id=999, chat_id=999))
+    await _esperar_notificacion(notificacion_enviada)
+    await polling._process_raw_update(
+        _crear_update_callback(4, "approve", "req-unauthorized", user_id=999, chat_id=999)
+    )
 
-    assert not pending.done()
-    # Polling rejects unauthorized chats before handing the update to the
-    # webhook dispatcher, so no callback acknowledgement is emitted.
+    assert not pendiente.done()
+    # El polling rechaza chats no autorizados antes de entregar el update al dispatcher.
     sender.answer_callback_query.assert_not_awaited()
-    pending.cancel()
+    pendiente.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await pending
+        await pendiente
 
 
 @pytest.mark.asyncio
-async def test_duplicate_polling_callback_is_effective_only_once() -> None:
-    notification_sent = asyncio.Event()
+async def test_callback_duplicado_por_polling_solo_tiene_un_efecto() -> None:
+    notificacion_enviada = asyncio.Event()
 
-    async def notify(_request) -> None:
-        notification_sent.set()
+    async def notificar(_request) -> None:
+        notificacion_enviada.set()
 
-    hitl = HITLGuard(notify_fn=notify, timeout=1)
-    polling, sender, _session = _make_transport(hitl)
-    pending = asyncio.create_task(hitl.request_approval(request_id="req-duplicate"))
-    update = _callback_update(5, "approve", "req-duplicate")
+    hitl = HITLGuard(notify_fn=notificar, timeout=1)
+    polling, sender, _session = _crear_transporte(hitl)
+    pendiente = asyncio.create_task(hitl.request_approval(request_id="req-duplicate"))
+    update = _crear_update_callback(5, "approve", "req-duplicate")
 
-    await _wait_for_notification(notification_sent)
+    await _esperar_notificacion(notificacion_enviada)
     await polling._process_raw_update(update)
     await polling._process_raw_update(update)
 
-    assert await pending is Decision.APPROVED
+    assert await pendiente is Decision.APPROVED
     sender.edit_message.assert_awaited_once()
     sender.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_timeout_does_not_allow_late_approval() -> None:
-    notification_sent = asyncio.Event()
+async def test_timeout_no_permite_aprobacion_tardia() -> None:
+    notificacion_enviada = asyncio.Event()
 
-    async def notify(_request) -> None:
-        notification_sent.set()
+    async def notificar(_request) -> None:
+        notificacion_enviada.set()
 
-    hitl = HITLGuard(notify_fn=notify, timeout=0.01)
-    polling, sender, _session = _make_transport(hitl)
-    pending = asyncio.create_task(hitl.request_approval(request_id="req-timeout"))
+    hitl = HITLGuard(notify_fn=notificar, timeout=0.01)
+    polling, sender, _session = _crear_transporte(hitl)
+    pendiente = asyncio.create_task(hitl.request_approval(request_id="req-timeout"))
 
-    await _wait_for_notification(notification_sent)
-    assert await pending is Decision.DENIED
+    await _esperar_notificacion(notificacion_enviada)
+    assert await pendiente is Decision.DENIED
 
-    await polling._process_raw_update(_callback_update(6, "approve", "req-timeout"))
+    await polling._process_raw_update(_crear_update_callback(6, "approve", "req-timeout"))
 
     sender.edit_message.assert_not_awaited()
     sender.send.assert_awaited_once_with(123, "Error: Request 'req-timeout' not found or already processed.")
 
 
 @pytest.mark.asyncio
-async def test_polling_preserves_injected_session() -> None:
+async def test_polling_preserva_la_sesion_inyectada() -> None:
     hitl = HITLGuard()
-    polling, _sender, session = _make_transport(hitl)
+    polling, _sender, session = _crear_transporte(hitl)
     polling._running = True
 
-    async def stop_after_poll() -> None:
+    async def detener_despues_del_poll() -> None:
         polling._running = False
 
-    polling._poll_once = AsyncMock(side_effect=stop_after_poll)
+    polling._poll_once = AsyncMock(side_effect=detener_despues_del_poll)
     await polling._run_loop()
 
     assert polling._session is session
@@ -205,7 +206,7 @@ async def test_polling_preserves_injected_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_polling_owned_session_is_closed_by_owner() -> None:
+async def test_polling_cierra_la_sesion_propietaria() -> None:
     handler = MagicMock()
     gateway = MagicMock()
     polling = TelegramPolling(
@@ -216,37 +217,37 @@ async def test_polling_owned_session_is_closed_by_owner() -> None:
         interval=0,
         authorized_chat_id=123,
     )
-    owned_session = MagicMock(spec=aiohttp.ClientSession)
-    owned_session.closed = False
-    owned_session.close = AsyncMock()
+    sesion_propietaria = MagicMock(spec=aiohttp.ClientSession)
+    sesion_propietaria.closed = False
+    sesion_propietaria.close = AsyncMock()
     polling._running = True
 
-    async def stop_after_poll() -> None:
+    async def detener_despues_del_poll() -> None:
         polling._running = False
 
-    polling._poll_once = AsyncMock(side_effect=stop_after_poll)
+    polling._poll_once = AsyncMock(side_effect=detener_despues_del_poll)
     with (
-        patch("sky_claw.app.comms.telegram_polling.aiohttp.ClientSession", return_value=owned_session),
+        patch("sky_claw.app.comms.telegram_polling.aiohttp.ClientSession", return_value=sesion_propietaria),
         patch("sky_claw.app.security.network_gateway.GatewayTCPConnector", return_value=MagicMock()),
     ):
         await polling._run_loop()
 
-    owned_session.close.assert_awaited_once()
+    sesion_propietaria.close.assert_awaited_once()
     assert polling._session is None
     assert polling._owns_session is False
 
 
 @pytest.mark.asyncio
-async def test_polling_stop_awaits_task_and_is_idempotent() -> None:
-    cleanup_complete = asyncio.Event()
-    task_started = asyncio.Event()
+async def test_stop_espera_la_tarea_y_es_idempotente() -> None:
+    limpieza_completa = asyncio.Event()
+    tarea_iniciada = asyncio.Event()
 
-    async def polling_task() -> None:
-        task_started.set()
+    async def tarea_de_polling() -> None:
+        tarea_iniciada.set()
         try:
             await asyncio.Event().wait()
         finally:
-            cleanup_complete.set()
+            limpieza_completa.set()
 
     polling = TelegramPolling(
         token="123:ABC",
@@ -256,20 +257,20 @@ async def test_polling_stop_awaits_task_and_is_idempotent() -> None:
         authorized_chat_id=123,
     )
     polling._running = True
-    polling._polling_task = asyncio.create_task(polling_task())
-    await task_started.wait()
+    polling._polling_task = asyncio.create_task(tarea_de_polling())
+    await tarea_iniciada.wait()
 
     await polling.stop()
     await polling.stop()
 
-    assert cleanup_complete.is_set()
+    assert limpieza_completa.is_set()
     assert polling._polling_task is None
     assert polling._running is False
 
 
 @pytest.mark.asyncio
-async def test_polling_stop_propagates_unexpected_task_failure_and_cleans_reference() -> None:
-    async def failing_task() -> None:
+async def test_stop_propaga_fallo_inesperado_y_limpia_la_referencia() -> None:
+    async def tarea_fallida() -> None:
         raise RuntimeError("polling failed")
 
     polling = TelegramPolling(
@@ -280,7 +281,7 @@ async def test_polling_stop_propagates_unexpected_task_failure_and_cleans_refere
         authorized_chat_id=123,
     )
     polling._running = True
-    polling._polling_task = asyncio.create_task(failing_task())
+    polling._polling_task = asyncio.create_task(tarea_fallida())
     await asyncio.sleep(0)
 
     with pytest.raises(RuntimeError, match="polling failed"):
@@ -291,7 +292,81 @@ async def test_polling_stop_propagates_unexpected_task_failure_and_cleans_refere
 
 
 @pytest.mark.asyncio
-async def test_polling_without_gateway_fails_closed_and_cleans_state() -> None:
+async def test_stop_desde_la_propia_tarea_no_se_autoespera() -> None:
+    polling = TelegramPolling(
+        token="123:ABC",
+        webhook_handler=MagicMock(),
+        gateway=MagicMock(),
+        session=MagicMock(spec=aiohttp.ClientSession),
+        authorized_chat_id=123,
+    )
+    tarea_actual = asyncio.current_task()
+    assert tarea_actual is not None
+    polling._running = True
+    polling._polling_task = tarea_actual
+
+    await polling.stop()
+
+    assert polling._running is False
+    assert polling._polling_task is None
+
+
+@pytest.mark.asyncio
+async def test_cancelar_stop_repropaga_cancelled_error_y_recolecta_la_tarea() -> None:
+    limpieza_completa = asyncio.Event()
+    tarea_iniciada = asyncio.Event()
+
+    async def tarea_de_polling() -> None:
+        tarea_iniciada.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.01)
+            limpieza_completa.set()
+
+    polling = TelegramPolling(
+        token="123:ABC",
+        webhook_handler=MagicMock(),
+        gateway=MagicMock(),
+        session=MagicMock(spec=aiohttp.ClientSession),
+        authorized_chat_id=123,
+    )
+    polling._running = True
+    polling._polling_task = asyncio.create_task(tarea_de_polling())
+    await tarea_iniciada.wait()
+
+    tarea_stop = asyncio.create_task(polling.stop())
+    await asyncio.sleep(0)
+    tarea_stop.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await tarea_stop
+
+    assert limpieza_completa.is_set()
+    assert polling._polling_task is None
+    assert polling._running is False
+
+
+@pytest.mark.asyncio
+async def test_start_sin_gateway_falla_antes_de_publicar_estado_activo() -> None:
+    polling = TelegramPolling(
+        token="123:ABC",
+        webhook_handler=MagicMock(),
+        gateway=None,
+        session=None,
+        interval=0,
+        authorized_chat_id=123,
+    )
+
+    with pytest.raises(RuntimeError, match="NetworkGateway"):
+        await polling.start()
+
+    assert polling._running is False
+    assert polling._polling_task is None
+
+
+@pytest.mark.asyncio
+async def test_polling_falla_sin_gateway_y_limpia_el_estado_interno() -> None:
     polling = TelegramPolling(
         token="123:ABC",
         webhook_handler=MagicMock(),
@@ -311,7 +386,7 @@ async def test_polling_without_gateway_fails_closed_and_cleans_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_polling_failure_during_poll_closes_owned_session() -> None:
+async def test_fallo_durante_polling_cierra_la_sesion_propietaria() -> None:
     polling = TelegramPolling(
         token="123:ABC",
         webhook_handler=MagicMock(),
@@ -320,22 +395,22 @@ async def test_polling_failure_during_poll_closes_owned_session() -> None:
         interval=0,
         authorized_chat_id=123,
     )
-    owned_session = MagicMock(spec=aiohttp.ClientSession)
-    owned_session.closed = False
-    owned_session.close = AsyncMock()
+    sesion_propietaria = MagicMock(spec=aiohttp.ClientSession)
+    sesion_propietaria.closed = False
+    sesion_propietaria.close = AsyncMock()
 
-    async def fail_and_stop() -> None:
+    async def fallar_y_detener() -> None:
         polling._running = False
         raise RuntimeError("poll once failed")
 
     polling._running = True
-    polling._poll_once = AsyncMock(side_effect=fail_and_stop)
+    polling._poll_once = AsyncMock(side_effect=fallar_y_detener)
     with (
-        patch("sky_claw.app.comms.telegram_polling.aiohttp.ClientSession", return_value=owned_session),
+        patch("sky_claw.app.comms.telegram_polling.aiohttp.ClientSession", return_value=sesion_propietaria),
         patch("sky_claw.app.security.network_gateway.GatewayTCPConnector", return_value=MagicMock()),
     ):
         await polling._run_loop()
 
-    owned_session.close.assert_awaited_once()
+    sesion_propietaria.close.assert_awaited_once()
     assert polling._session is None
     assert polling._running is False

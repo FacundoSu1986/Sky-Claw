@@ -1,4 +1,4 @@
-"""Focused tests for the common Telegram callback dispatcher."""
+"""Pruebas enfocadas del dispatcher común de callbacks de Telegram."""
 
 from __future__ import annotations
 
@@ -8,9 +8,10 @@ import aiohttp
 import pytest
 
 from sky_claw.app.comms.telegram import TelegramWebhook
+from sky_claw.app.security.network_gateway import EgressViolationError
 
 
-def _make_webhook() -> tuple[TelegramWebhook, AsyncMock, MagicMock]:
+def _crear_webhook() -> tuple[TelegramWebhook, AsyncMock, MagicMock]:
     hitl = MagicMock()
     hitl.respond = AsyncMock(return_value=True)
     sender = MagicMock()
@@ -27,7 +28,7 @@ def _make_webhook() -> tuple[TelegramWebhook, AsyncMock, MagicMock]:
     return webhook, hitl.respond, sender
 
 
-def _update(data: str, *, user_id: int = 123, chat_id: int = 123) -> dict:
+def _crear_update(data: str, *, user_id: int = 123, chat_id: int = 123) -> dict:
     return {
         "update_id": 1,
         "callback_query": {
@@ -40,10 +41,10 @@ def _update(data: str, *, user_id: int = 123, chat_id: int = 123) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_unknown_callback_action_does_not_resolve_request() -> None:
-    webhook, respond, sender = _make_webhook()
+async def test_accion_callback_desconocida_no_resuelve_la_solicitud() -> None:
+    webhook, respond, sender = _crear_webhook()
 
-    await webhook.process_update(_update("hitl:escalate:req-1"))
+    await webhook.process_update(_crear_update("hitl:escalate:req-1"))
 
     respond.assert_not_awaited()
     sender.answer_callback_query.assert_awaited_once_with("callback-1", text="Invalid HITL action")
@@ -51,10 +52,10 @@ async def test_unknown_callback_action_does_not_resolve_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_malformed_callback_does_not_resolve_request() -> None:
-    webhook, respond, sender = _make_webhook()
+async def test_callback_malformado_no_resuelve_la_solicitud() -> None:
+    webhook, respond, sender = _crear_webhook()
 
-    await webhook.process_update(_update("hitl:approve"))
+    await webhook.process_update(_crear_update("hitl:approve"))
 
     respond.assert_not_awaited()
     sender.answer_callback_query.assert_awaited_once_with("callback-1", text="Invalid callback")
@@ -62,10 +63,10 @@ async def test_malformed_callback_does_not_resolve_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_callback_does_not_resolve_request() -> None:
-    webhook, respond, sender = _make_webhook()
+async def test_callback_no_autorizado_no_resuelve_la_solicitud() -> None:
+    webhook, respond, sender = _crear_webhook()
 
-    await webhook.process_update(_update("hitl:approve:req-1", user_id=999, chat_id=999))
+    await webhook.process_update(_crear_update("hitl:approve:req-1", user_id=999, chat_id=999))
 
     respond.assert_not_awaited()
     sender.answer_callback_query.assert_awaited_once_with("callback-1", text="Unauthorized")
@@ -77,14 +78,37 @@ async def test_unauthorized_callback_does_not_resolve_request() -> None:
     ("data", "approved"),
     [("hitl:approve:req-approve", True), ("hitl:deny:req-deny", False)],
 )
-async def test_valid_callback_maps_only_allowlisted_actions_to_hitl(
+async def test_callback_valido_mapea_solo_acciones_permitidas(
     data: str,
     approved: bool,
 ) -> None:
-    webhook, respond, sender = _make_webhook()
+    webhook, respond, sender = _crear_webhook()
 
-    await webhook.process_update(_update(data))
+    await webhook.process_update(_crear_update(data))
 
     respond.assert_awaited_once_with(data.rsplit(":", 1)[1], approved)
     sender.answer_callback_query.assert_awaited_once_with("callback-1", text=None)
     sender.edit_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fallo_de_transporte_del_ack_no_revierte_la_decision() -> None:
+    webhook, respond, sender = _crear_webhook()
+    sender.answer_callback_query = AsyncMock(side_effect=EgressViolationError("egress bloqueado"))
+
+    await webhook.process_update(_crear_update("hitl:approve:req-1"))
+
+    respond.assert_awaited_once_with("req-1", True)
+    sender.edit_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fallo_inesperado_del_ack_se_propaga() -> None:
+    webhook, respond, sender = _crear_webhook()
+    sender.answer_callback_query = AsyncMock(side_effect=RuntimeError("fallo de programación"))
+
+    with pytest.raises(RuntimeError, match="fallo de programación"):
+        await webhook.process_update(_crear_update("hitl:approve:req-1"))
+
+    respond.assert_awaited_once_with("req-1", True)
+    sender.edit_message.assert_not_awaited()
