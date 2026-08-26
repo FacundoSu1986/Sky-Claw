@@ -92,14 +92,16 @@ async def test_callback_deny_por_polling_resuelve_hitl_pendiente() -> None:
     async def notificar(_request) -> None:
         notificacion_enviada.set()
 
-    hitl = HITLGuard(notify_fn=notificar, timeout=1)
-    polling, _sender, _session = _crear_transporte(hitl)
+    hitl = HITLGuard(notify_fn=notificar, timeout=5)
+    polling, sender, _session = _crear_transporte(hitl)
     pendiente = asyncio.create_task(hitl.request_approval(request_id="req-deny"))
 
     await _esperar_notificacion(notificacion_enviada)
     await polling._process_raw_update(_crear_update_callback(2, "deny", "req-deny"))
 
+    sender.answer_callback_query.assert_awaited_once_with("callback-2", text=None)
     assert await pendiente is Decision.DENIED
+    sender.edit_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -308,7 +310,7 @@ async def test_stop_desde_la_propia_tarea_no_se_autoespera() -> None:
     await polling.stop()
 
     assert polling._running is False
-    assert polling._polling_task is None
+    assert polling._polling_task is tarea_actual
 
 
 @pytest.mark.asyncio
@@ -324,11 +326,12 @@ async def test_cancelar_stop_repropaga_cancelled_error_y_recolecta_la_tarea() ->
             await asyncio.sleep(0.01)
             limpieza_completa.set()
 
+    sesion_inyectada = MagicMock(spec=aiohttp.ClientSession)
     polling = TelegramPolling(
         token="123:ABC",
         webhook_handler=MagicMock(),
         gateway=MagicMock(),
-        session=MagicMock(spec=aiohttp.ClientSession),
+        session=sesion_inyectada,
         authorized_chat_id=123,
     )
     polling._running = True
@@ -345,6 +348,95 @@ async def test_cancelar_stop_repropaga_cancelled_error_y_recolecta_la_tarea() ->
     assert limpieza_completa.is_set()
     assert polling._polling_task is None
     assert polling._running is False
+    sesion_inyectada.close.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_start_no_crea_segunda_tarea_durante_self_stop() -> None:
+    primera_tarea_iniciada = asyncio.Event()
+    primera_tarea_puede_terminar = asyncio.Event()
+    tareas_observadas: list[asyncio.Task[None]] = []
+    polling = TelegramPolling(
+        token="123:ABC",
+        webhook_handler=MagicMock(),
+        gateway=MagicMock(),
+        session=MagicMock(spec=aiohttp.ClientSession),
+        interval=0,
+        authorized_chat_id=123,
+    )
+
+    async def poll_once() -> None:
+        tarea_actual = asyncio.current_task()
+        assert tarea_actual is not None
+        tareas_observadas.append(tarea_actual)
+        if len(tareas_observadas) == 1:
+            primera_tarea_iniciada.set()
+            await polling.stop()
+            await primera_tarea_puede_terminar.wait()
+            polling._running = False
+        else:
+            polling._running = False
+
+    polling._poll_once = AsyncMock(side_effect=poll_once)
+    await polling.start()
+    await primera_tarea_iniciada.wait()
+    primera_tarea = polling._polling_task
+    assert primera_tarea is not None
+
+    await polling.start()
+
+    assert polling._polling_task is primera_tarea
+    assert not primera_tarea.done()
+    assert tareas_observadas == [primera_tarea]
+
+    primera_tarea_puede_terminar.set()
+    await primera_tarea
+    await asyncio.sleep(0)
+
+    assert polling._polling_task is None
+    assert polling._running is False
+
+
+@pytest.mark.asyncio
+async def test_restart_es_posible_despues_de_terminar_task_anterior() -> None:
+    primera_tarea_terminada = asyncio.Event()
+    segunda_tarea_iniciada = asyncio.Event()
+    polling = TelegramPolling(
+        token="123:ABC",
+        webhook_handler=MagicMock(),
+        gateway=MagicMock(),
+        session=MagicMock(spec=aiohttp.ClientSession),
+        interval=0,
+        authorized_chat_id=123,
+    )
+    llamadas = 0
+
+    async def poll_once() -> None:
+        nonlocal llamadas
+        llamadas += 1
+        polling._running = False
+        if llamadas == 1:
+            primera_tarea_terminada.set()
+        else:
+            segunda_tarea_iniciada.set()
+
+    polling._poll_once = AsyncMock(side_effect=poll_once)
+    await polling.start()
+    await primera_tarea_terminada.wait()
+    primera_tarea = polling._polling_task
+    assert primera_tarea is not None
+    await primera_tarea
+    await asyncio.sleep(0)
+
+    await polling.start()
+    segunda_tarea = polling._polling_task
+    assert segunda_tarea is not None
+    assert segunda_tarea is not primera_tarea
+    await segunda_tarea
+    await asyncio.sleep(0)
+
+    assert segunda_tarea_iniciada.is_set()
+    assert polling._polling_task is None
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,8 @@ class TelegramPolling:
         """Inicia el ciclo de polling después de validar sus precondiciones."""
         if self._running:
             return
+        if self._polling_task is not None and not self._polling_task.done():
+            return
         if self._gateway is None:
             raise RuntimeError("TelegramPolling requires a NetworkGateway for outbound traffic")
 
@@ -107,8 +109,8 @@ class TelegramPolling:
         current_task = asyncio.current_task()
         if task is current_task:
             # La tarea no puede esperarse a sí misma. El ciclo actual ejecutará
-            # su cleanup sin que stop() vuelva a esperarlo.
-            self._polling_task = None
+            # su cleanup sin que stop() vuelva a esperarlo; el callback de finalización
+            # liberará el slot cuando la tarea termine realmente.
             logger.info("Telegram long polling stopped from polling task")
             return
 

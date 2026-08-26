@@ -347,33 +347,38 @@ class TelegramWebhook:
             return
 
         action, request_id = parts[1], parts[2]
-        if action not in {"approve", "deny"} or not request_id.strip():
-            # Una acción desconocida nunca debe convertirse implícitamente en denegación.
-            logger.warning("Unknown or empty HITL callback action received: %r", action)
+        if action not in {"approve", "deny"} or not request_id.strip() or request_id != request_id.strip():
+            # Una acción desconocida o un ID no canónico nunca deben convertirse
+            # implícitamente en denegación ni en otro identificador.
+            logger.warning("Unknown, empty, or non-canonical HITL callback received: %r", data)
             await self._answer_callback_query_safely(query, text="Invalid HITL action")
             return
 
         approved = action == "approve"
 
-        if self._hitl is not None:
-            found = await self._hitl.respond(request_id, approved)
-            verb = "Approved" if approved else "Denied"
+        if self._hitl is None:
+            logger.error("Se recibió un callback HITL válido sin HITLGuard inicializado")
+            await self._answer_callback_query_safely(query, text="HITL unavailable")
+            return
 
-            # Confirma el callback para quitar el estado de carga. Un fallo de
-            # entrega se observa, pero no cambia el resultado HITL comprometido.
-            await self._answer_callback_query_safely(query)
+        found = await self._hitl.respond(request_id, approved)
+        verb = "Approved" if approved else "Denied"
 
-            if found:
-                text = f"Request '{request_id}' {verb.lower()} by operator."
-                try:
-                    await self._sender.edit_message(chat_id, message_id, text, reply_markup=None)
-                except Exception:
-                    logger.exception("No se pudo editar el mensaje HITL terminal para %s", request_id)
-            else:
-                await self._sender.send(
-                    chat_id,
-                    f"Error: Request '{request_id}' not found or already processed.",
-                )
+        # Confirma el callback para quitar el estado de carga. Un fallo de
+        # entrega se observa, pero no cambia el resultado HITL comprometido.
+        await self._answer_callback_query_safely(query)
+
+        if found:
+            text = f"Request '{request_id}' {verb.lower()} by operator."
+            try:
+                await self._sender.edit_message(chat_id, message_id, text, reply_markup=None)
+            except Exception:
+                logger.exception("No se pudo editar el mensaje HITL terminal para %s", request_id)
+        else:
+            await self._sender.send(
+                chat_id,
+                f"Error: Request '{request_id}' not found or already processed.",
+            )
 
     async def _handle_hitl_command(
         self,

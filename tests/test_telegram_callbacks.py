@@ -41,6 +41,36 @@ def _crear_update(data: str, *, user_id: int = 123, chat_id: int = 123) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_callback_hitl_sin_guard_falla_de_forma_explicita() -> None:
+    sender = MagicMock()
+    sender.answer_callback_query = AsyncMock()
+    sender.edit_message = AsyncMock()
+    webhook = TelegramWebhook(
+        router=MagicMock(),
+        sender=sender,
+        session=MagicMock(spec=aiohttp.ClientSession),
+        hitl=None,
+        authorized_user_id=123,
+    )
+
+    await webhook.process_update(_crear_update("hitl:approve:req-1"))
+
+    sender.answer_callback_query.assert_awaited_once_with("callback-1", text="HITL unavailable")
+    sender.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_request_id_con_espacios_es_rechazado() -> None:
+    webhook, respond, sender = _crear_webhook()
+
+    await webhook.process_update(_crear_update("hitl:approve: req-1 "))
+
+    respond.assert_not_awaited()
+    sender.answer_callback_query.assert_awaited_once_with("callback-1", text="Invalid HITL action")
+    sender.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_accion_callback_desconocida_no_resuelve_la_solicitud() -> None:
     webhook, respond, sender = _crear_webhook()
 
