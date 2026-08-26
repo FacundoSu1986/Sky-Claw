@@ -60,10 +60,21 @@ async def test_callback_hitl_sin_guard_falla_de_forma_explicita() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_id_con_espacios_es_rechazado() -> None:
+async def test_request_id_opaco_con_espacios_se_preserva_literalmente() -> None:
     webhook, respond, sender = _crear_webhook()
 
     await webhook.process_update(_crear_update("hitl:approve: req-1 "))
+
+    respond.assert_awaited_once_with(" req-1 ", True)
+    sender.answer_callback_query.assert_awaited_once_with("callback-1", text=None)
+    sender.edit_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_request_id_solo_whitespace_se_rechaza() -> None:
+    webhook, respond, sender = _crear_webhook()
+
+    await webhook.process_update(_crear_update("hitl:approve:   "))
 
     respond.assert_not_awaited()
     sender.answer_callback_query.assert_awaited_once_with("callback-1", text="Invalid HITL action")

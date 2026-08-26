@@ -347,10 +347,10 @@ class TelegramWebhook:
             return
 
         action, request_id = parts[1], parts[2]
-        if action not in {"approve", "deny"} or not request_id.strip() or request_id != request_id.strip():
-            # Una acción desconocida o un ID no canónico nunca deben convertirse
+        if action not in {"approve", "deny"} or not request_id.strip():
+            # Una acción desconocida o un ID vacío nunca deben convertirse
             # implícitamente en denegación ni en otro identificador.
-            logger.warning("Unknown, empty, or non-canonical HITL callback received: %r", data)
+            logger.warning("Unknown or empty HITL callback action received: %r", data)
             await self._answer_callback_query_safely(query, text="Invalid HITL action")
             return
 
