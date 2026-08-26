@@ -299,16 +299,21 @@ def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionR
         return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
 
     # 6c. Escalación de permisos/propietario desde el parent.
-    # Un token con WRITE_DAC efectivo sobre el parent puede reescribir su DACL para
-    # auto-concederse FILE_DELETE_CHILD, que borra hijos IGNORANDO su propia DACL; con
-    # WRITE_OWNER puede tomar posesión del parent y llegar a lo mismo. Esa vía existe aunque
-    # el root esté protegido contra herencia (dacl_inheritance_protected=True) — FILE_DELETE_CHILD
-    # sobre el parent no consulta la DACL del root — así que el chequeo NO se condiciona a la
-    # protección de herencia del root (ver M-GP1-30/31 para el caso heredado y M-GP1-32/55 para
-    # el caso protegido).
+    # CHANGE_PERMISSIONS (WRITE_DAC efectivo sobre el parent) es una capacidad DIRECTA: AccessCheck
+    # ya lo acredita en granted_rights (una Owner Rights ACE que lo suprimiera lo habría quitado del
+    # conjunto efectivo). El token puede reescribir la DACL del parent y auto-concederse
+    # FILE_DELETE_CHILD, que borra hijos IGNORANDO su propia DACL. Esa vía existe aunque el root esté
+    # protegido contra herencia (dacl_inheritance_protected=True) — FILE_DELETE_CHILD sobre el parent
+    # no consulta la DACL del root — así que NO se condiciona a la protección de herencia del root
+    # (ver M-GP1-30 heredado / M-GP1-32 protegido).
     if GoldenProtectionRight.CHANGE_PERMISSIONS in parent_rights:
         return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
-    if GoldenProtectionRight.CHANGE_OWNER in parent_rights:
+    # CHANGE_OWNER (WRITE_OWNER) es INDIRECTO: solo permite TOMAR POSESIÓN del parent. El nuevo dueño
+    # obtiene WRITE_DAC IMPLÍCITO —y con él la vía a FILE_DELETE_CHILD— únicamente si NO hay una Owner
+    # Rights ACE (S-1-3-4) en el parent; esa ACE suprime el grant implícito del dueño (MS-DTYP). Con
+    # la ACE presente, WRITE_OWNER por sí solo no prueba mutación, así que se condiciona a su ausencia
+    # (ver M-GP1-31/55 sin la ACE -> UNPROTECTED; M-GP1-56 con la ACE -> no UNPROTECTED).
+    if GoldenProtectionRight.CHANGE_OWNER in parent_rights and not parent_obs.owner_rights_ace_present:
         return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
 
     # 7. Si llegamos acá, el árbol es WRITE_PROTECTED. Evaluar HARDENED

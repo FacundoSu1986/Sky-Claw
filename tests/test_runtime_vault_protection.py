@@ -2058,6 +2058,45 @@ class TestMutacionesAdversariales:
         res = classify_protection(ev)
         assert res.state is GoldenProtectionState.UNPROTECTED
 
+    def test_m_gp1_56_parent_write_owner_con_owner_rights_ace_no_unprotected(self) -> None:
+        """M-GP1-56: parent con WRITE_OWNER PERO Owner Rights ACE (S-1-3-4) presente -> NO UNPROTECTED.
+
+        Hermano de M-GP1-55: WRITE_OWNER es indirecto (solo permite tomar posesión). Si el parent
+        tiene una Owner Rights ACE, el WRITE_DAC implícito del nuevo dueño queda suprimido (MS-DTYP),
+        así que tomar posesión no garantiza reescribir la DACL. Con owner_rights_ace_present=True la
+        rama de CHANGE_OWNER NO debe clasificar UNPROTECTED basándose solo en WRITE_OWNER.
+        """
+        ev = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            current_token_elevated=False,
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path=".",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                    dacl_inheritance_protected=True,
+                    owner_rights_ace_present=True,
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.CHANGE_OWNER}),
+                dacl_inheritance_protected=True,
+                owner_rights_ace_present=True,
+            ),
+        )
+        res = classify_protection(ev)
+        assert res.success is True
+        assert res.state is not GoldenProtectionState.UNPROTECTED
+
     def test_m_gp1_33_volume_info_failure_unknown(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
