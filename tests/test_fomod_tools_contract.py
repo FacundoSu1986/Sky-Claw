@@ -76,9 +76,11 @@ class _FakeHITL:
     def __init__(self, decision: Decision = Decision.APPROVED) -> None:
         self._decision = decision
         self.requested: list[str] = []
+        self.requested_kwargs: list[dict[str, Any]] = []
 
     async def request_approval(self, request_id: str, reason: str, **kwargs: Any) -> Decision:
         self.requested.append(request_id)
+        self.requested_kwargs.append(kwargs)
         return self._decision
 
 
@@ -206,6 +208,7 @@ class TestInstallModFromArchiveContrato:
         assert payload["success"] is False
         assert payload["status"] == "denied"
         assert fake_mo2.added == []
+        assert hitl.requested_kwargs[0]["category"] == "tool_execution"
 
     async def test_instalacion_ok_agrega_al_modlist(self, fake_mo2: _FakeMO2) -> None:
         hitl = _FakeHITL()

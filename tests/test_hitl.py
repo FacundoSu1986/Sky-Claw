@@ -500,6 +500,58 @@ class TestNotifyFnFailure:
 
 
 # ---------------------------------------------------------------------------
+# TestNotifyCancellation
+# ---------------------------------------------------------------------------
+
+
+class TestNotifyCancellation:
+    @pytest.mark.asyncio
+    async def test_cancelacion_durante_notify_limpia_pending_y_se_propaga(self) -> None:
+        """Cancelar notify no debe dejar la solicitud huérfana ni tragarse el cancel."""
+        notify_started = asyncio.Event()
+
+        async def blocking_notify(req: HITLRequest) -> None:
+            notify_started.set()
+            await asyncio.Event().wait()
+
+        request_id = "cancel-during-notify"
+        guard = HITLGuard(notify_fn=blocking_notify, timeout=5)
+        task = asyncio.create_task(guard.request_approval(request_id=request_id, reason="cancel test"))
+        await notify_started.wait()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert request_id not in guard._pending
+
+    @pytest.mark.asyncio
+    async def test_request_id_reutilizable_tras_cancelacion_durante_notify(self) -> None:
+        """El mismo ID debe poder usarse después de cancelar la notificación."""
+        notify_started = asyncio.Event()
+
+        async def blocking_notify(req: HITLRequest) -> None:
+            notify_started.set()
+            await asyncio.Event().wait()
+
+        request_id = "reusable-after-cancel"
+        guard = HITLGuard(notify_fn=blocking_notify, timeout=5)
+        task = asyncio.create_task(guard.request_approval(request_id=request_id, reason="first attempt"))
+        await notify_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        async def approve(req: HITLRequest) -> None:
+            await guard.respond(req.request_id, approved=True)
+
+        guard._notify = approve
+        decision = await guard.request_approval(request_id=request_id, reason="second attempt")
+
+        assert decision is Decision.APPROVED
+
+
+# ---------------------------------------------------------------------------
 # TestConcurrency
 # ---------------------------------------------------------------------------
 

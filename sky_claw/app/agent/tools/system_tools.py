@@ -258,6 +258,7 @@ async def install_mod_from_archive(
             request_id=request_id,
             reason=f"Confirmar instalación de mod: {pathlib.Path(archive_path).name}",
             detail=f"Selecciones FOMOD detectadas: {json.dumps(selections or {})}",
+            category="tool_execution",
         )
     except asyncio.CancelledError:
         raise

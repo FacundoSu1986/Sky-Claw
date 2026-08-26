@@ -143,6 +143,7 @@ async def download_mod(
             ),
             url=file_info.download_url,
             detail=detail,
+            category="download",
         )
 
         if decision is not Decision.APPROVED:

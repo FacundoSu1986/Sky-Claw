@@ -124,32 +124,32 @@ class HITLGuard:
             self._pending[request_id] = req
 
         try:
-            if self._notify is not None:
-                await self._notify(req)
-        except Exception as exc:
-            logger.error("HITL: notify_fn failed: %s", exc)
-            async with self._lock:
-                self._pending.pop(request_id, None)
-            return Decision.TIMEOUT
+            try:
+                if self._notify is not None:
+                    await self._notify(req)
+            except Exception as exc:
+                logger.error("HITL: notify_fn failed: %s", exc)
+                return Decision.TIMEOUT
 
-        logger.info("HITL: awaiting operator decision for %s", request_id)
+            logger.info("HITL: awaiting operator decision for %s", request_id)
 
-        try:
-            await asyncio.wait_for(req._event.wait(), timeout=self._timeout)
-        except TimeoutError:
-            # F6: commitear el auto-deny bajo el lock (primer escritor gana). Si
-            # un respond se coló en la ventana de la race y ya resolvió la
-            # request, ``_commit`` es no-op y se honra la decisión del operador.
-            if await self._commit(request_id, Decision.DENIED):
-                logger.warning(
-                    "HITL: timeout for %s — auto-denied (fail-secure policy)",
-                    request_id,
-                )
+            try:
+                await asyncio.wait_for(req._event.wait(), timeout=self._timeout)
+            except TimeoutError:
+                # F6: commitear el auto-deny bajo el lock (primer escritor gana). Si
+                # un respond se coló en la ventana de la race y ya resolvió la
+                # request, ``_commit`` es no-op y se honra la decisión del operador.
+                if await self._commit(request_id, Decision.DENIED):
+                    logger.warning(
+                        "HITL: timeout for %s — auto-denied (fail-secure policy)",
+                        request_id,
+                    )
+            return req.decision
         finally:
+            # También limpiar si notify_fn se cancela: CancelledError debe
+            # propagarse al caller, pero nunca dejar un pending huérfano.
             async with self._lock:
                 self._pending.pop(request_id, None)
-
-        return req.decision
 
     async def _commit(self, request_id: str, decision: Decision) -> bool:
         """F6: commitea una decisión terminal de forma atómica (primer escritor gana).

@@ -600,7 +600,7 @@ class TestHITLToolExecutionCategory:
 
     Without sender/operator_chat_id:
     - ``category="tool_execution"`` → DENIED (fail-closed)
-    - default category → APPROVED (legacy auto-approve for downloads preserved)
+    - default, download, and unknown categories → DENIED (fail-closed)
     """
 
     @staticmethod
@@ -669,8 +669,8 @@ class TestHITLToolExecutionCategory:
             await ctx.stop()
 
     @pytest.mark.asyncio
-    async def test_default_category_auto_approved_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
-        """Pins the legacy behavior: non-tool requests keep auto-approving."""
+    async def test_default_category_denied_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
+        """La categoría default no puede conservar el auto-approve legacy."""
         ctx = await self._boot_ctx_without_operator_channel(tmp_path)
         try:
             decision = await asyncio.wait_for(
@@ -680,7 +680,41 @@ class TestHITLToolExecutionCategory:
                 ),
                 timeout=5.0,
             )
-            assert decision is Decision.APPROVED
+            assert decision is Decision.DENIED
+        finally:
+            await ctx.stop()
+
+    @pytest.mark.asyncio
+    async def test_download_denied_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
+        """El egress de una descarga siempre requiere aprobación explícita."""
+        ctx = await self._boot_ctx_without_operator_channel(tmp_path)
+        try:
+            decision = await asyncio.wait_for(
+                ctx.hitl.request_approval(
+                    request_id="download-42-7-explicit",
+                    reason="Download mod X",
+                    category="download",
+                ),
+                timeout=5.0,
+            )
+            assert decision is Decision.DENIED
+        finally:
+            await ctx.stop()
+
+    @pytest.mark.asyncio
+    async def test_unknown_category_denied_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
+        """Una categoría futura/desconocida nunca se convierte en APPROVED."""
+        ctx = await self._boot_ctx_without_operator_channel(tmp_path)
+        try:
+            decision = await asyncio.wait_for(
+                ctx.hitl.request_approval(
+                    request_id="future-dangerous-action-42",
+                    reason="Future dangerous action",
+                    category="future_dangerous_action",
+                ),
+                timeout=5.0,
+            )
+            assert decision is Decision.DENIED
         finally:
             await ctx.stop()
 

@@ -768,6 +768,7 @@ class SyncEngine:
                             reason="Automatic Mod Update",
                             url=file_info.download_url,
                             detail=desc,
+                            category="download",
                         )
                 else:
                     decision = await self._hitl.request_approval(
@@ -775,6 +776,7 @@ class SyncEngine:
                         reason="Automatic Mod Update",
                         url=file_info.download_url,
                         detail=desc,
+                        category="download",
                     )
                 if decision != Decision.APPROVED:
                     logger.warning("Descarga abortada por HITL para %s", mod_name)

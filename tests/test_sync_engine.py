@@ -870,6 +870,7 @@ class TestCheckForUpdates:
         assert payload.total_checked == 1
         assert len(payload.failed_mods) == 1
         assert "HITL" in payload.failed_mods[0]["error"]
+        assert mock_hitl.request_approval.await_args.kwargs["category"] == "download"
 
     @pytest.mark.asyncio
     async def test_las_aprobaciones_hitl_no_se_solapan(self) -> None:
