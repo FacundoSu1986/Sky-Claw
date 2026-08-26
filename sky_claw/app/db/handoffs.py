@@ -159,8 +159,62 @@ CREATE INDEX IF NOT EXISTS idx_orphan_absorptions_artifact_tx
 """
 
 # =============================================================================
+# RESOLUCIONES DURABLES DE EVIDENCIA PER-ARTIFACT (D4, Issue #506)
+# =============================================================================
+#
+# La autoridad sobre el ciclo de vida de la evidencia reside exclusivamente a nivel
+# per-artifact en ``(transaction_id, artifact_path)``. Una operación sobre el
+# artifact A (RUN 1, replacement, INDETERMINATE, NO_ARTIFACT) jamás muta el
+# receipt global de la transacción ni destruye evidencia de otro artifact B.
+
+ARTIFACT_RESOLUTIONS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS artifact_evidence_resolutions (
+    resolution_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id  INTEGER NOT NULL REFERENCES transactions(transaction_id),
+    artifact_path   TEXT NOT NULL,
+    resolution_kind TEXT NOT NULL,
+    handoff_id      INTEGER REFERENCES deployment_handoffs(handoff_id),
+    resolved_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    CONSTRAINT chk_resolution_kind CHECK (
+        resolution_kind IN (
+            'absorbed_by_handoff',
+            'superseded_by_run',
+            'no_artifact_demonstrated'
+        )
+    ),
+    CONSTRAINT uq_resolution_tx_artifact
+        UNIQUE (transaction_id, artifact_path),
+    CONSTRAINT chk_resolution_provenance CHECK (
+        (
+            resolution_kind IN (
+                'absorbed_by_handoff',
+                'superseded_by_run'
+            )
+            AND handoff_id IS NOT NULL
+        )
+        OR
+        (
+            resolution_kind = 'no_artifact_demonstrated'
+            AND handoff_id IS NULL
+        )
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_resolutions_path_tx
+    ON artifact_evidence_resolutions(artifact_path, transaction_id);
+"""
+
+# =============================================================================
 # ESTADOS
 # =============================================================================
+
+
+class ArtifactResolutionKind(StrEnum):
+    """Tipos de resolución durable de evidencia orphan para un artifact físico."""
+
+    ABSORBED_BY_HANDOFF = "absorbed_by_handoff"
+    SUPERSEDED_BY_RUN = "superseded_by_run"
+    NO_ARTIFACT_DEMONSTRATED = "no_artifact_demonstrated"
 
 
 class HandoffState(StrEnum):
@@ -553,8 +607,8 @@ async def reconciliar_orphan_de_artifact(
     if alcance is ArtifactReachability.ABSENT:
         # Ausencia DEMOSTRADA (contenedor accesible y válido + target
         # realmente ausente): no queda mutación física preservada que
-        # proteger — el receipt puede cerrarse como NO_ARTIFACT.
-        await journal.cerrar_receipts_como_no_artifact(candidatas)  # type: ignore[attr-defined]
+        # proteger — la evidencia queda resuelta como NO_ARTIFACT para este artifact.
+        await journal.resolver_evidencia_como_no_artifact(clave, candidatas)  # type: ignore[attr-defined]
         return None
 
     # PRESENT (contrato 7-4 C): el mod existe aunque ``textures`` esté a
