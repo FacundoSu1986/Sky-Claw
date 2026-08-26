@@ -77,6 +77,98 @@ _FORBIDDEN_MUTATORS = frozenset(
     }
 )
 
+# ----------------------------------------------------------------------------
+# Anti-mutación en la capa Python (os / pathlib / shutil).
+#
+# Análogo a _FORBIDDEN_MUTATORS (Win32): el inspector es READ-ONLY, así que
+# protection.py no puede referenciar ningún mutador del stdlib. Enumeramos el
+# conjunto completo (no una muestra) y lo congelamos por AST, para que introducir
+# os.rename/os.replace/Path.mkdir/Path.touch/... rompa el gate.
+# ----------------------------------------------------------------------------
+
+# Mutadores del módulo `os` (se emparejan SOLO como `os.<attr>`, por lo que no
+# hay colisión con métodos homónimos de str/list/dict/file).
+_FORBIDDEN_OS_MUTATORS = frozenset(
+    {
+        "remove",
+        "unlink",
+        "rename",
+        "renames",
+        "replace",
+        "removedirs",
+        "rmdir",
+        "mkdir",
+        "makedirs",
+        "chmod",
+        "lchmod",
+        "chown",
+        "lchown",
+        "symlink",
+        "link",
+        "truncate",
+        "ftruncate",
+        "write",
+        "mkfifo",
+        "mknod",
+        "utime",
+        "startfile",
+    }
+)
+
+# Métodos mutadores de `pathlib.Path` (se emparejan como atributo desnudo `.<attr>`
+# sobre cualquier receptor). Sólo nombres INEQUÍVOCOS: se EXCLUYE deliberadamente
+# `replace` (colisiona con str.replace) y `remove` (list/set.remove); esos dos se
+# cubren por la vía `os.<attr>` (os.replace/os.remove) y por el monkeypatch runtime
+# (pathlib.Path.replace) para no producir falsos positivos sobre código read-only.
+_FORBIDDEN_PATHLIB_MUTATORS = frozenset(
+    {
+        "mkdir",
+        "touch",
+        "unlink",
+        "rmdir",
+        "chmod",
+        "lchmod",
+        "write_text",
+        "write_bytes",
+        "symlink_to",
+        "hardlink_to",
+        "rename",
+    }
+)
+
+# Allowlist positiva: únicos atributos `os.<attr>` que el inspector read-only puede usar.
+_ALLOWED_OS_ATTRS = frozenset({"scandir", "stat_result"})
+
+
+def _detectar_mutadores_python(source: str) -> set[str]:
+    """Detecta por AST cualquier mutador de os/pathlib/shutil en *source*.
+
+    Denylist exhaustiva y reutilizable: se ejecuta contra protection.py (debe dar
+    vacío) y contra fragmentos mutantes (debe marcarlos). Precisión:
+    - `os.<attr>` / `shutil.<attr>` se emparejan sólo cuando el receptor es el
+      Name del módulo, sin colisiones.
+    - los métodos de Path se emparejan por nombre de atributo desnudo, restringido
+      a nombres inequívocos (ver _FORBIDDEN_PATHLIB_MUTATORS).
+    """
+    arbol = ast.parse(source)
+    hallados: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            for alias in nodo.names:
+                if alias.name == "shutil" or alias.name.startswith("shutil."):
+                    hallados.add("import shutil")
+        elif isinstance(nodo, ast.ImportFrom) and nodo.module and nodo.module.split(".")[0] == "shutil":
+            hallados.add("from shutil")
+        elif isinstance(nodo, ast.Attribute):
+            val = nodo.value
+            if isinstance(val, ast.Name) and val.id == "os" and nodo.attr in _FORBIDDEN_OS_MUTATORS:
+                hallados.add(f"os.{nodo.attr}")
+            elif isinstance(val, ast.Name) and val.id == "shutil":
+                hallados.add(f"shutil.{nodo.attr}")
+            elif nodo.attr in _FORBIDDEN_PATHLIB_MUTATORS:
+                hallados.add(f".{nodo.attr}")
+    return hallados
+
 
 def _capturar_raw_security_descriptor_bytes(p: pathlib.Path) -> bytes:
     """Helper de test para capturar los bytes crudos del security descriptor (OWNER | GROUP | DACL)."""
@@ -1240,9 +1332,84 @@ class TestAntiMutacionYAllowlist:
                     f"Nombre de cuenta localizado prohibido '{nodo.value}' en protection.py"
                 )
 
+    def test_gp_t20_ast_denylist_mutadores_python_en_protection(self) -> None:
+        """GP-T20/GP-T49: protection.py no referencia NINGÚN mutador de os/pathlib/shutil (denylist AST exhaustiva)."""
+        mod_path = pathlib.Path(rv_pkg.__file__).parent / "protection.py"
+        hallados = _detectar_mutadores_python(mod_path.read_text(encoding="utf-8"))
+        assert hallados == set(), f"Mutadores de Python detectados en protection.py: {sorted(hallados)}"
+
+    def test_gp_t20_ast_allowlist_positiva_os_en_protection(self) -> None:
+        """GP-T20: toda referencia os.<attr> en protection.py está en la allowlist read-only (enumera, no muestrea)."""
+        mod_path = pathlib.Path(rv_pkg.__file__).parent / "protection.py"
+        arbol = ast.parse(mod_path.read_text(encoding="utf-8"))
+        observed = {
+            n.attr
+            for n in ast.walk(arbol)
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "os"
+        }
+        extra = observed - _ALLOWED_OS_ATTRS
+        assert not extra, f"Atributos os fuera de la allowlist read-only en protection.py: {sorted(extra)}"
+
+    @pytest.mark.parametrize(
+        ("fragmento", "esperado"),
+        [
+            ("import os\nos.remove(p)", "os.remove"),
+            ("import os\nos.unlink(p)", "os.unlink"),
+            ("import os\nos.rename(a, b)", "os.rename"),
+            ("import os\nos.replace(a, b)", "os.replace"),
+            ("import os\nos.renames(a, b)", "os.renames"),
+            ("import os\nos.removedirs(p)", "os.removedirs"),
+            ("import os\nos.mkdir(p)", "os.mkdir"),
+            ("import os\nos.makedirs(p)", "os.makedirs"),
+            ("import os\nos.rmdir(p)", "os.rmdir"),
+            ("import os\nos.chmod(p, 0)", "os.chmod"),
+            ("import os\nos.symlink(a, b)", "os.symlink"),
+            ("import os\nos.link(a, b)", "os.link"),
+            ("import os\nos.truncate(p, 0)", "os.truncate"),
+            ("import os\nos.utime(p)", "os.utime"),
+            ("import os\nos.write(fd, b'x')", "os.write"),
+            ("import shutil\nshutil.rmtree(p)", "import shutil"),
+            ("import shutil\nshutil.move(a, b)", "import shutil"),
+            ("from shutil import rmtree\nrmtree(p)", "from shutil"),
+            ("import pathlib\np = pathlib.Path('.')\np.mkdir()", ".mkdir"),
+            ("import pathlib\np = pathlib.Path('.')\np.touch()", ".touch"),
+            ("import pathlib\np = pathlib.Path('.')\np.rename(q)", ".rename"),
+            ("import pathlib\np = pathlib.Path('.')\np.unlink()", ".unlink"),
+            ("import pathlib\np = pathlib.Path('.')\np.rmdir()", ".rmdir"),
+            ("import pathlib\np = pathlib.Path('.')\np.chmod(0)", ".chmod"),
+            ("import pathlib\np = pathlib.Path('.')\np.write_text('x')", ".write_text"),
+            ("import pathlib\np = pathlib.Path('.')\np.write_bytes(b'x')", ".write_bytes"),
+            ("import pathlib\np = pathlib.Path('.')\np.symlink_to(q)", ".symlink_to"),
+            ("import pathlib\np = pathlib.Path('.')\np.hardlink_to(q)", ".hardlink_to"),
+        ],
+    )
+    def test_gp_t20_ast_detecta_mutador_python(self, fragmento: str, esperado: str) -> None:
+        """GP-T20: cada mutador de os/pathlib/shutil rompe el gate (mutantes que demuestran la detección)."""
+        assert esperado in _detectar_mutadores_python(fragmento)
+
+    def test_gp_t20_ast_control_read_only_no_marca_falsos_positivos(self) -> None:
+        """Control anti-falso-positivo: usos read-only (os.scandir, lstat, iterdir, str.replace) NO se marcan."""
+        limpio = (
+            "import os, pathlib\n"
+            "p = pathlib.Path('.')\n"
+            "os.scandir(p)\n"
+            "p.lstat()\n"
+            "list(p.iterdir())\n"
+            "s = 'abc'.replace('a', 'b')\n"  # str.replace jamás debe marcarse
+            "p.exists()\n"
+            "p.is_dir()\n"
+            "p.relative_to(p)\n"
+        )
+        assert _detectar_mutadores_python(limpio) == set()
+
     @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
     def test_gp_t20_monkeypatch_python_mutators(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """GP-T20: inspect_golden_protection no invoca mutadores de Python (os.remove, os.chmod, etc.)."""
+        """GP-T20: inspect_golden_protection no invoca NINGÚN mutador de Python (os/pathlib) en runtime.
+
+        Complementa la denylist AST: parcha en runtime el conjunto completo de mutadores de
+        os y pathlib.Path (incluidos rename/replace/mkdir/touch/symlink_to/hardlink_to, no sólo
+        remove/unlink/chmod) para que cualquier llamada mutante durante la inspección falle.
+        """
         sub = tmp_path / "golden_safe"
         sub.mkdir()
         (sub / "test.txt").write_text("safe", encoding="utf-8")
@@ -1250,15 +1417,41 @@ class TestAntiMutacionYAllowlist:
         def _forbidden_call(*args: object, **kwargs: object) -> None:
             pytest.fail("Llamada a mutador prohibida durante inspect_golden_protection")
 
-        monkeypatch.setattr(os, "remove", _forbidden_call)
-        monkeypatch.setattr(os, "unlink", _forbidden_call)
-        monkeypatch.setattr(os, "rmdir", _forbidden_call)
-        monkeypatch.setattr(os, "chmod", _forbidden_call)
-        monkeypatch.setattr(pathlib.Path, "unlink", _forbidden_call)
-        monkeypatch.setattr(pathlib.Path, "rmdir", _forbidden_call)
-        monkeypatch.setattr(pathlib.Path, "chmod", _forbidden_call)
-        monkeypatch.setattr(pathlib.Path, "write_text", _forbidden_call)
-        monkeypatch.setattr(pathlib.Path, "write_bytes", _forbidden_call)
+        # raising=False: algunos mutadores no existen en Windows (os.lchmod/mkfifo/mknod);
+        # crearlos como trampa es inocuo porque el inspector read-only nunca los invoca.
+        for nombre in (
+            "remove",
+            "unlink",
+            "rename",
+            "replace",
+            "rmdir",
+            "mkdir",
+            "makedirs",
+            "removedirs",
+            "renames",
+            "chmod",
+            "symlink",
+            "link",
+            "truncate",
+            "write",
+            "utime",
+            "startfile",
+        ):
+            monkeypatch.setattr(os, nombre, _forbidden_call, raising=False)
+        for nombre in (
+            "unlink",
+            "rmdir",
+            "mkdir",
+            "touch",
+            "rename",
+            "replace",
+            "chmod",
+            "write_text",
+            "write_bytes",
+            "symlink_to",
+            "hardlink_to",
+        ):
+            monkeypatch.setattr(pathlib.Path, nombre, _forbidden_call, raising=False)
 
         res = inspect_golden_protection(sub)
         assert isinstance(res, GoldenProtectionResult)
