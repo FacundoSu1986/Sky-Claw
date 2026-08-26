@@ -308,19 +308,43 @@ def classify_protection(evidence: GoldenProtectionEvidence) -> GoldenProtectionR
     # (ver M-GP1-30 heredado / M-GP1-32 protegido).
     if GoldenProtectionRight.CHANGE_PERMISSIONS in parent_rights:
         return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
-    # CHANGE_OWNER (WRITE_OWNER) es INDIRECTO: solo permite TOMAR POSESIÓN del parent. El nuevo dueño
-    # obtiene WRITE_DAC IMPLÍCITO —y con él la vía a FILE_DELETE_CHILD— únicamente si NO hay una Owner
-    # Rights ACE (S-1-3-4) en el parent; esa ACE suprime el grant implícito del dueño (MS-DTYP). Con
-    # la ACE presente, WRITE_OWNER por sí solo no prueba mutación, así que se condiciona a su ausencia
-    # (ver M-GP1-31/55 sin la ACE -> UNPROTECTED; M-GP1-56 con la ACE -> no UNPROTECTED).
-    if GoldenProtectionRight.CHANGE_OWNER in parent_rights and not parent_obs.owner_rights_ace_present:
-        return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
+    # CHANGE_OWNER (WRITE_OWNER) es INDIRECTO: solo permite TOMAR POSESIÓN del parent.
+    if GoldenProtectionRight.CHANGE_OWNER in parent_rights:
+        if not parent_obs.owner_rights_ace_present:
+            # Sin Owner Rights ACE, tomar posesión concede al nuevo dueño el WRITE_DAC IMPLÍCITO
+            # (MS-DTYP) -> reescribir la DACL del parent -> auto-conceder FILE_DELETE_CHILD ->
+            # borrar/renombrar el Golden -> UNPROTECTED (ver M-GP1-31/55).
+            return GoldenProtectionResult(state=GoldenProtectionState.UNPROTECTED, evidence=evidence, message="")
+        # Con Owner Rights ACE presente sólo conocemos su PRESENCIA (owner_rights_ace_present es un
+        # bool), NO su máscara. Los derechos del dueño tras tomar posesión dependen de qué concede
+        # esa ACE S-1-3-4: podría otorgar WRITE_DAC/GENERIC_ALL —habilitando la escalada— o restringir
+        # al dueño. NO asumir "ACE presente" == "ACE restrictiva"; sin la máscara la semántica post-
+        # takeownership es indemostrable -> fail-closed UNKNOWN (ver M-GP1-56).
+        return GoldenProtectionResult(
+            state=GoldenProtectionState.UNKNOWN,
+            evidence=evidence,
+            message=(
+                "Evidencia insuficiente: el parent concede WRITE_OWNER y presenta una Owner Rights "
+                "ACE de máscara desconocida; no se pueden determinar los derechos tras tomar posesión"
+            ),
+        )
 
-    # 7. Si llegamos acá, el árbol es WRITE_PROTECTED. Evaluar HARDENED
-    # HARDENED requiere:
-    # a. Token no elevado (TokenElevation == False)
+    # 7. Completeness de la elevación del token ANTES de declarar un estado PROTEGIDO.
+    # Distinguir WRITE_PROTECTED de HARDENED requiere saber si el token está elevado. Si es None la
+    # elevación no se determinó: evidencia ambigua -> fail-closed UNKNOWN (igual que con
+    # current_user_sid=None). Las vías UNPROTECTED (pasos 4-6) ya se evaluaron antes, así que un
+    # árbol mutable sigue clasificándose UNPROTECTED aun con elevación desconocida.
+    if evidence.current_token_elevated is None:
+        return GoldenProtectionResult(
+            state=GoldenProtectionState.UNKNOWN,
+            evidence=evidence,
+            message="No se pudo determinar el estado de elevación del token efectivo (TokenElevation)",
+        )
+
+    # 7b. Árbol protegido. WRITE_PROTECTED salvo que se cumplan los prerrequisitos de HARDENED:
+    # a. Token NO elevado (TokenElevation == False)
     # b. Ningún owner atribuible con vía de reescritura
-    if evidence.current_token_elevated is True or evidence.current_token_elevated is None:
+    if evidence.current_token_elevated is True:
         return GoldenProtectionResult(state=GoldenProtectionState.WRITE_PROTECTED, evidence=evidence, message="")
 
     for nodo in evidence.nodes:
@@ -861,10 +885,29 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
             message="",
         )
 
-    if not path.exists():
-        raise GoldenProtectionInputError(f"La ruta no existe: '{path}'")
+    # Observación inicial ÚNICA y controlada (reemplaza exists()+is_dir(), que absorben cualquier
+    # OSError y devuelven False). Distingue con precisión:
+    #   - FileNotFoundError -> ruta inexistente -> GoldenProtectionInputError (error de programador).
+    #   - otro OSError (p.ej. PermissionError por falta de FILE_TRAVERSE/READ_CONTROL en un ancestro)
+    #     -> hueco de OBSERVACIÓN -> UNKNOWN + observation_error (fail-closed del contrato del módulo).
+    #   - la ruta existe pero no es un directorio -> GoldenProtectionInputError.
+    # stat() sigue enlaces (como exists()/is_dir()); la detección de reparse points del root y del
+    # subárbol la preserva el PRE-scan posterior (link_kind_and_identity_or_raise vía lstat).
+    try:
+        st = path.stat()
+    except FileNotFoundError as exc:
+        raise GoldenProtectionInputError(f"La ruta no existe: '{path}'") from exc
+    except OSError as exc:
+        return GoldenProtectionResult(
+            state=GoldenProtectionState.UNKNOWN,
+            evidence=GoldenProtectionEvidence(
+                platform=sys.platform,
+                observation_error=f"Fallo de observación inicial en '{path}': {exc}",
+            ),
+            message=f"Fallo de observación inicial en '{path}': {exc}",
+        )
 
-    if not path.is_dir():
+    if not stat.S_ISDIR(st.st_mode):
         raise GoldenProtectionInputError(f"La ruta no es un directorio: '{path}'")
 
     # 2. Gate de plataforma no-Windows

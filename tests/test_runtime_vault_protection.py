@@ -276,6 +276,42 @@ class TestModelosEInvariantes:
         with pytest.raises(GoldenProtectionInputError, match="absoluto"):
             inspect_golden_protection(pathlib.Path("relativo/path"))
 
+    def test_gp_t24_observacion_inicial_oserror_unknown(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PATH OBSERVATION: un OSError de observación (p.ej. PermissionError por falta de
+        FILE_TRAVERSE/READ_CONTROL en un ancestro) sobre un directorio existente -> UNKNOWN +
+        observation_error, NO GoldenProtectionInputError. exists()/is_dir() absorbían el OSError y
+        devolvían False, colapsando un hueco de observación en 'no existe'/'no es directorio'.
+        """
+        golden = tmp_path / "golden"
+        golden.mkdir()
+
+        def _raise_perm(self: pathlib.Path, *a: object, **k: object) -> os.stat_result:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(pathlib.Path, "stat", _raise_perm)
+        res = inspect_golden_protection(golden)
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert res.success is False
+        assert res.evidence.observation_error is not None
+        assert res.message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Una ruta UNC sólo es absoluta en Windows")
+    def test_gp_t24_unc_unsupported_antes_de_tocar_filesystem(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """PATH OBSERVATION: una ruta UNC se clasifica UNSUPPORTED ANTES de tocar el filesystem.
+
+        Se parcha Path.stat para fallar; si igual devuelve UNSUPPORTED, la rama UNC precede a la
+        observación inicial y no toca el filesystem.
+        """
+
+        def _boom(self: pathlib.Path, *a: object, **k: object) -> os.stat_result:
+            raise AssertionError("No debe tocar el filesystem para una ruta UNC")
+
+        monkeypatch.setattr(pathlib.Path, "stat", _boom)
+        res = inspect_golden_protection(pathlib.Path(r"\\server\share\golden"))
+        assert res.state is GoldenProtectionState.UNSUPPORTED
+
 
 # ============================================================================
 # 2. Clasificador Puro y Matriz de Estados (GP-T01 .. GP-T17, GP-T26 .. GP-T48, GP-T55)
@@ -2251,13 +2287,14 @@ class TestMutacionesAdversariales:
         res = classify_protection(ev)
         assert res.state is GoldenProtectionState.UNPROTECTED
 
-    def test_m_gp1_56_parent_write_owner_con_owner_rights_ace_no_unprotected(self) -> None:
-        """M-GP1-56: parent con WRITE_OWNER PERO Owner Rights ACE (S-1-3-4) presente -> NO UNPROTECTED.
+    def test_m_gp1_56_parent_write_owner_con_owner_rights_ace_unknown(self) -> None:
+        """M-GP1-56: parent con WRITE_OWNER + Owner Rights ACE (S-1-3-4) de máscara desconocida -> UNKNOWN.
 
-        Hermano de M-GP1-55: WRITE_OWNER es indirecto (solo permite tomar posesión). Si el parent
-        tiene una Owner Rights ACE, el WRITE_DAC implícito del nuevo dueño queda suprimido (MS-DTYP),
-        así que tomar posesión no garantiza reescribir la DACL. Con owner_rights_ace_present=True la
-        rama de CHANGE_OWNER NO debe clasificar UNPROTECTED basándose solo en WRITE_OWNER.
+        Hermano de M-GP1-55: WRITE_OWNER es indirecto (solo permite tomar posesión). owner_rights_ace_present
+        es SÓLO presencia, no la máscara de la ACE S-1-3-4: si esa ACE otorgara WRITE_DAC/GENERIC_ALL, tomar
+        posesión SÍ habilitaría reescribir la DACL y borrar el Golden (falso verde). Como la evidencia no
+        acredita los derechos post-takeownership, el clasificador NO puede afirmar protección ni mutación:
+        fail-closed UNKNOWN. NO se interpreta "ACE presente" como "ACE restrictiva".
         """
         ev = GoldenProtectionEvidence(
             platform="windows",
@@ -2287,8 +2324,54 @@ class TestMutacionesAdversariales:
             ),
         )
         res = classify_protection(ev)
-        assert res.success is True
-        assert res.state is not GoldenProtectionState.UNPROTECTED
+        assert res.state is GoldenProtectionState.UNKNOWN
+        assert res.success is False
+        assert res.message  # UNKNOWN exige message explicativo no vacío
+
+    def test_m_gp1_57_elevacion_gobierna_estado_protegido(self) -> None:
+        """M-GP1-57: sobre un árbol protegido la elevación del token gobierna el estado final.
+
+        current_token_elevated: None -> UNKNOWN (fail-closed, evidencia ambigua; NO degradar a
+        WRITE_PROTECTED); True -> WRITE_PROTECTED; False -> HARDENED. El chequeo de None ocurre en la
+        fase de completeness, ANTES de declarar estados protegidos, pero después de las vías UNPROTECTED.
+        """
+        base = GoldenProtectionEvidence(
+            platform="windows",
+            drive_type=3,
+            filesystem="NTFS",
+            filesystem_persistent_acls=True,
+            pre_post_structural_match=True,
+            current_user_sid="S-1-5-21-1-2-3-1001",
+            current_token_elevated=None,  # elevación NO determinada
+            nodes=(
+                NodeProtectionObservation(
+                    relative_path=".",
+                    node_kind="dir",
+                    owner_sid="S-1-5-32-544",
+                    granted_rights=frozenset({GoldenProtectionRight.READ_DATA, GoldenProtectionRight.EXECUTE}),
+                    dacl_inheritance_protected=True,
+                    owner_rights_ace_present=False,
+                ),
+            ),
+            parent_observation=NodeProtectionObservation(
+                relative_path="..",
+                node_kind="dir",
+                owner_sid="S-1-5-32-544",
+                granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+                dacl_inheritance_protected=True,
+                owner_rights_ace_present=False,
+            ),
+        )
+        res_none = classify_protection(base)
+        assert res_none.state is GoldenProtectionState.UNKNOWN
+        assert res_none.success is False
+        assert res_none.message
+
+        res_true = classify_protection(dataclasses.replace(base, current_token_elevated=True))
+        assert res_true.state is GoldenProtectionState.WRITE_PROTECTED
+
+        res_false = classify_protection(dataclasses.replace(base, current_token_elevated=False))
+        assert res_false.state is GoldenProtectionState.HARDENED
 
     def test_m_gp1_33_volume_info_failure_unknown(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
