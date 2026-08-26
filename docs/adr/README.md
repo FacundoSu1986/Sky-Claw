@@ -5,9 +5,9 @@
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
-> **Fuentes canónicas:** ADR 0001–0009 en este directorio.
+> **Fuentes canónicas:** ADR 0001–0010 en este directorio.
 >
-> **Última verificación:** 2026-08-23 sobre `origin/main` `da017348`.
+> **Última verificación:** 2026-08-26 sobre `origin/main` `faa1317d`.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
@@ -18,6 +18,7 @@
 - [0007 — MO2 broker USVFS](0007-mo2-broker-usvfs.md)
 - [0008 — El KnowledgeCase](0008-knowledge-case.md)
 - [0009 — RV-GP1: Golden Protection Status](0009-runtime-vault-golden-protection-status.md)
+- [0010 — RV-GP2: Protect Golden / Golden Protection Apply](0010-runtime-vault-golden-protection-apply.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.
