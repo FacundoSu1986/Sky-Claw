@@ -894,7 +894,7 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
     # stat() sigue enlaces (como exists()/is_dir()); la detección de reparse points del root y del
     # subárbol la preserva el PRE-scan posterior (link_kind_and_identity_or_raise vía lstat).
     try:
-        st = path.stat()
+        initial_stat = path.stat()
     except FileNotFoundError as exc:
         raise GoldenProtectionInputError(f"La ruta no existe: '{path}'") from exc
     except OSError as exc:
@@ -907,7 +907,7 @@ def inspect_golden_protection(path: pathlib.Path) -> GoldenProtectionResult:
             message=f"Fallo de observación inicial en '{path}': {exc}",
         )
 
-    if not stat.S_ISDIR(st.st_mode):
+    if not stat.S_ISDIR(initial_stat.st_mode):
         raise GoldenProtectionInputError(f"La ruta no es un directorio: '{path}'")
 
     # 2. Gate de plataforma no-Windows
