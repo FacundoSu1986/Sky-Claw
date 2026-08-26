@@ -1408,7 +1408,11 @@ _EMISORES_DE_SQL_ESPERADOS = {
     # D2 (PR #493): lecturas del handoff durable — toman operation() con
     # lifecycle y self._lock en standalone, como sus pares de get_*.
     "consultar_handoff_activo": True,
-    "transacciones_que_nombran": True,
+    # POST493_ACTIVE_INDETERMINATE_EVIDENCE (fix): transacciones_que_nombran
+    # dejó de emitir SQL propio — su semántica vive en el helper de módulo
+    # _candidatas_orphan_en_conn, compartido con el boundary de reemplazo.
+    # Sigue tomando self._lock / operation() por sí misma, pero ya no es un
+    # emisor directo y sale de este inventario por definición.
     # D2 (PR #493 patch 0006): escritor de receipts de stale sweep — boundary
     # propio en las dos ramas, igual que los demás mutadores.
     "cerrar_receipts_como_no_artifact": True,
@@ -1450,7 +1454,9 @@ _EMISORES_CON_LOCK_LOCAL_ESPERADOS = {
     "sweep_stale_pending": True,
     # D2 (PR #493): lecturas del handoff — self._lock en standalone.
     "consultar_handoff_activo": True,
-    "transacciones_que_nombran": True,
+    # POST493_ACTIVE_INDETERMINATE_EVIDENCE (fix): ver el gemelo de arriba —
+    # transacciones_que_nombran ya no emite SQL directo (helper compartido
+    # _candidatas_orphan_en_conn) y sale de este inventario.
     "cerrar_receipts_como_no_artifact": True,
     # D2: helpers que asumen la serialización del caller (False acá; el par
     # exacto de cada caller se congela en _SERIALIZACION_DE_CALLERS_ESPERADA).
@@ -1481,6 +1487,25 @@ _HELPERS_QUE_ASUMEN_BOUNDARY = frozenset(
 )
 
 _METODOS_DE_EJECUCION = frozenset({"execute", "executescript", "executemany"})
+
+# POST493_ACTIVE_INDETERMINATE_EVIDENCE: helpers de MÓDULO (no métodos de la
+# clase) que emiten SQL sobre el ``conn`` del caller. Existen porque el oracle
+# público y los boundaries de sello comparten una sola definición de candidata.
+#
+# Cierran el modo de falla que el comentario de arriba (parte 2) ya predecía y
+# que este PR ejerció: al mover el SQL de ``transacciones_que_nombran`` a un
+# helper, el método dejó de emitir SQL directo y salió de AMBOS inventarios —
+# y con él la única verificación de que la lectura del oracle está serializada.
+# Los inventarios no alcanzan acá: ``_cuerpo_de_operation_journal()`` solo mira
+# métodos de ``OperationJournal``, así que un helper de módulo es invisible
+# para ellos por construcción.
+_HELPERS_DE_MODULO_QUE_EMITEN_SQL = frozenset(
+    {
+        "_candidatas_orphan_en_conn",
+        "_sellar_evidencia_de_artifact",
+        "_obsoletar_receipts_de_artifact",
+    }
+)
 _BOUNDARIES_DEL_LIFECYCLE = frozenset({"transaction", "operation"})
 
 
@@ -1663,3 +1688,62 @@ def test_ancla_los_helpers_sin_boundary_solo_tienen_callers_que_lo_toman() -> No
     assert sin_proteccion == [], (
         f"estos callers emiten SQL a través de un helper sin ninguna serialización: {sin_proteccion}"
     )
+
+
+def _helpers_de_modulo_de_journal() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Funciones definidas a nivel de MÓDULO en journal.py (no métodos)."""
+    arbol = ast.parse(_ARCHIVO_JOURNAL.read_text(encoding="utf-8"))
+    return {n.name: n for n in arbol.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def test_ancla_helpers_de_modulo_que_emiten_sql_esta_congelada() -> None:
+    """Igualdad literal del conjunto de helpers de módulo que emiten SQL.
+
+    Un helper nuevo entra solo al conjunto detectado y rompe el ancla hasta que
+    se le escriba su verificación de callers (el test de abajo). Es la pieza que
+    faltaba: los dos inventarios de la clase no pueden verlos.
+    """
+    detectados = {nombre for nombre, nodo in _helpers_de_modulo_de_journal().items() if _emite_sql(nodo)}
+    assert detectados == _HELPERS_DE_MODULO_QUE_EMITEN_SQL, (
+        f"cambió el conjunto de helpers de módulo que emiten SQL: {sorted(detectados)}"
+    )
+
+
+def test_ancla_callers_de_helpers_de_modulo_serializan() -> None:
+    """Todo caller de un helper de módulo que emite SQL lo invoca bajo una
+    serialización: o toma el boundary del lifecycle / ``self._lock`` por su
+    cuenta, o es un helper que ASUME el boundary del escritor público.
+
+    Reversión que esto ataja: mover una lectura del oracle fuera del lock —o
+    invocar el helper desde un camino nuevo sin serializar— intercalaría esa
+    lectura con un boundary de reemplazo/resume y devolvería candidatas
+    inconsistentes (falso INDETERMINATE, o evidencia sin absorber). Antes de
+    este ancla, ese cambio pasaba CI en verde.
+    """
+    helpers_de_modulo = _helpers_de_modulo_de_journal()
+    sin_serializar: list[str] = []
+
+    def _llama_a_un_helper(nodo: ast.AST) -> bool:
+        return any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in _HELPERS_DE_MODULO_QUE_EMITEN_SQL
+            for n in ast.walk(nodo)
+        )
+
+    for metodo in _cuerpo_de_operation_journal():
+        if not _llama_a_un_helper(metodo):
+            continue
+        if metodo.name in _HELPERS_QUE_ASUMEN_BOUNDARY:
+            continue  # el escritor público sostiene la serialización
+        if _toma_boundary_del_lifecycle(metodo) and _toma_el_lock_local(metodo):
+            continue
+        sin_serializar.append(metodo.name)
+
+    # Helper de módulo que llama a otro: ambos asumen el boundary del caller, y
+    # ese caller ya quedó verificado arriba.
+    for nombre, nodo in helpers_de_modulo.items():
+        if nombre in _HELPERS_DE_MODULO_QUE_EMITEN_SQL:
+            continue
+        if _llama_a_un_helper(nodo):
+            sin_serializar.append(f"{nombre} (helper de módulo fuera del conjunto congelado)")
+
+    assert not sin_serializar, f"callers del oracle/sello sin serialización propia: {sorted(sin_serializar)}"

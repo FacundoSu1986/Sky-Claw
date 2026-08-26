@@ -19,6 +19,7 @@ import os
 import pathlib
 import shutil
 import sqlite3
+import time
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -63,14 +64,16 @@ async def journal_tmp(tmp_path: pathlib.Path):  # noqa: ANN201
 
 def _lock_manager() -> AsyncMock:
     mgr = AsyncMock(spec=DistributedLockManager)
-    mgr.acquire_lock = AsyncMock(
-        return_value=LockInfo(
-            resource_id="dyndolod-pipeline",
-            agent_id="dyndolod-pipeline-service",
-            acquired_at=1000.0,
-            expires_at=1600.0,
-        )
+    # Par acquire/get_lock_info COHERENTES para assert_owned (mismo objeto ⇒
+    # token acquired_at matchea).
+    lock_info_fija = LockInfo(
+        resource_id="dyndolod-pipeline",
+        agent_id="dyndolod-pipeline-service",
+        acquired_at=time.time(),
+        expires_at=time.time() + 3600.0,
     )
+    mgr.acquire_lock = AsyncMock(return_value=lock_info_fija)
+    mgr.get_lock_info = AsyncMock(return_value=lock_info_fija)
     mgr.release_lock = AsyncMock(return_value=True)
     return mgr
 
@@ -3348,18 +3351,106 @@ def _cuerpo_de_funcion(modulo: pathlib.Path, nombre: str) -> str:
     return ""
 
 
+def _llamadas_por_superficie(raiz: pathlib.Path, callee: str) -> dict[tuple[str, str, str], int]:
+    """Sitios de llamada a ``callee`` bajo ``raiz``, agrupados por la función o
+    método contenedor MÁS CERCANO y por RAMA del boundary — ``(ruta_relativa,
+    nombre_cualificado, primer_posicional)`` — detectados por AST.
+
+    La identidad es estructural: nunca texto de comentarios/docstrings ni
+    números de línea. El tercer elemento es el PRIMER ARGUMENTO POSICIONAL de
+    la llamada (``conn``: boundary del lifecycle manager; ``db``: conexión
+    propia standalone): es el único discriminador entre las dos ramas cuando el
+    resto de la identidad es idéntico — sin él, un mutante con dos llamadas en
+    lifecycle y cero en standalone conserva el mismo inventario. El valor
+    cuenta SITIOS por identidad completa."""
+    import ast
+
+    hallazgos: dict[tuple[str, str, str], int] = {}
+
+    def _visitar(nodo: ast.AST, superficie: str, ruta: str) -> None:
+        for hijo in ast.iter_child_nodes(nodo):
+            nueva = superficie
+            if isinstance(hijo, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                nueva = f"{superficie}.{hijo.name}" if superficie else hijo.name
+            if isinstance(hijo, ast.Call):
+                func = hijo.func
+                nombre = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if nombre == callee:
+                    rama = ast.unparse(hijo.args[0]) if hijo.args else "<sin-posicional>"
+                    clave = (ruta, superficie or "<módulo>", rama)
+                    hallazgos[clave] = hallazgos.get(clave, 0) + 1
+            _visitar(hijo, nueva, ruta)
+
+    for archivo in sorted(raiz.rglob("*.py")):
+        try:
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        _visitar(arbol, "", archivo.relative_to(raiz).as_posix())
+    return hallazgos
+
+
 def test_la_fuente_durable_del_oracle_es_pending_mas_receipts_unresolved() -> None:
     """Ancla 2 (0006): el oracle nombra EXACTAMENTE sus dos fuentes durables —
     TX PENDING y receipts UNRESOLVED de stale sweep — y la tabla de receipts
-    existe en el contrato. Nunca: ROLLED_BACK arbitrario."""
+    existe en el contrato. Nunca: ROLLED_BACK arbitrario.
+
+    POST493_ACTIVE_INDETERMINATE_EVIDENCE (fix): la semántica vive en el
+    helper compartido ``_candidatas_orphan_en_conn`` — la MISMA función que
+    ejecuta la absorción del boundary de reemplazo, para que oracle y
+    absorción no puedan divergir. El ancla mira ese cuerpo."""
     raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
-    cuerpo = _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", "transacciones_que_nombran")
+    cuerpo = _cuerpo_de_funcion(raiz / "app" / "db" / "journal.py", "_candidatas_orphan_en_conn")
     assert "stale_pending_sweep_receipts" in cuerpo, "el oracle no consulta los receipts durables"
     assert "TransactionStatus.PENDING" in cuerpo, "el oracle perdió la ventana PENDING"
     assert "SweepReceiptState.UNRESOLVED" in cuerpo, "el oracle no filtra por receipt UNRESOLVED"
+    # Una sola definición de candidata: el oracle público Y el sello de
+    # evidencia de los boundaries delegan en el helper, sin duplicar la
+    # enumeración. QUIÉNES son esos callers se congela por AST —igualdad
+    # literal del conjunto y multiplicidad por superficie— en
+    # ``test_los_callers_del_oracle_de_candidatas_orphan_estan_congelados``:
+    # la búsqueda textual de acá no distinguía una llamada real de su mención
+    # en un comentario ni veía a un caller nuevo fuera de los dos esperados.
 
     contrato = (raiz / "app" / "db" / "handoffs.py").read_text(encoding="utf-8")
     assert "stale_pending_sweep_receipts" in contrato, "la tabla de receipts no vive en el contrato D2"
+
+
+def test_los_callers_del_oracle_de_candidatas_orphan_estan_congelados() -> None:
+    """El helper compartido ``_candidatas_orphan_en_conn`` —la ÚNICA definición
+    de "candidata orphan", compartida por oracle y absorción para que no puedan
+    divergir— sólo puede invocarse desde las superficies y ramas revisadas.
+
+    Se enumera por AST sobre TODO ``sky_claw/`` y se congela por igualdad
+    literal con multiplicidad POR RAMA (``conn`` lifecycle / ``db`` standalone):
+    un caller nuevo no revisado, uno requerido que desaparece, una llamada que
+    migra a otra superficie o a la otra rama —o una rama duplicada mientras la
+    hermana se elimina, invisible sin el discriminador del primer posicional—
+    rompen el ancla. No se acepta un conteo ``>= N`` ni una búsqueda textual:
+    ambos quedaban satisfechos con menciones en comentarios o con una query
+    duplicada en un tercer sitio."""
+    raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+    llamadas = _llamadas_por_superficie(raiz, "_candidatas_orphan_en_conn")
+
+    assert set(llamadas) == {
+        ("app/db/journal.py", "_sellar_evidencia_de_artifact", "conn"),
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran", "conn"),
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran", "db"),
+    }, (
+        "cambió el conjunto de superficies/ramas que ejecutan el oracle de "
+        f"candidatas orphan: {sorted(set(llamadas))} — decidí si la nueva "
+        "superficie comparte este selector o define candidatas divergentes antes de seguir"
+    )
+    assert llamadas == {
+        ("app/db/journal.py", "_sellar_evidencia_de_artifact", "conn"): 1,
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran", "conn"): 1,
+        ("app/db/journal.py", "OperationJournal.transacciones_que_nombran", "db"): 1,
+    }, (
+        "cambiaron los sitios de llamada del oracle por superficie Y rama: el "
+        "oracle público lo invoca UNA vez en su rama lifecycle (conn) y UNA vez "
+        "en la standalone (db); duplicar una rama mientras se elimina la otra "
+        f"conserva el total pero rompe acá. Hoy: {llamadas}"
+    )
 
 
 def test_startup_y_hot_path_consumen_la_misma_primitive() -> None:
