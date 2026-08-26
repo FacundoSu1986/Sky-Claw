@@ -2952,6 +2952,8 @@ class TestNativeWindowsAclOracles:
         """Escenario E: DACL restrictiva protegida de herencia con OWNER_RIGHTS read-only -> WRITE_PROTECTED/HARDENED."""
         advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         fn_convert_sddl = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
         fn_convert_sddl.argtypes = [
             ctypes.wintypes.LPCWSTR,
@@ -2960,6 +2962,9 @@ class TestNativeWindowsAclOracles:
             ctypes.POINTER(ctypes.wintypes.ULONG),
         ]
         fn_convert_sddl.restype = ctypes.wintypes.BOOL
+        fn_set_file_sec = advapi32.SetFileSecurityW
+        fn_set_file_sec.argtypes = [ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD, ctypes.c_void_p]
+        fn_set_file_sec.restype = ctypes.wintypes.BOOL
         fn_set_kernel_sec = advapi32.SetKernelObjectSecurity
         fn_set_kernel_sec.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD, ctypes.c_void_p]
         fn_set_kernel_sec.restype = ctypes.wintypes.BOOL
@@ -2994,14 +2999,15 @@ class TestNativeWindowsAclOracles:
             handles[p] = h
 
         try:
-            # Aplicar DACL restrictiva protegida con OWNER_RIGHTS read-only (0x1200A9)
+            # Aplicar DACL restrictiva protegida con OWNER_RIGHTS read-only (0x1200A9) usando SetFileSecurityW
+            # para que el filesystem NTFS persista el bit SE_DACL_PROTECTED (0x1000)
             sddl = "D:P(A;OICI;0x1200A9;;;WD)(A;OICI;0x1200A9;;;OW)"
             p_sd = ctypes.c_void_p()
             if not fn_convert_sddl(sddl, 1, ctypes.byref(p_sd), None):
                 raise OSError(f"ConvertStringSecurityDescriptorToSecurityDescriptorW falló: {ctypes.get_last_error()}")
             for p in paths:
-                ok = fn_set_kernel_sec(handles[p], 4 | 0x80000000, p_sd)
-                assert ok, f"SetKernelObjectSecurity falló para '{p}'"
+                ok = fn_set_file_sec(str(p), 4 | 0x80000000, p_sd)
+                assert ok, f"SetFileSecurityW falló para '{p}'"
             fn_local_free(p_sd)
 
             res = inspect_golden_protection(sub)
@@ -3025,10 +3031,10 @@ class TestNativeWindowsAclOracles:
                 assert GoldenProtectionRight.CHANGE_PERMISSIONS not in rights
                 assert GoldenProtectionRight.CHANGE_OWNER not in rights
         finally:
-            # Restaurar control total a través de los handles abiertos con WRITE_DAC
+            # Restaurar control total a través de los handles abiertos previamente con WRITE_DAC
             p_sd_full = ctypes.c_void_p()
             fn_convert_sddl("D:P(A;OICI;GA;;;WD)", 1, ctypes.byref(p_sd_full), None)
             for p in paths:
-                fn_set_kernel_sec(handles[p], 4 | 0x80000000, p_sd_full)
+                fn_set_kernel_sec(handles[p], 4, p_sd_full)
                 fn_close_handle(handles[p])
             fn_local_free(p_sd_full)
