@@ -41,6 +41,8 @@ from sky_claw.local.runtime_vault.models import (
     VerificationState,
 )
 from sky_claw.local.runtime_vault.protection import (
+    _DIR_MUTATION_RIGHTS,
+    _FILE_MUTATION_RIGHTS,
     GoldenProtectionEvidence,
     GoldenProtectionInputError,
     GoldenProtectionResult,
@@ -50,6 +52,10 @@ from sky_claw.local.runtime_vault.protection import (
     classify_protection,
     inspect_golden_protection,
 )
+
+# Unión exhaustiva de derechos que el clasificador reconoce como mutadores (fuente de verdad
+# compartida con protection.py, para que agregar un derecho no deje huecos en los oráculos).
+_TODOS_LOS_MUTADORES = _FILE_MUTATION_RIGHTS | _DIR_MUTATION_RIGHTS
 
 # Constantes para tests
 _FORBIDDEN_MUTATORS = frozenset(
@@ -2841,6 +2847,42 @@ class TestNativeWindowsAclOracles:
             with contextlib.suppress(Exception):
                 TestNativeWindowsAclOracles._set_sddl_dacl(p, "D:P(A;OICI;GA;;;WD)")
 
+    @staticmethod
+    def _leer_sd_control(path: pathlib.Path) -> int:
+        """Lee la palabra de control del Security Descriptor (incluye SE_DACL_PROTECTED=0x1000).
+
+        Prueba de forma independiente del SUT que la DACL esperada quedó realmente instalada.
+        """
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        fn_get_file_sec = advapi32.GetFileSecurityW
+        fn_get_file_sec.argtypes = [
+            ctypes.wintypes.LPCWSTR,
+            ctypes.wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.wintypes.DWORD,
+            ctypes.POINTER(ctypes.wintypes.DWORD),
+        ]
+        fn_get_file_sec.restype = ctypes.wintypes.BOOL
+        fn_get_control = advapi32.GetSecurityDescriptorControl
+        fn_get_control.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.wintypes.WORD),
+            ctypes.POINTER(ctypes.wintypes.DWORD),
+        ]
+        fn_get_control.restype = ctypes.wintypes.BOOL
+
+        needed = ctypes.wintypes.DWORD(0)
+        # DACL_SECURITY_INFORMATION (4): basta para consultar la protección de la DACL.
+        fn_get_file_sec(str(path), 4, None, 0, ctypes.byref(needed))
+        buf = (ctypes.c_ubyte * needed.value)()
+        if not fn_get_file_sec(str(path), 4, buf, needed.value, ctypes.byref(needed)):
+            raise OSError(f"GetFileSecurityW falló para '{path}': error {ctypes.get_last_error()}")
+        control = ctypes.wintypes.WORD(0)
+        revision = ctypes.wintypes.DWORD(0)
+        if not fn_get_control(ctypes.cast(buf, ctypes.c_void_p), ctypes.byref(control), ctypes.byref(revision)):
+            raise OSError(f"GetSecurityDescriptorControl falló para '{path}': error {ctypes.get_last_error()}")
+        return control.value
+
     @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
     def test_oracle_controlled_explicit_writable_dacl_unprotected(self, tmp_path: pathlib.Path) -> None:
         """Escenario A: DACL explícita con permisos mutadores (GA) -> exact UNPROTECTED."""
@@ -2949,7 +2991,12 @@ class TestNativeWindowsAclOracles:
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Requiere Windows")
     def test_oracle_controlled_restrictive_dacl_protected_inheritance(self, tmp_path: pathlib.Path) -> None:
-        """Escenario E: DACL restrictiva protegida de herencia con OWNER_RIGHTS read-only -> WRITE_PROTECTED/HARDENED."""
+        """Escenario E: DACL restrictiva protegida de herencia con OWNER_RIGHTS read-only.
+
+        Evidencia nativa exacta (DACL protegida, sin derechos mutadores). El estado final está
+        gated por el token del runner: UNPROTECTED si hay privilegios mutation-enabling; si no,
+        WRITE_PROTECTED (o HARDENED con token no elevado).
+        """
         advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -3010,26 +3057,39 @@ class TestNativeWindowsAclOracles:
                 assert ok, f"SetFileSecurityW falló para '{p}'"
             fn_local_free(p_sd)
 
+            # Probar, de forma INDEPENDIENTE del SUT, que la DACL restrictiva PROTEGIDA
+            # (SE_DACL_PROTECTED = 0x1000) quedó realmente instalada antes de inspeccionar.
+            assert self._leer_sd_control(sub) & 0x1000, "SE_DACL_PROTECTED no persistió en el golden"
+            assert self._leer_sd_control(parent_dir) & 0x1000, "SE_DACL_PROTECTED no persistió en el parent"
+
             res = inspect_golden_protection(sub)
             assert res.success is True
-            assert res.state in {GoldenProtectionState.WRITE_PROTECTED, GoldenProtectionState.HARDENED}
 
-            # Demostración explícita de prerrequisitos de HARDENED:
-            # Si el token no está elevado y no tiene privilegios de mutación, el estado es HARDENED
-            if res.evidence.current_token_elevated is False and not res.evidence.mutation_privileges_present:
+            # --- Evidencia nativa exacta (determinística, independiente del token del runner) ---
+            # La DACL read-only + PROTEGIDA con OWNER_RIGHTS ACE no concede ningún derecho mutador
+            # a nadie; AccessCheck lo refleja nodo por nodo y el bit de protección de herencia queda
+            # registrado. Estas aserciones son fijas en cualquier runner.
+            root_node = next((n for n in (res.evidence.nodes or ()) if n.relative_path == "."), None)
+            assert root_node is not None, "No se identificó el nodo root en la evidencia"
+            assert root_node.dacl_inheritance_protected is True
+            assert root_node.owner_rights_ace_present is True
+            for n in res.evidence.nodes or ():
+                assert not ((n.granted_rights or frozenset()) & _TODOS_LOS_MUTADORES)
+            assert res.evidence.parent_observation is not None
+            assert not ((res.evidence.parent_observation.granted_rights or frozenset()) & _TODOS_LOS_MUTADORES)
+
+            # --- Estado final: gated por los prerrequisitos del token del runner ---
+            # Sin derechos mutadores en la DACL, el estado depende SÓLO del token efectivo:
+            #  * privilegios mutation-enabling (SeRestore/SeBackup/SeTakeOwnership) bypassan la DACL
+            #    -> UNPROTECTED exacto (caso típico del runner administrativo de CI);
+            #  * sin esos privilegios, la DACL protegida rinde WRITE_PROTECTED, y sólo HARDENED
+            #    cuando además el token NO está elevado (TokenElevation == False demostrado).
+            if res.evidence.mutation_privileges_present:
+                assert res.state is GoldenProtectionState.UNPROTECTED
+            elif res.evidence.current_token_elevated is False:
                 assert res.state is GoldenProtectionState.HARDENED
             else:
                 assert res.state is GoldenProtectionState.WRITE_PROTECTED
-
-            # Verificar que ningún nodo en evidence tiene derechos de escritura
-            for n in res.evidence.nodes or ():
-                rights = n.granted_rights or set()
-                assert GoldenProtectionRight.WRITE_DATA not in rights
-                assert GoldenProtectionRight.ADD_FILE not in rights
-                assert GoldenProtectionRight.APPEND_DATA not in rights
-                assert GoldenProtectionRight.DELETE not in rights
-                assert GoldenProtectionRight.CHANGE_PERMISSIONS not in rights
-                assert GoldenProtectionRight.CHANGE_OWNER not in rights
         finally:
             # Restaurar control total a través de los handles abiertos previamente con WRITE_DAC
             p_sd_full = ctypes.c_void_p()
