@@ -177,9 +177,17 @@ _INSERT_ABSORCION_EVIDENCIA_SQL = (
 )
 
 #: INSERT de la resolución durable de evidencia per-artifact (D4, Issue #506).
+#: F-03 (#506): el arbitraje de exclusividad lo hace el UNIQUE
+#: ``(transaction_id, artifact_path)`` de SQLite vía ``ON CONFLICT DO NOTHING``,
+#: NO un pre-check SELECT→INSERT en Python (ventana TOCTOU entre dos
+#: conexiones: ambas leen "ausente", ambas insertan, y el duplicado exacto —
+#: idempotente por contrato — muere en IntegrityError). Jamás usar
+#: INSERT OR REPLACE / INSERT OR IGNORE / REPLACE: nunca se sobrescribe una
+#: resolución existente.
 _INSERT_RESOLUCION_EVIDENCIA_SQL = (
     "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
-    "VALUES (?, ?, ?, ?)"
+    "VALUES (?, ?, ?, ?) "
+    "ON CONFLICT(transaction_id, artifact_path) DO NOTHING"
 )
 
 
@@ -192,8 +200,14 @@ async def _registrar_resoluciones_de_artifact_en_conn(
     handoff_id: int | None = None,
 ) -> None:
     """Registra resoluciones durables per-artifact en ``artifact_evidence_resolutions``.
-    Garantiza idempotencia ante reintentos exactos y falla cerrado (IntegrityError)
-    ante conflictos de provenance semántica. ASUME el boundary del caller.
+    Garantiza idempotencia ante reintentos exactos y falla cerrado
+    (``JournalTransactionError``) ante conflictos de provenance semántica.
+    ASUME el boundary del caller.
+
+    F-03 (#506): atómica bajo concurrencia. El INSERT canónico usa
+    ``ON CONFLICT DO NOTHING`` (el UNIQUE de SQLite arbitra, no Python) y
+    DESPUÉS se lee SIEMPRE la fila autoritativa para clasificar el resultado:
+    idéntica → éxito idempotente; distinta → ``JournalTransactionError``.
     """
     ids = sorted({int(tx_id) for tx_id in transaction_ids})
     if not ids:
@@ -202,6 +216,14 @@ async def _registrar_resoluciones_de_artifact_en_conn(
     kind_str = str(resolution_kind)
 
     for tx_id in ids:
+        await conn.execute(
+            _INSERT_RESOLUCION_EVIDENCIA_SQL,
+            (tx_id, objetivo_fisico, kind_str, handoff_id),
+        )
+
+        # Leer SIEMPRE la fila autoritativa post-INSERT (haya insertado esta
+        # conexión o haya ganado otra): la clasificación exacto/conflicto se
+        # hace contra el estado durable, nunca contra el pre-check.
         async with conn.execute(
             "SELECT resolution_kind, handoff_id FROM artifact_evidence_resolutions "
             "WHERE transaction_id = ? AND artifact_path = ?",
@@ -209,19 +231,20 @@ async def _registrar_resoluciones_de_artifact_en_conn(
         ) as cur:
             fila = await cur.fetchone()
 
-        if fila is not None:
-            exist_kind, exist_handoff = str(fila[0]), (int(fila[1]) if fila[1] is not None else None)
-            if exist_kind == kind_str and exist_handoff == handoff_id:
-                continue  # Idempotente exacto
+        if fila is None:
+            # Inalcanzable con el contrato vigente (UNIQUE + NOT NULL): si un
+            # schema futuro lo rompe, falla cerrado en vez de reportar éxito.
             raise JournalTransactionError(
-                f"Conflicto de resolución para TX {tx_id} en '{objetivo_fisico}': "
-                f"existente=({exist_kind}, {exist_handoff}), nueva=({kind_str}, {handoff_id})",
+                f"Resolución ausente tras INSERT para TX {tx_id} en '{objetivo_fisico}'",
                 transaction_id=tx_id,
             )
-
-        await conn.execute(
-            _INSERT_RESOLUCION_EVIDENCIA_SQL,
-            (tx_id, objetivo_fisico, kind_str, handoff_id),
+        exist_kind, exist_handoff = str(fila[0]), (int(fila[1]) if fila[1] is not None else None)
+        if exist_kind == kind_str and exist_handoff == handoff_id:
+            continue  # Idempotente exacto
+        raise JournalTransactionError(
+            f"Conflicto de resolución para TX {tx_id} en '{objetivo_fisico}': "
+            f"existente=({exist_kind}, {exist_handoff}), nueva=({kind_str}, {handoff_id})",
+            transaction_id=tx_id,
         )
 
 
@@ -305,13 +328,21 @@ async def _migrar_resoluciones_legacy_en_conn(conn: aiosqlite.Connection) -> Non
     """
     await conn.execute(sql_backfill)
 
-    # 2. Validación posterior exacta fail-closed:
+    # 2. Validación posterior exacta fail-closed.
+    # F-04 (#506): la comparación incluye TAMBIÉN el timestamp histórico — el
+    # backfill copia o.absorbed_at → r.resolved_at, así que una fila D4
+    # preexistente con la misma (kind, handoff) pero distinto resolved_at NO es
+    # una migración equivalente y debe fallar cerrado. Ambos timestamps son
+    # NOT NULL en este contrato (comparación textual exacta válida); se usa
+    # ``IS NOT`` para que un NULL inesperado también dispare el fail-closed.
     sql_validar = """
         SELECT o.transaction_id, o.artifact_path, o.handoff_id, r.resolution_kind, r.handoff_id
         FROM orphan_evidence_absorptions o
         JOIN artifact_evidence_resolutions r
           ON r.transaction_id = o.transaction_id AND r.artifact_path = o.artifact_path
-        WHERE r.resolution_kind != 'absorbed_by_handoff' OR r.handoff_id != o.handoff_id
+        WHERE r.resolution_kind != 'absorbed_by_handoff'
+           OR r.handoff_id != o.handoff_id
+           OR r.resolved_at IS NOT o.absorbed_at
     """
     async with conn.execute(sql_validar) as cursor:
         discrepancias = [tuple(row) async for row in cursor]
