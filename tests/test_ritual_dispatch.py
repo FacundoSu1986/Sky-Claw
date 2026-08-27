@@ -347,12 +347,13 @@ async def test_run_ritual_single_flight_refuses_while_one_is_in_flight() -> None
     assert fb is not None and fb["type"] == "warning"
 
 
-async def test_run_ritual_clears_pending_prompt_and_inflight_on_finish() -> None:
+async def test_run_ritual_without_owned_request_preserves_existing_pending_prompt() -> None:
     store = ReactiveStore()
-    store.set("pending_hitl", {"request_id": "tool-x-1"})  # a stale prompt for this run
+    existing = {"request_id": "tool-x-1"}  # no exact identity belongs to this run
+    store.set("pending_hitl", existing)
     sup = _FakeSupervisor({"success": True})
     await run_ritual("dyndolod", supervisor=sup, store=store)
-    assert store.get("pending_hitl") is None
+    assert store.get("pending_hitl") == existing
     assert not store.get("ritual_in_flight")
     fb = store.get("ritual_feedback")
     assert fb is not None and fb["type"] == "positive"

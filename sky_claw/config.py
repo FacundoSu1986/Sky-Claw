@@ -750,6 +750,22 @@ def _umbral_env(nombre: str, defecto: float) -> float:
     return valor
 
 
+def _umbral_entero_env(nombre: str, defecto: int) -> int:
+    """Lee un umbral entero positivo de entorno, con fallback fail-closed."""
+    crudo = os.getenv(nombre)
+    if not crudo:
+        return defecto
+    try:
+        valor = int(crudo)
+    except ValueError:
+        logger.warning("%s='%s' no es un entero; se usa el default %d", nombre, crudo, defecto)
+        return defecto
+    if valor <= 0:
+        logger.warning("%s='%s' debe ser un entero > 0; se usa el default %d", nombre, crudo, defecto)
+        return defecto
+    return valor
+
+
 # ── Watchdog de cierre de la GUI (post-mortem WinError 10048) ────────
 # Ajustables por entorno: un reconnect legítimo del navegador puede pasarse de
 # la gracia tras una suspensión del equipo, carga alta o antivirus agresivo, y
@@ -758,3 +774,5 @@ GUI_EXIT_WATCHDOG_GRACE_SECONDS: float = _umbral_env("SKY_CLAW_GUI_EXIT_GRACE_SE
 # Plazo para la PRIMERA conexión: cubre el arranque en frío del .exe + el
 # escaneo del antivirus + el lanzamiento del navegador, así que es generoso.
 GUI_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS: float = _umbral_env("SKY_CLAW_GUI_EXIT_FIRST_CONNECT_SECONDS", 90.0)
+# Capacidad efímera del FIFO HITL de la GUI: no evicta entradas activas.
+GUI_MAX_PENDING_HITL: int = _umbral_entero_env("SKY_CLAW_GUI_MAX_PENDING_HITL", 32)

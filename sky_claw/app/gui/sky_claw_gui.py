@@ -41,7 +41,6 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
-    clear_answered_hitl,
     resolve_pending_hitl_request,
     resolve_visible_pending_hitl,
     run_ritual,
@@ -640,11 +639,12 @@ def _dispatch_hitl_response(
     """Valida ownership y agenda la respuesta para el ID capturado por la UI."""
     if resolve_pending_hitl_request(store, tab_id, request_id) is None:
         return None
-    # Capturamos y validamos el ID antes de programar la coroutine: un click
-    # stale nunca puede convertirse en una respuesta para otra entrada.
-    clear_answered_hitl(store, request_id)
+    # Sin guard no hay lifecycle autoritativo que comprometa la decisión: la
+    # entrada permanece visible para no perder una aprobación pendiente.
     if guard is None:
         return None
+    # La entrada se retira únicamente desde compose_gui_hitl_lifecycle cuando
+    # ``respond``/timeout/cancelación ya comprometió el resultado.
     return scheduler(guard.respond(request_id, approved), name="gui-hitl-respond")
 
 

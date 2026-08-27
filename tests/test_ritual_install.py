@@ -293,15 +293,16 @@ async def test_install_single_flight_refuses_while_one_is_in_flight() -> None:
     assert fb is not None and fb["type"] == "warning"
 
 
-async def test_install_clears_pending_prompt_on_finish() -> None:
+async def test_install_without_owned_request_preserves_existing_pending_prompt() -> None:
     store = ReactiveStore()
-    store.set("pending_hitl", {"request_id": "install-loot-1"})  # prompt parkeado de esta corrida
+    existing = {"request_id": "install-loot-1"}  # no exact identity belongs to this install
+    store.set("pending_hitl", existing)
     installer = _FakeInstaller()
     ctx = _FakeAppContext(installer)
 
     await run_ritual_install("loot", app_context=ctx, store=store)
 
-    assert store.get("pending_hitl") is None
+    assert store.get("pending_hitl") == existing
     assert not store.get("ritual_in_flight")
 
 

@@ -14,7 +14,6 @@ import pytest
 
 from sky_claw.app.gui.controllers.ritual_runner import (
     HITL_OWNER_TAB,
-    MAX_PENDING_HITL,
     PENDING_HITL_ENTRIES,
     PENDING_HITL_ORDER,
     STORE_KEY_PENDING_HITL,
@@ -27,9 +26,12 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     enqueue_pending_hitl,
     make_gui_hitl_notify,
     resolve_visible_pending_hitl,
+    run_ritual,
+    run_ritual_install,
 )
 from sky_claw.app.gui.state.reactive_store import ReactiveStore
 from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.config import GUI_MAX_PENDING_HITL, _umbral_entero_env
 
 
 def _payload(request_id: str, owner: str | None = None, *, category: str = "tool_execution") -> dict[str, object]:
@@ -155,14 +157,14 @@ def test_c3_16_y_c3_17_ownerless_coexiste_y_sigue_visible() -> None:
 
 def test_c3_18_capacity_fail_closed_sin_eviction() -> None:
     store = ReactiveStore()
-    for number in range(MAX_PENDING_HITL):
+    for number in range(GUI_MAX_PENDING_HITL):
         _park(store, f"req-{number}")
 
     with pytest.raises(PendingHitlCapacityError):
         _park(store, "overflow")
 
     state = store.get(STORE_KEY_PENDING_HITL)
-    assert len(state[PENDING_HITL_ORDER]) == MAX_PENDING_HITL  # type: ignore[index]
+    assert len(state[PENDING_HITL_ORDER]) == GUI_MAX_PENDING_HITL  # type: ignore[index]
     assert "overflow" not in state[PENDING_HITL_ENTRIES]  # type: ignore[index]
 
 
@@ -364,3 +366,141 @@ def test_legacy_single_entry_se_adopta_sin_perder_identidad() -> None:
     assert resolve_visible_pending_hitl(store, "tab-A")["request_id"] == "legacy-A"  # type: ignore[index]
     state = store.get(STORE_KEY_PENDING_HITL)
     assert list(state[PENDING_HITL_ORDER]) == ["legacy-A", "B"]  # type: ignore[index]
+
+
+@pytest.mark.parametrize("runner", ["run", "install"])
+async def test_tarea_sin_request_propia_no_evicta_request_existente(runner: str) -> None:
+    """Una task sin parking propio nunca infiere que la única entrada es suya."""
+    store = ReactiveStore()
+    _park(store, "B", "tab-A")
+
+    if runner == "run":
+
+        class _Supervisor:
+            async def dispatch_tool(self, _name: str, _args: dict) -> dict:
+                return {"success": True}
+
+        await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id="tab-A")
+    else:
+
+        class _Installer:
+            async def ensure_loot(self, _install_dir: object, _session: object) -> dict:
+                return {"success": True}
+
+        class _Context:
+            tools_installer = _Installer()
+            install_dir = None
+            session = None
+
+        await run_ritual_install("loot", app_context=_Context(), store=store, tab_id="tab-A")
+
+    assert resolve_visible_pending_hitl(store, "tab-A")["request_id"] == "B"  # type: ignore[index]
+
+
+@pytest.mark.parametrize("crudo, esperado", [("1", 1), (" 4 ", 4), ("32", 32)])
+def test_umbral_entero_env_acepta_positivos(crudo: str, esperado: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKY_CLAW_UMBRAL_ENTERO_DE_PRUEBA", crudo)
+    assert _umbral_entero_env("SKY_CLAW_UMBRAL_ENTERO_DE_PRUEBA", 32) == esperado
+
+
+@pytest.mark.parametrize("crudo", ["0", "-1", "1.5", "no-es-entero"])
+def test_umbral_entero_env_rechaza_no_positivos(crudo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKY_CLAW_UMBRAL_ENTERO_DE_PRUEBA", crudo)
+    assert _umbral_entero_env("SKY_CLAW_UMBRAL_ENTERO_DE_PRUEBA", 32) == 32
+
+
+def test_capacidad_configurable_se_prueba_sin_llenar_32(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sky_claw.app.gui.controllers.ritual_runner as ritual_runner
+
+    monkeypatch.setattr(ritual_runner, "GUI_MAX_PENDING_HITL", 2)
+    store = ReactiveStore()
+    _park(store, "A")
+    _park(store, "B")
+
+    with pytest.raises(PendingHitlCapacityError):
+        _park(store, "C")
+
+    assert list(store.get(STORE_KEY_PENDING_HITL)[PENDING_HITL_ORDER]) == ["A", "B"]  # type: ignore[index]
+    assert GUI_MAX_PENDING_HITL > 0
+
+
+def test_umbral_entero_env_sin_override_usa_default_32(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SKY_CLAW_UMBRAL_ENTERO_DE_PRUEBA", raising=False)
+    assert _umbral_entero_env("SKY_CLAW_UMBRAL_ENTERO_DE_PRUEBA", 32) == 32
+
+
+def test_dispatch_sin_guard_preserva_la_pendiente() -> None:
+    from sky_claw.app.gui.sky_claw_gui import _dispatch_hitl_response
+
+    store = ReactiveStore()
+    _park(store, "A", "tab-A")
+    scheduled: list[object] = []
+
+    result = _dispatch_hitl_response(
+        "A",
+        True,
+        store=store,
+        tab_id="tab-A",
+        guard=None,
+        scheduler=lambda coro, **kwargs: scheduled.append(coro),
+    )
+
+    assert result is None
+    assert scheduled == []
+    assert resolve_visible_pending_hitl(store, "tab-A")["request_id"] == "A"  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_deja_a_hasta_respuesta_autoritativa_y_nunca_b() -> None:
+    from sky_claw.app.gui.sky_claw_gui import _dispatch_hitl_response
+
+    store = ReactiveStore()
+    _park(store, "A", "tab-A")
+    _park(store, "B", "tab-A")
+    responded: list[tuple[str, bool]] = []
+
+    class _Guard:
+        async def respond(self, request_id: str, approved: bool) -> bool:
+            responded.append((request_id, approved))
+            return True
+
+    scheduled: list[object] = []
+
+    def scheduler(coro, **kwargs):
+        scheduled.append(coro)
+        return coro
+
+    _dispatch_hitl_response(
+        "A",
+        True,
+        store=store,
+        tab_id="tab-A",
+        guard=_Guard(),
+        scheduler=scheduler,
+    )
+    assert resolve_visible_pending_hitl(store, "tab-A")["request_id"] == "A"  # type: ignore[index]
+    await scheduled[0]
+    clear_answered_hitl(store, "A")
+
+    assert responded == [("A", True)]
+    assert resolve_visible_pending_hitl(store, "tab-A")["request_id"] == "B"  # type: ignore[index]
+
+
+def test_dispatch_stale_no_afecta_la_siguiente() -> None:
+    from sky_claw.app.gui.sky_claw_gui import _dispatch_hitl_response
+
+    store = ReactiveStore()
+    _park(store, "B", "tab-A")
+    scheduled: list[object] = []
+
+    _dispatch_hitl_response(
+        "A",
+        True,
+        store=store,
+        tab_id="tab-A",
+        guard=object(),
+        scheduler=lambda coro, **kwargs: scheduled.append(coro),
+    )
+
+    assert scheduled == []
+    assert resolve_visible_pending_hitl(store, "tab-A")["request_id"] == "B"  # type: ignore[index]

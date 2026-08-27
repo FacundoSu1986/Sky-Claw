@@ -32,6 +32,7 @@ responderla.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Callable
 from typing import Any
 
@@ -305,16 +306,22 @@ def _lanzadores_detectados() -> frozenset[str]:
     )
 
 
-async def _invocar_run_ritual(store: ReactiveStore, tab_id: str | None, espia: Callable[[], None]) -> None:
+async def _ejecutar_espia(espia: Callable[[], Any]) -> None:
+    resultado = espia()
+    if inspect.isawaitable(resultado):
+        await resultado
+
+
+async def _invocar_run_ritual(store: ReactiveStore, tab_id: str | None, espia: Callable[[], Any]) -> None:
     class _Supervisor:
         async def dispatch_tool(self, _name: str, _args: dict) -> dict:
-            espia()  # acá corre el gate HITL, inline en esta misma task
+            await _ejecutar_espia(espia)  # acá corre el gate HITL, inline en esta misma task
             return {"success": True}
 
     await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id=tab_id)
 
 
-async def _invocar_run_ritual_resume(store: ReactiveStore, tab_id: str | None, espia: Callable[[], None]) -> None:
+async def _invocar_run_ritual_resume(store: ReactiveStore, tab_id: str | None, espia: Callable[[], Any]) -> None:
     """Misma receta que ``run_ritual``: el resume despacha por el MISMO
     dispatcher HITL-gated, así que el espía debe correr en la task del
     lanzador y la aprobación debe quedar scoped al mismo ``tab_id``."""
@@ -322,18 +329,18 @@ async def _invocar_run_ritual_resume(store: ReactiveStore, tab_id: str | None, e
 
     class _Supervisor:
         async def dispatch_tool(self, _name: str, _args: dict) -> dict:
-            espia()  # acá corre el gate HITL, inline en esta misma task
+            await _ejecutar_espia(espia)  # acá corre el gate HITL, inline en esta misma task
             return {"success": True}
 
     await run_ritual_resume("dyndolod", supervisor=_Supervisor(), store=store, tab_id=tab_id)
 
 
-async def _invocar_run_ritual_install(store: ReactiveStore, tab_id: str | None, espia: Callable[[], None]) -> None:
+async def _invocar_run_ritual_install(store: ReactiveStore, tab_id: str | None, espia: Callable[[], Any]) -> None:
     from sky_claw.app.gui.controllers.ritual_runner import run_ritual_install
 
     class _Installer:
         async def ensure_loot(self, _install_dir: Any, _session: Any) -> dict:
-            espia()
+            await _ejecutar_espia(espia)
             return {"success": True}
 
     class _Ctx:
@@ -420,13 +427,13 @@ async def test_todo_lanzador_limpia_su_propia_aprobacion(nombre: str) -> None:
     corta ese falso verde.
     """
     store = ReactiveStore()
-    propia = {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"}
     parkeada = False
+    notify, _ = _bridge_con_store(store, tab_id_getter=lambda: "tab-A")
 
-    def _parkear() -> None:
+    async def _parkear() -> None:
         nonlocal parkeada
         parkeada = True
-        store.set(STORE_KEY_PENDING_HITL, dict(propia))
+        await notify(_Req(request_id="req-A"))
 
     await RECETAS_DE_INVOCACION[nombre](store, "tab-A", _parkear)
 
@@ -526,10 +533,11 @@ def test_clear_owned_borra_solo_si_el_dueno_coincide() -> None:
 async def test_el_ritual_falla_sin_perder_la_limpieza() -> None:
     """El hermano ``run_ritual`` tambien libera el estado ante una excepcion."""
     store = ReactiveStore()
+    notify, _ = _bridge_con_store(store, tab_id_getter=lambda: "tab-A")
 
     class _Supervisor:
         async def dispatch_tool(self, _name: str, _args: dict) -> dict:
-            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"})
+            await notify(_Req(request_id="req-A"))
             raise RuntimeError("dispatch failed")
 
     await run_ritual("loot", supervisor=_Supervisor(), store=store, tab_id="tab-A")
@@ -550,9 +558,11 @@ async def test_el_ritual_de_instalacion_falla_sin_perder_la_limpieza() -> None:
 
     store = ReactiveStore()
 
+    notify, _ = _bridge_con_store(store, tab_id_getter=lambda: "tab-A")
+
     class _Installer:
         async def ensure_loot(self, _install_dir: Any, _session: Any) -> object:
-            store.set(STORE_KEY_PENDING_HITL, {"request_id": "req-A", HITL_OWNER_TAB: "tab-A"})
+            await notify(_Req(request_id="req-A", category="download"))
             raise RuntimeError("se cayó la descarga")
 
     class _Ctx:

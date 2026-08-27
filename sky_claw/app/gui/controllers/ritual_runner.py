@@ -20,6 +20,7 @@ import pathlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.config import GUI_MAX_PENDING_HITL
 from sky_claw.local.tools.tool_result import normalize_tool_result
 from sky_claw.local.tools_installer import InstallVerification
 
@@ -115,9 +116,8 @@ HITL_OWNER_TAB = "owner_tab"
 #: Shape interna del estado multi-pending. La root key observable no cambia.
 PENDING_HITL_ENTRIES = "entries"
 PENDING_HITL_ORDER = "order"
-#: Límite deliberadamente privado: evita crecimiento sin acotar sin crear una
-#: setting pública para un estado efímero de UI. Llegar al límite falla cerrado.
-MAX_PENDING_HITL = 32
+#: Límite centralizado en ``config.py``; llegar al límite falla cerrado sin
+#: desalojar solicitudes activas.
 
 
 class PendingHitlStateError(RuntimeError):
@@ -180,7 +180,7 @@ def _read_pending_hitl_state(store: ReactiveStore) -> tuple[dict[str, dict[str, 
         raise MalformedPendingHitlError("pending HITL order has duplicate IDs")
     if set(entries) != set(order):
         raise MalformedPendingHitlError("pending HITL order and entries disagree")
-    if len(order) > MAX_PENDING_HITL:
+    if len(order) > GUI_MAX_PENDING_HITL:
         raise MalformedPendingHitlError("pending HITL state exceeds its capacity")
 
     copied: dict[str, dict[str, Any]] = {}
@@ -214,8 +214,8 @@ def enqueue_pending_hitl(store: ReactiveStore, payload: dict[str, Any]) -> None:
     entries, order = _read_pending_hitl_state(store)
     if request_id in entries:
         raise DuplicatePendingHitlError(f"pending HITL request_id already active: {request_id}")
-    if len(order) >= MAX_PENDING_HITL:
-        raise PendingHitlCapacityError(f"pending HITL capacity reached: {MAX_PENDING_HITL}")
+    if len(order) >= GUI_MAX_PENDING_HITL:
+        raise PendingHitlCapacityError(f"pending HITL capacity reached: {GUI_MAX_PENDING_HITL}")
     entries[request_id] = entry
     order.append(request_id)
     _write_pending_hitl_state(store, entries, order)
@@ -859,9 +859,9 @@ async def run_ritual(
         _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
         _ritual_tab_id.reset(cid_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        # Productive bridge captures the exact ID. Legacy callers without that
-        # seam may clear only their sole owned entry; multiple entries fail closed.
-        clear_owned_hitl(store, tab_id, request_id=pending_request_id)
+        # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
+        if pending_request_id is not None:
+            clear_owned_hitl(store, tab_id, request_id=pending_request_id)
     resultado = result if isinstance(result, dict) else {}
     # F-001: el panel consume el dict ESTRUCTURAL — needs_deployment + path —
     # para ofrecer la acción de Resume. R-004/R-005: se publica en ENVELOPE
@@ -1065,9 +1065,9 @@ async def run_ritual_install(
         _gui_pending_request_id.reset(pending_token)
         _ritual_tab_id.reset(tab_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        # Productive bridge captures the exact ID. Legacy callers without that
-        # seam may clear only their sole owned entry; multiple entries fail closed.
-        clear_owned_hitl(store, tab_id, request_id=pending_request_id)
+        # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
+        if pending_request_id is not None:
+            clear_owned_hitl(store, tab_id, request_id=pending_request_id)
 
     # Seed the resolver env var so the just-installed tool can run immediately,
     # without waiting for the next environment scan to refresh the snapshot.
