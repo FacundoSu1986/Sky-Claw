@@ -839,23 +839,18 @@ class AppContext:
             async def _hitl_notify(req: HITLRequest) -> None:
                 active_sender = self.sender if full_published else sender
                 if active_sender is None or operator_chat_id is None:
-                    if req.category in ("tool_execution", "sandbox_promotion"):
-                        # Fail-closed: destructive tool executions and sandbox
-                        # promotions (T-27b·2: promover un diff sin revisión
-                        # vaciaría al sandbox de sentido) are NEVER
-                        # auto-approved without an operator channel.
-                        logger.critical(
-                            "HITL: no operator channel configured — DENYING "
-                            "%s request %s (%s). Configure the Telegram bot and "
-                            "operator chat id to approve it.",
-                            req.category,
-                            req.request_id,
-                            req.reason,
-                        )
-                        await hitl.respond(req.request_id, False)
-                        return
-                    logger.info("HITL auto-approving: %s", req.request_id)
-                    await hitl.respond(req.request_id, True)
+                    # Fail-closed: sin canal de operador ninguna solicitud HITL
+                    # puede interpretarse como aprobada, independientemente de
+                    # su categoría actual o futura.
+                    logger.critical(
+                        "HITL: no operator channel configured — DENYING "
+                        "%s request %s (%s). Configure the Telegram bot and "
+                        "operator chat id to approve it.",
+                        req.category,
+                        req.request_id,
+                        req.reason,
+                    )
+                    await hitl.respond(req.request_id, False)
                     return
                 msg = f"🛡️ *HITL Approval Required*\n\nID: `{req.request_id}`\nReason: {req.reason}\n\n{req.detail}"
                 # Send using sender directly

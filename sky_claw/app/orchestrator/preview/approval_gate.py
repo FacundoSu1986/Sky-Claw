@@ -55,6 +55,7 @@ class ChainPreviewApprovalGate:
         decision = await self._hitl.request_approval(
             reason="Apply the previewed LOOT->xEdit->DynDOLOD chain?",
             detail=manifest.model_dump_json(),
+            category="tool_execution",
         )
 
         if decision == Decision.APPROVED:

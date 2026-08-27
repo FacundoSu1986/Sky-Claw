@@ -325,12 +325,14 @@ def _aprobar_todo(installer: ToolsInstaller) -> AsyncMock:
     return mock
 
 
-def _hitl_espiado(installer: ToolsInstaller, *, denegar_slug: str = "") -> AsyncMock:
-    """Reemplaza el guard por un spy: aprueba todo salvo los request_id con *denegar_slug*."""
+def _hitl_espiado(installer: ToolsInstaller, *, denegar_call: int | None = None) -> AsyncMock:
+    """Reemplaza el guard por un spy que puede denegar una llamada por orden."""
+    call_count = 0
 
-    async def _decidir(**kwargs: Any) -> Decision:
-        rid = str(kwargs.get("request_id", ""))
-        if denegar_slug and denegar_slug in rid:
+    async def _decidir(**_kwargs: Any) -> Decision:
+        nonlocal call_count
+        call_count += 1
+        if denegar_call is not None and call_count == denegar_call:
             return Decision.DENIED
         return Decision.APPROVED
 
@@ -907,9 +909,10 @@ class TestEnsureCommunityShadersInstalacion:
         assert hitl.await_count == 3
         assert all(c.kwargs["category"] == "download" for c in hitl.await_args_list)
         ids = [c.kwargs["request_id"] for c in hitl.await_args_list]
-        assert ids[0].startswith("install-address-library-")
-        assert ids[1].startswith("install-sse-engine-fixes-")
-        assert ids[2].startswith("install-community-shaders-")
+        assert ids[0].startswith("nexus-mod-install-")
+        assert ids[1].startswith("nexus-mod-install-")
+        assert ids[2].startswith("github-mod-install-")
+        assert len(set(ids)) == 3
         # Selectores: cascada universal 2026 y file MAIN explícito de Engine Fixes.
         assert downloader.get_file_info.await_args_list[0].args[0:2] == (32444, 720756)
         assert downloader.get_file_info.await_args_list[1].args[0:2] == (17230, 725753)
@@ -1071,7 +1074,7 @@ class TestEnsureCommunityShadersInstalacion:
         game_dir = tmp_path / "game"
         _juego_valido(game_dir)
         _mock_gateway_github_cs(installer, _ZIP_CS)
-        hitl = _hitl_espiado(installer, denegar_slug="sse-engine-fixes")
+        hitl = _hitl_espiado(installer, denegar_call=2)
         downloader = _downloader_completo(tmp_path)
         session = MagicMock(spec=aiohttp.ClientSession)
 
@@ -1361,7 +1364,7 @@ class TestCleanOnFailInvariantes:
         notas = dir_ajeno / "notas.txt"
         notas.write_text("contenido del usuario", encoding="utf-8")
 
-        _hitl_espiado(installer, denegar_slug="address-library")
+        _hitl_espiado(installer, denegar_call=1)
         session = MagicMock(spec=aiohttp.ClientSession)
         game_dir = tmp_path / "game"
         _juego_valido(game_dir)
