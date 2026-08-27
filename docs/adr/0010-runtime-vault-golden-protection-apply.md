@@ -3,7 +3,7 @@
 **Fecha:** 2026-08-27  
 **Estado:** Propuesta (design-only; prohibida la implementación de código de producción en este PR).  
 **Contexto de origen:** tarea RV-GP2 sobre `origin/main` `2ca4115b11740f0974c463a3d70db07aa068ca9c` (post-merge de PR #508, PR #509, PR #511 y PR #512).  
-**Alcance:** Diseño arquitectónico exclusivo de la capability mutadora transaccional de protección del Golden Master (`protect_golden_master`), su helper de elevación con privilegio mínimo, verificación estricta de quiescencia y mutación atada a handle (`SetSecurityInfo`), autoridad transaccional privilegiada continua durante todo el ciclo de vida del FSM, lock de mutación cross-process basado en kernel (`GoldenMutationLock`), store de operaciones independiente del perfil de usuario (`%ProgramData%`) con separación estricta staging vs autorización privilegiada, su journal transaccional con Write-Ahead Logging (WAL), su modelo de recuperación ante caídas (crash recovery) y su compatibilidad forward con GP3.  
+**Alcance:** Diseño arquitectónico exclusivo de la capability mutadora transaccional de protección del Golden Master (`protect_golden_master`), su helper de elevación con privilegio mínimo, verificación estricta de quiescencia (probe handle exclusivo) y mutación atada a handle (`SetSecurityInfo`), autoridad transaccional privilegiada continua durante todo el ciclo de vida del FSM, simetría rigurosa entre las dos superficies del repositorio (GUI `tool_dispatcher` y agente LLM `AsyncToolRegistry`), lock de mutación cross-process basado en kernel (`GoldenMutationLock`), store de operaciones independiente del perfil de usuario (`%ProgramData%`) con separación estricta staging vs autorización privilegiada, su journal transaccional con Write-Ahead Logging (WAL y `FlushFileBuffers`), su modelo de recuperación ante caídas (crash recovery) y su compatibilidad forward con GP3.  
 **Reglas de exclusión:** Sin código de producción; sin ejecución de UAC; sin mutación de ACLs reales; sin acceso a Golden físico ni Runtime físico; sin interacción con Skyrim, MO2 ni Steam; aislamiento estricto respecto del issue #506.
 
 ---
@@ -28,12 +28,13 @@ La auditoría de lanzamiento (`docs/audits/2026-08-22_runtime_vault_mo2_stock_la
 **RV-GP2 ("Protect Golden")** es la capability mutadora encargada de transformar un Golden Master en estado `UNPROTECTED` (o `WRITE_PROTECTED` sub-óptimo) al estado objetivo verificado **`HARDENED`**, garantizando:
 1. **Transaccionalidad y recuperabilidad:** captura previa exhaustiva de Security Descriptors (SD) por nodo antes de cualquier mutación;
 2. **Autorización Privilegiada y Registro de Confianza:** validación de pertenencia al Registro de Golden Masters Confiables (`ARBITRARY_ROOT_FROM_STAGING_ACCEPTED = NO`), confirmación privilegiada de intención ligada a la identidad del plan y separación estricta entre staging no confiable (`UNTRUSTED_STAGING`) y store autoritativo protegido (`AUTHORIZED_OPERATIONS` en `%ProgramData%`), soportando elevación Over-The-Shoulder (OTS);
-3. **Garantía de Quiescencia y Mutación Atada al Mismo Handle (Handle-Bound Mutation):** adquisición de handle exclusivo sin compartición de escritura ni borrado (`dwShareMode = FILE_SHARE_READ`), impidiendo que writers preexistentes o memory mappings retengan acceso tras mutar la DACL; inspección PRE, aplicación de Target DACL y validación POST sobre el **mismo handle abierto** (`SetSecurityInfo`);
+3. **Garantía Rigurosa de Quiescencia y Mutación Atada al Mismo Handle (Handle-Bound Mutation):** adquisición de probe handle de verificación de acceso exclusivo (`dwDesiredAccess = GENERIC_READ | GENERIC_WRITE`, `dwShareMode = 0` / check de colisión de compartición) para detectar cualquier writer preexistente o mapping modificable antes de la mutación; inspección PRE, aplicación de Target DACL y validación POST sobre el **mismo handle abierto** (`SetSecurityInfo`);
 4. **Autoridad Transaccional Privilegiada Continua (FSM Writer):** el helper elevado es el **único escritor del FSM autoritativo**, reteniendo el `GoldenMutationLock` durante las fases de mutación, post-verificación (orquestando la ejecución de GP1/RV2/NodeSet bajo token no elevado vía IPC autenticado), archivado de respaldo y commit final;
-5. **Serialización Cross-Process por Kernel Handle (`GoldenMutationLock`):** exclusión mutua respaldada por el kernel de Windows mediante `CreateFileW` con sharing exclusivo en un namespace protegido contra escritura de usuarios no elevados, con defensa contra reuso de PID;
-6. **Cero mutación no planificada:** mitigación de propagación silenciosa de herencia (`SetSecurityInfo` / `PROTECTED_DACL_SECURITY_INFORMATION`);
-7. **Verificación post-mutación de triple eje:** post-verificación de acceso GP1 (`state == HARDENED`), post-verificación de integridad de contenido RV-2 (`TreeDigest` intacto y `VERIFIED`), y verificación de igualdad literal exhaustiva del conjunto de nodos (`MANIFEST_NODE_SET == FRESH_POST_CANONICAL_NODE_SET`);
-8. **Rollback transaccional fail-closed:** restauración compensatoria ante cualquier fallo o inconsistencia intermedia con protocolo Write-Ahead Logging (WAL).
+5. **Simetría Rigurosa de Superficies Hermanas (AGENTS.md):** exposición uniforme y cableado simétrico en la GUI (`SupervisorAgent` -> `tool_dispatcher`) y en el agente LLM (`AsyncToolRegistry` -> `LLMRouter`), con ancla de test que previene asimetrías de elevación;
+6. **Serialización Cross-Process por Kernel Handle (`GoldenMutationLock`):** exclusión mutua respaldada por el kernel de Windows mediante `CreateFileW` con sharing exclusivo en un namespace protegido contra escritura de usuarios no elevados, con defensa contra reuso de PID;
+7. **Cero mutación no planificada:** mitigación de propagación silenciosa de herencia (`SetSecurityInfo` / `PROTECTED_DACL_SECURITY_INFORMATION`);
+8. **Verificación post-mutación de triple eje:** post-verificación de acceso GP1 (`state == HARDENED`), post-verificación de integridad de contenido RV-2 (`TreeDigest` intacto y `VERIFIED`), y verificación de igualdad literal exhaustiva del conjunto de nodos (`MANIFEST_NODE_SET == FRESH_POST_CANONICAL_NODE_SET`);
+9. **Rollback transaccional fail-closed con WAL durable:** restauración compensatoria ante cualquier fallo o inconsistencia intermedia con protocolo Write-Ahead Logging (WAL) y persistencia física obligatoria mediante `FlushFileBuffers`.
 
 ---
 
@@ -42,8 +43,8 @@ La auditoría de lanzamiento (`docs/audits/2026-08-22_runtime_vault_mo2_stock_la
 1. **Target de Estado:** El único estado final de éxito admisible para GP2 es **`HARDENED`** con `success == True` y `assurance_scope == "CURRENT_EFFECTIVE_UNELEVATED_TOKEN"`. Un resultado final que termine en `WRITE_PROTECTED`, `UNPROTECTED`, `UNKNOWN` o `UNSUPPORTED` constituye un fallo de la operación y dispara rollback obligatorio.
 2. **Mutación por Nodo Bottom-Up (Deepest Descendants First):** GP2 muta individualmente cada archivo y directorio del subárbol comenzando por las hojas más profundas y finalizando en la raíz del Golden (`root`). Cada nodo se configura explícitamente con `PROTECTED_DACL_SECURITY_INFORMATION`, desvinculando la herencia antes de que sus ancestros sean modificados, eliminando cualquier riesgo de propagación no planificada hacia descendientes abiertos.
 3. **Garantía de Quiescencia y Mutación Estrictamente Atada a Handle (Handle-Bound Mutation):**
-   - Para demostrar **quiescencia** y evitar que un proceso externo retenga un handle de escritura o mapping modificable tras el cambio de DACL, el helper abre cada nodo con `dwShareMode = FILE_SHARE_READ` (sin `FILE_SHARE_WRITE`, sin `FILE_SHARE_DELETE`). Si existe un writer o mapping preexistente, `CreateFileW` falla de inmediato con `ERROR_SHARING_VIOLATION` (`0x20`), produciendo `REFUSE_TO_APPLY` (antes de la primera mutación) o `ROLLBACK_REQUIRED` (durante la mutación).
-   - Toda la secuencia (validación de `FileId`, lectura de SD PRE, WAL `MUTATING(K)`, mutación con `SetSecurityInfo` y re-lectura de SD POST) se ejecuta sobre **el mismo handle abierto**, neutralizando cualquier ventana TOCTOU de renombres o reemplazos de archivo.
+   - Para demostrar **quiescencia** y asegurar que ningún proceso externo retenga un handle de escritura o mapping modificable que continúe escribiendo tras el endurecimiento, el helper ejecuta una verificación de apertura exclusiva por nodo. Si existe un writer o mapping preexistente, `CreateFileW` falla de inmediato con `ERROR_SHARING_VIOLATION` (`0x20`), produciendo `REFUSE_TO_APPLY` (antes de la primera mutación) o `ROLLBACK_REQUIRED` (durante la mutación).
+   - Toda la secuencia (validación de `FileId`, lectura de SD PRE, WAL durable con `FlushFileBuffers`, mutación con `SetSecurityInfo` y re-lectura de SD POST) se ejecuta sobre **el mismo handle abierto**, neutralizando cualquier ventana TOCTOU de renombres o reemplazos de archivo.
 4. **Parent Policy Normativa — Refuse to Apply:** GP2 v1 **NO modifica el directorio parent** contenedor del Golden. Si la inspección previa detecta que el parent inmediato presenta vectores de borrado/renombrado del root (`FILE_DELETE_CHILD`, cadena delete+create, `WRITE_DAC` o `WRITE_OWNER` escalable), GP2 se rehúsa terminantemente a aplicar (`PARENT_UNSAFE -> REFUSE_TO_APPLY`). Prohibido warning + continue; prohibido override HITL en v1.
 5. **Política de Hardlinks Internos — Refuse to Apply:** Si el inventario detecta dos o más rutas relativas dentro del subárbol que comparten la misma identidad física `(VolumeSerialNumber, FileId)`, GP2 v1 se rehúsa a aplicar (`REFUSE_TO_APPLY` con `DuplicateFileIdError`) antes de la primera mutación física, evitando generar registros de respaldo PRE conflictivos para un único objeto de seguridad mutable.
 6. **Respaldo Binario Exacto (Raw Self-Relative SD):** Antes de la primera mutación física, se genera un manifiesto sellado que almacena para cada nodo los bytes binarios exactos del `SECURITY_DESCRIPTOR` autoritativo en formato self-relative (`OWNER | GROUP | DACL` y bits de control `SE_DACL_PROTECTED`), con longitud validada mediante `GetSecurityDescriptorLength`. La cadena SDDL se preserva únicamente para diagnóstico/auditoría.
@@ -58,14 +59,15 @@ La auditoría de lanzamiento (`docs/audits/2026-08-22_runtime_vault_mo2_stock_la
     - Tras finalizar la mutación, el helper orquesta la post-verificación (GP1, RV2 y NodeSet) ejecutando un proceso verificador no elevado bajo el token del usuario y recibiendo el resultado mediante IPC autenticado.
     - Si la verificación es exitosa, el helper archiva el respaldo en `golden_backups` y realiza la transición a `COMMITTED`.
     - Si falla, el helper ejecuta el rollback Top-Down compensatorio y transiciona a `ROLLED_BACK`.
-13. **Lock Cross-Process OS-Enforced por Golden (`GoldenMutationLock`):** Toda mutación (APPLY, ROLLBACK, RECOVERY, futuro GP3) adquiere un lock transaccional exclusivo respaldado por un handle Win32 con sharing exclusivo en `%ProgramData%\Sky-Claw\runtime_vault\locks\<lock_key>.lock`. La carpeta `locks` tiene permisos de solo lectura para usuarios no elevados. Si el proceso muere, el kernel libera el lock automáticamente. Se valida PID y `ProcessCreationTime` para neutralizar el reuso de PIDs.
-14. **Journal Transaccional Propio con Write-Ahead Logging (WAL):** La máquina de estados persiste sus transiciones y el estado de cada nodo en `sky_claw/local/runtime_vault/protection_journal.py` (en `AUTHORIZED_OPERATIONS`), completamente desacoplado de `sky_claw/app/db/journal.py`. Antes de mutar cualquier nodo $K$, se registra durablemente la intención `MUTATING(K)` para cerrar la ventana de fallo entre mutación y registro.
-15. **Triple Post-Verificación Independiente:**
+13. **Simetría en las Dos Superficies del Repositorio (AGENTS.md):** La capability `protect_golden_master` se registra de forma estrictamente simétrica tanto en `SupervisorAgent` (`tool_dispatcher` en GUI) como en `AsyncToolRegistry` (`LLMRouter` para Telegram y chat), garantizando que ambas superficies compartan el mismo lock cross-process, el mismo preflight y el mismo requerimiento de elevación UAC.
+14. **Lock Cross-Process OS-Enforced por Golden (`GoldenMutationLock`):** Toda mutación (APPLY, ROLLBACK, RECOVERY, futuro GP3) adquiere un lock transaccional exclusivo respaldado por un handle Win32 con sharing exclusivo en `%ProgramData%\Sky-Claw\runtime_vault\locks\<lock_key>.lock`. La carpeta `locks` tiene permisos de solo lectura para usuarios no elevados. Si el proceso muere, el kernel libera el lock automáticamente. Se valida PID y `ProcessCreationTime` para neutralizar el reuso de PIDs.
+15. **Journal Transaccional Propio con WAL y FlushFileBuffers:** La máquina de estados persiste sus transiciones y el estado de cada nodo en `sky_claw/local/runtime_vault/protection_journal.py` (en `AUTHORIZED_OPERATIONS`), completamente desacoplado de `sky_claw/app/db/journal.py`. Antes de mutar cualquier nodo $K$, se registra durablemente la intención `MUTATING(K)` y se invoca `FlushFileBuffers` para cerrar la ventana de pérdida por caída de energía.
+16. **Triple Post-Verificación Independiente:**
     - GP1 `inspect_golden_protection(golden_path)` exigiendo `state == HARDENED` y `success == True`.
     - RV-2 `verify_golden_master(...)` exigiendo que el `TreeDigest` y los archivos críticos permanezcan `VERIFIED` e idénticos al baseline.
     - Verificación de Exhaustividad de Nodos: `MANIFEST_NODE_SET == FRESH_POST_CANONICAL_NODE_SET` (igualdad literal de rutas, tipo y `FileId`).
-16. **Archivado de Respaldo por Identidad Estable en Store Protegido:** En la fase `ARCHIVING_BACKUP` (antes de `COMMITTED`), el helper archiva el manifiesto en el almacén protegido del sistema: `%ProgramData%\Sky-Claw\runtime_vault\golden_backups\<vol_serial>_<root_file_id>\<policy_version>\<op_id>_manifest.json`, con DACL de solo lectura para usuarios, impidiendo que un Actor D modifique el baseline de restauración.
-17. **Rollback Top-Down vs GP3:** Si ocurre un fallo en cualquier etapa, el helper ejecuta un rollback transaccional restaurando los SDs originales en orden inverso (**Top-Down: Root primero, descendientes después**). Este rollback es un mecanismo de recuperación interna ante fallos y es conceptual y contractualmente distinto de **GP3** (capability futura de desprotección a demanda del operador).
+17. **Archivado de Respaldo por Identidad Estable en Store Protegido:** En la fase `ARCHIVING_BACKUP` (antes de `COMMITTED`), el helper archiva el manifiesto en el almacén protegido del sistema: `%ProgramData%\Sky-Claw\runtime_vault\golden_backups\<vol_serial>_<root_file_id>\<policy_version>\<op_id>_manifest.json`, con DACL de solo lectura para usuarios, impidiendo que un Actor D modifique el baseline de restauración.
+18. **Rollback Top-Down vs GP3:** Si ocurre un fallo en cualquier etapa, el helper ejecuta un rollback transaccional restaurando los SDs originales en orden inverso (**Top-Down: Root primero, descendientes después**). Este rollback es un mecanismo de recuperación interna ante fallos y es conceptual y contractualmente distinto de **GP3** (capability futura de desprotección a demanda del operador).
 
 ---
 
@@ -116,10 +118,13 @@ Amenaza: Confused Deputy en Helper UAC (Actor D forja plan en staging para direc
 Mitigación: Trusted Golden Registry (ARBITRARY_ROOT_FROM_STAGING_ACCEPTED = NO) + Confirmación Privilegiada de Intención Plan-Specific en el Helper + Store autoritativo protegido (%ProgramData%\...\operations) donde solo el Helper elevado puede crear el binding autorizado.
 
 Amenaza: Escrituras concurrentes de writers preexistentes tras cambiar la DACL
-Mitigación: Garantía de Quiescencia abriendo cada nodo con dwShareMode = FILE_SHARE_READ (sin write/delete sharing). Si existe un writer abierto o writable memory mapping -> CreateFileW falla con ERROR_SHARING_VIOLATION -> REFUSE_TO_APPLY / ROLLBACK_REQUIRED.
+Mitigación: Garantía de Quiescencia abriendo cada nodo con probe handle (GENERIC_READ | GENERIC_WRITE con dwShareMode = 0 / check de colisión). Si existe un writer abierto o writable memory mapping -> CreateFileW falla con ERROR_SHARING_VIOLATION -> REFUSE_TO_APPLY / ROLLBACK_REQUIRED.
 
 Amenaza: Sustitución de archivo / TOCTOU entre validación y mutación
 Mitigación: Handle-Bound Mutation (CreateFileW -> GetSecurityInfo(handle) -> SetSecurityInfo(mismo handle) -> GetSecurityInfo(mismo handle)), impidiendo desvíos por rename/delete durante la operación.
+
+Amenaza: Asimetría entre Superficies (GUI vs Agente LLM)
+Mitigación: Exposición simétrica de protect_golden_master en tool_dispatcher (GUI) y AsyncToolRegistry (LLM Router) con ancla de test AST GP2-T27.
 
 Amenaza: Mutación no planificada por herencia
 Mitigación: Bottom-Up Apply + PROTECTED_DACL_SECURITY_INFORMATION por nodo.
@@ -134,7 +139,7 @@ Amenaza: Intercalación concurrente de transacciones sobre el mismo Golden
 Mitigación: GoldenMutationLock respaldado por handle exclusivo del kernel en directorio protegido serializa todo apply, rollback, recovery y GP3 por (VolumeSerialNumber, root_file_id).
 
 Amenaza: Ventana de Crash entre Mutación y Registro en Journal
-Mitigación: Write-Ahead Logging (MUTATING registrado antes de SetSecurityInfo) + Re-escaneo de diferencias en recuperación.
+Mitigación: Write-Ahead Logging con FlushFileBuffers obligatorio (MUTATING persistido en disco antes de SetSecurityInfo) + Re-escaneo de diferencias en recuperación.
 
 Amenaza: Omisión de descendiente pre-endurecido en el plan
 Mitigación: Verificación obligatoria de igualdad literal entre MANIFEST_NODE_SET y FRESH_POST_CANONICAL_NODE_SET antes de COMMITTED.
@@ -308,7 +313,7 @@ El helper elevado (`sky-claw-vault-helper.exe` o worker elevado) ejecuta la muta
 
 ### 12.2 Algoritmo de Ejecución con Quiescencia y Handle-Bound Mutation
 
-Para garantizar **quiescencia** (cero writers preexistentes o mappings activos) y eliminar ventanas TOCTOU:
+Para garantizar **quiescencia** (detección estricta de writers preexistentes o mappings activos) y eliminar ventanas TOCTOU:
 
 ```text
 Fase de Autorización en el Helper (Elevado):
@@ -320,7 +325,8 @@ Fase de Autorización en el Helper (Elevado):
     6. Escribir authorized_plan.json en AUTHORIZED_OPERATIONS (inmutable para el usuario no elevado).
 
 Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
-    1. Abrir Handle Seguro Exigiendo Quiescencia:
+    1. Probe Handle de Quiescencia y Apertura Segura:
+       // Paso A: Apertura con verificación de colisión frente a writers concurrentes
        h = CreateFileW(
            node_path,
            READ_CONTROL | WRITE_DAC,
@@ -331,7 +337,7 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
            NULL
        )
        Si GetLastError() == ERROR_SHARING_VIOLATION:
-           // Hay un handle de escritura o mapping preexistente
+           // Hay un handle de escritura o mapping preexistente en uso
            Si 0 nodos mutados -> FAIL_CLOSED -> REFUSE_TO_APPLY (QuiescenceViolationError)
            Si >0 nodos mutados -> FAIL_CLOSED -> Iniciar secuencia de ROLLBACK (ROLLBACK_REQUIRED).
        Si h es inválido -> FAIL_CLOSED -> Iniciar ROLLBACK.
@@ -347,8 +353,9 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
        Si sha256(sd_pre) != expected.pre_sd_sha256:
            CloseHandle(h) -> FAIL_CLOSED -> Iniciar ROLLBACK.
 
-    4. Write-Ahead Log (WAL):
+    4. Write-Ahead Log (WAL) con FlushFileBuffers Obligatorio:
        Registrar durablemente en el journal de AUTHORIZED_OPERATIONS: MUTATING(K).
+       Invocar FlushFileBuffers(journal_file_handle) para garantizar persistencia física previa.
 
     5. Aplicar Target DACL sobre el MISMO Handle:
        err = SetSecurityInfo(
@@ -372,17 +379,22 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
 
     7. Confirmación en Journal y Cierre de Handle:
        Registrar durablemente en journal: MUTATED(K).
+       Invocar FlushFileBuffers(journal_file_handle).
        CloseHandle(h).
 ```
 
 ---
 
-## 13. UAC & Human-in-the-Loop (HITL)
+## 13. UAC, Human-in-the-Loop (HITL) & Superficies Hermanas
 
 1. **Consentimiento del SO Exclusivo:** La autorización privilegiada se solicita **únicamente** a través del mecanismo nativo de UAC de Windows (`ShellExecuteExW` con verbo `"runas"`).
 2. **Alineación con el Ciclo de Vida HITL:** En concordancia con el guardrail fail-closed del repositorio (`sky_claw/app/security/hitl.py`), toda solicitud HITL previa a la elevación se valida de forma no reentrable y con resolución terminal única.
-3. **Soporte Pleno de Elevación Over-The-Shoulder (OTS):** Al residir el staging y el store autorizado en `%ProgramData%`, el helper elevado puede leer el plan candidate y escribir el plan autoritativo independientemente de si la cuenta administrativa ingresada en el diálogo UAC coincide con el usuario interactivo o es un administrador secundario de la máquina.
-4. **Prohibición Absoluta de Credenciales Propias:** Sky-Claw **nunca** solicitará, almacenará, parseará ni enviará contraseñas ni credenciales de usuario.
+3. **Simetría en las Dos Superficies (AGENTS.md):**
+   - **Superficie GUI:** `SupervisorAgent` -> `tool_dispatcher["protect_golden_master"]` (con UAC / HITL bridge integrado).
+   - **Superficie Agente LLM:** `AsyncToolRegistry` -> `LLMRouter["protect_golden_master"]` (con UAC / HITL bridge integrado).
+   - Ambas superficies consumen el mismo servicio de backend (`sky_claw/local/runtime_vault/protection_service.py`), garantizando que ninguna superficie pueda ejecutar la mutación eludiendo el preflight, el lock cross-process o la elevación.
+4. **Soporte Pleno de Elevación Over-The-Shoulder (OTS):** Al residir el staging y el store autorizado en `%ProgramData%`, el helper elevado puede leer el plan candidate y escribir el plan autoritativo independientemente de si la cuenta administrativa ingresada en el diálogo UAC coincide con el usuario interactivo o es un administrador secundario de la máquina.
+5. **Prohibición Absoluta de Credenciales Propias:** Sky-Claw **nunca** solicitará, almacenará, parseará ni enviará contraseñas ni credenciales de usuario.
 
 ---
 
@@ -514,7 +526,7 @@ Matriz exhaustiva de recuperación ante caídas del sistema o interrupciones de 
 | **C1: Durante PREPARING** | Manifiesto ausente o incompleto en staging | `None` / Huérfano | Limpieza de temporales. Liberar lock. Estado no modificado. | Sí | No |
 | **C2: Manifiesto sellado (PREPARED)** | Manifiesto íntegro en staging, 0 nodos mutados | `PREPARED` | Operación cancelable sin efectos en FS. Liberar lock. | Sí | No |
 | **C3: UAC aceptado, antes del Nodo 1** | Journal `APPLYING` en authorized store, lista de nodos mutados vacía | `APPLYING` (0 nodes) | Marcar como cancelado; ningún nodo fue alterado. Liberar lock. | Sí | No |
-| **C4: Durante mutación de Nodo K (tras MUTATING(K), antes de MUTATED(K))** | Journal con `MUTATING(K)` registrado (WAL) | `ROLLBACK_REQUIRED` | Helper re-escanea nodos: incluye nodos 1..K (cualquier nodo cuyo SD actual difiera del PRE) y restaura Top-Down. | No (exige UAC) | Sí (UAC para rollback) |
+| **C4: Durante mutación de Nodo K (tras MUTATING(K), antes de MUTATED(K))** | Journal con `MUTATING(K)` y `FlushFileBuffers` persistido | `ROLLBACK_REQUIRED` | Helper re-escanea nodos: incluye nodos 1..K (cualquier nodo cuyo SD actual difiera del PRE) y restaura Top-Down. | No (exige UAC) | Sí (UAC para rollback) |
 | **C5: Helper finalizado, antes de Post-Verificación** | Journal `APPLYING` completo (todos los nodos `MUTATED`) | `APPLYING` | Helper retoma en `VERIFYING_GP1`. | No (exige UAC) | Sí (UAC para verificar/commitear) |
 | **C6: Durante verificación GP1/RV2/NodeSet** | Journal `VERIFYING_*`, todos los nodos mutados | `VERIFYING_*` | Re-ejecutar verificaciones read-only. Si pasan -> `ARCHIVING_BACKUP`; si fallan -> `ROLLBACK_REQUIRED`. | No (exige UAC) | Sí (UAC) |
 | **C7: Durante ARCHIVING_BACKUP (antes de COMMITTED)** | Verificaciones OK en journal, archivo en `golden_backups` parcial | `ARCHIVING_BACKUP` | Re-copiar manifiesto a `golden_backups` de forma segura y transicionar a `COMMITTED`. Liberar lock. | No (exige UAC) | Sí (UAC) |
@@ -597,13 +609,13 @@ Los tests de GP2 se implementarán en módulos dedicados bajo `tests/`:
 - `tests/test_runtime_vault_protection_apply_integration.py` (Tests de integración en Windows TEMP únicamente, sin tocar Golden real).
 
 ### Configuración Canónica de Fixture para Tests de Integración en Windows TEMP
-Para evitar que los tests de integración en `%TEMP%` aborten falsamente por `UnsafeParentError` (dado que el usuario creador de una carpeta temporal en Windows recibe implícitamente `WRITE_DAC` sobre el parent):
-- El fixture de test `temp_golden_harness` crea un subdirectorio contenedor `fixture_parent/golden_root`.
-- El fixture aplica sobre `fixture_parent` una DACL con la Owner Rights ACE `S-1-3-4` restrictiva (`FILE_GENERIC_READ | FILE_TRAVERSE`, sin `WRITE_DAC` ni `DELETE_CHILD`).
-- **GP2-T00** verifica de forma explícita que el parent del fixture es seguro conforme al clasificador GP1 antes de invocar la protección del Golden.
+Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reproducibles y limpien su estado sin dejar residuos:
+1. **Contenedor Seguro por Construcción:** El fixture de test `temp_golden_harness` estructura el árbol bajo `fixture_parent/golden_root`. Si el entorno de test requiere simular un parent seguro, se crea un contenedor seguro con DACL pre-establecida que concede `READ_CONTROL | WRITE_DAC` al harness de test para permitir el teardown completo.
+2. **Prueba Obligatoria de Parent Inseguro:** Se incluye un test específico que evalúa un parent estándar de usuario con `WRITE_DAC` activo para verificar que GP2 emite `UnsafeParentError`, retorna `REFUSE_TO_APPLY` y realiza cero mutaciones sobre el disco.
+3. **Teardown Seguro y Garantizado:** El teardown del fixture captura el SD original de `fixture_parent` al inicio y restaura explícitamente sus permisos antes de ejecutar la eliminación recursiva (`shutil.rmtree`).
 
 ### Casos de Test Obligatorios:
-- **GP2-T00:** El fixture de test prepara y certifica un parent seguro con Owner Rights ACE antes de ejecutar mutaciones.
+- **GP2-T00:** El fixture de test prepara un entorno con parent seguro por construcción y verifica teardown limpio sin residuos.
 - **GP2-T01:** Planificación exitosa genera manifiesto canónico con SDs self-relative y FileIds.
 - **GP2-T02:** Reparse point en cualquier nodo del árbol aborta la planificación con excepción `InventoryLinkError` y estado `REFUSE_TO_APPLY`.
 - **GP2-T03:** Parent con `FILE_DELETE_CHILD` aborta la planificación (`UnsafeParentError`, estado `REFUSE_TO_APPLY`).
@@ -618,7 +630,7 @@ Para evitar que los tests de integración en `%TEMP%` aborten falsamente por `Un
 - **GP2-T12:** Rollback restaura exactamente los campos `OWNER`, `GROUP`, `DACL` y flags de herencia de DACL originales; fixture con SACL presente valida que la SACL se mantiene inalterada.
 - **GP2-T13:** Fallo en post-verificación GP1 dispara rollback transaccional.
 - **GP2-T14:** Fallo en post-verificación RV-2 (digest alterado) dispara rollback transaccional.
-- **GP2-T15:** Simulación de crash en cada estado del FSM (incluyendo crash entre mutación y registro con WAL, rechazo de UAC resultando en `ELEVATION_REJECTED`, y crash en `ARCHIVING_BACKUP`) recupera la acción segura correcta.
+- **GP2-T15:** Simulación de crash en cada estado del FSM (incluyendo crash entre mutación y registro con WAL respaldado por `FlushFileBuffers`, rechazo de UAC resultando en `ELEVATION_REJECTED`, y crash en `ARCHIVING_BACKUP`) recupera la acción segura correcta.
 - **GP2-T16:** AST Anchor: `protection_journal.py` no importa `sky_claw.app.db.journal`.
 - **GP2-T17:** AST Anchor: El módulo no utiliza strings de cuentas localizadas ("Todos", "Administradores"), solo SIDs.
 - **GP2-T18:** Presencia de hardlinks internos (mismo `(VolumeSerialNumber, FileId)` en 2 rutas) aborta con `DuplicateFileIdError` y estado `REFUSE_TO_APPLY`.
@@ -630,6 +642,7 @@ Para evitar que los tests de integración en `%TEMP%` aborten falsamente por `Un
 - **GP2-T24:** Mapping de memoria escribible preexistente produce `ERROR_SHARING_VIOLATION` y aborto fail-closed.
 - **GP2-T25:** Intento de escritura en `AUTHORIZED_OPERATIONS` o `golden_backups` por parte de un proceso no elevado es bloqueado por la DACL del kernel (`ACCESS_DENIED`).
 - **GP2-T26:** Plan candidato en staging con ruta fuera del Registro de Golden Masters Confiables es rechazado por el helper antes de crear `authorized_plan.json`.
+- **GP2-T27:** AST Anchor de Simetría de Superficies: Verificación estricta de que `protect_golden_master` se encuentra expuesto y registrado de forma idéntica en `SupervisorAgent` (`tool_dispatcher`) y en `AsyncToolRegistry` (`LLMRouter`).
 
 ---
 
@@ -649,7 +662,7 @@ Para evitar que los tests de integración en `%TEMP%` aborten falsamente por `Un
 | **M10** | Declarar éxito cuando GP1 devuelve `UNKNOWN` | Contrato exige `state == HARDENED`; `UNKNOWN` dispara rollback |
 | **M11** | Declarar éxito cuando GP1 devuelve `WRITE_PROTECTED` | Contrato exige `state == HARDENED`; `WRITE_PROTECTED` dispara rollback |
 | **M12** | Omitir verificación RV-2 post-mutación | Test de contrato GP2 exige `post_rv2_result` verificado |
-| **M13** | Perder registro de nodos mutados en crash | Protocolo WAL (`MUTATING`) y re-escaneo de diferencias restauran todos los nodos tocados |
+| **M13** | Perder registro de nodos mutados en crash | Protocolo WAL (`MUTATING`), `FlushFileBuffers` y re-escaneo restauran todos los nodos tocados |
 | **M14** | Reset recursivo de ACLs desde el root en rollback | Test de rollback valida que cada nodo recibe su SD individual |
 | **M15** | Seguir reparse point durante inventario o aplicación | Primitiva canónica lanza `InventoryLinkError` / Helper aborta con `REFUSE_TO_APPLY` |
 | **M16** | Helper acepta manifiesto no sellado | Helper exige coincidencia con `--staging-digest` |
@@ -672,6 +685,7 @@ Para evitar que los tests de integración en `%TEMP%` aborten falsamente por `Un
 | **M33** | Ignorar `ERROR_SHARING_VIOLATION` como advertencia blanda | Test `GP2-T23` exige `REFUSE_TO_APPLY` o `ROLLBACK_REQUIRED` |
 | **M34** | Atacante genera plan en staging para directorio no registrado | Helper rechaza el plan antes de `AUTHORIZED_OPERATIONS` |
 | **M35** | Proceso no elevado intenta escribir `COMMITTED` en el journal | DACL del kernel deniega la escritura (`ACCESS_DENIED`) |
+| **M36** | `protect_golden_master` registrado en GUI pero omitido en el registry del agente LLM | Test AST `GP2-T27` detecta asimetría entre superficies |
 
 ---
 
@@ -697,6 +711,7 @@ Para evitar que los tests de integración en `%TEMP%` aborten falsamente por `Un
 - [MS-ADTS] §6.1.3.4: Blocking Implicit Owner Rights — *learn.microsoft.com/openspecs/windows_protocols/ms-adts/fb7c101d-ec8b-4fbf-bca8-7d7c2d747d0c*
 - `SetSecurityInfo` function — *learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo*
 - `GetSecurityInfo` function — *learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo*
+- `FlushFileBuffers` function — *learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers*
 - `GetSecurityDescriptorLength` function — *learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-getsecuritydescriptorlength*
 - `GetSecurityDescriptorControl` function — *learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-getsecuritydescriptorcontrol*
 - `AdjustTokenPrivileges` function — *learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-adjusttokenprivileges*
