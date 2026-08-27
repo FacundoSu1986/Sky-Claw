@@ -554,6 +554,49 @@ async def test_mig506_10_conflicting_backfill_fails_closed(tmp_path: pathlib.Pat
 
 
 @pytest.mark.asyncio
+async def test_mig506_12_timestamp_conflict_fails_closed(tmp_path: pathlib.Path) -> None:
+    """MIG506-TIMESTAMP-CONFLICT: D4 preexistente con resolved_at != absorbed_at
+    debe fallar cerrado en open(). La validación del backfill compara TAMBIÉN el
+    timestamp histórico (F-04 #506), no sólo resolution_kind y handoff_id: una
+    fila D4 con la misma semántica pero distinto resolved_at NO es equivalente."""
+    db_file = tmp_path / "timestamp_conflict.db"
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.executescript(LEGACY_SCHEMA_SQL)
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
+        await conn.execute(
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (10, 1, 'superseded', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
+        )
+        await conn.execute(
+            "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id, absorbed_at) "
+            "VALUES (1, 'c:/mods/texgen', 10, '2026-08-20 12:00:00')"
+        )
+        await conn.executescript(ARTIFACT_RESOLUTIONS_SCHEMA_SQL)
+        # Misma semántica (kind + handoff) pero resolved_at histórico distinto:
+        # la validación debe rechazarla como "migración equivalente".
+        await conn.execute(
+            "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at) "
+            "VALUES (1, 'c:/mods/texgen', 'absorbed_by_handoff', 10, '2099-01-01 00:00:00')"
+        )
+        await conn.commit()
+
+    j = OperationJournal(db_file)
+    with pytest.raises(JournalConnectionError, match="Corrupción detectada durante backfill de resoluciones"):
+        await j.open()
+
+    # La fila D4 preexistente no fue mutada ni duplicada por el intento de backfill.
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute(
+            "SELECT COUNT(*), SUM(resolved_at = '2099-01-01 00:00:00') FROM artifact_evidence_resolutions"
+        ) as cur,
+    ):
+        fila = await cur.fetchone()
+    assert fila[0] == 1, "No debe haber filas extra tras el fail-closed"
+    assert fila[1] == 1, "La fila D4 preexistente no debe ser sobrescrita"
+
+
+@pytest.mark.asyncio
 async def test_mig506_11_concurrent_open_legacy_db(tmp_path: pathlib.Path) -> None:
     """MIG506-11 / F506-MIG4: Múltiples instancias independientes abriendo concurrentemente una DB legacy migran limpiamente."""
     db_file = tmp_path / "concurrent_open.db"
@@ -630,6 +673,123 @@ async def test_res506_conflict_raises_journal_transaction_error(tmp_path: pathli
                 )
     finally:
         await j.close()
+
+
+# =============================================================================
+# CONCURRENCIA REAL DEL WRITER RUNTIME D4 (F-03 #506)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_res506_concurrent_exact_dos_conexiones(tmp_path: pathlib.Path) -> None:
+    """RES506-CONCURRENT-EXACT: dos conexiones SQLite reales e independientes
+    (dos managers, WAL) registran EXACTAMENTE la misma resolución de forma
+    concurrente → CALLER_1=SUCCESS, CALLER_2=SUCCESS, ROW_COUNT=1.
+    EXACT_DUPLICATE == IDEMPOTENT_SUCCESS, sin IntegrityError."""
+    db_file = tmp_path / "concurrent_exact.db"
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.executescript(LEGACY_SCHEMA_SQL)
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
+        await conn.commit()
+
+    mgr1 = DatabaseLifecycleManager()
+    mgr2 = DatabaseLifecycleManager()
+    j1 = OperationJournal(db_file, lifecycle=mgr1)
+    j2 = OperationJournal(db_file, lifecycle=mgr2)
+    try:
+        await j1.open()
+        await j2.open()
+        # Carrera real: cada journal usa la conexión de SU manager (conexiones
+        # físicas distintas al mismo archivo, WAL). Ni mock ni serialización:
+        # el arbitraje del (tx, artifact) lo hace el UNIQUE de SQLite.
+        await asyncio.gather(
+            j1.resolver_evidencia_como_no_artifact("c:/mods/texgen", [1]),
+            j2.resolver_evidencia_como_no_artifact("c:/mods/texgen", [1]),
+        )
+    finally:
+        await j1.close()
+        await j2.close()
+        await asyncio.gather(mgr1.shutdown_all(), mgr2.shutdown_all())
+
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur,
+    ):
+        (conteo,) = await cur.fetchone()
+    assert conteo == 1, "El duplicado exacto concurrente no debe crear una segunda fila"
+
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute(
+            "SELECT transaction_id, artifact_path, resolution_kind, handoff_id FROM artifact_evidence_resolutions"
+        ) as cur,
+    ):
+        fila = await cur.fetchone()
+    objetivo_esperado, _ = _canonica_y_prefijo("c:/mods/texgen")
+    assert fila == (1, objetivo_esperado, "no_artifact_demonstrated", None), "Fila exacta"
+
+
+@pytest.mark.asyncio
+async def test_res506_concurrent_conflict_dos_conexiones(tmp_path: pathlib.Path) -> None:
+    """RES506-CONCURRENT-CONFLICT: dos conexiones reales registran semánticas
+    DISTINTAS para el mismo (tx, artifact) → exactamente una queda durable, la
+    otra falla cerrado con JournalTransactionError (nunca overwrite, nunca dos
+    filas, nunca IntegrityError crudo como resultado de contrato)."""
+    db_file = tmp_path / "concurrent_conflict.db"
+    # WAL: lectores no bloquean escritores y el perdedor espera el commit del
+    # ganador en el busy handler — carrera real sin deadlock del journal mode
+    # rollback ni BUSY espurio.
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.executescript(LEGACY_SCHEMA_SQL)
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
+        await conn.executescript(ARTIFACT_RESOLUTIONS_SCHEMA_SQL)
+        await conn.commit()
+
+    # Timeout generoso: el perdedor sólo tiene que esperar el commit del ganador.
+    conn1 = await aiosqlite.connect(str(db_file), timeout=30.0)
+    conn2 = await aiosqlite.connect(str(db_file), timeout=30.0)
+    try:
+
+        async def _registrar(conn: aiosqlite.Connection, kind: str, handoff: int | None) -> None:
+            await _registrar_resoluciones_de_artifact_en_conn(
+                conn,
+                transaction_ids=[1],
+                artifact_path="c:/mods/texgen",
+                resolution_kind=kind,
+                handoff_id=handoff,
+            )
+            await conn.commit()
+
+        resultado1, resultado2 = await asyncio.gather(
+            _registrar(conn1, "no_artifact_demonstrated", None),
+            _registrar(conn2, "absorbed_by_handoff", 10),
+            return_exceptions=True,
+        )
+
+        # Exactamente un caller gana; el perdedor falla cerrado con el tipo de
+        # contrato — un IntegrityError crudo sería exactamente el defecto F-03.
+        errores = [r for r in (resultado1, resultado2) if isinstance(r, BaseException)]
+        assert len(errores) == 1, f"Debe fallar exactamente un caller: {(resultado1, resultado2)}"
+        assert isinstance(errores[0], JournalTransactionError), f"Tipo de contrato: {errores[0]!r}"
+    finally:
+        await conn1.close()
+        await conn2.close()
+
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur,
+    ):
+        (conteo,) = await cur.fetchone()
+    assert conteo == 1, "Nunca dos filas ni mutación parcial"
+
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute("SELECT resolution_kind, handoff_id FROM artifact_evidence_resolutions") as cur,
+    ):
+        fila = await cur.fetchone()
+    ganador = ("no_artifact_demonstrated", None) if resultado1 is None else ("absorbed_by_handoff", 10)
+    assert fila == ganador, "La semántica durable debe ser la del caller ganador"
 
 
 # =============================================================================
