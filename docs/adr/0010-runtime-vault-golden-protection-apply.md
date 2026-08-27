@@ -41,13 +41,14 @@ La auditoría de lanzamiento (`docs/audits/2026-08-22_runtime_vault_mo2_stock_la
 ## 2. Decisión
 
 1. **Target de Estado:** El único estado final de éxito admisible para GP2 es **`HARDENED`** con `success == True` y `assurance_scope == "CURRENT_EFFECTIVE_UNELEVATED_TOKEN"`. Un resultado final que termine en `WRITE_PROTECTED`, `UNPROTECTED`, `UNKNOWN` o `UNSUPPORTED` constituye un fallo de la operación y dispara rollback obligatorio.
+   - **Distinción normativa de `success`:** el `success` de este punto se refiere al **resultado transaccional GP2** (`GP2Result`), no al `GoldenProtectionResult` del inspector GP1. Según el contrato vigente de `protection.py`, `GoldenProtectionResult.success == (state != UNKNOWN)`: una **clasificación concluyente** que también es `True` para `UNSUPPORTED`, `UNPROTECTED` y `WRITE_PROTECTED`. Por tanto, el gate GP2 **no** puede depender de `GoldenProtectionResult.success`; exige **independientemente** `state == HARDENED` (ver §21). Queda prohibido usar `GoldenProtectionResult.success` como sinónimo de endurecimiento.
 2. **Mutación por Nodo Bottom-Up (Deepest Descendants First):** GP2 muta individualmente cada archivo y directorio del subárbol comenzando por las hojas más profundas y finalizando en la raíz del Golden (`root`). Cada nodo se configura explícitamente con `PROTECTED_DACL_SECURITY_INFORMATION`, desvinculando la herencia antes de que sus ancestros sean modificados, eliminando cualquier riesgo de propagación no planificada hacia descendientes abiertos.
 3. **Garantía de Quiescencia y Mutación Estrictamente Atada a Handle (Handle-Bound Mutation) — DOS handles normativos por nodo:**
    - **Probe handle transitorio (detección de writers/mappings):** antes de abrir el handle de mutación, el helper abre cada nodo con
      `dwDesiredAccess = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | DELETE` para archivos, o `FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | DELETE` para directorios; `dwShareMode = 0`; `FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT`; `OPEN_EXISTING`. El probe se cierra inmediatamente tras la verificación.
    - **Handle de mutación (binding por handle):** tras la verificación positiva, el helper abre un segundo handle con `dwDesiredAccess = READ_CONTROL | WRITE_DAC`; `dwShareMode = FILE_SHARE_READ` (sin `FILE_SHARE_WRITE`, sin `FILE_SHARE_DELETE`); mismas flags. Sobre este handle se ejecutan: validación de `(VolumeSerialNumber, FileId)` y `reparse_tag`, lectura de SD PRE, WAL durable con `FlushFileBuffers(journal_handle)`, `SetSecurityInfo` y re-lectura de SD POST.
    - **Razón del doble handle:** la compartición de Win32 se evalúa contra el `dwShareMode` de los handles ya abiertos; un writer que abrió con `FILE_SHARE_READ | FILE_SHARE_WRITE` (patrón habitual de MO2, engines, antivirus, indexadores) no produce `ERROR_SHARING_VIOLATION` si el nuevo handle sólo pide `READ_CONTROL | WRITE_DAC`. Sólo un probe que solicite acceso de datos de escritura con `dwShareMode = 0` colisiona de forma determinista con cualquier writer o `CreateFileMapping` escribible preexistente.
-   - **Limitación declarada:** NTFS no revoca los derechos concedidos en handles ya abiertos cuando se cambia la DACL; un writer cooperativo que abrió con `FILE_SHARE_READ | FILE_SHARE_WRITE` antes de la mutación conservará su handle y podrá seguir escribiendo. La garantía v1 es: (a) **detección** de que un writer existe al momento del probe; (b) **negación fail-closed** de la transición a `COMMITTED` mientras exista un writer o mapping escribible, vía rerun del probe inmediatamente antes de `ARCHIVING_BACKUP`; (c) post-detección, el rollback no restaura contenido, sólo ACLs, por lo que cualquier drift de contenido es responsabilidad del RV-2 (`TreeDigest`) que aborta la transición. **No se afirma exclusividad absoluta de writers preexistentes que no comparten delete y comparten write**; la matriz exacta figura en §4.1.
+   - **Limitación declarada:** NTFS no revoca los derechos concedidos en handles ya abiertos cuando se cambia la DACL. La clase de writer **no detectable** por el probe es únicamente la que concedió **todas** las clases que el probe solicita, es decir `dwShareMode` con `FILE_SHARE_WRITE | FILE_SHARE_DELETE` además de `FILE_SHARE_READ` (full-share, filas 4 y 6 de la HANDLE SHARE MATRIX §4.1.1). Un writer con `FILE_SHARE_READ | FILE_SHARE_WRITE` **sí es detectado** porque el probe también solicita `DELETE` y el writer no concedió `FILE_SHARE_DELETE` (fila 3 de la matriz). La garantía v1 es: (a) **detección** de writers que no concedieron `FILE_SHARE_WRITE` o `FILE_SHARE_DELETE`; (b) **negación fail-closed** de la transición a `COMMITTED` mientras exista un writer o mapping escribible, vía rerun del probe inmediatamente antes de `ARCHIVING_BACKUP`; (c) post-detección, el rollback no restaura contenido, sólo ACLs, por lo que cualquier drift de contenido es responsabilidad del RV-2 (`TreeDigest`) que aborta la transición. **No se afirma exclusividad absoluta para writers full-share (`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`)**; la matriz exacta figura en §4.1.
    - **Detección de TOCTOU/rename/delete:** el binding por `(VolumeSerialNumber, FileId)` revalidado en cada paso del handle de mutación, más `FILE_FLAG_OPEN_REPARSE_POINT` y verificación de `reparse_tag == 0`, neutraliza ventanas de renombre o reemplazo de archivo entre probe y `SetSecurityInfo`.
 4. **Parent Policy Normativa — Refuse to Apply:** GP2 v1 **NO modifica el directorio parent** contenedor del Golden. Si la inspección previa detecta que el parent inmediato presenta vectores de borrado/renombrado del root (`FILE_DELETE_CHILD`, cadena delete+create, `WRITE_DAC` o `WRITE_OWNER` escalable), GP2 se rehúsa terminantemente a aplicar (`PARENT_UNSAFE -> REFUSE_TO_APPLY`). Prohibido warning + continue; prohibido override HITL en v1.
 5. **Política de Hardlinks Internos — Refuse to Apply:** Si el inventario detecta dos o más rutas relativas dentro del subárbol que comparten la misma identidad física `(VolumeSerialNumber, FileId)`, GP2 v1 se rehúsa a aplicar (`REFUSE_TO_APPLY` con `DuplicateFileIdError`) antes de la primera mutación física, evitando generar registros de respaldo PRE conflictivos para un único objeto de seguridad mutable.
@@ -99,7 +100,7 @@ GP2 se construye sobre las garantías formales establecidas en ADR 0009 y verifi
    - Ausencia de privilegios mutation-enabling (`SeRestorePrivilege`, `SeTakeOwnershipPrivilege`).
 3. **Fail-Closed Ante Reparse Points:** Cualquier enlace simbólico, junction o reparse point detectado mediante la primitiva canónica `sky_claw.app.security.links` invalida la operación inmediatamente (`UNKNOWN` en GP1, `REFUSE_TO_APPLY` en GP2).
 4. **Ortogonalidad entre Integridad y Protección:** `TreeDigest` identifica contenido (`(digest, files, bytes)`); la protección describe accesibilidad (`GoldenProtectionResult`). Ninguno reemplaza al otro.
-5. **Contrato de Resultados del Repo:** `success: bool` es `True` únicamente cuando la operación concluye en el estado objetivo deseado; `message: str` permanece estrictamente vacío `""` en caso de éxito.
+5. **Contrato de `success` del Inspector GP1 vs gate GP2:** `GoldenProtectionResult.success` se define en `protection.py` como `state is not GoldenProtectionState.UNKNOWN`: representa una **clasificación concluyente**, y es `True` también para `UNSUPPORTED`, `UNPROTECTED` y `WRITE_PROTECTED`. **No significa** que el Golden haya alcanzado `HARDENED`. El gate de éxito GP2 exige por separado e incondicionalmente `result.state == HARDENED` (además de `result.success is True`, que por sí solo no es suficiente). El `success` del resultado transaccional `GP2Result` (operación concluida en el estado objetivo) es un contrato distinto del `success` del inspector GP1 y no debe confundirse con él. `message: str` permanece estrictamente vacío `""` en caso de éxito de cualquiera de los dos contratos.
 
 ---
 
@@ -144,36 +145,40 @@ PROBE_DESIRED_ACCESS =
 
 Tras la verificación, **el probe se cierra** y se abre un **handle de mutación** independiente con `READ_CONTROL | WRITE_DAC` y `dwShareMode = FILE_SHARE_READ` (sin `FILE_SHARE_WRITE`, sin `FILE_SHARE_DELETE`). El binding por `(VolumeSerialNumber, FileId)` revalidado en cada paso del handle de mutación neutraliza la ventana TOCTOU entre probe y `SetSecurityInfo`.
 
-### 4.1.1 Matriz de Colisión de Share-Modes (probe contra writers preexistentes)
+### 4.1.1 HANDLE SHARE MATRIX (probe contra handles preexistentes)
 
-El desenlace del probe se determina por la intersección entre los `dwDesiredAccess` que el probe solicita y los `dwShareMode` que el writer **otorgó** al abrir. Reglas de Win32 (`CreateFileW`):
-- Una clase de acceso (`FILE_READ_DATA`, `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_ATTRIBUTES`, `FILE_WRITE_EA`, `DELETE`) puede concederse a un nuevo open sólo si el writer que abrió antes la incluyó en su `dwShareMode`.
-- Si el writer abrió con `dwShareMode` que NO incluye una clase que el probe solicita -> `ERROR_SHARING_VIOLATION`.
-- Si el writer abrió con `dwShareMode` que sí incluye todas las clases que el probe solicita -> el open del probe tiene éxito.
+El desenlace del probe se determina por la intersección entre los `dwDesiredAccess` que el probe solicita y los `dwShareMode` que el handle preexistente **otorgó** al abrir. Reglas de Win32 (`CreateFileW`):
+- Una clase de acceso (`FILE_READ_DATA`, `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_ATTRIBUTES`, `FILE_WRITE_EA`, `DELETE`) puede concederse a un nuevo open sólo si el handle que abrió antes la incluyó en su `dwShareMode`.
+- Si el handle preexistente abrió con `dwShareMode` que NO incluye una clase que el probe solicita -> `ERROR_SHARING_VIOLATION`.
+- Si el handle preexistente abrió con `dwShareMode` que sí incluye todas las clases que el probe solicita -> el open del probe tiene éxito.
 
-El probe normativo (§4.1) solicita: `FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | DELETE` con `dwShareMode = 0`. El probe detecta un writer **si y sólo si** el writer NO concedió alguna de esas cinco clases. La tabla siguiente es **normativa y corregida** para reflejar la semántica real de Win32:
+El probe normativo (§4.1) solicita: `FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | DELETE` con `dwShareMode = 0`. El probe detecta un handle **si y sólo si** ese handle NO concedió alguna de esas cinco clases. La tabla siguiente es **normativa**: seis filas handle-level, cada una con un desenlace contractual único. **Es imposible que una misma fila tenga simultáneamente `ERROR_SHARING_VIOLATION` y "open exitoso".** El caso de mappings escribibles NO es una fila de esta matriz: se trata por separado en §4.1.2 (`WRITABLE MAPPING CASE`).
 
-| Writer `dwDesiredAccess` | Writer `dwShareMode` | ¿Writer concede todas las clases del probe? | Desenlace del probe | Estado GP2 |
-|---|---|---|---|---|
-| `GENERIC_WRITE` (incluye `FILE_WRITE_DATA`) | `0` (exclusivo) | NO (no concede nada) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
-| `GENERIC_WRITE` | `FILE_SHARE_READ` | NO (no concede write/append/ea/attr/delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
-| `GENERIC_WRITE` | `FILE_SHARE_READ \| FILE_SHARE_WRITE` | NO (no concede delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
-| `GENERIC_WRITE` | `FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE` | SÍ (todas las clases del probe concedidas) | **open exitoso** | sigue a `SetSecurityInfo`; el writer conserva su handle (limitación declarada abajo) |
-| `GENERIC_READ` (sólo lectura, sin `FILE_WRITE_DATA`) | `FILE_SHARE_READ` | NO (no concede write/append/ea/attr/delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
-| `GENERIC_READ` (sólo lectura, sin `FILE_WRITE_DATA`) | `FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE` | SÍ (concede todas las clases del probe, aunque su `dwDesiredAccess` sea read-only) | **open exitoso** | sigue a `SetSecurityInfo`; el reader conserva su handle (limitación declarada abajo) |
-| Mapping `CreateFileMapping(PAGE_READWRITE)` abierto con `FILE_SHARE_READ \| FILE_SHARE_WRITE` | (de la mapping) | El mapping es una referencia al archivo; el probe abre con `FILE_WRITE_DATA`. Si el mapping no concedió `FILE_SHARE_WRITE` -> `ERROR_SHARING_VIOLATION` | depende del share del mapping | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` cuando el probe falla |
+| ID | Handle preexistente `dwDesiredAccess` | Handle preexistente `dwShareMode` | ¿Concede todas las clases del probe? | Desenlace del probe | Estado GP2 |
+|---|---|---|---|---|---|
+| H1 | `GENERIC_WRITE` (incluye `FILE_WRITE_DATA`) | `0` (exclusivo) | NO (no concede nada) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
+| H2 | `GENERIC_WRITE` | `FILE_SHARE_READ` | NO (no concede write/append/ea/attr/delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
+| H3 | `GENERIC_WRITE` | `FILE_SHARE_READ \| FILE_SHARE_WRITE` | NO (no concede delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
+| H4 | `GENERIC_WRITE` | `FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE` | SÍ (todas las clases del probe concedidas) | **open exitoso** | sigue a `SetSecurityInfo`; el writer conserva su handle (limitación declarada abajo) |
+| H5 | `GENERIC_READ` (sólo lectura, sin `FILE_WRITE_DATA`) | `FILE_SHARE_READ` | NO (no concede write/append/ea/attr/delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
+| H6 | `GENERIC_READ` (sólo lectura, sin `FILE_WRITE_DATA`) | `FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE` | SÍ (concede todas las clases del probe, aunque su `dwDesiredAccess` sea read-only) | **open exitoso** | sigue a `SetSecurityInfo`; el reader conserva su handle (limitación declarada abajo) |
 
-**Limitación declarada (crítica, no inventada):** NTFS no revoca los derechos concedidos a un handle ya abierto cuando se cambia la DACL; un writer que abrió con `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` antes de la mutación **no es detectado por el probe** (el probe tiene éxito porque el writer concedió todas las clases solicitadas) y conservará su handle con `GENERIC_WRITE`. La garantía v1 es, por tanto, más débil de lo que el texto previo sugería: GP2 **no afirma detección universal de writers**. Lo que GP2 v1 sí garantiza:
-1. **Detección** de writers que no concedieron `FILE_SHARE_WRITE` o `FILE_SHARE_DELETE` (las tres primeras filas de la tabla, más mappings sin `FILE_SHARE_WRITE`).
+**Limitación declarada (crítica, no inventada):** NTFS no revoca los derechos concedidos a un handle ya abierto cuando se cambia la DACL; un writer que abrió con `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` antes de la mutación **no es detectado por el probe** (filas H4/H6: el probe tiene éxito porque el handle concedió todas las clases solicitadas) y conservará su handle con `GENERIC_WRITE`. La garantía v1 es, por tanto, más débil de lo que el texto previo sugería: GP2 **no afirma detección universal de writers**. Lo que GP2 v1 sí garantiza:
+1. **Detección** de writers que no concedieron `FILE_SHARE_WRITE` o `FILE_SHARE_DELETE` (filas H1, H2, H3 y H5).
 2. **Negación fail-closed** de la transición a `COMMITTED` cuando el probe detecta writer en el rerun pre-`ARCHIVING_BACKUP`.
 3. **Detección de drift de contenido** vía RV-2 (`TreeDigest`) cuando un writer no detectado escribió.
-4. **Cero afirmación de exclusividad absoluta** post-`COMMITTED` para writers con todos los share modes concedidos. La garantía completa post-`COMMITTED` requiere un módulo de enforcement distinto (no GP2 v1).
+4. **Cero afirmación de exclusividad absoluta** post-`COMMITTED` para handles con todos los share modes concedidos (H4/H6). La garantía completa post-`COMMITTED` requiere un módulo de enforcement distinto (no GP2 v1).
 
-`GP2-T23` se reespecifica: el oráculo paramétrico enumera explícitamente las **cinco filas** de la tabla con su desenlace contractual (cuatro filas de `ERROR_SHARING_VIOLATION` + una fila de "open exitoso" con la limitación declarada y la consecuencia documentada). No se admite parametrización parcial: el test cubre las cinco filas literalmente.
+`GP2-T23` se reespecifica: el oráculo enumera **literalmente las seis filas H1–H6** de la HANDLE SHARE MATRIX con su desenlace contractual por fila (cuatro filas de `ERROR_SHARING_VIOLATION` + dos filas de "open exitoso" con la limitación declarada y la consecuencia documentada). No se admite parametrización parcial ni omisión de filas.
 
-### 4.1.2 Mapping escribible (`CreateFileMapping` con `PAGE_READWRITE`)
+### 4.1.2 WRITABLE MAPPING CASE (`CreateFileMapping` con `PAGE_READWRITE`)
 
-La creación de un file mapping con `PAGE_READWRITE` mantiene una referencia de datos compartidos en el filesystem que participa en el sharing exactamente igual que un handle abierto. La semántica de colisión es la misma que para un writer de la §4.1.1: si el mapping fue creado sobre un handle que abrió con `dwShareMode` que **no** incluye `FILE_SHARE_WRITE` (y por tanto el mapping no tiene concedida la write-share), el probe del helper falla con `ERROR_SHARING_VIOLATION`. Si el mapping está sobre un handle con `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` (todas las write-shares concedidas), el probe **no** lo detecta (limitación declarada: análoga a la fila 4 de la tabla §4.1.1). `GP2-T24` cubre el caso fail-closed con un fixture que abre `CreateFileMapping(..., PAGE_READWRITE)` con `dwShareMode` que no concede `FILE_SHARE_WRITE` y verifica que el probe falla y que la verificación posterior aborta antes de `COMMITTED`. La fila con share completo se cubre por la misma cláusula de limitación y por RV-2 post-verificación de drift de contenido.
+Este caso es **independiente de la HANDLE SHARE MATRIX** de §4.1.1 y se trata aparte porque un file mapping es una referencia al archivo con semántica de sharing propia (derivada del `dwShareMode` del handle sobre el que se creó el mapping, no de un `dwDesiredAccess` propio):
+
+- Si el mapping fue creado sobre un handle con `dwShareMode` que **no** incluye `FILE_SHARE_WRITE` -> el probe del helper (que solicita `FILE_WRITE_DATA`) falla con `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED`.
+- Si el mapping está sobre un handle con `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` (todas las write-shares concedidas) -> el probe **no** lo detecta (limitación declarada: análoga a las filas H4/H6 de §4.1.1).
+
+`GP2-T24` cubre el caso fail-closed con un fixture que abre `CreateFileMapping(..., PAGE_READWRITE)` sobre un handle cuyo `dwShareMode` no concede `FILE_SHARE_WRITE` y verifica que el probe falla y que la verificación posterior aborta antes de `COMMITTED`. La variante full-share se cubre por la misma cláusula de limitación y por RV-2 post-verificación de drift de contenido.
 
 ---
 
@@ -291,7 +296,8 @@ En el modelo de seguridad de Windows ([MS-ADTS] §6.1.3.4, [MS-DTYP] §2.4.6):
 
 ### 8.3 Excepciones y Restricciones
 - Si durante la preparación del plan se detecta un nodo cuyo `owner_sid` es corrupto, no resoluble a SID string o no presente en el SD, la fase de planificación falla con `PlanCreationError` (desenlace `REFUSE_TO_APPLY`).
-- GP2 v1 no intenta transferir la propiedad a `TrustedInstaller` ni a `SYSTEM`, eliminando la necesidad de adquirir o retener `SeTakeOwnershipPrivilege` o `SeRestorePrivilege` durante la operación normal de protección.
+- GP2 v1 no intenta transferir la propiedad a `TrustedInstaller` ni a `SYSTEM`: **`SeTakeOwnershipPrivilege` nunca se adquiere ni se habilita en v1**.
+- **`SeRestorePrivilege` sí puede ser necesario** para atravesar DACLs restrictivas preexistentes (apertura del probe y del handle de mutación sobre un Golden cuyo DACL deniega los derechos solicitados), conforme a la política única de §18. La afirmación "la operación normal no requiere privilegios" queda acotada a: la operación **no requiere** `SeTakeOwnershipPrivilege` ni `SeSecurityPrivilege`; puede requerir `SeRestorePrivilege` sólo en el caso documentado de DACL preexistente restrictiva (ver §18.2).
 
 ---
 
@@ -399,7 +405,8 @@ Se definen las zonas bajo `%ProgramData%\Sky-Claw\runtime_vault`:
 
 | Namespace / Directorio | Propietario / Creador | DACL para `Administrators` y `SYSTEM` | DACL para `Authenticated Users` (`S-1-5-11`) | Propósito |
 |---|---|---|---|---|
-| `staging/<op_id>/` (`UNTRUSTED_STAGING`) | Coordinador (usuario interactivo) | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_EXECUTE` (con `CREATOR OWNER` pleno sobre sus carpetas) | Almacenamiento temporal del candidate manifest generado por el proceso no elevado. |
+| `staging/` (padre, sin `<op_id>`) | Componente privilegiado (instalador) | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_LIST_DIRECTORY \| FILE_TRAVERSE \| FILE_ADD_SUBDIRECTORY` — **crear su propia operación `<op_id>` SÍ; NO concede `FILE_ADD_FILE` sobre staging/ mismo, NO concede `FILE_WRITE_DATA` sobre staging/ mismo, y NO concede ningún derecho sobre `operations/`, `locks/`, `golden_backups/` ni `trusted_goldens.json`** | Contenedor de operaciones de staging. Un usuario no elevado puede crear `staging\<op_id>\` (y limpiarlo tras la operación, ver nota de teardown) pero no puede crear archivos sueltos en el padre ni alcanzar ningún store autoritativo a través de esta DACL. |
+| `staging/<op_id>/` (`UNTRUSTED_STAGING`) | Coordinador (usuario interactivo) | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ \| FILE_GENERIC_WRITE \| FILE_EXECUTE` (con `CREATOR OWNER` pleno sobre sus carpetas) | Almacenamiento temporal del candidate manifest generado por el proceso no elevado. El coordinador es `CREATOR OWNER` de su `<op_id>` y puede escribir/borrar dentro de su propia operación. **Nota de teardown:** la limpieza de `staging\<op_id>\` requiere `FILE_DELETE_CHILD` sobre el padre `staging/`; el diseño concede esa capacidad vía `CREATOR OWNER` heredable (sólo sobre los hijos del propio creador) y documenta el riesgo residual aceptado: un usuario no elevado podría borrar el staging de otro usuario. Esto **no** afecta a `operations/`, `locks/`, `golden_backups/` ni `trusted_goldens.json`, cuyos directorios padre deniegan `FILE_DELETE_CHILD` a Authenticated Users. |
 | `operations/<op_id>/` (`AUTHORIZED_OPERATIONS`) | Helper Elevado | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ` (`0x001200A9`) — **SIN DERECHO DE ESCRITURA NI BORRADO** | Almacén autoritativo del plan sellado `authorized_plan.json` y el journal de ejecución FSM. |
 | `golden_backups/<vol_root>/` (`AUTHORIZED_BACKUPS`) | Helper Elevado | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ` (`0x001200A9`) — **SIN DERECHO DE ESCRITURA NI BORRADO** | Respaldo durable de seguridad PRE para rollback forense y futura capability GP3. |
 | `locks/` (`LOCKS_STORE`) | Helper Elevado | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ` (`0x001200A9`) — **SIN DERECHO DE ESCRITURA, CREACIÓN, BORRADO, WRITE_DAC NI WRITE_OWNER** | Contenedor protegido para archivos de lock del kernel (GoldenMutationLock). |
@@ -442,6 +449,11 @@ Fase de Autorización en el Helper (Elevado):
 
 Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
     1. Probe Handle de Quiescencia (transitorio):
+       // Política de privilegios (única, ver §18.2): primer intento SIN privilegios (least privilege).
+       // Si el DACL preexistente deniega las clases solicitadas -> ERROR_ACCESS_DENIED -> se habilita
+       // SOLO SeRestorePrivilege (el necesario para aperturas write/delete con FILE_FLAG_BACKUP_SEMANTICS;
+       // SeBackupPrivilege NO se habilita: el probe no solicita READ_DATA) -> retry UNA vez -> si persiste
+       // ACCESS_DENIED -> bifurcar por nodos mutados (0 -> REFUSE_TO_APPLY; >0 -> ROLLBACK_REQUIRED).
        h_probe = CreateFileW(
            node_path,
            PROBE_DESIRED_ACCESS,           // normativo en §4.1
@@ -459,11 +471,16 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
            Si err == ERROR_ACCESS_DENIED:
                // El DACL del nodo niega las clases solicitadas por el probe a Administrators/helper.
                // Esto NO es quiescencia: indica que el helper no tiene los derechos para
-               // ni siquiera detectar writers. Política: habilitar SeBackupPrivilege y SeRestorePrivilege
-               // y reintentar una vez; si persiste ACCESS_DENIED -> ROLLBACK_REQUIRED (el contrato
-               // de "WRITE_PROTECTED -> HARDENED" exige que el helper pueda atravesar el DACL; si no
-               // puede, el plan debe fallar cerrado, no continuar con garantía degradada).
-           Cualquier otro err -> FAIL_CLOSED -> REFUSE_TO_APPLY / ROLLBACK_REQUIRED según corresponda.
+               // ni siquiera detectar writers. Aplicar §18.2: habilitar SeRestorePrivilege y
+               // reintentar una vez (SeBackupPrivilege NO aplica: el probe no pide READ_DATA).
+               Habilitar SeRestorePrivilege (validar ERROR_NOT_ALL_ASSIGNED);
+               h_probe = CreateFileW(node_path, PROBE_DESIRED_ACCESS, 0, NULL, OPEN_EXISTING,
+                                     FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+               Deshabilitar SeRestorePrivilege en finally (restaurar PreviousState);
+               Si h_probe == INVALID_HANDLE_VALUE:
+                   Si 0 nodos mutados -> FAIL_CLOSED -> REFUSE_TO_APPLY (ProbeAccessDeniedError)
+                   Si >0 nodos mutados -> FAIL_CLOSED -> Iniciar secuencia de ROLLBACK (ROLLBACK_REQUIRED).
+           Cualquier otro err -> FAIL_CLOSED -> Si 0 nodos mutados: REFUSE_TO_APPLY; Si >0 nodos mutados: ROLLBACK_REQUIRED.
        CloseHandle(h_probe).
 
     2. Apertura del Handle de Mutación (binding por handle) y Validación de Identidad:
@@ -476,8 +493,11 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
            NULL
        )
-       Si h == INVALID_HANDLE_VALUE y GetLastError() == ERROR_ACCESS_DENIED:
-           Habilitar SeRestorePrivilege en el scope del bloque (justo antes de esta apertura, no después), reintentar una vez; si persiste ACCESS_DENIED -> ROLLBACK_REQUIRED (no se asume que WRITE_DAC está concedido por la DACL existente).
+        Si h == INVALID_HANDLE_VALUE y GetLastError() == ERROR_ACCESS_DENIED:
+            Habilitar SeRestorePrivilege en el scope del bloque (justo antes de esta apertura, no después), reintentar una vez; si persiste ACCESS_DENIED:
+                Si 0 nodos mutados -> FAIL_CLOSED -> REFUSE_TO_APPLY (ProbeAccessDeniedError)
+                Si >0 nodos mutados -> FAIL_CLOSED -> Iniciar secuencia de ROLLBACK (ROLLBACK_REQUIRED).
+            (No se asume que WRITE_DAC está concedido por la DACL existente; no se usa SeTakeOwnershipPrivilege en v1.)
        info = GetFileInformationByHandleEx(h, FileIdInfo)
        tag  = GetFileInformationByHandleEx(h, FileAttributeTagInfo).ReparseTag
        Si info.VolumeSerialNumber != expected.vol_serial o info.FileId != expected.file_id o tag != 0:
@@ -522,10 +542,40 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
 
 Rerun del probe antes de ARCHIVING_BACKUP: una vez aplicadas todas las mutaciones y antes de transicionar a ARCHIVING_BACKUP, el helper reejecuta el Paso 1 sobre cada nodo. Si el probe falla para cualquier nodo -> transición a ROLLBACK_REQUIRED (no se archiva ni se promueve a COMMITTED). Esto cubre el caso de un writer que abrió durante la fase de mutación.
 
-Rollback por nodo (Top-Down, ver §17): el helper usa el `pre_sd_bytes_b64` validado en el paso 3 (no vuelve a leer del filesystem) y aplica `SetSecurityInfo` con el flag:
-   - Si pre_sd_protected_flag == SE_DACL_PROTECTED: DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
-   - Si no: DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION
-   restaurando exactamente OWNER, GROUP, DACL y flag de herencia PRE. El binding por (VolumeSerialNumber, FileId) se revalida en cada nodo antes de la restauración; si difiere -> INDETERMINATE.
+Rollback por nodo (Top-Down, ver §17): el helper usa el `pre_sd_bytes_b64` validado en el paso 3 (no vuelve a leer del filesystem) y reconstruye los componentes del `SECURITY_DESCRIPTOR` self-relative antes de invocar `SetSecurityInfo` (que **no** acepta un buffer SD completo, sino punteros separados a owner/group/dacl):
+
+```text
+decoded_sd = Base64Decode(pre_sd_bytes_b64)
+// validar: sha256(decoded_sd) == pre_sd_sha256 y GetSecurityDescriptorLength(decoded_sd) == pre_sd_length
+GetSecurityDescriptorOwner(decoded_sd, &pre_owner, NULL)
+GetSecurityDescriptorGroup(decoded_sd, &pre_group, NULL)
+GetSecurityDescriptorDacl(decoded_sd, &dacl_present, &pre_dacl, &dacl_defaulted)
+GetSecurityDescriptorControl(decoded_sd, &control_bits, NULL)
+pre_dacl_protected = (control_bits & SE_DACL_PROTECTED) != 0
+
+err = SetSecurityInfo(
+    handle,
+    SE_FILE_OBJECT,
+    OWNER_SECURITY_INFORMATION
+      | GROUP_SECURITY_INFORMATION
+      | DACL_SECURITY_INFORMATION
+      | protection_flag,                 // PROTECTED_DACL_ o UNPROTECTED_DACL_ según pre_dacl_protected
+    pre_owner,
+    pre_group,
+    pre_dacl,
+    NULL                                 // SACL: NO se toca (SACL_SECURITY_INFORMATION nunca se pasa)
+)
+```
+
+donde:
+
+```text
+protection_flag =
+    PROTECTED_DACL_SECURITY_INFORMATION   si pre_dacl_protected == True (el PRE estaba protegido)
+    UNPROTECTED_DACL_SECURITY_INFORMATION si pre_dacl_protected == False (el PRE heredaba)
+```
+
+Tras la restauración, el helper **re-lee** con `GetSecurityInfo(handle, OWNER | GROUP | DACL_SECURITY_INFORMATION)` y verifica exactamente: `owner == pre_owner`, `group == pre_group`, `dacl == pre_dacl` (comparación semántica de ACEs y orden canónico), y el bit `SE_DACL_PROTECTED` del descriptor resultante es exactamente `pre_dacl_protected`. Si cualquiera difiere -> `RollbackFailureError` -> `ROLLBACK_FAILED` / `INDETERMINATE`. El binding por `(VolumeSerialNumber, FileId)` se revalida en cada nodo antes de la restauración; si difiere -> `INDETERMINATE`.
 ```
 
 ---
@@ -600,7 +650,7 @@ ROLLBACK_ORDER = TOP_DOWN_PRE_ORDER
 
 ### 17.3 Restauración Exacta del Flag de Herencia PRE (normativa)
 
-El flag `SE_DACL_PROTECTED` del descriptor PRE de cada nodo se captura durante la fase de mutación y se persiste en el journal asociado a `MUTATING(K)` (ver §12.2 paso 4). El rollback selecciona el flag de `SetSecurityInfo` que se pasa a Windows según ese valor capturado:
+El flag `SE_DACL_PROTECTED` del descriptor PRE de cada nodo se captura durante la fase de mutación y se persiste en el journal asociado a `MUTATING(K)` (ver §12.2 paso 4). El rollback selecciona el flag de `SetSecurityInfo` que se pasa a Windows según ese valor capturado **dentro del bloque normativo completo de §12.2 (rollback)**, que reconstruye `pre_owner`, `pre_group` y `pre_dacl` desde `pre_sd_bytes_b64` y los pasa como parámetros separados:
 
 ```text
 if captured_pre_dacl_protected_flag & SE_DACL_PROTECTED:
@@ -609,7 +659,7 @@ else:
     SetSecurityInfo flags include UNPROTECTED_DACL_SECURITY_INFORMATION
 ```
 
-Pasar siempre `PROTECTED_DACL_SECURITY_INFORMATION` en el rollback dejaría `SE_DACL_PROTECTED` activado en nodos que originalmente heredaban de su parent, alterando la semántica de propagación DACL posterior y violando la promesa de "restauración exacta" del §2.6. Pasar siempre `UNPROTECTED_DACL_SECURITY_INFORMATION` produciría el mismo defecto en sentido inverso. La decisión es por nodo, leída del journal, y es la única vía válida en v1.
+Pasar siempre `PROTECTED_DACL_SECURITY_INFORMATION` en el rollback dejaría `SE_DACL_PROTECTED` activado en nodos que originalmente heredaban de su parent, alterando la semántica de propagación DACL posterior y violando la promesa de "restauración exacta" del §2.6. Pasar siempre `UNPROTECTED_DACL_SECURITY_INFORMATION` produciría el mismo defecto en sentido inverso. La decisión es por nodo, leída del journal, y es la única vía válida en v1. **El flag DACL no es suficiente para restaurar OWNER/GROUP**: la llamada completa (OWNER | GROUP | DACL | protection_flag con `pre_owner`/`pre_group`/`pre_dacl` extraídos del SD) es normativa y está definida en §12.2.
 
 `GP2-T12` extiende su oráculo para incluir un caso explícito: nodo con DACL PRE heredada (no protegida) -> APPLY -> fallo simulado -> rollback -> `SE_DACL_PROTECTED` del nodo es exactamente el del PRE (False). El mutante `M-R1` cubre la omisión de `UNPROTECTED_DACL_SECURITY_INFORMATION`.
 
@@ -620,18 +670,38 @@ Pasar siempre `PROTECTED_DACL_SECURITY_INFORMATION` en el rollback dejaría `SE_
 El helper privilegiado gestiona sus privilegios de token con máxima restricción temporal:
 
 ```text
-TAKE_OWNERSHIP_REQUIRED_WHEN = NEVER_IN_V1 (Preserve Owner by default)
-SE_RESTORE_REQUIRED_WHEN = ONLY_IF_WRITE_DAC_DENIED_BY_EXISTING_RESTRICTIVE_DACL
+TAKE_OWNERSHIP_REQUIRED_WHEN = NEVER_IN_V1 (Preserve Owner by default; SeTakeOwnershipPrivilege nunca se habilita)
+SE_RESTORE_REQUIRED_WHEN = ONLY_IF_ACCESS_DENIED_BY_EXISTING_RESTRICTIVE_DACL (probe y handle de mutación)
+SE_BACKUP_REQUIRED_WHEN  = NEVER (ninguna apertura del helper solicita READ_DATA con backup semantics)
 SE_SECURITY_REQUIRED = NO (SACL no modificada)
 PRIVILEGE_ENABLE_SCOPE = EXACT_WIN32_CALL_BOUNDARY
 PRIVILEGE_RESTORE_POLICY = ALWAYS_RESTORE_PREVIOUS_STATE_IN_FINALLY
 ```
 
 ### 18.1 Manejo de `AdjustTokenPrivileges`
-- Toda activación de privilegios (ej. `SeRestorePrivilege`) se habilita **antes de la apertura del handle de mutación** del nodo y se deshabilita inmediatamente después en un bloque de guarda `finally`. El motivo es normativo: si la DACL preexistente deniega `WRITE_DAC` a `Administrators` y el helper corre bajo una cuenta OTS secundaria que no es owner del objeto, la apertura con `READ_CONTROL | WRITE_DAC` falla con `ACCESS_DENIED` antes de llegar a `SetSecurityInfo`; habilitar `SeRestorePrivilege` después de esa apertura es tarde. El scope del privilegio cubre, por tanto, **toda la secuencia por nodo**: apertura del handle, lectura de SD PRE, `SetSecurityInfo` y re-lectura de SD POST.
+- Toda activación de privilegios (`SeRestorePrivilege`) se habilita **justo antes** de la llamada Win32 que lo requiere (apertura del probe o del handle de mutación) y se deshabilita inmediatamente después en un bloque de guarda `finally`, restaurando `TOKEN_PRIVILEGES.PreviousState`.
 - La función de habilitación valida explícitamente `GetLastError() != ERROR_NOT_ALL_ASSIGNED`. Si el privilegio no fue asignado, la operación falla cerrado.
-- Se preserva y restaura la estructura `TOKEN_PRIVILEGES.PreviousState`.
-- Si tras habilitar `SeRestorePrivilege` la apertura sigue devolviendo `ACCESS_DENIED`, se transiciona a `ROLLBACK_REQUIRED` sin intentar `SeTakeOwnershipPrivilege` (no se transfiere ownership en v1; el contrato es fail-closed).
+- Si tras habilitar `SeRestorePrivilege` la apertura sigue devolviendo `ACCESS_DENIED`, se bifurca por nodos mutados (`0 -> REFUSE_TO_APPLY`; `>0 -> ROLLBACK_REQUIRED`) sin intentar `SeTakeOwnershipPrivilege` (no se transfiere ownership en v1; el contrato es fail-closed).
+
+### 18.2 Estrategia Normativa Única de Privilegios (least privilege con retry documentado)
+
+La **única** política de privilegios del helper para las aperturas de nodo es:
+
+```text
+1. Intentar CreateFileW SIN privilegios habilitados (least privilege).
+2. Si el resultado es ERROR_ACCESS_DENIED:
+   a. Habilitar SeRestorePrivilege (validando ERROR_NOT_ALL_ASSIGNED; si no está asignado -> fail-closed).
+   b. Reintentar la MISMA CreateFileW una única vez.
+   c. Deshabilitar SeRestorePrivilege en finally (restaurar PreviousState).
+3. Si el retry persiste en ERROR_ACCESS_DENIED:
+   - mutated_nodes == 0 -> REFUSE_TO_APPLY (ProbeAccessDeniedError)
+   - mutated_nodes > 0  -> ROLLBACK_REQUIRED
+4. Cualquier otro GetLastError() tras el retry -> misma bifurcación 0/>0.
+```
+
+Justificación técnica (documentación primaria Microsoft, `CreateFileW` / File Security and Access Rights): con `FILE_FLAG_BACKUP_SEMANTICS`, el sistema omite las comprobaciones de la DACL para las clases solicitadas **sólo si el token tiene habilitado `SeRestorePrivilege`** (semántica write/delete: `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_ATTRIBUTES`, `FILE_WRITE_EA`, `DELETE`, y también `WRITE_DAC`/`WRITE_OWNER`). `SeBackupPrivilege` cubre exclusivamente la semántica de **lectura** (`FILE_READ_DATA`), que el probe y el handle de mutación **no solicitan**; por tanto **no se habilita nunca** (least privilege). `FILE_FLAG_OPEN_REPARSE_POINT` y la verificación posterior de `ReparseTag == 0` se mantienen en ambos handles.
+
+El handle de mutación (paso 2 del §12.2), además del retry de apertura, mantiene `SeRestorePrivilege` habilitado durante toda la secuencia por nodo (apertura, lectura de SD PRE, `SetSecurityInfo`, re-lectura de SD POST) cuando la DACL preexistente así lo exige; el probe (paso 1) usa únicamente el retry puntual y cierra el handle antes de restaurar el estado del token.
 
 ---
 
@@ -718,8 +788,8 @@ Matriz exhaustiva de recuperación ante caídas del sistema o interrupciones de 
 Inmediatamente después de que el helper completa la aplicación de cambios:
 1. El helper orquesta la ejecución de `inspect_golden_protection(golden_path)` bajo el token no elevado del operador.
 2. Se exige de forma estricta:
-   - `result.success is True`
-   - `result.state is GoldenProtectionState.HARDENED`
+   - `result.success is True` — condición **necesaria pero no suficiente**: `GoldenProtectionResult.success == (state != UNKNOWN)` (ver §4.5), por lo que no aporta por sí sola la garantía de endurecimiento.
+   - `result.state is GoldenProtectionState.HARDENED` — **gate independiente y decisivo**. El estado `HARDENED` es el único admisible; `UNSUPPORTED`, `UNPROTECTED`, `WRITE_PROTECTED` y `UNKNOWN` tienen `success == True` salvo `UNKNOWN`, y ninguno constituye éxito GP2.
    - `result.evidence.pre_post_structural_match is True`
    - `result.assurance_scope == "CURRENT_EFFECTIVE_UNELEVATED_TOKEN"`
 3. Si el resultado es `WRITE_PROTECTED`, `UNPROTECTED`, `UNKNOWN` o `UNSUPPORTED`, el helper transiciona el journal a `ROLLBACK_REQUIRED`.
@@ -769,6 +839,7 @@ El respaldo no se guarda con una clave basada únicamente en el digest de conten
 | `InventoryLinkError` / `PlanCreationError` | Error al leer SDs originales, reparse point detectado, o drift PRE/POST | `REFUSE_TO_APPLY` (sin mutación, sin UAC) |
 | `DuplicateFileIdError` | Múltiples rutas en el subárbol comparten el mismo `FileId` (hardlink interno) | `REFUSE_TO_APPLY` (sin mutación, sin UAC) |
 | `QuiescenceViolationError` | Handle de escritura o mapping preexistente en un nodo (`ERROR_SHARING_VIOLATION`) | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
+| `ProbeAccessDeniedError` | El DACL preexistente deniega las clases del probe o del handle de mutación incluso tras el retry con `SeRestorePrivilege` (`ERROR_ACCESS_DENIED` persistente) | `0 nodos mutados -> REFUSE_TO_APPLY`; `>0 nodos mutados -> ROLLBACK_REQUIRED` (bifurcación determinista por conteo de nodos; ver §12.2 pasos 1-2 y §18.2) |
 | `GoldenLockError` | No se pudo adquirir el `GoldenMutationLock` por conflicto concurrente activo | `REFUSE_TO_APPLY` / Aborto |
 | `ElevationRejectedError` | Usuario canceló o denegó el prompt de UAC | `ELEVATION_REJECTED` (sin mutación) |
 | `HelperExecutionError` | Helper falló durante la mutación de nodos | Transición a `ROLLBACK_REQUIRED` |
@@ -814,10 +885,17 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - **GP2-T17:** AST Anchor: El módulo no utiliza strings de cuentas localizadas ("Todos", "Administradores"), solo SIDs.
 - **GP2-T18:** Presencia de hardlinks internos (mismo `(VolumeSerialNumber, FileId)` en 2 rutas) aborta con `DuplicateFileIdError` y estado `REFUSE_TO_APPLY`.
 - **GP2-T19:** Omisión de un nodo pre-endurecido en el manifiesto es detectada por la verificación de igualdad `MANIFEST_NODE_SET == FRESH_POST_CANONICAL_NODE_SET` y aborta la transacción.
-- **GP2-T20:** `GoldenMutationLock` serializa dos llamadas concurrentes sobre el mismo Golden rechazando la segunda con `GoldenLockError`. Aserta además que el contrato de apertura del lock usa `dwDesiredAccess = GENERIC_READ | GENERIC_WRITE` y `dwShareMode = 0`.
+- **GP2-T20:** `GoldenMutationLock` serializa dos llamadas concurrentes sobre el mismo Golden rechazando la segunda con `GoldenLockError`. Aserta además que el contrato de apertura del lock usa `dwDesiredAccess = GENERIC_READ | GENERIC_WRITE`, `dwShareMode = 0` y `FILE_FLAG_OPEN_REPARSE_POINT`, y que tras abrir el lock se valida `ReparseTag == 0` y la pareja `(VolumeSerialNumber, FileId)` del lock file; si el lock fue sustituido por un junction, la segunda adquisición falla con `GoldenLockError`.
 - **GP2-T21:** La mutación se ejecuta sobre el mismo handle (`SetSecurityInfo(handle)`), fallando si el archivo se intenta reemplazar bajo el handle abierto.
 - **GP2-T22:** El store de operaciones y backup en `%ProgramData%` permite resolver el plan de forma transparente y autenticar el respaldo en escenarios de elevación Over-The-Shoulder (OTS).
-- **GP2-T23:** Oráculo paramétrico de la matriz de share-semantics del §4.1.1. Para cada `dwShareMode ∈ {0, FILE_SHARE_READ, FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE}`, abre un writer con `dwDesiredAccess = GENERIC_WRITE`; el probe del helper debe fallar con `ERROR_SHARING_VIOLATION` y el desenlace contractual de la fila correspondiente (cuatro filas de violación + una fila de `GENERIC_READ` puro sin share que también viola). Adicionalmente, el test cubre la fila con `dwShareMode = FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE` cuyo desenlace es "open exitoso": el test aserta que el open del probe tiene éxito **y** que el helper continúa con la verificación RV-2 post-mutación para detectar el writer sobreviviente. Sin parametrización: el test enumera literalmente las cinco filas. No se admite mock que sustituya `CreateFileW`; el probe debe ejercitar el camino real (con la dependencia real de `pywin32`/`ctypes`).
+- **GP2-T23:** Oráculo de la HANDLE SHARE MATRIX del §4.1.1. El test enumera **literalmente las seis filas H1–H6** con su desenlace contractual por fila (sin parametrización parcial y sin mocks que sustituyan `CreateFileW`):
+  - H1 (`GENERIC_WRITE`, `dwShareMode = 0`) -> `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_APPLY` (0 nodos mutados).
+  - H2 (`GENERIC_WRITE`, `FILE_SHARE_READ`) -> `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_APPLY`.
+  - H3 (`GENERIC_WRITE`, `FILE_SHARE_READ | FILE_SHARE_WRITE`) -> `ERROR_SHARING_VIOLATION` (colisión por `DELETE` no concedido) -> `REFUSE_TO_APPLY`.
+  - H4 (`GENERIC_WRITE`, `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`) -> **open exitoso**; el test aserta el open con éxito, la limitación documentada (el writer conserva su handle) y la detección del drift por RV-2 (`TreeDigest`) en la post-verificación.
+  - H5 (`GENERIC_READ` con share incompleto, `FILE_SHARE_READ`) -> `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_APPLY`.
+  - H6 (`GENERIC_READ` con share completo `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`) -> **open exitoso**; mismo tratamiento de limitación que H4.
+  El probe debe ejercitar el camino real (dependencia real de `pywin32`/`ctypes`); el desenlace esperado por fila es único y no admite ambigüedad entre `ERROR_SHARING_VIOLATION` y open exitoso.
 - **GP2-T24:** Mapping de memoria escribible preexistente (`CreateFileMapping` con `PAGE_READWRITE`) produce `ERROR_SHARING_VIOLATION` en el probe; rerun del probe antes de `ARCHIVING_BACKUP` detecta la persistencia y aborta antes de `COMMITTED`.
 - **GP2-T25:** Intento de escritura en `AUTHORIZED_OPERATIONS` o `golden_backups` por parte de un proceso no elevado es bloqueado por la DACL del kernel (`ACCESS_DENIED`). Cubre además `trusted_goldens.json` y `locks/`.
 - **GP2-T26 (ancla de binding pre_sd_bytes_b64):** test paramétrico que produce dos variantes del mismo plan —`(a)` plan correcto y `(b)` plan con `pre_sd_sha256` legítimo y `pre_sd_bytes_b64` adulterado— y verifica que el helper rechaza `(b)` con `PreSdBytesHashMismatchError` *antes* de la primera mutación, y acepta `(a)`. Complementa al mutante `M-B1`.
@@ -826,10 +904,12 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - **GP2-T29 (PPSC sin UAC):** el helper no crea `authorized_plan.json` si el operador cancela o rechaza la PPSC; el desenlace es `REFUSE_TO_PLAN` y la rama `staging` queda intacta.
 - **GP2-T30 (plan-specific confirmation parameters):** aserta que el diálogo PPSC muestra literalmente `operation_id`, `canonical_root`, `VolumeSerialNumber`, `root_file_id`, `TreeDigest`, `node_count`, `policy_version` y exige consentimiento explícito antes de crear `authorized_plan.json`.
 - **GP2-T31 (UAC != plan authorization):** un UAC aceptado sin PPSC posterior no produce `authorized_plan.json`; el desenlace es `REFUSE_TO_PLAN` con traza en el journal.
-- **GP2-T32 (privileged privilege scope):** DACL preexistente que deniega `WRITE_DAC` a Administrators + elevación OTS secundaria: el helper habilita `SeRestorePrivilege` antes de la apertura del handle de mutación; si la apertura sigue devolviendo `ACCESS_DENIED`, transición a `ROLLBACK_REQUIRED` (no se activa `SeTakeOwnershipPrivilege`).
+- **GP2-T32 (privileged privilege scope):** DACL preexistente que deniega `WRITE_DAC`/write-data a Administrators + elevación OTS secundaria: el helper aplica la estrategia §18.2 — primer intento del **probe** sin privilegios -> `ERROR_ACCESS_DENIED` -> habilita `SeRestorePrivilege` -> retry único -> éxito; y el mismo patrón para el handle de mutación. Si el retry persiste en `ACCESS_DENIED`, el desenlace es `REFUSE_TO_APPLY` con 0 nodos mutados (o `ROLLBACK_REQUIRED` con >0), nunca `SeTakeOwnershipPrivilege`. Aserta que `SeBackupPrivilege` nunca se habilita.
 - **GP2-T33 (verifier cannot write FSM):** el verificador no elevado intenta escribir en `AUTHORIZED_OPERATIONS` o transicionar a `COMMITTED`/`ARCHIVING_BACKUP` -> `ACCESS_DENIED` por DACL y desenlace `REFUSE_TO_PLAN`/`INDETERMINATE`.
-- **GP2-T34 (intermediate directory DACL):** un proceso no elevado intenta borrar `trusted_goldens.json` o `authorized_plan.json` a través del directorio padre (no por acceso directo al archivo) -> `ACCESS_DENIED` por la DACL del directorio intermedio. Complementa a `M-D1`.
+- **GP2-T34 (intermediate directory DACL):** un proceso no elevado intenta borrar `trusted_goldens.json` o `authorized_plan.json` a través del directorio padre (no por acceso directo al archivo) -> `ACCESS_DENIED` por la DACL del directorio intermedio. Complementa a `M-D1`. Cubre además la DACL de `staging/`: un usuario no elevado puede crear `staging\<op_id>\` y escribir en su propia operación, pero NO puede crear archivos sueltos en `staging/` ni obtener `FILE_DELETE_CHILD` sobre `operations/`, `locks/`, `golden_backups/` (ver §11.3).
 - **GP2-T35 (binding validated before lock acquired):** un plan con `pre_sd_bytes_b64` adulterado en un nodo intermedio (K>1) es rechazado con `REFUSE_TO_PLAN` y el `GoldenMutationLock` nunca es adquirido; cero nodos mutados en disco. Complementa a `M-B2`.
+- **GP2-T36 (probe ACCESS_DENIED bifurcation):** con DACL restrictiva que deniega write-data a Administrators, el probe falla `ERROR_ACCESS_DENIED`; tras el retry con `SeRestorePrivilege` persiste -> `REFUSE_TO_APPLY` (0 nodos mutados). El mismo fixture sobre un nodo K>1 (nodos previos mutados) -> `ROLLBACK_REQUIRED`. Aserta que `SeBackupPrivilege` no se habilita y que el `GoldenMutationLock` se libera en ambos desenlaces. Complementa a `M-P1`/`ProbeAccessDeniedError`.
+- **GP2-T37 (rollback restaura OWNER/GROUP/DACL por componentes):** tras APPLY + fallo simulado en K, el rollback decodifica `pre_sd_bytes_b64`, extrae `pre_owner`/`pre_group`/`pre_dacl`/`SE_DACL_PROTECTED` y llama `SetSecurityInfo(handle, OWNER | GROUP | DACL | protection_flag, pre_owner, pre_group, pre_dacl, NULL)`; la re-lectura POST verifica exactamente `owner`, `group`, `dacl` (semántica y orden) y el bit de protección. Un fixture con `PRE_DACL_PROTECTED = False` verifica que el flag vuelve a `False`. Complementa a `M-R1`.
 
 ---
 
@@ -880,8 +960,8 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 | **M-B1** | `pre_sd_sha256` correcto y `pre_sd_bytes_b64` adulterado; helper lo acepta y rollback aplica bytes adversarios | Test `GP2-T26` exige `PreSdBytesHashMismatchError` y `REFUSE_TO_PLAN` antes de la primera mutación |
 | **M-R1** | Rollback omite `UNPROTECTED_DACL_SECURITY_INFORMATION` cuando el SD PRE no tenía `SE_DACL_PROTECTED`, o viceversa | Test `GP2-T12` (caso con `PRE_DACL_PROTECTED = False`) exige que tras rollback el flag vuelva a `False` |
 | **M-F1** | Verifier no elevado escribe `FSM`, `COMMITTED` o `ARCHIVING_BACKUP` en `AUTHORIZED_OPERATIONS` | Test `GP2-T33` exige `ACCESS_DENIED` por DACL del kernel |
-| **M-P1** | Helper habilita `SeRestorePrivilege` *después* de la apertura del handle, perdiendo la oportunidad frente a un DACL restrictivo | Test `GP2-T32` exige habilitar antes de la apertura y `ROLLBACK_REQUIRED` si `ACCESS_DENIED` persiste |
-| **M-W1** | Falta el rerun del probe antes de `ARCHIVING_BACKUP`; un writer que abrió durante la mutación sobrevive a `COMMITTED` | Test que abre un writer con `dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE` (no detectable por el probe inicial: su `DELETE` no está concedido por la share del writer que aún no existía; pero el writer abre durante la mutación y al rerun del probe, el `DELETE` que solicita el probe colisiona con el handle del writer -> `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_PLAN`). Para writers con `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` (no detectables ni en probe ni en rerun), el test ancla la limitación declarada y verifica que RV-2 detecta el drift de contenido. |
+| **M-P1** | Helper habilita `SeRestorePrivilege` *después* de la apertura (perdiendo la oportunidad frente a un DACL restrictivo), o habilita `SeBackupPrivilege` innecesariamente | Test `GP2-T32`/`GP2-T36` exigen el patrón §18.2: retry con `SeRestorePrivilege` para probe y handle de mutación, `SeBackupPrivilege` nunca habilitado, y `REFUSE_TO_APPLY`/`ROLLBACK_REQUIRED` según la bifurcación 0/>0 |
+| **M-W1** | Falta el rerun del probe antes de `ARCHIVING_BACKUP`; un writer que abrió durante la mutación sobrevive a `COMMITTED` | Test que abre un writer con `dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE` (no presente en el probe inicial porque aún no existía; abre durante la mutación). El rerun del probe antes de `ARCHIVING_BACKUP` colisiona con su `DELETE` no concedido -> `ERROR_SHARING_VIOLATION` -> como ya hay nodos mutados, el desenlace contractual del FSM es **`ROLLBACK_REQUIRED` -> `ROLLING_BACK`** (nunca `REFUSE_TO_PLAN`, que sólo existe en la fase de planificación/autorización). Para writers con `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` (filas H4/H6, no detectables ni en probe ni en rerun), el test ancla la limitación declarada y verifica que RV-2 detecta el drift de contenido. |
 | **M-B2** | Validación del binding `pre_sd_bytes_b64`/`pre_sd_sha256` se omite o sólo ocurre en el bucle per-nodo en vez de en la fase de autorización previa; un plan con binding adversario en nodo K>1 produce nodos 1..K-1 mutados sin restauración | Test que presenta un plan con binding adulterado sólo en un nodo intermedio y aserta que el desenlace es `REFUSE_TO_PLAN` (sin mutación), no un rollback parcial |
 | **M-D1** | DACL de un directorio intermedio (`runtime_vault/`, `operations/`, `golden_backups/`, `locks/`) permite a un proceso no elevado añadir, borrar o sustituir entradas (rompe la garantía sobre la hoja) | Test que intenta borrar `trusted_goldens.json` o `authorized_plan.json` a través del parent directory y espera `ACCESS_DENIED` |
 
