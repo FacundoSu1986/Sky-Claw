@@ -757,3 +757,168 @@ def test_ast_resume_no_obsoleta_receipts_globales() -> None:
     llamadores = _funciones_que_llaman_ast(j_path, "_obsoletar_receipts_de_artifact")
     assert "_escribir_resume_completado" not in llamadores
     assert "_escribir_handoff_de_deployment" not in llamadores
+
+
+def test_ast_callers_de_registrar_resoluciones_en_journal() -> None:
+    """Ancla estructural: congelar todos los callers de _registrar_resoluciones_de_artifact_en_conn."""
+    j_path = _sky_claw_journal_path()
+    llamadores = _funciones_que_llaman_ast(j_path, "_registrar_resoluciones_de_artifact_en_conn")
+    assert llamadores == {
+        "_sellar_evidencia_de_artifact",
+        "_escribir_handoff_indeterminado",
+        "resolver_evidencia_como_no_artifact",
+    }
+
+
+# =============================================================================
+# TESTS DE ROLLBACK SEMÁNTICO STANDALONE (F506-RB1, F506-RB2)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_f506_rb1_resolver_evidencia_no_artifact_standalone_rollback(tmp_path: pathlib.Path) -> None:
+    """F506-RB1: Rollback semántico en standalone resolver_evidencia_como_no_artifact ante conflicto."""
+    from sky_claw.app.db.journal import JournalTransactionError, _canonica_y_prefijo
+
+    db_file = tmp_path / "rb1.db"
+    j = OperationJournal(db_file)
+    await j.open()
+    try:
+        tx1 = 101
+        tx2 = 102
+        art_path = "c:/mods/texgen"
+        clave, _ = _canonica_y_prefijo(art_path)
+
+        async with aiosqlite.connect(str(db_file)) as conn:
+            await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (101, 'tx1')")
+            await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (102, 'tx2')")
+            await conn.execute(
+                "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+                "VALUES (99, 102, 'awaiting_deployment', ?, 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)",
+                (clave,),
+            )
+            await conn.execute(
+                "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
+                "VALUES (102, ?, 'absorbed_by_handoff', 99)",
+                (clave,),
+            )
+            await conn.commit()
+
+        # Invocar con [tx1, tx2]: tx1 se inserta pero tx2 levanta JournalTransactionError por conflicto
+        with pytest.raises(JournalTransactionError, match="Conflicto de resolución"):
+            await j.resolver_evidencia_como_no_artifact(art_path, [tx1, tx2])
+
+        # Verificar que tx1 NO fue guardada (rollback efectivo)
+        async with aiosqlite.connect(str(db_file)) as conn:
+            async with conn.execute(
+                "SELECT resolution_kind FROM artifact_evidence_resolutions WHERE transaction_id = ?",
+                (tx1,),
+            ) as cur:
+                fila_tx1 = await cur.fetchone()
+            assert fila_tx1 is None, "tx1 no debe existir tras rollback"
+
+            async with conn.execute(
+                "SELECT resolution_kind, handoff_id FROM artifact_evidence_resolutions WHERE transaction_id = ?",
+                (tx2,),
+            ) as cur:
+                fila_tx2 = await cur.fetchone()
+            assert fila_tx2 == ("absorbed_by_handoff", 99), "tx2 debe permanecer intacta"
+
+        assert j._db is not None
+        assert not j._db.in_transaction, "db.in_transaction debe ser False tras error"
+
+        # Una operación/commit posterior no debe materializar tx1
+        await j.begin_transaction("tx_posterior", agent_id="test")
+        async with aiosqlite.connect(str(db_file)) as conn:
+            async with conn.execute(
+                "SELECT resolution_kind FROM artifact_evidence_resolutions WHERE transaction_id = ?",
+                (tx1,),
+            ) as cur:
+                fila_tx1_post = await cur.fetchone()
+            assert fila_tx1_post is None, "tx1 no debe aparecer en commit posterior"
+    finally:
+        await j.close()
+
+
+@pytest.mark.asyncio
+async def test_f506_rb2_registrar_handoff_indeterminado_standalone_rollback(tmp_path: pathlib.Path) -> None:
+    """F506-RB2: Rollback semántico en standalone registrar_handoff_indeterminado ante conflicto en absorción."""
+    from sky_claw.app.db.handoffs import DeploymentHandoff, HandoffState
+    from sky_claw.app.db.journal import JournalTransactionError, _canonica_y_prefijo
+
+    db_file = tmp_path / "rb2.db"
+    j = OperationJournal(db_file)
+    await j.open()
+    try:
+        tx1 = 201
+        tx2 = 202
+        art_path = "c:/mods/texgen"
+        clave, _ = _canonica_y_prefijo(art_path)
+
+        async with aiosqlite.connect(str(db_file)) as conn:
+            await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (201, 'tx1')")
+            await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (202, 'tx2')")
+            # Preinstalar resolución contradictoria para tx2
+            await conn.execute(
+                "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
+                "VALUES (202, ?, 'no_artifact_demonstrated', NULL)",
+                (clave,),
+            )
+            await conn.commit()
+
+        registro = DeploymentHandoff(
+            handoff_id=0,
+            source_tx_id=tx1,
+            state=HandoffState.INDETERMINATE,
+            artifact_path=clave,
+            game_key="g",
+            mods_root_key="m",
+            data_key="d",
+            expected_profile="p",
+            expected_digest=None,
+            expected_files=None,
+            expected_bytes=None,
+            observed_digest=None,
+            observed_files=None,
+            observed_bytes=None,
+            created_at="",
+            updated_at="",
+            completed_at=None,
+            superseded_at=None,
+            superseded_by=None,
+        )
+
+        with pytest.raises(JournalTransactionError, match="Conflicto de resolución"):
+            await j.registrar_handoff_indeterminado(
+                registro=registro,
+                consumir_receipts_de=(),
+                absorber_evidencia_de=[tx1, tx2],
+            )
+
+        # Verificar que el handoff NO fue creado y tx1 no tiene resolución
+        async with aiosqlite.connect(str(db_file)) as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) FROM deployment_handoffs WHERE artifact_path = ?",
+                (clave,),
+            ) as cur:
+                (cnt_h,) = await cur.fetchone()
+            assert cnt_h == 0, "Handoff no debe existir tras rollback"
+
+            async with conn.execute(
+                "SELECT resolution_kind FROM artifact_evidence_resolutions WHERE transaction_id = ?",
+                (tx1,),
+            ) as cur:
+                fila_tx1 = await cur.fetchone()
+            assert fila_tx1 is None, "tx1 no debe tener resolución"
+
+            async with conn.execute(
+                "SELECT resolution_kind FROM artifact_evidence_resolutions WHERE transaction_id = ?",
+                (tx2,),
+            ) as cur:
+                fila_tx2 = await cur.fetchone()
+            assert fila_tx2 == ("no_artifact_demonstrated",), "tx2 debe permanecer intacta"
+
+        assert j._db is not None
+        assert not j._db.in_transaction, "db.in_transaction debe ser False tras error"
+    finally:
+        await j.close()

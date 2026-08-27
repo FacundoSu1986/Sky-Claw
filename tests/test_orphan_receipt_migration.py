@@ -21,9 +21,11 @@ import pytest
 
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleManager
 from sky_claw.app.db.handoffs import (
+    ARTIFACT_RESOLUTIONS_SCHEMA_SQL,
     clave_de_artifact,
 )
 from sky_claw.app.db.journal import (
+    JournalConnectionError,
     JournalTransactionError,
     OperationJournal,
     TransactionStatus,
@@ -103,52 +105,12 @@ CREATE TABLE IF NOT EXISTS orphan_evidence_absorptions (
 """
 
 # =============================================================================
-# DDL Y BACKFILL PROPUESTOS PARA D4
-# =============================================================================
-
-D4_RESOLUTIONS_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS artifact_evidence_resolutions (
-    resolution_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    transaction_id  INTEGER NOT NULL REFERENCES transactions(transaction_id),
-    artifact_path   TEXT NOT NULL,
-    resolution_kind TEXT NOT NULL,
-    handoff_id      INTEGER REFERENCES deployment_handoffs(handoff_id),
-    resolved_at     TEXT NOT NULL DEFAULT (datetime('now')),
-    CONSTRAINT chk_resolution_kind CHECK (
-        resolution_kind IN ('absorbed_by_handoff', 'superseded_by_run', 'no_artifact_demonstrated')
-    ),
-    CONSTRAINT uq_resolution_tx_artifact UNIQUE (transaction_id, artifact_path)
-);
-
-CREATE INDEX IF NOT EXISTS idx_artifact_resolutions_path_tx
-    ON artifact_evidence_resolutions(artifact_path, transaction_id);
-"""
-
-D4_BACKFILL_SQL = """
-INSERT OR IGNORE INTO artifact_evidence_resolutions (
-    transaction_id,
-    artifact_path,
-    resolution_kind,
-    handoff_id,
-    resolved_at
-)
-SELECT
-    transaction_id,
-    artifact_path,
-    'absorbed_by_handoff',
-    handoff_id,
-    absorbed_at
-FROM orphan_evidence_absorptions;
-"""
-
-
-# =============================================================================
-# ORÁCULO FUTURO D4 (Prototipo formal de evaluación)
+# MODELO TEÓRICO ORÁCULO D4 (Referencia formal para comparar contra producción)
 # =============================================================================
 
 
-async def oracle_futuro_d4(conn: aiosqlite.Connection, objetivo_path: str) -> set[int]:
-    """Evaluación formal del oráculo propuesto bajo D4:
+async def oracle_futuro_d4_modelo(conn: aiosqlite.Connection, objetivo_path: str) -> set[int]:
+    """Evaluación teórica del oráculo propuesto bajo D4:
 
     Candidate(tx, A) =
         (status(tx) == PENDING OR (status(tx) == ROLLED_BACK AND EXISTS receipt(tx)))
@@ -157,7 +119,6 @@ async def oracle_futuro_d4(conn: aiosqlite.Connection, objetivo_path: str) -> se
     """
     objetivo_fisico, prefijo = _canonica_y_prefijo(objetivo_path)
 
-    # 1. Candidatas base con causalidad probada: PENDING o ROLLED_BACK con sweep receipt
     sql = """
         SELECT je.transaction_id, t.status, je.metadata, r.receipt_id
         FROM journal_entries je
@@ -165,7 +126,6 @@ async def oracle_futuro_d4(conn: aiosqlite.Connection, objetivo_path: str) -> se
         LEFT JOIN stale_pending_sweep_receipts r ON r.transaction_id = je.transaction_id
         WHERE je.metadata IS NOT NULL AND t.status IN ('pending', 'rolled_back')
     """
-    # 2. Exclusiones per-artifact desde la nueva tabla D4
     sql_resueltas = "SELECT transaction_id FROM artifact_evidence_resolutions WHERE artifact_path = ?"
 
     async with conn.execute(sql) as cursor:
@@ -175,11 +135,9 @@ async def oracle_futuro_d4(conn: aiosqlite.Connection, objetivo_path: str) -> se
 
     candidatas: set[int] = set()
     for tx_id, status, metadata, receipt_id in filas:
-        # Causalidad del sweep: PENDING activa O ROLLED_BACK con receipt existente
         es_candidata_causal = (status == TransactionStatus.PENDING.value) or (
             status == TransactionStatus.ROLLED_BACK.value and receipt_id is not None
         )
-
         if not es_candidata_causal:
             continue
 
@@ -189,13 +147,6 @@ async def oracle_futuro_d4(conn: aiosqlite.Connection, objetivo_path: str) -> se
                 break
 
     return candidatas - resueltas
-
-
-async def ejecutar_migracion_d4(conn: aiosqlite.Connection) -> None:
-    """Ejecuta la migración D4: crea la nueva tabla y realiza el backfill."""
-    await conn.executescript(D4_RESOLUTIONS_SCHEMA_SQL)
-    await conn.execute(D4_BACKFILL_SQL)
-    await conn.commit()
 
 
 # =============================================================================
@@ -209,7 +160,6 @@ def test_d1_create_if_not_exists_no_altera_tabla_existente() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(LEGACY_SCHEMA_SQL)
 
-    # Insertar dato inicial válido
     conn.execute("INSERT INTO transactions (description) VALUES ('test')")
     conn.execute(
         "INSERT INTO deployment_handoffs (source_tx_id, artifact_path, game_key, mods_root_key, data_key, expected_profile) "
@@ -220,7 +170,6 @@ def test_d1_create_if_not_exists_no_altera_tabla_existente() -> None:
     )
     conn.commit()
 
-    # Intentar aplicar el DDL "D1" con CREATE TABLE IF NOT EXISTS con handoff_id NULLABLE
     schema_d1_ingenuo = """
     CREATE TABLE IF NOT EXISTS orphan_evidence_absorptions (
         absorption_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -234,15 +183,12 @@ def test_d1_create_if_not_exists_no_altera_tabla_existente() -> None:
     """
     conn.executescript(schema_d1_ingenuo)
 
-    # Inspeccionar PRAGMA table_info
     cur = conn.execute("PRAGMA table_info(orphan_evidence_absorptions)")
     cols = {row[1]: {"type": row[2], "notnull": row[3]} for row in cur.fetchall()}
 
-    # handoff_id SIGUE SIENDO NOT NULL (notnull == 1)
     assert cols["handoff_id"]["notnull"] == 1, "CREATE TABLE IF NOT EXISTS no modificó la columna"
     assert "reason" not in cols, "CREATE TABLE IF NOT EXISTS no añadió la columna nueva"
 
-    # Intentar insertar NULL falla con IntegrityError
     with pytest.raises(sqlite3.IntegrityError, match="NOT NULL constraint failed"):
         conn.execute(
             "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) VALUES (2, 'path/b', NULL)"
@@ -251,14 +197,14 @@ def test_d1_create_if_not_exists_no_altera_tabla_existente() -> None:
 
 @pytest.mark.asyncio
 async def test_mig506_01_db_actual_preserva_absorciones(tmp_path: pathlib.Path) -> None:
-    """MIG506-01: DB actual con absorciones históricas se migra a D4 sin pérdida."""
+    """MIG506-01: DB actual con absorciones históricas se migra a D4 sin pérdida vía OperationJournal.open()."""
     db_file = tmp_path / "legacy.db"
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
         await conn.execute("INSERT INTO transactions (description) VALUES ('tx1')")
         await conn.execute(
-            "INSERT INTO deployment_handoffs (source_tx_id, artifact_path, game_key, mods_root_key, data_key, expected_profile) "
-            "VALUES (1, 'c:/mods/texgen', 'g', 'm', 'd', 'p')"
+            "INSERT INTO deployment_handoffs (source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (1, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
         )
         await conn.execute(
             "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id, absorbed_at) "
@@ -266,35 +212,38 @@ async def test_mig506_01_db_actual_preserva_absorciones(tmp_path: pathlib.Path) 
         )
         await conn.commit()
 
-        # Ejecutar migración D4
-        await ejecutar_migracion_d4(conn)
+    j = OperationJournal(db_file)
+    await j.open()
+    await j.close()
 
-        # Verificar datos en artifact_evidence_resolutions
-        async with conn.execute(
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute(
             "SELECT transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at "
             "FROM artifact_evidence_resolutions"
-        ) as cur:
-            filas = await cur.fetchall()
+        ) as cur,
+    ):
+        filas = await cur.fetchall()
 
-        assert len(filas) == 1
-        tx_id, art_path, kind, h_id, res_at = filas[0]
-        assert tx_id == 1
-        assert art_path == "c:/mods/texgen"
-        assert kind == "absorbed_by_handoff"
-        assert h_id == 1
-        assert res_at == "2026-08-20 12:00:00"
+    assert len(filas) == 1
+    tx_id, art_path, kind, h_id, res_at = filas[0]
+    assert tx_id == 1
+    assert art_path == "c:/mods/texgen"
+    assert kind == "absorbed_by_handoff"
+    assert h_id == 1
+    assert res_at == "2026-08-20 12:00:00"
 
 
 @pytest.mark.asyncio
 async def test_mig506_02_migracion_idempotente(tmp_path: pathlib.Path) -> None:
-    """MIG506-02: Ejecutar la migración D4 múltiples veces no duplica filas ni produce errores."""
+    """MIG506-02: Reabrir el OperationJournal múltiples veces no duplica filas ni produce errores."""
     db_file = tmp_path / "idempotent.db"
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
         await conn.execute("INSERT INTO transactions (description) VALUES ('tx1')")
         await conn.execute(
-            "INSERT INTO deployment_handoffs (source_tx_id, artifact_path, game_key, mods_root_key, data_key, expected_profile) "
-            "VALUES (1, 'c:/mods/texgen', 'g', 'm', 'd', 'p')"
+            "INSERT INTO deployment_handoffs (source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (1, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
         )
         await conn.execute(
             "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) "
@@ -302,19 +251,22 @@ async def test_mig506_02_migracion_idempotente(tmp_path: pathlib.Path) -> None:
         )
         await conn.commit()
 
-        # Ejecutar migración 3 veces consecutivas
-        await ejecutar_migracion_d4(conn)
-        await ejecutar_migracion_d4(conn)
-        await ejecutar_migracion_d4(conn)
+    for _ in range(3):
+        j = OperationJournal(db_file)
+        await j.open()
+        await j.close()
 
-        async with conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur:
-            (conteo,) = await cur.fetchone()
-        assert conteo == 1
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur,
+    ):
+        (conteo,) = await cur.fetchone()
+    assert conteo == 1
 
 
 @pytest.mark.asyncio
 async def test_mig506_03_consumed_con_absorption_a_preserva_b_activo(tmp_path: pathlib.Path) -> None:
-    """MIG506-03: LEGACY CONSUMED con absorción de A -> A queda resuelto y B activo en el oráculo futuro."""
+    """MIG506-03: LEGACY CONSUMED con absorción de A -> A queda resuelto y B activo en el oráculo de producción."""
     db_file = tmp_path / "consumed.db"
     path_a = str(tmp_path / "mods" / "TexGen Output")
     path_b = str(tmp_path / "mods" / "DynDOLOD Output")
@@ -322,7 +274,6 @@ async def test_mig506_03_consumed_con_absorption_a_preserva_b_activo(tmp_path: p
 
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
-        # TX ROLLED_BACK con receipt 'consumed'
         await conn.execute(
             "INSERT INTO transactions (transaction_id, description, status) VALUES (1, 'tx1', 'rolled_back')"
         )
@@ -333,10 +284,9 @@ async def test_mig506_03_consumed_con_absorption_a_preserva_b_activo(tmp_path: p
             "VALUES (1, 'agent', 'mod_install', ?, ?)",
             (path_a, manifest),
         )
-        # Absorción histórica SOLO para A
         await conn.execute(
-            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, artifact_path, game_key, mods_root_key, data_key, expected_profile) "
-            "VALUES (10, 1, ?, 'g', 'm', 'd', 'p')",
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (10, 1, 'awaiting_deployment', ?, 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)",
             (clave_a,),
         )
         await conn.execute(
@@ -345,28 +295,35 @@ async def test_mig506_03_consumed_con_absorption_a_preserva_b_activo(tmp_path: p
         )
         await conn.commit()
 
-        # Migrar a D4
-        await ejecutar_migracion_d4(conn)
+    j = OperationJournal(db_file)
+    await j.open()
+    try:
+        # Evaluar oráculo de producción
+        candidatas_prod_a = await j.transacciones_que_nombran(path_a)
+        candidatas_prod_b = await j.transacciones_que_nombran(path_b)
 
-        # Evaluar oráculo futuro D4
-        candidatas_a = await oracle_futuro_d4(conn, path_a)
-        candidatas_b = await oracle_futuro_d4(conn, path_b)
+        assert candidatas_prod_a == [], "A debe estar resuelto (excluido)"
+        assert candidatas_prod_b == [1], "B debe seguir ACTIVO como evidencia (no resuelto)"
 
-        assert candidatas_a == set(), "A debe estar resuelto (excluido)"
-        assert candidatas_b == {1}, "B debe seguir ACTIVO como evidencia (no resuelto)"
+        # Comparar contra modelo teórico
+        async with aiosqlite.connect(str(db_file)) as conn:
+            cand_mod_a = await oracle_futuro_d4_modelo(conn, path_a)
+            cand_mod_b = await oracle_futuro_d4_modelo(conn, path_b)
+            assert set(candidatas_prod_a) == cand_mod_a
+            assert set(candidatas_prod_b) == cand_mod_b
+    finally:
+        await j.close()
 
 
 @pytest.mark.asyncio
 async def test_mig506_04_superseded_run1_fail_closed_reactivation(tmp_path: pathlib.Path) -> None:
-    """MIG506-04: LEGACY SUPERSEDED RUN1 sin absorción -> no inventa resolución;
-    bajo FAIL_CLOSED_REACTIVATION ambos A y B son evidencia activa."""
+    """MIG506-04: LEGACY SUPERSEDED RUN1 sin absorción -> reactivación fail-closed para A y B."""
     db_file = tmp_path / "superseded_run1.db"
     path_a = str(tmp_path / "mods" / "TexGen Output")
     path_b = str(tmp_path / "mods" / "DynDOLOD Output")
 
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
-        # TX ROLLED_BACK con receipt 'superseded' pero CERO filas en orphan_evidence_absorptions
         await conn.execute(
             "INSERT INTO transactions (transaction_id, description, status) VALUES (1, 'tx1', 'rolled_back')"
         )
@@ -379,16 +336,15 @@ async def test_mig506_04_superseded_run1_fail_closed_reactivation(tmp_path: path
         )
         await conn.commit()
 
-        # Migrar a D4 (no hay absorciones que backfillear)
-        await ejecutar_migracion_d4(conn)
-
-        # Evaluar oráculo futuro D4
-        candidatas_a = await oracle_futuro_d4(conn, path_a)
-        candidatas_b = await oracle_futuro_d4(conn, path_b)
-
-        # Política FAIL_CLOSED_REACTIVATION: sin resolución durable explícita, se reactivan
-        assert candidatas_a == {1}, "A es evidencia activa (fail-closed)"
-        assert candidatas_b == {1}, "B es evidencia activa (fail-closed)"
+    j = OperationJournal(db_file)
+    await j.open()
+    try:
+        candidatas_a = await j.transacciones_que_nombran(path_a)
+        candidatas_b = await j.transacciones_que_nombran(path_b)
+        assert candidatas_a == [1], "A es evidencia activa (fail-closed)"
+        assert candidatas_b == [1], "B es evidencia activa (fail-closed)"
+    finally:
+        await j.close()
 
 
 @pytest.mark.asyncio
@@ -412,15 +368,15 @@ async def test_mig506_05_no_artifact_global_no_inventa_resolucion(tmp_path: path
         )
         await conn.commit()
 
-        await ejecutar_migracion_d4(conn)
-
-        candidatas_a = await oracle_futuro_d4(conn, path_a)
-        candidatas_b = await oracle_futuro_d4(conn, path_b)
-
-        # Al no haber registro per-artifact de ausencia para A ni B, el oráculo los considera activos
-        # hasta que la probe real de reconciliación emita una resolución per-artifact
-        assert candidatas_a == {1}
-        assert candidatas_b == {1}
+    j = OperationJournal(db_file)
+    await j.open()
+    try:
+        candidatas_a = await j.transacciones_que_nombran(path_a)
+        candidatas_b = await j.transacciones_que_nombran(path_b)
+        assert candidatas_a == [1]
+        assert candidatas_b == [1]
+    finally:
+        await j.close()
 
 
 @pytest.mark.asyncio
@@ -431,7 +387,6 @@ async def test_mig506_06_rolled_back_sin_receipt_no_resucita(tmp_path: pathlib.P
 
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
-        # TX ROLLED_BACK SIN receipt
         await conn.execute(
             "INSERT INTO transactions (transaction_id, description, status) VALUES (1, 'tx1', 'rolled_back')"
         )
@@ -443,10 +398,13 @@ async def test_mig506_06_rolled_back_sin_receipt_no_resucita(tmp_path: pathlib.P
         )
         await conn.commit()
 
-        await ejecutar_migracion_d4(conn)
-
-        candidatas_a = await oracle_futuro_d4(conn, path_a)
-        assert candidatas_a == set(), "TX rolled back sin receipt jamás debe considerarse evidencia"
+    j = OperationJournal(db_file)
+    await j.open()
+    try:
+        candidatas_a = await j.transacciones_que_nombran(path_a)
+        assert candidatas_a == [], "TX rolled back sin receipt jamás debe considerarse evidencia"
+    finally:
+        await j.close()
 
 
 @pytest.mark.asyncio
@@ -470,53 +428,74 @@ async def test_mig506_07_unresolved_continua_siendo_causalidad_valida(tmp_path: 
         )
         await conn.commit()
 
-        await ejecutar_migracion_d4(conn)
-
-        candidatas_a = await oracle_futuro_d4(conn, path_a)
-        candidatas_b = await oracle_futuro_d4(conn, path_b)
-
-        assert candidatas_a == {1}
-        assert candidatas_b == {1}
+    j = OperationJournal(db_file)
+    await j.open()
+    try:
+        candidatas_a = await j.transacciones_que_nombran(path_a)
+        candidatas_b = await j.transacciones_que_nombran(path_b)
+        assert candidatas_a == [1]
+        assert candidatas_b == [1]
+    finally:
+        await j.close()
 
 
 @pytest.mark.asyncio
 async def test_mig506_08_failure_durante_backfill_revierte_totalmente(tmp_path: pathlib.Path) -> None:
-    """MIG506-08: Fallo durante el backfill dentro de un boundary revierte completamente."""
+    """MIG506-08: Fallo durante backfill en OperationJournal.open() revierte integralmente filas D4 y deja DB limpia."""
     db_file = tmp_path / "fail_boundary.db"
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
-        await conn.execute("INSERT INTO transactions (description) VALUES ('tx1')")
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (2, 'tx2')")
+        await conn.execute(
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (10, 1, 'superseded', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
+        )
+        await conn.execute(
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (20, 2, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:def', 1, 10)"
+        )
+        await conn.execute(
+            "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) VALUES (1, 'c:/mods/texgen', 10)"
+        )
+        await conn.execute(
+            "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) VALUES (2, 'c:/mods/texgen', 10)"
+        )
+        # Pre-poblar resolución conflictiva para tx2 que obligue fallo por inconsistencia
+        await conn.executescript(ARTIFACT_RESOLUTIONS_SCHEMA_SQL)
+        await conn.execute(
+            "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
+            "VALUES (2, 'c:/mods/texgen', 'absorbed_by_handoff', 20)"
+        )
         await conn.commit()
 
-        try:
-            # Iniciar transacción SQLite explícita
-            await conn.execute("BEGIN IMMEDIATE")
-            await conn.executescript(D4_RESOLUTIONS_SCHEMA_SQL)
-            # Provocar fallo SQL en el backfill
-            await conn.execute(
-                "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind) "
-                "VALUES (9999, 'bad', 'invalid_kind')"
-            )
-            await conn.commit()
-        except sqlite3.Error:
-            await conn.rollback()
+    j = OperationJournal(db_file)
+    with pytest.raises(JournalConnectionError, match="Corrupción detectada durante backfill"):
+        await j.open()
 
-        # Verificar que la transacción revertida no dejó la tabla creada de forma inconsistente
-        async with conn.execute("SELECT COUNT(*) FROM transactions") as cur:
-            (conteo,) = await cur.fetchone()
-        assert conteo == 1
+    # Segunda conexión independiente a disco verifica:
+    # 1. tx1 no fue insertada (cero mutación residual de D4)
+    # 2. in_transaction es False
+    # 3. La DB permanece usable
+    async with aiosqlite.connect(str(db_file)) as conn:
+        async with conn.execute(
+            "SELECT transaction_id FROM artifact_evidence_resolutions WHERE transaction_id = 1"
+        ) as cur:
+            fila_tx1 = await cur.fetchone()
+        assert fila_tx1 is None, "tx1 no debe haber quedado backfilleada tras rollback de migración"
+        assert not conn.in_transaction
 
 
 @pytest.mark.asyncio
 async def test_mig506_09_db_ya_migrada_reopen_idempotente(tmp_path: pathlib.Path) -> None:
-    """MIG506-09: Reabrir una DB ya migrada ejecuta el init D4 limpiamente sin mutaciones."""
+    """MIG506-09: Reabrir una DB ya migrada no borra ni corrompe resoluciones preexistentes."""
     db_file = tmp_path / "migrated.db"
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
-        await conn.execute("INSERT INTO transactions (description) VALUES ('tx1')")
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
         await conn.execute(
-            "INSERT INTO deployment_handoffs (source_tx_id, artifact_path, game_key, mods_root_key, data_key, expected_profile) "
-            "VALUES (1, 'c:/mods/texgen', 'g', 'm', 'd', 'p')"
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (1, 1, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
         )
         await conn.execute(
             "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id, absorbed_at) "
@@ -524,48 +503,45 @@ async def test_mig506_09_db_ya_migrada_reopen_idempotente(tmp_path: pathlib.Path
         )
         await conn.commit()
 
-        # 1. Primera migración
-        await ejecutar_migracion_d4(conn)
+    # 1. Primera migración
+    j1 = OperationJournal(db_file)
+    await j1.open()
+    await j1.resolver_evidencia_como_no_artifact("c:/mods/dyndolod", [1])
+    await j1.close()
 
-        # 2. Registrar una nueva resolución nativa D4
-        await conn.execute(
-            "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
-            "VALUES (1, 'c:/mods/dyndolod', 'no_artifact_demonstrated', NULL)"
-        )
-        await conn.commit()
+    # 2. Reopen
+    j2 = OperationJournal(db_file)
+    await j2.open()
+    await j2.close()
 
-        # 3. Simular reinicio / re-ejecución del init D4
-        await ejecutar_migracion_d4(conn)
-
-        async with conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur:
-            (conteo,) = await cur.fetchone()
-        assert conteo == 2
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur,
+    ):
+        (conteo,) = await cur.fetchone()
+    assert conteo == 2
 
 
 @pytest.mark.asyncio
 async def test_mig506_10_conflicting_backfill_fails_closed(tmp_path: pathlib.Path) -> None:
     """MIG506-10: Discrepancia en backfill detectada por validación posterior falla cerrado."""
-    from sky_claw.app.db.journal import JournalConnectionError, OperationJournal
-
     db_file = tmp_path / "corrupt_backfill.db"
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
         await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
         await conn.execute(
-            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile) "
-            "VALUES (10, 1, 'superseded', 'c:/mods/texgen', 'g', 'm', 'd', 'p')"
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (10, 1, 'superseded', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
         )
         await conn.execute(
-            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile) "
-            "VALUES (20, 1, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p')"
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (20, 1, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:def', 1, 10)"
         )
-        # Fila en orphan_evidence_absorptions que apunta a handoff_id=10
         await conn.execute(
             "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) "
             "VALUES (1, 'c:/mods/texgen', 10)"
         )
-        # Crear schema D4 manualmente y pre-poblar resolución conflictiva que apunta a handoff_id=20
-        await conn.executescript(D4_RESOLUTIONS_SCHEMA_SQL)
+        await conn.executescript(ARTIFACT_RESOLUTIONS_SCHEMA_SQL)
         await conn.execute(
             "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
             "VALUES (1, 'c:/mods/texgen', 'absorbed_by_handoff', 20)"
@@ -579,14 +555,14 @@ async def test_mig506_10_conflicting_backfill_fails_closed(tmp_path: pathlib.Pat
 
 @pytest.mark.asyncio
 async def test_mig506_11_concurrent_open_legacy_db(tmp_path: pathlib.Path) -> None:
-    """MIG506-11: Múltiples instancias abriendo concurrentemente una DB legacy migran limpiamente."""
+    """MIG506-11 / F506-MIG4: Múltiples instancias independientes abriendo concurrentemente una DB legacy migran limpiamente."""
     db_file = tmp_path / "concurrent_open.db"
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
         await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
         await conn.execute(
-            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, artifact_path, game_key, mods_root_key, data_key, expected_profile) "
-            "VALUES (1, 1, 'c:/mods/texgen', 'g', 'm', 'd', 'p')"
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (1, 1, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
         )
         await conn.execute(
             "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) "
@@ -594,18 +570,25 @@ async def test_mig506_11_concurrent_open_legacy_db(tmp_path: pathlib.Path) -> No
         )
         await conn.commit()
 
-    mgr = DatabaseLifecycleManager()
-    j1 = OperationJournal(db_file, lifecycle=mgr)
-    j2 = OperationJournal(db_file, lifecycle=mgr)
+    mgr1 = DatabaseLifecycleManager()
+    mgr2 = DatabaseLifecycleManager()
+    j1 = OperationJournal(db_file, lifecycle=mgr1)
+    j2 = OperationJournal(db_file, lifecycle=mgr2)
 
-    await asyncio.gather(j1.open(), j2.open())
     try:
-        async with mgr.operation(db_file) as conn:
+        await asyncio.gather(j1.open(), j2.open())
+        async with aiosqlite.connect(str(db_file)) as conn:
             async with conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur:
                 (conteo,) = await cur.fetchone()
-            assert conteo == 1
+            assert conteo == 1, "D4 debe aparecer una sola vez con backfill completo"
+            assert not conn.in_transaction
     finally:
-        await mgr.shutdown_all()
+        await asyncio.gather(mgr1.shutdown_all(), mgr2.shutdown_all())
+
+    # Reopen posterior limpio
+    j3 = OperationJournal(db_file)
+    await j3.open()
+    await j3.close()
 
 
 @pytest.mark.asyncio
@@ -647,3 +630,149 @@ async def test_res506_conflict_raises_journal_transaction_error(tmp_path: pathli
                 )
     finally:
         await j.close()
+
+
+# =============================================================================
+# TESTS DE DURABILIDAD Y ROLLBACK DE MIGRACIÓN (F506-MIG1..4)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_f506_mig1_migracion_durable_antes_del_sweep(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F506-MIG1: La migración D4 es durable incluso si el sweep de arranque falla."""
+    db_file = tmp_path / "mig1.db"
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.executescript(LEGACY_SCHEMA_SQL)
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
+        await conn.execute(
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (10, 1, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
+        )
+        await conn.execute(
+            "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id, absorbed_at) "
+            "VALUES (1, 'c:/mods/texgen', 10, '2026-08-20 12:00:00')"
+        )
+        await conn.commit()
+
+    # Inyectar fallo en sweep_stale_pending
+    async def _fail_sweep(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise sqlite3.OperationalError("Simulated sweep failure")
+
+    monkeypatch.setattr(OperationJournal, "sweep_stale_pending", _fail_sweep)
+
+    j = OperationJournal(db_file)
+    await j.open()
+    await j.close()
+
+    # Abrir una SEGUNDA conexión independiente a disco y verificar que D4 está guardado
+    async with aiosqlite.connect(str(db_file)) as conn:
+        async with conn.execute(
+            "SELECT transaction_id, artifact_path, resolution_kind, handoff_id FROM artifact_evidence_resolutions"
+        ) as cur:
+            filas = await cur.fetchall()
+        assert len(filas) == 1, "La resolución debe estar persistida duraderamente a pesar del fallo del sweep"
+        assert filas[0] == (1, "c:/mods/texgen", "absorbed_by_handoff", 10)
+
+
+@pytest.mark.asyncio
+async def test_f506_mig2_migration_conflict_lifecycle_rollback(tmp_path: pathlib.Path) -> None:
+    """F506-MIG2: Conflicto en migración bajo DatabaseLifecycleManager revierte y deja conexión limpia."""
+    from sky_claw.app.db.handoffs import ARTIFACT_RESOLUTIONS_SCHEMA_SQL
+    from sky_claw.app.db.journal import JournalConnectionError
+
+    db_file = tmp_path / "mig2.db"
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.executescript(LEGACY_SCHEMA_SQL)
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (2, 'tx2')")
+        await conn.execute(
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (10, 1, 'superseded', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
+        )
+        await conn.execute(
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (20, 2, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:def', 1, 10)"
+        )
+        # Absorción legacy para tx1 compatible (apunta a 10)
+        await conn.execute(
+            "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) "
+            "VALUES (1, 'c:/mods/texgen', 10)"
+        )
+        # Absorción legacy para tx2 (apunta a 10)
+        await conn.execute(
+            "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) "
+            "VALUES (2, 'c:/mods/texgen', 10)"
+        )
+        # Pre-poblar tabla D4 con conflicto para tx2 (apunta a handoff 20)
+        await conn.executescript(ARTIFACT_RESOLUTIONS_SCHEMA_SQL)
+        await conn.execute(
+            "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
+            "VALUES (2, 'c:/mods/texgen', 'absorbed_by_handoff', 20)"
+        )
+        await conn.commit()
+
+    mgr = DatabaseLifecycleManager()
+    j = OperationJournal(db_file, lifecycle=mgr)
+    try:
+        with pytest.raises(JournalConnectionError, match="Corrupción detectada durante backfill"):
+            await j.open()
+
+        # Comprobar con la conexión administrada que no quedó backfill parcial de tx1
+        async with mgr.operation(db_file) as conn:
+            async with conn.execute(
+                "SELECT transaction_id FROM artifact_evidence_resolutions WHERE transaction_id = 1"
+            ) as cur:
+                fila = await cur.fetchone()
+            assert fila is None, "tx1 no debe haber quedado backfilleada"
+            assert not conn.in_transaction, "Conexión compartida no debe quedar in_transaction"
+    finally:
+        await mgr.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_f506_mig3_migration_conflict_standalone_rollback(tmp_path: pathlib.Path) -> None:
+    """F506-MIG3: Conflicto en migración standalone revierte y deja DB limpia."""
+    from sky_claw.app.db.handoffs import ARTIFACT_RESOLUTIONS_SCHEMA_SQL
+    from sky_claw.app.db.journal import JournalConnectionError
+
+    db_file = tmp_path / "mig3.db"
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.executescript(LEGACY_SCHEMA_SQL)
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
+        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (2, 'tx2')")
+        await conn.execute(
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (10, 1, 'superseded', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
+        )
+        await conn.execute(
+            "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
+            "VALUES (20, 2, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:def', 1, 10)"
+        )
+        await conn.execute(
+            "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) "
+            "VALUES (1, 'c:/mods/texgen', 10)"
+        )
+        await conn.execute(
+            "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id) "
+            "VALUES (2, 'c:/mods/texgen', 10)"
+        )
+        await conn.executescript(ARTIFACT_RESOLUTIONS_SCHEMA_SQL)
+        await conn.execute(
+            "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
+            "VALUES (2, 'c:/mods/texgen', 'absorbed_by_handoff', 20)"
+        )
+        await conn.commit()
+
+    j = OperationJournal(db_file)
+    with pytest.raises(JournalConnectionError, match="Corrupción detectada durante backfill"):
+        await j.open()
+
+    # Segunda conexión verifica que tx1 no quedó insertada
+    async with aiosqlite.connect(str(db_file)) as conn:
+        async with conn.execute(
+            "SELECT transaction_id FROM artifact_evidence_resolutions WHERE transaction_id = 1"
+        ) as cur:
+            fila = await cur.fetchone()
+        assert fila is None, "tx1 no debe existir tras rollback"
