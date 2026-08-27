@@ -19,8 +19,10 @@ from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.agent.tools_facade import AsyncToolRegistry
 from sky_claw.app.comms.telegram import (
     TelegramHITLMessageRegistry,
+    TelegramHITLRegistryError,
     TelegramWebhook,
     escape_html,
+    invalidate_unregistered_hitl_message,
     register_hitl_message_cancellation_safe,
     terminalize_hitl_message,
 )
@@ -846,19 +848,15 @@ class AppContext:
             full_published = False
 
             async def _hitl_terminal(req: HITLRequest, decision: Decision) -> None:
-                active_sender = self.sender if full_published else sender
                 await terminalize_hitl_message(
                     self.telegram_hitl_registry,
-                    active_sender,
                     req.request_id,
                     decision,
                 )
 
             async def _hitl_cancel(req: HITLRequest) -> None:
-                active_sender = self.sender if full_published else sender
                 await terminalize_hitl_message(
                     self.telegram_hitl_registry,
-                    active_sender,
                     req.request_id,
                     None,
                 )
@@ -911,11 +909,19 @@ class AppContext:
                 # El mapping sólo nace después de que Telegram devuelve la
                 # identidad del mensaje. Un fallo, un None o una respuesta
                 # incompleta deja la request fail-closed sin mapping fantasma.
-                await register_hitl_message_cancellation_safe(
-                    self.telegram_hitl_registry,
-                    req.request_id,
-                    message,
-                )
+                try:
+                    await register_hitl_message_cancellation_safe(
+                        self.telegram_hitl_registry,
+                        req.request_id,
+                        message,
+                        active_sender,
+                    )
+                except TelegramHITLRegistryError:
+                    # Telegram ya creó el mensaje, pero el prompt nuevo no tiene
+                    # owner registrable. Invalidarlo evita dejar botones vivos y
+                    # conserva intactos los mappings pendientes anteriores.
+                    await invalidate_unregistered_hitl_message(active_sender, message)
+                    raise
 
                 # Otra interfaz puede resolver la request mientras sendMessage
                 # está en vuelo. En ese caso el hook del guard pudo ejecutarse
@@ -925,7 +931,6 @@ class AppContext:
                 if terminal_decision is not None:
                     await terminalize_hitl_message(
                         self.telegram_hitl_registry,
-                        active_sender,
                         req.request_id,
                         terminal_decision,
                     )

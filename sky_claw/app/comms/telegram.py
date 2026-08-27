@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import contextlib
 import logging
 import secrets
 import uuid
@@ -25,16 +24,30 @@ from sky_claw.logging_config import correlation_id_var
 logger = logging.getLogger(__name__)
 
 _DEDUP_MAX_SIZE = 1000
+_TELEGRAM_HITL_COMPENSATION_TIMEOUT_SECONDS = 2.0
 _APPROVE_PREFIX = "/approve "
 _DENY_PREFIX = "/deny "
 
 
+class TelegramHITLRegistryError(RuntimeError):
+    """Error base para fallos de inscripción en el registry HITL."""
+
+
+class TelegramHITLRegistryFullError(TelegramHITLRegistryError):
+    """El registry alcanzó su capacidad sin expulsar mappings activos."""
+
+
+class TelegramHITLRegistryDuplicateError(TelegramHITLRegistryError):
+    """El request_id ya tiene un mensaje pendiente registrado."""
+
+
 @dataclass(frozen=True, slots=True)
 class TelegramHITLMessage:
-    """Referencia mínima al mensaje Telegram de un prompt HITL."""
+    """Referencia mínima al mensaje Telegram y su transporte propietario."""
 
     chat_id: int
     message_id: int
+    sender: TelegramSender
 
 
 class TelegramHITLMessageRegistry:
@@ -52,8 +65,14 @@ class TelegramHITLMessageRegistry:
         self._lock = asyncio.Lock()
         self._max_entries = max_entries
 
-    async def register(self, request_id: str, chat_id: int, message_id: int) -> None:
-        """Registra la identidad exacta del prompt ya entregado."""
+    async def register(
+        self,
+        request_id: str,
+        chat_id: int,
+        message_id: int,
+        sender: TelegramSender,
+    ) -> None:
+        """Registra identidad y owner sin expulsar mappings activos."""
         if not request_id:
             raise ValueError("request_id must not be empty")
         if not isinstance(chat_id, int) or isinstance(chat_id, bool):
@@ -62,10 +81,15 @@ class TelegramHITLMessageRegistry:
             raise TypeError("message_id must be an integer")
 
         async with self._lock:
-            self._entries[request_id] = TelegramHITLMessage(chat_id=chat_id, message_id=message_id)
-            self._entries.move_to_end(request_id)
-            while len(self._entries) > self._max_entries:
-                self._entries.popitem(last=False)
+            if request_id in self._entries:
+                raise TelegramHITLRegistryDuplicateError(f"HITL request_id already registered: {request_id}")
+            if len(self._entries) >= self._max_entries:
+                raise TelegramHITLRegistryFullError(f"HITL registry capacity exhausted ({self._max_entries})")
+            self._entries[request_id] = TelegramHITLMessage(
+                chat_id=chat_id,
+                message_id=message_id,
+                sender=sender,
+            )
 
     async def get(self, request_id: str) -> TelegramHITLMessage | None:
         """Obtiene una referencia sin modificar el registry."""
@@ -100,30 +124,66 @@ async def register_hitl_message_cancellation_safe(
     registry: TelegramHITLMessageRegistry,
     request_id: str,
     message: TelegramMessage,
+    sender: TelegramSender,
 ) -> None:
-    """Register a delivered message before allowing caller cancellation through.
+    """Registra un mensaje entregado antes de propagar cancelación al caller.
 
-    The task is owned locally and drained on cancellation. This shields only the
-    in-memory registration after ``sendMessage`` succeeded; network delivery is
-    never shielded.
+    La tarea tiene ownership local y se drena si hay cancelación. El shield sólo
+    protege el registro en memoria posterior a un ``sendMessage`` exitoso; la
+    entrega de red nunca queda shielded. Los fallos normales de registro se
+    propagan al caller, que compensa el mensaje recién creado.
     """
     registration = asyncio.create_task(
-        registry.register(request_id, message.chat_id, message.message_id),
+        registry.register(request_id, message.chat_id, message.message_id, sender),
         name=f"hitl-register:{request_id}",
     )
     try:
         await asyncio.shield(registration)
     except asyncio.CancelledError:
-        # Drenar la tarea owned antes de repropagar la cancelación evita tasks
-        # huérfanas y garantiza que el mapping exista para on_cancel.
-        with contextlib.suppress(asyncio.CancelledError):
+        # Drenar la tarea owned antes de repropagar la cancelación evita tareas
+        # huérfanas. Un error de registro también se consume aquí para no dejar
+        # una excepción no observada; la cancelación del caller sigue ganando.
+        try:
             await registration
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.error("HITL registration failed during cancellation: %s", exc)
+            await invalidate_unregistered_hitl_message(sender, message)
         raise
+
+
+async def invalidate_unregistered_hitl_message(
+    sender: TelegramSender,
+    message: TelegramMessage,
+) -> None:
+    """Retira botones de un mensaje enviado cuyo registro no pudo completarse."""
+    try:
+        await asyncio.wait_for(
+            sender.edit_message(
+                message.chat_id,
+                message.message_id,
+                "⚠️ Solicitud no accionable",
+                reply_markup=None,
+            ),
+            timeout=_TELEGRAM_HITL_COMPENSATION_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Timeout invalidando el mensaje HITL sin mapping (%s, %s)",
+            message.chat_id,
+            message.message_id,
+        )
+    except Exception:
+        logger.exception(
+            "No se pudo invalidar el mensaje HITL sin mapping (%s, %s)",
+            message.chat_id,
+            message.message_id,
+        )
 
 
 async def terminalize_hitl_message(
     registry: TelegramHITLMessageRegistry,
-    sender: TelegramSender | None,
     request_id: str,
     decision: Any,
 ) -> bool:
@@ -135,11 +195,9 @@ async def terminalize_hitl_message(
     reference = await registry.pop(request_id)
     if reference is None:
         return False
-    if sender is None:
-        return True
 
     try:
-        await sender.edit_message(
+        await reference.sender.edit_message(
             reference.chat_id,
             reference.message_id,
             terminal_hitl_text(decision),
@@ -437,15 +495,10 @@ class TelegramWebhook:
             await self._sender.send(chat_id, "❌ Ocurrió un error crítico durante la actualización.")
 
     async def terminalize_hitl(self, request_id: str, decision: Any) -> bool:
-        """Terminaliza el prompt asociado sin alterar la decisión autoritativa.
-
-        El mapping se consume antes del I/O de edición. Por eso un fallo de
-        Telegram no deja una referencia retenida ni puede cambiar el resultado
-        que el ``HITLGuard`` ya comprometió.
-        """
+        """Terminaliza el prompt usando el sender owner registrado."""
         if self._hitl_registry is None:
             return False
-        return await terminalize_hitl_message(self._hitl_registry, self._sender, request_id, decision)
+        return await terminalize_hitl_message(self._hitl_registry, request_id, decision)
 
     async def _answer_callback_query_safely(self, query: dict[str, Any], text: str | None = None) -> None:
         """Confirma un callback sin ocultar la decisión autoritativa de HITL."""

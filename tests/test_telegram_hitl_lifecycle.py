@@ -27,7 +27,7 @@ async def _build_lifecycle(
     webhook_box: list[TelegramWebhook] = []
 
     async def notify(req: HITLRequest) -> None:
-        await registry.register(req.request_id, chat_id=123, message_id=77)
+        await registry.register(req.request_id, chat_id=123, message_id=77, sender=sender)
         registered.set()
 
     async def terminal(req: HITLRequest, decision: Decision) -> None:
@@ -146,7 +146,7 @@ async def test_dos_hitl_concurrentes_no_cruzan_message_id() -> None:
     ids = {"req-a": 701, "req-b": 702}
 
     async def notify(req: HITLRequest) -> None:
-        await registry.register(req.request_id, chat_id=123, message_id=ids[req.request_id])
+        await registry.register(req.request_id, chat_id=123, message_id=ids[req.request_id], sender=sender)
 
     async def terminal(req: HITLRequest, decision: Decision) -> None:
         reference = await registry.pop(req.request_id)
@@ -211,7 +211,7 @@ async def test_delivery_failure_no_crea_mapping_fantasma() -> None:
 
     async def notify(req: HITLRequest) -> None:
         message = await sender.send(123, req.reason)
-        await registry.register(req.request_id, message.chat_id, message.message_id)
+        await registry.register(req.request_id, message.chat_id, message.message_id, sender)
 
     hitl = HITLGuard(notify_fn=notify, timeout=5)
     assert await hitl.request_approval(request_id="req-delivery", reason="test") is Decision.TIMEOUT
@@ -227,7 +227,7 @@ async def test_cancelacion_invalida_el_prompt_y_elimina_botones() -> None:
     registered = asyncio.Event()
 
     async def notify(req: HITLRequest) -> None:
-        await registry.register(req.request_id, 123, 808)
+        await registry.register(req.request_id, 123, 808, sender)
         registered.set()
 
     async def cancel(req: HITLRequest) -> None:
@@ -387,10 +387,16 @@ async def test_send_success_cancel_before_register_terminaliza_el_mensaje() -> N
             self.register_started = asyncio.Event()
             self.release_register = asyncio.Event()
 
-        async def register(self, request_id: str, chat_id: int, message_id: int) -> None:
+        async def register(
+            self,
+            request_id: str,
+            chat_id: int,
+            message_id: int,
+            sender: object,
+        ) -> None:
             self.register_started.set()
             await self.release_register.wait()
-            await super().register(request_id, chat_id, message_id)
+            await super().register(request_id, chat_id, message_id, sender)
 
     registry = GatedRegistry()
     sender = MagicMock()
@@ -399,10 +405,10 @@ async def test_send_success_cancel_before_register_terminaliza_el_mensaje() -> N
 
     async def notify(req: HITLRequest) -> None:
         message = await sender.send(123, "prompt")
-        await register_hitl_message_cancellation_safe(registry, req.request_id, message)
+        await register_hitl_message_cancellation_safe(registry, req.request_id, message, sender)
 
     async def cancel(req: HITLRequest) -> None:
-        await terminalize_hitl_message(registry, sender, req.request_id, None)
+        await terminalize_hitl_message(registry, req.request_id, None)
 
     hitl = HITLGuard(notify_fn=notify, timeout=5, on_cancel=cancel, observer_timeout=0.01)
     pending = asyncio.create_task(hitl.request_approval(request_id="req-send-cancel"))
@@ -420,3 +426,192 @@ async def test_send_success_cancel_before_register_terminaliza_el_mensaje() -> N
         reply_markup=None,
     )
     assert await registry.get("req-send-cancel") is None
+
+
+@pytest.mark.asyncio
+async def test_hot_reload_terminaliza_con_sender_propietario_y_no_con_el_actual() -> None:
+    sender_a = MagicMock(name="sender_a")
+    sender_a.edit_message = AsyncMock()
+    sender_b = MagicMock(name="sender_b")
+    sender_b.edit_message = AsyncMock()
+    registry = TelegramHITLMessageRegistry()
+    webhook = TelegramWebhook(
+        router=MagicMock(),
+        sender=sender_b,
+        session=MagicMock(spec=aiohttp.ClientSession),
+        hitl_registry=registry,
+    )
+
+    await registry.register("req-hot-reload", 123, 700, sender=sender_a)
+    assert await webhook.terminalize_hitl("req-hot-reload", Decision.TIMEOUT) is True
+
+    sender_a.edit_message.assert_awaited_once_with(
+        123,
+        700,
+        "⌛ Solicitud expirada",
+        reply_markup=None,
+    )
+    sender_b.edit_message.assert_not_awaited()
+    assert await registry.get("req-hot-reload") is None
+
+
+@pytest.mark.asyncio
+async def test_hot_reload_timeout_usa_sender_a_aunque_el_actual_sea_b() -> None:
+    sender_a = MagicMock(name="sender_a")
+    sender_a.edit_message = AsyncMock()
+    sender_b = MagicMock(name="sender_b")
+    sender_b.edit_message = AsyncMock()
+    registry = TelegramHITLMessageRegistry()
+    registered = asyncio.Event()
+    webhook_box: list[TelegramWebhook] = []
+
+    async def notify(req: HITLRequest) -> None:
+        await registry.register(req.request_id, 123, 701, sender=sender_a)
+        registered.set()
+
+    async def terminal(req: HITLRequest, decision: Decision) -> None:
+        await webhook_box[0].terminalize_hitl(req.request_id, decision)
+
+    hitl = HITLGuard(notify_fn=notify, timeout=0.01, on_terminal=terminal)
+    webhook_box.append(
+        TelegramWebhook(
+            router=MagicMock(),
+            sender=sender_b,
+            session=MagicMock(spec=aiohttp.ClientSession),
+            hitl=hitl,
+            hitl_registry=registry,
+        )
+    )
+    pending = asyncio.create_task(hitl.request_approval(request_id="req-hot-timeout"))
+    await registered.wait()
+
+    assert await pending is Decision.TIMEOUT
+    sender_a.edit_message.assert_awaited_once_with(
+        123,
+        701,
+        "⌛ Solicitud expirada",
+        reply_markup=None,
+    )
+    sender_b.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hot_reload_resolucion_externa_usa_sender_a() -> None:
+    sender_a = MagicMock(name="sender_a")
+    sender_a.edit_message = AsyncMock()
+    sender_b = MagicMock(name="sender_b")
+    sender_b.edit_message = AsyncMock()
+    registry = TelegramHITLMessageRegistry()
+    registered = asyncio.Event()
+    webhook_box: list[TelegramWebhook] = []
+
+    async def notify(req: HITLRequest) -> None:
+        await registry.register(req.request_id, 123, 702, sender=sender_a)
+        registered.set()
+
+    async def terminal(req: HITLRequest, decision: Decision) -> None:
+        await webhook_box[0].terminalize_hitl(req.request_id, decision)
+
+    hitl = HITLGuard(notify_fn=notify, timeout=5, on_terminal=terminal)
+    webhook_box.append(
+        TelegramWebhook(
+            router=MagicMock(),
+            sender=sender_b,
+            session=MagicMock(spec=aiohttp.ClientSession),
+            hitl=hitl,
+            hitl_registry=registry,
+        )
+    )
+    pending = asyncio.create_task(hitl.request_approval(request_id="req-hot-external"))
+    await registered.wait()
+
+    assert await hitl.respond("req-hot-external", approved=False) is True
+    assert await pending is Decision.DENIED
+    sender_a.edit_message.assert_awaited_once_with(
+        123,
+        702,
+        "❌ Solicitud denegada",
+        reply_markup=None,
+    )
+    sender_b.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_overflow_no_evicta_mappings_pendientes() -> None:
+    from sky_claw.app.comms.telegram import TelegramHITLRegistryFullError
+
+    registry = TelegramHITLMessageRegistry(max_entries=2)
+    sender = MagicMock()
+    await registry.register("A", 123, 801, sender=sender)
+    await registry.register("B", 123, 802, sender=sender)
+
+    with pytest.raises(TelegramHITLRegistryFullError):
+        await registry.register("C", 123, 803, sender=sender)
+
+    assert await registry.get("A") is not None
+    assert await registry.get("B") is not None
+    assert await registry.get("C") is None
+
+
+@pytest.mark.asyncio
+async def test_overflow_end_to_end_invalida_mensaje_nuevo_y_preserva_a() -> None:
+    from sky_claw.app.comms.telegram import (
+        TelegramHITLRegistryFullError,
+        invalidate_unregistered_hitl_message,
+        register_hitl_message_cancellation_safe,
+    )
+
+    registry = TelegramHITLMessageRegistry(max_entries=1)
+    sender = MagicMock()
+    sender.send = AsyncMock(return_value=TelegramMessage(chat_id=123, message_id=804))
+    sender.edit_message = AsyncMock()
+    owner_a = MagicMock(name="owner_a")
+    await registry.register("A", 123, 801, sender=owner_a)
+
+    async def notify(req: HITLRequest) -> None:
+        message = await sender.send(123, "prompt B")
+        try:
+            await register_hitl_message_cancellation_safe(registry, req.request_id, message, sender)
+        except TelegramHITLRegistryFullError:
+            await invalidate_unregistered_hitl_message(sender, message)
+            raise
+
+    hitl = HITLGuard(notify_fn=notify, timeout=5)
+    assert await hitl.request_approval(request_id="B") is Decision.TIMEOUT
+    assert await registry.get("A") is not None
+    assert await registry.get("B") is None
+    sender.edit_message.assert_awaited_once_with(
+        123,
+        804,
+        "⚠️ Solicitud no accionable",
+        reply_markup=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_capacity_recovery_despues_de_cleanup() -> None:
+    registry = TelegramHITLMessageRegistry(max_entries=1)
+    sender = MagicMock()
+    await registry.register("A", 123, 805, sender=sender)
+    assert await registry.pop("A") is not None
+
+    await registry.register("C", 123, 806, sender=sender)
+    assert await registry.get("C") is not None
+
+
+@pytest.mark.asyncio
+async def test_reregister_de_request_activo_es_rechazado() -> None:
+    from sky_claw.app.comms.telegram import TelegramHITLRegistryDuplicateError
+
+    registry = TelegramHITLMessageRegistry(max_entries=2)
+    sender_a = MagicMock(name="sender_a")
+    sender_b = MagicMock(name="sender_b")
+    await registry.register("A", 123, 807, sender=sender_a)
+
+    with pytest.raises(TelegramHITLRegistryDuplicateError):
+        await registry.register("A", 123, 808, sender=sender_b)
+
+    reference = await registry.get("A")
+    assert reference is not None
+    assert reference.message_id == 807
+    assert reference.sender is sender_a
