@@ -2,8 +2,8 @@
 
 Flow:
     1. Run the dry-run preview (safe, reverts everything → no approval needed).
-    2. Show the serialized :class:`PreviewManifest` to the operator and request
-       approval via :class:`HITLGuard` (fail-secure: timeout → TIMEOUT).
+    2. Mostrar el :class:`PreviewManifest` serializado al operador y solicitar
+       aprobación mediante :class:`HITLGuard` (fail-secure: timeout → TIMEOUT).
     3. ONLY on ``Decision.APPROVED`` run the real chain (``execute_fn``).
        ``DENIED`` / ``TIMEOUT`` execute nothing.
 

@@ -305,3 +305,118 @@ async def test_edit_message_envia_keyboard_vacio_para_remover_botones() -> None:
 
     payload = gateway.request.call_args.kwargs["json"]
     assert payload["reply_markup"] == {"inline_keyboard": []}
+
+
+@pytest.mark.asyncio
+async def test_stalled_on_terminal_no_bloquea_respond() -> None:
+    terminal_started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def stalled_terminal(req: HITLRequest, decision: Decision) -> None:
+        terminal_started.set()
+        await never.wait()
+
+    hitl = HITLGuard(timeout=5, on_terminal=stalled_terminal, observer_timeout=0.01)
+    pending = asyncio.create_task(hitl.request_approval(request_id="req-stalled-terminal"))
+    await asyncio.sleep(0)
+
+    responder = asyncio.create_task(hitl.respond("req-stalled-terminal", approved=True))
+    await terminal_started.wait()
+
+    assert await asyncio.wait_for(responder, timeout=0.2) is True
+    assert await pending is Decision.APPROVED
+    assert "req-stalled-terminal" not in hitl._pending
+
+
+@pytest.mark.asyncio
+async def test_timeout_con_observer_colgado_retorna_bounded() -> None:
+    terminal_started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def stalled_terminal(req: HITLRequest, decision: Decision) -> None:
+        terminal_started.set()
+        await never.wait()
+
+    hitl = HITLGuard(timeout=0, on_terminal=stalled_terminal, observer_timeout=0.01)
+    pending = asyncio.create_task(hitl.request_approval(request_id="req-stalled-timeout"))
+
+    assert await asyncio.wait_for(pending, timeout=0.2) is Decision.TIMEOUT
+    await terminal_started.wait()
+    assert "req-stalled-timeout" not in hitl._pending
+
+
+@pytest.mark.asyncio
+async def test_stalled_on_cancel_no_suprime_cancelled_error() -> None:
+    notify_done = asyncio.Event()
+    cancel_started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def notify(req: HITLRequest) -> None:
+        notify_done.set()
+
+    async def stalled_cancel(req: HITLRequest) -> None:
+        cancel_started.set()
+        await never.wait()
+
+    hitl = HITLGuard(
+        notify_fn=notify,
+        timeout=5,
+        on_cancel=stalled_cancel,
+        observer_timeout=0.01,
+    )
+    pending = asyncio.create_task(hitl.request_approval(request_id="req-stalled-cancel"))
+    await notify_done.wait()
+
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pending, timeout=0.2)
+    await cancel_started.wait()
+    assert "req-stalled-cancel" not in hitl._pending
+
+
+@pytest.mark.asyncio
+async def test_send_success_cancel_before_register_terminaliza_el_mensaje() -> None:
+    from sky_claw.app.comms.telegram import (
+        register_hitl_message_cancellation_safe,
+        terminalize_hitl_message,
+    )
+
+    class GatedRegistry(TelegramHITLMessageRegistry):
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_started = asyncio.Event()
+            self.release_register = asyncio.Event()
+
+        async def register(self, request_id: str, chat_id: int, message_id: int) -> None:
+            self.register_started.set()
+            await self.release_register.wait()
+            await super().register(request_id, chat_id, message_id)
+
+    registry = GatedRegistry()
+    sender = MagicMock()
+    sender.send = AsyncMock(return_value=TelegramMessage(chat_id=123, message_id=777))
+    sender.edit_message = AsyncMock()
+
+    async def notify(req: HITLRequest) -> None:
+        message = await sender.send(123, "prompt")
+        await register_hitl_message_cancellation_safe(registry, req.request_id, message)
+
+    async def cancel(req: HITLRequest) -> None:
+        await terminalize_hitl_message(registry, sender, req.request_id, None)
+
+    hitl = HITLGuard(notify_fn=notify, timeout=5, on_cancel=cancel, observer_timeout=0.01)
+    pending = asyncio.create_task(hitl.request_approval(request_id="req-send-cancel"))
+    await registry.register_started.wait()
+
+    pending.cancel()
+    registry.release_register.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    sender.edit_message.assert_awaited_once_with(
+        123,
+        777,
+        "⚠️ Solicitud no accionable",
+        reply_markup=None,
+    )
+    assert await registry.get("req-send-cancel") is None

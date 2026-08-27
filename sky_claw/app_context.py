@@ -21,6 +21,7 @@ from sky_claw.app.comms.telegram import (
     TelegramHITLMessageRegistry,
     TelegramWebhook,
     escape_html,
+    register_hitl_message_cancellation_safe,
     terminalize_hitl_message,
 )
 from sky_claw.app.comms.telegram_polling import TelegramPolling
@@ -910,10 +911,10 @@ class AppContext:
                 # El mapping sólo nace después de que Telegram devuelve la
                 # identidad del mensaje. Un fallo, un None o una respuesta
                 # incompleta deja la request fail-closed sin mapping fantasma.
-                await self.telegram_hitl_registry.register(
+                await register_hitl_message_cancellation_safe(
+                    self.telegram_hitl_registry,
                     req.request_id,
-                    message.chat_id,
-                    message.message_id,
+                    message,
                 )
 
                 # Otra interfaz puede resolver la request mientras sendMessage

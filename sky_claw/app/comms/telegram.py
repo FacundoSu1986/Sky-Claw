@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import logging
 import secrets
 import uuid
@@ -95,6 +96,31 @@ def terminal_hitl_text(decision: Any) -> str:
     }.get(getattr(decision, "value", ""), "⚠️ Solicitud no accionable")
 
 
+async def register_hitl_message_cancellation_safe(
+    registry: TelegramHITLMessageRegistry,
+    request_id: str,
+    message: TelegramMessage,
+) -> None:
+    """Register a delivered message before allowing caller cancellation through.
+
+    The task is owned locally and drained on cancellation. This shields only the
+    in-memory registration after ``sendMessage`` succeeded; network delivery is
+    never shielded.
+    """
+    registration = asyncio.create_task(
+        registry.register(request_id, message.chat_id, message.message_id),
+        name=f"hitl-register:{request_id}",
+    )
+    try:
+        await asyncio.shield(registration)
+    except asyncio.CancelledError:
+        # Drenar la tarea owned antes de repropagar la cancelación evita tasks
+        # huérfanas y garantiza que el mapping exista para on_cancel.
+        with contextlib.suppress(asyncio.CancelledError):
+            await registration
+        raise
+
+
 async def terminalize_hitl_message(
     registry: TelegramHITLMessageRegistry,
     sender: TelegramSender | None,
@@ -146,7 +172,7 @@ import html  # noqa: E402
 
 if TYPE_CHECKING:
     from sky_claw.app.agent.router import LLMRouter
-    from sky_claw.app.comms.telegram_sender import TelegramSender
+    from sky_claw.app.comms.telegram_sender import TelegramMessage, TelegramSender
     from sky_claw.app.orchestrator.sync_engine import UpdatePayload
     from sky_claw.app.security.hitl import HITLGuard
 
