@@ -17,7 +17,7 @@ import pathlib
 from typing import Any
 
 from sky_claw.app.core.models import LootExecutionParams
-from sky_claw.app.security.hitl import Decision
+from sky_claw.app.security.hitl import Decision, new_hitl_request_id
 from sky_claw.app.security.sanitize import sanitize_for_prompt
 from sky_claw.local.tools.output_targets import BODYSLIDE_MESHES_RESOURCE_ID
 
@@ -251,7 +251,7 @@ async def install_mod_from_archive(
     """
     if hitl is None:
         return json.dumps({"success": False, "message": "HITL guard is not configured. Installation blocked."})
-    request_id = f"install-{pathlib.Path(archive_path).name}"
+    request_id = new_hitl_request_id(f"install-{pathlib.Path(archive_path).name}")
     # Decision ya está importado a nivel de módulo (HOTFIX: se eliminó el import dinámico).
     try:
         decision = await hitl.request_approval(

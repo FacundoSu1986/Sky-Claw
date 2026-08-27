@@ -50,6 +50,16 @@ class HITLRequest:
     _resolved: bool = field(default=False, repr=False)
 
 
+def new_hitl_request_id(prefix: str) -> str:
+    """Genera una identidad corta y única para un intento HITL del productor.
+
+    El ``request_id`` sigue siendo opaco para :class:`HITLGuard`: este helper solo
+    evita que productores humanos reutilicen una identidad determinista entre
+    intentos, sin cambiar el protocolo de respuesta ni canonicalizar el prefijo.
+    """
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
 class HITLGuard:
     """Manages the HITL authorisation flow.
 

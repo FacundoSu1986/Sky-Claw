@@ -22,7 +22,7 @@ from sky_claw.app.agent.tools.system_tools import (
     preview_mod_installer,
     resolve_fomod,
 )
-from sky_claw.app.security.hitl import Decision
+from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.fomod.installer import FomodInstaller, FomodPreview, InstallResult
 
@@ -332,6 +332,66 @@ class TestInstallModFromArchiveContrato:
 
         with pytest.raises(asyncio.CancelledError):
             await install_mod_from_archive(fake_mo2, installer, _CancelHITL(), "C:/mods/TestMod.zip", profile="Default")
+
+    async def test_intentos_de_instalacion_tienen_ids_unicos_y_bloquean_replay_aba(self, fake_mo2: _FakeMO2) -> None:
+        """Una respuesta tardía de A no puede aprobar el reintento B de la misma archive."""
+        requests: list[Any] = []
+        first_delivered = asyncio.Event()
+        second_delivered = asyncio.Event()
+
+        async def notify(req: Any) -> None:
+            requests.append(req)
+            if len(requests) == 1:
+                first_delivered.set()
+                await asyncio.Event().wait()
+            else:
+                second_delivered.set()
+
+        guard = HITLGuard(notify_fn=notify, timeout=5)
+        installer = _FakeFomodInstaller(
+            install_result=InstallResult(mod_name="TestMod", files_copied=["plugin.esp"], installed=True)
+        )
+        archive = "C:/mods/TestMod.zip"
+
+        attempt_a = asyncio.create_task(
+            install_mod_from_archive(
+                fake_mo2,
+                installer,
+                guard,
+                archive,
+                selections={"Textures": ["2K"]},
+                profile="Default",
+            )
+        )
+        await asyncio.wait_for(first_delivered.wait(), timeout=1)
+        request_a = requests[0].request_id
+        attempt_a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await attempt_a
+        assert request_a not in guard._pending
+
+        attempt_b = asyncio.create_task(
+            install_mod_from_archive(
+                fake_mo2,
+                installer,
+                guard,
+                archive,
+                selections={"Textures": ["4K"]},
+                profile="Default",
+            )
+        )
+        await asyncio.wait_for(second_delivered.wait(), timeout=1)
+        request_b = requests[1].request_id
+
+        assert request_a != request_b
+        assert requests[0].detail != requests[1].detail
+        assert await guard.respond(request_a, approved=True) is False
+        assert request_b in guard._pending
+        assert await guard.respond(request_b, approved=True) is True
+
+        result = _cargar(await attempt_b)
+        assert result["success"] is True
+        assert request_b not in guard._pending
 
 
 # ---------------------------------------------------------------------------

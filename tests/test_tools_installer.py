@@ -173,6 +173,18 @@ def _mockear_py7zr_roto(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("py7zr.SevenZipFile", _reventar)
 
 
+async def _responder_pending(guard: HITLGuard, *, approved: bool) -> None:
+    """Responde al ID opaco que el productor publicó en este intento."""
+    for _ in range(500):
+        async with guard._lock:
+            request_ids = tuple(guard._pending)
+        if request_ids:
+            assert await guard.respond(request_ids[0], approved=approved)
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("El productor no publicó una solicitud HITL pendiente")
+
+
 def _mockear_7z_del_sistema(monkeypatch: pytest.MonkeyPatch, *, miembros: list[str]) -> MagicMock:
     """Simula el binario ``7z``: ``l -slt`` devuelve *miembros*, ``x`` no hace nada."""
     listado = "7-Zip 21.07\n--\nPath = dummy.7z\nType = 7z\n\n----------\n"
@@ -322,7 +334,7 @@ class TestEnsureLoot:
         # Auto-approve HITL.
         async def _auto_approve() -> None:
             await asyncio.sleep(0.01)
-            await installer._hitl.respond("install-loot-0.22.4", approved=True)
+            await _responder_pending(installer._hitl, approved=True)
 
         asyncio.create_task(_auto_approve())
 
@@ -356,7 +368,7 @@ class TestEnsureLoot:
 
         async def _auto_deny() -> None:
             await asyncio.sleep(0.01)
-            await installer._hitl.respond("install-loot-0.22.4", approved=False)
+            await _responder_pending(installer._hitl, approved=False)
 
         asyncio.create_task(_auto_deny())
 
@@ -436,7 +448,7 @@ class TestEnsureXedit:
 
         async def _auto_approve() -> None:
             await asyncio.sleep(0.01)
-            await installer._hitl.respond("install-xedit-4.1.5", approved=True)
+            await _responder_pending(installer._hitl, approved=True)
 
         asyncio.create_task(_auto_approve())
 
@@ -467,7 +479,7 @@ class TestEnsureXedit:
 
         async def _auto_deny() -> None:
             await asyncio.sleep(0.01)
-            await installer._hitl.respond("install-xedit-4.1.5", approved=False)
+            await _responder_pending(installer._hitl, approved=False)
 
         asyncio.create_task(_auto_deny())
 

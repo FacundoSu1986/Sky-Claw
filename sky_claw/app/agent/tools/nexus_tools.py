@@ -19,7 +19,7 @@ from urllib.parse import quote_plus
 
 import aiohttp
 
-from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.hitl import Decision, HITLGuard, new_hitl_request_id
 from sky_claw.app.security.network_gateway import GatewayTCPConnector, NetworkGateway
 from sky_claw.app.security.sanitize import sanitize_for_prompt
 
@@ -134,7 +134,7 @@ async def download_mod(
             f"MD5: {file_info.md5 or 'n/a'}  |  "
             f"URL: {file_info.download_url}"
         )
-        request_id = f"download-{nexus_id}-{file_id}"
+        request_id = new_hitl_request_id(f"download-{nexus_id}-{file_id}")
         decision = await hitl.request_approval(
             request_id=request_id,
             reason=(

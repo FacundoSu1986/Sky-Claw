@@ -853,11 +853,12 @@ class TestEndToEndHITLFlow:
                 # Sincronizacion por evento: _notify setea request_registered en
                 # cuanto HITLGuard guarda la solicitud pendiente.
                 await asyncio.wait_for(request_registered.wait(), timeout=5.0)
+                expected_request_id = notifications[0]
+                assert expected_request_id.startswith("download-42-7-")
 
                 # ---- El operador aprueba via Telegram ----
                 # _install_webhook_sync hace que client.post recien retorne
                 # cuando las tasks de fondo del webhook terminaron.
-                expected_request_id = "download-42-7"
                 await client.post(
                     "/webhook",
                     json=_make_update(100, chat_id=operator_chat_id, text=f"/approve {expected_request_id}"),
@@ -910,8 +911,10 @@ class TestEndToEndHITLFlow:
         sync_engine = SyncEngine(mo2=mo2, masterlist=masterlist, registry=db)
 
         request_registered = asyncio.Event()
+        request_ids: list[str] = []
 
-        async def _notify(_req: Any) -> None:
+        async def _notify(req: Any) -> None:
+            request_ids.append(req.request_id)
             request_registered.set()
 
         guard = HITLGuard(notify_fn=_notify, timeout=10)
@@ -953,10 +956,12 @@ class TestEndToEndHITLFlow:
 
         tool_task = asyncio.create_task(_run_tool())
         await asyncio.wait_for(request_registered.wait(), timeout=5.0)
+        expected_request_id = request_ids[0]
+        assert expected_request_id.startswith("download-1-2-")
 
         await client.post(
             "/webhook",
-            json=_make_update(200, text="/deny download-1-2"),
+            json=_make_update(200, text=f"/deny {expected_request_id}"),
         )
         await tool_task
 

@@ -16,7 +16,9 @@ Covers:
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import pathlib
 import uuid
 from unittest.mock import AsyncMock
 
@@ -176,6 +178,104 @@ class TestRequestApprovalIdGeneration:
 # ---------------------------------------------------------------------------
 # TestRequestApproval – duplicate request_id
 # ---------------------------------------------------------------------------
+
+
+class TestHitlProducerRequestIds:
+    """Ancla de familia: todo productor humano debe evitar IDs reutilizables."""
+
+    _EXPECTED_PRODUCERS = {
+        "sky_claw/app/agent/tools/nexus_tools.py": {"download_mod": 1},
+        "sky_claw/app/agent/tools/system_tools.py": {"install_mod_from_archive": 1},
+        "sky_claw/app/orchestrator/preview/approval_gate.py": {"preview_then_execute": 1},
+        "sky_claw/app/orchestrator/sandbox_promotion.py": {"_request_decision": 1},
+        "sky_claw/app/orchestrator/sync_engine.py": {"_check_and_update_mod": 2},
+        "sky_claw/app/orchestrator/tool_strategies/middleware.py": {"__call__": 1},
+        "sky_claw/local/tools_installer.py": {
+            "ensure_loot": 1,
+            "ensure_xedit": 1,
+            "ensure_pandora": 1,
+            "ensure_skse": 1,
+            "ensure_bodyslide": 1,
+            "_ensure_github_mod": 1,
+            "_ensure_nexus_mod": 1,
+        },
+    }
+
+    @staticmethod
+    def _dotted_names(node: ast.AST) -> set[str]:
+        return {item.id for item in ast.walk(node) if isinstance(item, ast.Name)} | {
+            item.attr for item in ast.walk(node) if isinstance(item, ast.Attribute)
+        }
+
+    @classmethod
+    def _is_unique_expression(cls, expression: ast.AST, function: ast.AST, seen: set[str]) -> bool:
+        names = cls._dotted_names(expression)
+        if "new_hitl_request_id" in names or "uuid4" in names:
+            return True
+        if not isinstance(expression, ast.Name) or expression.id in seen:
+            return False
+        seen.add(expression.id)
+        values: list[ast.AST] = []
+        for item in ast.walk(function):
+            if isinstance(item, ast.Assign):
+                targets = item.targets
+                value = item.value
+            elif isinstance(item, ast.AnnAssign):
+                targets = [item.target]
+                value = item.value
+            else:
+                continue
+            if (
+                any(isinstance(target, ast.Name) and target.id == expression.id for target in targets)
+                and value is not None
+            ):
+                values.append(value)
+        return bool(values) and all(cls._is_unique_expression(value, function, seen.copy()) for value in values)
+
+    def test_todos_los_productores_humanos_tienen_identidad_por_intento(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        discovered: dict[str, dict[str, int]] = {}
+        calls: list[tuple[str, str, ast.Call, ast.AST]] = []
+
+        for path in sorted((root / "sky_claw").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+            class Visitor(ast.NodeVisitor):
+                def __init__(self, relative_path: str) -> None:
+                    self._relative_path = relative_path
+                    self.functions: list[tuple[str, ast.AST]] = []
+
+                def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                    self.functions.append((node.name, node))
+                    self.generic_visit(node)
+                    self.functions.pop()
+
+                visit_AsyncFunctionDef = visit_FunctionDef  # noqa: N815
+
+                def visit_Call(self, node: ast.Call) -> None:
+                    if isinstance(node.func, ast.Attribute) and node.func.attr == "request_approval" and self.functions:
+                        function_name, function_node = self.functions[-1]
+                        calls.append((self._relative_path, function_name, node, function_node))
+                    self.generic_visit(node)
+
+            Visitor(str(path.relative_to(root))).visit(tree)
+
+        for relative, function_name, call, function_node in calls:
+            discovered.setdefault(relative, {})[function_name] = (
+                discovered.setdefault(relative, {}).get(function_name, 0) + 1
+            )
+            request_id = next((keyword.value for keyword in call.keywords if keyword.arg == "request_id"), None)
+            if request_id is None:
+                assert (relative, function_name) == (
+                    "sky_claw/app/orchestrator/preview/approval_gate.py",
+                    "preview_then_execute",
+                )
+            else:
+                assert self._is_unique_expression(request_id, function_node, set()), (
+                    f"request_id no único en {relative}:{function_name}"
+                )
+
+        assert discovered == self._EXPECTED_PRODUCERS
 
 
 class TestRequestApprovalDuplicateId:

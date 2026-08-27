@@ -49,7 +49,7 @@ from sky_claw.app.scraper.masterlist import (
     MasterlistFetchError,
     MasterlistHTTPError,
 )
-from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.hitl import Decision, HITLGuard, new_hitl_request_id
 from sky_claw.app.security.network_gateway import NetworkGatewayTimeoutError
 from sky_claw.app.security.path_validator import (
     PathViolationError,
@@ -758,13 +758,14 @@ class SyncEngine:
 
             if self._hitl:
                 desc = f"Update for {mod_name} ({local_version} -> {nexus_version})"
+                request_id = new_hitl_request_id(f"update_{nexus_id}")
                 # F7: la aprobación humana se serializa (semáforo de a uno) para
                 # no solapar prompts contra el único slot de la GUI. Envuelve
                 # SOLO request_approval — la descarga posterior sigue concurrente.
                 if hitl_semaphore is not None:
                     async with hitl_semaphore:
                         decision = await self._hitl.request_approval(
-                            request_id=f"update_{nexus_id}",
+                            request_id=request_id,
                             reason="Automatic Mod Update",
                             url=file_info.download_url,
                             detail=desc,
@@ -772,7 +773,7 @@ class SyncEngine:
                         )
                 else:
                     decision = await self._hitl.request_approval(
-                        request_id=f"update_{nexus_id}",
+                        request_id=request_id,
                         reason="Automatic Mod Update",
                         url=file_info.download_url,
                         detail=desc,
