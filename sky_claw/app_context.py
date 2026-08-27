@@ -920,17 +920,12 @@ class AppContext:
                             ]
                         },
                     )
-                    # Otra interfaz puede resolver mientras sendMessage está en
-                    # vuelo. En ese caso no hay mapping que registrar: se
-                    # invalida el mensaje recién creado y se deja que el guard
-                    # devuelva su decisión terminal original.
-                    if await hitl.terminal_decision(req.request_id) is not None:
-                        await invalidate_unregistered_hitl_message(active_sender, message)
-                        await self.telegram_hitl_registry.release_token(token)
-                        return
-                    # El mapping sólo nace después de que Telegram devuelve la
-                    # identidad del mensaje. Un fallo, un None o una respuesta
-                    # incompleta deja la request fail-closed sin mapping fantasma.
+                    # El mapping sólo nace inmediatamente después de que
+                    # Telegram devuelve la identidad del mensaje. No insertar
+                    # awaits entre sendMessage y este registro: la cancelación
+                    # debe poder encontrar el owner para quitar los botones. Un
+                    # fallo, un None o una respuesta incompleta deja la request
+                    # fail-closed sin mapping fantasma.
                     try:
                         await register_hitl_message_cancellation_safe(
                             self.telegram_hitl_registry,

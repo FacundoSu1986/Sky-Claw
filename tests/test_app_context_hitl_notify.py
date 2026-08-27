@@ -167,3 +167,42 @@ async def test_fallo_real_de_sendmessage_libera_token_y_falla_cerrado(tmp_path: 
     assert decision is Decision.TIMEOUT
     assert len(ctx.telegram_hitl_registry) == 0
     assert await ctx.telegram_hitl_registry.token_for_request("request-send-failure") is None
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_entre_send_y_register_invalida_prompt_productivo(tmp_path: Path) -> None:
+    ctx, hitl, sender, sent = await _build_productive_hitl(tmp_path)
+    request_id = "request-cancel-race"
+    original_terminal_decision = hitl.terminal_decision
+    terminal_decision_blocked = asyncio.Event()
+    terminal_decision_calls = 0
+
+    async def terminal_decision_with_gate(current_request_id: str):
+        nonlocal terminal_decision_calls
+        terminal_decision_calls += 1
+        decision = await original_terminal_decision(current_request_id)
+        if terminal_decision_calls == 2:
+            terminal_decision_blocked.set()
+            await asyncio.Event().wait()
+        return decision
+
+    hitl.terminal_decision = terminal_decision_with_gate
+    pending = asyncio.create_task(hitl.request_approval(request_id=request_id, reason="cancel race"))
+
+    await asyncio.wait_for(sent.wait(), timeout=1)
+    token = await ctx.telegram_hitl_registry.token_for_request(request_id)
+    assert token is not None
+    await asyncio.wait_for(terminal_decision_blocked.wait(), timeout=1)
+
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    sender.edit_message.assert_awaited_once_with(
+        123,
+        77,
+        "⚠️ Solicitud no accionable",
+        reply_markup=None,
+    )
+    assert await ctx.telegram_hitl_registry.resolve_token(token) is None
+    assert await ctx.telegram_hitl_registry.get(request_id) is None
