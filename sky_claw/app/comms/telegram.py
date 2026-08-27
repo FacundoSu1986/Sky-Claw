@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hashlib
 import logging
 import secrets
 import uuid
@@ -402,10 +403,31 @@ if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
 
 
+_HITL_REQUEST_ID_VISIBLE_PREFIX_CHARS = 48
+_HITL_REQUEST_ID_SHORT_MAX_CHARS = 128
+
+
 def escape_html(text: str) -> str:
     if not text:
         return ""
     return html.escape(str(text))
+
+
+def format_hitl_request_id_for_telegram(request_id: str) -> str:
+    """Renderiza una vista acotada del ID sin cambiar su identidad interna.
+
+    IDs cortos se muestran completos para conservar la ergonomía existente. Para
+    IDs largos, Telegram recibe sólo un prefijo escapado y una huella SHA-256
+    derivada del valor exacto; el ``request_id`` original nunca se trunca en el
+    guard ni en el registry.
+    """
+    if not isinstance(request_id, str):
+        raise TypeError("request_id must be a string")
+    if len(request_id) <= _HITL_REQUEST_ID_SHORT_MAX_CHARS:
+        return escape_html(request_id)
+    prefix = escape_html(request_id[:_HITL_REQUEST_ID_VISIBLE_PREFIX_CHARS])
+    fingerprint = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}… [sha256:{fingerprint}]"
 
 
 def _format_update_payload(payload: UpdatePayload) -> str:

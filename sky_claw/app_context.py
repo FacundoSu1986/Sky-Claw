@@ -22,6 +22,7 @@ from sky_claw.app.comms.telegram import (
     TelegramWebhook,
     build_hitl_callback_data,
     escape_html,
+    format_hitl_request_id_for_telegram,
     invalidate_unregistered_hitl_message,
     register_hitl_message_cancellation_safe,
     terminalize_hitl_message,
@@ -893,7 +894,7 @@ class AppContext:
                     prompt_lines = [
                         "🛡️ <b>Se requiere aprobación HITL</b>",
                         "",
-                        f"<b>ID:</b> <code>{escape_html(req.request_id)}</code>",
+                        f"<b>ID:</b> <code>{format_hitl_request_id_for_telegram(req.request_id)}</code>",
                         f"<b>Motivo:</b> {escape_html(req.reason)}",
                     ]
                     if req.url:
