@@ -19,12 +19,14 @@ from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.agent.tools_facade import AsyncToolRegistry
 from sky_claw.app.comms.telegram import (
     TelegramHITLMessageRegistry,
-    TelegramHITLRegistryError,
     TelegramWebhook,
+    build_hitl_callback_data,
     escape_html,
+    format_hitl_request_id_for_telegram,
     invalidate_unregistered_hitl_message,
     register_hitl_message_cancellation_safe,
     terminalize_hitl_message,
+    terminalize_unregistered_hitl_message_bounded,
 )
 from sky_claw.app.comms.telegram_polling import TelegramPolling
 from sky_claw.app.comms.telegram_sender import TelegramSender
@@ -877,50 +879,93 @@ class AppContext:
                     )
                     await hitl.respond(req.request_id, False)
                     return
-                prompt_lines = [
-                    "🛡️ <b>Se requiere aprobación HITL</b>",
-                    "",
-                    f"<b>ID:</b> <code>{escape_html(req.request_id)}</code>",
-                    f"<b>Motivo:</b> {escape_html(req.reason)}",
-                ]
-                if req.url:
-                    prompt_lines.append(f"<b>URL:</b> <code>{escape_html(req.url)}</code>")
-                if req.detail:
-                    prompt_lines.extend(["", escape_html(req.detail)])
-
-                message = await active_sender.send(
-                    operator_chat_id,
-                    "\n".join(prompt_lines),
-                    reply_markup={
-                        "inline_keyboard": [
-                            [
-                                {
-                                    "text": "✅ Aprobar",
-                                    "callback_data": f"hitl:approve:{req.request_id}",
-                                },
-                                {
-                                    "text": "❌ Denegar",
-                                    "callback_data": f"hitl:deny:{req.request_id}",
-                                },
-                            ]
-                        ]
-                    },
-                )
-                # El mapping sólo nace después de que Telegram devuelve la
-                # identidad del mensaje. Un fallo, un None o una respuesta
-                # incompleta deja la request fail-closed sin mapping fantasma.
                 try:
-                    await register_hitl_message_cancellation_safe(
-                        self.telegram_hitl_registry,
-                        req.request_id,
-                        message,
-                        active_sender,
+                    token = await self.telegram_hitl_registry.reserve_token(req.request_id)
+                except Exception:
+                    # Si otra interfaz resolvió durante la reserva, preservar la
+                    # decisión del guard; una reserva que nunca existió no deja
+                    # nada que limpiar ni debe transformar APPROVED en TIMEOUT.
+                    if await hitl.terminal_decision(req.request_id) is not None:
+                        return
+                    raise
+                if await hitl.terminal_decision(req.request_id) is not None:
+                    await self.telegram_hitl_registry.release_token(token)
+                    return
+                try:
+                    prompt_lines = [
+                        "🛡️ <b>Se requiere aprobación HITL</b>",
+                        "",
+                        f"<b>ID:</b> <code>{format_hitl_request_id_for_telegram(req.request_id)}</code>",
+                        f"<b>Motivo:</b> {escape_html(req.reason)}",
+                    ]
+                    if req.url:
+                        prompt_lines.append(f"<b>URL:</b> <code>{escape_html(req.url)}</code>")
+                    if req.detail:
+                        prompt_lines.extend(["", escape_html(req.detail)])
+
+                    message = await active_sender.send(
+                        operator_chat_id,
+                        "\n".join(prompt_lines),
+                        reply_markup={
+                            "inline_keyboard": [
+                                [
+                                    {
+                                        "text": "✅ Aprobar",
+                                        "callback_data": build_hitl_callback_data("approve", token),
+                                    },
+                                    {
+                                        "text": "❌ Denegar",
+                                        "callback_data": build_hitl_callback_data("deny", token),
+                                    },
+                                ]
+                            ]
+                        },
                     )
-                except TelegramHITLRegistryError:
-                    # Telegram ya creó el mensaje, pero el prompt nuevo no tiene
-                    # owner registrable. Invalidarlo evita dejar botones vivos y
-                    # conserva intactos los mappings pendientes anteriores.
-                    await invalidate_unregistered_hitl_message(active_sender, message)
+                    # El mapping sólo nace inmediatamente después de que
+                    # Telegram devuelve la identidad del mensaje. No insertar
+                    # awaits entre sendMessage y este registro: la cancelación
+                    # debe poder encontrar el owner para quitar los botones. Un
+                    # fallo, un None o una respuesta incompleta deja la request
+                    # fail-closed sin mapping fantasma.
+                    try:
+                        await register_hitl_message_cancellation_safe(
+                            self.telegram_hitl_registry,
+                            req.request_id,
+                            message,
+                            active_sender,
+                            token=token,
+                        )
+                    except Exception:
+                        # Telegram ya creó el mensaje. Si otra interfaz resolvió
+                        # durante sendMessage, on_terminal retiró la reserva y no
+                        # habrá mapping que consumir: conservar la presentación
+                        # terminal de esa decisión en vez de usar cancelación genérica.
+                        decision = await hitl.terminal_decision(req.request_id)
+                        if decision is not None:
+                            await terminalize_unregistered_hitl_message_bounded(
+                                active_sender,
+                                message,
+                                decision,
+                            )
+                            return
+                        # En cualquier otro fallo, invalidar el prompt recién creado
+                        # y conservar intactos los mappings pendientes anteriores.
+                        await invalidate_unregistered_hitl_message(active_sender, message)
+                        raise
+                except asyncio.CancelledError:
+                    # El guard ejecuta on_cancel para quitar botones; aquí sólo
+                    # liberamos la reserva si la cancelación ocurrió antes del
+                    # registro del mensaje.
+                    await self.telegram_hitl_registry.release_token(token)
+                    raise
+                except Exception:
+                    # send failure, builder failure y registration failure son
+                    # fail-closed; la reserva nunca queda huérfana. Si otra
+                    # interfaz ya comprometió una decisión mientras el envío
+                    # estaba en vuelo, no convertirla en TIMEOUT.
+                    await self.telegram_hitl_registry.release_token(token)
+                    if await hitl.terminal_decision(req.request_id) is not None:
+                        return
                     raise
 
                 # Otra interfaz puede resolver la request mientras sendMessage
