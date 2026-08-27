@@ -130,13 +130,13 @@ class TestParseHITLCommand:
         result = _parse_hitl_command("/deny download-10-20")
         assert result == (False, "download-10-20")
 
-    def test_approve_strips_whitespace(self) -> None:
+    def test_approve_preserva_whitespace_del_request_id(self) -> None:
         result = _parse_hitl_command("  /approve   my-req-id  ")
-        assert result == (True, "my-req-id")
+        assert result == (True, "  my-req-id  ")
 
-    def test_deny_strips_whitespace(self) -> None:
+    def test_deny_preserva_whitespace_del_request_id(self) -> None:
         result = _parse_hitl_command("  /deny   my-req-id  ")
-        assert result == (False, "my-req-id")
+        assert result == (False, "  my-req-id  ")
 
     def test_regular_text_returns_none(self) -> None:
         assert _parse_hitl_command("hello world") is None
