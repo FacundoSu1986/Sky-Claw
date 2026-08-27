@@ -27,10 +27,9 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     RITUAL_TOOL_MAP,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
-    clear_answered_hitl,
     clear_ritual_result_owned,
-    resolve_pending_hitl,
     resolve_ritual_resume_action,
+    resolve_visible_pending_hitl,
 )
 from sky_claw.app.gui.state import get_store
 
@@ -680,12 +679,7 @@ def _modo_local_panel() -> None:
 
 # ── HITL APPROVAL MODAL + RITUAL FEEDBACK (store-driven overlays) ─────────────────
 def _respond_hitl(request_id: str, approved: bool) -> None:
-    """Clear the pending prompt and forward the decision to the HITL guard.
-
-    P1-7: limpia la pendiente SOLO si es esta misma solicitud (compara
-    ``request_id``). Un clear incondicional desalojaba una que nadie respondió.
-    """
-    clear_answered_hitl(get_store(), request_id)
+    """Forward the captured request ID to the page-level guarded callback."""
     fn = _HITL_CALLBACKS.get("respond")
     if callable(fn):
         fn(request_id, approved)
@@ -737,7 +731,7 @@ def _hitl_modal_panel() -> None:
     """
     # P1-7: la aprobación de ESTE cliente (la del Ritual que él lanzó), o una sin
     # dueño. Nunca la de otra pestaña: era accionable desde cualquier sesión.
-    pending = resolve_pending_hitl(get_store(), current_tab_id())
+    pending = resolve_visible_pending_hitl(get_store(), current_tab_id())
     if not _hitl_modal_visible(pending, str(get_store().get("active_section") or "")):
         return
     request_id = str(pending.get("request_id", ""))

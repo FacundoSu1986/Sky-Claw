@@ -331,6 +331,7 @@ async def test_bridge_parks_download_modal_and_never_auto_approves() -> None:
             "reason": "Install LOOT?",
             "detail": "Asset…",
             "url": "https://x/y.zip",
+            "category": "download",
             "owner_tab": None,
         }
     ]

@@ -57,6 +57,11 @@ def ritual_auto_approve_armed() -> bool:
 #: aprobar un Ritual que no inició. El ContextVar lleva el dueño hasta el bridge
 #: HITL, que corre inline dentro de la misma task del dispatch.
 _ritual_tab_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("ritual_tab_id", default=None)
+# Identidad exacta de la última solicitud estacionada por el runner actual. Se
+# usa solo para que su ``finally`` retire su propia entrada, nunca por posición.
+_gui_pending_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "gui_pending_request_id", default=None
+)
 
 
 def ritual_tab_id() -> str | None:
@@ -107,56 +112,244 @@ RITUAL_RESULTS_BY_OWNER = "results_by_owner"
 #: sobre ``STORE_KEY_PENDING_HITL`` — el modal no aparecería nunca.
 HITL_OWNER_TAB = "owner_tab"
 
+#: Shape interna del estado multi-pending. La root key observable no cambia.
+PENDING_HITL_ENTRIES = "entries"
+PENDING_HITL_ORDER = "order"
+#: Límite deliberadamente privado: evita crecimiento sin acotar sin crear una
+#: setting pública para un estado efímero de UI. Llegar al límite falla cerrado.
+MAX_PENDING_HITL = 32
+
+
+class PendingHitlStateError(RuntimeError):
+    """Estado HITL GUI inválido o una operación que no puede parkearse."""
+
+
+class DuplicatePendingHitlError(PendingHitlStateError):
+    """El ``request_id`` ya ocupa una entrada activa y no puede sobrescribirse."""
+
+
+class PendingHitlCapacityError(PendingHitlStateError):
+    """El contenedor está lleno y no puede desalojar una solicitud activa."""
+
+
+class MalformedPendingHitlError(PendingHitlStateError):
+    """La shape persistida no permite identificar solicitudes de forma segura."""
+
 
 def stamp_hitl_owner(payload: dict[str, Any], tab_id: str | None) -> dict[str, Any]:
     """Marca la solicitud con la pestaña dueña, sin mutar el payload original."""
     return {**payload, HITL_OWNER_TAB: tab_id}
 
 
+def _valid_pending_envelope(raw: Any, expected_request_id: str | None = None) -> dict[str, Any]:
+    """Valida y copia una entrada sin reparar identidades malformadas."""
+    if not isinstance(raw, dict):
+        raise MalformedPendingHitlError("pending HITL envelope must be a dict")
+    request_id = raw.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        raise MalformedPendingHitlError("pending HITL request_id must be a non-empty string")
+    if expected_request_id is not None and request_id != expected_request_id:
+        raise MalformedPendingHitlError("pending HITL entry key does not match request_id")
+    owner = raw.get(HITL_OWNER_TAB)
+    if owner is not None and not isinstance(owner, str):
+        raise MalformedPendingHitlError("pending HITL owner_tab must be a string or None")
+    return dict(raw)
+
+
+def _read_pending_hitl_state(store: ReactiveStore) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Lee la shape C3 o adopta una única entrada legacy sin escribirla."""
+    raw = store.get(STORE_KEY_PENDING_HITL)
+    if raw is None:
+        return {}, []
+    if not isinstance(raw, dict):
+        raise MalformedPendingHitlError("pending HITL state must be a dict or None")
+
+    # Hot reload transition: un dict simple pre-C3 sigue siendo una entrada.
+    if PENDING_HITL_ENTRIES not in raw and PENDING_HITL_ORDER not in raw:
+        entry = _valid_pending_envelope(raw)
+        request_id = entry["request_id"]
+        return {request_id: entry}, [request_id]
+
+    entries = raw.get(PENDING_HITL_ENTRIES)
+    order = raw.get(PENDING_HITL_ORDER)
+    if not isinstance(entries, dict) or not isinstance(order, list):
+        raise MalformedPendingHitlError("pending HITL entries/order have invalid types")
+    if any(not isinstance(request_id, str) for request_id in order):
+        raise MalformedPendingHitlError("pending HITL order has invalid IDs")
+    if len(order) != len(set(order)):
+        raise MalformedPendingHitlError("pending HITL order has duplicate IDs")
+    if set(entries) != set(order):
+        raise MalformedPendingHitlError("pending HITL order and entries disagree")
+    if len(order) > MAX_PENDING_HITL:
+        raise MalformedPendingHitlError("pending HITL state exceeds its capacity")
+
+    copied: dict[str, dict[str, Any]] = {}
+    for request_id in order:
+        copied[request_id] = _valid_pending_envelope(entries[request_id], request_id)
+    return copied, list(order)
+
+
+def _write_pending_hitl_state(
+    store: ReactiveStore,
+    entries: dict[str, dict[str, Any]],
+    order: list[str],
+) -> None:
+    """ÚNICO writer productivo del root key HITL; muta el contenedor una vez."""
+    if not order:
+        store.set(STORE_KEY_PENDING_HITL, None)
+        return
+    store.set(
+        STORE_KEY_PENDING_HITL,
+        {
+            PENDING_HITL_ENTRIES: {request_id: dict(entries[request_id]) for request_id in order},
+            PENDING_HITL_ORDER: list(order),
+        },
+    )
+
+
+def enqueue_pending_hitl(store: ReactiveStore, payload: dict[str, Any]) -> None:
+    """Añade una solicitud sin sobrescribir ni desalojar las ya pendientes."""
+    entry = _valid_pending_envelope(payload)
+    request_id = entry["request_id"]
+    entries, order = _read_pending_hitl_state(store)
+    if request_id in entries:
+        raise DuplicatePendingHitlError(f"pending HITL request_id already active: {request_id}")
+    if len(order) >= MAX_PENDING_HITL:
+        raise PendingHitlCapacityError(f"pending HITL capacity reached: {MAX_PENDING_HITL}")
+    entries[request_id] = entry
+    order.append(request_id)
+    _write_pending_hitl_state(store, entries, order)
+
+
+def _remove_pending_hitl(store: ReactiveStore, request_id: str) -> None:
+    """Elimina solo ``request_id`` y no hace nada ante un click stale."""
+    if not isinstance(request_id, str) or not request_id:
+        return
+    try:
+        entries, order = _read_pending_hitl_state(store)
+    except MalformedPendingHitlError:
+        return
+    if request_id not in entries:
+        return
+    del entries[request_id]
+    _write_pending_hitl_state(store, entries, [rid for rid in order if rid != request_id])
+
+
 def clear_answered_hitl(store: ReactiveStore, request_id: str) -> None:
-    """Limpia la solicitud pendiente SOLO si es la que se acaba de responder.
+    """Limpia exactamente la solicitud que acaba de resolverse."""
+    _remove_pending_hitl(store, request_id)
 
-    Un clear incondicional desalojaba una solicitud que nadie contestó: entre
-    que se parkea una y el operador responde otra, borrar a ciegas la dejaba
-    huérfana en el backend hasta su timeout fail-closed, y sin nada en pantalla.
+
+def clear_owned_hitl(
+    store: ReactiveStore,
+    tab_id: str | None,
+    *,
+    request_id: str | None = None,
+) -> None:
+    """Limpia una entrada propia por identidad exacta y nunca un owner completo.
+
+    ``request_id`` es obligatorio para el wiring productivo. El fallback sin ID
+    conserva compatibilidad con callers antiguos solo cuando hay una única
+    entrada de ese dueño; si hay varias, no borra ninguna (fail-closed).
     """
-    pending = store.get(STORE_KEY_PENDING_HITL)
-    if isinstance(pending, dict) and pending.get("request_id") == request_id:
-        store.set(STORE_KEY_PENDING_HITL, None)
+    try:
+        entries, order = _read_pending_hitl_state(store)
+    except MalformedPendingHitlError:
+        return
+    if request_id is not None:
+        candidate = entries.get(request_id)
+        if candidate is None or candidate.get(HITL_OWNER_TAB) != tab_id:
+            return
+        _remove_pending_hitl(store, request_id)
+        return
+    owned = [rid for rid in order if entries[rid].get(HITL_OWNER_TAB) == tab_id]
+    if len(owned) == 1:
+        _remove_pending_hitl(store, owned[0])
 
 
-def clear_owned_hitl(store: ReactiveStore, tab_id: str | None) -> None:
-    """Limpia la pendiente SOLO si su ``owner_tab`` coincide con ``tab_id``.
-
-    El ``finally`` de ``run_ritual``/``run_ritual_install`` necesita descartar
-    SU PROPIA aprobación si quedó sin responder (denegada/timeout), para no
-    dejar un modal stale — pero un clear incondicional podía desalojar una
-    pendiente AJENA: ``STORE_KEY_RITUAL_IN_FLIGHT`` solo serializa entre
-    Rituales/instalaciones entre sí, no bloquea un ``tool_execution``
-    concurrente del agente LLM o Telegram, que parkea bajo la misma clave
-    global (review de PR #373).
-    """
-    pending = store.get(STORE_KEY_PENDING_HITL)
-    if isinstance(pending, dict) and pending.get(HITL_OWNER_TAB) == tab_id:
-        store.set(STORE_KEY_PENDING_HITL, None)
+def resolve_visible_pending_hitl(
+    store: ReactiveStore,
+    tab_id: str | None,
+    *,
+    category: str | None = None,
+) -> dict[str, Any] | None:
+    """Devuelve la primera entrada visible en FIFO, o ``None`` fail-closed."""
+    try:
+        entries, order = _read_pending_hitl_state(store)
+    except MalformedPendingHitlError:
+        return None
+    for request_id in order:
+        entry = entries[request_id]
+        owner = entry.get(HITL_OWNER_TAB)
+        if owner is not None and owner != tab_id:
+            continue
+        if (
+            category is not None
+            and entry.get("category") != category
+            and not (category == "download" and "url" in entry)
+        ):
+            # Pre-C3 download envelopes no tenían ``category``; la URL es la
+            # única señal legacy suficiente para no ocultar una solicitud válida.
+            continue
+        return dict(entry)
+    return None
 
 
 def resolve_pending_hitl(store: ReactiveStore, tab_id: str | None) -> dict[str, Any] | None:
-    """La aprobación que ESTA pestaña debe renderizar, o ``None``.
+    """Compatibilidad del selector histórico: primera entrada visible por FIFO."""
+    return resolve_visible_pending_hitl(store, tab_id)
 
-    Solo la que ella lanzó. Una solicitud sin dueño (agente/backend) la ve
-    cualquiera: nadie la "lanzó" desde la GUI, y ocultarla la dejaría colgada
-    hasta el timeout sin que nadie pudiera responderla.
 
-    Seam puro, para que el panel refrescable sea testeable sin NiceGUI.
-    """
-    pending = store.get(STORE_KEY_PENDING_HITL)
-    if not isinstance(pending, dict):
+def resolve_pending_hitl_request(
+    store: ReactiveStore,
+    tab_id: str | None,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Devuelve una entrada concreta solo si esta pestaña puede accionarla."""
+    if not isinstance(request_id, str) or not request_id:
         return None
-    owner = pending.get(HITL_OWNER_TAB)
-    if owner is None or owner == tab_id:
-        return pending
-    return None
+    try:
+        entries, _order = _read_pending_hitl_state(store)
+    except MalformedPendingHitlError:
+        return None
+    entry = entries.get(request_id)
+    if entry is None:
+        return None
+    owner = entry.get(HITL_OWNER_TAB)
+    if owner is not None and owner != tab_id:
+        return None
+    return dict(entry)
+
+
+def compose_gui_hitl_lifecycle(guard: Any, store: ReactiveStore) -> None:
+    """Compone cleanup GUI exacto sobre observers existentes de HITLGuard.
+
+    El observer original (Telegram) siempre se conserva y se ejecuta después del
+    cleanup local. La composición es idempotente para no apilar callbacks si el
+    wiring se evalúa más de una vez durante un reload.
+    """
+    if getattr(guard, "_sky_claw_gui_hitl_lifecycle_composed", False):
+        return
+    original_terminal = getattr(guard, "_on_terminal", None)
+    original_cancel = getattr(guard, "_on_cancel", None)
+
+    async def _on_terminal(req: Any, decision: Any) -> None:
+        request_id = getattr(req, "request_id", None)
+        if isinstance(request_id, str):
+            clear_answered_hitl(store, request_id)
+        if original_terminal is not None:
+            await original_terminal(req, decision)
+
+    async def _on_cancel(req: Any) -> None:
+        request_id = getattr(req, "request_id", None)
+        if isinstance(request_id, str):
+            clear_answered_hitl(store, request_id)
+        if original_cancel is not None:
+            await original_cancel(req)
+
+    guard._on_terminal = _on_terminal
+    guard._on_cancel = _on_cancel
+    guard._sky_claw_gui_hitl_lifecycle_composed = True
 
 
 def _es_envelope_legacy(raw: Any) -> bool:
@@ -517,10 +710,12 @@ def make_gui_hitl_notify(
                             "request_id": req.request_id,
                             "reason": getattr(req, "reason", ""),
                             "detail": getattr(req, "detail", ""),
+                            "category": category,
                         },
                         tab_id,
                     )
                 )
+                _gui_pending_request_id.set(req.request_id)
             return
         if category == "sandbox_promotion":
             # Promoción post-run del sandbox (T-27b·2): siempre modal, nunca
@@ -531,10 +726,12 @@ def make_gui_hitl_notify(
                         "request_id": req.request_id,
                         "reason": getattr(req, "reason", ""),
                         "detail": getattr(req, "detail", ""),
+                        "category": category,
                     },
                     tab_id,
                 )
             )
+            _gui_pending_request_id.set(req.request_id)
             return
         if category == "download":
             # Egress: never auto-approved — always parks a manual Aprobar/Denegar.
@@ -545,11 +742,14 @@ def make_gui_hitl_notify(
                         "reason": getattr(req, "reason", ""),
                         "detail": getattr(req, "detail", ""),
                         "url": getattr(req, "url", "") or "",
+                        "category": category,
                     },
                     tab_id,
                 )
             )
+            _gui_pending_request_id.set(req.request_id)
             return
+
         if delegate is not None:
             await delegate(req)
 
@@ -568,8 +768,8 @@ async def run_ritual(
     """Dispatch a Ritual's tool and publish a feedback message to the store.
 
     ``auto_approve`` is the launching client's "Modo local" preference, read in
-    the click handler (the only place with client context). It is armed in the
-    store for this single dispatch so the HITL bridge can auto-grant *this*
+    the click handler (the only place with client context). It is armed in a
+    ContextVar for this single dispatch so the HITL bridge can auto-grant *this*
     request — and disarmed afterwards — instead of consulting a process-global
     flag that would also affect other clients/agent calls.
 
@@ -638,6 +838,7 @@ async def run_ritual(
     cv_token = _ritual_auto_approve.set(bool(auto_approve))
     # P1-7: mismo scoping por task para el dueño de la aprobación.
     cid_token = _ritual_tab_id.set(tab_id)
+    pending_token = _gui_pending_request_id.set(None)
     try:
         result = await supervisor.dispatch_tool(tool_name, dict(payload) if payload else {})
     except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
@@ -653,14 +854,14 @@ async def run_ritual(
         # CROSS_TAB_RITUAL_RESULT_EVICTION.
         return
     finally:
+        pending_request_id = _gui_pending_request_id.get()
+        _gui_pending_request_id.reset(pending_token)
         _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
         _ritual_tab_id.reset(cid_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        # Drop the approval prompt tied to THIS run so no stale modal lingers on
-        # the timeout/denied path where the operator never clicked (Codex #211)
-        # — pero solo si es la propia: nunca una ajena que nadie respondió
-        # todavía (review de PR #373).
-        clear_owned_hitl(store, tab_id)
+        # Productive bridge captures the exact ID. Legacy callers without that
+        # seam may clear only their sole owned entry; multiple entries fail closed.
+        clear_owned_hitl(store, tab_id, request_id=pending_request_id)
     resultado = result if isinstance(result, dict) else {}
     # F-001: el panel consume el dict ESTRUCTURAL — needs_deployment + path —
     # para ofrecer la acción de Resume. R-004/R-005: se publica en ENVELOPE
@@ -734,10 +935,10 @@ async def run_ritual_install(
 
     Wired to the "Instalar" button of a Ritual card in the ``missing`` state. Reuses
     the same single-flight guard as :func:`run_ritual` so an install and a run can
-    never overlap (both serialize on ``STORE_KEY_RITUAL_IN_FLIGHT`` and share the one
-    ``pending_hitl`` modal slot). The download's HITL approval is requested by the
-    installer with ``category="download"`` and routed to the GUI modal by
-    :func:`make_gui_hitl_notify` — it is never auto-approved by "Modo local".
+    never overlap (both serialize on ``STORE_KEY_RITUAL_IN_FLIGHT``). The download's
+    HITL approval is requested by the installer with ``category="download"`` and
+    routed to the GUI modal by :func:`make_gui_hitl_notify` — it is never
+    auto-approved by "Modo local".
 
     P1-7: ``tab_id`` arma el mismo ContextVar que :func:`run_ritual`, así que la
     aprobación de descarga queda marcada con la pestaña que apretó "Instalar".
@@ -846,6 +1047,7 @@ async def run_ritual_install(
     # corre inline en esta misma task, así que ve el ContextVar y marca la
     # aprobación de descarga con la pestaña que apretó "Instalar".
     tab_token = _ritual_tab_id.set(tab_id)
+    pending_token = _gui_pending_request_id.set(None)
     try:
         if cs_kwargs is not None:
             result = await ensure(install_dir, session, downloader, **cs_kwargs)
@@ -859,12 +1061,13 @@ async def run_ritual_install(
         )
         return
     finally:
+        pending_request_id = _gui_pending_request_id.get()
+        _gui_pending_request_id.reset(pending_token)
         _ritual_tab_id.reset(tab_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        # Drop the approval prompt tied to this install so no stale modal lingers
-        # on the denied/timed-out path — pero solo la propia (mismo cuidado que
-        # run_ritual, review de PR #373).
-        clear_owned_hitl(store, tab_id)
+        # Productive bridge captures the exact ID. Legacy callers without that
+        # seam may clear only their sole owned entry; multiple entries fail closed.
+        clear_owned_hitl(store, tab_id, request_id=pending_request_id)
 
     # Seed the resolver env var so the just-installed tool can run immediately,
     # without waiting for the next environment scan to refresh the snapshot.
