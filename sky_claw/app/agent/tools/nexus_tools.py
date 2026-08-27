@@ -134,7 +134,7 @@ async def download_mod(
             f"MD5: {file_info.md5 or 'n/a'}  |  "
             f"URL: {file_info.download_url}"
         )
-        request_id = new_hitl_request_id(f"download-{nexus_id}-{file_id}")
+        request_id = new_hitl_request_id("nexus-download")
         decision = await hitl.request_approval(
             request_id=request_id,
             reason=(

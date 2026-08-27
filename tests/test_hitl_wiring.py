@@ -854,7 +854,7 @@ class TestEndToEndHITLFlow:
                 # cuanto HITLGuard guarda la solicitud pendiente.
                 await asyncio.wait_for(request_registered.wait(), timeout=5.0)
                 expected_request_id = notifications[0]
-                assert expected_request_id.startswith("download-42-7-")
+                assert expected_request_id.startswith("nexus-download-")
 
                 # ---- El operador aprueba via Telegram ----
                 # _install_webhook_sync hace que client.post recien retorne
@@ -957,7 +957,7 @@ class TestEndToEndHITLFlow:
         tool_task = asyncio.create_task(_run_tool())
         await asyncio.wait_for(request_registered.wait(), timeout=5.0)
         expected_request_id = request_ids[0]
-        assert expected_request_id.startswith("download-1-2-")
+        assert expected_request_id.startswith("nexus-download-")
 
         await client.post(
             "/webhook",

@@ -53,15 +53,10 @@ async def test_approved_runs_real_chain() -> None:
 
 @pytest.mark.asyncio
 async def test_sin_operador_no_ejecuta_cadena_real() -> None:
-    """El notifier sin operador debe denegar antes de ejecutar la cadena."""
+    """Sin operador, la solicitud expira y la cadena real nunca se ejecuta."""
     preview_fn = AsyncMock(return_value=_manifest())
     execute_fn = AsyncMock(return_value={"chain": "ran"})
-    hitl = HITLGuard(timeout=5)
-
-    async def no_operator_notify(req) -> None:
-        await hitl.respond(req.request_id, approved=False)
-
-    hitl._notify = no_operator_notify
+    hitl = HITLGuard(notify_fn=None, timeout=0)
     gate = ChainPreviewApprovalGate(hitl_guard=hitl, preview_fn=preview_fn, execute_fn=execute_fn)
 
     result = await gate.preview_then_execute(workflow_id="wf-7", load_order_file="/sandbox/plugins.txt")

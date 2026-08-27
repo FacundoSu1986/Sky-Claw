@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sky_claw.app.security.hitl import Decision, HITLGuard, HITLRequest
+from sky_claw.app.security.hitl import Decision, HITLGuard, HITLRequest, new_hitl_request_id
 
 # ---------------------------------------------------------------------------
 # Helpers / factories
@@ -159,6 +159,14 @@ class TestRequestApprovalIdGeneration:
         assert len(ids) == 2
         assert ids[0] != ids[1]
 
+    def test_new_hitl_request_id_is_unique_and_preserves_prefix(self) -> None:
+        first = new_hitl_request_id("test")
+        second = new_hitl_request_id("test")
+
+        assert first != second
+        assert first.startswith("test-")
+        assert len(first.encode("utf-8")) <= 51
+
     @pytest.mark.asyncio
     async def test_caller_supplied_request_id_is_used(self) -> None:
         captured: list[HITLRequest] = []
@@ -199,6 +207,19 @@ class TestHitlProducerRequestIds:
             "_ensure_github_mod": 1,
             "_ensure_nexus_mod": 1,
         },
+    }
+
+    _EXPECTED_PREFIXES = {
+        ("sky_claw/app/agent/tools/nexus_tools.py", "download_mod"): "nexus-download",
+        ("sky_claw/app/agent/tools/system_tools.py", "install_mod_from_archive"): "mod-install",
+        ("sky_claw/app/orchestrator/sync_engine.py", "_check_and_update_mod"): "mod-update",
+        ("sky_claw/local/tools_installer.py", "ensure_loot"): "loot-install",
+        ("sky_claw/local/tools_installer.py", "ensure_xedit"): "xedit-install",
+        ("sky_claw/local/tools_installer.py", "ensure_pandora"): "pandora-install",
+        ("sky_claw/local/tools_installer.py", "ensure_skse"): "skse-install",
+        ("sky_claw/local/tools_installer.py", "ensure_bodyslide"): "bodyslide-install",
+        ("sky_claw/local/tools_installer.py", "_ensure_github_mod"): "github-mod-install",
+        ("sky_claw/local/tools_installer.py", "_ensure_nexus_mod"): "nexus-mod-install",
     }
 
     @staticmethod
@@ -258,7 +279,7 @@ class TestHitlProducerRequestIds:
                         calls.append((self._relative_path, function_name, node, function_node))
                     self.generic_visit(node)
 
-            Visitor(str(path.relative_to(root))).visit(tree)
+            Visitor(path.relative_to(root).as_posix()).visit(tree)
 
         for relative, function_name, call, function_node in calls:
             discovered.setdefault(relative, {})[function_name] = (
@@ -276,6 +297,36 @@ class TestHitlProducerRequestIds:
                 )
 
         assert discovered == self._EXPECTED_PRODUCERS
+
+    def test_prefijos_productivos_son_constantes_y_caben_en_callback_data(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        max_request_id_bytes = 64 - len(b"hitl:approve:")
+
+        for (relative, function_name), expected_prefix in self._EXPECTED_PREFIXES.items():
+            path = root / relative
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            function = next(
+                (
+                    node
+                    for node in ast.walk(tree)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
+                ),
+                None,
+            )
+            assert function is not None, f"productor no encontrado: {relative}:{function_name}"
+
+            helper_calls = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call) and "new_hitl_request_id" in self._dotted_names(node.func)
+            ]
+            assert len(helper_calls) == 1, f"prefijo ambiguo en {relative}:{function_name}"
+            prefix_argument = helper_calls[0].args[0]
+            assert isinstance(prefix_argument, ast.Constant) and isinstance(prefix_argument.value, str)
+            assert prefix_argument.value == expected_prefix
+
+            sample_request_id = f"{expected_prefix}-{'0' * 12}"
+            assert len(sample_request_id.encode("utf-8")) <= max_request_id_bytes
 
 
 class TestRequestApprovalDuplicateId:

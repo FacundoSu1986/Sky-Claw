@@ -251,7 +251,7 @@ async def install_mod_from_archive(
     """
     if hitl is None:
         return json.dumps({"success": False, "message": "HITL guard is not configured. Installation blocked."})
-    request_id = new_hitl_request_id(f"install-{pathlib.Path(archive_path).name}")
+    request_id = new_hitl_request_id("mod-install")
     # Decision ya está importado a nivel de módulo (HOTFIX: se eliminó el import dinámico).
     try:
         decision = await hitl.request_approval(

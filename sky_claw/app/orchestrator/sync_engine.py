@@ -758,7 +758,7 @@ class SyncEngine:
 
             if self._hitl:
                 desc = f"Update for {mod_name} ({local_version} -> {nexus_version})"
-                request_id = new_hitl_request_id(f"update_{nexus_id}")
+                request_id = new_hitl_request_id("mod-update")
                 # F7: la aprobación humana se serializa (semáforo de a uno) para
                 # no solapar prompts contra el único slot de la GUI. Envuelve
                 # SOLO request_approval — la descarga posterior sigue concurrente.
