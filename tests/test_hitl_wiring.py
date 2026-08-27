@@ -600,7 +600,7 @@ class TestHITLToolExecutionCategory:
 
     Without sender/operator_chat_id:
     - ``category="tool_execution"`` → DENIED (fail-closed)
-    - default category → APPROVED (legacy auto-approve for downloads preserved)
+    - default, download, and unknown categories → DENIED (fail-closed)
     """
 
     @staticmethod
@@ -669,8 +669,8 @@ class TestHITLToolExecutionCategory:
             await ctx.stop()
 
     @pytest.mark.asyncio
-    async def test_default_category_auto_approved_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
-        """Pins the legacy behavior: non-tool requests keep auto-approving."""
+    async def test_default_category_denied_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
+        """La categoría default no puede conservar el auto-approve legacy."""
         ctx = await self._boot_ctx_without_operator_channel(tmp_path)
         try:
             decision = await asyncio.wait_for(
@@ -680,7 +680,41 @@ class TestHITLToolExecutionCategory:
                 ),
                 timeout=5.0,
             )
-            assert decision is Decision.APPROVED
+            assert decision is Decision.DENIED
+        finally:
+            await ctx.stop()
+
+    @pytest.mark.asyncio
+    async def test_download_denied_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
+        """El egress de una descarga siempre requiere aprobación explícita."""
+        ctx = await self._boot_ctx_without_operator_channel(tmp_path)
+        try:
+            decision = await asyncio.wait_for(
+                ctx.hitl.request_approval(
+                    request_id="download-42-7-explicit",
+                    reason="Download mod X",
+                    category="download",
+                ),
+                timeout=5.0,
+            )
+            assert decision is Decision.DENIED
+        finally:
+            await ctx.stop()
+
+    @pytest.mark.asyncio
+    async def test_unknown_category_denied_without_operator_channel(self, tmp_path: pathlib.Path) -> None:
+        """Una categoría futura/desconocida nunca se convierte en APPROVED."""
+        ctx = await self._boot_ctx_without_operator_channel(tmp_path)
+        try:
+            decision = await asyncio.wait_for(
+                ctx.hitl.request_approval(
+                    request_id="future-dangerous-action-42",
+                    reason="Future dangerous action",
+                    category="future_dangerous_action",
+                ),
+                timeout=5.0,
+            )
+            assert decision is Decision.DENIED
         finally:
             await ctx.stop()
 
@@ -819,11 +853,12 @@ class TestEndToEndHITLFlow:
                 # Sincronizacion por evento: _notify setea request_registered en
                 # cuanto HITLGuard guarda la solicitud pendiente.
                 await asyncio.wait_for(request_registered.wait(), timeout=5.0)
+                expected_request_id = notifications[0]
+                assert expected_request_id.startswith("nexus-download-")
 
                 # ---- El operador aprueba via Telegram ----
                 # _install_webhook_sync hace que client.post recien retorne
                 # cuando las tasks de fondo del webhook terminaron.
-                expected_request_id = "download-42-7"
                 await client.post(
                     "/webhook",
                     json=_make_update(100, chat_id=operator_chat_id, text=f"/approve {expected_request_id}"),
@@ -876,8 +911,10 @@ class TestEndToEndHITLFlow:
         sync_engine = SyncEngine(mo2=mo2, masterlist=masterlist, registry=db)
 
         request_registered = asyncio.Event()
+        request_ids: list[str] = []
 
-        async def _notify(_req: Any) -> None:
+        async def _notify(req: Any) -> None:
+            request_ids.append(req.request_id)
             request_registered.set()
 
         guard = HITLGuard(notify_fn=_notify, timeout=10)
@@ -919,10 +956,12 @@ class TestEndToEndHITLFlow:
 
         tool_task = asyncio.create_task(_run_tool())
         await asyncio.wait_for(request_registered.wait(), timeout=5.0)
+        expected_request_id = request_ids[0]
+        assert expected_request_id.startswith("nexus-download-")
 
         await client.post(
             "/webhook",
-            json=_make_update(200, text="/deny download-1-2"),
+            json=_make_update(200, text=f"/deny {expected_request_id}"),
         )
         await tool_task
 

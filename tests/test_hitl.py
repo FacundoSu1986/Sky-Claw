@@ -16,13 +16,15 @@ Covers:
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import pathlib
 import uuid
 from unittest.mock import AsyncMock
 
 import pytest
 
-from sky_claw.app.security.hitl import Decision, HITLGuard, HITLRequest
+from sky_claw.app.security.hitl import Decision, HITLGuard, HITLRequest, new_hitl_request_id
 
 # ---------------------------------------------------------------------------
 # Helpers / factories
@@ -157,6 +159,14 @@ class TestRequestApprovalIdGeneration:
         assert len(ids) == 2
         assert ids[0] != ids[1]
 
+    def test_new_hitl_request_id_is_unique_and_preserves_prefix(self) -> None:
+        first = new_hitl_request_id("test")
+        second = new_hitl_request_id("test")
+
+        assert first != second
+        assert first.startswith("test-")
+        assert len(first.encode("utf-8")) <= 51
+
     @pytest.mark.asyncio
     async def test_caller_supplied_request_id_is_used(self) -> None:
         captured: list[HITLRequest] = []
@@ -176,6 +186,147 @@ class TestRequestApprovalIdGeneration:
 # ---------------------------------------------------------------------------
 # TestRequestApproval – duplicate request_id
 # ---------------------------------------------------------------------------
+
+
+class TestHitlProducerRequestIds:
+    """Ancla de familia: todo productor humano debe evitar IDs reutilizables."""
+
+    _EXPECTED_PRODUCERS = {
+        "sky_claw/app/agent/tools/nexus_tools.py": {"download_mod": 1},
+        "sky_claw/app/agent/tools/system_tools.py": {"install_mod_from_archive": 1},
+        "sky_claw/app/orchestrator/preview/approval_gate.py": {"preview_then_execute": 1},
+        "sky_claw/app/orchestrator/sandbox_promotion.py": {"_request_decision": 1},
+        "sky_claw/app/orchestrator/sync_engine.py": {"_check_and_update_mod": 2},
+        "sky_claw/app/orchestrator/tool_strategies/middleware.py": {"__call__": 1},
+        "sky_claw/local/tools_installer.py": {
+            "ensure_loot": 1,
+            "ensure_xedit": 1,
+            "ensure_pandora": 1,
+            "ensure_skse": 1,
+            "ensure_bodyslide": 1,
+            "_ensure_github_mod": 1,
+            "_ensure_nexus_mod": 1,
+        },
+    }
+
+    _EXPECTED_PREFIXES = {
+        ("sky_claw/app/agent/tools/nexus_tools.py", "download_mod"): "nexus-download",
+        ("sky_claw/app/agent/tools/system_tools.py", "install_mod_from_archive"): "mod-install",
+        ("sky_claw/app/orchestrator/sync_engine.py", "_check_and_update_mod"): "mod-update",
+        ("sky_claw/local/tools_installer.py", "ensure_loot"): "loot-install",
+        ("sky_claw/local/tools_installer.py", "ensure_xedit"): "xedit-install",
+        ("sky_claw/local/tools_installer.py", "ensure_pandora"): "pandora-install",
+        ("sky_claw/local/tools_installer.py", "ensure_skse"): "skse-install",
+        ("sky_claw/local/tools_installer.py", "ensure_bodyslide"): "bodyslide-install",
+        ("sky_claw/local/tools_installer.py", "_ensure_github_mod"): "github-mod-install",
+        ("sky_claw/local/tools_installer.py", "_ensure_nexus_mod"): "nexus-mod-install",
+    }
+
+    @staticmethod
+    def _dotted_names(node: ast.AST) -> set[str]:
+        return {item.id for item in ast.walk(node) if isinstance(item, ast.Name)} | {
+            item.attr for item in ast.walk(node) if isinstance(item, ast.Attribute)
+        }
+
+    @classmethod
+    def _is_unique_expression(cls, expression: ast.AST, function: ast.AST, seen: set[str]) -> bool:
+        names = cls._dotted_names(expression)
+        if "new_hitl_request_id" in names or "uuid4" in names:
+            return True
+        if not isinstance(expression, ast.Name) or expression.id in seen:
+            return False
+        seen.add(expression.id)
+        values: list[ast.AST] = []
+        for item in ast.walk(function):
+            if isinstance(item, ast.Assign):
+                targets = item.targets
+                value = item.value
+            elif isinstance(item, ast.AnnAssign):
+                targets = [item.target]
+                value = item.value
+            else:
+                continue
+            if (
+                any(isinstance(target, ast.Name) and target.id == expression.id for target in targets)
+                and value is not None
+            ):
+                values.append(value)
+        return bool(values) and all(cls._is_unique_expression(value, function, seen.copy()) for value in values)
+
+    def test_todos_los_productores_humanos_tienen_identidad_por_intento(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        discovered: dict[str, dict[str, int]] = {}
+        calls: list[tuple[str, str, ast.Call, ast.AST]] = []
+
+        for path in sorted((root / "sky_claw").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+            class Visitor(ast.NodeVisitor):
+                def __init__(self, relative_path: str) -> None:
+                    self._relative_path = relative_path
+                    self.functions: list[tuple[str, ast.AST]] = []
+
+                def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                    self.functions.append((node.name, node))
+                    self.generic_visit(node)
+                    self.functions.pop()
+
+                visit_AsyncFunctionDef = visit_FunctionDef  # noqa: N815
+
+                def visit_Call(self, node: ast.Call) -> None:
+                    if isinstance(node.func, ast.Attribute) and node.func.attr == "request_approval" and self.functions:
+                        function_name, function_node = self.functions[-1]
+                        calls.append((self._relative_path, function_name, node, function_node))
+                    self.generic_visit(node)
+
+            Visitor(path.relative_to(root).as_posix()).visit(tree)
+
+        for relative, function_name, call, function_node in calls:
+            discovered.setdefault(relative, {})[function_name] = (
+                discovered.setdefault(relative, {}).get(function_name, 0) + 1
+            )
+            request_id = next((keyword.value for keyword in call.keywords if keyword.arg == "request_id"), None)
+            if request_id is None:
+                assert (relative, function_name) == (
+                    "sky_claw/app/orchestrator/preview/approval_gate.py",
+                    "preview_then_execute",
+                )
+            else:
+                assert self._is_unique_expression(request_id, function_node, set()), (
+                    f"request_id no único en {relative}:{function_name}"
+                )
+
+        assert discovered == self._EXPECTED_PRODUCERS
+
+    def test_prefijos_productivos_son_constantes_y_caben_en_callback_data(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        max_request_id_bytes = 64 - len(b"hitl:approve:")
+
+        for (relative, function_name), expected_prefix in self._EXPECTED_PREFIXES.items():
+            path = root / relative
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            function = next(
+                (
+                    node
+                    for node in ast.walk(tree)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
+                ),
+                None,
+            )
+            assert function is not None, f"productor no encontrado: {relative}:{function_name}"
+
+            helper_calls = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call) and "new_hitl_request_id" in self._dotted_names(node.func)
+            ]
+            assert len(helper_calls) == 1, f"prefijo ambiguo en {relative}:{function_name}"
+            prefix_argument = helper_calls[0].args[0]
+            assert isinstance(prefix_argument, ast.Constant) and isinstance(prefix_argument.value, str)
+            assert prefix_argument.value == expected_prefix
+
+            sample_request_id = f"{expected_prefix}-{'0' * 12}"
+            assert len(sample_request_id.encode("utf-8")) <= max_request_id_bytes
 
 
 class TestRequestApprovalDuplicateId:
@@ -354,11 +505,11 @@ class TestRespond:
 
 class TestTimeout:
     @pytest.mark.asyncio
-    async def test_no_response_within_timeout_returns_denied(self) -> None:
-        """No response within timeout → DENIED (fail-secure policy)."""
+    async def test_no_response_within_timeout_returns_timeout(self) -> None:
+        """Sin respuesta durante el timeout → TIMEOUT (política fail-secure)."""
         guard = HITLGuard(notify_fn=None, timeout=0)
         decision = await guard.request_approval(reason="timeout_test")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_timeout_clears_pending_entry(self) -> None:
@@ -374,7 +525,7 @@ class TestTimeout:
 
     @pytest.mark.asyncio
     async def test_timeout_decision_on_hitl_request(self) -> None:
-        """The HITLRequest.decision field must be DENIED after expiry (fail-secure)."""
+        """HITLRequest.decision debe ser TIMEOUT tras expirar (fail-secure)."""
         last_req: list[HITLRequest] = []
 
         async def capture(req: HITLRequest) -> None:
@@ -383,9 +534,9 @@ class TestTimeout:
 
         guard = HITLGuard(notify_fn=capture, timeout=0)
         decision = await guard.request_approval(reason="decision_field_test")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
         if last_req:
-            assert last_req[0].decision == Decision.DENIED
+            assert last_req[0].decision == Decision.TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +574,7 @@ class TestTimeoutRespondRace:
         encuentra la request (ni la pisa) y devuelve False — sin ack falso."""
         guard = HITLGuard(notify_fn=None, timeout=0)
         decision = await guard.request_approval(request_id="r-late", reason="x")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
         assert await guard.respond("r-late", approved=True) is False
 
@@ -484,10 +635,10 @@ class TestNotifyFnFailure:
 
     @pytest.mark.asyncio
     async def test_none_notify_fn_times_out_normally(self) -> None:
-        """With no notify_fn the guard should wait then time out → DENIED (fail-secure)."""
+        """Sin notify_fn, el guard espera y expira → TIMEOUT (fail-secure)."""
         guard = HITLGuard(notify_fn=None, timeout=0)
         decision = await guard.request_approval(reason="no_notify_fn")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_notify_value_error_is_fail_closed(self) -> None:
@@ -497,6 +648,58 @@ class TestNotifyFnFailure:
         guard = HITLGuard(notify_fn=raise_value_error, timeout=5)
         decision = await guard.request_approval(reason="value_error")
         assert decision == Decision.TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# TestNotifyCancellation
+# ---------------------------------------------------------------------------
+
+
+class TestNotifyCancellation:
+    @pytest.mark.asyncio
+    async def test_cancelacion_durante_notify_limpia_pending_y_se_propaga(self) -> None:
+        """Cancelar notify no debe dejar la solicitud huérfana ni tragarse el cancel."""
+        notify_started = asyncio.Event()
+
+        async def blocking_notify(req: HITLRequest) -> None:
+            notify_started.set()
+            await asyncio.Event().wait()
+
+        request_id = "cancel-during-notify"
+        guard = HITLGuard(notify_fn=blocking_notify, timeout=5)
+        task = asyncio.create_task(guard.request_approval(request_id=request_id, reason="cancel test"))
+        await notify_started.wait()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert request_id not in guard._pending
+
+    @pytest.mark.asyncio
+    async def test_request_id_reutilizable_tras_cancelacion_durante_notify(self) -> None:
+        """El mismo ID debe poder usarse después de cancelar la notificación."""
+        notify_started = asyncio.Event()
+
+        async def blocking_notify(req: HITLRequest) -> None:
+            notify_started.set()
+            await asyncio.Event().wait()
+
+        request_id = "reusable-after-cancel"
+        guard = HITLGuard(notify_fn=blocking_notify, timeout=5)
+        task = asyncio.create_task(guard.request_approval(request_id=request_id, reason="first attempt"))
+        await notify_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        async def approve(req: HITLRequest) -> None:
+            await guard.respond(req.request_id, approved=True)
+
+        guard._notify = approve
+        decision = await guard.request_approval(request_id=request_id, reason="second attempt")
+
+        assert decision is Decision.APPROVED
 
 
 # ---------------------------------------------------------------------------
@@ -569,46 +772,46 @@ class TestConcurrency:
 
 
 class TestHITLFailSecure:
-    """Verify fail-secure behavior: timeout → DENIED, not TIMEOUT."""
+    """Verifica fail-secure: timeout → TIMEOUT y nunca APPROVED."""
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_denied(self) -> None:
-        """When operator doesn't respond, decision must be DENIED (fail-secure)."""
+    async def test_timeout_returns_timeout(self) -> None:
+        """Sin respuesta del operador, la decisión debe ser TIMEOUT (fail-secure)."""
 
         async def stall(req: HITLRequest) -> None:
-            # Do NOT resolve; let timeout fire
+            # No resolver: dejar que expire el timeout.
             pass
 
         guard = HITLGuard(notify_fn=stall, timeout=0)
         decision = await guard.request_approval(reason="fail_secure_timeout_test")
-        assert decision == Decision.DENIED
-        # Ensure it's explicitly NOT TIMEOUT
-        assert decision != Decision.TIMEOUT
+        assert decision == Decision.TIMEOUT
+        # La expiración sigue siendo explícitamente no aprobada.
+        assert decision != Decision.APPROVED
 
     @pytest.mark.asyncio
     async def test_timeout_is_not_approved(self) -> None:
-        """A timed-out request must never be approved."""
+        """Una solicitud expirada nunca debe aprobarse."""
 
         async def stall(req: HITLRequest) -> None:
-            # Do NOT resolve; let timeout fire
+            # No resolver: dejar que expire el timeout.
             pass
 
         guard = HITLGuard(notify_fn=stall, timeout=0)
         decision = await guard.request_approval(reason="timeout_denied_test")
         assert decision != Decision.APPROVED
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_timeout_with_short_duration(self) -> None:
-        """Timeout with 0.05s should also return DENIED."""
+        """Un timeout de 0.05 s también debe devolver TIMEOUT."""
 
         async def stall(req: HITLRequest) -> None:
-            # Do NOT set event; let timeout occur
+            # No establecer el evento: dejar que expire el timeout.
             pass
 
-        guard = HITLGuard(notify_fn=stall, timeout=0)
+        guard = HITLGuard(notify_fn=stall, timeout=0.05)
         decision = await guard.request_approval(reason="short_timeout_test")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_decision_timeout_enum_still_exists(self) -> None:

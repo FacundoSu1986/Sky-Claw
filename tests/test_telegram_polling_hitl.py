@@ -182,7 +182,7 @@ async def test_timeout_no_permite_aprobacion_tardia() -> None:
     pendiente = asyncio.create_task(hitl.request_approval(request_id="req-timeout"))
 
     await _esperar_notificacion(notificacion_enviada)
-    assert await pendiente is Decision.DENIED
+    assert await pendiente is Decision.TIMEOUT
 
     await polling._process_raw_update(_crear_update_callback(6, "approve", "req-timeout"))
 

@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import aiohttp
 
 from sky_claw.app.db.locks import DistributedLockManager
-from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.hitl import Decision, HITLGuard, new_hitl_request_id
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.app.security.network_gateway import (
     EgressViolationError,
@@ -1219,7 +1219,7 @@ class ToolsInstaller:
             )
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-loot-{version}",
+                request_id=new_hitl_request_id("loot-install"),
                 reason=f"Install LOOT {version}?",
                 url=asset.browser_download_url,
                 detail=(
@@ -1283,7 +1283,7 @@ class ToolsInstaller:
             )
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-xedit-{version}",
+                request_id=new_hitl_request_id("xedit-install"),
                 reason=f"Install SSEEdit {version}?",
                 url=asset.browser_download_url,
                 detail=(
@@ -1378,7 +1378,7 @@ class ToolsInstaller:
             )
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-pandora-{version}",
+                request_id=new_hitl_request_id("pandora-install"),
                 reason=f"Install Pandora Behavior Engine {version}?",
                 url=asset.browser_download_url,
                 detail=(
@@ -1591,7 +1591,7 @@ class ToolsInstaller:
 
             # Solicitar aprobación HITL
             decision = await self._hitl.request_approval(
-                request_id=f"install-skse-{ed_key}",
+                request_id=new_hitl_request_id("skse-install"),
                 reason=f"Install SKSE for Skyrim {ed_key}?",
                 url=url,
                 detail=(
@@ -2181,7 +2181,7 @@ class ToolsInstaller:
                 raise ToolInstallError(f"Failed to fetch BodySlide info from Nexus: {exc}") from exc
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-bodyslide-{file_info.file_id}",
+                request_id=new_hitl_request_id("bodyslide-install"),
                 reason=f"Install BodySlide and Outfit Studio (Nexus ID {nexus_id})?",
                 url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
                 detail=(
@@ -2563,7 +2563,7 @@ class ToolsInstaller:
             asset, version = await self._find_github_asset(session, releases_url, keyword=keyword, select=asset_select)
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-{request_slug}-{version}",
+                request_id=new_hitl_request_id("github-mod-install"),
                 reason=f"¿Instalar el mod {mod_name} {version}?",
                 url=asset.browser_download_url,
                 detail=(f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: {source_hint}"),
@@ -2698,7 +2698,7 @@ class ToolsInstaller:
                 ) from exc
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-{request_slug}-{file_info.file_id}",
+                request_id=new_hitl_request_id("nexus-mod-install"),
                 reason=f"¿Instalar el mod {mod_name} (Nexus ID {nexus_id})?",
                 url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
                 detail=(
