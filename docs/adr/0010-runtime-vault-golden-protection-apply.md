@@ -159,7 +159,8 @@ El probe normativo (§4.1) solicita: `FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_
 | `GENERIC_WRITE` | `FILE_SHARE_READ` | NO (no concede write/append/ea/attr/delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
 | `GENERIC_WRITE` | `FILE_SHARE_READ \| FILE_SHARE_WRITE` | NO (no concede delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
 | `GENERIC_WRITE` | `FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE` | SÍ (todas las clases del probe concedidas) | **open exitoso** | sigue a `SetSecurityInfo`; el writer conserva su handle (limitación declarada abajo) |
-| `GENERIC_READ` (sólo lectura, sin `FILE_WRITE_DATA`) | cualquiera | NO (no concede write/append/ea/attr/delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
+| `GENERIC_READ` (sólo lectura, sin `FILE_WRITE_DATA`) | `FILE_SHARE_READ` | NO (no concede write/append/ea/attr/delete) | `ERROR_SHARING_VIOLATION` | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` |
+| `GENERIC_READ` (sólo lectura, sin `FILE_WRITE_DATA`) | `FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE` | SÍ (concede todas las clases del probe, aunque su `dwDesiredAccess` sea read-only) | **open exitoso** | sigue a `SetSecurityInfo`; el reader conserva su handle (limitación declarada abajo) |
 | Mapping `CreateFileMapping(PAGE_READWRITE)` abierto con `FILE_SHARE_READ \| FILE_SHARE_WRITE` | (de la mapping) | El mapping es una referencia al archivo; el probe abre con `FILE_WRITE_DATA`. Si el mapping no concedió `FILE_SHARE_WRITE` -> `ERROR_SHARING_VIOLATION` | depende del share del mapping | `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED` cuando el probe falla |
 
 **Limitación declarada (crítica, no inventada):** NTFS no revoca los derechos concedidos a un handle ya abierto cuando se cambia la DACL; un writer que abrió con `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` antes de la mutación **no es detectado por el probe** (el probe tiene éxito porque el writer concedió todas las clases solicitadas) y conservará su handle con `GENERIC_WRITE`. La garantía v1 es, por tanto, más débil de lo que el texto previo sugería: GP2 **no afirma detección universal de writers**. Lo que GP2 v1 sí garantiza:
@@ -403,6 +404,10 @@ Se definen las zonas bajo `%ProgramData%\Sky-Claw\runtime_vault`:
 | `golden_backups/<vol_root>/` (`AUTHORIZED_BACKUPS`) | Helper Elevado | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ` (`0x001200A9`) — **SIN DERECHO DE ESCRITURA NI BORRADO** | Respaldo durable de seguridad PRE para rollback forense y futura capability GP3. |
 | `locks/` (`LOCKS_STORE`) | Helper Elevado | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ` (`0x001200A9`) — **SIN DERECHO DE ESCRITURA, CREACIÓN, BORRADO, WRITE_DAC NI WRITE_OWNER** | Contenedor protegido para archivos de lock del kernel (GoldenMutationLock). |
 | `trusted_goldens.json` (`TRUSTED_GOLDEN_REGISTRY`) | Componente privilegiado (instalador) | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ` (`0x00120089`) — **READ ONLY: SIN CREATE, SIN WRITE, SIN DELETE, SIN WRITE_DAC, SIN WRITE_OWNER** | Trust root del helper elevado. Contiene entradas `{canonical_root, VolumeSerialNumber, root_file_id, policy_version, registered_by, registered_at}`. Un proceso no elevado no puede añadir, reemplazar, borrar, ni siquiera reparse-sustituir el archivo. |
+| `runtime_vault/` (raíz del namespace) | Componente privilegiado (instalador) | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ \| FILE_TRAVERSE` (`0x001200A9`) — **SIN `FILE_ADD_FILE`, SIN `FILE_ADD_SUBDIRECTORY`, SIN `FILE_DELETE_CHILD`, SIN `DELETE`, SIN `WRITE_DAC`, SIN `WRITE_OWNER`** | Directorio raíz del namespace; un proceso no elevado no puede añadir ni borrar entradas que cambien la composición del árbol (la ruta `Sky-Claw\runtime_vault\` y sus ramas hijas no se pueden renombrar, mover ni eliminar por usuarios no elevados). |
+| `operations/` (intermedio, sin `<op_id>`) | Componente privilegiado (instalador) | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ \| FILE_TRAVERSE` — **SIN `FILE_ADD_FILE`, SIN `FILE_ADD_SUBDIRECTORY`, SIN `FILE_DELETE_CHILD`, SIN `DELETE`, SIN `WRITE_DAC`, SIN `WRITE_OWNER`** | Sólo el helper elevado puede crear `operations\<op_id>\`. Un proceso no elevado que intente borrar `operations\X\authorized_plan.json` a través del parent `operations\` recibe `ACCESS_DENIED` por la DACL del directorio padre. |
+| `golden_backups/` (intermedio, sin `<vol_root>`) | Componente privilegiado (instalador) | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ \| FILE_TRAVERSE` — **SIN `FILE_ADD_FILE`, SIN `FILE_ADD_SUBDIRECTORY`, SIN `FILE_DELETE_CHILD`, SIN `DELETE`, SIN `WRITE_DAC`, SIN `WRITE_OWNER`** | Sólo el helper elevado puede crear `golden_backups\<vol_serial>_<root_file_id>\`. |
+| `locks/` (intermedio) | Componente privilegiado (instalador) | `FILE_ALL_ACCESS` (`0x001F01FF`) | `FILE_GENERIC_READ \| FILE_TRAVERSE` — **SIN `FILE_ADD_FILE`, SIN `FILE_ADD_SUBDIRECTORY`, SIN `FILE_DELETE_CHILD`, SIN `DELETE`, SIN `WRITE_DAC`, SIN `WRITE_OWNER`** | Sólo el helper elevado puede crear `locks\<lock_key>.lock`. |
 
 ---
 
@@ -426,8 +431,14 @@ Fase de Autorización en el Helper (Elevado):
     2. Verificar sha256(candidate_manifest_bytes) == staging_digest.
     3. Validar pertenencia de la ruta contra TGR (canonical_root + VolumeSerialNumber + root_file_id) en %ProgramData%\Sky-Claw\runtime_vault\trusted_goldens.json. Falla -> REFUSE_TO_PLAN (no se crea authorized_plan.json).
     4. Confirmación Privilegiada de Intención (PPSC) en la sesión UAC: el diálogo elevado debe exhibir exactamente operation_id, canonical_root, VolumeSerialNumber, root_file_id, TreeDigest, node_count, policy_version, y obtener consentimiento explícito del operador. Sin confirmación -> ELEVATION_REJECTED / REFUSE_TO_PLAN. Se registra durablemente en el journal que PPSC pasó.
-    5. Adquirir GoldenMutationLock exclusivo (CreateFileW sobre %ProgramData%\Sky-Claw\runtime_vault\locks\skyclaw_golden_lock_<vol_serial>_<root_file_id>.lock con dwDesiredAccess = GENERIC_READ | GENERIC_WRITE, dwShareMode = 0; ver §19.1).
-    6. Crear authorized_plan.json en AUTHORIZED_OPERATIONS (único productor). El binding incluye operation_id, canonical_root, VolumeSerialNumber, root_file_id, TreeDigest, node_count, policy_version, staging_digest y el timestamp PPSC.
+    5. **Validación exhaustiva de precondiciones criptográficas del plan** (se ejecuta **una vez** sobre el `candidate_manifest.json` completo, antes de adquirir el `GoldenMutationLock` y antes de cualquier mutación). Si cualquier nodo del plan no satisface los invariantes de abajo -> `REFUSE_TO_PLAN` (sin `GoldenMutationLock` adquirido, sin nodos mutados, sin `authorized_plan.json` creado):
+        - Para cada nodo K: `sha256(base64_decode(node.pre_sd_bytes_b64)) == node.pre_sd_sha256` (rechaza `pre_sd_bytes_b64` adversarios).
+        - Para cada nodo K: `node.pre_sd_length == GetSecurityDescriptorLength(base64_decode(node.pre_sd_bytes_b64))` y `node.dacl_control_flags` consistente con el descriptor decodificado.
+        - Unicidad de `(VolumeSerialNumber, FileId)` en el conjunto de nodos.
+        - Consistencia de la jerarquía: cada relpath es resoluble bajo `canonical_root` y no escapa de él.
+       Esta validación se realiza antes de la mutación para que un plan adversario sea rechazado con cero mutaciones; los chequeos revalidación per-nodo en el bucle de mutación (§12.2 paso 3) son **revalidation**, no primera validación.
+    6. Adquirir GoldenMutationLock exclusivo (CreateFileW sobre %ProgramData%\Sky-Claw\runtime_vault\locks\skyclaw_golden_lock_<vol_serial>_<root_file_id>.lock con dwDesiredAccess = GENERIC_READ | GENERIC_WRITE, dwShareMode = 0; ver §19.1).
+    7. Crear authorized_plan.json en AUTHORIZED_OPERATIONS (único productor). El binding incluye operation_id, canonical_root, VolumeSerialNumber, root_file_id, TreeDigest, node_count, policy_version, staging_digest y el timestamp PPSC.
 
 Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
     1. Probe Handle de Quiescencia (transitorio):
@@ -463,12 +474,12 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
        Si info.VolumeSerialNumber != expected.vol_serial o info.FileId != expected.file_id o tag != 0:
            CloseHandle(h) -> FAIL_CLOSED -> Iniciar ROLLBACK.
 
-    3. Leer SD PRE sobre el Handle y Validar Binding pre_sd_bytes_b64 == pre_sd_sha256:
+    3. Leer SD PRE sobre el Handle y **Revalidar** Binding pre_sd_bytes_b64 == pre_sd_sha256:
        sd_pre = GetSecurityInfo(h, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, ...)
-       Si sha256(sd_pre) != expected.pre_sd_sha256:
-           CloseHandle(h) -> FAIL_CLOSED -> Iniciar ROLLBACK.
+       Si sha256(sd_pre) != expected.pre_sd_sha256:   // drift entre captura y ejecución
+           CloseHandle(h) -> FAIL_CLOSED -> Iniciar ROLLBACK (no `REFUSE_TO_PLAN` aquí: ya estamos en el bucle de mutación; este chequeo es la revalidación per-nodo).
        Si sha256(base64_decode(expected.pre_sd_bytes_b64)) != expected.pre_sd_sha256:
-           CloseHandle(h) -> FAIL_CLOSED -> REFUSE_TO_APLAN (manifest adversario detectado ANTES de mutar nada).
+           CloseHandle(h) -> FAIL_CLOSED -> Iniciar ROLLBACK (defensa en profundidad; la primera validación ocurrió en la fase de autorización §12.2 paso 5).
        Capture pre_sd_protected_flag = GetSecurityDescriptorControl(sd_pre) & SE_DACL_PROTECTED para usarlo en rollback (ver §13).
 
     4. Write-Ahead Log (WAL) con FlushFileBuffers Obligatorio:
@@ -806,6 +817,8 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - **GP2-T31 (UAC != plan authorization):** un UAC aceptado sin PPSC posterior no produce `authorized_plan.json`; el desenlace es `REFUSE_TO_PLAN` con traza en el journal.
 - **GP2-T32 (privileged privilege scope):** DACL preexistente que deniega `WRITE_DAC` a Administrators + elevación OTS secundaria: el helper habilita `SeRestorePrivilege` antes de la apertura del handle de mutación; si la apertura sigue devolviendo `ACCESS_DENIED`, transición a `ROLLBACK_REQUIRED` (no se activa `SeTakeOwnershipPrivilege`).
 - **GP2-T33 (verifier cannot write FSM):** el verificador no elevado intenta escribir en `AUTHORIZED_OPERATIONS` o transicionar a `COMMITTED`/`ARCHIVING_BACKUP` -> `ACCESS_DENIED` por DACL y desenlace `REFUSE_TO_PLAN`/`INDETERMINATE`.
+- **GP2-T34 (intermediate directory DACL):** un proceso no elevado intenta borrar `trusted_goldens.json` o `authorized_plan.json` a través del directorio padre (no por acceso directo al archivo) -> `ACCESS_DENIED` por la DACL del directorio intermedio. Complementa a `M-D1`.
+- **GP2-T35 (binding validated before lock acquired):** un plan con `pre_sd_bytes_b64` adulterado en un nodo intermedio (K>1) es rechazado con `REFUSE_TO_PLAN` y el `GoldenMutationLock` nunca es adquirido; cero nodos mutados en disco. Complementa a `M-B2`.
 
 ---
 
@@ -858,6 +871,8 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 | **M-F1** | Verifier no elevado escribe `FSM`, `COMMITTED` o `ARCHIVING_BACKUP` en `AUTHORIZED_OPERATIONS` | Test `GP2-T33` exige `ACCESS_DENIED` por DACL del kernel |
 | **M-P1** | Helper habilita `SeRestorePrivilege` *después* de la apertura del handle, perdiendo la oportunidad frente a un DACL restrictivo | Test `GP2-T32` exige habilitar antes de la apertura y `ROLLBACK_REQUIRED` si `ACCESS_DENIED` persiste |
 | **M-W1** | Falta el rerun del probe antes de `ARCHIVING_BACKUP`; un writer que abrió durante la mutación sobrevive a `COMMITTED` | Test que detecta que `COMMITTED` se alcanza con un writer activo (cubre la fila de la matriz §4.1.1 con `FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE` cuyo writer no fue detectado en el probe inicial y debe ser detectado por el rerun) |
+| **M-B2** | Validación del binding `pre_sd_bytes_b64`/`pre_sd_sha256` se omite o sólo ocurre en el bucle per-nodo en vez de en la fase de autorización previa; un plan con binding adversario en nodo K>1 produce nodos 1..K-1 mutados sin restauración | Test que presenta un plan con binding adulterado sólo en un nodo intermedio y aserta que el desenlace es `REFUSE_TO_PLAN` (sin mutación), no un rollback parcial |
+| **M-D1** | DACL de un directorio intermedio (`runtime_vault/`, `operations/`, `golden_backups/`, `locks/`) permite a un proceso no elevado añadir, borrar o sustituir entradas (rompe la garantía sobre la hoja) | Test que intenta borrar `trusted_goldens.json` o `authorized_plan.json` a través del parent directory y espera `ACCESS_DENIED` |
 
 ---
 
