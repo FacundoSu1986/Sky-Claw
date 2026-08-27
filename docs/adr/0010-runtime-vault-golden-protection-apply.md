@@ -1,9 +1,9 @@
 # ADR 0010 — RV-GP2: Protect Golden / Golden Protection Apply
 
-**Fecha:** 2026-08-27  
-**Estado:** Propuesta (design-only; prohibida la implementación de código de producción en este PR).  
-**Contexto de origen:** tarea RV-GP2 sobre `origin/main` `2ca4115b11740f0974c463a3d70db07aa068ca9c` (post-merge de PR #508, PR #509, PR #511 y PR #512).  
-**Alcance:** Diseño arquitectónico exclusivo de la capability mutadora transaccional de protección del Golden Master (`protect_golden_master`), su helper de elevación con privilegio mínimo, verificación estricta de quiescencia (probe handle exclusivo) y mutación atada a handle (`SetSecurityInfo`), autoridad transaccional privilegiada continua durante todo el ciclo de vida del FSM, simetría rigurosa entre las dos superficies del repositorio (GUI `tool_dispatcher` y agente LLM `AsyncToolRegistry`), lock de mutación cross-process basado en kernel (`GoldenMutationLock`), store de operaciones independiente del perfil de usuario (`%ProgramData%`) con separación estricta staging vs autorización privilegiada, su journal transaccional con Write-Ahead Logging (WAL y `FlushFileBuffers`), su modelo de recuperación ante caídas (crash recovery) y su compatibilidad forward con GP3.  
+**Fecha:** 2026-08-27
+**Estado:** Propuesta (design-only; prohibida la implementación de código de producción en este PR).
+**Contexto de origen:** tarea RV-GP2 sobre `origin/main` `2ca4115b11740f0974c463a3d70db07aa068ca9c` (post-merge de PR #508, PR #509, PR #511 y PR #512).
+**Alcance:** Diseño arquitectónico exclusivo de la capability mutadora transaccional de protección del Golden Master (`protect_golden_master`), su helper de elevación con privilegio mínimo, verificación estricta de quiescencia (probe handle exclusivo) y mutación atada a handle (`SetSecurityInfo`), autoridad transaccional privilegiada continua durante todo el ciclo de vida del FSM, simetría rigurosa entre las dos superficies del repositorio (GUI `tool_dispatcher` y agente LLM `AsyncToolRegistry`), lock de mutación cross-process basado en kernel (`GoldenMutationLock`), store de operaciones independiente del perfil de usuario (`%ProgramData%`) con separación estricta staging vs autorización privilegiada, su journal transaccional con Write-Ahead Logging (WAL y `FlushFileBuffers`), su modelo de recuperación ante caídas (crash recovery) y su compatibilidad forward con GP3.
 **Reglas de exclusión:** Sin código de producción; sin ejecución de UAC; sin mutación de ACLs reales; sin acceso a Golden físico ni Runtime físico; sin interacción con Skyrim, MO2 ni Steam; aislamiento estricto respecto del issue #506.
 
 ---
