@@ -33,6 +33,12 @@ por `_run_telegram()`.
 ## Lifecycle visible de aprobaciones HITL
 
 Una solicitud pendiente se muestra con botones inline **Aprobar** y **Denegar**.
+Los botones transportan un token efímero, aleatorio y acotado al protocolo de
+Telegram; el `request_id` interno completo nunca se embebe en `callback_data`.
+Los comandos textuales `/approve ` y `/deny ` siguen aceptando el
+`request_id` literal después del separador canónico y preservan sus espacios y
+Unicode.
+
 Cuando `HITLGuard` alcanza una decisión terminal, el mensaje original se actualiza
 y deja de tener botones accionables, incluso si la resolución provino de un
 comando textual, otra interfaz válida o un timeout:
