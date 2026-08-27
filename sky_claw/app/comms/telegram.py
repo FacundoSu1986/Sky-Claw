@@ -320,33 +320,42 @@ async def register_hitl_message_cancellation_safe(
         raise
 
 
-async def invalidate_unregistered_hitl_message(
+async def terminalize_unregistered_hitl_message_bounded(
     sender: TelegramSender,
     message: TelegramMessage,
+    decision: Any,
 ) -> None:
-    """Retira botones de un mensaje enviado cuyo registro no pudo completarse."""
+    """Presenta un estado terminal sin depender de un mapping en el registry."""
     try:
         await asyncio.wait_for(
             sender.edit_message(
                 message.chat_id,
                 message.message_id,
-                "⚠️ Solicitud no accionable",
+                terminal_hitl_text(decision),
                 reply_markup=None,
             ),
             timeout=_TELEGRAM_HITL_COMPENSATION_TIMEOUT_SECONDS,
         )
     except TimeoutError:
         logger.warning(
-            "Timeout invalidando el mensaje HITL sin mapping (%s, %s)",
+            "Timeout terminalizando el mensaje HITL sin mapping (%s, %s)",
             message.chat_id,
             message.message_id,
         )
     except Exception:
         logger.exception(
-            "No se pudo invalidar el mensaje HITL sin mapping (%s, %s)",
+            "No se pudo terminalizar el mensaje HITL sin mapping (%s, %s)",
             message.chat_id,
             message.message_id,
         )
+
+
+async def invalidate_unregistered_hitl_message(
+    sender: TelegramSender,
+    message: TelegramMessage,
+) -> None:
+    """Retira botones de un mensaje enviado cuyo registro no pudo completarse."""
+    await terminalize_unregistered_hitl_message_bounded(sender, message, None)
 
 
 async def terminalize_hitl_message(

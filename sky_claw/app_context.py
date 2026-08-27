@@ -26,6 +26,7 @@ from sky_claw.app.comms.telegram import (
     invalidate_unregistered_hitl_message,
     register_hitl_message_cancellation_safe,
     terminalize_hitl_message,
+    terminalize_unregistered_hitl_message_bounded,
 )
 from sky_claw.app.comms.telegram_polling import TelegramPolling
 from sky_claw.app.comms.telegram_sender import TelegramSender
@@ -935,15 +936,21 @@ class AppContext:
                             token=token,
                         )
                     except Exception:
-                        # Telegram ya creó el mensaje, pero el prompt nuevo no tiene
-                        # owner registrable. Invalidarlo evita dejar botones vivos y
-                        # conserva intactos los mappings pendientes anteriores.
-                        await invalidate_unregistered_hitl_message(active_sender, message)
-                        # Si el token desapareció porque el guard resolvió entre el
-                        # check y el registro, la decisión ya comprometida debe
-                        # seguir siendo la que recibe request_approval.
-                        if await hitl.terminal_decision(req.request_id) is not None:
+                        # Telegram ya creó el mensaje. Si otra interfaz resolvió
+                        # durante sendMessage, on_terminal retiró la reserva y no
+                        # habrá mapping que consumir: conservar la presentación
+                        # terminal de esa decisión en vez de usar cancelación genérica.
+                        decision = await hitl.terminal_decision(req.request_id)
+                        if decision is not None:
+                            await terminalize_unregistered_hitl_message_bounded(
+                                active_sender,
+                                message,
+                                decision,
+                            )
                             return
+                        # En cualquier otro fallo, invalidar el prompt recién creado
+                        # y conservar intactos los mappings pendientes anteriores.
+                        await invalidate_unregistered_hitl_message(active_sender, message)
                         raise
                 except asyncio.CancelledError:
                     # El guard ejecuta on_cancel para quitar botones; aquí sólo

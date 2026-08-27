@@ -206,3 +206,43 @@ async def test_cancelacion_entre_send_y_register_invalida_prompt_productivo(tmp_
     )
     assert await ctx.telegram_hitl_registry.resolve_token(token) is None
     assert await ctx.telegram_hitl_registry.get(request_id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("approved", "expected_decision", "expected_text"),
+    [
+        (True, Decision.APPROVED, "✅ Solicitud aprobada"),
+        (False, Decision.DENIED, "❌ Solicitud denegada"),
+    ],
+)
+async def test_decision_externa_durante_send_preserva_presentacion_terminal(
+    tmp_path: Path,
+    approved: bool,
+    expected_decision: Decision,
+    expected_text: str,
+) -> None:
+    ctx, hitl, sender, sent = await _build_productive_hitl(tmp_path)
+    request_id = "request-external-during-send"
+    send_release = asyncio.Event()
+
+    async def blocked_send(*_args: object, **_kwargs: object) -> TelegramMessage:
+        sent.set()
+        await send_release.wait()
+        return TelegramMessage(chat_id=123, message_id=77)
+
+    sender.send = AsyncMock(side_effect=blocked_send)
+    pending = asyncio.create_task(hitl.request_approval(request_id=request_id, reason="external race"))
+
+    await asyncio.wait_for(sent.wait(), timeout=1)
+    token = await ctx.telegram_hitl_registry.token_for_request(request_id)
+    assert token is not None
+    assert await hitl.respond(request_id, approved) is True
+    assert await hitl.terminal_decision(request_id) is expected_decision
+
+    send_release.set()
+    assert await pending is expected_decision
+
+    sender.edit_message.assert_awaited_once_with(123, 77, expected_text, reply_markup=None)
+    assert await ctx.telegram_hitl_registry.resolve_token(token) is None
+    assert await ctx.telegram_hitl_registry.get(request_id) is None
