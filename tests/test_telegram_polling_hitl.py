@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from sky_claw.app.comms.telegram import TelegramWebhook
+from sky_claw.app.comms.telegram import (
+    TelegramHITLMessageRegistry,
+    TelegramWebhook,
+    build_hitl_callback_data,
+    terminalize_hitl_message,
+)
 from sky_claw.app.comms.telegram_polling import TelegramPolling
 from sky_claw.app.security.hitl import Decision, HITLGuard
 
@@ -20,7 +25,7 @@ async def _esperar_notificacion(notificacion_enviada: asyncio.Event) -> None:
 def _crear_update_callback(
     update_id: int,
     accion: str,
-    request_id: str,
+    token: str,
     *,
     user_id: int = 123,
     chat_id: int = 123,
@@ -31,14 +36,31 @@ def _crear_update_callback(
             "id": f"callback-{update_id}",
             "from": {"id": user_id},
             "message": {"chat": {"id": chat_id}, "message_id": 77},
-            "data": f"hitl:{accion}:{request_id}",
+            "data": build_hitl_callback_data(accion, token),
         },
     }
 
 
-def _crear_transporte(hitl: HITLGuard) -> tuple[TelegramPolling, MagicMock, MagicMock]:
+def _crear_transporte(hitl: HITLGuard) -> tuple[TelegramPolling, MagicMock, MagicMock, TelegramHITLMessageRegistry]:
     router = MagicMock()
     sender = MagicMock()
+    registry = TelegramHITLMessageRegistry()
+    original_notify = hitl._notify
+
+    async def notify(request) -> None:
+        if original_notify is not None:
+            await original_notify(request)
+        await registry.register(request.request_id, 123, 77, sender=sender)
+
+    async def terminal(request, decision) -> None:
+        await terminalize_hitl_message(registry, request.request_id, decision)
+
+    async def cancel(request) -> None:
+        await terminalize_hitl_message(registry, request.request_id, None)
+
+    hitl._notify = notify
+    hitl._on_terminal = terminal
+    hitl._on_cancel = cancel
     sender.answer_callback_query = AsyncMock()
     sender.edit_message = AsyncMock()
     sender.send = AsyncMock()
@@ -49,6 +71,7 @@ def _crear_transporte(hitl: HITLGuard) -> tuple[TelegramPolling, MagicMock, Magi
         session=session,
         hitl=hitl,
         authorized_user_id=123,
+        hitl_registry=registry,
     )
     polling = TelegramPolling(
         token="123:ABC",
@@ -58,7 +81,13 @@ def _crear_transporte(hitl: HITLGuard) -> tuple[TelegramPolling, MagicMock, Magi
         interval=0,
         authorized_chat_id=123,
     )
-    return polling, sender, session
+    return polling, sender, session, registry
+
+
+async def _token_for(registry: TelegramHITLMessageRegistry, request_id: str) -> str:
+    token = await registry.token_for_request(request_id)
+    assert token is not None
+    return token
 
 
 @pytest.mark.asyncio
@@ -69,18 +98,19 @@ async def test_callback_approve_por_polling_resuelve_hitl_pendiente() -> None:
         notificacion_enviada.set()
 
     hitl = HITLGuard(notify_fn=notificar, timeout=1)
-    polling, sender, _session = _crear_transporte(hitl)
+    polling, sender, _session, registry = _crear_transporte(hitl)
     pendiente = asyncio.create_task(hitl.request_approval(request_id="req-approve"))
 
     await _esperar_notificacion(notificacion_enviada)
-    await polling._process_raw_update(_crear_update_callback(1, "approve", "req-approve"))
+    token = await _token_for(registry, "req-approve")
+    await polling._process_raw_update(_crear_update_callback(1, "approve", token))
 
     assert await pendiente is Decision.APPROVED
     sender.answer_callback_query.assert_awaited_once_with("callback-1", text=None)
     sender.edit_message.assert_awaited_once_with(
         123,
         77,
-        "Request 'req-approve' approved by operator.",
+        "✅ Solicitud aprobada",
         reply_markup=None,
     )
 
@@ -93,11 +123,12 @@ async def test_callback_deny_por_polling_resuelve_hitl_pendiente() -> None:
         notificacion_enviada.set()
 
     hitl = HITLGuard(notify_fn=notificar, timeout=5)
-    polling, sender, _session = _crear_transporte(hitl)
+    polling, sender, _session, registry = _crear_transporte(hitl)
     pendiente = asyncio.create_task(hitl.request_approval(request_id="req-deny"))
 
     await _esperar_notificacion(notificacion_enviada)
-    await polling._process_raw_update(_crear_update_callback(2, "deny", "req-deny"))
+    token = await _token_for(registry, "req-deny")
+    await polling._process_raw_update(_crear_update_callback(2, "deny", token))
 
     sender.answer_callback_query.assert_awaited_once_with("callback-2", text=None)
     assert await pendiente is Decision.DENIED
@@ -112,14 +143,17 @@ async def test_accion_callback_desconocida_por_polling_no_resuelve_hitl() -> Non
         notificacion_enviada.set()
 
     hitl = HITLGuard(notify_fn=notificar, timeout=1)
-    polling, sender, _session = _crear_transporte(hitl)
+    polling, sender, _session, registry = _crear_transporte(hitl)
     pendiente = asyncio.create_task(hitl.request_approval(request_id="req-unknown"))
 
     await _esperar_notificacion(notificacion_enviada)
-    await polling._process_raw_update(_crear_update_callback(3, "escalate", "req-unknown"))
+    token = await _token_for(registry, "req-unknown")
+    update = _crear_update_callback(3, "approve", token)
+    update["callback_query"]["data"] = f"hitl:escalate:{token}"
+    await polling._process_raw_update(update)
 
     assert not pendiente.done()
-    sender.answer_callback_query.assert_awaited_once_with("callback-3", text="Invalid HITL action")
+    sender.answer_callback_query.assert_awaited_once_with("callback-3", text="Invalid callback")
     pendiente.cancel()
     with pytest.raises(asyncio.CancelledError):
         await pendiente
@@ -133,13 +167,11 @@ async def test_callback_no_autorizado_por_polling_no_resuelve_hitl() -> None:
         notificacion_enviada.set()
 
     hitl = HITLGuard(notify_fn=notificar, timeout=1)
-    polling, sender, _session = _crear_transporte(hitl)
+    polling, sender, _session, registry = _crear_transporte(hitl)
     pendiente = asyncio.create_task(hitl.request_approval(request_id="req-unauthorized"))
 
     await _esperar_notificacion(notificacion_enviada)
-    await polling._process_raw_update(
-        _crear_update_callback(4, "approve", "req-unauthorized", user_id=999, chat_id=999)
-    )
+    await polling._process_raw_update(_crear_update_callback(4, "approve", "unused-token", user_id=999, chat_id=999))
 
     assert not pendiente.done()
     # El polling rechaza chats no autorizados antes de entregar el update al dispatcher.
@@ -157,11 +189,12 @@ async def test_callback_duplicado_por_polling_solo_tiene_un_efecto() -> None:
         notificacion_enviada.set()
 
     hitl = HITLGuard(notify_fn=notificar, timeout=1)
-    polling, sender, _session = _crear_transporte(hitl)
+    polling, sender, _session, registry = _crear_transporte(hitl)
     pendiente = asyncio.create_task(hitl.request_approval(request_id="req-duplicate"))
-    update = _crear_update_callback(5, "approve", "req-duplicate")
 
     await _esperar_notificacion(notificacion_enviada)
+    token = await _token_for(registry, "req-duplicate")
+    update = _crear_update_callback(5, "approve", token)
     await polling._process_raw_update(update)
     await polling._process_raw_update(update)
 
@@ -178,22 +211,23 @@ async def test_timeout_no_permite_aprobacion_tardia() -> None:
         notificacion_enviada.set()
 
     hitl = HITLGuard(notify_fn=notificar, timeout=0.01)
-    polling, sender, _session = _crear_transporte(hitl)
+    polling, sender, _session, registry = _crear_transporte(hitl)
     pendiente = asyncio.create_task(hitl.request_approval(request_id="req-timeout"))
 
     await _esperar_notificacion(notificacion_enviada)
+    token = await _token_for(registry, "req-timeout")
     assert await pendiente is Decision.TIMEOUT
 
-    await polling._process_raw_update(_crear_update_callback(6, "approve", "req-timeout"))
+    await polling._process_raw_update(_crear_update_callback(6, "approve", token))
 
-    sender.edit_message.assert_not_awaited()
-    sender.send.assert_awaited_once_with(123, "Error: Request 'req-timeout' not found or already processed.")
+    sender.edit_message.assert_awaited_once()
+    sender.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_polling_preserva_la_sesion_inyectada() -> None:
     hitl = HITLGuard()
-    polling, _sender, session = _crear_transporte(hitl)
+    polling, _sender, session, _registry = _crear_transporte(hitl)
     polling._running = True
 
     async def detener_despues_del_poll() -> None:

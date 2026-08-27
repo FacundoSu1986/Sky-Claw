@@ -17,8 +17,9 @@ async def _build_lifecycle(
     *,
     timeout: float = 5,
     edit_side_effect: BaseException | None = None,
-) -> tuple[HITLGuard, TelegramWebhook, TelegramHITLMessageRegistry, MagicMock, asyncio.Event]:
+) -> tuple[HITLGuard, TelegramWebhook, TelegramHITLMessageRegistry, MagicMock, asyncio.Event, dict[str, str]]:
     registry = TelegramHITLMessageRegistry()
+    tokens: dict[str, str] = {}
     sender = MagicMock()
     sender.send = AsyncMock()
     sender.answer_callback_query = AsyncMock()
@@ -28,6 +29,9 @@ async def _build_lifecycle(
 
     async def notify(req: HITLRequest) -> None:
         await registry.register(req.request_id, chat_id=123, message_id=77, sender=sender)
+        token = await registry.token_for_request(req.request_id)
+        assert token is not None
+        tokens[req.request_id] = token
         registered.set()
 
     async def terminal(req: HITLRequest, decision: Decision) -> None:
@@ -43,24 +47,24 @@ async def _build_lifecycle(
         hitl_registry=registry,
     )
     webhook_box.append(webhook)
-    return hitl, webhook, registry, sender, registered
+    return hitl, webhook, registry, sender, registered, tokens
 
 
-def _callback(update_id: int, action: str, request_id: str, message_id: int = 77) -> dict:
+def _callback(update_id: int, action: str, token: str, message_id: int = 77) -> dict:
     return {
         "update_id": update_id,
         "callback_query": {
             "id": f"callback-{update_id}",
             "from": {"id": 123},
             "message": {"chat": {"id": 123}, "message_id": message_id},
-            "data": f"hitl:{action}:{request_id}",
+            "data": f"hitl:{action}:{token}",
         },
     }
 
 
 @pytest.mark.asyncio
 async def test_registry_es_concurrent_safe_y_limpia_al_terminalizar() -> None:
-    hitl, _webhook, registry, _sender, registered = await _build_lifecycle()
+    hitl, _webhook, registry, _sender, registered, _tokens = await _build_lifecycle()
 
     pending = asyncio.create_task(hitl.request_approval(request_id="req-clean", reason="test"))
     await registered.wait()
@@ -84,11 +88,11 @@ async def test_callback_ganador_terminaliza_el_mensaje_correcto(
     decision: Decision,
     text: str,
 ) -> None:
-    hitl, webhook, registry, sender, registered = await _build_lifecycle()
-
+    hitl, webhook, registry, sender, registered, tokens = await _build_lifecycle()
     pending = asyncio.create_task(hitl.request_approval(request_id="req-inline", reason="test"))
+
     await registered.wait()
-    await webhook.process_update(_callback(1, action, "req-inline"))
+    await webhook.process_update(_callback(1, action, tokens["req-inline"]))
 
     assert await pending is decision
     sender.edit_message.assert_awaited_once_with(123, 77, text, reply_markup=None)
@@ -97,7 +101,7 @@ async def test_callback_ganador_terminaliza_el_mensaje_correcto(
 
 @pytest.mark.asyncio
 async def test_timeout_terminaliza_como_expirado_y_bloquea_callback_tardio() -> None:
-    hitl, webhook, registry, sender, registered = await _build_lifecycle(timeout=0)
+    hitl, webhook, registry, sender, registered, tokens = await _build_lifecycle(timeout=0)
 
     decision = await hitl.request_approval(request_id="req-timeout", reason="test")
     assert decision is Decision.TIMEOUT
@@ -109,16 +113,17 @@ async def test_timeout_terminaliza_como_expirado_y_bloquea_callback_tardio() -> 
     )
     assert await registry.get("req-timeout") is None
 
-    await webhook.process_update(_callback(2, "approve", "req-timeout"))
+    await webhook.process_update(_callback(2, "approve", tokens["req-timeout"]))
     assert sender.edit_message.await_count == 1
-    sender.send.assert_awaited_once_with(123, "Error: Request 'req-timeout' not found or already processed.")
+    sender.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_resolucion_externa_sincroniza_ui_y_callback_tardio_no_pisa_decision() -> None:
-    hitl, webhook, registry, sender, registered = await _build_lifecycle()
+    hitl, webhook, registry, sender, registered, tokens = await _build_lifecycle()
 
     pending = asyncio.create_task(hitl.request_approval(request_id="req-external", reason="test"))
+
     await registered.wait()
     assert await hitl.respond("req-external", approved=False) is True
 
@@ -131,7 +136,7 @@ async def test_resolucion_externa_sincroniza_ui_y_callback_tardio_no_pisa_decisi
     )
     assert await registry.get("req-external") is None
 
-    await webhook.process_update(_callback(3, "approve", "req-external"))
+    await webhook.process_update(_callback(3, "approve", tokens["req-external"]))
     assert await hitl.respond("req-external", approved=True) is False
     assert sender.edit_message.await_count == 1
 
@@ -168,7 +173,7 @@ async def test_dos_hitl_concurrentes_no_cruzan_message_id() -> None:
 
 @pytest.mark.asyncio
 async def test_fallo_de_edicion_no_cambia_decision_ni_deja_mapping() -> None:
-    hitl, _webhook, registry, _sender, registered = await _build_lifecycle(
+    hitl, _webhook, registry, _sender, registered, _tokens = await _build_lifecycle(
         edit_side_effect=RuntimeError("Telegram edit failed")
     )
 
@@ -258,7 +263,7 @@ async def test_cancelacion_invalida_el_prompt_y_elimina_botones() -> None:
 
 @pytest.mark.asyncio
 async def test_comando_textual_terminaliza_el_prompt_original() -> None:
-    hitl, webhook, registry, sender, registered = await _build_lifecycle()
+    hitl, webhook, registry, sender, registered, _tokens = await _build_lifecycle()
     pending = asyncio.create_task(hitl.request_approval(request_id="req-command", reason="test"))
     await registered.wait()
 

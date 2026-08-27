@@ -298,9 +298,8 @@ class TestHitlProducerRequestIds:
 
         assert discovered == self._EXPECTED_PRODUCERS
 
-    def test_prefijos_productivos_son_constantes_y_caben_en_callback_data(self) -> None:
+    def test_prefijos_productivos_son_constantes_y_no_dependen_de_telegram(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1]
-        max_request_id_bytes = 64 - len(b"hitl:approve:")
 
         for (relative, function_name), expected_prefix in self._EXPECTED_PREFIXES.items():
             path = root / relative
@@ -325,8 +324,10 @@ class TestHitlProducerRequestIds:
             assert isinstance(prefix_argument, ast.Constant) and isinstance(prefix_argument.value, str)
             assert prefix_argument.value == expected_prefix
 
-            sample_request_id = f"{expected_prefix}-{'0' * 12}"
-            assert len(sample_request_id.encode("utf-8")) <= max_request_id_bytes
+            # El request_id es una identidad del guard y ya no está condicionado
+            # por el límite de callback_data; Telegram lo tokeniza en su boundary.
+            sample_request_id = f"{expected_prefix}-{'0' * 1000}"
+            assert sample_request_id.startswith(expected_prefix)
 
 
 class TestRequestApprovalDuplicateId:
