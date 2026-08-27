@@ -717,14 +717,31 @@ class OperationJournal:
             # `executescript` en las dos ramas — dos call sites del mismo SQL son
             # exactamente el hermano desalineado que este repo colecciona.
             if self._lifecycle is not None:
-                boundary: Any = self._lifecycle.operation(self._db_path)
+                schema_boundary: Any = self._lifecycle.operation(self._db_path)
             else:
-                boundary = contextlib.nullcontext(self._db)
-            async with boundary as db:
+                schema_boundary = contextlib.nullcontext(self._db)
+            async with schema_boundary as db:
                 if self._lifecycle is not None:
                     self._db = db
                 await db.executescript(self._SCHEMA_SQL)
-                await _migrar_resoluciones_legacy_en_conn(db)
+
+            # Phase 2 (F-02): Migration/backfill boundary con commit durable propio.
+            # No depende del commit del sweep posterior: la migración validada queda
+            # persistida y confirmada antes de iniciar el mantenimiento best-effort.
+            if self._lifecycle is not None:
+                async with self._lifecycle.transaction(self._db_path) as conn:
+                    await _migrar_resoluciones_legacy_en_conn(conn)
+            else:
+                commit_exitoso = False
+                try:
+                    await _migrar_resoluciones_legacy_en_conn(self._db)
+                    await self._db.commit()
+                    commit_exitoso = True
+                finally:
+                    if not commit_exitoso:
+                        with contextlib.suppress(sqlite3.Error):
+                            await self._db.rollback()
+
             logger.info("Journal database opened", extra={"db_path": str(self._db_path)})
         except (sqlite3.Error, JournalError) as e:
             if self._db is not None and self._owns_conn:
@@ -1176,6 +1193,7 @@ class OperationJournal:
                 raise JournalTransactionError(f"Failed to record no_artifact resolutions: {e}") from e
         else:
             async with self._lock:
+                commit_exitoso = False
                 try:
                     await _registrar_resoluciones_de_artifact_en_conn(
                         db,
@@ -1185,10 +1203,13 @@ class OperationJournal:
                         handoff_id=None,
                     )
                     await db.commit()
+                    commit_exitoso = True
                 except sqlite3.Error as e:
-                    with contextlib.suppress(sqlite3.Error):
-                        await db.rollback()
                     raise JournalTransactionError(f"Failed to record no_artifact resolutions: {e}") from e
+                finally:
+                    if not commit_exitoso:
+                        with contextlib.suppress(sqlite3.Error):
+                            await db.rollback()
 
     async def cerrar_receipts_como_no_artifact(self, tx_ids: Iterable[int]) -> None:
         """Cierra receipts UNRESOLVED como NO_ARTIFACT (Principio 4).
@@ -1719,6 +1740,7 @@ class OperationJournal:
             except sqlite3.Error as e:
                 raise JournalTransactionError(f"Failed to register indeterminate handoff: {e}") from e
         async with self._lock:
+            commit_exitoso = False
             try:
                 nuevo_id = await self._escribir_handoff_indeterminado(
                     db,
@@ -1727,22 +1749,23 @@ class OperationJournal:
                     ids_absorcion=ids_absorcion,
                 )
                 await db.commit()
+                commit_exitoso = True
                 return nuevo_id
             except sqlite3.IntegrityError:
                 # El INSERT perdió contra un owner concurrente: el consumo de
                 # receipts (ya emitido en la transacción) tampoco debe quedar
                 # afirmado — se deshace junto con el INSERT.
-                with contextlib.suppress(sqlite3.Error):
-                    await db.rollback()
                 logger.warning(
                     "Handoff INDETERMINATE para '%s' no insertado: ya hay un owner activo",
                     registro.artifact_path,
                 )
                 return None
             except sqlite3.Error as e:
-                with contextlib.suppress(sqlite3.Error):
-                    await db.rollback()
                 raise JournalTransactionError(f"Failed to register indeterminate handoff: {e}") from e
+            finally:
+                if not commit_exitoso:
+                    with contextlib.suppress(sqlite3.Error):
+                        await db.rollback()
 
     async def transacciones_que_nombran(self, objetivo: str) -> list[int]:
         """IDs de transacciones cuya ActionManifest nombra ``objetivo``, acotadas
