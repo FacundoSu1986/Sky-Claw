@@ -451,10 +451,19 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
            NULL
        )
-       Si h_probe == INVALID_HANDLE_VALUE y GetLastError() == ERROR_SHARING_VIOLATION:
-           Si 0 nodos mutados -> FAIL_CLOSED -> REFUSE_TO_APPLY (QuiescenceViolationError)
-           Si >0 nodos mutados -> FAIL_CLOSED -> Iniciar secuencia de ROLLBACK (ROLLBACK_REQUIRED).
-       Si h_probe es inválido por otro motivo -> FAIL_CLOSED -> REFUSE_TO_APPLY / ROLLBACK_REQUIRED según corresponda.
+       Si h_probe == INVALID_HANDLE_VALUE:
+           err = GetLastError();
+           Si err == ERROR_SHARING_VIOLATION:
+               Si 0 nodos mutados -> FAIL_CLOSED -> REFUSE_TO_APPLY (QuiescenceViolationError)
+               Si >0 nodos mutados -> FAIL_CLOSED -> Iniciar secuencia de ROLLBACK (ROLLBACK_REQUIRED).
+           Si err == ERROR_ACCESS_DENIED:
+               // El DACL del nodo niega las clases solicitadas por el probe a Administrators/helper.
+               // Esto NO es quiescencia: indica que el helper no tiene los derechos para
+               // ni siquiera detectar writers. Política: habilitar SeBackupPrivilege y SeRestorePrivilege
+               // y reintentar una vez; si persiste ACCESS_DENIED -> ROLLBACK_REQUIRED (el contrato
+               // de "WRITE_PROTECTED -> HARDENED" exige que el helper pueda atravesar el DACL; si no
+               // puede, el plan debe fallar cerrado, no continuar con garantía degradada).
+           Cualquier otro err -> FAIL_CLOSED -> REFUSE_TO_APPLY / ROLLBACK_REQUIRED según corresponda.
        CloseHandle(h_probe).
 
     2. Apertura del Handle de Mutación (binding por handle) y Validación de Identidad:
@@ -670,16 +679,18 @@ VERIFIER_CAN_WRITE_AUTHORIZED_OPERATIONS = NO
 PREPARING -> PREPARED -> AWAITING_ELEVATION -> APPLYING -> VERIFYING_GP1 -> VERIFYING_RV2 -> VERIFYING_NODE_SET -> ARCHIVING_BACKUP -> COMMITTED
    |            |               |                 |               |               |                    |                   |
    v            v               v                 v               v               v                    v                   v
-REFUSE_TO_APPLY CANCELLED ELEVATION_REJECTED ROLLBACK_REQ   ROLLBACK_REQ    ROLLBACK_REQ         ROLLBACK_REQ        RETRY_ARCHIVE
-                                                 |               |               |                    |
-                                                 +---------------+---------------+--------------------+
-                                                                 |
-                                                                 v
-                                                           ROLLING_BACK
-                                                            /        \
-                                                           v          v
-                                                      ROLLED_BACK  ROLLBACK_FAILED / INDETERMINATE
+REFUSE_TO_APPLY CANCELLED ELEVATION_REJECTED ROLLBACK_REQ   ROLLBACK_REQ    ROLLBACK_REQ         ROLLBACK_REQ        ROLLBACK_REQ
+                                                  |               |               |                    |
+                                                  +---------------+---------------+--------------------+
+                                                                  |
+                                                                  v
+                                                            ROLLING_BACK
+                                                             /        \
+                                                            v          v
+                                                       ROLLED_BACK  ROLLBACK_FAILED / INDETERMINATE
 ```
+
+**Nota sobre `ARCHIVING_BACKUP`:** la fase `ARCHIVING_BACKUP` puede fallar transitoriamente (espacio en disco, antivirus). La política de reintentos es **acotada a nivel de fase** (reintentos dentro de `ARCHIVING_BACKUP` hasta un máximo configurable `MAX_ARCHIVE_RETRIES`); si los reintentos se agotan, la transición es a `ROLLBACK_REQUIRED` (no a un estado huérfano `RETRY_ARCHIVE`). El lock se mantiene durante los reintentos. `GP2-T15` cubre el caso de archivo exitoso y de archivo fallido tras agotar reintentos.
 
 ---
 
@@ -870,7 +881,7 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 | **M-R1** | Rollback omite `UNPROTECTED_DACL_SECURITY_INFORMATION` cuando el SD PRE no tenía `SE_DACL_PROTECTED`, o viceversa | Test `GP2-T12` (caso con `PRE_DACL_PROTECTED = False`) exige que tras rollback el flag vuelva a `False` |
 | **M-F1** | Verifier no elevado escribe `FSM`, `COMMITTED` o `ARCHIVING_BACKUP` en `AUTHORIZED_OPERATIONS` | Test `GP2-T33` exige `ACCESS_DENIED` por DACL del kernel |
 | **M-P1** | Helper habilita `SeRestorePrivilege` *después* de la apertura del handle, perdiendo la oportunidad frente a un DACL restrictivo | Test `GP2-T32` exige habilitar antes de la apertura y `ROLLBACK_REQUIRED` si `ACCESS_DENIED` persiste |
-| **M-W1** | Falta el rerun del probe antes de `ARCHIVING_BACKUP`; un writer que abrió durante la mutación sobrevive a `COMMITTED` | Test que detecta que `COMMITTED` se alcanza con un writer activo (cubre la fila de la matriz §4.1.1 con `FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE` cuyo writer no fue detectado en el probe inicial y debe ser detectado por el rerun) |
+| **M-W1** | Falta el rerun del probe antes de `ARCHIVING_BACKUP`; un writer que abrió durante la mutación sobrevive a `COMMITTED` | Test que abre un writer con `dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE` (no detectable por el probe inicial: su `DELETE` no está concedido por la share del writer que aún no existía; pero el writer abre durante la mutación y al rerun del probe, el `DELETE` que solicita el probe colisiona con el handle del writer -> `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_PLAN`). Para writers con `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` (no detectables ni en probe ni en rerun), el test ancla la limitación declarada y verifica que RV-2 detecta el drift de contenido. |
 | **M-B2** | Validación del binding `pre_sd_bytes_b64`/`pre_sd_sha256` se omite o sólo ocurre en el bucle per-nodo en vez de en la fase de autorización previa; un plan con binding adversario en nodo K>1 produce nodos 1..K-1 mutados sin restauración | Test que presenta un plan con binding adulterado sólo en un nodo intermedio y aserta que el desenlace es `REFUSE_TO_PLAN` (sin mutación), no un rollback parcial |
 | **M-D1** | DACL de un directorio intermedio (`runtime_vault/`, `operations/`, `golden_backups/`, `locks/`) permite a un proceso no elevado añadir, borrar o sustituir entradas (rompe la garantía sobre la hoja) | Test que intenta borrar `trusted_goldens.json` o `authorized_plan.json` a través del parent directory y espera `ACCESS_DENIED` |
 
