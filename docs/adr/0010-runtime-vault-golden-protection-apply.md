@@ -173,12 +173,16 @@ El probe normativo (§4.1) solicita: `FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_
 
 ### 4.1.2 WRITABLE MAPPING CASE (`CreateFileMapping` con `PAGE_READWRITE`)
 
-Este caso es **independiente de la HANDLE SHARE MATRIX** de §4.1.1 y se trata aparte porque un file mapping es una referencia al archivo con semántica de sharing propia (derivada del `dwShareMode` del handle sobre el que se creó el mapping, no de un `dwDesiredAccess` propio):
+Este caso es **independiente de la HANDLE SHARE MATRIX** de §4.1.1 y se trata aparte porque un file mapping es una referencia al archivo con semántica de sharing propia (derivada del `dwShareMode` del handle sobre el que se creó el mapping, no de un `dwDesiredAccess` propio).
 
-- Si el mapping fue creado sobre un handle con `dwShareMode` que **no** incluye `FILE_SHARE_WRITE` -> el probe del helper (que solicita `FILE_WRITE_DATA`) falla con `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED`.
-- Si el mapping está sobre un handle con `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` (todas las write-shares concedidas) -> el probe **no** lo detecta (limitación declarada: análoga a las filas H4/H6 de §4.1.1).
+**Restricción de construcción (Win32, no inventada):** `CreateFileMappingW` con `PAGE_READWRITE` exige que el handle subyacente se haya abierto con `dwShareMode` que incluya `FILE_SHARE_READ | FILE_SHARE_WRITE`; no es posible construir un mapping escribible sobre un handle sin `FILE_SHARE_WRITE` (el propio `CreateFileMapping` falla con `ERROR_ACCESS_DENIED`/`ERROR_SHARING_VIOLATION`). Consecuencias normativas:
 
-`GP2-T24` cubre el caso fail-closed con un fixture que abre `CreateFileMapping(..., PAGE_READWRITE)` sobre un handle cuyo `dwShareMode` no concede `FILE_SHARE_WRITE` y verifica que el probe falla y que la verificación posterior aborta antes de `COMMITTED`. La variante full-share se cubre por la misma cláusula de limitación y por RV-2 post-verificación de drift de contenido.
+- **No existe un caso "mapping escribible detectado por el probe por falta de write-share"**: todo mapping `PAGE_READWRITE` real nace de un handle full-write-share y, por tanto, **no es detectado** por el probe (análogo a las filas H4/H6 de §4.1.1). La única defensa real ante drift de contenido por mappings es RV-2 (`TreeDigest`).
+- El caso fail-closed de quiescencia que sí es materializable es la **fila H2** de la HANDLE SHARE MATRIX: un writer `GENERIC_WRITE` abierto con `FILE_SHARE_READ` (sin `FILE_SHARE_WRITE`) que el probe detecta con `ERROR_SHARING_VIOLATION`.
+
+`GP2-T24` se reespecifica en dos partes:
+1. **Caso alcanzable fail-closed:** writer `GENERIC_WRITE` con `dwShareMode = FILE_SHARE_READ` (fila H2) -> probe falla con `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_APPLY` (0 nodos) / `ROLLBACK_REQUIRED` (>0 nodos). Sin mock de `CreateFileW`.
+2. **Caso mapping full-share (limitación):** fixture que abre el archivo con `dwShareMode = FILE_SHARE_READ | FILE_SHARE_WRITE`, crea `CreateFileMapping(..., PAGE_READWRITE)` sobre ese handle (construcción válida), verifica que el probe **no** lo detecta (open exitoso) y que la transición a `COMMITTED` queda protegida por la verificación RV-2 (`TreeDigest`) que aborta ante drift de contenido. Si el `CreateFileMapping` del fixture falla (por cualquier restricción del entorno), el test debe **fallar explícitamente** (setup error), no pasar en verde.
 
 ---
 
@@ -724,10 +728,16 @@ Para evitar cualquier interferencia con el trabajo paralelo del Issue #506 en `s
 4. **Comportamiento ante Muerte de Proceso:** El kernel de Windows cierra automáticamente todos los handles abiertos cuando un proceso finaliza (sea por crash, kill o salida normal), liberando la exclusión mutua de forma síncrona.
 5. **Defensa contra Reuso de PID y Recuperación de Lock Huérfano:**
    - Dentro del archivo de lock se escribe la metadata del dueño: `{"lock_key": "...", "owner_pid": 1234, "owner_process_creation_time": 133456789012345678, "session_id": 1, "operation_id": "...", "phase": "APPLYING", "created_at": 1756245000}`.
-   - Si un proceso intenta adquirir el lock y `CreateFileW` tiene éxito (el handle fue liberado por el SO), pero existe metadata de una operación previa no concluida:
-     - El recuperador consulta `GetProcessTimes` sobre `owner_pid`. Si el proceso existe y su `CreationTime` coincide con `owner_process_creation_time`, el proceso sigue vivo y NO se puede robar el lock (`GoldenLockError`).
-     - Si el proceso murió o el `CreationTime` difiere (PID reuse detectado), se confirma que el lock quedó huérfano por crash y se transiciona de forma segura al procedimiento de Crash Recovery (§20).
+   - **Ciclo de vida del lock file (normativo, cierra el caso "lock residual"):**
+     - En toda **terminación normal** (`COMMITTED`, `ROLLED_BACK`, `CANCELLED`, `REFUSE_TO_APPLY`), el propietario, antes de `CloseHandle`, escribe `phase=RELEASED` en la metadata y elimina el archivo de lock (`DeleteFileW`). Si el borrado falla (p. ej. antivirus), escribe `phase=RELEASED` y deja constancia en el journal; la próxima adquisición trata `phase=RELEASED` como metadata residual.
+     - En terminación por **crash**, el kernel cierra el handle y el archivo conserva metadata con `phase != RELEASED`.
+   - Si un proceso intenta adquirir el lock y `CreateFileW` tiene éxito (el handle fue liberado por el SO), pero existe metadata de una operación previa:
+     - Si `phase == RELEASED` -> metadata **residual** de una operación terminada; el adquirente la sobreescribe y continúa (no es un lock activo).
+     - Si `phase != RELEASED` (operación previa no concluida):
+       - El recuperador consulta `GetProcessTimes` sobre `owner_pid`. Si el proceso existe y su `CreationTime` coincide con `owner_process_creation_time`, el proceso sigue vivo y NO se puede robar el lock (`GoldenLockError`).
+       - Si el proceso murió o el `CreationTime` difiere (PID reuse detectado), se confirma que el lock quedó huérfano por crash y se transiciona de forma segura al procedimiento de Crash Recovery (§20).
      - Prohibido robar el lock basándose en timeout de heartbeat si el proceso propietario sigue vivo.
+   - **Oráculo:** tras una operación normal completada (COMMITTED/ROLLED_BACK) y la liberación del lock, la siguiente adquisición sobre el mismo Golden debe tener éxito **sin intervención manual** (ni borrado privilegiado ni reinicio); GP2-T20 cubre esta secuencia de re-adquisición.
 6. **Prohibición de reparse-substitution en el lock file:** cualquier `ReparseTag != 0` al reabrir el lock aborta la operación con `GoldenLockError` (defensa contra Actor D que reemplaza el lock por un junction).
 
 ### 19.2 FSM Completa y Autoridad del Helper
@@ -885,7 +895,7 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - **GP2-T17:** AST Anchor: El módulo no utiliza strings de cuentas localizadas ("Todos", "Administradores"), solo SIDs.
 - **GP2-T18:** Presencia de hardlinks internos (mismo `(VolumeSerialNumber, FileId)` en 2 rutas) aborta con `DuplicateFileIdError` y estado `REFUSE_TO_APPLY`.
 - **GP2-T19:** Omisión de un nodo pre-endurecido en el manifiesto es detectada por la verificación de igualdad `MANIFEST_NODE_SET == FRESH_POST_CANONICAL_NODE_SET` y aborta la transacción.
-- **GP2-T20:** `GoldenMutationLock` serializa dos llamadas concurrentes sobre el mismo Golden rechazando la segunda con `GoldenLockError`. Aserta además que el contrato de apertura del lock usa `dwDesiredAccess = GENERIC_READ | GENERIC_WRITE`, `dwShareMode = 0` y `FILE_FLAG_OPEN_REPARSE_POINT`, y que tras abrir el lock se valida `ReparseTag == 0` y la pareja `(VolumeSerialNumber, FileId)` del lock file; si el lock fue sustituido por un junction, la segunda adquisición falla con `GoldenLockError`.
+- **GP2-T20:** `GoldenMutationLock` serializa dos llamadas concurrentes sobre el mismo Golden rechazando la segunda con `GoldenLockError`. Aserta además que el contrato de apertura del lock usa `dwDesiredAccess = GENERIC_READ | GENERIC_WRITE`, `dwShareMode = 0` y `FILE_FLAG_OPEN_REPARSE_POINT`, y que tras abrir el lock se valida `ReparseTag == 0` y la pareja `(VolumeSerialNumber, FileId)` del lock file; si el lock fue sustituido por un junction, la segunda adquisición falla con `GoldenLockError`. **Re-adquisición post-terminal (oráculo de lock residual, §19.1.5):** completar una operación normal (COMMITTED/ROLLED_BACK), liberar el lock y adquirirlo de nuevo sobre el mismo Golden debe ser exitoso sin intervención manual; verifica que la metadata residual con `phase=RELEASED` (o el borrado del lock file) no dispara `GoldenLockError`.
 - **GP2-T21:** La mutación se ejecuta sobre el mismo handle (`SetSecurityInfo(handle)`), fallando si el archivo se intenta reemplazar bajo el handle abierto.
 - **GP2-T22:** El store de operaciones y backup en `%ProgramData%` permite resolver el plan de forma transparente y autenticar el respaldo en escenarios de elevación Over-The-Shoulder (OTS).
 - **GP2-T23:** Oráculo de la HANDLE SHARE MATRIX del §4.1.1. El test enumera **literalmente las seis filas H1–H6** con su desenlace contractual por fila (sin parametrización parcial y sin mocks que sustituyan `CreateFileW`):
@@ -896,7 +906,7 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
   - H5 (`GENERIC_READ` con share incompleto, `FILE_SHARE_READ`) -> `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_APPLY`.
   - H6 (`GENERIC_READ` con share completo `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`) -> **open exitoso**; mismo tratamiento de limitación que H4.
   El probe debe ejercitar el camino real (dependencia real de `pywin32`/`ctypes`); el desenlace esperado por fila es único y no admite ambigüedad entre `ERROR_SHARING_VIOLATION` y open exitoso.
-- **GP2-T24:** Mapping de memoria escribible preexistente (`CreateFileMapping` con `PAGE_READWRITE`) produce `ERROR_SHARING_VIOLATION` en el probe; rerun del probe antes de `ARCHIVING_BACKUP` detecta la persistencia y aborta antes de `COMMITTED`.
+- **GP2-T24:** WRITABLE MAPPING CASE (§4.1.2). Parte 1 (fail-closed alcanzable): writer `GENERIC_WRITE` con `dwShareMode = FILE_SHARE_READ` (fila H2 de la HANDLE SHARE MATRIX) -> probe con `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_APPLY` / `ROLLBACK_REQUIRED`. Parte 2 (limitación declarada): handle abierto con `FILE_SHARE_READ | FILE_SHARE_WRITE` + `CreateFileMapping(PAGE_READWRITE)` sobre él -> el probe no detecta el mapping (open exitoso) y la protección contra drift queda en RV-2 (`TreeDigest`) que aborta antes de `COMMITTED`. Si el `CreateFileMapping` del fixture falla, el test falla explícitamente (setup error); nunca pasa en verde por la razón equivocada.
 - **GP2-T25:** Intento de escritura en `AUTHORIZED_OPERATIONS` o `golden_backups` por parte de un proceso no elevado es bloqueado por la DACL del kernel (`ACCESS_DENIED`). Cubre además `trusted_goldens.json` y `locks/`.
 - **GP2-T26 (ancla de binding pre_sd_bytes_b64):** test paramétrico que produce dos variantes del mismo plan —`(a)` plan correcto y `(b)` plan con `pre_sd_sha256` legítimo y `pre_sd_bytes_b64` adulterado— y verifica que el helper rechaza `(b)` con `PreSdBytesHashMismatchError` *antes* de la primera mutación, y acepta `(a)`. Complementa al mutante `M-B1`.
 - **GP2-T27:** AST Anchor de Simetría de Superficies: enumera por introspección/igualdad literal el set de herramientas mutadoras registradas tanto en `SupervisorAgent` (`tool_dispatcher`) como en `AsyncToolRegistry` (`LLMRouter`); detecta asimetrías de cableado y de `HITLGuard`/UAC. El ancla es por **igualdad literal del set** (no por muestreo), siguiendo el patrón de `RITUAL_TOOL_MAP` del repositorio.
