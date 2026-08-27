@@ -17,7 +17,15 @@ import keyring
 from sky_claw.app.agent.providers import ProviderConfigError, create_provider
 from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.agent.tools_facade import AsyncToolRegistry
-from sky_claw.app.comms.telegram import TelegramWebhook
+from sky_claw.app.comms.telegram import (
+    TelegramHITLMessageRegistry,
+    TelegramHITLRegistryError,
+    TelegramWebhook,
+    escape_html,
+    invalidate_unregistered_hitl_message,
+    register_hitl_message_cancellation_safe,
+    terminalize_hitl_message,
+)
 from sky_claw.app.comms.telegram_polling import TelegramPolling
 from sky_claw.app.comms.telegram_sender import TelegramSender
 from sky_claw.app.core.metrics_server import (
@@ -35,7 +43,7 @@ from sky_claw.app.scraper.masterlist import MasterlistClient
 from sky_claw.app.scraper.nexus_downloader import NexusDownloader
 from sky_claw.app.security.auth_token_manager import AuthTokenManager
 from sky_claw.app.security.credential_vault import CredentialVault
-from sky_claw.app.security.hitl import HITLGuard, HITLRequest
+from sky_claw.app.security.hitl import Decision, HITLGuard, HITLRequest
 from sky_claw.app.security.network_gateway import GatewayTCPConnector, NetworkGateway
 from sky_claw.app.security.path_validator import PathValidator, assert_safe_component
 from sky_claw.app.security.prompt_armor import build_system_header
@@ -207,6 +215,9 @@ class AppContext:
         self.vfs_loot_runner: BrokeredLootRunner | VfsRequiredLootRunner | None = None
 
         self.hitl: HITLGuard | None = None
+        # Registry efímero: request_id → mensaje Telegram exacto. Nunca se
+        # persiste y se limpia al cerrar la generación de startup.
+        self.telegram_hitl_registry = TelegramHITLMessageRegistry()
         self.router: LLMRouter | None = None
         # F1 (auditoría Zero-Trust 2026-07-18): bóveda de credenciales para el
         # hot-swap Zero-Trust del router. None hasta que start_full la provisione
@@ -836,6 +847,20 @@ class AppContext:
             hitl: HITLGuard
             full_published = False
 
+            async def _hitl_terminal(req: HITLRequest, decision: Decision) -> None:
+                await terminalize_hitl_message(
+                    self.telegram_hitl_registry,
+                    req.request_id,
+                    decision,
+                )
+
+            async def _hitl_cancel(req: HITLRequest) -> None:
+                await terminalize_hitl_message(
+                    self.telegram_hitl_registry,
+                    req.request_id,
+                    None,
+                )
+
             async def _hitl_notify(req: HITLRequest) -> None:
                 active_sender = self.sender if full_published else sender
                 if active_sender is None or operator_chat_id is None:
@@ -852,31 +877,70 @@ class AppContext:
                     )
                     await hitl.respond(req.request_id, False)
                     return
-                msg = f"🛡️ *HITL Approval Required*\n\nID: `{req.request_id}`\nReason: {req.reason}\n\n{req.detail}"
-                # Send using sender directly
-                try:
-                    await active_sender.send(
-                        operator_chat_id,
-                        msg,
-                        reply_markup={
-                            "inline_keyboard": [
-                                [
-                                    {
-                                        "text": "✅ Approve",
-                                        "callback_data": f"hitl:approve:{req.request_id}",
-                                    },
-                                    {
-                                        "text": "❌ Deny",
-                                        "callback_data": f"hitl:deny:{req.request_id}",
-                                    },
-                                ]
-                            ]
-                        },
-                    )
-                except Exception:
-                    logger.exception("Failed to send HITL notification")
+                prompt_lines = [
+                    "🛡️ <b>Se requiere aprobación HITL</b>",
+                    "",
+                    f"<b>ID:</b> <code>{escape_html(req.request_id)}</code>",
+                    f"<b>Motivo:</b> {escape_html(req.reason)}",
+                ]
+                if req.url:
+                    prompt_lines.append(f"<b>URL:</b> <code>{escape_html(req.url)}</code>")
+                if req.detail:
+                    prompt_lines.extend(["", escape_html(req.detail)])
 
-            hitl = HITLGuard(notify_fn=_hitl_notify)
+                message = await active_sender.send(
+                    operator_chat_id,
+                    "\n".join(prompt_lines),
+                    reply_markup={
+                        "inline_keyboard": [
+                            [
+                                {
+                                    "text": "✅ Aprobar",
+                                    "callback_data": f"hitl:approve:{req.request_id}",
+                                },
+                                {
+                                    "text": "❌ Denegar",
+                                    "callback_data": f"hitl:deny:{req.request_id}",
+                                },
+                            ]
+                        ]
+                    },
+                )
+                # El mapping sólo nace después de que Telegram devuelve la
+                # identidad del mensaje. Un fallo, un None o una respuesta
+                # incompleta deja la request fail-closed sin mapping fantasma.
+                try:
+                    await register_hitl_message_cancellation_safe(
+                        self.telegram_hitl_registry,
+                        req.request_id,
+                        message,
+                        active_sender,
+                    )
+                except TelegramHITLRegistryError:
+                    # Telegram ya creó el mensaje, pero el prompt nuevo no tiene
+                    # owner registrable. Invalidarlo evita dejar botones vivos y
+                    # conserva intactos los mappings pendientes anteriores.
+                    await invalidate_unregistered_hitl_message(active_sender, message)
+                    raise
+
+                # Otra interfaz puede resolver la request mientras sendMessage
+                # está en vuelo. En ese caso el hook del guard pudo ejecutarse
+                # antes de existir el mapping; consumirlo ahora evita dejar el
+                # prompt accionable o una entrada huérfana.
+                terminal_decision = await hitl.terminal_decision(req.request_id)
+                if terminal_decision is not None:
+                    await terminalize_hitl_message(
+                        self.telegram_hitl_registry,
+                        req.request_id,
+                        terminal_decision,
+                    )
+
+            hitl = HITLGuard(
+                notify_fn=_hitl_notify,
+                on_terminal=_hitl_terminal,
+                on_cancel=_hitl_cancel,
+            )
+            self._push_startup_cleanup(self.telegram_hitl_registry.clear)
 
             # Observability: configure distributed tracing first so spans from the
             # metrics server startup are captured.  NoOp when no OTLP endpoint is set.
@@ -1270,6 +1334,7 @@ class AppContext:
                     session=self.network.session,
                     hitl=hitl,
                     authorized_user_id=operator_chat_id,
+                    hitl_registry=self.telegram_hitl_registry,
                 )
                 polling = TelegramPolling(
                     token=bot_token,

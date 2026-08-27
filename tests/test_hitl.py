@@ -505,11 +505,11 @@ class TestRespond:
 
 class TestTimeout:
     @pytest.mark.asyncio
-    async def test_no_response_within_timeout_returns_denied(self) -> None:
-        """No response within timeout → DENIED (fail-secure policy)."""
+    async def test_no_response_within_timeout_returns_timeout(self) -> None:
+        """Sin respuesta durante el timeout → TIMEOUT (política fail-secure)."""
         guard = HITLGuard(notify_fn=None, timeout=0)
         decision = await guard.request_approval(reason="timeout_test")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_timeout_clears_pending_entry(self) -> None:
@@ -525,7 +525,7 @@ class TestTimeout:
 
     @pytest.mark.asyncio
     async def test_timeout_decision_on_hitl_request(self) -> None:
-        """The HITLRequest.decision field must be DENIED after expiry (fail-secure)."""
+        """HITLRequest.decision debe ser TIMEOUT tras expirar (fail-secure)."""
         last_req: list[HITLRequest] = []
 
         async def capture(req: HITLRequest) -> None:
@@ -534,9 +534,9 @@ class TestTimeout:
 
         guard = HITLGuard(notify_fn=capture, timeout=0)
         decision = await guard.request_approval(reason="decision_field_test")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
         if last_req:
-            assert last_req[0].decision == Decision.DENIED
+            assert last_req[0].decision == Decision.TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +574,7 @@ class TestTimeoutRespondRace:
         encuentra la request (ni la pisa) y devuelve False — sin ack falso."""
         guard = HITLGuard(notify_fn=None, timeout=0)
         decision = await guard.request_approval(request_id="r-late", reason="x")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
         assert await guard.respond("r-late", approved=True) is False
 
@@ -635,10 +635,10 @@ class TestNotifyFnFailure:
 
     @pytest.mark.asyncio
     async def test_none_notify_fn_times_out_normally(self) -> None:
-        """With no notify_fn the guard should wait then time out → DENIED (fail-secure)."""
+        """Sin notify_fn, el guard espera y expira → TIMEOUT (fail-secure)."""
         guard = HITLGuard(notify_fn=None, timeout=0)
         decision = await guard.request_approval(reason="no_notify_fn")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_notify_value_error_is_fail_closed(self) -> None:
@@ -772,46 +772,46 @@ class TestConcurrency:
 
 
 class TestHITLFailSecure:
-    """Verify fail-secure behavior: timeout → DENIED, not TIMEOUT."""
+    """Verifica fail-secure: timeout → TIMEOUT y nunca APPROVED."""
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_denied(self) -> None:
-        """When operator doesn't respond, decision must be DENIED (fail-secure)."""
+    async def test_timeout_returns_timeout(self) -> None:
+        """Sin respuesta del operador, la decisión debe ser TIMEOUT (fail-secure)."""
 
         async def stall(req: HITLRequest) -> None:
-            # Do NOT resolve; let timeout fire
+            # No resolver: dejar que expire el timeout.
             pass
 
         guard = HITLGuard(notify_fn=stall, timeout=0)
         decision = await guard.request_approval(reason="fail_secure_timeout_test")
-        assert decision == Decision.DENIED
-        # Ensure it's explicitly NOT TIMEOUT
-        assert decision != Decision.TIMEOUT
+        assert decision == Decision.TIMEOUT
+        # La expiración sigue siendo explícitamente no aprobada.
+        assert decision != Decision.APPROVED
 
     @pytest.mark.asyncio
     async def test_timeout_is_not_approved(self) -> None:
-        """A timed-out request must never be approved."""
+        """Una solicitud expirada nunca debe aprobarse."""
 
         async def stall(req: HITLRequest) -> None:
-            # Do NOT resolve; let timeout fire
+            # No resolver: dejar que expire el timeout.
             pass
 
         guard = HITLGuard(notify_fn=stall, timeout=0)
         decision = await guard.request_approval(reason="timeout_denied_test")
         assert decision != Decision.APPROVED
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_timeout_with_short_duration(self) -> None:
-        """Timeout with 0.05s should also return DENIED."""
+        """Un timeout de 0.05 s también debe devolver TIMEOUT."""
 
         async def stall(req: HITLRequest) -> None:
-            # Do NOT set event; let timeout occur
+            # No establecer el evento: dejar que expire el timeout.
             pass
 
-        guard = HITLGuard(notify_fn=stall, timeout=0)
+        guard = HITLGuard(notify_fn=stall, timeout=0.05)
         decision = await guard.request_approval(reason="short_timeout_test")
-        assert decision == Decision.DENIED
+        assert decision == Decision.TIMEOUT
 
     @pytest.mark.asyncio
     async def test_decision_timeout_enum_still_exists(self) -> None:

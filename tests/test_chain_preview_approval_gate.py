@@ -62,7 +62,7 @@ async def test_sin_operador_no_ejecuta_cadena_real() -> None:
     result = await gate.preview_then_execute(workflow_id="wf-7", load_order_file="/sandbox/plugins.txt")
 
     assert result["status"] == "rejected"
-    assert result["decision"] == "denied"
+    assert result["decision"] == "timeout"
     execute_fn.assert_not_awaited()
 
 
