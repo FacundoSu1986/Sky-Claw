@@ -13,6 +13,7 @@ from aiohttp import web
 from sky_claw.app.comms.telegram import _DEDUP_MAX_SIZE, TelegramWebhook
 from sky_claw.app.comms.telegram_sender import (
     MAX_MESSAGE_LENGTH,
+    TelegramMessage,
     TelegramSender,
     TelegramSendError,
 )
@@ -294,6 +295,7 @@ class TestTelegramSender:
         mock_gateway = MagicMock()
         mock_response = AsyncMock()
         mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={"ok": True, "result": {"message_id": 1, "chat": {"id": 456}}})
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
         mock_gateway.request = AsyncMock(return_value=mock_response)
@@ -306,8 +308,9 @@ class TestTelegramSender:
             session=mock_session,
         )
 
-        await sender.send(456, "hello")
+        result = await sender.send(456, "hello")
 
+        assert result == TelegramMessage(chat_id=456, message_id=1)
         mock_gateway.request.assert_awaited_once()
         call_args = mock_gateway.request.call_args
         assert call_args[0][0] == "POST"
@@ -341,6 +344,7 @@ class TestTelegramSender:
         mock_gateway = MagicMock()
         mock_response = AsyncMock()
         mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={"ok": True, "result": {"message_id": 1, "chat": {"id": 456}}})
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
         mock_gateway.request = AsyncMock(return_value=mock_response)
@@ -368,6 +372,7 @@ class TestTelegramSender:
         mock_gateway = MagicMock()
         mock_response = AsyncMock()
         mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={"ok": True, "result": {"message_id": 1, "chat": {"id": 456}}})
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
         mock_response.__aexit__ = AsyncMock(return_value=False)
         mock_gateway.request = AsyncMock(return_value=mock_response)

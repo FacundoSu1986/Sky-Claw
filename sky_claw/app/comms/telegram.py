@@ -12,6 +12,7 @@ import collections
 import logging
 import secrets
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -25,6 +26,102 @@ logger = logging.getLogger(__name__)
 _DEDUP_MAX_SIZE = 1000
 _APPROVE_PREFIX = "/approve "
 _DENY_PREFIX = "/deny "
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramHITLMessage:
+    """Referencia mínima al mensaje Telegram de un prompt HITL."""
+
+    chat_id: int
+    message_id: int
+
+
+class TelegramHITLMessageRegistry:
+    """Asocia requests HITL pendientes con mensajes Telegram, sólo en memoria.
+
+    El lock protege cada operación del mapping y ``max_entries`` evita que un
+    fallo de cleanup convierta el registry en almacenamiento ilimitado. La
+    identidad de request por intento sigue siendo responsabilidad del productor.
+    """
+
+    def __init__(self, max_entries: int = 1024) -> None:
+        if max_entries <= 0:
+            raise ValueError("max_entries must be positive")
+        self._entries: collections.OrderedDict[str, TelegramHITLMessage] = collections.OrderedDict()
+        self._lock = asyncio.Lock()
+        self._max_entries = max_entries
+
+    async def register(self, request_id: str, chat_id: int, message_id: int) -> None:
+        """Registra la identidad exacta del prompt ya entregado."""
+        if not request_id:
+            raise ValueError("request_id must not be empty")
+        if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+            raise TypeError("chat_id must be an integer")
+        if not isinstance(message_id, int) or isinstance(message_id, bool):
+            raise TypeError("message_id must be an integer")
+
+        async with self._lock:
+            self._entries[request_id] = TelegramHITLMessage(chat_id=chat_id, message_id=message_id)
+            self._entries.move_to_end(request_id)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+
+    async def get(self, request_id: str) -> TelegramHITLMessage | None:
+        """Obtiene una referencia sin modificar el registry."""
+        async with self._lock:
+            return self._entries.get(request_id)
+
+    async def pop(self, request_id: str) -> TelegramHITLMessage | None:
+        """Elimina y devuelve una referencia terminalizada."""
+        async with self._lock:
+            return self._entries.pop(request_id, None)
+
+    async def clear(self) -> None:
+        """Limpia explícitamente referencias retenidas durante shutdown."""
+        async with self._lock:
+            self._entries.clear()
+
+    def __len__(self) -> int:
+        """Devuelve el tamaño observado del registry para diagnóstico/tests."""
+        return len(self._entries)
+
+
+def terminal_hitl_text(decision: Any) -> str:
+    """Renderiza un estado HITL terminal sin dejar una acción disponible."""
+    return {
+        "approved": "✅ Solicitud aprobada",
+        "denied": "❌ Solicitud denegada",
+        "timeout": "⌛ Solicitud expirada",
+    }.get(getattr(decision, "value", ""), "⚠️ Solicitud no accionable")
+
+
+async def terminalize_hitl_message(
+    registry: TelegramHITLMessageRegistry,
+    sender: TelegramSender | None,
+    request_id: str,
+    decision: Any,
+) -> bool:
+    """Consume el mapping y refleja un estado terminal en Telegram.
+
+    El mapping se elimina antes del I/O de presentación: una edición fallida no
+    altera la decisión HITL ya comprometida ni retiene memoria indefinidamente.
+    """
+    reference = await registry.pop(request_id)
+    if reference is None:
+        return False
+    if sender is None:
+        return True
+
+    try:
+        await sender.edit_message(
+            reference.chat_id,
+            reference.message_id,
+            terminal_hitl_text(decision),
+            reply_markup=None,
+        )
+    except Exception:
+        logger.exception("No se pudo editar el mensaje HITL terminal para %s", request_id)
+    return True
 
 
 def _parse_hitl_command(text: str) -> tuple[bool, str] | None:
@@ -108,11 +205,13 @@ class TelegramWebhook:
         hitl: HITLGuard | None = None,
         secret_token: str | None = None,
         authorized_user_id: int | None = None,
+        hitl_registry: TelegramHITLMessageRegistry | None = None,
     ) -> None:
         self._router = router
         self._sender = sender
         self._session = session
         self._hitl = hitl
+        self._hitl_registry = hitl_registry
         self._secret_token = secret_token
         self._seen_updates: collections.OrderedDict[int, None] = collections.OrderedDict()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -311,6 +410,17 @@ class TelegramWebhook:
             logging.getLogger(__name__).exception("Falla en /update_mods: %s", exc)
             await self._sender.send(chat_id, "❌ Ocurrió un error crítico durante la actualización.")
 
+    async def terminalize_hitl(self, request_id: str, decision: Any) -> bool:
+        """Terminaliza el prompt asociado sin alterar la decisión autoritativa.
+
+        El mapping se consume antes del I/O de edición. Por eso un fallo de
+        Telegram no deja una referencia retenida ni puede cambiar el resultado
+        que el ``HITLGuard`` ya comprometió.
+        """
+        if self._hitl_registry is None:
+            return False
+        return await terminalize_hitl_message(self._hitl_registry, self._sender, request_id, decision)
+
     async def _answer_callback_query_safely(self, query: dict[str, Any], text: str | None = None) -> None:
         """Confirma un callback sin ocultar la decisión autoritativa de HITL."""
         callback_id = query.get("id")
@@ -369,16 +479,30 @@ class TelegramWebhook:
         await self._answer_callback_query_safely(query)
 
         if found:
-            text = f"Request '{request_id}' {verb.lower()} by operator."
-            try:
-                await self._sender.edit_message(chat_id, message_id, text, reply_markup=None)
-            except Exception:
-                logger.exception("No se pudo editar el mensaje HITL terminal para %s", request_id)
+            if self._hitl_registry is not None:
+                # En producción, el hook del guard normalmente ya consumió el
+                # mapping. Este fallback cubre guards compatibles sin hook.
+                await self.terminalize_hitl(request_id, self._hitl_decision(approved))
+            else:
+                # Compatibilidad para callers antiguos que sólo disponen de la
+                # identidad embebida en el callback inline.
+                text = f"Request '{request_id}' {verb.lower()} by operator."
+                try:
+                    await self._sender.edit_message(chat_id, message_id, text, reply_markup=None)
+                except Exception:
+                    logger.exception("No se pudo editar el mensaje HITL terminal para %s", request_id)
         else:
             await self._sender.send(
                 chat_id,
                 f"Error: Request '{request_id}' not found or already processed.",
             )
+
+    @staticmethod
+    def _hitl_decision(approved: bool) -> Any:
+        """Devuelve el enum sin importar el módulo en tiempo de importación."""
+        from sky_claw.app.security.hitl import Decision
+
+        return Decision.APPROVED if approved else Decision.DENIED
 
     async def _handle_hitl_command(
         self,
@@ -407,6 +531,10 @@ class TelegramWebhook:
         verb = "approved" if approved else "denied"
         try:
             if found:
+                if self._hitl_registry is not None:
+                    # Compatibilidad para guards sin hook terminal; con el
+                    # wiring productivo el hook ya habrá consumido el mapping.
+                    await self.terminalize_hitl(request_id, self._hitl_decision(approved))
                 await self._sender.send(chat_id, f"Request '{request_id}' {verb}.")
             else:
                 await self._sender.send(

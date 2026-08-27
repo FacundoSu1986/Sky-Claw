@@ -11,6 +11,7 @@ import asyncio
 import collections
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -27,6 +28,14 @@ MAX_MESSAGES_PER_MINUTE = 20
 
 class TelegramSendError(Exception):
     """Raised when a Telegram sendMessage call fails."""
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramMessage:
+    """Identidad mínima de un mensaje creado por ``sendMessage``."""
+
+    chat_id: int
+    message_id: int
 
 
 class TelegramSender:
@@ -59,7 +68,7 @@ class TelegramSender:
         text: str,
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = None,
-    ) -> None:
+    ) -> TelegramMessage:
         """Send a message to a Telegram chat.
 
         Automatically splits messages exceeding 4096 characters
@@ -71,15 +80,27 @@ class TelegramSender:
             reply_markup: Optional inline keyboard or other markup.
             parse_mode: Optional Telegram parse mode (e.g. "MarkdownV2").
 
+        Returns:
+            The identity of the last message created.  HITL prompts are kept
+            below the Telegram size limit, so this is the prompt's identity.
+
         Raises:
-            TelegramSendError: On API failure after sending.
+            TelegramSendError: On API or malformed-response failure.
         """
         chunks = self._split_message(text)
+        last_message: TelegramMessage | None = None
         for i, chunk in enumerate(chunks):
             await self._wait_for_rate_limit(chat_id)
             # Only add reply_markup to the last chunk if it's split
             markup = reply_markup if i == len(chunks) - 1 else None
-            await self._send_chunk(chat_id, chunk, markup, parse_mode)
+            last_message = await self._send_chunk(chat_id, chunk, markup, parse_mode)
+
+        # ``_split_message`` siempre devuelve al menos un chunk, pero conservar
+        # este guard explícito evita que un cambio futuro fabrique un mapping HITL
+        # sin identidad de Telegram.
+        if last_message is None:
+            raise TelegramSendError("Telegram send produced no message identity")
+        return last_message
 
     async def _send_chunk(
         self,
@@ -87,7 +108,7 @@ class TelegramSender:
         text: str,
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = None,
-    ) -> None:
+    ) -> TelegramMessage:
         """Send a single message chunk via the Telegram API."""
         payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode or "HTML"}
         if reply_markup is not None:
@@ -104,7 +125,21 @@ class TelegramSender:
             if resp.status != 200:
                 body = await resp.text()
                 raise TelegramSendError(f"Telegram API returned {resp.status}: {body}")
+
+            try:
+                body = await resp.json()
+            except Exception as exc:
+                raise TelegramSendError("Telegram sendMessage returned invalid JSON") from exc
+
+            result = body.get("result") if isinstance(body, dict) and body.get("ok") else None
+            message_id = result.get("message_id") if isinstance(result, dict) else None
+            if not isinstance(message_id, int) or isinstance(message_id, bool):
+                description = body.get("description") if isinstance(body, dict) else None
+                detail = f": {description}" if description else ""
+                raise TelegramSendError(f"Telegram sendMessage returned no message_id{detail}")
+
             self._record_send(chat_id)
+            return TelegramMessage(chat_id=chat_id, message_id=message_id)
 
     async def _wait_for_rate_limit(self, chat_id: int) -> None:
         """Block until we are within the per-chat rate limit."""
@@ -198,9 +233,10 @@ class TelegramSender:
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
+            # Telegram necesita un teclado inline vacío para retirar los botones;
+            # omitir la clave deja el markup anterior intacto.
+            "reply_markup": reply_markup if reply_markup is not None else {"inline_keyboard": []},
         }
-        if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
         url = self._url + "editMessageText"
         resp = await self._gateway.request(
             "POST",

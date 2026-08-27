@@ -732,6 +732,7 @@ class FrontendBridge:
                 session=self.ctx.session,
                 hitl=self.ctx.hitl,
                 authorized_user_id=authorized_user_id,
+                hitl_registry=self.ctx.telegram_hitl_registry,
             )
             self.ctx.polling = TelegramPolling(
                 token=token,
