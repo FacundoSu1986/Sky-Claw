@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hashlib
 import logging
 import secrets
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +29,11 @@ _DEDUP_MAX_SIZE = 1000
 _TELEGRAM_HITL_COMPENSATION_TIMEOUT_SECONDS = 2.0
 _APPROVE_PREFIX = "/approve "
 _DENY_PREFIX = "/deny "
+_HITL_CALLBACK_NAMESPACE = "hitl"
+_HITL_CALLBACK_ACTIONS = frozenset({"approve", "deny"})
+_HITL_TOKEN_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+_DEFAULT_HITL_TOKEN_BYTES = 16
+_DEFAULT_HITL_TOKEN_ATTEMPTS = 8
 
 
 class TelegramHITLRegistryError(RuntimeError):
@@ -41,6 +48,10 @@ class TelegramHITLRegistryDuplicateError(TelegramHITLRegistryError):
     """El request_id ya tiene un mensaje pendiente registrado."""
 
 
+class TelegramHITLTokenCollisionError(TelegramHITLRegistryError):
+    """El generador agotó sus intentos sin producir un token libre."""
+
+
 @dataclass(frozen=True, slots=True)
 class TelegramHITLMessage:
     """Referencia mínima al mensaje Telegram y su transporte propietario."""
@@ -48,22 +59,101 @@ class TelegramHITLMessage:
     chat_id: int
     message_id: int
     sender: TelegramSender
+    token: str = ""
 
 
 class TelegramHITLMessageRegistry:
-    """Asocia requests HITL pendientes con mensajes Telegram, sólo en memoria.
+    """Registry efímero del lifecycle Telegram y de sus tokens opacos.
 
-    El lock protege cada operación del mapping y ``max_entries`` evita que un
-    fallo de cleanup convierta el registry en almacenamiento ilimitado. La
-    identidad de request por intento sigue siendo responsabilidad del productor.
+    Las reservas cuentan contra ``max_entries`` desde antes de ``sendMessage``.
+    El lock protege tanto la reserva como el mapping request/token y nunca se
+    expulsan entradas activas. ``_token_to_request`` sólo contiene tokens que
+    aún no fueron registrados; ``_registered_tokens`` conserva los tokens de
+    mensajes accionables hasta su cleanup terminal. Los tokens retirados se
+    recuerdan en una ventana bounded para impedir su reutilización inmediata.
     """
 
-    def __init__(self, max_entries: int = 1024) -> None:
+    def __init__(
+        self,
+        max_entries: int = 1024,
+        *,
+        token_factory: Callable[[], str] | None = None,
+        max_token_attempts: int = _DEFAULT_HITL_TOKEN_ATTEMPTS,
+    ) -> None:
         if max_entries <= 0:
             raise ValueError("max_entries must be positive")
+        if max_token_attempts <= 0:
+            raise ValueError("max_token_attempts must be positive")
         self._entries: collections.OrderedDict[str, TelegramHITLMessage] = collections.OrderedDict()
+        self._token_to_request: dict[str, str] = {}
+        self._registered_tokens: dict[str, str] = {}
+        self._request_to_token: dict[str, str] = {}
+        self._retired_tokens: collections.deque[str] = collections.deque(maxlen=max_entries)
+        self._retired_token_set: set[str] = set()
         self._lock = asyncio.Lock()
         self._max_entries = max_entries
+        self._token_factory = token_factory or (lambda: secrets.token_urlsafe(_DEFAULT_HITL_TOKEN_BYTES))
+        self._max_token_attempts = max_token_attempts
+
+    async def reserve_token(self, request_id: str) -> str:
+        """Reserva un token nuevo antes de construir botones o enviar el prompt."""
+        if not request_id:
+            raise ValueError("request_id must not be empty")
+
+        async with self._lock:
+            return self._reserve_token_locked(request_id)
+
+    def _reserve_token_locked(self, request_id: str) -> str:
+        if request_id in self._request_to_token:
+            raise TelegramHITLRegistryDuplicateError(f"HITL request_id already registered: {request_id}")
+        if len(self._request_to_token) >= self._max_entries:
+            raise TelegramHITLRegistryFullError(f"HITL registry capacity exhausted ({self._max_entries})")
+
+        for _attempt in range(self._max_token_attempts):
+            try:
+                token = self._token_factory()
+            except Exception as exc:
+                raise TelegramHITLTokenCollisionError("HITL token generator failed") from exc
+            if not _is_valid_hitl_token(token):
+                continue
+            if token in self._token_to_request or token in self._registered_tokens or token in self._retired_token_set:
+                continue
+            self._request_to_token[request_id] = token
+            self._token_to_request[token] = request_id
+            return token
+        raise TelegramHITLTokenCollisionError("Unable to reserve a unique HITL Telegram token")
+
+    async def release_token(self, token: str) -> bool:
+        """Libera sólo una reserva pre-envío, nunca un mensaje ya accionable."""
+        async with self._lock:
+            request_id = self._token_to_request.pop(token, None)
+            if request_id is None:
+                return False
+            if self._request_to_token.get(request_id) == token:
+                self._request_to_token.pop(request_id, None)
+            self._retire_token_locked(token)
+            return True
+
+    def _retire_token_locked(self, token: str) -> None:
+        if token in self._retired_token_set:
+            return
+        if len(self._retired_tokens) == self._retired_tokens.maxlen:
+            oldest = self._retired_tokens.popleft()
+            self._retired_token_set.discard(oldest)
+        self._retired_tokens.append(token)
+        self._retired_token_set.add(token)
+
+    async def resolve_token(self, token: str) -> str | None:
+        """Resuelve sólo tokens existentes, sin tratar nunca el token como request_id."""
+        if not isinstance(token, str):
+            return None
+        async with self._lock:
+            return self._token_to_request.get(token) or self._registered_tokens.get(token)
+
+    async def token_for_request(self, request_id: str) -> str | None:
+        """Obtiene el token de un intento activo para sincronización de lifecycle."""
+        async with self._lock:
+            return self._request_to_token.get(request_id)
 
     async def register(
         self,
@@ -71,8 +161,10 @@ class TelegramHITLMessageRegistry:
         chat_id: int,
         message_id: int,
         sender: TelegramSender,
+        *,
+        token: str | None = None,
     ) -> None:
-        """Registra identidad y owner sin expulsar mappings activos."""
+        """Registra el mensaje para un token reservado, o crea una reserva legacy de test."""
         if not request_id:
             raise ValueError("request_id must not be empty")
         if not isinstance(chat_id, int) or isinstance(chat_id, bool):
@@ -83,12 +175,23 @@ class TelegramHITLMessageRegistry:
         async with self._lock:
             if request_id in self._entries:
                 raise TelegramHITLRegistryDuplicateError(f"HITL request_id already registered: {request_id}")
-            if len(self._entries) >= self._max_entries:
-                raise TelegramHITLRegistryFullError(f"HITL registry capacity exhausted ({self._max_entries})")
+            reserved = self._request_to_token.get(request_id)
+            if token is None:
+                if reserved is not None:
+                    raise TelegramHITLRegistryDuplicateError(f"HITL request_id already reserved: {request_id}")
+                token = self._reserve_token_locked(request_id)
+            elif not _is_valid_hitl_token(token):
+                raise TelegramHITLRegistryError("HITL token is not valid")
+            elif reserved != token or self._token_to_request.get(token) != request_id:
+                raise TelegramHITLRegistryError("HITL token is not reserved for this request_id")
+
+            self._token_to_request.pop(token, None)
+            self._registered_tokens[token] = request_id
             self._entries[request_id] = TelegramHITLMessage(
                 chat_id=chat_id,
                 message_id=message_id,
                 sender=sender,
+                token=token,
             )
 
     async def get(self, request_id: str) -> TelegramHITLMessage | None:
@@ -97,18 +200,67 @@ class TelegramHITLMessageRegistry:
             return self._entries.get(request_id)
 
     async def pop(self, request_id: str) -> TelegramHITLMessage | None:
-        """Elimina y devuelve una referencia terminalizada."""
+        """Elimina mensaje y token asociado, incluyendo una reserva pre-envío."""
         async with self._lock:
-            return self._entries.pop(request_id, None)
+            reference = self._entries.pop(request_id, None)
+            token = self._request_to_token.pop(request_id, None)
+            if token is not None:
+                self._token_to_request.pop(token, None)
+                self._registered_tokens.pop(token, None)
+                self._retire_token_locked(token)
+            return reference
 
     async def clear(self) -> None:
-        """Limpia explícitamente referencias retenidas durante shutdown."""
+        """Limpia explícitamente referencias y reservas durante shutdown."""
         async with self._lock:
             self._entries.clear()
+            self._token_to_request.clear()
+            self._registered_tokens.clear()
+            self._request_to_token.clear()
+            self._retired_tokens.clear()
+            self._retired_token_set.clear()
 
     def __len__(self) -> int:
-        """Devuelve el tamaño observado del registry para diagnóstico/tests."""
-        return len(self._entries)
+        """Devuelve reservas más mensajes activos para el límite bounded."""
+        return len(self._request_to_token)
+
+
+def _is_valid_hitl_token(token: object) -> bool:
+    return isinstance(token, str) and bool(token) and all(character in _HITL_TOKEN_ALPHABET for character in token)
+
+
+def build_hitl_callback_data(action: str, token: str) -> str:
+    """Construye y valida el único formato de callback HITL de producción."""
+    if not isinstance(action, str) or action not in _HITL_CALLBACK_ACTIONS:
+        raise ValueError(f"Unknown HITL callback action: {action!r}")
+    if not _is_valid_hitl_token(token):
+        raise ValueError("HITL callback token must be non-empty ASCII URL-safe text")
+    callback_data = f"{_HITL_CALLBACK_NAMESPACE}:{action}:{token}"
+    size = len(callback_data.encode("utf-8"))
+    if not 1 <= size <= 64:
+        raise ValueError(f"HITL callback_data must be between 1 and 64 UTF-8 bytes, got {size}")
+    return callback_data
+
+
+def parse_hitl_callback_data(data: object) -> tuple[str, str] | None:
+    """Parsea namespace, action y token sin interpretar ningún request_id."""
+    if not isinstance(data, str):
+        return None
+    parts = data.split(":")
+    if (
+        len(parts) != 3
+        or parts[0] != _HITL_CALLBACK_NAMESPACE
+        or parts[1] not in _HITL_CALLBACK_ACTIONS
+        or not _is_valid_hitl_token(parts[2])
+    ):
+        return None
+    try:
+        size = len(data.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
+    if not 1 <= size <= 64:
+        return None
+    return parts[1], parts[2]
 
 
 def terminal_hitl_text(decision: Any) -> str:
@@ -125,6 +277,8 @@ async def register_hitl_message_cancellation_safe(
     request_id: str,
     message: TelegramMessage,
     sender: TelegramSender,
+    *,
+    token: str | None = None,
 ) -> None:
     """Registra un mensaje entregado antes de propagar cancelación al caller.
 
@@ -133,10 +287,17 @@ async def register_hitl_message_cancellation_safe(
     entrega de red nunca queda shielded. Los fallos normales de registro se
     propagan al caller, que compensa el mensaje recién creado.
     """
-    registration = asyncio.create_task(
-        registry.register(request_id, message.chat_id, message.message_id, sender),
-        name=f"hitl-register:{request_id}",
-    )
+    if token is None:
+        registration_coro = registry.register(request_id, message.chat_id, message.message_id, sender)
+    else:
+        registration_coro = registry.register(
+            request_id,
+            message.chat_id,
+            message.message_id,
+            sender,
+            token=token,
+        )
+    registration = asyncio.create_task(registration_coro, name=f"hitl-register:{request_id}")
     try:
         await asyncio.shield(registration)
     except asyncio.CancelledError:
@@ -149,8 +310,44 @@ async def register_hitl_message_cancellation_safe(
             pass
         except Exception as exc:
             logger.error("HITL registration failed during cancellation: %s", exc)
+            if token is not None:
+                await registry.release_token(token)
             await invalidate_unregistered_hitl_message(sender, message)
         raise
+    except Exception:
+        if token is not None:
+            await registry.release_token(token)
+        raise
+
+
+async def terminalize_unregistered_hitl_message_bounded(
+    sender: TelegramSender,
+    message: TelegramMessage,
+    decision: Any,
+) -> None:
+    """Presenta un estado terminal sin depender de un mapping en el registry."""
+    try:
+        await asyncio.wait_for(
+            sender.edit_message(
+                message.chat_id,
+                message.message_id,
+                terminal_hitl_text(decision),
+                reply_markup=None,
+            ),
+            timeout=_TELEGRAM_HITL_COMPENSATION_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Timeout terminalizando el mensaje HITL sin mapping (%s, %s)",
+            message.chat_id,
+            message.message_id,
+        )
+    except Exception:
+        logger.exception(
+            "No se pudo terminalizar el mensaje HITL sin mapping (%s, %s)",
+            message.chat_id,
+            message.message_id,
+        )
 
 
 async def invalidate_unregistered_hitl_message(
@@ -158,28 +355,7 @@ async def invalidate_unregistered_hitl_message(
     message: TelegramMessage,
 ) -> None:
     """Retira botones de un mensaje enviado cuyo registro no pudo completarse."""
-    try:
-        await asyncio.wait_for(
-            sender.edit_message(
-                message.chat_id,
-                message.message_id,
-                "⚠️ Solicitud no accionable",
-                reply_markup=None,
-            ),
-            timeout=_TELEGRAM_HITL_COMPENSATION_TIMEOUT_SECONDS,
-        )
-    except TimeoutError:
-        logger.warning(
-            "Timeout invalidando el mensaje HITL sin mapping (%s, %s)",
-            message.chat_id,
-            message.message_id,
-        )
-    except Exception:
-        logger.exception(
-            "No se pudo invalidar el mensaje HITL sin mapping (%s, %s)",
-            message.chat_id,
-            message.message_id,
-        )
+    await terminalize_unregistered_hitl_message_bounded(sender, message, None)
 
 
 async def terminalize_hitl_message(
@@ -209,20 +385,21 @@ async def terminalize_hitl_message(
 
 
 def _parse_hitl_command(text: str) -> tuple[bool, str] | None:
-    """Parse an operator HITL command from *text*.
+    """Parsea un comando HITL sin modificar el request_id restante.
 
-    Returns ``(approved, request_id)`` when the text is a valid
-    ``/approve <id>`` or ``/deny <id>`` command, otherwise ``None``.
-
-    An empty or whitespace-only request_id is treated as invalid.
+    El parser consume exactamente ``/approve `` o ``/deny ``. El resto es una
+    identidad opaca literal; ``strip`` sólo se usa para decidir si está vacío,
+    nunca para reemplazar el valor retornado.
     """
-    stripped = text.strip()
-    if stripped.startswith(_APPROVE_PREFIX):
-        req_id = stripped[len(_APPROVE_PREFIX) :].strip()
-        return (True, req_id) if req_id else None
-    if stripped.startswith(_DENY_PREFIX):
-        req_id = stripped[len(_DENY_PREFIX) :].strip()
-        return (False, req_id) if req_id else None
+    if not isinstance(text, str):
+        return None
+    command = text.lstrip()
+    if command.startswith(_APPROVE_PREFIX):
+        req_id = command[len(_APPROVE_PREFIX) :]
+        return (True, req_id) if req_id.strip() else None
+    if command.startswith(_DENY_PREFIX):
+        req_id = command[len(_DENY_PREFIX) :]
+        return (False, req_id) if req_id.strip() else None
     return None
 
 
@@ -235,10 +412,31 @@ if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
 
 
+_HITL_REQUEST_ID_VISIBLE_PREFIX_CHARS = 48
+_HITL_REQUEST_ID_SHORT_MAX_CHARS = 128
+
+
 def escape_html(text: str) -> str:
     if not text:
         return ""
     return html.escape(str(text))
+
+
+def format_hitl_request_id_for_telegram(request_id: str) -> str:
+    """Renderiza una vista acotada del ID sin cambiar su identidad interna.
+
+    IDs cortos se muestran completos para conservar la ergonomía existente. Para
+    IDs largos, Telegram recibe sólo un prefijo escapado y una huella SHA-256
+    derivada del valor exacto; el ``request_id`` original nunca se trunca en el
+    guard ni en el registry.
+    """
+    if not isinstance(request_id, str):
+        raise TypeError("request_id must be a string")
+    if len(request_id) <= _HITL_REQUEST_ID_SHORT_MAX_CHARS:
+        return escape_html(request_id)
+    prefix = escape_html(request_id[:_HITL_REQUEST_ID_VISIBLE_PREFIX_CHARS])
+    fingerprint = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}… [sha256:{fingerprint}]"
 
 
 def _format_update_payload(payload: UpdatePayload) -> str:
@@ -528,52 +726,40 @@ class TelegramWebhook:
             await self._answer_callback_query_safely(query, text="Invalid callback")
             return
 
-        # Formato: "hitl:approve:<request_id>" o "hitl:deny:<request_id>".
-        parts = data.split(":")
-        if len(parts) != 3 or parts[0] != "hitl":
+        parsed = parse_hitl_callback_data(data)
+        if parsed is None:
             logger.warning("Invalid HITL callback format received")
             await self._answer_callback_query_safely(query, text="Invalid callback")
             return
 
-        action, request_id = parts[1], parts[2]
-        if action not in {"approve", "deny"} or not request_id.strip():
-            # Una acción desconocida o un ID vacío nunca deben convertirse
-            # implícitamente en denegación ni en otro identificador.
-            logger.warning("Unknown or empty HITL callback action received: %r", data)
-            await self._answer_callback_query_safely(query, text="Invalid HITL action")
-            return
-
-        approved = action == "approve"
-
-        if self._hitl is None:
-            logger.error("Se recibió un callback HITL válido sin HITLGuard inicializado")
+        action, token = parsed
+        if self._hitl is None or self._hitl_registry is None:
+            logger.error("Se recibió un callback HITL válido sin guard o registry inicializado")
             await self._answer_callback_query_safely(query, text="HITL unavailable")
             return
 
+        # El token es sólo una identidad de transporte. Nunca cae como
+        # request_id al guard si falta o quedó stale.
+        request_id = await self._hitl_registry.resolve_token(token)
+        if request_id is None:
+            await self._answer_callback_query_safely(query, text="Unknown or expired HITL request")
+            return
+
+        approved = action == "approve"
         found = await self._hitl.respond(request_id, approved)
-        verb = "Approved" if approved else "Denied"
 
         # Confirma el callback para quitar el estado de carga. Un fallo de
         # entrega se observa, pero no cambia el resultado HITL comprometido.
         await self._answer_callback_query_safely(query)
 
         if found:
-            if self._hitl_registry is not None:
-                # En producción, el hook del guard normalmente ya consumió el
-                # mapping. Este fallback cubre guards compatibles sin hook.
-                await self.terminalize_hitl(request_id, self._hitl_decision(approved))
-            else:
-                # Compatibilidad para callers antiguos que sólo disponen de la
-                # identidad embebida en el callback inline.
-                text = f"Request '{request_id}' {verb.lower()} by operator."
-                try:
-                    await self._sender.edit_message(chat_id, message_id, text, reply_markup=None)
-                except Exception:
-                    logger.exception("No se pudo editar el mensaje HITL terminal para %s", request_id)
+            # El hook del guard suele consumir el mapping. Este fallback cubre
+            # guards compatibles sin hook y conserva el sender owner de C1.
+            await self.terminalize_hitl(request_id, self._hitl_decision(approved))
         else:
             await self._sender.send(
                 chat_id,
-                f"Error: Request '{request_id}' not found or already processed.",
+                "Error: HITL request already processed or unavailable.",
             )
 
     @staticmethod
