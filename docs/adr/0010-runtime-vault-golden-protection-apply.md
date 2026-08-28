@@ -61,7 +61,7 @@ La auditoría de lanzamiento (`docs/audits/2026-08-22_runtime_vault_mo2_stock_la
     - `operations\<op_id>\authorized_plan.json`: store protegido donde **únicamente el helper elevado** puede escribir tras validar físicamente el plan contra el registro de Golden Masters confiables y obtener la confirmación privilegiada de intención del operador.
 11. **Helper Privilegiado Confinado (Anti-Confused Deputy):** El helper elevado recibe exclusivamente `--operation-id <UUID>` y `--staging-digest <SHA-256>`. El helper no acepta rutas libres ni scripts arbitrarios. El helper revalida de manera autónoma el lock de mutación activo, la pertenencia de la ruta al registro de Golden Masters confiables, el confinamiento estricto bajo el root, ausencia total de reparse points, `FileId` y digest del SD PRE antes de mutar cada nodo.
 12. **Autoridad Transaccional Privilegiada Continua (FSM Writer):** El helper elevado permanece activo como la **única autoridad que escribe el FSM autoritativo**, manteniendo el `GoldenMutationLock` durante las fases de mutación, post-verificación, archivado de respaldo y commit:
-    - Tras finalizar la mutación, el helper orquesta la post-verificación (GP1, RV2 y NodeSet) ejecutando un proceso verificador no elevado bajo el token del usuario y recibiendo el resultado mediante IPC autenticado.
+    - Tras finalizar la mutación, el helper orquesta la post-verificación (GP1, RV2 y NodeSet) ejecutando un proceso verificador no elevado bajo el token del usuario y recibiendo el resultado mediante el canal IPC autenticado normativo de **§12.3** (pipe anónimo heredado por el hijo lanzado por el helper + verificación de peer PID/creation-time/imagen + nonce por operación).
     - Si la verificación es exitosa, el helper archiva el respaldo en `golden_backups` y realiza la transición a `COMMITTED`.
     - Si falla, el helper ejecuta el rollback Top-Down compensatorio y transiciona a `ROLLED_BACK`.
 13. **Simetría en las Dos Superficies del Repositorio (AGENTS.md):** La capability `protect_golden_master` se registra de forma estrictamente simétrica tanto en `SupervisorAgent` (`tool_dispatcher` en GUI) como en `AsyncToolRegistry` (`LLMRouter` para Telegram y chat), garantizando que ambas superficies compartan el mismo lock cross-process, el mismo preflight y el mismo requerimiento de elevación UAC.
@@ -184,6 +184,34 @@ Este caso es **independiente de la HANDLE SHARE MATRIX** de §4.1.1 y se trata a
 - Un mapping `PAGE_READONLY` no es una amenaza de mutación (no concede write) y no bloquea el flujo.
 
 **Limitación residual:** como con cualquier handle, un mapping creado **después** del probe (o del rerun pre-`ARCHIVING_BACKUP`) y antes de `COMMITTED` no es detectado; RV-2 (`TreeDigest`) detecta el drift de contenido que produzca. `GP2-T24` cubre ambos casos (ver §25).
+
+### 4.1.3 Política de reintentos acotados del probe (colisión de lectores benignos)
+
+El probe (`dwShareMode = 0`) colisiona con **todo** handle de datos preexistente, incluidos los **lectores benignos** de solo lectura (filas H5/H6: indexador de búsqueda de Windows, antivirus, el shell generando thumbnails/preview). Estos lectores **no** son una amenaza de quiescencia —no pueden mutar el archivo— pero el probe no puede distinguirlos de un writer, porque la colisión ocurre en la dirección 1 (§4.1.1: el lector no concedió `FILE_SHARE_WRITE`). En un árbol de ~16.000 nodos (§27) sobre un escritorio Windows vivo, la probabilidad de que **algún** nodo tenga un handle de lectura transitorio en el instante del probe es alta; un aborto inmediato a `REFUSE_TO_APPLY` haría `protect_golden_master` intermitentemente inviable.
+
+Por eso el desenlace de `ERROR_SHARING_VIOLATION` en el probe **no es aborto inmediato**, sino una **política de reintentos acotados con backoff** (normativa; refina el "primer `ERROR_SHARING_VIOLATION` -> `REFUSE_TO_APPLY`" de versiones previas):
+
+```text
+PROBE_RETRY_POLICY (por nodo):
+  intentos = 0
+  mientras intentos < MAX_PROBE_RETRIES:            // MAX_PROBE_RETRIES configurable (default 5)
+      h_probe = QUIESCENCE_PROBE(node)              // §4.1
+      si h_probe válido: CloseHandle; nodo quiescente; continuar el flujo normal.
+      si GetLastError() == ERROR_SHARING_VIOLATION:
+          registrar telemetría de "nodo bloqueante" (relpath, intento, timestamp);
+          esperar backoff exponencial (base configurable, p. ej. 50ms * 2^intentos, con jitter);
+          intentos += 1; continuar el bucle.
+      cualquier otro error: aplicar §12.2 (ACCESS_DENIED / catch-all fail-closed).
+  // Reintentos agotados y el nodo sigue colisionando:
+  si 0 nodos mutados -> REFUSE_TO_APPLY (QuiescenceViolationError, con la lista de nodos bloqueantes en el reporte)
+  si >0 nodos mutados -> ROLLBACK_REQUIRED
+```
+
+- **No debilita la seguridad:** el desenlace terminal tras agotar reintentos sigue siendo **fail-closed** (`REFUSE_TO_APPLY`/`ROLLBACK_REQUIRED`); nunca se muta un nodo cuyo probe final no fue limpio. El backoff sólo da tiempo a que un lector transitorio (thumbnail, escaneo AV) cierre su handle.
+- **Guía de operación:** el reporte de fallo enumera los nodos bloqueantes y el proceso propietario del handle cuando `RmGetList`/`NtQuerySystemInformation` lo permita (best-effort, sólo diagnóstico), para que el operador cierre la app o excluya el Golden del indexador/AV y reintente.
+- **Aplica también al rerun pre-`ARCHIVING_BACKUP`** (§12.2) con el mismo `MAX_PROBE_RETRIES`.
+
+Oráculo: `GP2-T45` verifica que (a) una colisión de lector que se libera dentro de la ventana de reintentos permite completar el probe y proseguir; (b) una colisión persistente agota `MAX_PROBE_RETRIES` y termina en `REFUSE_TO_APPLY` (0 nodos) / `ROLLBACK_REQUIRED` (>0) con la lista de nodos bloqueantes; (c) el número de intentos y el backoff son acotados (no bucle infinito). El mutante `M-Q3` (aborto inmediato sin reintentos, o reintentos no acotados) es detectado por `GP2-T45`.
 
 ---
 
@@ -487,7 +515,10 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
        Si h_probe == INVALID_HANDLE_VALUE:
            err = GetLastError();
            Si err == ERROR_SHARING_VIOLATION:
-               Si 0 nodos mutados -> FAIL_CLOSED -> REFUSE_TO_APPLY (QuiescenceViolationError)
+               // Aplicar PROBE_RETRY_POLICY (§4.1.3): reintentos acotados con backoff para tolerar
+               // lectores benignos transitorios (indexador/AV/shell) antes de decidir. Sólo tras
+               // agotar MAX_PROBE_RETRIES sin quiescencia se bifurca:
+               Si 0 nodos mutados -> FAIL_CLOSED -> REFUSE_TO_APPLY (QuiescenceViolationError, con lista de nodos bloqueantes)
                Si >0 nodos mutados -> FAIL_CLOSED -> Iniciar secuencia de ROLLBACK (ROLLBACK_REQUIRED).
            Si err == ERROR_ACCESS_DENIED:
                // El DACL del nodo niega las clases solicitadas por el probe a Administrators/helper.
@@ -607,6 +638,18 @@ protection_flag =
 
 Tras la restauración, el helper **re-lee** con `GetSecurityInfo(handle, OWNER | GROUP | DACL_SECURITY_INFORMATION)` y verifica exactamente: `owner == pre_owner`, `group == pre_group`, `dacl == pre_dacl` (comparación semántica de ACEs y orden canónico), y el bit `SE_DACL_PROTECTED` del descriptor resultante es exactamente `pre_dacl_protected`. Si cualquiera difiere -> `RollbackFailureError` -> `ROLLBACK_FAILED` / `INDETERMINATE`. El binding por `(VolumeSerialNumber, FileId)` se revalida en cada nodo antes de la restauración; si difiere -> `INDETERMINATE`.
 ```
+
+### 12.3 Canal IPC de Post-Verificación (normativo, anti-suplantación del verificador)
+
+La decisión de `COMMITTED` depende del resultado (`HARDENED`/`VERIFIED`/NodeSet OK) que el verificador **no elevado** devuelve al helper elevado. Como esa decisión es crítica, el canal IPC y la autenticación del peer se especifican de forma **normativa** para impedir que un Actor D local suplante al verificador y responda un falso `HARDENED`/`VERIFIED` (lo que provocaría `COMMITTED` sobre un Golden no endurecido o alterado):
+
+1. **El helper LANZA al verificador como proceso hijo directo** bajo el token no elevado del operador (`CreateProcessAsUserW`/`CreateProcessW` con el token filtrado), con el path de imagen **fijo** del binario verificador empaquetado (mismo binario firmado que el helper), nunca una ruta recibida por parámetro. No existe un servicio verificador de larga vida al que "conectarse".
+2. **Canal = pipe anónimo con handles heredados** (`CreatePipe` + `bInheritHandle = TRUE`, pasados al hijo vía `STARTUPINFO`/handle inheritance). Un pipe **anónimo no tiene nombre**, por lo que **ningún** proceso externo (Actor D) puede abrirlo ni conectarse: sólo el hijo lanzado por el helper posee el extremo heredado. Queda **prohibido** un named pipe con nombre adivinable; si por razones de plataforma se usara uno, su DACL debe admitir exclusivamente a `SYSTEM`/el token del hijo y el helper debe usar `GetNamedPipeClientProcessId` + verificación del peer (abajo).
+3. **Autenticación del peer (defensa en profundidad):** el helper conserva el `PID` y el `ProcessCreationTime` devueltos por `CreateProcess`, y antes de aceptar el resultado verifica que el extremo del pipe corresponde a ese hijo (imagen firmada esperada, `PID` + `ProcessCreationTime` estables — misma defensa PID-reuse que §19.1.5). Además el helper genera un **nonce por operación** (CSPRNG), lo pasa al hijo al lanzarlo y exige que el resultado lo devuelva; un payload sin el nonce vigente se descarta (anti-replay).
+4. **Fail-closed ante ausencia/ambigüedad:** si el hijo muere, el pipe cierra (EOF), el nonce no coincide, el `PID`/`ProcessCreationTime` no casan, o el resultado es ilegible -> el helper trata la post-verificación como **fallida** -> `ROLLBACK_REQUIRED`. **Nunca** se transiciona a `COMMITTED` con un resultado ausente, tardío o no autenticado.
+5. **Read-only:** el verificador sólo lee (GP1/RV-2/NodeSet) y devuelve un veredicto; no escribe el FSM, `AUTHORIZED_OPERATIONS`, `COMMITTED` ni `ARCHIVING_BACKUP` (§19.2). El helper retiene el `GoldenMutationLock` durante toda la post-verificación.
+
+Oráculo: `GP2-T46` verifica que (a) el helper sólo acepta el resultado por el pipe anónimo heredado del hijo que lanzó (imagen esperada, `PID`+`ProcessCreationTime`, nonce vigente); (b) un proceso ajeno que intente entregar `HARDENED`/`VERIFIED` por cualquier otro canal (o con nonce inválido/reutilizado) es ignorado y **no** produce `COMMITTED`; (c) muerte del verificador o resultado ausente -> `ROLLBACK_REQUIRED`, nunca `COMMITTED`. El mutante `M-I1` (aceptar el veredicto sin autenticar el peer, o por un named pipe con DACL permisiva) es detectado por `GP2-T46`.
 
 ---
 
@@ -731,6 +774,8 @@ La **única** política de privilegios del helper para las aperturas de nodo es:
 
 Justificación técnica (documentación primaria Microsoft, `CreateFileW` / File Security and Access Rights): con `FILE_FLAG_BACKUP_SEMANTICS`, el sistema omite las comprobaciones de la DACL para las clases solicitadas **sólo si el token tiene habilitado `SeRestorePrivilege`** (semántica write/delete: `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_ATTRIBUTES`, `FILE_WRITE_EA`, `DELETE`, y también `WRITE_DAC`/`WRITE_OWNER`). `SeBackupPrivilege` cubre exclusivamente la semántica de **lectura** (`FILE_READ_DATA`), que el probe y el handle de mutación **no solicitan**; por tanto **no se habilita nunca** (least privilege). `FILE_FLAG_OPEN_REPARSE_POINT` y la verificación posterior de `ReparseTag == 0` se mantienen en ambos handles.
 
+**`WRITE_OWNER` y la elección de `SeRestorePrivilege` (no `SeTakeOwnershipPrivilege`) — evidencia primaria:** la constante de privilegio **`SE_RESTORE_NAME` (`SeRestorePrivilege`)** está documentada como "grants all *write* access control to any file, regardless of the ACL", y la lista explícita de derechos que concede incluye **`WRITE_DAC` y `WRITE_OWNER`** (además de `FILE_ADD_FILE`, `FILE_ADD_SUBDIRECTORY`, `DELETE`, etc.). Por tanto, abrir el handle de mutación con `READ_CONTROL | WRITE_DAC | WRITE_OWNER` bajo `FILE_FLAG_BACKUP_SEMANTICS` **sí** queda cubierto por el retry con `SeRestorePrivilege` cuando la DACL preexistente lo deniega (incluido el caso típico de un árbol cuyo `owner` es el usuario y cuya DACL no incluye ACE de `Administrators`: el helper elevado no es el dueño ni tiene ACE, obtiene `ACCESS_DENIED`, habilita `SeRestorePrivilege` y reabre con éxito). La elección de `SeRestorePrivilege` es además la **única** correcta para el rollback: restaurar el `OWNER` al SID **original** (que puede no ser el del helper) es una operación de *restore* que exige `SeRestorePrivilege`; `SeTakeOwnershipPrivilege` sólo permite fijar el owner **a uno mismo** (SID del token), por lo que sería insuficiente para restaurar un owner ajeno — y está prohibido en v1 (§8.3/§18). No hay, por tanto, contradicción: el contrato de apertura (`WRITE_OWNER`) y la política de privilegios (`SeRestorePrivilege`) son coherentes y suficientes. La semántica exacta se ancla además con `GP2-T37` (rollback restaura OWNER/GROUP) sobre un fixture cuyo owner es un SID distinto del helper.
+
 El handle de mutación (paso 2 del §12.2), además del retry de apertura, mantiene `SeRestorePrivilege` habilitado durante toda la secuencia por nodo (apertura, lectura de SD PRE, `SetSecurityInfo`, re-lectura de SD POST) cuando la DACL preexistente así lo exige; el probe (paso 1) usa únicamente el retry puntual y cierra el handle antes de restaurar el estado del token.
 
 ---
@@ -774,7 +819,7 @@ WHO_WRITES_EARLY_FSM        = Unelevated Coordinator ONLY (estados PREPARING/PRE
 WHO_WRITES_AUTHORIZED_OPERATIONS = Elevated Helper Process ONLY
 WHO_WRITES_COMMITTED        = Elevated Helper Process ONLY
 WHO_WRITES_ARCHIVING_BACKUP = Elevated Helper Process ONLY
-POSTVERIFY_EXECUTOR         = Unelevated Verifier Process (read-only, ejecutado por el Helper vía IPC autenticado)
+POSTVERIFY_EXECUTOR         = Unelevated Verifier Process (read-only, hijo lanzado por el Helper; resultado vía canal IPC autenticado normativo §12.3)
 BACKUP_ARCHIVER             = Elevated Helper Process
 LOCK_OWNER_DURING_POSTVERIFY = Elevated Helper Process (mantiene el GoldenMutationLock continuamente)
 VERIFIER_CAN_WRITE_FSM      = NO
@@ -971,6 +1016,8 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - **GP2-T42 (parent WRITE_OWNER fail-closed):** parent con `CHANGE_OWNER` efectivo (con o sin Owner Rights ACE) -> `UnsafeParentError` -> `REFUSE_TO_APPLY`, cero mutaciones; GP2 nunca continúa basándose sólo en `owner_rights_ace_present`. Complementa a `M05`.
 - **GP2-T43 (descriptor estructuralmente inválido rechazado):** manifest con `pre_sd_bytes_b64` auto-consistente pero estructuralmente inválido (longitud menor a `SECURITY_DESCRIPTOR_MIN_LENGTH` o `IsValidSecurityDescriptor == False`) -> `REFUSE_TO_PLAN` en la fase de autorización, sin parsear con accessors nativos.
 - **GP2-T44 (refresco del TGR, §11.4):** (a) una operación GP2 apply nunca escribe `trusted_goldens.json` (ancla AST/comportamiento: apply sólo lee el TGR); (b) el flujo `REGISTER_OR_REFRESH_TRUSTED_GOLDEN` exige re-ejecución RV-2 con `state == VERIFIED` bajo el token del operador **más** confirmación privilegiada explícita antes de escribir la entrada, y actualiza `tree_digest` de forma atómica; (c) un proceso no elevado que intente escribir/refrescar `trusted_goldens.json` recibe `ACCESS_DENIED` por DACL. Un Golden actualizado legítimamente (nuevo `TreeDigest`) vuelve a ser protegible por GP2 sólo tras el refresco. Complementa a `M-T2`.
+- **GP2-T45 (probe con reintentos acotados, §4.1.3):** (a) un lector benigno (`GENERIC_READ`, filas H5/H6) que cierra su handle dentro de la ventana de reintentos permite completar el probe y proseguir; (b) una colisión persistente agota `MAX_PROBE_RETRIES` y termina en `REFUSE_TO_APPLY` (0 nodos) / `ROLLBACK_REQUIRED` (>0) con la lista de nodos bloqueantes en el reporte; (c) el número de intentos y el backoff están acotados (sin bucle infinito) y el desenlace terminal sigue siendo fail-closed. Complementa a `M-Q3`.
+- **GP2-T46 (IPC de post-verificación autenticado, §12.3):** (a) el helper sólo acepta el veredicto por el pipe anónimo heredado del hijo verificador que lanzó (imagen esperada, `PID`+`ProcessCreationTime`, nonce por operación vigente); (b) un proceso ajeno que entregue `HARDENED`/`VERIFIED` por otro canal, o con nonce inválido/reutilizado, es ignorado y no produce `COMMITTED`; (c) muerte del verificador o resultado ausente/tardío -> `ROLLBACK_REQUIRED`, nunca `COMMITTED`. Complementa a `M-I1`.
 
 ---
 
@@ -1032,6 +1079,8 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 | **M-O1** | Helper continúa con parent `WRITE_OWNER` efectivo cuando `owner_rights_ace_present == True` (máscara desconocida) | Test `GP2-T42` exige `REFUSE_TO_APPLY` siempre con `CHANGE_OWNER` efectivo |
 | **M-S1** | Helper parsea `pre_sd_bytes_b64` con accessors nativos sin `IsValidSecurityDescriptor`/longitud mínima | Test `GP2-T43` exige `REFUSE_TO_PLAN` sin parsear descriptores inválidos |
 | **M-T2** | Refresco del TGR confía en el `tree_digest` staged (Actor D) sin re-ejecutar RV-2 bajo el token del operador, o GP2 apply escribe el TGR por su cuenta | Test `GP2-T44` exige re-ejecución RV-2 `VERIFIED` + confirmación privilegiada antes de mutar la entrada, y que apply nunca escriba `trusted_goldens.json` |
+| **M-Q3** | El probe aborta a `REFUSE_TO_APPLY` en la primera colisión `ERROR_SHARING_VIOLATION` (sin reintentos) por un lector benigno, o reintenta de forma no acotada | Test `GP2-T45` exige reintentos acotados con backoff y desenlace fail-closed sólo tras agotar `MAX_PROBE_RETRIES` |
+| **M-I1** | El helper acepta el veredicto de post-verificación sin autenticar al peer (canal nombrado con DACL permisiva, sin verificar imagen/PID/creation-time/nonce), permitiendo a Actor D inyectar un falso `HARDENED`/`VERIFIED` | Test `GP2-T46` exige pipe anónimo heredado + verificación de peer + nonce, y `ROLLBACK_REQUIRED` ante resultado no autenticado o ausente |
 
 ---
 
@@ -1068,6 +1117,8 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - File Access Rights Constants — *learn.microsoft.com/windows/win32/fileio/file-access-rights-constants*
 - `IoCheckShareAccess` routine (share-access sólo se evalúa para clases de datos read/write/delete; `READ_CONTROL`/`WRITE_DAC`/`WRITE_OWNER` no participan) — *learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/nf-ntifs-iocheckshareaccess*
 - `CreateFileW` function (dwShareMode, sharing model) — *learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew*
+- Privilege Constants — `SE_RESTORE_NAME` grants all write access control incl. `WRITE_DAC`/`WRITE_OWNER`; `SE_TAKE_OWNERSHIP_NAME` sets owner to self only — *learn.microsoft.com/windows/win32/secauthz/privilege-constants*
+- `CreatePipe` (anonymous pipe) / `CreateProcessAsUserW` (handle inheritance, launching the unelevated verifier) — *learn.microsoft.com/windows/win32/api/namedpipeapi/nf-namedpipeapi-createpipe* · *learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw*
 
 ---
 
