@@ -492,7 +492,9 @@ async def test_mig506_09_db_ya_migrada_reopen_idempotente(tmp_path: pathlib.Path
     db_file = tmp_path / "migrated.db"
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
-        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
+        await conn.execute(
+            "INSERT INTO transactions (transaction_id, description, status) VALUES (1, 'tx1', 'rolled_back')"
+        )
         await conn.execute(
             "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
             "VALUES (1, 1, 'awaiting_deployment', 'c:/mods/texgen', 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)"
@@ -501,6 +503,7 @@ async def test_mig506_09_db_ya_migrada_reopen_idempotente(tmp_path: pathlib.Path
             "INSERT INTO orphan_evidence_absorptions (transaction_id, artifact_path, handoff_id, absorbed_at) "
             "VALUES (1, 'c:/mods/texgen', 1, '2026-08-26 10:00:00')"
         )
+        await conn.execute("INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (1, 'unresolved')")
         await conn.commit()
 
     # 1. Primera migración
