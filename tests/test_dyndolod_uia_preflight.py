@@ -48,14 +48,14 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
     TOOLS_OBSERVABLES,
     ControlObservado,
     CriteriosDeControl,
-    ErrorUIA,
     EstadoPreflight,
     LocalizadorPsutil,
+    ObservacionUIAError,
     ObservadorNoDisponible,
     ProcesoObservado,
     RazonPreflight,
     SolicitudPreflightUIA,
-    UIANoDisponible,
+    UIANoDisponibleError,
     VentanaObservada,
     canonicalizar_ruta_windows,
     observador_por_defecto,
@@ -338,7 +338,7 @@ def test_t9_error_com_o_elemento_stale_da_unknown(metodo):
         ventanas=[_ventana()],
         controles={"w1": [_control()]},
         valores={"edOutput": SALIDA_ADMINISTRADA},
-        error=ErrorUIA("stale element"),
+        error=ObservacionUIAError("stale element"),
         error_en={metodo},
     )
     assert resultado.estado is EstadoPreflight.UNKNOWN
@@ -350,7 +350,7 @@ def test_t9b_uia_no_disponible_se_distingue_de_un_error_cualquiera():
         _solicitud(),
         procesos=[_proceso()],
         ventanas=[_ventana()],
-        error=UIANoDisponible("sin backend"),
+        error=UIANoDisponibleError("sin backend"),
         error_en={"ventanas_de_proceso"},
     )
     assert resultado.estado is EstadoPreflight.UNKNOWN
@@ -360,7 +360,7 @@ def test_t9b_uia_no_disponible_se_distingue_de_un_error_cualquiera():
 def test_t9c_fallo_del_localizador_de_procesos_tambien_da_unknown():
     resultado = observar_output(
         _solicitud(),
-        localizador=LocalizadorFalso([], error=ErrorUIA("psutil roto")),
+        localizador=LocalizadorFalso([], error=ObservacionUIAError("psutil roto")),
         observador=ObservadorFalso(),
     )
     assert resultado.estado is EstadoPreflight.UNKNOWN
@@ -611,7 +611,7 @@ def test_un_selector_sin_ningun_criterio_da_unknown():
 
 
 def test_las_tools_observables_estan_congeladas():
-    assert TOOLS_OBSERVABLES == frozenset({"TexGen", "DynDOLOD"})
+    assert set(TOOLS_OBSERVABLES) == {"TexGen", "DynDOLOD"}
 
 
 # ---------------------------------------------------------------------------
@@ -737,7 +737,7 @@ def test_las_razones_estan_congeladas():
         "ERROR_UIA",
         "OBSERVADO_NO_CANONICALIZABLE",
     }
-    assert RAZONES_DE_UNKNOWN == frozenset(RazonPreflight) - {
+    assert set(RAZONES_DE_UNKNOWN) == set(RazonPreflight) - {
         RazonPreflight.OUTPUT_COINCIDE,
         RazonPreflight.OUTPUT_DIFIERE,
     }
@@ -751,11 +751,11 @@ def test_las_razones_estan_congeladas():
 def test_el_observador_por_defecto_falla_cerrado_en_vez_de_adivinar():
     observador = observador_por_defecto()
     assert isinstance(observador, ObservadorNoDisponible)
-    with pytest.raises(UIANoDisponible):
+    with pytest.raises(UIANoDisponibleError):
         observador.ventanas_de_proceso(1)
-    with pytest.raises(UIANoDisponible):
+    with pytest.raises(UIANoDisponibleError):
         observador.controles_de_ventana(_ventana())
-    with pytest.raises(UIANoDisponible):
+    with pytest.raises(UIANoDisponibleError):
         observador.leer_valor(_control())
 
 
@@ -770,9 +770,9 @@ def test_el_pipeline_con_el_observador_por_defecto_da_unknown_no_error():
 
 
 def test_uia_no_disponible_es_un_error_uia():
-    # El pipeline atrapa `ErrorUIA` como red general; si `UIANoDisponible` no
+    # El pipeline atrapa `ObservacionUIAError` como red general; si `UIANoDisponibleError` no
     # fuera subclase, una plataforma sin backend escaparía del fail-closed.
-    assert issubclass(UIANoDisponible, ErrorUIA)
+    assert issubclass(UIANoDisponibleError, ObservacionUIAError)
 
 
 def test_el_modulo_no_importa_nada_de_windows():

@@ -287,6 +287,7 @@ module = [
     "sky_claw.local.xedit.ai_assisted_strategy",  # Fase 1 AI-assisted: strategy catch-all, estricto
     "sky_claw.local.xedit.record_dump_parser",  # Fase 1 AI-assisted: parser del dump, estricto
     "sky_claw.local.tools.rollback_reconciler",  # U-08: reconciliador de arranque, nace estricto
+    "sky_claw.local.tools.dyndolod_uia_preflight",  # T5A: preflight UIA read-only, nace estricto
     "sky_claw.local.fomod.*",  # T-12: instalador FOMOD anotado a strict (parser/resolver/models/installer)
     "sky_claw.local.loot.*",  # T-12: cliente LOOT a strict (cli/masterlist/parser/version)
     # Primitiva de detección de enlaces: módulo nuevo, nace estricto. El opt-in es
