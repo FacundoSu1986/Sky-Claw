@@ -38,7 +38,6 @@ import pytest
 
 from sky_claw.app.db.handoffs import (
     HandoffState,
-    SweepReceiptState,
     clave_de_artifact,
 )
 from sky_claw.app.db.journal import (
@@ -292,15 +291,15 @@ async def _correr_secuencia(
         activo = await journal.consultar_handoff_activo(clave_de_artifact(escenario.mod_texgen))
         estado_handoff = activo.state.value if activo is not None else None
         cur = await journal._db.execute(  # noqa: SLF001
-            "SELECT state FROM stale_pending_sweep_receipts WHERE transaction_id = ?",
-            (escenario.tx,),
+            "SELECT resolution_kind FROM artifact_evidence_resolutions WHERE transaction_id = ? AND artifact_path = ?",
+            (escenario.tx, clave_de_artifact(escenario.mod_texgen)),
         )
         fila = await cur.fetchone()
-        estado_receipt = None if fila is None else str(fila[0])
+        estado_resolucion = None if fila is None else str(fila[0])
         restaurado = (
             escenario.mod_texgen.is_dir() and (escenario.mod_texgen / "textures" / "a.dds").read_bytes() == b"GEN-VIEJA"
         )
-        return estado_handoff, estado_receipt, restaurado
+        return estado_handoff, estado_resolucion, restaurado
     finally:
         await journal.close()
         await locks.close()
@@ -312,11 +311,11 @@ async def test_ejecutar_rollback_primero_cambia_la_decision_del_oracle(tmp_path:
 
     Rollback primero (orden publicado): restaura la generación previa, el
     oracle ve el artifact PRESENTE y fabrica un INDETERMINATE espurio con la
-    identidad observada de la generación VIEJA; los receipts se CONSUMEN sobre
+    identidad observada de la generación VIEJA; la evidencia se absorbe sobre
     ese estado contaminado (pérdida de recovery evidence).
 
-    Handoff primero (orden requerido): ausencia demostrada → receipt cerrado
-    NO_ARTIFACT + legacy; el reconciler restaura después la generación previa
+    Handoff primero (orden requerido): ausencia demostrada → resolución
+    no_artifact_demonstrated + legacy; el reconciler restaura después la generación previa
     sin que la evidencia de la corrida interrumpida se atribuya a ella.
     """
     escenario_actual = await _escenario_de_muerte_dura(tmp_path / "actual")
@@ -332,13 +331,11 @@ async def test_ejecutar_rollback_primero_cambia_la_decision_del_oracle(tmp_path:
     assert decision_actual[0] == HandoffState.INDETERMINATE.value, (
         "el orden rollback-primero no produjo el INDETERMINATE espurio esperado"
     )
-    assert decision_actual[1] == SweepReceiptState.CONSUMED.value, (
-        "el receipt no se consumió sobre el estado contaminado"
-    )
+    assert decision_actual[1] == "absorbed_by_handoff", "la evidencia no se absorbió sobre el estado contaminado"
     assert decision_actual[2] is True
 
     assert decision_requerida[0] is None, "el orden requerido debe terminar en legacy (sin handoff activo)"
-    assert decision_requerida[1] == SweepReceiptState.NO_ARTIFACT.value
+    assert decision_requerida[1] == "no_artifact_demonstrated"
     assert decision_requerida[2] is True
 
 
@@ -346,16 +343,16 @@ async def test_la_secuencia_cableada_del_arranque_produce_la_semantica_correcta(
     tmp_path: pathlib.Path,
 ) -> None:
     """A2-regresión: la secuencia REAL cableada en ``app_context`` (derivada de
-    las posiciones del AST) debe terminar en legacy + NO_ARTIFACT + artifact
+    las posiciones del AST) debe terminar en legacy + no_artifact_demonstrated + artifact
     restaurado — no en un INDETERMINATE espurio. RED contra el orden
     rollback-primero, GREEN con el orden congelado por A1."""
     posiciones = _posiciones_de_llamadas_de_startup()
     orden_cableado = tuple(sorted(_ORDEN_CABLEADO, key=lambda nombre: posiciones[nombre]))
     escenario = await _escenario_de_muerte_dura(tmp_path)
-    estado_handoff, estado_receipt, restaurado = await _correr_secuencia(escenario, orden_cableado)
+    estado_handoff, estado_resolucion, restaurado = await _correr_secuencia(escenario, orden_cableado)
 
     assert estado_handoff is None, "la secuencia cableada fabricó un INDETERMINATE sobre la generación restaurada"
-    assert estado_receipt == SweepReceiptState.NO_ARTIFACT.value, "el receipt no quedó cerrado como ausencia demostrada"
+    assert estado_resolucion == "no_artifact_demonstrated", "la evidencia no quedó resuelta como ausencia demostrada"
     assert restaurado is True, "el reconciler no restauró la generación previa"
 
 
@@ -476,14 +473,14 @@ async def test_fallo_del_rollback_reconciler_no_aborta_el_contrato_del_handoff(
                 lock_manager=locks,
             )
 
-        # La decisión durable del handoff permanece: legacy + NO_ARTIFACT.
+        # La decisión durable del handoff permanece: legacy + no_artifact_demonstrated.
         assert await journal.consultar_handoff_activo(clave_de_artifact(escenario.mod_texgen)) is None
         cur = await journal._db.execute(  # noqa: SLF001
-            "SELECT state FROM stale_pending_sweep_receipts WHERE transaction_id = ?",
-            (escenario.tx,),
+            "SELECT resolution_kind FROM artifact_evidence_resolutions WHERE transaction_id = ? AND artifact_path = ?",
+            (escenario.tx, clave_de_artifact(escenario.mod_texgen)),
         )
         fila = await cur.fetchone()
-        assert fila is not None and fila[0] == SweepReceiptState.NO_ARTIFACT.value
+        assert fila is not None and fila[0] == "no_artifact_demonstrated"
         # El residuo sigue intacto para el próximo arranque.
         assert not escenario.mod_texgen.exists()
     finally:
