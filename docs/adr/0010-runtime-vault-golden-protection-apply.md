@@ -149,7 +149,9 @@ Tras la verificación, **el probe se cierra** y se abre un **handle de mutación
 
 **Semántica bidireccional de compartición (Win32, `CreateFileW`):** la compatibilidad de una nueva apertura se evalúa **en ambas direcciones** contra cada handle preexistente del archivo:
 1. El handle preexistente debe haber **concedido** (en su `dwShareMode`) todas las clases de acceso que la nueva apertura solicita; si no -> `ERROR_SHARING_VIOLATION`.
-2. La nueva apertura debe **conceder** (en su propio `dwShareMode`) las clases de acceso que el handle preexistente obtuvo; si la nueva apertura usa `dwShareMode = 0`, no concede nada -> `ERROR_SHARING_VIOLATION` contra **todo** handle preexistente que tenga acceso de datos (`FILE_READ_DATA`, `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_ATTRIBUTES`, `FILE_WRITE_EA`, `FILE_ADD_FILE`, `FILE_ADD_SUBDIRECTORY`, `FILE_DELETE_CHILD` o `DELETE`). Las clases de metadatos (`READ_CONTROL`, `SYNCHRONIZE`, `FILE_READ_ATTRIBUTES`, `FILE_READ_EA` sin datos) no participan en la compartición.
+2. La nueva apertura debe **conceder** (en su propio `dwShareMode`) las clases de acceso que el handle preexistente obtuvo; si la nueva apertura usa `dwShareMode = 0`, no concede nada -> `ERROR_SHARING_VIOLATION` contra **todo** handle preexistente que tenga acceso de datos (`FILE_READ_DATA`, `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_ATTRIBUTES`, `FILE_WRITE_EA`, `FILE_ADD_FILE`, `FILE_ADD_SUBDIRECTORY`, `FILE_DELETE_CHILD` o `DELETE`).
+
+   **Condición de disparo (normativa, `IoCheckShareAccess` — ver §29):** la comprobación de compartición de ambas direcciones se ejecuta **sólo si la nueva apertura solicita alguna clase de datos** — `FILE_READ_DATA`/`FILE_EXECUTE` (read), `FILE_WRITE_DATA`/`FILE_APPEND_DATA` (write) o `DELETE`. Las clases de **metadatos y de control** —`READ_CONTROL`, `WRITE_DAC`, `WRITE_OWNER`, `SYNCHRONIZE`, `FILE_READ_ATTRIBUTES`, `FILE_READ_EA` sin datos— **no participan en la compartición**: una apertura que sólo pide estas clases **retorna éxito sin evaluar la dirección 2** y no puede producir `ERROR_SHARING_VIOLATION`, ni siquiera contra un handle abierto con `dwShareMode = 0`. Por eso el **handle de mutación** (`READ_CONTROL | WRITE_DAC | WRITE_OWNER`, sin ninguna clase de datos) **no** detecta writers por sí mismo —la detección es responsabilidad exclusiva del probe (§4.1)— y tampoco falla con `ERROR_SHARING_VIOLATION` ante un writer preexistente (esto es, además, lo que permite reescribir la DACL de un archivo abierto por otro proceso).
 
 El probe normativo (§4.1) usa `dwShareMode = 0`, por lo que **colisiona con todo handle preexistente que tenga acceso de datos**, con independencia del `dwShareMode` que ese handle haya concedido. La tabla siguiente es **normativa**: seis filas handle-level, cada una con desenlace contractual único. **Es imposible que una misma fila tenga simultáneamente `ERROR_SHARING_VIOLATION` y "open exitoso".** El caso de mappings escribibles NO es una fila de esta matriz: se trata por separado en §4.1.2 (`WRITABLE MAPPING CASE`).
 
@@ -517,6 +519,15 @@ Fase de Mutación por Nodo K en el Plan (en orden Bottom-Up):
                 Si 0 nodos mutados -> FAIL_CLOSED -> REFUSE_TO_APPLY (ProbeAccessDeniedError)
                 Si >0 nodos mutados -> FAIL_CLOSED -> Iniciar secuencia de ROLLBACK (ROLLBACK_REQUIRED).
             (No se asume que WRITE_DAC está concedido por la DACL existente; no se usa SeTakeOwnershipPrivilege en v1.)
+       Si h == INVALID_HANDLE_VALUE por cualquier OTRO GetLastError() (catch-all fail-closed, simétrico al paso 1 del probe):
+            // ERROR_SHARING_VIOLATION NO puede originarse en esta apertura: el handle de mutación
+            // solicita sólo READ_CONTROL | WRITE_DAC | WRITE_OWNER, ninguna clase de datos
+            // read/write/delete, y `IoCheckShareAccess` sólo evalúa compartición cuando la
+            // apertura pide FILE_READ_DATA/FILE_EXECUTE, FILE_WRITE_DATA/FILE_APPEND_DATA o DELETE
+            // (ver §4.1.1 y §29). Aun así, todo GetLastError() distinto se bifurca de forma determinista:
+            Si 0 nodos mutados -> FAIL_CLOSED -> REFUSE_TO_APPLY
+            Si >0 nodos mutados -> FAIL_CLOSED -> Iniciar secuencia de ROLLBACK (ROLLBACK_REQUIRED).
+       // A partir de aquí h es un handle válido:
        info = GetFileInformationByHandleEx(h, FileIdInfo)
        tag  = GetFileInformationByHandleEx(h, FileAttributeTagInfo).ReparseTag
        Si info.VolumeSerialNumber != expected.vol_serial o info.FileId != expected.file_id o tag != 0:
@@ -1055,6 +1066,8 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - Well-known SIDs / Owner Rights SID (`S-1-3-4`) — *learn.microsoft.com/windows/win32/secauthz/well-known-sids*
 - Order of ACEs in a DACL — *learn.microsoft.com/windows/win32/secauthz/order-of-aces-in-a-dacl*
 - File Access Rights Constants — *learn.microsoft.com/windows/win32/fileio/file-access-rights-constants*
+- `IoCheckShareAccess` routine (share-access sólo se evalúa para clases de datos read/write/delete; `READ_CONTROL`/`WRITE_DAC`/`WRITE_OWNER` no participan) — *learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/nf-ntifs-iocheckshareaccess*
+- `CreateFileW` function (dwShareMode, sharing model) — *learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew*
 
 ---
 
