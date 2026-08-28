@@ -1564,9 +1564,18 @@ class OperationJournal:
     ) -> int | None:
         """INSERT del INDETERMINATE + resolución de evidencia per-artifact en el
         MISMO boundary (Principio 4 e Issue #506 D4); ASUME el boundary del caller.
-        Levanta ``sqlite3.IntegrityError`` si ya hay owner activo del artifact — o
-        si una resolución duplica o entra en conflicto — y entonces NADA del
-        bloque queda afirmado (el boundary revierte completo).
+
+        Contrato de errores:
+
+        - ``sqlite3.IntegrityError`` si ya hay owner activo del artifact (índice
+          único parcial de ``deployment_handoffs``);
+        - ``JournalTransactionError`` si una resolución existente para
+          ``(transaction_id, artifact_path)`` tiene otra provenance (conflicto
+          semántico). Un duplicado EXACTO es un éxito idempotente.
+
+        En ambos casos NADA del bloque queda afirmado: el boundary revierte
+        completo. ``ids_receipts`` sólo aporta el conjunto de candidatas cuando
+        ``ids_absorcion`` es ``None``; este helper ya no muta receipts.
         """
         cursor = await conn.execute(_INSERT_HANDOFF_SQL, fila_de_registro(registro))
         nuevo_id = int(cursor.lastrowid or 0) or None

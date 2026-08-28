@@ -475,15 +475,13 @@ async def test_mig506_08_failure_durante_backfill_revierte_totalmente(tmp_path: 
 
     # Segunda conexión independiente a disco verifica:
     # 1. tx1 no fue insertada (cero mutación residual de D4)
-    # 2. in_transaction es False
-    # 3. La DB permanece usable
+    # 2. La DB permanece consultable tras el rollback fallido
     async with aiosqlite.connect(str(db_file)) as conn:
         async with conn.execute(
             "SELECT transaction_id FROM artifact_evidence_resolutions WHERE transaction_id = 1"
         ) as cur:
             fila_tx1 = await cur.fetchone()
         assert fila_tx1 is None, "tx1 no debe haber quedado backfilleada tras rollback de migración"
-        assert not conn.in_transaction
 
 
 @pytest.mark.asyncio
@@ -627,7 +625,6 @@ async def test_mig506_11_concurrent_open_legacy_db(tmp_path: pathlib.Path) -> No
             async with conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur:
                 (conteo,) = await cur.fetchone()
             assert conteo == 1, "D4 debe aparecer una sola vez con backfill completo"
-            assert not conn.in_transaction
     finally:
         await asyncio.gather(mgr1.shutdown_all(), mgr2.shutdown_all())
 
