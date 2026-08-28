@@ -76,7 +76,8 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     the fail-closed auto-deny when nobody answers.
     """
     from sky_claw.app.gui.controllers.ritual_runner import (
-        STORE_KEY_PENDING_HITL,
+        compose_gui_hitl_lifecycle,
+        enqueue_pending_hitl,
         make_gui_hitl_notify,
         ritual_auto_approve_armed,
         ritual_tab_id,
@@ -85,6 +86,8 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     guard = ctx.hitl
     if guard is None:
         logger.warning("No HITLGuard on AppContext — GUI ritual approval unavailable")
+        return
+    if getattr(guard, "_sky_claw_gui_hitl_bridge_installed", False):
         return
     # Wrap (not replace) the original closure so Telegram scope approvals keep
     # working; tool_execution + download are intercepted for the GUI. M-9: el getter
@@ -98,14 +101,16 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     # aprobación de una operación destructiva que no inició. El dueño va en el
     # payload y NO en la clave: los subscribers del store son por clave exacta,
     # así que una clave por pestaña no dispararía el refresh de la página.
+    compose_gui_hitl_lifecycle(guard, store)
     original_notify = guard._notify
     guard._notify = make_gui_hitl_notify(
         respond=guard.respond,
-        set_pending=lambda payload: store.set(STORE_KEY_PENDING_HITL, payload),
+        set_pending=lambda payload: enqueue_pending_hitl(store, payload),
         auto_approve_getter=ritual_auto_approve_armed,
         tab_id_getter=ritual_tab_id,
         delegate=original_notify,
     )
+    guard._sky_claw_gui_hitl_bridge_installed = True
 
 
 def _build_environment_scanner(ctx: AppContext):
