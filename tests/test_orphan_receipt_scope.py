@@ -677,6 +677,109 @@ async def test_t506_06_pending_control_retiene_semantica_actual(journal_tmp) -> 
 
 
 # =============================================================================
+
+
+async def test_f506_pending_run1_no_terminaliza_evidencia_viva(journal_tmp) -> None:  # noqa: ANN001
+    """F506-PENDING-RUN1: RUN1 no resuelve una TX PENDING viva sin receipt."""
+    journal, db_path = journal_tmp
+    tmp_path = db_path.parent
+    config, _runner = _entorno(tmp_path)
+
+    art_a = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    art_b = config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME
+    clave_a = clave_de_artifact(art_a)
+    clave_b = clave_de_artifact(art_b)
+
+    tx_pending = await _crear_tx_multi_artifact(
+        journal,
+        [art_a, art_b],
+        descripcion="pending live antes de RUN1",
+    )
+
+    snap_pre = await tomar_snapshot_evidencia(
+        journal,
+        tx_id=tx_pending,
+        clave_a=clave_a,
+        clave_b=clave_b,
+        db_path=db_path,
+    )
+    assert snap_pre.transaction_status == TransactionStatus.PENDING.value
+    assert snap_pre.receipt_state is None
+    assert snap_pre.resolutions == []
+    assert tx_pending in snap_pre.oracle_a
+    assert tx_pending in snap_pre.oracle_b
+
+    # Otra corrida produce A y completa un RUN1 autorizado.
+    _escribir_artifact_dir(art_a, b"F506_RUN1")
+    tx_run1 = await journal.begin_transaction("RUN1 concurrente", agent_id="test")
+    registro = _crear_registro_awaiting(art_a, tx_run1, config)
+    handoff_id = await journal.crear_handoff_de_deployment(
+        tx_run1,
+        descripcion="RUN1 concurrente",
+        registro=registro,
+        viejo=None,
+    )
+    assert handoff_id > 0
+
+    snap_post = await tomar_snapshot_evidencia(
+        journal,
+        tx_id=tx_pending,
+        clave_a=clave_a,
+        clave_b=clave_b,
+        db_path=db_path,
+    )
+    assert snap_post.transaction_status == TransactionStatus.PENDING.value
+    assert snap_post.receipt_state is None
+    assert snap_post.resolutions == []
+    assert tx_pending in snap_post.oracle_a
+    assert tx_pending in snap_post.oracle_b
+
+
+async def test_f506_pending_no_artifact_no_terminaliza_evidencia_viva(journal_tmp) -> None:  # noqa: ANN001
+    """F506-PENDING-NO-ARTIFACT: ausencia física no terminaliza una TX PENDING viva."""
+    journal, db_path = journal_tmp
+    tmp_path = db_path.parent
+    config, _runner = _entorno(tmp_path)
+
+    art_a = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    art_b = config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME
+    clave_a = clave_de_artifact(art_a)
+    clave_b = clave_de_artifact(art_b)
+
+    assert config.mo2_mods_path.is_dir()
+    assert not art_a.exists()
+
+    tx_pending = await _crear_tx_multi_artifact(
+        journal,
+        [art_a, art_b],
+        descripcion="pending live antes de NO_ARTIFACT",
+    )
+
+    resultado = await reconciliar_orphan_de_artifact(
+        journal=journal,
+        mod_texgen=art_a,
+        game_key=clave_de_artifact(config.game_path),
+        mods_root_key=clave_de_artifact(config.mo2_mods_path),
+        data_key=clave_de_artifact(config.data_dir),
+        expected_profile="Perfil-A",
+        digest_arbol=digest_arbol,
+    )
+    assert resultado is None
+
+    snap_post = await tomar_snapshot_evidencia(
+        journal,
+        tx_id=tx_pending,
+        clave_a=clave_a,
+        clave_b=clave_b,
+        db_path=db_path,
+    )
+    assert snap_post.transaction_status == TransactionStatus.PENDING.value
+    assert snap_post.receipt_state is None
+    assert snap_post.resolutions == []
+    assert tx_pending in snap_post.oracle_a
+    assert tx_pending in snap_post.oracle_b
+
+
 # T506-07: RESTART Y DURABILIDAD TRAS RESOLUCIÓN PARCIAL
 # =============================================================================
 
@@ -790,8 +893,12 @@ async def test_f506_rb1_resolver_evidencia_no_artifact_standalone_rollback(tmp_p
         clave, _ = _canonica_y_prefijo(art_path)
 
         async with aiosqlite.connect(str(db_file)) as conn:
-            await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (101, 'tx1')")
-            await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (102, 'tx2')")
+            await conn.execute(
+                "INSERT INTO transactions (transaction_id, description, status) VALUES (101, 'tx1', 'rolled_back')"
+            )
+            await conn.execute(
+                "INSERT INTO transactions (transaction_id, description, status) VALUES (102, 'tx2', 'rolled_back')"
+            )
             await conn.execute(
                 "INSERT INTO deployment_handoffs (handoff_id, source_tx_id, state, artifact_path, game_key, mods_root_key, data_key, expected_profile, expected_digest, expected_files, expected_bytes) "
                 "VALUES (99, 102, 'awaiting_deployment', ?, 'g', 'm', 'd', 'p', 'sha256:abc', 1, 10)",
@@ -801,6 +908,12 @@ async def test_f506_rb1_resolver_evidencia_no_artifact_standalone_rollback(tmp_p
                 "INSERT INTO artifact_evidence_resolutions (transaction_id, artifact_path, resolution_kind, handoff_id) "
                 "VALUES (102, ?, 'absorbed_by_handoff', 99)",
                 (clave,),
+            )
+            await conn.execute(
+                "INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (101, 'unresolved')"
+            )
+            await conn.execute(
+                "INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (102, 'unresolved')"
             )
             await conn.commit()
 

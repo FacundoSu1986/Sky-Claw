@@ -168,6 +168,46 @@ async def _candidatas_orphan_en_conn(
     return coincidencias - resueltas
 
 
+async def _filtrar_resolubles_historicas_en_conn(
+    conn: aiosqlite.Connection,
+    transaction_ids: Iterable[int],
+) -> set[int]:
+    """Conserva sólo evidencia histórica apta para resolución terminal.
+
+    F-05 (#506): una TX PENDING viva pertenece al oracle, pero RUN1 y
+    NO_ARTIFACT no pueden terminalizarla. Sóo una TX actualmente ROLLED_BACK
+    cuya causalidad de stale sweep está demostrada por la EXISTENCIA de un
+    receipt puede recibir esas resoluciones terminales. El estado del receipt
+    no participa: sigue siendo causalidad global, nunca autoridad per-artifact.
+
+    ASUME el boundary del caller para que la revalidación durable y la escritura
+    de la resolución ocurran en la misma operación DB.
+    """
+    ids = sorted({int(tx_id) for tx_id in transaction_ids})
+    if not ids:
+        return set()
+
+    sql = """
+        SELECT t.transaction_id
+        FROM transactions t
+        WHERE t.status = ?
+          AND t.transaction_id IN (
+              SELECT CAST(value AS INTEGER)
+              FROM json_each(?)
+          )
+          AND EXISTS (
+              SELECT 1
+              FROM stale_pending_sweep_receipts r
+              WHERE r.transaction_id = t.transaction_id
+          )
+    """
+    async with conn.execute(
+        sql,
+        (TransactionStatus.ROLLED_BACK.value, json.dumps(ids)),
+    ) as cursor:
+        return {int(fila[0]) async for fila in cursor}
+
+
 #: INSERT del receipt durable de stale sweep (F-001, patch 0006).
 _INSERT_SWEEP_RECEIPT_SQL = "INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (?, 'unresolved')"
 
@@ -256,6 +296,7 @@ async def _sellar_evidencia_de_artifact(
     handoff_id: int | None = None,
     resolution_kind: ArtifactResolutionKind | str = ArtifactResolutionKind.ABSORBED_BY_HANDOFF,
     excluir: int | None = None,
+    solo_historicas: bool = False,
 ) -> None:
     """Sella la evidencia orphan vigente de un artifact: la resuelve en
     ``artifact_evidence_resolutions``. ASUME el boundary del caller.
@@ -263,6 +304,11 @@ async def _sellar_evidencia_de_artifact(
     candidatas = await _candidatas_orphan_en_conn(conn, objetivo_fisico=objetivo_fisico, prefijo=prefijo)
     if excluir is not None:
         candidatas.discard(excluir)
+    if solo_historicas:
+        candidatas = await _filtrar_resolubles_historicas_en_conn(
+            conn,
+            candidatas,
+        )
     if candidatas:
         await _registrar_resoluciones_de_artifact_en_conn(
             conn,
@@ -1213,26 +1259,36 @@ class OperationJournal:
         if self._lifecycle is not None:
             try:
                 async with self._lifecycle.transaction(self._db_path) as conn:
-                    await _registrar_resoluciones_de_artifact_en_conn(
+                    ids_resolubles = await _filtrar_resolubles_historicas_en_conn(
                         conn,
-                        transaction_ids=ids,
-                        artifact_path=objetivo_fisico,
-                        resolution_kind=ArtifactResolutionKind.NO_ARTIFACT_DEMONSTRATED,
-                        handoff_id=None,
+                        ids,
                     )
+                    if ids_resolubles:
+                        await _registrar_resoluciones_de_artifact_en_conn(
+                            conn,
+                            transaction_ids=ids_resolubles,
+                            artifact_path=objetivo_fisico,
+                            resolution_kind=ArtifactResolutionKind.NO_ARTIFACT_DEMONSTRATED,
+                            handoff_id=None,
+                        )
             except sqlite3.Error as e:
                 raise JournalTransactionError(f"Failed to record no_artifact resolutions: {e}") from e
         else:
             async with self._lock:
                 commit_exitoso = False
                 try:
-                    await _registrar_resoluciones_de_artifact_en_conn(
+                    ids_resolubles = await _filtrar_resolubles_historicas_en_conn(
                         db,
-                        transaction_ids=ids,
-                        artifact_path=objetivo_fisico,
-                        resolution_kind=ArtifactResolutionKind.NO_ARTIFACT_DEMONSTRATED,
-                        handoff_id=None,
+                        ids,
                     )
+                    if ids_resolubles:
+                        await _registrar_resoluciones_de_artifact_en_conn(
+                            db,
+                            transaction_ids=ids_resolubles,
+                            artifact_path=objetivo_fisico,
+                            resolution_kind=ArtifactResolutionKind.NO_ARTIFACT_DEMONSTRATED,
+                            handoff_id=None,
+                        )
                     await db.commit()
                     commit_exitoso = True
                 except sqlite3.Error as e:
@@ -1396,6 +1452,7 @@ class OperationJournal:
                 handoff_id=nuevo_id,
                 resolution_kind=ArtifactResolutionKind.SUPERSEDED_BY_RUN,
                 excluir=transaction_id,
+                solo_historicas=True,
             )
         return nuevo_id
 

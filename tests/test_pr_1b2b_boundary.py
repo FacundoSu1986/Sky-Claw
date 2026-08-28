@@ -1492,6 +1492,7 @@ _METODOS_DE_EJECUCION = frozenset({"execute", "executescript", "executemany"})
 _HELPERS_DE_MODULO_QUE_EMITEN_SQL = frozenset(
     {
         "_candidatas_orphan_en_conn",
+        "_filtrar_resolubles_historicas_en_conn",
         "_obsoletar_receipts_de_artifact",
         "_registrar_resoluciones_de_artifact_en_conn",
         "_migrar_resoluciones_legacy_en_conn",

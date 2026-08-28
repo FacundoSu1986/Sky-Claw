@@ -689,7 +689,10 @@ async def test_res506_concurrent_exact_dos_conexiones(tmp_path: pathlib.Path) ->
     db_file = tmp_path / "concurrent_exact.db"
     async with aiosqlite.connect(str(db_file)) as conn:
         await conn.executescript(LEGACY_SCHEMA_SQL)
-        await conn.execute("INSERT INTO transactions (transaction_id, description) VALUES (1, 'tx1')")
+        await conn.execute(
+            "INSERT INTO transactions (transaction_id, description, status) VALUES (1, 'tx1', 'rolled_back')"
+        )
+        await conn.execute("INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (1, 'unresolved')")
         await conn.commit()
 
     mgr1 = DatabaseLifecycleManager()
