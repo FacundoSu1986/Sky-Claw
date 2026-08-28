@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import sys
 
 import pytest
 
@@ -949,9 +948,41 @@ def test_el_pipeline_solo_llama_a_los_metodos_del_protocolo():
     assert set(espia.llamadas) <= set(METODOS_DEL_OBSERVADOR)
 
 
-def test_el_probe_es_de_solo_lectura_y_no_se_importa_desde_el_paquete():
-    # El backend Windows vive en el probe, fuera del runtime: así el paquete se
-    # importa en Ubuntu sin COM y el repo no toma una dependencia UIA todavía.
+def test_el_backend_windows_vive_fuera_del_paquete():
+    """El probe puede importar `sky_claw`; `sky_claw` NO puede importar al probe.
+
+    Esa es la propiedad que mantiene el paquete importable en el CI de Ubuntu sin
+    COM y que deja la decisión de dependencia UIA para cuando haya evidencia. Se
+    verifica por enumeración de TODO el paquete, no con un caso: un import nuevo
+    desde cualquier módulo rompe el ancla.
+    """
     assert PROBE_T5A.exists()
-    assert not any(PROBE_T5A.samefile(p) for p in (RAIZ / "sky_claw").rglob("*.py"))
-    assert "sky_claw" not in {m.split(".")[0] for m in sys.modules if m.startswith("probe_")}
+    assert not PROBE_T5A.is_relative_to(RAIZ / "sky_claw")
+
+    modulo_del_probe = PROBE_T5A.stem
+    culpables = []
+    for archivo in (RAIZ / "sky_claw").rglob("*.py"):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        for nodo in ast.walk(arbol):
+            nombres = []
+            if isinstance(nodo, ast.Import):
+                nombres = [alias.name for alias in nodo.names]
+            elif isinstance(nodo, ast.ImportFrom):
+                nombres = [nodo.module or ""]
+            if any(modulo_del_probe in nombre for nombre in nombres):
+                culpables.append(str(archivo.relative_to(RAIZ)))
+    assert not culpables, f"el paquete importa el probe desde {culpables}"
+
+
+def test_el_probe_no_declara_dependencia_uia_en_los_manifests():
+    """Ninguna dependencia UIA entró al repo: la decision espera la evidencia.
+
+    `comtypes` se importa perezosamente DENTRO del probe (§7: no se toma una
+    dependencia por costumbre, y menos una que sólo sirve a un diagnóstico).
+    Si algún día entra al runtime tiene que ser una decisión explícita que
+    rompa este ancla, no un `pip install` que se cuele en un lockfile.
+    """
+    manifest = (RAIZ / "pyproject.toml").read_text(encoding="utf-8")
+    seccion = manifest.split("[project.optional-dependencies]")[0]
+    for paquete in ("comtypes", "pywinauto", "uiautomation", "pywin32"):
+        assert f'"{paquete}' not in seccion, f"{paquete} entró a dependencies sin decisión"

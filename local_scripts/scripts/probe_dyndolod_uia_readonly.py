@@ -1,0 +1,362 @@
+#!/usr/bin/env python
+"""Sonda READ-ONLY del árbol de UI Automation de TexGen/DynDOLOD (T5A).
+
+**Para qué existe.** ``sky_claw/local/tools/dyndolod_uia_preflight.py`` sabe
+decidir MATCH / MISMATCH / UNKNOWN, pero deliberadamente **no** trae un selector
+del campo *Output*: nadie midió todavía el árbol UIA de estos binarios, y una
+constante escrita de memoria sería una invención con apariencia de evidencia.
+Esta sonda es cómo se consigue esa evidencia en un rig Windows real:
+
+    python local_scripts/scripts/probe_dyndolod_uia_readonly.py \\
+        --tool TexGen --exe "C:/Modding/DynDOLOD/TexGenx64.exe"
+
+Imprime, saneada, la identidad del proceso, la de su ventana top-level y las
+propiedades de cada control (``AutomationId``, ``Name``, ``ControlType``,
+``ClassName``, y qué patrón de LECTURA expone). Con eso se decide qué
+combinación de propiedades identifica al control de forma inequívoca — y recién
+ahí se puede escribir el selector, con la medición al lado.
+
+Si además se le pasan los criterios y la salida administrada, corre el preflight
+completo con el observador real y muestra el veredicto:
+
+    python local_scripts/scripts/probe_dyndolod_uia_readonly.py \\
+        --tool TexGen --exe "C:/Modding/DynDOLOD/TexGenx64.exe" \\
+        --automation-id edOutput --control-type Edit \\
+        --expected-output "C:/Games/Skyrim Special Edition/Sky-Claw/DynDOLOD"
+
+**Es de SOLO LECTURA y eso está anclado, no prometido.** Sólo conecta, enumera y
+lee propiedades. No pulsa nada, no escribe presets, no cambia el Output, no
+inyecta teclado ni mouse, no enfoca ventanas. El ancla por AST de
+``tests/test_dyndolod_uia_preflight.py`` cubre este archivo igual que al módulo
+productivo: no puede siquiera NOMBRAR una primitiva mutante de UIA/Win32, ni
+usar despacho dinámico para llegar a una.
+
+**Por qué el backend vive acá y no en el paquete.** Dos motivos.
+
+1. *Dependencias.* ``comtypes`` (MIT, sin dependencias transitivas, upstream
+   Enthought) es el binding COM correcto para esto, pero el repo no tiene hoy
+   ninguna dependencia de UI Automation y **todavía no hay evidencia que
+   justifique tomar una**: eso es precisamente lo que esta sonda va a medir.
+   Acá el import es perezoso, así que el operador la instala en el rig
+   (``pip install comtypes``) sin que el runtime de Sky-Claw dependa de ella.
+2. *CI multiplataforma.* El paquete tiene que importarse en Ubuntu sin COM ni
+   escritorio interactivo. Fuera del paquete, este archivo no puede romperlo:
+   nada de ``sky_claw/`` lo importa, y un test lo congela.
+
+**Estado de verificación, sin adornos:** el adaptador COM de abajo **no se
+ejecutó nunca** — esta rama se desarrolló en Linux, sin TexGen/DynDOLOD y sin
+Windows. Lo que sí está probado es la máquina de decisión del módulo productivo
+(90 casos deterministas). Tratá la primera corrida de esta sonda como parte de
+la medición, no como una herramienta ya validada.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import pathlib
+import sys
+from collections.abc import Sequence
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+
+from sky_claw.local.tools.dyndolod_uia_preflight import (  # noqa: E402
+    TOOLS_OBSERVABLES,
+    ControlObservado,
+    CriteriosDeControl,
+    LocalizadorPsutil,
+    ObservacionUIAError,
+    SolicitudPreflightUIA,
+    UIANoDisponibleError,
+    VentanaObservada,
+    observar_output,
+)
+
+#: CLSID de ``CUIAutomation``, el objeto COM raíz de UI Automation.
+CLSID_CUIAUTOMATION = "{ff48dba4-60ef-4201-aa87-54103eef594e}"
+
+#: Tope de controles a enumerar por ventana. Microsoft advierte que recorrer el
+#: árbol UIA entero es caro; acá la búsqueda ya está acotada al subtree de UNA
+#: ventana de UN proceso, y este tope además impide que una GUI con miles de
+#: nodos convierta un diagnóstico en una espera indefinida.
+TOPE_DE_CONTROLES = 400
+
+#: ``UIA_ControlTypePropertyId`` devuelve un entero. Se traducen sólo los tipos
+#: que pueden plausiblemente contener una ruta; el resto se reporta como su id
+#: crudo, que sigue siendo evidencia utilizable.
+NOMBRES_DE_CONTROL_TYPE = {
+    50004: "Edit",
+    50020: "Text",
+    50003: "ComboBox",
+    50000: "Button",
+    50032: "Window",
+    50026: "Group",
+    50033: "Pane",
+    50008: "Document",
+    50007: "List",
+    50005: "Hyperlink",
+}
+
+
+def _sanear(texto: str) -> str:
+    """Reemplaza el perfil del usuario por un marcador antes de imprimir.
+
+    Los títulos de ventana y los valores de las cajas de texto llevan rutas
+    completas; el output de esta sonda se pega en un PR. Sanear no es cosmético.
+    """
+    resultado = texto
+    for variable in ("USERPROFILE", "HOME", "USERNAME"):
+        valor = os.environ.get(variable)
+        if valor and len(valor) > 2:
+            resultado = resultado.replace(valor, f"<{variable}>")
+    return resultado
+
+
+class ObservadorUIAWindows:
+    """Adaptador READ-ONLY sobre UI Automation, vía ``comtypes``.
+
+    Implementa los tres métodos de ``ObservadorUIA`` y ninguno más. Cada llamada
+    COM de acá es una consulta: obtener la raíz, construir una condición,
+    ``FindAll`` acotado, leer una propiedad, leer el valor de un patrón de
+    lectura. No hay ninguna que modifique estado de la GUI.
+
+    ``comtypes`` se importa dentro de ``__init__`` a propósito: importar este
+    archivo en cualquier plataforma no debe fallar, y la ausencia del binding
+    tiene que llegar como :class:`UIANoDisponibleError` —que el preflight
+    traduce a ``UNKNOWN``— y no como un ``ImportError`` que reviente arriba.
+    """
+
+    def __init__(self) -> None:
+        if sys.platform != "win32":
+            raise UIANoDisponibleError(f"UI Automation es Windows-only; esta plataforma es {sys.platform!r}")
+        try:
+            import comtypes  # noqa: PLC0415
+            import comtypes.client  # noqa: PLC0415
+        except ImportError as exc:  # pragma: no cover -- depende del rig
+            raise UIANoDisponibleError(
+                "falta el binding COM: instalá `comtypes` en el rig (pip install comtypes). "
+                "Sky-Claw no lo declara como dependencia todavía: la decisión espera la evidencia "
+                "que esta misma sonda produce."
+            ) from exc
+        try:
+            comtypes.CoInitialize()
+            self._uia_mod = comtypes.client.GetModule("UIAutomationCore.dll")
+            self._uia = comtypes.client.CreateObject(
+                CLSID_CUIAUTOMATION,
+                interface=self._uia_mod.IUIAutomation,
+            )
+        except Exception as exc:  # pragma: no cover -- depende del rig
+            raise UIANoDisponibleError(f"no se pudo inicializar UI Automation: {exc}") from exc
+
+    # -- lectura de propiedades ------------------------------------------------
+
+    def _propiedad(self, elemento: object, nombre_de_id: str) -> object:
+        identificador = self._uia_mod.__dict__[nombre_de_id]
+        return elemento.GetCurrentPropertyValue(identificador)  # type: ignore[attr-defined]
+
+    def _texto(self, elemento: object, nombre_de_id: str) -> str:
+        valor = self._propiedad(elemento, nombre_de_id)
+        return "" if valor is None else str(valor)
+
+    def _control_type(self, elemento: object) -> str:
+        crudo = self._propiedad(elemento, "UIA_ControlTypePropertyId")
+        try:
+            numero = int(crudo)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return str(crudo)
+        return NOMBRES_DE_CONTROL_TYPE.get(numero, str(numero))
+
+    def _pid(self, elemento: object) -> int:
+        crudo = self._propiedad(elemento, "UIA_ProcessIdPropertyId")
+        try:
+            return int(crudo)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return -1
+
+    def _elementos(self, coleccion: object) -> list[object]:
+        total = int(coleccion.Length)  # type: ignore[attr-defined]
+        return [coleccion.GetElement(indice) for indice in range(min(total, TOPE_DE_CONTROLES))]  # type: ignore[attr-defined]
+
+    # -- protocolo ObservadorUIA ----------------------------------------------
+
+    def ventanas_de_proceso(self, pid: int) -> Sequence[VentanaObservada]:
+        """Ventanas top-level del pid. Hijas directas de la raíz, no el Desktop entero."""
+        try:
+            raiz = self._uia.GetRootElement()
+            condicion = self._uia.CreatePropertyCondition(self._uia_mod.UIA_ProcessIdPropertyId, pid)
+            encontradas = raiz.FindAll(self._uia_mod.TreeScope_Children, condicion)
+            return tuple(
+                VentanaObservada(
+                    pid=self._pid(elemento),
+                    titulo=self._texto(elemento, "UIA_NamePropertyId"),
+                    class_name=self._texto(elemento, "UIA_ClassNamePropertyId"),
+                    handle=elemento,
+                )
+                for elemento in self._elementos(encontradas)
+            )
+        except Exception as exc:  # pragma: no cover -- depende del rig
+            raise ObservacionUIAError(f"fallo al enumerar ventanas del pid {pid}: {exc}") from exc
+
+    def controles_de_ventana(self, ventana: VentanaObservada) -> Sequence[ControlObservado]:
+        """Descendientes de ESA ventana, acotados por :data:`TOPE_DE_CONTROLES`."""
+        try:
+            condicion = self._uia.CreateTrueCondition()
+            encontrados = ventana.handle.FindAll(self._uia_mod.TreeScope_Descendants, condicion)  # type: ignore[attr-defined]
+            return tuple(
+                ControlObservado(
+                    pid=self._pid(elemento),
+                    automation_id=self._texto(elemento, "UIA_AutomationIdPropertyId"),
+                    nombre=self._texto(elemento, "UIA_NamePropertyId"),
+                    tipo_de_control=self._control_type(elemento),
+                    class_name=self._texto(elemento, "UIA_ClassNamePropertyId"),
+                    handle=elemento,
+                )
+                for elemento in self._elementos(encontrados)
+            )
+        except Exception as exc:  # pragma: no cover -- depende del rig
+            raise ObservacionUIAError(f"fallo al enumerar controles de {ventana.titulo!r}: {exc}") from exc
+
+    def leer_valor(self, control: ControlObservado) -> str | None:
+        """Valor del control por un patrón de LECTURA, o ``None`` si no expone ninguno.
+
+        Se prueba ``ValuePattern`` y, si no está, ``TextPattern``. Ninguno de los
+        dos modifica el control: ``ValuePattern`` también tiene una operación de
+        escritura y acá simplemente no se usa. Si ninguno está disponible, la
+        respuesta es ``None`` y el preflight responde ``UNKNOWN``: no se recurre
+        al portapapeles ni al teclado para arrancar el dato por otra vía.
+        """
+        try:
+            if self._propiedad(control.handle, "UIA_IsValuePatternAvailablePropertyId"):
+                patron = control.handle.GetCurrentPattern(self._uia_mod.UIA_ValuePatternId)  # type: ignore[attr-defined]
+                if patron:
+                    valor = patron.QueryInterface(self._uia_mod.IUIAutomationValuePattern).CurrentValue
+                    return None if valor is None else str(valor)
+            if self._propiedad(control.handle, "UIA_IsTextPatternAvailablePropertyId"):
+                patron = control.handle.GetCurrentPattern(self._uia_mod.UIA_TextPatternId)  # type: ignore[attr-defined]
+                if patron:
+                    rango = patron.QueryInterface(self._uia_mod.IUIAutomationTextPattern).DocumentRange
+                    return str(rango.GetText(-1))
+        except Exception as exc:  # pragma: no cover -- depende del rig
+            raise ObservacionUIAError(f"fallo al leer el valor de {control.describir()}: {exc}") from exc
+        return None
+
+    def patrones_de_lectura(self, control: ControlObservado) -> str:
+        """Qué patrones de lectura expone el control. Sólo para el volcado."""
+        disponibles = []
+        for etiqueta, propiedad in (
+            ("ValuePattern", "UIA_IsValuePatternAvailablePropertyId"),
+            ("TextPattern", "UIA_IsTextPatternAvailablePropertyId"),
+            ("LegacyIAccessible", "UIA_IsLegacyIAccessiblePatternAvailablePropertyId"),
+        ):
+            try:
+                if self._propiedad(control.handle, propiedad):
+                    disponibles.append(etiqueta)
+            except Exception:  # pragma: no cover -- depende del rig
+                disponibles.append(f"{etiqueta}=?")
+        return ",".join(disponibles) or "(ninguno)"
+
+
+def _volcar(observador: ObservadorUIAWindows, pid: int, salida) -> None:
+    """Imprime el subárbol saneado de cada ventana top-level del pid."""
+    ventanas = observador.ventanas_de_proceso(pid)
+    print(f"  ventanas top-level: {len(ventanas)}", file=salida)
+    for ventana in ventanas:
+        print(
+            f"  ventana titulo={_sanear(ventana.titulo)!r} clase={ventana.class_name!r} pid={ventana.pid}",
+            file=salida,
+        )
+        controles = observador.controles_de_ventana(ventana)
+        print(f"    controles enumerados: {len(controles)} (tope {TOPE_DE_CONTROLES})", file=salida)
+        for control in controles:
+            patrones = observador.patrones_de_lectura(control)
+            print(
+                f"    - automation_id={control.automation_id!r} nombre={_sanear(control.nombre)!r} "
+                f"tipo={control.tipo_de_control!r} clase={control.class_name!r} "
+                f"pid={control.pid} patrones={patrones}",
+                file=salida,
+            )
+
+
+def _analizar_argumentos(argv: Sequence[str] | None) -> argparse.Namespace:
+    analizador = argparse.ArgumentParser(
+        description="Sonda READ-ONLY del árbol UIA de TexGen/DynDOLOD (T5A). No modifica nada.",
+    )
+    analizador.add_argument("--tool", required=True, choices=sorted(TOOLS_OBSERVABLES))
+    analizador.add_argument("--exe", required=True, help="ruta o nombre del ejecutable esperado")
+    analizador.add_argument("--pid", type=int, default=None, help="atar la observación a este pid")
+    analizador.add_argument("--expected-output", default=None, help="salida administrada esperada")
+    analizador.add_argument("--automation-id", default=None)
+    analizador.add_argument("--name", dest="nombre", default=None)
+    analizador.add_argument("--control-type", dest="tipo", default=None)
+    return analizador.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    argumentos = _analizar_argumentos(argv)
+    salida = sys.stdout
+
+    print(f"[T5A] sonda READ-ONLY — tool={argumentos.tool} exe={argumentos.exe}", file=salida)
+    localizador = LocalizadorPsutil()
+    esperado = pathlib.PurePath(argumentos.exe.replace("\\", "/")).name.lower()
+    candidatos = [p for p in localizador.procesos() if p.nombre_ejecutable.lower() == esperado]
+    print(f"[T5A] procesos con ese binario: {len(candidatos)}", file=salida)
+    for proceso in candidatos:
+        print(f"  pid={proceso.pid} exe={_sanear(proceso.ruta_ejecutable or proceso.nombre_ejecutable)}", file=salida)
+    if not candidatos:
+        print("[T5A] no hay nada que observar: abrí la herramienta y volvé a correr la sonda.", file=salida)
+        return 2
+
+    try:
+        observador = ObservadorUIAWindows()
+    except UIANoDisponibleError as exc:
+        print(f"[T5A] UIA_UNAVAILABLE: {exc}", file=salida)
+        return 3
+
+    for proceso in candidatos:
+        if argumentos.pid is not None and proceso.pid != argumentos.pid:
+            continue
+        print(f"[T5A] volcado del pid {proceso.pid}", file=salida)
+        try:
+            _volcar(observador, proceso.pid, salida)
+        except ObservacionUIAError as exc:
+            print(f"  ERROR_UIA: {exc}", file=salida)
+
+    criterios = CriteriosDeControl(
+        automation_id=argumentos.automation_id,
+        nombre=argumentos.nombre,
+        tipo_de_control=argumentos.tipo,
+    )
+    if argumentos.expected_output is None or criterios.esta_vacio():
+        print(
+            "[T5A] sin --expected-output y criterios de control no se corre la comparación: "
+            "el selector se escribe DESPUÉS de leer el volcado de arriba, no antes.",
+            file=salida,
+        )
+        return 0
+
+    resultado = observar_output(
+        SolicitudPreflightUIA(
+            tool=argumentos.tool,
+            ejecutable_esperado=argumentos.exe,
+            salida_administrada_esperada=argumentos.expected_output,
+            criterios_del_control=criterios,
+            pid=argumentos.pid,
+        ),
+        localizador=localizador,
+        observador=observador,
+    )
+    print(f"[T5A] {resultado.estado.value} ({resultado.razon.value}): {_sanear(resultado.detalle)}", file=salida)
+    print(f"       observado={_sanear(str(resultado.valor_observado))!r}", file=salida)
+    print(f"       esperado ={_sanear(resultado.valor_esperado)!r}", file=salida)
+    for linea in resultado.evidencia:
+        print(f"       evidencia: {_sanear(linea)}", file=salida)
+    print(
+        "[T5A] recordatorio: un MATCH dice que la GUI MUESTRA esa ruta hoy. "
+        "No prueba dónde va a escribir una corrida futura (eso es T5-v2).",
+        file=salida,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
