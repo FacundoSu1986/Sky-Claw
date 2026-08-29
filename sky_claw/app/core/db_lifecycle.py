@@ -43,6 +43,32 @@ WAL_WARNING_THRESHOLD_BYTES = 10_485_760  # 10 MB
 WAL_CRITICAL_THRESHOLD_BYTES = 52_428_800  # 50 MB
 SHUTDOWN_CHECKPOINT_TIMEOUT_SECONDS = 10
 
+# Intervalo entre reintentos de la conversión a WAL (ver ``_enter_wal_mode``).
+# El sleep NO es el mecanismo de corrección —el límite es la ventana de
+# ``busy_timeout_ms`` y el arbitraje es de SQLite—; sólo evita un spin cerrado
+# entre intento e intento.
+_CONVERSION_WAL_RETRY_SLEEP_S = 0.005
+
+# Familia de contención de locks reintentable. Corrupción, malformed DB, I/O y
+# permisos NUNCA se reintentan: ``SQLITE_BUSY`` (5) y ``SQLITE_LOCKED`` (6),
+# enmascarando códigos extendidos (``SQLITE_BUSY_SNAPSHOT`` = 517 → base 5).
+_CODIGOS_DE_CONTENCION = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+
+
+def _es_contencion_de_bloqueo(error: sqlite3.OperationalError) -> bool:
+    """True SOLO para la familia de contención de locks (BUSY/LOCKED).
+
+    Distingue contención esperada de error permanente (sección error semantics
+    del contrato DB): un archivo corrupto o ilegible no se reintenta. El
+    ``errorcode`` extendido está disponible desde Python 3.11; el fallback por
+    mensaje cubre builds donde el atributo no venga poblado.
+    """
+    codigo = getattr(error, "sqlite_errorcode", None)
+    if codigo is not None:
+        return (codigo & 0xFF) in _CODIGOS_DE_CONTENCION
+    mensaje = str(error)
+    return "database is locked" in mensaje or "database table is locked" in mensaje
+
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -419,7 +445,16 @@ class DatabaseLifecycleManager:
         try:
             # Open temporary connection for recovery
             conn = await aiosqlite.connect(path_str)
-            await conn.execute("PRAGMA journal_mode=WAL")
+            # Mismo orden que _apply_pragmas (hermano): el knob configurado
+            # gobierna desde el primer statement que puede esperar, y la
+            # conversión lleva su reintento acotado. En el caso normal el
+            # archivo ya está en WAL (los sidecars lo prueban) y el pragma es
+            # un no-op; la conversión REAL sólo ocurre en el borde de un crash
+            # a mitad de conversión (header aún en delete) — exactamente la
+            # ventana donde puede competir con otro manager, así que participa
+            # del mismo mecanismo.
+            await conn.execute(f"PRAGMA busy_timeout={self._config.busy_timeout_ms}")
+            await self._enter_wal_mode(conn, path_str)
             # Force checkpoint to flush WAL contents into main DB
             await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             await conn.close()
@@ -457,14 +492,67 @@ class DatabaseLifecycleManager:
                 except OSError:
                     logger.error("Could not rename corrupted WAL file")
 
+    async def _enter_wal_mode(self, conn: aiosqlite.Connection, path_str: str) -> None:
+        """Convierte la DB a WAL con reintento acotado por ``busy_timeout_ms``.
+
+        Por qué el reintento existe (demostrado con SQLite real, no asumido):
+        ``PRAGMA journal_mode=WAL`` sobre un archivo que NO está en WAL promueve
+        el lock de SHARED a EXCLUSIVE. Cuando DOS conexiones corren la conversión
+        a la vez —dos ``DatabaseLifecycleManager`` independientes sobre el mismo
+        archivo, cuyos locks Python por path son por-instancia y no se arbitran
+        entre sí— SQLite devuelve SQLITE_BUSY al perdedor INMEDIATAMENTE, sin
+        invocar el busy handler: es la evitación de deadlock documentada para la
+        promoción de locks ("if SQLite determines that invoking the busy handler
+        could result in a deadlock... it will go ahead and return SQLITE_BUSY").
+        Ningún ``busy_timeout`` salva ese caso porque el handler no llega a
+        correr. Ese era el fallo de CI (run 33223088993, windows-latest/py3.11):
+        ``_init_single`` → ``_apply_pragmas`` → ``journal_mode=WAL`` →
+        "database is locked" en el primer intento, envuelto en
+        ``JournalConnectionError`` por el ``open()`` del journal.
+
+        Contrato: mientras el lock incompatible se libere DENTRO de la ventana
+        configurada, la conversión progresa; si el holder lo retiene más allá,
+        falla de forma limitada y diagnosticable con el MISMO error, sin esperar
+        infinitamente. Reintentar la MISMA sentencia sobre la misma conexión es
+        seguro: el pragma fallido no abre transacción ni deja estado. Sólo se
+        reintenta la familia BUSY/LOCKED (``_es_contencion_de_bloqueo``);
+        corrupción, I/O y permisos propagan al primer intento.
+
+        Cuándo NO compite: si el archivo ya está en WAL, el pragma es un no-op
+        instantáneo aunque haya writers o lectores activos — la única ventana de
+        carrera es la conversión misma.
+        """
+        ventana_s = self._config.busy_timeout_ms / 1000.0
+        inicio = time.monotonic()
+        while True:
+            try:
+                await conn.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as error:
+                if not _es_contencion_de_bloqueo(error):
+                    raise
+                restante = ventana_s - (time.monotonic() - inicio)
+                if restante <= 0:
+                    raise
+                await asyncio.sleep(min(_CONVERSION_WAL_RETRY_SLEEP_S, restante))
+
     async def _apply_pragmas(self, conn: aiosqlite.Connection, path_str: str) -> None:
-        """Apply hardened SQLite pragmas to a connection."""
+        """Apply hardened SQLite pragmas to a connection.
+
+        El orden NO es cosmético: ``busy_timeout`` se instala ANTES del primer
+        pragma que puede esperar por otro owner (la conversión a WAL), para que
+        el knob configurado —no el default de 5s de ``sqlite3.connect``—
+        gobierne toda la ventana de inicialización. (Los dos órdenes emiten las
+        mismas pragmas; ``dlq_manager`` ya documentaba "busy_timeout must be
+        first: protects WAL mode switch" — mismo criterio.) La conversión a WAL
+        además lleva su propio reintento acotado: ver ``_enter_wal_mode``.
+        """
         cfg = self._config
 
-        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute(f"PRAGMA busy_timeout={cfg.busy_timeout_ms}")
+        await self._enter_wal_mode(conn, path_str)
         await conn.execute("PRAGMA foreign_keys=ON")
         await conn.execute(f"PRAGMA synchronous={cfg.synchronous_mode}")
-        await conn.execute(f"PRAGMA busy_timeout={cfg.busy_timeout_ms}")
         await conn.execute("PRAGMA temp_store=MEMORY")
 
         # Verify critical pragmas
