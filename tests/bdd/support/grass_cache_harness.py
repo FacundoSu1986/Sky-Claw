@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import pathlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from sky_claw.app.db.journal import OperationJournal, OperationType, TransactionStatus
+from sky_claw.app.orchestrator.dispatcher_dependencies import (
+    OrchestrationDispatcherDependencies,
+)
 from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app.orchestrator.tool_dispatcher import OrchestrationToolDispatcher, build_orchestration_dispatcher
 from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
@@ -16,41 +20,49 @@ from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
 from sky_claw.local.tools.grass_cache_service import GrassCacheService
 
-SUPERFICIE_DISPATCHER_SUPERVISOR = frozenset(
+SUPERFICIE_DISPATCHER_DEPENDENCIES = frozenset(
     {
-        "_dyndolod_service",
-        "_event_bus",
-        "_grass_cache_service",
-        "_hitl_guard",
-        "_lock_manager",
-        "_loot_service",
-        "_pandora_service",
-        "_path_resolver",
-        "_path_validator",
-        "_run_plugin_limit_guard",
-        "_synthesis_service",
-        "_xedit_service",
-        "execute_wrye_bash_pipeline",
-        "journal",
-        "profile_name",
+        "default_profile_getter",
+        "dyndolod_service",
+        "grass_cache_service",
+        "loot_service",
+        "pandora_service",
+        "plugin_limit_guard",
+        "preview_service_provider",
+        "real_journal_provider",
         "scan_asset_conflicts",
         "scan_asset_conflicts_json",
         "scraper",
-        "snapshot_manager",
+        "synthesis_flow_provider",
+        "synthesis_service_factory",
+        "wrye_bash_pipeline",
+        "xedit_service",
     }
 )
 
 
-def superficie_dispatcher_supervisor() -> frozenset[str]:
-    """Enumera por AST todas las dependencias ``supervisor.*`` del módulo."""
+def superficie_dispatcher_dependencies() -> frozenset[str]:
+    """Enumera por AST todas las capacidades ``dependencies.*`` usadas."""
     modulo = inspect.getmodule(build_orchestration_dispatcher)
     assert modulo is not None
     arbol = ast.parse(inspect.getsource(modulo))
     return frozenset(
         nodo.attr
         for nodo in ast.walk(arbol)
-        if isinstance(nodo, ast.Attribute) and isinstance(nodo.value, ast.Name) and nodo.value.id == "supervisor"
+        if isinstance(nodo, ast.Attribute) and isinstance(nodo.value, ast.Name) and nodo.value.id == "dependencies"
     )
+
+
+def campos_dispatcher_dependencies() -> frozenset[str]:
+    """Enumera los campos declarados en ``OrchestrationDispatcherDependencies``.
+
+    Cruza con ``superficie_dispatcher_dependencies`` para que un campo
+    agregado al dataclass y nunca cableado en ``build_orchestration_dispatcher``
+    rompa el test, y un atributo ``dependencies.*`` usado por el dispatcher
+    sin declarar también. Sin este ancla, los dos lados pueden divergir
+    silenciosamente (regla "arreglar un hermano y no al otro").
+    """
+    return frozenset(campo.name for campo in dataclasses.fields(OrchestrationDispatcherDependencies))
 
 
 def preparar_entorno_mo2(tmp_path: pathlib.Path) -> dict[str, pathlib.Path]:
@@ -153,7 +165,8 @@ def construir_dispatcher_grass(
     realmente se alcanza). NUNCA se pasa ``allow_unattended=True``, que
     desactivaría el fail-closed en vez de anclarlo.
     """
-    assert superficie_dispatcher_supervisor() == SUPERFICIE_DISPATCHER_SUPERVISOR
+    assert campos_dispatcher_dependencies() == SUPERFICIE_DISPATCHER_DEPENDENCIES
+    assert superficie_dispatcher_dependencies() == SUPERFICIE_DISPATCHER_DEPENDENCIES
     hitl_guard: HITLGuard | None = None
     if con_guard:
         hitl_guard = MagicMock(spec=HITLGuard)
@@ -179,7 +192,12 @@ def construir_dispatcher_grass(
     supervisor.scan_asset_conflicts = AsyncMock()
     supervisor.scan_asset_conflicts_json = AsyncMock()
     supervisor.profile_name = "BDDProfile"
-    dispatcher = build_orchestration_dispatcher(supervisor, hitl_gate=gate)
+    from tests._orchestration_dispatcher_dependencies import crear_dependencias_desde_doble
+
+    dispatcher = build_orchestration_dispatcher(
+        crear_dependencias_desde_doble(supervisor),
+        hitl_gate=gate,
+    )
     return dispatcher, hitl_guard
 
 

@@ -1,5 +1,5 @@
 """OrchestrationToolDispatcher — registry-based replacement for the
-legacy SupervisorAgent.dispatch_tool match/case (Strangler Fig refactor).
+legacy monolithic ``dispatch_tool`` match/case (Strangler Fig refactor).
 
 This dispatcher serves the orchestration layer (LangGraph callbacks,
 internal services) and returns dicts. It is INTENTIONALLY separate from
@@ -69,8 +69,9 @@ from sky_claw.app.orchestrator.tool_strategies.validate_plugin_limit import (
 )
 
 if TYPE_CHECKING:
-    from sky_claw.app.orchestrator.preview.chain_preview_service import ChainPreviewService
-    from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+    from sky_claw.app.orchestrator.dispatcher_dependencies import (
+        OrchestrationDispatcherDependencies,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ class OrchestrationToolDispatcher:
     Caller-facing contract — `dispatch(tool_name, payload_dict)`:
       - On match: run the middleware chain (outer → inner → strategy.execute).
       - On miss: return {"status": "error", "reason": "ToolNotFound"} (legacy
-        contract preserved verbatim from supervisor.py:345-347).
+        contract preserved verbatim from the former inline dispatcher).
     """
 
     def __init__(self, *, global_middleware: list[ToolMiddleware] | None = None) -> None:
@@ -140,7 +141,7 @@ class OrchestrationToolDispatcher:
 
         Duck-typed: toda strategy que exponga ``drain_pendientes()`` (p. ej.
         las resoluciones de journal post-cancelación de Synthesis) es esperada
-        acá. El supervisor lo invoca en su shutdown ANTES de cerrar journal y
+        acá. La raíz de composición lo invoca en su shutdown ANTES de cerrar journal y
         DB, para que ningún cleanup en vuelo corra contra recursos cerrados.
         """
         for strategy in self._strategies.values():
@@ -171,96 +172,8 @@ def _make_thunk(
     return thunk
 
 
-def _build_chain_preview_service(supervisor: SupervisorAgent) -> ChainPreviewService:
-    """Lazily build a :class:`ChainPreviewService` from the supervisor's collaborators.
-
-    Invoked only when ``preview_chain`` is dispatched (not at registration time),
-    so wiring the dispatcher never requires the LOOT/xEdit binaries to be present.
-    Raises ``RuntimeError`` when the tool paths are not configured; the strategy's
-    ErrorWrappingMiddleware converts that into a serializable error dict.
-    """
-    # Local imports keep dispatcher construction cheap and avoid import cycles.
-    import pathlib
-
-    from sky_claw.app.orchestrator.preview.chain_preview_service import ChainPreviewService
-    from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
-    from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer
-    from sky_claw.local.xedit.runner import XEditRunner
-
-    path_resolver = supervisor._path_resolver
-    game_path = path_resolver.get_skyrim_path()
-    xedit_path = path_resolver.get_xedit_path()
-    if game_path is None or xedit_path is None:
-        raise RuntimeError("Cannot preview the chain: SKYRIM_PATH and XEDIT_PATH must be configured.")
-
-    loot_exe = path_resolver.get_loot_exe() or pathlib.Path("loot.exe")
-    loot_runner = LOOTRunner(
-        LOOTConfig(loot_exe=loot_exe, game_path=game_path),
-        path_validator=supervisor._path_validator,
-    )
-    xedit_runner = XEditRunner(
-        xedit_path=xedit_path,
-        game_path=game_path,
-        output_dir=pathlib.Path(".skyclaw_backups/patches"),
-    )
-
-    return ChainPreviewService(
-        lock_manager=supervisor._lock_manager,
-        snapshot_manager=supervisor.snapshot_manager,
-        journal=supervisor.journal,
-        path_resolver=path_resolver,
-        path_validator=supervisor._path_validator,
-        event_bus=supervisor._event_bus,
-        loot_runner=loot_runner,
-        xedit_runner=xedit_runner,
-        conflict_analyzer=ConflictAnalyzer(),
-    )
-
-
-def _build_synthesis_sandbox_flow(supervisor: SupervisorAgent) -> Any:
-    """Lazily build the :class:`SandboxPromotionFlow` for the Synthesis Ritual.
-
-    Invoked only when ``execute_synthesis_pipeline`` is dispatched (not at
-    registration time), so wiring the dispatcher never requires MO2 to be
-    present. Raises ``RuntimeError`` when MO2 is not configured; the strategy's
-    ErrorWrappingMiddleware converts that into a serializable error dict.
-    """
-    # Local imports keep dispatcher construction cheap and avoid import cycles.
-    from sky_claw.app.orchestrator.sandbox_promotion import SandboxPromotionFlow
-    from sky_claw.local.mo2.profile_sandbox import ProfileSandbox
-
-    mo2_path = supervisor._path_resolver.get_mo2_path()
-    if mo2_path is None:
-        raise RuntimeError("Cannot sandbox the Synthesis pipeline: MO2_PATH must be configured.")
-
-    return SandboxPromotionFlow(
-        sandbox=ProfileSandbox(mo2_root=mo2_path, profile=supervisor.profile_name),
-        hitl_guard=supervisor._hitl_guard,
-    )
-
-
-def _build_sandboxed_synthesis_service(supervisor: SupervisorAgent, output_path: Any, journal: Any) -> Any:
-    """Fresh :class:`SynthesisPipelineService` writing into the sandbox clone.
-
-    Un servicio por run sandboxeado (patrón documentado en el propio servicio,
-    T-27b): mismas dependencias que ``supervisor._synthesis_service`` pero con
-    ``output_path`` apuntando a ``SandboxClone.overwrite_copy``.
-    """
-    from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
-
-    return SynthesisPipelineService(
-        lock_manager=supervisor._lock_manager,
-        snapshot_manager=supervisor.snapshot_manager,
-        journal=journal,
-        path_resolver=supervisor._path_resolver,
-        event_bus=supervisor._event_bus,
-        pipeline_config_path=supervisor._synthesis_service._pipeline_config_path,
-        output_path=output_path,
-    )
-
-
 def build_orchestration_dispatcher(
-    supervisor: SupervisorAgent,
+    dependencies: OrchestrationDispatcherDependencies,
     *,
     hitl_gate: HitlGateMiddleware | None = None,
     loop_guardrail: LoopGuardrailMiddleware | None = None,
@@ -268,11 +181,9 @@ def build_orchestration_dispatcher(
 ) -> OrchestrationToolDispatcher:
     """Wire all migrated tool strategies onto a fresh dispatcher.
 
-    Called from SupervisorAgent.__init__ AFTER all collaborators
-    (services, agents, daemons) are constructed. Strategies are migrated
-    one-by-one in the Strangler Fig refactor; the legacy match/case in
-    SupervisorAgent.dispatch_tool delegates to this dispatcher only for
-    tool names that have been moved over.
+    Called by the composition root AFTER all collaborators (services, agents,
+    daemons) are constructed. The factory receives only the capabilities each
+    strategy consumes.
 
     FASE 1.5.1: Destructive tools are wrapped with HitlGateMiddleware.
     Without a ``hitl_gate`` instance the default gate is FAIL-CLOSED:
@@ -282,13 +193,13 @@ def build_orchestration_dispatcher(
     # F1a (informe #319): el cortacircuitos cognitivo corre como middleware
     # global del dispatcher — el ÚNICO camino real de ejecución de tools. Antes
     # vivía en los callbacks del StateGraph, que nada ejecutaba en producción.
-    # El supervisor inyecta su instancia para poder rearmarla ante intervención
+    # La raíz de composición inyecta su instancia para rearmarla ante intervención
     # humana (reset_loop_guardrail); None crea una propia (tests/standalone).
     guardrail = loop_guardrail if loop_guardrail is not None else LoopGuardrailMiddleware()
     # F4 (auditoría 2026-07-18): IdempotencyMiddleware (FASE 1.5.4) existía y
     # estaba testeado en aislamiento, pero nunca se registraba acá — la misma
     # laguna que F1a documentó para el loop guardrail. Mismo patrón de
-    # inyección: el supervisor retiene su instancia, None arma una propia.
+    # inyección: el caller retiene su instancia, None arma una propia.
     dedupe = idempotency if idempotency is not None else IdempotencyMiddleware(ToolStateMachine())
     dispatcher = OrchestrationToolDispatcher(global_middleware=[guardrail, dedupe])
 
@@ -297,16 +208,16 @@ def build_orchestration_dispatcher(
     # (fail-closed). Tests opt out explicitly via allow_unattended=True.
     gate = hitl_gate or HitlGateMiddleware()
 
-    dispatcher.register(QueryModMetadataStrategy(scraper=supervisor.scraper))
+    dispatcher.register(QueryModMetadataStrategy(scraper=dependencies.scraper))
 
     # FASE 1.5.1: execute_loot_sorting is destructive → HITL gate
     dispatcher.register(
         ExecuteLootSortingStrategy(
-            service=supervisor._loot_service,
+            service=dependencies.loot_service,
             # El Ritual de la GUI despacha con payload vacío: sin esto el perfil salía
             # del default de pydantic ("Default") y la GUI ordenaba otro load order
             # que el agente LLM, sobre el mismo plugins.txt.
-            default_profile_getter=lambda: supervisor.profile_name,
+            default_profile_getter=dependencies.default_profile_getter,
         ),
         middleware=[
             ErrorWrappingMiddleware("LootExecutionFailed"),
@@ -317,16 +228,13 @@ def build_orchestration_dispatcher(
 
     # T-27b·2: Synthesis corre SIEMPRE en sandbox — el flow resuelve
     # promote/discard vía HITL post-run sobre el diff real (ADR 0005). Sin
-    # gate pre-ejecución: sería double-gating (precedente PR #173). Lambdas
-    # lazy: registrar no exige MO2 presente y los tests pueden monkey-patchear
-    # los builders a nivel módulo.
+    # gate pre-ejecución: sería double-gating (precedente PR #173). Los providers
+    # lazy hacen que registrar no exija MO2 presente.
     dispatcher.register(
         ExecuteSynthesisPipelineStrategy(
-            flow_provider=lambda: _build_synthesis_sandbox_flow(supervisor),
-            service_factory=lambda output_path, journal: _build_sandboxed_synthesis_service(
-                supervisor, output_path, journal
-            ),
-            real_journal_provider=lambda: supervisor.journal,
+            flow_provider=dependencies.synthesis_flow_provider,
+            service_factory=dependencies.synthesis_service_factory,
+            real_journal_provider=dependencies.real_journal_provider,
         ),
         middleware=[
             ErrorWrappingMiddleware("SynthesisPipelineExecutionFailed"),
@@ -338,7 +246,7 @@ def build_orchestration_dispatcher(
     # INNERMOST so its pre-prompt validation failures are converted to the
     # legacy {"status": "error", ...} dict by ErrorWrapping/DictResultGuard.
     dispatcher.register(
-        ResolveConflictWithPatchStrategy(service=supervisor._xedit_service),
+        ResolveConflictWithPatchStrategy(service=dependencies.xedit_service),
         middleware=[
             ErrorWrappingMiddleware("XEditPatchExecutionFailed"),
             DictResultGuardMiddleware("InvalidXEditPatchResult"),
@@ -348,33 +256,33 @@ def build_orchestration_dispatcher(
 
     # FASE 1.5.1: generate_lods is destructive → HITL gate
     dispatcher.register(
-        GenerateLodsStrategy(service=supervisor._dyndolod_service),
+        GenerateLodsStrategy(service=dependencies.dyndolod_service),
         middleware=[gate],
     )
 
     # Follow-up A: generate_animations (Pandora) is destructive → HITL gate
     dispatcher.register(
-        GenerateAnimationsStrategy(service=supervisor._pandora_service),
+        GenerateAnimationsStrategy(service=dependencies.pandora_service),
         middleware=[gate],
     )
 
     # Follow-up B: quick_auto_clean (SSEEdit QuickAutoClean) is destructive → HITL gate
     dispatcher.register(
-        QuickAutoCleanStrategy(service=supervisor._xedit_service),
+        QuickAutoCleanStrategy(service=dependencies.xedit_service),
         middleware=[gate],
     )
 
     # PR-5 grass cache: la Fase A es read-only (sin gate, con wrapping como
     # preview_chain); el ritual completo es destructivo → gate innermost.
     dispatcher.register(
-        AnalyzeGrassPrerequisitesStrategy(service=supervisor._grass_cache_service),
+        AnalyzeGrassPrerequisitesStrategy(service=dependencies.grass_cache_service),
         middleware=[
             ErrorWrappingMiddleware("GrassAnalysisFailed"),
             DictResultGuardMiddleware("InvalidGrassAnalysisResult"),
         ],
     )
     dispatcher.register(
-        GenerateGrassCacheStrategy(service=supervisor._grass_cache_service),
+        GenerateGrassCacheStrategy(service=dependencies.grass_cache_service),
         middleware=[
             ErrorWrappingMiddleware("GrassCacheExecutionFailed"),
             DictResultGuardMiddleware("InvalidGrassCacheResult"),
@@ -382,33 +290,32 @@ def build_orchestration_dispatcher(
         ],
     )
 
-    # Lambdas re-resolve attributes on each call so test fixtures can
-    # monkey-patch the supervisor methods AFTER the dispatcher is wired
-    # (and so the lazy `asset_detector` property keeps its semantics).
+    # Los callables explícitos conservan la resolución lazy del detector de
+    # assets sin exponer el objeto que compone toda la aplicación.
     dispatcher.register(
         ScanAssetConflictsStrategy(
-            scan_callable=lambda: supervisor.scan_asset_conflicts(),
+            scan_callable=dependencies.scan_asset_conflicts,
         ),
     )
 
     dispatcher.register(
         ScanAssetConflictsJsonStrategy(
-            scan_json_callable=lambda: supervisor.scan_asset_conflicts_json(),
+            scan_json_callable=dependencies.scan_asset_conflicts_json,
         ),
     )
 
     # FASE 1.5.1: generate_bashed_patch is destructive → HITL gate
     dispatcher.register(
         GenerateBashedPatchStrategy(
-            wrye_bash_pipeline=lambda **kwargs: supervisor.execute_wrye_bash_pipeline(**kwargs),
+            wrye_bash_pipeline=dependencies.wrye_bash_pipeline,
         ),
         middleware=[gate],
     )
 
     dispatcher.register(
         ValidatePluginLimitStrategy(
-            plugin_limit_guard=lambda profile: supervisor._run_plugin_limit_guard(profile),
-            default_profile_getter=lambda: supervisor.profile_name,
+            plugin_limit_guard=dependencies.plugin_limit_guard,
+            default_profile_getter=dependencies.default_profile_getter,
         ),
     )
 
@@ -416,7 +323,7 @@ def build_orchestration_dispatcher(
     # ChainPreviewService is built lazily so registration never needs binaries.
     dispatcher.register(
         PreviewChainStrategy(
-            service_provider=lambda: _build_chain_preview_service(supervisor),
+            service_provider=dependencies.preview_service_provider,
         ),
         middleware=[
             ErrorWrappingMiddleware("ChainPreviewFailed"),

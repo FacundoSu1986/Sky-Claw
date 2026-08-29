@@ -425,7 +425,12 @@ class TestDispatcherGateWiring:
 
         sup = self._make_supervisor()
         gate = HitlGateMiddleware(allow_unattended=True)
-        dispatcher = build_orchestration_dispatcher(sup, hitl_gate=gate)
+        from tests._orchestration_dispatcher_dependencies import crear_dependencias_desde_doble
+
+        dispatcher = build_orchestration_dispatcher(
+            crear_dependencias_desde_doble(sup),
+            hitl_gate=gate,
+        )
 
         gated = {name for name, chain in dispatcher._middleware.items() if any(mw is gate for mw in chain)}
         assert gated == set(DESTRUCTIVE_TOOL_PATTERNS)
@@ -441,8 +446,10 @@ class TestDispatcherGateWiring:
         sup.interface.request_hitl = AsyncMock(return_value="denied")
         sup._loot_service.sort_load_order = AsyncMock(return_value={"status": "ok"})
         guard, captured, registered = _make_guard()
+        from tests._orchestration_dispatcher_dependencies import crear_dependencias_desde_doble
+
         dispatcher = build_orchestration_dispatcher(
-            sup,
+            crear_dependencias_desde_doble(sup),
             hitl_gate=HitlGateMiddleware(hitl_guard=guard),
         )
 
