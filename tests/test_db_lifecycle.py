@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -778,3 +780,267 @@ async def test_sidecars_con_ruta_relativa_tambien_consultan_el_checkpoint(tmp_pa
         )
     finally:
         await segundo.shutdown_all()
+
+
+# ---------------------------------------------------------------------------
+# Carrera de inicialización concurrente (H1 — CI run 33223088993)
+# ---------------------------------------------------------------------------
+#
+# Mecanismo demostrado con SQLite real, no asumido:
+#
+#   `PRAGMA journal_mode=WAL` sobre un archivo que NO está en WAL promueve el
+#   lock a EXCLUSIVE. Cuando DOS conexiones corren la conversión a la vez (dos
+#   managers independientes sobre el mismo archivo: los locks Python por path
+#   son por-INSTANCIA y SQLite es el único árbitro), SQLite devuelve
+#   SQLITE_BUSY al perdedor INMEDIATAMENTE, sin invocar el busy handler — es la
+#   evitación de deadlock documentada para la promoción de locks. Ningún
+#   busy_timeout salva ese caso porque el handler no llega a correr: el
+#   perdedor moría con "database is locked" en el primer intento
+#   (`_apply_pragmas` → `journal_mode=WAL` → JournalConnectionError, CI
+#   run 33223088993, windows-latest / py3.11).
+#
+#   Evidencia empírica (SQLite 3.45, Windows): con un holder en RESERVED, el
+#   pragma falla en 0.00s CON busy_timeout=15000 instalado antes; con un holder
+#   solo-lectura (SHARED) el handler SÍ espera; sobre un archivo ya-WAL el
+#   pragma es un no-op instantáneo aunque haya writers activos. La única
+#   ventana de carrera es la conversión misma.
+#
+# Los holders de acá abajo son conexiones SQLite REALES que sostienen
+# exactamente el estado de lock requerido; no se simula ningún error.
+
+
+class _SostieneLockSQLite(threading.Thread):
+    """Conexión auxiliar real que sostiene el lock incompatible con la conversión.
+
+    ``escritura=True``  → BEGIN IMMEDIATE + escritura: lock RESERVED. Es el
+    estado que deja la conversión a WAL de otro manager en vuelo (promoción a
+    EXCLUSIVE bloqueada por RESERVED) y el que dispara el BUSY instantáneo sin
+    handler. ``escritura=False`` → BEGIN + SELECT: lock SHARED, contra el que
+    el busy handler SÍ espera.
+    """
+
+    def __init__(self, db_file: Path, *, escritura: bool = True) -> None:
+        super().__init__(daemon=True, name="holder-lock-sqlite")
+        self._db_file = db_file
+        self._escritura = escritura
+        self.adquirido = threading.Event()
+        self.liberar = threading.Event()
+
+    def run(self) -> None:
+        conn = sqlite3.connect(str(self._db_file), timeout=0.05)
+        try:
+            if self._escritura:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("CREATE TABLE IF NOT EXISTS holder_t (x)")
+                conn.execute("INSERT INTO holder_t VALUES (1)")
+            else:
+                conn.execute("BEGIN")
+                conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+            self.adquirido.set()
+            self.liberar.wait(30)
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
+                conn.close()
+
+
+def _sembrar_db_en_modo_delete(db_file: Path) -> None:
+    """DB legacy real: modo journal DELETE (default), cerrada y sin locks."""
+    conn = sqlite3.connect(str(db_file))
+    try:
+        conn.execute("CREATE TABLE t (x)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def test_conversion_wal_con_holder_reservado_transitorio_triunfa(db_path: Path) -> None:
+    """H1-A/B: la conversión a WAL espera al holder de la carrera y progresa.
+
+    RED pre-fix: el perdedor de la conversión moría INSTANTÁNEAMENTE con
+    "database is locked" (handler bypaseado), sin esperar la ventana
+    configurada. Post-fix: reintenta dentro de la ventana del config y gana
+    cuando el lock incompatible se libera.
+    """
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=5000),
+    )
+    holder = _SostieneLockSQLite(db_path)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+
+    async def liberar_tarde() -> None:
+        await asyncio.sleep(0.3)
+        holder.liberar.set()
+
+    liberador = asyncio.create_task(liberar_tarde())
+    try:
+        await manager._init_single(db_path)
+
+        path_str = str(db_path.resolve())
+        assert path_str in manager._connections, "la conversión debe terminar registrando la conexión"
+        conn = manager._connections[path_str]
+        async with conn.execute("PRAGMA journal_mode") as cur:
+            assert (await cur.fetchone())[0] == "wal"
+    finally:
+        liberador.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await liberador
+        holder.liberar.set()
+        holder.join(5)
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_conversion_wal_con_holder_permanente_falla_acotada(db_path: Path) -> None:
+    """H1-C: lock retenido más allá de la ventana → fallo limitado y diagnosticable.
+
+    El fallo NO es el BUSY instantáneo del handler bypaseado: la conversión
+    reintentó hasta agotar la ventana configurada (≥ busy_timeout_ms), y no
+    queda conexión huérfana registrada. Nunca se espera infinitamente.
+    """
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=300),
+    )
+    holder = _SostieneLockSQLite(db_path)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+    try:
+        inicio = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await manager._init_single(db_path)
+        transcurrido = time.monotonic() - inicio
+
+        assert transcurrido >= 0.25, (
+            "el fallo fue instantáneo: la conversión no reintentó dentro de la "
+            f"ventana configurada (transcurrido={transcurrido:.3f}s)"
+        )
+        assert transcurrido < 10, "el reintento no puede esperar indefinidamente"
+        assert manager._connections == {}, "un init fallido no debe registrar conexiones"
+    finally:
+        holder.liberar.set()
+        holder.join(5)
+
+
+async def test_busy_timeout_configurado_gobierna_la_conversion(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H1-B (knob): el busy_timeout de la CONFIG gobierna desde el primer statement.
+
+    ``sqlite3.connect`` instala un busy handler de 5s por defecto; pre-fix,
+    ``journal_mode=WAL`` corría ANTES del pragma ``busy_timeout`` y la ventana
+    configurada no alcanzaba a gobernar el primer statement que espera por otro
+    owner. El monkeypatch SOLO baja ese default de connect (0.1s) para que la
+    discriminación sea rápida; los locks son SQLite real: un holder LECTOR
+    (SHARED), contra el que el handler sí espera, liberado a los ~0.3s.
+    Pre-fix: la conversión usaba el default (fallaba a los ~0.1s). Post-fix:
+    el pragma configurado (15s) la cubre y progresa cuando el holder libera.
+    """
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=15000),
+    )
+
+    conectar_real = aiosqlite.connect
+
+    async def conectar_con_default_corto(database: object, **kwargs: object) -> aiosqlite.Connection:
+        kwargs.setdefault("timeout", 0.1)
+        return await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_con_default_corto)
+
+    holder = _SostieneLockSQLite(db_path, escritura=False)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+
+    async def liberar_tarde() -> None:
+        await asyncio.sleep(0.3)
+        holder.liberar.set()
+
+    liberador = asyncio.create_task(liberar_tarde())
+    try:
+        await manager._init_single(db_path)
+        assert str(db_path.resolve()) in manager._connections
+    finally:
+        liberador.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await liberador
+        holder.liberar.set()
+        holder.join(5)
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_paths_distintos_no_se_bloquean_entre_si(tmp_db_dir: Path) -> None:
+    """H1-D: el holder sobre el path A no bloquea la inicialización de B."""
+    path_a = tmp_db_dir / "path_a.db"
+    path_b = tmp_db_dir / "path_b.db"
+    _sembrar_db_en_modo_delete(path_a)
+    _sembrar_db_en_modo_delete(path_b)
+    manager = DatabaseLifecycleManager(
+        db_paths=[path_a, path_b],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=500),
+    )
+    holder = _SostieneLockSQLite(path_a)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+    try:
+        # B inicializa mientras A sigue bloqueado por el holder real.
+        await manager._init_single(path_b)
+        assert str(path_b.resolve()) in manager._connections
+        assert str(path_a.resolve()) not in manager._connections
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await manager._init_single(path_a)
+        assert str(path_a.resolve()) not in manager._connections
+    finally:
+        holder.liberar.set()
+        holder.join(5)
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_cancelacion_durante_conversion_no_deja_conexion_huerfana(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H1-F (foco en el reintento): cancelar a mitad del retry no registra conexión.
+
+    La cancelación atraviesa el reintento con su identidad (el loop sólo atrapa
+    OperationalError de contención) y el cierre de la conexión NO registrada
+    corre según el contrato existente de ``_init_single``.
+
+    El sleep del reintento se agranda vía monkeypatch para que la cancelación
+    caiga DETERMINÍSTICAMENTE dentro del ``await asyncio.sleep`` del loop (la
+    fase alternativa —el ``execute``— propaga igual, así que un cancel que
+    cayera ahí no discriminaría una mutación que trague la cancelación del
+    sleep).
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    monkeypatch.setattr(db_lifecycle, "_CONVERSION_WAL_RETRY_SLEEP_S", 0.5)
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=5000),
+    )
+    holder = _SostieneLockSQLite(db_path)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+    try:
+        tarea = asyncio.create_task(manager._init_single(db_path))
+        await asyncio.sleep(0.1)  # dentro del primer sleep del reintento
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        assert manager._connections == {}, "la cancelación no debe dejar conexión huérfana registrada"
+    finally:
+        holder.liberar.set()
+        holder.join(5)
