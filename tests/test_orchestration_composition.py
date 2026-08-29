@@ -128,24 +128,43 @@ def _nombres_de_calls_en_init() -> set[str]:
     """Nombres de funciones llamadas dentro de ``SupervisorAgent.__init__``.
 
     Para llamadas con prefijo de módulo (``loot_mod.LootSortingService(...)``)
-    registra el nombre del atributo final (``LootSortingService``), de modo que
-    el ancla no depende de "cómo se importó" el constructor prohibido.
+    registra el nombre del atributo final. Además resuelve aliases de
+    ``from X import Y as Z`` (tanto a nivel de módulo como locales al
+    ``__init__``), de modo que ``LS(...)`` con ``LS = LootSortingService``
+    se reporta como ``LootSortingService``.
     """
     ruta = pathlib.Path(inspect.getfile(SupervisorAgent))
     arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+
+    # Alias map: nombre-visto -> nombre-real. Los aliases locales al __init__
+    # pisan los del módulo (shadowing intencional).
+    alias_map: dict[str, str] = {}
+    for nodo in arbol.body:
+        if isinstance(nodo, ast.ImportFrom):
+            for alias in nodo.names:
+                alias_map[alias.asname or alias.name] = alias.name
+
     for nodo in ast.walk(arbol):
         if isinstance(nodo, ast.ClassDef) and nodo.name == "SupervisorAgent":
             for miembro in nodo.body:
                 if isinstance(miembro, ast.FunctionDef) and miembro.name == "__init__":
+                    for sent in ast.walk(miembro):
+                        if isinstance(sent, ast.ImportFrom):
+                            for alias in sent.names:
+                                alias_map[alias.asname or alias.name] = alias.name
+
                     llamadas: set[str] = set()
                     for sub in ast.walk(miembro):
                         if isinstance(sub, ast.Call):
                             if isinstance(sub.func, ast.Name):
-                                llamadas.add(sub.func.id)
+                                llamador = sub.func.id
                             elif isinstance(sub.func, ast.Attribute):
                                 # dotted call: el nombre del atributo final
                                 # es el identificador del constructor.
-                                llamadas.add(sub.func.attr)
+                                llamador = sub.func.attr
+                            else:
+                                continue
+                            llamadas.add(alias_map.get(llamador, llamador))
                     return llamadas
     raise AssertionError("No se encontró SupervisorAgent.__init__ en el AST")
 
