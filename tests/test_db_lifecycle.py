@@ -1377,6 +1377,74 @@ async def test_recovery_close_no_confirmado_conserva_ownership(
                 await real.close()
 
 
+async def test_recovery_exception_generica_va_a_clase_c_rename(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``Exception`` genérica (no-sqlite) en recovery va a clase C (rename).
+
+    Ancla el ORDEN de los excepts: ``sqlite3.OperationalError`` →
+    ``Exception`` → ``BaseException``. Si ``BaseException`` queda antes
+    de ``Exception`` (bug de reorden), una ``OSError`` genérica caería
+    en clase B (propagar sin rename) en vez de clase C (rename forense).
+
+    El spy inyecta una ``OSError`` en el execute del WAL pragma. Clase C
+    debe tragar el error y renombrar.
+
+    Red pre-fix (con orden invertido): ``OSError`` cae en
+    ``except BaseException`` → PROPAGA sin rename.
+    """
+
+    class _SpyOSError:
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+            self._disparado = False
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if (
+                isinstance(sql, str)
+                and "PRAGMA journal_mode=WAL" in sql
+                and not self._disparado
+            ):
+                self._disparado = True
+                return _RaiseAsyncCtx(OSError("fallo de E/S deliberado"))
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+    conexiones_reales: list[aiosqlite.Connection] = []
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        conexiones_reales.append(conn)
+        return _SpyOSError(conn)  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    _sembrar_db_en_modo_delete(db_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=200),
+    )
+    try:
+        # Clase C traga el error y renombra — NO debe propagar.
+        await manager._recover_orphaned_wal(db_path, wal_path, shm_path)
+        assert _sidecars_renombrados(db_path), (
+            "una Exception genérica debe ir a clase C (rename forense)"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+        for real in conexiones_reales:
+            with contextlib.suppress(Exception):
+                await real.close()
+
+
 async def test_recovery_contencion_propagada_sin_renombrar_wal(
     db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
