@@ -153,8 +153,18 @@ def _sanear(texto: str) -> str:
         # se redacta como prefijo y se comería cualquier separador del volcado.
         # Se exige que quede al menos un componente propio bajo una raíz.
         if valor and _ES_PERFIL_UTIL(valor):
+            # El patrón acepta CUALQUIERA de los dos separadores en cada
+            # posición, en vez de exigir los del valor de la variable. Win32
+            # acepta los dos y el volcado mezcla: en Windows `USERPROFILE` viene
+            # con `\`, mientras que el uso documentado de la sonda es
+            # `--exe "C:/Modding/…"`. Con el patrón literal esa combinación no
+            # matcheaba y la ruta del perfil salía entera. Se normaliza el
+            # PATRÓN, nunca el texto: el volcado tiene que mostrar los
+            # separadores que UIA reportó, no los que nos resulten cómodos.
+            # Hallazgo de review (Qodo).
+            patron = f"[{separadores}]".join(re.escape(parte) for parte in re.split(r"[\\/]", valor))
             resultado = re.sub(
-                re.escape(valor) + rf"(?=[{separadores}]|$)",
+                patron + rf"(?=[{separadores}]|$)",
                 f"<{variable}>",
                 resultado,
                 flags=re.IGNORECASE,

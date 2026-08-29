@@ -845,6 +845,15 @@ def test_el_adaptador_del_probe_exige_enumeracion_completa():
             hijo.func.id for hijo in ast.walk(funcion) if isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Name)
         }
         assert "exigir_enumeracion_completa" in llamadas
+        # Validar el total y DESPUÉS materializar con el recorte de diagnóstico
+        # pasaba las dos anclas mientras un veredicto salía de evidencia
+        # parcial. Verificado: la suite quedaba entera en verde con esa
+        # mutación. Hallazgo de review (Qodo).
+        usadas = {hijo.attr for hijo in ast.walk(funcion) if isinstance(hijo, ast.Attribute)}
+        assert "_elementos_truncados" not in usadas, (
+            "`_elementos` materializa con el recorte de diagnóstico: validar el total no alcanza "
+            "si después se devuelve una colección recortada"
+        )
 
 
 def test_los_metodos_del_protocolo_no_usan_la_enumeracion_truncada():
@@ -1113,6 +1122,10 @@ def test_el_resultado_no_expone_un_success_booleano():
     resultado = _observar(_solicitud(), procesos=[])
     campos = set(vars(resultado))
     assert "success" not in campos
+    # `vars()` NO ve una `@property`: con sólo esa comprobación, exponer
+    # `success` como property dejaba el ancla en verde y el contrato roto.
+    # Hallazgo de review (Qodo). `hasattr` cubre las dos formas.
+    assert not hasattr(resultado, "success")
     assert isinstance(resultado.estado, EstadoPreflight)
 
 
@@ -2122,3 +2135,29 @@ def test_un_caracter_de_control_al_final_rechaza_la_ruta(control):
 def test_el_espacio_final_sigue_siendo_neutro_aunque_el_tab_no_lo_sea():
     """El complemento: cerrar el borde no puede volver a rechazar lo que Win32 sí recorta."""
     assert canonicalizar_ruta_windows("C:\\Sky-Claw  ") == r"c:\sky-claw"
+
+
+@pytest.mark.parametrize(
+    ("perfil", "texto"),
+    [
+        (r"C:\Users\operador", r"C:\Users\operador\Modding\TexGenx64.exe"),
+        (r"C:\Users\operador", "C:/Users/operador/Modding/TexGenx64.exe"),
+        ("C:/Users/operador", r"C:\Users\operador\Modding\TexGenx64.exe"),
+        ("C:/Users/operador", "C:/Users/operador/Modding/TexGenx64.exe"),
+    ],
+)
+def test_el_saneo_redacta_el_perfil_con_separadores_mixtos(perfil, texto, monkeypatch):
+    """Win32 acepta los dos separadores, así que el saneo también tiene que hacerlo.
+
+    Hallazgo de review (Qodo). El patrón se armaba con el valor literal de la
+    variable, así que si `USERPROFILE` traía `\\` y el texto del volcado traía
+    `/` —el uso documentado de la sonda es `--exe "C:/Modding/..."`, y en
+    Windows el perfil viene con `\\`— el prefijo no matcheaba y la ruta del
+    perfil salía entera. Los tests anteriores sólo cubrían separadores
+    homogéneos, así que CI quedaba verde con la fuga adentro.
+    """
+    monkeypatch.setenv("USERPROFILE", perfil)
+    monkeypatch.delenv("USERNAME", raising=False)
+    saneado = _cargar_la_sonda()._sanear(texto)
+    assert "operador" not in saneado, saneado
+    assert saneado.startswith("<USERPROFILE>"), saneado
