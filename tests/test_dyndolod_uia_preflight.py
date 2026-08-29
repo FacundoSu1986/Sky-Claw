@@ -2372,3 +2372,120 @@ def test_el_perfil_pegado_a_puntuacion_no_se_redacta_y_es_deliberado(monkeypatch
     monkeypatch.setenv("USERPROFILE", r"C:\Users\operador")
     monkeypatch.delenv("USERNAME", raising=False)
     assert _cargar_la_sonda()._sanear(r"[C:\Users\operador]") == r"[C:\Users\operador]"
+
+
+# ---------------------------------------------------------------------------
+# "Nunca lanza" tiene que valer también para un bug del adaptador
+# ---------------------------------------------------------------------------
+
+
+class ObservadorConBugDeAdaptador:
+    """Modela un typo del adaptador, no un fallo del rig.
+
+    `_propiedad` del probe indexa `self._uia_mod.__dict__[nombre_de_id]`: un id
+    mal escrito lanza `KeyError`. Desde que los `except` del adaptador dejaron
+    de ser `except Exception` (a propósito), esa excepción ya no se traduce allá
+    y llega hasta acá.
+    """
+
+    def __init__(self, excepcion):
+        self._excepcion = excepcion
+
+    def ventanas_de_proceso(self, pid):
+        raise self._excepcion
+
+    def controles_de_ventana(self, ventana):
+        return []
+
+    def leer_valor(self, control):
+        return None
+
+
+@pytest.mark.parametrize(
+    "excepcion",
+    [
+        KeyError("UIA_IsValueXPatternAvailablePropertyId"),
+        AttributeError("'module' object has no attribute 'UIA_ValueXPatternId'"),
+        TypeError("int() argument must be a string"),
+        ValueError("invalid literal"),
+        IndexError("tuple index out of range"),
+    ],
+)
+def test_un_bug_del_adaptador_no_escapa_de_observar_output(excepcion):
+    """El contrato dice "nunca lanza" y tiene que valer para TODO.
+
+    Hallazgo de review (Qodo), y es el costo directo de mi propio fix anterior:
+    al dejar de capturar `except Exception` en el adaptador —correcto, para que
+    un typo no se disfrace de "el control no expone el patrón"— esas
+    excepciones pasaron a escapar de `observar_output`, que promete no lanzar.
+
+    La promesa no es cosmética: existe para que el llamador no las trague con
+    un `except` amplio y siga como si nada, que es el camino exacto por el que
+    un fail-closed se vuelve fail-open. Cuando este preflight se cablee al
+    runtime, la excepción rompería el pipeline en vez de cerrar en UNKNOWN.
+
+    Traducir no es esconder: el TIPO de la excepción va en el detalle, así que
+    un bug del adaptador sigue siendo diagnosticable — lo que no puede es
+    disfrazarse de observación válida.
+    """
+    resultado = observar_output(
+        _solicitud(),
+        localizador=LocalizadorFalso([_proceso()]),
+        observador=ObservadorConBugDeAdaptador(excepcion),
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.ERROR_UIA
+    assert type(excepcion).__name__ in resultado.detalle, resultado.detalle
+
+
+@pytest.mark.parametrize("sufijo", [" ", "\\ ", "  ", "\t"])
+def test_el_saneo_tolera_un_perfil_con_whitespace_final(sufijo, monkeypatch):
+    """`rstrip("\\\\/")` no se lleva un espacio final, y ahí el patrón no matchea.
+
+    Hallazgo de review (Qodo, baja). Windows no produce ese valor en la
+    práctica, pero el resto de la función existe para cerrar justamente estos
+    bordes y el arreglo es una línea.
+    """
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\operador" + sufijo)
+    monkeypatch.delenv("USERNAME", raising=False)
+    saneado = _cargar_la_sonda()._sanear(r"C:\Users\operador\Modding\x")
+    assert "operador" not in saneado, saneado
+
+
+def test_leer_valor_cae_a_textpattern_si_value_no_da_texto():
+    """Un `CurrentValue` vacío no puede terminar la lectura.
+
+    Hallazgo de review (Qodo, baja). Un Edit de Win32/Delphi suele exponer
+    ValuePattern Y TextPattern, y en ciertos estados `CurrentValue` devuelve
+    `None`: el preflight respondía `VALOR_NO_LEIBLE` con el texto ahí, legible
+    por el otro patrón. Degrada la sonda justo en el control que T5A mide.
+
+    No se puede ejercitar COM acá, así que se ancla por AST: el único `return
+    None` de `leer_valor` es el ÚLTIMO statement —la salida por agotamiento—.
+    Un `return None` adentro de la rama de ValuePattern rompe el test.
+
+    (Distinto de `LegacyIAccessible`, que sigue sin implementarse: allá haría
+    falta una rama COM nueva que nadie puede ejercitar; acá las dos ramas ya
+    existen y sólo cambia el flujo entre ellas.)
+    """
+    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    lector = next(nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef) and nodo.name == "leer_valor")
+    # Un `return None if x else y` es exactamente cómo una rama se lleva un
+    # None afuera sin parecer un `return None`: mi primera versión de este
+    # ancla no lo veía y pasaba en verde con el defecto puesto.
+    condicionales = [
+        nodo for nodo in ast.walk(lector) if isinstance(nodo, ast.Return) and isinstance(nodo.value, ast.IfExp)
+    ]
+    assert not condicionales, (
+        "`leer_valor` devuelve por expresión condicional: una rama puede salir con None sin probar el patrón siguiente"
+    )
+
+    devoluciones_none = [
+        nodo
+        for nodo in ast.walk(lector)
+        if isinstance(nodo, ast.Return) and isinstance(nodo.value, ast.Constant) and nodo.value.value is None
+    ]
+    assert len(devoluciones_none) == 1, "hay más de una salida `return None`: alguna rama corta la lectura"
+    assert devoluciones_none[0] is lector.body[-1], (
+        "`return None` no es el último statement: una rama devuelve None sin probar el patrón siguiente"
+    )

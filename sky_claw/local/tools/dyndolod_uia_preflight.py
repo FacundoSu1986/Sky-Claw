@@ -106,6 +106,14 @@ _PREFIJOS_DE_NAMESPACE = frozenset({"?", "."})
 #: que no es el que Win32 resolvería.
 _CARACTERES_RESERVADOS_WIN32 = frozenset('<>:"|?*')
 
+#: Excepciones que delatan un BUG del adaptador, no un fallo del rig: un id de
+#: propiedad mal escrito (``KeyError`` al indexar el módulo COM), un atributo
+#: inexistente, un valor de tipo inesperado, un índice fuera de rango. Se
+#: enumeran en vez de capturar ``Exception`` —prohibido por
+#: `coding_conventions.md` §3— y `observar_output` las traduce a ``UNKNOWN``
+#: nombrando el tipo, para no romper su contrato de que nunca lanza.
+_ERRORES_DE_ADAPTADOR = (AttributeError, IndexError, KeyError, TypeError, ValueError)
+
 #: Cota de elementos que un adaptador materializa por consulta a UIA. Cada
 #: elemento cuesta un ``GetElement`` más una lectura POR propiedad, y todas son
 #: llamadas COM que cruzan el límite de proceso: el costo está ahí, no en el
@@ -1199,6 +1207,25 @@ def observar_output(
             RazonPreflight.ERROR_UIA,
             solicitud,
             f"la observación de UI Automation falló: {exc}",
+            valor_esperado_canonico=esperado_canonico,
+            evidencia=evidencia,
+        )
+    except _ERRORES_DE_ADAPTADOR as exc:
+        # Un BUG del adaptador, no un fallo del rig. Desde que sus `except`
+        # dejaron de ser `except Exception` —a propósito, para que un typo no se
+        # disfrace de "el control no expone el patrón"— estas excepciones llegan
+        # hasta acá, y "nunca lanza" tiene que valer también para ellas: la
+        # promesa existe para que el llamador no las trague con un `except`
+        # amplio y siga, que es como un fail-closed se vuelve fail-open.
+        #
+        # Traducir no es esconder: el TIPO va en el detalle, así que el bug
+        # sigue siendo diagnosticable — lo que no puede es pasar por una
+        # observación válida. Hallazgo de review (Qodo).
+        return _resultado(
+            EstadoPreflight.UNKNOWN,
+            RazonPreflight.ERROR_UIA,
+            solicitud,
+            f"el adaptador de observación falló con {type(exc).__name__}: {exc}",
             valor_esperado_canonico=esperado_canonico,
             evidencia=evidencia,
         )

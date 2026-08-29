@@ -148,7 +148,10 @@ def _sanear(texto: str) -> str:
         # `USERPROFILE=C:\Users\op\` el lookahead exigía otro separador después
         # del valor —el suyo ya estaba adentro— así que una ruta que continúa no
         # matcheaba y el perfil salía crudo. Hallazgo de review (Qodo).
-        valor = valor.rstrip("\\/") if valor else valor
+        # Whitespace Y separadores finales: `rstrip("\\/")` no se lleva un
+        # espacio, y con `USERPROFILE=C:\Users\op ` el patrón exigía ese espacio
+        # textual y no matcheaba una ruta que continúa. Hallazgo de review (Qodo).
+        valor = re.sub(r"[\s\\/]+$", "", valor) if valor else valor
         # El guard es de FORMA, no de longitud: un perfil degenerado (`/`, `C:\`)
         # se redacta como prefijo y se comería cualquier separador del volcado.
         # Se exige que quede al menos un componente propio bajo una raíz.
@@ -364,7 +367,13 @@ class ObservadorUIAWindows:
                 patron = control.handle.GetCurrentPattern(self._uia_mod.UIA_ValuePatternId)  # type: ignore[attr-defined]
                 if patron:
                     valor = patron.QueryInterface(self._uia_mod.IUIAutomationValuePattern).CurrentValue
-                    return None if valor is None else str(valor)
+                    # Sólo se devuelve si HAY texto: un `CurrentValue` vacío no
+                    # termina la lectura, cae a TextPattern. Un Edit de
+                    # Win32/Delphi suele exponer los dos patrones y en ciertos
+                    # estados el primero devuelve None con el texto ahí, legible
+                    # por el segundo. Hallazgo de review (Qodo).
+                    if valor is not None:
+                        return str(valor)
             if self._propiedad(control.handle, "UIA_IsTextPatternAvailablePropertyId"):
                 patron = control.handle.GetCurrentPattern(self._uia_mod.UIA_TextPatternId)  # type: ignore[attr-defined]
                 if patron:
