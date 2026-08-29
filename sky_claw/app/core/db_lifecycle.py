@@ -482,13 +482,19 @@ class DatabaseLifecycleManager:
         """Recover data from orphaned WAL files before normal init.
 
         Abre una conexión temporal, fuerza un checkpoint TRUNCATE y la
-        cierra. La CONTIENCIÓN (BUSY/LOCKED) y la CANCELACIÓN se
-        propagan sin rename forense — la invariante de la ronda
-        (``CONTENCIÓN != CORRUPCIÓN``): un lock temporal o un shutdown
-        no son evidencia de que el archivo esté corrupto. Otros errores
-        (I/O, schema, permisos) sí justifican el rename forense, mismo
-        comportamiento histórico: queda el archivo a salvo del próximo
-        recovery, y el siguiente intento puede fallar limpio.
+        cierra. Clasificación de errores, de específico a general:
+
+        - Contención (BUSY/LOCKED, clasificada por
+          ``_es_contencion_de_bloqueo``, NUNCA por la clase Python
+          sola): PROPAGA sin rename forense — la invariante de la
+          ronda (``CONTENCIÓN != CORRUPCIÓN``).
+        - Cancelación (``BaseException``): PROPAGA con su identidad,
+          sin rename.
+        - Cualquier otro error (``OperationalError`` no-contención —
+          I/O, permisos, malformed — o ``Exception`` genérica):
+          rename forense, mismo comportamiento histórico. El error se
+          TRAGA después del rename (el archivo queda a salvo del
+          próximo recovery; el siguiente intento puede fallar limpio).
         """
         path_str = str(db_path)
         conn: aiosqlite.Connection | None = None
@@ -508,68 +514,101 @@ class DatabaseLifecycleManager:
             await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             await conn.close()
             conn = None
-        except sqlite3.OperationalError as contencion:
-            # Clase A: contención de bloqueo (BUSY/LOCKED). PROPAGA sin
-            # rename — la invariante de la ronda.
-            logger.error(
-                "DatabaseLifecycle: WAL recovery encontró contención para %s: %s",
-                path_str,
-                contencion,
-            )
-            if conn is not None:
-                await self._cerrar_conexion_de_recovery(conn, path_str)
-            raise
+        except sqlite3.OperationalError as error_sql:
+            # Clasificar por ``_es_contencion_de_bloqueo``, NO por la
+            # clase Python: un ``OperationalError`` de I/O o permisos
+            # no es contención y no debe propagar como si lo fuera.
+            if _es_contencion_de_bloqueo(error_sql):
+                # Clase A: contención. PROPAGA sin rename.
+                logger.error(
+                    "DatabaseLifecycle: WAL recovery encontró contención para %s: %s",
+                    path_str,
+                    error_sql,
+                )
+                if conn is not None:
+                    await self._cerrar_conexion_de_recovery(conn, db_path)
+                raise
+            # ``OperationalError`` NO-contención → clase C.
+            await self._recovery_rename_forense(path_str, wal_path, conn)
+        except Exception:
+            # Clase C: error no-sqlite (OSError, RuntimeError...) → clase C.
+            await self._recovery_rename_forense(path_str, wal_path, conn)
         except BaseException:
             # Clase B: cancelación (CancelledError) o cualquier
             # ``BaseException`` no-sqlite (KeyboardInterrupt, SystemExit).
             # PROPAGA con su identidad, sin rename.
             if conn is not None:
-                await self._cerrar_conexion_de_recovery(conn, path_str)
+                await self._cerrar_conexion_de_recovery(conn, db_path)
             raise
-        except Exception as otro:
-            # Clase C: error NO clasificado como contención ni como
-            # cancelación — I/O, schema, permisos, malformed. Aquí sí
-            # aplica el rename forense: el archivo queda a salvo del
-            # próximo recovery, y el siguiente intento puede fallar
-            # limpio (o tener éxito si el rename libera el sidecar).
-            logger.error(
-                "DatabaseLifecycle: WAL recovery FAILED para %s: %s",
-                path_str,
-                otro,
-            )
-            if conn is not None:
-                with contextlib.suppress(Exception):
-                    await conn.close()
-            timestamp = int(time.time())
-            if wal_path.exists():
-                corrupted_name = f"{path_str}-wal.corrupted.{timestamp}"
-                try:
-                    import shutil
 
-                    shutil.move(str(wal_path), corrupted_name)
-                    logger.error(
-                        "Renamed corrupted WAL to %s for forensics",
-                        corrupted_name,
-                    )
-                except OSError:
-                    logger.error("Could not rename corrupted WAL file")
+    async def _recovery_rename_forense(
+        self,
+        path_str: str,
+        wal_path: Path,
+        conn: aiosqlite.Connection | None,
+    ) -> None:
+        """Rename forense del WAL huérfano (clase C).
+
+        El error de recovery que justifica el rename NO se propaga:
+        el archivo queda a salvo del próximo recovery renombrado a
+        ``*.corrupted.*``, y el siguiente intento puede fallar limpio
+        (o tener éxito si el rename libera el sidecar). El cierre de
+        la conexión temporal es best-effort; si falla, se conserva el
+        ownership vía ``_cerrar_conexion_de_recovery``.
+        """
+        logger.error(
+            "DatabaseLifecycle: WAL recovery FAILED para %s (rename forense)",
+            path_str,
+        )
+        if conn is not None:
+            await self._cerrar_conexion_de_recovery(conn, Path(path_str))
+        timestamp = int(time.time())
+        if wal_path.exists():
+            corrupted_name = f"{path_str}-wal.corrupted.{timestamp}"
+            try:
+                import shutil
+
+                shutil.move(str(wal_path), corrupted_name)
+                logger.error(
+                    "Renamed corrupted WAL to %s for forensics",
+                    corrupted_name,
+                )
+            except OSError:
+                logger.error("Could not rename corrupted WAL file")
 
     async def _cerrar_conexion_de_recovery(
         self,
         conn: aiosqlite.Connection,
-        path_str: str,
+        db_path: Path,
     ) -> None:
         """Cierra la conexión temporal del recovery preservando la cancelación.
 
         Usa ``_close_connection`` con ``shielded=True`` para que el
         cierre se complete aunque la cancelación externa haya llegado
         al recovery (close failure no debe perder el cancel original).
+
+        Close NO confirmado: decisión explícita de ownership. La
+        conexión quedó viva y sin dueño — nadie más la va a cerrar.
+        Se registra en ``_connections`` bajo la clave canónica del
+        path (si no hay ya una entrada) para que ``shutdown_all()``
+        pueda reintentar el cierre, y el path queda fail-closed
+        (cuarentena): no vuelve a servir conexiones hasta que esa
+        conexión se cierre. Sin el registro, el fallo de cierre
+        quedaría oculto y la conexión filtraría para siempre.
         """
         outcome = await self._close_connection(conn, shielded=True)
+        if outcome.closed:
+            return
+        # Close NO confirmado: retener ownership explícitamente.
+        path_key = self._resolve_key(db_path)
+        if self._connections.get(path_key) is not conn:
+            self._connections[path_key] = conn
+        self._quarantined_paths.add(path_key)
         if outcome.error is not None and not isinstance(outcome.error, asyncio.CancelledError):
             logger.critical(
-                "DatabaseLifecycle: no se pudo cerrar la conexión de recovery para %s",
-                path_str,
+                "DatabaseLifecycle: no se pudo cerrar la conexión de recovery para %s; "
+                "ownership retenido y path en cuarentena",
+                path_key,
                 exc_info=(
                     type(outcome.error),
                     outcome.error,
@@ -624,20 +663,14 @@ class DatabaseLifecycleManager:
         """
         ventana_s = self._config.busy_timeout_ms / 1000.0
         inicio = time.monotonic()
+        ultimo_error: sqlite3.OperationalError | None = None
         while True:
-            restante = ventana_s - (time.monotonic() - inicio)
-            if restante <= 0:
-                # El budget se agotó entre intentos. El último execute ya
-                # corrió (o se skipeó si restante era 0 antes de entrar al
-                # try); propagamos el error de contención que ``_enter_wal_mode``
-                # ya estaría propagando. Para no depender del último estado,
-                # levantamos un BUSY genérico con el código canónico (la
-                # contención es lo único que puede ocurrir dentro del loop).
-                raise sqlite3.OperationalError("database is locked")
             # Cada intento lleva su propio ``busy_timeout`` capado al
-            # RESTANTE de la ventana. Si el handler interno de SQLite
-            # esperara la ventana completa, el total podría duplicar el
-            # budget: el outer deadline + el inner busy_timeout.
+            # RESTANTE de la ventana. El execute corre SIEMPRE (incluso con
+            # ``busy_timeout_ms=0``, donde restante es ~0 y ``restante_ms=1``
+            # = fail-fast): la ventana cero significa "un intento, sin
+            # esperar", NO "no intentar".
+            restante = ventana_s - (time.monotonic() - inicio)
             restante_ms = max(1, int(restante * 1000))
             await conn.execute(f"PRAGMA busy_timeout={restante_ms}")
             try:
@@ -645,12 +678,16 @@ class DatabaseLifecycleManager:
             except sqlite3.OperationalError as error:
                 if not _es_contencion_de_bloqueo(error):
                     raise
+                ultimo_error = error
+                # Deadline agotado: re-lanzar el ÚLTIMO error real que
+                # SQLite devolvió, nunca un ``OperationalError`` sintético.
+                if ventana_s - (time.monotonic() - inicio) <= 0:
+                    raise ultimo_error from None
                 # Ceder el scheduler para que la cancelación pueda
                 # entrar. El sleep es chico para no contaminar el
                 # budget; el ``busy_timeout`` por intento ya hace el
                 # trabajo de esperar al lock.
                 await asyncio.sleep(min(_CONVERSION_WAL_RETRY_SLEEP_S, restante))
-                continue
             else:
                 break
         # Restauración obligatoria: la conexión que sobrevive al
