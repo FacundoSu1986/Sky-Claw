@@ -38,6 +38,7 @@ jobs:
     # PRs de Dependabot/Renovate — justo la superficie de supply-chain que se
     # buscaba habilitar.
     if: >-
+      github.event.repository.private == false &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.state == 'open' &&
@@ -68,6 +69,7 @@ jobs:
   comment-command:
     name: "Comando seguro en comentario"
     if: >-
+      github.event.repository.private == false &&
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request != null &&
       github.event.issue.state == 'open' &&

@@ -16,9 +16,9 @@ Este documento establece la política de gobernanza y privacidad de datos aplica
 
 * **Enrutamiento vía OpenRouter:** Los workflows están configurados para consultar modelos externos a través de OpenRouter (e.g., NVIDIA Nemotron, MiniMax).
 * **Políticas de retención y registro (Logging):**
-  * Algunos endpoints gratuitos (como los modelos NVIDIA Nemotron o variantes comunitarias) pueden registrar prompts y respuestas para fines de seguridad, moderación y mejora de producto según sus respectivos términos de servicio.
+  * Los endpoints gratuitos actuales no cuentan con garantía demostrada de Zero Data Retention (ZDR); pueden registrar prompts y respuestas para fines de seguridad, moderación y mejora de producto según sus respectivos términos de servicio.
   * Cada proveedor upstream en OpenRouter mantiene políticas de retención y privacidad diferenciadas.
-* **Revisión obligatoria por cambio de modelo:** Cualquier cambio o adición en `CONFIG.MODEL` o `CONFIG.FALLBACK_MODELS` exige revisar previamente los términos de gobernanza y retención de datos del proveedor correspondiente.
+* **Revisión obligatoria por cambio de modelo:** Cualquier cambio o adición en `CONFIG.MODEL` o `CONFIG.FALLBACK_MODELS` exige revisar previamente los términos de gobernanza y retención de datos del proveedor correspondiente y actualizar la lista de modelos aprobados.
 
 ---
 
@@ -39,9 +39,41 @@ Queda terminantemente prohibido procesar o exponer a través de estos workflows:
 
 ---
 
-## 5. Inaplicabilidad en Repositorios Privados y Transición ZDR
+## 5. Inaplicabilidad en Repositorios Privados, Bloqueo Automático y Transición ZDR
 
-* **No aprobación automática:** Esta política y la configuración actual de modelos gratuitos **NO están aprobadas automáticamente para su uso en repositorios privados**.
-* **Condición de migración / ZDR:** Si Sky-Claw pasa a ser un repositorio privado o comienza a manejar información confidencial o sensible:
-  * Debe exigirse una política estricta de **Cero Retención de Datos (Zero Data Retention / ZDR)** o configuración explícita `data_collection=deny`.
-  * En su defecto, los proveedores y modelos deben sustituirse por endpoints empresariales privados o instancias autohospedadas antes de habilitar los workflows.
+* **Desautorización automática:** Si Sky-Claw pasa a ser un repositorio privado o el workflow pudiera procesar información no pública, esta configuración de modelos gratuitos queda automáticamente **NO AUTORIZADA**.
+* **Bloqueo técnico (Fail-Closed):** Los workflows implementan la condición `github.event.repository.private == false` a nivel de job para bloquear de forma inmediata y automática cualquier ejecución si el repositorio es privado.
+* **Requisitos acumulativos para uso sobre datos privados:** Para volver a habilitar revisores externos sobre datos privados deben cumplirse **SIMULTÁNEAMENTE** todas las siguientes condiciones:
+  1. **Cero Retención de Datos verificable (Zero Data Retention / ZDR):** Configuración `zdr=true` o guardrail / account setting equivalente comprobable en el proveedor.
+  2. **Política de no recopilación:** `data_collection=deny` explícito en el enrutamiento. **Nota de seguridad:** `data_collection=deny` restringe el enrutamiento pero **NO sustituye ZDR**; ambas condiciones son obligatorias e indispensables.
+  3. **Proveedores y endpoints aprobados:** Contratos empresariales o endpoints dedicados que garanticen la confidencialidad.
+  4. **Reevaluación explícita de gobernanza:** Aprobación formal documentada en esta política antes de cualquier despliegue.
+
+---
+
+## 6. Inventario de Modelos Aprobados (Governance Allowlist)
+
+La siguiente sección auditable delimita los modelos exactos aprobados exclusivamente para datos públicos de Sky-Claw:
+
+<!-- approved-models:start -->
+* `openrouter/nvidia/nemotron-3-super-120b-a12b:free`
+  * Proveedor / Familia: NVIDIA (Nemotron-3 Super 120B) vía OpenRouter
+  * Fecha de revisión: 2026-08-29
+  * Alcance de aprobación: `PUBLIC_DATA_ONLY`
+  * Decisión: Aprobado exclusivamente porque Sky-Claw y el diff procesado son públicos.
+  * Advertencia: Las políticas de retención y entrenamiento del proveedor upstream pueden cambiar y deben reevaluarse periódicamente; no cuenta con garantía demostrada de Zero Data Retention (ZDR).
+
+* `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`
+  * Proveedor / Familia: NVIDIA (Nemotron-3 Ultra 550B) vía OpenRouter
+  * Fecha de revisión: 2026-08-29
+  * Alcance de aprobación: `PUBLIC_DATA_ONLY`
+  * Decisión: Aprobado exclusivamente porque Sky-Claw y el diff procesado son públicos.
+  * Advertencia: Las políticas de retención y entrenamiento del proveedor upstream pueden cambiar y deben reevaluarse periódicamente; no cuenta con garantía demostrada de Zero Data Retention (ZDR).
+
+* `openrouter/minimax/minimax-m3:free`
+  * Proveedor / Familia: MiniMax (MiniMax-M3) vía OpenRouter
+  * Fecha de revisión: 2026-08-29
+  * Alcance de aprobación: `PUBLIC_DATA_ONLY`
+  * Decisión: Aprobado exclusivamente porque Sky-Claw y el diff procesado son públicos.
+  * Advertencia: Las políticas de retención y entrenamiento del proveedor upstream pueden cambiar y deben reevaluarse periódicamente; no cuenta con garantía demostrada de Zero Data Retention (ZDR).
+<!-- approved-models:end -->
