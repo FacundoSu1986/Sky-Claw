@@ -57,7 +57,7 @@ import os
 import pathlib
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
@@ -105,6 +105,54 @@ NOMBRES_DE_CONTROL_TYPE = {
     50032: "Window",
     50033: "Pane",
 }
+
+
+def primer_texto_no_vacio(lecturas: Iterable[Callable[[], str | None]]) -> str | None:
+    """Primer texto NO VACÍO de una secuencia de lecturas perezosas, o ``None``.
+
+    Vive acá, puro y sin COM, porque el ORDEN de los patrones de lectura y su
+    caída son comportamiento que hay que poder testear. Tres anclas por AST
+    intentaron fijarlo mirando la forma de `leer_valor` y las tres pasaron en
+    verde con un defecto puesto: la última contaba `return None` como única
+    salida temprana y no veía que `if valor is not None: return str(valor)`
+    corta la lectura con `""`. La lección es dejar de adivinar la forma y hacer
+    la conducta ejecutable. Hallazgo de review (Qodo).
+
+    Vacío NO es una lectura: un ``ValuePattern`` que devuelve ``""`` en un Edit
+    deshabilitado no puede impedir que se pruebe ``TextPattern``, que puede
+    tener el texto. Si TODAS dan vacío, la respuesta es ``None`` —"no lo
+    expone"— y el preflight responde ``UNKNOWN``.
+    """
+    for leer in lecturas:
+        valor = leer()
+        if valor:
+            return valor
+    return None
+
+
+def describir_tolerando_fallos(
+    elementos: Sequence[object],
+    describir: Callable[[object], ControlObservado],
+    errores: tuple[type[BaseException], ...],
+) -> tuple[list[ControlObservado], int]:
+    """``(descritos, cuántos fallaron)``. Un elemento roto NO aborta el volcado.
+
+    Un control *stale* —invalidado por un repaint de la GUI a mitad de la
+    enumeración, frecuente en árboles UIA grandes— hacía que la excepción se
+    llevara puesto el volcado de la ventana ENTERA, y el operador se quedaba sin
+    la evidencia de los controles que sí se habían leído. Que es exactamente el
+    insumo que esta sonda existe para producir. Hallazgo de review (Qodo).
+
+    Los que fallan se CUENTAN, no se esconden: `_volcar` imprime el número.
+    """
+    descritos: list[ControlObservado] = []
+    fallidos = 0
+    for elemento in elementos:
+        try:
+            descritos.append(describir(elemento))
+        except errores:
+            fallidos += 1
+    return descritos, fallidos
 
 
 def _ES_PERFIL_UTIL(valor: str) -> bool:  # noqa: N802 -- se lee como constante en el punto de uso
@@ -344,12 +392,19 @@ class ObservadorUIAWindows:
         except self._errores_del_rig as exc:  # pragma: no cover -- depende del rig
             raise ObservacionUIAError(f"fallo al enumerar controles de {ventana.titulo!r}: {exc}") from exc
 
-    def controles_para_volcado(self, ventana: VentanaObservada) -> tuple[Sequence[ControlObservado], int]:
-        """``(controles mostrados, total real)`` para el diagnóstico, nunca para decidir."""
+    def controles_para_volcado(self, ventana: VentanaObservada) -> tuple[Sequence[ControlObservado], int, int]:
+        """``(mostrados, total real, ilegibles)`` para el diagnóstico, nunca para decidir.
+
+        Los ilegibles viajan en el CONTRATO y no en un atributo suelto: son una
+        condición distinta de la truncación —un control *stale* no es un árbol
+        que no entra en la cota— y confundirlas le haría creer al operador que
+        el volcado se recortó cuando en realidad algo falló al leerse.
+        """
         try:
             encontrados = self._coleccion_de_controles(ventana)
             elementos, total = self._elementos_truncados(encontrados)
-            return tuple(self._describir(elemento) for elemento in elementos), total
+            descritos, ilegibles = describir_tolerando_fallos(elementos, self._describir, self._errores_del_rig)
+            return tuple(descritos), total, ilegibles
         except self._errores_del_rig as exc:  # pragma: no cover -- depende del rig
             raise ObservacionUIAError(f"fallo al enumerar controles de {ventana.titulo!r}: {exc}") from exc
 
@@ -363,25 +418,34 @@ class ObservadorUIAWindows:
         al portapapeles ni al teclado para arrancar el dato por otra vía.
         """
         try:
-            if self._propiedad(control.handle, "UIA_IsValuePatternAvailablePropertyId"):
-                patron = control.handle.GetCurrentPattern(self._uia_mod.UIA_ValuePatternId)  # type: ignore[attr-defined]
-                if patron:
-                    valor = patron.QueryInterface(self._uia_mod.IUIAutomationValuePattern).CurrentValue
-                    # Sólo se devuelve si HAY texto: un `CurrentValue` vacío no
-                    # termina la lectura, cae a TextPattern. Un Edit de
-                    # Win32/Delphi suele exponer los dos patrones y en ciertos
-                    # estados el primero devuelve None con el texto ahí, legible
-                    # por el segundo. Hallazgo de review (Qodo).
-                    if valor is not None:
-                        return str(valor)
-            if self._propiedad(control.handle, "UIA_IsTextPatternAvailablePropertyId"):
-                patron = control.handle.GetCurrentPattern(self._uia_mod.UIA_TextPatternId)  # type: ignore[attr-defined]
-                if patron:
-                    rango = patron.QueryInterface(self._uia_mod.IUIAutomationTextPattern).DocumentRange
-                    return str(rango.GetText(-1))
+            return primer_texto_no_vacio(
+                (
+                    lambda: self._texto_por_value_pattern(control),
+                    lambda: self._texto_por_text_pattern(control),
+                )
+            )
         except self._errores_del_rig as exc:  # pragma: no cover -- depende del rig
             raise ObservacionUIAError(f"fallo al leer el valor de {control.describir()}: {exc}") from exc
-        return None
+
+    def _texto_por_value_pattern(self, control: ControlObservado) -> str | None:
+        """``ValuePattern.CurrentValue``, o ``None`` si el control no lo expone."""
+        if not self._propiedad(control.handle, "UIA_IsValuePatternAvailablePropertyId"):
+            return None
+        patron = control.handle.GetCurrentPattern(self._uia_mod.UIA_ValuePatternId)  # type: ignore[attr-defined]
+        if not patron:
+            return None
+        valor = patron.QueryInterface(self._uia_mod.IUIAutomationValuePattern).CurrentValue
+        return None if valor is None else str(valor)
+
+    def _texto_por_text_pattern(self, control: ControlObservado) -> str | None:
+        """``TextPattern.DocumentRange.GetText``, o ``None`` si no lo expone."""
+        if not self._propiedad(control.handle, "UIA_IsTextPatternAvailablePropertyId"):
+            return None
+        patron = control.handle.GetCurrentPattern(self._uia_mod.UIA_TextPatternId)  # type: ignore[attr-defined]
+        if not patron:
+            return None
+        rango = patron.QueryInterface(self._uia_mod.IUIAutomationTextPattern).DocumentRange
+        return str(rango.GetText(-1))
 
     def patrones_de_lectura(self, control: ControlObservado) -> str:
         """Qué patrones de lectura expone el control. Sólo para el volcado."""
@@ -420,9 +484,12 @@ def _volcar(observador: ObservadorUIAWindows, pid: int, salida) -> None:
             f"  ventana titulo={_sanear(ventana.titulo)!r} clase={_sanear(ventana.class_name)!r} pid={ventana.pid}",
             file=salida,
         )
-        controles, total = observador.controles_para_volcado(ventana)
-        if total > len(controles):
-            print(f"    TRUNCATED: {len(controles)} / {total} controles", file=salida)
+        controles, total, ilegibles = observador.controles_para_volcado(ventana)
+        # Dos condiciones DISTINTAS, dos líneas distintas. El árbol recortado por
+        # la cota y el control que no se pudo leer se veían igual —`N / M`— y el
+        # operador habría leído "se truncó" ante un elemento stale.
+        if total > len(controles) + ilegibles:
+            print(f"    TRUNCATED: {len(controles) + ilegibles} / {total} controles", file=salida)
             print(
                 "    (el volcado se recorta para ser legible; el preflight, en cambio, responde "
                 "UNKNOWN/ENUMERACION_INCOMPLETA ante un árbol que no entra entero)",
@@ -430,6 +497,12 @@ def _volcar(observador: ObservadorUIAWindows, pid: int, salida) -> None:
             )
         else:
             print(f"    controles enumerados: {len(controles)} / {total}", file=salida)
+        if ilegibles:
+            print(
+                f"    ILEGIBLES: {ilegibles} control(es) fallaron al leerse y se omiten "
+                "(stale durante la enumeración); los demás siguen abajo",
+                file=salida,
+            )
         for control in controles:
             patrones = observador.patrones_de_lectura(control)
             print(

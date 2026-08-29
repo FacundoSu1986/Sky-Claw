@@ -1762,7 +1762,7 @@ class _ObservadorDeVolcado:
         return [self._ventana]
 
     def controles_para_volcado(self, ventana):
-        return list(self._controles), len(self._controles)
+        return list(self._controles), len(self._controles), 0
 
     def patrones_de_lectura(self, control):
         return "Value"
@@ -1883,14 +1883,22 @@ def test_el_contrato_no_declara_patrones_de_lectura_que_nadie_implementa():
 
     fuente = PROBE_T5A.read_text(encoding="utf-8")
     arbol = ast.parse(fuente)
+    # `leer_valor` delega en un lector por patrón, así que los ids viven ahí.
+    # El ancla los busca en TODA la familia `_texto_por_*` además del método
+    # público: si mañana se agrega un lector, entra solo.
+    lectores = [
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.FunctionDef) and (nodo.name == "leer_valor" or nodo.name.startswith("_texto_por_"))
+    ]
+    assert len(lectores) >= 2, f"la familia de lectores se encogió: {[n.name for n in lectores]}"
     implementados = set()
-    for nodo in ast.walk(arbol):
-        if isinstance(nodo, ast.FunctionDef) and nodo.name == "leer_valor":
-            for hijo in ast.walk(nodo):
-                if isinstance(hijo, ast.Constant) and isinstance(hijo.value, str):
-                    encontrado = re.fullmatch(r"UIA_Is(\w+?)PatternAvailablePropertyId", hijo.value)
-                    if encontrado:
-                        implementados.add(encontrado.group(1))
+    for lector in lectores:
+        for hijo in ast.walk(lector):
+            if isinstance(hijo, ast.Constant) and isinstance(hijo.value, str):
+                encontrado = re.fullmatch(r"UIA_Is(\w+?)PatternAvailablePropertyId", hijo.value)
+                if encontrado:
+                    implementados.add(encontrado.group(1))
 
     assert declarados == implementados, (
         f"el contrato declara {sorted(declarados)} y el adaptador implementa {sorted(implementados)}"
@@ -2467,43 +2475,73 @@ def test_el_saneo_tolera_un_perfil_con_whitespace_final(sufijo, monkeypatch):
     assert "operador" not in saneado, saneado
 
 
-def test_leer_valor_cae_a_textpattern_si_value_no_da_texto():
-    """Un `CurrentValue` vacío no puede terminar la lectura.
+def test_un_texto_vacio_no_termina_la_lectura():
+    """Vacío NO es una lectura: se sigue probando el patrón siguiente.
 
-    Hallazgo de review (Qodo, baja). Un Edit de Win32/Delphi suele exponer
-    ValuePattern Y TextPattern, y en ciertos estados `CurrentValue` devuelve
-    `None`: el preflight respondía `VALOR_NO_LEIBLE` con el texto ahí, legible
-    por el otro patrón. Degrada la sonda justo en el control que T5A mide.
+    Hallazgo de review (Qodo), y es la TERCERA ancla por AST que no ataba lo que
+    decía sobre esta función: la anterior contaba `return None` como única
+    salida temprana y no veía que `if valor is not None: return str(valor)`
+    corta con `""`. Un Edit deshabilitado que devuelve `""` por ValuePattern
+    con el texto en TextPattern daba UNKNOWN.
 
-    No se puede ejercitar COM acá, así que se ancla por AST: el único `return
-    None` de `leer_valor` es el ÚLTIMO statement —la salida por agotamiento—.
-    Un `return None` adentro de la rama de ValuePattern rompe el test.
-
-    (Distinto de `LegacyIAccessible`, que sigue sin implementarse: allá haría
-    falta una rama COM nueva que nadie puede ejercitar; acá las dos ramas ya
-    existen y sólo cambia el flujo entre ellas.)
+    La respuesta no fue otra ancla más fina, fue mover el ORDEN de lectura a un
+    helper puro que se puede ejecutar en Linux. Esto es conducta, no forma.
     """
+    sonda = _cargar_la_sonda()
+    llamados = []
+
+    def lector(nombre, valor):
+        def _leer():
+            llamados.append(nombre)
+            return valor
+
+        return _leer
+
+    # El vacío del primero no corta: se consulta el segundo y gana su texto.
+    assert sonda.primer_texto_no_vacio((lector("value", ""), lector("text", r"C:\Salida"))) == r"C:\Salida"
+    assert llamados == ["value", "text"]
+
+    # Un texto real del primero SÍ corta: el segundo ni se consulta.
+    llamados.clear()
+    assert sonda.primer_texto_no_vacio((lector("value", r"C:\Otra"), lector("text", r"C:\Salida"))) == r"C:\Otra"
+    assert llamados == ["value"], "se consultó el patrón siguiente teniendo ya una lectura válida"
+
+    # Todos vacíos o ausentes: `None`, que el preflight traduce a UNKNOWN.
+    llamados.clear()
+    assert sonda.primer_texto_no_vacio((lector("value", None), lector("text", ""))) is None
+    assert llamados == ["value", "text"]
+
+
+def test_leer_valor_delega_el_orden_en_el_helper_puro():
+    """Que no se vuelva a escribir el orden inline, donde no se puede testear."""
     arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
     lector = next(nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef) and nodo.name == "leer_valor")
-    # Un `return None if x else y` es exactamente cómo una rama se lleva un
-    # None afuera sin parecer un `return None`: mi primera versión de este
-    # ancla no lo veía y pasaba en verde con el defecto puesto.
-    condicionales = [
-        nodo for nodo in ast.walk(lector) if isinstance(nodo, ast.Return) and isinstance(nodo.value, ast.IfExp)
-    ]
-    assert not condicionales, (
-        "`leer_valor` devuelve por expresión condicional: una rama puede salir con None sin probar el patrón siguiente"
-    )
+    llamadas = {
+        hijo.func.id for hijo in ast.walk(lector) if isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Name)
+    }
+    assert "primer_texto_no_vacio" in llamadas
 
-    devoluciones_none = [
-        nodo
-        for nodo in ast.walk(lector)
-        if isinstance(nodo, ast.Return) and isinstance(nodo.value, ast.Constant) and nodo.value.value is None
-    ]
-    assert len(devoluciones_none) == 1, "hay más de una salida `return None`: alguna rama corta la lectura"
-    assert devoluciones_none[0] is lector.body[-1], (
-        "`return None` no es el último statement: una rama devuelve None sin probar el patrón siguiente"
-    )
+
+def test_un_control_roto_no_se_lleva_puesto_el_volcado_entero():
+    """Un control *stale* no puede costar la evidencia de los que sí se leyeron.
+
+    Hallazgo de review (Qodo). `controles_para_volcado` describía todos los
+    controles dentro de un solo `try`: un repaint de la GUI que invalidara UNO
+    abortaba el volcado de la ventana entera, y el operador se quedaba sin lo
+    único que la sonda existe para producir.
+    """
+    sonda = _cargar_la_sonda()
+
+    def describir(elemento):
+        if elemento == "roto":
+            raise OSError("stale element")
+        return ControlObservado(
+            pid=4242, automation_id=str(elemento), nombre="Output", tipo_de_control="Edit", class_name="TEdit"
+        )
+
+    descritos, fallidos = sonda.describir_tolerando_fallos(["a", "roto", "b"], describir, (OSError,))
+    assert [c.automation_id for c in descritos] == ["a", "b"], "se perdió la evidencia de los controles sanos"
+    assert fallidos == 1, "los que fallan se cuentan, no se esconden"
 
 
 # ---------------------------------------------------------------------------
@@ -2550,3 +2588,39 @@ def test_una_ruta_con_alias_no_puede_dar_un_veredicto_concluyente(crudo):
 def test_el_rechazo_de_alias_no_se_come_nombres_legitimos(crudo, esperado):
     """Rechazar de más rompe justo aquello para lo que existe el preflight."""
     assert canonicalizar_ruta_windows(crudo) == esperado
+
+
+def test_el_volcado_distingue_un_control_ilegible_de_una_truncacion(monkeypatch):
+    """Dos condiciones distintas no pueden imprimirse igual.
+
+    Al tolerar el control roto (hallazgo de Qodo) introduje esto: con un control
+    omitido `len(controles) < total`, y `_volcar` lo reportaba como `TRUNCATED`
+    —que significa "el árbol no entra en la cota"—. El operador habría leído que
+    se recortó el volcado cuando en realidad algo falló al leerse.
+    """
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\operador")
+    monkeypatch.delenv("USERNAME", raising=False)
+    sonda = _cargar_la_sonda()
+
+    ventana = VentanaObservada(pid=4242, titulo="TexGen", class_name="TfrmMain", handle="w1")
+    control = ControlObservado(
+        pid=4242, automation_id="edOutput", nombre="Output", tipo_de_control="Edit", class_name="TEdit"
+    )
+
+    class _ConUnIlegible:
+        def ventanas_de_proceso(self, pid):
+            return [ventana]
+
+        def controles_para_volcado(self, ventana):
+            # 3 en el árbol, 1 mostrado, 2 ilegibles: NO es truncación.
+            return [control], 3, 2
+
+        def patrones_de_lectura(self, control):
+            return "Value"
+
+    salida = io.StringIO()
+    sonda._volcar(_ConUnIlegible(), 4242, salida)
+    volcado = salida.getvalue()
+    assert "ILEGIBLES: 2" in volcado, volcado
+    assert "TRUNCATED" not in volcado, volcado
+    assert "edOutput" in volcado, "se perdió la evidencia del control que sí se leyó"
