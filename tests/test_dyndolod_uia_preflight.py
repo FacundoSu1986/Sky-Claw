@@ -2161,3 +2161,53 @@ def test_el_saneo_redacta_el_perfil_con_separadores_mixtos(perfil, texto, monkey
     saneado = _cargar_la_sonda()._sanear(texto)
     assert "operador" not in saneado, saneado
     assert saneado.startswith("<USERPROFILE>"), saneado
+
+
+@pytest.mark.parametrize(
+    "blanco",
+    ["\xa0", "\x85", "\u2009", "\u3000", "\u202f", "\u2028"],
+)
+def test_el_whitespace_unicode_final_no_es_neutro(blanco):
+    r"""Win32 recorta el espacio ASCII y el punto. Nada más.
+
+    Hallazgo de review (Qodo), y es la mitad que me faltó del fix del tab:
+    moví el chequeo de caracteres de control ANTES del recorte, pero dejé
+    `rstrip()` sin argumentos, que es Unicode-aware y se lleva un NBSP
+    (`U+00A0`), un NEL (`U+0085`) o un espacio fino igual que un espacio. Esos
+    designan un directorio DISTINTO: `C:\Salida\xa0` canonicalizaba idéntico a
+    `C:\Salida` y salía un veredicto concluyente sobre un destino que no es el
+    mismo.
+    """
+    assert canonicalizar_ruta_windows("C:\\Salida" + blanco) is None
+
+
+def test_el_espacio_ascii_final_sigue_siendo_neutro():
+    """El complemento: cerrar el borde Unicode no puede rechazar lo que Win32 sí recorta."""
+    assert canonicalizar_ruta_windows("C:\\Salida   ") == r"c:\salida"
+
+
+def test_la_sonda_no_captura_excepciones_desnudas():
+    """`except Exception` está prohibido por `coding_conventions.md` §3.
+
+    Hallazgo de review (Qodo). El ancla existe porque **ningún gate lo cubre
+    acá**: `pyproject.toml` exime `local_scripts/**` de `BLE001`, así que ruff
+    pasa en verde sobre un `except Exception` en este archivo. Es exactamente el
+    caso que `AGENTS.md` advierte — verificar que tu archivo no esté en la lista
+    de exentos antes de confiar en el gate.
+
+    El motivo es concreto, no de estilo: este adaptador NUNCA corrió, así que en
+    la primera corrida sobre un rig hay que poder distinguir "COM falló" de "el
+    adaptador tiene un typo". Un `KeyError` por un id de propiedad mal escrito
+    disfrazado de "el control no expone ese patrón" haría que el operador elija
+    un selector sobre evidencia inventada — justo lo que la sonda mide.
+    """
+    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    desnudos = []
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.ExceptHandler):
+            continue
+        if nodo.type is None:
+            desnudos.append(f"línea {nodo.lineno}: except:")
+        elif isinstance(nodo.type, ast.Name) and nodo.type.id in {"Exception", "BaseException"}:
+            desnudos.append(f"línea {nodo.lineno}: except {nodo.type.id}")
+    assert not desnudos, f"la sonda captura excepciones desnudas: {desnudos}"

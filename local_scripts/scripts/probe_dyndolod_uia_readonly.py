@@ -225,6 +225,19 @@ class ObservadorUIAWindows:
                 "Sky-Claw no lo declara como dependencia todavía: la decisión espera la evidencia "
                 "que esta misma sonda produce."
             ) from exc
+        # Los fallos que ESTE adaptador puede tener sin ser un bug suyo. Se
+        # enumeran en vez de capturar `Exception`: `coding_conventions.md` §3 lo
+        # prohíbe, y acá el motivo es concreto y no de estilo. Este adaptador
+        # NUNCA corrió (lo dice su docstring), así que en la primera corrida
+        # sobre un rig hay que poder distinguir "COM falló" de "el adaptador
+        # tiene un typo": un `KeyError` por un id de propiedad mal escrito
+        # disfrazado de "el control no expone el patrón" haría que el operador
+        # elija un selector sobre evidencia falsa — justo lo que esta sonda
+        # existe para medir. `COMError` es la excepción pública de comtypes
+        # (re-exportada de `_ctypes`); `OSError` cubre `CoInitialize`, e
+        # `ImportError` la generación de módulo de `GetModule`.
+        # Hallazgo de review (Qodo).
+        self._errores_del_rig: tuple[type[BaseException], ...] = (comtypes.COMError, OSError)
         try:
             comtypes.CoInitialize()
             self._uia_mod = comtypes.client.GetModule("UIAutomationCore.dll")
@@ -232,7 +245,7 @@ class ObservadorUIAWindows:
                 CLSID_CUIAUTOMATION,
                 interface=self._uia_mod.IUIAutomation,
             )
-        except Exception as exc:  # pragma: no cover -- depende del rig
+        except (comtypes.COMError, OSError, ImportError) as exc:  # pragma: no cover -- depende del rig
             raise UIANoDisponibleError(f"no se pudo inicializar UI Automation: {exc}") from exc
 
     # -- lectura de propiedades ------------------------------------------------
@@ -311,7 +324,7 @@ class ObservadorUIAWindows:
             )
         except EnumeracionIncompletaError:
             raise
-        except Exception as exc:  # pragma: no cover -- depende del rig
+        except self._errores_del_rig as exc:  # pragma: no cover -- depende del rig
             raise ObservacionUIAError(f"fallo al enumerar ventanas del pid {pid}: {exc}") from exc
 
     def controles_de_ventana(self, ventana: VentanaObservada) -> Sequence[ControlObservado]:
@@ -321,7 +334,7 @@ class ObservadorUIAWindows:
             return tuple(self._describir(elemento) for elemento in self._elementos(encontrados))
         except EnumeracionIncompletaError:
             raise
-        except Exception as exc:  # pragma: no cover -- depende del rig
+        except self._errores_del_rig as exc:  # pragma: no cover -- depende del rig
             raise ObservacionUIAError(f"fallo al enumerar controles de {ventana.titulo!r}: {exc}") from exc
 
     def controles_para_volcado(self, ventana: VentanaObservada) -> tuple[Sequence[ControlObservado], int]:
@@ -330,7 +343,7 @@ class ObservadorUIAWindows:
             encontrados = self._coleccion_de_controles(ventana)
             elementos, total = self._elementos_truncados(encontrados)
             return tuple(self._describir(elemento) for elemento in elementos), total
-        except Exception as exc:  # pragma: no cover -- depende del rig
+        except self._errores_del_rig as exc:  # pragma: no cover -- depende del rig
             raise ObservacionUIAError(f"fallo al enumerar controles de {ventana.titulo!r}: {exc}") from exc
 
     def leer_valor(self, control: ControlObservado) -> str | None:
@@ -353,7 +366,7 @@ class ObservadorUIAWindows:
                 if patron:
                     rango = patron.QueryInterface(self._uia_mod.IUIAutomationTextPattern).DocumentRange
                     return str(rango.GetText(-1))
-        except Exception as exc:  # pragma: no cover -- depende del rig
+        except self._errores_del_rig as exc:  # pragma: no cover -- depende del rig
             raise ObservacionUIAError(f"fallo al leer el valor de {control.describir()}: {exc}") from exc
         return None
 
@@ -368,7 +381,11 @@ class ObservadorUIAWindows:
             try:
                 if self._propiedad(control.handle, propiedad):
                     disponibles.append(etiqueta)
-            except Exception:  # pragma: no cover -- depende del rig
+            except self._errores_del_rig:  # pragma: no cover -- depende del rig
+                # Sólo un fallo del rig se reporta como `=?`. Un bug del
+                # adaptador (un id mal escrito → `KeyError`) PROPAGA: si se
+                # disfrazara de "no expone el patrón", el operador elegiría el
+                # selector sobre evidencia inventada.
                 disponibles.append(f"{etiqueta}=?")
         return ",".join(disponibles) or "(ninguno)"
 

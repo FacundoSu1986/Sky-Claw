@@ -572,7 +572,16 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
     # finales; tabs y saltos de línea NO. Hallazgo de review (Qodo).
     if any(ord(caracter) < 0x20 or ord(caracter) == 0x7F for caracter in valor):
         return None
-    texto = valor.rstrip()
+    # Y ningún whitespace que NO sea el espacio ASCII. Win32 recorta `U+0020` y
+    # el punto, nada más: un NBSP (`U+00A0`), un NEL (`U+0085`) o un espacio
+    # fino designan un directorio DISTINTO. `rstrip()` sin argumentos se los
+    # llevaba a todos —es Unicode-aware— así que `C:\Salida\xa0` canonicalizaba
+    # igual que `C:\Salida` y salía un veredicto concluyente sobre un destino
+    # que no es el mismo. Por eso el recorte de abajo es `rstrip(" ")` y no
+    # `rstrip()`. Hallazgo de review (Qodo).
+    if any(caracter.isspace() and caracter != " " for caracter in valor):
+        return None
+    texto = valor.rstrip(" ")
     if not texto:
         return None
 
