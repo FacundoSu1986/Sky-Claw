@@ -1062,11 +1062,42 @@ def test_un_blanco_junto_a_un_criterio_real_no_invalida_al_real():
 
 
 def test_la_canonicalizacion_no_toca_el_filesystem(tmp_path, monkeypatch):
-    # Ninguna de estas rutas existe; si la canonicalización llamara a resolve()
-    # o exists() sobre ellas el resultado dependería del disco del rig.
+    r"""Se INTERCEPTA el acceso a disco; no se infiere de que el resultado sea igual.
+
+    Hallazgo de review (Qodo). La versión anterior comparaba
+    `canonicalizar_ruta_windows(r"Z:\no\existe")` contra la cadena esperada y
+    después miraba que no se hubiera CREADO nada. Las dos aserciones pasaban
+    igual con una implementación que usara `Path.resolve(strict=False)` o
+    `normpath` —para ese input devuelven exactamente lo mismo— así que el test
+    no podía fallar por el defecto que decía cubrir: una comparación que
+    dependiera del estado del disco del rig.
+
+    Ahora se registran las primitivas que usaría una implementación no textual.
+    Si la canonicalización toca alguna, el test lo dice con nombre y propio.
+    """
     monkeypatch.chdir(tmp_path)
+
+    tocadas: list[str] = []
+
+    def _espiar(nombre, original):
+        def _envuelto(*args, **kwargs):
+            tocadas.append(nombre)
+            return original(*args, **kwargs)
+
+        return _envuelto
+
+    for modulo, atributos in (
+        (os.path, ("realpath", "exists", "abspath", "isdir", "isfile", "islink", "normpath")),
+        (os, ("stat", "lstat", "listdir", "getcwd")),
+        (pathlib.Path, ("resolve", "exists", "is_dir", "is_file", "stat", "absolute")),
+    ):
+        for atributo in atributos:
+            original = getattr(modulo, atributo, None)
+            if original is not None:
+                monkeypatch.setattr(modulo, atributo, _espiar(f"{modulo}.{atributo}", original))
+
     assert canonicalizar_ruta_windows(r"Z:\no\existe") == r"z:\no\existe"
-    assert not (tmp_path / "no").exists()
+    assert not tocadas, f"la canonicalización tocó el filesystem: {sorted(set(tocadas))}"
 
 
 # ---------------------------------------------------------------------------
@@ -1846,3 +1877,54 @@ def test_el_contrato_no_declara_patrones_de_lectura_que_nadie_implementa():
     assert declarados == implementados, (
         f"el contrato declara {sorted(declarados)} y el adaptador implementa {sorted(implementados)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Puntos y espacios finales POR COMPONENTE
+# ---------------------------------------------------------------------------
+#
+# Hallazgo de review (Qodo). Win32 recorta los espacios y puntos FINALES de
+# cada componente de una ruta no extendida, así que `...\DynDOLOD.` y
+# `...\DynDOLOD` designan el MISMO directorio. El `rstrip` que había cubría
+# sólo el final global de la cadena, así que un punto accidental en el campo
+# Output producía `MISMATCH`/`OUTPUT_DIFIERE` — un veredicto CONCLUYENTE
+# equivocado, que es peor que el `UNKNOWN` que el módulo promete cuando no
+# puede normalizar con seguridad.
+
+
+@pytest.mark.parametrize(
+    ("crudo", "esperado"),
+    [
+        (r"C:\Sky-Claw.", r"c:\sky-claw"),
+        (r"C:\Sky-Claw...", r"c:\sky-claw"),
+        (r"C:\Sky \Salida", r"c:\sky\salida"),
+        (r"C:\Sky.\Salida", r"c:\sky\salida"),
+        (r"C:\Sky-Claw\DynDOLOD. ", r"c:\sky-claw\dyndolod"),
+        (r"\\servidor\recurso\Sky-Claw.", r"\\servidor\recurso\sky-claw"),
+    ],
+)
+def test_los_puntos_y_espacios_finales_de_cada_componente_son_neutros(crudo, esperado):
+    assert canonicalizar_ruta_windows(crudo) == esperado
+
+
+def test_un_punto_final_accidental_no_produce_un_mismatch_concluyente():
+    """End-to-end: el campo Output con un punto de más no puede dar OUTPUT_DIFIERE."""
+    resultado = _observar(
+        _solicitud(),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": SALIDA_ADMINISTRADA + "."},
+    )
+    assert resultado.estado is EstadoPreflight.MATCH, resultado.razon
+
+
+@pytest.mark.parametrize("crudo", [r"C:\x\...\y", r"C:\x\   \y", r"C:\x\..."])
+def test_un_componente_que_se_queda_vacio_al_recortar_se_rechaza(crudo):
+    """Recortar no puede FABRICAR un componente distinto.
+
+    `...` recortado daría `..` (traversal) y `   ` daría vacío. Ninguno de los
+    dos es una normalización neutra, así que la ruta entera se rechaza: es el
+    mismo fail-closed que `..`, no una excepción nueva.
+    """
+    assert canonicalizar_ruta_windows(crudo) is None

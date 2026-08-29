@@ -590,6 +590,27 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
     if any(_CARACTERES_RESERVADOS_WIN32 & set(parte) for parte in interiores):
         return None
 
+    # Win32 recorta los espacios y puntos FINALES de CADA componente de una ruta
+    # no extendida, así que `…\DynDOLOD.` y `…\DynDOLOD` son el mismo
+    # directorio. El `rstrip` de arriba sólo cubre el final global de la cadena:
+    # con un punto de más en el campo Output el pipeline emitía OUTPUT_DIFIERE,
+    # un veredicto CONCLUYENTE equivocado — peor que el UNKNOWN que este módulo
+    # promete cuando no puede normalizar con seguridad. Hallazgo de review (Qodo).
+    #
+    # El designador de unidad queda afuera del recorte para no perturbar la
+    # prueba de `texto.startswith(unidad + "\\")` de más abajo, que es lo que
+    # distingue `C:\x` de `C:x`; un `C:` no lleva puntos ni espacios finales.
+    recortados = []
+    for parte in interiores:
+        limpio = parte.rstrip(" .")
+        # Recortar no puede FABRICAR un componente distinto del que había: `...`
+        # se quedaría en nada y `   ` también. Eso no es una normalización
+        # neutra, así que se rechaza la ruta entera — mismo fail-closed que `..`.
+        if not limpio:
+            return None
+        recortados.append(limpio)
+    componentes = recortados if es_unc else [componentes[0], *recortados]
+
     if es_unc:
         # Servidor + recurso como mínimo: `\\servidor` sola no designa un árbol.
         if len(componentes) < 2:
