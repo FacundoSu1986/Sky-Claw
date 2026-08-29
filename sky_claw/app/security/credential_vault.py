@@ -60,6 +60,9 @@ class _SQLitePool:
         # conexiones sensibles con las generales (ver db_lifecycle.py).
         conn = await aiosqlite.connect(self._db_path)
         try:
+            await conn.execute(
+                "PRAGMA busy_timeout=5000"
+            )  # primero: protege el cambio a WAL (ver DatabaseLifecycleManager._entrar_en_wal)
             await conn.execute("PRAGMA journal_mode=WAL;")
             await conn.execute("PRAGMA synchronous=NORMAL;")
         except BaseException:

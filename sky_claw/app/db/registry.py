@@ -82,6 +82,9 @@ class ModRegistry:
         self._conn = await aiosqlite.connect(self._db_path)
         self._conn.row_factory = aiosqlite.Row
         try:
+            await self._conn.execute(
+                "PRAGMA busy_timeout=5000"
+            )  # primero: protege el cambio a WAL (ver DatabaseLifecycleManager._entrar_en_wal)
             await self._conn.execute("PRAGMA journal_mode=WAL")
             await self._conn.execute("PRAGMA foreign_keys=ON")
             async with self._conn.execute("PRAGMA quick_check") as cur:

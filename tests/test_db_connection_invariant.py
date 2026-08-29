@@ -281,3 +281,84 @@ def test_los_docs_no_reintroducen_conexiones_por_hilo() -> None:
         "de este repo es aiosqlite vía DatabaseLifecycleManager "
         "(core/db_lifecycle.py); no hay conexiones por hilo."
     )
+
+
+# ---------------------------------------------------------------------------
+# Ancla del cambio a WAL: `busy_timeout` PRIMERO, en TODOS los que abren
+# ---------------------------------------------------------------------------
+#
+# Por qué existe. `dlq_manager._connect` llevaba desde hacía tiempo el comentario
+# "must be first: protects WAL mode switch". Era la lección correcta, aprendida
+# en UN solo call site: los otros seis abridores del árbol seguían poniendo
+# `PRAGMA journal_mode=WAL` antes que el timeout, o directamente sin timeout. El
+# resultado fue una carrera intermitente en CI (`database is locked` al abrir dos
+# managers sobre la misma base) que costó un ciclo entero de diagnóstico.
+#
+# Es exactamente el defecto que `AGENTS.md` describe: un fix que aterriza en un
+# camino y deja intactos a sus gemelos. Por eso el ancla ENUMERA en vez de
+# muestrear — un abridor nuevo rompe el test hasta que se decida si participa o
+# es una exención consciente.
+
+#: Funciones que ejecutan `PRAGMA journal_mode=WAL`, congeladas por igualdad
+#: literal. Agregar un abridor nuevo rompe el test a propósito.
+ABRIDORES_QUE_ENTRAN_EN_WAL: frozenset[str] = frozenset(
+    {
+        "sky_claw/app/agent/router.py::open",
+        "sky_claw/app/core/db_lifecycle.py::_entrar_en_wal",
+        "sky_claw/app/core/dlq_manager.py::_connect",
+        "sky_claw/app/db/async_registry.py::open",
+        "sky_claw/app/db/journal.py::open",
+        "sky_claw/app/db/locks.py::initialize",
+        "sky_claw/app/db/registry.py::open",
+        "sky_claw/app/security/credential_vault.py::_create_connection",
+    }
+)
+
+#: Única exención, y con motivo mecánico: `_entrar_en_wal` es el helper de
+#: reintento; el `busy_timeout` lo aplican sus LLAMADORES antes de invocarlo, y
+#: es además el único lugar que puede sobrevivir a un BUSY porque reintenta.
+EXENTOS_DEL_ORDEN: frozenset[str] = frozenset({"sky_claw/app/core/db_lifecycle.py::_entrar_en_wal"})
+
+
+def _pragmas_por_funcion() -> dict[str, list[tuple[str, int]]]:
+    """`{"archivo::funcion": [("wal"|"busy", lineno), ...]}` por AST."""
+    hallazgos: dict[str, list[tuple[str, int]]] = {}
+    for archivo in sorted(PAQUETE.rglob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            pragmas: list[tuple[str, int]] = []
+            for hijo in ast.walk(nodo):
+                if isinstance(hijo, ast.Constant) and isinstance(hijo.value, str):
+                    texto = hijo.value.upper()
+                    if "PRAGMA JOURNAL_MODE=WAL" in texto:
+                        pragmas.append(("wal", hijo.lineno))
+                    elif "PRAGMA BUSY_TIMEOUT" in texto:
+                        pragmas.append(("busy", hijo.lineno))
+            if any(clase == "wal" for clase, _ in pragmas):
+                clave = f"{archivo.relative_to(RAIZ).as_posix()}::{nodo.name}"
+                hallazgos[clave] = sorted(pragmas, key=lambda par: par[1])
+    return hallazgos
+
+
+def test_la_familia_de_abridores_que_entran_en_wal_esta_congelada():
+    assert set(_pragmas_por_funcion()) == set(ABRIDORES_QUE_ENTRAN_EN_WAL)
+
+
+def test_todo_abridor_pone_busy_timeout_antes_de_cambiar_a_wal():
+    """Un `journal_mode=WAL` sin timeout previo es el caso peor, y hubo seis.
+
+    El timeout no basta por sí solo —entrar a WAL puede devolver BUSY sin
+    invocar al busy handler, y por eso existe el reintento de
+    `_entrar_en_wal`— pero ponerlo después es garantizar que el resto de los
+    PRAGMA de esa conexión tampoco esté protegido.
+    """
+    incumplen = []
+    for clave, pragmas in _pragmas_por_funcion().items():
+        if clave in EXENTOS_DEL_ORDEN:
+            continue
+        primer_wal = next(linea for clase, linea in pragmas if clase == "wal")
+        if not any(clase == "busy" and linea < primer_wal for clase, linea in pragmas):
+            incumplen.append(clave)
+    assert not incumplen, f"cambian a WAL sin `busy_timeout` previo: {sorted(incumplen)}"

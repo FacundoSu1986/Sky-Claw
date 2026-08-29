@@ -23,6 +23,7 @@ import pytest
 from pydantic import ValidationError
 
 from sky_claw.app.core.db_lifecycle import (
+    _INTENTOS_DE_WAL,
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
     DatabaseShutdownIncompleteError,
@@ -778,3 +779,111 @@ async def test_sidecars_con_ruta_relativa_tambien_consultan_el_checkpoint(tmp_pa
         )
     finally:
         await segundo.shutdown_all()
+
+
+# ---------------------------------------------------------------------------
+# Transición a WAL bajo apertura concurrente
+# ---------------------------------------------------------------------------
+#
+# Historia, con la medición que la sostiene: `test_mig506_11_concurrent_open_legacy_db`
+# fallaba de forma intermitente con `database is locked`, y el traceback señalaba
+# `PRAGMA journal_mode=WAL` dentro de `_apply_pragmas`.
+#
+# La primera hipótesis fue el ORDEN de los PRAGMA: `busy_timeout` se aplicaba
+# DESPUÉS de `journal_mode`, así que la transición corría sin timeout. Reordenar
+# es correcto y quedó hecho, pero **medido no alcanzó**: el fallo seguía
+# apareciendo 2 de cada 60 corridas bajo presión de I/O.
+#
+# Lo que cerró el diagnóstico fue cronometrar el statement que falla. Con
+# `busy_timeout=5000` puesto, el PRAGMA devolvía `database is locked` en
+# **0.001 s**, no en 5. El busy handler no se invoca para esta transición: entrar
+# a WAL pide un lock exclusivo momentáneo y SQLite responde BUSY de inmediato en
+# vez de esperar. Un timeout sobre una espera que nunca ocurre no protege nada.
+#
+# Por eso el fix es reintentar, y converge por una propiedad concreta: la ventana
+# que colisiona es sólo la PRIMERA transición (`delete` → `wal`). Apenas la otra
+# conexión termina la suya, el mismo PRAGMA es un no-op que no pide lock. En la
+# reproducción, un único reintento bastó; con el fix, 0 de 100 corridas bajo la
+# misma presión de I/O que antes daba 2 de 60.
+#
+# `dlq_manager.py:300` ya tenía media lección aprendida ("must be first: protects
+# WAL mode switch") en UN solo call site.
+
+
+class _ConexionQueRechazaLaTransicion:
+    """Conexión mínima que devuelve BUSY las primeras `fallos` veces."""
+
+    def __init__(self, fallos: int, error: Exception | None = None) -> None:
+        self.fallos = fallos
+        self.llamadas = 0
+        self._error = error or sqlite3.OperationalError("database is locked")
+
+    async def execute(self, sql: str):  # noqa: ANN201 -- doble de prueba
+        self.llamadas += 1
+        if self.llamadas <= self.fallos:
+            raise self._error
+        return MagicMock()
+
+
+@pytest.mark.asyncio
+async def test_entrar_en_wal_reintenta_hasta_que_la_transicion_pasa() -> None:
+    """El caso real: la otra conexión termina su transición y el reintento entra."""
+    manager = DatabaseLifecycleManager()
+    conexion = _ConexionQueRechazaLaTransicion(fallos=2)
+    await manager._entrar_en_wal(conexion, "x.db")  # type: ignore[arg-type]
+    assert conexion.llamadas == 3
+
+
+@pytest.mark.asyncio
+async def test_entrar_en_wal_se_rinde_acotado_en_vez_de_colgarse() -> None:
+    """Reintentar no puede volverse esperar para siempre: el intento N propaga."""
+    manager = DatabaseLifecycleManager()
+    conexion = _ConexionQueRechazaLaTransicion(fallos=10_000)
+    with pytest.raises(sqlite3.OperationalError):
+        await manager._entrar_en_wal(conexion, "x.db")  # type: ignore[arg-type]
+    assert conexion.llamadas == _INTENTOS_DE_WAL
+
+
+@pytest.mark.asyncio
+async def test_entrar_en_wal_no_reintenta_un_error_que_no_es_de_lock() -> None:
+    """Sólo la contención se reintenta. Un schema roto tiene que fallar de una."""
+    manager = DatabaseLifecycleManager()
+    conexion = _ConexionQueRechazaLaTransicion(
+        fallos=10_000,
+        error=sqlite3.OperationalError("no such table: t"),
+    )
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        await manager._entrar_en_wal(conexion, "x.db")  # type: ignore[arg-type]
+    assert conexion.llamadas == 1
+
+
+@pytest.mark.asyncio
+async def test_aperturas_concurrentes_de_una_base_legacy_convergen_a_wal(
+    tmp_path: Path,
+) -> None:
+    """La forma del bug original: varios managers abriendo la MISMA base no-WAL.
+
+    Ninguno puede reventar y todos tienen que terminar en WAL. Es el test que
+    habría atajado el defecto: `test_mig506_11...` usa dos managers y por eso lo
+    encontró de casualidad; acá se sube la concurrencia para que la ventana sea
+    ancha en vez de depender de la carga de la máquina.
+    """
+    db_file = tmp_path / "legacy_concurrente.db"
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        await conn.commit()
+        async with conn.execute("PRAGMA journal_mode") as cur:
+            fila = await cur.fetchone()
+    assert fila is not None
+    assert fila[0].lower() != "wal", "la base debe arrancar fuera de WAL"
+
+    managers = [DatabaseLifecycleManager() for _ in range(8)]
+    try:
+        conexiones = await asyncio.gather(*(m.get_connection(db_file) for m in managers))
+        for conexion in conexiones:
+            async with conexion.execute("PRAGMA journal_mode") as cur:
+                fila = await cur.fetchone()
+            assert fila is not None
+            assert fila[0].lower() == "wal"
+    finally:
+        await asyncio.gather(*(m.shutdown_all() for m in managers))
