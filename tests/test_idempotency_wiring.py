@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+from tests._orchestration_dispatcher_dependencies import crear_dependencias_desde_doble
 
 
 def _supervisor_minimo() -> SupervisorAgent:
@@ -46,7 +47,7 @@ class TestIdempotencyWiringEnElDispatcherReal:
         de correr en paralelo — sin wiring, ambos corrían libremente."""
         sup = _supervisor_minimo()
         dispatcher = build_orchestration_dispatcher(
-            sup,
+            crear_dependencias_desde_doble(sup),
             hitl_gate=HitlGateMiddleware(allow_unattended=True),
         )
 
@@ -95,7 +96,7 @@ class TestIdempotencyWiringEnElDispatcherReal:
         sm = ToolStateMachine()
         sup = _supervisor_minimo()
         dispatcher = build_orchestration_dispatcher(
-            sup,
+            crear_dependencias_desde_doble(sup),
             hitl_gate=HitlGateMiddleware(allow_unattended=True),
             idempotency=IdempotencyMiddleware(state_machine=sm),
         )

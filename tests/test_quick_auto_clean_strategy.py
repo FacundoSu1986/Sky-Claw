@@ -16,6 +16,7 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import DESTRUCTIVE_TOO
 from sky_claw.app.orchestrator.tool_strategies.quick_auto_clean import (
     QuickAutoCleanStrategy,
 )
+from tests._orchestration_dispatcher_dependencies import crear_dependencias_dispatcher
 
 
 # ── Estrategia ───────────────────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ def test_quick_auto_clean_is_destructive() -> None:
 def test_dispatcher_registers_quick_auto_clean() -> None:
     from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 
-    dispatcher = build_orchestration_dispatcher(MagicMock())
+    dispatcher = build_orchestration_dispatcher(crear_dependencias_dispatcher())
     assert "quick_auto_clean" in dispatcher.registered_tools()
 
 
