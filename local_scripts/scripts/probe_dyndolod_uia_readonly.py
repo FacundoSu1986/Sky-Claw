@@ -164,7 +164,11 @@ def _sanear(texto: str) -> str:
             # Hallazgo de review (Qodo).
             patron = f"[{separadores}]".join(re.escape(parte) for parte in re.split(r"[\\/]", valor))
             resultado = re.sub(
-                patron + rf"(?=[{separadores}]|$)",
+                # Whitespace también CIERRA el perfil: un título de ventana suele
+                # pegar la ruta al nombre de la app (`C:\\Users\\op - TexGen 3.00`)
+                # y con sólo separador-o-fin eso no matcheaba, así que el volcado
+                # imprimía el usuario entero. Hallazgo de review (Qodo).
+                patron + rf"(?=[{separadores}]|\s|$)",
                 f"<{variable}>",
                 resultado,
                 flags=re.IGNORECASE,

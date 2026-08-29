@@ -2325,3 +2325,50 @@ def test_los_metodos_del_protocolo_materializan_por_el_helper():
         assert "GetElement" not in atributos, (
             f"{nombre} llama a GetElement directo: un recorte inline se saltea `exigir_enumeracion_completa`"
         )
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        r"C:\Users\operador - TexGen 3.00",
+        "TexGen 3.00 - C:/Users/operador (idle)",
+    ],
+)
+def test_el_saneo_redacta_el_perfil_aunque_lo_siga_prosa(texto, monkeypatch):
+    """Un título de ventana suele pegar la ruta al nombre de la app.
+
+    Hallazgo de review (Qodo). El lookahead exigía separador o fin de cadena
+    DESPUÉS del perfil, así que `C:\\Users\\operador - TexGen 3.00` —el patrón
+    típico de una app que antepone la ruta a su nombre— no matcheaba y el
+    volcado, que existe para pegarse en un PR, imprimía el usuario entero.
+
+    Se amplía a whitespace y no a "cualquier cosa": el borde sigue siendo que el
+    perfil TERMINE ahí. Los cuatro casos de sobre-saneo documentados
+    (`badminton`, `Administración`, `admin-tools`, `administrator`) siguen
+    intactos porque después del nombre no hay ni separador ni espacio — están
+    cubiertos por el test de al lado, que se corrió con este cambio puesto.
+    """
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\operador")
+    monkeypatch.delenv("USERNAME", raising=False)
+    saneado = _cargar_la_sonda()._sanear(texto)
+    assert "operador" not in saneado, saneado
+    assert "<USERPROFILE>" in saneado, saneado
+
+
+def test_el_perfil_pegado_a_puntuacion_no_se_redacta_y_es_deliberado(monkeypatch):
+    r"""El límite de la frontera, anclado a propósito en vez de quedar por accidente.
+
+    `C:\Users\operador]` NO se redacta, y no hay forma TEXTUAL de arreglarlo
+    sin romper algo peor: `]` es legal en un nombre de directorio, así que
+    `...\operador]` puede ser un directorio REAL distinto del perfil.
+    Distinguir "acá terminó la ruta y sigue prosa" de "este es otro directorio
+    cuyo nombre empieza igual" exige mirar el disco, y esta función no lo toca
+    por contrato.
+
+    La frontera elegida —separador, whitespace o fin— es donde el riesgo es
+    simétrico y bajo. Este test existe para que el hueco sea una DECISIÓN
+    visible: si alguien la amplía, que sea sabiendo qué está cambiando.
+    """
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\operador")
+    monkeypatch.delenv("USERNAME", raising=False)
+    assert _cargar_la_sonda()._sanear(r"[C:\Users\operador]") == r"[C:\Users\operador]"
