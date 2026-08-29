@@ -85,10 +85,38 @@ def test_composition_es_frozen_slots_y_superficie_exhaustiva() -> None:
 
 
 def test_composition_no_conoce_supervisor() -> None:
+    """La composición no importa ni manipula al supervisor.
+
+    Es AST-real, no string matching: detecta cualquier referencia a
+    ``SupervisorAgent`` en nombres, atributos, imports y decoradores
+    del módulo de composición, incluyendo imports perezosos o locales.
+    """
     ruta = pathlib.Path(inspect.getfile(build_orchestration_composition))
-    fuente = ruta.read_text(encoding="utf-8")
-    ast.parse(fuente)
-    assert "SupervisorAgent" not in fuente
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+
+    inventario: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, (ast.Import, ast.ImportFrom)):
+            if isinstance(nodo, ast.ImportFrom) and nodo.module:
+                inventario.add(nodo.module)
+            for alias in nodo.names:
+                inventario.add(alias.name)
+        elif isinstance(nodo, ast.Name):
+            inventario.add(nodo.id)
+        elif isinstance(nodo, ast.Attribute):
+            cursor = nodo
+            while isinstance(cursor, ast.Attribute):
+                inventario.add(cursor.attr)
+                cursor = cursor.value
+            if isinstance(cursor, ast.Name):
+                inventario.add(cursor.id)
+
+    assert "SupervisorAgent" not in inventario, (
+        "orchestration_composition referencia 'SupervisorAgent' — "
+        "el flujo correcto es composition → supervisor, nunca al revés"
+    )
+    # Ningún módulo del supervisor se importa.
+    assert "sky_claw.app.orchestrator.supervisor" not in inventario
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +125,12 @@ def test_composition_no_conoce_supervisor() -> None:
 
 
 def _nombres_de_calls_en_init() -> set[str]:
-    """Nombres de funciones llamadas dentro de ``SupervisorAgent.__init__``."""
+    """Nombres de funciones llamadas dentro de ``SupervisorAgent.__init__``.
+
+    Para llamadas con prefijo de módulo (``loot_mod.LootSortingService(...)``)
+    registra el nombre del atributo final (``LootSortingService``), de modo que
+    el ancla no depende de "cómo se importó" el constructor prohibido.
+    """
     ruta = pathlib.Path(inspect.getfile(SupervisorAgent))
     arbol = ast.parse(ruta.read_text(encoding="utf-8"))
     for nodo in ast.walk(arbol):
@@ -109,8 +142,10 @@ def _nombres_de_calls_en_init() -> set[str]:
                         if isinstance(sub, ast.Call):
                             if isinstance(sub.func, ast.Name):
                                 llamadas.add(sub.func.id)
-                            elif isinstance(sub.func, ast.Attribute) and isinstance(sub.func.value, ast.Name):
-                                llamadas.add(f"{sub.func.value.id}.{sub.func.attr}")
+                            elif isinstance(sub.func, ast.Attribute):
+                                # dotted call: el nombre del atributo final
+                                # es el identificador del constructor.
+                                llamadas.add(sub.func.attr)
                     return llamadas
     raise AssertionError("No se encontró SupervisorAgent.__init__ en el AST")
 
