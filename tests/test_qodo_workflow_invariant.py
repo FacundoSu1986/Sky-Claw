@@ -5,9 +5,10 @@ Garantiza que todas las invocaciones de Codium-ai/pr-agent dentro de
 .github/workflows/*.yml estén explícitamente inventariadas y congeladas
 en su receta de routing OpenRouter.
 
-Cualquier invocación nueva que se agregue o cualquier divergencia en
-claves de credenciales, modelos, límites de tokens o fallbacks romperá
-este test de forma determinista hasta que se declare su receta.
+Cualquier invocación nueva que se agregue, cualquier step duplicado dentro
+del mismo job, o cualquier divergencia en claves de credenciales, modelos,
+límites de tokens o fallbacks romperá este test de forma determinista
+hasta que se declare su receta.
 """
 
 from __future__ import annotations
@@ -58,13 +59,14 @@ RECETAS_ESPERADAS: dict[tuple[str, str], dict[str, str]] = {
 
 def descubrir_invocaciones_qodo(
     workflows_dir: Path | None = None,
-) -> dict[tuple[str, str], dict[str, Any]]:
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
     """Descubre dinámicamente todas las invocaciones de Codium-ai/pr-agent en .github/workflows/*.
 
-    Retorna un diccionario mapeando (workflow_filename, job_id) -> metadata del step (uses, env).
+    Retorna un diccionario mapeando (workflow_filename, job_id) -> lista de steps encontrados.
+    Garantiza que múltiples invocaciones dentro del mismo job no se sobrescriban.
     """
     directorio = workflows_dir or WORKFLOWS_DIR
-    invocaciones: dict[tuple[str, str], dict[str, Any]] = {}
+    invocaciones: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     archivos_workflow = sorted(list(directorio.glob("*.yml")) + list(directorio.glob("*.yaml")))
 
@@ -91,16 +93,18 @@ def descubrir_invocaciones_qodo(
                 uses = str(step.get("uses", "")).strip()
                 if uses.startswith("Codium-ai/pr-agent"):
                     clave = (archivo.name, job_id)
-                    invocaciones[clave] = {
-                        "uses": uses,
-                        "env": step.get("env", {}) or {},
-                    }
+                    invocaciones.setdefault(clave, []).append(
+                        {
+                            "uses": uses,
+                            "env": step.get("env", {}) or {},
+                        }
+                    )
 
     return invocaciones
 
 
 def test_conjunto_de_invocaciones_qodo_es_exacto() -> None:
-    """Verifica que el conjunto de (workflow, job) coincida exactamente con lo esperado."""
+    """Verifica que el conjunto de jobs coincida exactamente y que cada uno tenga exactamente una invocación."""
     descubiertas = descubrir_invocaciones_qodo()
     conjunto_descubierto = set(descubiertas.keys())
     conjunto_esperado = set(RECETAS_ESPERADAS.keys())
@@ -111,15 +115,22 @@ def test_conjunto_de_invocaciones_qodo_es_exacto() -> None:
         f"Inesperadas: {conjunto_descubierto - conjunto_esperado}"
     )
 
+    # Verificar que CADA job contenga EXACTAMENTE UNA invocación (evita duplicados o sobrescritura silenciosa)
+    for (archivo, job_id), steps in descubiertas.items():
+        assert len(steps) == 1, (
+            f"El job {archivo} / {job_id} contiene {len(steps)} invocaciones de PR-Agent; se esperaba exactamente 1."
+        )
+
 
 def test_pinning_de_accion_qodo_es_exacto() -> None:
     """Verifica que cada invocación use exactamente el SHA fijado de Codium-ai/pr-agent."""
     descubiertas = descubrir_invocaciones_qodo()
-    for (archivo, job_id), metadata in descubiertas.items():
-        uses = metadata.get("uses", "")
-        assert uses == PINNED_ACTION_ESPERADA, (
-            f"Pinning inesperado en {archivo} / {job_id}: {uses!r} != {PINNED_ACTION_ESPERADA!r}"
-        )
+    for (archivo, job_id), steps in descubiertas.items():
+        for idx, step_metadata in enumerate(steps):
+            uses = step_metadata.get("uses", "")
+            assert uses == PINNED_ACTION_ESPERADA, (
+                f"Pinning inesperado en {archivo} / {job_id} (step {idx}): {uses!r} != {PINNED_ACTION_ESPERADA!r}"
+            )
 
 
 def test_receta_routing_openrouter_por_invocacion() -> None:
@@ -128,7 +139,9 @@ def test_receta_routing_openrouter_por_invocacion() -> None:
 
     for (archivo, job_id), receta_esperada in RECETAS_ESPERADAS.items():
         assert (archivo, job_id) in descubiertas, f"Falta invocación {archivo} / {job_id}"
-        env = descubiertas[(archivo, job_id)]["env"]
+        steps = descubiertas[(archivo, job_id)]
+        assert len(steps) == 1, f"Múltiples steps en {archivo} / {job_id}"
+        env = steps[0]["env"]
 
         # Extraer únicamente las claves de routing relevantes para la aserción
         routing_actual = {k: str(env.get(k, "")) for k in CLAVES_ROUTING}
