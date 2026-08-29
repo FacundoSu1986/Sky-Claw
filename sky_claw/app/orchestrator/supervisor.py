@@ -13,28 +13,17 @@ from sky_claw.app.core.models import HitlApprovalRequest
 from sky_claw.app.core.path_resolver import PathResolutionService, resolver_perfil_activo
 from sky_claw.app.core.windows_interop import ModdingToolsAgent
 from sky_claw.app.db.rollback_manager import RollbackManager
-from sky_claw.app.orchestrator.dispatcher_dependencies import (
-    OrchestrationDispatcherDependencies,
-    build_preview_chain_service_provider,
-    build_synthesis_flow_provider,
-    build_synthesis_service_factory,
-    build_wrye_bash_pipeline,
-)
 from sky_claw.app.orchestrator.maintenance_daemon import (
     MaintenanceDaemon,
+)
+from sky_claw.app.orchestrator.orchestration_composition import (
+    build_orchestration_composition,
 )
 from sky_claw.app.orchestrator.rollback_factory import (
     RollbackComponents,
     create_rollback_components,
 )
 from sky_claw.app.orchestrator.telemetry_daemon import TelemetryDaemon
-from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
-from sky_claw.app.orchestrator.tool_state_machine import ToolStateMachine
-from sky_claw.app.orchestrator.tool_strategies.middleware import (
-    HitlGateMiddleware,
-    IdempotencyMiddleware,
-    LoopGuardrailMiddleware,
-)
 from sky_claw.app.orchestrator.watcher_daemon import WatcherDaemon
 from sky_claw.app.scraper.scraper_agent import ScraperAgent
 from sky_claw.app.security.hitl import HITLGuard
@@ -43,13 +32,7 @@ from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
 from sky_claw.local.mo2.grass_profile import GrassProfileManager
 from sky_claw.local.mo2.vfs import MO2Controller
-from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
-from sky_claw.local.tools.grass_cache_service import GrassCacheService, GrassRuntimeDeps
-from sky_claw.local.tools.loot_service import LootSortingService
-from sky_claw.local.tools.pandora_service import PandoraPipelineService
-from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
-from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
-from sky_claw.local.tools.xedit_service import XEditPipelineService
+from sky_claw.local.tools.grass_cache_service import GrassRuntimeDeps
 from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
 
 logger = logging.getLogger(__name__)
@@ -207,100 +190,45 @@ class SupervisorAgent:
             event_bus=self._event_bus,
         )
 
-        # Sprint-2: Inicializar Servicios Extraídos (Strangler Fig)
-        synthesis_pipeline_config_path = pathlib.Path(BACKUP_STAGING_DIR) / "synthesis_pipeline.json"
-        self._synthesis_service = SynthesisPipelineService(
+        # PR2 (Strangler Fig): la construcción del grafo de servicios, providers,
+        # middleware, dependencias del dispatcher y dispatcher se delega a
+        # build_orchestration_composition(). El supervisor conserva las
+        # referencias que necesita para lifecycle y APIs existentes; los seams
+        # residuales de Grass, asset scan y plugin-limit se entregan como
+        # callables estrechos (PR3 los extraerá del supervisor).
+        composition = build_orchestration_composition(
+            scraper=self.scraper,
             lock_manager=self._lock_manager,
             snapshot_manager=self.snapshot_manager,
             journal=self.journal,
-            path_resolver=self._path_resolver,
-            event_bus=self._event_bus,
-            pipeline_config_path=synthesis_pipeline_config_path,
-        )
-
-        self._dyndolod_service = DynDOLODPipelineService(
-            lock_manager=self._lock_manager,
-            snapshot_manager=self.snapshot_manager,
-            journal=self.journal,
-            path_resolver=self._path_resolver,
-            event_bus=self._event_bus,
-            mo2_profile=self.profile_name,  # D2 (PR #493): dueño del handoff durable
-        )
-
-        self._xedit_service = XEditPipelineService(
-            lock_manager=self._lock_manager,
-            snapshot_manager=self.snapshot_manager,
-            journal=self.journal,
-            path_resolver=self._path_resolver,
-            event_bus=self._event_bus,
-            llm=patch_advisor_llm,  # Fase 1 AI-assisted (None = fail-closed)
-        )
-
-        # Audit #190: LOOT --sort rewrites the shared load order, so the real
-        # sort runs under the load-order lock (LOOTRunner built lazily from the
-        # path resolver, like the other tool services).
-        self._loot_service = LootSortingService(
-            lock_manager=self._lock_manager,
-            snapshot_manager=self.snapshot_manager,
             path_resolver=self._path_resolver,
             path_validator=self._path_validator,
+            event_bus=self._event_bus,
+            profile_name=self.profile_name,
+            hitl_guard=hitl_guard,
             loot_runner=loot_runner,
             require_vfs=require_vfs,
-            # T-26 (review Codex PR #243): cablear el journal de producción para
-            # que el Ritual de LOOT emita el ActionManifest antes de mutar —
-            # sin esto el guard era test-only. Espeja los servicios hermanos.
-            journal=self.journal,
-        )
-
-        # Follow-up A: Pandora regenera behavior graphs, así que la corrida real va
-        # bajo el lock de behavior-graphs (runner construido perezosamente desde el
-        # resolver, igual que los otros servicios de tools). T-26/T-28 (ADR 0002):
-        # el journal se cablea acá (path GUI/dispatcher) para emitir la caja negra de
-        # vuelo — el path del agente (system_tools.run_pandora) NO lo cablea (honesto).
-        self._pandora_service = PandoraPipelineService(
-            lock_manager=self._lock_manager,
-            snapshot_manager=self.snapshot_manager,
-            path_resolver=self._path_resolver,
-            journal=self.journal,
-        )
-
-        # Grass cache: orquestador del Stage 8 (NGIO). El runner de xEdit de la
-        # Fase A se resuelve perezosamente vía el servicio de xEdit; las
-        # dependencias de Fases B/C (perfil MO2, game path, overwrite/Grass) las
-        # arma _build_grass_dependencies como PROVIDER LAZY: se resuelven al
-        # ejecutar el ritual, no en __init__, porque en la GUI MO2_PATH/
-        # SKYRIM_PATH se hidratan DESPUÉS de construir el supervisor (review
-        # Codex #301). El servicio devuelve error accionable del contrato si
-        # todavía no están configuradas.
-        self._grass_cache_service = GrassCacheService(
-            lock_manager=self._lock_manager,
-            snapshot_manager=self.snapshot_manager,
-            journal=self.journal,
-            event_bus=self._event_bus,
-            xedit_runner_provider=self._xedit_service.ensure_xedit_runner,
-            runtime_deps_provider=self._build_grass_dependencies,
-        )
-
-        # PR A (caja negra de Wrye Bash): extracción Strangler-Fig del pipeline que
-        # antes vivía inline en el supervisor. Era el ÚNICO ritual mutante sin
-        # SnapshotTransactionLock (hueco de concurrencia); el servicio lo corre bajo el
-        # lock distribuido. El guard M-04 (compartido, expuesto por validate_plugin_limit)
-        # se inyecta desde acá porque no es exclusivo de Wrye Bash.
-        self._wrye_bash_service = WryeBashPipelineService(
-            lock_manager=self._lock_manager,
-            snapshot_manager=self.snapshot_manager,
-            path_resolver=self._path_resolver,
+            patch_advisor_llm=patch_advisor_llm,
+            grass_runtime_deps_provider=self._build_grass_dependencies,
             plugin_limit_guard=self._run_plugin_limit_guard,
-            # T-26/T-28 ("PR C" del #315): cablear el journal para emitir la caja negra.
-            journal=self.journal,
+            scan_asset_conflicts=self.scan_asset_conflicts,
+            scan_asset_conflicts_json=self.scan_asset_conflicts_json,
         )
+        self._synthesis_service = composition.synthesis_service
+        self._dyndolod_service = composition.dyndolod_service
+        self._xedit_service = composition.xedit_service
+        self._loot_service = composition.loot_service
+        self._pandora_service = composition.pandora_service
+        self._grass_cache_service = composition.grass_cache_service
+        self._wrye_bash_service = composition.wrye_bash_service
+        self._dispatcher_dependencies = composition.dispatcher_dependencies
+        self._tool_dispatcher = composition.tool_dispatcher
+        self._loop_guardrail_middleware = composition.loop_guardrail_middleware
+        self._tool_state_machine = composition.tool_state_machine
 
         # Lazy init para runners legacy que aún no son servicios puros (AssetDetector)
         self._asset_detector: AssetConflictDetector | None = None
 
-        # Strangler Fig: dispatcher para herramientas migradas. Las branches del match/case
-        # delegan progresivamente a este dispatcher. Se construye al final del __init__
-        # para garantizar que todos los services y agents ya están listos.
         # Fail-closed: sin hitl_guard, las tools destructivas se DENIEGAN.
         if hitl_guard is None:
             logger.warning(
@@ -310,63 +238,6 @@ class SupervisorAgent:
         # T-27b·2: el flow de promoción del sandbox necesita el guard crudo
         # (no solo el middleware) para la aprobación post-run del diff.
         self._hitl_guard = hitl_guard
-        # F1a (informe #319): cortacircuitos cognitivo del camino real de
-        # dispatch. El supervisor retiene la instancia para rearmarla ante
-        # intervención humana (reset_loop_guardrail, invocado por la GUI).
-        self._loop_guardrail_middleware = LoopGuardrailMiddleware()
-        # F4 (auditoría 2026-07-18): la protección anti-duplicados de FASE
-        # 1.5.4 existía pero nunca se cableaba en el dispatcher real — la
-        # misma laguna que F1a documentó para el loop guardrail. El supervisor
-        # retiene el ToolStateMachine para introspección futura (GUI/telemetría).
-        self._tool_state_machine = ToolStateMachine()
-        synthesis_flow_provider = build_synthesis_flow_provider(
-            path_resolver=self._path_resolver,
-            profile_name=self.profile_name,
-            hitl_guard=hitl_guard,
-        )
-        synthesis_service_factory = build_synthesis_service_factory(
-            lock_manager=self._lock_manager,
-            snapshot_manager=self.snapshot_manager,
-            path_resolver=self._path_resolver,
-            event_bus=self._event_bus,
-            pipeline_config_path=synthesis_pipeline_config_path,
-        )
-        preview_chain_service_provider = build_preview_chain_service_provider(
-            path_resolver=self._path_resolver,
-            path_validator=self._path_validator,
-            lock_manager=self._lock_manager,
-            snapshot_manager=self.snapshot_manager,
-            journal=self.journal,
-            event_bus=self._event_bus,
-        )
-        default_profile = self.profile_name
-        journal = self.journal
-        self._dispatcher_dependencies = OrchestrationDispatcherDependencies(
-            scraper=self.scraper,
-            loot_service=self._loot_service,
-            synthesis_flow_provider=synthesis_flow_provider,
-            synthesis_service_factory=synthesis_service_factory,
-            real_journal_provider=lambda: journal,
-            xedit_service=self._xedit_service,
-            dyndolod_service=self._dyndolod_service,
-            pandora_service=self._pandora_service,
-            grass_cache_service=self._grass_cache_service,
-            scan_asset_conflicts=self.scan_asset_conflicts,
-            scan_asset_conflicts_json=self.scan_asset_conflicts_json,
-            wrye_bash_pipeline=build_wrye_bash_pipeline(
-                service=self._wrye_bash_service,
-                default_profile=default_profile,
-            ),
-            plugin_limit_guard=self._run_plugin_limit_guard,
-            default_profile_getter=lambda: default_profile,
-            preview_service_provider=preview_chain_service_provider,
-        )
-        self._tool_dispatcher = build_orchestration_dispatcher(
-            self._dispatcher_dependencies,
-            hitl_gate=HitlGateMiddleware(hitl_guard=hitl_guard),
-            loop_guardrail=self._loop_guardrail_middleware,
-            idempotency=IdempotencyMiddleware(state_machine=self._tool_state_machine),
-        )
 
     def _make_path_resolver(self, sandbox_validator: PathValidatorProtocol | None) -> PathResolutionService:
         """Build the MO2 path resolver.
