@@ -47,6 +47,22 @@ despacho dinámico que dejaría llamar a una mutante sin que su nombre aparezca 
 el árbol. Un guard que sólo mirara los nombres directos sería una muestra; este
 es una enumeración.
 
+**Dos formas de mentir que este módulo se prohíbe explícitamente.** Las dos las
+encontró la review de la ronda 1, y las dos comparten forma: convertir *"no
+pude comprobarlo"* en *"lo comprobé"*, más débilmente, sin decirlo.
+
+1. *Degradar la identidad.* Si el llamador nombra una instalación
+   (``C:\\Modding\\DynDOLOD\\TexGenx64.exe``) y el sensor no puede leer la ruta del
+   proceso, comparar sólo el NOMBRE del binario responde una pregunta distinta
+   de la que se hizo. Hoy eso es ``IDENTIDAD_NO_DEMOSTRABLE``; la identidad por
+   nombre existe únicamente cuando el llamador pidió un nombre.
+2. *Recortar la evidencia.* Una colección de UIA truncada en silencio hace que
+   dos candidatos parezcan uno, y un candidato único es justo lo que el decisor
+   toma como inequívoco. Por eso :func:`exigir_enumeracion_completa` **lanza** en
+   vez de recortar: no hay una variante que devuelva una secuencia parcial, así
+   que ningún adaptador puede alimentar un veredicto con evidencia incompleta ni
+   siquiera por descuido.
+
 Fuera de alcance (T5-v2 y posteriores): autoridad final entre preset y ``-o:``,
 limpieza del preset rancio, modificación de argumentos, ejecución de la
 generación, atribución de artefactos físicos.
@@ -80,6 +96,13 @@ _ES_UNIDAD = re.compile(r"^[A-Za-z]:$")
 #: Fail-closed: UNKNOWN.
 _PREFIJOS_DE_NAMESPACE = frozenset({"?", "."})
 
+#: Cota de elementos que un adaptador materializa por consulta a UIA. Cada
+#: elemento cuesta un ``GetElement`` más una lectura POR propiedad, y todas son
+#: llamadas COM que cruzan el límite de proceso: el costo está ahí, no en el
+#: ``FindAll`` (que arma la colección entera antes de que nadie la recorra). Por
+#: eso la cota acota el MARSHALLING y no el recorrido del árbol.
+TOPE_DE_ELEMENTOS_UIA = 400
+
 
 class EstadoPreflight(enum.Enum):
     """Las tres cajas del veredicto. Son tres y no dos, y ese es el contrato."""
@@ -103,12 +126,14 @@ class RazonPreflight(enum.Enum):
     TOOL_DESCONOCIDA = "TOOL_DESCONOCIDA"
     SELECTOR_SIN_CRITERIOS = "SELECTOR_SIN_CRITERIOS"
     ESPERADO_NO_CANONICALIZABLE = "ESPERADO_NO_CANONICALIZABLE"
+    EJECUTABLE_NO_CANONICALIZABLE = "EJECUTABLE_NO_CANONICALIZABLE"
     #: El backend no puede observar en esta plataforma/proceso.
     UIA_NO_DISPONIBLE = "UIA_UNAVAILABLE"
     #: Identidad de proceso y ventana.
     PROCESO_NO_ENCONTRADO = "PROCESO_NO_ENCONTRADO"
     PROCESO_AMBIGUO = "PROCESO_AMBIGUO"
     PID_NO_COINCIDE = "PID_NO_COINCIDE"
+    IDENTIDAD_NO_DEMOSTRABLE = "IDENTIDAD_NO_DEMOSTRABLE"
     VENTANA_NO_ENCONTRADA = "VENTANA_NO_ENCONTRADA"
     VENTANA_AMBIGUA = "VENTANA_AMBIGUA"
     #: Resolución del control de Output dentro de esa ventana.
@@ -117,6 +142,7 @@ class RazonPreflight(enum.Enum):
     CONTROL_FUERA_DEL_PROCESO = "CONTROL_FUERA_DEL_PROCESO"
     #: Lectura y comparación.
     VALOR_NO_LEIBLE = "VALOR_NO_LEIBLE"
+    ENUMERACION_INCOMPLETA = "ENUMERACION_INCOMPLETA"
     ERROR_UIA = "ERROR_UIA"
     OBSERVADO_NO_CANONICALIZABLE = "OBSERVADO_NO_CANONICALIZABLE"
 
@@ -135,6 +161,21 @@ class ObservacionUIAError(Exception):
     """Cualquier fallo de OBSERVACIÓN: error COM, elemento *stale*, sensor roto.
 
     El pipeline lo traduce a ``UNKNOWN``; nunca escapa de :func:`observar_output`.
+    """
+
+
+class EnumeracionIncompletaError(ObservacionUIAError):
+    """La colección de UIA no entró entera en la cota: la evidencia es parcial.
+
+    Existe porque un recorte SILENCIOSO fabrica certeza. Si un adaptador
+    devuelve los primeros N de N+1 controles, el decisor ve un único candidato
+    donde el árbol real tenía dos, lo declara inequívoco y puede emitir un
+    ``MATCH`` que nada sostiene — evidencia parcial tratada como completa, que
+    es el modo de fallo más caro que tiene este módulo.
+
+    Es SUBCLASE de :class:`ObservacionUIAError` por el mismo motivo que
+    :class:`UIANoDisponibleError`: la red general del pipeline la atrapa aunque
+    un camino nuevo se olvide de mencionarla.
     """
 
 
@@ -437,6 +478,23 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
     return "\\".join([unidad, *componentes[1:]]).lower() if componentes[1:] else unidad.lower() + "\\"
 
 
+def exigir_enumeracion_completa(total: int, *, tope: int = TOPE_DE_ELEMENTOS_UIA, contexto: str) -> int:
+    """Devuelve ``total`` si la colección entra entera; si no, LANZA.
+
+    La forma importa: no existe una variante que recorte. Un adaptador no puede
+    entregarle al decisor una secuencia parcial "por las dudas", porque la única
+    respuesta honesta a una colección que no entra es dejar de responder. Un
+    modo diagnóstico sí puede mostrar los primeros N, pero entonces tiene que
+    decir que truncó, y esa lista no alimenta ningún veredicto.
+    """
+    if total > tope:
+        raise EnumeracionIncompletaError(
+            f"la enumeración de {contexto} devolvió {total} elementos y la cota es {tope}: "
+            f"la evidencia sería parcial y un recorte podría esconder un segundo candidato"
+        )
+    return total
+
+
 def _nombre_de_binario(ruta: str) -> str:
     """Basename en semántica Windows, en minúsculas. Vale en cualquier plataforma."""
     return ntpath.basename(ruta.replace("/", "\\")).lower()
@@ -476,82 +534,154 @@ def _resultado(
     )
 
 
-def _candidatos_de_proceso(
-    solicitud: SolicitudPreflightUIA,
-    procesos: Sequence[ProcesoObservado],
-) -> tuple[list[ProcesoObservado], list[str]]:
-    """Procesos cuya identidad es compatible con la solicitud, más su evidencia.
+def _identidad_del_ejecutable(valor: str) -> tuple[str, str | None] | None:
+    """``(basename, ruta_canónica | None)`` de lo que pidió el llamador, o ``None``.
 
-    Dos niveles de prueba, y el resultado dice cuál se usó. Si el llamador nombró
-    una instalación completa y el sensor pudo leer la ruta del proceso, la
-    identidad se prueba contra la ruta ENTERA: dos copias del mismo TexGen en
-    discos distintos no son la misma instancia. Si el sensor no pudo leer la ruta
-    (permisos), queda el nombre del binario y eso se registra — la identidad más
-    débil no se disfraza de la fuerte.
+    ``None`` significa que la solicitud no nombra un ejecutable comparable, y es
+    un corte de VALIDACIÓN, no un fallback: un nombre vacío, o una ruta que
+    parece completa pero no se puede canonicalizar. Aceptar esa segunda forma y
+    compararla por nombre era el defecto de la ronda 1: convertía "no puedo
+    probar la ruta" en "la identidad es el basename", que es una afirmación
+    distinta y más débil que la que el llamador pidió.
     """
-    nombre_esperado = _nombre_de_binario(solicitud.ejecutable_esperado)
-    exige_ruta = _es_ruta_completa(solicitud.ejecutable_esperado)
-    ruta_esperada = canonicalizar_ruta_windows(solicitud.ejecutable_esperado) if exige_ruta else None
+    nombre = _nombre_de_binario(valor)
+    if not nombre.strip():
+        return None
+    if not _es_ruta_completa(valor):
+        # El llamador pidió un binario, no una instalación: identidad por
+        # nombre porque es LO QUE PIDIÓ, no porque algo falló.
+        return nombre, None
+    ruta = canonicalizar_ruta_windows(valor)
+    if ruta is None:
+        return None
+    return nombre, ruta
 
+
+def _probar_identidad(
+    procesos: Sequence[ProcesoObservado],
+    ruta_esperada: str,
+    evidencia: list[str],
+) -> tuple[list[ProcesoObservado], str | None]:
+    """Filtra por RUTA COMPLETA. Devuelve ``(candidatos, motivo_de_corte)``.
+
+    Tres desenlaces por proceso, y ninguno es "seguí igual":
+
+    * la ruta observada canonicaliza y coincide → candidato;
+    * canonicaliza y difiere → NO es candidato (otra instalación del mismo
+      binario), se registra en la evidencia y se sigue;
+    * no hay ruta observable (``AccessDenied``) o no canonicaliza → la identidad
+      de ESTE proceso no se puede probar ni refutar, así que tampoco se puede
+      afirmar cuántas instancias de la instalación pedida hay. Corta.
+    """
     candidatos: list[ProcesoObservado] = []
-    evidencia: list[str] = []
     for proceso in procesos:
-        if _nombre_de_binario(proceso.nombre_ejecutable) != nombre_esperado:
+        if not proceso.ruta_ejecutable:
+            evidencia.append(f"pid={proceso.pid}: el sensor no expone la ruta del ejecutable")
+            return [], f"no se puede probar que el pid {proceso.pid} sea {ruta_esperada!r}"
+        observada = canonicalizar_ruta_windows(proceso.ruta_ejecutable)
+        if observada is None:
+            evidencia.append(f"pid={proceso.pid}: ruta {proceso.ruta_ejecutable!r} no canonicalizable")
+            return [], f"la ruta observada del pid {proceso.pid} no se puede comparar"
+        if observada != ruta_esperada:
+            evidencia.append(f"pid={proceso.pid} descartado: {proceso.ruta_ejecutable!r} es otra instalación")
             continue
-        if ruta_esperada is not None and proceso.ruta_ejecutable:
-            observada = canonicalizar_ruta_windows(proceso.ruta_ejecutable)
-            if observada != ruta_esperada:
-                evidencia.append(f"pid={proceso.pid} descartado: ruta {proceso.ruta_ejecutable!r} != esperada")
-                continue
-            evidencia.append(f"pid={proceso.pid} identidad por ruta completa")
-        else:
-            evidencia.append(f"pid={proceso.pid} identidad sólo por nombre de binario")
+        evidencia.append(f"pid={proceso.pid} identidad probada por ruta completa")
         candidatos.append(proceso)
-    return candidatos, evidencia
+    return candidatos, None
 
 
 def _resolver_proceso(
     solicitud: SolicitudPreflightUIA,
     localizador: LocalizadorDeProcesos,
-) -> tuple[ProcesoObservado | None, ResultadoPreflightUIA | None]:
+) -> tuple[ProcesoObservado | None, ResultadoPreflightUIA | None, list[str]]:
     """Una instancia concreta, o el ``UNKNOWN`` que explica por qué no.
 
-    **Nunca desempata.** Ni por "el primero", ni por el pid más bajo, ni por el
-    más reciente: con dos instancias plausibles la observación no puede decir a
-    cuál se refiere, y elegir una sería fabricar la certeza que falta.
+    **Nunca desempata** —ni por "el primero", ni por el pid más bajo— y **nunca
+    degrada la identidad**: si el llamador nombró una instalación, la respuesta
+    sale de comparar la instalación, o no sale.
+
+    El orden importa: el filtro por ``pid`` va ANTES de la prueba de identidad.
+    Un tercero homónimo con ``exe`` ilegible no puede invalidar una observación
+    que el llamador ya ató a un pid concreto; sin pid, en cambio, ese mismo
+    tercero sí hace imposible afirmar que hay exactamente una instancia de lo
+    que se pidió.
     """
-    candidatos, evidencia = _candidatos_de_proceso(solicitud, localizador.procesos())
+    evidencia: list[str] = []
+    identidad = _identidad_del_ejecutable(solicitud.ejecutable_esperado)
+    if identidad is None:
+        return (
+            None,
+            _resultado(
+                EstadoPreflight.UNKNOWN,
+                RazonPreflight.EJECUTABLE_NO_CANONICALIZABLE,
+                solicitud,
+                f"el ejecutable esperado {solicitud.ejecutable_esperado!r} no nombra un binario comparable",
+            ),
+            evidencia,
+        )
+    nombre_esperado, ruta_esperada = identidad
+
+    candidatos = [p for p in localizador.procesos() if _nombre_de_binario(p.nombre_ejecutable) == nombre_esperado]
 
     if solicitud.pid is not None:
         con_pid = [proceso for proceso in candidatos if proceso.pid == solicitud.pid]
         if not con_pid:
-            return None, _resultado(
-                EstadoPreflight.UNKNOWN,
-                RazonPreflight.PID_NO_COINCIDE,
-                solicitud,
-                f"ningún proceso {solicitud.ejecutable_esperado!r} corre con pid {solicitud.pid}",
-                evidencia=evidencia,
+            return (
+                None,
+                _resultado(
+                    EstadoPreflight.UNKNOWN,
+                    RazonPreflight.PID_NO_COINCIDE,
+                    solicitud,
+                    f"ningún proceso {nombre_esperado!r} corre con pid {solicitud.pid}",
+                    evidencia=evidencia,
+                ),
+                evidencia,
             )
         candidatos = con_pid
 
+    if ruta_esperada is not None:
+        candidatos, corte = _probar_identidad(candidatos, ruta_esperada, evidencia)
+        if corte is not None:
+            return (
+                None,
+                _resultado(
+                    EstadoPreflight.UNKNOWN,
+                    RazonPreflight.IDENTIDAD_NO_DEMOSTRABLE,
+                    solicitud,
+                    corte,
+                    evidencia=evidencia,
+                ),
+                evidencia,
+            )
+    else:
+        evidencia.extend(f"pid={p.pid} identidad sólo por nombre de binario (es lo pedido)" for p in candidatos)
+
     if not candidatos:
-        return None, _resultado(
-            EstadoPreflight.UNKNOWN,
-            RazonPreflight.PROCESO_NO_ENCONTRADO,
-            solicitud,
-            f"no hay ninguna instancia de {solicitud.ejecutable_esperado!r} corriendo",
-            evidencia=evidencia,
+        return (
+            None,
+            _resultado(
+                EstadoPreflight.UNKNOWN,
+                RazonPreflight.PROCESO_NO_ENCONTRADO,
+                solicitud,
+                f"no hay ninguna instancia de {solicitud.ejecutable_esperado!r} corriendo",
+                evidencia=evidencia,
+            ),
+            evidencia,
         )
     if len(candidatos) > 1:
         pids = ", ".join(str(proceso.pid) for proceso in candidatos)
-        return None, _resultado(
-            EstadoPreflight.UNKNOWN,
-            RazonPreflight.PROCESO_AMBIGUO,
-            solicitud,
-            f"hay {len(candidatos)} instancias plausibles (pids {pids}); la observación no puede elegir",
-            evidencia=evidencia,
+        return (
+            None,
+            _resultado(
+                EstadoPreflight.UNKNOWN,
+                RazonPreflight.PROCESO_AMBIGUO,
+                solicitud,
+                f"hay {len(candidatos)} instancias plausibles (pids {pids}); la observación no puede elegir",
+                evidencia=evidencia,
+            ),
+            evidencia,
         )
-    return candidatos[0], None
+    return candidatos[0], None, evidencia
 
 
 def _resolver_ventana(
@@ -695,11 +825,10 @@ def observar_output(
 
     evidencia: list[str] = []
     try:
-        proceso, corte = _resolver_proceso(solicitud, localizador)
+        proceso, corte, evidencia = _resolver_proceso(solicitud, localizador)
         if corte is not None:
             return corte
         assert proceso is not None  # noqa: S101 -- garantizado por _resolver_proceso
-        evidencia.append(f"proceso pid={proceso.pid} exe={proceso.ruta_ejecutable or proceso.nombre_ejecutable!r}")
 
         ventana, corte = _resolver_ventana(solicitud, observador, proceso, evidencia)
         if corte is not None:
@@ -712,6 +841,15 @@ def observar_output(
         assert control is not None  # noqa: S101 -- garantizado por _resolver_control
 
         observado = observador.leer_valor(control)
+    except EnumeracionIncompletaError as exc:
+        return _resultado(
+            EstadoPreflight.UNKNOWN,
+            RazonPreflight.ENUMERACION_INCOMPLETA,
+            solicitud,
+            f"la observación fue parcial y no se puede afirmar unicidad: {exc}",
+            valor_esperado_canonico=esperado_canonico,
+            evidencia=evidencia,
+        )
     except UIANoDisponibleError as exc:
         return _resultado(
             EstadoPreflight.UNKNOWN,

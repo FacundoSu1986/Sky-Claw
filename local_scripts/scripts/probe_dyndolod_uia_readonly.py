@@ -62,24 +62,21 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from sky_claw.local.tools.dyndolod_uia_preflight import (  # noqa: E402
     TOOLS_OBSERVABLES,
+    TOPE_DE_ELEMENTOS_UIA,
     ControlObservado,
     CriteriosDeControl,
+    EnumeracionIncompletaError,
     LocalizadorPsutil,
     ObservacionUIAError,
     SolicitudPreflightUIA,
     UIANoDisponibleError,
     VentanaObservada,
+    exigir_enumeracion_completa,
     observar_output,
 )
 
 #: CLSID de ``CUIAutomation``, el objeto COM raíz de UI Automation.
 CLSID_CUIAUTOMATION = "{ff48dba4-60ef-4201-aa87-54103eef594e}"
-
-#: Tope de controles a enumerar por ventana. Microsoft advierte que recorrer el
-#: árbol UIA entero es caro; acá la búsqueda ya está acotada al subtree de UNA
-#: ventana de UN proceso, y este tope además impide que una GUI con miles de
-#: nodos convierta un diagnóstico en una espera indefinida.
-TOPE_DE_CONTROLES = 400
 
 #: ``UIA_ControlTypePropertyId`` devuelve un entero. Se traducen sólo los tipos
 #: que pueden plausiblemente contener una ruta; el resto se reporta como su id
@@ -174,8 +171,36 @@ class ObservadorUIAWindows:
             return -1
 
     def _elementos(self, coleccion: object) -> list[object]:
+        """Materializa la colección ENTERA, o no materializa nada.
+
+        `exigir_enumeracion_completa` lanza si no entra en la cota. No hay una
+        rama que recorte: devolver los primeros N de N+1 le daría al decisor una
+        unicidad que el árbol real no tiene. Para mirar un árbol grande está
+        `_elementos_truncados`, que es sólo para el volcado y lo anuncia.
+        """
         total = int(coleccion.Length)  # type: ignore[attr-defined]
-        return [coleccion.GetElement(indice) for indice in range(min(total, TOPE_DE_CONTROLES))]  # type: ignore[attr-defined]
+        exigir_enumeracion_completa(total, contexto="elementos de UI Automation")
+        return [coleccion.GetElement(indice) for indice in range(total)]  # type: ignore[attr-defined]
+
+    def _elementos_truncados(self, coleccion: object) -> tuple[list[object], int]:
+        """``(primeros N, total)`` para el VOLCADO. Nunca alimenta un veredicto."""
+        total = int(coleccion.Length)  # type: ignore[attr-defined]
+        mostrados = min(total, TOPE_DE_ELEMENTOS_UIA)
+        return [coleccion.GetElement(indice) for indice in range(mostrados)], total  # type: ignore[attr-defined]
+
+    def _coleccion_de_controles(self, ventana: VentanaObservada) -> object:
+        condicion = self._uia.CreateTrueCondition()
+        return ventana.handle.FindAll(self._uia_mod.TreeScope_Descendants, condicion)  # type: ignore[attr-defined]
+
+    def _describir(self, elemento: object) -> ControlObservado:
+        return ControlObservado(
+            pid=self._pid(elemento),
+            automation_id=self._texto(elemento, "UIA_AutomationIdPropertyId"),
+            nombre=self._texto(elemento, "UIA_NamePropertyId"),
+            tipo_de_control=self._control_type(elemento),
+            class_name=self._texto(elemento, "UIA_ClassNamePropertyId"),
+            handle=elemento,
+        )
 
     # -- protocolo ObservadorUIA ----------------------------------------------
 
@@ -194,25 +219,27 @@ class ObservadorUIAWindows:
                 )
                 for elemento in self._elementos(encontradas)
             )
+        except EnumeracionIncompletaError:
+            raise
         except Exception as exc:  # pragma: no cover -- depende del rig
             raise ObservacionUIAError(f"fallo al enumerar ventanas del pid {pid}: {exc}") from exc
 
     def controles_de_ventana(self, ventana: VentanaObservada) -> Sequence[ControlObservado]:
-        """Descendientes de ESA ventana, acotados por :data:`TOPE_DE_CONTROLES`."""
+        """Descendientes de ESA ventana. Completos, o :class:`EnumeracionIncompletaError`."""
         try:
-            condicion = self._uia.CreateTrueCondition()
-            encontrados = ventana.handle.FindAll(self._uia_mod.TreeScope_Descendants, condicion)  # type: ignore[attr-defined]
-            return tuple(
-                ControlObservado(
-                    pid=self._pid(elemento),
-                    automation_id=self._texto(elemento, "UIA_AutomationIdPropertyId"),
-                    nombre=self._texto(elemento, "UIA_NamePropertyId"),
-                    tipo_de_control=self._control_type(elemento),
-                    class_name=self._texto(elemento, "UIA_ClassNamePropertyId"),
-                    handle=elemento,
-                )
-                for elemento in self._elementos(encontrados)
-            )
+            encontrados = self._coleccion_de_controles(ventana)
+            return tuple(self._describir(elemento) for elemento in self._elementos(encontrados))
+        except EnumeracionIncompletaError:
+            raise
+        except Exception as exc:  # pragma: no cover -- depende del rig
+            raise ObservacionUIAError(f"fallo al enumerar controles de {ventana.titulo!r}: {exc}") from exc
+
+    def controles_para_volcado(self, ventana: VentanaObservada) -> tuple[Sequence[ControlObservado], int]:
+        """``(controles mostrados, total real)`` para el diagnóstico, nunca para decidir."""
+        try:
+            encontrados = self._coleccion_de_controles(ventana)
+            elementos, total = self._elementos_truncados(encontrados)
+            return tuple(self._describir(elemento) for elemento in elementos), total
         except Exception as exc:  # pragma: no cover -- depende del rig
             raise ObservacionUIAError(f"fallo al enumerar controles de {ventana.titulo!r}: {exc}") from exc
 
@@ -265,8 +292,16 @@ def _volcar(observador: ObservadorUIAWindows, pid: int, salida) -> None:
             f"  ventana titulo={_sanear(ventana.titulo)!r} clase={ventana.class_name!r} pid={ventana.pid}",
             file=salida,
         )
-        controles = observador.controles_de_ventana(ventana)
-        print(f"    controles enumerados: {len(controles)} (tope {TOPE_DE_CONTROLES})", file=salida)
+        controles, total = observador.controles_para_volcado(ventana)
+        if total > len(controles):
+            print(f"    TRUNCATED: {len(controles)} / {total} controles", file=salida)
+            print(
+                "    (el volcado se recorta para ser legible; el preflight, en cambio, responde "
+                "UNKNOWN/ENUMERACION_INCOMPLETA ante un árbol que no entra entero)",
+                file=salida,
+            )
+        else:
+            print(f"    controles enumerados: {len(controles)} / {total}", file=salida)
         for control in controles:
             patrones = observador.patrones_de_lectura(control)
             print(

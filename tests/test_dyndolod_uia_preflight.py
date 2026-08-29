@@ -45,8 +45,10 @@ import pytest
 from sky_claw.local.tools.dyndolod_uia_preflight import (
     RAZONES_DE_UNKNOWN,
     TOOLS_OBSERVABLES,
+    TOPE_DE_ELEMENTOS_UIA,
     ControlObservado,
     CriteriosDeControl,
+    EnumeracionIncompletaError,
     EstadoPreflight,
     LocalizadorPsutil,
     ObservacionUIAError,
@@ -57,6 +59,7 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
     UIANoDisponibleError,
     VentanaObservada,
     canonicalizar_ruta_windows,
+    exigir_enumeracion_completa,
     observador_por_defecto,
     observar_output,
 )
@@ -585,6 +588,225 @@ def test_una_ventana_de_otro_proceso_devuelta_por_el_adapter_se_descarta():
 
 
 # ---------------------------------------------------------------------------
+# Identidad del ejecutable: la ruta completa NO puede degradarse a basename
+# ---------------------------------------------------------------------------
+#
+# Hallazgo de review (ronda 1) sobre el módulo productivo: cuando el llamador
+# pedía una instalación concreta y el sensor no podía probar la identidad, el
+# pipeline caía a comparar sólo el NOMBRE del binario y seguía adelante. La
+# incertidumbre se convertía en una identidad más débil sin decirlo, y con eso
+# un `MATCH` podía salir de un proceso que nadie demostró que fuera el pedido.
+# El contrato dice lo contrario: identidad no demostrable → UNKNOWN.
+
+
+def test_ruta_completa_pedida_y_exe_no_observable_da_unknown():
+    # psutil no siempre puede leer `exe` (AccessDenied). Que no se pueda probar
+    # la identidad no la convierte en probada por el basename.
+    resultado = _observar(
+        _solicitud(ejecutable=r"C:\Modding\DynDOLOD\TexGenx64.exe"),
+        procesos=[_proceso(ruta=None)],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.IDENTIDAD_NO_DEMOSTRABLE
+
+
+def test_ruta_completa_pedida_no_canonicalizable_da_unknown_sin_tocar_uia():
+    # Si la ruta que pide el llamador no se puede canonicalizar, la comparación
+    # de identidad es imposible: es un defecto de la SOLICITUD y se corta antes
+    # de generar tráfico UIA, igual que el resto de la validación de entrada.
+    espia = ObservadorEspia(ObservadorFalso())
+    resultado = observar_output(
+        _solicitud(ejecutable=r"C:\Modding\..\DynDOLOD\TexGenx64.exe"),
+        localizador=LocalizadorFalso([_proceso()]),
+        observador=espia,
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.EJECUTABLE_NO_CANONICALIZABLE
+    assert espia.llamadas == []
+
+
+def test_ruta_completa_pedida_y_exe_observado_no_canonicalizable_da_unknown():
+    resultado = _observar(
+        _solicitud(ejecutable=r"C:\Modding\DynDOLOD\TexGenx64.exe"),
+        procesos=[_proceso(ruta=r"..\TexGenx64.exe")],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.IDENTIDAD_NO_DEMOSTRABLE
+
+
+def test_un_binario_homonimo_de_otra_instalacion_nunca_produce_match():
+    # El caso más duro: se PUEDE probar que el proceso es de otra instalación.
+    # Antes del fix esto daba MATCH.
+    resultado = _observar(
+        _solicitud(ejecutable=r"C:\Modding\DynDOLOD\TexGenx64.exe"),
+        procesos=[_proceso(ruta=r"D:\OtraInstalacion\TexGenx64.exe")],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is not EstadoPreflight.MATCH
+    assert resultado.razon is RazonPreflight.PROCESO_NO_ENCONTRADO
+
+
+def test_un_basename_pedido_explicitamente_sigue_siendo_identidad_valida():
+    # La identidad por nombre NO se prohíbe: se prohíbe llegar a ella por
+    # degradación. Si el llamador pidió sólo el binario, es lo que pidió.
+    resultado = _observar(
+        _solicitud(ejecutable="TexGenx64.exe"),
+        procesos=[_proceso(ruta=None)],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.MATCH
+    assert any("sólo por nombre" in linea for linea in resultado.evidencia)
+
+
+def test_un_pid_fijado_acota_la_prueba_de_identidad_a_ese_proceso():
+    # Un tercero homónimo con `exe` ilegible no puede invalidar una observación
+    # que el llamador ya ató a un pid concreto: la prueba se aplica DESPUÉS de
+    # filtrar por pid, no antes.
+    resultado = _observar(
+        _solicitud(ejecutable=r"C:\Modding\DynDOLOD\TexGenx64.exe", pid=4242),
+        procesos=[_proceso(pid=4242), _proceso(pid=99, ruta=None)],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.MATCH
+    assert resultado.pid == 4242
+
+
+def test_un_homonimo_con_exe_ilegible_hace_ambigua_la_identidad_sin_pid():
+    # Sin pid, ese mismo tercero SÍ importa: no se puede afirmar que hay
+    # exactamente una instancia de la instalación pedida.
+    resultado = _observar(
+        _solicitud(ejecutable=r"C:\Modding\DynDOLOD\TexGenx64.exe"),
+        procesos=[_proceso(pid=4242), _proceso(pid=99, ruta=None)],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.IDENTIDAD_NO_DEMOSTRABLE
+
+
+@pytest.mark.parametrize("ejecutable", ["", "   "])
+def test_un_ejecutable_esperado_vacio_da_unknown(ejecutable):
+    resultado = _observar(_solicitud(ejecutable=ejecutable), procesos=[_proceso()])
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.EJECUTABLE_NO_CANONICALIZABLE
+
+
+# ---------------------------------------------------------------------------
+# Enumeración incompleta: un recorte silencioso puede fabricar unicidad
+# ---------------------------------------------------------------------------
+#
+# Segundo hallazgo de review: el adaptador cortaba la colección de UIA a un tope
+# y devolvía el recorte como si fuera el árbol entero. Con dos controles que
+# satisfacen el selector, uno dentro del tope y otro fuera, el decisor ve UN
+# candidato, lo declara inequívoco y puede emitir un `MATCH` que el árbol real
+# no sostiene. Evidencia parcial tratada como evidencia completa.
+#
+# El fix es que la incompletitud sea imposible de confundir con un resultado:
+# `exigir_enumeracion_completa` LANZA en vez de recortar, así que ningún
+# adaptador puede alimentar al decisor con una secuencia parcial por descuido.
+
+
+def test_exigir_enumeracion_completa_acepta_justo_el_tope():
+    assert exigir_enumeracion_completa(TOPE_DE_ELEMENTOS_UIA, contexto="controles") == TOPE_DE_ELEMENTOS_UIA
+
+
+def test_exigir_enumeracion_completa_rechaza_uno_mas_que_el_tope():
+    with pytest.raises(EnumeracionIncompletaError) as excinfo:
+        exigir_enumeracion_completa(TOPE_DE_ELEMENTOS_UIA + 1, contexto="controles")
+    # El diagnóstico tiene que decir cuánto se vio y cuánto había.
+    assert str(TOPE_DE_ELEMENTOS_UIA) in str(excinfo.value)
+    assert str(TOPE_DE_ELEMENTOS_UIA + 1) in str(excinfo.value)
+
+
+def test_enumeracion_incompleta_es_un_error_uia():
+    # Subclase, por el mismo motivo que UIANoDisponibleError: la red general del
+    # pipeline la atrapa aunque nadie escriba un `except` específico.
+    assert issubclass(EnumeracionIncompletaError, ObservacionUIAError)
+
+
+@pytest.mark.parametrize("metodo", ["ventanas_de_proceso", "controles_de_ventana"])
+def test_una_enumeracion_truncada_da_unknown_y_no_match(metodo):
+    resultado = _observar(
+        _solicitud(),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+        error=EnumeracionIncompletaError("713 elementos, tope 400"),
+        error_en={metodo},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.ENUMERACION_INCOMPLETA
+
+
+def test_un_segundo_candidato_pasado_el_tope_no_puede_producir_match():
+    """El caso adversarial exacto: 401 controles, matches en 0 y en 400.
+
+    Se modela con un observador que enumera como debe hacerlo un adaptador
+    correcto —consultando el total ANTES de recortar—, así que el escenario se
+    reproduce sin necesitar Windows. Si el adaptador truncara en silencio, el
+    decisor vería un único candidato y esto sería MATCH.
+    """
+    controles = [_control(automation_id="edOutput")]
+    controles += [_control(automation_id=f"otro{i}") for i in range(TOPE_DE_ELEMENTOS_UIA - 1)]
+    controles += [_control(automation_id="edOutput", nombre="Output (2)")]
+    assert len(controles) == TOPE_DE_ELEMENTOS_UIA + 1
+
+    class ObservadorQueEnumeraBien:
+        def ventanas_de_proceso(self, pid):
+            exigir_enumeracion_completa(1, contexto="ventanas")
+            return (_ventana(),)
+
+        def controles_de_ventana(self, ventana):
+            exigir_enumeracion_completa(len(controles), contexto="controles")
+            return tuple(controles)
+
+        def leer_valor(self, control):
+            return SALIDA_ADMINISTRADA
+
+    resultado = observar_output(
+        _solicitud(),
+        localizador=LocalizadorFalso([_proceso()]),
+        observador=ObservadorQueEnumeraBien(),
+    )
+    assert resultado.estado is not EstadoPreflight.MATCH
+    assert resultado.razon is RazonPreflight.ENUMERACION_INCOMPLETA
+
+
+def test_el_adaptador_del_probe_exige_enumeracion_completa():
+    """Ancla estructural: el backend Windows no puede devolver un recorte.
+
+    No se puede ejecutar COM acá, así que se verifica por AST que el método que
+    materializa una colección de UIA llama a `exigir_enumeracion_completa`. Sin
+    esto, el invariante viviría sólo en la revisión humana del adaptador, que es
+    exactamente lo que dejó pasar el defecto la primera vez.
+    """
+    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    materializadores = [
+        nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef) and nodo.name == "_elementos"
+    ]
+    assert materializadores, "el probe ya no tiene `_elementos`: revisá este ancla"
+    for funcion in materializadores:
+        llamadas = {
+            hijo.func.id for hijo in ast.walk(funcion) if isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Name)
+        }
+        assert "exigir_enumeracion_completa" in llamadas
+
+
+# ---------------------------------------------------------------------------
 # Validación de la solicitud (fail-closed antes de tocar la GUI)
 # ---------------------------------------------------------------------------
 
@@ -723,16 +945,19 @@ def test_las_razones_estan_congeladas():
         "TOOL_DESCONOCIDA",
         "SELECTOR_SIN_CRITERIOS",
         "ESPERADO_NO_CANONICALIZABLE",
+        "EJECUTABLE_NO_CANONICALIZABLE",
         "UIA_UNAVAILABLE",
         "PROCESO_NO_ENCONTRADO",
         "PROCESO_AMBIGUO",
         "PID_NO_COINCIDE",
+        "IDENTIDAD_NO_DEMOSTRABLE",
         "VENTANA_NO_ENCONTRADA",
         "VENTANA_AMBIGUA",
         "CONTROL_NO_ENCONTRADO",
         "CONTROL_AMBIGUO",
         "CONTROL_FUERA_DEL_PROCESO",
         "VALOR_NO_LEIBLE",
+        "ENUMERACION_INCOMPLETA",
         "ERROR_UIA",
         "OBSERVADO_NO_CANONICALIZABLE",
     }
