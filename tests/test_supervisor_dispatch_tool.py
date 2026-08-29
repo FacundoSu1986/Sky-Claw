@@ -23,6 +23,7 @@ from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
 from sky_claw.local.xedit.conflict_analyzer import ConflictReport
+from tests._orchestration_dispatcher_dependencies import crear_dependencias_desde_doble
 
 
 @pytest.fixture
@@ -51,8 +52,9 @@ def supervisor() -> SupervisorAgent:
     sup.journal = AsyncMock()
     # allow_unattended: estos tests caracterizan el routing del dispatcher,
     # no la gate HITL (cubierta en test_hitl_destructive_gate.py).
+    sup._dispatcher_dependencies = crear_dependencias_desde_doble(sup)
     sup._tool_dispatcher = build_orchestration_dispatcher(
-        sup,
+        sup._dispatcher_dependencies,
         hitl_gate=HitlGateMiddleware(allow_unattended=True),
     )
     return sup
@@ -141,7 +143,7 @@ async def test_execute_loot_sorting_propagates_update_masterlist_true(supervisor
 async def test_execute_loot_sorting_envuelve_fallo_vfs_previo_a_hitl(supervisor):
     supervisor._loot_service.prepare_vfs_attestation = AsyncMock(side_effect=RuntimeError("perfil sin canary VFS"))
     supervisor._tool_dispatcher = build_orchestration_dispatcher(
-        supervisor,
+        supervisor._dispatcher_dependencies,
         hitl_gate=HitlGateMiddleware(hitl_guard=MagicMock()),
     )
 
@@ -184,31 +186,36 @@ class _SynthesisFlowFake:
         return result
 
 
-def _wire_fake_synthesis_flow(monkeypatch, *, side_effect=None, return_value=None):
-    """Monkeypatchea los builders lazy del dispatcher (se resuelven por-call)."""
+def _wire_fake_synthesis_flow(supervisor, *, side_effect=None, return_value=None):
+    """Inyecta providers fake por la frontera explícita del dispatcher."""
     import pathlib
-
-    from sky_claw.app.orchestrator import tool_dispatcher as td
 
     flow = _SynthesisFlowFake(overwrite_copy=pathlib.Path("clone") / "overwrite")
     service = MagicMock()
     service.execute_pipeline = AsyncMock(side_effect=side_effect, return_value=return_value)
     factory_calls: list[pathlib.Path] = []
 
-    def _fake_service_factory(sup, output_path, journal):
+    def _fake_service_factory(output_path, journal):
         factory_calls.append(output_path)
         return service
 
-    monkeypatch.setattr(td, "_build_synthesis_sandbox_flow", lambda sup: flow)
-    monkeypatch.setattr(td, "_build_sandboxed_synthesis_service", _fake_service_factory)
+    supervisor._dispatcher_dependencies = dataclasses.replace(
+        supervisor._dispatcher_dependencies,
+        synthesis_flow_provider=lambda: flow,
+        synthesis_service_factory=_fake_service_factory,
+    )
+    supervisor._tool_dispatcher = build_orchestration_dispatcher(
+        supervisor._dispatcher_dependencies,
+        hitl_gate=HitlGateMiddleware(allow_unattended=True),
+    )
     return flow, service, factory_calls
 
 
-async def test_execute_synthesis_pipeline_runs_sandboxed_and_filters_payload(supervisor, monkeypatch):
+async def test_execute_synthesis_pipeline_runs_sandboxed_and_filters_payload(supervisor):
     """El dispatch pasa por el flow de sandbox: el servicio se construye
     apuntando al overwrite del clon y el payload se filtra a las claves válidas."""
     flow, service, factory_calls = _wire_fake_synthesis_flow(
-        monkeypatch, return_value={"success": True, "message": "", "patches": 3}
+        supervisor, return_value={"success": True, "message": "", "patches": 3}
     )
 
     result = await supervisor.dispatch_tool(
@@ -222,8 +229,8 @@ async def test_execute_synthesis_pipeline_runs_sandboxed_and_filters_payload(sup
     assert result["sandbox"]["promoted"] is True
 
 
-async def test_execute_synthesis_pipeline_exception_wrapped(supervisor, monkeypatch):
-    _wire_fake_synthesis_flow(monkeypatch, side_effect=RuntimeError("boom"))
+async def test_execute_synthesis_pipeline_exception_wrapped(supervisor):
+    _wire_fake_synthesis_flow(supervisor, side_effect=RuntimeError("boom"))
 
     result = await supervisor.dispatch_tool("execute_synthesis_pipeline", {"patcher_ids": ["a"]})
 
@@ -232,20 +239,34 @@ async def test_execute_synthesis_pipeline_exception_wrapped(supervisor, monkeypa
     assert "boom" in result["details"]
 
 
-async def test_execute_synthesis_pipeline_non_dict_result(supervisor, monkeypatch):
-    _wire_fake_synthesis_flow(monkeypatch, return_value="oops not a dict")
+async def test_execute_synthesis_pipeline_non_dict_result(supervisor):
+    _wire_fake_synthesis_flow(supervisor, return_value="oops not a dict")
 
     result = await supervisor.dispatch_tool("execute_synthesis_pipeline", {"patcher_ids": ["a"]})
 
     assert result == {"status": "error", "reason": "InvalidSynthesisPipelineResult"}
 
 
-async def test_execute_synthesis_pipeline_sin_guard_deniega_fail_closed(supervisor, monkeypatch, tmp_path):
+async def test_execute_synthesis_pipeline_sin_guard_deniega_fail_closed(supervisor, tmp_path):
     """Builder REAL: sin HITLGuard el ritual se deniega sin ejecutarse — nadie
     podría aprobar la promoción del diff (fail-closed, ADR 0005)."""
     supervisor._hitl_guard = None
     supervisor._path_resolver = MagicMock()
     supervisor._path_resolver.get_mo2_path.return_value = tmp_path
+    from sky_claw.app.orchestrator.dispatcher_dependencies import build_synthesis_flow_provider
+
+    supervisor._dispatcher_dependencies = dataclasses.replace(
+        supervisor._dispatcher_dependencies,
+        synthesis_flow_provider=build_synthesis_flow_provider(
+            path_resolver=supervisor._path_resolver,
+            profile_name=supervisor.profile_name,
+            hitl_guard=None,
+        ),
+    )
+    supervisor._tool_dispatcher = build_orchestration_dispatcher(
+        supervisor._dispatcher_dependencies,
+        hitl_gate=HitlGateMiddleware(allow_unattended=True),
+    )
 
     result = await supervisor.dispatch_tool("execute_synthesis_pipeline", {"patcher_ids": ["a"]})
 
@@ -366,9 +387,9 @@ async def test_quick_auto_clean_delegates(supervisor):
     assert result["success"] is True
 
 
-async def test_execute_synthesis_pipeline_filters_extra_llm_keys(supervisor, monkeypatch):
+async def test_execute_synthesis_pipeline_filters_extra_llm_keys(supervisor):
     """VULN-2 fix: Extra keys injected by the LLM are filtered out."""
-    _, service, _ = _wire_fake_synthesis_flow(monkeypatch, return_value={"success": True, "message": ""})
+    _, service, _ = _wire_fake_synthesis_flow(supervisor, return_value={"success": True, "message": ""})
 
     await supervisor.dispatch_tool(
         "execute_synthesis_pipeline",

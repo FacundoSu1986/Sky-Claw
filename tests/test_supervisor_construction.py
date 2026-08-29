@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import pytest
 
+from sky_claw.app.orchestrator.dispatcher_dependencies import (
+    OrchestrationDispatcherDependencies,
+)
 from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app.security.network_gateway import NetworkGateway
 from sky_claw.app.security.path_validator import PathValidator
@@ -40,6 +43,13 @@ def test_supervisor_init_constructs_all_services(mo2_root, tmp_path):
     assert sup._xedit_service is not None  # Blocker 4: was missing journal kwarg
     assert sup._loot_service is not None
     assert sup._tool_dispatcher is not None
+    assert isinstance(sup._dispatcher_dependencies, OrchestrationDispatcherDependencies)
+    assert sup._dispatcher_dependencies.scraper is sup.scraper
+    assert sup._dispatcher_dependencies.loot_service is sup._loot_service
+    assert sup._dispatcher_dependencies.xedit_service is sup._xedit_service
+    assert sup._dispatcher_dependencies.dyndolod_service is sup._dyndolod_service
+    assert sup._dispatcher_dependencies.pandora_service is sup._pandora_service
+    assert sup._dispatcher_dependencies.grass_cache_service is sup._grass_cache_service
     # modlist resolved against the modding sandbox (Blocker 3), not backups:
     assert str(sup.modlist_path).endswith("modlist.txt")
     assert "MO2" in str(sup.modlist_path)
