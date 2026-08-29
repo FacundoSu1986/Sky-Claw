@@ -444,6 +444,28 @@ class DatabaseLifecycleManager:
                 shm_path.exists(),
             )
             await self._recover_orphaned_wal(db_path, wal_path, shm_path)
+            # Cierre NO confirmado dentro del recovery (clase C vía
+            # ``_cerrar_conexion_de_recovery``; en clase A y B el error
+            # propaga y nunca se llega acá): la conexión temporal quedó
+            # registrada como única owner y el path fail-closed. Publicar
+            # acá una conexión nueva PISA esa entrada y destruye el único
+            # owner de una conexión posiblemente viva — exactamente lo que
+            # la cuarentena existe para impedir. La señal es el REGISTRO,
+            # no la membresía en ``_quarantined_paths``: en la ventana de
+            # ``recover_connection()`` el path YA está cuarentenado por la
+            # propia ventana (con el registro vacío), y ahí el reabrir es
+            # legítimo. Al llegar acá el registro ESTABA vacío para este
+            # path (``_resolve_connection`` sólo llama a ``_init_single``
+            # tras el doble chequeo bajo ``_init_lock``), así que cualquier
+            # entrada presente la puso el recovery. Fail-closed inmediato:
+            # ninguna ruta de inicialización abre ni publica reemplazo; la
+            # salida es reintentar ``shutdown_all()`` (contrato de la
+            # cuarentena).
+            if self._connections.get(path_str) is not None:
+                raise DatabaseConnectionQuarantinedError(
+                    f"Recovery for {path_str} ended with an unconfirmed close; "
+                    "the temporary connection is retained and the path is quarantined"
+                )
 
         # Step 2: Open connection and apply pragmas. Until registration succeeds,
         # this local scope is the connection's only owner.

@@ -25,6 +25,7 @@ import pytest
 from pydantic import ValidationError
 
 from sky_claw.app.core.db_lifecycle import (
+    DatabaseConnectionQuarantinedError,
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
     DatabaseShutdownIncompleteError,
@@ -1377,6 +1378,119 @@ async def test_recovery_close_no_confirmado_conserva_ownership(
                 await real.close()
 
 
+async def test_init_no_publica_reemplazo_tras_close_no_confirmado_en_recovery(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interleaving adversarial: recovery clase C + close NO confirmado.
+
+    Secuencia reproducida (determinista, SQLite real, sin sleeps):
+
+        _init_single()
+          → detecta orphan WAL/SHM
+          → _recover_orphaned_wal()
+          → clase C (OSError en el pragma WAL, error TRAGADO tras el rename)
+          → _recovery_rename_forense()
+          → _cerrar_conexion_de_recovery() con close() FALLIDO
+          → registra la conexión temporal + cuarentena del path
+          → el recovery RETORNA (la clase C no propaga)
+          → _init_single continúa Step 2
+          → abre una segunda conexión y PISA _connections[path]
+
+    Ese pisón destruye el único owner registrado de una conexión temporal
+    posiblemente viva: la cuarentena queda vacía de contenido, porque
+    ``shutdown_all()`` ya no encuentra en el registro la conexión que debía
+    reintentar cerrar.
+
+    Propiedad bajo test: si el recovery retuvo ownership porque el cierre
+    no se confirmó, NINGUNA ruta de inicialización puede abrir ni publicar
+    una conexión de reemplazo. El init falla cerrado con
+    ``DatabaseConnectionQuarantinedError`` (no con la OSError tragada por
+    la clase C, ni con éxito silencioso).
+
+    Red pre-fix: Step 2 corría, ``aiosqlite.connect`` se llamaba DOS veces
+    y ``_connections[path]`` apuntaba a la segunda conexión — el test
+    fallaba en los tres oráculos (excepción, identidad y conteo).
+    """
+
+    class _SpyCloseFallaClaseC:
+        """Delega execute; OSError en el pragma WAL (clase C) y close fallido."""
+
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+            self._cerrada = False
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
+                return _RaiseAsyncCtx(OSError("fallo de E/S deliberado"))
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        async def close(self) -> None:
+            self._cerrada = True
+            raise OSError("close deliberadamente fallido")
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+    spys: list[_SpyCloseFallaClaseC] = []
+    conexiones_reales: list[aiosqlite.Connection] = []
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        conexiones_reales.append(conn)
+        if not spys:
+            # La conexión TEMPORAL del recovery: clase C + close fallido.
+            spy = _SpyCloseFallaClaseC(conn)  # type: ignore[arg-type]
+            spys.append(spy)
+            return spy  # type: ignore[return-value]
+        # Cualquier conexión posterior delega limpia: post-fix NO debe
+        # existir (oracle de conteo); pre-fix es la del Step 2.
+        return conn
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    _sembrar_db_en_modo_delete(db_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=50),
+    )
+    path_str = str(db_path.resolve())
+    try:
+        # El init completo NO puede publicar una conexión de reemplazo:
+        # falla cerrado con la excepción del lifecycle, no con la OSError
+        # que la clase C tragó, ni con éxito silencioso.
+        with pytest.raises(DatabaseConnectionQuarantinedError):
+            await manager.get_connection(db_path)
+
+        # ORACLE 1: exactamente UNA llamada a aiosqlite.connect — la del
+        # recovery. Step 2 jamás abrió una segunda conexión.
+        assert len(conexiones_reales) == 1, (
+            f"el init abrió {len(conexiones_reales)} conexiones: la del recovery y una de reemplazo"
+        )
+
+        # ORACLE 2: ownership retenido — el registro sigue apuntando a la
+        # MISMA conexión temporal del recovery (la cuyo close falló).
+        assert manager._connections.get(path_str) is spys[0], (
+            "_connections[path] debe seguir siendo la conexión temporal del recovery"
+        )
+
+        # ORACLE 3: el path quedó fail-closed.
+        assert path_str in manager._quarantined_paths, "el close no confirmado debe dejar el path en cuarentena"
+        assert spys[0]._cerrada, "el close de la conexión temporal se intentó"
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+        # Limpieza del thread worker: la conexión real nunca cerró (el
+        # close del spy falla deliberadamente); la cerramos por fuera.
+        for real in conexiones_reales:
+            with contextlib.suppress(Exception):
+                await real.close()
+
+
 async def test_recovery_exception_generica_va_a_clase_c_rename(
     db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1401,11 +1515,7 @@ async def test_recovery_exception_generica_va_a_clase_c_rename(
             self._disparado = False
 
         def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-            if (
-                isinstance(sql, str)
-                and "PRAGMA journal_mode=WAL" in sql
-                and not self._disparado
-            ):
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql and not self._disparado:
                 self._disparado = True
                 return _RaiseAsyncCtx(OSError("fallo de E/S deliberado"))
             return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
@@ -1434,9 +1544,7 @@ async def test_recovery_exception_generica_va_a_clase_c_rename(
     try:
         # Clase C traga el error y renombra — NO debe propagar.
         await manager._recover_orphaned_wal(db_path, wal_path, shm_path)
-        assert _sidecars_renombrados(db_path), (
-            "una Exception genérica debe ir a clase C (rename forense)"
-        )
+        assert _sidecars_renombrados(db_path), "una Exception genérica debe ir a clase C (rename forense)"
     finally:
         with contextlib.suppress(Exception):
             await manager.shutdown_all()
@@ -1797,6 +1905,37 @@ async def test_clasificacion_no_acepta_operational_error_no_bloqueo() -> None:
         # así que la clasificación por mensaje debe rechazarlo.
         assert db_lifecycle._es_contencion_de_bloqueo(err) is False, (
             f"error '{err}' no debió clasificarse como contención"
+        )
+
+
+def test_clasificacion_fallback_textual_exige_igualdad_exacta() -> None:
+    """F4: el fallback (sin ``sqlite_errorcode``) es IGUALDAD EXACTA contra
+    los strings canónicos de SQLite, nunca substrings de "busy"/"locked".
+
+    Un mensaje que CONTIENE "locked" sin SER el string canónico — detalle
+    extra, mayúsculas, otra condición que lo menciona — no es contención:
+    reintentarlo especulativamente podría enmascarar un fallo ajeno a la
+    contención. La mutación M-E2 (fallback por substring) muere acá.
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    cerca_pero_no_contencion = [
+        sqlite3.OperationalError("database is locked (tabla audits)"),
+        sqlite3.OperationalError("database is LOCKED"),
+        sqlite3.OperationalError("statement UNLOCKED unexpectedly"),
+    ]
+    for err in cerca_pero_no_contencion:
+        assert db_lifecycle._es_contencion_de_bloqueo(err) is False, (
+            f"el fallback no debe aceptar por substring: '{err}' no es un string canónico"
+        )
+
+    exactos = [
+        sqlite3.OperationalError("database is locked"),
+        sqlite3.OperationalError("database table is locked"),
+    ]
+    for err in exactos:
+        assert db_lifecycle._es_contencion_de_bloqueo(err) is True, (
+            f"el fallback debe aceptar el string canónico exacto: '{err}'"
         )
 
 

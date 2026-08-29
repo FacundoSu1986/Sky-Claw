@@ -1137,6 +1137,17 @@ _SITIOS_DE_RAISE_ESPERADOS = {
     ("_admit", "DatabaseLifecycleShuttingDownError"),
     ("_await_db_operation", "_DatabaseOperationCancelled"),
     ("_await_db_operation", "_DatabaseOperationFailedAfterCancellation"),
+    # P1 ownership/quarantine: si el recovery retuvo ownership porque el
+    # cierre de la conexión temporal no se confirmó, ``_init_single`` falla
+    # cerrado con ``DatabaseConnectionQuarantinedError`` en vez de abrir
+    # una segunda conexión que pisaría la entrada retenida. La clase ya
+    # está en ``_RECHAZOS_DE_ADMISION`` y ``_FALLOS_DE_CLEANUP_ABSORBIBLES``
+    # desde ``_resolve_connection`` y ``recover_connection``; el cleanup
+    # parametrizado (``test_ancla_cleanup_preserva_primaria_para_todo_
+    # rechazo_de_admision``) cubre la misma clase en ``__aenter__``. El
+    # oráculo de comportamiento está en
+    # ``test_init_no_publica_reemplazo_tras_close_no_confirmado_en_recovery``.
+    ("_init_single", "DatabaseConnectionQuarantinedError"),
     ("_resolve_connection", "DatabaseConnectionQuarantinedError"),
     ("_shutdown_all_under_transition", "DatabaseShutdownIncompleteError"),
     ("init_all", "DatabaseLifecycleShuttingDownError"),
