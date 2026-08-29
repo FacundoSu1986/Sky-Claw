@@ -96,6 +96,16 @@ _ES_UNIDAD = re.compile(r"^[A-Za-z]:$")
 #: Fail-closed: UNKNOWN.
 _PREFIJOS_DE_NAMESPACE = frozenset({"?", "."})
 
+#: Caracteres que Win32 prohíbe dentro de un componente de ruta. ``\\`` y ``/``
+#: no están porque son separadores y se resuelven antes de partir; los de control
+#: (``< 0x20`` y ``0x7F``) tampoco, porque se rechazan sobre el texto completo.
+#: El ``:`` está acá y se exime SÓLO en el designador de unidad, que valida
+#: :data:`_ES_UNIDAD`: en cualquier otra posición abre un Alternate Data Stream
+#: (``C:\\x\\a:b`` escribe en el stream ``b`` de ``a``, no en un archivo ``a:b``),
+#: así que compararlo como si fuera un nombre de directorio es afirmar un destino
+#: que no es el que Win32 resolvería.
+_CARACTERES_RESERVADOS_WIN32 = frozenset('<>:"|?*')
+
 #: Cota de elementos que un adaptador materializa por consulta a UIA. Cada
 #: elemento cuesta un ``GetElement`` más una lectura POR propiedad, y todas son
 #: llamadas COM que cruzan el límite de proceso: el costo está ahí, no en el
@@ -204,11 +214,12 @@ class ProcesoObservado:
     ruta_ejecutable: str | None = None
 
 
-#: Un pid negativo significa "el backend no pudo leer ``ProcessId``". Todo
-#: adaptador debe usar un valor negativo para ese caso y NUNCA el pid esperado:
-#: el pipeline lo trata como identidad no observable, que es distinto de
-#: "pertenece a otro proceso". Los pids reales son positivos en todo sistema
-#: soportado, así que el centinela no colisiona con ninguno legítimo.
+#: Centinela que un adaptador usa cuando no pudo leer ``ProcessId``. NUNCA el
+#: pid esperado: el pipeline trata la identidad ilegible como no observable, que
+#: es distinto de "pertenece a otro proceso".
+#:
+#: No es el único valor ilegible que llega, y por eso los guards preguntan por
+#: :func:`_pid_es_legible` y no por esta constante — ver su docstring.
 PID_ILEGIBLE = -1
 
 
@@ -216,7 +227,7 @@ PID_ILEGIBLE = -1
 class VentanaObservada:
     """Ventana top-level de un proceso. ``handle`` es opaco para el pipeline.
 
-    ``pid`` negativo = el backend no pudo leerlo (ver :data:`PID_ILEGIBLE`).
+    ``pid`` no positivo = el backend no pudo leerlo (ver :func:`_pid_es_legible`).
     """
 
     pid: int
@@ -469,7 +480,13 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
       Una relativa depende del ``cwd`` del binario, que UIA no reporta: sin ese
       dato no hay comparación posible, sólo una adivinanza;
     * los prefijos de namespace (:data:`_PREFIJOS_DE_NAMESPACE`) se rechazan: ver
-      la nota de esa constante.
+      la nota de esa constante;
+    * un componente con un carácter reservado de Win32
+      (:data:`_CARACTERES_RESERVADOS_WIN32`) **rechaza la ruta**. Es la misma
+      regla que ``..``, por el mismo motivo: el sistema no puede abrir esa ruta,
+      así que no tiene un destino con el cual comparar. Bajarla a minúsculas y
+      compararla como cadena sería afirmar una igualdad entre dos cosas de las
+      cuales al menos una no designa nada.
     """
     if valor is None:
         return None
@@ -500,6 +517,13 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
     if ".." in componentes:
         return None
     componentes = [parte for parte in componentes if parte != "."]
+
+    # El designador de unidad es el único componente donde `:` es legal, y ahí lo
+    # valida `_ES_UNIDAD` más abajo (`^[A-Za-z]:$`), que es más estricto que esta
+    # comprobación: eximirlo no le abre la puerta a nada.
+    interiores = componentes if es_unc else componentes[1:]
+    if any(_CARACTERES_RESERVADOS_WIN32 & set(parte) for parte in interiores):
+        return None
 
     if es_unc:
         # Servidor + recurso como mínimo: `\\servidor` sola no designa un árbol.
@@ -543,6 +567,24 @@ def _es_ruta_completa(valor: str) -> bool:
     """¿El llamador nombró una instalación concreta o sólo el binario?"""
     normalizado = valor.replace("/", "\\")
     return "\\" in normalizado or ":" in normalizado
+
+
+def _pid_es_legible(pid: int) -> bool:
+    """``True`` sólo si el pid identifica a un proceso.
+
+    Hay DOS valores que significan "no lo pude leer" y ninguno es una excepción:
+    UIA devuelve ``ProcessId = 0`` cuando el provider no lo expone —elementos que
+    no están basados en HWND—, y el adaptador pone :data:`PID_ILEGIBLE` cuando la
+    conversión a entero falla. Ningún proceso real tiene pid ``<= 0``, así que la
+    frontera es el SIGNO y no una constante: un guard escrito contra
+    ``PID_ILEGIBLE`` deja pasar el ``0``, que después descarta el filtro
+    ``pid == proceso.pid`` como si el elemento fuera ajeno. Eso fabrica la
+    unicidad que :data:`RazonPreflight.PID_NO_OBSERVABLE` existe para prevenir.
+
+    Vive en un solo lugar a propósito: los dos guards (ventana y control) son
+    hermanos y el defecto de este repo es arreglar uno y no el otro.
+    """
+    return pid > 0
 
 
 def _resultado(
@@ -741,7 +783,7 @@ def _resolver_ventana(
 
     # ANTES de filtrar por pid: el filtro descartaría estas como "ajenas", y no
     # lo son — su identidad simplemente no se pudo leer. Ver `PID_ILEGIBLE`.
-    ilegibles = [ventana for ventana in observadas if ventana.pid < 0]
+    ilegibles = [ventana for ventana in observadas if not _pid_es_legible(ventana.pid)]
     if ilegibles:
         return None, _resultado(
             EstadoPreflight.UNKNOWN,
@@ -805,7 +847,7 @@ def _resolver_control(
             evidencia=evidencia,
         )
 
-    ilegibles = [control for control in coinciden if control.pid < 0]
+    ilegibles = [control for control in coinciden if not _pid_es_legible(control.pid)]
     if ilegibles:
         return None, _resultado(
             EstadoPreflight.UNKNOWN,

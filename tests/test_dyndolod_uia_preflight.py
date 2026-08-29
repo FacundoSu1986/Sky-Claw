@@ -49,6 +49,7 @@ from unittest import mock
 import pytest
 
 from sky_claw.local.tools.dyndolod_uia_preflight import (
+    _CARACTERES_RESERVADOS_WIN32,
     RAZONES_DE_UNKNOWN,
     TOOLS_OBSERVABLES,
     TOPE_DE_ELEMENTOS_UIA,
@@ -943,6 +944,19 @@ def test_canonicalizacion_de_rutas_validas(crudo, esperado):
         "1:\\Sky-Claw",  # unidad inválida
         "C:\\Sky\x00Claw",
         "C:\\Sky\nClaw",
+        # Caracteres que Win32 prohíbe en un componente de ruta. Una ruta que el
+        # sistema no puede interpretar no tiene forma canónica: el veredicto
+        # honesto es UNKNOWN, no una comparación de cadenas en minúsculas.
+        r"C:\Sky-Claw?",
+        r"C:\Sky*Claw",
+        r"C:\Sky|Claw",
+        r"C:\Sky<Claw",
+        r"C:\Sky>Claw",
+        'C:\\Sky"Claw',
+        # `:` sólo es legal en la unidad. Un componente interior con `:` es un
+        # Alternate Data Stream o basura, no un directorio.
+        r"C:\x\D:",
+        r"C:\x\a:b",
         # Un espacio LÍDER no es formato neutro: rompe que la ruta sea
         # absoluta a la unidad, así que Win32 la resuelve como relativa o la
         # rechaza. Es un destino distinto, no el mismo escrito de otra forma.
@@ -1525,3 +1539,120 @@ def test_una_ventana_con_pid_ilegible_da_unknown():
     )
     assert resultado.estado is EstadoPreflight.UNKNOWN
     assert resultado.razon is RazonPreflight.PID_NO_OBSERVABLE
+
+
+# ---------------------------------------------------------------------------
+# pid == 0: el otro valor que significa "no lo pude leer"
+# ---------------------------------------------------------------------------
+#
+# Hallazgo de review (Qodo), y es la mitad que faltaba del fix anterior. UIA
+# devuelve `ProcessId = 0` cuando el provider no lo expone —elementos que no
+# están basados en HWND—, y el adaptador lo propagaba tal cual: sólo mapeaba a
+# `PID_ILEGIBLE` los casos en que la conversión a entero fallaba. Un `0` no es
+# negativo, así que se colaba por el guard y lo descartaba el filtro
+# `pid == proceso.pid` como si fuera de otro proceso.
+#
+# El resultado era exactamente la unicidad fabricada que `PID_NO_OBSERVABLE`
+# existe para prevenir: dos candidatos, uno con pid 0, veredicto MATCH.
+
+
+@pytest.mark.parametrize("pid_ilegible", [0, -1, -99])
+def test_ningun_pid_no_positivo_cuenta_como_identidad(pid_ilegible):
+    """0 y los negativos significan lo mismo: no se pudo leer."""
+    resultado = _observar(
+        _solicitud(),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control(), _control(pid=pid_ilegible)]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.PID_NO_OBSERVABLE
+
+
+@pytest.mark.parametrize("pid_ilegible", [0, -1])
+def test_ninguna_ventana_con_pid_no_positivo_cuenta_como_identidad(pid_ilegible):
+    resultado = observar_output(
+        _solicitud(),
+        localizador=LocalizadorFalso([_proceso()]),
+        observador=ObservadorFalso(
+            ventanas=[_ventana(), _ventana(pid=pid_ilegible, handle="w2")],
+            controles={"w1": [_control()]},
+            valores={"edOutput": SALIDA_ADMINISTRADA},
+            ignorar_pid=True,
+        ),
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.PID_NO_OBSERVABLE
+
+
+# ---------------------------------------------------------------------------
+# Anclas de los dos guards que este PR agregó
+# ---------------------------------------------------------------------------
+#
+# Los dos hallazgos de review que arreglan estas anclas son la MISMA forma que
+# `AGENTS.md` llama "la regla que más se viola": una regla, dos lugares donde
+# aplicarla. El pid ilegible se chequea en la ventana Y en el control; los
+# reservados de Win32 valen para todos los componentes de la ruta. Un caso
+# escrito a mano para el hermano que faltaba no ataja al tercero, así que las
+# anclas enumeran: una recorre el AST del módulo entero, la otra deriva sus
+# casos de la constante.
+
+
+def test_ningun_guard_compara_un_pid_contra_un_literal_fuera_del_predicado():
+    """La frontera "pid legible" vive en `_pid_es_legible` y en ningún otro lado.
+
+    El bug era `pid < 0` escrito dos veces: cerraba sobre `PID_ILEGIBLE` (-1) y
+    dejaba pasar el `0` que UIA devuelve para elementos no basados en HWND. Un
+    test por caso arregla los dos guards de hoy; esta ancla impide que un guard
+    NUEVO —de un tercer tipo de elemento— vuelva a escribir el umbral a mano.
+
+    Comparar un pid contra OTRO pid (`control.pid == proceso.pid`) es lo que hace
+    el filtro de pertenencia y no lo toca: lo prohibido es el literal.
+    """
+    arbol = ast.parse(MODULO_T5A.read_text(encoding="utf-8"))
+
+    def menciona_pid(nodo):
+        return (isinstance(nodo, ast.Name) and nodo.id == "pid") or (
+            isinstance(nodo, ast.Attribute) and nodo.attr == "pid"
+        )
+
+    def es_literal_numerico(nodo):
+        return isinstance(nodo, ast.Constant) and isinstance(nodo.value, int)
+
+    culpables = set()
+    for funcion in ast.walk(arbol):
+        if not isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for nodo in ast.walk(funcion):
+            if not isinstance(nodo, ast.Compare):
+                continue
+            lados = [nodo.left, *nodo.comparators]
+            if any(map(menciona_pid, lados)) and any(map(es_literal_numerico, lados)):
+                culpables.add(funcion.name)
+
+    assert culpables == {"_pid_es_legible"}, (
+        f"comparan un pid contra un literal fuera del predicado: {sorted(culpables - {'_pid_es_legible'})}"
+    )
+
+
+def test_los_reservados_de_win32_estan_congelados():
+    """Igualdad literal: sacar un carácter del conjunto tiene que ser deliberado."""
+    assert frozenset({"<", ">", ":", '"', "|", "?", "*"}) == _CARACTERES_RESERVADOS_WIN32
+
+
+@pytest.mark.parametrize("reservado", sorted(_CARACTERES_RESERVADOS_WIN32))
+def test_cada_reservado_de_win32_rechaza_la_ruta(reservado):
+    """Se deriva de la constante, no de una lista paralela.
+
+    Agregar un carácter al conjunto le agrega su caso end-to-end acá solo; una
+    lista escrita a mano se habría desincronizado en el primer agregado.
+    """
+    assert canonicalizar_ruta_windows(f"C:\\Sky{reservado}Claw") is None
+
+
+def test_la_unidad_es_la_unica_posicion_donde_dos_puntos_es_legal():
+    """El complemento del test de arriba: eximir la unidad no puede eximir al resto."""
+    assert canonicalizar_ruta_windows(r"C:\Sky-Claw") == r"c:\sky-claw"
+    assert canonicalizar_ruta_windows(r"C:\x\D:\y") is None
+    assert canonicalizar_ruta_windows(r"\\servidor\C:\x") is None
