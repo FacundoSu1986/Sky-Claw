@@ -258,25 +258,43 @@ class CriteriosDeControl:
     nombre: str | None = None
     tipo_de_control: str | None = None
 
+    def _criterios(self) -> dict[str, str]:
+        """Sólo los criterios con EVIDENCIA: los vacíos o en blanco no cuentan.
+
+        Un `--automation-id ""` desde la CLI parece un criterio y no lo es: un
+        ``AutomationId`` vacío no identifica a nadie, y si la ventana tuviera un
+        único control con ese campo vacío quedaría elegido sobre evidencia nula.
+        Un valor en blanco es "no lo pasé", no "quiero el que esté vacío".
+        """
+        candidatos = {
+            "automation_id": self.automation_id,
+            "nombre": self.nombre,
+            "tipo_de_control": self.tipo_de_control,
+        }
+        return {campo: valor for campo, valor in candidatos.items() if valor is not None and valor.strip()}
+
     def esta_vacio(self) -> bool:
-        return self.automation_id is None and self.nombre is None and self.tipo_de_control is None
+        return not self._criterios()
 
     def coincide(self, control: ControlObservado) -> bool:
-        """AND de los criterios presentes. Comparación exacta, sin heurística."""
-        if self.automation_id is not None and control.automation_id != self.automation_id:
-            return False
-        if self.nombre is not None and control.nombre != self.nombre:
-            return False
-        return not (self.tipo_de_control is not None and control.tipo_de_control != self.tipo_de_control)
+        """AND de los criterios CON EVIDENCIA. Comparación exacta, sin heurística.
+
+        Los campos observados se enumeran a mano y no por acceso dinámico: el
+        ancla read-only de la suite prohíbe `getattr` en esta superficie, y con
+        razón — es el hueco por el que una llamada mutante entraría sin que su
+        nombre aparezca en el árbol sintáctico. La enumeración explícita cuesta
+        tres líneas y mantiene el guard completo.
+        """
+        observados = {
+            "automation_id": control.automation_id,
+            "nombre": control.nombre,
+            "tipo_de_control": control.tipo_de_control,
+        }
+        return all(observados[campo] == valor for campo, valor in self._criterios().items())
 
     def describir(self) -> str:
-        partes = []
-        if self.automation_id is not None:
-            partes.append(f"automation_id={self.automation_id!r}")
-        if self.nombre is not None:
-            partes.append(f"nombre={self.nombre!r}")
-        if self.tipo_de_control is not None:
-            partes.append(f"tipo={self.tipo_de_control!r}")
+        """Los criterios con evidencia, tal como se aplicaron."""
+        partes = [f"{campo}={valor!r}" for campo, valor in self._criterios().items()]
         return " ".join(partes) if partes else "(sin criterios)"
 
 
@@ -443,7 +461,16 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
     """
     if valor is None:
         return None
-    texto = valor.strip()
+    # La asimetría entre los dos extremos es de Win32, no una preferencia: la
+    # normalización de rutas del sistema recorta los espacios FINALES del último
+    # componente, así que quitarlos es neutro. Los LÍDERES no: con un espacio
+    # adelante la ruta deja de ser absoluta a la unidad —`" C:"` no es una
+    # unidad— y el sistema la resuelve como relativa o la rechaza. Es un destino
+    # distinto, no el mismo escrito de otra forma, así que se rechaza en vez de
+    # limpiarse. Recortar los dos daba MATCH entre `" C:\x"` y `"C:\x"`.
+    if valor[:1].isspace():
+        return None
+    texto = valor.rstrip()
     if not texto:
         return None
     # Un carácter de control adentro de la ruta es basura de decodificación o de

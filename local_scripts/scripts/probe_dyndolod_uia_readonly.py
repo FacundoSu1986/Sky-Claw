@@ -330,7 +330,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     argumentos = _analizar_argumentos(argv)
     salida = sys.stdout
 
-    print(f"[T5A] sonda READ-ONLY — tool={argumentos.tool} exe={argumentos.exe}", file=salida)
+    # Saneado como el resto: una instalación bajo el perfil del operador
+    # lleva su nombre de usuario en la ruta, y este volcado se pega en un PR.
+    print(f"[T5A] sonda READ-ONLY — tool={argumentos.tool} exe={_sanear(argumentos.exe)}", file=salida)
     localizador = LocalizadorPsutil()
     esperado = pathlib.PurePath(argumentos.exe.replace("\\", "/")).name.lower()
     candidatos = [p for p in localizador.procesos() if p.nombre_ejecutable.lower() == esperado]

@@ -38,7 +38,10 @@ llama, así que el guard no depende sólo de leer el AST.
 from __future__ import annotations
 
 import ast
+import os
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
@@ -415,7 +418,6 @@ def test_t10b_ruta_esperada_no_canonicalizable_da_unknown_sin_tocar_uia():
         SALIDA_ADMINISTRADA,
         SALIDA_ADMINISTRADA + "\\",
         SALIDA_ADMINISTRADA + "   ",
-        "  " + SALIDA_ADMINISTRADA,
         SALIDA_ADMINISTRADA.replace("\\", "/"),
         SALIDA_ADMINISTRADA.replace("\\", "\\\\"),
         SALIDA_ADMINISTRADA.upper(),
@@ -847,7 +849,7 @@ def test_las_tools_observables_estan_congeladas():
         (r"C:\Sky-Claw\\", r"c:\sky-claw"),
         ("C:/Sky-Claw/DynDOLOD", r"c:\sky-claw\dyndolod"),
         (r"C:\\Sky-Claw\\\DynDOLOD", r"c:\sky-claw\dyndolod"),
-        ("  C:\\Sky-Claw  ", r"c:\sky-claw"),
+        ("C:\\Sky-Claw  ", r"c:\sky-claw"),  # sólo el final: el líder ahora rechaza
         (r"c:\SKY-CLAW", r"c:\sky-claw"),
         ("C:\\", "c:\\"),
         ("C:/", "c:\\"),
@@ -878,10 +880,81 @@ def test_canonicalizacion_de_rutas_validas(crudo, esperado):
         "1:\\Sky-Claw",  # unidad inválida
         "C:\\Sky\x00Claw",
         "C:\\Sky\nClaw",
+        # Un espacio LÍDER no es formato neutro: rompe que la ruta sea
+        # absoluta a la unidad, así que Win32 la resuelve como relativa o la
+        # rechaza. Es un destino distinto, no el mismo escrito de otra forma.
+        "  C:\\Sky-Claw",
+        "\tC:\\Sky-Claw",
     ],
 )
 def test_rutas_que_no_se_pueden_canonicalizar(crudo):
     assert canonicalizar_ruta_windows(crudo) is None
+
+
+def test_el_espacio_final_si_es_neutro_pero_el_lider_no():
+    """La asimetría es de Win32, no una preferencia: los espacios FINALES los
+    recorta la normalización de rutas del sistema, los LÍDERES no.
+
+    Hallazgo de review (Codex, P2). Antes, `strip()` borraba los dos y
+    `" C:\\Games\\Output"` daba MATCH contra `"C:\\Games\\Output"` — un MATCH
+    falso, porque con el espacio adelante la ruta ni siquiera es absoluta a la
+    unidad y el destino real sería otro.
+    """
+    assert canonicalizar_ruta_windows(r"C:\Sky-Claw   ") == r"c:\sky-claw"
+    assert canonicalizar_ruta_windows(r"   C:\Sky-Claw") is None
+
+
+def test_un_output_con_espacio_lider_no_produce_match():
+    resultado = _observar(
+        _solicitud(),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": " " + SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.OBSERVADO_NO_CANONICALIZABLE
+
+
+# ---------------------------------------------------------------------------
+# Criterios en blanco: "puse un criterio" vs. "puse evidencia"
+# ---------------------------------------------------------------------------
+#
+# Hallazgo de review (Codex, P2). `--automation-id ""` desde la CLI construía un
+# selector que `esta_vacio()` daba por válido, aunque un AutomationId vacío no
+# identifica nada. Si la ventana tenía exactamente un control con AutomationId
+# vacío, quedaba elegido sobre evidencia nula y podía salir MATCH.
+
+
+@pytest.mark.parametrize("blanco", ["", "   ", "\t"])
+def test_un_criterio_en_blanco_no_cuenta_como_criterio(blanco):
+    assert CriteriosDeControl(automation_id=blanco).esta_vacio()
+    assert CriteriosDeControl(nombre=blanco).esta_vacio()
+    assert CriteriosDeControl(tipo_de_control=blanco).esta_vacio()
+
+
+def test_un_selector_solo_con_blancos_da_unknown_y_no_elige_nada():
+    resultado = _observar(
+        _solicitud(criterios=CriteriosDeControl(automation_id="")),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control(automation_id="", nombre="Output")]},
+        valores={"": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.SELECTOR_SIN_CRITERIOS
+
+
+def test_un_blanco_junto_a_un_criterio_real_no_invalida_al_real():
+    # El blanco se ignora; el criterio con evidencia sigue mandando.
+    resultado = _observar(
+        _solicitud(criterios=CriteriosDeControl(automation_id="  ", nombre="Output")),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control(), _control(automation_id="edInput", nombre="Data")]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.MATCH
 
 
 def test_la_canonicalizacion_no_toca_el_filesystem(tmp_path, monkeypatch):
@@ -1211,3 +1284,30 @@ def test_el_probe_no_declara_dependencia_uia_en_los_manifests():
     seccion = manifest.split("[project.optional-dependencies]")[0]
     for paquete in ("comtypes", "pywinauto", "uiautomation", "pywin32"):
         assert f'"{paquete}' not in seccion, f"{paquete} entró a dependencies sin decisión"
+
+
+def test_el_banner_de_la_sonda_sanea_la_ruta_del_ejecutable():
+    """La primera línea no puede filtrar lo que el resto del volcado redacta.
+
+    Hallazgo de review (Codex, P2). El banner imprimía `--exe` crudo, y una
+    instalación bajo el perfil del operador lleva su nombre de usuario en la
+    ruta — justo lo que `_sanear` existe para no pegar en un PR.
+    """
+    entorno = dict(os.environ, USERPROFILE=r"C:\Users\operador")
+    completado = subprocess.run(  # noqa: S603 -- ruta del intérprete y del script, ambas del repo
+        [
+            sys.executable,
+            str(PROBE_T5A),
+            "--tool",
+            "TexGen",
+            "--exe",
+            r"C:\Users\operador\Modding\DynDOLOD\TexGenx64.exe",
+        ],
+        capture_output=True,
+        text=True,
+        env=entorno,
+        timeout=60,
+        check=False,
+    )
+    assert "operador" not in completado.stdout, completado.stdout
+    assert "<USERPROFILE>" in completado.stdout, completado.stdout
