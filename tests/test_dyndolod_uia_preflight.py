@@ -818,6 +818,58 @@ def test_el_adaptador_del_probe_exige_enumeracion_completa():
         assert "exigir_enumeracion_completa" in llamadas
 
 
+def test_los_metodos_del_protocolo_no_usan_la_enumeracion_truncada():
+    """El ancla anterior ataba el HELPER, no el call site — y eso no alcanza.
+
+    Hallazgo de review (Qodo): verificar que `_elementos` valida la completitud
+    deja intacto el hueco de cambiar el cuerpo de `ventanas_de_proceso` o
+    `controles_de_ventana` para que llamen a `_elementos_truncados`. El helper
+    seguiría siendo correcto y el ancla seguiría verde mientras un recorte
+    alimenta el veredicto. Es la misma forma de defecto que este PR viene
+    corrigiendo: probar la pieza en vez del camino.
+
+    `controles_para_volcado` es la ÚNICA que puede truncar: es diagnóstico, lo
+    anuncia con `TRUNCATED:` y no alimenta ninguna decisión.
+    """
+    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    metodos = {nodo.name: nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef | ast.AsyncFunctionDef)}
+    for nombre in METODOS_DEL_OBSERVADOR:
+        assert nombre in metodos, f"el probe ya no implementa {nombre}: revisá este ancla"
+        usadas = {hijo.attr for hijo in ast.walk(metodos[nombre]) if isinstance(hijo, ast.Attribute)}
+        assert "_elementos_truncados" not in usadas, (
+            f"{nombre} materializa con el recorte de diagnóstico: un veredicto no puede salir de evidencia parcial"
+        )
+
+    # Y el diagnóstico sigue siendo el único que puede truncar.
+    volcado = metodos.get("controles_para_volcado")
+    assert volcado is not None
+    assert "_elementos_truncados" in {h.attr for h in ast.walk(volcado) if isinstance(h, ast.Attribute)}
+
+
+def test_el_mapa_de_control_types_esta_congelado_contra_los_ids_reales():
+    """Igualdad literal contra los ids verificados en los headers de UIA.
+
+    Hallazgo de review (Qodo): la primera versión cruzaba `50007`/`50008` y no
+    tenía `Document`. Verificado contra `uiautomation` 2.0.29 (`class
+    ControlType`): ListItem=50007, List=50008, Document=50030. Se congela porque
+    un id mal traducido induce un selector equivocado, y el volcado existe
+    justamente para que el selector NO se escriba a ojo.
+    """
+    assert _cargar_la_sonda().NOMBRES_DE_CONTROL_TYPE == {
+        50000: "Button",
+        50003: "ComboBox",
+        50004: "Edit",
+        50005: "Hyperlink",
+        50007: "ListItem",
+        50008: "List",
+        50020: "Text",
+        50026: "Group",
+        50030: "Document",
+        50032: "Window",
+        50033: "Pane",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Validación de la solicitud (fail-closed antes de tocar la GUI)
 # ---------------------------------------------------------------------------

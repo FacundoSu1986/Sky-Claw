@@ -79,20 +79,30 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (  # noqa: E402
 #: CLSID de ``CUIAutomation``, el objeto COM raíz de UI Automation.
 CLSID_CUIAUTOMATION = "{ff48dba4-60ef-4201-aa87-54103eef594e}"
 
-#: ``UIA_ControlTypePropertyId`` devuelve un entero. Se traducen sólo los tipos
-#: que pueden plausiblemente contener una ruta; el resto se reporta como su id
-#: crudo, que sigue siendo evidencia utilizable.
+#: ``UIA_ControlTypePropertyId`` devuelve un entero. Se traducen los tipos que
+#: pueden plausiblemente contener una ruta; el resto se reporta como su id crudo,
+#: que sigue siendo evidencia utilizable.
+#:
+#: **Los ids están verificados contra los headers de UIA, no escritos de
+#: memoria** — y hacía falta: la primera versión cruzaba `50007`/`50008` y
+#: omitía `Document`. Un tipo mal traducido no es cosmético acá: el operador
+#: ESCRIBE el selector a partir de este volcado, así que un `List` que en
+#: realidad es un `ListItem` produce un `--control-type` que apunta al control
+#: equivocado, y de ahí puede salir un MATCH que no es del campo Output.
+#: Fuente de verificación: `uiautomation` 2.0.29 (`class ControlType`, generada
+#: de los headers de UI Automation). Congelado en los tests por igualdad literal.
 NOMBRES_DE_CONTROL_TYPE = {
-    50004: "Edit",
-    50020: "Text",
-    50003: "ComboBox",
     50000: "Button",
-    50032: "Window",
-    50026: "Group",
-    50033: "Pane",
-    50008: "Document",
-    50007: "List",
+    50003: "ComboBox",
+    50004: "Edit",
     50005: "Hyperlink",
+    50007: "ListItem",
+    50008: "List",
+    50020: "Text",
+    50026: "Group",
+    50030: "Document",
+    50032: "Window",
+    50033: "Pane",
 }
 
 
