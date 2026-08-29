@@ -297,6 +297,12 @@ class CriteriosDeControl:
         return {campo: valor for campo, valor in candidatos.items() if valor is not None and valor.strip()}
 
     def esta_vacio(self) -> bool:
+        """``True`` si no queda NINGÚN criterio con evidencia.
+
+        No es "los tres campos son ``None``": un selector de puros blancos
+        (``automation_id=""``) también está vacío, porque `_criterios` ya los
+        descartó. El pipeline lo traduce a ``UNKNOWN`` antes de mirar el árbol.
+        """
         return not self._criterios()
 
     def coincide(self, control: ControlObservado) -> bool:
@@ -363,7 +369,18 @@ class ResultadoPreflightUIA:
 class LocalizadorDeProcesos(Protocol):
     """Sensor de procesos vivos. Solo enumera; no abre, no señaliza, no mata."""
 
-    def procesos(self) -> Sequence[ProcesoObservado]: ...
+    def procesos(self) -> Sequence[ProcesoObservado]:
+        """Los procesos vivos que el sensor alcanza a ver, SIN filtrar.
+
+        El filtrado por identidad lo hace el pipeline, no la implementación: si
+        el sensor decidiera a quién devolver, la prueba de identidad quedaría
+        fuera de lo auditable. Un proceso ilegible se OMITE; no se inventa un
+        placeholder.
+
+        Lanza :class:`ObservacionUIAError` si el sensor falla como un todo — eso
+        es ``UNKNOWN``, distinto de "no hay ninguna instancia corriendo".
+        """
+        ...
 
 
 @runtime_checkable
@@ -379,11 +396,43 @@ class ObservadorUIA(Protocol):
     :class:`UIANoDisponibleError`); el pipeline las traduce a ``UNKNOWN``.
     """
 
-    def ventanas_de_proceso(self, pid: int) -> Sequence[VentanaObservada]: ...
+    def ventanas_de_proceso(self, pid: int) -> Sequence[VentanaObservada]:
+        """Ventanas top-level de ``pid``. **No las enfoca, no las activa, no las ordena.**
 
-    def controles_de_ventana(self, ventana: VentanaObservada) -> Sequence[ControlObservado]: ...
+        Traer una ventana al frente es una mutación que ven el usuario y la app:
+        cambia el foco de teclado. La observación no lo necesita, así que no lo
+        hace.
 
-    def leer_valor(self, control: ControlObservado) -> str | None: ...
+        Puede devolver ventanas de más: el pipeline revalida cada ``pid`` contra
+        el proceso resuelto, justamente para que un adapter no pueda ampliar el
+        alcance sin que se note. Si el ``ProcessId`` no se pudo leer va
+        :data:`PID_ILEGIBLE` y NUNCA el pid pedido (ver :func:`_pid_es_legible`).
+        """
+        ...
+
+    def controles_de_ventana(self, ventana: VentanaObservada) -> Sequence[ControlObservado]:
+        """Descendientes de ``ventana``, **completos o ninguno**.
+
+        Si el árbol no entra en :data:`TOPE_DE_ELEMENTOS_UIA` la implementación
+        lanza :class:`EnumeracionIncompletaError` en vez de recortar: los
+        primeros N de N+1 le darían al decisor una unicidad que el árbol real no
+        tiene, y ése es exactamente el ``MATCH`` falso que este módulo existe
+        para no emitir. Ver :func:`exigir_enumeracion_completa`.
+        """
+        ...
+
+    def leer_valor(self, control: ControlObservado) -> str | None:
+        """El valor que el control MUESTRA hoy, o ``None`` si no lo expone.
+
+        Sólo patrones de lectura (``ValuePattern.CurrentValue``, ``TextPattern``,
+        ``LegacyIAccessible``). Las primitivas mutantes están fuera del contrato:
+        no aparecen en este protocolo, y el ancla por AST de la suite prohíbe
+        nombrarlas en toda esta superficie.
+
+        ``None`` es "no lo expone", que termina en ``UNKNOWN``. No se confunde
+        con ``""``, que es un valor leído y vacío.
+        """
+        ...
 
 
 class LocalizadorPsutil:
@@ -396,6 +445,11 @@ class LocalizadorPsutil:
     """
 
     def procesos(self) -> Sequence[ProcesoObservado]:
+        """Enumera con ``psutil`` y traduce su fallo al error del puerto.
+
+        Un proceso sin nombre legible se omite en vez de entrar con el campo
+        vacío: entraría como candidato de un ejecutable que nadie pudo confirmar.
+        """
         salida: list[ProcesoObservado] = []
         try:
             # `ad_value=None` sustituye los atributos que el sensor no puede leer
@@ -600,6 +654,12 @@ def _resultado(
     valor_esperado_canonico: str | None = None,
     evidencia: Sequence[str] = (),
 ) -> ResultadoPreflightUIA:
+    """Constructor ÚNICO de todo veredicto: cada rama del pipeline sale por acá.
+
+    Que sea uno solo es lo que impide que el par ``(estado, razon)`` diverja
+    entre caminos, y lo que obliga a una rama nueva a elegir una razón declarada
+    en vez de reciclar la de al lado.
+    """
     return ResultadoPreflightUIA(
         estado=estado,
         razon=razon,
