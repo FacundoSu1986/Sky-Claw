@@ -57,6 +57,7 @@ jobs:
         uses: Codium-ai/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d # v0.41.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Data policy: .github/AI_REVIEW_DATA_POLICY.md — solo datos públicos; revisar proveedores antes de cambiar modelos.
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER__KEY: ${{ secrets.OPENROUTER_API_KEY }}
           CONFIG.MODEL: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
@@ -166,6 +167,7 @@ jobs:
         uses: Codium-ai/pr-agent@570f67ed5fc8db5be74c18df070bc20079b64b0d # v0.41.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Data policy: .github/AI_REVIEW_DATA_POLICY.md — solo datos públicos; revisar proveedores antes de cambiar modelos.
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER__KEY: ${{ secrets.OPENROUTER_API_KEY }}
           CONFIG.MODEL: "openrouter/nvidia/nemotron-3-super-120b-a12b:free"
