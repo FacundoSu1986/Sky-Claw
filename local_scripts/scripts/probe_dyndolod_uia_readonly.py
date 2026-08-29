@@ -341,12 +341,20 @@ class ObservadorUIAWindows:
 
 
 def _volcar(observador: ObservadorUIAWindows, pid: int, salida) -> None:
-    """Imprime el subárbol saneado de cada ventana top-level del pid."""
+    """Imprime el subárbol de cada ventana top-level del pid, saneado ENTERO.
+
+    Todo campo de TEXTO pasa por `_sanear`, no sólo los que obviamente llevan
+    una ruta. Una app que derive su ``AutomationId`` o su ``ClassName`` de una
+    ruta filtraría ahí el perfil del operador — y este volcado está hecho para
+    pegarse en un PR. Que TexGen/DynDOLOD lo hagan no está verificado (se sabrá
+    en un rig real), pero redactar cuesta cero. Los pids son numéricos y no
+    llevan nada que redactar. Hallazgo de review (Qodo).
+    """
     ventanas = observador.ventanas_de_proceso(pid)
     print(f"  ventanas top-level: {len(ventanas)}", file=salida)
     for ventana in ventanas:
         print(
-            f"  ventana titulo={_sanear(ventana.titulo)!r} clase={ventana.class_name!r} pid={ventana.pid}",
+            f"  ventana titulo={_sanear(ventana.titulo)!r} clase={_sanear(ventana.class_name)!r} pid={ventana.pid}",
             file=salida,
         )
         controles, total = observador.controles_para_volcado(ventana)
@@ -362,8 +370,8 @@ def _volcar(observador: ObservadorUIAWindows, pid: int, salida) -> None:
         for control in controles:
             patrones = observador.patrones_de_lectura(control)
             print(
-                f"    - automation_id={control.automation_id!r} nombre={_sanear(control.nombre)!r} "
-                f"tipo={control.tipo_de_control!r} clase={control.class_name!r} "
+                f"    - automation_id={_sanear(control.automation_id)!r} nombre={_sanear(control.nombre)!r} "
+                f"tipo={_sanear(control.tipo_de_control)!r} clase={_sanear(control.class_name)!r} "
                 f"pid={control.pid} patrones={patrones}",
                 file=salida,
             )

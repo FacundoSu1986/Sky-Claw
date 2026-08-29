@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import io
 import os
 import pathlib
 import subprocess
@@ -134,6 +135,15 @@ class ObservadorFalso:
 
     def leer_valor(self, control):
         self._quizas_fallar("leer_valor")
+        # La clave puede ser el `AutomationId` (el caso común, un control por
+        # id) o la tupla COMPLETA que identifica al control. La tupla existe
+        # para los tests donde dos controles comparten `AutomationId`: con la
+        # clave simple el doble devolvía el MISMO valor para cualquiera de los
+        # candidatos, así que el test no podía notar que el pipeline había
+        # elegido el equivocado. Hallazgo de review (Qodo).
+        compuesta = (control.automation_id, control.nombre, control.tipo_de_control, control.pid)
+        if compuesta in self._valores:
+            return self._valores[compuesta]
         return self._valores.get(control.automation_id)
 
 
@@ -471,7 +481,13 @@ def test_t13_automation_id_vacio_se_resuelve_con_evidencia_alternativa_inequivoc
                 _control(automation_id="", nombre="Data", tipo="Edit"),
             ]
         },
-        valores={"": SALIDA_ADMINISTRADA},
+        # Valores DISTINTOS por control: si el pipeline eligiera `Data`, leería
+        # otra ruta y esto sería MISMATCH. Con un único valor para los dos, el
+        # test daba MATCH eligiera el que eligiera y no probaba la selección.
+        valores={
+            ("", "Output", "Edit", 4242): SALIDA_ADMINISTRADA,
+            ("", "Data", "Edit", 4242): r"C:\Games\Skyrim Special Edition\Sky-Claw\Otro",
+        },
     )
     assert resultado.estado is EstadoPreflight.MATCH
 
@@ -487,7 +503,10 @@ def test_t13b_automation_id_vacio_sin_evidencia_alternativa_da_unknown():
                 _control(automation_id="", nombre="Data", tipo="Edit"),
             ]
         },
-        valores={"": SALIDA_ADMINISTRADA},
+        valores={
+            ("", "Output", "Edit", 4242): SALIDA_ADMINISTRADA,
+            ("", "Data", "Edit", 4242): r"C:\Games\Skyrim Special Edition\Sky-Claw\Otro",
+        },
     )
     assert resultado.estado is EstadoPreflight.UNKNOWN
     assert resultado.razon is RazonPreflight.CONTROL_AMBIGUO
@@ -501,7 +520,13 @@ def test_t14_automation_id_duplicado_fuera_del_proceso_no_afecta():
         procesos=[_proceso()],
         ventanas=[_ventana()],
         controles={"w1": [_control(), _control(pid=777)]},
-        valores={"edOutput": SALIDA_ADMINISTRADA},
+        # El homónimo ajeno lee OTRA ruta: si el scoping por pid fallara y se
+        # eligiera el del pid 777, el veredicto sería MISMATCH en vez de MATCH.
+        # Con un solo valor para ambos, el test pasaba eligiera al que eligiera.
+        valores={
+            ("edOutput", "Output", "Edit", 4242): SALIDA_ADMINISTRADA,
+            ("edOutput", "Output", "Edit", 777): r"C:\Games\Skyrim Special Edition\Sky-Claw\Ajeno",
+        },
     )
     assert resultado.estado is EstadoPreflight.MATCH
     assert resultado.pid == 4242
@@ -1656,3 +1681,63 @@ def test_la_unidad_es_la_unica_posicion_donde_dos_puntos_es_legal():
     assert canonicalizar_ruta_windows(r"C:\Sky-Claw") == r"c:\sky-claw"
     assert canonicalizar_ruta_windows(r"C:\x\D:\y") is None
     assert canonicalizar_ruta_windows(r"\\servidor\C:\x") is None
+
+
+# ---------------------------------------------------------------------------
+# El volcado redacta TODOS los campos de texto, no algunos
+# ---------------------------------------------------------------------------
+#
+# Hallazgo de review (Qodo). `_volcar` saneaba el título de la ventana y el
+# `Name` del control, y dejaba crudos `AutomationId`, `ClassName` y
+# `ControlType`. El docstring del propio módulo dice que este volcado se pega
+# en un PR: una app que derive su `AutomationId` de una ruta filtra ahí el
+# perfil del operador, que es exactamente lo que las otras dos líneas redactan.
+#
+# No está verificado que TexGen/DynDOLOD embeban rutas en esos campos —eso sólo
+# se sabrá en un rig real— pero redactar cuesta cero y cierra la superficie.
+#
+# El test enumera los campos de texto del control en vez de mirar uno: si
+# mañana el volcado imprime un campo nuevo sin sanear, este test lo agarra.
+
+
+class _ObservadorDeVolcado:
+    """Observador mínimo para `_volcar`: un árbol fijo, sin UIA ni Windows."""
+
+    def __init__(self, ventana, controles):
+        self._ventana = ventana
+        self._controles = controles
+
+    def ventanas_de_proceso(self, pid):
+        return [self._ventana]
+
+    def controles_para_volcado(self, ventana):
+        return list(self._controles), len(self._controles)
+
+    def patrones_de_lectura(self, control):
+        return "Value"
+
+
+def test_el_volcado_redacta_todos_los_campos_de_texto_del_control(monkeypatch):
+    monkeypatch.setenv("USERNAME", "operador")
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\operador")
+    sonda = _cargar_la_sonda()
+
+    perfil = r"C:\Users\operador"
+    ventana = VentanaObservada(pid=4242, titulo=f"{perfil}\\salida", class_name=f"{perfil}\\clase", handle="w1")
+    # Cada campo de texto lleva el perfil: si alguno se imprime crudo, aparece.
+    control = ControlObservado(
+        pid=4242,
+        automation_id=f"{perfil}\\idcontrol",
+        nombre=f"{perfil}\\nombre",
+        tipo_de_control=f"{perfil}\\tipo",
+        class_name=f"{perfil}\\claseControl",
+    )
+
+    salida = io.StringIO()
+    sonda._volcar(_ObservadorDeVolcado(ventana, [control]), 4242, salida)
+    volcado = salida.getvalue()
+
+    assert "operador" not in volcado, volcado
+    # Y que efectivamente imprimió los campos, para que el test no pase por
+    # haber volcado nada: cada uno tiene que estar, redactado.
+    assert volcado.count("<USERPROFILE>") >= 6, volcado
