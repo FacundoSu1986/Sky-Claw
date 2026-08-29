@@ -1087,6 +1087,7 @@ def test_las_razones_estan_congeladas():
         "PROCESO_AMBIGUO",
         "PID_NO_COINCIDE",
         "IDENTIDAD_NO_DEMOSTRABLE",
+        "PID_NO_OBSERVABLE",
         "VENTANA_NO_ENCONTRADA",
         "VENTANA_AMBIGUA",
         "CONTROL_NO_ENCONTRADO",
@@ -1467,3 +1468,60 @@ def test_los_codigos_de_salida_de_la_sonda_estan_congelados():
         if isinstance(nodo, ast.Return) and isinstance(nodo.value, ast.Constant)
     }
     assert codigos == {0, 2, 3, 4}
+
+
+# ---------------------------------------------------------------------------
+# Un pid ilegible no prueba que el control sea ajeno
+# ---------------------------------------------------------------------------
+#
+# Hallazgo de review (Qodo). El filtro `control.pid == proceso.pid` descartaba
+# como AJENOS los controles cuyo pid es negativo — que es el centinela que usa el
+# adaptador cuando UIA no puede leer `ProcessId`. Con dos controles que satisfacen
+# el selector, uno legible y otro no, el decisor veía UNO, lo declaraba inequívoco
+# y podía emitir MATCH aunque el árbol real tuviera dos y el Output verdadero
+# fuese el ilegible.
+#
+# Es exactamente la misma forma que la degradación de identidad del ejecutable:
+# convertir "no pude probarlo" en "queda descartado". Un pid ilegible no prueba
+# ajenidad; prueba que la unicidad no se puede afirmar.
+
+
+def test_un_control_con_pid_ilegible_junto_a_otro_valido_da_unknown():
+    resultado = _observar(
+        _solicitud(),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control(), _control(pid=-1)]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.PID_NO_OBSERVABLE
+
+
+def test_un_control_unico_con_pid_ilegible_tambien_da_unknown():
+    """Aunque sea el único: no se puede afirmar que pertenezca a este proceso."""
+    resultado = _observar(
+        _solicitud(),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control(pid=-1)]},
+        valores={"edOutput": SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.PID_NO_OBSERVABLE
+
+
+def test_una_ventana_con_pid_ilegible_da_unknown():
+    """Mismo patrón en la resolución de ventana: el filtro las escondía igual."""
+    resultado = observar_output(
+        _solicitud(),
+        localizador=LocalizadorFalso([_proceso()]),
+        observador=ObservadorFalso(
+            ventanas=[_ventana(), _ventana(pid=-1, handle="w2")],
+            controles={"w1": [_control()]},
+            valores={"edOutput": SALIDA_ADMINISTRADA},
+            ignorar_pid=True,
+        ),
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.PID_NO_OBSERVABLE

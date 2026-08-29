@@ -134,6 +134,7 @@ class RazonPreflight(enum.Enum):
     PROCESO_AMBIGUO = "PROCESO_AMBIGUO"
     PID_NO_COINCIDE = "PID_NO_COINCIDE"
     IDENTIDAD_NO_DEMOSTRABLE = "IDENTIDAD_NO_DEMOSTRABLE"
+    PID_NO_OBSERVABLE = "PID_NO_OBSERVABLE"
     VENTANA_NO_ENCONTRADA = "VENTANA_NO_ENCONTRADA"
     VENTANA_AMBIGUA = "VENTANA_AMBIGUA"
     #: Resolución del control de Output dentro de esa ventana.
@@ -203,9 +204,20 @@ class ProcesoObservado:
     ruta_ejecutable: str | None = None
 
 
+#: Un pid negativo significa "el backend no pudo leer ``ProcessId``". Todo
+#: adaptador debe usar un valor negativo para ese caso y NUNCA el pid esperado:
+#: el pipeline lo trata como identidad no observable, que es distinto de
+#: "pertenece a otro proceso". Los pids reales son positivos en todo sistema
+#: soportado, así que el centinela no colisiona con ninguno legítimo.
+PID_ILEGIBLE = -1
+
+
 @dataclass(frozen=True)
 class VentanaObservada:
-    """Ventana top-level de un proceso. ``handle`` es opaco para el pipeline."""
+    """Ventana top-level de un proceso. ``handle`` es opaco para el pipeline.
+
+    ``pid`` negativo = el backend no pudo leerlo (ver :data:`PID_ILEGIBLE`).
+    """
 
     pid: int
     titulo: str
@@ -724,8 +736,23 @@ def _resolver_ventana(
     tenemos, y un adapter que devuelva de más no debe poder ampliar el alcance de
     la observación sin que se note.
     """
-    ventanas = [ventana for ventana in observador.ventanas_de_proceso(proceso.pid) if ventana.pid == proceso.pid]
-    evidencia.extend(f"ventana titulo={ventana.titulo!r} clase={ventana.class_name!r}" for ventana in ventanas)
+    observadas = list(observador.ventanas_de_proceso(proceso.pid))
+    evidencia.extend(f"ventana titulo={ventana.titulo!r} clase={ventana.class_name!r}" for ventana in observadas)
+
+    # ANTES de filtrar por pid: el filtro descartaría estas como "ajenas", y no
+    # lo son — su identidad simplemente no se pudo leer. Ver `PID_ILEGIBLE`.
+    ilegibles = [ventana for ventana in observadas if ventana.pid < 0]
+    if ilegibles:
+        return None, _resultado(
+            EstadoPreflight.UNKNOWN,
+            RazonPreflight.PID_NO_OBSERVABLE,
+            solicitud,
+            f"{len(ilegibles)} ventana(s) sin ProcessId legible: no se puede afirmar a qué proceso pertenecen",
+            pid=proceso.pid,
+            evidencia=evidencia,
+        )
+
+    ventanas = [ventana for ventana in observadas if ventana.pid == proceso.pid]
 
     if not ventanas:
         return None, _resultado(
@@ -773,6 +800,19 @@ def _resolver_control(
             RazonPreflight.CONTROL_NO_ENCONTRADO,
             solicitud,
             f"ningún control de la ventana satisface {criterios.describir()}",
+            pid=proceso.pid,
+            ventana=ventana.titulo,
+            evidencia=evidencia,
+        )
+
+    ilegibles = [control for control in coinciden if control.pid < 0]
+    if ilegibles:
+        return None, _resultado(
+            EstadoPreflight.UNKNOWN,
+            RazonPreflight.PID_NO_OBSERVABLE,
+            solicitud,
+            f"{len(ilegibles)} de {len(coinciden)} candidatos no exponen ProcessId: "
+            "un pid ilegible no prueba ajenidad, prueba que la unicidad no se puede afirmar",
             pid=proceso.pid,
             ventana=ventana.titulo,
             evidencia=evidencia,

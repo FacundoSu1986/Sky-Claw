@@ -62,6 +62,7 @@ from collections.abc import Sequence
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from sky_claw.local.tools.dyndolod_uia_preflight import (  # noqa: E402
+    PID_ILEGIBLE,
     TOOLS_OBSERVABLES,
     TOPE_DE_ELEMENTOS_UIA,
     ControlObservado,
@@ -224,7 +225,7 @@ class ObservadorUIAWindows:
         try:
             return int(crudo)  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            return -1
+            return PID_ILEGIBLE
 
     def _elementos(self, coleccion: object) -> list[object]:
         """Materializa la colección ENTERA, o no materializa nada.
