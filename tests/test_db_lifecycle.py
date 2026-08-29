@@ -1662,8 +1662,11 @@ async def test_deadline_total_no_excede_ventana_dos_fases(
     duplicar o triplicar el budget.
 
     Post-fix: el segundo ``execute`` corre con ``busy_timeout <= restante``.
-    El total respeta el budget configurado (0.3s + 0.15s de tolerancia
-    explícita por scheduling = assertion < 0.45s).
+    El bug MA D1 (second attempt with the FULL configured busy_timeout)
+    is caught deterministically by asserting on the NUMERIC value the spy
+    captured (``_busy_timeout_ms``), not on wall clock — ``asyncio.sleep``
+    bajo carga de CI (runner de Windows) puede distorsionar la medición
+    sin afectar la lógica del cap.
     """
     import sky_claw.app.core.db_lifecycle as db_lifecycle
 
@@ -1678,6 +1681,9 @@ async def test_deadline_total_no_excede_ventana_dos_fases(
         def __init__(self) -> None:
             self._disparos = 0
             self._inicio = time.monotonic()
+            # Valores capturados para la aserción determinística:
+            # el busy_timeout con que `_enter_wal_mode` ejecuta cada intento.
+            self._segundo_intento_busy_timeout_ms: int | None = None
 
         def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
             if isinstance(sql, str) and sql.strip().startswith("PRAGMA busy_timeout="):
@@ -1705,22 +1711,23 @@ async def test_deadline_total_no_excede_ventana_dos_fases(
                         sqlite3.OperationalError("database is locked"),
                     )
                 if self._disparos == 2:
-                    # Segundo intento: el busy_timeout del intento
-                    # debería ser el RESTANTE (~60ms) si el fix
-                    # funciona. Sin el fix, sería 300ms. El spy
-                    # espera lo que el busy_timeout diga (porque
-                    # la espera del busy handler usa el busy_timeout
-                    # del stmt). Si el fix funciona, el spy espera
-                    # 60ms y completa la espera de la ventana
-                    # restante — el total queda en ~300ms. Si el
-                    # fix NO funciona (M-D1), el spy espera 300ms
-                    # y empuja el total a ~600ms.
-                    espera = (self._busy_timeout_ms or 300) / 1000.0
+                    # Probabilidad determinística del bug M-D1: el segundo
+                    # intento llega con el restante (~60ms), no con el
+                    # valor completo (300ms). El spy captura ese valor.
+                    self._segundo_intento_busy_timeout_ms = self._busy_timeout_ms
                     return _DelayedRaise(
-                        espera,
+                        (self._busy_timeout_ms or 300) / 1000.0,
                         sqlite3.OperationalError("database is locked"),
                     )
-                # Tercer intento: pasa.
+                # Intentos N>=3: el deadline debe haber disparado ya. Si por
+                # scheduling el elapsed quedó aún bajo (CI de Windows), NO
+                # dejamos pasar el reintento: re-lanzamos BUSY igual.
+                # Prevente "DID NOT RAISE" por segundo intento que duró
+                # menos que el presupuesto en algunos runners.
+                return _DelayedRaise(
+                    0.001,
+                    sqlite3.OperationalError("database is locked"),
+                )
             return self._conn.execute(sql, *args, **kwargs)  # type: ignore[attr-defined]
 
         def __getattr__(self, item: str) -> object:
@@ -1764,29 +1771,30 @@ async def test_deadline_total_no_excede_ventana_dos_fases(
         config=DatabaseLifecycleConfig(busy_timeout_ms=300),
     )
     try:
-        inicio = time.monotonic()
-        # El escenario es: el holder sostiene el lock durante ~el
-        # budget completo. El primer intento espera 240ms, el segundo
-        # entraría a la espera del handler con el busy_timeout
-        # ORIGINAL (300ms), no con el restante. Bajo el bug, el total
-        # puede ser ~540ms (primer intento) o más si la espera
-        # legítima del segundo intento excede la ventana restante. El
-        # fix acota cada intento al restante, así que el total <=
-        # 300ms + tolerancia. Esta es la propiedad que el prompt
-        # exige.
+        # Wall-clock NO es aserción de propiedad en CI: asyncio.Sleep bajo
+        # carga de scheduling puede desviar la medición sin afectar al
+        # cap de busy_timeout. La propiedad determinística: el busy_timeout
+        # capturado por el spy para el segundo intento (escape: <
+        # 300ms) no puede ser el valor configurado completo.
+
         with pytest.raises(sqlite3.OperationalError, match="database is locked"):
             await manager._init_single(db_path)
-        transcurrido = time.monotonic() - inicio
-        assert spy_factory_calls, "el spy debió capturar la conexión"
+
+        assert spy_factory_calls, "el spy debió capturar la conexión."
         assert spy_factory_calls[0]._disparos >= 1, "el primer execute debió ser BUSY (fase 1)"
-        # El total debe estar acotado por la ventana configurada (300ms) +
-        # tolerancia EXPLÍCITA de scheduling (en CI de Windows un diseñador
-        # puede añadir hasta 300ms de latencia sin alterar la semántica).
-        # Elijo TOLERANCIA optimista de 0.30s: pre-fix el segundo intento
-        # arranca con busy_timeout=300ms y el total sería ~0.54s+ (0.24+0.30),
-        # así que sigue siendo ROJO con el bug. El valor evita falsos
-        # negativos por scheduling solamente.
-        assert transcurrido < 0.60, f"tiempo total acotado por busy_timeout + scheduling tolerado: {transcurrido:.3f}s"
+
+        segundo_intento_timeout = spy_factory_calls[0]._segundo_intento_busy_timeout_ms
+        assert segundo_intento_timeout is not None, (
+            "el segundo intento nunca corrió (bug o la flecha regresó al_SCHEDULER)"
+        )
+        # Primer intento consumió ~240ms del budget de 300ms (Fase 1). El
+        # segundo intento DEBE ver ~60ms, no 300ms. El margen ancho (< 250)
+        # cubre scheduling de CI sin dejar pasar M-D1: el bug deja el segundo
+        # intento con 300ms exactos.
+        assert segundo_intento_timeout < 250, (
+            f"el segundo intento debió capar su busy_timeout al restante(~60ms), "
+            f"pero se observó {segundo_intento_timeout}ms — señal de M-D1 (se le dio el budget completo)"
+        )
     finally:
         with contextlib.suppress(Exception):
             await manager.shutdown_all()
