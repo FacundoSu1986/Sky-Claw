@@ -13,6 +13,7 @@ dispatch_tool actually reads.
 from __future__ import annotations
 
 import dataclasses
+import pathlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -249,11 +250,27 @@ async def test_execute_synthesis_pipeline_non_dict_result(supervisor):
 
 async def test_execute_synthesis_pipeline_sin_guard_deniega_fail_closed(supervisor, tmp_path):
     """Builder REAL: sin HITLGuard el ritual se deniega sin ejecutarse — nadie
-    podría aprobar la promoción del diff (fail-closed, ADR 0005)."""
+    podría aprobar la promoción del diff (fail-closed, ADR 0005).
+
+    El assert ancla observa la frontera real nueva del dispatcher: el
+    ``synthesis_service_factory`` inyectado vía ``OrchestrationDispatcherDependencies``.
+    La estrategia ``ExecuteSynthesisPipelineStrategy`` no consulta
+    ``supervisor._synthesis_service``; consulta ``self._service_factory`` que
+    recibe desde el dataclass. Si el factory se invocara aunque el flow
+    rechace la promoción, se estaría construyendo un servicio sandbox y
+    arrancando una ejecución productiva sin gate — el fail-closed exige
+    detectar esa regresión.
+    """
     supervisor._hitl_guard = None
     supervisor._path_resolver = MagicMock()
     supervisor._path_resolver.get_mo2_path.return_value = tmp_path
     from sky_claw.app.orchestrator.dispatcher_dependencies import build_synthesis_flow_provider
+
+    factory_calls: list[tuple[pathlib.Path, object]] = []
+
+    def _factory_espia(output_path, journal):
+        factory_calls.append((output_path, journal))
+        raise AssertionError("synthesis_service_factory no debe invocarse sin HITLGuard")
 
     supervisor._dispatcher_dependencies = dataclasses.replace(
         supervisor._dispatcher_dependencies,
@@ -262,6 +279,7 @@ async def test_execute_synthesis_pipeline_sin_guard_deniega_fail_closed(supervis
             profile_name=supervisor.profile_name,
             hitl_guard=None,
         ),
+        synthesis_service_factory=_factory_espia,
     )
     supervisor._tool_dispatcher = build_orchestration_dispatcher(
         supervisor._dispatcher_dependencies,
@@ -272,7 +290,7 @@ async def test_execute_synthesis_pipeline_sin_guard_deniega_fail_closed(supervis
 
     assert result["success"] is False
     assert result["reason"] == "SandboxPromotionUnavailable"
-    supervisor._synthesis_service.execute_pipeline.assert_not_awaited()
+    assert factory_calls == []
 
 
 # ---------------------------------------------------------------------------

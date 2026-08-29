@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import pathlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from sky_claw.app.db.journal import OperationJournal, OperationType, TransactionStatus
+from sky_claw.app.orchestrator.dispatcher_dependencies import (
+    OrchestrationDispatcherDependencies,
+)
 from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 from sky_claw.app.orchestrator.tool_dispatcher import OrchestrationToolDispatcher, build_orchestration_dispatcher
 from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
@@ -47,6 +51,18 @@ def superficie_dispatcher_dependencies() -> frozenset[str]:
         for nodo in ast.walk(arbol)
         if isinstance(nodo, ast.Attribute) and isinstance(nodo.value, ast.Name) and nodo.value.id == "dependencies"
     )
+
+
+def campos_dispatcher_dependencies() -> frozenset[str]:
+    """Enumera los campos declarados en ``OrchestrationDispatcherDependencies``.
+
+    Cruza con ``superficie_dispatcher_dependencies`` para que un campo
+    agregado al dataclass y nunca cableado en ``build_orchestration_dispatcher``
+    rompa el test, y un atributo ``dependencies.*`` usado por el dispatcher
+    sin declarar también. Sin este ancla, los dos lados pueden divergir
+    silenciosamente (regla "arreglar un hermano y no al otro").
+    """
+    return frozenset(campo.name for campo in dataclasses.fields(OrchestrationDispatcherDependencies))
 
 
 def preparar_entorno_mo2(tmp_path: pathlib.Path) -> dict[str, pathlib.Path]:
@@ -149,6 +165,7 @@ def construir_dispatcher_grass(
     realmente se alcanza). NUNCA se pasa ``allow_unattended=True``, que
     desactivaría el fail-closed en vez de anclarlo.
     """
+    assert campos_dispatcher_dependencies() == SUPERFICIE_DISPATCHER_DEPENDENCIES
     assert superficie_dispatcher_dependencies() == SUPERFICIE_DISPATCHER_DEPENDENCIES
     hitl_guard: HITLGuard | None = None
     if con_guard:
