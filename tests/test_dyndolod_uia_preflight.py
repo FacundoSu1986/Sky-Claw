@@ -38,10 +38,12 @@ llama, así que el guard no depende sólo de leer el AST.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import os
 import pathlib
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
@@ -103,8 +105,12 @@ class ObservadorFalso:
     fallos COM / *stale element* del rig real sin tener rig.
     """
 
-    def __init__(self, ventanas=(), controles=None, valores=None, error=None, error_en=None):
+    def __init__(self, ventanas=(), controles=None, valores=None, error=None, error_en=None, ignorar_pid=False):
         self._ventanas = tuple(ventanas)
+        # `ignorar_pid=True` modela un adaptador que devuelve de más. Sin él, el
+        # doble filtraba por pid y el guard defensivo del pipeline nunca se
+        # ejercía: el test pasaba por el filtro del DOBLE, no por el del código.
+        self._ignorar_pid = ignorar_pid
         self._controles = controles or {}
         self._valores = valores or {}
         self._error = error
@@ -116,6 +122,8 @@ class ObservadorFalso:
 
     def ventanas_de_proceso(self, pid):
         self._quizas_fallar("ventanas_de_proceso")
+        if self._ignorar_pid:
+            return self._ventanas
         return tuple(v for v in self._ventanas if v.pid == pid)
 
     def controles_de_ventana(self, ventana):
@@ -578,11 +586,13 @@ def test_una_ventana_de_otro_proceso_devuelta_por_el_adapter_se_descarta():
     resultado = observar_output(
         _solicitud(),
         localizador=LocalizadorFalso([_proceso()]),
-        # Este observador ignora el pid: devuelve la ventana de otro proceso.
+        # `ignorar_pid=True`: el adaptador devuelve la ventana de OTRO proceso,
+        # así que la re-validación del pipeline es lo único que la puede frenar.
         observador=ObservadorFalso(
             ventanas=[_ventana(pid=777)],
             controles={"w1": [_control()]},
             valores={"edOutput": SALIDA_ADMINISTRADA},
+            ignorar_pid=True,
         ),
     )
     assert resultado.estado is EstadoPreflight.UNKNOWN
@@ -1280,10 +1290,17 @@ def test_el_probe_no_declara_dependencia_uia_en_los_manifests():
     Si algún día entra al runtime tiene que ser una decisión explícita que
     rompa este ancla, no un `pip install` que se cuele en un lockfile.
     """
-    manifest = (RAIZ / "pyproject.toml").read_text(encoding="utf-8")
-    seccion = manifest.split("[project.optional-dependencies]")[0]
+    manifest = tomllib.loads((RAIZ / "pyproject.toml").read_text(encoding="utf-8"))
+    proyecto = manifest.get("project", {})
+    # TODAS las secciones de dependencias, no sólo la principal: cortar el texto
+    # antes de `[project.optional-dependencies]` dejaba entrar un `comtypes` por
+    # la puerta de al lado (hallazgo de review, Qodo).
+    declaradas = list(proyecto.get("dependencies", []))
+    for extra, paquetes in proyecto.get("optional-dependencies", {}).items():
+        declaradas.extend(f"{extra}:{paquete}" for paquete in paquetes)
     for paquete in ("comtypes", "pywinauto", "uiautomation", "pywin32"):
-        assert f'"{paquete}' not in seccion, f"{paquete} entró a dependencies sin decisión"
+        culpables = [d for d in declaradas if paquete in d.lower()]
+        assert not culpables, f"{paquete} entró a las dependencias sin decisión: {culpables}"
 
 
 def test_el_banner_de_la_sonda_sanea_la_ruta_del_ejecutable():
@@ -1311,3 +1328,54 @@ def test_el_banner_de_la_sonda_sanea_la_ruta_del_ejecutable():
     )
     assert "operador" not in completado.stdout, completado.stdout
     assert "<USERPROFILE>" in completado.stdout, completado.stdout
+
+
+def _cargar_la_sonda():
+    """Carga el probe por ruta: vive fuera del paquete y no es importable normal."""
+    spec = importlib.util.spec_from_file_location("probe_t5a", PROBE_T5A)
+    assert spec is not None and spec.loader is not None
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        r"C:\Games\badminton\out",
+        "DynDOLOD administrator mode",
+        r"C:\Modding\admin-tools\TexGen",
+        "Administración de DynDOLOD",
+    ],
+)
+def test_el_saneo_no_corrompe_texto_que_solo_contiene_el_usuario_como_substring(texto, monkeypatch):
+    """Sanear de más rompe justo aquello para lo que existe el volcado.
+
+    Hallazgo de review (Qodo). Con `USERNAME=Admin`, reemplazar por substring
+    convertía `Administración` en `<USERNAME>istración` y `badminton` en
+    `b<USERNAME>ton`: el árbol que hay que leer para ELEGIR el selector T5A
+    quedaba ilegible, y podía inducir criterios equivocados.
+    """
+    monkeypatch.setenv("USERNAME", "Admin")
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\Admin")
+    assert _cargar_la_sonda()._sanear(texto) == texto
+
+
+@pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        (r"C:\Users\Admin\Modding\TexGenx64.exe", r"<USERPROFILE>\Modding\TexGenx64.exe"),
+        (r"C:\Users\Admin", "<USERPROFILE>"),
+        (r"D:\mods\Admin\out", r"D:\mods\<USERNAME>\out"),
+        (r"c:\users\admin\x", r"<USERPROFILE>\x"),
+    ],
+)
+def test_el_saneo_si_redacta_componentes_completos(texto, esperado, monkeypatch):
+    """Componente completo o prefijo de ruta: ahí sí hay que redactar.
+
+    El último caso cubre que las rutas de Windows no distinguen mayúsculas: no
+    redactar por diferencia de caso sería una fuga.
+    """
+    monkeypatch.setenv("USERNAME", "Admin")
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\Admin")
+    assert _cargar_la_sonda()._sanear(texto) == esperado

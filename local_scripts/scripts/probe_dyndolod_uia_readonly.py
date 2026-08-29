@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import re
 import sys
 from collections.abc import Sequence
 
@@ -96,16 +97,47 @@ NOMBRES_DE_CONTROL_TYPE = {
 
 
 def _sanear(texto: str) -> str:
-    """Reemplaza el perfil del usuario por un marcador antes de imprimir.
+    """Redacta el perfil del usuario antes de imprimir, SIN romper el resto.
 
     Los títulos de ventana y los valores de las cajas de texto llevan rutas
-    completas; el output de esta sonda se pega en un PR. Sanear no es cosmético.
+    completas; este volcado se pega en un PR, así que redactar no es cosmético.
+
+    **Pero sobre-redactar rompe justo aquello para lo que existe el volcado.**
+    Reemplazar por substring convertía —con `USERNAME=Admin`— `Administración`
+    en `<USERNAME>istración` y `badminton` en `b<USERNAME>ton`: el árbol que hay
+    que LEER para elegir el selector T5A quedaba ilegible, y podía inducir
+    criterios equivocados. Por eso se exige frontera:
+
+    * ``USERPROFILE``/``HOME`` son rutas: se redactan como prefijo, sólo cuando
+      lo que sigue es un separador o el fin de la cadena;
+    * ``USERNAME`` es un nombre suelto: se redacta sólo como COMPONENTE completo
+      de ruta, rodeado de separadores o extremos.
+
+    La comparación ignora mayúsculas porque las rutas de Windows tampoco las
+    distinguen: no redactar por diferencia de caso sería una fuga. El costo
+    aceptado es que un ``USERNAME`` suelto en prosa (un título como "Admin
+    tools") no se redacta — ahí no es una ruta, y romper el volcado por ese caso
+    sale más caro que el dato.
     """
+    separadores = r"\\/"
     resultado = texto
-    for variable in ("USERPROFILE", "HOME", "USERNAME"):
+    for variable in ("USERPROFILE", "HOME"):
         valor = os.environ.get(variable)
         if valor and len(valor) > 2:
-            resultado = resultado.replace(valor, f"<{variable}>")
+            resultado = re.sub(
+                re.escape(valor) + rf"(?=[{separadores}]|$)",
+                f"<{variable}>",
+                resultado,
+                flags=re.IGNORECASE,
+            )
+    usuario = os.environ.get("USERNAME")
+    if usuario and len(usuario) > 2:
+        resultado = re.sub(
+            rf"(?<![^{separadores}]){re.escape(usuario)}(?![^{separadores}])",
+            "<USERNAME>",
+            resultado,
+            flags=re.IGNORECASE,
+        )
     return resultado
 
 
@@ -121,6 +153,20 @@ class ObservadorUIAWindows:
     archivo en cualquier plataforma no debe fallar, y la ausencia del binding
     tiene que llegar como :class:`UIANoDisponibleError` —que el preflight
     traduce a ``UNKNOWN``— y no como un ``ImportError`` que reviente arriba.
+
+    **Ciclo de vida de COM: una sola inicialización, sin cierre simétrico, y es
+    deliberado.** ``CoInitialize()`` no lleva su ``CoUninitialize()`` porque esta
+    sonda es un CLI de una corrida: el proceso termina y el sistema libera el
+    apartamento. Cerrarlo a mano sería PEOR, no mejor — habría que soltar antes
+    todas las referencias COM vivas (``self._uia``, los elementos que el volcado
+    todavía sostiene), y un ``CoUninitialize()`` con referencias pendientes es
+    exactamente cómo se consigue un crash en vez de una limpieza.
+
+    La consecuencia, dicha para que nadie la descubra a los golpes: **no
+    instancies esta clase muchas veces en un mismo intérprete** (un REPL, una
+    sesión de diagnóstico larga). Si alguna vez hace falta, el arreglo no es
+    agregar el cierre acá sino envolver el apartamento en un context manager que
+    sea dueño de las referencias.
     """
 
     def __init__(self) -> None:
