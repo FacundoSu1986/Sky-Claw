@@ -586,6 +586,14 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
         return None
 
     texto = texto.replace("/", "\\")
+    # Exactamente DOS separadores abren una UNC. Con tres o más, el filtro de
+    # componentes vacíos de abajo los colapsaba y `\\\\\\servidor\\recurso\\x`
+    # canonicalizaba igual que la UNC válida — una ruta malformada podía dar
+    # MATCH contra la salida administrada. Win32 no trata tres separadores como
+    # UNC, así que afirmar esa igualdad excede lo que se puede probar.
+    # Hallazgo de review (CodeRabbit).
+    if texto.startswith("\\\\\\"):
+        return None
     es_unc = texto.startswith("\\\\")
     cuerpo = texto[2:] if es_unc else texto
     componentes = [parte for parte in cuerpo.split("\\") if parte]
@@ -606,8 +614,27 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
     # El designador de unidad es el único componente donde `:` es legal, y ahí lo
     # valida `_ES_UNIDAD` más abajo (`^[A-Za-z]:$`), que es más estricto que esta
     # comprobación: eximirlo no le abre la puerta a nada.
-    interiores = componentes if es_unc else componentes[1:]
-    if any(_CARACTERES_RESERVADOS_WIN32 & set(parte) for parte in interiores):
+    # Dos reglas distintas sobre dos conjuntos distintos, y no se comparten la
+    # variable: confundirlas dejó pasar `\\\\servidor\\C:\\x` en la primera
+    # versión de este fix.
+    #
+    # `sin_reservados` — los reservados de Win32 no son legales en NINGÚN
+    # componente, share incluido; sólo se exime el designador de unidad, que
+    # valida `_ES_UNIDAD` más abajo con una regla más estricta.
+    sin_reservados = componentes if es_unc else componentes[1:]
+    # `interiores` — lo que se RECORTA. En una UNC el servidor y el recurso
+    # quedan afuera: uno es un endpoint de red y el otro un nombre de share, y
+    # el recorte se justifica con la normalización de RUTAS de Win32, que no
+    # los alcanza. Si traen punto o espacio final se rechaza la ruta entera: un
+    # FQDN con punto final no es demostrablemente el mismo host, y un share
+    # terminado en punto es otro share. Hallazgo de review (Qodo).
+    if es_unc:
+        if any(parte != parte.rstrip(" .") for parte in componentes[:2]):
+            return None
+        interiores = componentes[2:]
+    else:
+        interiores = componentes[1:]
+    if any(_CARACTERES_RESERVADOS_WIN32 & set(parte) for parte in sin_reservados):
         return None
 
     # Win32 recorta los espacios y puntos FINALES de CADA componente de una ruta
@@ -629,7 +656,7 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
         if not limpio:
             return None
         recortados.append(limpio)
-    componentes = recortados if es_unc else [componentes[0], *recortados]
+    componentes = [*componentes[:2], *recortados] if es_unc else [componentes[0], *recortados]
 
     if es_unc:
         # Servidor + recurso como mínimo: `\\servidor` sola no designa un árbol.
@@ -877,8 +904,20 @@ def _resolver_proceso(
     return candidatos[0], None, evidencia
 
 
-def _huella(proceso: ProcesoObservado) -> tuple[str, str | None]:
-    """Lo que hace que un pid siga denotando lo mismo que cuando se probó."""
+def _huella(proceso: ProcesoObservado, *, por_ruta: bool) -> tuple[str, str | None]:
+    """Lo que hace que un pid siga denotando lo mismo que cuando se probó.
+
+    ``por_ruta`` es el criterio con el que se probó la identidad, y tiene que
+    ser EL MISMO en las dos puntas. Si el llamador pidió el binario por nombre,
+    la ruta nunca fue parte de la prueba: incluirla acá hacía que un
+    ``AccessDenied`` transitorio de psutil —la ruta pasa de legible a ``None``
+    entre las dos fotos— cortara con ``UNKNOWN`` sobre el MISMO proceso. Es
+    fail-closed, pero rompe el camino feliz legítimo de `--exe TexGenx64.exe` y
+    contradice el contrato de :func:`_identidad_del_ejecutable`, que promete que
+    la identidad por nombre se prueba por nombre. Hallazgo de review (Qodo).
+    """
+    if not por_ruta:
+        return proceso.nombre_ejecutable.lower(), None
     ruta = canonicalizar_ruta_windows(proceso.ruta_ejecutable) if proceso.ruta_ejecutable else None
     return proceso.nombre_ejecutable.lower(), ruta
 
@@ -923,8 +962,11 @@ def _revalidar_identidad(
             evidencia=evidencia,
         )
 
+    identidad = _identidad_del_ejecutable(solicitud.ejecutable_esperado)
+    por_ruta = identidad is not None and identidad[1] is not None
+
     vigentes = [candidato for candidato in actuales if candidato.pid == proceso.pid]
-    if len(vigentes) != 1 or _huella(vigentes[0]) != _huella(proceso):
+    if len(vigentes) != 1 or _huella(vigentes[0], por_ruta=por_ruta) != _huella(proceso, por_ruta=por_ruta):
         motivo = (
             f"el pid {proceso.pid} ya no existe"
             if not vigentes

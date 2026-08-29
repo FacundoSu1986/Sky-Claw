@@ -2211,3 +2211,117 @@ def test_la_sonda_no_captura_excepciones_desnudas():
         elif isinstance(nodo.type, ast.Name) and nodo.type.id in {"Exception", "BaseException"}:
             desnudos.append(f"línea {nodo.lineno}: except {nodo.type.id}")
     assert not desnudos, f"la sonda captura excepciones desnudas: {desnudos}"
+
+
+# ---------------------------------------------------------------------------
+# UNC: prefijos malformados y componentes de red
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "crudo",
+    ["\\\\\\servidor\\recurso\\x", "///servidor/recurso/x", "\\\\\\\\servidor\\recurso\\x"],
+)
+def test_un_prefijo_unc_malformado_se_rechaza(crudo):
+    """Tres o más separadores no son una UNC: no se colapsan a una válida.
+
+    Hallazgo de review (CodeRabbit). El filtro de componentes vacíos hacía que
+    `\\\\\\servidor\\recurso\\x` canonicalizara igual que
+    `\\\\servidor\\recurso\\x`, así que una ruta malformada podía dar MATCH
+    contra la salida administrada. Win32 no trata tres separadores como UNC, y
+    afirmar esa igualdad excede lo que este módulo puede probar.
+    """
+    assert canonicalizar_ruta_windows(crudo) is None
+
+
+@pytest.mark.parametrize(
+    "crudo",
+    [r"\\servidor.\recurso\x", r"\\servidor \recurso\x", r"\\servidor\recurso.\x", r"\\servidor\recurso \x"],
+)
+def test_el_recorte_no_se_aplica_al_servidor_ni_al_recurso(crudo):
+    """El servidor y el share NO son componentes de ruta: no se les recorta nada.
+
+    Hallazgo de review (Qodo). El recorte por componente se justificaba con la
+    normalización de rutas de Win32, que aplica a componentes de RUTA. El
+    servidor es un endpoint de red y el recurso un nombre de share: un FQDN con
+    punto final no es demostrablemente el mismo host, y un share terminado en
+    punto es otro share. Recortarlos afirmaba una igualdad que el contrato de
+    esta función no autoriza, así que se rechaza — el mismo fail-closed de
+    siempre, no una excepción nueva.
+    """
+    assert canonicalizar_ruta_windows(crudo) is None
+
+
+def test_una_unc_normal_sigue_canonicalizando():
+    """El complemento: cerrar el borde no puede romper la UNC legítima."""
+    assert canonicalizar_ruta_windows(r"\\servidor\recurso\Sky-Claw.") == r"\\servidor\recurso\sky-claw"
+
+
+# ---------------------------------------------------------------------------
+# La revalidación tiene que usar el MISMO criterio con que se probó
+# ---------------------------------------------------------------------------
+
+
+def test_la_identidad_por_nombre_se_revalida_por_nombre():
+    """Si la ruta nunca fue parte de la prueba, perderla no invalida nada.
+
+    Hallazgo de review (Qodo), y es un defecto que introduje con la
+    revalidación: `_huella` incluía la ruta SIEMPRE, aunque el llamador hubiera
+    pedido identidad por nombre (`--exe TexGenx64.exe`). Un `AccessDenied`
+    transitorio de psutil entre las dos fotos hacía que `ruta_ejecutable` pasara
+    de legible a `None` y el preflight respondía UNKNOWN sobre el MISMO proceso.
+    Es fail-closed, pero rompe el camino feliz legítimo y contradice el contrato
+    de `_identidad_del_ejecutable`: la identidad por nombre se prueba por nombre.
+    """
+    con_ruta = _proceso()
+    sin_ruta = ProcesoObservado(pid=4242, nombre_ejecutable="TexGenx64.exe", ruta_ejecutable=None)
+    resultado = observar_output(
+        _solicitud(ejecutable="TexGenx64.exe"),
+        localizador=LocalizadorQueCambia([con_ruta], [sin_ruta]),
+        observador=ObservadorFalso(
+            ventanas=[_ventana()],
+            controles={"w1": [_control()]},
+            valores={"edOutput": SALIDA_ADMINISTRADA},
+        ),
+    )
+    assert resultado.estado is EstadoPreflight.MATCH, resultado.razon
+
+
+def test_la_identidad_por_ruta_sigue_exigiendo_la_ruta_en_la_revalidacion():
+    """El complemento: aflojar el caso por nombre no puede aflojar el caso por ruta."""
+    con_ruta = _proceso()
+    sin_ruta = ProcesoObservado(pid=4242, nombre_ejecutable="TexGenx64.exe", ruta_ejecutable=None)
+    resultado = observar_output(
+        _solicitud(ejecutable=r"C:\Modding\DynDOLOD\TexGenx64.exe"),
+        localizador=LocalizadorQueCambia([con_ruta], [sin_ruta]),
+        observador=ObservadorFalso(
+            ventanas=[_ventana()],
+            controles={"w1": [_control()]},
+            valores={"edOutput": SALIDA_ADMINISTRADA},
+        ),
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.IDENTIDAD_CAMBIO_DURANTE_LA_OBSERVACION
+
+
+def test_los_metodos_del_protocolo_materializan_por_el_helper():
+    """Prohibir el nombre del recorte no alcanza: hay que exigir el CAMINO.
+
+    Hallazgo de review (Qodo). Las anclas anteriores buscaban nombres de
+    función, así que un recorte escrito INLINE —`min(total, TOPE)` dentro de la
+    comprensión, llamando a `GetElement` directo— reintroducía la truncación
+    silenciosa y la suite seguía entera en verde. Verificado: 205 passed con esa
+    mutación.
+
+    `controles_para_volcado` queda afuera: es diagnóstico, lo anuncia y no
+    alimenta ningún veredicto.
+    """
+    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    metodos = {nodo.name: nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef | ast.AsyncFunctionDef)}
+    for nombre in ("ventanas_de_proceso", "controles_de_ventana"):
+        assert nombre in metodos, f"el probe ya no implementa {nombre}: revisá este ancla"
+        atributos = {hijo.attr for hijo in ast.walk(metodos[nombre]) if isinstance(hijo, ast.Attribute)}
+        assert "_elementos" in atributos, f"{nombre} no materializa por `_elementos`"
+        assert "GetElement" not in atributos, (
+            f"{nombre} llama a GetElement directo: un recorte inline se saltea `exigir_enumeracion_completa`"
+        )
