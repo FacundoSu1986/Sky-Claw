@@ -44,6 +44,7 @@ import pathlib
 import subprocess
 import sys
 import tomllib
+from unittest import mock
 
 import pytest
 
@@ -1431,3 +1432,38 @@ def test_el_saneo_si_redacta_componentes_completos(texto, esperado, monkeypatch)
     monkeypatch.setenv("USERNAME", "Admin")
     monkeypatch.setenv("USERPROFILE", r"C:\Users\Admin")
     assert _cargar_la_sonda()._sanear(texto) == esperado
+
+
+def test_la_sonda_traduce_un_fallo_del_sensor_de_procesos_en_vez_de_reventar():
+    """Un traceback en el rig no es evidencia pegable en un PR.
+
+    Hallazgo de review (Qodo): `main()` llamaba a `procesos()` sin borde. Un
+    proceso que muere a mitad de la enumeración hace fallar a psutil, y
+    `LocalizadorPsutil` lo traduce a `ObservacionUIAError`; sin atajarlo, el CLI
+    reventaba justo donde el resto responde con diagnóstico y código de salida.
+    """
+    sonda = _cargar_la_sonda()
+    with mock.patch.object(
+        sonda.LocalizadorPsutil,
+        "procesos",
+        side_effect=ObservacionUIAError("psutil roto"),
+    ):
+        codigo = sonda.main(["--tool", "TexGen", "--exe", "TexGenx64.exe"])
+    assert codigo == 4
+
+
+def test_los_codigos_de_salida_de_la_sonda_estan_congelados():
+    """Cada corte del CLI tiene su código, y son distinguibles entre sí.
+
+    Un operador (o un script del rig) distingue "no hay nada abierto" de "no
+    puedo observar" de "el sensor se rompió" por el código, no por el texto.
+    """
+    fuente = PROBE_T5A.read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    principal = next(nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef) and nodo.name == "main")
+    codigos = {
+        nodo.value.value
+        for nodo in ast.walk(principal)
+        if isinstance(nodo, ast.Return) and isinstance(nodo.value, ast.Constant)
+    }
+    assert codigos == {0, 2, 3, 4}

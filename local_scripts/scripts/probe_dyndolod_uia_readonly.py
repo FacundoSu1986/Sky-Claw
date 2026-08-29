@@ -391,7 +391,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"[T5A] sonda READ-ONLY — tool={argumentos.tool} exe={_sanear(argumentos.exe)}", file=salida)
     localizador = LocalizadorPsutil()
     esperado = pathlib.PurePath(argumentos.exe.replace("\\", "/")).name.lower()
-    candidatos = [p for p in localizador.procesos() if p.nombre_ejecutable.lower() == esperado]
+    try:
+        procesos = localizador.procesos()
+    except ObservacionUIAError as exc:
+        # Un proceso que muere a mitad de la enumeración hace que psutil falle, y
+        # `LocalizadorPsutil` lo traduce a ObservacionUIAError. Sin este borde,
+        # el CLI escupía un traceback justo donde el resto responde con un
+        # diagnóstico y un código de salida — y un traceback en el rig es
+        # exactamente lo que no se puede pegar en un PR como evidencia.
+        print(f"[T5A] ERROR_UIA: no se pudo enumerar procesos: {exc}", file=salida)
+        return 4
+    candidatos = [p for p in procesos if p.nombre_ejecutable.lower() == esperado]
     print(f"[T5A] procesos con ese binario: {len(candidatos)}", file=salida)
     for proceso in candidatos:
         print(f"  pid={proceso.pid} exe={_sanear(proceso.ruta_ejecutable or proceso.nombre_ejecutable)}", file=salida)
