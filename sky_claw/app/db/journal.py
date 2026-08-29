@@ -767,11 +767,9 @@ class OperationJournal:
                 # omit close(), causing observed CI 20-minute timeouts.
                 self._owns_conn = True
                 self._db = await aiosqlite.connect(self._db_path)
-                await self._db.execute(
-                    "PRAGMA busy_timeout=5000"
-                )  # primero: protege el cambio a WAL (ver DatabaseLifecycleManager._entrar_en_wal)
                 await self._db.execute("PRAGMA journal_mode=WAL")
                 await self._db.execute("PRAGMA foreign_keys=ON")
+                await self._db.execute("PRAGMA busy_timeout=5000")
                 await self._db.execute("PRAGMA synchronous=NORMAL")
 
             # Schema is the same regardless of path — pero el boundary no.

@@ -32,13 +32,6 @@ from typing import Any, NamedTuple
 import aiosqlite
 from pydantic import BaseModel, ConfigDict
 
-#: Intentos de la transición a WAL. Ver ``_entrar_en_wal``: la ventana que
-#: colisiona es solo la PRIMERA transición, así que converge rápido.
-_INTENTOS_DE_WAL = 8
-
-#: Espera inicial del backoff exponencial (8 intentos ≈ 2.5 s de techo).
-_ESPERA_BASE_DE_WAL = 0.02
-
 logger = logging.getLogger("SkyClaw.DatabaseLifecycle")
 
 # ---------------------------------------------------------------------------
@@ -426,8 +419,7 @@ class DatabaseLifecycleManager:
         try:
             # Open temporary connection for recovery
             conn = await aiosqlite.connect(path_str)
-            await conn.execute(f"PRAGMA busy_timeout={self._config.busy_timeout_ms}")
-            await self._entrar_en_wal(conn, path_str)
+            await conn.execute("PRAGMA journal_mode=WAL")
             # Force checkpoint to flush WAL contents into main DB
             await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             await conn.close()
@@ -465,47 +457,14 @@ class DatabaseLifecycleManager:
                 except OSError:
                     logger.error("Could not rename corrupted WAL file")
 
-    async def _entrar_en_wal(self, conn: aiosqlite.Connection, path_str: str) -> None:
-        """Pone la base en WAL tolerando que otra conexión la esté abriendo.
-
-        **Por qué no alcanza con ``busy_timeout``.** Entrar o salir de WAL pide
-        un lock EXCLUSIVO momentáneo sobre la base, y SQLite no deja que el busy
-        handler rescate esa transición mientras otra conexión la tiene abierta:
-        devuelve ``SQLITE_BUSY`` de una. Poner el timeout antes es necesario
-        —protege al resto de los PRAGMA— pero no suficiente, y medirlo fue la
-        diferencia entre creer que estaba arreglado y que lo estuviera: con el
-        reordenamiento solo, el fallo seguía apareciendo 2 de cada 60 corridas.
-
-        El reintento sí cierra el caso, y por una propiedad concreta: la ventana
-        que colisiona es la PRIMERA transición (``delete`` → ``wal``). Apenas la
-        otra conexión termina la suya, la base ya está en WAL y este mismo PRAGMA
-        pasa a ser un no-op que no pide lock alguno. Por eso reintentar converge
-        en vez de competir indefinidamente.
-        """
-        for intento in range(_INTENTOS_DE_WAL):
-            try:
-                await conn.execute("PRAGMA journal_mode=WAL")
-                return
-            except sqlite3.OperationalError as exc:
-                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
-                    raise
-                if intento == _INTENTOS_DE_WAL - 1:
-                    raise
-                await asyncio.sleep(_ESPERA_BASE_DE_WAL * (2**intento))
-
     async def _apply_pragmas(self, conn: aiosqlite.Connection, path_str: str) -> None:
         """Apply hardened SQLite pragmas to a connection."""
         cfg = self._config
 
-        # `busy_timeout` va PRIMERO y no es cosmético: cambiar el journal mode
-        # pide un lock exclusivo momentáneo, así que `journal_mode=WAL` sobre una
-        # base que otra conexión está abriendo al mismo tiempo devuelve
-        # SQLITE_BUSY. Sin el timeout puesto todavía, esa colisión no se
-        # reintenta ni un milisegundo: falla de una con "database is locked".
-        await conn.execute(f"PRAGMA busy_timeout={cfg.busy_timeout_ms}")
-        await self._entrar_en_wal(conn, path_str)
+        await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA foreign_keys=ON")
         await conn.execute(f"PRAGMA synchronous={cfg.synchronous_mode}")
+        await conn.execute(f"PRAGMA busy_timeout={cfg.busy_timeout_ms}")
         await conn.execute("PRAGMA temp_store=MEMORY")
 
         # Verify critical pragmas
