@@ -1496,6 +1496,83 @@ async def test_init_no_publica_reemplazo_tras_close_no_confirmado_en_recovery(
                 await real.close()
 
 
+async def test_recovery_close_no_confirmado_no_renombra_wal(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close no confirmado del recovery => WAL intacto, sin rename.
+
+    Propiedad: si el cierre de la conexión temporal del recovery NO se
+    confirma, el archivo sigue bajo una conexión posiblemente viva.
+    Renombrar el WAL en ese estado rompe la integridad del archivo bajo
+    un handler activo. Por eso ``_recovery_rename_forense`` sólo puede
+    renombrar si el cierre está CONFIRMADO (``_cerrar_conexion_de_recovery``
+    retorna True).
+
+    Escenario determinista:
+    1. Orphan WAL/SHM (post-crash).
+    2. Clase C (``OSError`` en el execute del pragma WAL).
+    3. El close de la temp connection está forzado a fallar.
+    4. ``_cerrar_conexion_de_recovery`` registra y monta cuarentena.
+    5. El rename NO debe correr: el WAL permanece en ``<path>-wal``.
+    """
+
+    class _SpyCloseFallaWal:
+        """Clase C en execute + close deliberadamente fallido."""
+
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
+                return _RaiseAsyncCtx(OSError("fallo de E/S deliberado en recovery"))
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        async def close(self) -> None:
+            raise OSError("close deliberadamente fallido")
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+    conexiones_reales: list[aiosqlite.Connection] = []
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        conexiones_reales.append(conn)
+        return _SpyCloseFallaWal(conn)  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    _sembrar_db_en_modo_delete(db_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=50),
+    )
+    try:
+        # Clase C traga el error --- no debe renombrar el WAL porque
+        # el close de la conexión temporal NO se confirmó.
+        await manager._recover_orphaned_wal(db_path, wal_path, shm_path)
+        assert wal_path.exists(), (
+            "el close no se confirmó y el WAL fue renombrado igualmente: "
+            "esto viola la integridad del archivo bajo una conexión potencialmente viva"
+        )
+        path_str = str(db_path.resolve())
+        assert path_str in manager._quarantined_paths, "el path debe quedar en cuarentena"
+        assert manager._connections.get(path_str) is not None, (
+            "ownership debe quedar registrado para que shutdown_all() lo cierre"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+        for real in conexiones_reales:
+            with contextlib.suppress(Exception):
+                await real.close()
+
+
 async def test_recovery_exception_generica_va_a_clase_c_rename(
     db_path: Path,
     monkeypatch: pytest.MonkeyPatch,

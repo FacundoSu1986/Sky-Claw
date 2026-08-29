@@ -574,18 +574,24 @@ class DatabaseLifecycleManager:
         El error de recovery que justifica el rename NO se propaga:
         el archivo queda a salvo del próximo recovery renombrado a
         ``*.corrupted.*``, y el siguiente intento puede fallar limpio
-        (o tener éxito si el rename libera el sidecar). El cierre de
-        la conexión temporal es best-effort; si falla, se conserva el
-        ownership vía ``_cerrar_conexion_de_recovery``.
+        (o tener éxito si el rename libera el sidecar).
+
+        Cierre NO confirmado => NO rename. Si el cierre de la conexión
+        temporal no se confirmó, el archivo sigue bajo una conexión
+        posiblemente viva: moverlo ahí destrozaría la integridad del inodo
+        bajo un writer activo. El WAL queda intacto en su nombre original y
+        el path cuarentena fail-closed lo cubre al siguiente init.
         """
         logger.error(
             "DatabaseLifecycle: WAL recovery FAILED para %s (rename forense)",
             path_str,
         )
+        cierre_confirmado = True
         if conn is not None:
-            await self._cerrar_conexion_de_recovery(conn, Path(path_str))
+            cierre_confirmado = await self._cerrar_conexion_de_recovery(conn, Path(path_str))
+
         timestamp = int(time.time())
-        if wal_path.exists():
+        if wal_path.exists() and cierre_confirmado:
             corrupted_name = f"{path_str}-wal.corrupted.{timestamp}"
             try:
                 import shutil
@@ -598,11 +604,13 @@ class DatabaseLifecycleManager:
             except OSError:
                 logger.error("Could not rename corrupted WAL file")
 
+    # Return: True si el cierre se confirmó, False si no (ownership
+    # retained dejado por la cuarentena, hasta que shutdown_all() reintente).
     async def _cerrar_conexion_de_recovery(
         self,
         conn: aiosqlite.Connection,
         db_path: Path,
-    ) -> None:
+    ) -> bool:
         """Cierra la conexión temporal del recovery preservando la cancelación.
 
         Usa ``_close_connection`` con ``shielded=True`` para que el
@@ -617,10 +625,16 @@ class DatabaseLifecycleManager:
         (cuarentena): no vuelve a servir conexiones hasta que esa
         conexión se cierre. Sin el registro, el fallo de cierre
         quedaría oculto y la conexión filtraría para siempre.
+
+        Returns:
+            True si el cierre fue confirmado; False si se retuvo
+            ownership tras un cierre no confirmado. El recovery usa
+            este valor para decidir si es seguro renombrar el WAL
+            (cierre confirmado → sí; cierre no confirmado → no).
         """
         outcome = await self._close_connection(conn, shielded=True)
         if outcome.closed:
-            return
+            return True
         # Close NO confirmado: retener ownership explícitamente.
         path_key = self._resolve_key(db_path)
         if self._connections.get(path_key) is not conn:
@@ -637,6 +651,7 @@ class DatabaseLifecycleManager:
                     outcome.error.__traceback__,
                 ),
             )
+        return False
 
     async def _enter_wal_mode(self, conn: aiosqlite.Connection, path_str: str) -> None:
         """Convierte la DB a WAL con reintento acotado por ``busy_timeout_ms``.
