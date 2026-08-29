@@ -1937,7 +1937,22 @@ def test_un_punto_final_accidental_no_produce_un_mismatch_concluyente():
     assert resultado.estado is EstadoPreflight.MATCH, resultado.razon
 
 
-@pytest.mark.parametrize("crudo", [r"C:\x\...\y", r"C:\x\   \y", r"C:\x\..."])
+@pytest.mark.parametrize(
+    "crudo",
+    [
+        r"C:\x\...\y",
+        r"C:\x\   \y",
+        r"C:\x\...",
+        # Estos dos los pidió una guía de review TRES veces, afirmando que
+        # `.. ` se canonicaliza a `..` (traversal fabricado) y `. ` a `.`.
+        # No es así —`rstrip(" .")` recorta puntos Y espacios, y el componente
+        # colapsa a vacío— pero no estaban cubiertos, así que se cubren: es más
+        # barato un caso que volver a medirlo cada vez que se repite.
+        r"C:\x\.. \y",
+        r"C:\x\. \y",
+        r"C:\x\ . \y",
+    ],
+)
 def test_un_componente_que_se_queda_vacio_al_recortar_se_rechaza(crudo):
     """Recortar no puede FABRICAR un componente distinto.
 
