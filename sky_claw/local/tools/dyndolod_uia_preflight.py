@@ -144,6 +144,7 @@ class RazonPreflight(enum.Enum):
     PROCESO_AMBIGUO = "PROCESO_AMBIGUO"
     PID_NO_COINCIDE = "PID_NO_COINCIDE"
     IDENTIDAD_NO_DEMOSTRABLE = "IDENTIDAD_NO_DEMOSTRABLE"
+    IDENTIDAD_CAMBIO_DURANTE_LA_OBSERVACION = "IDENTIDAD_CAMBIO_DURANTE_LA_OBSERVACION"
     PID_NO_OBSERVABLE = "PID_NO_OBSERVABLE"
     VENTANA_NO_ENCONTRADA = "VENTANA_NO_ENCONTRADA"
     VENTANA_AMBIGUA = "VENTANA_AMBIGUA"
@@ -857,6 +858,71 @@ def _resolver_proceso(
     return candidatos[0], None, evidencia
 
 
+def _huella(proceso: ProcesoObservado) -> tuple[str, str | None]:
+    """Lo que hace que un pid siga denotando lo mismo que cuando se probó."""
+    ruta = canonicalizar_ruta_windows(proceso.ruta_ejecutable) if proceso.ruta_ejecutable else None
+    return proceso.nombre_ejecutable.lower(), ruta
+
+
+def _revalidar_identidad(
+    solicitud: SolicitudPreflightUIA,
+    localizador: LocalizadorDeProcesos,
+    proceso: ProcesoObservado,
+    evidencia: list[str],
+) -> ResultadoPreflightUIA | None:
+    """Vuelve a probar la identidad DESPUÉS de observar, o corta con ``UNKNOWN``.
+
+    Probar la identidad una vez no es probarla durante toda la observación. El
+    pid se demuestra contra una fotografía de psutil y después se usa para
+    enumerar la ventana, el control y leer el valor: si en el medio el proceso
+    muere y Windows RECICLA el pid, todo lo observado es de otro proceso, pasa
+    los filtros ``pid == proceso.pid`` y sale un veredicto concluyente que
+    ningún proceso verificado sostiene. Era el único hueco fail-open del
+    pipeline — una degradación de identidad por TIEMPO, no por sensor.
+
+    La revalidación va DESPUÉS y no antes a propósito: chequear antes sólo
+    corre la ventana de carrera unos microsegundos, mientras que chequear
+    después la ENCIERRA — cubre el reciclado que haya ocurrido durante la
+    observación, que es cuando puede ocurrir.
+
+    **No la elimina, y decirlo importa:** el pid podría reciclarse justo después
+    de esta segunda lectura. Cerrar la carrera del todo exige un handle del
+    sistema operativo que mantenga vivo el pid mientras se observa, y eso es
+    trabajo de T5-v2 con un backend real. Lo que esto garantiza es que un
+    reciclado que ocurra DURANTE la observación no puede producir un veredicto
+    concluyente. Hallazgo de review (Qodo).
+    """
+    try:
+        actuales = list(localizador.procesos())
+    except ObservacionUIAError as exc:
+        return _resultado(
+            EstadoPreflight.UNKNOWN,
+            RazonPreflight.IDENTIDAD_CAMBIO_DURANTE_LA_OBSERVACION,
+            solicitud,
+            f"no se pudo revalidar la identidad del pid {proceso.pid} después de observar: {exc}",
+            pid=proceso.pid,
+            evidencia=evidencia,
+        )
+
+    vigentes = [candidato for candidato in actuales if candidato.pid == proceso.pid]
+    if len(vigentes) != 1 or _huella(vigentes[0]) != _huella(proceso):
+        motivo = (
+            f"el pid {proceso.pid} ya no existe"
+            if not vigentes
+            else f"el pid {proceso.pid} ya no denota {proceso.ruta_ejecutable or proceso.nombre_ejecutable!r}"
+        )
+        evidencia.append(f"revalidación: {motivo}")
+        return _resultado(
+            EstadoPreflight.UNKNOWN,
+            RazonPreflight.IDENTIDAD_CAMBIO_DURANTE_LA_OBSERVACION,
+            solicitud,
+            f"{motivo}: lo observado no lo sostiene ningún proceso verificado",
+            pid=proceso.pid,
+            evidencia=evidencia,
+        )
+    return None
+
+
 def _resolver_ventana(
     solicitud: SolicitudPreflightUIA,
     observador: ObservadorUIA,
@@ -1042,6 +1108,12 @@ def observar_output(
         assert control is not None  # noqa: S101 -- garantizado por _resolver_control
 
         observado = observador.leer_valor(control)
+
+        # Recién acá: la identidad tiene que seguir siendo la misma que se probó
+        # ANTES de mirar la GUI. Ver `_revalidar_identidad`.
+        corte = _revalidar_identidad(solicitud, localizador, proceso, evidencia)
+        if corte is not None:
+            return corte
     except EnumeracionIncompletaError as exc:
         return _resultado(
             EstadoPreflight.UNKNOWN,

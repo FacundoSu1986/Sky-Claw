@@ -1159,6 +1159,11 @@ def test_las_razones_estan_congeladas():
         "PROCESO_AMBIGUO",
         "PID_NO_COINCIDE",
         "IDENTIDAD_NO_DEMOSTRABLE",
+        # La identidad se probó bien y DESPUÉS dejó de valer: el pid se recicló
+        # mientras se observaba. Es una razón propia y no un caso de
+        # IDENTIDAD_NO_DEMOSTRABLE porque el diagnóstico es distinto — ahí nunca
+        # se pudo probar, acá se probó y venció.
+        "IDENTIDAD_CAMBIO_DURANTE_LA_OBSERVACION",
         "PID_NO_OBSERVABLE",
         "VENTANA_NO_ENCONTRADA",
         "VENTANA_AMBIGUA",
@@ -1928,3 +1933,140 @@ def test_un_componente_que_se_queda_vacio_al_recortar_se_rechaza(crudo):
     mismo fail-closed que `..`, no una excepción nueva.
     """
     assert canonicalizar_ruta_windows(crudo) is None
+
+
+# ---------------------------------------------------------------------------
+# Identidad: probarla una vez no es probarla durante toda la observación
+# ---------------------------------------------------------------------------
+
+
+class LocalizadorQueCambia:
+    """Localizador cuya fotografía cambia entre llamadas.
+
+    Modela el reciclado de pid: la primera lectura ve el proceso esperado, la
+    siguiente ve OTRO binario con el mismo pid (o ninguno).
+    """
+
+    def __init__(self, *fotografias):
+        self._fotografias = list(fotografias)
+        self.llamadas = 0
+
+    def procesos(self):
+        self.llamadas += 1
+        indice = min(self.llamadas - 1, len(self._fotografias) - 1)
+        return tuple(self._fotografias[indice])
+
+
+def test_si_el_pid_se_recicla_durante_la_observacion_el_veredicto_es_unknown():
+    """Hallazgo de review (Qodo, TOCTOU). Era el único hueco fail-open del pipeline.
+
+    La identidad se probaba UNA vez sobre una fotografía de psutil y después el
+    pid se usaba para enumerar ventana y control sin revalidar. Si el proceso
+    muere y Windows recicla el pid, la ventana observada es de otro proceso,
+    pasa los filtros `pid == proceso.pid` y produce un MATCH/MISMATCH que
+    ningún proceso verificado sostiene — exactamente el modo de falla que
+    `IDENTIDAD_NO_DEMOSTRABLE` existe para prevenir.
+    """
+    ajeno = ProcesoObservado(pid=4242, nombre_ejecutable="TexGenx64.exe", ruta_ejecutable=r"D:\Otra\TexGenx64.exe")
+    localizador = LocalizadorQueCambia([_proceso()], [ajeno])
+    resultado = observar_output(
+        _solicitud(),
+        localizador=localizador,
+        observador=ObservadorFalso(
+            ventanas=[_ventana()],
+            controles={"w1": [_control()]},
+            valores={"edOutput": SALIDA_ADMINISTRADA},
+        ),
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN, resultado.razon
+    assert resultado.razon is RazonPreflight.IDENTIDAD_CAMBIO_DURANTE_LA_OBSERVACION
+
+
+def test_si_el_proceso_desaparece_durante_la_observacion_el_veredicto_es_unknown():
+    localizador = LocalizadorQueCambia([_proceso()], [])
+    resultado = observar_output(
+        _solicitud(),
+        localizador=localizador,
+        observador=ObservadorFalso(
+            ventanas=[_ventana()],
+            controles={"w1": [_control()]},
+            valores={"edOutput": SALIDA_ADMINISTRADA},
+        ),
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.IDENTIDAD_CAMBIO_DURANTE_LA_OBSERVACION
+
+
+def test_la_identidad_se_revalida_aunque_no_haya_cambiado():
+    """El camino feliz sigue dando MATCH, y se revalidó de verdad (dos lecturas)."""
+    localizador = LocalizadorQueCambia([_proceso()])
+    resultado = observar_output(
+        _solicitud(),
+        localizador=localizador,
+        observador=ObservadorFalso(
+            ventanas=[_ventana()],
+            controles={"w1": [_control()]},
+            valores={"edOutput": SALIDA_ADMINISTRADA},
+        ),
+    )
+    assert resultado.estado is EstadoPreflight.MATCH
+    assert localizador.llamadas >= 2, "no se revalidó la identidad después de observar"
+
+
+# ---------------------------------------------------------------------------
+# El saneo, en los dos huecos que quedaban
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("sufijo", ["", "\\", "/"])
+def test_el_saneo_redacta_el_perfil_termine_o_no_en_separador(sufijo, monkeypatch):
+    """Hallazgo de review (Qodo). Con `USERPROFILE=C:\\Users\\op\\` el lookahead
+    exigía OTRO separador después del valor —el suyo ya estaba adentro— así que
+    una ruta que continúa no matcheaba y el perfil salía crudo.
+    """
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\operador" + sufijo)
+    monkeypatch.delenv("USERNAME", raising=False)
+    saneado = _cargar_la_sonda()._sanear(r"C:\Users\operador\Modding\TexGenx64.exe")
+    assert saneado == r"<USERPROFILE>\Modding\TexGenx64.exe", saneado
+
+
+def test_ningun_print_de_la_sonda_emite_una_excepcion_sin_sanear():
+    """Los mensajes de error son un campo de texto más del volcado.
+
+    Hallazgo de review (Qodo). El `except` imprimía `{exc}` crudo, y esos
+    mensajes se construyen con `ventana.titulo` y `control.describir()`: un
+    fallo COM filtraba por el borde de error justo lo que el volcado redacta en
+    el camino feliz.
+
+    El ancla ENUMERA en vez de probar un caso: recorre todos los `print` del
+    archivo y exige que cualquier interpolación de una variable capturada por
+    un `except ... as` pase por `_sanear`. Un borde de error nuevo que imprima
+    la excepción cruda rompe el test, aunque nadie escriba su caso.
+    """
+    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+
+    capturadas = {nodo.name for nodo in ast.walk(arbol) if isinstance(nodo, ast.ExceptHandler) and nodo.name}
+    assert capturadas, "el probe no captura ninguna excepción con nombre; ¿cambió la estructura?"
+
+    culpables = []
+    for nodo in ast.walk(arbol):
+        if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "print"):
+            continue
+        for argumento in nodo.args:
+            if not isinstance(argumento, ast.JoinedStr):
+                continue
+            for trozo in argumento.values:
+                if not isinstance(trozo, ast.FormattedValue):
+                    continue
+                nombres = {h.id for h in ast.walk(trozo.value) if isinstance(h, ast.Name)}
+                if not (nombres & capturadas):
+                    continue
+                saneado = (
+                    isinstance(trozo.value, ast.Call)
+                    and isinstance(trozo.value.func, ast.Name)
+                    and trozo.value.func.id == "_sanear"
+                )
+                if not saneado:
+                    culpables.append(f"línea {nodo.lineno}: {ast.unparse(trozo.value)}")
+
+    assert not culpables, f"print() que emite una excepción sin sanear: {culpables}"

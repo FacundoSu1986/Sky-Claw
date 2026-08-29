@@ -144,6 +144,11 @@ def _sanear(texto: str) -> str:
     resultado = texto
     for variable in ("USERPROFILE", "HOME"):
         valor = os.environ.get(variable)
+        # Se normaliza el separador FINAL antes de armar el patrón: con
+        # `USERPROFILE=C:\Users\op\` el lookahead exigía otro separador después
+        # del valor —el suyo ya estaba adentro— así que una ruta que continúa no
+        # matcheaba y el perfil salía crudo. Hallazgo de review (Qodo).
+        valor = valor.rstrip("\\/") if valor else valor
         # El guard es de FORMA, no de longitud: un perfil degenerado (`/`, `C:\`)
         # se redacta como prefijo y se comería cualquier separador del volcado.
         # Se exige que quede al menos un componente propio bajo una raíz.
@@ -426,7 +431,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # el CLI escupía un traceback justo donde el resto responde con un
         # diagnóstico y un código de salida — y un traceback en el rig es
         # exactamente lo que no se puede pegar en un PR como evidencia.
-        print(f"[T5A] ERROR_UIA: no se pudo enumerar procesos: {exc}", file=salida)
+        print(f"[T5A] ERROR_UIA: no se pudo enumerar procesos: {_sanear(str(exc))}", file=salida)
         return 4
     candidatos = [p for p in procesos if p.nombre_ejecutable.lower() == esperado]
     print(f"[T5A] procesos con ese binario: {len(candidatos)}", file=salida)
@@ -439,7 +444,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         observador = ObservadorUIAWindows()
     except UIANoDisponibleError as exc:
-        print(f"[T5A] UIA_UNAVAILABLE: {exc}", file=salida)
+        print(f"[T5A] UIA_UNAVAILABLE: {_sanear(str(exc))}", file=salida)
         return 3
 
     for proceso in candidatos:
@@ -449,7 +454,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             _volcar(observador, proceso.pid, salida)
         except ObservacionUIAError as exc:
-            print(f"  ERROR_UIA: {exc}", file=salida)
+            # Saneado como cualquier otro campo: estos mensajes llevan
+            # `ventana.titulo` y `control.describir()` adentro, así que un fallo
+            # COM filtraba por el borde de error lo que el volcado redacta en el
+            # camino feliz. Hallazgo de review (Qodo).
+            print(f"  ERROR_UIA: {_sanear(str(exc))}", file=salida)
 
     criterios = CriteriosDeControl(
         automation_id=argumentos.automation_id,
