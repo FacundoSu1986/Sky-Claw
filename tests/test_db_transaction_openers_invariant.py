@@ -1,48 +1,60 @@
 """Ancla enumerativa de los abridores EXPLÍCITOS de transacciones SQLite.
 
-Por qué existe: el boundary transaccional de este repo es
-``DatabaseLifecycleManager.transaction()``, que NO emite ``BEGIN`` propio —
-depende del BEGIN DEFERRED implícito de ``sqlite3`` en modo legacy (emitido
-antes del primer DML del cuerpo). Los ``BEGIN`` explícitos que existen en el
-árbol son decisiones de contrato tomadas una por una: reservan la write
-transaction DESDE el inicio porque el caller declara su cuerpo como escritura
-(``init_db``, ``_ensure_schema``). Un ``BEGIN`` (o ``BEGIN DEFERRED``) nuevo
-cambia el aislamiento prometido por ``transaction()`` —promoción
-deferred→write con ventana de SQLITE_BUSY_SNAPSHOT— y hoy NINGÚN caller
-establece snapshot de lectura dentro del boundary antes de su primera
-escritura; esa propiedad se mantiene en parte porque nada la hacía fallar.
+Alcance del ancla: el inventario de llamadas a ``execute``/``executescript``/
+``executemany`` cuyo primer argumento es un literal (o variable asignada a
+literal) que abre transacción, case-insensitive, dentro de ``sky_claw/``.
 
-Estos tests enumeran en vez de muestrear (ver "La regla que más se viola" en
-`AGENTS.md`): congelan el inventario EXACTO de abridores por módulo y símbolo.
-Un ``BEGIN`` nuevo —módulo nuevo, o una forma nueva dentro de un módulo ya
-listado— rompe el test hasta que se decida explícitamente si el caller es un
-writer que exige BEGIN IMMEDIATE, un boundary read-only deliberado (exención
-documentada), o un defecto.
+Lo que el ancla SÍ detecta:
+- ``BEGIN`` / ``BEGIN DEFERRED`` / ``BEGIN IMMEDIATE`` NUEVO en un módulo
+  del paquete.
+- Cambio de forma dentro de un módulo ya listado (deferred ↔ immediate).
+- Mover un abridor de un símbolo a otro.
+- MULTIPLICIDAD: dos ``BEGIN IMMEDIATE`` en el mismo símbolo
+  (incluso con la misma forma) elevan el conteo, no colapsan en el
+  set. La representación usa ``Counter`` anidado
+  ``{(símbolo, forma): n}`` para preservar el ordinal.
 
-Se detecta por AST: llamadas a ``execute``/``executescript``/``executemany``
- cuyo primer argumento es un literal (o una variable asignada a un literal)
- que abre transacción, case-insensitive. Es sobre-aproximación conservadora:
-la evasión deliberada (``getattr``, SQL compuesto en runtime) queda fuera del
-alcance de un chequeo estático, mismo criterio que
-``tests/test_db_connection_invariant.py``.
+Lo que el ancla NO detecta (y la limitación es deliberada):
+- El ORDEN de operaciones dentro de un mismo ``transaction()``: este ancla
+  enumera ABRIDORES, no el patrón (read-first / write-first) del cuerpo
+  del boundary. Un caller que hoy escribe antes de leer puede, sin que
+  el ancla se entere, leer antes de escribir y abrir la ventana
+  ``SQLITE_BUSY_SNAPSHOT`` que el propio docstring del archivo menciona.
+  La defensa contra esa regresión es estructural (auditoría de callers,
+  revisión) y la promesa del ancla es sobre las decisiones EXPLÍCITAS,
+  no sobre el patrón implícito.
+- SQL compuesto en runtime, ``getattr`` para esconder el método, u otras
+  evasiones dinámicas: el detector es estático, mismo criterio que
+  ``tests/test_db_connection_invariant.py``.
+
+Por qué el inventario se congela: un ``BEGIN`` o ``BEGIN DEFERRED``
+nuevo en un writer cambia el aislamiento prometido por
+``DatabaseLifecycleManager.transaction()`` (la promoción
+deferred→write abre la ventana de ``SQLITE_BUSY_SNAPSHOT``). Cada
+abridor es una decisión de contrato tomada una por una: ``init_db`` y
+``_ensure_schema`` reservan la write transaction desde el inicio
+porque declaran su cuerpo como escritura. Romper el ancla fuerza a
+re-explicitar la decisión.
 """
 
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
 PAQUETE = RAIZ / "sky_claw"
 
-# (módulo, símbolo contenedor, literal) congelados. Igualdad literal del set:
-# un abridor nuevo, movido de función o cambiado de forma rompe acá.
-ABRIDORES_ESPERADOS: set[tuple[str, str, str]] = {
-    # Cuerpos que declaran su boundary como ESCRITURA desde el inicio: reservan
-    # la write transaction antes del DDL (el arbiter es SQLite, no Python).
-    ("sky_claw/app/core/database.py", "init_db", "BEGIN IMMEDIATE"),
-    ("sky_claw/app/core/dlq_manager.py", "_ensure_schema", "BEGIN IMMEDIATE"),
-}
+# ``Counter`` anidado ``{(símbolo, forma): n}``. Multiplicidad
+# preservada: dos ``BEGIN IMMEDIATE`` en el mismo símbolo cuentan
+# como 2, no colapsan a 1.
+ABRIDORES_ESPERADOS: Counter[tuple[str, str, str]] = Counter(
+    {
+        ("sky_claw/app/core/database.py", "init_db", "BEGIN IMMEDIATE"): 1,
+        ("sky_claw/app/core/dlq_manager.py", "_ensure_schema", "BEGIN IMMEDIATE"): 1,
+    }
+)
 
 METODOS_SQL = {"execute", "executescript", "executemany"}
 
@@ -119,32 +131,6 @@ def _simbolo_contenedor(arbol: ast.AST, nodo_objetivo: ast.stmt) -> str:
     return contenedor
 
 
-def _abridores_de_modulo(ruta: Path) -> set[tuple[str, str]]:
-    """{(símbolo, literal)} de cada abridor explícito en el módulo."""
-    arbol = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
-    return _abridores(arbol)
-
-
-def _abridores(arbol: ast.AST) -> set[tuple[str, str]]:
-    """Abridores explícitos en un AST: {(símbolo contenedor, forma canónica)}.
-
-    Resuelve ``execute``/``executescript``/``executemany`` con literal directo
-    o vía variable asignada a un literal abridor.
-    """
-    resolvedor = _ResolvedorDeLiterales(arbol)
-    encontrados: set[tuple[str, str]] = set()
-    for nodo in ast.walk(arbol):
-        if not isinstance(nodo, ast.Call) or not isinstance(nodo.func, ast.Attribute):
-            continue
-        if nodo.func.attr not in METODOS_SQL or not nodo.args:
-            continue
-        literal = resolvedor.literal_de(nodo.args[0])
-        if literal is not None:
-            stmt = _statement_que_contiene(arbol, nodo.lineno)
-            encontrados.add((_simbolo_contenedor(arbol, stmt), literal))
-    return encontrados
-
-
 def _statement_que_contiene(arbol: ast.AST, linea: int) -> ast.stmt:
     """El statement más interno cuyo rango de líneas contiene a `linea`.
 
@@ -164,27 +150,15 @@ def _statement_que_contiene(arbol: ast.AST, linea: int) -> ast.stmt:
     return mejor
 
 
-def _inventario() -> set[tuple[str, str, str]]:
-    inventario: set[tuple[str, str, str]] = set()
-    for ruta in PAQUETE.rglob("*.py"):
-        abridores = _abridores_de_modulo(ruta)
-        for simbolo, literal in abridores:
-            inventario.add((ruta.relative_to(RAIZ).as_posix(), simbolo, literal))
-    return inventario
+def _abridores(arbol: ast.AST) -> Counter[tuple[str, str]]:
+    """Abridores explícitos en un AST: ``Counter{(símbolo, forma): n}``.
 
-
-# ---------------------------------------------------------------------------
-# Detector: el ancla no sirve si se la esquiva
-# ---------------------------------------------------------------------------
-
-
-def _contar_de_fuente(fuente: str) -> set[tuple[str, str]]:
-    return _abridores(ast.parse(fuente))
-
-
-def _abridores(arbol: ast.AST) -> set[tuple[str, str]]:
+    Multiplicidad preservada: dos ``BEGIN IMMEDIATE`` en el mismo
+    símbolo cuentan como 2. Esto es lo que rompe el ancla si se
+    agrega un abridor nuevo sin actualizar ``ABRIDORES_ESPERADOS``.
+    """
     resolvedor = _ResolvedorDeLiterales(arbol)
-    encontrados: set[tuple[str, str]] = set()
+    encontrados: Counter[tuple[str, str]] = Counter()
     for nodo in ast.walk(arbol):
         if not isinstance(nodo, ast.Call) or not isinstance(nodo.func, ast.Attribute):
             continue
@@ -193,45 +167,163 @@ def _abridores(arbol: ast.AST) -> set[tuple[str, str]]:
         literal = resolvedor.literal_de(nodo.args[0])
         if literal is not None:
             stmt = _statement_que_contiene(arbol, nodo.lineno)
-            encontrados.add((_simbolo_contenedor(arbol, stmt), literal))
+            encontrados[(_simbolo_contenedor(arbol, stmt), literal)] += 1
     return encontrados
+
+
+def _abridores_de_modulo(ruta: Path) -> Counter[tuple[str, str]]:
+    """``Counter`` de cada abridor explícito en el módulo."""
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
+    return _abridores(arbol)
+
+
+def _inventario() -> Counter[tuple[str, str, str]]:
+    """Inventario completo del paquete: ``Counter`` con módulo incluido.
+
+    La clave incluye el path del módulo (``relative_to(RAIZ)``) para
+    que dos ``init_db`` en módulos distintos NO se confundan.
+    Multiplicidad por (módulo, símbolo, forma) preservada.
+    """
+    inventario: Counter[tuple[str, str, str]] = Counter()
+    for ruta in PAQUETE.rglob("*.py"):
+        for (simbolo, literal), n in _abridores_de_modulo(ruta).items():
+            inventario[(ruta.relative_to(RAIZ).as_posix(), simbolo, literal)] += n
+    return inventario
+
+
+# ---------------------------------------------------------------------------
+# Detector: el ancla no sirve si se la esquiva
+# ---------------------------------------------------------------------------
+
+
+def _contar_de_fuente(fuente: str) -> Counter[tuple[str, str]]:
+    return _abridores(ast.parse(fuente))
+
+
+def test_inventario_tiene_una_sola_abridores() -> None:
+    """F6: el detector debe estar definido UNA sola vez.
+
+    El bug pre-fix: dos ``def _abridores`` en el mismo módulo. La
+    segunda pisa a la primera y los tests siguen pasando
+    silenciosamente. El test verifica por AST que existe exactamente
+    una función ``_abridores`` en el módulo. Si la duplicación
+    vuelve, el test rompe.
+    """
+    with open(__file__, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    definiciones = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_abridores"]
+    assert len(definiciones) == 1, (
+        f"_abridores debe estar definida una sola vez, hay {len(definiciones)}: {[d.lineno for d in definiciones]}"
+    )
+
+
+def test_inventario_abridores_detecta_multiplicidad() -> None:
+    """F5: el ancla debe detectar un segundo abridor idéntico en el mismo símbolo.
+
+    ``set`` colapsa tuplas idénticas; un segundo ``BEGIN IMMEDIATE`` dentro
+    de ``init_db`` pasa invisible al ancla actual. La representación del
+    inventario debe preservar la multiplicidad (Counter o tupla con
+    ordinal/recuento), y el ancla debe romper cuando un símbolo existente
+    gana un abridor adicional con la misma forma.
+
+    Verifica que ``_abridores`` y ``_inventario`` devuelven una
+    estructura donde ``BEGIN IMMEDIATE`` aparece DOS veces en
+    ``init_db`` cuando se agrega una segunda invocación literal al AST.
+
+    Red pre-fix: con un set, la segunda invocación colapsa con la
+    primera y la diferencia no es observable; el ancla pasa
+    silenciosamente.
+    """
+    fuente_con_dos_begin = (
+        "async def init_db(conn):\n"
+        '    await conn.execute("BEGIN IMMEDIATE")\n'
+        '    await conn.execute("BEGIN IMMEDIATE")\n'
+    )
+    fuente_con_un_begin = 'async def init_db(conn):\n    await conn.execute("BEGIN IMMEDIATE")\n'
+    # Lo que el ancla debería distinguir:
+    #   - una invocación: el inventario refleja 1 elemento en init_db/BEGIN IMMEDIATE.
+    #   - dos invocaciones: el inventario refleja 2 elementos en init_db/BEGIN IMMEDIATE.
+    # La forma EXACTA del contenedor (Counter, lista ordenada, tupla con
+    # ordinal) es decisión de implementación; el test verifica la
+    # PROPIEDAD de que las dos formas NO son iguales y que la forma
+    # ``con_dos`` indica más invocaciones que ``con_un``.
+    con_un = _abridores(ast.parse(fuente_con_un_begin))
+    con_dos = _abridores(ast.parse(fuente_con_dos_begin))
+    # Cualquier representación razonable debe poder reportar la diferencia
+    # de alguna forma. La representación más simple que cumple la
+    # propiedad es ``Counter``: ``Counter({"init_db": {"BEGIN IMMEDIATE": 1}})``
+    # vs ``Counter({"init_db": {"BEGIN IMMEDIATE": 2}})``.
+    from collections import Counter
+
+    def _a_counter(observado: object) -> Counter:
+        # Acepta tanto un set de tuplas como un Counter anidado.
+        if isinstance(observado, Counter):
+            return observado
+        c: Counter = Counter()
+        for simbolo, literal in observado:  # type: ignore[union-attr]
+            c[(simbolo, literal)] += 1
+        return c
+
+    cnt_un = _a_counter(con_un)
+    cnt_dos = _a_counter(con_dos)
+    assert cnt_dos[("init_db", "BEGIN IMMEDIATE")] == 2, (
+        f"el ancla debe contar 2 invocaciones en la fuente con_dos, obtuvo {dict(cnt_dos)}"
+    )
+    assert cnt_un[("init_db", "BEGIN IMMEDIATE")] == 1, (
+        f"el ancla debe contar 1 invocación en la fuente con_un, obtuvo {dict(cnt_un)}"
+    )
+    assert cnt_dos != cnt_un, "el ancla debe distinguir una invocación de dos (multiplicidad)"
 
 
 def test_detector_reconoce_las_formas_de_abrir() -> None:
     """Literal directo, mayúsculas/minúsculas y constante de módulo cuentan."""
     directo = "async def f(conn):\n    await conn.execute('BEGIN IMMEDIATE')\n"
-    assert _contar_de_fuente(directo) == {("f", "BEGIN IMMEDIATE")}
+    assert _contar_de_fuente(directo) == Counter({("f", "BEGIN IMMEDIATE"): 1})
     minusculas = "async def f(conn):\n    await conn.execute('begin immediate')\n"
-    assert _contar_de_fuente(minusculas) == {("f", "BEGIN IMMEDIATE")}
+    assert _contar_de_fuente(minusculas) == Counter({("f", "BEGIN IMMEDIATE"): 1})
     via_variable = 'SQL = "BEGIN IMMEDIATE"\nasync def f(conn):\n    await conn.execute(SQL)\n'
-    assert _contar_de_fuente(via_variable) == {("f", "BEGIN IMMEDIATE")}
+    assert _contar_de_fuente(via_variable) == Counter({("f", "BEGIN IMMEDIATE"): 1})
     deferred = "async def f(conn):\n    await conn.execute('BEGIN DEFERRED')\n"
-    assert _contar_de_fuente(deferred) == {("f", "BEGIN DEFERRED")}
+    assert _contar_de_fuente(deferred) == Counter({("f", "BEGIN DEFERRED"): 1})
     executescript = "def f(conn):\n    conn.executescript('BEGIN; SELECT 1; COMMIT;')\n"
-    assert _contar_de_fuente(executescript) == {("f", "BEGIN")}
+    assert _contar_de_fuente(executescript) == Counter({("f", "BEGIN"): 1})
 
 
 def test_detector_ignora_lo_que_no_abre() -> None:
     """SQL ordinario, strings BEGIN en comentarios y otras llamadas no cuentan."""
     ordinario = "async def f(conn):\n    await conn.execute('SELECT 1')\n"
-    assert _contar_de_fuente(ordinario) == set()
+    assert _contar_de_fuente(ordinario) == Counter()
     comentario = "# conn.execute('BEGIN IMMEDIATE') prohibido\nx = 1\n"
-    assert _contar_de_fuente(comentario) == set()
+    assert _contar_de_fuente(comentario) == Counter()
     otro_metodo = "async def f(conn):\n    await conn.commit()\n"
-    assert _contar_de_fuente(otro_metodo) == set()
+    assert _contar_de_fuente(otro_metodo) == Counter()
     no_string = "async def f(conn, sql):\n    await conn.execute(sql)\n"
-    assert _contar_de_fuente(no_string) == set()
+    assert _contar_de_fuente(no_string) == Counter()
 
 
 def test_abridores_explicitos_estan_congelados() -> None:
-    """Igualdad literal del inventario: abridor nuevo rompe acá.
+    """Congela el inventario EXACTO de abridores BEGIN explícitos.
 
-    Si agregás un ``BEGIN``/``BEGIN DEFERRED`` explícito, decidí primero: ¿el
-    caller es un writer que exige reservar la write transaction (usá
-    ``BEGIN IMMEDIATE`` y documentá por qué ``transaction()`` deferred no
-    alcanza), o es un boundary read-only (no abrás transacción)? Nunca
-    ``BEGIN`` deferred en un writer: deja la ventana de promoción
-    deferred→write abierta (SQLITE_BUSY_SNAPSHOT).
+    Lo que este test PROTEGE: un ``BEGIN``/``BEGIN IMMEDIATE``/
+    ``BEGIN DEFERRED`` NUEVO dentro de un módulo del paquete, o una
+    forma nueva dentro de un módulo ya listado, rompe hasta decisión
+    explícita (aceptar el cambio y actualizar ``ABRIDORES_ESPERADOS``).
+
+    Lo que este test NO cubre: el ORDEN de operaciones dentro de un
+    mismo ``transaction()``. Un caller que hoy escribe antes de leer
+    podría en el futuro leer antes de escribir dentro del mismo
+    boundary, abriendo la ventana ``SQLITE_BUSY_SNAPSHOT`` que el
+    propio test menciona — y este ancla no lo detectaría porque el
+    ``BEGIN`` explícito (cuando existe) o el ``BEGIN`` implícito del
+    driver (cuando no) no cambian de forma. La defensa contra esa
+    regresión es estructural del código (auditoría de callers) y de
+    revisión, no de este ancla AST.
+
+    Por eso este test describe el inventario de las decisiones
+    EXPLÍCITAS, no una promesa sobre el comportamiento de los callers
+    implícitos. Si el caller del ``transaction()`` cambia de
+    categoría (read-first / write-first), el ancla no rompe: hay que
+    revisarlo.
     """
     assert _inventario() == ABRIDORES_ESPERADOS, (
         "Cambió el inventario de abridores explícitos de transacciones SQLite. "
