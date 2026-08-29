@@ -424,10 +424,21 @@ class ObservadorUIA(Protocol):
     def leer_valor(self, control: ControlObservado) -> str | None:
         """El valor que el control MUESTRA hoy, o ``None`` si no lo expone.
 
-        Sólo patrones de lectura (``ValuePattern.CurrentValue``, ``TextPattern``,
-        ``LegacyIAccessible``). Las primitivas mutantes están fuera del contrato:
-        no aparecen en este protocolo, y el ancla por AST de la suite prohíbe
+        Patrones de lectura implementados: ``ValuePattern`` y ``TextPattern``.
+        Sólo de lectura: ``ValuePattern`` también tiene operación de escritura y
+        acá no se usa. Las primitivas mutantes están fuera del contrato — no
+        aparecen en este protocolo, y el ancla por AST de la suite prohíbe
         nombrarlas en toda esta superficie.
+
+        **``LegacyIAccessible`` NO es un camino de lectura**, aunque la sonda lo
+        reporte cuando el control lo expone. Es a propósito y es un hueco
+        conocido: los controles Win32/Delphi a veces exponen sólo ese patrón, y
+        ahí este método devuelve ``None`` y el preflight responde ``UNKNOWN``
+        aunque el valor exista. Implementarlo a ciegas sería escribir una rama
+        COM que nadie puede ejercitar hasta que haya rig, y un valor leído mal
+        es peor que un ``UNKNOWN``: la sonda lo REPORTA justamente para que el
+        rig diga si hace falta. Cerrarlo es trabajo de T5-v2, no de acá.
+        Hallazgo de review (Qodo); el contrato decía leerlo y no lo leía.
 
         ``None`` es "no lo expone", que termina en ``UNKNOWN``. No se confunde
         con ``""``, que es un valor leído y vacío.

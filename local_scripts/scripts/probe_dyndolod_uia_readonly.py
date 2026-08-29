@@ -107,6 +107,16 @@ NOMBRES_DE_CONTROL_TYPE = {
 }
 
 
+def _ES_PERFIL_UTIL(valor: str) -> bool:  # noqa: N802 -- se lee como constante en el punto de uso
+    """``True`` si el perfil designa un directorio propio y no una raíz pelada.
+
+    `` `/` ``, `` `\\` `` o `` `C:\\` `` como ``USERPROFILE``/``HOME`` no
+    identifican a nadie, y redactarlos como prefijo destrozaría el volcado.
+    """
+    nucleo = valor.strip("\\/")
+    return bool(nucleo) and ("\\" in nucleo or "/" in nucleo)
+
+
 def _sanear(texto: str) -> str:
     """Redacta el perfil del usuario antes de imprimir, SIN romper el resto.
 
@@ -134,7 +144,10 @@ def _sanear(texto: str) -> str:
     resultado = texto
     for variable in ("USERPROFILE", "HOME"):
         valor = os.environ.get(variable)
-        if valor and len(valor) > 2:
+        # El guard es de FORMA, no de longitud: un perfil degenerado (`/`, `C:\`)
+        # se redacta como prefijo y se comería cualquier separador del volcado.
+        # Se exige que quede al menos un componente propio bajo una raíz.
+        if valor and _ES_PERFIL_UTIL(valor):
             resultado = re.sub(
                 re.escape(valor) + rf"(?=[{separadores}]|$)",
                 f"<{variable}>",
@@ -142,7 +155,12 @@ def _sanear(texto: str) -> str:
                 flags=re.IGNORECASE,
             )
     usuario = os.environ.get("USERNAME")
-    if usuario and len(usuario) > 2:
+    # SIN umbral de longitud: el `len(usuario) > 2` era herencia de cuando el
+    # reemplazo era por substring, donde un usuario corto ensuciaba cualquier
+    # palabra. El regex de abajo exige que el usuario sea un COMPONENTE completo
+    # de ruta, así que ya no hay nada de qué protegerse — y el umbral dejaba sin
+    # redactar al operador que se llama `jd`. Hallazgo de review (Qodo).
+    if usuario:
         resultado = re.sub(
             rf"(?<![^{separadores}]){re.escape(usuario)}(?![^{separadores}])",
             "<USERNAME>",

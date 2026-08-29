@@ -42,6 +42,7 @@ import importlib.util
 import io
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -61,6 +62,7 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
     LocalizadorPsutil,
     ObservacionUIAError,
     ObservadorNoDisponible,
+    ObservadorUIA,
     ProcesoObservado,
     RazonPreflight,
     SolicitudPreflightUIA,
@@ -1741,3 +1743,106 @@ def test_el_volcado_redacta_todos_los_campos_de_texto_del_control(monkeypatch):
     # Y que efectivamente imprimió los campos, para que el test no pase por
     # haber volcado nada: cada uno tiene que estar, redactado.
     assert volcado.count("<USERPROFILE>") >= 6, volcado
+
+
+# ---------------------------------------------------------------------------
+# El umbral de longitud del saneo, y el contrato que declara de más
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("usuario", ["a", "ab", "jd"])
+def test_el_saneo_redacta_tambien_los_usuarios_cortos(usuario, monkeypatch):
+    """Un `USERNAME` de 1-2 caracteres es un usuario, no una excepción.
+
+    Hallazgo de review (Qodo, security). `_sanear` traía un `len(valor) > 2`
+    heredado de cuando el reemplazo era por SUBSTRING: ahí un usuario corto
+    generaba falsos positivos en cualquier palabra. Con el regex de frontera
+    actual eso ya no puede pasar —el usuario tiene que ser un COMPONENTE
+    completo de ruta— así que el umbral dejó de proteger de nada y lo único que
+    hacía era no redactar al operador que se llama `jd`.
+    """
+    monkeypatch.setenv("USERNAME", usuario)
+    # El perfil vive en OTRO lado: la ruta bajo prueba no lo contiene, así que
+    # la única regla que puede redactarla es la de USERNAME. Con el perfil
+    # apuntando a la misma ruta, la redacción de USERPROFILE tapaba el hueco y
+    # el test pasaba sin probar nada.
+    monkeypatch.setenv("USERPROFILE", rf"C:\Users\{usuario}")
+    saneado = _cargar_la_sonda()._sanear(rf"D:\{usuario}\Modding\DynDOLOD")
+    assert saneado == r"D:\<USERNAME>\Modding\DynDOLOD", saneado
+
+
+@pytest.mark.parametrize("usuario", ["a", "ab"])
+def test_el_saneo_de_usuarios_cortos_sigue_exigiendo_frontera(usuario, monkeypatch):
+    """Y bajar el umbral no puede reintroducir el sobre-saneo que el umbral tapaba."""
+    monkeypatch.setenv("USERNAME", usuario)
+    monkeypatch.setenv("USERPROFILE", rf"C:\Users\{usuario}")
+    # `usuario` aparece como substring dentro de otros componentes, nunca solo.
+    intacto = rf"D:\Games\{usuario}bcdef\x{usuario}yz\Salida"
+    assert _cargar_la_sonda()._sanear(intacto) == intacto
+
+
+@pytest.mark.parametrize(
+    ("perfil", "intacto"),
+    [
+        # Cada perfil degenerado va con la ruta que SÍ destrozaría. Emparejarlos
+        # importa: con una ruta cualquiera el test pasa aunque el guard no esté,
+        # porque el lookahead de separador ya no matchea. Verificado midiendo
+        # cuáles rompen de verdad, en vez de suponer que cualquier ruta sirve.
+        ("\\", r"\\servidor\recurso\Sky-Claw"),
+        ("/", "//servidor/recurso/Sky-Claw"),
+        ("C:\\", "C:\\"),
+        ("   ", r"D:\Games\a   \Salida"),
+    ],
+)
+def test_un_perfil_degenerado_no_se_redacta_como_prefijo(perfil, intacto, monkeypatch):
+    """Sacar el umbral de longitud no puede volver destructivo al saneo.
+
+    `USERPROFILE=C:\\` o `HOME=/` no identifican a nadie, y redactarlos COMO
+    PREFIJO se come el arranque de la ruta — que es justo lo que hay que leer
+    para elegir el selector. El guard que los descarta es de FORMA (¿queda un
+    componente propio bajo la raíz?) y no de longitud, porque la longitud era
+    lo que dejaba sin redactar a los usuarios cortos.
+    """
+    monkeypatch.setenv("USERPROFILE", perfil)
+    monkeypatch.setenv("HOME", perfil)
+    monkeypatch.delenv("USERNAME", raising=False)
+    assert _cargar_la_sonda()._sanear(intacto) == intacto
+
+
+def test_el_contrato_no_declara_patrones_de_lectura_que_nadie_implementa():
+    """Lo que el protocolo promete leer tiene que ser lo que el adaptador lee.
+
+    Hallazgo de review (Qodo). El docstring de `ObservadorUIA.leer_valor`
+    listaba `LegacyIAccessible` entre sus patrones de lectura y el adaptador
+    real sólo prueba Value y Text: un control que expusiera SÓLO Legacy
+    —frecuente en Win32/Delphi— daría `UNKNOWN` mientras el contrato afirmaba
+    que se podía leer.
+
+    El ancla se deriva de las dos fuentes en vez de repetir una lista a mano:
+    lee la línea declarativa del docstring y la compara con los patrones que
+    `leer_valor` del probe consulta de verdad.
+    """
+    doc = ObservadorUIA.leer_valor.__doc__ or ""
+    declarados = set()
+    for linea in doc.splitlines():
+        if "Patrones de lectura implementados:" in linea:
+            declarados = set(re.findall(r"``(\w+?)Pattern``", linea))
+    assert declarados, (
+        "el docstring de leer_valor no declara sus patrones en una línea "
+        "'Patrones de lectura implementados: ...' que se pueda verificar"
+    )
+
+    fuente = PROBE_T5A.read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    implementados = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.FunctionDef) and nodo.name == "leer_valor":
+            for hijo in ast.walk(nodo):
+                if isinstance(hijo, ast.Constant) and isinstance(hijo.value, str):
+                    encontrado = re.fullmatch(r"UIA_Is(\w+?)PatternAvailablePropertyId", hijo.value)
+                    if encontrado:
+                        implementados.add(encontrado.group(1))
+
+    assert declarados == implementados, (
+        f"el contrato declara {sorted(declarados)} y el adaptador implementa {sorted(implementados)}"
+    )
