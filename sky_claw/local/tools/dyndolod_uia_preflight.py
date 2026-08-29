@@ -565,12 +565,15 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
     # limpiarse. Recortar los dos daba MATCH entre `" C:\x"` y `"C:\x"`.
     if valor[:1].isspace():
         return None
+    # ANTES del recorte, y el orden es el fix: `rstrip()` se lleva `\t`, `\n` y
+    # `\r` igual que un espacio, así que mirando el texto YA recortado un tab
+    # final se borraba en silencio y la ruta canonicalizaba igual que la limpia
+    # — MATCH donde el contrato promete UNKNOWN. Win32 recorta espacios y puntos
+    # finales; tabs y saltos de línea NO. Hallazgo de review (Qodo).
+    if any(ord(caracter) < 0x20 or ord(caracter) == 0x7F for caracter in valor):
+        return None
     texto = valor.rstrip()
     if not texto:
-        return None
-    # Un carácter de control adentro de la ruta es basura de decodificación o de
-    # copiado, no una ruta: no se limpia, se rechaza.
-    if any(ord(caracter) < 0x20 or ord(caracter) == 0x7F for caracter in texto):
         return None
 
     texto = texto.replace("/", "\\")
@@ -583,6 +586,13 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
     if ".." in componentes:
         return None
     componentes = [parte for parte in componentes if parte != "."]
+    # Antes de cualquier acceso posicional: un separador pelado (`"\\"`, `"/"`)
+    # deja la lista vacía, y armar la lista recortada mira `componentes[0]`. Sin
+    # este corte eso era un `IndexError` que escapaba de `observar_output` —la
+    # canonicalización del esperado corre fuera de su `try`— y rompía el
+    # contrato de que el preflight NUNCA lanza. Hallazgo de review (Qodo).
+    if not componentes:
+        return None
 
     # El designador de unidad es el único componente donde `:` es legal, y ahí lo
     # valida `_ES_UNIDAD` más abajo (`^[A-Za-z]:$`), que es más estricto que esta

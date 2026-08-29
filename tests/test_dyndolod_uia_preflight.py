@@ -2070,3 +2070,55 @@ def test_ningun_print_de_la_sonda_emite_una_excepcion_sin_sanear():
                     culpables.append(f"línea {nodo.lineno}: {ast.unparse(trozo.value)}")
 
     assert not culpables, f"print() que emite una excepción sin sanear: {culpables}"
+
+
+# ---------------------------------------------------------------------------
+# Dos bordes que el recorte por componente dejó abiertos
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("separador", ["\\", "/", "\\ ", "// "])
+def test_un_separador_pelado_no_revienta(separador):
+    """`canonicalizar_ruta_windows` NUNCA lanza: devuelve ``None``.
+
+    Hallazgo de review (Qodo), y es una regresión que introduje con el recorte
+    por componente: `componentes[0]` se accedía al armar la lista recortada,
+    ANTES del `if not componentes` que protegía ese acceso. Un backslash solo en
+    el campo Output —o `--expected-output "\\"` desde la sonda— daba
+    `IndexError`. La canonicalización del esperado corre FUERA del `try` de
+    `observar_output`, así que la excepción escapaba y rompía el contrato
+    declarado de que el preflight nunca lanza.
+    """
+    assert canonicalizar_ruta_windows(separador) is None
+
+
+def test_un_separador_pelado_en_el_valor_observado_da_unknown():
+    """End-to-end del mismo borde: UNKNOWN, no traceback."""
+    resultado = _observar(
+        _solicitud(),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control()]},
+        valores={"edOutput": "\\"},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.OBSERVADO_NO_CANONICALIZABLE
+
+
+@pytest.mark.parametrize("control", ["\t", "\n", "\r", "\x0b", "\x7f"])
+def test_un_caracter_de_control_al_final_rechaza_la_ruta(control):
+    """Un tab pegado al final NO es whitespace neutro de Win32.
+
+    Hallazgo de review (Qodo). El `rstrip()` corría ANTES del chequeo de
+    caracteres de control, así que un `\t`/`\n`/`\r` final se borraba en
+    silencio y la ruta canonicalizaba igual que la limpia — MATCH donde el
+    contrato promete UNKNOWN por basura de decodificación. Win32 recorta
+    espacios y puntos finales, no tabs ni saltos de línea: son destinos
+    distintos, no la misma ruta escrita de otra forma.
+    """
+    assert canonicalizar_ruta_windows("C:\\Sky-Claw" + control) is None
+
+
+def test_el_espacio_final_sigue_siendo_neutro_aunque_el_tab_no_lo_sea():
+    """El complemento: cerrar el borde no puede volver a rechazar lo que Win32 sí recorta."""
+    assert canonicalizar_ruta_windows("C:\\Sky-Claw  ") == r"c:\sky-claw"
