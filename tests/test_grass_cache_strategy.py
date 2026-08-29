@@ -26,6 +26,7 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     DESTRUCTIVE_TOOL_PATTERNS,
     HitlGateMiddleware,
 )
+from tests._orchestration_dispatcher_dependencies import crear_dependencias_desde_doble
 
 _PAYLOAD = {"worldspaces": ["Tamriel"], "conflicting_mods": ["ENB Helper"]}
 
@@ -131,7 +132,10 @@ def test_dispatcher_registra_generate_gateada_y_analyze_libre() -> None:
     sup.profile_name = "TestProfile"
     gate = HitlGateMiddleware(allow_unattended=True)
 
-    dispatcher = build_orchestration_dispatcher(sup, hitl_gate=gate)
+    dispatcher = build_orchestration_dispatcher(
+        crear_dependencias_desde_doble(sup),
+        hitl_gate=gate,
+    )
 
     gated = {name for name, chain in dispatcher._middleware.items() if any(mw is gate for mw in chain)}
     assert GenerateGrassCacheStrategy.name in gated

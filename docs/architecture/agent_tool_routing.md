@@ -5,9 +5,14 @@
 > **Audiencia:** desarrolladores y agentes.
 >
 > **Fuentes canónicas:** `sky_claw/app/agent/tools/`,
-> `sky_claw/app/orchestrator/tool_dispatcher.py` y sus callers.
+> `sky_claw/app/orchestrator/tool_dispatcher.py`,
+> `sky_claw/app/orchestrator/dispatcher_dependencies.py` y sus callers.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación integral previa:** 2026-07-25 sobre `origin/main`
+> `c6ab35e`.
+>
+> **Frontera del dispatcher:** re-verificada el 2026-08-28 contra el código y
+> los tests estructurales de este cambio.
 
 ## Ruta LLM
 
@@ -32,7 +37,8 @@ base es lock-only, aunque handlers concretos como `download_mod` reciben un
 ```mermaid
 flowchart LR
     UI["Acción GUI / supervisor"] --> Supervisor["SupervisorAgent.dispatch_tool"]
-    Supervisor --> Dispatcher["OrchestrationToolDispatcher.dispatch"]
+    Supervisor --> Deps["OrchestrationDispatcherDependencies"]
+    Deps --> Dispatcher["OrchestrationToolDispatcher.dispatch"]
     Dispatcher --> MW["Middleware global y por tool"]
     MW --> Strategy["ToolStrategy.execute"]
     Strategy --> Service["servicio local"]
@@ -41,6 +47,20 @@ flowchart LR
 El dispatcher registra strategies con `register()`. Puede aplicar loop
 guardrail, idempotencia, wrapping de errores, validación de dict y HITL.
 Synthesis usa además `SandboxPromotionFlow`.
+
+La frontera de composición es explícita: `SupervisorAgent.__init__` construye
+un `OrchestrationDispatcherDependencies` inmutable con las quince capacidades
+estrechas consumidas por las strategies. `tool_dispatcher.py` no conoce ni
+consulta al supervisor. Los providers de preview y Synthesis son lazy y
+cierran solamente sobre sus servicios, paths, journal, buses, locks, perfil y
+guard concretos; construir el dispatcher no resuelve ejecutables ni rutas de
+MO2. El callable de Wrye Bash cierra sobre su servicio y el perfil de sesión,
+sin capturar al supervisor completo.
+
+La aprobación destructiva pre-ejecución permanece en exactamente siete tools:
+LOOT, resolución xEdit, DynDOLOD, Pandora, QuickAutoClean, Grass Cache y Wrye
+Bash. Synthesis no usa ese middleware porque su sandbox solicita aprobación
+post-ejecución sobre el diff; agregar el gate previo sería double-gating.
 
 ## Contratos que no deben mezclarse
 

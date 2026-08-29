@@ -13,6 +13,13 @@ from sky_claw.app.core.models import HitlApprovalRequest
 from sky_claw.app.core.path_resolver import PathResolutionService, resolver_perfil_activo
 from sky_claw.app.core.windows_interop import ModdingToolsAgent
 from sky_claw.app.db.rollback_manager import RollbackManager
+from sky_claw.app.orchestrator.dispatcher_dependencies import (
+    OrchestrationDispatcherDependencies,
+    build_preview_chain_service_provider,
+    build_synthesis_flow_provider,
+    build_synthesis_service_factory,
+    build_wrye_bash_pipeline,
+)
 from sky_claw.app.orchestrator.maintenance_daemon import (
     MaintenanceDaemon,
 )
@@ -201,13 +208,14 @@ class SupervisorAgent:
         )
 
         # Sprint-2: Inicializar Servicios Extraídos (Strangler Fig)
+        synthesis_pipeline_config_path = pathlib.Path(BACKUP_STAGING_DIR) / "synthesis_pipeline.json"
         self._synthesis_service = SynthesisPipelineService(
             lock_manager=self._lock_manager,
             snapshot_manager=self.snapshot_manager,
             journal=self.journal,
             path_resolver=self._path_resolver,
             event_bus=self._event_bus,
-            pipeline_config_path=pathlib.Path(BACKUP_STAGING_DIR) / "synthesis_pipeline.json",
+            pipeline_config_path=synthesis_pipeline_config_path,
         )
 
         self._dyndolod_service = DynDOLODPipelineService(
@@ -311,8 +319,50 @@ class SupervisorAgent:
         # misma laguna que F1a documentó para el loop guardrail. El supervisor
         # retiene el ToolStateMachine para introspección futura (GUI/telemetría).
         self._tool_state_machine = ToolStateMachine()
+        synthesis_flow_provider = build_synthesis_flow_provider(
+            path_resolver=self._path_resolver,
+            profile_name=self.profile_name,
+            hitl_guard=hitl_guard,
+        )
+        synthesis_service_factory = build_synthesis_service_factory(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self.snapshot_manager,
+            path_resolver=self._path_resolver,
+            event_bus=self._event_bus,
+            pipeline_config_path=synthesis_pipeline_config_path,
+        )
+        preview_chain_service_provider = build_preview_chain_service_provider(
+            path_resolver=self._path_resolver,
+            path_validator=self._path_validator,
+            lock_manager=self._lock_manager,
+            snapshot_manager=self.snapshot_manager,
+            journal=self.journal,
+            event_bus=self._event_bus,
+        )
+        default_profile = self.profile_name
+        journal = self.journal
+        self._dispatcher_dependencies = OrchestrationDispatcherDependencies(
+            scraper=self.scraper,
+            loot_service=self._loot_service,
+            synthesis_flow_provider=synthesis_flow_provider,
+            synthesis_service_factory=synthesis_service_factory,
+            real_journal_provider=lambda: journal,
+            xedit_service=self._xedit_service,
+            dyndolod_service=self._dyndolod_service,
+            pandora_service=self._pandora_service,
+            grass_cache_service=self._grass_cache_service,
+            scan_asset_conflicts=self.scan_asset_conflicts,
+            scan_asset_conflicts_json=self.scan_asset_conflicts_json,
+            wrye_bash_pipeline=build_wrye_bash_pipeline(
+                service=self._wrye_bash_service,
+                default_profile=default_profile,
+            ),
+            plugin_limit_guard=self._run_plugin_limit_guard,
+            default_profile_getter=lambda: default_profile,
+            preview_service_provider=preview_chain_service_provider,
+        )
         self._tool_dispatcher = build_orchestration_dispatcher(
-            self,
+            self._dispatcher_dependencies,
             hitl_gate=HitlGateMiddleware(hitl_guard=hitl_guard),
             loop_guardrail=self._loop_guardrail_middleware,
             idempotency=IdempotencyMiddleware(state_machine=self._tool_state_machine),

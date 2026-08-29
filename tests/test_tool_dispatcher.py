@@ -194,31 +194,26 @@ def test_strategy_satisfies_protocol():
 
 
 # ---------------------------------------------------------------------------
-# _build_chain_preview_service — LOOT path resolution
+# provider lazy de ChainPreviewService — resolución de LOOT
 # ---------------------------------------------------------------------------
 
 
-class _FakeSupervisorForPreview:
-    """Minimal supervisor double for _build_chain_preview_service tests.
-
-    Provides only the attributes accessed by _build_chain_preview_service;
-    everything else is a MagicMock so the function can build its
-    collaborators without real binaries.
-    """
+class _FakePreviewDependencies:
+    """Dependencias concretas mínimas para construir el provider de preview."""
 
     def __init__(self, *, loot_exe: pathlib.Path | None = None) -> None:
-        self._path_resolver = MagicMock()
-        self._path_resolver.get_skyrim_path.return_value = pathlib.Path("/skyrim")
-        self._path_resolver.get_xedit_path.return_value = pathlib.Path("/xedit.exe")
-        self._path_resolver.get_loot_exe.return_value = loot_exe
-        self._path_validator = MagicMock()
-        self._lock_manager = MagicMock()
+        self.path_resolver = MagicMock()
+        self.path_resolver.get_skyrim_path.return_value = pathlib.Path("/skyrim")
+        self.path_resolver.get_xedit_path.return_value = pathlib.Path("/xedit.exe")
+        self.path_resolver.get_loot_exe.return_value = loot_exe
+        self.path_validator = MagicMock()
+        self.lock_manager = MagicMock()
         self.snapshot_manager = MagicMock()
         self.journal = MagicMock()
-        self._event_bus = MagicMock()
+        self.event_bus = MagicMock()
 
 
-# All classes lazily imported inside _build_chain_preview_service that we need
+# Clases importadas perezosamente dentro del provider que se reemplazan para
 # to stub out so the function can run without real tool binaries on disk.
 _CHAIN_PREVIEW_PATCHES = [
     "sky_claw.local.loot.cli.LOOTConfig",
@@ -241,19 +236,26 @@ def test_build_chain_preview_loot_exe_resolution(
     loot_exe_configured: pathlib.Path | None,
     expected_loot_exe: pathlib.Path,
 ) -> None:
-    """_build_chain_preview_service consults get_loot_exe() and uses the
-    resolved path; falls back to Path("loot.exe") when the resolver returns
-    None (LOOT_EXE env var not set), preserving backward-compat behaviour.
-    """
-    from sky_claw.app.orchestrator.tool_dispatcher import _build_chain_preview_service
+    """El provider usa LOOT_EXE configurado o el fallback ``loot.exe``."""
+    from sky_claw.app.orchestrator.dispatcher_dependencies import (
+        build_preview_chain_service_provider,
+    )
+
+    deps = _FakePreviewDependencies(loot_exe=loot_exe_configured)
+    provider = build_preview_chain_service_provider(
+        path_resolver=deps.path_resolver,
+        path_validator=deps.path_validator,
+        lock_manager=deps.lock_manager,
+        snapshot_manager=deps.snapshot_manager,
+        journal=deps.journal,
+        event_bus=deps.event_bus,
+    )
 
     with ExitStack() as stack:
         mocks = [stack.enter_context(patch(p)) for p in _CHAIN_PREVIEW_PATCHES]
         mock_loot_config = mocks[0]  # sky_claw.local.loot.cli.LOOTConfig
 
-        _build_chain_preview_service(
-            _FakeSupervisorForPreview(loot_exe=loot_exe_configured),  # type: ignore[arg-type]
-        )
+        provider()
 
         mock_loot_config.assert_called_once()
         assert mock_loot_config.call_args.kwargs["loot_exe"] == expected_loot_exe

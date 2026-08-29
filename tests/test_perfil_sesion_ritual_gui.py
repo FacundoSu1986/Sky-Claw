@@ -277,7 +277,12 @@ async def _perfiles_que_cruzan(tool: str) -> list[str]:
     from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
 
     sup = _supervisor_de_sesion()
-    dispatcher = build_orchestration_dispatcher(sup, hitl_gate=HitlGateMiddleware(allow_unattended=True))
+    from tests._orchestration_dispatcher_dependencies import crear_dependencias_desde_doble
+
+    dispatcher = build_orchestration_dispatcher(
+        crear_dependencias_desde_doble(sup),
+        hitl_gate=HitlGateMiddleware(allow_unattended=True),
+    )
     await dispatcher.dispatch(tool, dict(PAYLOAD_DEL_RITUAL))
 
     hallados: list[str] = []
