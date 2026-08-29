@@ -2504,3 +2504,49 @@ def test_leer_valor_cae_a_textpattern_si_value_no_da_texto():
     assert devoluciones_none[0] is lector.body[-1], (
         "`return None` no es el último statement: una rama devuelve None sin probar el patrón siguiente"
     )
+
+
+# ---------------------------------------------------------------------------
+# Alias de Windows: lo que puede denotar el MISMO destino con otra cadena
+# ---------------------------------------------------------------------------
+#
+# Hallazgo de review (Qodo). El fail-closed estaba cubierto sólo en la dirección
+# del MATCH falso; el MISMATCH falso no tenía caja de ambigüedad. Si la GUI
+# muestra la salida por un alias y el esperado usa la forma larga, el veredicto
+# era `MISMATCH`/`OUTPUT_DIFIERE` —CONCLUYENTE— sobre dos cadenas que designan
+# el mismo directorio.
+#
+# Se rechaza lo que se puede reconocer SIN tocar el disco. Lo que no (junctions
+# y symlinks, indistinguibles de una ruta común) queda documentado como límite
+# en el docstring de la función, no tapado.
+
+
+@pytest.mark.parametrize(
+    "crudo",
+    [
+        r"C:\PROGRA~1\Sky-Claw",
+        r"C:\Sky-Claw\DYNDOL~1",
+        r"C:\Games\TEXGEN~2\Salida",
+        r"C:\%APPDATA%\Sky-Claw",
+        r"C:\Games\%USERNAME%\Salida",
+        r"C:\%SYSTEMDRIVE%\x",
+    ],
+)
+def test_una_ruta_con_alias_no_puede_dar_un_veredicto_concluyente(crudo):
+    """Un nombre 8.3 o una variable sin expandir pueden ser OTRA forma del mismo destino."""
+    assert canonicalizar_ruta_windows(crudo) is None
+
+
+@pytest.mark.parametrize(
+    ("crudo", "esperado"),
+    [
+        # `~` sin dígito no es un nombre corto: `~backup` es un directorio común.
+        (r"C:\~backup\Sky-Claw", r"c:\~backup\sky-claw"),
+        (r"C:\Sky~Claw\x", r"c:\sky~claw\x"),
+        # Un `%` suelto tampoco es una variable: hace falta el par.
+        (r"C:\100% done\x", r"c:\100% done\x"),
+    ],
+)
+def test_el_rechazo_de_alias_no_se_come_nombres_legitimos(crudo, esperado):
+    """Rechazar de más rompe justo aquello para lo que existe el preflight."""
+    assert canonicalizar_ruta_windows(crudo) == esperado

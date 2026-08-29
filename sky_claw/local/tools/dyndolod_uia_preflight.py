@@ -106,6 +106,17 @@ _PREFIJOS_DE_NAMESPACE = frozenset({"?", "."})
 #: que no es el que Win32 resolvería.
 _CARACTERES_RESERVADOS_WIN32 = frozenset('<>:"|?*')
 
+#: Formas que pueden denotar el MISMO directorio con otra cadena, reconocibles
+#: sin tocar el disco: un nombre corto 8.3 (``PROGRA~1``) y una variable de
+#: entorno sin expandir (``%APPDATA%``). Una ruta que las contenga no admite
+#: veredicto CONCLUYENTE en ninguna de las dos direcciones — ni MATCH ni
+#: MISMATCH— así que se rechaza a ``UNKNOWN``.
+#:
+#: El ``~`` exige un dígito detrás porque `~backup` es un directorio común; el
+#: ``%`` exige el PAR porque `100% done` también lo es. Rechazar de más rompe
+#: justo aquello para lo que existe el preflight. Hallazgo de review (Qodo).
+_PARECE_ALIAS = re.compile(r"~\d|%[^%]+%")
+
 #: Excepciones que delatan un BUG del adaptador, no un fallo del rig: un id de
 #: propiedad mal escrito (``KeyError`` al indexar el módulo COM), un atributo
 #: inexistente, un valor de tipo inesperado, un índice fuera de rango. Se
@@ -555,6 +566,21 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
       dato no hay comparación posible, sólo una adivinanza;
     * los prefijos de namespace (:data:`_PREFIJOS_DE_NAMESPACE`) se rechazan: ver
       la nota de esa constante;
+
+    **El límite, dicho y no tapado.** Una junction o un symlink son
+    indistinguibles de un directorio común MIRANDO LA CADENA, y resolverlos
+    exige el filesystem, que esta función no toca por contrato. Así que
+    ``MISMATCH`` significa exactamente *"estas dos cadenas designan lugares
+    distintos según la sintaxis de Win32"*, y no puede ascender a *"estos son
+    destinos distintos"*: dos rutas que difieren pueden apuntar al mismo lugar a
+    través de un enlace. Es el reflejo simétrico del límite que el módulo ya
+    declara para ``MATCH``, y quien actúe sobre un ``MISMATCH`` —T5-v2, cuando
+    corrija el Output— tiene que poner su propio guard antes de escribir;
+    * un componente que parece un ALIAS (:data:`_PARECE_ALIAS`) rechaza la ruta.
+      Es la mitad que faltaba del fail-closed: sin esto, una GUI que muestre la
+      salida por un nombre corto 8.3 contra un esperado en forma larga daba
+      ``MISMATCH`` —un veredicto CONCLUYENTE— sobre dos cadenas que designan el
+      mismo directorio;
     * un componente con un carácter reservado de Win32
       (:data:`_CARACTERES_RESERVADOS_WIN32`) **rechaza la ruta**. Es la misma
       regla que ``..``, por el mismo motivo: el sistema no puede abrir esa ruta,
@@ -643,6 +669,8 @@ def canonicalizar_ruta_windows(valor: str | None) -> str | None:
     else:
         interiores = componentes[1:]
     if any(_CARACTERES_RESERVADOS_WIN32 & set(parte) for parte in sin_reservados):
+        return None
+    if any(_PARECE_ALIAS.search(parte) for parte in sin_reservados):
         return None
 
     # Win32 recorta los espacios y puntos FINALES de CADA componente de una ruta
