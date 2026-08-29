@@ -49,19 +49,31 @@ SHUTDOWN_CHECKPOINT_TIMEOUT_SECONDS = 10
 # entre intento e intento.
 _CONVERSION_WAL_RETRY_SLEEP_S = 0.005
 
-# Familia de contención de locks reintentable. Corrupción, malformed DB, I/O y
-# permisos NUNCA se reintentan: ``SQLITE_BUSY`` (5) y ``SQLITE_LOCKED`` (6),
-# enmascarando códigos extendidos (``SQLITE_BUSY_SNAPSHOT`` = 517 → base 5).
+# Familia de contención de locks reintentable, DECIDIDA código por código.
+# Corrupción, malformed DB, I/O y permisos NUNCA se reintentan. La máscara
+# ``& 0xFF`` clasifica por código BASE, así que cubre también los extendidos:
+#   SQLITE_BUSY            (5)   → reintentable: hay otro owner activo.
+#   SQLITE_BUSY_SNAPSHOT  (517)  → reintentable: otro writer commiteó después
+#                                  de nuestro snapshot; esperar y re-leer.
+#   SQLITE_BUSY_RECOVERY  (261)  → reintentable: otra conexión está en WAL
+#                                  recovery; esperar a que termine.
+#   SQLITE_LOCKED          (6)   → reintentable: lock de tabla de otra
+#                                  conexión; esperar.
+#   SQLITE_LOCKED_SHAREDCACHE (262) → reintentable: variante shared-cache.
+# Cualquier otro OperationalError (corrupción, I/O, permisos) propaga al
+# primer intento.
 _CODIGOS_DE_CONTENCION = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
 
 
 def _es_contencion_de_bloqueo(error: sqlite3.OperationalError) -> bool:
     """True SOLO para la familia de contención de locks (BUSY/LOCKED).
 
-    Distingue contención esperada de error permanente (sección error semantics
-    del contrato DB): un archivo corrupto o ilegible no se reintenta. El
-    ``errorcode`` extendido está disponible desde Python 3.11; el fallback por
-    mensaje cubre builds donde el atributo no venga poblado.
+    La clasificación es por ``sqlite_errorcode`` (disponible desde Python 3.11,
+    el mínimo de este repo), nunca por texto libre: "busy"/"locked" como
+    substrings reintentarían condiciones ajenas. El fallback por mensaje
+    compara los strings CANÓNICOS de SQLite ("database is locked" /
+    "database table is locked") y sólo existe para builds donde el atributo
+    no venga poblado — en 3.11/3.12 el camino primario es siempre el código.
     """
     codigo = getattr(error, "sqlite_errorcode", None)
     if codigo is not None:
@@ -515,12 +527,19 @@ class DatabaseLifecycleManager:
         falla de forma limitada y diagnosticable con el MISMO error, sin esperar
         infinitamente. Reintentar la MISMA sentencia sobre la misma conexión es
         seguro: el pragma fallido no abre transacción ni deja estado. Sólo se
-        reintenta la familia BUSY/LOCKED (``_es_contencion_de_bloqueo``);
-        corrupción, I/O y permisos propagan al primer intento.
+        reintenta la familia BUSY/LOCKED (``_es_contencion_de_bloqueo``, con la
+        decisión código por código documentada ahí); corrupción, I/O y permisos
+        propagan al primer intento.
 
-        Cuándo NO compite: si el archivo ya está en WAL, el pragma es un no-op
-        instantáneo aunque haya writers o lectores activos — la única ventana de
-        carrera es la conversión misma.
+        Alcance de la propiedad, enunciado sin overclaim: la carrera
+        REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
+        RESERVED durante la promoción) corresponde a la conversión misma. En
+        los estados observados con el archivo ya en WAL —writer o reader en
+        vuelo— el pragma devolvió 'wal' sin esperar. NO se afirma que el
+        pragma jamás pueda devolver BUSY por otra vía interna (p. ej. durante
+        WAL recovery de otra conexión): si lo hiciera, este reintento acotado
+        lo cubre igual, porque el criterio es el CÓDIGO del error (familia
+        BUSY/LOCKED) y no el origen del conflicto.
         """
         ventana_s = self._config.busy_timeout_ms / 1000.0
         inicio = time.monotonic()
@@ -542,10 +561,14 @@ class DatabaseLifecycleManager:
         El orden NO es cosmético: ``busy_timeout`` se instala ANTES del primer
         pragma que puede esperar por otro owner (la conversión a WAL), para que
         el knob configurado —no el default de 5s de ``sqlite3.connect``—
-        gobierne toda la ventana de inicialización. (Los dos órdenes emiten las
-        mismas pragmas; ``dlq_manager`` ya documentaba "busy_timeout must be
-        first: protects WAL mode switch" — mismo criterio.) La conversión a WAL
-        además lleva su propio reintento acotado: ver ``_enter_wal_mode``.
+        gobierne toda la ventana de inicialización. OJO con la distinción: la
+        conexión recién abierta YA tiene un busy handler de ~5s (default de
+        ``sqlite3.connect``); este reorden no repara la race observada en CI
+        (ahí el handler no corría porque SQLite lo BYPASEA en la promoción de
+        locks, ver ``_enter_wal_mode``). Repara la integridad del knob: con el
+        orden viejo, ``busy_timeout_ms`` no gobernaba el primer statement que
+        espera. La conversión a WAL además lleva su propio reintento acotado:
+        ver ``_enter_wal_mode``.
         """
         cfg = self._config
 

@@ -802,8 +802,10 @@ async def test_sidecars_con_ruta_relativa_tambien_consultan_el_checkpoint(tmp_pa
 #   Evidencia empírica (SQLite 3.45, Windows): con un holder en RESERVED, el
 #   pragma falla en 0.00s CON busy_timeout=15000 instalado antes; con un holder
 #   solo-lectura (SHARED) el handler SÍ espera; sobre un archivo ya-WAL el
-#   pragma es un no-op instantáneo aunque haya writers activos. La única
-#   ventana de carrera es la conversión misma.
+#   pragma devolvió 'wal' sin esperar en los estados observados (writer o
+#   reader en vuelo). La carrera REPRODUCIDA corresponde a la conversión
+#   misma; no se afirma que el pragma jamás devuelva BUSY por otra vía (el
+#   retry de producción clasifica por código de error, no por origen).
 #
 # Los holders de acá abajo son conexiones SQLite REALES que sostienen
 # exactamente el estado de lock requerido; no se simula ningún error.
