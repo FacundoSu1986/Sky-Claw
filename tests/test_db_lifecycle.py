@@ -840,7 +840,12 @@ class _SostieneLockSQLite(threading.Thread):
                 conn.execute("BEGIN")
                 conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
             self.adquirido.set()
-            self.liberar.wait(30)
+            # Holder: espera a que el test pida soltar — pero con un
+            # tope de seguridad. 30s se queda corto si el scheduling del
+            # runner demora la entrada a _init_single (Windows CI donde el
+            # thread worker de aiosqlite compite con el arranque del async
+            # task en runners pesados). 180s alcanza sin impactar la suite.
+            self.liberar.wait(180)
         finally:
             with contextlib.suppress(sqlite3.Error):
                 conn.rollback()
