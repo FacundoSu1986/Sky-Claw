@@ -56,8 +56,11 @@ La frontera de composición es explícita: desde **PR2**, `build_orchestration_c
 finales: 7 servicios de pipeline, dependencias del dispatcher, dispatcher, loop
 guardrail y máquina de estados. `SupervisorAgent.__init__` invoca el builder y
 conserva las referencias que necesita para lifecycle, APIs existentes y reset
-manual del loop guardrail; los seams residuales de Grass, asset scan y
-plugin-limit se entregan como callables estrechos (PR3 los extraerá).
+manual del loop guardrail; el seam de Grass vive desde PR3 en un provider con
+dependencias explícitas y resolución lazy
+(`sky_claw/app/orchestrator/grass_runtime_deps.py`), mientras los seams
+residuales de asset scan y plugin-limit siguen entregándose como callables
+estrechos (PR4 los extraerá).
 
 `tool_dispatcher.py` no conoce ni consulta al supervisor. Los providers de
 preview y Synthesis son lazy y cierran solamente sobre sus servicios, paths,
