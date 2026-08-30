@@ -250,6 +250,27 @@ def test_calculate_checksum_no_abre_asset_si_el_validator_rechaza(tmp_path: path
         detector.calculate_checksum(asset)
 
 
+def test_parse_modlist_funciona_cuando_el_validator_acepta(tmp_path: pathlib.Path) -> None:
+    """T-S4 (happy-path): con el asset dentro de la root, el validator acepta y
+    ``parse_modlist`` devuelve los mods habilitados (mayor prioridad primero).
+
+    Complementa a T-S2/T-S3 (rechazo): sin este test, un guard que rechazara
+    TODO pasaría la suite — el fail-closed se demuestra porque también abre
+    cuando corresponde."""
+    mo2 = tmp_path / "mo2"
+    mods = mo2 / "mods"
+    mods.mkdir(parents=True)
+    profiles = mo2 / "profiles" / "Sesion"
+    profiles.mkdir(parents=True)
+    (profiles / "modlist.txt").write_text("+ModBajo\n-ModDeshabilitado\n+ModAlto\n", encoding="utf-8")
+
+    validator = PathValidator(roots=[mo2])
+    scanner, _ = _scanner_con_resolver(mods, path_validator=validator)
+    detector = scanner.detector
+
+    assert detector.parse_modlist() == ["ModAlto", "ModBajo"]
+
+
 # ---------------------------------------------------------------------------
 # Errores durante la resolución lazy del detector
 # ---------------------------------------------------------------------------
@@ -473,23 +494,54 @@ def test_unique_seam_del_supervisor_bound_al_builder_es_plugin_guard() -> None:
     )
 
 
+def _referencia_logica(nodo: ast.expr) -> tuple[str, str] | None:
+    """Normaliza una referencia a valor, sin depender de la forma superficial.
+
+    - ``scanner``            (``ast.Name``)                → ``("name", "scanner")``
+    - ``self._asset_scanner`` (``ast.Attribute`` de self)  → ``("self_attr", "_asset_scanner")``
+    - cualquier otra cosa (llamadas, sumas, …)             → ``None``
+
+    Así T9 compara la IDENTIDAD LÓGICA del objeto y no el estilo de
+    asignación: ``scanner.scan`` y ``self._asset_scanner.scan`` son la misma
+    referencia cuando el scanner se construyó bajo esa referencia.
+    """
+    if isinstance(nodo, ast.Name):
+        return ("name", nodo.id)
+    if isinstance(nodo, ast.Attribute) and isinstance(nodo.value, ast.Name) and nodo.value.id == "self":
+        return ("self_attr", nodo.attr)
+    return None
+
+
 def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
     """T9 (AST): ``__init__`` construye AssetConflictScanner SOLO con
     ``path_resolver=self._path_resolver`` y ``path_validator=self._modding_validator``
-    y pasa ``scanner.scan`` / ``scanner.scan_json`` al builder — sin congelar el
-    nombre de la variable local.
+    y pasa el ``.scan`` / ``.scan_json`` del MISMO objeto al builder.
+
+    El oracle comprueba SEMÁNTICA, no estilo AST: no le importa si el scanner
+    se construye en una variable local (``asset_conflict_scanner = AssetConflictScanner(...)``)
+    o directamente en un atributo (``self._asset_scanner = AssetConflictScanner(...)``),
+    ni si los callbacks nombran la variable local o el atributo de ``self``
+    (ambas son REFACTORES EQUIVALENTES que deben pasar; un WIRING DIFERENTE
+    —otro scanner, otro método, callback viejo del supervisor— debe fallar).
 
     Invariantes:
-      - TODOS los kwargs a ``AssetConflictScanner`` se inventarían (named + ``**``);
-        un ``**extras`` o un kwarg inesperado rompe el test.
+      - EXACTAMENTE UNA construcción productiva de ``AssetConflictScanner``;
+        un scanner duplicado rompe el test.
+      - TODOS los argumentos se inventarían: ni posicionales, ni ``**extras``,
+        ni kwargs inesperados.
       - ``path_validator`` apunta al validator de modding (no ``_path_validator``
         del rollback ni un validator fabricado).
-      - el MISMO scanner construido se usa para ``scan`` y ``scan_json``
-        (detección de inversión plain/JSON y de callbacks viejos del supervisor).
-      - la correspondencia scanner↔callback es por IDENTIDAD EXACTA de nombre
-        (pertenencia a un ``set``), nunca por substring: un scanner distinto
-        cuyo nombre sea subcadena del construido (p.ej. ``scanner`` dentro de
-        ``asset_conflict_scanner``) rompe el test.
+      - el MISMO objeto construido alimenta ``scan_asset_conflicts`` (vía
+        ``.scan``) y ``scan_asset_conflicts_json`` (vía ``.scan_json``); se
+        detecta la inversión plain/JSON y los callbacks viejos del supervisor.
+      - se rastrea el alias simple local→self (``self._asset_scanner = scanner``)
+        recorriendo las asignaciones en orden de línea; NO hay dataflow general
+        (containers, closures o returns no son referencias del scanner).
+
+    Mutaciones de contraste ejecutadas en el PR: la forma ``self.attr`` pura
+    pasa (equivalente); un SEGUNDO scanner cableado, el swap plain/JSON,
+    ``self.scan_asset_conflicts``, ``path_validator=self._path_validator``,
+    ``path_validator=fabricado()``, un kwarg extra y ``**extras`` fallan.
     """
     arbol = _arbol_supervisor()
     clase = _cuerpo_supervisor(arbol)
@@ -497,27 +549,80 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
         if not (isinstance(miembro, ast.FunctionDef) and miembro.name == "__init__"):
             continue
 
-        construcciones: list[tuple[set[str], dict[str, ast.expr], list[ast.expr]]] = []
+        # Recorremos las asignaciones en ORDEN DE LÍNEA para poder rastrear
+        # aliases simples (target = referencia) sin construir dataflow general.
+        asignaciones = sorted(
+            (n for n in ast.walk(miembro) if isinstance(n, ast.Assign)),
+            key=lambda n: n.lineno,
+        )
+
+        construcciones = [
+            sub
+            for sub in asignaciones
+            if isinstance(sub.value, ast.Call)
+            and isinstance(sub.value.func, ast.Name)
+            and sub.value.func.id == "AssetConflictScanner"
+        ]
+        assert len(construcciones) == 1, (
+            f"__init__ debe construir EXACTAMENTE UN AssetConflictScanner "
+            f"(encontrados {len(construcciones)}) — un segundo scanner cableado "
+            "sería wiring distinto, no un refactor equivalente"
+        )
+
+        construccion = construcciones[0]
+        call = construccion.value
+        assert isinstance(call, ast.Call)  # estrechamiento para el type-checker
+        kw_named: dict[str, ast.expr] = {}
+        for kw in call.keywords:
+            if kw.arg is None:
+                raise AssertionError(
+                    "AssetConflictScanner recibe `**kwargs` no nominales — "
+                    "el contrato del scanner es path_resolver + path_validator explícitos"
+                )
+            kw_named[kw.arg] = kw.value
+
+        # 1. Contrato exacto del constructor: sin posicionales ni kwargs raros.
+        assert call.args == [], (
+            "AssetConflictScanner debe construirse solo con kwargs nominales "
+            f"(recibió {len(call.args)} argumentos posicionales)"
+        )
+        assert set(kw_named) == {"path_resolver", "path_validator"}, (
+            f"AssetConflictScanner se construye con kwargs {set(kw_named)} — "
+            "se espera exactamente {path_resolver, path_validator}"
+        )
+        assert _formato_kwarg(kw_named["path_resolver"]) == "self._path_resolver", (
+            "path_resolver debe ser self._path_resolver"
+        )
+        assert _formato_kwarg(kw_named["path_validator"]) == "self._modding_validator", (
+            "path_validator debe ser self._modding_validator (el validator de modding, "
+            "NO el backup-only del rollback ni un validator fabricado)"
+        )
+
+        # 2. Identidad lógica del objeto: referencias destino de la construcción
+        #    (locales o self.attr) + aliases simples `target = <ref conocida>`.
+        refs_del_scanner: set[tuple[str, str]] = set()
+        for target in construccion.targets:
+            ref = _referencia_logica(target)
+            if ref is not None:
+                refs_del_scanner.add(ref)
+        assert refs_del_scanner, (
+            "La construcción del scanner debe asignarse a un nombre local o a un "
+            "atributo de self (no a suscripciones ni targets dinámicos)"
+        )
+        for sub in asignaciones:
+            if sub is construccion:
+                continue
+            ref_valor = _referencia_logica(sub.value)
+            if ref_valor is None or ref_valor not in refs_del_scanner:
+                continue
+            for target in sub.targets:
+                ref = _referencia_logica(target)
+                if ref is not None:
+                    refs_del_scanner.add(ref)
+
+        # 3. Los callbacks del builder deben ser <ref del scanner>.scan / .scan_json.
         kwargs_al_builder: dict[str, ast.expr] = {}
         for sub in ast.walk(miembro):
-            # Construcción del scanner: captura la variable destino para rastrear
-            # el MISMO objeto hasta los callbacks del builder.
-            if (
-                isinstance(sub, ast.Assign)
-                and isinstance(sub.value, ast.Call)
-                and isinstance(sub.value.func, ast.Name)
-                and sub.value.func.id == "AssetConflictScanner"
-            ):
-                kw_named: dict[str, ast.expr] = {}
-                kw_args: list[ast.expr] = []
-                for kw in sub.value.keywords:
-                    if kw.arg is None:
-                        kw_args.append(kw.value)
-                    else:
-                        kw_named[kw.arg] = kw.value
-                nombres_destino = {t.id for t in sub.targets if isinstance(t, ast.Name)}
-                construcciones.append((nombres_destino, kw_named, kw_args))
-
             if (
                 isinstance(sub, ast.Call)
                 and isinstance(sub.func, ast.Name)
@@ -527,45 +632,20 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
                     if kw.arg is not None:
                         kwargs_al_builder[kw.arg] = kw.value
 
-        assert construcciones, "__init__ no construye AssetConflictScanner"
-
-        for nombres_destino, kw_named, kw_args in construcciones:
-            # 1. Sin `**extras` ni kwargs inesperados: el contrato es exacto.
-            assert kw_args == [], (
-                "AssetConflictScanner recibe `**kwargs` no nominales — "
-                "el contrato del scanner es path_resolver + path_validator explícitos"
+        for builder_kwarg, attr in (
+            ("scan_asset_conflicts", "scan"),
+            ("scan_asset_conflicts_json", "scan_json"),
+        ):
+            valor = kwargs_al_builder.get(builder_kwarg)
+            assert valor is not None, f"{builder_kwarg} no se entregó al builder"
+            assert isinstance(valor, ast.Attribute) and valor.attr == attr, (
+                f"{builder_kwarg} debe ser <scanner>.{attr} (detecta inversión plain/JSON "
+                "y callbacks viejos del supervisor)"
             )
-            assert set(kw_named) == {"path_resolver", "path_validator"}, (
-                f"AssetConflictScanner se construye con kwargs {set(kw_named)} — "
-                "se espera exactamente {path_resolver, path_validator}"
+            ref_base = _referencia_logica(valor.value)
+            assert ref_base is not None and ref_base in refs_del_scanner, (
+                f"{builder_kwarg} usa un objeto distinto del scanner construido "
+                f"(refs del scanner: {sorted(refs_del_scanner)}) — identidad lógica rota"
             )
-            # 2. Valores correctos (semántica, no nombre local).
-            assert _formato_kwarg(kw_named["path_resolver"]) == "self._path_resolver", (
-                "path_resolver debe ser self._path_resolver"
-            )
-            assert _formato_kwarg(kw_named["path_validator"]) == "self._modding_validator", (
-                "path_validator debe ser self._modding_validator (el validator de modding, "
-                "NO el backup-only del rollback)"
-            )
-            # 3. El MISMO scanner construido alimenta scan y scan_json.
-            for builder_kwarg, attr in (
-                ("scan_asset_conflicts", "scan"),
-                ("scan_asset_conflicts_json", "scan_json"),
-            ):
-                valor = kwargs_al_builder.get(builder_kwarg)
-                assert valor is not None, f"{builder_kwarg} no se entregó al builder"
-                assert isinstance(valor, ast.Attribute) and valor.attr == attr, (
-                    f"{builder_kwarg} debe ser <scanner>.{attr} (detecta inversión plain/JSON "
-                    "y callbacks viejos del supervisor)"
-                )
-                assert isinstance(valor.value, ast.Name), (
-                    f"{builder_kwarg} debe referir al scanner construido, no a una expresión arbitraria"
-                )
-                # Identidad EXACTA de nombre: pertenencia al set, nunca
-                # substring — "scanner" no casa con {"asset_conflict_scanner"}.
-                assert valor.value.id in nombres_destino, (
-                    f"{builder_kwarg} usa un scanner distinto del que __init__ construyó "
-                    f"(construido en {sorted(nombres_destino)}, usado via '{valor.value.id}')"
-                )
         return
     raise AssertionError("No se encontró SupervisorAgent.__init__")
