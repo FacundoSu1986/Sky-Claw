@@ -41,6 +41,7 @@ from sky_claw.local.tools.dyndolod_uia_gate import (
     ejecutar_gate_sincrono,
 )
 from sky_claw.local.tools.dyndolod_uia_preflight import (
+    ControlObservado,
     EstadoPreflight,
     ObservacionUIAError,
     ProcesoObservado,
@@ -49,7 +50,6 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
     SolicitudPreflightUIA,
     UIANoDisponibleError,
     VentanaObservada,
-    ControlObservado,
 )
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
@@ -269,7 +269,9 @@ def _config_con_gate_corto(tmp_path: pathlib.Path) -> ddl.DynDOLODConfig:
 
 def _proceso_falso_del_rig(ejecutable: str) -> ProcesoObservado:
     """La fila de psutil que la identidad del gate espera encontrar."""
-    return ProcesoObservado(pid=PID, nombre_ejecutable=pathlib.PureWindowsPath(ejecutable).name, ruta_ejecutable=ejecutable)
+    return ProcesoObservado(
+        pid=PID, nombre_ejecutable=pathlib.PureWindowsPath(ejecutable).name, ruta_ejecutable=ejecutable
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,14 +286,17 @@ def test_las_razones_transitorias_estan_congeladas():
     DynDOLOD esconde el TEdit del wizard; el proceso/ventana tardan en existir;
     un Edit recién creado puede no tener texto). Todo lo demás es terminal.
     """
-    assert RAZONES_TRANSITORIAS_DE_INICIO == frozenset(
-        {
-            RazonPreflight.PROCESO_NO_ENCONTRADO,
-            RazonPreflight.PID_NO_COINCIDE,
-            RazonPreflight.VENTANA_NO_ENCONTRADA,
-            RazonPreflight.CONTROL_NO_ENCONTRADO,
-            RazonPreflight.VALOR_NO_LEIBLE,
-        }
+    assert (
+        frozenset(
+            {
+                RazonPreflight.PROCESO_NO_ENCONTRADO,
+                RazonPreflight.PID_NO_COINCIDE,
+                RazonPreflight.VENTANA_NO_ENCONTRADA,
+                RazonPreflight.CONTROL_NO_ENCONTRADO,
+                RazonPreflight.VALOR_NO_LEIBLE,
+            }
+        )
+        == RAZONES_TRANSITORIAS_DE_INICIO
     )
 
 
@@ -332,9 +337,12 @@ def test_match_y_mismatch_salen_inmediatos_sin_reintento():
         (OTRA_SALIDA, EstadoPreflight.MISMATCH),
     ):
         observador = _ObservadorPorRonda([_ronda_output(valor)])
+        # ``fabrica_observador`` default-binding: el lambda captura por valor,
+        # no por referencia — sin esto, la última iteración del loop afecta a
+        # todas las anteriores (``B023``).
         resultado = ejecutar_gate_sincrono(
             _solicitud(),
-            fabrica_observador=lambda: observador,
+            fabrica_observador=(lambda o=observador: o),
             localizador=_LocalizadorFalso([_proceso_falso_del_rig(r"C:\Modding\DynDOLOD\TexGenx64.exe")]),
             timeout_segundos=300.0,
             intervalo_segundos=1.0,
@@ -644,13 +652,15 @@ def _spawn_de(proc):
 )
 async def test_g2_g5_mismatch_bloquea_y_mata_al_proceso(tmp_path, tool, ejecutable, valor):
     """G2/G5 — MISMATCH: no continúa, el proceso muere, el Job se cierra."""
-    runner, proc, _observador = _preparar_corrida(tmp_path, rondas=[_ronda_output(valor, pid=PID)], ejecutable=ejecutable)
+    runner, proc, _observador = _preparar_corrida(
+        tmp_path, rondas=[_ronda_output(valor, pid=PID)], ejecutable=ejecutable
+    )
     with (
         patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc))),
         _PilaDeOwnership() as pila,
+        pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo,
     ):
-        with pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo:
-            await runner._execute_process(pathlib.Path(ejecutable), [], tool)
+        await runner._execute_process(pathlib.Path(ejecutable), [], tool)
 
     resultado = excinfo.value.resultado
     assert resultado.estado is EstadoPreflight.MISMATCH
@@ -676,9 +686,9 @@ async def test_g3_g6_unknown_bloquea_y_mata_al_proceso(tmp_path, tool, ejecutabl
     with (
         patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc))),
         _PilaDeOwnership() as pila,
+        pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo,
     ):
-        with pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo:
-            await runner._execute_process(pathlib.Path(ejecutable), [], tool)
+        await runner._execute_process(pathlib.Path(ejecutable), [], tool)
 
     assert excinfo.value.resultado.estado is EstadoPreflight.UNKNOWN
     assert excinfo.value.resultado.razon is RazonPreflight.CONTROL_AMBIGUO
@@ -732,24 +742,22 @@ async def test_g8_g9_cero_o_dos_candidatos_bloquean_al_agotar_el_deadline(tmp_pa
     with (
         patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc))),
         _PilaDeOwnership() as pila,
+        pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo,
     ):
-        with pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo:
-            await runner._execute_process(pathlib.Path(ejecutable), [], tool)
+        await runner._execute_process(pathlib.Path(ejecutable), [], tool)
     assert excinfo.value.resultado.razon is RazonPreflight.CONTROL_NO_ENCONTRADO
     assert observador.observaciones == 6, "reintentó acotado por el deadline y falló cerrado"
     assert proc.esperas == 0
     pila.mocks["kill_and_reap"].assert_awaited_once_with(proc)
 
     # Dos candidatos: terminal inmediato.
-    runner2, proc2, _obs2 = _preparar_corrida(
-        tmp_path, rondas=[_ronda_dos_candidatos(pid=PID)], ejecutable=ejecutable
-    )
+    runner2, proc2, _obs2 = _preparar_corrida(tmp_path, rondas=[_ronda_dos_candidatos(pid=PID)], ejecutable=ejecutable)
     with (
         patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc2))),
         _PilaDeOwnership() as pila2,
+        pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo2,
     ):
-        with pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo2:
-            await runner2._execute_process(pathlib.Path(ejecutable), [], tool)
+        await runner2._execute_process(pathlib.Path(ejecutable), [], tool)
     assert excinfo2.value.resultado.razon is RazonPreflight.CONTROL_AMBIGUO
     pila2.mocks["kill_and_reap"].assert_awaited_once_with(proc2)
 
@@ -970,9 +978,9 @@ async def test_una_tool_sin_selector_medido_bloquea_por_construccion(tmp_path):
     with (
         patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc))),
         _PilaDeOwnership() as pila,
+        pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo,
     ):
-        with pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo:
-            await runner._execute_process(pathlib.Path(r"C:\Modding\Otro\Otrox64.exe"), [], "OtraCosa")
+        await runner._execute_process(pathlib.Path(r"C:\Modding\Otro\Otrox64.exe"), [], "OtraCosa")
     assert excinfo.value.resultado.razon is RazonPreflight.TOOL_DESCONOCIDA
     pila.mocks["kill_and_reap"].assert_awaited_once_with(proc)
 
@@ -992,10 +1000,7 @@ def _funcion_del_runner(nombre: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     """
     arbol = ast.parse(MODULO_RUNNER.read_text(encoding="utf-8"))
     for nodo in ast.walk(arbol):
-        if (
-            isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and nodo.name == nombre
-        ):
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and nodo.name == nombre:
             return nodo
     raise AssertionError(f"{MODULO_RUNNER.name} ya no define {nombre!r}: revisá estas anclas")
 
@@ -1018,9 +1023,7 @@ def test_los_dos_lanzadores_pasan_por_el_unico_seam_gateado():
 
     seam = _funcion_del_runner("_execute_process")
     llamadas_seam = {
-        hijo.func.attr
-        for hijo in ast.walk(seam)
-        if isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Attribute)
+        hijo.func.attr for hijo in ast.walk(seam) if isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Attribute)
     }
     assert "_gate_uia_output" in llamadas_seam, "_execute_process dejó de llamar al gate"
 
@@ -1032,10 +1035,10 @@ def test_los_dos_lanzadores_pasan_por_el_unico_seam_gateado():
         and isinstance(nodo.func, ast.Attribute)
         and nodo.func.attr == "create_subprocess_exec"
     ]
-    assert len(spawns) == 1, f"apareció un segundo spawn de proceso: {_AST_UBICACIONES(spawns)}"
+    assert len(spawns) == 1, f"apareció un segundo spawn de proceso: {_ast_ubicaciones(spawns)}"
 
 
-def _AST_UBICACIONES(nodos: list[ast.Call]) -> list[str]:
+def _ast_ubicaciones(nodos: list[ast.Call]) -> list[str]:
     return [f"línea {n.lineno}" for n in nodos]
 
 
@@ -1051,7 +1054,11 @@ def test_el_gate_corre_antes_de_la_espera_y_de_los_drains():
         if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "_gate_uia_output"
     )
     primera_task = min(
-        (nodo.lineno for nodo in ast.walk(seam) if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "create_task"),
+        (
+            nodo.lineno
+            for nodo in ast.walk(seam)
+            if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "create_task"
+        ),
         default=None,
     )
     assert primera_task is not None, "_execute_process ya no crea tasks de monitoreo"
@@ -1121,9 +1128,7 @@ def test_el_gate_no_lee_el_header_del_log_como_prueba_de_destino():
     assert "_ruta_del_log" not in fuente_gate
 
     metodo = _funcion_del_runner("_gate_uia_output")
-    literales = {
-        n.value for n in ast.walk(metodo) if isinstance(n, ast.Constant) and isinstance(n.value, str)
-    }
+    literales = {n.value for n in ast.walk(metodo) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
     assert not any("Using Output Path" in literal for literal in literales)
     atributos = {n.attr for n in ast.walk(metodo) if isinstance(n, ast.Attribute)}
     assert "_ruta_del_log" not in atributos and "_leer_log" not in atributos
@@ -1134,9 +1139,5 @@ def test_observar_output_sigue_siendo_la_unicas_decision():
     comparación (que es donde un MISMATCH se convertiría en MATCH)."""
     fuente_gate = MODULO_GATE.read_text(encoding="utf-8")
     arbol = ast.parse(fuente_gate)
-    usos = {
-        nodo.func.id
-        for nodo in ast.walk(arbol)
-        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)
-    }
+    usos = {nodo.func.id for nodo in ast.walk(arbol) if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)}
     assert "observar_output" in usos, "el gate dejó de delegar el veredicto en el preflight"

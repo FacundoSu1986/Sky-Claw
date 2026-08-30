@@ -1638,9 +1638,7 @@ def test_comtypes_es_la_dependencia_uia_y_solo_en_windows():
 
     # 1. comtypes está, y solo uno.
     concuerdan = [d for d in declaradas if "comtypes" in d.lower()]
-    assert len(concuerdan) == 1, (
-        f"esperaba exactamente una línea con comtypes; hay {len(concuerdan)}: {concuerdan}"
-    )
+    assert len(concuerdan) == 1, f"esperaba exactamente una línea con comtypes; hay {len(concuerdan)}: {concuerdan}"
 
     # 2. La única línea es Windows-only. Sin el marcador, ``import comtypes``
     # intenta COM en Linux incluso bajo ImportError perezoso.
