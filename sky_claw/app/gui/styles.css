@@ -106,6 +106,10 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 }
 
 /* Scrollbars talladas */
+.sky-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: #6a5a38 rgba(0, 0, 0, 0.28);
+}
 .sky-scrollbar::-webkit-scrollbar { width: 10px; height: 10px; }
 .sky-scrollbar::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.28); }
 .sky-scrollbar::-webkit-scrollbar-thumb {
@@ -113,6 +117,27 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     border-radius: 10px; border: 2px solid transparent; background-clip: padding-box;
 }
 .sky-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, #8a7444, #4a3c24); background-clip: padding-box;
+}
+
+/* El shell Forge (forge_dashboard.py) usa su propia clase de scroll — antes
+   caía al scrollbar nativo del navegador (gris claro), que rompía la lectura
+   "piedra tallada" del fondo. Misma receta que .sky-scrollbar.
+   scrollbar-width/color es el fallback estándar (Firefox): los pseudoselectores
+   ::-webkit-scrollbar solo aplican en Chromium — el webview por defecto de
+   NiceGUI — pero el shell también puede abrirse en un navegador externo.
+   El mismo par de propiedades va en .sky-scrollbar (ruta legacy). */
+.sc-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #6a5a38 rgba(0, 0, 0, 0.28);
+}
+.sc-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.sc-scroll::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.28); }
+.sc-scroll::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #6a5a38, #352b1a);
+    border-radius: 10px; border: 2px solid transparent; background-clip: padding-box;
+}
+.sc-scroll::-webkit-scrollbar-thumb:hover {
     background: linear-gradient(180deg, #8a7444, #4a3c24); background-clip: padding-box;
 }
 
@@ -552,3 +577,56 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 @keyframes scSpin    { to { transform: rotate(360deg); } }
 @keyframes scFade    { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 .sky-animate-in  { animation: sky-fade-up 0.5s ease-out forwards; }
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+    15. ACCESIBILIDAD — FOCO VISIBLE Y MOVIMIENTO REDUCIDO
+    ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* Foco de teclado con filo de oro (WCAG 2.4.7). El shell Forge arma sus botones
+   como <button> con estilos inline y SIN foco alguno: sin esta regla, navegar
+   por Tab (p. ej. para llegar al toggle F8) era invisible. La regla es global a
+   propósito: cubre también los ui.input/ui.button de Quasar. Sólo el outline es
+   de la casa: NO impone geometría — un border-radius global pisaba la forma
+   propia de pills y botones redondos de Quasar/NiceGUI; cada componente conserva
+   su forma y el outline la sigue. */
+:is(button, a, input, [role="button"], [tabindex]):focus-visible {
+    outline: 2px solid var(--sky-gold-bright);
+    outline-offset: 2px;
+}
+
+/* Quasar resetea el outline de sus inputs de base con !important
+   (quasar.important.prod.css: `.q-field__native,.q-field__input{outline:0!important}`)
+   y los ui.input borderless del shell (búsqueda del header, chat) no tienen
+   borde de foco propio: sin esta pisa, Tab en ellos era invisible. La regla es
+   unlayered con !important y mayor especificidad — gana al reset en ambas
+   dimensiones de la cascada. */
+.q-field__native:focus-visible,
+.q-field__input:focus-visible {
+    outline: 2px solid var(--sky-gold-bright) !important;
+    outline-offset: 2px !important;
+}
+
+/* Respeta "reducir movimiento" del SO con una política DIRIGIDA a lo decorativo:
+   aurora, brasas, shimmer, pulso del dot de conexión, blink del chat y fades de
+   entrada. Nada de selector universal (*, *::before, *::after): congelaba también
+   spinners e indicadores de carga de Quasar/NiceGUI y transiciones funcionales
+   ajenas al tema. Las transiciones del tema (hover, iniciadas por el usuario)
+   se conservan; scroll-behavior no hace falta tocarlo (el tema nunca pide smooth).
+   Los !important ganan a los estilos inline que emite el Forge. Los keyframes
+   inline del shell viajan con clases marcadoras emitidas por
+   views/forge_dashboard.py (el test de contratos congela la familia completa):
+   .sc-deco — decoración que queda estática sin ambigüedad (el estado lo siguen
+   dando el color/etiqueta/texto) — y .sc-ember — partículas que se apagan del
+   todo, porque sin animación quedarían como puntos fijos en vez de fundirse. */
+@media (prefers-reduced-motion: reduce) {
+    .sky-connection-dot--connected,
+    .sky-active-rune,
+    .sky-animate-in,
+    .sc-deco {
+        animation: none !important;
+    }
+    .sc-ember {
+        animation: none !important;
+        opacity: 0 !important;
+    }
+}
