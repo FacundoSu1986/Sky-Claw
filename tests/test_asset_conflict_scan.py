@@ -486,6 +486,10 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
         del rollback ni un validator fabricado).
       - el MISMO scanner construido se usa para ``scan`` y ``scan_json``
         (detección de inversión plain/JSON y de callbacks viejos del supervisor).
+      - la correspondencia scanner↔callback es por IDENTIDAD EXACTA de nombre
+        (pertenencia a un ``set``), nunca por substring: un scanner distinto
+        cuyo nombre sea subcadena del construido (p.ej. ``scanner`` dentro de
+        ``asset_conflict_scanner``) rompe el test.
     """
     arbol = _arbol_supervisor()
     clase = _cuerpo_supervisor(arbol)
@@ -493,7 +497,7 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
         if not (isinstance(miembro, ast.FunctionDef) and miembro.name == "__init__"):
             continue
 
-        construcciones: list[tuple[str, dict[str, ast.expr], list[ast.expr]]] = []
+        construcciones: list[tuple[set[str], dict[str, ast.expr], list[ast.expr]]] = []
         kwargs_al_builder: dict[str, ast.expr] = {}
         for sub in ast.walk(miembro):
             # Construcción del scanner: captura la variable destino para rastrear
@@ -511,8 +515,8 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
                         kw_args.append(kw.value)
                     else:
                         kw_named[kw.arg] = kw.value
-                nombres_destino = [t.id for t in sub.targets if isinstance(t, ast.Name)]
-                construcciones.append((",".join(nombres_destino), kw_named, kw_args))
+                nombres_destino = {t.id for t in sub.targets if isinstance(t, ast.Name)}
+                construcciones.append((nombres_destino, kw_named, kw_args))
 
             if (
                 isinstance(sub, ast.Call)
@@ -525,7 +529,7 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
 
         assert construcciones, "__init__ no construye AssetConflictScanner"
 
-        for destino, kw_named, kw_args in construcciones:
+        for nombres_destino, kw_named, kw_args in construcciones:
             # 1. Sin `**extras` ni kwargs inesperados: el contrato es exacto.
             assert kw_args == [], (
                 "AssetConflictScanner recibe `**kwargs` no nominales — "
@@ -557,9 +561,11 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
                 assert isinstance(valor.value, ast.Name), (
                     f"{builder_kwarg} debe referir al scanner construido, no a una expresión arbitraria"
                 )
-                assert valor.value.id in destino, (
+                # Identidad EXACTA de nombre: pertenencia al set, nunca
+                # substring — "scanner" no casa con {"asset_conflict_scanner"}.
+                assert valor.value.id in nombres_destino, (
                     f"{builder_kwarg} usa un scanner distinto del que __init__ construyó "
-                    f"(construido en '{destino}', usado via '{valor.value.id}')"
+                    f"(construido en {sorted(nombres_destino)}, usado via '{valor.value.id}')"
                 )
         return
     raise AssertionError("No se encontró SupervisorAgent.__init__")
