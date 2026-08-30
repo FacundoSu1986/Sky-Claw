@@ -6,13 +6,14 @@
 >
 > **Fuentes canónicas:** `sky_claw/app/agent/tools/`,
 > `sky_claw/app/orchestrator/tool_dispatcher.py`,
-> `sky_claw/app/orchestrator/dispatcher_dependencies.py` y sus callers.
+> `sky_claw/app/orchestrator/dispatcher_dependencies.py`,
+> `sky_claw/app/orchestrator/orchestration_composition.py` y sus callers.
 >
 > **Última verificación integral previa:** 2026-07-25 sobre `origin/main`
 > `c6ab35e`.
 >
-> **Frontera del dispatcher:** re-verificada el 2026-08-28 contra el código y
-> los tests estructurales de este cambio.
+> **Frontera del dispatcher:** re-verificada el 2026-08-29 contra el código y
+> los tests estructurales de este cambio (PR2 de la composición).
 
 ## Ruta LLM
 
@@ -37,7 +38,8 @@ base es lock-only, aunque handlers concretos como `download_mod` reciben un
 ```mermaid
 flowchart LR
     UI["Acción GUI / supervisor"] --> Supervisor["SupervisorAgent.dispatch_tool"]
-    Supervisor --> Deps["OrchestrationDispatcherDependencies"]
+    Supervisor --> Comp["OrchestrationComposition<br>(build_orchestration_composition)"]
+    Comp --> Deps["OrchestrationDispatcherDependencies"]
     Deps --> Dispatcher["OrchestrationToolDispatcher.dispatch"]
     Dispatcher --> MW["Middleware global y por tool"]
     MW --> Strategy["ToolStrategy.execute"]
@@ -48,14 +50,20 @@ El dispatcher registra strategies con `register()`. Puede aplicar loop
 guardrail, idempotencia, wrapping de errores, validación de dict y HITL.
 Synthesis usa además `SandboxPromotionFlow`.
 
-La frontera de composición es explícita: `SupervisorAgent.__init__` construye
-un `OrchestrationDispatcherDependencies` inmutable con las quince capacidades
-estrechas consumidas por las strategies. `tool_dispatcher.py` no conoce ni
-consulta al supervisor. Los providers de preview y Synthesis son lazy y
-cierran solamente sobre sus servicios, paths, journal, buses, locks, perfil y
-guard concretos; construir el dispatcher no resuelve ejecutables ni rutas de
-MO2. El callable de Wrye Bash cierra sobre su servicio y el perfil de sesión,
-sin capturar al supervisor completo.
+La frontera de composición es explícita: desde **PR2**, `build_orchestration_composition()`
+(`sky_claw/app/orchestrator/orchestration_composition.py`) construye un
+`OrchestrationComposition` inmutable (frozen, slots) con las 11 dependencias
+finales: 7 servicios de pipeline, dependencias del dispatcher, dispatcher, loop
+guardrail y máquina de estados. `SupervisorAgent.__init__` invoca el builder y
+conserva las referencias que necesita para lifecycle, APIs existentes y reset
+manual del loop guardrail; los seams residuales de Grass, asset scan y
+plugin-limit se entregan como callables estrechos (PR3 los extraerá).
+
+`tool_dispatcher.py` no conoce ni consulta al supervisor. Los providers de
+preview y Synthesis son lazy y cierran solamente sobre sus servicios, paths,
+journal, buses, locks, perfil y guard concretos; construir la composition no
+resuelve ejecutables ni rutas de MO2. El callable de Wrye Bash cierra sobre su
+servicio y el perfil de sesión, sin capturar al supervisor completo.
 
 La aprobación destructiva pre-ejecución permanece en exactamente siete tools:
 LOOT, resolución xEdit, DynDOLOD, Pandora, QuickAutoClean, Grass Cache y Wrye
