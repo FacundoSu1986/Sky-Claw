@@ -594,6 +594,18 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     outline-offset: 2px;
 }
 
+/* Quasar resetea el outline de sus inputs de base con !important
+   (quasar.important.prod.css: `.q-field__native,.q-field__input{outline:0!important}`)
+   y los ui.input borderless del shell (búsqueda del header, chat) no tienen
+   borde de foco propio: sin esta pisa, Tab en ellos era invisible. La regla es
+   unlayered con !important y mayor especificidad — gana al reset en ambas
+   dimensiones de la cascada. */
+.q-field__native:focus-visible,
+.q-field__input:focus-visible {
+    outline: 2px solid var(--sky-gold-bright) !important;
+    outline-offset: 2px !important;
+}
+
 /* Respeta "reducir movimiento" del SO con una política DIRIGIDA a lo decorativo:
    aurora, brasas, shimmer, pulso del dot de conexión, blink del chat y fades de
    entrada. Nada de selector universal (*, *::before, *::after): congelaba también

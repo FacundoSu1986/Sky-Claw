@@ -107,6 +107,21 @@ def test_focus_visible_foca_sin_imponer_geometria_global() -> None:
     assert "border-radius" not in regla, "la regla global no puede imponer geometría"
 
 
+def test_focus_visible_pisa_el_reset_de_quasar_en_inputs() -> None:
+    """Quasar trae un reset con !important
+    (``.q-field__native,.q-field__input{outline:0!important}`` en
+    quasar.important.prod.css): sin la pisa, Tab en un ``ui.input`` borderless
+    del shell (búsqueda del header, chat) era invisible (revisión Codex #522).
+    """
+    for clase in (".q-field__native", ".q-field__input"):
+        assert f"{clase}:focus-visible" in _STYLES
+    inicio = _STYLES.index(".q-field__native:focus-visible")
+    regla = _STYLES[inicio : _STYLES.index("}", inicio)]
+    # La pisa tiene que ser del outline y con !important en la MISMA declaración:
+    # basta que pierda el marcador para que vuelva a ganar el reset de Quasar.
+    assert "outline: 2px solid var(--sky-gold-bright) !important;" in regla, "la pisa debe ganar al reset !important de Quasar"
+
+
 # Familia animada del tema, congelada por nombre (secciones 13/14 de styles.css
 # y emisiones inline del shell). Enumerar la familia completa —no muestrear— es
 # lo que hace que una animación nueva sin política de movimiento reducido rompa
@@ -217,6 +232,13 @@ def test_reduced_motion_dirigido_a_las_decorativas_del_tema() -> None:
             assert base != "*", f"selector universal en reduced-motion: {token!r}"
 
 
+# Codepoints con Emoji_Presentation=Yes (emoji-data.txt) que caerían dentro de
+# los rangos permitidos: esos rectángulos tomarían la pila de color del SO por
+# defecto, que es justo lo que el contrato prohíbe (revisión Codex #522). Las
+# flechas 0x2194–0x2199 son Emoji=Yes pero texto por defecto → no se excluyen.
+_EMOJI_PRESENTACION_DEFECTO = frozenset(range(0x25FB, 0x25FF))  # ◻ ◼ ◽ ◾
+
+
 def _glifo_permitido(cp: int) -> bool:
     """Clases de glifos no-ASCII que el shell Forge tiene derecho a usar.
 
@@ -224,6 +246,8 @@ def _glifo_permitido(cp: int) -> bool:
     nuevo fuera de estas clases hace fallar el inventario y obliga a decidir
     conscientemente si entra al alfabeto del tema.
     """
+    if cp in _EMOJI_PRESENTACION_DEFECTO:
+        return False
     if cp < 0x80:
         return True  # ASCII
     if 0x00A1 <= cp <= 0x024F:
