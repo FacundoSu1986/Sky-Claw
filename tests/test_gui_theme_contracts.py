@@ -3,8 +3,10 @@
 Cada aserción protege UN fix de diseño que ya ocurrió una vez y rompía en
 silencio (ningún gate lo veía): textos ilegibles, scrollbar nativa gris, emojis
 que se renderizan con la pila de color del SO, un h1 que pedía un peso que la
-fuente declaraba no tener, y una atenuación de estado que se llevaba puesto el
-contraste del texto. La convención del repo para este tipo de regla es el test
+fuente declaraba no tener, una atenuación de estado que se llevaba puesto el
+contraste del texto, un foco global que imponía geometría a Quasar/NiceGUI y una
+intervención universal de movimiento reducido que congelaba indicadores ajenos
+al tema. La convención del repo para este tipo de regla es el test
 ancla que ENUMERA la familia completa (ver AGENTS.md y test_pyinstaller.py):
 si un refactor futuro pisa cualquiera de estas cuerdas, el test se rompe en CI
 y no en la cara del usuario.
@@ -13,6 +15,7 @@ y no en la cara del usuario.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 _GUI_DIR = Path(__file__).resolve().parent.parent / "sky_claw" / "app" / "gui"
@@ -89,12 +92,129 @@ def test_cinzel_ambas_caras_declaran_hasta_900() -> None:
     assert all("font-weight: 400 900;" in cara for cara in caras)
 
 
-def test_tema_respeta_focus_visible_y_reduced_motion() -> None:
-    """A11y mínima del tema: foco de teclado visible (los botones del Forge son
-    <button> inline sin foco) y apagado de aurora/brasas/shimmer con
-    prefers-reduced-motion."""
-    assert ":focus-visible" in _STYLES
-    assert "prefers-reduced-motion" in _STYLES
+def test_focus_visible_foca_sin_imponer_geometria_global() -> None:
+    """El foco de teclado global sigue existiendo (outline dorado + offset) y NO
+    impone geometría: el ``border-radius: 3px`` en la regla global pisaba la
+    forma propia de pills y botones redondos de Quasar/NiceGUI. La estética del
+    Forge no viaja en la regla de accesibilidad: cada componente conserva su
+    forma y el outline la sigue (revisión #522)."""
+    selector = ':is(button, a, input, [role="button"], [tabindex]):focus-visible'
+    assert selector in _STYLES, "el foco de teclado global desapareció"
+    inicio = _STYLES.index(selector)
+    regla = _STYLES[inicio : _STYLES.index("}", inicio)]
+    assert "outline:" in regla, "el foco visible debe seguir siendo un outline"
+    assert "outline-offset" in regla
+    assert "border-radius" not in regla, "la regla global no puede imponer geometría"
+
+
+# Familia animada del tema, congelada por nombre (secciones 13/14 de styles.css
+# y emisiones inline del shell). Enumerar la familia completa —no muestrear— es
+# lo que hace que una animación nueva sin política de movimiento reducido rompa
+# el test en CI (AGENTS.md: anclar con enumeración, no con ejemplos).
+_ANIMACIONES_POR_CLASE_CSS: dict[str, set[str]] = {
+    # keyframes aplicados por reglas del stylesheet → selectores que los aplican.
+    "sky-pulse-amber": {".sky-active-rune"},
+    "sky-pulse-soft": {".sky-connection-dot--connected"},
+    "sky-fade-up": {".sky-animate-in"},
+}
+
+_ANIMACIONES_INLINE: dict[str, str] = {
+    # keyframes emitidos por forge_dashboard.py en estilos inline → clase
+    # marcadora que debe viajar en la MISMA línea del HTML emitido:
+    # sc-deco — queda estática sin ambigüedad (el estado lo siguen dando el
+    # color/etiqueta/texto); sc-ember — se apaga del todo, porque sin animación
+    # las brasas quedarían como puntos fijos en vez de fundirse.
+    "scAurora": "sc-deco",
+    "scPulse": "sc-deco",
+    "scShimmer": "sc-deco",
+    "scBlink": "sc-deco",
+    "scEmber": "sc-ember",
+}
+
+_KEYFRAMES_SIN_USO: set[str] = {"scSpin", "scFade"}  # declarados en styles.css, aún sin consumo
+
+
+def _keyframes_declarados() -> set[str]:
+    return set(re.findall(r"@keyframes\s+([A-Za-z][A-Za-z0-9-]*)", _STYLES))
+
+
+def _bloque_reduced_motion() -> str:
+    """Texto del bloque ``@media (prefers-reduced-motion: reduce)`` con balance
+    de llaves: contiene reglas anidadas, un ``index("}")`` simple se cortaría
+    en la primera."""
+    inicio = _STYLES.index("@media (prefers-reduced-motion: reduce)")
+    profundidad = 0
+    for i in range(_STYLES.index("{", inicio), len(_STYLES)):
+        if _STYLES[i] == "{":
+            profundidad += 1
+        elif _STYLES[i] == "}":
+            profundidad -= 1
+            if profundidad == 0:
+                return _STYLES[inicio : i + 1]
+    raise AssertionError("@media prefers-reduced-motion sin cerrar")
+
+
+def test_reduced_motion_dirigido_a_las_decorativas_del_tema() -> None:
+    """Política de movimiento reducido ENUMERADA, no universal (revisión #522).
+
+    Congela cuatro cosas: (1) la familia EXACTA de keyframes del tema — uno
+    nuevo obliga a decidir su política; (2) cada keyframe aplicado por el
+    stylesheet viaja con su selector dentro del bloque @media; (3) cada
+    ``animation:scX`` inline del shell viaja con su clase marcadora, y la
+    marcadora está en la política; (4) el bloque no vuelve al selector
+    universal ``*, *::before, *::after``, que congelaba también spinners e
+    indicadores de carga de Quasar/NiceGUI.
+    """
+    bloque = _bloque_reduced_motion()
+
+    # (1) La familia declarada es exacta y conocida.
+    familia = set(_ANIMACIONES_POR_CLASE_CSS) | set(_ANIMACIONES_INLINE) | _KEYFRAMES_SIN_USO
+    assert _keyframes_declarados() == familia
+
+    # (2) Aplicados por el stylesheet: nombres y selectores exactos (fuera del
+    # bloque @media y sin comentarios CSS), y cada selector dentro de la política.
+    inicio_bloque = _STYLES.index("@media (prefers-reduced-motion: reduce)")
+    fuera = _STYLES[:inicio_bloque] + _STYLES[inicio_bloque + len(bloque) :]
+    fuera = re.sub(r"/\*.*?\*/", "", fuera, flags=re.DOTALL)
+    uso_css: dict[str, set[str]] = {}
+    for coincidencia in re.finditer(r"([^{}]+)\{[^{}]*?animation:\s*([A-Za-z][\w-]*)", fuera):
+        for sel in coincidencia.group(1).strip().split(","):
+            uso_css.setdefault(coincidencia.group(2), set()).add(sel.strip())
+    assert uso_css == _ANIMACIONES_POR_CLASE_CSS, f"uso de animaciones en el stylesheet cambió: {uso_css}"
+    for nombre, selectores in _ANIMACIONES_POR_CLASE_CSS.items():
+        for sel in selectores:
+            assert sel in bloque, f"{nombre} ({sel}) sin política de movimiento reducido"
+
+    # (3) Aplicados inline por el shell: conjunto exacto de nombres; cada línea
+    # emisora viaja con su marcadora y la marcadora está en la política.
+    inline_encontrados = set(re.findall(r"animation:\s*([A-Za-z][\w-]*)", _FORGE))
+    assert inline_encontrados == set(_ANIMACIONES_INLINE), (
+        f"animaciones inline del shell cambiaron: {inline_encontrados}"
+    )
+    for nombre, marcador in _ANIMACIONES_INLINE.items():
+        # regex con \s*: un reformateo del inline ("animation: scX") no debe
+        # tumbar el ancla — la clase marcadora sobrevive a la re-emisión.
+        lineas = [linea for linea in _FORGE.splitlines() if re.search(rf"animation:\s*{nombre}\b", linea)]
+        assert lineas, f"{nombre} dejó de emitirse; actualizar la familia"
+        for linea in lineas:
+            assert marcador in linea, f"{nombre} inline sin clase marcadora {marcador}"
+        assert f".{marcador}" in bloque
+
+    # (3b) Los keyframes sin uso deben seguir siéndolo: consumirlos obliga a
+    # sumarlos a la política antes.
+    for nombre in _KEYFRAMES_SIN_USO:
+        assert not re.search(rf"animation:\s*{nombre}\b", _STYLES)
+        assert not re.search(rf"animation:\s*{nombre}\b", _FORGE)
+
+    # (4) Sin selector universal dentro del bloque.
+    cuerpo = bloque[bloque.index("{") + 1 :]
+    for fragmento in cuerpo.split("}"):
+        if "{" not in fragmento:
+            continue
+        selector = fragmento.split("{")[0]
+        for token in selector.split(","):
+            base = token.strip().split("::")[0].strip()
+            assert base != "*", f"selector universal en reduced-motion: {token!r}"
 
 
 def _glifo_permitido(cp: int) -> bool:

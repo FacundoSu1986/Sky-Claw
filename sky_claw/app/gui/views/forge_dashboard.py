@@ -453,15 +453,17 @@ def _sidebar(
         )
         # Connection — driven by the real websocket state (Codex review on #208);
         # a hardcoded green pulse would give a false health signal when offline.
+        # sc-deco: la clase marcadora de movimiento reducido viaja junto a la
+        # animación inline (contrato congelado en test_gui_theme_contracts.py).
         if connected:
-            dot = "background:#5f9c6b; box-shadow:0 0 9px #5f9c6b; animation:scPulse 2.6s ease-in-out infinite;"
+            dot = 'class="sc-deco" style="width:9px; height:9px; border-radius:50%; background:#5f9c6b; box-shadow:0 0 9px #5f9c6b; animation:scPulse 2.6s ease-in-out infinite;"'
             border, label, label_color = "rgba(95,156,107,.28)", "DAEMON CONECTADO", "#bfcfb6"
         else:
-            dot = "background:#857c69;"
+            dot = 'style="width:9px; height:9px; border-radius:50%; background:#857c69;"'
             border, label, label_color = "rgba(200,168,106,.18)", "DAEMON DESCONECTADO", "#a39a85"
         ui.html(
             f'<div style="margin:14px 18px 4px; padding:9px 12px; display:flex; align-items:center; gap:10px; background:rgba(0,0,0,.28); border:1px solid {border}; border-radius:3px;">'
-            f'<span style="width:9px; height:9px; border-radius:50%; {dot}"></span>'
+            f"<span {dot}></span>"
             '<div style="flex:1; min-width:0;">'
             f"<div style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.12em; color:{label_color};\">{label}</div>"
             "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#8a927f; margin-top:1px;\">ws://localhost:8765</div>"
@@ -980,9 +982,9 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
             "<div style=\"position:absolute; inset:0; background:url('/assets/alduin_menace_bg.jpg') center 32%/cover; transform:scale(1.04);\"></div>"
             '<div style="position:absolute; inset:0; background:linear-gradient(92deg, rgba(8,10,14,.85) 0%, rgba(8,10,14,.8) 34%, rgba(8,10,14,.32) 62%, rgba(10,12,16,.6) 100%);"></div>'
             '<div style="position:absolute; inset:0; background:linear-gradient(0deg, rgba(7,9,12,.96) 2%, transparent 42%);"></div>'
-            '<div style="position:absolute; left:-10%; right:-10%; top:-46%; height:80%; pointer-events:none; background:radial-gradient(60% 100% at 50% 100%, rgba(70,180,150,.3), transparent 70%); filter:blur(26px); animation:scAurora 13s ease-in-out infinite;"></div>'
+            '<div class="sc-deco" style="position:absolute; left:-10%; right:-10%; top:-46%; height:80%; pointer-events:none; background:radial-gradient(60% 100% at 50% 100%, rgba(70,180,150,.3), transparent 70%); filter:blur(26px); animation:scAurora 13s ease-in-out infinite;"></div>'
             + "".join(
-                f'<span style="position:absolute; left:{lx}%; bottom:{by}px; width:3px; height:3px; border-radius:50%; background:#ffb347; box-shadow:0 0 7px #ff9d00; animation:scEmber {du}s linear {dly}s infinite;"></span>'
+                f'<span class="sc-ember" style="position:absolute; left:{lx}%; bottom:{by}px; width:3px; height:3px; border-radius:50%; background:#ffb347; box-shadow:0 0 7px #ff9d00; animation:scEmber {du}s linear {dly}s infinite;"></span>'
                 for lx, by, du, dly in [
                     (64, 30, 6.5, 0.2),
                     (72, 20, 7.8, 1.4),
@@ -1019,7 +1021,7 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
                     "<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.16em; color:#b6ab90;\">ESTADO DE LA FORJA</span>"
                     f"<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.1em; color:{estado_color};\">◆ {_e(estado)}</span></div>"
                     '<div style="height:7px; border-radius:4px; background:rgba(255,255,255,.07); overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,.6);">'
-                    f'<div style="height:100%; width:{integrity}%; border-radius:4px; background:linear-gradient(90deg,#8a6c38,#ecd9a8); box-shadow:0 0 10px rgba(200,168,106,.45); background-size:200% 100%; animation:scShimmer 3.5s linear infinite;"></div></div>'
+                    f'<div class="sc-deco" style="height:100%; width:{integrity}%; border-radius:4px; background:linear-gradient(90deg,#8a6c38,#ecd9a8); box-shadow:0 0 10px rgba(200,168,106,.45); background-size:200% 100%; animation:scShimmer 3.5s linear infinite;"></div></div>'
                     f"<div style=\"display:flex; justify-content:space-between; margin-top:7px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#8a8270;\"><span>Integridad {integrity}%</span><span>{_e(conflicts)} conflictos</span></div></div>"
                 )
                 prepare = _cb(callbacks, "on_cta_primary")
@@ -1316,9 +1318,9 @@ def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks
                 ui.html(
                     "<div style=\"display:flex; align-items:center; gap:8px; color:#6b5536; font-family:'EB Garamond',serif; font-style:italic; font-size:13px;\">"
                     '<span style="display:inline-flex; gap:3px;">'
-                    '<span style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s infinite;"></span>'
-                    '<span style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .2s infinite;"></span>'
-                    '<span style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .4s infinite;"></span></span>'
+                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s infinite;"></span>'
+                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .2s infinite;"></span>'
+                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .4s infinite;"></span></span>'
                     "Consultando los pergaminos…</div>"
                 )
         # Input row

@@ -585,20 +585,36 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 /* Foco de teclado con filo de oro (WCAG 2.4.7). El shell Forge arma sus botones
    como <button> con estilos inline y SIN foco alguno: sin esta regla, navegar
    por Tab (p. ej. para llegar al toggle F8) era invisible. La regla es global a
-   propósito: cubre también los ui.input/ui.button de Quasar. */
+   propósito: cubre también los ui.input/ui.button de Quasar. Sólo el outline es
+   de la casa: NO impone geometría — un border-radius global pisaba la forma
+   propia de pills y botones redondos de Quasar/NiceGUI; cada componente conserva
+   su forma y el outline la sigue. */
 :is(button, a, input, [role="button"], [tabindex]):focus-visible {
     outline: 2px solid var(--sky-gold-bright);
     outline-offset: 2px;
-    border-radius: 3px;
 }
 
-/* Respeta "reducir movimiento" del SO: apaga aurora, brasas, shimmer y pulsos.
-   El !important gana a los estilos inline con animation: que emite el Forge. */
+/* Respeta "reducir movimiento" del SO con una política DIRIGIDA a lo decorativo:
+   aurora, brasas, shimmer, pulso del dot de conexión, blink del chat y fades de
+   entrada. Nada de selector universal (*, *::before, *::after): congelaba también
+   spinners e indicadores de carga de Quasar/NiceGUI y transiciones funcionales
+   ajenas al tema. Las transiciones del tema (hover, iniciadas por el usuario)
+   se conservan; scroll-behavior no hace falta tocarlo (el tema nunca pide smooth).
+   Los !important ganan a los estilos inline que emite el Forge. Los keyframes
+   inline del shell viajan con clases marcadoras emitidas por
+   views/forge_dashboard.py (el test de contratos congela la familia completa):
+   .sc-deco — decoración que queda estática sin ambigüedad (el estado lo siguen
+   dando el color/etiqueta/texto) — y .sc-ember — partículas que se apagan del
+   todo, porque sin animación quedarían como puntos fijos en vez de fundirse. */
 @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
-        scroll-behavior: auto !important;
+    .sky-connection-dot--connected,
+    .sky-active-rune,
+    .sky-animate-in,
+    .sc-deco {
+        animation: none !important;
+    }
+    .sc-ember {
+        animation: none !important;
+        opacity: 0 !important;
     }
 }
