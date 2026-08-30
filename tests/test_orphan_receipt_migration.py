@@ -635,6 +635,50 @@ async def test_mig506_11_concurrent_open_legacy_db(tmp_path: pathlib.Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_f506_ddl_schema_concurrente_entre_managers_ya_inicializados(tmp_path: pathlib.Path) -> None:
+    """Auditoría DDL (concurrencia): dos conexiones YA inicializadas ejecutan
+    concurrentemente el schema de ``OperationJournal.open()`` bajo ``operation()``.
+
+    Aislar el DDL de la conversión a WAL (que es la carrera que falló en CI y
+    se reproduce determinísticamente en test_db_lifecycle): el archivo arranca
+    ya en WAL. En WAL el writer-writer espera vía busy_timeout y
+    ``CREATE TABLE IF NOT EXISTS`` es idempotente, así que el desenlace
+    esperado es que ambas completen. Si esto fallara, el finding DDL estaría
+    confirmado y ``journal.py`` necesitaría su propio boundary; con ambas
+    completando consistentemente, el finding queda NOT REPRODUCIBLE y
+    ``journal.py`` no se toca (decisión documentada en el PR).
+    """
+    db_file = tmp_path / "ddl_race.db"
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.commit()
+
+    mgr1 = DatabaseLifecycleManager()
+    mgr2 = DatabaseLifecycleManager()
+    try:
+        # Ya inicializados: sin conversión en vuelo, sólo DDL concurrente.
+        await mgr1.get_connection(db_file)
+        await mgr2.get_connection(db_file)
+
+        async def ejecutar_schema(mgr: DatabaseLifecycleManager) -> None:
+            async with mgr.operation(db_file) as conn:
+                await conn.executescript(OperationJournal._SCHEMA_SQL)
+
+        await asyncio.gather(ejecutar_schema(mgr1), ejecutar_schema(mgr2))
+
+        # El schema quedó, exactamente una vez, y ambos managers siguen sanos.
+        async with (
+            aiosqlite.connect(str(db_file)) as conn,
+            conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='artifact_evidence_resolutions'"
+            ) as cur,
+        ):
+            assert (await cur.fetchone())[0] == 1
+    finally:
+        await asyncio.gather(mgr1.shutdown_all(), mgr2.shutdown_all())
+
+
+@pytest.mark.asyncio
 async def test_res506_conflict_raises_journal_transaction_error(tmp_path: pathlib.Path) -> None:
     """RES506-CONFLICT: Registrar una resolución en conflicto con diferente kind/handoff falla cerrado."""
     db_file = tmp_path / "conflict_res.db"

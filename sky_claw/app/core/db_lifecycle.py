@@ -43,6 +43,75 @@ WAL_WARNING_THRESHOLD_BYTES = 10_485_760  # 10 MB
 WAL_CRITICAL_THRESHOLD_BYTES = 52_428_800  # 50 MB
 SHUTDOWN_CHECKPOINT_TIMEOUT_SECONDS = 10
 
+# Intervalo entre reintentos de la conversión a WAL (ver ``_enter_wal_mode``).
+# El sleep NO es el mecanismo de corrección —el límite es la ventana de
+# ``busy_timeout_ms`` y el arbitraje es de SQLite—; sólo evita un spin cerrado
+# entre intento e intento.
+_CONVERSION_WAL_RETRY_SLEEP_S = 0.005
+
+# Familia de contención de locks REINTENTABLE, decisión código por código.
+# Corrupción, malformed DB, I/O y permisos NUNCA se reintentan. La lista es
+# EXPLÍCITA: aceptar la familia completa por máscara ``& 0xFF`` trae
+# extendidos no deseados (p. ej. SQLITE_BUSY_SNAPSHOT exige rollback +
+# nueva transacción, no retry ciego).
+#
+#   SQLITE_BUSY              (5)    → reintentable: hay otro owner activo;
+#                                      ``PRAGMA journal_mode=WAL`` lo
+#                                      recibe del bypass del busy handler
+#                                      en la promoción de locks.
+#   SQLITE_BUSY_RECOVERY     (261)  → reintentable: otra conexión está
+#                                      en WAL recovery; la ventana del
+#                                      busy handler es la misma que la
+#                                      del outer budget.
+#   SQLITE_LOCKED            (6)    → reintentable: lock de tabla de
+#                                      otra conexión; basta esperar.
+#   SQLITE_LOCKED_SHAREDCACHE (262) → reintentable: variante shared-cache.
+#
+# Excluidos DELIBERADAMENTE (pese a ``& 0xFF``):
+#   SQLITE_BUSY_SNAPSHOT    (517)  → exige rollback + nueva transacción
+#                                    (el snapshot de lectura no puede
+#                                    promoverse). En
+#                                    ``_enter_wal_mode`` sobre conexión
+#                                    fresh/autocommit es INALCANZABLE;
+#                                    si llegara, fallar-closed /
+#                                    propagar es preferible a reintentar
+#                                    especulativamente.
+#   SQLITE_BUSY_TIMEOUT     (773)  → la espera del busy handler agotó
+#                                    la ventana LOCAL del stmt; el
+#                                    outer budget ya la gobierna, un
+#                                    retry duplica la espera sin
+#                                    cambiar el estado.
+#   Cualquier otro extendido o base: NO retry (fail-closed).
+_CODIGOS_DE_CONTENCION_REINTENTABLES: frozenset[int] = frozenset(
+    {
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_BUSY_RECOVERY,
+        sqlite3.SQLITE_LOCKED,
+        sqlite3.SQLITE_LOCKED_SHAREDCACHE,
+    }
+)
+
+
+def _es_contencion_de_bloqueo(error: sqlite3.OperationalError) -> bool:
+    """True SOLO para la familia de contención de locks REINTENTABLE.
+
+    La clasificación es por ``sqlite_errorcode`` (disponible desde
+    Python 3.11, el mínimo de este repo), nunca por máscara
+    ``(codigo & 0xFF)``: aceptar el base code trae extendidos no
+    reintentables (BUSY_SNAPSHOT, BUSY_TIMEOUT) y compromete la
+    clasificación. Si el atributo no viniera poblado — versiones de
+    ``sqlite3`` con bug o envolturas no estándar — el fallback
+    compara contra los strings CANÓNICOS de SQLite
+    (``"database is locked"`` / ``"database table is locked"``) con
+    igualdad exacta: nunca substrings de "busy" o "locked" que
+    reintentarían condiciones ajenas.
+    """
+    codigo = getattr(error, "sqlite_errorcode", None)
+    if codigo is not None:
+        return codigo in _CODIGOS_DE_CONTENCION_REINTENTABLES
+    mensaje = str(error)
+    return mensaje == "database is locked" or mensaje == "database table is locked"
+
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -375,6 +444,28 @@ class DatabaseLifecycleManager:
                 shm_path.exists(),
             )
             await self._recover_orphaned_wal(db_path, wal_path, shm_path)
+            # Cierre NO confirmado dentro del recovery (clase C vía
+            # ``_cerrar_conexion_de_recovery``; en clase A y B el error
+            # propaga y nunca se llega acá): la conexión temporal quedó
+            # registrada como única owner y el path fail-closed. Publicar
+            # acá una conexión nueva PISA esa entrada y destruye el único
+            # owner de una conexión posiblemente viva — exactamente lo que
+            # la cuarentena existe para impedir. La señal es el REGISTRO,
+            # no la membresía en ``_quarantined_paths``: en la ventana de
+            # ``recover_connection()`` el path YA está cuarentenado por la
+            # propia ventana (con el registro vacío), y ahí el reabrir es
+            # legítimo. Al llegar acá el registro ESTABA vacío para este
+            # path (``_resolve_connection`` sólo llama a ``_init_single``
+            # tras el doble chequeo bajo ``_init_lock``), así que cualquier
+            # entrada presente la puso el recovery. Fail-closed inmediato:
+            # ninguna ruta de inicialización abre ni publica reemplazo; la
+            # salida es reintentar ``shutdown_all()`` (contrato de la
+            # cuarentena).
+            if self._connections.get(path_str) is not None:
+                raise DatabaseConnectionQuarantinedError(
+                    f"Recovery for {path_str} ended with an unconfirmed close; "
+                    "the temporary connection is retained and the path is quarantined"
+                )
 
         # Step 2: Open connection and apply pragmas. Until registration succeeds,
         # this local scope is the connection's only owner.
@@ -412,59 +503,257 @@ class DatabaseLifecycleManager:
     ) -> None:
         """Recover data from orphaned WAL files before normal init.
 
-        Opens a temporary connection, forces a TRUNCATE checkpoint,
-        then closes. If recovery fails, renames the WAL for forensics.
+        Abre una conexión temporal, fuerza un checkpoint TRUNCATE y la
+        cierra. Clasificación de errores, de específico a general:
+
+        - Contención (BUSY/LOCKED, clasificada por
+          ``_es_contencion_de_bloqueo``, NUNCA por la clase Python
+          sola): PROPAGA sin rename forense — la invariante de la
+          ronda (``CONTENCIÓN != CORRUPCIÓN``).
+        - Cancelación (``BaseException``): PROPAGA con su identidad,
+          sin rename.
+        - Cualquier otro error (``OperationalError`` no-contención —
+          I/O, permisos, malformed — o ``Exception`` genérica):
+          rename forense, mismo comportamiento histórico. El error se
+          TRAGA después del rename (el archivo queda a salvo del
+          próximo recovery; el siguiente intento puede fallar limpio).
         """
         path_str = str(db_path)
+        conn: aiosqlite.Connection | None = None
         try:
-            # Open temporary connection for recovery
             conn = await aiosqlite.connect(path_str)
-            await conn.execute("PRAGMA journal_mode=WAL")
+            # Mismo orden que _apply_pragmas (hermano): el knob configurado
+            # gobierna desde el primer statement que puede esperar, y la
+            # conversión lleva su reintento acotado. En el caso normal el
+            # archivo ya está en WAL (los sidecars lo prueban) y el pragma es
+            # un no-op; la conversión REAL sólo ocurre en el borde de un crash
+            # a mitad de conversión (header aún en delete) — exactamente la
+            # ventana donde puede competir con otro manager, así que participa
+            # del mismo mecanismo.
+            await conn.execute(f"PRAGMA busy_timeout={self._config.busy_timeout_ms}")
+            await self._enter_wal_mode(conn, path_str)
             # Force checkpoint to flush WAL contents into main DB
             await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             await conn.close()
-
-            # Verify WAL files were cleaned up
-            if wal_path.exists() or shm_path.exists():
-                logger.warning(
-                    "WAL files still present after recovery checkpoint for %s",
+            conn = None
+        except sqlite3.OperationalError as error_sql:
+            # Clasificar por ``_es_contencion_de_bloqueo``, NO por la
+            # clase Python: un ``OperationalError`` de I/O o permisos
+            # no es contención y no debe propagar como si lo fuera.
+            if _es_contencion_de_bloqueo(error_sql):
+                # Clase A: contención. PROPAGA sin rename.
+                logger.error(
+                    "DatabaseLifecycle: WAL recovery encontró contención para %s: %s",
                     path_str,
+                    error_sql,
                 )
+                if conn is not None:
+                    await self._cerrar_conexion_de_recovery(conn, db_path)
+                raise
+            # ``OperationalError`` NO-contención → clase C.
+            await self._recovery_rename_forense(path_str, wal_path, conn)
+        except Exception:
+            # Clase C: error no-sqlite (OSError, RuntimeError...) → clase C.
+            await self._recovery_rename_forense(path_str, wal_path, conn)
+        except BaseException:
+            # Clase B: cancelación (CancelledError) o cualquier
+            # ``BaseException`` no-sqlite (KeyboardInterrupt, SystemExit).
+            # PROPAGA con su identidad, sin rename.
+            if conn is not None:
+                await self._cerrar_conexion_de_recovery(conn, db_path)
+            raise
 
-            logger.info(
-                "DatabaseLifecycle: successfully recovered orphaned WAL for %s",
-                path_str,
+    async def _recovery_rename_forense(
+        self,
+        path_str: str,
+        wal_path: Path,
+        conn: aiosqlite.Connection | None,
+    ) -> None:
+        """Rename forense del WAL huérfano (clase C).
+
+        El error de recovery que justifica el rename NO se propaga:
+        el archivo queda a salvo del próximo recovery renombrado a
+        ``*.corrupted.*``, y el siguiente intento puede fallar limpio
+        (o tener éxito si el rename libera el sidecar).
+
+        Cierre NO confirmado => NO rename. Si el cierre de la conexión
+        temporal no se confirmó, el archivo sigue bajo una conexión
+        posiblemente viva: moverlo ahí destrozaría la integridad del inodo
+        bajo un writer activo. El WAL queda intacto en su nombre original y
+        el path cuarentena fail-closed lo cubre al siguiente init.
+        """
+        logger.error(
+            "DatabaseLifecycle: WAL recovery FAILED para %s (rename forense)",
+            path_str,
+        )
+        cierre_confirmado = True
+        if conn is not None:
+            cierre_confirmado = await self._cerrar_conexion_de_recovery(conn, Path(path_str))
+
+        timestamp = int(time.time())
+        if wal_path.exists() and cierre_confirmado:
+            corrupted_name = f"{path_str}-wal.corrupted.{timestamp}"
+            try:
+                import shutil
+
+                shutil.move(str(wal_path), corrupted_name)
+                logger.error(
+                    "Renamed corrupted WAL to %s for forensics",
+                    corrupted_name,
+                )
+            except OSError:
+                logger.error("Could not rename corrupted WAL file")
+
+    # Return: True si el cierre se confirmó, False si no (ownership
+    # retained dejado por la cuarentena, hasta que shutdown_all() reintente).
+    async def _cerrar_conexion_de_recovery(
+        self,
+        conn: aiosqlite.Connection,
+        db_path: Path,
+    ) -> bool:
+        """Cierra la conexión temporal del recovery preservando la cancelación.
+
+        Usa ``_close_connection`` con ``shielded=True`` para que el
+        cierre se complete aunque la cancelación externa haya llegado
+        al recovery (close failure no debe perder el cancel original).
+
+        Close NO confirmado: decisión explícita de ownership. La
+        conexión quedó viva y sin dueño — nadie más la va a cerrar.
+        Se registra en ``_connections`` bajo la clave canónica del
+        path (si no hay ya una entrada) para que ``shutdown_all()``
+        pueda reintentar el cierre, y el path queda fail-closed
+        (cuarentena): no vuelve a servir conexiones hasta que esa
+        conexión se cierre. Sin el registro, el fallo de cierre
+        quedaría oculto y la conexión filtraría para siempre.
+
+        Returns:
+            True si el cierre fue confirmado; False si se retuvo
+            ownership tras un cierre no confirmado. El recovery usa
+            este valor para decidir si es seguro renombrar el WAL
+            (cierre confirmado → sí; cierre no confirmado → no).
+        """
+        outcome = await self._close_connection(conn, shielded=True)
+        if outcome.closed:
+            return True
+        # Close NO confirmado: retener ownership explícitamente.
+        path_key = self._resolve_key(db_path)
+        if self._connections.get(path_key) is not conn:
+            self._connections[path_key] = conn
+        self._quarantined_paths.add(path_key)
+        if outcome.error is not None and not isinstance(outcome.error, asyncio.CancelledError):
+            logger.critical(
+                "DatabaseLifecycle: no se pudo cerrar la conexión de recovery para %s; "
+                "ownership retenido y path en cuarentena",
+                path_key,
+                exc_info=(
+                    type(outcome.error),
+                    outcome.error,
+                    outcome.error.__traceback__,
+                ),
             )
+        return False
 
-        except Exception as e:
-            logger.error(
-                "DatabaseLifecycle: WAL recovery FAILED for %s: %s",
-                path_str,
-                e,
-            )
-            # Rename corrupted WAL for forensics
-            timestamp = int(time.time())
-            if wal_path.exists():
-                corrupted_name = f"{path_str}-wal.corrupted.{timestamp}"
-                try:
-                    import shutil
+    async def _enter_wal_mode(self, conn: aiosqlite.Connection, path_str: str) -> None:
+        """Convierte la DB a WAL con reintento acotado por ``busy_timeout_ms``.
 
-                    shutil.move(str(wal_path), corrupted_name)
-                    logger.error(
-                        "Renamed corrupted WAL to %s for forensics",
-                        corrupted_name,
-                    )
-                except OSError:
-                    logger.error("Could not rename corrupted WAL file")
+        Por qué el reintento existe (demostrado con SQLite real, no asumido):
+        ``PRAGMA journal_mode=WAL`` sobre un archivo que NO está en WAL promueve
+        el lock de SHARED a EXCLUSIVE. Cuando DOS conexiones corren la conversión
+        a la vez —dos ``DatabaseLifecycleManager`` independientes sobre el mismo
+        archivo, cuyos locks Python por path son por-instancia y no se arbitran
+        entre sí— SQLite devuelve SQLITE_BUSY al perdedor INMEDIATAMENTE, sin
+        invocar el busy handler: es la evitación de deadlock documentada para la
+        promoción de locks ("if SQLite determines that invoking the busy handler
+        could result in a deadlock... it will go ahead and return SQLITE_BUSY").
+        Ningún ``busy_timeout`` salva ese caso porque el handler no llega a
+        correr. Ese era el fallo de CI (run 33223088993, windows-latest/py3.11):
+        ``_init_single`` → ``_apply_pragmas`` → ``journal_mode=WAL`` →
+        "database is locked" en el primer intento, envuelto en
+        ``JournalConnectionError`` por el ``open()`` del journal.
+
+        Contrato: mientras el lock incompatible se libere DENTRO de la ventana
+        configurada, la conversión progresa; si el holder lo retiene más allá,
+        falla de forma limitada y diagnosticable con el MISMO error, sin esperar
+        infinitamente. Reintentar la MISMA sentencia sobre la misma conexión es
+        seguro: el pragma fallido no abre transacción ni deja estado. Sólo se
+        reintenta la familia BUSY/LOCKED (``_es_contencion_de_bloqueo``, con la
+        decisión código por código documentada ahí); BUSY_SNAPSHOT, BUSY_TIMEOUT
+        y códigos no listados propagan al primer intento.
+
+        Deadline único: el total NO puede exceder ``busy_timeout_ms``. Cada
+        intento ajusta su propio ``PRAGMA busy_timeout`` al RESTANTE de la
+        ventana, no reusa el valor configurado completo — sin esto, dos
+        intentos podrían sumar hasta 2× el budget. La restauración del
+        ``busy_timeout`` configurado se hace siempre al final (éxito o
+        falla): una conexión que se publique con ``busy_timeout=0``
+        dejaría sin protección al siguiente caller.
+
+        Alcance de la propiedad, enunciado sin overclaim: la carrera
+        REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
+        RESERVED durante la promoción) corresponde a la conversión misma. En
+        los estados observados con el archivo ya en WAL —writer o reader en
+        vuelo— el pragma devolvió 'wal' sin esperar. NO se afirma que el
+        pragma jamás pueda devolver BUSY por otra vía interna (p. ej. durante
+        WAL recovery de otra conexión): si lo hiciera, este reintento acotado
+        lo cubre igual, porque el criterio es el CÓDIGO del error (familia
+        BUSY/LOCKED explícitamente listada) y no el origen del conflicto.
+        """
+        ventana_s = self._config.busy_timeout_ms / 1000.0
+        inicio = time.monotonic()
+        ultimo_error: sqlite3.OperationalError | None = None
+        while True:
+            # Cada intento lleva su propio ``busy_timeout`` capado al
+            # RESTANTE de la ventana. El execute corre SIEMPRE (incluso con
+            # ``busy_timeout_ms=0``, donde restante es ~0 y ``restante_ms=1``
+            # = fail-fast): la ventana cero significa "un intento, sin
+            # esperar", NO "no intentar".
+            restante = ventana_s - (time.monotonic() - inicio)
+            restante_ms = max(1, int(restante * 1000))
+            await conn.execute(f"PRAGMA busy_timeout={restante_ms}")
+            try:
+                await conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError as error:
+                if not _es_contencion_de_bloqueo(error):
+                    raise
+                ultimo_error = error
+                # Deadline agotado: re-lanzar el ÚLTIMO error real que
+                # SQLite devolvió, nunca un ``OperationalError`` sintético.
+                if ventana_s - (time.monotonic() - inicio) <= 0:
+                    raise ultimo_error from None
+                # Ceder el scheduler para que la cancelación pueda
+                # entrar. El sleep es chico para no contaminar el
+                # budget; el ``busy_timeout`` por intento ya hace el
+                # trabajo de esperar al lock.
+                await asyncio.sleep(min(_CONVERSION_WAL_RETRY_SLEEP_S, restante))
+            else:
+                break
+        # Restauración obligatoria: la conexión que sobrevive al
+        # ``_enter_wal_mode`` debe volver a tener el ``busy_timeout``
+        # configurado, no el cap por intento. Sin esto, una conexión
+        # que se publique arrastraría un busy_timeout arbitrario.
+        await conn.execute(f"PRAGMA busy_timeout={self._config.busy_timeout_ms}")
 
     async def _apply_pragmas(self, conn: aiosqlite.Connection, path_str: str) -> None:
-        """Apply hardened SQLite pragmas to a connection."""
+        """Apply hardened SQLite pragmas to a connection.
+
+        El orden NO es cosmético: ``busy_timeout`` se instala ANTES del primer
+        pragma que puede esperar por otro owner (la conversión a WAL), para que
+        el knob configurado —no el default de 5s de ``sqlite3.connect``—
+        gobierne toda la ventana de inicialización. OJO con la distinción: la
+        conexión recién abierta YA tiene un busy handler de ~5s (default de
+        ``sqlite3.connect``); este reorden no repara la race observada en CI
+        (ahí el handler no corría porque SQLite lo BYPASEA en la promoción de
+        locks, ver ``_enter_wal_mode``). Repara la integridad del knob: con el
+        orden viejo, ``busy_timeout_ms`` no gobernaba el primer statement que
+        espera. La conversión a WAL además lleva su propio reintento acotado:
+        ver ``_enter_wal_mode``.
+        """
         cfg = self._config
 
-        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute(f"PRAGMA busy_timeout={cfg.busy_timeout_ms}")
+        await self._enter_wal_mode(conn, path_str)
         await conn.execute("PRAGMA foreign_keys=ON")
         await conn.execute(f"PRAGMA synchronous={cfg.synchronous_mode}")
-        await conn.execute(f"PRAGMA busy_timeout={cfg.busy_timeout_ms}")
         await conn.execute("PRAGMA temp_store=MEMORY")
 
         # Verify critical pragmas

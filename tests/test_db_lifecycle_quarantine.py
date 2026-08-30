@@ -1447,6 +1447,18 @@ MUTADORES_DE_REGISTRO_ESPERADOS = {
     "_invalidate_under_boundary": 1,
     # API legacy sin callers en producción (ver test G2).
     "evict_connection": 1,
+    # Retención de ownership tras un cierre NO confirmado de la conexión
+    # temporal del recovery: registra la conexión bajo la clave canónica
+    # del path para que shutdown_all() pueda reintentar el cierre, y marca
+    # el path fail-closed. Es el cuarto camino de "cerrar + mutar el
+    # registro" y comparte SU política: sólo escribe cuando el cierre no
+    # se confirmó, nunca pisa una entrada vigente de otro dueño
+    # (guard por identidad ``is``), y siempre instala la cuarentena junto
+    # con el registro. Hermanos conductuales:
+    # test_recovery_close_no_confirmado_conserva_ownership (nivel recovery)
+    # y test_init_no_publica_reemplazo_tras_close_no_confirmado_en_recovery
+    # (nivel init: el registro retenido impide publicar reemplazo).
+    "_cerrar_conexion_de_recovery": 1,
 }
 
 
