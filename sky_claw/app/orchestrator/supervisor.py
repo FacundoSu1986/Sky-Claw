@@ -200,6 +200,7 @@ class SupervisorAgent:
         )
         asset_conflict_scanner = AssetConflictScanner(
             path_resolver=self._path_resolver,
+            path_validator=self._modding_validator,
         )
         self._asset_scanner = asset_conflict_scanner
         composition = build_orchestration_composition(

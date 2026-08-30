@@ -1,9 +1,13 @@
-"""Caracterización del seam Asset Conflict Scan (PR4).
+"""Caracterización del seam Asset Conflict Scan (PR4 + hardening PR4.1).
 
 PR4 del Strangler Fig extrae de ``SupervisorAgent`` la creación perezosa del
 ``AssetConflictDetector`` y los contratos ``scan_asset_conflicts`` /
 ``scan_asset_conflicts_json`` a :class:`AssetConflictScanner`
-(``sky_claw/app/orchestrator/asset_conflict_scan.py``). Estas anclas fijan:
+(``sky_claw/app/orchestrator/asset_conflict_scan.py``). PR4.1 añade el
+hardening de seguridad: el **validator de modding** se inyecta al scanner y llega
+al detector para activar los guards de child-path que antes quedaban inertes.
+
+Estas anclas fijan:
 
 - Contrato lazy: construir el scanner NO construye el detector (en la GUI
   ``MO2_PATH`` puede hidratarse después de construir el supervisor).
@@ -17,9 +21,15 @@ PR4 del Strangler Fig extrae de ``SupervisorAgent`` la creación perezosa del
 - Frontera inversa: ``SupervisorAgent`` ya no construye el detector ni
   conserva el estado ``_asset_detector`` (AST, con resolución de aliases y
   llamadas dotted).
-- Wiring: ``__init__`` construye el scanner con el path resolver y pasa
-  ``scanner.scan`` / ``scanner.scan_json`` a ``build_orchestration_composition``
-  (AST — detecta inversión plain/JSON y callbacks del supervisor).
+- Wiring: ``__init__`` construye el scanner con ``path_resolver`` +
+  ``path_validator`` (el de modding) y pasa ``scanner.scan`` / ``scanner.scan_json``
+  a ``build_orchestration_composition`` (AST — detecta inversión plain/JSON,
+  callbacks del supervisor, kwargs inesperados y ``**kwargs``).
+- Seguridad: el MISMO validator inyectado llega al detector y participa de
+  verdad en ``parse_modlist`` / ``calculate_checksum`` (fail-closed).
+- Errores de resolución lazy: fallos en ``get_mo2_mods_path`` /
+  ``get_active_profile`` se re-lanzan sin dejar el memo a medio construir.
+- Inventario de seams bound al supervisor (enumera, no muestrea).
 """
 
 from __future__ import annotations
@@ -32,6 +42,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from sky_claw.app.orchestrator.asset_conflict_scan import AssetConflictScanner
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport, AssetType
 
 
@@ -39,12 +50,19 @@ def _scanner_con_resolver(
     mods_path: pathlib.Path | None,
     *,
     profile: str = "Sesion",
+    path_validator: object | None = None,
 ) -> tuple[AssetConflictScanner, MagicMock]:
     """Scanner con resolver doblado: getters preconfigurados."""
     resolver = MagicMock()
     resolver.get_mo2_mods_path.return_value = mods_path
     resolver.get_active_profile.return_value = profile
-    return AssetConflictScanner(path_resolver=resolver), resolver
+    return (
+        AssetConflictScanner(
+            path_resolver=resolver,
+            path_validator=path_validator,
+        ),
+        resolver,
+    )
 
 
 def _reporte(path: str = "meshes/a.nif") -> AssetConflictReport:
@@ -160,6 +178,107 @@ def test_scan_json_relanza_errores_conocidos(excepcion: Exception) -> None:
     with pytest.raises(type(excepcion)) as ctx:
         scanner.scan_json()
     assert ctx.value is excepcion
+
+
+# ---------------------------------------------------------------------------
+# Hardening de seguridad — wiring del validator + guards child-path activos
+# ---------------------------------------------------------------------------
+
+
+def test_scanner_construye_el_detector_con_el_mismo_validator(tmp_path: pathlib.Path) -> None:
+    """T-S1: el detector construido lazy recibe EXACTAMENTE el validator que
+    se inyectó al scanner (identidad, no clon)."""
+    validator = PathValidator(roots=[tmp_path])
+    scanner, _ = _scanner_con_resolver(tmp_path, path_validator=validator)
+
+    detector = scanner.detector
+
+    assert detector._path_validator is validator
+
+
+def test_detector_recibe_el_mismo_validator_tras_memoizacion(tmp_path: pathlib.Path) -> None:
+    """T-S1 (memo): el acceso repetido conserva el MISMO detector con el MISMO
+    validator — no se reconstruye ni se re-clona el guard."""
+    validator = PathValidator(roots=[tmp_path])
+    scanner, _ = _scanner_con_resolver(tmp_path, path_validator=validator)
+
+    assert scanner.detector is scanner.detector
+    assert scanner.detector._path_validator is validator
+
+
+def test_parse_modlist_no_abre_archivo_si_el_validator_rechaza(tmp_path: pathlib.Path) -> None:
+    """T-S2: un validator que rechaza modlist_path impide que ``parse_modlist``
+    llegue a ``open()`` — el guard de child-path participa de verdad (fail-closed).
+
+    Usamos el ``PathValidator`` real con la root apuntando a un directorio
+    DISTINTO del que contiene modlist.txt: ``validate()`` lanza
+    ``PathViolationError`` antes de cualquier lectura.
+    """
+    mo2 = tmp_path / "mo2"
+    mo2.mkdir()
+    mods = mo2 / "mods"
+    mods.mkdir()
+    profiles = mo2 / "profiles" / "Sesion"
+    profiles.mkdir(parents=True)
+    (profiles / "modlist.txt").write_text("+ModLegitimo\n", encoding="utf-8")
+
+    # Root del validator apunta a otro lado: cualquier path de MO2 es "fuera".
+    validator = PathValidator(roots=[tmp_path / "otro_sandbox"])
+    scanner, _ = _scanner_con_resolver(mods, path_validator=validator)
+    detector = scanner.detector
+
+    with pytest.raises(PathViolationError):
+        detector.parse_modlist()
+
+
+def test_calculate_checksum_no_abre_asset_si_el_validator_rechaza(tmp_path: pathlib.Path) -> None:
+    """T-S3: un path rechazado por el validator no se abre para checksum.
+
+    El asset existe en disco pero queda FUERA de la root del validator, así que
+    ``calculate_checksum`` lanza ``PathViolationError`` en lugar de leer."""
+    otro = tmp_path / "fuera"
+    otro.mkdir()
+    asset = otro / "textures" / "a.dds"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"\x00\x01\x02\x03")
+
+    validator = PathValidator(roots=[tmp_path / "sandbox_interno"])
+    scanner, _ = _scanner_con_resolver(tmp_path, path_validator=validator)
+    detector = scanner.detector
+
+    with pytest.raises(PathViolationError):
+        detector.calculate_checksum(asset)
+
+
+# ---------------------------------------------------------------------------
+# Errores durante la resolución lazy del detector
+# ---------------------------------------------------------------------------
+
+
+def test_scan_relanza_error_del_resolver_antes_de_construir_detector(tmp_path: pathlib.Path) -> None:
+    """El error en ``get_mo2_mods_path`` durante la resolución lazy se re-lanza
+    tal cual, sin dejar ``_detector`` parcialmente inicializado."""
+    scanner, resolver = _scanner_con_resolver(tmp_path)
+    boom = RuntimeError("MO2_PATH sin configurar")
+    resolver.get_mo2_mods_path.side_effect = boom
+
+    with pytest.raises(RuntimeError) as ctx:
+        scanner.scan()
+    assert ctx.value is boom
+    assert scanner._detector is None
+
+
+def test_scan_json_relanza_error_del_resolver_antes_de_construir_detector(tmp_path: pathlib.Path) -> None:
+    """Mismo contrato para ``scan_json``: el fallo del resolver se propaga y el
+    memo no queda a medio construir."""
+    scanner, resolver = _scanner_con_resolver(tmp_path)
+    boom = RuntimeError("profile sin hidratar")
+    resolver.get_active_profile.side_effect = boom
+
+    with pytest.raises(RuntimeError) as ctx:
+        scanner.scan_json()
+    assert ctx.value is boom
+    assert scanner._detector is None
 
 
 # ---------------------------------------------------------------------------
@@ -286,63 +405,161 @@ def test_supervisor_ya_no_tiene_estado_asset_detector() -> None:
     )
 
 
-def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
-    """T9 (AST): __init__ construye AssetConflictScanner con el path resolver
-    y pasa ``.scan`` / ``.scan_json`` al builder.
+def _formato_kwarg(value: ast.expr) -> str:
+    """Normaliza una expresión de kwarg a una forma comparable.
 
-    Ancla las dos mitades: quitar la construcción del scanner O los kwargs al
-    builder rompe el test; también detecta la inversión plain/JSON y el
-    callback viejo del supervisor (``self.scan_asset_conflicts``).
+    Cubre ``self.attr`` (→ ``self.attr``), ``Name`` (→ ``name``) y cualquier
+    otra expresión por su representación de tipo (ast.Call, ast.Constant, …)
+    para poder asertar el kwarg INESPERADO sin depender del nombre local.
+    """
+    if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name) and value.value.id == "self":
+        return f"self.{value.attr}"
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, ast.Constant):
+        return repr(value.value)
+    return type(value).__name__
+
+
+def test_unique_seam_del_supervisor_bound_al_builder_es_plugin_guard() -> None:
+    """Guardrail de familia (enumera, no muestrea).
+
+    De todos los kwargs entregados a ``build_orchestration_composition``, los
+    que son métodos bound del supervisor (``self.<método>``) deben ser
+    exactamente:
+        plugin_limit_guard ← self._run_plugin_limit_guard
+
+    Es el único seam de dominio residual que sigue bound al supervisor tras PR4.
+    PR5 (plugin-limit) debe romper esta ancla a propósito y actualizarla; un
+    callable bound nuevo que reaparezca sin pasar por la extracción la rompe
+    (mantiene el inventario exhaustivo, no un caso por cada seam).
+    """
+    arbol = _arbol_supervisor()
+    clase = _cuerpo_supervisor(arbol)
+
+    # Métodos reales de SupervisorAgent (FunctionDef / AsyncFunctionDef): solo
+    # estos cuentan como "callables bound". Los datos/servicios (self.scraper,
+    # self._lock_manager, self._path_resolver, …) son atributos, no métodos.
+    nombres_metodo = {m.name for m in clase.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    bound_del_supervisor: dict[str, str] = {}
+    for miembro in clase.body:
+        if not (isinstance(miembro, ast.FunctionDef) and miembro.name == "__init__"):
+            continue
+        for sub in ast.walk(miembro):
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id == "build_orchestration_composition"
+            ):
+                for kw in sub.keywords:
+                    if kw.arg is None:
+                        continue
+                    valor = kw.value
+                    if (
+                        isinstance(valor, ast.Attribute)
+                        and isinstance(valor.value, ast.Name)
+                        and valor.value.id == "self"
+                        and valor.attr in nombres_metodo
+                    ):
+                        bound_del_supervisor[kw.arg] = valor.attr
+        break
+
+    assert bound_del_supervisor == {"plugin_limit_guard": "_run_plugin_limit_guard"}, (
+        f"Seams bound al supervisor entregados al builder: {bound_del_supervisor}. "
+        "Se espera exactamente {plugin_limit_guard: _run_plugin_limit_guard} "
+        "(los demás seams ya están extraídos: grass → GrassRuntimeDepsProvider, "
+        "asset scan → AssetConflictScanner)"
+    )
+
+
+def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
+    """T9 (AST): ``__init__`` construye AssetConflictScanner SOLO con
+    ``path_resolver=self._path_resolver`` y ``path_validator=self._modding_validator``
+    y pasa ``scanner.scan`` / ``scanner.scan_json`` al builder — sin congelar el
+    nombre de la variable local.
+
+    Invariantes:
+      - TODOS los kwargs a ``AssetConflictScanner`` se inventarían (named + ``**``);
+        un ``**extras`` o un kwarg inesperado rompe el test.
+      - ``path_validator`` apunta al validator de modding (no ``_path_validator``
+        del rollback ni un validator fabricado).
+      - el MISMO scanner construido se usa para ``scan`` y ``scan_json``
+        (detección de inversión plain/JSON y de callbacks viejos del supervisor).
     """
     arbol = _arbol_supervisor()
     clase = _cuerpo_supervisor(arbol)
     for miembro in clase.body:
-        if isinstance(miembro, ast.FunctionDef) and miembro.name == "__init__":
-            construcciones = []
-            kwargs_al_builder: dict[str, ast.expr] = {}
-            for sub in ast.walk(miembro):
-                if (
-                    isinstance(sub, ast.Assign)
-                    and isinstance(sub.value, ast.Call)
-                    and isinstance(sub.value.func, ast.Name)
-                    and sub.value.func.id == "AssetConflictScanner"
-                    and any(isinstance(t, ast.Name) and t.id == "asset_conflict_scanner" for t in sub.targets)
-                ):
-                    construcciones.append(sub)
-                if (
-                    isinstance(sub, ast.Call)
-                    and isinstance(sub.func, ast.Name)
-                    and sub.func.id == "build_orchestration_composition"
-                ):
-                    for kw in sub.keywords:
+        if not (isinstance(miembro, ast.FunctionDef) and miembro.name == "__init__"):
+            continue
+
+        construcciones: list[tuple[str, dict[str, ast.expr], list[ast.expr]]] = []
+        kwargs_al_builder: dict[str, ast.expr] = {}
+        for sub in ast.walk(miembro):
+            # Construcción del scanner: captura la variable destino para rastrear
+            # el MISMO objeto hasta los callbacks del builder.
+            if (
+                isinstance(sub, ast.Assign)
+                and isinstance(sub.value, ast.Call)
+                and isinstance(sub.value.func, ast.Name)
+                and sub.value.func.id == "AssetConflictScanner"
+            ):
+                kw_named: dict[str, ast.expr] = {}
+                kw_args: list[ast.expr] = []
+                for kw in sub.value.keywords:
+                    if kw.arg is None:
+                        kw_args.append(kw.value)
+                    else:
+                        kw_named[kw.arg] = kw.value
+                nombres_destino = [t.id for t in sub.targets if isinstance(t, ast.Name)]
+                construcciones.append((",".join(nombres_destino), kw_named, kw_args))
+
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id == "build_orchestration_composition"
+            ):
+                for kw in sub.keywords:
+                    if kw.arg is not None:
                         kwargs_al_builder[kw.arg] = kw.value
-            assert construcciones, "__init__ no construye AssetConflictScanner"
-            kwargs_reales = {}
-            for kw in construcciones[0].value.keywords:
-                v = kw.value
-                if isinstance(v, ast.Attribute) and isinstance(v.value, ast.Name) and v.value.id == "self":
-                    kwargs_reales[kw.arg] = f"self.{v.attr}"
-                elif isinstance(v, ast.Name):
-                    kwargs_reales[kw.arg] = v.id
-            assert kwargs_reales == {"path_resolver": "self._path_resolver"}, (
-                f"AssetConflictScanner se construye con {kwargs_reales} — "
-                "se espera exactamente path_resolver=self._path_resolver"
-            )
 
-            def _es_attr_del_scanner(nodo: ast.expr | None, attr: str) -> bool:
-                return (
-                    isinstance(nodo, ast.Attribute)
-                    and nodo.attr == attr
-                    and isinstance(nodo.value, ast.Name)
-                    and nodo.value.id == "asset_conflict_scanner"
+        assert construcciones, "__init__ no construye AssetConflictScanner"
+
+        for destino, kw_named, kw_args in construcciones:
+            # 1. Sin `**extras` ni kwargs inesperados: el contrato es exacto.
+            assert kw_args == [], (
+                "AssetConflictScanner recibe `**kwargs` no nominales — "
+                "el contrato del scanner es path_resolver + path_validator explícitos"
+            )
+            assert set(kw_named) == {"path_resolver", "path_validator"}, (
+                f"AssetConflictScanner se construye con kwargs {set(kw_named)} — "
+                "se espera exactamente {path_resolver, path_validator}"
+            )
+            # 2. Valores correctos (semántica, no nombre local).
+            assert _formato_kwarg(kw_named["path_resolver"]) == "self._path_resolver", (
+                "path_resolver debe ser self._path_resolver"
+            )
+            assert _formato_kwarg(kw_named["path_validator"]) == "self._modding_validator", (
+                "path_validator debe ser self._modding_validator (el validator de modding, "
+                "NO el backup-only del rollback)"
+            )
+            # 3. El MISMO scanner construido alimenta scan y scan_json.
+            for builder_kwarg, attr in (
+                ("scan_asset_conflicts", "scan"),
+                ("scan_asset_conflicts_json", "scan_json"),
+            ):
+                valor = kwargs_al_builder.get(builder_kwarg)
+                assert valor is not None, f"{builder_kwarg} no se entregó al builder"
+                assert isinstance(valor, ast.Attribute) and valor.attr == attr, (
+                    f"{builder_kwarg} debe ser <scanner>.{attr} (detecta inversión plain/JSON "
+                    "y callbacks viejos del supervisor)"
                 )
-
-            assert _es_attr_del_scanner(kwargs_al_builder.get("scan_asset_conflicts"), "scan"), (
-                "scan_asset_conflicts debe ser asset_conflict_scanner.scan (no otro callable)"
-            )
-            assert _es_attr_del_scanner(kwargs_al_builder.get("scan_asset_conflicts_json"), "scan_json"), (
-                "scan_asset_conflicts_json debe ser asset_conflict_scanner.scan_json — "
-                "detecta inversión plain/JSON y callbacks del supervisor"
-            )
-            return
+                assert isinstance(valor.value, ast.Name), (
+                    f"{builder_kwarg} debe referir al scanner construido, no a una expresión arbitraria"
+                )
+                assert valor.value.id in destino, (
+                    f"{builder_kwarg} usa un scanner distinto del que __init__ construyó "
+                    f"(construido en '{destino}', usado via '{valor.value.id}')"
+                )
+        return
     raise AssertionError("No se encontró SupervisorAgent.__init__")

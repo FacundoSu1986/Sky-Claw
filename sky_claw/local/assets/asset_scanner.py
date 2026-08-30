@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.app.core.contracts import PathValidatorProtocol
 
 from sky_claw.app.security.path_validator import (
     PathViolationError,
@@ -106,7 +106,7 @@ class AssetConflictDetector:
         self,
         mo2_mods_path: Path,
         profile_name: str = "Default",
-        path_validator: PathValidator | None = None,
+        path_validator: PathValidatorProtocol | None = None,
     ) -> None:
         """
         Inicializa el detector.
