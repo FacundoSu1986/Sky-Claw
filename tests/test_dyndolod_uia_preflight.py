@@ -15,20 +15,21 @@ resultado no tiene ``success: bool`` (ver el docstring del módulo) y por eso
 ``test_el_resultado_no_expone_un_success_booleano`` lo congela.
 
 **Se enumera, no se muestrea** (``AGENTS.md``, "La regla que más se viola"). Tres
-anclas estructurales por AST sostienen el invariante read-only, que es la
-propiedad que separa T5A de la automatización de GUI:
+ anclas estructurales por AST sostienen el invariante read-only, que es la
+ propiedad que separa T5A/T5-v2 de la automatización de GUI:
 
-1. ``test_la_superficie_no_nombra_primitivas_mutantes``: ningún identificador,
-   atributo ni literal de los archivos de T5A puede ser una primitiva mutante de
-   UIA/Win32 — y ``getattr``/``setattr``/``eval``/``exec`` también están
-   prohibidos, porque son el hueco por el que una llamada mutante entraría sin
-   que su nombre aparezca en el árbol.
-2. ``test_el_protocolo_del_observador_esta_congelado``: los métodos declarados
-   por ``ObservadorUIA`` se congelan por igualdad literal. Agregar ``click()`` al
-   protocolo rompe el test aunque nadie lo llame todavía.
-3. ``test_las_razones_estan_congeladas``: la familia de razones se congela por
-   igualdad literal, para que una rama nueva del pipeline tenga que declarar su
-   razón en vez de reciclar una existente.
+ 1. ``test_la_superficie_no_nombra_primitivas_mutantes``: ningún identificador,
+    atributo ni literal de los archivos de la superficie (preflight, backend
+    Windows del runtime, gate y sonda) puede ser una primitiva mutante de
+    UIA/Win32 — y ``getattr``/``setattr``/``eval``/``exec`` también están
+    prohibidos, porque son el hueco por el que una llamada mutante entraría sin
+    que su nombre aparezca en el árbol.
+ 2. ``test_el_protocolo_del_observador_esta_congelado``: los métodos declarados
+    por ``ObservadorUIA`` se congelan por igualdad literal. Agregar ``click()`` al
+    protocolo rompe el ancla aunque nadie lo llame todavía.
+ 3. ``test_las_razones_estan_congeladas``: la familia de razones se congela por
+    igualdad literal, para que una rama nueva del pipeline tenga que declarar su
+    razón en vez de reciclar una existente.
 
 Y una cuarta ancla en tiempo de ejecución: el observador espía de
 ``ObservadorEspia`` lleva métodos con nombre mutante que revientan si alguien los
@@ -53,6 +54,7 @@ import pytest
 from sky_claw.local.tools.dyndolod_uia_preflight import (
     _CARACTERES_RESERVADOS_WIN32,
     RAZONES_DE_UNKNOWN,
+    SELECTORES_DE_OUTPUT,
     TOOLS_OBSERVABLES,
     TOPE_DE_ELEMENTOS_UIA,
     ControlObservado,
@@ -77,6 +79,13 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 MODULO_T5A = RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_uia_preflight.py"
 PROBE_T5A = RAIZ / "local_scripts" / "scripts" / "probe_dyndolod_uia_readonly.py"
+#: Desde T5-v2 el backend COM vive en el runtime del paquete (la probe lo
+#: importa, no lo redefine) y el gate productivo vive en su propio módulo. Las
+#: anclas que en T5A apuntaban al probe "porque ahí vivía el adaptador" apuntan
+#: ahora acá: es la pieza que el gate de producción ejecuta de verdad, así que
+#: la propiedad queda anclada donde importa.
+MODULO_UIA_WINDOWS = RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_uia_windows.py"
+MODULO_GATE = RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_uia_gate.py"
 
 #: Salida administrada que ``output_targets.dyndolod_output_target`` produce en
 #: un rig Windows. Se escribe literal (y no se importa) porque el preflight
@@ -827,19 +836,22 @@ def test_un_segundo_candidato_pasado_el_tope_no_puede_producir_match():
     assert resultado.razon is RazonPreflight.ENUMERACION_INCOMPLETA
 
 
-def test_el_adaptador_del_probe_exige_enumeracion_completa():
+def test_el_backend_del_runtime_exige_enumeracion_completa():
     """Ancla estructural: el backend Windows no puede devolver un recorte.
 
     No se puede ejecutar COM acá, así que se verifica por AST que el método que
     materializa una colección de UIA llama a `exigir_enumeracion_completa`. Sin
     esto, el invariante viviría sólo en la revisión humana del adaptador, que es
     exactamente lo que dejó pasar el defecto la primera vez.
+
+    Desde T5-v2 el ancla lee ``dyndolod_uia_windows`` (el backend del runtime
+    que la probe importa): antes leía el probe, donde el adaptador vivía.
     """
-    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    arbol = ast.parse(MODULO_UIA_WINDOWS.read_text(encoding="utf-8"))
     materializadores = [
         nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef) and nodo.name == "_elementos"
     ]
-    assert materializadores, "el probe ya no tiene `_elementos`: revisá este ancla"
+    assert materializadores, "el backend del runtime ya no tiene `_elementos`: revisá este ancla"
     for funcion in materializadores:
         llamadas = {
             hijo.func.id for hijo in ast.walk(funcion) if isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Name)
@@ -868,11 +880,13 @@ def test_los_metodos_del_protocolo_no_usan_la_enumeracion_truncada():
 
     `controles_para_volcado` es la ÚNICA que puede truncar: es diagnóstico, lo
     anuncia con `TRUNCATED:` y no alimenta ninguna decisión.
+
+    Desde T5-v2 se lee el módulo del runtime, que es donde vive el adaptador.
     """
-    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    arbol = ast.parse(MODULO_UIA_WINDOWS.read_text(encoding="utf-8"))
     metodos = {nodo.name: nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef | ast.AsyncFunctionDef)}
     for nombre in METODOS_DEL_OBSERVADOR:
-        assert nombre in metodos, f"el probe ya no implementa {nombre}: revisá este ancla"
+        assert nombre in metodos, f"el backend ya no implementa {nombre}: revisá este ancla"
         usadas = {hijo.attr for hijo in ast.walk(metodos[nombre]) if isinstance(hijo, ast.Attribute)}
         assert "_elementos_truncados" not in usadas, (
             f"{nombre} materializa con el recorte de diagnóstico: un veredicto no puede salir de evidencia parcial"
@@ -1068,6 +1082,111 @@ def test_un_blanco_junto_a_un_criterio_real_no_invalida_al_real():
         valores={"edOutput": SALIDA_ADMINISTRADA},
     )
     assert resultado.estado is EstadoPreflight.MATCH
+
+
+# ---------------------------------------------------------------------------
+# class_name como criterio (T5-v2, G1)
+# ---------------------------------------------------------------------------
+#
+# La medición del rig (T5A, 2026-08-29/30) mostró que ``AutomationId`` es
+# INESTABLE entre lanzamientos (TexGen 6293158→5113454; DynDOLOD 657180→8652478)
+# y que ``ControlType=Edit`` solo no distingue el Output del TMemo de logs. El
+# par ``tipo=Edit + clase=TEdit`` fue único y estable en los 4 volcados. El
+# AND sigue siendo exacto — ninguna heurística nueva.
+
+
+def _selector_del_rig():
+    """El selector que el rig midió estable: Edit + TEdit, sin AutomationId."""
+    return CriteriosDeControl(tipo_de_control="Edit", class_name="TEdit")
+
+
+def test_g1_class_name_forma_parte_del_and_exacto():
+    criterios = _selector_del_rig()
+    assert criterios.coincide(_control(automation_id="", nombre="", tipo="Edit", clase="TEdit"))
+    assert not criterios.coincide(_control(automation_id="", nombre="", tipo="Edit", clase="TMemo"))
+    assert not criterios.coincide(_control(automation_id="", nombre="", tipo="Text", clase="TEdit"))
+
+
+def test_g1_class_name_no_reemplaza_a_otro_criterio_distinto():
+    # El AND no se degrada a OR: tipo correcto con clase ajena no matchea, y
+    # viceversa. Verificado además EN el pipeline, no sólo contra el dataclass.
+    resultado = _observar(
+        _solicitud(criterios=_selector_del_rig()),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control(automation_id="edLog", nombre="", tipo="Edit", clase="TMemo")]},
+        valores={"edLog": SALIDA_ADMINISTRADA},
+    )
+    # El TMemo no satisface la clase pedida: no hay candidato Output. El valor
+    # correcto en un control equivocado no puede fabricar un MATCH.
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.CONTROL_NO_ENCONTRADO
+
+
+def test_g1_pipeline_matchea_edit_tedit_con_selector_del_rig():
+    resultado = _observar(
+        _solicitud(criterios=_selector_del_rig()),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={"w1": [_control(automation_id="6293158", nombre="", tipo="Edit", clase="TEdit")]},
+        valores={("6293158", "", "Edit", 4242): SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.MATCH
+    assert resultado.valor_observado == SALIDA_ADMINISTRADA
+
+
+@pytest.mark.parametrize("blanco", ["", "   ", "\t"])
+def test_g1_class_name_en_blanco_no_es_un_criterio(blanco):
+    # Un class_name vacío es "no lo pasé", no "quiero el de clase vacía".
+    assert CriteriosDeControl(class_name=blanco).esta_vacio()
+    # Y junto a un criterio real, se ignora como cualquier otro blanco.
+    criterios = CriteriosDeControl(tipo_de_control="Edit", class_name=blanco)
+    assert not criterios.esta_vacio()
+    assert "TEdit" not in criterios.describir()
+
+
+def test_g1_dos_tedit_compatibles_dan_control_ambiguo():
+    # Dos candidatos Edit/TEdit: nunca se elige el primero (M-V2-7).
+    resultado = _observar(
+        _solicitud(criterios=_selector_del_rig()),
+        procesos=[_proceso()],
+        ventanas=[_ventana()],
+        controles={
+            "w1": [
+                _control(automation_id="a", nombre="", tipo="Edit", clase="TEdit"),
+                _control(automation_id="b", nombre="", tipo="Edit", clase="TEdit"),
+            ]
+        },
+        valores={("a", "", "Edit", 4242): SALIDA_ADMINISTRADA},
+    )
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.CONTROL_AMBIGUO
+    assert resultado.valor_observado is None
+
+
+# ---------------------------------------------------------------------------
+# Selector productivo: UNA fuente auditable, congelada (T5-v2, §11)
+# ---------------------------------------------------------------------------
+#
+# El selector del gate NO puede derivarse por convención ni rearmarse en cada
+# call site: vive en el módulo, congelado por igualdad literal. La medición que
+# lo sostiene (rig T5A): único Edit/TEdit en 4/4 volcados, en los dos binarios.
+
+
+def test_el_selector_productivo_cubre_exactamente_texgen_y_dyndolod():
+    assert set(SELECTORES_DE_OUTPUT) == {"TexGen", "DynDOLOD"} == set(TOOLS_OBSERVABLES)
+
+
+def test_el_selector_productivo_es_el_medido_en_el_rig():
+    for tool, criterios in SELECTORES_DE_OUTPUT.items():
+        # Sin AutomationId: es inestable, medido dos veces por binario (M-V2-6).
+        assert criterios.automation_id is None, tool
+        # Name es "" en ambos: un criterio vacío no es criterio.
+        assert criterios.nombre is None, tool
+        # La evidencia única y estable: tipo Edit + clase TEdit (M-V2-5).
+        assert criterios.tipo_de_control == "Edit", tool
+        assert criterios.class_name == "TEdit", tool
+        assert not criterios.esta_vacio(), tool
 
 
 def test_la_canonicalizacion_no_toca_el_filesystem(tmp_path, monkeypatch):
@@ -1335,7 +1454,11 @@ METODOS_DEL_OBSERVADOR: tuple[str, ...] = (
     "leer_valor",
 )
 
-ARCHIVOS_DE_T5A = (MODULO_T5A, PROBE_T5A)
+# La superficie READ-ONLY completa, T5A + T5-v2: la máquina de decisión, el
+# backend COM del runtime (que la probe importa — medido en rig) y el gate
+# productivo. Cualquier archivo nuevo de esta familia entra acá: el ancla es
+# una ENUMERACIÓN, no una muestra.
+ARCHIVOS_DE_T5A = (MODULO_T5A, MODULO_UIA_WINDOWS, MODULO_GATE, PROBE_T5A)
 
 
 def _docstrings(arbol: ast.AST) -> set[int]:
@@ -1404,9 +1527,15 @@ def test_el_backend_windows_vive_fuera_del_paquete():
     """El probe puede importar `sky_claw`; `sky_claw` NO puede importar al probe.
 
     Esa es la propiedad que mantiene el paquete importable en el CI de Ubuntu sin
-    COM y que deja la decisión de dependencia UIA para cuando haya evidencia. Se
-    verifica por enumeración de TODO el paquete, no con un caso: un import nuevo
-    desde cualquier módulo rompe el ancla.
+    COM y que impide que el diagnóstico se cuele al runtime por la puerta de
+    atrás. Se verifica por enumeración de TODO el paquete, no con un caso: un
+    import nuevo desde cualquier módulo rompe el ancla.
+
+    Desde T5-v2 el adaptador COM SÍ vive en el paquete
+    (``dyndolod_uia_windows``) — es la decisión de dependencia que el propio ancla
+    original aplazaba "hasta que hubiera evidencia", tomada con la medición del
+    rig T5A— y la probe lo importa de ahí; lo que NO cambia es la dirección del
+    grafo: ``sky_claw`` nunca importa al probe.
     """
     assert PROBE_T5A.exists()
     assert not PROBE_T5A.is_relative_to(RAIZ / "sky_claw")
@@ -1426,25 +1555,105 @@ def test_el_backend_windows_vive_fuera_del_paquete():
     assert not culpables, f"el paquete importa el probe desde {culpables}"
 
 
-def test_el_probe_no_declara_dependencia_uia_en_los_manifests():
-    """Ninguna dependencia UIA entró al repo: la decision espera la evidencia.
+def test_la_sonda_no_redefine_el_backend_del_runtime():
+    """La implementación COM es UNA — la del runtime — y la probe la importa.
 
-    `comtypes` se importa perezosamente DENTRO del probe (§7: no se toma una
-    dependencia por costumbre, y menos una que sólo sirve a un diagnóstico).
-    Si algún día entra al runtime tiene que ser una decisión explícita que
-    rompa este ancla, no un `pip install` que se cuele en un lockfile.
+    T5-v2 promovió a ``dyndolod_uia_windows`` el adaptador que el rig midió:
+    ése es exactamente el que el gate de producción usa. Una segunda copia en el
+    probe (una clase `ObservadorUIAWindows` redefinida, un helper duplicado)
+    sería el defecto hermano en su forma de libro: dos adaptadores que divergen,
+    uno ejercitado y otro no.
+    """
+    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    clases = [nodo.name for nodo in ast.walk(arbol) if isinstance(nodo, ast.ClassDef)]
+    assert "ObservadorUIAWindows" not in clases, (
+        "la probe define su propio ObservadorUIAWindows en vez de importarlo del runtime"
+    )
+
+    importaciones = []
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.ImportFrom) and nodo.module == "sky_claw.local.tools.dyndolod_uia_windows":
+            importaciones.extend(alias.name for alias in nodo.names)
+    assert "ObservadorUIAWindows" in importaciones, (
+        "la probe no importa el backend del runtime: volvió a tener uno propio o dejó de observar"
+    )
+
+
+def test_el_adaptador_windows_no_importa_comtypes_en_tope_de_modulo():
+    """Import-safe en cualquier plataforma: `comtypes` entra perezoso o no entra.
+
+    El paquete se importa en el CI de Ubuntu (y en rigs sin `comtypes`
+    instalado): si el binding apareciera en un import de NIVEL DE MÓDULO, ese
+    import sería un `ImportError` en Linux y el gate dejaría de fallar CERRADO
+    para fallar ROTO. Los imports dentro de ``__init__`` son los legítimos: su
+    ausencia llega como ``UIANoDisponibleError`` → UNKNOWN.
+    """
+    for modulo in (MODULO_UIA_WINDOWS, MODULO_GATE):
+        arbol = ast.parse(modulo.read_text(encoding="utf-8"))
+        culpables = []
+        for nodo in arbol.body:
+            if isinstance(nodo, ast.Import):
+                culpables.extend(alias.name for alias in nodo.names)
+            elif isinstance(nodo, ast.ImportFrom) and nodo.module:
+                culpables.append(nodo.module)
+        prohibidos = {"comtypes", "ctypes", "win32api", "win32gui", "win32process", "pywinauto", "uiautomation"}
+        encontrados = [nombre for nombre in culpables if nombre.split(".")[0] in prohibidos]
+        assert not encontrados, f"{modulo.name} importa {encontrados} a nivel de módulo"
+
+
+def test_el_adaptador_windows_importable_sin_windows_ni_comtypes():
+    """La otra mitad ejecutable del guard: importar no construye el backend.
+
+    En este proceso de test (Linux o Windows con comtypes quizá instalado) el
+    MÓDULO importa siempre; la CONSTRUCCIÓN del observador es lo que falla
+    cerrado donde no hay plataforma/binding.
+    """
+    import importlib
+
+    modulo = importlib.import_module("sky_claw.local.tools.dyndolod_uia_windows")
+    assert hasattr(modulo, "ObservadorUIAWindows")
+    if sys.platform != "win32":
+        with pytest.raises(UIANoDisponibleError):
+            modulo.ObservadorUIAWindows()
+
+
+def test_comtypes_es_la_dependencia_uia_y_solo_en_windows():
+    """T5-v2: comtypes está declarado, Windows-only, sin alternativas de ventana.
+
+    La política mínima de dependencias UIA (rig T5A, evidencia externa 2026-08-29):
+    comtypes es el backend puro-Python/COM medido. Alternativas de ventana
+    (``pywinauto``/``uiautomation``) NO entran al repo — serían una segunda
+    superficie UIA sin el rig que la medida exige.
+
+    La mutación mata:
+    - quitar ``comtypes`` → RED
+    - quitar ``; sys_platform == "win32"`` → RED
+    - agregar ``pywinauto``/``uiautomation``/``pywin32`` → RED
     """
     manifest = tomllib.loads((RAIZ / "pyproject.toml").read_text(encoding="utf-8"))
     proyecto = manifest.get("project", {})
-    # TODAS las secciones de dependencias, no sólo la principal: cortar el texto
-    # antes de `[project.optional-dependencies]` dejaba entrar un `comtypes` por
-    # la puerta de al lado (hallazgo de review, Qodo).
     declaradas = list(proyecto.get("dependencies", []))
     for extra, paquetes in proyecto.get("optional-dependencies", {}).items():
         declaradas.extend(f"{extra}:{paquete}" for paquete in paquetes)
-    for paquete in ("comtypes", "pywinauto", "uiautomation", "pywin32"):
+
+    # 1. comtypes está, y solo uno.
+    concuerdan = [d for d in declaradas if "comtypes" in d.lower()]
+    assert len(concuerdan) == 1, (
+        f"esperaba exactamente una línea con comtypes; hay {len(concuerdan)}: {concuerdan}"
+    )
+
+    # 2. La única línea es Windows-only. Sin el marcador, ``import comtypes``
+    # intenta COM en Linux incluso bajo ImportError perezoso.
+    linea = concuerdan[0]
+    assert """sys_platform == "win32" """ in linea or "sys_platform == 'win32'" in linea, (
+        f"comtypes tiene que ser Windows-only; llegó {linea!r}"
+    )
+
+    # 3. No entraron las alternativas de ventana ni la capa genérica.
+    ausencias = ("pywinauto", "uiautomation", "pywin32")
+    for paquete in ausencias:
         culpables = [d for d in declaradas if paquete in d.lower()]
-        assert not culpables, f"{paquete} entró a las dependencias sin decisión: {culpables}"
+        assert not culpables, f"{paquete!r} entró a las dependencias: {culpables}"
 
 
 def test_el_banner_de_la_sonda_sanea_la_ruta_del_ejecutable():
@@ -1881,7 +2090,8 @@ def test_el_contrato_no_declara_patrones_de_lectura_que_nadie_implementa():
         "'Patrones de lectura implementados: ...' que se pueda verificar"
     )
 
-    fuente = PROBE_T5A.read_text(encoding="utf-8")
+    # T5-v2: la implementación vive en el módulo del runtime (la probe importa).
+    fuente = MODULO_UIA_WINDOWS.read_text(encoding="utf-8")
     arbol = ast.parse(fuente)
     # `leer_valor` delega en un lector por patrón, así que los ids viven ahí.
     # El ancla los busca en TODA la familia `_texto_por_*` además del método
@@ -2337,9 +2547,9 @@ def test_los_metodos_del_protocolo_materializan_por_el_helper():
     mutación.
 
     `controles_para_volcado` queda afuera: es diagnóstico, lo anuncia y no
-    alimenta ningún veredicto.
+    alimenta ningún veredicto. Desde T5-v2 el ancla lee el módulo del runtime.
     """
-    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    arbol = ast.parse(MODULO_UIA_WINDOWS.read_text(encoding="utf-8"))
     metodos = {nodo.name: nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef | ast.AsyncFunctionDef)}
     for nombre in ("ventanas_de_proceso", "controles_de_ventana"):
         assert nombre in metodos, f"el probe ya no implementa {nombre}: revisá este ancla"
@@ -2514,7 +2724,7 @@ def test_un_texto_vacio_no_termina_la_lectura():
 
 def test_leer_valor_delega_el_orden_en_el_helper_puro():
     """Que no se vuelva a escribir el orden inline, donde no se puede testear."""
-    arbol = ast.parse(PROBE_T5A.read_text(encoding="utf-8"))
+    arbol = ast.parse(MODULO_UIA_WINDOWS.read_text(encoding="utf-8"))
     lector = next(nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef) and nodo.name == "leer_valor")
     llamadas = {
         hijo.func.id for hijo in ast.walk(lector) if isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Name)

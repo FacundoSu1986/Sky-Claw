@@ -1151,7 +1151,12 @@ class TestExecuteProcessDrainGrace:
         runner = ddl.DynDOLODRunner(config)
         cwd = pathlib.Path.cwd()
 
-        with patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)) as create_process:
+        with (
+            patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)) as create_process,
+            # T5-v2: este test prueba el contrato de cwd del subproceso; el gate
+            # UIA tiene su propia suite (test_dyndolod_uia_gate.py).
+            patch.object(runner, "_gate_uia_output", AsyncMock()),
+        ):
             await runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD")
 
         assert create_process.call_args.kwargs["cwd"] == cwd
@@ -1173,6 +1178,8 @@ class TestExecuteProcessDrainGrace:
         with (
             patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
             patch.object(ddl, "_DRAIN_GRACE_SECONDS", 0.1),
+            # T5-v2: el gate UIA tiene su propia suite; acá se prueba el drain.
+            patch.object(runner, "_gate_uia_output", AsyncMock()),
         ):
             # Con el fix retorna dentro del grace (0.1s); sin él, el gather del
             # path de éxito cuelga y este wait_for externo dispararía TimeoutError.
@@ -1211,6 +1218,8 @@ class TestExecuteProcessDrainGrace:
             patch.object(ddl, "_DRAIN_GRACE_SECONDS", 0.1),
             patch.object(ddl, "assign_kill_on_close_job", assign_spy),
             patch.object(ddl, "close_job", close_spy),
+            # T5-v2: el gate UIA tiene su propia suite; acá se prueba el job.
+            patch.object(runner, "_gate_uia_output", AsyncMock()),
         ):
             await asyncio.wait_for(
                 runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD"),
@@ -1274,7 +1283,13 @@ class TestExecuteProcessCancellation:
         config = MagicMock(timeout_seconds=3600, heartbeat_interval=60)
         runner = ddl.DynDOLODRunner(config)
 
-        with patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
+        with (
+            patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
+            # T5-v2: la cancelación DURANTE el gate tiene su propio test en
+            # test_dyndolod_uia_gate.py; acá se mide la cancelación sobre la
+            # espera del proceso, con el gate ya superado.
+            patch.object(runner, "_gate_uia_output", AsyncMock()),
+        ):
             task = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD"))
             try:
                 await wait_started.wait()

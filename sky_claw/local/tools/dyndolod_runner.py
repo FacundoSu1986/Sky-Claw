@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -32,6 +33,22 @@ from sky_claw.app.security.links import (
     rmtree_link_aware,
 )
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
+from sky_claw.local.tools.dyndolod_uia_gate import (
+    GATE_UIA_INTERVALO_SEGUNDOS,
+    GATE_UIA_TIMEOUT_SEGUNDOS,
+    ejecutar_gate_sincrono,
+)
+from sky_claw.local.tools.dyndolod_uia_preflight import (
+    EstadoPreflight,
+    LocalizadorDeProcesos,
+    LocalizadorPsutil,
+    ObservadorUIA,
+    RazonPreflight,
+    ResultadoPreflightUIA,
+    SolicitudPreflightUIA,
+    selector_de_output,
+)
+from sky_claw.local.tools.dyndolod_uia_windows import construir_observador_windows
 from sky_claw.local.tools.output_targets import dyndolod_output_target
 
 # Import directo del MÓDULO y no del paquete `validators`: el gate sólo depende de
@@ -399,6 +416,38 @@ class DynDOLODValidationError(DynDOLODExecutionError):
         self.output_path = output_path
 
 
+class DynDOLODPreflightUIAError(DynDOLODExecutionError):
+    """El gate UIA de Output (T5-v2) bloqueó la corrida: MISMATCH o UNKNOWN.
+
+    No es un crash del tool: es la negativa deliberada a dejar la GUI lista para
+    el Start humano con la observación divergente o inconclusa. Lleva el
+    ``ResultadoPreflightUIA`` entero — estado, razón, valores esperado/observado,
+    pid y evidencia — para que las capas superiores (``run_full_pipeline`` lo
+    traduce a ``ToolExecutionResult(success=False)``, el servicio a su borde
+    ``success``/``message``) no tengan que re-derivar nada del mensaje.
+
+    El mensaje distingue explícitamente las dos clases de bloqueo
+    (§ "Resultado de fallo" del encargo): *UIA output mismatch* cuando la GUI
+    muestra OTRO destino, *preflight UIA inconcluso* cuando no pudo
+    demostrarse — y nunca "el tool crasheó", porque no lo hizo.
+    """
+
+    def __init__(self, resultado: ResultadoPreflightUIA) -> None:
+        self.resultado = resultado
+        esperado = resultado.valor_esperado_canonico or resultado.valor_esperado
+        observado = resultado.valor_observado_canonico or resultado.valor_observado
+        observado_txt = observado if observado is not None else "<sin lectura>"
+        super().__init__(
+            message=(
+                f"preflight UIA de Output bloqueó a {resultado.tool}: "
+                f"{resultado.estado.value} ({resultado.razon.value}) — {resultado.detalle} "
+                f"[esperado={esperado!r} observado={observado_txt!r} pid={resultado.pid}]"
+            ),
+            return_code=None,
+            stderr=None,
+        )
+
+
 # =============================================================================
 # DATA CLASSES
 # =============================================================================
@@ -441,6 +490,19 @@ class DynDOLODConfig:
         preset: Nivel de calidad (Low, Medium, High) — metadato de la corrida
             (eventos, journal, preview). NO viaja en el argv: lo elige el humano
             en el asistente de la herramienta.
+        uia_gate_timeout_seconds: Deadline monotónico del gate UIA de Output
+            (T5-v2) — cuánto se espera a que la GUI exponga el campo Output
+            leíble ANTES de aceptar la instancia como lista para la
+            interacción. NO es el timeout de la corrida: es la ventana de
+            readiness, y tiene que cubrir el modal HITL de DynDOLOD
+            (``LOD billboard(s) not found.``, medido en el rig T5A) que exige
+            un clic humano antes de que el wizard exista. Agotado el plazo, la
+            corrida se bloquea fail-closed. Default:
+            ``GATE_UIA_TIMEOUT_SEGUNDOS`` (300 s).
+        uia_gate_poll_interval_seconds: Cadencia de sondeo UIA dentro del gate
+            (default: ``GATE_UIA_INTERVALO_SEGUNDOS``, 1 s). Cada sondeo es una
+            enumeración UIA completa del árbol, así que no baja de ahí por
+            default: más fino sólo gasta llamadas COM cross-process.
     """
 
     game_path: pathlib.Path
@@ -457,6 +519,8 @@ class DynDOLODConfig:
     timeout_seconds: int = 14400  # 4 horas por defecto
     heartbeat_interval: int = 60  # Segundos entre logs de heartbeat
     preset: str = "Medium"  # Low, Medium, High
+    uia_gate_timeout_seconds: float = GATE_UIA_TIMEOUT_SEGUNDOS
+    uia_gate_poll_interval_seconds: float = GATE_UIA_INTERVALO_SEGUNDOS
 
     def __post_init__(self) -> None:
         """Resuelve defaults derivables y valida que los paths requeridos existan.
@@ -510,6 +574,14 @@ class DynDOLODConfig:
             raise ValueError(f"Game path does not exist: {self.game_path}")
         if not self.dyndolod_exe.exists():
             raise DynDOLODNotFoundError(self.dyndolod_exe)
+        # El gate no puede decidir con un presupuesto de tiempo nulo o negativo:
+        # es un error de configuración, se detecta acá y no dentro del gate,
+        # donde saldría disfrazado de "la GUI nunca respondió".
+        if self.uia_gate_timeout_seconds <= 0 or self.uia_gate_poll_interval_seconds <= 0:
+            raise ValueError(
+                "uia_gate_timeout_seconds y uia_gate_poll_interval_seconds deben ser > 0; "
+                f"recibidos {self.uia_gate_timeout_seconds=} y {self.uia_gate_poll_interval_seconds=}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -650,14 +722,40 @@ class DynDOLODRunner:
     TEXGEN_MOD_NAME = "TexGen Output"
     DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
 
-    def __init__(self, config: DynDOLODConfig) -> None:
+    def __init__(
+        self,
+        config: DynDOLODConfig,
+        *,
+        uia_localizador: LocalizadorDeProcesos | None = None,
+        uia_observador_factory: Callable[[], ObservadorUIA] | None = None,
+        uia_reloj: Callable[[], float] | None = None,
+        uia_dormir: Callable[[float], None] | None = None,
+    ) -> None:
         """
         Inicializa el runner de DynDOLOD.
 
         Args:
             config: Configuración con paths y timeouts.
+            uia_localizador: Sensor de procesos para el gate UIA (T5-v2). Por
+                defecto :class:`LocalizadorPsutil`. Inyectable para tests — la
+                política del gate no cambia, sólo el sensor.
+            uia_observador_factory: Fábrica del observador UIA. Por defecto
+                :func:`construir_observador_windows` — el adaptador COM medido
+                en el rig T5A, que es el mismo que importa la sonda. La fábrica
+                se invoca DENTRO del hilo del gate (el apartamento COM es del
+                hilo); inyectable para tests.
+            uia_reloj / uia_dormir: Reloj monotónico y sleep del gate. Reales
+                por defecto; los tests los falsifican para no esperar segundos
+                reales contra el deadline (el gate es síncrono y corre en
+                ``to_thread``).
         """
         self._config = config
+        self._uia_localizador = uia_localizador if uia_localizador is not None else LocalizadorPsutil()
+        self._uia_observador_factory = (
+            uia_observador_factory if uia_observador_factory is not None else construir_observador_windows
+        )
+        self._uia_reloj = uia_reloj if uia_reloj is not None else time.monotonic
+        self._uia_dormir = uia_dormir if uia_dormir is not None else time.sleep
         logger.info(
             "DynDOLODRunner inicializado: dyndolod_exe=%s, texgen_exe=%s, timeout=%ds",
             config.dyndolod_exe,
@@ -913,6 +1011,79 @@ class DynDOLODRunner:
 
         return result
 
+    async def _gate_uia_output(self, *, tool_name: str, executable: pathlib.Path, proc: Any) -> None:
+        """Gate T5-v2: la GUI recién lanzada no es "lista" hasta un MATCH de Output.
+
+        Lee por UIA —sólo lectura— el campo Output de ESTA instancia (``proc.pid``)
+        y lo compara contra la salida administrada; si no coinciden, o si no se
+        pudo demostrar, lanza :class:`DynDOLODPreflightUIAError` y el llamador
+        termina el proceso. La autoridad es ``self._config.output_root`` — **la
+        misma fuente** que ``_build_xedit_args`` serializa en el ``-o:`` — así
+        que no hay dos lecturas de "lo esperado" que puedan diverger.
+
+        El observador se construye DENTRO del hilo donde corre el sondeo
+        (``asyncio.to_thread``): COM ata su apartamento al hilo que inicializa.
+
+        No es un veredicto de escritura física: un ``MATCH`` dice "lo que la GUI
+        muestra coincide con lo administrado" y habilita al operador; dónde
+        escribieron los bytes lo certifica el post-check, como siempre.
+        """
+        try:
+            criterios = selector_de_output(tool_name)
+        except KeyError:
+            # Una tool sin selector medido no tiene gate honesto disponible; el
+            # fail-closed la trata como UNKNOWN/TOOL_DESCONOCIDA, no como MATCH.
+            raise DynDOLODPreflightUIAError(
+                ResultadoPreflightUIA(
+                    estado=EstadoPreflight.UNKNOWN,
+                    razon=RazonPreflight.TOOL_DESCONOCIDA,
+                    tool=tool_name,
+                    detalle=f"{tool_name!r} no tiene selector UIA medido en SELECTORES_DE_OUTPUT",
+                    valor_esperado=str(self._config.output_root),
+                    pid=proc.pid if isinstance(proc.pid, int) else None,
+                )
+            ) from None
+
+        solicitud = SolicitudPreflightUIA(
+            tool=tool_name,
+            ejecutable_esperado=str(executable),
+            salida_administrada_esperada=str(self._config.output_root),
+            criterios_del_control=criterios,
+            pid=proc.pid if isinstance(proc.pid, int) else None,
+        )
+
+        def _registrar_transitorio(resultado: ResultadoPreflightUIA) -> None:
+            # Progreso del gate: una línea por CAMBIO de razón (una GUI sana no
+            # produce un log por segundo), para que un modal HITL largo —o una
+            # GUI que nunca termina de aparecer— sea visible mientras se espera.
+            logger.info(
+                "Gate UIA de %s (pid=%s): esperando la GUI (%s)",
+                tool_name,
+                solicitud.pid,
+                resultado.razon.value,
+            )
+
+        resultado = await asyncio.to_thread(
+            ejecutar_gate_sincrono,
+            solicitud,
+            fabrica_observador=self._uia_observador_factory,
+            localizador=self._uia_localizador,
+            timeout_segundos=float(self._config.uia_gate_timeout_seconds),
+            intervalo_segundos=float(self._config.uia_gate_poll_interval_seconds),
+            reloj=self._uia_reloj,
+            dormir=self._uia_dormir,
+            proceso_vivo=lambda: proc.returncode is None,
+            al_progreso=_registrar_transitorio,
+        )
+        if resultado.estado is EstadoPreflight.MATCH:
+            logger.info(
+                "Gate UIA de %s (pid=%s): Output observado coincide con la salida administrada",
+                tool_name,
+                solicitud.pid,
+            )
+            return
+        raise DynDOLODPreflightUIAError(resultado)
+
     async def _execute_process(
         self,
         executable: pathlib.Path,
@@ -988,6 +1159,28 @@ class DynDOLODRunner:
         # nieto que sobreviva —incluso reparentado tras la salida del padre—, el
         # hueco que kill_and_reap no cubre en la salida normal. No-op fuera de Windows.
         job = assign_kill_on_close_job(proc.pid)
+
+        # T5-v2: gate UIA del campo Output. El proceso YA existe (la GUI tiene
+        # que estar viva para observarla) pero NO se lo considera "listo para la
+        # interacción" hasta el MATCH: un MISMATCH o un UNKNOWN terminal cortan
+        # acá, con el mismo ownership de siempre (kill_and_reap + close_job) —
+        # el operador nunca llega a un Start aceptado por Sky-Claw con el Output
+        # divergente, y el proceso no queda huérfano. Es el ÚNICO seam por donde
+        # cruzan los dos lanzadores, así que cubrirlo acá cubre a TexGen y a
+        # DynDOLOD por construcción (no por recordatorio). Va ANTES de los drains
+        # y del heartbeat: durante el gate (≤ config.uia_gate_timeout_seconds) la
+        # espera la reporta el propio gate con su razón, y estos binarios son
+        # apps GUI (PE Subsystem 2) que no escriben al pipe, así que no hay nada
+        # que drenar en la ventana.
+        try:
+            await self._gate_uia_output(tool_name=tool_name, executable=executable, proc=proc)
+        except (DynDOLODPreflightUIAError, asyncio.CancelledError):
+            # El bloqueo del gate y la cancelación externa comparten el cleanup:
+            # matar el árbol y cerrar el Job. El raise preserva la identidad de
+            # CancelledError (no se degrada a un fallo de ejecución genérico).
+            await kill_and_reap(proc)
+            close_job(job)
+            raise
 
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
