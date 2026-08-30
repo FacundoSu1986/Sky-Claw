@@ -1010,9 +1010,14 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
 
 # Per-state chrome for a ritual card. "unknown" = scan hasn't landed yet, so we
 # stay honest (neutral, no Ejecutar/Instalar claim) until the snapshot arrives.
+# La atenuación de los estados no-listos va SOLO a lo decorativo
+# (``deco_opacity`` sobre el medallón rúnico y un borde más tenue) — nunca a la
+# tarjeta entera: un ``opacity`` global también bajaba el contraste del texto
+# (#8a8270 componía ~2.5:1 con opacity .62, bajo WCAG AA; revisión Codex #522).
 _RITUAL_STATE_STYLE: dict[str, dict[str, str]] = {
     "available": {
-        "opacity": "1",
+        "deco_opacity": "1",
+        "card_border": "rgba(200,168,106,.22)",
         "dot": GREEN,
         "label": "Disponible",
         "color": "#9bbf8e",
@@ -1020,7 +1025,8 @@ _RITUAL_STATE_STYLE: dict[str, dict[str, str]] = {
         "btn_style": "color:#d8c69a; border-color:rgba(156,122,64,.5);",
     },
     "missing": {
-        "opacity": "0.62",
+        "deco_opacity": ".55",
+        "card_border": "rgba(200,168,106,.12)",
         "dot": "#9c7a40",
         "label": "No instalado",
         "color": "#b8946a",
@@ -1028,7 +1034,8 @@ _RITUAL_STATE_STYLE: dict[str, dict[str, str]] = {
         "btn_style": "color:#ffb05a; border-color:rgba(200,100,20,.5);",
     },
     "unknown": {
-        "opacity": "0.78",
+        "deco_opacity": ".8",
+        "card_border": "rgba(200,168,106,.16)",
         "dot": "#857c69",
         "label": "Verificando…",
         "color": "#a39a85",
@@ -1046,7 +1053,8 @@ def _ritual_card(
 ) -> None:
     tone = r["tone"]
     style = _RITUAL_STATE_STYLE.get(state, _RITUAL_STATE_STYLE["unknown"])
-    opacity = style["opacity"]
+    deco_opacity = style["deco_opacity"]
+    card_border = style["card_border"]
     status_dot = style["dot"]
     status_label = style["label"]
     status_color = style["color"]
@@ -1061,13 +1069,13 @@ def _ritual_card(
         # un click que no lleva a ninguna parte.
         btn_style += " cursor:default;"
     card = (
-        f"position:relative; display:flex; flex-direction:column; gap:9px; padding:18px 16px; border-radius:4px; opacity:{opacity};"
-        "background:linear-gradient(168deg, rgba(30,22,14,.9), rgba(14,10,7,.92)); border:1px solid rgba(200,168,106,.22);"
+        f"position:relative; display:flex; flex-direction:column; gap:9px; padding:18px 16px; border-radius:4px;"
+        f"background:linear-gradient(168deg, rgba(30,22,14,.9), rgba(14,10,7,.92)); border:1px solid {card_border};"
         "box-shadow:0 14px 30px -16px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.04); transition:transform .25s, border-color .25s;"
     )
     with ui.element("div").style(card):
         ui.html(
-            f'<div style="display:flex; align-items:center; justify-content:center; width:48px; height:48px; border-radius:50%; background:radial-gradient(circle at 50% 38%, #2c1f13, #0d0805); border:1.5px solid {tone}; box-shadow:inset 0 0 10px rgba(0,0,0,.7), 0 0 12px {tone}55;">'
+            f'<div style="display:flex; align-items:center; justify-content:center; width:48px; height:48px; border-radius:50%; background:radial-gradient(circle at 50% 38%, #2c1f13, #0d0805); border:1.5px solid {tone}; box-shadow:inset 0 0 10px rgba(0,0,0,.7), 0 0 12px {tone}55; opacity:{deco_opacity};">'
             f'<span style="font-family:\'Noto Sans Runic\',serif; font-size:23px; color:{tone}; text-shadow:0 0 9px {tone}88;" aria-hidden="true">{r["rune"]}</span></div>'
             f"<div style=\"font-family:'Cinzel',serif; font-weight:600; font-size:14.5px; letter-spacing:.03em; color:#ecdfc2; line-height:1.2;\">{_e(r['label'])}</div>"
             f"<div style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.42; color:#9b927e;\">{_e(r['desc'])}</div>"
