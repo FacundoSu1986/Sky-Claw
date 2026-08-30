@@ -9,13 +9,14 @@
 > subárbol. Las propiedades que cubran familias de superficies deben anclarse
 > mediante enumeración/introspección, no mediante muestras manuales.
 
-## 1. Baseline: PR #522
+## 1. Baseline: PR #522 (Merged)
 
 PR: `#522` — `fix(gui): quick wins visuales del tema Forja del Dovahkiin`  
-HEAD verificado: `1701e94179d2ee38d7536b38058e9cfd120f9d23`  
-Estado al registrar este plan: **READY FOR SQUASH MERGE**, todavía no afirmado como integrado en `main`.
+Squash commit en `main`: `89d81ad2a86821c55b19cdd83b339aa914e4288e`  
+PR HEAD previo (trazabilidad): `1701e94179d2ee38d7536b38058e9cfd120f9d23`  
+Estado actual: **MERGED** en `main`.
 
-El PR cubre los cinco quick wins de la auditoría:
+El PR cubrió los cinco quick wins de la auditoría:
 
 1. scrollbar temática `.sc-scroll`, incluyendo fallback estándar y WebKit;
 2. Cinzel hasta peso 900 en las dos caras declaradas;
@@ -23,37 +24,48 @@ El PR cubre los cinco quick wins de la auditoría:
 4. contraste de textos/rituales sin atenuar globalmente la tarjeta;
 5. sustitución de iconos emoji del shell por SVG diegéticos y contrato de glifos.
 
-Cierre de revisión verificado sobre ese HEAD:
+Cierre de revisión verificado sobre ese PR:
 
-- CI principal y los dos workflows Qodo: `success`;
-- siete review threads: resueltos;
-- PR: mergeable/clean;
-- `#523` permanece fuera de alcance.
+- CI principal y workflows Qodo: `success`;
+- anclas de contrato incorporadas en `tests/test_gui_theme_contracts.py`;
+- review threads resueltos;
+- `#523` permanece fuera de alcance y se gestiona como seguimiento independiente.
 
-### Sincronización OODA después del merge
+### Sincronización OODA tras el merge de #522
 
-No editar `docs/pending_ooda_status.md` como si #522 ya estuviera en `main` antes del merge.
-Después del squash merge, revalidar y actualizar como mínimo:
+Tras la integración de #522 en `main`, `docs/pending_ooda_status.md` fue reconciliado con los cierres parciales demostrados:
 
-- **T-22**: pasar de `Abierto` a **Parcial** si el único cierre demostrado por #522 es `prefers-reduced-motion`; mantener pendiente cualquier trabajo de transiciones que siga existiendo.
-- **T-24**: pasar de `Abierto` a **Parcial** si #522 demuestra foco visible pero no cierra exhaustivamente labels/formularios.
-
-No declarar ninguno `Cerrado` sin enumerar la superficie completa correspondiente.
+- **T-22**: actualizado a **Parcial** — #522 cubrió la política de `prefers-reduced-motion` sobre animaciones decorativas; continúa pendiente la revisión/cierre del resto del contrato de transiciones.
+- **T-24**: actualizado a **Parcial** — #522 cubrió foco visible de teclado (incluyendo inputs Quasar); continúa pendiente el inventario exhaustivo de labels y formularios accesibles.
 
 ## 2. Prioridad inmediata: integridad antes que arte
 
-### P0 — #523: ownership multi-tab de `STORE_KEY_RITUAL_FEEDBACK`
+### P0 — #523: ownership multi-tab de estado efímero de rituales (feedback y preflight)
 
-**Estado:** abierto; bug preexistente descubierto durante la revisión de #522.  
-**Regla de alcance:** PR separado; no reabrir #522 para corregirlo.
+**Estado:** abierto; defecto de concurrencia preexistente a #522 (detectado durante su revisión y ampliado en la auditoría de #525).  
+**Regla de alcance:** PR separado; no mezclar con cambios cosméticos.
 
-Objetivo: impedir que una pestaña pueda consumir/limpiar feedback perteneciente a otra. La solución debe tratar feedback, resultado ritual y acción de reanudación como estado con ownership coherente, con pruebas de dos pestañas y comportamiento fail-closed.
+**Diagnóstico de frontera y superficies hermanas:**
+El proceso NiceGUI comparte un único `ReactiveStore` entre todas las pestañas abiertas. Hoy existen dos superficies hermanas afectadas por la misma clase de defecto («dos superficies, un recurso»):
 
-Criterio de cierre mínimo:
+1. `STORE_KEY_RITUAL_FEEDBACK`: `_ritual_feedback_panel()` en `forge_dashboard.py` consume y limpia globalmente la clave al reanudar o cerrar el toast, lo que borra el feedback de otra pestaña antes de que su dueño lo vea.
+2. `STORE_KEY_RITUAL_PREFLIGHT`: `_ritual_preflight_panel()` en `forge_dashboard.py` lee y descarta globalmente el reporte de preflight (`store.set(STORE_KEY_RITUAL_PREFLIGHT, None)`), mientras que `run_ritual` y `run_ritual_install` en `ritual_runner.py` limpian y publican preflight sobre esa misma clave global. Una pestaña puede ocultar o sobreescribir el semáforo/reporte de preflight rojo de otra pestaña.
 
-- ninguna pestaña puede cerrar/consumir feedback ajeno;
-- dismiss/resume respetan el mismo owner;
-- tests cubren explícitamente dos owners y enumeran todos los caminos que leen/limpian ese estado.
+**Invariante / Propiedad del mecanismo:**
+> Todo estado efímero de ritual que pueda ser publicado, mostrado, reanudado o descartado desde una pestaña debe conservar ownership explícito; una pestaña nunca puede consumir, reemplazar o limpiar el estado perteneciente a otra.
+
+**Frontera de ownership obligatoria:**
+- `STORE_KEY_RITUAL_FEEDBACK` (toasts de feedback de rituales);
+- `STORE_KEY_RITUAL_PREFLIGHT` (panel/semáforo dismissible de preflight);
+- `STORE_KEY_RITUAL_LAST_RESULT` y acción de reanudación (`resolve_ritual_resume_action` / `clear_ritual_result_owned`) bajo un modelo de ownership coherente.
+
+**Criterios de cierre de #523:**
+- feedback con scoping por pestaña/owner;
+- preflight con scoping por pestaña/owner;
+- resultado ritual y acción de reanudación con ownership coherente;
+- dismiss de feedback y preflight acotado estrictamente a su owner;
+- tests de carrera multi-pestaña que simulen explícitamente dos owners concurrentes;
+- ancla por AST/introspección que enumere todos los productores, consumidores y limpiadores de la familia en `ReactiveStore` (evitando muestreos parciales).
 
 ## 3. Deuda estructural verificada o candidata a verificación
 
@@ -158,17 +170,20 @@ Antes de implementarlo:
 
 ### D5 — Sonido diegético
 
-**Estado:** propuesta con seam por verificar.
+**Estado:** seam existente / implementación real de audio pendiente.
 
-No asumir que `playSkyrimSound` está actualmente cableado: la búsqueda del árbol usada para este baseline no devolvió evidencia suficiente de ese símbolo. El PR debe primero verificar si existe un seam de audio reutilizable.
+`gui_helpers._load_css()` ya define `window.playSkyrimSound = window.playSkyrimSound || function (_type) {};` (`sky_claw/app/gui/gui_helpers.py:48`) como seam global centralizado (no-op silencioso para evitar `ReferenceError` en consola mientras no existan assets empaquetados). Distintos componentes ya lo invocan en hover y click: `views/components/buttons.py:51` (`playSkyrimSound('click')`), `views/components/feature_card.py:46` (`playSkyrimSound('hover')`) y `views/components/stat_card.py:54` (`playSkyrimSound('hover')`).
 
-Si no existe, el feature incluye diseñarlo. En ambos casos:
+Por tanto, **no hace falta diseñar ni descubrir otro seam**: la interfaz ya está cableada. El alcance de la tarea queda acotado a implementar la reproducción real de sonido detrás del seam existente.
 
-- asset con licencia/procedencia compatible;
-- toggle de silencio persistente en Ajustes;
-- default conservador;
-- cero reproducción automática molesta durante arranque/errores repetitivos;
-- ausencia del asset o fallo de audio nunca debe afectar el flujo funcional.
+Guardarraíles y requisitos:
+
+- asset de audio con licencia/procedencia compatible y limpia (sin redistribuir audio propietario de Bethesda);
+- implementación técnica de audio detrás del seam existente `window.playSkyrimSound`;
+- toggle de silencio persistente en Ajustes / Config;
+- default conservador (volumen moderado / sin estridencias);
+- cero reproducción automática molesta o repetitiva durante el arranque o ante ráfagas de errores;
+- la ausencia del asset o cualquier fallo en el subsistema de audio nunca debe afectar el flujo funcional ni propagar excepciones no capturadas.
 
 ## 5. Mascotas Skyrim
 
@@ -186,20 +201,19 @@ Guardarraíles:
 
 ## 6. Secuencia recomendada
 
-Orden por riesgo/deuda antes que ornamentación:
+Orden por riesgo/deuda antes que ornamentación (asumiendo #522 ya integrado en `main` y T-22/T-24 reconciliados parcialmente):
 
-1. squash merge de #522 y sincronización parcial de T-22/T-24;
-2. #523 — ownership multi-tab;
-3. auditoría/limpieza C3 y decisión A3, preferiblemente como PRs atómicos separados;
-4. C2 — centralización de botones;
-5. responsive baseline;
-6. D3 — integridad reactiva;
-7. D4 — emblema del wizard;
-8. D6 — glifo de estado;
-9. D2 — lore;
-10. D1 — brújula/HUD;
-11. D5 — sonido, una vez verificado/diseñado el seam;
-12. mascotas.
+1. **#523** — ownership multi-tab de estado efímero (feedback, preflight, result/resume);
+2. **Auditoría/limpieza C3 y decisión A3**, preferiblemente como PRs atómicos separados;
+3. **C2** — centralización de clases de botones;
+4. **Responsive baseline**;
+5. **D3** — integridad reactiva del hero;
+6. **D4** — emblema del wizard;
+7. **D6** — glifo de estado;
+8. **D2** — lore en el wizard;
+9. **D1** — brújula/HUD;
+10. **D5** — sonido diegético tras el seam existente;
+11. **Mascotas**.
 
 La secuencia puede cambiar por dependencias descubiertas, pero **#523 y la deuda estructural deben preceder a añadir nuevas superficies decorativas**.
 

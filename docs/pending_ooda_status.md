@@ -37,9 +37,9 @@ confirmarlo contra código y tests.
 | T-11 | Parcial | `local/xedit/` | Retirar BLE001 incrementalmente del resto del árbol | `pyproject.toml` |
 | T-12 | Parcial | `local/fomod/`, `local/loot/` | Migrar los módulos aún exentos a mypy estricto | `pyproject.toml` |
 | T-16c | Cerrado | #288, #306, #323 | — | tests de preflight por ritual |
-| T-22 | Abierto | — | Transiciones y `prefers-reduced-motion` | humano |
+| T-22 | Parcial | #522 para `prefers-reduced-motion` | Revisar/cerrar el resto del contrato de transiciones | `test_gui_theme_contracts.py` y humano |
 | T-23 | Abierto | — | Virtualizar listas grandes de mods | humano |
-| T-24 | Abierto | — | Labels y foco visible en formularios | humano |
+| T-24 | Parcial | #522 para foco visible de teclado | Inventario exhaustivo de labels y formularios accesibles | `test_gui_theme_contracts.py` y humano |
 | T-25 | Parcial | — | Cerrar T-27 y después ejecutar la matriz E2E con Skyrim, MO2 y herramientas reales | `TECHNICAL_REVIEW_TASKS.md:247-249`; humano |
 | T-26 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_action_manifest` |
 | T-27 | Parcial | ADR 0005 para Synthesis y salida administrada de Pandora | Migrar Pandora, DynDOLOD y Wrye Bash al flujo aislado USVFS con diff/promoción | código, ADR 0005 y `test_pandora_service.py` |
