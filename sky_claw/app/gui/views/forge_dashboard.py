@@ -1107,7 +1107,8 @@ _RITUAL_STATE_STYLE: dict[str, dict[str, str]] = {
         "btn_style": "color:#d8c69a; border-color:rgba(156,122,64,.5);",
     },
     "present_unverified": {
-        "opacity": "1",
+        "deco_opacity": "1",
+        "card_border": "rgba(200,168,106,.22)",
         "dot": "#e0a13c",
         "label": "Presente, sin verificar",
         "color": "#d9b078",

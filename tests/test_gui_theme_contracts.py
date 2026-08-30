@@ -119,11 +119,12 @@ def test_rituales_atenuan_decoracion_nunca_el_texto() -> None:
     texto: #8a8270 con opacity .62 componía ~2.5:1 contra el fondo, por debajo
     de WCAG AA (revisión Codex #522).
 
-    Cobertura de los tres estados: available / missing / unknown.
+    Cobertura de los cuatro estados: available / present_unverified / missing /
+    unknown.
     """
     from sky_claw.app.gui.views.forge_dashboard import _RITUAL_STATE_STYLE
 
-    assert set(_RITUAL_STATE_STYLE) == {"available", "missing", "unknown"}
+    assert set(_RITUAL_STATE_STYLE) == {"available", "present_unverified", "missing", "unknown"}
     for estado, estilo in _RITUAL_STATE_STYLE.items():
         assert "opacity" not in estilo, f"{estado}: opacity global en la tarjeta (ataca al texto)"
         assert float(estilo["deco_opacity"]) <= 1.0
