@@ -119,7 +119,9 @@ def test_focus_visible_pisa_el_reset_de_quasar_en_inputs() -> None:
     regla = _STYLES[inicio : _STYLES.index("}", inicio)]
     # La pisa tiene que ser del outline y con !important en la MISMA declaración:
     # basta que pierda el marcador para que vuelva a ganar el reset de Quasar.
-    assert "outline: 2px solid var(--sky-gold-bright) !important;" in regla, "la pisa debe ganar al reset !important de Quasar"
+    assert "outline: 2px solid var(--sky-gold-bright) !important;" in regla, (
+        "la pisa debe ganar al reset !important de Quasar"
+    )
 
 
 # Familia animada del tema, congelada por nombre (secciones 13/14 de styles.css
