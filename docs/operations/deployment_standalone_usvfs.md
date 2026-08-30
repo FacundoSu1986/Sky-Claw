@@ -9,7 +9,8 @@
 > **Fuentes canónicas:** `sky_claw/local/tools/output_targets.py`,
 > `sky_claw/local/tools/_process.py`, `sky_claw/local/mo2/vfs.py`,
 > `sky_claw/local/mo2/brokered_loot.py`,
-> `sky_claw/local/validators/vfs_visibility.py`.
+> `sky_claw/local/validators/vfs_visibility.py`,
+> `sky_claw/local/validators/texgen_visibility.py`.
 >
 > **Última verificación:** 2026-07-28 sobre `origin/main` `9e5232c`.
 
@@ -60,6 +61,71 @@ funciona sería peor que dejar pasar un caso ambiguo.
 es visible, **no** que todo lo esté. Con una materialización parcial, el sensor
 no te va a avisar.
 
+### El caso de TexGen → DynDOLOD tiene además su propio gate
+
+El sensor de arriba mide el modlist antes del ritual. La etapa 9 tiene una
+segunda frontera, **dentro** de la corrida, y es de otra naturaleza: lo que
+DynDOLOD necesita ver no es un mod que ya estaba, sino la salida que TexGen
+**acaba de generar en esta misma corrida**.
+
+Empaquetarla en `<mo2>/mods/TexGen Output` es entrega, no despliegue. Como
+DynDOLOD se lanza directo contra el `-d:<Data>` físico, ese mod le es invisible
+salvo que lo hayas materializado. Antes de spawnear DynDOLOD, Sky-Claw recorre el
+staging de TexGen **completo** y exige que cada archivo aparezca bajo
+`<Data>/textures` con los **mismos bytes** — no le alcanza con que exista ni con
+que tenga el mismo tamaño, porque un despliegue de una corrida anterior cumple
+las dos cosas. Si no puede demostrarlo, **DynDOLOD no se lanza** y la etapa sale
+en rojo antes de gastar los 30+ minutos.
+
+Acá el criterio NO es el conservador del sensor de modlist: ahí una
+materialización parcial pasa en verde porque el universo medido es heterogéneo y
+frenar un setup que funciona sería peor. Este árbol, en cambio, salió entero de
+una sola corrida, así que "parcial" no es ambiguo — o desplegaste esta salida o
+no. **Sky-Claw no materializa nada por su cuenta:** no copia a `Data`, no edita
+el modlist y no lanza `ModOrganizer.exe`. Sólo se niega a seguir sin evidencia.
+
+### Cuando ese gate corta, la salida de TexGen te queda esperando
+
+El corte por visibilidad no es un fallo de herramienta: TexGen corrió bien y su
+mod quedó empaquetado y validado. Por eso la etapa **preserva**
+`<mo2>/mods/TexGen Output` en vez de revertirlo, aunque el resto de la corrida sí
+revierta. Es deliberado y acotado:
+
+| Destino | Qué pasa tras un corte por visibilidad |
+|---|---|
+| `<mo2>/mods/TexGen Output` | **se conserva** con la salida de ESTA corrida — es lo que tenés que desplegar |
+| `<raíz administrada>/textures` (staging crudo) | **revierte**, como siempre: que nazca vacío es la precondición de que su contenido sea el de la corrida |
+| `<mo2>/mods/DynDOLOD Output` | revierte — DynDOLOD no llegó a correr |
+
+La transacción queda **PENDIENTE**, no marcada como revertida, y el registro
+nombra el directorio preservado: hay una mutación viva en disco y el journal lo
+dice. `rolled_back` en el resultado es `False` por la misma razón.
+
+El ciclo completo, entonces:
+
+```text
+TexGen corre  →  TexGen Output empaquetado  →  gate de visibilidad FALLA
+                                                      ↓
+                       resultado: success=False, needs_deployment=True,
+                                  texgen_mod_path=<mo2>/mods/TexGen Output
+                                                      ↓
+                          MATERIALIZÁS ese árbol en el Data del juego
+                                                      ↓
+                    volvés a correr la etapa con TexGen DESACTIVADO
+                                                      ↓
+             se verifica el mod preservado contra el Data, byte a byte
+                                                      ↓
+                                DynDOLOD arranca
+```
+
+Correr la continuación **sin** TexGen es lo correcto y no un atajo: la autoridad
+es el artefacto que ya se generó y desplegaste, no una regeneración que podría
+producir bytes distintos. Esa continuación tiene su propio gate — si el mod
+empaquetado existe, DynDOLOD no se lanza hasta que el `Data` lo espeje
+exactamente; que el archivo *exista* con el tamaño correcto no alcanza. Y si
+nunca empaquetaste un `TexGen Output` con Sky-Claw, el uso de siempre —DynDOLOD
+solo, porque tus texturas ya están— sigue funcionando igual.
+
 ## Qué tenés que hacer
 
 **Materializá a disco el árbol de mods del perfil activo**, en el `Data` del
@@ -103,7 +169,7 @@ trabajo.
 | **Pandora** | `<juego resuelto>/Pandora_Output` — ruta absoluta explícita mediante `--output` |
 | **BodySlide** | `<juego>/<output_path>` — el `-o` es **relativo** al `cwd`, que es el juego |
 | **Synthesis** | Ruta explícita (caso (b)): el `overwrite` de MO2 si existe, si no `<mo2>/mods/Synthesis Output` |
-| **DynDOLOD / TexGen** | Staging crudo (`DynDOLOD_Output` / `TexGen_Output`) bajo la raíz MO2, el directorio del exe o el directorio de trabajo del proceso; los mods empaquetados van a `<mo2>/mods/` |
+| **DynDOLOD / TexGen** | Raíz explícita `<juego>/Sky-Claw/DynDOLOD` mediante `-o:`; DynDOLOD usa `DynDOLOD_Output` (o el root con `DynDOLOD.esp`) y TexGen usa `textures`; los mods empaquetados van a `<mo2>/mods/`. La raíz es COMPARTIDA por las dos herramientas, así que **nunca se empaqueta entera**: si DynDOLOD escribe directo en ella, la etapa falla cerrada en vez de atribuirle hijos que pueden ser de TexGen |
 | **LOOT** | No produce artefacto nuevo: reordena el `plugins.txt` / `loadorder.txt` del perfil |
 | **xEdit (QuickAutoClean)** | Reescribe el plugin **in-place**, sobre su propia ruta de entrada |
 
@@ -119,8 +185,16 @@ tabla es su versión legible, no una segunda definición.
 
 El destino de salida define qué se puede deshacer cuando un ritual falla:
 
-- **DynDOLOD / TexGen** — el destino es un directorio propio, y se protege con un
-  move-aside que se restaura ante fallo.
+- **DynDOLOD / TexGen** — los destinos son directorios propios, y se protegen con
+  un move-aside que se restaura ante fallo: los dos mods empaquetados bajo
+  `<mo2>/mods` y —desde el fix B del review de #493— el **staging crudo de
+  TexGen** (`<raíz administrada>/textures`). Ese último no se aparta para poder
+  revertirlo: se aparta para que nazca **vacío**, y así lo que quede adentro
+  después sea exactamente lo que esta corrida generó. Sin eso, un archivo de una
+  corrida anterior sobrevivía en el árbol y terminaba dentro del mod, porque el
+  gate de frescura sólo prueba que *algo* cambió. La cobertura del move-aside
+  sigue siendo **parcial** a propósito: el directorio del ejecutable (donde el
+  binario escribe su log y su INI) y el temporal quedan afuera.
 - **Wrye Bash** — el destino es **un archivo** con nombre canónico, así que se
   puede snapshotear antes de correr y restaurar si el run falla.
   *Estado: implementado en el PR #395; hasta que ese PR esté mergeado, tratá a

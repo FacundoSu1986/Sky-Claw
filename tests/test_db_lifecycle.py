@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,6 +25,7 @@ import pytest
 from pydantic import ValidationError
 
 from sky_claw.app.core.db_lifecycle import (
+    DatabaseConnectionQuarantinedError,
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
     DatabaseShutdownIncompleteError,
@@ -778,3 +781,1366 @@ async def test_sidecars_con_ruta_relativa_tambien_consultan_el_checkpoint(tmp_pa
         )
     finally:
         await segundo.shutdown_all()
+
+
+# ---------------------------------------------------------------------------
+# Carrera de inicialización concurrente (H1 — CI run 33223088993)
+# ---------------------------------------------------------------------------
+#
+# Mecanismo demostrado con SQLite real, no asumido:
+#
+#   `PRAGMA journal_mode=WAL` sobre un archivo que NO está en WAL promueve el
+#   lock a EXCLUSIVE. Cuando DOS conexiones corren la conversión a la vez (dos
+#   managers independientes sobre el mismo archivo: los locks Python por path
+#   son por-INSTANCIA y SQLite es el único árbitro), SQLite devuelve
+#   SQLITE_BUSY al perdedor INMEDIATAMENTE, sin invocar el busy handler — es la
+#   evitación de deadlock documentada para la promoción de locks. Ningún
+#   busy_timeout salva ese caso porque el handler no llega a correr: el
+#   perdedor moría con "database is locked" en el primer intento
+#   (`_apply_pragmas` → `journal_mode=WAL` → JournalConnectionError, CI
+#   run 33223088993, windows-latest / py3.11).
+#
+#   Evidencia empírica (SQLite 3.45, Windows): con un holder en RESERVED, el
+#   pragma falla en 0.00s CON busy_timeout=15000 instalado antes; con un holder
+#   solo-lectura (SHARED) el handler SÍ espera; sobre un archivo ya-WAL el
+#   pragma devolvió 'wal' sin esperar en los estados observados (writer o
+#   reader en vuelo). La carrera REPRODUCIDA corresponde a la conversión
+#   misma; no se afirma que el pragma jamás devuelva BUSY por otra vía (el
+#   retry de producción clasifica por código de error, no por origen).
+#
+# Los holders de acá abajo son conexiones SQLite REALES que sostienen
+# exactamente el estado de lock requerido; no se simula ningún error.
+
+
+class _SostieneLockSQLite(threading.Thread):
+    """Conexión auxiliar real que sostiene el lock incompatible con la conversión.
+
+    ``escritura=True``  → BEGIN IMMEDIATE + escritura: lock RESERVED. Es el
+    estado que deja la conversión a WAL de otro manager en vuelo (promoción a
+    EXCLUSIVE bloqueada por RESERVED) y el que dispara el BUSY instantáneo sin
+    handler. ``escritura=False`` → BEGIN + SELECT: lock SHARED, contra el que
+    el busy handler SÍ espera.
+    """
+
+    def __init__(self, db_file: Path, *, escritura: bool = True) -> None:
+        super().__init__(daemon=True, name="holder-lock-sqlite")
+        self._db_file = db_file
+        self._escritura = escritura
+        self.adquirido = threading.Event()
+        self.liberar = threading.Event()
+
+    def run(self) -> None:
+        conn = sqlite3.connect(str(self._db_file), timeout=0.05)
+        try:
+            if self._escritura:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("CREATE TABLE IF NOT EXISTS holder_t (x)")
+                conn.execute("INSERT INTO holder_t VALUES (1)")
+            else:
+                conn.execute("BEGIN")
+                conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+            self.adquirido.set()
+            # Holder: espera a que el test pida soltar — pero con un
+            # tope de seguridad. 30s se queda corto si el scheduling del
+            # runner demora la entrada a _init_single (Windows CI donde el
+            # thread worker de aiosqlite compite con el arranque del async
+            # task en runners pesados). 180s alcanza sin impactar la suite.
+            self.liberar.wait(180)
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
+                conn.close()
+
+
+def _sembrar_db_en_modo_delete(db_file: Path) -> None:
+    """DB legacy real: modo journal DELETE (default), cerrada y sin locks."""
+    conn = sqlite3.connect(str(db_file))
+    try:
+        conn.execute("CREATE TABLE t (x)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def test_conversion_wal_con_holder_reservado_transitorio_triunfa(db_path: Path) -> None:
+    """H1-A/B: la conversión a WAL espera al holder de la carrera y progresa.
+
+    RED pre-fix: el perdedor de la conversión moría INSTANTÁNEAMENTE con
+    "database is locked" (handler bypaseado), sin esperar la ventana
+    configurada. Post-fix: reintenta dentro de la ventana del config y gana
+    cuando el lock incompatible se libera.
+    """
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=5000),
+    )
+    holder = _SostieneLockSQLite(db_path)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+
+    async def liberar_tarde() -> None:
+        await asyncio.sleep(0.3)
+        holder.liberar.set()
+
+    liberador = asyncio.create_task(liberar_tarde())
+    try:
+        await manager._init_single(db_path)
+
+        path_str = str(db_path.resolve())
+        assert path_str in manager._connections, "la conversión debe terminar registrando la conexión"
+        conn = manager._connections[path_str]
+        async with conn.execute("PRAGMA journal_mode") as cur:
+            assert (await cur.fetchone())[0] == "wal"
+    finally:
+        liberador.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await liberador
+        holder.liberar.set()
+        holder.join(5)
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_conversion_wal_con_holder_permanente_falla_acotada(db_path: Path) -> None:
+    """H1-C: lock retenido más allá de la ventana → fallo limitado y diagnosticable.
+
+    El fallo NO es el BUSY instantáneo del handler bypaseado: la conversión
+    reintentó hasta agotar la ventana configurada (≥ busy_timeout_ms), y no
+    queda conexión huérfana registrada. Nunca se espera infinitamente.
+    """
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=300),
+    )
+    holder = _SostieneLockSQLite(db_path)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+    try:
+        inicio = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await manager._init_single(db_path)
+        transcurrido = time.monotonic() - inicio
+
+        assert transcurrido >= 0.25, (
+            "el fallo fue instantáneo: la conversión no reintentó dentro de la "
+            f"ventana configurada (transcurrido={transcurrido:.3f}s)"
+        )
+        assert transcurrido < 10, "el reintento no puede esperar indefinidamente"
+        assert manager._connections == {}, "un init fallido no debe registrar conexiones"
+    finally:
+        holder.liberar.set()
+        holder.join(5)
+
+
+async def test_busy_timeout_configurado_gobierna_la_conversion(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H1-B (knob): el busy_timeout de la CONFIG gobierna desde el primer statement.
+
+    ``sqlite3.connect`` instala un busy handler de 5s por defecto; pre-fix,
+    ``journal_mode=WAL`` corría ANTES del pragma ``busy_timeout`` y la ventana
+    configurada no alcanzaba a gobernar el primer statement que espera por otro
+    owner. El monkeypatch SOLO baja ese default de connect (0.1s) para que la
+    discriminación sea rápida; los locks son SQLite real: un holder LECTOR
+    (SHARED), contra el que el handler sí espera, liberado a los ~0.3s.
+    Pre-fix: la conversión usaba el default (fallaba a los ~0.1s). Post-fix:
+    el pragma configurado (15s) la cubre y progresa cuando el holder libera.
+    """
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=15000),
+    )
+
+    conectar_real = aiosqlite.connect
+
+    async def conectar_con_default_corto(database: object, **kwargs: object) -> aiosqlite.Connection:
+        kwargs.setdefault("timeout", 0.1)
+        return await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_con_default_corto)
+
+    holder = _SostieneLockSQLite(db_path, escritura=False)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+
+    async def liberar_tarde() -> None:
+        await asyncio.sleep(0.3)
+        holder.liberar.set()
+
+    liberador = asyncio.create_task(liberar_tarde())
+    try:
+        await manager._init_single(db_path)
+        assert str(db_path.resolve()) in manager._connections
+    finally:
+        liberador.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await liberador
+        holder.liberar.set()
+        holder.join(5)
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_paths_distintos_no_se_bloquean_entre_si(tmp_db_dir: Path) -> None:
+    """H1-D: el holder sobre el path A no bloquea la inicialización de B."""
+    path_a = tmp_db_dir / "path_a.db"
+    path_b = tmp_db_dir / "path_b.db"
+    _sembrar_db_en_modo_delete(path_a)
+    _sembrar_db_en_modo_delete(path_b)
+    manager = DatabaseLifecycleManager(
+        db_paths=[path_a, path_b],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=500),
+    )
+    holder = _SostieneLockSQLite(path_a)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+    try:
+        # B inicializa mientras A sigue bloqueado por el holder real.
+        await manager._init_single(path_b)
+        assert str(path_b.resolve()) in manager._connections
+        assert str(path_a.resolve()) not in manager._connections
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await manager._init_single(path_a)
+        assert str(path_a.resolve()) not in manager._connections
+    finally:
+        holder.liberar.set()
+        holder.join(5)
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_cancelacion_durante_conversion_cierra_conexion_fisicamente(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F7: cancelación durante la conversión cierra la conexión físicamente.
+
+    La cancelación atraviesa el reintento con su identidad (el loop sólo
+    atrapa ``OperationalError`` de contención) y el cierre de la
+    conexión corre según el contrato existente de ``_init_single``.
+
+    Oracle físico: la conexión capturada por spy queda en estado
+    ``_connection is None`` (``aiosqlite.Connection._conn`` levanta
+    ``ValueError: no active connection`` cuando la conexión fue
+    cerrada). Sin este oracle, basta con que la conexión nunca haya
+    sido REGISTRADA para que ``manager._connections == {}`` se cumpla
+    — la conexión puede haber quedado abierta en el limbo, sin
+    ownership. El test de acá no acepta ese falso verde: la conexión
+    capturada DEBE estar cerrada.
+
+    El sleep del reintento se agranda vía monkeypatch para que la
+    cancelación caiga DETERMINÍSTICAMENTE dentro del
+    ``await asyncio.sleep`` del loop (la fase alternativa —el
+    ``execute``— propaga igual, así que un cancel que cayera ahí no
+    discriminaría una mutación que trague la cancelación del sleep).
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    monkeypatch.setattr(db_lifecycle, "_CONVERSION_WAL_RETRY_SLEEP_S", 0.5)
+    _sembrar_db_en_modo_delete(db_path)
+
+    # Spy sobre ``aiosqlite.connect`` que captura la conexión real.
+    conn_creadas: list[aiosqlite.Connection] = []
+    conectar_real = aiosqlite.connect
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        conn_creadas.append(conn)
+        return conn
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=5000),
+    )
+    holder = _SostieneLockSQLite(db_path)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+    try:
+        tarea = asyncio.create_task(manager._init_single(db_path))
+        # Esperar a que la conexión haya sido abierta.
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if conn_creadas:
+                break
+        assert conn_creadas, "el spy debió capturar la conexión de init"
+        # Cancelar en plena fase de sleep (ventana 0.5s lo permite).
+        await asyncio.sleep(0.05)
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        # ORACLE 1: la conexión capturada por spy está cerrada.
+        # ``aiosqlite.Connection._conn`` levanta ``ValueError`` si la
+        # conexión está cerrada; sin el close, la propiedad devuelve
+        # el ``sqlite3.Connection`` interno y NO levanta.
+        conn_capturada = conn_creadas[0]
+        with pytest.raises(ValueError, match="no active connection"):
+            _ = conn_capturada._conn  # type: ignore[attr-defined]
+        # ORACLE 2: el registro del manager no contiene la conexión.
+        assert manager._connections == {}, "la cancelación no debe dejar conexión huérfana registrada"
+    finally:
+        holder.liberar.set()
+        holder.join(5)
+
+
+async def test_cancelacion_durante_conversion_no_deja_conexion_huerfana(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H1-F (foco en el reintento): cancelar a mitad del retry no registra conexión.
+
+    La cancelación atraviesa el reintento con su identidad (el loop sólo atrapa
+    OperationalError de contención) y el cierre de la conexión NO registrada
+    corre según el contrato existente de ``_init_single``.
+
+    El sleep del reintento se agranda vía monkeypatch para que la cancelación
+    caiga DETERMINÍSTICAMENTE dentro del ``await asyncio.sleep`` del loop (la
+    fase alternativa —el ``execute``— propaga igual, así que un cancel que
+    cayera ahí no discriminaría una mutación que trague la cancelación del
+    sleep).
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    monkeypatch.setattr(db_lifecycle, "_CONVERSION_WAL_RETRY_SLEEP_S", 0.5)
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=5000),
+    )
+    holder = _SostieneLockSQLite(db_path)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no consiguió su lock"
+    try:
+        tarea = asyncio.create_task(manager._init_single(db_path))
+        await asyncio.sleep(0.1)  # dentro del primer sleep del reintento
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        assert manager._connections == {}, "la cancelación no debe dejar conexión huérfana registrada"
+    finally:
+        holder.liberar.set()
+        holder.join(5)
+
+
+def _sidecars_renombrados(db_path: Path) -> bool:
+    """True si quedaron archivos ``-wal.corrupted.*`` o ``-shm.corrupted.*``."""
+    raiz = str(db_path)
+    candidatos = list(db_path.parent.glob(Path(raiz).name + "-wal.corrupted.*"))
+    candidatos.extend(db_path.parent.glob(Path(raiz).name + "-shm.corrupted.*"))
+    return any(p.exists() for p in candidatos)
+
+
+class _RaiseAsyncCtx:
+    """Awaitable+async-CM que sólo lanza al ser usado.
+
+    ``aiosqlite.Connection.execute`` se invoca como
+    ``await conn.execute(sql)`` (await del ``@asynccontextmanager``) y el
+    ``_apply_pragmas`` lo usa como ``async with conn.execute(sql) as cur``
+    indistintamente. Esta clase soporta las dos formas: ``__await__``
+    lanza para el caso ``await``, y ``__aenter__`` lanza para
+    ``async with``. La semántica es equivalente a que el ``execute``
+    original haya raiseado.
+    """
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def __await__(self):  # type: ignore[no-untyped-def]
+        async def _raise() -> object:
+            raise self._exc
+
+        return _raise().__await__()
+
+    async def __aenter__(self) -> object:
+        raise self._exc
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+
+async def test_busy_timeout_cero_ejecuta_un_intento(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``busy_timeout_ms=0`` debe ejecutar exactamente UN intento del pragma.
+
+    Semántica de ``busy_timeout_ms=0``: fail-fast. La conversión se
+    INTENTA una vez (SQLite real) y, si hay contención, falla de
+    inmediato — sin esperar. NO es "no intentar": el bug pre-fix
+    calculaba ``restante = 0 - elapsed = 0`` ANTES del primer execute
+    y lanzaba un ``OperationalError`` sintético sin tocar SQLite.
+
+    Oracle: el spy de ``execute`` cuenta las invocaciones de
+    ``PRAGMA journal_mode=WAL``. Con ``busy_timeout_ms=0`` y SIN
+    contención, la conversión debe PROGRESAR (un intento exitoso) y
+    registrar la conexión.
+
+    Red pre-fix: ``raise sqlite3.OperationalError("database is locked")``
+    antes de ejecutar el pragma → el spy cuenta 0 intentos y
+    ``_init_single`` falla aunque no haya contención.
+    """
+
+    intentos_wal: list[str] = []
+
+    class _SpyCuentaWAL:
+        """Delega execute al sqlite real, contando los pragmas WAL."""
+
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
+                intentos_wal.append(sql)
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        return _SpyCuentaWAL(conn)  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=0),
+    )
+    try:
+        await manager._init_single(db_path)
+        assert len(intentos_wal) == 1, (
+            f"con busy_timeout_ms=0 debe ejecutarse exactamente UN intento del "
+            f"pragma (fail-fast), se ejecutaron {len(intentos_wal)}: {intentos_wal}"
+        )
+        assert str(db_path.resolve()) in manager._connections, (
+            "sin contención, el intento único debe progresar y registrar la conexión"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_recovery_operational_error_no_busy_no_se_clasifica_contencion(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Un ``OperationalError`` no-BUSY en recovery va a clase C (rename forense).
+
+    La clase A actual atrapa TODO ``sqlite3.OperationalError`` como
+    contención, pero un ``OperationalError`` de I/O, permisos o schema
+    NO es contención. El fix debe clasificar dentro del except con
+    ``_es_contencion_de_bloqueo()``: si no es contención, no debe
+    propagar como si lo fuera — debe ir a la clase C (rename forense +
+    log + return sin raise).
+
+    Spy inyecta un ``OperationalError("disk I/O error")`` sin
+    ``sqlite_errorcode`` poblado (el camino del fallback textual: el
+    mensaje NO es "database is locked" ni "database table is locked",
+    así que ``_es_contencion_de_bloqueo`` devuelve False).
+
+    Red pre-fix: la clase A lo atrapa y propaga (raise) sin rename.
+    """
+
+    class _SpyIOError:
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+            self._disparado = False
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql and not self._disparado:
+                self._disparado = True
+                return _RaiseAsyncCtx(sqlite3.OperationalError("disk I/O error"))
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        return _SpyIOError(conn)  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    _sembrar_db_en_modo_delete(db_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=200),
+    )
+    try:
+        # Clase C traga el error y renombra — NO debe propagar.
+        await manager._recover_orphaned_wal(db_path, wal_path, shm_path)
+        # Post-fix: rename forense existe.
+        assert _sidecars_renombrados(db_path), "un OperationalError no-BUSY debe ir a clase C (rename forense)"
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_recovery_close_no_confirmado_conserva_ownership(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close de la conexión temporal NO confirmado → ownership retenido.
+
+    Decisión explícita: si el cierre físico de la conexión temporal del
+    recovery no se confirma, el path queda fail-closed (cuarentena) y la
+    conexión se registra en ``_connections`` para que ``shutdown_all()``
+    pueda reintentar el cierre. No se traga el fallo de ownership: el
+    path nunca vuelve a servir sin que antes se cierre la conexión.
+
+    Spy: la conexión capturada por ``aiosqlite.connect`` falla al
+    ``close()``. El recovery debe propagar la contención (clase A) y la
+    conexión debe quedar registrada + path cuarentenado.
+
+    Red pre-fix: ``_cerrar_conexion_de_recovery`` sólo loguea
+    ``critical`` y suelta la conexión — sin registro ni cuarentena, el
+    path volvería a servir conexiones nuevas mientras la vieja queda
+    viva sin dueño.
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    class _SpyCloseFalla:
+        """Delega execute, pero el close físico falla deliberadamente."""
+
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+            self._cerrada = False
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
+                err = sqlite3.OperationalError("database is locked")
+                err.__dict__["sqlite_errorcode"] = sqlite3.SQLITE_BUSY
+                err.__dict__["sqlite_errorname"] = "SQLITE_BUSY"
+                return _RaiseAsyncCtx(err)
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        async def close(self) -> None:
+            self._cerrada = True
+            raise OSError("close deliberadamente fallido")
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+    spys: list[_SpyCloseFalla] = []
+    conexiones_reales: list[aiosqlite.Connection] = []
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        conexiones_reales.append(conn)
+        spy = _SpyCloseFalla(conn)  # type: ignore[arg-type]
+        spys.append(spy)
+        return spy  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    monkeypatch.setattr(db_lifecycle, "_CONVERSION_WAL_RETRY_SLEEP_S", 0.001)
+    _sembrar_db_en_modo_delete(db_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=50),
+    )
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await manager._recover_orphaned_wal(db_path, wal_path, shm_path)
+        assert spys, "el spy debió capturar la conexión"
+        assert spys[0]._cerrada, "el close de la conexión temporal se intentó"
+        # Ownership retenido: la conexión quedó registrada para que
+        # shutdown_all() pueda reintentar el cierre.
+        path_str = str(db_path.resolve())
+        assert path_str in manager._connections, (
+            "un close no confirmado debe conservar la conexión en _connections para que shutdown_all() la reintente"
+        )
+        assert path_str in manager._quarantined_paths, (
+            "un close no confirmado debe dejar el path fail-closed (cuarentena)"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+        # Limpieza del thread worker: la conexión real (envuelta por el
+        # spy cuyo close falla) nunca se cerró; la cerramos por fuera
+        # para no dejar el proceso colgado.
+        for real in conexiones_reales:
+            with contextlib.suppress(Exception):
+                await real.close()
+
+
+async def test_init_no_publica_reemplazo_tras_close_no_confirmado_en_recovery(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interleaving adversarial: recovery clase C + close NO confirmado.
+
+    Secuencia reproducida (determinista, SQLite real, sin sleeps):
+
+        _init_single()
+          → detecta orphan WAL/SHM
+          → _recover_orphaned_wal()
+          → clase C (OSError en el pragma WAL, error TRAGADO tras el rename)
+          → _recovery_rename_forense()
+          → _cerrar_conexion_de_recovery() con close() FALLIDO
+          → registra la conexión temporal + cuarentena del path
+          → el recovery RETORNA (la clase C no propaga)
+          → _init_single continúa Step 2
+          → abre una segunda conexión y PISA _connections[path]
+
+    Ese pisón destruye el único owner registrado de una conexión temporal
+    posiblemente viva: la cuarentena queda vacía de contenido, porque
+    ``shutdown_all()`` ya no encuentra en el registro la conexión que debía
+    reintentar cerrar.
+
+    Propiedad bajo test: si el recovery retuvo ownership porque el cierre
+    no se confirmó, NINGUNA ruta de inicialización puede abrir ni publicar
+    una conexión de reemplazo. El init falla cerrado con
+    ``DatabaseConnectionQuarantinedError`` (no con la OSError tragada por
+    la clase C, ni con éxito silencioso).
+
+    Red pre-fix: Step 2 corría, ``aiosqlite.connect`` se llamaba DOS veces
+    y ``_connections[path]`` apuntaba a la segunda conexión — el test
+    fallaba en los tres oráculos (excepción, identidad y conteo).
+    """
+
+    class _SpyCloseFallaClaseC:
+        """Delega execute; OSError en el pragma WAL (clase C) y close fallido."""
+
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+            self._cerrada = False
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
+                return _RaiseAsyncCtx(OSError("fallo de E/S deliberado"))
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        async def close(self) -> None:
+            self._cerrada = True
+            raise OSError("close deliberadamente fallido")
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+    spys: list[_SpyCloseFallaClaseC] = []
+    conexiones_reales: list[aiosqlite.Connection] = []
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        conexiones_reales.append(conn)
+        if not spys:
+            # La conexión TEMPORAL del recovery: clase C + close fallido.
+            spy = _SpyCloseFallaClaseC(conn)  # type: ignore[arg-type]
+            spys.append(spy)
+            return spy  # type: ignore[return-value]
+        # Cualquier conexión posterior delega limpia: post-fix NO debe
+        # existir (oracle de conteo); pre-fix es la del Step 2.
+        return conn
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    _sembrar_db_en_modo_delete(db_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=50),
+    )
+    path_str = str(db_path.resolve())
+    try:
+        # El init completo NO puede publicar una conexión de reemplazo:
+        # falla cerrado con la excepción del lifecycle, no con la OSError
+        # que la clase C tragó, ni con éxito silencioso.
+        with pytest.raises(DatabaseConnectionQuarantinedError):
+            await manager.get_connection(db_path)
+
+        # ORACLE 1: exactamente UNA llamada a aiosqlite.connect — la del
+        # recovery. Step 2 jamás abrió una segunda conexión.
+        assert len(conexiones_reales) == 1, (
+            f"el init abrió {len(conexiones_reales)} conexiones: la del recovery y una de reemplazo"
+        )
+
+        # ORACLE 2: ownership retenido — el registro sigue apuntando a la
+        # MISMA conexión temporal del recovery (la cuyo close falló).
+        assert manager._connections.get(path_str) is spys[0], (
+            "_connections[path] debe seguir siendo la conexión temporal del recovery"
+        )
+
+        # ORACLE 3: el path quedó fail-closed.
+        assert path_str in manager._quarantined_paths, "el close no confirmado debe dejar el path en cuarentena"
+        assert spys[0]._cerrada, "el close de la conexión temporal se intentó"
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+        # Limpieza del thread worker: la conexión real nunca cerró (el
+        # close del spy falla deliberadamente); la cerramos por fuera.
+        for real in conexiones_reales:
+            with contextlib.suppress(Exception):
+                await real.close()
+
+
+async def test_recovery_close_no_confirmado_no_renombra_wal(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Close no confirmado del recovery => WAL intacto, sin rename.
+
+    Propiedad: si el cierre de la conexión temporal del recovery NO se
+    confirma, el archivo sigue bajo una conexión posiblemente viva.
+    Renombrar el WAL en ese estado rompe la integridad del archivo bajo
+    un handler activo. Por eso ``_recovery_rename_forense`` sólo puede
+    renombrar si el cierre está CONFIRMADO (``_cerrar_conexion_de_recovery``
+    retorna True).
+
+    Escenario determinista:
+    1. Orphan WAL/SHM (post-crash).
+    2. Clase C (``OSError`` en el execute del pragma WAL).
+    3. El close de la temp connection está forzado a fallar.
+    4. ``_cerrar_conexion_de_recovery`` registra y monta cuarentena.
+    5. El rename NO debe correr: el WAL permanece en ``<path>-wal``.
+    """
+
+    class _SpyCloseFallaWal:
+        """Clase C en execute + close deliberadamente fallido."""
+
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
+                return _RaiseAsyncCtx(OSError("fallo de E/S deliberado en recovery"))
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        async def close(self) -> None:
+            raise OSError("close deliberadamente fallido")
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+    conexiones_reales: list[aiosqlite.Connection] = []
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        conexiones_reales.append(conn)
+        return _SpyCloseFallaWal(conn)  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    _sembrar_db_en_modo_delete(db_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=50),
+    )
+    try:
+        # Clase C traga el error --- no debe renombrar el WAL porque
+        # el close de la conexión temporal NO se confirmó.
+        await manager._recover_orphaned_wal(db_path, wal_path, shm_path)
+        assert wal_path.exists(), (
+            "el close no se confirmó y el WAL fue renombrado igualmente: "
+            "esto viola la integridad del archivo bajo una conexión potencialmente viva"
+        )
+        path_str = str(db_path.resolve())
+        assert path_str in manager._quarantined_paths, "el path debe quedar en cuarentena"
+        assert manager._connections.get(path_str) is not None, (
+            "ownership debe quedar registrado para que shutdown_all() lo cierre"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+        for real in conexiones_reales:
+            with contextlib.suppress(Exception):
+                await real.close()
+
+
+async def test_recovery_exception_generica_va_a_clase_c_rename(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``Exception`` genérica (no-sqlite) en recovery va a clase C (rename).
+
+    Ancla el ORDEN de los excepts: ``sqlite3.OperationalError`` →
+    ``Exception`` → ``BaseException``. Si ``BaseException`` queda antes
+    de ``Exception`` (bug de reorden), una ``OSError`` genérica caería
+    en clase B (propagar sin rename) en vez de clase C (rename forense).
+
+    El spy inyecta una ``OSError`` en el execute del WAL pragma. Clase C
+    debe tragar el error y renombrar.
+
+    Red pre-fix (con orden invertido): ``OSError`` cae en
+    ``except BaseException`` → PROPAGA sin rename.
+    """
+
+    class _SpyOSError:
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+            self._disparado = False
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql and not self._disparado:
+                self._disparado = True
+                return _RaiseAsyncCtx(OSError("fallo de E/S deliberado"))
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+    conexiones_reales: list[aiosqlite.Connection] = []
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        conexiones_reales.append(conn)
+        return _SpyOSError(conn)  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    _sembrar_db_en_modo_delete(db_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=200),
+    )
+    try:
+        # Clase C traga el error y renombra — NO debe propagar.
+        await manager._recover_orphaned_wal(db_path, wal_path, shm_path)
+        assert _sidecars_renombrados(db_path), "una Exception genérica debe ir a clase C (rename forense)"
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+        for real in conexiones_reales:
+            with contextlib.suppress(Exception):
+                await real.close()
+
+
+async def test_recovery_contencion_propagada_sin_renombrar_wal(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F1: contención legítima en recovery NO es corrupción.
+
+    El ``_enter_wal_mode`` REAL corre (no se monkeypatchea): el spy
+    intercepta SÓLO el ``execute`` de ``PRAGMA journal_mode=WAL`` e
+    inyecta BUSY (``sqlite_errorcode=5``, la MISMA forma que el bypass
+    real del busy handler en la promoción SHARED→EXCLUSIVE). Con
+    ``busy_timeout_ms=50`` el loop de reintento agota la ventana en
+    ~50ms y propaga el último error real. La clase A del recovery debe
+    propagarlo SIN renombrar el WAL (CONTENCIÓN != CORRUPCIÓN).
+
+    A diferencia del test previo, aquí no se sustituye ``_enter_wal_mode``:
+    la decisión de retry y deadline la toma el código de producción real;
+    el spy sólo modela la fuente de BUSY que un holder real dispararía.
+
+    Red pre-fix: la clase A renombra el WAL como evidencia forense.
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    class _SpyBUSYReal:
+        """Inyecta BUSY (code 5) en el execute del WAL pragma, delega el resto."""
+
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+            self._busy_error: sqlite3.OperationalError | None = None
+            err = sqlite3.OperationalError("database is locked")
+            err.__dict__["sqlite_errorcode"] = sqlite3.SQLITE_BUSY
+            err.__dict__["sqlite_errorname"] = "SQLITE_BUSY"
+            self._busy_error = err
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
+                return _RaiseAsyncCtx(self._busy_error)
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    conectar_real = aiosqlite.connect
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        return _SpyBUSYReal(conn)  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    # Sleep del retry chico para que la ventana se agote rápido.
+    monkeypatch.setattr(db_lifecycle, "_CONVERSION_WAL_RETRY_SLEEP_S", 0.001)
+
+    _sembrar_db_en_modo_delete(db_path)
+    # Sidecars huérfanos: pre-condición para que el camino del recovery corra.
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=50),
+    )
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await manager._recover_orphaned_wal(
+                db_path,
+                wal_path,
+                shm_path,
+            )
+        # INVARIANTE: no hay forensic rename. La contención no corrompió el archivo.
+        assert not _sidecars_renombrados(db_path), (
+            "contención NO es corrupción: el WAL original debe seguir existiendo sin rename forense"
+        )
+        assert wal_path.exists(), "el WAL huérfano original debe sobrevivir al recovery fallido"
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_deadline_total_no_excede_ventana_dos_fases(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F3: el tiempo total del reintento no puede exceder ``busy_timeout_ms``.
+
+    La propiedad: ``configured window = total maximum waiting budget``. Cada
+    intento de ``PRAGMA journal_mode=WAL`` debe ajustar su propio
+    ``busy_timeout`` al RESTANTE de la ventana, no reusar el valor
+    configurado completo.
+
+    Escenario de dos fases (adversarial):
+    - Fase 1: ``busy_timeout=300ms``, el primer intento recibe BUSY
+      INMEDIATO vía bypass del handler (la misma forma que la race real,
+      simulada por spy para controlar la ventana).
+    - Fase 2: una vez consumido ~el 80% del budget, el spy deja pasar
+      un execute. La nueva situación es la normal (SQLite usaría su
+      busy handler si la espera supera la ventana restante).
+
+    Pre-fix: el segundo ``conn.execute`` arranca con ``busy_timeout=300ms``
+    (el configurado), no con el restante. Si la espera legítima del
+    handler excede la ventana restante, el reintento total puede
+    duplicar o triplicar el budget.
+
+    Post-fix: el segundo ``execute`` corre con ``busy_timeout <= restante``.
+    El bug MA D1 (second attempt with the FULL configured busy_timeout)
+    is caught deterministically by asserting on the NUMERIC value the spy
+    captured (``_busy_timeout_ms``), not on wall clock — ``asyncio.sleep``
+    bajo carga de CI (runner de Windows) puede distorsionar la medición
+    sin afectar la lógica del cap.
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    # Spy sobre la conexión aiosqlite del recovery: modela la
+    # interacción con el busy handler REAL. La primera invocación
+    # ``PRAGMA journal_mode=WAL`` "gasta" 240ms (espera legítima del
+    # busy handler con un lock sostenido) y luego ``raise`` BUSY. Las
+    # siguientes invocaciones pasan. El bug del over-budget se
+    # reproduce: el segundo intento entra con el busy_timeout
+    # configurado (300ms) en vez del restante (~60ms).
+    class _AisqliteSpyDeadline:
+        def __init__(self) -> None:
+            self._disparos = 0
+            self._inicio = time.monotonic()
+            # Valores capturados para la aserción determinística:
+            # el busy_timeout con que `_enter_wal_mode` ejecuta cada intento.
+            self._segundo_intento_busy_timeout_ms: int | None = None
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and sql.strip().startswith("PRAGMA busy_timeout="):
+                # El cap por intento: extraemos el valor numérico del
+                # busy_timeout que el ``_enter_wal_mode`` fija antes de
+                # cada intento. Lo guardamos para que el spy lo use
+                # como la espera del busy handler del siguiente
+                # ``journal_mode=WAL``.
+                try:
+                    self._busy_timeout_ms = int(sql.split("=", 1)[1])
+                except (IndexError, ValueError):
+                    self._busy_timeout_ms = 0
+                return self._conn.execute(sql, *args, **kwargs)  # type: ignore[attr-defined]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
+                self._disparos += 1
+                if self._disparos == 1:
+                    # Primer intento: espera ~80% del busy_timeout
+                    # configurado (240ms de 300ms) y luego BUSY. El
+                    # resto (60ms) queda como ventana para el
+                    # segundo intento. El spy simula la espera
+                    # legítima del busy handler, que se agota SIN
+                    # completar la conversión.
+                    return _DelayedRaise(
+                        0.24,
+                        sqlite3.OperationalError("database is locked"),
+                    )
+                if self._disparos == 2:
+                    # Probabilidad determinística del bug M-D1: el segundo
+                    # intento llega con el restante (~60ms), no con el
+                    # valor completo (300ms). El spy captura ese valor.
+                    self._segundo_intento_busy_timeout_ms = self._busy_timeout_ms
+                    return _DelayedRaise(
+                        (self._busy_timeout_ms or 300) / 1000.0,
+                        sqlite3.OperationalError("database is locked"),
+                    )
+                # Intentos N>=3: el deadline debe haber disparado ya. Si por
+                # scheduling el elapsed quedó aún bajo (CI de Windows), NO
+                # dejamos pasar el reintento: re-lanzamos BUSY igual.
+                # Prevente "DID NOT RAISE" por segundo intento que duró
+                # menos que el presupuesto en algunos runners.
+                return _DelayedRaise(
+                    0.001,
+                    sqlite3.OperationalError("database is locked"),
+                )
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[attr-defined]
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    class _DelayedRaise(_RaiseAsyncCtx):
+        """Espera ``delay_s`` y luego ``raise`` al ser awaited o ``__aenter__``."""
+
+        def __init__(self, delay_s: float, exc: BaseException) -> None:
+            super().__init__(exc)
+            self._delay = delay_s
+
+        def __await__(self):  # type: ignore[no-untyped-def]
+            async def _raise() -> object:
+                await asyncio.sleep(self._delay)
+                raise self._exc
+
+            return _raise().__await__()
+
+        async def __aenter__(self) -> object:
+            await asyncio.sleep(self._delay)
+            raise self._exc
+
+    spy_factory_calls: list[_AisqliteSpyDeadline] = []
+    conectar_real = aiosqlite.connect
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        spy = _AisqliteSpyDeadline()
+        spy._conn = conn  # type: ignore[attr-defined]
+        spy_factory_calls.append(spy)
+        return spy  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+    # Sleep del retry bien chico para no contaminar la medición.
+    monkeypatch.setattr(db_lifecycle, "_CONVERSION_WAL_RETRY_SLEEP_S", 0.001)
+
+    _sembrar_db_en_modo_delete(db_path)
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=300),
+    )
+    try:
+        # Wall-clock NO es aserción de propiedad en CI: asyncio.Sleep bajo
+        # carga de scheduling puede desviar la medición sin afectar al
+        # cap de busy_timeout. La propiedad determinística: el busy_timeout
+        # capturado por el spy para el segundo intento (escape: <
+        # 300ms) no puede ser el valor configurado completo.
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await manager._init_single(db_path)
+
+        assert spy_factory_calls, "el spy debió capturar la conexión."
+        assert spy_factory_calls[0]._disparos >= 1, "el primer execute debió ser BUSY (fase 1)"
+
+        segundo_intento_timeout = spy_factory_calls[0]._segundo_intento_busy_timeout_ms
+        assert segundo_intento_timeout is not None, (
+            "el segundo intento nunca corrió (bug o la flecha regresó al_SCHEDULER)"
+        )
+        # Primer intento consumió ~240ms del budget de 300ms (Fase 1). El
+        # segundo intento DEBE ver ~60ms, no 300ms. El margen ancho (< 250)
+        # cubre scheduling de CI sin dejar pasar M-D1: el bug deja el segundo
+        # intento con 300ms exactos.
+        assert segundo_intento_timeout < 250, (
+            f"el segundo intento debió capar su busy_timeout al restante(~60ms), "
+            f"pero se observó {segundo_intento_timeout}ms — señal de M-D1 (se le dio el budget completo)"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()
+
+
+async def test_clasificacion_codigos_extendidos_exactos(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F4: clasificación exacta de ``sqlite_errorcode``.
+
+    El contrato: la decisión es código por código, NO por máscara
+    ``(codigo & 0xFF)``. La lista de reintentables debe ser enumerada
+    y verificada contra los códigos que ``PRAGMA journal_mode=WAL``
+    puede devolver REALMENTE.
+
+    Códigos verificados:
+    - ``SQLITE_BUSY`` (5) ........... reintentable: hay otro owner activo.
+    - ``SQLITE_BUSY_RECOVERY`` (261) . reintentable: WAL recovery en
+      curso en otra conexión.
+    - ``SQLITE_BUSY_SNAPSHOT`` (517)  NO reintentable: el snapshot de
+      lectura no puede promoverse a escritura; en ``_enter_wal_mode``
+      sobre una conexión fresh/autocommit es INALCANZABLE, así que
+      fallar-closed / propagar es preferible a reintentar
+      especulativamente.
+    - ``SQLITE_BUSY_TIMEOUT`` (773) .. NO reintentable en este
+      statement: la espera del busy handler agotó la ventana LOCAL del
+      stmt, pero el outer budget ya la gobierna — reintentar duplica
+      la espera sin cambiar el estado.
+    - ``SQLITE_LOCKED`` (6) .......... reintentable: lock de tabla
+      esperando que otra conexión lo libere.
+    - ``SQLITE_LOCKED_SHAREDCACHE`` (262) reintentable: variante
+      shared-cache.
+    - Códigos extendidos no listados explícitamente: NO reintentables
+      (fail-closed). Aceptarlos por la máscara ``& 0xFF`` es el bug.
+
+    Red pre-fix: ``(codigo & 0xFF) in {5, 6}`` acepta TODOS los
+    extendidos cuyo base sea 5 o 6, incluyendo los que el contrato
+    rechaza explícitamente.
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    # Helper para construir OperationalError con código arbitrario.
+    def error_con_codigo(codigo: int, mensaje: str) -> sqlite3.OperationalError:
+        err = sqlite3.OperationalError(mensaje)
+        # ``sqlite_errorcode`` es de sólo lectura en 3.11+, pero el
+        # constructor ``sqlite3_errmsg`` y compañía no permiten
+        # inyectarlo. Usamos un ``SimpleNamespace``-style fallback:
+        # si la API lo permite, lo seteamos; si no, lo inyectamos por
+        # ``__dict__``.
+        try:
+            err.sqlite_errorcode = codigo  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):
+            err.__dict__["sqlite_errorcode"] = codigo
+        return err
+
+    casos_reintentables: list[tuple[int, str]] = [
+        (sqlite3.SQLITE_BUSY, "database is locked"),
+        (sqlite3.SQLITE_BUSY_RECOVERY, "database is locked"),
+        (sqlite3.SQLITE_LOCKED, "database table is locked"),
+        (sqlite3.SQLITE_LOCKED_SHAREDCACHE, "database table is locked"),
+    ]
+    casos_no_reintentables: list[tuple[int, str]] = [
+        (sqlite3.SQLITE_BUSY_SNAPSHOT, "snapshot busy"),
+        (sqlite3.SQLITE_BUSY_TIMEOUT, "busy timeout"),
+        # Código no documentado para ``PRAGMA journal_mode=WAL``;
+        # extendido no listado: fallar-closed.
+        (0x12340005, "unknown extended busy"),
+    ]
+    # En 3.11 algunos nombres pueden no existir; verificamos y omitimos
+    # los que no estén disponibles.
+    disponibles: dict[str, int] = {
+        "SQLITE_BUSY_SNAPSHOT": getattr(sqlite3, "SQLITE_BUSY_SNAPSHOT", 517),
+        "SQLITE_BUSY_RECOVERY": getattr(sqlite3, "SQLITE_BUSY_RECOVERY", 261),
+        "SQLITE_BUSY_TIMEOUT": getattr(sqlite3, "SQLITE_BUSY_TIMEOUT", 773),
+        "SQLITE_LOCKED_SHAREDCACHE": getattr(sqlite3, "SQLITE_LOCKED_SHAREDCACHE", 262),
+    }
+    # Recalcular la lista de no-reintentables con los códigos reales del runtime.
+    casos_no_reintentables = [
+        (disponibles["SQLITE_BUSY_SNAPSHOT"], "snapshot busy"),
+        (disponibles["SQLITE_BUSY_TIMEOUT"], "busy timeout"),
+        (0x12340005, "unknown extended busy"),
+    ]
+
+    for codigo, mensaje in casos_reintentables:
+        err = error_con_codigo(codigo, mensaje)
+        # Inyectar el código vía el dict de la excepción (la API no lo
+        # permite por atributo, pero ``__dict__`` lo acepta).
+        err.__dict__["sqlite_errorcode"] = codigo
+        assert db_lifecycle._es_contencion_de_bloqueo(err) is True, (
+            f"código {codigo} ({mensaje}) debió ser reintentable"
+        )
+
+    for codigo, mensaje in casos_no_reintentables:
+        err = error_con_codigo(codigo, mensaje)
+        err.__dict__["sqlite_errorcode"] = codigo
+        assert db_lifecycle._es_contencion_de_bloqueo(err) is False, (
+            f"código {codigo} ({mensaje}) NO debió ser reintentable (el bug pre-fix lo aceptaba por máscara ``& 0xFF``)"
+        )
+
+
+async def test_clasificacion_no_acepta_operational_error_no_bloqueo() -> None:
+    """F4 (no retry): un OperationalError de E/S o de schema NO es
+    reintentable. La pre-fix aceptaba sólo por mensaje; la post-fix
+    exige código.
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    casos = [
+        sqlite3.OperationalError("no such table: foo"),
+        sqlite3.OperationalError("disk I/O error"),
+        sqlite3.OperationalError("database is corrupt"),
+    ]
+    for err in casos:
+        # Sin ``sqlite_errorcode``, el fallback por mensaje puede ser
+        # "database is locked" — pero la fix debe preferir el código y
+        # aceptar SÓLO los listados explícitamente. Aquí el mensaje
+        # NO es "database is locked" / "database table is locked",
+        # así que la clasificación por mensaje debe rechazarlo.
+        assert db_lifecycle._es_contencion_de_bloqueo(err) is False, (
+            f"error '{err}' no debió clasificarse como contención"
+        )
+
+
+def test_clasificacion_fallback_textual_exige_igualdad_exacta() -> None:
+    """F4: el fallback (sin ``sqlite_errorcode``) es IGUALDAD EXACTA contra
+    los strings canónicos de SQLite, nunca substrings de "busy"/"locked".
+
+    Un mensaje que CONTIENE "locked" sin SER el string canónico — detalle
+    extra, mayúsculas, otra condición que lo menciona — no es contención:
+    reintentarlo especulativamente podría enmascarar un fallo ajeno a la
+    contención. La mutación M-E2 (fallback por substring) muere acá.
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    cerca_pero_no_contencion = [
+        sqlite3.OperationalError("database is locked (tabla audits)"),
+        sqlite3.OperationalError("database is LOCKED"),
+        sqlite3.OperationalError("statement UNLOCKED unexpectedly"),
+    ]
+    for err in cerca_pero_no_contencion:
+        assert db_lifecycle._es_contencion_de_bloqueo(err) is False, (
+            f"el fallback no debe aceptar por substring: '{err}' no es un string canónico"
+        )
+
+    exactos = [
+        sqlite3.OperationalError("database is locked"),
+        sqlite3.OperationalError("database table is locked"),
+    ]
+    for err in exactos:
+        assert db_lifecycle._es_contencion_de_bloqueo(err) is True, (
+            f"el fallback debe aceptar el string canónico exacto: '{err}'"
+        )
+
+
+async def test_recovery_cierra_conexion_temporal_al_cancelar(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F2: cancelar dentro de recovery cierra físicamente la conexión temporal.
+
+    Se cancela la task que ejecuta ``_recover_orphaned_wal`` durante la
+    fase de retry de ``_enter_wal_mode`` (después de conectar, antes del
+    ``await conn.close()`` final). El ``except Exception`` actual NO
+    cubre ``CancelledError`` (``BaseException``), así que la conexión
+    temporal queda abierta.
+
+    La inyección de BUSY en el primer intento de ``_enter_wal_mode`` (vía
+    monkeypatch) fuerza el camino del retry: la cancelación aterriza en
+    el ``await asyncio.sleep`` del loop. Sin la inyección, con sidecars
+    presentes, ``PRAGMA journal_mode=WAL`` es un no-op y nunca entra al
+    retry. El BUSY inyectado es la MISMA forma que el bypass real del
+    busy handler (test existente ``test_conversion_wal_con_holder_permanente_falla_acotada``);
+    acá verifica que la cancelación durante el retry cierra la conexión
+    abierta por el recovery.
+
+    Red pre-fix: la conexión temporal queda abierta tras la cancelación.
+    ORACLE: el ``sqlite3.Connection`` interno (capturado por spy) rechaza
+    operaciones cuando la conexión fue cerrada.
+    """
+    import sky_claw.app.core.db_lifecycle as db_lifecycle
+
+    # Agrandar el sleep del retry del recovery para que el cancel sea determinista.
+    monkeypatch.setattr(db_lifecycle, "_CONVERSION_WAL_RETRY_SLEEP_S", 0.5)
+    # Forzar el camino del retry REAL: la primera ejecución de ``PRAGMA
+    # journal_mode=WAL`` sobre el recovery con sidecars sería un no-op
+    # (SQLite los ve y considera el archivo ya en WAL). Envolvemos la
+    # conexión capturada para que su ``execute`` lance BUSY en el primer
+    # intento y tenga éxito en los siguientes — la MISMA forma que el
+    # bypass real del busy handler cuando el holder sostiene RESERVED.
+    # El loop del ``_enter_wal_mode`` REAL entra entonces al sleep, y la
+    # cancelación cae ahí (no en la línea de execute).
+    conn_creadas: list[aiosqlite.Connection] = []
+    conectar_real = aiosqlite.connect
+
+    class _AisqliteExecuteSpy:
+        """Envuelve una ``aiosqlite.Connection`` y lanza BUSY en el primer
+        ``execute('PRAGMA journal_mode=WAL')``. Para cualquier otro
+        ``execute`` delega.
+
+        aiosqlite.Connection.execute es ``@asynccontextmanager``: la
+        invocación devuelve un async context manager. Para intercalar el
+        raise sin romper el contrato, devolvemos un async context manager
+        que sólo levanta en ``__aenter__``.
+        """
+
+        def __init__(self, conn: aiosqlite.Connection) -> None:
+            self._conn = conn
+            self._disparado = False
+
+        def execute(self, sql: object, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+            if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql and not self._disparado:
+                self._disparado = True
+                return _RaiseAsyncCtx(sqlite3.OperationalError("database is locked"))
+            return self._conn.execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+    async def conectar_spy(database: object, **kwargs: object) -> aiosqlite.Connection:
+        conn = await conectar_real(database, **kwargs)  # type: ignore[arg-type]
+        spy = _AisqliteExecuteSpy(conn)  # type: ignore[arg-type]
+        # El recovery espera un aiosqlite.Connection. Como sólo usa
+        # ``execute``/``close`` sobre el objeto, ``_AisqliteExecuteSpy``
+        # cumple el contrato (delegando el resto por ``__getattr__``).
+        # Para que ``isinstance(conn, aiosqlite.Connection)`` no rompa en
+        # otros tests, registramos el objeto original.
+        conn_creadas.append(conn)
+        return spy  # type: ignore[return-value]
+
+    monkeypatch.setattr(aiosqlite, "connect", conectar_spy)
+
+    _sembrar_db_en_modo_delete(db_path)
+    wal_path = Path(str(db_path) + "-wal")
+    shm_path = Path(str(db_path) + "-shm")
+    wal_path.write_bytes(b"orphan")
+    shm_path.write_bytes(b"orphan")
+
+    manager = DatabaseLifecycleManager(
+        db_paths=[db_path],
+        config=DatabaseLifecycleConfig(busy_timeout_ms=5000),
+    )
+    try:
+        tarea = asyncio.create_task(manager._recover_orphaned_wal(db_path, wal_path, shm_path))
+        # Esperar a que el recovery haya abierto la conexión y entrado al sleep.
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if conn_creadas:
+                break
+        assert conn_creadas, "el recovery no llegó a abrir la conexión temporal"
+        # Cancelar en plena fase de sleep (la ventana de 0.5s lo permite).
+        await asyncio.sleep(0.05)
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        # ORACLE físico: la conexión capturada por spy está cerrada. El
+        # ``sqlite3.Connection`` interno rechaza operaciones cuando la
+        # conexión fue cerrada.
+        assert conn_creadas, "el spy debió capturar la conexión del recovery"
+        conn_temp = conn_creadas[0]
+        # ORACLE físico: la conexión aiosqlite capturada por spy debe estar
+        # cerrada. El aiosqlite.Connection expone ``_connection is None``
+        # cuando se cerró limpiamente. Sin el close, ``_connection`` sigue
+        # siendo el sqlite3.Connection interno. El test del SELECT 1
+        # directo sobre ``_conn`` no sirve: aiosqlite corre en un thread
+        # separado y el sqlite3.Connection interno rechaza uso cross-thread
+        # con ``ProgrammingError`` (falso positivo de "cerrado").
+        with pytest.raises(ValueError, match="no active connection"):
+            _ = conn_temp._conn  # type: ignore[attr-defined]
+    finally:
+        with contextlib.suppress(Exception):
+            await manager.shutdown_all()

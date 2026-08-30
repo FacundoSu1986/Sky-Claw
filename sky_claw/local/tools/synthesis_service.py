@@ -457,6 +457,19 @@ class SynthesisPipelineService:
                     summary=f"Ejecutar {len(patcher_ids)} patcher(s) de Synthesis → {target_esp.name}.",
                 )
 
+                # Idempotencia de reruns: Synthesis puede regenerar exactamente
+                # los mismos bytes que una corrida anterior. Retirar el esp
+                # previo hace que la mera existencia post-run demuestre
+                # producción de ESTA corrida (el runner exige pre-ABSENT o
+                # digest distinto). Solo cuando la restauración ante fallo está
+                # garantizada: el snapshot ya fue tomado (target_files no vacío)
+                # o el sandbox es el mecanismo de rollback (el clon se
+                # descarta). Sin ninguna de las dos, fail-closed: NO se retira
+                # y un rerun idéntico sin retirada no puede atribuirse.
+                if target_esp.exists() and (bool(target_files) or self._output_path is not None):
+                    target_esp.unlink()
+                    logger.info("Synthesis.esp previo retirado para atribución por existencia: %s", target_esp)
+
                 result = await runner.run_pipeline(patcher_ids)
 
                 # Validar ESP DENTRO del context manager para activar rollback

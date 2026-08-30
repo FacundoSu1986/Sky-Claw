@@ -359,6 +359,7 @@ class TestDownloadModZeroTrust:
         # Should be "enqueued", not "error".
         assert "error" not in data, f"download_mod aborted unexpectedly: {data}"
         assert data.get("status") == "enqueued"
+        assert mock_hitl.request_approval.await_args.kwargs["category"] == "download"
 
 
 # ---------------------------------------------------------------------------

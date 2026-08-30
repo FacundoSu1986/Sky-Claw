@@ -112,32 +112,40 @@ def _make_service(
 
 @pytest.mark.asyncio
 async def test_sort_runs_and_returns_success(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
 ) -> None:
-    runner = _runner_returning()
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
 
     result = await svc.sort_load_order()
 
     assert result["success"] is True
-    assert result["sorted_plugins"] == ["Skyrim.esm", "Update.esm"]
+    assert result["sorted_plugins"] == ["Skyrim.esm"]
     runner.sort.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_holds_load_order_lock_during_sort(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
 ) -> None:
     """While LOOT sorts, the shared load-order lock is held by this service."""
     seen: dict[str, object] = {}
+    resolver, plugins = _preparar_load_order(tmp_path)
 
     async def on_sort(**_kwargs: object) -> LOOTResult:
         seen["info"] = await lock_manager.get_lock_info(LOAD_ORDER_RESOURCE_ID)
+        for archivo in (plugins, plugins.with_name("loadorder.txt")):
+            archivo.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
         return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
 
     runner = MagicMock()
     runner.sort = AsyncMock(side_effect=on_sort)
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
 
     await svc.sort_load_order()
 
@@ -181,10 +189,13 @@ async def test_releases_lock_on_runner_failure(
 
 @pytest.mark.asyncio
 async def test_forwards_update_masterlist_flag(
-    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
 ) -> None:
-    runner = _runner_returning()
-    svc = _make_service(lock_manager, snapshot_manager, runner)
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
     params = MagicMock(update_masterlist=True)
 
     await svc.sort_load_order(params)
@@ -211,6 +222,8 @@ async def test_builds_runner_from_resolver_with_preserved_timeout(
     # Sin MO2 configurado: el resolver de load order no debe inventar rutas.
     resolver.get_mo2_path = MagicMock(return_value=None)
 
+    load_order_resolver, plugins = _preparar_load_order(tmp_path)
+
     captured: dict[str, object] = {}
 
     class _FakeRunner:
@@ -218,12 +231,15 @@ async def test_builds_runner_from_resolver_with_preserved_timeout(
             captured["config"] = config
 
         async def sort(self, *, update_masterlist: bool = False) -> LOOTResult:
+            for archivo in (plugins, plugins.with_name("loadorder.txt")):
+                archivo.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
             return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
 
     svc = LootSortingService(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
         path_resolver=resolver,
+        load_order_resolver=load_order_resolver,
         preflight=_preflight_verde(),
     )
     with patch("sky_claw.local.tools.loot_service.LOOTRunner", _FakeRunner):
@@ -259,6 +275,26 @@ def _preparar_load_order(tmp_path: pathlib.Path) -> tuple[LoadOrderFileResolver,
     plugins.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
     (load_order_dir / "loadorder.txt").write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
     return LoadOrderFileResolver(explicit_dir=load_order_dir), plugins
+
+
+def _runner_exitoso_que_reescribe(plugins: pathlib.Path) -> MagicMock:
+    """Runner fiel a LOOT real: reescribe los archivos del load order al ordenar.
+
+    LOOT real siempre reescribe plugins.txt/loadorder.txt al aplicar (libloot
+    ``set_load_order`` → ``save()`` incondicional), incluso si el orden no
+    cambia. El gate de evidencia física del servicio (rc=0 sin mutación
+    observable → fallo) exige que los mocks de corridas exitosas dejen esa
+    huella.
+    """
+
+    async def sort_real(**_kwargs: object) -> LOOTResult:
+        for archivo in (plugins, plugins.with_name("loadorder.txt")):
+            archivo.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
+        return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort_real)
+    return runner
 
 
 @pytest.mark.asyncio
@@ -435,8 +471,7 @@ async def test_sort_emite_manifiesto_antes_de_mutar(
     """Con journal cableado, el sort persiste un ActionManifest con archivos y
     plan de rollback ANTES de correr LOOT (T-26)."""
     resolver, plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    runner = _runner_exitoso_que_reescribe(plugins)
     svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
 
     result = await svc.sort_load_order()
@@ -480,9 +515,8 @@ async def test_manifiesto_registra_la_version_de_loot(
 ) -> None:
     """La versión que ya detectó el preflight se persiste en el manifiesto —
     no se pierde ni se relanza el binario (review Codex PR #243)."""
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver, loot_version=(0, 28, 0))
 
     await svc.sort_load_order()
@@ -574,9 +608,8 @@ async def test_fallo_de_commit_del_journal_no_rompe_el_sort(
 ) -> None:
     """El sort ya terminó: un fallo de commit del journal se loguea best-effort
     y NO rompe el contrato de dict serializable (review Copilot PR #243)."""
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
 
     with patch.object(journal, "commit_transaction", AsyncMock(side_effect=OSError("disk full"))):
@@ -594,9 +627,8 @@ async def test_sin_journal_no_emite_manifiesto_pero_ordena(
 ) -> None:
     """Sin journal cableado (callers legacy), el sort corre igual — el manifiesto
     es opcional a nivel dependencia, no rompe el camino existente."""
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
 
     result = await svc.sort_load_order()
@@ -622,8 +654,7 @@ async def test_sort_exitoso_persiste_informe_de_vuelo(
     from sky_claw.app.orchestrator.preview.flight_report import FlightReport
 
     resolver, plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    runner = _runner_exitoso_que_reescribe(plugins)
     svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
 
     result = await svc.sort_load_order()
@@ -653,9 +684,8 @@ async def test_fallo_del_informe_no_rompe_el_contrato_de_dict(
     """El informe es post-vuelo y best-effort: si su persistencia falla, el
     sort ya exitoso sigue devolviendo dict de éxito (misma disciplina que el
     commit del journal, T-26)."""
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
 
     with patch.object(journal, "persist_flight_report", AsyncMock(side_effect=OSError("disk full"))):
@@ -680,9 +710,8 @@ async def test_cancelacion_durante_el_informe_no_revierte_la_tx_commiteada(
     audit trail no debe mentir (review Codex #249)."""
     from sky_claw.app.db.journal import TransactionStatus
 
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
 
     # persist_flight_report se ejecuta DESPUÉS del commit; una CancelledError acá
@@ -704,14 +733,28 @@ async def test_informe_registra_el_diff_real_de_orden(
     journal,  # noqa: ANN001
     tmp_path: pathlib.Path,
 ) -> None:
-    """El informe adjunta el diff REAL de orden (archivo antes vs
-    result.sorted_plugins después), aunque el manifiesto pre-vuelo — emitido
-    antes de mutar e inmutable — no lo tenga (review Codex #249)."""
+    """El informe adjunta el diff REAL de orden (archivo antes vs archivo
+    después, ambos leídos dentro del lock), aunque el manifiesto pre-vuelo —
+    emitido antes de mutar e inmutable — no lo tenga (review Codex #249).
+    El "después" sale del archivo que LOOT reescribió, no de
+    ``result.sorted_plugins``: con LOOT real esa lista llega vacía (review
+    CodeRabbit #495)."""
     from sky_claw.app.orchestrator.preview.flight_report import FlightReport
 
-    resolver, _plugins = _preparar_load_order(tmp_path)  # orden previo: Skyrim.esm, Original.esp
+    resolver, plugins = _preparar_load_order(tmp_path)  # orden previo: Skyrim.esm, Original.esp
+    orden_nuevo = "Original.esp\nSkyrim.esm\n"
     runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Original.esp", "Skyrim.esm"]))
+
+    async def sort_real(**_kwargs: object) -> LOOTResult:
+        # LOOT reescribe ambos archivos del load order (libloot save()).
+        for archivo in (plugins, plugins.with_name("loadorder.txt")):
+            archivo.write_text(orden_nuevo, encoding="utf-8")
+        # Deliberadamente SIN telemetría: el diff debe salir del archivo
+        # físico; una regresión a result.sorted_plugins daría diff vacío y
+        # rompería este test (review adversarial #495).
+        return LOOTResult(return_code=0, sorted_plugins=[], errors=[])
+
+    runner.sort = AsyncMock(side_effect=sort_real)
     svc = _make_service_con_journal(lock_manager, snapshot_manager, runner, journal, resolver)
 
     result = await svc.sort_load_order()
@@ -765,9 +808,8 @@ async def test_sort_exitoso_llena_el_slot_post_run_del_informe(
     from sky_claw.app.orchestrator.preview.flight_report import FlightReport
     from sky_claw.local.validators.preflight import PreflightService
 
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     # Preflight REAL (no el mock de _preflight_verde): el post-run solo corre
     # sobre un PreflightService de verdad (guard isinstance del servicio).
     checker = MagicMock()
@@ -808,9 +850,8 @@ async def test_post_run_con_hallazgos_viaja_en_la_respuesta(
     from sky_claw.local.validators.overwrite_health import OverwriteScan
     from sky_claw.local.validators.preflight import PreflightService
 
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     checker = MagicMock()
     checker.check.return_value = []
     preflight = PreflightService(
@@ -845,9 +886,8 @@ async def test_fallo_del_post_run_no_rompe_el_sort_exitoso(
     from sky_claw.local.validators import post_run as post_run_module
     from sky_claw.local.validators.preflight import PreflightService
 
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     checker = MagicMock()
     checker.check.return_value = []
     preflight = PreflightService(vfs_checker=checker, loot_version_detector=AsyncMock(return_value=(0, 29, 0)))
@@ -878,9 +918,8 @@ async def test_post_run_verde_no_ensucia_la_respuesta(
     `post_run` no aparece en la respuesta (solo se superficie lo accionable)."""
     from sky_claw.local.validators.preflight import PreflightService
 
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     checker = MagicMock()
     checker.check.return_value = []
     preflight = PreflightService(vfs_checker=checker, loot_version_detector=AsyncMock(return_value=(0, 29, 0)))
@@ -912,9 +951,8 @@ async def test_post_run_corre_dentro_del_lock_del_load_order(
     from sky_claw.app.db.locks import LockAcquisitionError
     from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 
-    resolver, _plugins = _preparar_load_order(tmp_path)
-    runner = MagicMock()
-    runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
     svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
 
     lock_tomado_durante_post_run: list[bool] = []
@@ -933,3 +971,46 @@ async def test_post_run_corre_dentro_del_lock_del_load_order(
 
     assert result["success"] is True
     assert lock_tomado_durante_post_run == [True]
+
+
+@pytest.mark.asyncio
+async def test_before_order_se_lee_dentro_del_lock_del_load_order(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """review adversarial #495: una lectura del "antes" pre-lock podría atribuir
+    a este sort un cambio que otro Ritual hizo antes de adquirir. El spy de
+    secuencia ancla que TODAS las lecturas de ``_read_plugin_order`` ocurren
+    DESPUÉS de la adquisición del lock (la primera observación es el acquire)."""
+    from sky_claw.local.tools import loot_service as loot_service_module
+
+    resolver, plugins = _preparar_load_order(tmp_path)
+    runner = _runner_exitoso_que_reescribe(plugins)
+    svc = _make_service(lock_manager, snapshot_manager, runner, load_order_resolver=resolver)
+
+    secuencia: list[str] = []
+    acquire_original = DistributedLockManager.acquire_lock
+
+    async def acquire_spy(
+        self: DistributedLockManager, resource_id: str, agent_id: str, ttl: float | None = None
+    ) -> object:
+        secuencia.append("lock")
+        return await acquire_original(self, resource_id, agent_id, ttl=ttl)
+
+    read_original = loot_service_module._read_plugin_order
+
+    def read_spy(path: object) -> list[str]:
+        secuencia.append("read")
+        return read_original(path)  # type: ignore[arg-type]
+
+    with (
+        patch.object(DistributedLockManager, "acquire_lock", acquire_spy),
+        patch.object(loot_service_module, "_read_plugin_order", read_spy),
+    ):
+        result = await svc.sort_load_order()
+
+    assert result["success"] is True
+    assert secuencia[0] == "lock"  # ninguna lectura antes de adquirir
+    assert secuencia.count("lock") == 1
+    assert secuencia.count("read") == 2  # antes + después, ambas dentro

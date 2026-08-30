@@ -2,8 +2,10 @@
 
 > **Audiencia:** operadores y responsables de release.
 > **Fuente canónica:** runtime, CI y packaging del árbol actual.
-> **Última verificación:** 2026-07-26 sobre
+> **Última verificación integral:** 2026-07-26 sobre
 > `codex/crash-logging-async-safe` `74bdb8f`.
+> **Sincronización CredentialVault/release:** 2026-08-16 sobre `main` `f6d502c`;
+> limitada al wiring de secretos y al estado público de `v0.2.4`.
 
 Operational guide for deploying, running and recovering Sky-Claw. For the
 quick-start install flow see [QUICKSTART.md](QUICKSTART.md); this document
@@ -136,9 +138,26 @@ vars, resueltos por argparse, no por `path_resolver`): `--xedit-exe`,
 migra a keyring y los borra del TOML — `config.py:96-102`).
 
 ### Secretos de runtime (LLM / Nexus / Telegram) → OS keyring
-El path de arranque real: `Config._load_from_keyring()` (`config.py:67-81`) lee
-del **keyring del SO** bajo el servicio **`sky_claw`**. `AppContext` construye el
-`LLMRouter` con estas claves; **`CredentialVault` NO interviene en este flujo.**
+El bootstrap real lee las credenciales desde el **keyring del SO** bajo el
+servicio **`sky_claw`** mediante `Config._load_from_keyring()` (`config.py:67-81`).
+Esa sigue siendo la fuente inicial para LLM/Nexus/Telegram. `CredentialVault` no
+la sustituye: cuando `SKYCLAW_VAULT_MASTER_KEY` está configurada,
+`AppContext.start_full()` provisiona la bóveda, siembra **sólo si falta** la
+credencial del provider activo y la inyecta en `LLMRouter`.
+
+Hay dos rutas de cambio de provider y no son equivalentes:
+
+- `AppContext.reload_llm_provider()` es la ruta usada por la configuración viva:
+  toma una clave explícita o la lee del keyring y llama `LLMRouter.set_provider()`
+  directamente. **No consulta `CredentialVault`.**
+- `LLMRouter.reload_provider()` es una API separada, respaldada por la bóveda:
+  obtiene la credencial desde `CredentialVault`. En el árbol verificado no se
+  observó un caller productivo de esta ruta.
+
+Por lo tanto, sin `SKYCLAW_VAULT_MASTER_KEY` queda `vault=None` y se deshabilita
+la ruta **vault-backed** de `LLMRouter.reload_provider()`; el reload por
+settings/keyring mediante `AppContext.reload_llm_provider()` puede seguir
+funcionando.
 
 | Clave keyring (`service="sky_claw"`) | Uso |
 |---|---|
@@ -168,12 +187,22 @@ claro (se loguea) y elegís otro.
    **token-file rotativo** en `~/.sky_claw/tokens/` (`read_token_file(token_dir)`),
    con TTL/rotación. La rotación es del archivo, no del keyring.
 
-### CredentialVault (almacén cifrado, separado)
+### CredentialVault (almacén cifrado, ruta vault-backed del router)
 `sky_claw/app/security/credential_vault.py` es un almacén **cifrado con
-Fernet** (clave derivada por PBKDF2 desde un salt por máquina en
-`~/.sky_claw/vault_salt.bin` + backup), ciphertext en SQLite. API
-`get_secret(name)` / `set_secret(name, value)`. Es una facilidad aparte — **no es
-el mecanismo que alimenta LLM/Nexus/Telegram al arranque** (eso es keyring, arriba).
+Fernet**. La clave Fernet se deriva con PBKDF2HMAC desde la master-key y un salt
+aleatorio persistido con backup; en el wiring de `AppContext`, el salt efectivo
+se guarda bajo `<directorio-del-db>/vault_salt/vault_salt.bin` y su backup es
+`vault_salt.bin.backup`. El ciphertext se persiste en SQLite. API `get_secret(name)` /
+`set_secret(name, value)`.
+
+El keyring sigue alimentando el bootstrap. Si existe
+`SKYCLAW_VAULT_MASTER_KEY`, `AppContext` provisiona la bóveda e inyecta `vault`
+en el router; la credencial activa se siembra con semántica
+**seed-if-absent**, de modo que una credencial ya rotada en la bóveda no se pisa
+con la credencial de bootstrap leída vía Config/keyring. Esa bóveda puede ser
+consumida por `LLMRouter.reload_provider()`; la ruta productiva
+`AppContext.reload_llm_provider()` usa keyring/clave explícita y
+`LLMRouter.set_provider()` en forma independiente.
 
 ---
 
@@ -285,7 +314,7 @@ Antes de soltar el agente sobre un Skyrim+MO2 real (idealmente en VM o perfil de
 MO2 descartable la primera vez):
 
 - [ ] `~/.sky_claw/config.toml` creado; `SKYRIM_PATH` y `XEDIT_PATH` válidos (los exige el chequeo de paths en runtime), `MO2_PATH` dentro del sandbox.
-- [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. (Cargar en `CredentialVault` NO los expone al arranque.)
+- [ ] Secretos en **keyring** (`service="sky_claw"`): `llm_api_key` o `<provider>_api_key`; `nexus_api_key`; `telegram_bot_token` si usás Telegram. Esa es la fuente de bootstrap. Si habilitás `SKYCLAW_VAULT_MASTER_KEY`, el provider activo puede sembrarse en `CredentialVault` para la ruta vault-backed de `LLMRouter.reload_provider()`; el reload de configuración viva mediante `AppContext.reload_llm_provider()` sigue usando clave explícita/keyring.
 - [ ] Proveedor LLM elegido entre los soportados: `anthropic` / `deepseek` / `openai` / `ollama`.
 - [ ] Suite local en verde: `pytest -q`.
 - [ ] Gates: `ruff check sky_claw/ tests/`, `ruff format --check sky_claw/ tests/` y `mypy sky_claw/`.
@@ -321,12 +350,24 @@ Honestidad operativa — esto sigue abierto y conviene saberlo antes de producci
 
 Workflow estándar para publicar una nueva versión de Sky-Claw. El empaquetado se realiza con PyInstaller usando el spec `sky_claw.spec` (que autoderiva el `VERSIONINFO` de la versión del paquete en `pyproject.toml`).
 
-> **Estado actual:** GitHub contiene releases hasta `v0.2.4`. El workflow
-> publicado construyó `SkyClawApp.exe`, generó un SBOM SPDX, ejecutó
-> `Cosign sign-blob` keyless y adjuntó `SkyClawApp.exe.bundle.json`; su ejecución
-> para `v0.2.4` terminó correctamente. Los cambios del árbol actual siguen en
-> `[Unreleased]`. Esta tarea no verificó criptográficamente el bundle, no hizo
-> cold boot del ejecutable ni inspeccionó la firma PE del artefacto histórico.
+> **Estado actual:** GitHub contiene releases hasta `v0.2.4`. La publicación de
+> nuevos releases está **pausada temporalmente** mientras continúan los refactors
+> estructurales. `.github/workflows/release.yml` conserva la receta de build,
+> SBOM, firma y publicación, pero no se dispara por tags y el job `release` está
+> bloqueado intencionalmente. Los cambios del árbol actual siguen en
+> `[Unreleased]`.
+
+> **Reactivación:** restaurar en `.github/workflows/release.yml` el trigger
+> `push.tags` para `v*` y eliminar el guard `if: ${{ false }}` del job `release`.
+> Solo después de mergear esa reactivación debe crearse y pushearse un nuevo tag
+> de versión.
+
+> **Límites de la evidencia histórica:** lo que se sabe de `v0.2.4` sigue
+> acotado a lo que publicó el workflow. Esta documentación
+> no verificó criptográficamente el bundle publicado,
+> no hizo cold boot de `SkyClawApp.exe` ni inspeccionó de forma independiente la
+> firma PE/Authenticode del artefacto histórico. Que la release exista y haya
+> adjuntado su SBOM y su `SkyClawApp.exe.bundle.json` no sustituye esos smokes.
 
 ### 10.1 Checklist de Release
 
@@ -362,10 +403,11 @@ Tras generar el `.exe`:
 1.  **Arranque en modo GUI:** Ejecutar `SkyClawApp.exe` en una máquina limpia (sin Python instalado). Debe arrancar en modo GUI por defecto (`sys.frozen`).
 2.  **Arranque en modo CLI:** Probar `SkyClawApp.exe --mode cli -v` para verificar logs y que el handler de excepciones del loop funciona.
 3.  **Validación de Bridge:** Correr `SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"` y validar el smoke de §2.
-4.  **Artifact Tagging:** Sustituir `<version>` por la versión SemVer ya
-    declarada en `pyproject.toml`; crear el tag
+4.  **Artifact Tagging:** mientras la publicación esté pausada, **no crear ni
+    pushear tags de release**. Tras reactivar el workflow según el bloque
+    anterior, sustituir `<version>` por la versión SemVer declarada, crear el tag
     (`git tag -a "v<version>" -m "Release v<version>"`) y pushearlo
-    (`git push origin "v<version>"`). El push dispara
+    (`git push origin "v<version>"`). En ese estado reactivado, el push dispara
     `.github/workflows/release.yml`, que publica el ejecutable, el bundle Cosign
     y el SBOM en GitHub Releases. Los comandos con `<version>` son plantillas,
     no deben ejecutarse literalmente.

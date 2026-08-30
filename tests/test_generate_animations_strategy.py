@@ -16,6 +16,7 @@ from sky_claw.app.orchestrator.tool_strategies.generate_animations import (
     GenerateAnimationsStrategy,
 )
 from sky_claw.app.orchestrator.tool_strategies.middleware import DESTRUCTIVE_TOOL_PATTERNS
+from tests._orchestration_dispatcher_dependencies import crear_dependencias_dispatcher
 
 
 # ── Estrategia ───────────────────────────────────────────────────────────────────
@@ -57,10 +58,7 @@ def test_generate_animations_is_destructive() -> None:
 def test_dispatcher_registers_generate_animations() -> None:
     from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
 
-    # build_orchestration_dispatcher solo accede a atributos del supervisor en la
-    # construcción de las estrategias (los lambdas son perezosos), así que un
-    # MagicMock alcanza para verificar el registro.
-    dispatcher = build_orchestration_dispatcher(MagicMock())
+    dispatcher = build_orchestration_dispatcher(crear_dependencias_dispatcher())
     assert "generate_animations" in dispatcher.registered_tools()
 
 

@@ -955,8 +955,12 @@ class TestAppContextPartialFullAcquisition:
         ctx.config_path = tmp_path / "config.toml"
         ctx._resolve_config_path = MagicMock()
         ctx._migrate_legacy_json = MagicMock()
-        ctx.lifecycle.initialize = AsyncMock()
-        ctx.lifecycle.close = AsyncMock()
+        # PR-1b2a (wiring): el LifecycleContext REAL modela el ownership real.
+        # Los lock managers productivos usan lifecycle=self.lifecycle.manager, y
+        # su cierre físico pertenece a shutdown_all(): mockear lifecycle.close
+        # acá dejaría la conexión compartida de locks.db sin dueño (worker
+        # thread huérfano). El cleanup debe ocurrir por el flujo normal:
+        # rollback de start_full → AsyncExitStack → LifecycleContext.close().
         ctx.network.initialize = AsyncMock()
         ctx.network.close = AsyncMock()
         ctx.network.gateway = MagicMock()

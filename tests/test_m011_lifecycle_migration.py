@@ -9,6 +9,8 @@ tests construct them bare and must stay green).
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from sky_claw.app.core.db_lifecycle import DatabaseLifecycleManager
@@ -130,3 +132,69 @@ async def test_dlq_rolls_back_dangling_transaction_on_shared_connection(tmp_path
         assert await dlq.list_pending() == []
     finally:
         await mgr.shutdown_all()
+
+
+# =============================================================================
+# PR-1b2a (wiring): TODO DistributedLockManager productivo recibe lifecycle=
+# =============================================================================
+
+_RAIZ_REPO = Path(__file__).resolve().parents[1]
+
+#: Inventario EXACTO de construcciones productivas de DistributedLockManager.
+#: Clave: (archivo relativo, función envolvente, variable asignada). La igualdad
+#: exhaustiva rompe el test si aparece un TERCER constructor no enumerado; y un
+#: sitio enumerado sin ``lifecycle=`` rompe la verificación de keyword.
+_SITIOS_LOCK_MANAGER_PRODUCTIVOS: set[tuple[str, str, str]] = {
+    ("sky_claw/app_context.py", "_start_full_inner", "tools_installer_lock_manager"),
+    ("sky_claw/app_context.py", "_start_full_inner", "lock_manager"),
+    ("sky_claw/app/orchestrator/rollback_factory.py", "create_rollback_components", "lock_manager"),
+}
+
+
+def test_inventario_productivo_de_lock_managers_exige_lifecycle() -> None:
+    """Inventario de wiring, no de comportamiento (eso lo cubren las carreras
+    conductuales de PR-1b2a): cada construcción productiva de
+    ``DistributedLockManager`` debe pasar ``lifecycle=`` explícito para
+    participar del boundary. Enumeración exhaustiva por AST: un sitio nuevo
+    rompe la igualdad del inventario hasta ser enumerado, y enumerado sin
+    ``lifecycle`` rompe la verificación de keyword."""
+    encontrados: dict[tuple[str, str, str], bool] = {}
+    for archivo in (_RAIZ_REPO / "sky_claw").rglob("*.py"):
+        rel = str(archivo.relative_to(_RAIZ_REPO)).replace("\\", "/")
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
+        padres: dict[ast.AST, ast.AST] = {}
+        for nodo in ast.walk(arbol):
+            for hijo in ast.iter_child_nodes(nodo):
+                padres[hijo] = nodo
+
+        for nodo in ast.walk(arbol):
+            if not (
+                isinstance(nodo, ast.Call)
+                and isinstance(nodo.func, ast.Name)
+                and nodo.func.id == "DistributedLockManager"
+            ):
+                continue
+            variable: str | None = None
+            funcion: str | None = None
+            cur: ast.AST | None = padres.get(nodo)
+            while cur is not None:
+                if variable is None and isinstance(cur, ast.Assign):
+                    for target in cur.targets:
+                        if isinstance(target, ast.Name):
+                            variable = target.id
+                            break
+                if variable is None and isinstance(cur, ast.AnnAssign) and isinstance(cur.target, ast.Name):
+                    variable = cur.target.id
+                if funcion is None and isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    funcion = cur.name
+                cur = padres.get(cur)
+
+            tiene_lifecycle = any(isinstance(kw, ast.keyword) and kw.arg == "lifecycle" for kw in nodo.keywords)
+            encontrados[(rel, funcion or "<module>", variable or "<sin-variable>")] = tiene_lifecycle
+
+    assert set(encontrados) == _SITIOS_LOCK_MANAGER_PRODUCTIVOS, (
+        f"inventario de construcciones productivas de DistributedLockManager cambiado: "
+        f"{set(encontrados) ^ _SITIOS_LOCK_MANAGER_PRODUCTIVOS}"
+    )
+    sin_lifecycle = [sitio for sitio, tiene in encontrados.items() if not tiene]
+    assert not sin_lifecycle, f"constructores productivos sin lifecycle=: {sin_lifecycle}"

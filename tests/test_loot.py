@@ -61,8 +61,10 @@ class TestLOOTOutputParser:
         assert result.sorted_plugins == []
         assert result.warnings == []
         assert result.errors == []
-        # Golden Master: success requires plugins > 0
-        assert result.success is False
+        # LOOT no imprime la lista de plugins (verificado contra upstream:
+        # loot/loot src/gui/qt/main.cpp + docs/app/usage/initialisation.rst).
+        # rc=0 sin errores es una corrida exitosa aunque no haya lista.
+        assert result.success is True
 
     def test_parse_mixed_output(self) -> None:
         stdout = (
@@ -97,6 +99,18 @@ class TestLOOTOutputParser:
         assert len(result.errors) >= 1
         assert "CRITICAL" in result.errors[0]
         assert "crashed natively" in result.errors[0]
+
+    def test_parse_rc0_con_error_semantico_falla(self) -> None:
+        """CASO D: rc=0 con evidencia de error real en el output NO es éxito.
+
+        El contrato nuevo no convierte rc=0 en éxito ciego: una firma de crash
+        (o línea de error) en la salida sigue fallando aunque el proceso haya
+        salido 0.
+        """
+        stdout = "FATAL ERROR: access violation at 0xDEADBEEF\n"
+        result = LOOTOutputParser.parse(stdout=stdout, stderr="", return_code=0)
+        assert result.success is False
+        assert "CRITICAL" in result.errors[0]
 
 
 # ------------------------------------------------------------------
@@ -688,12 +702,39 @@ class TestRunLootSortLock:
         await sm.initialize()
         return lm, sm
 
+    def _localappdata_con_load_order(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> pathlib.Path:
+        """Crea el layout LOCALAPPDATA real y lo inyecta: el resolver por defecto
+        del servicio necesita targets observables (el gate físico exige
+        evidencia de mutación, review adversarial #495)."""
+        la = tmp_path / "localappdata"
+        game_dir = la / "Skyrim Special Edition"
+        game_dir.mkdir(parents=True)
+        plugins = game_dir / "plugins.txt"
+        plugins.write_text("Skyrim.esm\n", encoding="utf-8")
+        (game_dir / "loadorder.txt").write_text("Skyrim.esm\n", encoding="utf-8")
+        monkeypatch.setenv("LOCALAPPDATA", str(la))
+        return plugins
+
+    def _runner_que_escribe(self, plugins: pathlib.Path) -> MagicMock:
+        """Runner fiel a LOOT real: reescribe los archivos del load order."""
+
+        async def sort_real(**kw: object) -> LOOTResult:  # noqa: ANN003
+            for archivo in (plugins, plugins.with_name("loadorder.txt")):
+                archivo.write_text("Skyrim.esm\n", encoding="utf-8")
+            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+
+        runner = MagicMock()
+        runner.sort = AsyncMock(side_effect=sort_real)
+        return runner
+
     @pytest.mark.asyncio
-    async def test_acquires_and_releases_load_order_lock(self, tmp_path: pathlib.Path) -> None:
+    async def test_acquires_and_releases_load_order_lock(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         lm, sm = await self._managers(tmp_path)
         try:
-            runner = MagicMock()
-            runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+            plugins = self._localappdata_con_load_order(monkeypatch, tmp_path)
+            runner = self._runner_que_escribe(plugins)
             result = json.loads(
                 await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )
@@ -706,11 +747,20 @@ class TestRunLootSortLock:
             await lm.close()
 
     @pytest.mark.asyncio
-    async def test_locked_path_preserva_el_perfil_solicitado(self, tmp_path: pathlib.Path) -> None:
+    async def test_locked_path_preserva_el_perfil_solicitado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         lm, sm = await self._managers(tmp_path)
         try:
+            plugins = self._localappdata_con_load_order(monkeypatch, tmp_path)
+
+            async def sort_real(**kw: object) -> LOOTResult:  # noqa: ANN003
+                for archivo in (plugins, plugins.with_name("loadorder.txt")):
+                    archivo.write_text("Skyrim.esm\n", encoding="utf-8")
+                return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+
             profiled = MagicMock()
-            profiled.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+            profiled.sort = AsyncMock(side_effect=sort_real)
 
             class _ProfileFactory:
                 def __init__(self) -> None:
@@ -816,7 +866,9 @@ class TestRunLootSortLock:
         assert "no se pudo resolver el perfil" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_locked_path_returns_json_on_unexpected_error(self, tmp_path: pathlib.Path) -> None:
+    async def test_locked_path_returns_json_on_unexpected_error(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An unexpected subprocess error (e.g. OSError) is returned as JSON, not raised.
 
         Preserves the AsyncToolRegistry.execute() contract on the locked live path
@@ -824,6 +876,10 @@ class TestRunLootSortLock:
         """
         lm, sm = await self._managers(tmp_path)
         try:
+            # Targets observables: con la precondición nueva (sin targets →
+            # fail antes de LOOT), el error del runner debe seguir siendo lo
+            # que este test ejercita.
+            self._localappdata_con_load_order(monkeypatch, tmp_path)
             runner = MagicMock()
             runner.sort = AsyncMock(side_effect=OSError("loot.exe is not executable"))
             result = json.loads(
@@ -836,7 +892,9 @@ class TestRunLootSortLock:
             await lm.close()
 
     @pytest.mark.asyncio
-    async def test_emits_action_manifest_when_journal_wired(self, tmp_path: pathlib.Path) -> None:
+    async def test_emits_action_manifest_when_journal_wired(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Con journal cableado, el path del agente persiste la "caja negra de
         vuelo" del sort (T-26 end-to-end).
 
@@ -853,8 +911,8 @@ class TestRunLootSortLock:
         journal = OperationJournal(tmp_path / "journal.db")
         await journal.open()
         try:
-            runner = MagicMock()
-            runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+            plugins = self._localappdata_con_load_order(monkeypatch, tmp_path)
+            runner = self._runner_que_escribe(plugins)
             result = json.loads(
                 await run_loot_sort(
                     MagicMock(),
@@ -889,12 +947,14 @@ class TestRunLootSortLock:
             await lm.close()
 
     @pytest.mark.asyncio
-    async def test_journal_opcional_preserva_compat(self, tmp_path: pathlib.Path) -> None:
+    async def test_journal_opcional_preserva_compat(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Sin journal, el path del agente ordena igual que antes (back-compat)."""
         lm, sm = await self._managers(tmp_path)
         try:
-            runner = MagicMock()
-            runner.sort = AsyncMock(return_value=LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"]))
+            plugins = self._localappdata_con_load_order(monkeypatch, tmp_path)
+            runner = self._runner_que_escribe(plugins)
             result = json.loads(
                 await run_loot_sort(MagicMock(), runner, None, profile="Default", lock_manager=lm, snapshot_manager=sm)
             )

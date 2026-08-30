@@ -164,6 +164,7 @@ async def test_bridge_opens_modal_when_toggle_off() -> None:
             "request_id": "r2",
             "reason": "Tool 'execute_loot_sorting'…",
             "detail": "payload: <empty>",
+            "category": "tool_execution",
             # P1-7: la solicitud viaja marcada con la pestaña dueña (acá, ninguna).
             "owner_tab": None,
         }
@@ -202,6 +203,7 @@ async def test_bridge_parks_sandbox_promotion_even_with_auto_approve_on() -> Non
             "request_id": "s1",
             "reason": "El ritual 'synthesis' terminó en sandbox",
             "detail": "+ overwrite/Synthesis.esp",
+            "category": "sandbox_promotion",
             "owner_tab": None,
         }
     ]
@@ -345,12 +347,13 @@ async def test_run_ritual_single_flight_refuses_while_one_is_in_flight() -> None
     assert fb is not None and fb["type"] == "warning"
 
 
-async def test_run_ritual_clears_pending_prompt_and_inflight_on_finish() -> None:
+async def test_run_ritual_without_owned_request_preserves_existing_pending_prompt() -> None:
     store = ReactiveStore()
-    store.set("pending_hitl", {"request_id": "tool-x-1"})  # a stale prompt for this run
+    existing = {"request_id": "tool-x-1"}  # no exact identity belongs to this run
+    store.set("pending_hitl", existing)
     sup = _FakeSupervisor({"success": True})
     await run_ritual("dyndolod", supervisor=sup, store=store)
-    assert store.get("pending_hitl") is None
+    assert store.get("pending_hitl") == existing
     assert not store.get("ritual_in_flight")
     fb = store.get("ritual_feedback")
     assert fb is not None and fb["type"] == "positive"

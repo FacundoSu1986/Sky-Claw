@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import contextlib
+import hashlib
 import logging
 import pathlib
 import re
@@ -32,6 +33,14 @@ from sky_claw.app.security.links import (
 )
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.output_targets import dyndolod_output_target
+
+# Import directo del MÓDULO y no del paquete `validators`: el gate sólo depende de
+# `app.security.links`, así que no reintroduce el ciclo que obliga a
+# `dyndolod_service` a importar `validators.preflight` de forma perezosa.
+from sky_claw.local.validators.texgen_visibility import (
+    TexGenVisibilityError,
+    verificar_visibilidad_de_texgen,
+)
 from sky_claw.logging_config import pipeline_tx_id_var, subprocess_error_extra
 
 logger = logging.getLogger(__name__)
@@ -146,6 +155,196 @@ _GAME_MODE_SUELTO = re.compile(r"^\s*[-/]([A-Za-z0-9]+)\s*$")
 # frescura, porque "no lo pude mirar antes" pasa a leerse como "no había nada".
 # Tupla vacía: ninguna firma real lo es.
 _SIN_ARTEFACTO: tuple[float | int, ...] = ()
+
+#: Cuánto se lee por vuelta al firmar el log. El log de DynDOLOD llega a decenas
+#: de MB: se firma por chunks para no traerlo entero a memoria sólo para hashearlo.
+_CHUNK_DEL_DIGEST = 1024 * 1024
+
+
+#: Digest del CONTENIDO del log, no de su metadata: lo único que tiene que hacer
+#: es distinguir dos contenidos distintos del mismo tamaño, que es exactamente lo
+#: que `mtime + tamaño` no puede. `sha256` es de stdlib y criptográfico; se lo
+#: eligió MIDIENDO, no por costumbre: sobre un log sintético de 100 MiB da
+#: ~1100 MB/s contra ~570 MB/s de `blake2b`, porque las CPU con extensiones SHA
+#: lo aceleran por hardware. Coste real por corrida: dos pasadas —la firma previa
+#: y la re-firma del prefijo—, ~190 ms sobre 100 MiB, contra una corrida de
+#: DynDOLOD que dura horas.
+def _digest_de_stream(fh: Any, limite: int | None = None) -> tuple[int, str]:
+    """Firma por chunks lo que salga de ``fh``, hasta ``limite`` bytes si se pide.
+
+    Devuelve ``(bytes_leídos, digest)``. Los bytes leídos se cuentan acá y no con
+    un ``stat`` aparte a propósito: el tamaño que devuelve es el del contenido que
+    REALMENTE se firmó, así que la firma no puede quedar descalzada de su tamaño
+    si el archivo cambia entre una llamada y la otra.
+    """
+    acumulador = hashlib.sha256()
+    leidos = 0
+    while limite is None or leidos < limite:
+        pedido = _CHUNK_DEL_DIGEST if limite is None else min(_CHUNK_DEL_DIGEST, limite - leidos)
+        chunk = fh.read(pedido)
+        if not chunk:
+            break
+        leidos += len(chunk)
+        acumulador.update(chunk)
+    return leidos, acumulador.hexdigest()
+
+
+# =============================================================================
+# TAXONOMÍA DEL LOG (etapa 9)
+# =============================================================================
+#
+# Los binarios son apps GUI sin stdout: la evidencia de una corrida vive en su
+# log. El gate anterior era `not errors` sobre un patrón que matchea `Error:`,
+# y el rig 2026-08-10 midió **121 líneas `Error:` en una corrida EXITOSA** de
+# DynDOLOD — o sea que rechazaba todo éxito real. Informe fuera del repo.
+#
+# La taxonomía tiene TRES cajas, no dos, y esa es la corrección de fondo:
+# completitud, no-fatal de dominio, y terminal. Ante duda, TERMINAL: un
+# no-fatal mal clasificado como terminal da un rojo revisable; al revés da un
+# verde falso, que es el defecto que esta etapa arrastró desde #440.
+
+#: Qué línea prueba que la herramienta TERMINÓ su trabajo, por herramienta.
+#: Son DISTINTOS por binario y ese es justo el riesgo de hermano: cablear el de
+#: DynDOLOD y dejar TexGen sin el suyo deja media etapa sin gate de completitud.
+#: Congelado por igualdad literal en `tests/test_dyndolod_taxonomia_log.py`.
+#: Se evalúan con `any()`, así que CADA entrada tiene que bastar por sí sola para
+#: afirmar "la herramienta terminó". Dos consecuencias que costaron un hallazgo:
+#:
+#: 1. Ninguna puede ser un HITO INTERMEDIO. `LODGenx64Win6.exe generated object LOD
+#:    for <ws> successfully` —que el informe lista junto a las otras— se probó y se
+#:    descartó: una corrida que llega a LODGen y muere antes de generar los plugins
+#:    es incompleta, y con esa entrada daba `completo=True`. Falso verde.
+#: 2. Ninguna puede perder el `successfully`. Truncarla en el `<ws>` para tolerar el
+#:    worldspace variable dejaba `"generated object LOD for"`, que matchea también
+#:    `Error: failed, never generated object LOD for Tamriel`.
+#:
+#: Las dos que quedan son afirmaciones de fin de trabajo, completas y sin comodín.
+MARCADORES_DE_COMPLETITUD: dict[str, tuple[str, ...]] = {
+    "TexGen": ("TexGen completed successfully",),
+    "DynDOLOD": (
+        "DynDOLOD plugins generated successfully",
+        "Occlusion.esp completed successfully",
+    ),
+}
+
+#: Ruido de dominio que el binario emite en corridas buenas. Van a `warnings`:
+#: son información para el operador, no fallo. Medidos en rig (§11.4).
+#:
+#: Cada entrada es una tupla de substrings que tienen que aparecer **TODOS** en la
+#: línea. No es ceremonia: la categoría del DLL es `DynDOLOD.DLL … not found`, y
+#: exentar por el substring suelto `"DynDOLOD.DLL"` declaraba no-fatal a
+#: `Critical: DynDOLOD.DLL is corrupt` — un terminal disfrazado de ruido, que con
+#: artefacto fresco y marcador daba verde. Exentar de más es la dirección que
+#: produce falsos VERDES, así que cada exención dice su categoría completa.
+NO_FATALES_DEL_DOMINIO: tuple[tuple[str, ...], ...] = (
+    ("Deleted reference",),
+    ("Unresolved FormID",),
+    ("LOD billboard(s) not found",),
+    ("No TexGen output detected",),
+    ("DynDOLOD.DLL", "not found"),
+    ("File not found", "SkyrimSE.exe"),
+)
+
+#: Lo que aborta la corrida. Se evalúa ANTES que los no-fatales para que un
+#: `Fatal:` no se cuele por parecerse a uno de ellos.
+#:
+#: Se comparan en MINÚSCULAS: el parser anterior usaba `re.IGNORECASE`, y perderlo
+#: dejaba pasar `exception:` en minúscula —que ningún patrón terminal ni
+#: `_ERROR_SUELTO` capturaba— hacia un veredicto verde. Bajar el case es el fix
+#: mínimo que conserva el fail-closed sin ensanchar la lista.
+PATRONES_TERMINALES: tuple[str, ...] = (
+    "Fatal:",
+    "Can not create path",
+    "Path not allowed",
+    "core files are outdated",
+    "madExcept",
+    "Exception",
+)
+
+#: Orden determinista de decodificación del log, con `errors="replace"`
+#: reservado al ÚLTIMO recurso. `utf-8` va primero porque es el único
+#: autovalidante de los dos: `cp1252` acepta casi cualquier byte, así que
+#: intentarlo primero convierte un log utf-8 legítimo en mojibake silencioso y
+#: deja el fallback inalcanzable.
+_CODECS_DEL_LOG: tuple[str, ...] = ("utf-8", "cp1252")
+
+#: Severidades que declaran que la corrida SE ROMPIÓ, sin importar de QUÉ hable la
+#: línea. Se evalúan en la MISMA caja que :data:`PATRONES_TERMINALES` —es decir,
+#: ANTES que las categorías de dominio— porque la categoría dice de qué habla la
+#: línea y la severidad dice si la corrida sigue viva. Sin esta precedencia,
+#: `Critical: Deleted reference […] is corrupt` cae en la caja de ruido por
+#: mencionar una categoría conocida, y una corrida que abortó sale verde.
+#:
+#: `ERROR` NO está acá y no puede estarlo: el rig 2026-08-10 midió 121 líneas
+#: `Error:` en una corrida EXITOSA. Barrer todo `Error:` antes de las categorías
+#: convertiría cada una de esas 121 en terminal y ninguna corrida buena volvería a
+#: salir verde — el falso rojo que T2 vino a cerrar, reintroducido por el otro lado.
+_SEVERIDAD_TERMINAL = re.compile(r"\b(?:FATAL|FAIL|Critical)\s*:", re.IGNORECASE)
+
+#: `Error:` suelto, para la regla fail-closed de abajo: se aplica DESPUÉS de las
+#: categorías, así que sólo alcanza a lo que ninguna categoría conocida explica.
+_ERROR_SUELTO = re.compile(r"\bERROR\s*:", re.IGNORECASE)
+
+
+def clasificar_log(texto: str, tool: str) -> tuple[list[str], list[str], bool]:
+    """Reparte las líneas del log en terminal / no-fatal, y busca la completitud.
+
+    Función de módulo y NO método del runner a propósito: es texto puro, sin
+    disco. La familia del post-check enumera los métodos que sondean el
+    filesystem para emitir el veredicto (`tests/test_dyndolod_service.py`,
+    `test_la_familia_del_post_check_esta_congelada`); meter acá un clasificador
+    sin I/O lo dejaría dentro de un ancla que no lo describe, o —peor— fuera de
+    toda ancla si su nombre no matchea los prefijos que el detector busca.
+
+    Args:
+        texto: contenido del log de la herramienta.
+        tool: ``"TexGen"`` o ``"DynDOLOD"``; elige los marcadores de completitud.
+
+    Returns:
+        ``(terminales, no_fatales, completo)``. `terminales` es lo que gatea el
+        veredicto; `no_fatales` es diagnóstico para el operador; `completo` dice
+        si la herramienta declaró haber terminado.
+    """
+    terminales: list[str] = []
+    no_fatales: list[str] = []
+    # Deduplicación por set aparte de la lista: el log real del rig son 121
+    # líneas de error entre decenas de miles, y `x not in lista` sobre la lista
+    # que se está construyendo es O(n²) sobre un archivo que puede pesar
+    # decenas de MB. Las listas siguen siendo la salida porque el orden del log
+    # es lo que hace legible el diagnóstico; el set solo decide si ya se vio.
+    vistos_terminales: set[str] = set()
+    vistos_no_fatales: set[str] = set()
+
+    terminales_en_minusculas = tuple(patron.lower() for patron in PATRONES_TERMINALES)
+
+    for linea in texto.splitlines():
+        limpia = linea.strip()
+        if not limpia:
+            continue
+        minuscula = limpia.lower()
+        # La severidad se evalúa junto con los patrones terminales y ANTES que las
+        # categorías: una línea puede mencionar una categoría conocida y aun así
+        # declarar que la corrida abortó.
+        if any(patron in minuscula for patron in terminales_en_minusculas) or _SEVERIDAD_TERMINAL.search(limpia):
+            if limpia not in vistos_terminales:
+                vistos_terminales.add(limpia)
+                terminales.append(limpia)
+            continue
+        if any(all(parte in limpia for parte in categoria) for categoria in NO_FATALES_DEL_DOMINIO):
+            if limpia not in vistos_no_fatales:
+                vistos_no_fatales.add(limpia)
+                no_fatales.append(limpia)
+            continue
+        # Fail-closed: un `Error:` que no está en la lista de no-fatales conocidos
+        # se trata como terminal. La lista salió del §11.4 del informe, que enumera
+        # CATEGORÍAS y no las 121 ocurrencias, así que una categoría no prevista
+        # tiene que dar rojo revisable y no verde silencioso.
+        if _ERROR_SUELTO.search(limpia) and limpia not in vistos_terminales:
+            vistos_terminales.add(limpia)
+            terminales.append(limpia)
+
+    completo = any(marcador in texto for marcador in MARCADORES_DE_COMPLETITUD[tool])
+    return terminales, no_fatales, completo
 
 
 # =============================================================================
@@ -327,6 +526,14 @@ class _PostCheck:
     artefacto: bool
     errors: list[str]
     warnings: list[str]
+    #: ¿La herramienta declaró en su log que TERMINÓ? El gate de frescura prueba
+    #: que el artefacto cambió, no que la corrida haya llegado al final: una GUI
+    #: cerrada a mitad deja el árbol tocado y el trabajo incompleto.
+    completo: bool = False
+    #: Lo que aborta la corrida, ya separado del ruido de dominio. Es ESTO lo que
+    #: gatea el veredicto, no `errors` — que además lleva los diagnósticos que el
+    #: post-check redacta para el operador (artefacto rancio, staging no sondeable).
+    terminales: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +574,15 @@ class DynDOLODPipelineResult:
         texgen_mod_path: Path al mod empaquetado de TexGen.
         dyndolod_mod_path: Path al mod empaquetado de DynDOLOD.
         errors: Lista de errores acumulados del pipeline.
+        needs_deployment: el corte NO fue un fallo de herramienta — TexGen corrió,
+            su mod se empaquetó y lo único que falta es que el operador lo
+            materialice en el ``Data`` físico. Distingue "esto se rompió" de
+            "esto está listo y espera un despliegue", que es la diferencia entre
+            un rojo terminal y uno con continuación. El servicio la usa para
+            decidir qué move-aside PRESERVA (review de #493, finding F1).
+        texgen_packaging_attempted: sube ANTES de invocar el empaquetado de
+            TexGen — la única mutación del artifact FINAL. Es la evidencia que
+            el servicio usa para la matriz de fallos del supersede (clases A/B/C).
     """
 
     success: bool
@@ -375,6 +591,8 @@ class DynDOLODPipelineResult:
     texgen_mod_path: pathlib.Path | None = None
     dyndolod_mod_path: pathlib.Path | None = None
     errors: list[str] = field(default_factory=list)
+    needs_deployment: bool = False
+    texgen_packaging_attempted: bool = False
 
 
 # =============================================================================
@@ -390,7 +608,7 @@ class DynDOLODRunner:
     y texturas optimizadas para mejorar la visualización a larga distancia.
 
     Patrones de salida esperados:
-    - TexGen: <TexGen_Output>/ - Contiene texturas LOD
+    - TexGen: <output_root>/textures/ - Contiene texturas LOD
     - DynDOLOD: <DynDOLOD_Output>/ - Contiene DynDOLOD.esp y assets
 
     Usage:
@@ -410,20 +628,24 @@ class DynDOLODRunner:
             print(f"DynDOLOD mod: {result.dyndolod_mod_path}")
     """
 
-    # Patrones regex para el post-check por LOG (los binarios son apps GUI, PE
+    # Patrón regex para el post-check por LOG (los binarios son apps GUI, PE
     # Subsystem 2: no escriben a stdout/stderr; la evidencia real de una corrida
     # vive en ``Logs/{Tool}_{modo}_log.txt``).
-    _ERROR_PATTERN = re.compile(
-        r"(?:ERROR|Error|FAIL|Exception|Critical|FATAL):\s*(.+?)(?:\n|$)",
-        re.IGNORECASE | re.MULTILINE,
-    )
+    #
+    # El `_ERROR_PATTERN` que acompañaba a este quedó sin callers en T2: su
+    # trabajo —decidir qué línea del log es un error— lo hace ahora
+    # `clasificar_log` con las tres cajas, y un regex de errores colgado en la
+    # clase invita a que alguien lo vuelva a cablear en paralelo a la taxonomía.
+    # Esa es exactamente la forma "hermano en el mismo archivo" que este repo
+    # mide como su defecto dominante, así que se borra en vez de dejarse muerto.
     _WARNING_PATTERN = re.compile(
         r"(?:WARNING|Warning|WARN):\s*(.+?)(?:\n|$)",
         re.IGNORECASE | re.MULTILINE,
     )
 
-    # Nombres de directorios de salida estándar
-    TEXGEN_OUTPUT_NAME = "TexGen_Output"
+    # Contratos físicos de staging. Los nombres de mods MO2 son conceptos
+    # independientes y permanecen en *_MOD_NAME.
+    TEXGEN_OUTPUT_NAME = "textures"
     DYNDOLLOD_OUTPUT_NAME = "DynDOLOD_Output"
     TEXGEN_MOD_NAME = "TexGen Output"
     DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
@@ -495,6 +717,9 @@ class DynDOLODRunner:
         # Firma del staging ANTES de lanzar: la frescura se decide comparando el
         # árbol consigo mismo (mtime contra mtime), no contra el reloj de pared.
         firmas_previas = await asyncio.to_thread(self._firmas_de_salida, "TexGen")
+        # El log también se firma ANTES: el marcador de completitud sólo vale si
+        # lo escribió ESTA corrida (ver `_firma_del_log`).
+        firma_log_previa = await asyncio.to_thread(self._firma_del_log, "TexGen")
 
         try:
             execution_cwd = pathlib.Path.cwd()
@@ -521,9 +746,15 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        post = await asyncio.to_thread(self._post_check, "TexGen", firmas_previas)
+        post = await asyncio.to_thread(self._post_check, "TexGen", firmas_previas, firma_log_previa)
         errors, warnings, output_path = post.errors, post.warnings, post.output_path
-        success = return_code == 0 and post.artefacto and not errors
+        # Cuatro conjuntos, y ninguno es redundante: el exit code no alcanza en una
+        # app GUI, el artefacto fresco prueba que ALGO se escribió en esta corrida,
+        # el marcador prueba que la herramienta LLEGÓ AL FINAL, y la ausencia de
+        # terminales prueba que no abortó. Gatear por `not errors` —lo anterior—
+        # rechazaba todo éxito real: el rig midió 121 líneas `Error:` en una corrida
+        # buena. Ver `clasificar_log`. Idéntica a la de `run_dyndolod` a propósito.
+        success = return_code == 0 and post.artefacto and post.completo and not post.terminales
 
         result = ToolExecutionResult(
             success=success,
@@ -606,6 +837,9 @@ class DynDOLODRunner:
 
         # Ver run_texgen: firma previa del staging para el gate de frescura.
         firmas_previas = await asyncio.to_thread(self._firmas_de_salida, "DynDOLOD")
+        # El log también se firma ANTES: el marcador de completitud sólo vale si
+        # lo escribió ESTA corrida (ver `_firma_del_log`).
+        firma_log_previa = await asyncio.to_thread(self._firma_del_log, "DynDOLOD")
 
         try:
             execution_cwd = pathlib.Path.cwd()
@@ -632,9 +866,13 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        post = await asyncio.to_thread(self._post_check, "DynDOLOD", firmas_previas)
+        post = await asyncio.to_thread(self._post_check, "DynDOLOD", firmas_previas, firma_log_previa)
         errors, warnings, output_path = post.errors, post.warnings, post.output_path
-        success = return_code == 0 and post.artefacto and not errors
+        # Ver `run_texgen`: misma fórmula, palabra por palabra. Que las dos sean
+        # literalmente iguales es el punto — los marcadores de completitud SÍ
+        # difieren por herramienta (`MARCADORES_DE_COMPLETITUD`), y ahí es donde
+        # el hermano se escapa si uno de los dos lanzadores no consulta el suyo.
+        success = return_code == 0 and post.artefacto and post.completo and not post.terminales
 
         result = ToolExecutionResult(
             success=success,
@@ -890,18 +1128,23 @@ class DynDOLODRunner:
         self,
         output_path: pathlib.Path,
         mod_name: str,
+        *,
+        preservar_directorio_raiz: bool = False,
     ) -> pathlib.Path:
         """
         Empaqueta la salida de una herramienta como un mod válido para MO2.
 
         Pasos:
         1. Crear directorio en self._config.mo2_mods_path / mod_name
-        2. Copiar todo el contenido de output_path al nuevo directorio
+        2. Copiar el contenido de output_path o preservar esa raíz Data-relative
         3. Generar meta.ini válido
 
         Args:
             output_path: Path al directorio de salida de la herramienta.
             mod_name: Nombre del mod a crear.
+            preservar_directorio_raiz: Si es True, copia ``output_path`` como
+                hijo del mod. TexGen lo necesita porque su artefacto físico es
+                ``root/textures`` y ``textures`` forma parte del layout Data.
 
         Returns:
             pathlib.Path: Ruta al directorio del mod creado.
@@ -914,6 +1157,36 @@ class DynDOLODRunner:
         logger.info("Empaquetando mod: %s -> %s", output_path, mod_path)
 
         try:
+            # OWNERSHIP antes que existencia: la raíz administrada es un namespace
+            # COMPARTIDO —las dos herramientas reciben el mismo valor en ``-o:``—
+            # así que sus hijos no se pueden atribuir a una sola. Empaquetarla
+            # entera copiaba ``root/textures`` (el artefacto de TexGen) dentro de
+            # "DynDOLOD Output", y el operador terminaba con las mismas texturas
+            # desplegadas por dos mods distintos (review de #493, hallazgo A).
+            #
+            # Se prohíbe el OWNERSHIP, no la DETECCIÓN: ``_candidatos_de_salida``
+            # sigue reconociendo la raíz para DynDOLOD (interpretación B de
+            # ``-o:``, gateada por ``DynDOLOD.esp``), porque saber DÓNDE escribió
+            # la herramienta es una pregunta distinta de a quién pertenece lo que
+            # hay ahí. Y no se filtra por nombre: excluir ``textures`` dejaría
+            # pasar cualquier otro hijo ajeno de la raíz —el ``DynDOLOD_Output``
+            # de una corrida anterior, un backup de move-aside— con el mismo
+            # resultado. Lo que no es empaquetable es el DIRECTORIO, no una lista
+            # de sus hijos.
+            #
+            # Está PRIMERO, antes del chequeo de existencia, porque la respuesta no
+            # depende del estado del disco: la raíz compartida no es una unidad
+            # empaquetable ni cuando está poblada ni cuando no.
+            if self._es_la_raiz_administrada(output_path):
+                raise DynDOLODValidationError(
+                    f"'{output_path}' es la raíz administrada compartida por TexGen y DynDOLOD, "
+                    f"no una salida propia de una herramienta: no se puede empaquetar como "
+                    f"'{mod_name}' sin atribuirle hijos que pueden ser de la otra. La herramienta "
+                    "escribió directo en el namespace compartido en vez de en su subcarpeta de "
+                    "staging; revisá el destino real de la corrida antes de reintentar.",
+                    output_path=output_path,
+                )
+
             # Verificar que el directorio de salida existe
             if not output_path.exists():
                 raise DynDOLODValidationError(
@@ -967,8 +1240,12 @@ class DynDOLODRunner:
 
                 mod_path.mkdir(parents=True, exist_ok=True)
 
-                # Copiar contenido
-                for item in output_path.iterdir():
+                # TexGen entrega ``root/textures`` como artefacto/fuente exacta,
+                # pero el root del mod MO2 tiene que conservar ``textures/``.
+                # DynDOLOD, en cambio, ya entrega un staging cuyo CONTENIDO es
+                # Data-relative y conserva el comportamiento histórico.
+                items = [output_path] if preservar_directorio_raiz else list(output_path.iterdir())
+                for item in items:
                     src = item
                     dst = mod_path / item.name
                     if src.is_dir():
@@ -1009,9 +1286,13 @@ class DynDOLODRunner:
 
         Flujo:
         1. Ejecutar TexGen (si run_texgen=True)
-        2. Empaquetar TexGen_Output como "TexGen Output"
-        3. Ejecutar DynDOLOD (después de que TexGen esté listo)
-        4. Empaquetar DynDOLOD_Output como "DynDOLOD Output"
+        2. Empaquetar ``textures`` como "TexGen Output", preservando esa raíz
+        3. Verificar que esa salida sea VISIBLE bajo el ``-d:<Data>`` que DynDOLOD
+           va a abrir. Empaquetar en ``mods/`` no lo demuestra: Sky-Claw corre
+           standalone y no hereda la USVFS de MO2. Sin esa prueba, fail-closed —
+           DynDOLOD no se lanza.
+        4. Ejecutar DynDOLOD (después de que TexGen esté listo Y sea visible)
+        5. Empaquetar DynDOLOD_Output como "DynDOLOD Output"
 
         Args:
             run_texgen: Si True, ejecuta TexGen antes de DynDOLOD.
@@ -1033,6 +1314,25 @@ class DynDOLODRunner:
         dyndolod_result: ToolExecutionResult | None = None
         texgen_mod_path: pathlib.Path | None = None
         dyndolod_mod_path: pathlib.Path | None = None
+        # C: si el handoff con TexGen no se puede DEMOSTRAR, DynDOLOD no se lanza.
+        # Arranca en True porque sin `run_texgen` no hay salida nueva cuya
+        # visibilidad afirmar: el gate mide "el TexGen que ESTA corrida generó", y
+        # con la etapa apagada esa proposición no tiene sujeto. Sólo lo baja el
+        # propio gate — un fallo previo de TexGen o de su empaquetado deja el
+        # camino como estaba (el pipeline ya sale rojo por su cuenta) y cambiar
+        # eso sería otra decisión, no la de este fix.
+        handoff_verificado = True
+        #: F1: sube SÓLO cuando el corte es "falta desplegar", nunca cuando algo
+        #: se rompió. Es la condición que autoriza al servicio a preservar el mod
+        #: de TexGen, así que un `True` de más equivale a dejar en disco una
+        #: mutación de una corrida fallida.
+        needs_deployment = False
+        # D2 (PR #493): sube ANTES de invocar el empaquetado de TexGen. Es la
+        # evidencia que el servicio usa para distinguir la clase A del supersede
+        # ("el artifact empaquetado nunca se tocó") de B/C ("el reemplazo
+        # empezó y puede no ser restaurable"). El empaquetado es la ÚNICA
+        # mutación del artifact final; TexGen solo escribe el staging crudo.
+        texgen_packaging_attempted = False
 
         # Paso 1: Ejecutar TexGen si está habilitado
         if run_texgen:
@@ -1042,9 +1342,11 @@ class DynDOLODRunner:
                 if texgen_result.success and texgen_result.output_path:
                     # Empaquetar TexGen Output
                     try:
+                        texgen_packaging_attempted = True
                         texgen_mod_path = await self._package_output_as_mod(
                             texgen_result.output_path,
                             self.TEXGEN_MOD_NAME,
+                            preservar_directorio_raiz=True,
                         )
                     except DynDOLODValidationError as e:
                         errors.append(f"Failed to package TexGen output: {e}")
@@ -1061,6 +1363,64 @@ class DynDOLODRunner:
                             e,
                             extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
                         )
+
+                    # C (review de #493): empaquetar NO es desplegar, y ÉSTE es el
+                    # único momento en que la diferencia se puede afirmar — con la
+                    # salida de esta corrida ya en la mano y ANTES de gastar los
+                    # 30+ min de DynDOLOD.
+                    #
+                    # Sky-Claw corre standalone: no hereda la USVFS de MO2 y lanza
+                    # DynDOLOD contra el `-d:<Data>` FÍSICO, así que el mod que
+                    # acabamos de dejar en `<mo2>/mods` le es invisible salvo que
+                    # el operador haya materializado su árbol de mods. Sin este
+                    # gate, DynDOLOD generaba LODs contra texturas que nunca vio,
+                    # salía con código 0 y el pipeline reportaba verde.
+                    #
+                    # Cuelga de `texgen_mod_path`, o sea de la cadena completa
+                    # (corrida → veredicto → empaquetado → visibilidad): si el
+                    # empaquetado ya falló, el pipeline sale rojo por su cuenta y
+                    # esa consecuencia transaccional está decidida aparte (review
+                    # Qodo #471). Este gate agrega UN corte nuevo, no reabre ése.
+                    #
+                    # `to_thread`: el gate recorre el árbol y, cuando la identidad
+                    # física no alcanza, hashea archivos de decenas de MB. En el
+                    # hilo del event loop eso congela la UI de NiceGUI — misma
+                    # frontera que `_post_check` y `_empaquetar_sincrono`.
+                    if texgen_mod_path is not None:
+                        data_dir = self._config.data_dir
+                        if data_dir is None:
+                            handoff_verificado = False
+                            errors.append(
+                                "No hay un Data configurado contra el cual verificar que la salida "
+                                "de TexGen sea visible para DynDOLOD."
+                            )
+                        else:
+                            try:
+                                await asyncio.to_thread(
+                                    verificar_visibilidad_de_texgen,
+                                    staging=texgen_result.output_path,
+                                    data_dir=data_dir,
+                                )
+                            except TexGenVisibilityError as e:
+                                handoff_verificado = False
+                                # F1 (review de #493): acá —y sólo acá— el rojo NO
+                                # es un fallo de herramienta. TexGen corrió, su
+                                # veredicto pasó y su mod quedó empaquetado y
+                                # validado en `mods/`; lo único que falta es un
+                                # despliegue que Sky-Claw deliberadamente no hace.
+                                # Marcarlo es lo que le permite al servicio
+                                # PRESERVAR ese mod en vez de revertirlo: sin esta
+                                # distinción, el rollback borraba exactamente el
+                                # artefacto que el mensaje de error manda
+                                # materializar, y el reintento regeneraba lo mismo
+                                # para volver a fallar.
+                                needs_deployment = True
+                                errors.append(str(e))
+                                logger.error(
+                                    "TexGen no es visible para DynDOLOD: %s",
+                                    e,
+                                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                                )
                 elif not texgen_result.success:
                     errors.extend(texgen_result.errors)
 
@@ -1082,59 +1442,133 @@ class DynDOLODRunner:
                     stderr=e.stderr or "",
                     errors=[str(e)],
                 )
-
-        # Paso 2: Ejecutar DynDOLOD
-        # Nota: DynDOLOD puede ejecutarse sin TexGen si ya existe TexGen_Output
-        try:
-            dyndolod_result = await self.run_dyndolod(
-                preset=preset,
-                extra_args=dyndolod_args,
+        else:
+            # F1-resume: la continuación después de un despliegue. Sin `run_texgen`
+            # no hay salida NUEVA que gatear, pero sí puede haber una salida
+            # PRESERVADA de una corrida anterior que cortó por visibilidad — y ésa
+            # es justamente la que el operador acaba de materializar. Verificarla
+            # contra el `Data` cierra el ciclo sin volver a correr TexGen, que es
+            # lo que exige no depender de que el binario sea determinista: la
+            # autoridad es el artefacto guardado, no una regeneración que podría
+            # diferir.
+            #
+            # Cuelga de que el mod EXISTA, y ése es el recorte que no rompe el uso
+            # legítimo preexistente: "DynDOLOD sin TexGen porque sus texturas ya
+            # existen" sigue funcionando igual cuando Sky-Claw nunca empaquetó un
+            # TexGen Output. Si el mod está, en cambio, es el artefacto de este
+            # pipeline y DynDOLOD tiene que ver EXACTAMENTE esos bytes: dejarlo
+            # pasar por `exists()` sería el mismo falso verde que el gate C cierra
+            # una capa más arriba.
+            mods_path = self._config.mo2_mods_path
+            data_dir = self._config.data_dir
+            staging_preservado = (
+                mods_path / self.TEXGEN_MOD_NAME / self.TEXGEN_OUTPUT_NAME if mods_path is not None else None
             )
-
-            if dyndolod_result.success and dyndolod_result.output_path:
-                # Empaquetar DynDOLOD Output
-                try:
-                    dyndolod_mod_path = await self._package_output_as_mod(
-                        dyndolod_result.output_path,
-                        self.DYNDOLLOD_MOD_NAME,
+            if staging_preservado is not None and staging_preservado.is_dir():
+                if data_dir is None:
+                    handoff_verificado = False
+                    errors.append(
+                        "Hay un TexGen Output empaquetado pero no hay un Data configurado contra el "
+                        "cual verificar que sea visible para DynDOLOD."
                     )
-                except DynDOLODValidationError as e:
-                    errors.append(f"Failed to package DynDOLOD output: {e}")
-                    logger.error(
-                        "Error empaquetando DynDOLOD: %s",
-                        e,
-                        extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
-                    )
-            elif not dyndolod_result.success:
-                errors.extend(dyndolod_result.errors)
+                else:
+                    try:
+                        await asyncio.to_thread(
+                            verificar_visibilidad_de_texgen,
+                            staging=staging_preservado,
+                            data_dir=data_dir,
+                        )
+                    except TexGenVisibilityError as e:
+                        handoff_verificado = False
+                        needs_deployment = True
+                        errors.append(str(e))
+                        logger.error(
+                            "El TexGen Output empaquetado no es visible para DynDOLOD: %s",
+                            e,
+                            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                        )
 
-        except DynDOLODExecutionError as e:
-            errors.append(f"DynDOLOD execution failed: {e}")
-            # Ver el gemelo de TexGen: `run_dyndolod` relanza esta familia sin
-            # loguear, así que la etapa sale de acá.
+        # Paso 2: Ejecutar DynDOLOD — SÓLO si el handoff quedó demostrado.
+        # Nota: DynDOLOD puede ejecutarse sin TexGen si sus texturas ya existen.
+        #
+        # El guard cuelga de todo el paso y no del `run_dyndolod` solo: si el
+        # handoff no se pudo probar, tampoco hay nada que empaquetar ni veredicto
+        # que emitir sobre una corrida que no ocurrió. `dyndolod_result` queda en
+        # `None` y la fórmula de `success` de más abajo ya lo exige no-nulo, así
+        # que el pipeline sale rojo sin ninguna rama nueva.
+        if not handoff_verificado:
             logger.error(
-                "Error ejecutando DynDOLOD: %s",
-                e,
+                "DynDOLOD no se lanza: la salida de TexGen no es visible en %s. La etapa se corta "
+                "ANTES del spawn — es el único punto donde el fallo cuesta segundos y no 30+ min.",
+                self._config.data_dir,
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
             )
-            dyndolod_result = ToolExecutionResult(
-                success=False,
-                tool_name="DynDOLOD",
-                return_code=e.return_code or -1,
-                stdout="",
-                stderr=e.stderr or "",
-                errors=[str(e)],
-            )
+        else:
+            try:
+                dyndolod_result = await self.run_dyndolod(
+                    preset=preset,
+                    extra_args=dyndolod_args,
+                )
+
+                if dyndolod_result.success and dyndolod_result.output_path:
+                    # Empaquetar DynDOLOD Output
+                    try:
+                        dyndolod_mod_path = await self._package_output_as_mod(
+                            dyndolod_result.output_path,
+                            self.DYNDOLLOD_MOD_NAME,
+                        )
+                    except DynDOLODValidationError as e:
+                        errors.append(f"Failed to package DynDOLOD output: {e}")
+                        logger.error(
+                            "Error empaquetando DynDOLOD: %s",
+                            e,
+                            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                        )
+                elif not dyndolod_result.success:
+                    errors.extend(dyndolod_result.errors)
+
+            except DynDOLODExecutionError as e:
+                errors.append(f"DynDOLOD execution failed: {e}")
+                # Ver el gemelo de TexGen: `run_dyndolod` relanza esta familia sin
+                # loguear, así que la etapa sale de acá.
+                logger.error(
+                    "Error ejecutando DynDOLOD: %s",
+                    e,
+                    extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+                )
+                dyndolod_result = ToolExecutionResult(
+                    success=False,
+                    tool_name="DynDOLOD",
+                    return_code=e.return_code or -1,
+                    stdout="",
+                    stderr=e.stderr or "",
+                    errors=[str(e)],
+                )
 
         # Determinar éxito general.
         #
         # Las DOS ramas exigen lo mismo: que la herramienta haya andado Y que su
         # mod se haya empaquetado. La rama de TexGen pedía solo lo primero, y esa
-        # asimetría dentro de una sola expresión era un falso verde: DynDOLOD lee
-        # las texturas de TexGen del staging crudo (`-o:`), no de `mods/`, así que
-        # su corrida sale bien y el pipeline reportaba éxito mientras el mod nunca
-        # llegaba a `mods/` — MO2 no lo despliega y el juego queda con los meshes
-        # de LOD sin las texturas que les corresponden.
+        # asimetría dentro de una sola expresión era un falso verde: la corrida de
+        # DynDOLOD sale bien igual y el pipeline reportaba éxito mientras el mod de
+        # TexGen nunca llegaba a `mods/` — MO2 no lo despliega y el juego queda con
+        # los meshes de LOD sin las texturas que les corresponden.
+        #
+        # **Este comentario decía que DynDOLOD lee las texturas de TexGen del
+        # staging crudo del `-o:` y eso es FALSO para el deployment soportado.**
+        # `-o:` es la salida de cada herramienta, no una entrada de la otra:
+        # DynDOLOD lee lo que haya en el `-d:<Data>` que recibe, y Sky-Claw corre
+        # standalone, así que ese `Data` es el FÍSICO y un mod bajo `<mo2>/mods` no
+        # está ahí. La premisa hacía invisible el hallazgo C de #493 — mientras
+        # pareciera que el handoff viajaba por el `-o:` compartido, no había nada
+        # que verificar. La afirmación correcta es que **empaquetar no es
+        # visibilidad**, y por eso DynDOLOD ahora sólo se lanza después de que
+        # `verificar_visibilidad_de_texgen` demuestre que la salida de ESTA corrida
+        # está, con los mismos bytes, bajo el `Data` que el binario va a abrir.
+        # No se reemplaza una afirmación por otra sin ancla: la sostienen
+        # `test_no_se_lanza_dyndolod_si_texgen_no_es_visible_en_data` (sin
+        # visibilidad no hay spawn) y `test_se_lanza_dyndolod_cuando_texgen_es_
+        # visible_en_data` (con visibilidad, sí).
         #
         # Se corrige acá (y no en un PR aparte) porque es este PR el que vuelve la
         # contradicción OBSERVABLE: desde que el fallo del empaquetado lleva
@@ -1173,6 +1607,14 @@ class DynDOLODRunner:
             texgen_mod_path=texgen_mod_path,
             dyndolod_mod_path=dyndolod_mod_path,
             errors=errors,
+            # `and not success` es defensa en profundidad, no adorno: "hay algo que
+            # desplegar" y "el pipeline salió bien" son mutuamente excluyentes por
+            # construcción —el gate que lo prende también baja `handoff_verificado`
+            # y sin él `dyndolod_result` queda en None—, pero el servicio PRESERVA
+            # una mutación cuando lee este flag, y un futuro camino que lo prendiera
+            # sobre una corrida exitosa dejaría un move-aside sin confirmar.
+            needs_deployment=needs_deployment and not success,
+            texgen_packaging_attempted=texgen_packaging_attempted,
         )
 
         if result.success:
@@ -1451,6 +1893,251 @@ class DynDOLODRunner:
         """
         return "TES5VR" if self._config.game_mode == "tes5vr" else "SSE"
 
+    def _ruta_del_log(self, tool: str) -> pathlib.Path:
+        """Dónde vive el log de ``tool``. Fuente única para leerlo y para firmarlo.
+
+        Que la firma previa y la lectura del post-check resuelvan el path por
+        caminos distintos es cómo se llega a firmar un archivo y leer otro.
+        """
+        exe = (
+            self._config.texgen_exe
+            if tool == "TexGen" and self._config.texgen_exe is not None
+            else self._config.dyndolod_exe
+        )
+        return exe.parent / "Logs" / f"{tool}_{self._modo()}_log.txt"
+
+    def _firma_del_log(self, tool: str) -> tuple[int | str, ...] | None:
+        """Firma de CONTINUIDAD del log ANTES de lanzar: ``(tamaño, digest)``.
+
+        Sin esto el conjunto de completitud es falsificable con estado viejo, y de
+        la peor manera: una corrida anterior exitosa deja su log CON el marcador;
+        la corrida de hoy toca la salida —así que el gate de frescura del artefacto
+        pasa— y muere antes de reescribir o flushear el log. Los cuatro conjuntos
+        quedan satisfechos (`rc == 0`, artefacto fresco, marcador presente, sin
+        terminales) sobre una generación a medias, y el pipeline la empaqueta.
+        Hallazgo P1 del revisor Codex en el PR #488.
+
+        **Por qué NO es ``mtime + tamaño``, que es la forma de**
+        :meth:`_firma_de_veredicto`: para el artefacto alcanza con detectar que
+        CAMBIÓ, y `mtime + tamaño` lo detecta. Acá hace falta algo más fuerte —hay
+        que poder recortar el prefijo viejo para quedarse con lo que escribió esta
+        corrida—, y `mtime + tamaño` **no distingue un append de una reescritura
+        que termina más grande**: las dos crecen. Recortar sobre esa suposición
+        deja afuera bytes de la corrida actual, y si entre ellos hay un `Fatal:`
+        el veredicto sale verde sobre una corrida que abortó. El digest del
+        contenido previo convierte "supongo que apendeó" en algo demostrable:
+        después de la corrida se re-firma el prefijo y se compara.
+
+        El tamaño sale de contar lo que se firmó, no de un ``stat`` aparte: así la
+        firma y su tamaño no pueden descalzarse si el archivo cambia en el medio.
+        ``None`` sigue reservado a "no se pudo sondear" — distinto de
+        :data:`_SIN_ARTEFACTO`, que acá significa "no había log". Colapsarlos haría
+        fail-OPEN igual que en el artefacto.
+        """
+        log = self._ruta_del_log(tool)
+        try:
+            with log.open("rb") as fh:
+                tamano, digest = _digest_de_stream(fh)
+        except FileNotFoundError:
+            return _SIN_ARTEFACTO
+        except OSError as e:
+            logger.warning(
+                "No se pudo firmar el log de %s (%s): %s",
+                tool,
+                log,
+                e,
+                extra={"operation_type": "dyndolod_firma_de_log_fallida", "tx_id": _tx_id()},
+            )
+            return None
+        return (tamano, digest)
+
+    def _digest_del_prefijo(self, tool: str, hasta_byte: int) -> str | None:
+        """Re-firma los primeros ``hasta_byte`` bytes del log, para probar el append.
+
+        Es la mitad que faltaba de :meth:`_firma_del_log`: si este digest coincide
+        con el de antes de lanzar, el prefijo llegó intacto al final de la corrida
+        y recortarlo es lícito. Si no coincide —o si el archivo ya no tiene ni
+        siquiera esos bytes—, hubo reescritura y no hay append que recortar.
+
+        ``None`` significa "no se pudo demostrar", nunca "está bien". No registra:
+        es SONDA y no veredicto, igual que :meth:`_leer_log` — el motivo se lo
+        pone :meth:`_validar_completitud_de_la_corrida` y la etapa la emite el
+        lanzador, con exit code, tx_id y evidencia. Un registro por incidente.
+        """
+        log = self._ruta_del_log(tool)
+        try:
+            with log.open("rb") as fh:
+                leidos, digest = _digest_de_stream(fh, limite=hasta_byte)
+        except OSError:
+            return None
+        if leidos != hasta_byte:
+            # El archivo achicó entre el sondeo del tamaño y esta relectura: no hay
+            # prefijo que comparar, así que no hay nada que demostrar.
+            return None
+        return digest
+
+    def _validar_completitud_de_la_corrida(
+        self,
+        tool: str,
+        texto: str,
+        marcador_en_el_archivo: bool,
+        firma_previa_del_log: tuple[int | str, ...] | None,
+    ) -> tuple[bool, str | None, str]:
+        """¿Qué parte del log escribió ESTA corrida, y lo declaró terminado?
+
+        Comparar sólo la firma del archivo alcanza si el binario TRUNCA el log en
+        cada corrida, pero el log normal de DynDOLOD **apendea** entre sesiones
+        (dyndolod.info/Messages: *"All messages are appended … when the tool is
+        closed"*; sólo el debug log se reescribe por sesión). Con append, una
+        corrida anterior exitosa deja su marcador en el archivo, la de hoy apendea
+        sus líneas de arranque —la firma CAMBIA—, muere a mitad con `rc == 0` y
+        toca la salida: los cuatro conjuntos satisfechos sobre trabajo a medias.
+        Por eso el veredicto se evalúa sobre **los bytes que agregó esta corrida**.
+
+        **El append hay que demostrarlo, no suponerlo.** `mtime + tamaño` no
+        distingue un append de una reescritura que termina MÁS GRANDE que el
+        archivo previo: las dos crecen y las dos cambian de mtime. Recortar
+        ``bytes[:previo]`` sobre esa suposición deja afuera bytes que escribió la
+        corrida ACTUAL, y si entre ellos hay un `Fatal:` el resultado es un falso
+        verde sobre una corrida que abortó — medido, no hipotético. Por eso la
+        firma previa incluye el **digest del contenido** y acá se re-firma el
+        prefijo: recortar sólo es lícito cuando ``bytes[:previo]`` sigue siendo
+        exactamente lo que había antes de lanzar.
+
+        Los cuatro desenlaces posibles, y ninguno adivina:
+
+        - **No había log antes.** Todo el archivo es de esta corrida, sin frontera
+          que demostrar.
+        - **Creció y el prefijo coincide.** Append DEMOSTRADO: la evidencia es la
+          cola ``bytes[previo:]``.
+        - **Creció y el prefijo NO coincide.** Fue reescrito, no apendeado: no se
+          recorta un prefijo que cambió. Fail-closed.
+        - **Mismo tamaño, o más chico.** No hay bytes nuevos demostrables, o el
+          prefijo previo ya no está. Fail-closed. Un `mtime` distinto sobre el
+          mismo tamaño no prueba que la corrida haya escrito nada.
+
+        **La misma delimitación vale para los terminales**, no sólo para el
+        marcador: un `Fatal:` de una sesión fallida anterior queda en el prefijo
+        de un log que apendea y, clasificado sobre el log completo, enrojecería
+        para siempre TODA corrida buena posterior — un falso rojo que no se
+        auto-repara hasta que el operador trunque el log a mano. Por eso esta
+        función devuelve además el TEXTO atribuible, y el llamador clasifica el
+        veredicto entero —marcador y terminales— sobre él. Las dos mitades tienen
+        que valer a la vez: un terminal heredado no tumba una corrida buena, un
+        marcador heredado no la aprueba, y un terminal ACTUAL nunca queda afuera
+        por haber supuesto un append que nadie demostró.
+
+        *Revisores qodo y CodeRabbit, PR #488; el contraejemplo de la reescritura
+        que crece se reprodujo antes de escribir esto.*
+
+        Returns:
+            ``(completo, motivo, de_esta_corrida)``. `motivo` es ``None`` cuando
+            no hay nada que explicarle al operador: o la corrida está completa, o
+            el marcador simplemente no aparece y el diagnóstico genérico lo pone
+            el llamador. `de_esta_corrida` es el texto que esta corrida agregó
+            —el archivo entero si no había log, la cola si el append quedó
+            demostrado, y ``""`` cuando no hay ventana atribuible—: es la
+            evidencia sobre la que se clasifican los terminales, y vacía significa
+            que ninguna línea histórica se le atribuye a esta corrida.
+        """
+        # Cuando la frontera es INDETERMINADA la ventana atribuible es vacía
+        # (``""``), no el archivo completo: sin frontera no hay con qué afirmar que
+        # UNA línea histórica es de esta corrida, y atribuirle un `Fatal:` viejo
+        # ensucia el diagnóstico con una falsa causa. El run sigue fail-closed por
+        # el motivo; la evidencia se declara indeterminada en vez de heredarse.
+        #
+        # Ningún motivo de esta familia puede afirmar que el marcador está en el
+        # archivo: se emiten ANTES de mirarlo, así que la afirmación sería falsa
+        # justo cuando el log no lo tiene.
+        if firma_previa_del_log is None:
+            return (
+                False,
+                f"No se pudo sondear el log de {tool} ANTES de lanzar, así que no hay con qué "
+                "distinguir lo que escribió esta corrida de lo que ya estaba.",
+                "",
+            )
+
+        firma_actual = self._firma_del_log(tool)
+        if firma_actual is None:
+            return (
+                False,
+                f"No se pudo sondear el log de {tool} DESPUÉS de la corrida, así que no hay con qué "
+                "verificar qué escribió.",
+                "",
+            )
+        if firma_actual == _SIN_ARTEFACTO:
+            return (
+                False,
+                f"El log de {tool} desapareció entre que se leyó y que se verificó: no se reporta "
+                "éxito sobre evidencia que ya no está.",
+                "",
+            )
+
+        if firma_previa_del_log == _SIN_ARTEFACTO:
+            # No había log antes: todo el archivo es de esta corrida y no hay
+            # frontera que demostrar.
+            de_esta_corrida = texto
+        else:
+            previo = int(firma_previa_del_log[0])
+            actual = int(firma_actual[0])
+            if actual < previo:
+                return (
+                    False,
+                    f"El log de {tool} es MÁS CHICO que antes de lanzar: fue truncado o reemplazado, "
+                    "así que no hay forma de delimitar qué escribió esta corrida.",
+                    "",
+                )
+            if actual == previo:
+                return (
+                    False,
+                    f"El log de {tool} no creció durante la corrida: sin bytes nuevos no hay evidencia "
+                    "que atribuirle, y un mtime distinto sobre el mismo tamaño no prueba que haya "
+                    "escrito algo.",
+                    "",
+                )
+
+            # Creció. Que haya crecido NO prueba que sea un append: una reescritura
+            # que termina más grande tiene la misma firma. Se demuestra re-firmando
+            # el prefijo, y sólo si sigue intacto se lo recorta.
+            digest_del_prefijo = self._digest_del_prefijo(tool, previo)
+            if digest_del_prefijo is None:
+                return (
+                    False,
+                    f"No se pudo releer el prefijo del log de {tool} para verificar que la corrida lo "
+                    "haya apendeado en vez de reescribirlo.",
+                    "",
+                )
+            if digest_del_prefijo != str(firma_previa_del_log[1]):
+                return (
+                    False,
+                    f"El log de {tool} creció, pero sus primeros {previo} bytes ya no son los que "
+                    "tenía antes de lanzar: fue reescrito, no apendeado. No se recorta un prefijo "
+                    "que cambió, porque ahí puede haber quedado lo que escribió esta corrida.",
+                    "",
+                )
+
+            de_esta_corrida = self._leer_log(tool, desde_byte=previo)
+            if de_esta_corrida is None:
+                return (
+                    False,
+                    f"No se pudo releer el log de {tool} para aislar lo que escribió esta corrida.",
+                    "",
+                )
+
+        # Si el marcador no está en NINGUNA parte del archivo, tampoco está en la
+        # ventana: el diagnóstico genérico lo pone el llamador.
+        if not marcador_en_el_archivo:
+            return False, None, de_esta_corrida
+
+        if any(marcador in de_esta_corrida for marcador in MARCADORES_DE_COMPLETITUD[tool]):
+            return True, None, de_esta_corrida
+        return (
+            False,
+            f"El marcador de completitud de {tool} está en el log, pero en la parte que YA existía "
+            "antes de esta corrida: es de una corrida anterior. Ésta no declaró haber terminado.",
+            de_esta_corrida,
+        )
+
     def _candidatos_de_salida(self, tool: str) -> list[pathlib.Path]:
         """Dónde puede haber aterrizado la salida de ``tool``, en orden de preferencia.
 
@@ -1459,11 +2146,11 @@ class DynDOLODRunner:
         suyo es cómo se llega a que el preflight opine sobre un lugar donde el
         tool no escribe.
 
-        TexGen lleva UN solo candidato a propósito (review de #440): su salida son
-        texturas, sin artefacto con nombre propio que gatear, así que aceptar la
-        raíz como fallback dejaría pasar el ``DynDOLOD_Output`` de una corrida
-        previa como si fuera salida de TexGen. DynDOLOD sí puede caer en la raíz
-        (interpretación B de ``-o:``) porque su gate exige ``DynDOLOD.esp``.
+        TexGen lleva UN solo candidato a propósito (review de #440): el binario
+        escribe ``root/textures`` y aceptar la raíz como fallback dejaría pasar el
+        ``DynDOLOD_Output`` de una corrida previa como si fuera salida de TexGen.
+        DynDOLOD sí puede caer en la raíz (interpretación B de ``-o:``) porque su
+        gate exige ``DynDOLOD.esp``.
         """
         root = self._config.output_root
         if root is None:
@@ -1471,6 +2158,39 @@ class DynDOLODRunner:
         if tool == "TexGen":
             return [root / self.TEXGEN_OUTPUT_NAME]
         return [root / self.DYNDOLLOD_OUTPUT_NAME, root]
+
+    def _es_la_raiz_administrada(self, candidato: pathlib.Path) -> bool:
+        """¿``candidato`` ES la raíz administrada compartida (y no una salida propia)?
+
+        Vive al lado de :meth:`_candidatos_de_salida` porque es su contracara: ahí
+        se decide dónde puede haber aterrizado una salida, acá cuál de esos lugares
+        pertenece a UNA herramienta. La raíz llega a la lista de candidatos a
+        propósito —DynDOLOD puede escribir directo en ella— y por eso hace falta un
+        predicado aparte en vez de sacarla de la lista.
+
+        Se compara sobre rutas RESUELTAS y no léxicamente: la raíz sale de
+        ``dyndolod_output_target``, que construye sobre ``game.resolve()``, mientras
+        que un ``output_path`` puede llegar con un junction o un ``..`` en el medio;
+        ``Path.__eq__`` es léxico y diría "no son la misma" sobre el mismo
+        directorio. Mismo motivo por el que ``_primer_ancestro_existente`` resuelve
+        su tope antes de comparar.
+
+        Fail-closed si no se puede resolver: "no pude decidir de quién es" no
+        habilita empaquetarlo.
+        """
+        raiz = self._config.output_root
+        if raiz is None:
+            return False
+        try:
+            return candidato.resolve() == raiz.resolve()
+        except OSError as e:
+            logger.warning(
+                "No se pudo resolver '%s' contra la raíz administrada: %s",
+                candidato,
+                e,
+                extra={"operation_type": "dyndolod_resolucion_de_ownership_fallida", "tx_id": _tx_id()},
+            )
+            return True
 
     def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, tuple[float | int, ...] | None]:
         """Firma de cada candidato ANTES de lanzar, para comparar contra la de después.
@@ -1584,6 +2304,7 @@ class DynDOLODRunner:
         self,
         tool: str,
         firmas_previas: dict[pathlib.Path, tuple[float | int, ...] | None],
+        firma_previa_del_log: tuple[int | str, ...] | None = None,
     ) -> _PostCheck:
         """Veredicto de la corrida: log + artefacto + frescura. TODO el I/O, acá.
 
@@ -1613,11 +2334,57 @@ class DynDOLODRunner:
             y los errores/warnings del log.
         """
         texto = self._leer_log(tool)
-        errors, warnings = self._parse_log(texto) if texto is not None else ([], [])
+        if texto is None:
+            # Sin log no hay marcador de completitud, y el gate de frescura solo
+            # prueba que el artefacto CAMBIÓ, no que la corrida haya terminado.
+            # Fail-closed: "no pude verificar que terminó" no es "terminó bien".
+            terminales: list[str] = []
+            warnings: list[str] = []
+            completo = False
+            errors = [
+                f"El log de {tool} no está o no se pudo leer, así que no hay forma de verificar "
+                "que la corrida haya terminado. No se reporta éxito sobre completitud indeterminada."
+            ]
+        else:
+            terminales, warnings, marcador_en_el_archivo = self._parse_log(texto, tool)
+
+            # El marcador tiene que ser de ESTA corrida, no de la anterior. Un log
+            # viejo con marcador + una corrida que tocó la salida y murió antes de
+            # reescribirlo satisface los cuatro conjuntos sobre trabajo a medias.
+            completo, motivo, de_esta_corrida = self._validar_completitud_de_la_corrida(
+                tool, texto, marcador_en_el_archivo, firma_previa_del_log
+            )
+            # La MISMA delimitación vale para los terminales: un `Fatal:` de una
+            # sesión anterior vive en el prefijo de un log que apendea y no puede
+            # enrojecer la corrida que no lo emitió (dyndolod.info/Messages: "All
+            # messages are appended … when the tool is closed"). Si la evidencia de
+            # esta corrida difiere del archivo completo, se reclasifica sobre ella.
+            if de_esta_corrida != texto:
+                terminales, warnings, _ = self._parse_log(de_esta_corrida, tool)
+            errors = list(terminales)
+            if motivo:
+                errors.append(motivo)
+
+            # Sin esto, una corrida incompleta y sin terminales dejaba `errors`
+            # vacío y los lanzadores reportaban "Unknown error" — una fuente nueva
+            # de error desconocido fuera de `normalize_tool_result`, que es lo que
+            # el contrato de `../../AGENTS.md` prohíbe.
+            if not completo and not errors:
+                errors.append(
+                    f"{tool} no declaró en su log que hubiera terminado (falta su marcador de "
+                    "completitud). La corrida quedó a medias o el log no llegó a escribirse entero."
+                )
 
         candidatos = self._candidatos_de_salida(tool)
         if not candidatos:
-            return _PostCheck(output_path=None, artefacto=False, errors=errors, warnings=warnings)
+            return _PostCheck(
+                output_path=None,
+                artefacto=False,
+                errors=errors,
+                warnings=warnings,
+                completo=completo,
+                terminales=terminales,
+            )
 
         hubo_artefacto_rancio = False
         no_verificable = False
@@ -1642,7 +2409,14 @@ class DynDOLODRunner:
             # corrido dejan un .esp con fecha adelantada que una corrida real nunca
             # superaría — falso ROJO sobre una salida buena (review CodeRabbit #441).
             if actual != previa:
-                return _PostCheck(output_path=candidato, artefacto=True, errors=errors, warnings=warnings)
+                return _PostCheck(
+                    output_path=candidato,
+                    artefacto=True,
+                    errors=errors,
+                    warnings=warnings,
+                    completo=completo,
+                    terminales=terminales,
+                )
             hubo_artefacto_rancio = True
 
         if no_verificable:
@@ -1658,7 +2432,14 @@ class DynDOLODRunner:
 
         # Ninguno pasó: se reporta el candidato primario para que el operador
         # sepa dónde se buscó.
-        return _PostCheck(output_path=candidatos[0], artefacto=False, errors=errors, warnings=warnings)
+        return _PostCheck(
+            output_path=candidatos[0],
+            artefacto=False,
+            errors=errors,
+            warnings=warnings,
+            completo=completo,
+            terminales=terminales,
+        )
 
     def _tiene_artefacto(self, tool: str, candidato: pathlib.Path) -> bool:
         """¿``candidato`` contiene una salida válida de ``tool``?
@@ -1682,30 +2463,38 @@ class DynDOLODRunner:
             )
             return False
 
-    def _leer_log(self, tool: str) -> str | None:
+    def _leer_log(self, tool: str, desde_byte: int = 0) -> str | None:
         """Lee el log real de la herramienta: ``Logs/{tool}_{modo}_log.txt``.
+
+        ``desde_byte`` recorta el prefijo que ya existía ANTES de la corrida, para
+        preguntarle al log qué se escribió en ÉSTA. Se corta sobre los bytes y no
+        sobre el texto decodificado porque el offset viene de ``st_size``, que es
+        bytes: cortar un `str` por esa posición desalinea cualquier log no-ASCII.
 
         Síncrona a propósito: corre dentro del ``to_thread`` de
         :meth:`_post_check`, que es su único llamador.
 
         Los binarios son apps GUI (PE Subsystem 2): no escriben a stdout ni
         stderr, así que la evidencia de una corrida vive en su log. Ausencia del
-        log → ``None`` (warning, no fallo duro): el gate duro es el artefacto en
-        el ``-o:``.
+        log → ``None``, y desde T2 eso **falla la corrida**: sin log no hay
+        marcador de completitud, y "no pude verificar que terminó" no puede
+        significar "terminó bien". El veredicto lo emite el lanzador; acá solo
+        se sondea.
+
+        **Decodificación:** :data:`_CODECS_DEL_LOG` en orden, estrictos, y recién
+        si ninguno decodifica se cae a ``cp1252`` con ``errors="replace"``. Leer
+        ``cp1252`` primero —o pasarle ``errors="replace"`` al primer intento—
+        vuelve el fallback inalcanzable: ``cp1252`` acepta casi cualquier byte,
+        así que un log utf-8 legítimo salía mojibake y nadie se enteraba.
         """
-        exe = (
-            self._config.texgen_exe
-            if tool == "TexGen" and self._config.texgen_exe is not None
-            else self._config.dyndolod_exe
-        )
-        log_path = exe.parent / "Logs" / f"{tool}_{self._modo()}_log.txt"
+        log_path = self._ruta_del_log(tool)
         try:
-            return log_path.read_text(encoding="utf-8", errors="replace")
+            crudo = log_path.read_bytes()[desde_byte:]
         except FileNotFoundError:
-            # SIN etapa por mandato explícito del SOP §2.9 punto 3: "A missing or
-            # unreadable log is a warning, not a failure — the hard gate is the
-            # artifact at the -o: root". Etiquetarlo contaría como fallo de la
-            # etapa 9 corridas exitosas cuyo log no se escribió.
+            # Registro de SONDA, no de veredicto: la etapa la emite el lanzador
+            # (`run_texgen`/`run_dyndolod`) al componer su resultado con la
+            # completitud que este `None` deja en False. Ver la exención de
+            # `dyndolod_log_ausente` en `tests/test_dyndolod_service.py`.
             logger.warning(
                 "Log de %s no encontrado: %s",
                 tool,
@@ -1723,32 +2512,61 @@ class DynDOLODRunner:
             )
             return None
 
-    def _parse_log(self, texto: str) -> tuple[list[str], list[str]]:
-        """Extrae errores/warnings del log REAL y registra las rutas resueltas.
+        for codec in _CODECS_DEL_LOG:
+            try:
+                return crudo.decode(codec)
+            except UnicodeDecodeError:
+                continue
+        return crudo.decode("cp1252", errors="replace")
 
-        Reutiliza los patrones que antes se aplicaban a stdout: el texto cambió,
-        el criterio no. Las rutas que la herramienta resolvió (``Using Temp
-        Path:``, ``Using plugin list:``) se loguean a info — evidencia de efecto,
-        mejor que un ``--help`` — para el post-check (U-06).
+    def _parse_log(self, texto: str, tool: str) -> tuple[list[str], list[str], bool]:
+        """Clasifica el log REAL en terminal / no-fatal / completitud.
+
+        Delega la clasificación en :func:`clasificar_log` —texto puro, sin
+        disco— y se queda con lo que sí necesita el runner: sumar los `Warning:`
+        que el binario emite explícitamente al ruido de dominio, y loguear las
+        rutas que la herramienta resolvió (``Using Temp Path:``, ``Using plugin
+        list:``) como evidencia de efecto para el post-check (U-06).
+
+        Args:
+            texto: contenido del log.
+            tool: ``"TexGen"`` o ``"DynDOLOD"`` — los marcadores de completitud
+                son distintos por binario y pasarlos mal deja media etapa sin gate.
+
+        Returns:
+            ``(terminales, warnings, completo)``.
         """
-        errors: list[str] = []
-        for match in self._ERROR_PATTERN.finditer(texto):
-            error_msg = match.group(1).strip()
-            if error_msg and error_msg not in errors:
-                errors.append(error_msg)
+        terminales, warnings, completo = clasificar_log(texto, tool)
 
-        warnings: list[str] = []
-        for match in self._WARNING_PATTERN.finditer(texto):
-            warning_msg = match.group(1).strip()
-            if warning_msg and warning_msg not in warnings:
-                warnings.append(warning_msg)
+        # Se agrega la LÍNEA COMPLETA, no el `group(1)` del patrón. `clasificar_log`
+        # ya puso líneas completas en `warnings`, así que extraer solo el mensaje
+        # mezclaba dos formas en una misma lista y volvía inútil el dedupe entre las
+        # dos fuentes: `"2 texturas omitidas"` nunca es igual a
+        # `"[00:02] Warning: 2 texturas omitidas"`, así que un `Warning:` que además
+        # fuera no-fatal de dominio aparecía dos veces, con dos formatos.
+        # El dedupe va contra un set y no contra la lista: `limpia not in warnings`
+        # es una búsqueda lineal por cada línea del log, y el log de DynDOLOD llega
+        # a decenas de MB. La lista se conserva porque el ORDEN es lo que el
+        # operador lee; el set sólo responde la pertenencia.
+        vistos_warnings = set(warnings)
+        for linea in texto.splitlines():
+            limpia = linea.strip()
+            if limpia and self._WARNING_PATTERN.search(limpia) and limpia not in vistos_warnings:
+                vistos_warnings.add(limpia)
+                warnings.append(limpia)
 
         for linea in texto.splitlines():
             if "Using" in linea:
                 logger.info("Rutas resueltas por la herramienta: %s", linea.strip())
 
-        logger.debug("Parse log: errors=%d, warnings=%d", len(errors), len(warnings))
-        return errors, warnings
+        logger.debug(
+            "Parse log de %s: terminales=%d, warnings=%d, completo=%s",
+            tool,
+            len(terminales),
+            len(warnings),
+            completo,
+        )
+        return terminales, warnings, completo
 
     def _generate_meta_ini(self, mod_path: pathlib.Path, mod_name: str) -> None:
         """
@@ -1810,8 +2628,7 @@ class DynDOLODRunner:
             raise
 
     def _find_texgen_output(self) -> pathlib.Path | None:
-        """Staging de TexGen: SOLO ``root/TexGen_Output`` (la herramienta crea su
-        carpeta dentro del ``-o:`` — layout por default).
+        """Staging de TexGen: SOLO ``root/textures``.
 
         A diferencia de DynDOLOD, TexGen NO tiene un artefacto con nombre propio
         que gatear (su salida son texturas), así que un fallback a ``root`` sería
@@ -1819,7 +2636,7 @@ class DynDOLODRunner:
         ``root/DynDOLOD_Output``, ``any(root.iterdir())`` lo aceptaría como salida
         de TexGen y el empaquetado copiaría el staging de DynDOLOD dentro de
         "TexGen Output". Por eso ``_candidatos_de_salida`` le da UN solo
-        candidato: si no existe, el gate de artefacto falla (fail-closed).
+        candidato físico: si no existe, el gate de artefacto falla (fail-closed).
         """
         candidatos = self._candidatos_de_salida("TexGen")
         return candidatos[0] if candidatos else None

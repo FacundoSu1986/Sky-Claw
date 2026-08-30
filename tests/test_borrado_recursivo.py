@@ -107,6 +107,7 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     "sky_claw/local/mo2/grass_profile.py": "vía-wrapper",
     "sky_claw/local/mo2/profile_sandbox.py": "vía-wrapper",
     "sky_claw/local/mo2/vfs.py": "link-aware",
+    "sky_claw/local/runtime_vault/clone.py": "link-aware",
     "sky_claw/local/tools/_dir_rollback.py": "link-aware",
     "sky_claw/local/tools/dyndolod_runner.py": "link-aware",
     "sky_claw/local/tools/rollback_reconciler.py": "link-aware",
@@ -243,6 +244,22 @@ MECANISMO_DE_MEDICION: dict[str, str] = {
     # recorrido entrara a un árbol ajeno por un junction, archivos de otro mod
     # harían pasar por fresca una corrida que no escribió nada.
     "sky_claw/local/tools/dyndolod_runner.py": "link-aware",
+    # Recorre el staging de TexGen para exigir que CADA archivo esté visible, con
+    # los mismos bytes, bajo el `Data` que DynDOLOD va a abrir. Mide link-aware
+    # porque la medición es el gate: si el recorrido entrara por un junction a un
+    # árbol ajeno, el gate afirmaría la visibilidad de archivos que TexGen no
+    # generó — y si SALTEARA archivos propios, afirmaría una visibilidad completa
+    # sobre un subconjunto. Su contraparte que borra es el `DirectoryRollback` que
+    # el servicio pone sobre ese mismo staging: medir con una política y borrar
+    # con otra es cómo la cuenta y el efecto divergen.
+    "sky_claw/local/validators/texgen_visibility.py": "link-aware",
+    # D2 (PR #493): la identidad durable del artifact empaquetado se mide con el
+    # MISMO recorrido link-aware: si el digest atravesara un junction, firmaría
+    # como propio un árbol ajeno y el resume autorizaría bytes que TX1 no
+    # produjo. Su contraparte que borra es el DirectoryRollback sobre el mismo
+    # mod (crear el digest con una política y el rollback con otra es cómo la
+    # identidad y el efecto divergen).
+    "sky_claw/local/tools/artifact_digest.py": "link-aware",
     "sky_claw/local/assets/asset_scanner.py": "sin-contraparte-que-borre",
     "sky_claw/local/tools/grass_cache_runner.py": "sin-contraparte-que-borre",
 }
@@ -404,6 +421,7 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     "sky_claw/local/fomod/installer.py": "requiere",
     "sky_claw/local/mo2/bridge_installer.py": "no-requiere",
     "sky_claw/local/mo2/vfs.py": "requiere",
+    "sky_claw/local/runtime_vault/clone.py": "requiere",
     "sky_claw/local/tools/dyndolod_runner.py": "requiere",
     "sky_claw/local/tools/rollback_reconciler.py": "requiere",
     "sky_claw/local/tools/vramr_service.py": "requiere",

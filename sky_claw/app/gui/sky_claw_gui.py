@@ -41,8 +41,11 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
+    resolve_pending_hitl_request,
+    resolve_visible_pending_hitl,
     run_ritual,
     run_ritual_install,
+    run_ritual_resume,
 )
 from sky_claw.app.gui.gui_event_adapter import (
     EventBus,
@@ -624,6 +627,27 @@ def _load_downloads_history() -> None:
     create_tracked_task(_load(), name="gui-downloads-history")
 
 
+def _dispatch_hitl_response(
+    request_id: str,
+    approved: bool,
+    *,
+    store: ReactiveStore,
+    tab_id: str | None,
+    guard: Any,
+    scheduler: Any = create_tracked_task,
+) -> Any:
+    """Valida ownership y agenda la respuesta para el ID capturado por la UI."""
+    if resolve_pending_hitl_request(store, tab_id, request_id) is None:
+        return None
+    # Sin guard no hay lifecycle autoritativo que comprometa la decisión: la
+    # entrada permanece visible para no perder una aprobación pendiente.
+    if guard is None:
+        return None
+    # La entrada se retira únicamente desde compose_gui_hitl_lifecycle cuando
+    # ``respond``/timeout/cancelación ya comprometió el resultado.
+    return scheduler(guard.respond(request_id, approved), name="gui-hitl-respond")
+
+
 @ui.refreshable
 def main_page() -> None:
     """Single page that gates between Wizard and Dashboard via the store."""
@@ -711,6 +735,21 @@ def main_page() -> None:
         name="gui-ritual-run",
     )
 
+    # F-001 (post-D2): la acción "Continuar DynDOLOD" del toast de feedback. Es
+    # el MISMO dispatcher/supervisor que "Generar" — la vista sólo expresa la
+    # intención resume; el payload ``run_texgen=False`` es fijo y la validación
+    # durable del handoff queda en DynDOLODPipelineService.execute.
+    callbacks["on_ritual_resume"] = lambda tool_key: create_tracked_task(
+        run_ritual_resume(
+            tool_key,
+            supervisor=runtime.supervisor,
+            store=get_store(),
+            auto_approve=modo_local_enabled(),
+            tab_id=current_tab_id(),
+        ),
+        name="gui-ritual-resume",
+    )
+
     # Follow-up C: the "Instalar" button (Ritual in "No instalado" state) downloads
     # the tool via ToolsInstaller. Download approval is parked in the GUI modal
     # (category="download") and never auto-approved by Modo local.
@@ -728,9 +767,13 @@ def main_page() -> None:
     )
 
     def _on_hitl_respond(request_id: str, approved: bool) -> None:
-        guard = getattr(runtime.app_context, "hitl", None)
-        if guard is not None:
-            create_tracked_task(guard.respond(request_id, approved), name="gui-hitl-respond")
+        _dispatch_hitl_response(
+            request_id,
+            approved,
+            store=get_store(),
+            tab_id=current_tab_id(),
+            guard=getattr(runtime.app_context, "hitl", None),
+        )
 
     callbacks["on_hitl_respond"] = _on_hitl_respond
 
@@ -955,7 +998,7 @@ def main_page() -> None:
     downloads: dict[str, Any] | None = None
     if active_section == "Downloads":
         downloads = {
-            "pending": get_store().get(STORE_KEY_PENDING_HITL),
+            "pending": resolve_visible_pending_hitl(get_store(), current_tab_id(), category="download"),
             "history": get_store().get("downloads_history") or [],
         }
 

@@ -36,6 +36,7 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
         session=ctx.session,
         hitl=ctx.hitl,
         authorized_user_id=ctx._args.operator_chat_id,
+        hitl_registry=ctx.telegram_hitl_registry,
     )
     polling = TelegramPolling(
         token=ctx.sender._token,

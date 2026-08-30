@@ -174,13 +174,12 @@ def test_pandora_service_sondea_solo_el_destino_administrado(tmp_path: pathlib.P
 
 
 def test_dyndolod_salida_determinista_bajo_la_raiz(tmp_path: pathlib.Path) -> None:
-    """Con ``-o:`` la salida es determinista: 2 candidatos bajo la raíz administrada.
+    """Con ``-o:`` la salida es determinista bajo la raíz administrada.
 
-    Interpretación A (primaria): la herramienta crea su carpeta
-    (``DynDOLOD_Output``/``TexGen_Output``) DENTRO del ``-o:`` — el layout por
-    default lo confirma. Interpretación B (fallback acotado a la raíz): escribe
-    directo. El cwd / dir del exe / raíz MO2 ya NO son raíces de staging: el
-    subproceso recibe ``-o:`` y escribe solo en la raíz administrada.
+    TexGen escribe ``textures`` dentro del ``-o:``. DynDOLOD conserva su candidato
+    primario ``DynDOLOD_Output`` y el fallback acotado a la raíz. El cwd / dir del
+    exe / raíz MO2 ya NO son raíces de staging: el subproceso recibe ``-o:`` y
+    escribe solo en la raíz administrada.
     """
     mo2 = tmp_path / "mo2"
     exe_dir = tmp_path / "dyndolod"
@@ -204,7 +203,8 @@ def test_dyndolod_salida_determinista_bajo_la_raiz(tmp_path: pathlib.Path) -> No
 
     # Sin nada en disco: los stagings se resuelven como candidatos bajo la raíz.
     assert runner._find_dyndolod_output() == root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
-    assert runner._find_texgen_output() == root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert runner._candidatos_de_salida("TexGen") == [root / "textures"]
+    assert runner._find_texgen_output() == root / "textures"
 
     # Interpretación A: la herramienta crea la subcarpeta dentro del -o:.
     staging = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
@@ -262,7 +262,10 @@ def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
     assert root is not None
     assert root in targets
     assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME in targets
-    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME in targets
+    texgen_candidates = runner._candidatos_de_salida("TexGen")
+    assert texgen_candidates == [root / "textures"]
+    assert texgen_candidates[0] in targets
+    assert root / "TexGen_Output" not in targets
 
     # Para poder CREAR la raíz en el primer run hay que sondear un eslabón que
     # EXISTA: con la raíz anidada bajo Sky-Claw/, `root.parent` tampoco está en
@@ -371,8 +374,8 @@ def test_dyndolod_tiene_una_raiz_administrada_unica(tmp_path: pathlib.Path) -> N
 def test_dyndolod_staging_cuelga_de_la_raiz(tmp_path: pathlib.Path) -> None:
     """Los dos stagings de la herramienta viven bajo la raíz administrada.
 
-    Ancla los nombres: la herramienta crea ``DynDOLOD_Output``/``TexGen_Output``
-    DENTRO del valor de ``-o:`` (el layout por default —junto al exe— lo confirma).
+    Ancla los contratos físicos independientes: DynDOLOD crea
+    ``DynDOLOD_Output`` y TexGen crea ``textures`` DENTRO del valor de ``-o:``.
     Si alguien renombra las constantes del runner o cambia la raíz, esto se rompe
     antes de llegar a producción.
     """
@@ -381,7 +384,7 @@ def test_dyndolod_staging_cuelga_de_la_raiz(tmp_path: pathlib.Path) -> None:
     assert root is not None
 
     assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME == game.resolve() / "Sky-Claw" / "DynDOLOD" / "DynDOLOD_Output"
-    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME == game.resolve() / "Sky-Claw" / "DynDOLOD" / "TexGen_Output"
+    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME == game.resolve() / "Sky-Claw" / "DynDOLOD" / "textures"
 
 
 # ---------------------------------------------------------------------------

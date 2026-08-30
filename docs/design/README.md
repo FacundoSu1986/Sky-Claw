@@ -21,6 +21,7 @@ Diseño acordado antes de implementar: contexto, decisión y alcance.
 - [#411 — Salida administrada y reversible de Pandora](specs/2026-07-31-pandora-managed-output-design.md)
 - [#454 — Perfil FOMOD y frontera segura de resultados de tools](specs/2026-08-09-fomod-profile-and-tool-output-security-design.md)
 - [Knowledge Capture — captura local de casos verificables](specs/2026-08-11-knowledge-capture-design.md) — spec sin implementación: acompaña a [ADR 0008](../adr/0008-knowledge-case.md) y precede a su desarrollo, así que no lleva número de PR de implementación como el resto del índice.
+- [Game Design Profile — intención de diseño del usuario](specs/2026-08-18-game-design-profile-intent.md) — propuesta documental sin implementación: registra el boundary y las fases futuras para traducir objetivos de experiencia a un perfil validado antes de cualquier planificación o mutación.
 
 ## Planes de implementación (`plans/`)
 
@@ -30,6 +31,7 @@ Descomposición en tareas de una spec o de un objetivo concreto.
 - [#411 — Pandora Managed Output](plans/2026-07-31-pandora-managed-output.md)
 - [#427 — Autoinstalación de SKSE](plans/2026-08-02-skse-autoinstall.md)
 - [#454 — FOMOD Profile and Tool Output Security](plans/2026-08-09-fomod-profile-and-tool-output-security.md)
+- [Roadmap DynDOLOD v2 — etapa 9](plans/2026-08-16-dyndolod-roadmap-v2.md) — plan **sin implementación**: re-baselinea el trabajo pendiente de la etapa 9 contra `main` y ordena los bloques que siguen, así que no lleva número de PR de implementación como el resto del índice.
 
 El número es el PR que mergeó cada documento junto con su implementación. Para
 saber qué sigue vigente, contrastar con el código, los tests y los ADR

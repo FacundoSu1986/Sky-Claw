@@ -186,10 +186,19 @@ class TestOwnershipEnFallosDeArranque:
                 raise error_cierre
             await close_real()
 
-        get_connection_spy = AsyncMock(wraps=lifecycle.get_connection)
+        operation_real = lifecycle.operation
+        operaciones = 0
+
+        @contextlib.asynccontextmanager
+        async def operation_espia(path):
+            nonlocal operaciones
+            operaciones += 1
+            async with operation_real(path) as conn:
+                yield conn
+
         rename_spy = MagicMock(side_effect=AssertionError("no debe renombrar"))
         monkeypatch.setattr(conn, "close", cerrar_con_fallo_inicial)
-        monkeypatch.setattr(lifecycle, "get_connection", get_connection_spy)
+        monkeypatch.setattr(lifecycle, "operation", operation_espia)
         monkeypatch.setattr(pathlib.Path, "rename", rename_spy)
 
         try:
@@ -207,7 +216,7 @@ class TestOwnershipEnFallosDeArranque:
             assert exc_info.value.__cause__ is error_cierre
             assert lifecycle._connections.get(path_key) is conn
             assert registry._conn is None
-            get_connection_spy.assert_awaited_once_with(str(db_path))
+            assert operaciones == 1, f"el registry intentó reabrir la conexión (operation x{operaciones})"
             rename_spy.assert_not_called()
 
             await lifecycle.shutdown_all()
@@ -243,10 +252,19 @@ class TestOwnershipEnFallosDeArranque:
             await liberar_cierre.wait()
             await close_real()
 
-        get_connection_spy = AsyncMock(wraps=lifecycle.get_connection)
+        operation_real = lifecycle.operation
+        operaciones = 0
+
+        @contextlib.asynccontextmanager
+        async def operation_espia(path):
+            nonlocal operaciones
+            operaciones += 1
+            async with operation_real(path) as conn:
+                yield conn
+
         rename_spy = MagicMock(side_effect=AssertionError("no debe renombrar"))
         monkeypatch.setattr(conn_corrupta, "close", cerrar_bloqueado)
-        monkeypatch.setattr(lifecycle, "get_connection", get_connection_spy)
+        monkeypatch.setattr(lifecycle, "operation", operation_espia)
         monkeypatch.setattr(lifecycle, "checkpoint_all", AsyncMock(return_value={}))
         monkeypatch.setattr(pathlib.Path, "rename", rename_spy)
         open_task: asyncio.Task[None] | None = None
@@ -269,7 +287,7 @@ class TestOwnershipEnFallosDeArranque:
             assert exc_info.value is error_corrupcion
             assert lifecycle._connections.get(path_key) is conn_reemplazo
             assert registry._conn is None
-            get_connection_spy.assert_awaited_once_with(str(db_path))
+            assert operaciones == 1, f"el registry intentó reabrir la conexión (operation x{operaciones})"
             rename_spy.assert_not_called()
             conn_reemplazo.close.assert_not_awaited()
 
@@ -316,10 +334,19 @@ class TestOwnershipEnFallosDeArranque:
                     raise
             await close_real()
 
-        get_connection_spy = AsyncMock(wraps=lifecycle.get_connection)
+        operation_real = lifecycle.operation
+        operaciones = 0
+
+        @contextlib.asynccontextmanager
+        async def operation_espia(path):
+            nonlocal operaciones
+            operaciones += 1
+            async with operation_real(path) as conn:
+                yield conn
+
         rename_spy = MagicMock(side_effect=AssertionError("no debe renombrar"))
         monkeypatch.setattr(conn, "close", cerrar_hasta_cancelacion)
-        monkeypatch.setattr(lifecycle, "get_connection", get_connection_spy)
+        monkeypatch.setattr(lifecycle, "operation", operation_espia)
         monkeypatch.setattr(pathlib.Path, "rename", rename_spy)
         open_task: asyncio.Task[None] | None = None
 
@@ -341,7 +368,7 @@ class TestOwnershipEnFallosDeArranque:
             assert exc_info.value.args == ("cancelacion externa deliberada",)
             assert lifecycle._connections.get(path_key) is conn
             assert registry._conn is None
-            get_connection_spy.assert_awaited_once_with(str(db_path))
+            assert operaciones == 1, f"el registry intentó reabrir la conexión (operation x{operaciones})"
             rename_spy.assert_not_called()
 
             await lifecycle.shutdown_all()

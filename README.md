@@ -1,4 +1,8 @@
-# Sky-Claw
+# Sky-Claw — AI-assisted Skyrim Mod Manager for Mod Organizer 2
+
+**Local AI-assisted Skyrim SE/AE mod management and automation for Mod Organizer 2 (MO2), LOOT, xEdit, FOMOD and Nexus Mods.**
+
+Sky-Claw is a local, AI-assisted control plane for Skyrim Special Edition and Anniversary Edition modding. It combines natural-language workflows with human approval gates, traceability and integrations around the existing Skyrim modding toolchain instead of replacing it with an unrestricted autonomous agent.
 
 > **Audiencia:** usuarios, operadores y contribuidores.
 >
@@ -7,7 +11,13 @@
 >
 > **Fuentes canónicas:** runtime, ADR vigentes, `DEPLOYMENT.md` y `SECURITY.md`.
 >
-> **Última verificación:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+> **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
+>
+> **Sincronización DB/lifecycle:** 2026-08-16 sobre `main` `7156718`; no implica
+> reverificación integral del resto de claims del README.
+>
+> **Sincronización release/empaquetado:** 2026-08-16 sobre `main` `f6d502c`;
+> limitada al estado público de los artefactos de `v0.2.4`.
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
@@ -22,6 +32,15 @@ Skyrim SE/AE a través de Mod Organizer 2 (MO2). Permite buscar, descargar,
 instalar y analizar conflictos usando lenguaje natural, con locks, trazabilidad
 y gates humanos en las operaciones que los requieren. Su norte es una
 **caja negra de vuelo**, no un agente autónomo irrestricto.
+
+### Capacidades principales
+
+- **Skyrim SE/AE + Mod Organizer 2:** automatización orientada a perfiles y flujos de modding sobre MO2.
+- **LOOT y xEdit:** ejecución integrada para ordenar plugins y analizar o transformar datos del load order.
+- **FOMOD y Nexus Mods:** resolución de instaladores FOMOD y flujos de descarga controlados.
+- **IA local o por API:** proveedores Anthropic, OpenAI, DeepSeek y Ollama detrás de una interfaz unificada.
+- **Human-in-the-loop (HITL):** operaciones sensibles pueden requerir aprobación humana antes de ejecutarse.
+- **GUI, CLI y Telegram:** varias superficies de interacción sobre el mismo plano de control.
 
 **Novedades de la Versión Moderna:**
 - **Soporte Multi-LLM**: Elegí entre Anthropic (Claude), OpenAI (GPT-4), DeepSeek o ejecución local con Ollama.
@@ -59,6 +78,12 @@ Usuario (GUI / CLI / Telegram)
          |
     MO2 Portable / Skyrim SE
 ```
+
+La persistencia SQLite gestionada usa `DatabaseLifecycleManager`: los
+consumidores lifecycle-backed mantienen `operation()` o `transaction()` durante
+la unidad SQL completa. Obtener una conexión mediante `get_connection()` no
+conserva por sí solo el boundary frente a un shutdown concurrente. Véase
+[Datos, persistencia y recuperación](docs/architecture/data_persistence_recovery.md).
 
 ---
 
@@ -119,6 +144,7 @@ Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nue
 - **[Manual de Agentes y Tools](docs/agents/tool_creation.md):** Tutorial para extender el sistema con nuevos Tool Runners y proveedores LLM.
 - **[SOP del Pipeline de Modding](sky_claw/local/AGENTS.md):** Reglas de negocio inmutables para la orquestación de herramientas de Skyrim.
 - **[Portal de Documentación](docs/README.md):** Guías para usuarios, operadores, desarrolladores y agentes.
+- **[Fuentes de verdad](docs/documentation/source_of_truth.md):** Precedencia para resolver contradicciones y `DOCUMENTATION_DRIFT`.
 
 ---
 
@@ -132,7 +158,7 @@ Sky-Claw es un ecosistema asíncrono complejo. Si deseas contribuir, añadir nue
 - [x] Base de datos async distribuida
 - [x] Wrapper xEdit y LOOT headless
 - [x] Parser y resolución FOMOD
-- [ ] Empaquetado final como .exe único
+- [x] Empaquetado `.exe` único publicado en `v0.2.4` (firma, cold boot y smokes reales quedan fuera de esta verificación)
 
 ---
 

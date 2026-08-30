@@ -20,7 +20,9 @@ import pathlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.config import GUI_MAX_PENDING_HITL
 from sky_claw.local.tools.tool_result import normalize_tool_result
+from sky_claw.local.tools_installer import InstallVerification
 
 if TYPE_CHECKING:
     from sky_claw.app.gui.state.reactive_store import ReactiveStore
@@ -56,6 +58,11 @@ def ritual_auto_approve_armed() -> bool:
 #: aprobar un Ritual que no inició. El ContextVar lleva el dueño hasta el bridge
 #: HITL, que corre inline dentro de la misma task del dispatch.
 _ritual_tab_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("ritual_tab_id", default=None)
+# Identidad exacta de la última solicitud estacionada por el runner actual. Se
+# usa solo para que su ``finally`` retire su propia entrada, nunca por posición.
+_gui_pending_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "gui_pending_request_id", default=None
+)
 
 
 def ritual_tab_id() -> str | None:
@@ -72,6 +79,30 @@ def ritual_tab_id() -> str | None:
 # panels in forge_dashboard so the chat input is never reset).
 STORE_KEY_PENDING_HITL = "pending_hitl"
 STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
+# F-001 (post-D2): el RESULTADO estructural del último dispatch de Ritual
+# (dict crudo con ``needs_deployment``/``texgen_mod_path``) para que el panel
+# ofrezca la acción de Resume sin parsear el texto del feedback. R-004/R-005:
+# viaja en ENVELOPE — dueño (``owner_tab``) + ``tool_key`` real de la corrida +
+# dict — para que una acción destructiva no migre entre pestañas ni se derive
+# con un literal de tool desde la vista.
+#
+# PATCH 0010 (CROSS_TAB_RITUAL_RESULT_EVICTION): la clave sigue siendo UNA —
+# los subscribers de ``ReactiveStore`` son estrictamente por clave y la página
+# refresca el panel sobre cambios del valor — pero el valor ahora es un
+# CONTENEDOR multi-owner: un envelope POR ``owner_tab``. Cada pestaña sustituye
+# o limpia SÓLO su slot; dos pestañas pueden conservar resultados pendientes
+# simultáneamente. El single-flight global (``STORE_KEY_RITUAL_IN_FLIGHT``)
+# serializa la EJECUCIÓN y no se toca: el estado POST-run es el multi-owner.
+STORE_KEY_RITUAL_LAST_RESULT = "ritual_last_result"
+
+#: Claves del envelope publicado bajo ``STORE_KEY_RITUAL_LAST_RESULT``.
+RITUAL_RESULT_OWNER_TAB = "owner_tab"
+RITUAL_RESULT_TOOL_KEY = "tool_key"
+RITUAL_RESULT_PAYLOAD_KEY = "result"
+#: Clave INTERNA del contenedor multi-owner (PATCH 0010): mapea ``owner_tab``
+#: (o ``None`` para el resultado sin dueño) → envelope. Nunca se manipula desde
+#: la vista; todo read/write/delete pasa por los helpers de este módulo.
+RITUAL_RESULTS_BY_OWNER = "results_by_owner"
 
 
 #: Dueño de una aprobación pendiente: el ``tab_id`` de la pestaña que lanzó el
@@ -82,56 +113,446 @@ STORE_KEY_RITUAL_FEEDBACK = "ritual_feedback"
 #: sobre ``STORE_KEY_PENDING_HITL`` — el modal no aparecería nunca.
 HITL_OWNER_TAB = "owner_tab"
 
+#: Shape interna del estado multi-pending. La root key observable no cambia.
+PENDING_HITL_ENTRIES = "entries"
+PENDING_HITL_ORDER = "order"
+#: Límite centralizado en ``config.py``; llegar al límite falla cerrado sin
+#: desalojar solicitudes activas.
+
+
+class PendingHitlStateError(RuntimeError):
+    """Estado HITL GUI inválido o una operación que no puede parkearse."""
+
+
+class DuplicatePendingHitlError(PendingHitlStateError):
+    """El ``request_id`` ya ocupa una entrada activa y no puede sobrescribirse."""
+
+
+class PendingHitlCapacityError(PendingHitlStateError):
+    """El contenedor está lleno y no puede desalojar una solicitud activa."""
+
+
+class MalformedPendingHitlError(PendingHitlStateError):
+    """La shape persistida no permite identificar solicitudes de forma segura."""
+
 
 def stamp_hitl_owner(payload: dict[str, Any], tab_id: str | None) -> dict[str, Any]:
     """Marca la solicitud con la pestaña dueña, sin mutar el payload original."""
     return {**payload, HITL_OWNER_TAB: tab_id}
 
 
+def _valid_pending_envelope(raw: Any, expected_request_id: str | None = None) -> dict[str, Any]:
+    """Valida y copia una entrada sin reparar identidades malformadas."""
+    if not isinstance(raw, dict):
+        raise MalformedPendingHitlError("pending HITL envelope must be a dict")
+    request_id = raw.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        raise MalformedPendingHitlError("pending HITL request_id must be a non-empty string")
+    if expected_request_id is not None and request_id != expected_request_id:
+        raise MalformedPendingHitlError("pending HITL entry key does not match request_id")
+    owner = raw.get(HITL_OWNER_TAB)
+    if owner is not None and not isinstance(owner, str):
+        raise MalformedPendingHitlError("pending HITL owner_tab must be a string or None")
+    return dict(raw)
+
+
+def _read_pending_hitl_state(store: ReactiveStore) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Lee la shape C3 o adopta una única entrada legacy sin escribirla."""
+    raw = store.get(STORE_KEY_PENDING_HITL)
+    if raw is None:
+        return {}, []
+    if not isinstance(raw, dict):
+        raise MalformedPendingHitlError("pending HITL state must be a dict or None")
+
+    # Hot reload transition: un dict simple pre-C3 sigue siendo una entrada.
+    if PENDING_HITL_ENTRIES not in raw and PENDING_HITL_ORDER not in raw:
+        entry = _valid_pending_envelope(raw)
+        request_id = entry["request_id"]
+        return {request_id: entry}, [request_id]
+
+    entries = raw.get(PENDING_HITL_ENTRIES)
+    order = raw.get(PENDING_HITL_ORDER)
+    if not isinstance(entries, dict) or not isinstance(order, list):
+        raise MalformedPendingHitlError("pending HITL entries/order have invalid types")
+    if any(not isinstance(request_id, str) for request_id in order):
+        raise MalformedPendingHitlError("pending HITL order has invalid IDs")
+    if len(order) != len(set(order)):
+        raise MalformedPendingHitlError("pending HITL order has duplicate IDs")
+    if set(entries) != set(order):
+        raise MalformedPendingHitlError("pending HITL order and entries disagree")
+    if len(order) > GUI_MAX_PENDING_HITL:
+        raise MalformedPendingHitlError("pending HITL state exceeds its capacity")
+
+    copied: dict[str, dict[str, Any]] = {}
+    for request_id in order:
+        copied[request_id] = _valid_pending_envelope(entries[request_id], request_id)
+    return copied, list(order)
+
+
+def _write_pending_hitl_state(
+    store: ReactiveStore,
+    entries: dict[str, dict[str, Any]],
+    order: list[str],
+) -> None:
+    """ÚNICO writer productivo del root key HITL; muta el contenedor una vez."""
+    if not order:
+        store.set(STORE_KEY_PENDING_HITL, None)
+        return
+    store.set(
+        STORE_KEY_PENDING_HITL,
+        {
+            PENDING_HITL_ENTRIES: {request_id: dict(entries[request_id]) for request_id in order},
+            PENDING_HITL_ORDER: list(order),
+        },
+    )
+
+
+def enqueue_pending_hitl(store: ReactiveStore, payload: dict[str, Any]) -> None:
+    """Añade una solicitud sin sobrescribir ni desalojar las ya pendientes."""
+    entry = _valid_pending_envelope(payload)
+    request_id = entry["request_id"]
+    entries, order = _read_pending_hitl_state(store)
+    if request_id in entries:
+        raise DuplicatePendingHitlError(f"pending HITL request_id already active: {request_id}")
+    if len(order) >= GUI_MAX_PENDING_HITL:
+        raise PendingHitlCapacityError(f"pending HITL capacity reached: {GUI_MAX_PENDING_HITL}")
+    entries[request_id] = entry
+    order.append(request_id)
+    _write_pending_hitl_state(store, entries, order)
+
+
+def _remove_pending_hitl(store: ReactiveStore, request_id: str) -> None:
+    """Elimina solo ``request_id`` y no hace nada ante un click stale."""
+    if not isinstance(request_id, str) or not request_id:
+        return
+    try:
+        entries, order = _read_pending_hitl_state(store)
+    except MalformedPendingHitlError:
+        return
+    if request_id not in entries:
+        return
+    del entries[request_id]
+    _write_pending_hitl_state(store, entries, [rid for rid in order if rid != request_id])
+
+
 def clear_answered_hitl(store: ReactiveStore, request_id: str) -> None:
-    """Limpia la solicitud pendiente SOLO si es la que se acaba de responder.
+    """Limpia exactamente la solicitud que acaba de resolverse."""
+    _remove_pending_hitl(store, request_id)
 
-    Un clear incondicional desalojaba una solicitud que nadie contestó: entre
-    que se parkea una y el operador responde otra, borrar a ciegas la dejaba
-    huérfana en el backend hasta su timeout fail-closed, y sin nada en pantalla.
+
+def clear_owned_hitl(
+    store: ReactiveStore,
+    tab_id: str | None,
+    *,
+    request_id: str | None = None,
+) -> None:
+    """Limpia una entrada propia por identidad exacta y nunca un owner completo.
+
+    ``request_id`` es obligatorio para el wiring productivo. El fallback sin ID
+    conserva compatibilidad con callers antiguos solo cuando hay una única
+    entrada de ese dueño; si hay varias, no borra ninguna (fail-closed).
     """
-    pending = store.get(STORE_KEY_PENDING_HITL)
-    if isinstance(pending, dict) and pending.get("request_id") == request_id:
-        store.set(STORE_KEY_PENDING_HITL, None)
+    try:
+        entries, order = _read_pending_hitl_state(store)
+    except MalformedPendingHitlError:
+        return
+    if request_id is not None:
+        candidate = entries.get(request_id)
+        if candidate is None or candidate.get(HITL_OWNER_TAB) != tab_id:
+            return
+        _remove_pending_hitl(store, request_id)
+        return
+    owned = [rid for rid in order if entries[rid].get(HITL_OWNER_TAB) == tab_id]
+    if len(owned) == 1:
+        _remove_pending_hitl(store, owned[0])
 
 
-def clear_owned_hitl(store: ReactiveStore, tab_id: str | None) -> None:
-    """Limpia la pendiente SOLO si su ``owner_tab`` coincide con ``tab_id``.
-
-    El ``finally`` de ``run_ritual``/``run_ritual_install`` necesita descartar
-    SU PROPIA aprobación si quedó sin responder (denegada/timeout), para no
-    dejar un modal stale — pero un clear incondicional podía desalojar una
-    pendiente AJENA: ``STORE_KEY_RITUAL_IN_FLIGHT`` solo serializa entre
-    Rituales/instalaciones entre sí, no bloquea un ``tool_execution``
-    concurrente del agente LLM o Telegram, que parkea bajo la misma clave
-    global (review de PR #373).
-    """
-    pending = store.get(STORE_KEY_PENDING_HITL)
-    if isinstance(pending, dict) and pending.get(HITL_OWNER_TAB) == tab_id:
-        store.set(STORE_KEY_PENDING_HITL, None)
+def resolve_visible_pending_hitl(
+    store: ReactiveStore,
+    tab_id: str | None,
+    *,
+    category: str | None = None,
+) -> dict[str, Any] | None:
+    """Devuelve la primera entrada visible en FIFO, o ``None`` fail-closed."""
+    try:
+        entries, order = _read_pending_hitl_state(store)
+    except MalformedPendingHitlError:
+        return None
+    for request_id in order:
+        entry = entries[request_id]
+        owner = entry.get(HITL_OWNER_TAB)
+        if owner is not None and owner != tab_id:
+            continue
+        if (
+            category is not None
+            and entry.get("category") != category
+            and not (category == "download" and "url" in entry)
+        ):
+            # Pre-C3 download envelopes no tenían ``category``; la URL es la
+            # única señal legacy suficiente para no ocultar una solicitud válida.
+            continue
+        return dict(entry)
+    return None
 
 
 def resolve_pending_hitl(store: ReactiveStore, tab_id: str | None) -> dict[str, Any] | None:
-    """La aprobación que ESTA pestaña debe renderizar, o ``None``.
+    """Compatibilidad del selector histórico: primera entrada visible por FIFO."""
+    return resolve_visible_pending_hitl(store, tab_id)
 
-    Solo la que ella lanzó. Una solicitud sin dueño (agente/backend) la ve
-    cualquiera: nadie la "lanzó" desde la GUI, y ocultarla la dejaría colgada
-    hasta el timeout sin que nadie pudiera responderla.
 
-    Seam puro, para que el panel refrescable sea testeable sin NiceGUI.
-    """
-    pending = store.get(STORE_KEY_PENDING_HITL)
-    if not isinstance(pending, dict):
+def resolve_pending_hitl_request(
+    store: ReactiveStore,
+    tab_id: str | None,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Devuelve una entrada concreta solo si esta pestaña puede accionarla."""
+    if not isinstance(request_id, str) or not request_id:
         return None
-    owner = pending.get(HITL_OWNER_TAB)
-    if owner is None or owner == tab_id:
-        return pending
-    return None
+    try:
+        entries, _order = _read_pending_hitl_state(store)
+    except MalformedPendingHitlError:
+        return None
+    entry = entries.get(request_id)
+    if entry is None:
+        return None
+    owner = entry.get(HITL_OWNER_TAB)
+    if owner is not None and owner != tab_id:
+        return None
+    return dict(entry)
+
+
+def compose_gui_hitl_lifecycle(guard: Any, store: ReactiveStore) -> None:
+    """Compone cleanup GUI exacto sobre observers existentes de HITLGuard.
+
+    El observer original (Telegram) siempre se conserva y se ejecuta después del
+    cleanup local. La composición es idempotente para no apilar callbacks si el
+    wiring se evalúa más de una vez durante un reload.
+    """
+    if getattr(guard, "_sky_claw_gui_hitl_lifecycle_composed", False):
+        return
+    original_terminal = getattr(guard, "_on_terminal", None)
+    original_cancel = getattr(guard, "_on_cancel", None)
+
+    async def _on_terminal(req: Any, decision: Any) -> None:
+        request_id = getattr(req, "request_id", None)
+        if isinstance(request_id, str):
+            clear_answered_hitl(store, request_id)
+        if original_terminal is not None:
+            await original_terminal(req, decision)
+
+    async def _on_cancel(req: Any) -> None:
+        request_id = getattr(req, "request_id", None)
+        if isinstance(request_id, str):
+            clear_answered_hitl(store, request_id)
+        if original_cancel is not None:
+            await original_cancel(req)
+
+    guard._on_terminal = _on_terminal
+    guard._on_cancel = _on_cancel
+    guard._sky_claw_gui_hitl_lifecycle_composed = True
+
+
+def _es_envelope_legacy(raw: Any) -> bool:
+    """True si ``raw`` es el envelope simple pre-multi-owner (PATCH 0010).
+
+    El store es efímero en proceso, pero un hot reload o una corrida larga
+    puede dejar publicado el shape anterior ``{owner_tab, tool_key, result}``.
+    El reader lo adopta en transición en vez de descartar el resultado
+    accionable que ya tenía un dueño legítimo.
+    """
+    return isinstance(raw, dict) and RITUAL_RESULT_TOOL_KEY in raw and RITUAL_RESULT_PAYLOAD_KEY in raw
+
+
+def _resultados_por_owner(store: ReactiveStore) -> dict[str | None, dict[str, Any]]:
+    """Resultados vigentes por ``owner_tab`` (``None`` = sin dueño).
+
+    Normaliza el contenedor multi-owner y adopta el envelope legacy si aparece
+    (transición sin migración durable). Devuelve el dict interno SÓLO para
+    lectura: quien muta hace una copia antes (``dict(...)``) y escribe por
+    :func:`_escribir_resultados_de_ritual`.
+    """
+    raw = store.get(STORE_KEY_RITUAL_LAST_RESULT)
+    if _es_envelope_legacy(raw):
+        owner = raw.get(RITUAL_RESULT_OWNER_TAB)
+        if owner is not None and not isinstance(owner, str):
+            # Review PR #501 (CR-2): un dueño malformado no puede usarse como
+            # clave ({[]: raw} lanza TypeError unhashable ANTES de cualquier
+            # chequeo del reader). Fail-closed sin excepción: ningún slot,
+            # ninguna acción, nada mutado. Dueño válido: ``str`` o ``None``;
+            # no se repara, ni se convierte, ni se descarta el resto del store.
+            return {}
+        return {owner: raw}
+    if isinstance(raw, dict):
+        resultados = raw.get(RITUAL_RESULTS_BY_OWNER)
+        if isinstance(resultados, dict):
+            return resultados
+    return {}
+
+
+def _escribir_resultados_de_ritual(
+    store: ReactiveStore,
+    resultados: dict[str | None, dict[str, Any]],
+) -> None:
+    """ÚNICO punto de producción que escribe ``STORE_KEY_RITUAL_LAST_RESULT``.
+
+    Escribe el contenedor completo (o ``None`` si quedó vacío) como UNA
+    mutación de la clave, para conservar el mecanismo de subscriptions del
+    ``ReactiveStore``. Ancla por AST en ``test_ritual_result_cross_tab``: un
+    ``store.set`` directo a esta clave fuera de acá es un clear/replace global
+    accidental (el bug cross-tab) y rompe el test.
+    """
+    if resultados:
+        store.set(STORE_KEY_RITUAL_LAST_RESULT, {RITUAL_RESULTS_BY_OWNER: dict(resultados)})
+    else:
+        store.set(STORE_KEY_RITUAL_LAST_RESULT, None)
+
+
+def publicar_resultado_de_ritual(
+    store: ReactiveStore,
+    *,
+    tool_key: str,
+    resultado: dict[str, Any],
+    tab_id: str | None,
+) -> None:
+    """Publica el resultado estructural en el slot del dueño (R-004/R-005).
+
+    El envelope persiste juntos el ``owner_tab``, el ``tool_key`` REAL de la
+    corrida y el dict estructurado — no sólo el result. Con eso, la acción de
+    Resume sólo puede resolverse/consumirse desde la pestaña dueña, y la vista
+    nunca hardcodea "dyndolod": el tool sale del dato, no de un literal.
+
+    PATCH 0010: la publicación es PER-OWNER — cada pestaña sustituye SÓLO su
+    resultado anterior. Un ritual de B ya no puede reemplazar el envelope
+    accionable de A (CROSS_TAB_RITUAL_RESULT_EVICTION); dos pestañas pueden
+    tener resultados pendientes simultáneamente. Un dispatch sin pestaña
+    lanzadora (agente LLM, Telegram, backend) ocupa el slot sin dueño
+    (``None``), visible para cualquiera como siempre.
+    """
+    resultados = dict(_resultados_por_owner(store))
+    resultados[tab_id] = {
+        RITUAL_RESULT_OWNER_TAB: tab_id,
+        RITUAL_RESULT_TOOL_KEY: tool_key,
+        RITUAL_RESULT_PAYLOAD_KEY: resultado,
+    }
+    _escribir_resultados_de_ritual(store, resultados)
+
+
+def _seleccionar_resultado_owned(
+    resultados: dict[str | None, dict[str, Any]],
+    tab_id: str | None,
+) -> tuple[str | None, dict[str, Any]] | None:
+    """Selección ÚNICA de ownership para los DOS hermanos que consumen un
+    resultado por dueño (:func:`resolve_ritual_resume_action` y
+    :func:`clear_ritual_result_owned`).
+
+    Devuelve ``(owner_del_slot, envelope)`` o ``None`` si nada es seleccionable:
+
+    1. Pertenencia, no valor (review PR #501): si ``tab_id`` existe como clave
+       se selecciona EXACTAMENTE ese slot — aunque su valor sea ``None`` o
+       basura; un slot propio presente pero inválido NUNCA cae al ownerless
+       (``dict.get`` confundía ausencia con valor ``None``);
+    2. sólo si el slot propio NO existe se intenta el slot sin dueño;
+    3. el valor debe ser un ``dict``;
+    4. el ``owner_tab`` declarado debe coincidir EXACTAMENTE con el dueño del
+       slot por el que fue seleccionado (ausente ≡ ``None``, la convención con
+       la que :func:`_resultados_por_owner` re-indexa envelopes legacy);
+    5. cualquier otra forma → ``None``.
+
+    Puro: no muta, no repara, no borra, no convierte tipos. Centralizar acá la
+    regla evita el defecto hermano clásico del repo (resolver y limpiar con
+    semánticas distintas): un cambio de política de ownership toca UN punto y
+    las dos superficies lo heredan. El ancla AST de callers en
+    ``test_ritual_result_cross_tab`` congela quién participa.
+    """
+    owner_seleccionado: str | None = tab_id
+    if tab_id in resultados:
+        envelope = resultados[tab_id]
+    else:
+        owner_seleccionado = None
+        envelope = resultados.get(None)
+    if not isinstance(envelope, dict):
+        return None
+    if envelope.get(RITUAL_RESULT_OWNER_TAB) != owner_seleccionado:
+        return None
+    return owner_seleccionado, envelope
+
+
+def resolve_ritual_resume_action(store: ReactiveStore, tab_id: str | None) -> dict[str, Any] | None:
+    """La acción de Resume que ESTA pestaña puede resolver/consumir, o ``None``.
+
+    R-004: espeja :func:`resolve_pending_hitl` — una acción DESTRUCTIVA no
+    migra entre pestañas. Sólo el ``owner_tab`` del envelope la ve; un
+    resultado sin dueño (agente/backend, o dispatch sin contexto de pestaña)
+    lo ve cualquiera, con el mismo criterio del modal HITL.
+
+    R-005: el ``tool_key`` sale del envelope publicado por la corrida — un
+    resultado de otro ritual con ``needs_deployment`` de fixture NO produce una
+    acción de DynDOLOD. Seam puro, testeable sin NiceGUI.
+
+    PATCH 0010 (precedencia multi-owner): la pestaña ve SU último resultado; si
+    no tiene ninguno propio, ve el resultado sin dueño (política vigente:
+    ownerless es visible para cualquiera). Nunca el de OTRA pestaña — con dos
+    resultados pendientes, cada tab resuelve exactamente el suyo.
+
+    Follow-up de PR #493 (RITUAL_RESULT_OWNER_KEY_MISMATCH), fail-closed: el
+    envelope seleccionado por un slot debe declarar como ``owner_tab`` al MISMO
+    dueño del slot por el que fue seleccionado (``owner_tab`` ausente ≡
+    ``None``, la misma convención con la que ``_resultados_por_owner``
+    re-indexa envelopes legacy). Si no coincide, el estado es internamente
+    inconsistente — ningún writer productivo lo produce hoy, y el reader no
+    repara, ni reubica, ni limpia nada: devuelve ``None`` sin derivar la
+    acción. «Slot ausente» y «slot presente con valor inválido» siguen siendo
+    cosas distintas: sólo la AUSENCIA del slot propio habilita el fallback
+    ownerless; un slot presente pero inválido —incluido el valor ``None``, que
+    ``dict.get`` no distingue de la ausencia— se rechaza sin caer al resultado
+    sin dueño. Por eso la selección es por PERTENENCIA (``tab_id in
+    resultados``) y vive en :func:`_seleccionar_resultado_owned`, la MISMA
+    política —y la MISMA función— que usa :func:`clear_ritual_result_owned`
+    para decidir qué borrar.
+    """
+    seleccion = _seleccionar_resultado_owned(_resultados_por_owner(store), tab_id)
+    if seleccion is None:
+        return None
+    _owner_seleccionado, envelope = seleccion
+    tool_key = envelope.get(RITUAL_RESULT_TOOL_KEY)
+    resultado = envelope.get(RITUAL_RESULT_PAYLOAD_KEY)
+    if not isinstance(tool_key, str) or not isinstance(resultado, dict):
+        return None
+    return resume_action_from_result(tool_key, resultado)
+
+
+def clear_ritual_result_owned(store: ReactiveStore, tab_id: str | None) -> None:
+    """Limpia el resultado accionable que ESTA pestaña puede desalojar (F-004).
+
+    Tab B no puede CONSUMIR la acción de A, y tampoco borrarla con el ``×``:
+    el clear/dismiss respeta el mismo ``owner_tab`` del envelope. Un resultado
+    sin dueño conserva la política ya aceptada — lo limpia cualquiera. El
+    ``tab_id=None`` (sin contexto de pestaña) sólo puede limpiar resultados sin
+    dueño, igual que en :func:`resolve_pending_hitl`.
+
+    PATCH 0010 (multi-owner): borra el slot PROPIO de ``tab_id``; si la pestaña
+    no tiene slot propio, cae al slot sin dueño (política vigente). NUNCA borra
+    el resultado de OTRA pestaña, ni siquiera un ``tab_id=None`` de contexto.
+
+    Review PR #501 (hermano del resolver): usa la MISMA selección validada de
+    :func:`_seleccionar_resultado_owned` — un slot presente pero inválido
+    (``None``, basura, dueño declarado ajeno al slot, incluido el slot ``None``
+    con un envelope de otra pestaña) NO se borra NI cae al ownerless. Y un
+    rechazo NO reescribe el contenedor: acá no hay ``store.set``, así que el
+    store queda byte-idéntico y sin notifications (el ``×`` del panel llama a
+    esta función con o sin acción de Resume pendiente).
+    """
+    seleccion = _seleccionar_resultado_owned(_resultados_por_owner(store), tab_id)
+    if seleccion is None:
+        # Rechazo: ni borrado ni reescritura idéntica del contenedor — toda
+        # escritura del resultado es una mutación observable del store.
+        return
+    owner_seleccionado, _envelope = seleccion
+    resultados = dict(_resultados_por_owner(store))
+    # La validación del selector garantiza slot == owner_tab == owner_seleccionado,
+    # así que borrar por dueño seleccionado borra exactamente el slot elegido.
+    del resultados[owner_seleccionado]
+    _escribir_resultados_de_ritual(store, resultados)
 
 
 #: Per-client "Modo local" toggle, stored in ``app.storage.client`` (server-side,
@@ -289,10 +710,12 @@ def make_gui_hitl_notify(
                             "request_id": req.request_id,
                             "reason": getattr(req, "reason", ""),
                             "detail": getattr(req, "detail", ""),
+                            "category": category,
                         },
                         tab_id,
                     )
                 )
+                _gui_pending_request_id.set(req.request_id)
             return
         if category == "sandbox_promotion":
             # Promoción post-run del sandbox (T-27b·2): siempre modal, nunca
@@ -303,10 +726,12 @@ def make_gui_hitl_notify(
                         "request_id": req.request_id,
                         "reason": getattr(req, "reason", ""),
                         "detail": getattr(req, "detail", ""),
+                        "category": category,
                     },
                     tab_id,
                 )
             )
+            _gui_pending_request_id.set(req.request_id)
             return
         if category == "download":
             # Egress: never auto-approved — always parks a manual Aprobar/Denegar.
@@ -317,11 +742,14 @@ def make_gui_hitl_notify(
                         "reason": getattr(req, "reason", ""),
                         "detail": getattr(req, "detail", ""),
                         "url": getattr(req, "url", "") or "",
+                        "category": category,
                     },
                     tab_id,
                 )
             )
+            _gui_pending_request_id.set(req.request_id)
             return
+
         if delegate is not None:
             await delegate(req)
 
@@ -335,18 +763,26 @@ async def run_ritual(
     store: ReactiveStore,
     auto_approve: bool = False,
     tab_id: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> None:
     """Dispatch a Ritual's tool and publish a feedback message to the store.
 
     ``auto_approve`` is the launching client's "Modo local" preference, read in
-    the click handler (the only place with client context). It is armed in the
-    store for this single dispatch so the HITL bridge can auto-grant *this*
+    the click handler (the only place with client context). It is armed in a
+    ContextVar for this single dispatch so the HITL bridge can auto-grant *this*
     request — and disarmed afterwards — instead of consulting a process-global
     flag that would also affect other clients/agent calls.
 
     ``tab_id`` viaja por el mismo camino y por el mismo motivo (P1-7): la
     aprobación de esta operación destructiva se parkea bajo ESE cliente, para
     que no sea accionable desde otra pestaña que no lanzó el Ritual.
+
+    ``payload`` (F-001, post-D2): el dict que viaja al dispatcher. ``None``
+    conserva el contrato histórico —payload vacío, defaults del service—, que
+    es la intención "Generar/regenerar" (``run_texgen`` default ``True``). La
+    intención "Continuar" pasa por :func:`run_ritual_resume` con el MISMO
+    camino y un payload explícito ``{"run_texgen": False}``: nunca se
+    re-significa el botón normal en auto-resume.
 
     Never raises: dispatch failures and a missing supervisor are converted into
     a ``ritual_feedback`` entry so the click handler (a fire-and-forget task)
@@ -379,6 +815,13 @@ async def run_ritual(
             {"text": "Ya hay un ritual en curso o esperando aprobación. Esperá a que termine.", "type": "warning"},
         )
         return
+    # F-001/PATCH 0010: una generación nueva sustituye el resultado accionable
+    # ANTERIOR de la MISMA pestaña — y sólo el propio. El clear global que vivía
+    # acá desalojaba la acción de Resume pendiente de OTRA pestaña al arrancar
+    # este run (CROSS_TAB_RITUAL_RESULT_EVICTION). Va DESPUÉS de los guards: un
+    # click rechazado (single-flight / sin supervisor / ritual no cableado) no
+    # consume la acción propia, porque la corrida ni siquiera empieza.
+    clear_ritual_result_owned(store, tab_id)
     store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
     # F1a: un click del operador ES intervención humana — rearmar el
     # cortacircuitos cognitivo del dispatcher antes de despachar, para que
@@ -395,30 +838,90 @@ async def run_ritual(
     cv_token = _ritual_auto_approve.set(bool(auto_approve))
     # P1-7: mismo scoping por task para el dueño de la aprobación.
     cid_token = _ritual_tab_id.set(tab_id)
+    pending_token = _gui_pending_request_id.set(None)
     try:
-        result = await supervisor.dispatch_tool(tool_name, {})
+        result = await supervisor.dispatch_tool(tool_name, dict(payload) if payload else {})
     except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
         logger.exception("Ritual %s (%s) dispatch failed", tool_key, tool_name)
         store.set(
             STORE_KEY_RITUAL_FEEDBACK,
             {"text": f"El ritual «{tool_key}» falló: {type(exc).__name__}", "type": "negative"},
         )
+        # PATCH 0010: el clear de arranque ya desalojó el resultado PROPIO antes
+        # de despachar; el fallo de ESTE run sólo publica su feedback y NUNCA
+        # limpia el resultado accionable de otra pestaña — el ``store.set(KEY,
+        # None)`` global que vivía acá era la segunda pata del
+        # CROSS_TAB_RITUAL_RESULT_EVICTION.
         return
     finally:
+        pending_request_id = _gui_pending_request_id.get()
+        _gui_pending_request_id.reset(pending_token)
         _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
         _ritual_tab_id.reset(cid_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        # Drop the approval prompt tied to THIS run so no stale modal lingers on
-        # the timeout/denied path where the operator never clicked (Codex #211)
-        # — pero solo si es la propia: nunca una ajena que nadie respondió
-        # todavía (review de PR #373).
-        clear_owned_hitl(store, tab_id)
-    text, kind = summarize_ritual_result(tool_key, result if isinstance(result, dict) else {})
+        # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
+        if pending_request_id is not None:
+            clear_owned_hitl(store, tab_id, request_id=pending_request_id)
+    resultado = result if isinstance(result, dict) else {}
+    # F-001: el panel consume el dict ESTRUCTURAL — needs_deployment + path —
+    # para ofrecer la acción de Resume. R-004/R-005: se publica en ENVELOPE
+    # (dueño + tool_key real + dict), ANTES del texto del toast.
+    publicar_resultado_de_ritual(store, tool_key=tool_key, resultado=resultado, tab_id=tab_id)
+    text, kind = summarize_ritual_result(tool_key, resultado)
     store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": text, "type": kind})
     # Surface del reporte de preflight que el dispatch adjuntó (hoy solo LOOT): el
     # panel refrescable lo renderiza con create_preflight_panel (T-16b). Rojo = el
     # gate de loot_service ya frenó el sort; el panel lo hace visible al operador.
-    store.set(STORE_KEY_RITUAL_PREFLIGHT, preflight_from_result(result))
+    store.set(STORE_KEY_RITUAL_PREFLIGHT, preflight_from_result(resultado))
+
+
+async def run_ritual_resume(
+    tool_key: str,
+    *,
+    supervisor: Any,
+    store: ReactiveStore,
+    auto_approve: bool = False,
+    tab_id: str | None = None,
+) -> None:
+    """Intención EXPLÍCITA de continuación post-deployment (F-001, post-D2).
+
+    Es la MISMA implementación que :func:`run_ritual` —mismo single-flight,
+    mismo HITL gate del dispatcher, mismo feedback— con UN payload explícito:
+    ``{"run_texgen": False}``. La GUI expresa la intención "Continuar DynDOLOD
+    después de materializar el artifact"; la validación durable del handoff
+    sigue siendo propiedad exclusiva de ``DynDOLODPipelineService.execute``
+    (acá no se consulta ni se duplica estado durable).
+
+    El botón normal "Generar" NO pasa por acá: ``run_texgen=True`` sigue siendo
+    la vía de regeneración/supersede y conserva su payload vacío histórico.
+    """
+    await run_ritual(
+        tool_key,
+        supervisor=supervisor,
+        store=store,
+        auto_approve=auto_approve,
+        tab_id=tab_id,
+        payload={"run_texgen": False},
+    )
+
+
+def resume_action_from_result(tool_key: str, result: dict[str, Any]) -> dict[str, Any] | None:
+    """Acción de Resume derivada ESTRUCTURALMENTE del resultado (F-001).
+
+    Sólo ``dyndolod`` + ``needs_deployment is True`` (el flag, nunca el texto
+    del ``message``) produce la acción. El dict devuelto es lo único que el
+    panel necesita para renderizar el botón; el payload es lo único que
+    :func:`run_ritual_resume` necesita para despachar.
+    """
+    if tool_key != "dyndolod" or result.get("needs_deployment") is not True:
+        return None
+    detail = result.get("texgen_mod_path")
+    return {
+        "tool_key": "dyndolod",
+        "label": "Continuar DynDOLOD",
+        "detail": str(detail) if detail else "",
+        "payload": {"run_texgen": False},
+    }
 
 
 async def run_ritual_install(
@@ -432,10 +935,10 @@ async def run_ritual_install(
 
     Wired to the "Instalar" button of a Ritual card in the ``missing`` state. Reuses
     the same single-flight guard as :func:`run_ritual` so an install and a run can
-    never overlap (both serialize on ``STORE_KEY_RITUAL_IN_FLIGHT`` and share the one
-    ``pending_hitl`` modal slot). The download's HITL approval is requested by the
-    installer with ``category="download"`` and routed to the GUI modal by
-    :func:`make_gui_hitl_notify` — it is never auto-approved by "Modo local".
+    never overlap (both serialize on ``STORE_KEY_RITUAL_IN_FLIGHT``). The download's
+    HITL approval is requested by the installer with ``category="download"`` and
+    routed to the GUI modal by :func:`make_gui_hitl_notify` — it is never
+    auto-approved by "Modo local".
 
     P1-7: ``tab_id`` arma el mismo ContextVar que :func:`run_ritual`, así que la
     aprobación de descarga queda marcada con la pestaña que apretó "Instalar".
@@ -544,6 +1047,7 @@ async def run_ritual_install(
     # corre inline en esta misma task, así que ve el ContextVar y marca la
     # aprobación de descarga con la pestaña que apretó "Instalar".
     tab_token = _ritual_tab_id.set(tab_id)
+    pending_token = _gui_pending_request_id.set(None)
     try:
         if cs_kwargs is not None:
             result = await ensure(install_dir, session, downloader, **cs_kwargs)
@@ -557,12 +1061,13 @@ async def run_ritual_install(
         )
         return
     finally:
+        pending_request_id = _gui_pending_request_id.get()
+        _gui_pending_request_id.reset(pending_token)
         _ritual_tab_id.reset(tab_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        # Drop the approval prompt tied to this install so no stale modal lingers
-        # on the denied/timed-out path — pero solo la propia (mismo cuidado que
-        # run_ritual, review de PR #373).
-        clear_owned_hitl(store, tab_id)
+        # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
+        if pending_request_id is not None:
+            clear_owned_hitl(store, tab_id, request_id=pending_request_id)
 
     # Seed the resolver env var so the just-installed tool can run immediately,
     # without waiting for the next environment scan to refresh the snapshot.
@@ -624,6 +1129,40 @@ async def run_ritual_install(
                     "type": "warning",
                 },
             )
+        return
+
+    # Presencia != compatibilidad probada. `ensure_skse` puede devolver una
+    # instalación que EXISTE en disco pero cuya compatibilidad no se pudo verificar
+    # porque el ejecutable de Skyrim no expone su versión exacta. Colapsar ese estado
+    # en el cartel verde le afirma al operador algo que nadie probó — el mismo falso
+    # positivo que el installer rechazó, una capa más arriba. Se reporta con el
+    # `warning` que la rama de Community Shaders ya usa para una operación que ocurrió
+    # pero no quedó garantizada. `getattr` porque el campo es opcional en
+    # `InstallResult` y los demás `ensure_*` no lo llenan.
+    if getattr(result, "verification", None) is InstallVerification.PRESENT_BUT_UNVERIFIED:
+        # Dos situaciones distintas comparten el estado, y el cartel tiene que
+        # distinguirlas: "no pude probar nada" NO implica "no toqué nada". La
+        # idempotente encontró algo y no escribió; la fresca sin ejecutable descargó y
+        # copió, pero no había runtime contra el cual probar el build. Un texto único
+        # que afirme "no se modificó nada" le miente al operador en la segunda, y esa
+        # mentira lo empuja a reintentar una instalación que ya ocurrió.
+        # `already_existed` es exactamente la dimensión que las separa — por eso vive
+        # aparte de `verification` y acá se leen las dos.
+        if getattr(result, "already_existed", False):
+            aviso = (
+                f"«{tool_key}» detectado en el directorio del juego, pero no se pudo "
+                "verificar su compatibilidad: no se pudo leer la versión exacta de "
+                "Skyrim. No se descargó ni se modificó nada. Comprobá a mano que el "
+                "build corresponda (https://skse.silverlock.org/)."
+            )
+        else:
+            aviso = (
+                f"«{tool_key}» quedó instalado, pero su compatibilidad no se pudo "
+                "verificar: no hay un ejecutable de Skyrim en esa carpeta contra el "
+                "cual comprobar el build. Verificá a mano que corresponda "
+                "(https://skse.silverlock.org/)."
+            )
+        store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": aviso, "type": "warning"})
         return
 
     store.set(

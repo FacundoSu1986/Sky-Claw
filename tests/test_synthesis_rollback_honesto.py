@@ -192,7 +192,12 @@ async def test_no_declara_rollback_con_lock_real_si_el_restore_falla(
     exitoso, pero con el LOCK REAL y ``restore_snapshot`` reventando en
     ``__aexit__``. El servicio consulta ``rollback_completed`` (False) → NO marca
     la TX como rolled_back y reporta ``rolled_back=False``. Antes solo se cubría
-    con un fake del lock o con el lock real y restore completo."""
+    con un fake del lock o con el lock real y restore completo.
+
+    Nota (ronda 3, idempotencia de reruns): el service retira el esp previo
+    ANTES del run (atribución por existencia), así que un restore fallido deja
+    el nombre AUSENTE en disco — la copia de seguridad vive en el snapshot
+    manager, pendiente de recuperación manual (la TX queda pendiente)."""
     esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
     esp.write_bytes(b"TES4 original")
 
@@ -211,7 +216,9 @@ async def test_no_declara_rollback_con_lock_real_si_el_restore_falla(
     # Restore fallido → la TX queda PENDIENTE para recuperación manual.
     mock_journal.mark_transaction_rolled_back.assert_not_awaited()
     assert _payload_completed(mock_event_bus)["rolled_back"] is False
-    assert esp.read_bytes() == b"TES4 original"  # el snapshot restauró
+    # El esp fue retirado antes del run y el restore falló: el nombre queda
+    # ausente (la copia está en el snapshot manager para recuperación manual).
+    assert not esp.exists()
 
 
 @pytest.mark.asyncio

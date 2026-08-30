@@ -12,7 +12,7 @@ import pytest
 
 from sky_claw.app.orchestrator.preview.approval_gate import ChainPreviewApprovalGate
 from sky_claw.app.orchestrator.preview.manifest import PreviewManifest, StageChangeSet
-from sky_claw.app.security.hitl import Decision
+from sky_claw.app.security.hitl import Decision, HITLGuard
 
 
 def _manifest() -> PreviewManifest:
@@ -46,8 +46,24 @@ async def test_approved_runs_real_chain() -> None:
     preview_fn.assert_awaited_once()
     execute_fn.assert_awaited_once()
     # The operator was shown the serialized manifest as the approval detail.
-    detail = hitl.request_approval.await_args.kwargs["detail"]
-    assert "wf-7" in detail
+    approval_kwargs = hitl.request_approval.await_args.kwargs
+    assert approval_kwargs["category"] == "tool_execution"
+    assert "wf-7" in approval_kwargs["detail"]
+
+
+@pytest.mark.asyncio
+async def test_sin_operador_no_ejecuta_cadena_real() -> None:
+    """Sin operador, la solicitud expira y la cadena real nunca se ejecuta."""
+    preview_fn = AsyncMock(return_value=_manifest())
+    execute_fn = AsyncMock(return_value={"chain": "ran"})
+    hitl = HITLGuard(notify_fn=None, timeout=0)
+    gate = ChainPreviewApprovalGate(hitl_guard=hitl, preview_fn=preview_fn, execute_fn=execute_fn)
+
+    result = await gate.preview_then_execute(workflow_id="wf-7", load_order_file="/sandbox/plugins.txt")
+
+    assert result["status"] == "rejected"
+    assert result["decision"] == "timeout"
+    execute_fn.assert_not_awaited()
 
 
 @pytest.mark.asyncio

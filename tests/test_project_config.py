@@ -13,6 +13,7 @@ from pathlib import Path
 
 # `packaging` no se declara en [dev] porque es dependencia dura de pytest
 # (`packaging>=20`): si no está, este archivo no puede ni colectarse.
+import pytest
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 
@@ -224,3 +225,80 @@ def test_modulos_de_logging_tienen_override_mypy_strict() -> None:
         if override.get("ignore_errors") is True:
             assert target_modules.isdisjoint(override["module"])
     assert target_modules <= strict_modules
+
+
+def test_el_parser_de_pe_es_dependencia_dura_no_opcional() -> None:
+    """Sin ``pefile`` declarado, el gate de runtime de SKSE deja de proteger y pasa a bloquear.
+
+    ``scanner._read_pe_product_version`` importa ``pefile`` dentro de un
+    ``try/ImportError`` y devuelve ``None`` si falta, así que ``read_skyrim_version()``
+    entrega ``""`` **sin error visible**. ``ensure_skse`` es fail-closed ante esa
+    versión vacía: si el parser no está, no rechaza el caso dudoso — los rechaza
+    TODOS, y el autoinstalador queda inalcanzable en el entorno documentado
+    (``uv sync --extra dev``). Un fail-closed sobre una señal que nunca llega no es
+    fail-closed.
+
+    Se ancla en las tres capas porque cada una se rompe distinto: declarada en
+    ``[project.dependencies]`` (no en ``[dev]``, que no se instala en producción),
+    resuelta en ``uv.lock`` (o un ``uv sync`` la deja afuera) e importable acá (o la
+    declaración quedó de adorno).
+
+    *Historia: el gate se escribió, la suite entera stubeaba ``read_skyrim_version``,
+    CI dio verde en las cuatro combinaciones de OS × Python, y el defecto lo encontró
+    un revisor automático leyendo el árbol de dependencias — no un test.*
+    """
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    runtime = [Requirement(d).name for d in pyproject["project"]["dependencies"]]
+    assert "pefile" in runtime, "pefile tiene que ser dependencia de runtime, no de [dev]"
+
+    uv_lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    assert 'name = "pefile"' in uv_lock, "pefile declarado pero sin resolver en uv.lock"
+
+    import pefile  # noqa: PLC0415 — el import ES la aserción: tiene que estar instalado
+
+    assert pefile is not None
+
+
+def test_la_lectura_de_version_llega_al_parser_y_no_a_la_rama_de_importerror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El camino real de lectura de versión, SIN stub — el hueco que dejó pasar el defecto.
+
+    Todos los tests de ``ensure_skse`` monkeypatchean ``read_skyrim_version``, así que
+    ninguno ejercitaba la función posta y el "siempre devuelve vacío" era invisible.
+
+    La aserción no es sobre el valor devuelto (haría falta un PE real con recurso de
+    versión), sino sobre **qué rama se toma**: se sustituye ``pefile.PE`` por un doble
+    que registra su invocación. Si el helper hubiera caído en el ``except ImportError``
+    —que es lo que pasaba sin la dependencia declarada— el doble nunca se llama y el
+    test falla nombrando la causa. Los dos desenlaces devuelven ``None`` por fuera, así
+    que distinguirlos requiere mirar el camino, no el resultado.
+    """
+    import pefile  # noqa: PLC0415
+
+    from sky_claw.local.discovery import scanner  # noqa: PLC0415
+
+    invocaciones: list[str] = []
+
+    class _PEDoble:
+        def __init__(self, path: str, fast_load: bool = True) -> None:
+            invocaciones.append(path)
+
+        def parse_data_directories(self, directories: object) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(pefile, "PE", _PEDoble)
+
+    exe = tmp_path / "SkyrimSE.exe"
+    exe.write_bytes(b"MZ")
+    scanner.read_skyrim_version(exe)
+
+    assert invocaciones == [str(exe)], (
+        "read_skyrim_version no llegó al parser de PE: cayó en el except ImportError, "
+        "que es exactamente el estado en el que el gate de ensure_skse bloquea todo"
+    )

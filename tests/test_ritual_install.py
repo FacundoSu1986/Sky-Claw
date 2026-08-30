@@ -28,7 +28,7 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     run_ritual_install,
 )
 from sky_claw.app.gui.state.reactive_store import ReactiveStore
-from sky_claw.local.tools_installer import ToolInstallError
+from sky_claw.local.tools_installer import InstallVerification, ToolInstallError
 
 
 @dataclass
@@ -44,6 +44,7 @@ class _FakeReq:
 class _FakeInstallResult:
     exe_path: str
     already_existed: bool = False
+    verification: InstallVerification = InstallVerification.VERIFIED
 
 
 class _FakeInstaller:
@@ -55,10 +56,14 @@ class _FakeInstaller:
         exe_path: str = "C:/Modding/LOOT/loot.exe",
         error: Exception | None = None,
         cs_result: list | None = None,
+        verification: InstallVerification = InstallVerification.VERIFIED,
+        already_existed: bool = False,
     ) -> None:
         self.calls: list[tuple[str, object, object]] = []
         self._exe_path = exe_path
         self._error = error
+        self._verification = verification
+        self._already_existed = already_existed
         self._cs_result = cs_result or []
         self.cs_kwargs: dict[str, object] | None = None
         self.cs_downloader: object = None
@@ -67,7 +72,9 @@ class _FakeInstaller:
         self.calls.append((name, install_dir, session))
         if self._error is not None:
             raise self._error
-        return _FakeInstallResult(exe_path=self._exe_path)
+        return _FakeInstallResult(
+            exe_path=self._exe_path, already_existed=self._already_existed, verification=self._verification
+        )
 
     async def ensure_loot(self, install_dir: object, session: object) -> _FakeInstallResult:
         return await self._ensure("ensure_loot", install_dir, session)
@@ -286,15 +293,16 @@ async def test_install_single_flight_refuses_while_one_is_in_flight() -> None:
     assert fb is not None and fb["type"] == "warning"
 
 
-async def test_install_clears_pending_prompt_on_finish() -> None:
+async def test_install_without_owned_request_preserves_existing_pending_prompt() -> None:
     store = ReactiveStore()
-    store.set("pending_hitl", {"request_id": "install-loot-1"})  # prompt parkeado de esta corrida
+    existing = {"request_id": "install-loot-1"}  # no exact identity belongs to this install
+    store.set("pending_hitl", existing)
     installer = _FakeInstaller()
     ctx = _FakeAppContext(installer)
 
     await run_ritual_install("loot", app_context=ctx, store=store)
 
-    assert store.get("pending_hitl") is None
+    assert store.get("pending_hitl") == existing
     assert not store.get("ritual_in_flight")
 
 
@@ -324,9 +332,130 @@ async def test_bridge_parks_download_modal_and_never_auto_approves() -> None:
             "reason": "Install LOOT?",
             "detail": "Asset…",
             "url": "https://x/y.zip",
+            "category": "download",
             "owner_tab": None,
         }
     ]
+
+
+async def test_install_skse_presente_sin_verificar_no_se_anuncia_como_compatible() -> None:
+    """PRESENT_BUT_UNVERIFIED no puede mostrarse como "instalado y compatible".
+
+    Es la mitad del contrato que vive en el caller: `ensure_skse` puede distinguir
+    presencia de compatibilidad probada todo lo que quiera, pero si la GUI colapsa
+    los dos estados en el mismo cartel verde, el operador termina igual de mal
+    informado que con el falso positivo que este diseño rechazó — solo que una capa
+    más arriba.
+
+    El cartel tiene que decir lo que se sabe: SKSE está, la compatibilidad no se
+    pudo verificar, y no se tocó nada. Se usa el mismo `type: warning` con el que
+    la rama de Community Shaders ya reporta una operación que ocurrió a medias.
+    """
+    from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+    from sky_claw.local.discovery.environment import EnvironmentSnapshot, SkyrimEdition, SkyrimInfo
+
+    game_path = pathlib.Path("D:/Steam/steamapps/common/Skyrim Special Edition")
+    store = ReactiveStore()
+    store.set(
+        STORE_KEY_ENV,
+        EnvironmentSnapshot(skyrim=SkyrimInfo(path=game_path, exe_name="SkyrimSE.exe", edition=SkyrimEdition.AE)),
+    )
+    installer = _FakeInstaller(
+        exe_path=str(game_path / "skse64_loader.exe"),
+        verification=InstallVerification.PRESENT_BUT_UNVERIFIED,
+        already_existed=True,  # el caso idempotente: se encontró, no se escribió
+    )
+    ctx = _FakeAppContext(installer, install_dir="C:/Modding")
+
+    await run_ritual_install("skse", app_context=ctx, store=store)
+
+    fb = store.get("ritual_feedback")
+    assert fb is not None
+    assert fb["type"] == "warning", "un estado no verificable no es un éxito verde"
+    assert "instalado correctamente" not in fb["text"], "no se puede afirmar compatibilidad que no se probó"
+    # Lo que el cartel SÍ tiene que transmitir: detectado, sin verificar, y sin cambios.
+    assert "detect" in fb["text"].lower()
+    assert "verific" in fb["text"].lower()
+    # Contracara de la aserción positiva del hermano fresco: acá lo distintivo es que
+    # NO se tocó nada, y perder ese dato manda al operador a auditar el directorio a
+    # mano. Las dos ramas fijan su propio contenido, no sólo el del otro por ausencia.
+    assert "no se descargó ni se modificó nada" in fb["text"].lower()
+    assert "quedó instalado" not in fb["text"]
+    assert not store.get("ritual_in_flight")
+
+
+async def test_install_skse_verificado_sigue_siendo_un_exito_verde() -> None:
+    """La contracara, para que el fix no se convierta en "avisar siempre".
+
+    Con la compatibilidad PROBADA el cartel de advertencia sería ruido: degradar
+    también el camino verificado destruiría la distinción que este PR agrega.
+    """
+    from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+    from sky_claw.local.discovery.environment import EnvironmentSnapshot, SkyrimEdition, SkyrimInfo
+
+    game_path = pathlib.Path("D:/Steam/steamapps/common/Skyrim Special Edition")
+    store = ReactiveStore()
+    store.set(
+        STORE_KEY_ENV,
+        EnvironmentSnapshot(skyrim=SkyrimInfo(path=game_path, exe_name="SkyrimSE.exe", edition=SkyrimEdition.AE)),
+    )
+    installer = _FakeInstaller(
+        exe_path=str(game_path / "skse64_loader.exe"),
+        verification=InstallVerification.VERIFIED,
+    )
+    ctx = _FakeAppContext(installer, install_dir="C:/Modding")
+
+    await run_ritual_install("skse", app_context=ctx, store=store)
+
+    fb = store.get("ritual_feedback")
+    assert fb is not None and fb["type"] == "positive"
+    assert "instalado correctamente" in fb["text"]
+
+
+async def test_install_skse_fresco_sin_verificar_no_niega_la_instalacion_que_acaba_de_hacer() -> None:
+    """Un estado no verificado no implica que no se haya tocado nada.
+
+    `ensure_skse` devuelve PRESENT_BUT_UNVERIFIED en dos situaciones distintas: la
+    idempotente (encontró algo, no descargó ni escribió) y la fresca sin ejecutable
+    (descargó y copió, pero no había runtime contra el cual probar el build). Un
+    cartel único que afirme «No se descargó ni se modificó nada» le miente al
+    operador en la segunda, y la mentira es de las caras: puede llevarlo a reintentar
+    una instalación que ya ocurrió.
+
+    `already_existed` es justamente la dimensión que las separa, y por eso vive
+    aparte de `verification`: acá se usan las dos juntas, cada una respondiendo lo
+    suyo.
+    """
+    from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+    from sky_claw.local.discovery.environment import EnvironmentSnapshot, SkyrimEdition, SkyrimInfo
+
+    game_path = pathlib.Path("D:/Steam/steamapps/common/Skyrim Special Edition")
+    store = ReactiveStore()
+    store.set(
+        STORE_KEY_ENV,
+        EnvironmentSnapshot(skyrim=SkyrimInfo(path=game_path, exe_name="SkyrimSE.exe", edition=SkyrimEdition.AE)),
+    )
+    installer = _FakeInstaller(
+        exe_path=str(game_path / "skse64_loader.exe"),
+        verification=InstallVerification.PRESENT_BUT_UNVERIFIED,
+        already_existed=False,  # la copia SÍ ocurrió en esta corrida
+    )
+    ctx = _FakeAppContext(installer, install_dir="C:/Modding")
+
+    await run_ritual_install("skse", app_context=ctx, store=store)
+
+    fb = store.get("ritual_feedback")
+    assert fb is not None
+    assert fb["type"] == "warning", "sigue sin ser un éxito verde: la compatibilidad no se probó"
+    assert "no se descargó" not in fb["text"].lower(), "niega una instalación que acaba de ocurrir"
+    assert "no se modificó" not in fb["text"].lower()
+    assert "verific" in fb["text"].lower()
+    # Aserción POSITIVA, no sólo la ausencia de la negación: un texto genérico que ni
+    # afirme ni niegue la copia («estado no verificable») pasaría todo lo de arriba y
+    # dejaría al operador sin saber si se instaló algo. Lo que distingue esta rama de
+    # la idempotente es precisamente que la copia ocurrió, así que eso es lo que hay
+    # que fijar.
+    assert "quedó instalado" in fb["text"], "la rama fresca tiene que AFIRMAR que se instaló"
 
 
 # ── run_ritual_install: rama community_shaders ──────────────────────────────────

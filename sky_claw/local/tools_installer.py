@@ -21,12 +21,13 @@ import zipfile
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiohttp
 
 from sky_claw.app.db.locks import DistributedLockManager
-from sky_claw.app.security.hitl import Decision, HITLGuard
+from sky_claw.app.security.hitl import Decision, HITLGuard, new_hitl_request_id
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.app.security.network_gateway import (
     EgressViolationError,
@@ -41,6 +42,7 @@ from sky_claw.local.discovery.environment import SkyrimEdition
 from sky_claw.local.discovery.scanner import (
     PANDORA_EXE_NAMES,
     detect_skyrim_edition,
+    find_skse_installation,
     read_skyrim_version,
     skse_dll_game_version,
     skyrim_version_matches,
@@ -262,12 +264,24 @@ _NGIO_RELEASES_URL = "https://api.github.com/repos/DwemerEngineer/No-Grass-In-Ob
 # entrada acá y pasarle el `store` del snapshot a la selección de payload — no está
 # hecho porque no se quiere, no porque falte.
 #
-# El recorte ya es fail-closed sin costo: el gate de versión exacta de `ensure_skse`
-# corre ANTES del HITL y de la descarga, y GOG AE (1.6.1179) no matchea el 1.6.1170
-# del payload de Steam, así que un usuario de GOG recibe el error sin que se le pida
+# El recorte es fail-closed sin costo: el gate de versión exacta de `ensure_skse` corre
+# ANTES del HITL y de la descarga, y GOG AE (1.6.1179) no matchea el 1.6.1170 del
+# payload de Steam, así que un usuario de GOG recibe el error sin que se le pida
 # aprobación, sin egress y sin que se escriba nada en el directorio del juego. El
 # mensaje lo manda a https://skse.silverlock.org/, que es donde está su build.
+#
+# Esa garantía vale ahora en las DOS ramas del gate. Antes dependía de que la versión
+# se pudiera leer: con `read_skyrim_version` devolviendo "" (sin `pefile`, PE que no
+# parsea, PE sin recurso de versión) el mismatch no se evaluaba, la edición la decidía
+# una heurística de tamaño, y al usuario de GOG se le pedía aprobación y se le bajaba
+# el payload de Steam. La rama ilegible también corta.
 
+# `steam_loader` NO declara "este build lo trae": es el NOMBRE del componente para esa
+# familia, y lo usan dos consumidores distintos. `_cleanup_orphaned_skse_dlls` lo
+# protege del glob `skse*.dll` (borrarlo dejaría la instalación sin loader de Steam), y
+# `_verify_skse_installed` lo usa para nombrar el archivo — pero condiciona el aviso a
+# que el PAYLOAD lo haya traído, porque qué archivos incluye cada archive es propiedad
+# del build, no de la edición.
 SKSE_CONFIG: dict[str, dict[str, str | None]] = {
     "AE": {
         "url": "https://skse.silverlock.org/beta/skse64_2_02_06.7z",
@@ -297,6 +311,15 @@ SKSE_CONFIG: dict[str, dict[str, str | None]] = {
 #: el techo existe para que un origen comprometido o mal configurado no pueda llenar el
 #: disco de staging: el timeout de la descarga acota el TIEMPO, no los BYTES.
 _SKSE_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+
+#: Ejecutables que cuentan como "hay un Skyrim instalado acá", en orden de preferencia.
+#: Compartido por los dos lectores del PE (`_detect_skyrim_edition_from_exe` y
+#: `_leer_version_del_ejecutable`): con dos listas separadas, agregar una edición a una
+#: y no a la otra deja el gate de compatibilidad ciego justo para esa edición.
+_SKYRIM_EXE_NAMES = ("SkyrimSE.exe", "SkyrimVR.exe", "Skyrim.exe")
+
+#: Lo que devuelve un lector de PE; el traductor compartido lo preserva.
+_T = TypeVar("_T")
 
 #: Techo absoluto de respaldo para ``_download_asset`` (helper GitHub compartido
 #: por todos los ``ensure_*``). Vale cuando la API no publica ``size`` (0): sin
@@ -432,9 +455,45 @@ class ReleaseAsset:
     sha256: str = ""
 
 
+class InstallVerification(StrEnum):
+    """¿Se pudo PROBAR que lo que quedó en disco sirve para este sistema?
+
+    Es una dimensión distinta de ``already_existed``, que responde "¿la instalación
+    ya existía?". Una instalación puede existir y no poder verificarse: SKSE está
+    pinneado al BUILD exacto de Skyrim, y el ejecutable no siempre expone su versión
+    (sin ``pefile``, PE que no parsea, PE sin recurso de versión). En esa rama la
+    edición sale de una heurística de TAMAÑO de archivo, así que ni siquiera el
+    nombre del DLL en disco prueba nada: puede ser un leftover de un upgrade previo.
+
+    Sobrecargar ``already_existed`` para significar las dos cosas obliga al caller a
+    elegir entre dos mentiras —"ausente" sobre una instalación buena, o "compatible"
+    sobre un runtime desconocido—. Con el campo aparte puede decir lo que realmente
+    se sabe.
+
+    El tercer estado del contrato —"no hay instalación reconocible" y "hay una y el
+    mismatch está DEMOSTRADO"— NO es miembro de este enum a propósito: no son
+    resultados sino las dos formas en que ``ensure_skse`` corta (``ToolInstallError``)
+    o procede a instalar. Un ``InstallResult`` que existe ya pasó esos gates, así que
+    un miembro para representarlo sería inalcanzable por construcción.
+    """
+
+    #: Hay una prueba: se leyó la versión del ejecutable y el payload en disco la targetea.
+    VERIFIED = "verified"
+    #: Hay evidencia de PRESENCIA física (loader + DLL de runtime) y nada más.
+    PRESENT_BUT_UNVERIFIED = "present_but_unverified"
+
+
 @dataclass(frozen=True, slots=True)
 class InstallResult:
-    """Resultado de una operación de auto-instalación."""
+    """Resultado de una operación de auto-instalación.
+
+    Attributes:
+        verification: Ver :class:`InstallVerification`. El default vale para los
+            tools que no están pinneados al build de ningún runtime
+            (LOOT/xEdit/Pandora/BodySlide): no tienen nada que probar, así que su
+            resultado no arrastra incertidumbre y no tienen que aprender a llenar
+            este campo.
+    """
 
     tool_name: str
     exe_path: pathlib.Path
@@ -442,6 +501,7 @@ class InstallResult:
     already_existed: bool
     success: bool = True
     message: str = ""
+    verification: InstallVerification = InstallVerification.VERIFIED
 
 
 @dataclass(frozen=True, slots=True)
@@ -1159,7 +1219,7 @@ class ToolsInstaller:
             )
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-loot-{version}",
+                request_id=new_hitl_request_id("loot-install"),
                 reason=f"Install LOOT {version}?",
                 url=asset.browser_download_url,
                 detail=(
@@ -1223,7 +1283,7 @@ class ToolsInstaller:
             )
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-xedit-{version}",
+                request_id=new_hitl_request_id("xedit-install"),
                 reason=f"Install SSEEdit {version}?",
                 url=asset.browser_download_url,
                 detail=(
@@ -1318,7 +1378,7 @@ class ToolsInstaller:
             )
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-pandora-{version}",
+                request_id=new_hitl_request_id("pandora-install"),
                 reason=f"Install Pandora Behavior Engine {version}?",
                 url=asset.browser_download_url,
                 detail=(
@@ -1383,12 +1443,24 @@ class ToolsInstaller:
             # esto corre —máquina limpia— no hay DLL que mirar. Defaultear a AE ahí le
             # instala `skse64_1_6_1170.dll` a un runtime 1.5.97 y SKSE no carga.
             #
-            # `detected_version` solo se llena en el camino de autodetección: si el
-            # caller pasa `edition` explícito confiamos en su elección sin exigir un
-            # .exe real en disco (staging, tests, instalación en curso).
+            # Quién nombra la EDICIÓN y quién prueba la VERSIÓN son cosas distintas: el
+            # caller puede traer la edición, pero la compatibilidad la decide el build
+            # del ejecutable que haya en disco. Por eso los dos caminos terminan
+            # llenando `detected_version` y `hay_ejecutable`.
             detected_version = ""
             if edition is None:
                 edition, detected_version = await self._detect_skyrim_edition_from_exe(install_dir)
+                # `_detect_skyrim_edition_from_exe` levanta si no encuentra ninguno.
+                hay_ejecutable = True
+            else:
+                # Con `edition` explícita no se EXIGE un .exe en disco (staging, tests,
+                # instalación en curso), pero si lo hay, su versión manda igual: la
+                # compatibilidad de SKSE es del BUILD, y quién nombró la edición no
+                # cambia qué runtime va a cargar el DLL. Sin esto, el gate quedaba
+                # atado al camino de autodetección y cualquier caller que resolviera
+                # la edición por su cuenta —config, snapshot, un consumidor futuro—
+                # se saltaba la prueba de compatibilidad entera.
+                hay_ejecutable, detected_version = await self._leer_version_del_ejecutable(install_dir)
 
             ed_key = self._edition_to_config_key(edition)
             cfg = SKSE_CONFIG.get(ed_key)
@@ -1402,10 +1474,83 @@ class ToolsInstaller:
 
             # Gate de versión exacta: SKSE está pinneado al BUILD exacto del juego, no
             # solo a su edición — dos AE distintos (1.6.640 vs 1.6.1170) comparten
-            # edición pero el DLL de uno no carga sobre el otro. Solo se evalúa cuando
-            # hay versión detectada (autodetección + pefile presente); si no, se
-            # degrada al comportamiento previo (edición sola) en vez de bloquear.
+            # edición pero el DLL de uno no carga sobre el otro. Corre ANTES del HITL,
+            # del egress y de cualquier escritura en el directorio del juego: la
+            # propiedad es "autoinstalar exige PODER PROBAR la compatibilidad", no
+            # "exige no haberla desmentido".
+            #
+            # De ahí que la versión ILEGIBLE también corte. Degradarse ahí "a edición
+            # sola" era fail-open: `read_skyrim_version` devuelve "" en tres casos
+            # reales (sin `pefile`, PE que no parsea, PE sin recurso de versión) y en
+            # esa MISMA rama la edición no sale del PE sino de una heurística de TAMAÑO
+            # de archivo (`scanner._detect_skyrim_version`: >60 MB ⇒ AE). O sea que lo
+            # que se instalaba era el payload de un build adivinado sobre un runtime
+            # desconocido — incluido el AE de GOG (1.6.1179), que el gate de mismatch
+            # solo ataja cuando la versión se pudo leer.
+            #
+            # La condición es "hay un runtime en disco que no pude probar", NO "la
+            # edición vino por autodetección": atarla al origen de la edición dejaba el
+            # gate ciego para cualquier caller que la resolviera por su cuenta, que es
+            # la misma clase de defecto —un camino cubierto y su gemelo intacto— que
+            # este gate existe para cerrar.
             expected_version = _skse_dll_game_version(dll_name)
+            loader_path = install_dir / loader_name
+            dll_path = install_dir / dll_name
+            ya_instalado = loader_path.exists() and dll_path.exists()
+
+            # PRESENCIA, no compatibilidad. `ya_instalado` mira el par EXACTO que este
+            # payload instalaría, y ese nombre sale de la edición — que en la rama del
+            # PE ilegible no sale del PE sino de una heurística de TAMAÑO. Con el
+            # runtime ilegible y la heurística diciendo AE, una instalación SE buena
+            # (`skse64_1_5_97.dll`) no matchea el DLL AE buscado y el contrato viejo la
+            # reportaba AUSENTE: `ToolInstallError` mandando a instalar a mano algo que
+            # ya estaba. Ese es el falso negativo que queda de #490.
+            #
+            # Se pregunta por la presencia con la MISMA detección que usa el scanner
+            # (loader + algún DLL de runtime, excluyendo el steam loader, que no
+            # codifica versión de juego), importada en vez de duplicada por el mismo
+            # motivo que el decodificador de versión: dos globs divergen.
+            #
+            # Tres recortes, y cada uno cierra un falso positivo distinto:
+            #
+            # * `not detected_version` — si la versión se pudo LEER no hay nada que no
+            #   se haya podido probar, y el gate de mismatch de abajo conserva su
+            #   precedencia. La incertidumbre es un estado para lo que no se pudo
+            #   probar, nunca un lugar donde esconder lo que se probó y salió mal.
+            # * `hay_ejecutable` — sin runtime en disco estamos en staging con edición
+            #   explícita, un camino que el contrato de #490 permite instalar y que
+            #   este fix no toca.
+            # * `edition=UNKNOWN` — la edición adivinada es justamente lo que no se
+            #   puede creer acá; dejarla recortar qué loaders cuentan reintroduce el
+            #   mismo falso negativo un nivel más abajo.
+            #
+            # Lo que NO se hace es "loader + cualquier DLL ⇒ éxito": eso cambia este
+            # falso negativo por el falso positivo opuesto —runtime desconocido + DLL
+            # stale reportados como compatibles—. Se reporta PRESENCIA, y el estado
+            # dice que compatibilidad no hay ninguna probada.
+            presente_sin_verificar = (
+                hay_ejecutable
+                and not detected_version
+                and not ya_instalado
+                and find_skse_installation(install_dir, edition=SkyrimEdition.UNKNOWN, game_version="") is not None
+            )
+
+            # El corte por versión ilegible NO se le aplica a una instalación que ya
+            # está: ese camino no descarga ni escribe nada, así que negarle el no-op a
+            # una máquina cuyo PE no se puede leer rompe una instalación buena sin
+            # ganar ninguna garantía. Es la misma política que el hermano de detección
+            # ya documenta (`scanner.find_skse_installation`: versión vacía degrada a
+            # "loader + algún DLL de runtime", no falla cerrado), y acá vale por la
+            # misma razón: lo que exige prueba es MUTAR, no reportar.
+            if hay_ejecutable and not detected_version and not ya_instalado and not presente_sin_verificar:
+                raise ToolInstallError(
+                    f"No pude leer la versión exacta de tu Skyrim {ed_key} en {install_dir} "
+                    "(¿falta `pefile`, o el ejecutable no expone su recurso de versión?). "
+                    "SKSE está pinneado a la versión EXACTA del ejecutable, así que sin poder "
+                    "probar la compatibilidad no se instala nada: elegir el payload por edición "
+                    "sola escribe un DLL que puede no cargar. Instalá manualmente el build "
+                    "correspondiente desde https://skse.silverlock.org/."
+                )
             if detected_version and not _game_version_matches(detected_version, expected_version):
                 raise ToolInstallError(
                     f"Tu Skyrim {ed_key} está en la versión {detected_version}, pero el único "
@@ -1413,23 +1558,40 @@ class ToolsInstaller:
                     "a la versión EXACTA del ejecutable, no solo a la edición). Instalá "
                     "manualmente el build correspondiente desde https://skse.silverlock.org/."
                 )
-            loader_path = install_dir / loader_name
-            dll_path = install_dir / dll_name
 
-            if loader_path.exists() and dll_path.exists():
-                logger.info("SKSE ya instalado en %s", loader_path)
+            if ya_instalado or presente_sin_verificar:
+                # Verificado SOLO con una lectura del ejecutable detrás. Pasado el gate
+                # de mismatch, `detected_version` no vacía significa que el runtime en
+                # disco targetea el mismo build que `dll_name`, y `ya_instalado` dice
+                # que ese DLL exacto está puesto: ahí sí hay prueba. Con la versión
+                # ilegible no la hay ni aunque el DLL se llame como corresponde — el
+                # nombre del archivo no es evidencia del runtime que lo va a cargar.
+                verification = (
+                    InstallVerification.VERIFIED
+                    if detected_version and ya_instalado
+                    else InstallVerification.PRESENT_BUT_UNVERIFIED
+                )
+                # El loader REAL, no el de la edición adivinada: en el camino sin
+                # verificar son distintos justamente porque la edición no es confiable.
+                loader_en_disco = (
+                    loader_path
+                    if ya_instalado
+                    else (find_skse_installation(install_dir, edition=SkyrimEdition.UNKNOWN) or loader_path)
+                )
+                logger.info("SKSE ya instalado en %s (%s)", loader_en_disco, verification.value)
                 return InstallResult(
                     tool_name="SKSE",
-                    exe_path=loader_path,
+                    exe_path=loader_en_disco,
                     version="existing",
                     already_existed=True,
+                    verification=verification,
                 )
 
             url = _skse_cfg_field(cfg, "url")
 
             # Solicitar aprobación HITL
             decision = await self._hitl.request_approval(
-                request_id=f"install-skse-{ed_key}",
+                request_id=new_hitl_request_id("skse-install"),
                 reason=f"Install SKSE for Skyrim {ed_key}?",
                 url=url,
                 detail=(
@@ -1466,6 +1628,25 @@ class ToolsInstaller:
                 # Buscar loader excluyendo __MACOSX
                 skse_root = self._find_skse_root(extract_path, cfg)
 
+                # SEGUNDO GATE, pegado a la primera escritura. El de arriba probó la
+                # compatibilidad al ARRANCAR la operación; desde entonces pasaron tres
+                # cosas que duran —la espera del HITL, la descarga y la extracción— y
+                # Skyrim es un ejecutable que otro proceso (Steam) actualiza sin
+                # avisarnos. Sin releer, lo que quedaba demostrado era "el runtime ERA
+                # compatible cuando empecé", y lo que decide si el DLL carga es si lo
+                # SIGUE siendo cuando escribo.
+                #
+                # Va acá y no antes de la descarga: cuanto más lejos de la copia, más
+                # ventana queda sin cubrir. Y va antes de `_copy_skse_files` porque esa
+                # es la primera mutación del directorio del juego — todo lo anterior
+                # (sandbox, archive, extracción) vive en staging temporal.
+                await self._revalidar_runtime_antes_de_mutar(
+                    install_dir,
+                    ed_key,
+                    expected_version,
+                    habia_ejecutable=hay_ejecutable,
+                )
+
                 # Copiar archivos al directorio del juego. `_copy_skse_files` solo toca
                 # nombres presentes en el payload nuevo (loader/dll de esta edición +
                 # Data) — no depende de que los DLL huérfanos ya estén borrados.
@@ -1481,12 +1662,141 @@ class ToolsInstaller:
                 await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
 
             logger.info("SKSE %s instalado en %s", ed_key, loader_path)
+            # Explícito, NO heredado del default del dataclass. El veredicto describe
+            # el RESULTADO en disco, no el camino que se recorrió para llegar: sin
+            # esto, una instalación fresca de staging (sin ejecutable, edición
+            # explícita) salía `VERIFIED` y la llamada idempotente siguiente —mismos
+            # archivos, misma ausencia de runtime— salía `PRESENT_BUT_UNVERIFIED`. Un
+            # campo de verificación no puede depender de quién hizo la copia.
+            #
+            # Con ejecutable, lo que hay detrás es la cadena entera: gate de versión
+            # ilegible, gate de mismatch y la revalidación pegada a la copia, que
+            # acaba de releer el PE del disco. Sin ejecutable no hay prueba posible y
+            # la revalidación se salta a propósito, así que decir `VERIFIED` ahí sería
+            # el `UNKNOWN == COMPATIBLE` que este contrato existe para prohibir.
             return InstallResult(
                 tool_name="SKSE",
                 exe_path=loader_path,
                 version=pathlib.Path(url).stem,
                 already_existed=False,
+                verification=(
+                    InstallVerification.VERIFIED if hay_ejecutable else InstallVerification.PRESENT_BUT_UNVERIFIED
+                ),
             )
+
+    async def _revalidar_runtime_antes_de_mutar(
+        self,
+        game_dir: pathlib.Path,
+        ed_key: str,
+        expected_version: str,
+        *,
+        habia_ejecutable: bool,
+    ) -> None:
+        """Vuelve a probar la compatibilidad contra el ejecutable REAL, justo antes de escribir.
+
+        No confía en nada de la primera pasada: relee el PE del disco. Ni la versión
+        detectada al arrancar, ni la edición, ni el nombre del DLL elegido sirven acá
+        — todos son de antes de la ventana, y la ventana es justamente el problema.
+
+        ``habia_ejecutable`` es lo único que se hereda, y no es una versión sino un
+        hecho sobre la precondición: distingue "el juego se desinstaló o se movió a
+        mitad de la operación" (había uno, ya no) de "esta instalación nunca tuvo un
+        .exe acá", que es el camino legítimo de staging con ``edition`` explícita y
+        que el contrato existente permite.
+
+        Falla cerrado en las tres formas de no poder probar: sin ejecutable, sin
+        versión legible, o versión que no matchea el payload que se bajó.
+        """
+        hay_ejecutable, version_actual = await self._leer_version_del_ejecutable(game_dir)
+
+        if not hay_ejecutable:
+            if not habia_ejecutable:
+                # Nunca hubo ejecutable: staging con edición explícita. Nada cambió
+                # bajo nuestros pies, así que no hay TOCTOU que atajar.
+                return
+            raise ToolInstallError(
+                f"El payload de SKSE {ed_key} ya se descargó, pero ya no encuentro el ejecutable "
+                f"de Skyrim en {game_dir}: desapareció mientras se preparaba la instalación "
+                "(¿se desinstaló o se movió el juego?). No se copió nada."
+            )
+
+        if not version_actual:
+            raise ToolInstallError(
+                f"La compatibilidad de tu Skyrim {ed_key} en {game_dir} dejó de poder verificarse "
+                "mientras se preparaba la instalación: el ejecutable está pero ya no expone su "
+                "versión (¿una actualización en curso?). No se copió nada; reintentá cuando el "
+                "juego esté en reposo."
+            )
+
+        if not _game_version_matches(version_actual, expected_version):
+            raise ToolInstallError(
+                f"Tu Skyrim {ed_key} cambió de versión mientras se preparaba la instalación: "
+                f"ahora está en {version_actual} y el payload que se descargó es para "
+                f"{expected_version}. Copiarlo dejaría un SKSE que no carga, así que no se copió "
+                "nada. Volvé a intentarlo para que se elija el build correspondiente a "
+                f"{version_actual}."
+            )
+
+    async def _leer_version_del_ejecutable(self, game_dir: pathlib.Path) -> tuple[bool, str]:
+        """``(¿hay ejecutable de Skyrim?, versión exacta o "")`` sin exigir que exista.
+
+        Hermano de :meth:`_detect_skyrim_edition_from_exe` para el camino en que el
+        caller ya trae la edición: ahí no hace falta deducirla, pero sí hace falta
+        saber si hay un runtime real cuya compatibilidad se pueda probar. Los dos
+        desenlaces que devuelve ``""`` son distintos y por eso se devuelve también el
+        booleano: "no hay Skyrim acá" es legítimo (staging), "hay uno y no pude leerle
+        la versión" es lo que tiene que fallar cerrado.
+        """
+        for exe_name in _SKYRIM_EXE_NAMES:
+            exe = game_dir / exe_name
+            if exe.is_file():
+                return True, await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
+        return False, ""
+
+    async def _leer_pe_tolerando_ilegible(
+        self,
+        lector: Callable[[pathlib.Path], _T],
+        exe: pathlib.Path,
+        *,
+        ilegible: _T,
+    ) -> _T:
+        """Corre un lector de PE fuera del event loop y traduce "no se pudo leer".
+
+        Punto ÚNICO de traducción, compartido por los dos caminos que leen el PE
+        —autodetección de edición y relectura de versión—. Estuvo primero solo en uno
+        de los dos y el revisor encontró el gemelo intacto: con la traducción repetida
+        en cada sitio, el tercero que lea un PE vuelve a olvidarla.
+        """
+        try:
+            # pefile hace I/O síncrono de PE: fuera del event loop.
+            return await asyncio.to_thread(lector, exe)
+        except Exception as exc:
+            # Se traduce SOLO el `Exception` pelado, que es exactamente lo que
+            # `pefile` levanta en al menos un caso de acceso (ruta que resulta ser un
+            # directorio) y que queda fuera de las tres ramas que
+            # `_read_pe_product_version` captura. El `is_file()` del caller no alcanza:
+            # entre esa comprobación y la lectura la ruta puede cambiar, y esto corre
+            # precisamente cuando el juego se está actualizando.
+            #
+            # Cualquier SUBTIPO se re-lanza: un `TypeError` por cambio de firma o un
+            # `AttributeError` por una versión nueva de `pefile` son defectos NUESTROS,
+            # y traducirlos a "ilegible" le diría al operador que su Skyrim no se puede
+            # verificar cuando el problema es de Sky-Claw — con el traceback real
+            # enterrado en un warning y sin forma de distinguir una cosa de la otra.
+            #
+            # BLE001 está exento para este archivo en `pyproject.toml`, así que ruff NO
+            # habría marcado el catch-all: el recorte por tipo exacto está porque el
+            # gate no cubre este código, no porque lo cubra.
+            if type(exc) is not Exception:
+                raise
+            logger.warning(
+                "No se pudo leer el PE de %s con %s (%s: %s); se trata como ilegible.",
+                exe,
+                getattr(lector, "__name__", lector),
+                type(exc).__name__,
+                exc,
+            )
+            return ilegible
 
     async def _detect_skyrim_edition_from_exe(self, game_dir: pathlib.Path) -> tuple[SkyrimEdition, str]:
         """Deriva edición y versión exacta leyendo el PE del ejecutable en *game_dir*.
@@ -1495,12 +1805,18 @@ class ToolsInstaller:
         a su edición, así que el caller necesita la versión para el gate de
         compatibilidad además de la edición para elegir el payload.
         """
-        for exe_name in ("SkyrimSE.exe", "SkyrimVR.exe", "Skyrim.exe"):
+        for exe_name in _SKYRIM_EXE_NAMES:
             exe = game_dir / exe_name
             if exe.is_file():
-                # pefile hace I/O síncrono de PE: fuera del event loop.
-                edition = await asyncio.to_thread(detect_skyrim_edition, exe)
-                version = await asyncio.to_thread(read_skyrim_version, exe)
+                # Las dos lecturas van por el mismo traductor que la relectura del
+                # segundo gate: un PE que explota acá tiene que dar el mismo
+                # `ToolInstallError` accionable, no una excepción cruda por venir del
+                # camino de autodetección. Edición ilegible -> UNKNOWN, que
+                # `_edition_to_config_key` ya corta con su propio mensaje.
+                edition = await self._leer_pe_tolerando_ilegible(
+                    detect_skyrim_edition, exe, ilegible=SkyrimEdition.UNKNOWN
+                )
+                version = await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
                 return edition, version
 
         raise ToolInstallError(
@@ -1774,10 +2090,15 @@ class ToolsInstaller:
                 "Verifica que el archivo descargado contenga los binarios esperados."
             )
 
-        self._verify_skse_installed(game_dir, cfg)
+        self._verify_skse_installed(skse_root, game_dir, cfg)
         logger.info("SKSE: archivos copiados a %s", game_dir)
 
-    def _verify_skse_installed(self, game_dir: pathlib.Path, cfg: dict[str, str | None]) -> None:
+    def _verify_skse_installed(
+        self,
+        skse_root: pathlib.Path,
+        game_dir: pathlib.Path,
+        cfg: dict[str, str | None],
+    ) -> None:
         """Verifica en DESTINO que la instalación de SKSE quedó completa.
 
         Contar archivos copiados no alcanza: un payload con el loader y un ``Data/``
@@ -1797,8 +2118,18 @@ class ToolsInstaller:
         # El steam loader no entra en el corte duro: solo hace falta para arrancar desde
         # Steam, y MO2 lanza el loader directo. Fallar acá tiraría abajo una instalación
         # que funciona; avisar deja el rastro sin romperla.
+        #
+        # Pero la expectativa sale del PAYLOAD, no de `SKSE_CONFIG`: los archives no
+        # traen todos el mismo set de archivos, así que condicionar el aviso a la
+        # edición lo dispara en TODA instalación buena de un build que no lo incluye —
+        # y le dice al operador que le falta algo que su build nunca tuvo. Mirando el
+        # payload el aviso queda acotado a lo que sí es un defecto: el archive lo traía
+        # y no aterrizó (copia incompleta), que es el caso de los builds históricos que
+        # realmente lo necesitan. Se compara contra la raíz del payload porque es
+        # exactamente el nivel que `_copy_skse_files` recorre: si el archivo no está
+        # ahí, no había nada que copiar.
         steam_loader = cfg.get("steam_loader")
-        if steam_loader and not (game_dir / steam_loader).is_file():
+        if steam_loader and (skse_root / steam_loader).is_file() and not (game_dir / steam_loader).is_file():
             logger.warning(
                 "SKSE instalado sin %s: el arranque desde Steam puede no cargar SKSE "
                 "(lanzándolo desde MO2 o desde el loader funciona igual).",
@@ -1850,7 +2181,7 @@ class ToolsInstaller:
                 raise ToolInstallError(f"Failed to fetch BodySlide info from Nexus: {exc}") from exc
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-bodyslide-{file_info.file_id}",
+                request_id=new_hitl_request_id("bodyslide-install"),
                 reason=f"Install BodySlide and Outfit Studio (Nexus ID {nexus_id})?",
                 url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
                 detail=(
@@ -2232,7 +2563,7 @@ class ToolsInstaller:
             asset, version = await self._find_github_asset(session, releases_url, keyword=keyword, select=asset_select)
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-{request_slug}-{version}",
+                request_id=new_hitl_request_id("github-mod-install"),
                 reason=f"¿Instalar el mod {mod_name} {version}?",
                 url=asset.browser_download_url,
                 detail=(f"Asset: {asset.name}\nSize: {asset.size / (1024 * 1024):.1f} MB\nSource: {source_hint}"),
@@ -2367,7 +2698,7 @@ class ToolsInstaller:
                 ) from exc
 
             decision = await self._hitl.request_approval(
-                request_id=f"install-{request_slug}-{file_info.file_id}",
+                request_id=new_hitl_request_id("nexus-mod-install"),
                 reason=f"¿Instalar el mod {mod_name} (Nexus ID {nexus_id})?",
                 url=f"https://www.nexusmods.com/skyrimspecialedition/mods/{nexus_id}",
                 detail=(

@@ -17,7 +17,17 @@ import keyring
 from sky_claw.app.agent.providers import ProviderConfigError, create_provider
 from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.agent.tools_facade import AsyncToolRegistry
-from sky_claw.app.comms.telegram import TelegramWebhook
+from sky_claw.app.comms.telegram import (
+    TelegramHITLMessageRegistry,
+    TelegramWebhook,
+    build_hitl_callback_data,
+    escape_html,
+    format_hitl_request_id_for_telegram,
+    invalidate_unregistered_hitl_message,
+    register_hitl_message_cancellation_safe,
+    terminalize_hitl_message,
+    terminalize_unregistered_hitl_message_bounded,
+)
 from sky_claw.app.comms.telegram_polling import TelegramPolling
 from sky_claw.app.comms.telegram_sender import TelegramSender
 from sky_claw.app.core.metrics_server import (
@@ -35,7 +45,7 @@ from sky_claw.app.scraper.masterlist import MasterlistClient
 from sky_claw.app.scraper.nexus_downloader import NexusDownloader
 from sky_claw.app.security.auth_token_manager import AuthTokenManager
 from sky_claw.app.security.credential_vault import CredentialVault
-from sky_claw.app.security.hitl import HITLGuard, HITLRequest
+from sky_claw.app.security.hitl import Decision, HITLGuard, HITLRequest
 from sky_claw.app.security.network_gateway import GatewayTCPConnector, NetworkGateway
 from sky_claw.app.security.path_validator import PathValidator, assert_safe_component
 from sky_claw.app.security.prompt_armor import build_system_header
@@ -207,6 +217,9 @@ class AppContext:
         self.vfs_loot_runner: BrokeredLootRunner | VfsRequiredLootRunner | None = None
 
         self.hitl: HITLGuard | None = None
+        # Registry efímero: request_id → mensaje Telegram exacto. Nunca se
+        # persiste y se limpia al cerrar la generación de startup.
+        self.telegram_hitl_registry = TelegramHITLMessageRegistry()
         self.router: LLMRouter | None = None
         # F1 (auditoría Zero-Trust 2026-07-18): bóveda de credenciales para el
         # hot-swap Zero-Trust del router. None hasta que start_full la provisione
@@ -836,52 +849,143 @@ class AppContext:
             hitl: HITLGuard
             full_published = False
 
+            async def _hitl_terminal(req: HITLRequest, decision: Decision) -> None:
+                await terminalize_hitl_message(
+                    self.telegram_hitl_registry,
+                    req.request_id,
+                    decision,
+                )
+
+            async def _hitl_cancel(req: HITLRequest) -> None:
+                await terminalize_hitl_message(
+                    self.telegram_hitl_registry,
+                    req.request_id,
+                    None,
+                )
+
             async def _hitl_notify(req: HITLRequest) -> None:
                 active_sender = self.sender if full_published else sender
                 if active_sender is None or operator_chat_id is None:
-                    if req.category in ("tool_execution", "sandbox_promotion"):
-                        # Fail-closed: destructive tool executions and sandbox
-                        # promotions (T-27b·2: promover un diff sin revisión
-                        # vaciaría al sandbox de sentido) are NEVER
-                        # auto-approved without an operator channel.
-                        logger.critical(
-                            "HITL: no operator channel configured — DENYING "
-                            "%s request %s (%s). Configure the Telegram bot and "
-                            "operator chat id to approve it.",
-                            req.category,
-                            req.request_id,
-                            req.reason,
-                        )
-                        await hitl.respond(req.request_id, False)
-                        return
-                    logger.info("HITL auto-approving: %s", req.request_id)
-                    await hitl.respond(req.request_id, True)
+                    # Fail-closed: sin canal de operador ninguna solicitud HITL
+                    # puede interpretarse como aprobada, independientemente de
+                    # su categoría actual o futura.
+                    logger.critical(
+                        "HITL: no operator channel configured — DENYING "
+                        "%s request %s (%s). Configure the Telegram bot and "
+                        "operator chat id to approve it.",
+                        req.category,
+                        req.request_id,
+                        req.reason,
+                    )
+                    await hitl.respond(req.request_id, False)
                     return
-                msg = f"🛡️ *HITL Approval Required*\n\nID: `{req.request_id}`\nReason: {req.reason}\n\n{req.detail}"
-                # Send using sender directly
                 try:
-                    await active_sender.send(
+                    token = await self.telegram_hitl_registry.reserve_token(req.request_id)
+                except Exception:
+                    # Si otra interfaz resolvió durante la reserva, preservar la
+                    # decisión del guard; una reserva que nunca existió no deja
+                    # nada que limpiar ni debe transformar APPROVED en TIMEOUT.
+                    if await hitl.terminal_decision(req.request_id) is not None:
+                        return
+                    raise
+                if await hitl.terminal_decision(req.request_id) is not None:
+                    await self.telegram_hitl_registry.release_token(token)
+                    return
+                try:
+                    prompt_lines = [
+                        "🛡️ <b>Se requiere aprobación HITL</b>",
+                        "",
+                        f"<b>ID:</b> <code>{format_hitl_request_id_for_telegram(req.request_id)}</code>",
+                        f"<b>Motivo:</b> {escape_html(req.reason)}",
+                    ]
+                    if req.url:
+                        prompt_lines.append(f"<b>URL:</b> <code>{escape_html(req.url)}</code>")
+                    if req.detail:
+                        prompt_lines.extend(["", escape_html(req.detail)])
+
+                    message = await active_sender.send(
                         operator_chat_id,
-                        msg,
+                        "\n".join(prompt_lines),
                         reply_markup={
                             "inline_keyboard": [
                                 [
                                     {
-                                        "text": "✅ Approve",
-                                        "callback_data": f"hitl:approve:{req.request_id}",
+                                        "text": "✅ Aprobar",
+                                        "callback_data": build_hitl_callback_data("approve", token),
                                     },
                                     {
-                                        "text": "❌ Deny",
-                                        "callback_data": f"hitl:deny:{req.request_id}",
+                                        "text": "❌ Denegar",
+                                        "callback_data": build_hitl_callback_data("deny", token),
                                     },
                                 ]
                             ]
                         },
                     )
+                    # El mapping sólo nace inmediatamente después de que
+                    # Telegram devuelve la identidad del mensaje. No insertar
+                    # awaits entre sendMessage y este registro: la cancelación
+                    # debe poder encontrar el owner para quitar los botones. Un
+                    # fallo, un None o una respuesta incompleta deja la request
+                    # fail-closed sin mapping fantasma.
+                    try:
+                        await register_hitl_message_cancellation_safe(
+                            self.telegram_hitl_registry,
+                            req.request_id,
+                            message,
+                            active_sender,
+                            token=token,
+                        )
+                    except Exception:
+                        # Telegram ya creó el mensaje. Si otra interfaz resolvió
+                        # durante sendMessage, on_terminal retiró la reserva y no
+                        # habrá mapping que consumir: conservar la presentación
+                        # terminal de esa decisión en vez de usar cancelación genérica.
+                        decision = await hitl.terminal_decision(req.request_id)
+                        if decision is not None:
+                            await terminalize_unregistered_hitl_message_bounded(
+                                active_sender,
+                                message,
+                                decision,
+                            )
+                            return
+                        # En cualquier otro fallo, invalidar el prompt recién creado
+                        # y conservar intactos los mappings pendientes anteriores.
+                        await invalidate_unregistered_hitl_message(active_sender, message)
+                        raise
+                except asyncio.CancelledError:
+                    # El guard ejecuta on_cancel para quitar botones; aquí sólo
+                    # liberamos la reserva si la cancelación ocurrió antes del
+                    # registro del mensaje.
+                    await self.telegram_hitl_registry.release_token(token)
+                    raise
                 except Exception:
-                    logger.exception("Failed to send HITL notification")
+                    # send failure, builder failure y registration failure son
+                    # fail-closed; la reserva nunca queda huérfana. Si otra
+                    # interfaz ya comprometió una decisión mientras el envío
+                    # estaba en vuelo, no convertirla en TIMEOUT.
+                    await self.telegram_hitl_registry.release_token(token)
+                    if await hitl.terminal_decision(req.request_id) is not None:
+                        return
+                    raise
 
-            hitl = HITLGuard(notify_fn=_hitl_notify)
+                # Otra interfaz puede resolver la request mientras sendMessage
+                # está en vuelo. En ese caso el hook del guard pudo ejecutarse
+                # antes de existir el mapping; consumirlo ahora evita dejar el
+                # prompt accionable o una entrada huérfana.
+                terminal_decision = await hitl.terminal_decision(req.request_id)
+                if terminal_decision is not None:
+                    await terminalize_hitl_message(
+                        self.telegram_hitl_registry,
+                        req.request_id,
+                        terminal_decision,
+                    )
+
+            hitl = HITLGuard(
+                notify_fn=_hitl_notify,
+                on_terminal=_hitl_terminal,
+                on_cancel=_hitl_cancel,
+            )
+            self._push_startup_cleanup(self.telegram_hitl_registry.clear)
 
             # Observability: configure distributed tracing first so spans from the
             # metrics server startup are captured.  NoOp when no OTLP endpoint is set.
@@ -965,6 +1069,7 @@ class AppContext:
                 max_retries=180,
                 backoff_base=1.0,
                 backoff_max=10.0,
+                lifecycle=self.lifecycle.manager,
             )
             self._push_startup_cleanup(tools_installer_lock_manager.close)
             await self._await_startup(tools_installer_lock_manager.initialize())
@@ -1052,7 +1157,10 @@ class AppContext:
             # here, but SnapshotTransactionLock requires the instance.
             _LOCK_STAGING_DIR.mkdir(parents=True, exist_ok=True)
             (_LOCK_STAGING_DIR / "snapshots").mkdir(parents=True, exist_ok=True)
-            lock_manager = DistributedLockManager(db_path=_LOCK_STAGING_DIR / "locks.db")
+            lock_manager = DistributedLockManager(
+                db_path=_LOCK_STAGING_DIR / "locks.db",
+                lifecycle=self.lifecycle.manager,
+            )
             self._push_startup_cleanup(lock_manager.close)
             await self._await_startup(lock_manager.initialize())
             snapshot_manager = FileSnapshotManager(snapshot_dir=_LOCK_STAGING_DIR / "snapshots")
@@ -1078,6 +1186,75 @@ class AppContext:
                         exc_info=True,
                     )
 
+            # T-26 (ADR 0002, follow-up de #243): journal para que run_loot_sort
+            # de este path del agente también emita+persista el ActionManifest
+            # ("caja negra de vuelo") antes de mutar — cerrando el hueco donde la
+            # emisión era un no-op fuera del path de la GUI/supervisor. Comparte
+            # .skyclaw_backups/journal.db (mismo staging que locks.db, audit #190)
+            # y toma la conexión del DatabaseLifecycleManager (WAL recovery +
+            # pragmas hardenizadas + shutdown coordinado), igual que la history DB
+            # del router más abajo.
+            journal = OperationJournal(
+                db_path=_LOCK_STAGING_DIR / "journal.db",
+                lifecycle=self.lifecycle.manager,
+            )
+            self._push_startup_cleanup(journal.close)
+            await self._await_startup(journal.open())
+
+            # D2 (PR #493): reconciliar el handoff durable de deployment contra el
+            # filesystem ANTES de que cualquier resume lo consulte. El orden del
+            # arranque está congelado por tests (test_startup_recovery_order.py):
+            #
+            #   1. journal.open() — incluye el stale sweep de TX PENDING;
+            #   2. esta reconciliación de handoff (evidencia del journal);
+            #   3. barrido de rollback_reconciler (U-08, más abajo).
+            #
+            # El barrido de residuos corre DESPUÉS a propósito: el reconciler
+            # restaura/desplaza evidencia física (``mods/TexGen Output``,
+            # ``managed_root/textures``) que ESTE oracle inspecciona. Ejecutarlo
+            # primero restauraría la generación previa y el oracle —mirando ya el
+            # artifact restaurado— fabricaría un INDETERMINATE espurio con la
+            # identidad observada de la generación vieja y consumiría los receipts
+            # sobre ese estado contaminado (reproducido en el post-push 0009).
+            # Best-effort: nunca aborta el arranque. Sólo degrada a INDETERMINATE
+            # con evidencia; jamás fabrica identidad autorizada.
+            try:
+                from sky_claw.app.db.handoffs import (
+                    clave_de_artifact,
+                    reconciliar_handoffs_de_deployment,
+                )
+                from sky_claw.local.tools.artifact_digest import digest_arbol
+                from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
+
+                mods_root = pathlib.Path(mo2_root) / "mods" if mo2_root else None
+                game_path = configured_game if isinstance(configured_game, pathlib.Path) else None
+                data_dir = game_path / "Data" if game_path is not None else None
+                if game_path is not None and data_dir is not None and mods_root is not None:
+                    await self._await_startup(
+                        reconciliar_handoffs_de_deployment(
+                            journal=journal,
+                            # F-007: la fuente canónica del nombre del mod es
+                            # DynDOLODRunner.TEXGEN_MOD_NAME — el ancla AST de
+                            # tests exige que el wiring no hardcodee el literal.
+                            mod_texgen=mods_root / DynDOLODRunner.TEXGEN_MOD_NAME,
+                            game_key=clave_de_artifact(game_path),
+                            mods_root_key=clave_de_artifact(mods_root),
+                            data_key=clave_de_artifact(data_dir),
+                            expected_profile=active_profile,
+                            digest_arbol=digest_arbol,
+                        )
+                    )
+                else:
+                    logger.warning(
+                        "Reconciliación del handoff de deployment omitida: no hay juego/MO2 "
+                        "resolubles para ubicar el artifact físico (best-effort, no bloquea el arranque)"
+                    )
+            except Exception:
+                logger.warning(
+                    "Reconciliación del handoff de deployment falló (no bloquea el arranque)",
+                    exc_info=True,
+                )
+
             # U-08 (mitad 2): reconciliar el residuo de rollback que sobrevive a una
             # muerte dura. La mitad 1 (#378) cubrió la cancelación cooperativa en
             # clone(); un SIGKILL/OOM/corte de luz evade TODO finally e __aexit__, así
@@ -1085,6 +1262,12 @@ class AppContext:
             # la reconciliación de U-03 de arriba — mismo guard: si el ritual que
             # produce el residuo está en curso (aun en otra instancia), no se toca.
             # Best-effort: NO debe abortar el arranque.
+            #
+            # Corre DESPUÉS de la reconciliación de handoff de D2 (orden congelado
+            # por test_startup_recovery_order.py): el oracle ya decidió sobre la
+            # evidencia física PREVIA a la restauración, y recién ahora este
+            # barrido devuelve la generación anterior a su lugar — convergiendo
+            # con lo que el camino de cancelación cooperativa ya produce.
             try:
                 from sky_claw.local.tools.rollback_reconciler import (
                     construir_productores_de_move_aside,
@@ -1112,21 +1295,6 @@ class AppContext:
                     "Reconciliación de backups de rollback huérfanos falló (no bloquea el arranque)",
                     exc_info=True,
                 )
-
-            # T-26 (ADR 0002, follow-up de #243): journal para que run_loot_sort
-            # de este path del agente también emita+persista el ActionManifest
-            # ("caja negra de vuelo") antes de mutar — cerrando el hueco donde la
-            # emisión era un no-op fuera del path de la GUI/supervisor. Comparte
-            # .skyclaw_backups/journal.db (mismo staging que locks.db, audit #190)
-            # y toma la conexión del DatabaseLifecycleManager (WAL recovery +
-            # pragmas hardenizadas + shutdown coordinado), igual que la history DB
-            # del router más abajo.
-            journal = OperationJournal(
-                db_path=_LOCK_STAGING_DIR / "journal.db",
-                lifecycle=self.lifecycle.manager,
-            )
-            self._push_startup_cleanup(journal.close)
-            await self._await_startup(journal.open())
 
             # Auditoría FOMOD: el motor (parser/resolver/installer) existía pero
             # nunca se cableó — las tools preview_mod_installer /
@@ -1211,6 +1379,7 @@ class AppContext:
                     session=self.network.session,
                     hitl=hitl,
                     authorized_user_id=operator_chat_id,
+                    hitl_registry=self.telegram_hitl_registry,
                 )
                 polling = TelegramPolling(
                     token=bot_token,
