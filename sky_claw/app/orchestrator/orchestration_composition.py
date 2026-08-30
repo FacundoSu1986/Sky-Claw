@@ -6,9 +6,11 @@ tipada externa.
 
 La clase que antes actuaba como composition root invoca
 ``build_orchestration_composition()`` y recibe un
-:class:`OrchestrationComposition` con los objetos ya cableados, pero
-todavía conserva temporalmente los seams residuales de Grass, asset scan
-y plugin-limit guard para el PR3.
+:class:`OrchestrationComposition` con los objetos ya cableados. Tras PR3,
+el seam de Grass vive en ``grass_runtime_deps.GrassRuntimeDepsProvider``
+(deps explícitas, resolución lazy); los seams residuales de asset scan y
+plugin-limit guard siguen entregándose como callables estrechos (PR4 los
+extraerá).
 
 Sin cambio funcional intencional.
 """
@@ -113,7 +115,8 @@ def build_orchestration_composition(
     loot_runner: LootRunnerProtocol | None,
     require_vfs: bool,
     patch_advisor_llm: LLMCallable | None,
-    # Seams residuales (transitorios — PR3 los extraerá del supervisor)
+    # Seams residuales de asset scan y plugin-limit (transitorios — PR4);
+    # el provider de Grass ya llega extraído desde PR3.
     grass_runtime_deps_provider: Callable[[], GrassRuntimeDeps | None],
     plugin_limit_guard: Callable[[str], Awaitable[dict[str, Any]]],
     scan_asset_conflicts: Callable[[], list[AssetConflictReport]],

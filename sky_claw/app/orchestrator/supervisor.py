@@ -13,6 +13,7 @@ from sky_claw.app.core.models import HitlApprovalRequest
 from sky_claw.app.core.path_resolver import PathResolutionService, resolver_perfil_activo
 from sky_claw.app.core.windows_interop import ModdingToolsAgent
 from sky_claw.app.db.rollback_manager import RollbackManager
+from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
 from sky_claw.app.orchestrator.maintenance_daemon import (
     MaintenanceDaemon,
 )
@@ -30,9 +31,6 @@ from sky_claw.app.security.hitl import HITLGuard
 from sky_claw.app.security.network_gateway import NetworkGateway
 from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
-from sky_claw.local.mo2.grass_profile import GrassProfileManager
-from sky_claw.local.mo2.vfs import MO2Controller
-from sky_claw.local.tools.grass_cache_service import GrassRuntimeDeps
 from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
 
 logger = logging.getLogger(__name__)
@@ -126,13 +124,6 @@ class SupervisorAgent:
         patch_advisor_llm: LLMCallable | None = None,
     ):
         self.db = DatabaseAgent()
-        # Memo del MO2Controller PROPIO del ritual de grass — aislado del
-        # controller del AppContext a propósito: el cleanup de grass
-        # (close_game entre relanzamientos) mata TODOS los PIDs trackeados, así
-        # que compartir el tracking con el juego que el usuario lanzó por la
-        # tool normal lo mataría (review Codex #305 C2). Se puebla perezosamente
-        # en _resolve_grass_mo2_controller y se reusa entre corridas del ritual.
-        self._mo2_controller: MO2Controller | None = None
         # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
         # NO duplicar caché DNS pinning ni reglas de egress (dos políticas que
         # podrían divergir). ``is not None`` explícito (no ``or``): un gateway
@@ -193,9 +184,18 @@ class SupervisorAgent:
         # PR2 (Strangler Fig): la construcción del grafo de servicios, providers,
         # middleware, dependencias del dispatcher y dispatcher se delega a
         # build_orchestration_composition(). El supervisor conserva las
-        # referencias que necesita para lifecycle y APIs existentes; los seams
-        # residuales de Grass, asset scan y plugin-limit se entregan como
-        # callables estrechos (PR3 los extraerá del supervisor).
+        # referencias que necesita para lifecycle y APIs existentes.
+        #
+        # PR3: las deps de Fases B/C del ritual de grass se extrajeron a
+        # GrassRuntimeDepsProvider (sky_claw.app.orchestrator.grass_runtime_deps),
+        # que recibe dependencias explícitas y se resuelve de forma lazy al
+        # ejecutar el ritual. Los seams de asset scan y plugin-limit siguen como
+        # callables estrechos (PR4 los extraerá).
+        grass_runtime_deps_provider = GrassRuntimeDepsProvider(
+            path_resolver=self._path_resolver,
+            path_validator=self._modding_validator,
+            profile_name=self.profile_name,
+        )
         composition = build_orchestration_composition(
             scraper=self.scraper,
             lock_manager=self._lock_manager,
@@ -209,7 +209,7 @@ class SupervisorAgent:
             loot_runner=loot_runner,
             require_vfs=require_vfs,
             patch_advisor_llm=patch_advisor_llm,
-            grass_runtime_deps_provider=self._build_grass_dependencies,
+            grass_runtime_deps_provider=grass_runtime_deps_provider,
             plugin_limit_guard=self._run_plugin_limit_guard,
             scan_asset_conflicts=self.scan_asset_conflicts,
             scan_asset_conflicts_json=self.scan_asset_conflicts_json,
@@ -514,59 +514,6 @@ class SupervisorAgent:
     def get_rollback_manager(self) -> RollbackManager:
         """Retorna el RollbackManager para inyección de dependencias."""
         return self.rollback_manager
-
-    def _build_grass_dependencies(self) -> GrassRuntimeDeps | None:
-        """Provider lazy de las deps de Fases B/C del ritual de grass (Stage 8).
-
-        Lo llama el :class:`GrassCacheService` al EJECUTAR el ritual (no en
-        ``__init__``): en la GUI, ``MO2_PATH``/``SKYRIM_PATH`` se hidratan
-        después de construir el supervisor, así que resolverlas antes daría
-        ``None`` permanente (review Codex #301). Devuelve ``None`` si todavía
-        faltan — el servicio responde con su error de contrato accionable y se
-        reintenta en la próxima corrida.
-
-        Usa el validator de MODDING (``_modding_validator``, el mismo que el
-        path resolver), no el rollback backup-only que rechazaría
-        ``<MO2>/profiles`` y ``<MO2>/mods``; y clona el perfil ACTIVO
-        (``self.profile_name``), no el ``Default`` por defecto.
-        """
-        mo2_root = self._path_resolver.get_mo2_path()
-        game_path = self._path_resolver.get_skyrim_path()
-        if mo2_root is None or game_path is None:
-            return None
-        mo2 = self._resolve_grass_mo2_controller(mo2_root)
-        profile_manager = GrassProfileManager(
-            mo2_root,
-            self._modding_validator,
-            source_profile=self.profile_name,
-            controller=mo2,
-        )
-        return GrassRuntimeDeps(
-            profile_manager=profile_manager,
-            mo2=mo2,
-            game_path=game_path,
-            overwrite_grass_dir=mo2_root / "overwrite" / "Grass",
-        )
-
-    def _resolve_grass_mo2_controller(self, mo2_root: pathlib.Path) -> MO2Controller:
-        """Devuelve el MO2Controller PROPIO del ritual de grass, memoizado.
-
-        Es una instancia AISLADA a propósito (no la del AppContext): el runner
-        de grass llama ``close_game()`` entre relanzamientos y al salir, y
-        ``close_game`` mata TODOS los PIDs trackeados (§1.2). Si compartiera el
-        ``_launched_procs`` con el controller del AppContext, arrancar el grass
-        cache mataría el Skyrim que el usuario lanzó con la tool normal (review
-        Codex #305 C2). El cleanup de grass debe ser ritual-scoped.
-
-        Se memoiza (en vez de construir uno nuevo por resolución) para no
-        recrearlo en reintentos del ritual y mantener un tracking de PIDs
-        estable entre corridas.
-        """
-        resolved = mo2_root.resolve()
-        if self._mo2_controller is not None and self._mo2_controller.root == resolved:
-            return self._mo2_controller
-        self._mo2_controller = MO2Controller(resolved, self._modding_validator)
-        return self._mo2_controller
 
     # =========================================================================
     # FASE 6: Wrye Bash Integration
