@@ -13,6 +13,7 @@ from sky_claw.app.core.models import HitlApprovalRequest
 from sky_claw.app.core.path_resolver import PathResolutionService, resolver_perfil_activo
 from sky_claw.app.core.windows_interop import ModdingToolsAgent
 from sky_claw.app.db.rollback_manager import RollbackManager
+from sky_claw.app.orchestrator.asset_conflict_scan import AssetConflictScanner
 from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
 from sky_claw.app.orchestrator.maintenance_daemon import (
     MaintenanceDaemon,
@@ -189,13 +190,18 @@ class SupervisorAgent:
         # PR3: las deps de Fases B/C del ritual de grass se extrajeron a
         # GrassRuntimeDepsProvider (sky_claw.app.orchestrator.grass_runtime_deps),
         # que recibe dependencias explícitas y se resuelve de forma lazy al
-        # ejecutar el ritual. Los seams de asset scan y plugin-limit siguen como
-        # callables estrechos (PR4 los extraerá).
+        # ejecutar el ritual. PR4: el scanner de conflictos de assets vive en
+        # AssetConflictScanner (sky_claw/app/orchestrator/asset_conflict_scan.py);
+        # el seam de plugin-limit sigue como callable estrecho (PR5 lo extraerá).
         grass_runtime_deps_provider = GrassRuntimeDepsProvider(
             path_resolver=self._path_resolver,
             path_validator=self._modding_validator,
             profile_name=self.profile_name,
         )
+        asset_conflict_scanner = AssetConflictScanner(
+            path_resolver=self._path_resolver,
+        )
+        self._asset_scanner = asset_conflict_scanner
         composition = build_orchestration_composition(
             scraper=self.scraper,
             lock_manager=self._lock_manager,
@@ -211,8 +217,8 @@ class SupervisorAgent:
             patch_advisor_llm=patch_advisor_llm,
             grass_runtime_deps_provider=grass_runtime_deps_provider,
             plugin_limit_guard=self._run_plugin_limit_guard,
-            scan_asset_conflicts=self.scan_asset_conflicts,
-            scan_asset_conflicts_json=self.scan_asset_conflicts_json,
+            scan_asset_conflicts=asset_conflict_scanner.scan,
+            scan_asset_conflicts_json=asset_conflict_scanner.scan_json,
         )
         self._synthesis_service = composition.synthesis_service
         self._dyndolod_service = composition.dyndolod_service
@@ -225,9 +231,6 @@ class SupervisorAgent:
         self._tool_dispatcher = composition.tool_dispatcher
         self._loop_guardrail_middleware = composition.loop_guardrail_middleware
         self._tool_state_machine = composition.tool_state_machine
-
-        # Lazy init para runners legacy que aún no son servicios puros (AssetDetector)
-        self._asset_detector: AssetConflictDetector | None = None
 
         # Fail-closed: sin hitl_guard, las tools destructivas se DENIEGAN.
         if hitl_guard is None:
@@ -607,6 +610,13 @@ class SupervisorAgent:
 
     # =========================================================================
     # FASE 5: Asset Conflict Detection Integration
+    #
+    # PR4 (Strangler Fig): la lógica real vive en ``AssetConflictScanner``
+    # (sky_claw/app/orchestrator/asset_conflict_scan.py). Estos métodos son
+    # FACADES delegantes: existen callers externos reales — la GUI accede a
+    # ``runtime.supervisor.asset_detector`` (sky_claw/app/gui/sky_claw_gui.py)
+    # y tests/harness BDD monkeypatchean ``scan_asset_conflicts*`` sobre la
+    # instancia con late-binding.
     # =========================================================================
 
     @property
@@ -621,7 +631,7 @@ class SupervisorAgent:
 
     @property
     def asset_detector(self) -> AssetConflictDetector:
-        """FASE 5: Inicialización lazy del AssetConflictDetector.
+        """FASE 5: facade del detector lazy (delega en el scanner extraído).
 
         Returns:
             AssetConflictDetector inicializado.
@@ -629,36 +639,15 @@ class SupervisorAgent:
         Raises:
             RuntimeError: Si no se puede detectar la ruta de MO2.
         """
-        if self._asset_detector is None:
-            mo2_mods_path = self._path_resolver.get_mo2_mods_path()
-            profile = self._path_resolver.get_active_profile()
-            self._asset_detector = AssetConflictDetector(mo2_mods_path, profile)
-            logger.info(
-                "AssetConflictDetector inicializado: mods=%s, profile=%s",
-                mo2_mods_path,
-                profile,
-            )
-        return self._asset_detector
+        return self._asset_scanner.detector
 
     def scan_asset_conflicts(self) -> list[AssetConflictReport]:
-        """FASE 5: Herramienta READ-ONLY para escanear conflictos de assets.
+        """FASE 5: facade READ-ONLY del escaneo de conflictos de assets.
 
-        Escanea el VFS de MO2 y detecta archivos "loose" sobrescritos.
-
-        Returns:
-            Lista de AssetConflictReport con todos los conflictos detectados.
-
-        SECURITY: Esta herramienta es estrictamente READ-ONLY.
-        No modifica, mueve ni oculta archivos.
+        Delega en ``AssetConflictScanner.scan()`` — ver ese docstring para el
+        contrato completo (incluye la estricta read-only del detector).
         """
-        logger.info("Iniciando escaneo de conflictos de assets...")
-        try:
-            conflicts = self.asset_detector.detect_conflicts()
-            logger.info(f"Detectados {len(conflicts)} conflictos de assets")
-            return conflicts
-        except (OSError, RuntimeError) as e:
-            logger.error(f"Error durante escaneo de conflictos: {e}", exc_info=True)
-            raise
+        return self._asset_scanner.scan()
 
     async def scan_record_conflicts(
         self,
@@ -723,21 +712,11 @@ class SupervisorAgent:
         return await ConflictAnalyzer().analyze(plugins, xedit_runner)
 
     def scan_asset_conflicts_json(self) -> str:
-        """FASE 5: Herramienta READ-ONLY que devuelve el reporte en formato JSON.
+        """FASE 5: facade READ-ONLY del reporte JSON de conflictos de assets.
 
-        Returns:
-            JSON string estructurado con el reporte completo de conflictos.
-
-        SECURITY: Esta herramienta es estrictamente READ-ONLY.
+        Delega en ``AssetConflictScanner.scan_json()``.
         """
-        logger.info("Generando reporte JSON de conflictos de assets...")
-        try:
-            json_report = self.asset_detector.scan_to_json()
-            logger.info("Reporte JSON de conflictos generado exitosamente")
-            return json_report
-        except (OSError, RuntimeError) as e:
-            logger.error(f"Error generando reporte JSON de conflictos: {e}", exc_info=True)
-            raise
+        return self._asset_scanner.scan_json()
 
 
 if __name__ == "__main__":
