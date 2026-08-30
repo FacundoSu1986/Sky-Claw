@@ -82,32 +82,32 @@ Objetivos:
 - evitar que cada panel redefina gradiente, borde y foco inline;
 - conservar semántica y callbacks; cambio puramente de presentación.
 
-### A3 — MedievalSharp: decidir uso o eliminación
+### A3 — MedievalSharp: alcance y decisión de adopción vs. eliminación
 
-**Estado:** investigación previa obligatoria, no afirmar todavía “fuente muerta”.
+**Estado:** empaquetado confirmado; reachability en runtime y decisión de diseño pendientes.
 
-El árbol contiene assets WOFF2 de MedievalSharp. Antes de eliminarlos hay que demostrar dos propiedades distintas:
+El empaquetado ya es un hecho congelado en el árbol: `sky_claw.spec:109-115` añade el directorio entero `sky_claw/app/gui/assets` a `datas`, y `tests/test_pyinstaller.py:44-52` congela ese contrato exacto en CI, por lo que ambos archivos WOFF2 de MedievalSharp (~61 KB combinados) ya se incluyen en la distribución congelada.
 
-1. **reachability CSS/runtime:** ninguna regla o superficie productiva los usa;
-2. **packaging:** confirmar si PyInstaller los incluye efectivamente en el ejecutable/distribución y medir el impacto real.
+El trabajo pendiente queda acotado a:
 
-Decisión posterior:
+1. **reachability CSS/runtime:** auditar exhaustivamente si alguna regla de `styles.css` o superficie de UI invoca la familia tipográfica `MedievalSharp`;
+2. **impacto de tamaño y decisión:**
+   - si se le asigna un rol visual justificado (p. ej. display/títulos diegéticos específicos), documentarlo y anclar su consumo;
+   - si no tiene reachability y no se adopta, eliminar los dos archivos WOFF2 y su `@font-face` en `fonts.css`, reduciendo el bundle distribuido sin romper contratos.
 
-- si existe un rol visual justificado, asignarlo explícitamente (p. ej. títulos/hero) y anclarlo;
-- si no existe reachability y el asset se empaqueta, eliminarlo junto con su declaración/referencia;
-- no mantener una fuente solo “por si acaso”.
+### C3 — Layout/sections legacy: depuración con exclusión de componentes activos
 
-### C3 — Layout/sections legacy
+**Estado:** candidato a limpieza; inventario por módulo obligatorio (código muerto no homogéneo).
 
-**Estado:** candidato a limpieza; **código muerto no confirmado todavía**.
-
-La auditoría señala `views/layout/header.py`, `views/layout/sidebar.py` y `sections/*` como superficies legacy asociadas a `render_dashboard_page_content`, mientras el dashboard actual usa Forge. Sin embargo, antes de borrar hay que probar reachability completa porque símbolos legacy todavía pueden estar exportados/importados.
+La familia `sections/*` no puede tratarse en bloque como código muerto: el dashboard Forge actual importa activamente `create_preflight_panel` desde `.sections` (`forge_dashboard.py:37`) y lo invoca en la línea 880 para renderizar reportes de preflight de rituales. Tratar todo `sections/*` como legacy mezclaría componentes productivos vivos con las viejas secciones de inicio.
 
 Criterio de cierre:
 
-- enumerar imports y callers productivos de `render_dashboard_page_content` y del paquete legacy;
-- si el conjunto productivo es vacío, eliminar/deprecar en PR de limpieza atómico;
-- si existe un consumidor, migrarlo primero;
+- inventariar los módulos individualmente:
+  - **superficies legacy:** `views/layout/header.py`, `views/layout/sidebar.py` y las secciones del viejo home (`cta_section.py`, `features_section.py`, `mods_preview.py`, `stats_section.py`) asociadas a `render_dashboard_page_content` / `dashboard_page.py`;
+  - **componentes activos:** `preflight_panel.py` debe ser explícitamente retenido y/o reubicado (p. ej. a `views/components/`) antes de cualquier eliminación del namespace legacy;
+- demostrar reachability de cada export antes de eliminar;
+- si las superficies legacy no tienen callers productivos tras la separación, eliminarlas en un PR de limpieza atómico;
 - agregar un ancla que impida reintroducir accidentalmente dos shells/paletas paralelos.
 
 ### Responsive baseline

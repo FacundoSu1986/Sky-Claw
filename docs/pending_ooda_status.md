@@ -21,6 +21,13 @@
 > `_package_output_as_mod`— se releyeron contra `f8e8a4f`; ninguna arrastra el
 > baseline de 2026-08-08. **No** es una reverificación integral del resto de la
 > tabla.
+>
+> **Re-baseline parcial 2026-08-30 sobre `main` `89d81ad2` (#522):** cubre exclusivamente
+> las filas `T-22` y `T-24` — `prefers-reduced-motion` sobre animaciones decorativas y
+> foco visible de teclado (incluyendo inputs Quasar), ancladas en
+> `tests/test_gui_theme_contracts.py`. Ambas pasan a **Parcial**; no afirma el cierre
+> integral de transiciones ni el inventario exhaustivo de formularios/labels. **No** es una
+> reverificación integral del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
