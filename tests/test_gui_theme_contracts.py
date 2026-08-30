@@ -97,13 +97,45 @@ def test_tema_respeta_focus_visible_y_reduced_motion() -> None:
     assert "prefers-reduced-motion" in _STYLES
 
 
-def test_shell_forge_sin_emojis_de_ui() -> None:
-    """Los emojis (🛡️ HITL, ⚔ disputas, 🔒/🔓 Modo local) se reemplazaron por los
-    SVG de ``icons.py`` (stroke actualColor): el emoji toma la pila de color del
-    SO y rompe la ilusión diegética. Este ancla bloquea su reingreso al shell;
-    no aplica a Telegram/logs, donde el emoji es nativo del canal."""
-    for emoji in ("🛡", "⚔", "🔒", "🔓"):
-        assert emoji not in _FORGE, f"emoji {emoji!r} reingresó al shell Forge"
+def _glifo_permitido(cp: int) -> bool:
+    """Clases de glifos no-ASCII que el shell Forge tiene derecho a usar.
+
+    Exhaustivo por bloque, no por lista negra de caracteres: cualquier glifo
+    nuevo fuera de estas clases hace fallar el inventario y obliga a decidir
+    conscientemente si entra al alfabeto del tema.
+    """
+    if cp < 0x80:
+        return True  # ASCII
+    if 0x00A1 <= cp <= 0x024F:
+        return True  # Español y tipografía latina: acentos, ñ, «», ·, ¿¡, ×
+    if 0x16A0 <= cp <= 0x16FF:
+        return True  # Rúnico — el alfabeto del tema
+    if 0x2010 <= cp <= 0x2027:
+        return True  # Puntuación general: — …
+    if 0x2190 <= cp <= 0x21FF:
+        return True  # Flechas: ↑ → ↓
+    if 0x2500 <= cp <= 0x25FF:
+        return True  # Box drawing (divisores de comentarios) y rombo de estado ◆
+    return cp == 0x2713  # Checkmark semántico de disputas resueltas
+
+
+def test_shell_forge_inventario_de_glifos_congelado() -> None:
+    """El shell no usa emojis: se reemplazaron por los SVG de ``icons.py``
+    (stroke ``currentColor``) porque el emoji se renderiza con la pila de color
+    del SO y rompe la ilusión diegética.
+
+    La verificación es EXHAUSTIVA, no un muestreo de caracteres (revisión
+    CodeRabbit #522): todo carácter no-ASCII del archivo debe caer en una clase
+    permitida de ``_glifo_permitido``. Los bloques U+2600–U+27BF —el reservorio
+    de emojis (⚔ U+2694, ⚙ U+2699, ⚠ U+26A0) y de los selectores de variación
+    U+FE0F— quedan prohibidos por construcción, igual que el plano
+    multilingüe U+1F300+. No aplica a Telegram/logs, donde el emoji es nativo
+    del canal.
+    """
+    intrusos = sorted({c for c in _FORGE if not _glifo_permitido(ord(c))})
+    assert not intrusos, "glifos fuera del alfabeto del tema en forge_dashboard.py: " + ", ".join(
+        f"U+{ord(c):04X} {c!r}" for c in intrusos
+    )
     # Y los reemplazos existen de verdad en el registro de iconos.
     icons = (_GUI_DIR / "icons.py").read_text(encoding="utf-8")
     assert '_ICON_SHIELD_CHECK = """<svg' in icons
