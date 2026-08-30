@@ -30,6 +30,7 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     clear_answered_hitl,
     resolve_pending_hitl,
 )
+from sky_claw.app.gui.icons import _ICON_LOCK, _ICON_SHIELD_CHECK, _ICON_SWORDS, _ICON_UNLOCK
 from sky_claw.app.gui.state import get_store
 
 from .sections import create_preflight_panel
@@ -424,7 +425,7 @@ def _sidebar(
             f'<span style="width:9px; height:9px; border-radius:50%; {dot}"></span>'
             '<div style="flex:1; min-width:0;">'
             f"<div style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.12em; color:{label_color};\">{label}</div>"
-            "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#6f7a68; margin-top:1px;\">ws://localhost:8765</div>"
+            "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#8a927f; margin-top:1px;\">ws://localhost:8765</div>"
             "</div></div>"
         )
         ui.html(
@@ -498,7 +499,7 @@ def _vitals_html() -> str:
         "<div style=\"font-family:'Cinzel',serif; font-size:10px; font-weight:600; letter-spacing:.22em; color:#6b6151; margin-bottom:12px;\">VITALIDAD DEL SISTEMA</div>"
         f"{bars}"
         '<div style="margin-top:14px; display:flex; align-items:center; justify-content:space-between;">'
-        "<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#5f5849;\">v2.0 · NORDIC</span>"
+        "<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#8a8270;\">v2.0 · NORDIC</span>"
         '<span style="font-family:\'Noto Sans Runic\',serif; font-size:12px; color:#c8a86a; opacity:.85;" aria-hidden="true">ᛞᚱᚪᚷᚩᚾ</span></div></div>'
     )
 
@@ -604,7 +605,7 @@ def _on_modo_local_key(e: Any) -> None:
 
 @ui.refreshable
 def _modo_local_panel() -> None:
-    """Header toggle: 🔓 Modo local (auto-aprobar) / 🔒 Confirmar (default).
+    """Header toggle: candado abierto «Modo local» (auto-aprobar) / cerrado «Confirmar» (default).
 
     When ON, destructive Ritual approvals are auto-granted so the operator at the
     PC isn't prompted each time; OFF shows the Aprobar/Denegar modal. Default OFF
@@ -613,7 +614,7 @@ def _modo_local_panel() -> None:
     on = modo_local_enabled()
     if on:
         icon, label, color, border, title = (
-            "🔓",
+            _ICON_UNLOCK,
             "Modo local",
             "#9bbf8e",
             "rgba(95,156,107,.5)",
@@ -621,7 +622,7 @@ def _modo_local_panel() -> None:
         )
     else:
         icon, label, color, border, title = (
-            "🔒",
+            _ICON_LOCK,
             "Confirmar",
             "#a39a85",
             "rgba(200,168,106,.28)",
@@ -635,7 +636,7 @@ def _modo_local_panel() -> None:
     btn.props(f'title="{_e(title)}"')
     btn.on("click", lambda _=None: (_toggle_auto_approve(), _modo_local_panel.refresh()))
     with btn:
-        ui.html(f'<span aria-hidden="true">{icon}</span><span>{_e(label)}</span>')
+        ui.html(f"{icon}<span>{_e(label)}</span>")
 
 
 # ── HITL APPROVAL MODAL + RITUAL FEEDBACK (store-driven overlays) ─────────────────
@@ -720,7 +721,7 @@ def _hitl_modal_panel() -> None:
     with ui.element("div").style(overlay), ui.element("div").style(card):
         ui.html(
             '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">'
-            '<span style="font-size:20px;" aria-hidden="true">🛡️</span>'
+            f'<span style="color:#ecd9a8; display:inline-flex;" aria-hidden="true">{_ICON_SHIELD_CHECK}</span>'
             "<span style=\"font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.1em; color:#f1e6cf;\">APROBACIÓN REQUERIDA</span></div>"
             f"<div style=\"font-family:'EB Garamond',serif; font-size:14px; line-height:1.5; color:#d8cfba; margin-bottom:8px;\">{_e(reason)}</div>"
             f"{detail_html}"
@@ -1105,7 +1106,7 @@ def _ritual_card(
         with b:
             ui.html(btn_label)
         ui.html(
-            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#6e6655; text-align:right;\">{_e(r['tech'])}</div>"
+            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#8a8270; text-align:right;\">{_e(r['tech'])}</div>"
         )
 
 
@@ -1169,11 +1170,11 @@ def _mod_row(idx: int, m: dict[str, Any], on_mod: Callable | None) -> None:
         row.on("click", lambda _=None, n=name: on_mod(n))
     with row:
         ui.html(
-            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:#6e6655; width:18px; flex-shrink:0;\">{idx}</span>"
+            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:#8a8270; width:18px; flex-shrink:0;\">{idx}</span>"
             f'<span style="width:9px; height:9px; flex-shrink:0; border-radius:50%; background:{dot}; box-shadow:0 0 7px {dot};"></span>'
             '<div style="flex:1; min-width:0;"><div style="display:flex; align-items:center; gap:9px;">'
             f"<span style=\"font-family:'Cinzel',serif; font-size:14px; color:{name_color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;\">{_e(name)}</span>{conflict_badge}</div>"
-            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#7d7563; margin-top:2px;\">{_e(ver)} · {_e(size)}</div></div>"
+            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#9a917d; margin-top:2px;\">{_e(ver)} · {_e(size)}</div></div>"
             f"<span style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:{dot}; width:74px; text-align:right; flex-shrink:0;\">{status_label}</span>"
         )
 
@@ -1283,7 +1284,7 @@ def _footer_rune() -> None:
         '<span style="height:1px; width:90px; background:linear-gradient(90deg,transparent,rgba(200,168,106,.4));"></span>'
         '<span style="font-family:\'Noto Sans Runic\',serif; font-size:13px; letter-spacing:.45em; color:#c8a86a; text-shadow:0 0 10px rgba(200,168,106,.45);" aria-hidden="true">ᚦᚢ&nbsp;&nbsp;ᚠᚢᛋ&nbsp;&nbsp;ᚱᚩ&nbsp;&nbsp;ᛞᚪ</span>'
         '<span style="height:1px; width:90px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
-        "<div style=\"text-align:center; margin-top:10px; font-family:'EB Garamond',serif; font-style:italic; font-size:12.5px; color:#5f5849;\">«Que tu orden de carga sea estable y tu juego, eterno.»</div>"
+        "<div style=\"text-align:center; margin-top:10px; font-family:'EB Garamond',serif; font-style:italic; font-size:12.5px; color:#8a8270;\">«Que tu orden de carga sea estable y tu juego, eterno.»</div>"
     )
 
 
@@ -1439,7 +1440,7 @@ def _conflict_row(c: dict[str, Any], on_resolve: Callable | None) -> None:
             f'<span style="width:9px; height:9px; border-radius:50%; background:{RED}; box-shadow:0 0 9px {RED}; flex-shrink:0;"></span>'
             '<div style="flex:1; min-width:0;">'
             f"<div style=\"font-family:'Cinzel',serif; font-size:14px; color:#f1e6cf;\">{_e(c.get('mod_a', '?'))}"
-            f' <span style="color:{RED_SOFT};">⚔</span> '
+            f'<span style="color:{RED_SOFT}; display:inline-flex; align-items:center; vertical-align:-2px; margin:0 4px;" aria-hidden="true">{_ICON_SWORDS}</span>'
             f"{_e(c.get('mod_b', '?'))}</div>"
             f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#8a7f6a; margin-top:2px;\">{_e(subtitle)}</div>"
             "</div>"
@@ -1468,7 +1469,9 @@ def _open_resolve_dialog(c: dict[str, Any], on_resolve: Callable) -> None:
     with ui.dialog() as dialog, ui.element("div").style(card):
         ui.html(
             "<div style=\"font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.1em; color:#f1e6cf; margin-bottom:6px;\">RESOLVER DISPUTA</div>"
-            f"<div style=\"font-family:'EB Garamond',serif; font-size:13px; color:#c9c0aa; margin-bottom:14px;\">{_e(c.get('mod_a', '?'))} ⚔ {_e(c.get('mod_b', '?'))}</div>"
+            f"<div style=\"font-family:'EB Garamond',serif; font-size:13px; color:#c9c0aa; margin-bottom:14px;\">{_e(c.get('mod_a', '?'))}"
+            f'<span style="color:{RED_SOFT}; display:inline-flex; align-items:center; vertical-align:-2px; margin:0 4px;" aria-hidden="true">{_ICON_SWORDS}</span>'
+            f"{_e(c.get('mod_b', '?'))}</div>"
         )
         note = (
             ui.textarea(
