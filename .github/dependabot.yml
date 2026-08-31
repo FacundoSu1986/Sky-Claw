@@ -1,29 +1,8 @@
 version: 2
 
 updates:
-  # Python application + development dependencies declared at repository root.
-  # Minor/patch updates are grouped to limit PR noise; major updates remain
-  # independent so compatibility changes receive explicit review.
-  - package-ecosystem: pip
-    directory: "/"
-    schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: "America/Argentina/Buenos_Aires"
-    open-pull-requests-limit: 5
-    groups:
-      python-minor-patch:
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-    commit-message:
-      prefix: "chore(deps)"
-
-  # Node.js Telegram gateway. package-lock.json is committed, so Dependabot can
-  # update the manifest and lockfile together and CI validates with npm ci/audit.
+  # Gateway de Telegram en Node.js. package-lock.json está versionado, por lo que
+  # Dependabot puede actualizar manifiesto y lockfile juntos; CI valida con npm ci/audit.
   - package-ecosystem: npm
     directory: "/sky_claw/app/comms/telegram_gateway_node"
     schedule:
@@ -42,8 +21,8 @@ updates:
     commit-message:
       prefix: "chore(deps)"
 
-  # Keep SHA-pinned GitHub Actions current without weakening immutable-action
-  # pinning. Dependabot updates the SHA and its associated version comment.
+  # Mantiene actualizadas las GitHub Actions fijadas por SHA sin debilitar el
+  # pinning inmutable. Los cambios major quedan fuera del grupo para revisión explícita.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
@@ -53,8 +32,11 @@ updates:
       timezone: "America/Argentina/Buenos_Aires"
     open-pull-requests-limit: 5
     groups:
-      github-actions:
+      github-actions-minor-patch:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
     commit-message:
       prefix: "chore(deps)"
