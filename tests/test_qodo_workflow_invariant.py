@@ -232,3 +232,30 @@ def test_modelos_configurados_coinciden_con_allowlist_de_politica() -> None:
         f"No aprobados en política pero configurados en workflows: {modelos_configurados - modelos_aprobados}\n"
         f"Aprobados en política pero no configurados en workflows:  {modelos_aprobados - modelos_configurados}"
     )
+
+
+def test_gate_dependabot_en_jobs_automaticos_pull_request() -> None:
+    """Verifica que los jobs automáticos de pull_request excluyan explícitamente a dependabot[bot].
+
+    Dependabot no tiene acceso a secrets del repositorio (como OPENROUTER_API_KEY)
+    en eventos pull_request automáticos. Los jobs automáticos deben incluir
+    'github.event.pull_request.user.login != \\'dependabot[bot]\\'' en su cláusula if.
+    El job interactivo de issue_comment (comment-command) está exento porque
+    requiere autorización explícita de un colaborador humano (OWNER/MEMBER/COLLABORATOR).
+    """
+    descubiertas = descubrir_invocaciones_qodo()
+    jobs_automaticos = {
+        ("qodo-merge-adversarial.yml", "auto-review"),
+        ("qodo-regression-test-oracle.yml", "regression-test-oracle"),
+    }
+
+    for clave in jobs_automaticos:
+        assert clave in descubiertas, f"Falta invocación automática esperada: {clave}"
+        steps = descubiertas[clave]
+        for idx, step_metadata in enumerate(steps):
+            job_if = step_metadata.get("job_if", "")
+            assert "github.event.pull_request.user.login != 'dependabot[bot]'" in job_if, (
+                f"El job {clave[0]} / {clave[1]} (step {idx}) no incluye la condición "
+                f"'github.event.pull_request.user.login != \\'dependabot[bot]\\'' en su cláusula if.\n"
+                f"Cláusula if actual: {job_if!r}"
+            )

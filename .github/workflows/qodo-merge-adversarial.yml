@@ -32,14 +32,13 @@ permissions:
 jobs:
   auto-review:
     name: "Auto-revisión en PR interno"
-    # El gate de bots se movió por completo a .pr_agent.toml (github.ignore_bot_pr):
-    # filtrar acá con sender.type != 'Bot' bloqueaba el evento antes de que PR-Agent
-    # pudiera aplicar esa política, dejando ignore_bot_pr=false sin efecto para
-    # PRs de Dependabot/Renovate — justo la superficie de supply-chain que se
-    # buscaba habilitar.
+    # Dependabot ejecuta Actions sin acceso a secrets del repo (OPENROUTER_API_KEY),
+    # generando fallos 401. Se excluye únicamente su autor en la invocación automática
+    # para evitar falsos negativos, preservando la revisión de otros bots con credenciales válidas.
     if: >-
       github.event.repository.private == false &&
       github.event_name == 'pull_request' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.state == 'open' &&
       github.event.pull_request.head.repo.full_name == github.repository
