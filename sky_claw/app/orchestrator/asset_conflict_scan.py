@@ -4,14 +4,19 @@ PR4 del Strangler Fig de ``SupervisorAgent``: extrae del supervisor la
 creación perezosa del :class:`AssetConflictDetector` y los dos contratos de
 escaneo (plain y JSON). Sin cambio funcional intencional.
 
-El scanner recibe únicamente su dependencia real — el resolver de rutas — y
-NO conoce ni importa al supervisor. La composition root recibe
-``scanner.scan`` / ``scanner.scan_json`` como callables estrechos para el
-dispatcher; el supervisor conserva facades delegantes (``asset_detector``,
-``scan_asset_conflicts``, ``scan_asset_conflicts_json``) porque existen
-callers externos reales (la GUI accede a ``runtime.supervisor.asset_detector``
-para persistir disputas, y tests/harness BDD monkeypatchean los métodos del
-supervisor con late-binding).
+El scanner recibe sus dos dependencias reales — el resolver de rutas y el
+validator de modding — y NO conoce ni importa al supervisor. La composition
+root recibe ``scanner.scan`` / ``scanner.scan_json`` como callables estrechos
+para el dispatcher; el supervisor conserva facades delegantes
+(``asset_detector``, ``scan_asset_conflicts``,
+``scan_asset_conflicts_json``) porque existen callers externos reales (la GUI
+accede a ``runtime.supervisor.asset_detector`` para persistir disputas, y
+tests/harness BDD monkeypatchean los métodos del supervisor con late-binding).
+
+El validator de modding (``_modding_validator`` del supervisor) llega al
+:class:`AssetConflictDetector` para activar los guards de child-path que ya
+existían en el detector pero quedaban inertes (``path_validator=None``).
+Es el MISMO validator, no un clon ni el backup-only del rollback.
 
 Contratos preservados respecto del código pre-PR4:
 
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 import logging
 
+from sky_claw.app.core.contracts import PathValidatorProtocol
 from sky_claw.app.core.path_resolver import PathResolutionService
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
 
@@ -40,10 +46,21 @@ class AssetConflictScanner:
     La construcción es barata y sin efectos: el ``AssetConflictDetector`` se
     crea al primer acceso a :attr:`detector` (semántica lazy del supervisor
     pre-PR4) y se memoiza (misma instancia entre accesos).
+
+    Recibe además el **validator de modding** (no el backup-only del rollback):
+    el detector lo usa como segunda barrera antes de abrir ``modlist.txt`` y
+    cada asset leído para checksum. Sin esta inyección, esos guards internos
+    del detector quedaban inertes en producción (``path_validator=None``).
     """
 
-    def __init__(self, *, path_resolver: PathResolutionService) -> None:
+    def __init__(
+        self,
+        *,
+        path_resolver: PathResolutionService,
+        path_validator: PathValidatorProtocol | None,
+    ) -> None:
         self._path_resolver = path_resolver
+        self._path_validator = path_validator
         self._detector: AssetConflictDetector | None = None
 
     @property
@@ -59,7 +76,11 @@ class AssetConflictScanner:
         if self._detector is None:
             mo2_mods_path = self._path_resolver.get_mo2_mods_path()
             profile = self._path_resolver.get_active_profile()
-            self._detector = AssetConflictDetector(mo2_mods_path, profile)
+            self._detector = AssetConflictDetector(
+                mo2_mods_path,
+                profile,
+                self._path_validator,
+            )
             logger.info(
                 "AssetConflictDetector inicializado: mods=%s, profile=%s",
                 mo2_mods_path,

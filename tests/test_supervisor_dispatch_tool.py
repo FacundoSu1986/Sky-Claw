@@ -423,16 +423,34 @@ async def test_execute_synthesis_pipeline_filters_extra_llm_keys(supervisor):
 
 
 async def test_scan_asset_conflicts_returns_dataclass_dicts(supervisor):
+    """El dispatcher enruta ``scan_asset_conflicts`` a la strategy y serializa
+    los reportes a dicts.
+
+    Se inyecta un callable EXPLÍCITO (el que producción obtiene de
+    ``AssetConflictScanner.scan``) en las deps del dispatcher, en lugar de
+    monkeypatchear el método del supervisor — el wiring productivo post-PR4 ya
+    no late-binda ``supervisor.scan_asset_conflicts``.
+    """
+
     @dataclasses.dataclass
     class FakeConflict:
         path: str
         severity: str
 
     fake = [FakeConflict(path="a.dds", severity="warn"), FakeConflict(path="b.nif", severity="info")]
-    supervisor.scan_asset_conflicts = MagicMock(return_value=fake)
+    scan_callable = MagicMock(return_value=fake)
+    supervisor._dispatcher_dependencies = dataclasses.replace(
+        supervisor._dispatcher_dependencies,
+        scan_asset_conflicts=scan_callable,
+    )
+    supervisor._tool_dispatcher = build_orchestration_dispatcher(
+        supervisor._dispatcher_dependencies,
+        hitl_gate=HitlGateMiddleware(allow_unattended=True),
+    )
 
     result = await supervisor.dispatch_tool("scan_asset_conflicts", {})
 
+    scan_callable.assert_called_once_with()
     assert result["status"] == "success"
     assert result["conflicts"] == [
         {"path": "a.dds", "severity": "warn"},
@@ -441,10 +459,21 @@ async def test_scan_asset_conflicts_returns_dataclass_dicts(supervisor):
 
 
 async def test_scan_asset_conflicts_json(supervisor):
-    supervisor.scan_asset_conflicts_json = MagicMock(return_value='{"foo": "bar"}')
+    """Mismo enrutamiento para la variante JSON: callable explícito, contrato
+    de passthrough del string tal cual."""
+    scan_json_callable = MagicMock(return_value='{"foo": "bar"}')
+    supervisor._dispatcher_dependencies = dataclasses.replace(
+        supervisor._dispatcher_dependencies,
+        scan_asset_conflicts_json=scan_json_callable,
+    )
+    supervisor._tool_dispatcher = build_orchestration_dispatcher(
+        supervisor._dispatcher_dependencies,
+        hitl_gate=HitlGateMiddleware(allow_unattended=True),
+    )
 
     result = await supervisor.dispatch_tool("scan_asset_conflicts_json", {})
 
+    scan_json_callable.assert_called_once_with()
     assert result == {"status": "success", "json_report": '{"foo": "bar"}'}
 
 

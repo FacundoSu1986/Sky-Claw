@@ -8,9 +8,10 @@ La clase que antes actuaba como composition root invoca
 ``build_orchestration_composition()`` y recibe un
 :class:`OrchestrationComposition` con los objetos ya cableados. Tras PR3,
 el seam de Grass vive en ``grass_runtime_deps.GrassRuntimeDepsProvider``
-(deps explícitas, resolución lazy); los seams residuales de asset scan y
-plugin-limit guard siguen entregándose como callables estrechos (PR4 los
-extraerá).
+(deps explícitas, resolución lazy); tras PR4 el asset conflict scan vive en
+``AssetConflictScanner`` (``asset_conflict_scan.py``) y este builder recibe
+``scanner.scan`` / ``scanner.scan_json`` como callables estrechos. El seam de
+plugin-limit guard sigue entregándose como callable estrecho (PR5 lo extraerá).
 
 Sin cambio funcional intencional.
 """
@@ -115,8 +116,9 @@ def build_orchestration_composition(
     loot_runner: LootRunnerProtocol | None,
     require_vfs: bool,
     patch_advisor_llm: LLMCallable | None,
-    # Seams residuales de asset scan y plugin-limit (transitorios — PR4);
-    # el provider de Grass ya llega extraído desde PR3.
+    # Seam residual de plugin-limit (transitorio — PR5 lo extraerá); el
+    # provider de Grass llega extraído desde PR3 y el asset scan desde PR4
+    # (AssetConflictScanner entrega sus callables estrechos al supervisor).
     grass_runtime_deps_provider: Callable[[], GrassRuntimeDeps | None],
     plugin_limit_guard: Callable[[str], Awaitable[dict[str, Any]]],
     scan_asset_conflicts: Callable[[], list[AssetConflictReport]],
