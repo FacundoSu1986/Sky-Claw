@@ -295,7 +295,7 @@ class AssetConflictDetector:
         mod_dir = self._mo2_mods_path / mod_name
 
         if self._path_validator is not None:
-            mod_dir = self._path_validator.validate(mod_dir, strict_symlink=True)
+            self._path_validator.validate(mod_dir, strict_symlink=True)
 
         if not mod_dir.exists():
             logger.warning(f"Directorio de mod no encontrado: {mod_dir}")
@@ -305,10 +305,19 @@ class AssetConflictDetector:
 
         logger.info(f"Escaneando directorio de mod: {mod_name}")
 
-        for root_dir, dirnames, filenames in os.walk(mod_dir, topdown=True, followlinks=False):
+        def _propagar_error_walk(error: OSError) -> None:
+            """Propaga errores de enumeración para no devolver mapas incompletos."""
+            raise error
+
+        for root_dir, dirnames, filenames in os.walk(
+            mod_dir,
+            topdown=True,
+            onerror=_propagar_error_walk,
+            followlinks=False,
+        ):
             current_dir = Path(root_dir)
             if self._path_validator is not None:
-                current_dir = self._path_validator.validate(current_dir, strict_symlink=True)
+                self._path_validator.validate(current_dir, strict_symlink=True)
 
             # Validar todos los subdirectorios antes de descender (validate-before-descent)
             if self._path_validator is not None:
@@ -319,7 +328,10 @@ class AssetConflictDetector:
             for filename in filenames:
                 file_path = current_dir / filename
                 if self._path_validator is not None:
-                    file_path = self._path_validator.validate(file_path, strict_symlink=True)
+                    # La validación es solo un check de confinamiento: se conserva
+                    # el path léxico para mantener la identidad VFS de symlinks
+                    # aceptados dentro de las roots autorizadas.
+                    self._path_validator.validate(file_path, strict_symlink=True)
 
                 if not file_path.is_file():
                     continue
