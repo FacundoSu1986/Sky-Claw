@@ -25,16 +25,19 @@ preflight traduce a ``UNKNOWN`` — y nunca como un ``ImportError`` que revienta
 la importación del paquete. El ancla
 ``test_el_adaptador_windows_no_importa_comtypes_en_tope_de_modulo`` lo congela.
 
-**Ciclo de vida de COM: una inicialización por hilo, sin cierre simétrico, y es
-deliberado.** ``CoInitialize()`` no lleva su ``CoUninitialize()``: soltarlo a
-mano con referencias COM vivas (``self._uia``, los handles de elemento) es cómo
-se consigue un crash en vez de una limpieza. El productor llama al adaptador
-desde UN solo hilo (el gate corre entero dentro de un ``asyncio.to_thread``):
-el apartamento queda atado a ese hilo y el pool lo reutiliza — un segundo
-``CoInitialize`` sobre el mismo hilo es ``S_FALSE``, inocuo. Lo que sigue
-prohibido es usar UNA instancia desde DOS hilos: el apartamento STA no es
-ajeno a eso, así que quien construya el adaptador lo construye en el hilo que
-lo va a usar (el gate lo hace dentro del callable que manda al pool).
+**Ciclo de vida de COM: inicialización y cierre SIMÉTRICOS por ejecución del
+gate, en el mismo hilo.** Cada construcción del adaptador hace ``CoInitialize``
+y cada :meth:`ObservadorUIAWindows.liberar` hace su ``CoUninitialize`` — el
+runtime exige el par aunque la segunda inicialización de un hilo reutilizado
+del pool devuelva ``S_FALSE`` (esa llamada incrementa el balance igual).
+``liberar`` primero suelta las referencias (``_uia``, el módulo generado) y
+recién después desinicializa: el orden inverso es la forma documentada de
+conseguir un crash en vez de una limpieza. El gate (``dyndolod_uia_gate``) la
+invoca desde su ``finally`` vía :class:`ObservadorLiberable`, así que TODO
+veredicto —y toda excepción— deja el hilo del pool como lo encontró. Lo que
+sigue prohibido es usar UNA instancia desde DOS hilos: el apartamento STA no
+es ajeno a eso, así que quien construya el adaptador lo construye en el hilo
+que lo va a usar (el gate lo hace dentro del callable que manda al pool).
 """
 
 from __future__ import annotations
@@ -171,15 +174,45 @@ class ObservadorUIAWindows:
         # cubre `CoInitialize`, e `ImportError` la generación de módulo de
         # `GetModule`. Hallazgo de review (Qodo).
         self._errores_del_rig: tuple[type[BaseException], ...] = (comtypes.COMError, OSError)
+        self._comtypes: Any = comtypes
+        #: Bandera de ownership del apartamento: ``True`` sólo entre un
+        #: ``CoInitialize`` exitoso y su ``CoUninitialize`` correspondiente.
+        self._apartamento_inicializado = False
         try:
             comtypes.CoInitialize()
+            self._apartamento_inicializado = True
             self._uia_mod: Any = comtypes.client.GetModule("UIAutomationCore.dll")
             self._uia: Any = comtypes.client.CreateObject(
                 CLSID_CUIAUTOMATION,
                 interface=self._uia_mod.IUIAutomation,
             )
         except (comtypes.COMError, OSError, ImportError) as exc:  # pragma: no cover -- depende del rig
+            # Ownership también en el fracaso: si CoInitialize ya había
+            # inicializado el apartamento, se desinicializa antes de propagar —
+            # el ``S_FALSE`` de un hilo de pool reutilizado cuenta igual.
+            self.liberar()
             raise UIANoDisponibleError(f"no se pudo inicializar UI Automation: {exc}") from exc
+
+    def liberar(self) -> None:
+        """Cierra el apartamento COM del hilo. Idempotente.
+
+        Orden contractual (MSDN ``CoUninitialize``): PRIMERO se sueltan las
+        referencias COM del objeto (``_uia``, el módulo generado con sus
+        handles de patrón) y DESPUÉS se desinicializa el apartamento; al
+        revés es un crash del runtime, no una limpieza. En CPython el
+        ``= None`` decrementa la referencia en el acto — determinista, no a
+        merced del GC.
+
+        El gate la invoca desde su ``finally`` si el observador implementa
+        :class:`ObservadorLiberable`, así que cada ejecución del gate deja el
+        hilo del pool exactamente como lo encontró.
+        """
+        if not self._apartamento_inicializado:
+            return
+        self._apartamento_inicializado = False
+        self._uia = None
+        self._uia_mod = None
+        self._comtypes.CoUninitialize()
 
     # -- lectura de propiedades ------------------------------------------------
 

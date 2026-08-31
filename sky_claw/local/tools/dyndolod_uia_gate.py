@@ -1,12 +1,22 @@
-"""T5-v2 — el gate productivo del preflight UIA: fail-closed antes del Start humano.
+"""T5-v2 — el gate productivo del preflight UIA: fail-closed sobre la corrida.
 
 **La pregunta que responde, entera.** *"El control Output que ESTA instancia
 recién lanzada muestra por UIA, ¿coincide con la salida administrada que
-Sky-Claw le pasó por ``-o:``?"* Si la respuesta no es ``MATCH``, el proceso
-**no se considera listo para interacción** y el runner lo termina — el operador
-nunca llega a un Start que Sky-Claw haya aceptado. ``MATCH`` habilita la
-espera normal; **no** es un comprobante de escritura física (eso sigue siendo
-del post-check de artefactos, que es independiente y posterior).
+Sky-Claw le pasó por ``-o:``?"* Si la respuesta no es ``MATCH``, Sky-Claw no
+considera la instancia lista y el runner termina el proceso — el pipeline no
+continúa sobre una observación divergente o inconclusa.
+
+**Contrato DÉBIL, y dicho así adrede (F2, requisito del dueño del rig).** La
+garantía es contractual: *Sky-Claw no continúa hasta ``MATCH`` y el operador
+no debe interactuar con Start durante el gate*. NO es la garantía fuerte —
+*"el humano físicamente no puede pulsar Start antes del ``MATCH``"*— porque la
+GUI pertenece al binario recién lanzado y acepta input nativo desde el spawn;
+bloquearla exigiría mutar una ventana ajena (``EnableWindow``, hooks de input
+o similares), que el alcance read-only de T5-v2 prohíbe. La carrera humano vs
+``MATCH`` es una limitación documentada de una etapa asistida, no un
+invariante de este módulo. ``MATCH`` habilita la espera normal; **no** es un
+comprobante de escritura física (eso sigue siendo del post-check de
+artefactos, que es independiente y posterior).
 
 **Qué es este módulo y qué no.** Es un lazo *acotado* alrededor de
 :func:`sky_claw.local.tools.dyndolod_uia_preflight.observar_output`: la decisión
@@ -59,6 +69,7 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
     EstadoPreflight,
     LocalizadorDeProcesos,
     ObservacionUIAError,
+    ObservadorLiberable,
     ObservadorUIA,
     RazonPreflight,
     ResultadoPreflightUIA,
@@ -171,20 +182,30 @@ def ejecutar_gate_sincrono(
 
     limite = reloj() + timeout_segundos
     razon_anterior: RazonPreflight | None = None
-    while True:
-        resultado = observar_output(solicitud, localizador=localizador, observador=observador)
-        if resultado.estado is not EstadoPreflight.UNKNOWN:
-            return resultado
-        if resultado.razon not in RAZONES_TRANSITORIAS_DE_INICIO:
-            return resultado
-        if proceso_vivo is not None and not proceso_vivo():
-            return resultado
-        restante = limite - reloj()
-        if restante <= 0:
-            return resultado
-        if al_progreso is not None and resultado.razon is not razon_anterior:
-            al_progreso(resultado)
-            razon_anterior = resultado.razon
-        # El sueño NUNCA se pasa del deadline: un `time.sleep(1)` sin cota sería
-        # la forma barata de que "acotado" dejara de ser verdad por un intervalo.
-        dormir(min(intervalo_segundos, restante))
+    try:
+        while True:
+            resultado = observar_output(solicitud, localizador=localizador, observador=observador)
+            if resultado.estado is not EstadoPreflight.UNKNOWN:
+                return resultado
+            if resultado.razon not in RAZONES_TRANSITORIAS_DE_INICIO:
+                return resultado
+            if proceso_vivo is not None and not proceso_vivo():
+                return resultado
+            restante = limite - reloj()
+            if restante <= 0:
+                return resultado
+            if al_progreso is not None and resultado.razon is not razon_anterior:
+                al_progreso(resultado)
+                razon_anterior = resultado.razon
+            # El sueño NUNCA se pasa del deadline: un `time.sleep(1)` sin cota sería
+            # la forma barata de que "acotado" dejara de ser verdad por un intervalo.
+            dormir(min(intervalo_segundos, restante))
+    finally:
+        # F4 — el observador que abrió recursos en ESTE hilo los cierra acá, en
+        # TODO camino (MATCH/MISMATCH/UNKNOWN/excepción). La capacidad es
+        # optativa (``ObservadorLiberable``): un observador sin ella no deja
+        # nada pendiente por construcción. ``isinstance`` con Protocol
+        # ``runtime_checkable``: nada de despacho dinámico — el ancla read-only
+        # de la superficie prohíbe ``getattr``.
+        if isinstance(observador, ObservadorLiberable):
+            observador.liberar()

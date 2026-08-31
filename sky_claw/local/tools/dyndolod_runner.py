@@ -62,6 +62,26 @@ from sky_claw.logging_config import pipeline_tx_id_var, subprocess_error_extra
 
 logger = logging.getLogger(__name__)
 
+#: Gracia del deadline EXTERNO del gate sobre el deadline interno (F1).
+#:
+#: El deadline interno de ``ejecutar_gate_sincrono`` se consulta ENTRE
+#: observaciones: una llamada COM que no retorna (bloqueo del provider, RPC
+#: colgada) haría que el ``asyncio.to_thread`` jamás completara y el pipeline
+#: quedara esperando para siempre a esa ronda. El ``asyncio.wait_for`` externo
+#: recupera el control en ``uia_gate_timeout_seconds + poll + esta gracia``.
+#:
+#: **Límite honesto (documentado, no escondido).** Cancelar el ``await`` NO
+#: mata al worker del pool ni interrumpe la llamada COM ya en curso: el hilo
+#: sigue ocupado hasta que la llamada retorna, y los workers del executor se
+#: joinean en el shutdown del intérprete. Lo que SÍ se garantiza — y lo
+#: testea ``test_f1_un_com_bloqueado_dispara_el_deadline_externo_y_limpia`` —
+#: es que el pipeline recupera el control acotado, el proceso muere y el Job
+#: se cierra. Matar físicamente una llamada COM bloqueada requeriría aislar
+#: la observación en un PROCESO helper (options bajo
+#: ``STOP_ARCHITECTURE_COM_TIMEOUT``); el ownership del proceso target y del
+#: Job hace que esa consecuencia operativa quede contenida.
+_GRACIA_EXTERNA_DEL_GATE_SEGUNDOS = 15.0
+
 #: Índice de etapa de DynDOLOD en el DAG de ``sky_claw/local/AGENTS.md`` §1
 #: (SOP §5 regla 5). Se define UNA vez y todos los registros de fallo la
 #: referencian por nombre: duplicar el literal en cada uno garantiza que un
@@ -1012,7 +1032,7 @@ class DynDOLODRunner:
         return result
 
     async def _gate_uia_output(self, *, tool_name: str, executable: pathlib.Path, proc: Any) -> None:
-        """Gate T5-v2: la GUI recién lanzada no es "lista" hasta un MATCH de Output.
+        """Gate T5-v2: Sky-Claw no acepta la instancia hasta un MATCH de Output.
 
         Lee por UIA —sólo lectura— el campo Output de ESTA instancia (``proc.pid``)
         y lo compara contra la salida administrada; si no coinciden, o si no se
@@ -1021,8 +1041,20 @@ class DynDOLODRunner:
         misma fuente** que ``_build_xedit_args`` serializa en el ``-o:`` — así
         que no hay dos lecturas de "lo esperado" que puedan diverger.
 
+        **Contrato DÉBIL (decisión de arquitectura, F2).** Lo que se garantiza:
+        Sky-Claw no considera la instancia lista ni continúa su pipeline hasta
+        ``MATCH``, y el operador no debe interactuar con Start durante el gate.
+        Lo que NO se garantiza: que el humano físicamente no pueda pulsar Start
+        antes del ``MATCH`` — la GUI es del binario y acepta input nativo desde
+        el spawn, y bloquearla exigiría mutar una ventana ajena, fuera del
+        alcance read-only de T5-v2. Es la limitación documentada de una etapa
+        asistida, no un invariante invocable.
+
         El observador se construye DENTRO del hilo donde corre el sondeo
         (``asyncio.to_thread``): COM ata su apartamento al hilo que inicializa.
+        El deadline EXTERNO (``asyncio.wait_for``) cubre el caso que el deadline
+        interno no puede alcanzar — una observación que jamás retorna; ver
+        ``_GRACIA_EXTERNA_DEL_GATE_SEGUNDOS`` y su límite documentado.
 
         No es un veredicto de escritura física: un ``MATCH`` dice "lo que la GUI
         muestra coincide con lo administrado" y habilita al operador; dónde
@@ -1063,18 +1095,46 @@ class DynDOLODRunner:
                 resultado.razon.value,
             )
 
-        resultado = await asyncio.to_thread(
-            ejecutar_gate_sincrono,
-            solicitud,
-            fabrica_observador=self._uia_observador_factory,
-            localizador=self._uia_localizador,
-            timeout_segundos=float(self._config.uia_gate_timeout_seconds),
-            intervalo_segundos=float(self._config.uia_gate_poll_interval_seconds),
-            reloj=self._uia_reloj,
-            dormir=self._uia_dormir,
-            proceso_vivo=lambda: proc.returncode is None,
-            al_progreso=_registrar_transitorio,
-        )
+        try:
+            resultado = await asyncio.wait_for(
+                asyncio.to_thread(
+                    ejecutar_gate_sincrono,
+                    solicitud,
+                    fabrica_observador=self._uia_observador_factory,
+                    localizador=self._uia_localizador,
+                    timeout_segundos=float(self._config.uia_gate_timeout_seconds),
+                    intervalo_segundos=float(self._config.uia_gate_poll_interval_seconds),
+                    reloj=self._uia_reloj,
+                    dormir=self._uia_dormir,
+                    proceso_vivo=lambda: proc.returncode is None,
+                    al_progreso=_registrar_transitorio,
+                ),
+                timeout=(
+                    float(self._config.uia_gate_timeout_seconds)
+                    + float(self._config.uia_gate_poll_interval_seconds)
+                    + _GRACIA_EXTERNA_DEL_GATE_SEGUNDOS
+                ),
+            )
+        except TimeoutError:
+            # F1: el gate interno nunca devolvió (una observación quedó
+            # bloqueada) y el deadline EXTERNO agotó su presupuesto. Fail-closed
+            # con la misma forma de siempre: UNKNOWN y razón del sensor — la
+            # observación no produjo veredicto, y tratarlo como MATCH sería la
+            # única salida inaceptable. El cleanup del proceso corre en el
+            # ``except`` del seam, como todo bloqueo del gate.
+            raise DynDOLODPreflightUIAError(
+                ResultadoPreflightUIA(
+                    estado=EstadoPreflight.UNKNOWN,
+                    razon=RazonPreflight.ERROR_UIA,
+                    tool=tool_name,
+                    detalle=(
+                        "el gate no completó ninguna observación dentro del deadline externo "
+                        "(una llamada UIA quedó bloqueada): la instancia no se considera lista"
+                    ),
+                    valor_esperado=str(self._config.output_root),
+                    pid=solicitud.pid,
+                )
+            ) from None
         if resultado.estado is EstadoPreflight.MATCH:
             logger.info(
                 "Gate UIA de %s (pid=%s): Output observado coincide con la salida administrada",
@@ -1161,23 +1221,37 @@ class DynDOLODRunner:
         job = assign_kill_on_close_job(proc.pid)
 
         # T5-v2: gate UIA del campo Output. El proceso YA existe (la GUI tiene
-        # que estar viva para observarla) pero NO se lo considera "listo para la
-        # interacción" hasta el MATCH: un MISMATCH o un UNKNOWN terminal cortan
-        # acá, con el mismo ownership de siempre (kill_and_reap + close_job) —
-        # el operador nunca llega a un Start aceptado por Sky-Claw con el Output
-        # divergente, y el proceso no queda huérfano. Es el ÚNICO seam por donde
-        # cruzan los dos lanzadores, así que cubrirlo acá cubre a TexGen y a
-        # DynDOLOD por construcción (no por recordatorio). Va ANTES de los drains
-        # y del heartbeat: durante el gate (≤ config.uia_gate_timeout_seconds) la
-        # espera la reporta el propio gate con su razón, y estos binarios son
-        # apps GUI (PE Subsystem 2) que no escriben al pipe, así que no hay nada
-        # que drenar en la ventana.
+        # que estar viva para observarla) pero Sky-Claw NO la da por lista hasta
+        # el MATCH: un MISMATCH o un UNKNOWN terminal cortan acá, con el mismo
+        # ownership de siempre (kill_and_reap + close_job) — el pipeline nunca
+        # continúa sobre una observación divergente o inconclusa ni deja el
+        # proceso huérfano. Contrato DÉBIL y explícito: la GUI acepta input
+        # nativo desde el spawn, así que durante el gate el operador no debe
+        # interactuar con Start; bloquearla físicamente exigiría mutar la
+        # ventana ajena, fuera del alcance read-only de T5-v2. Es el ÚNICO seam
+        # por donde cruzan los dos lanzadores, así que cubrirlo acá cubre a
+        # TexGen y a DynDOLOD por construcción (no por recordatorio). Va ANTES
+        # de los drains y del heartbeat: durante el gate
+        # (≤ config.uia_gate_timeout_seconds + gracia externa) la espera la
+        # reporta el propio gate con su razón, y estos binarios son apps GUI
+        # (PE Subsystem 2) que no escriben al pipe, así que no hay nada que
+        # drenar en la ventana.
         try:
             await self._gate_uia_output(tool_name=tool_name, executable=executable, proc=proc)
         except (DynDOLODPreflightUIAError, asyncio.CancelledError):
             # El bloqueo del gate y la cancelación externa comparten el cleanup:
             # matar el árbol y cerrar el Job. El raise preserva la identidad de
             # CancelledError (no se degrada a un fallo de ejecución genérico).
+            await kill_and_reap(proc)
+            close_job(job)
+            raise
+        except BaseException:
+            # F3 — después del spawn, NINGUNA salida excepcional del gate deja
+            # el proceso sin ownership. El ``except`` de arriba cubre el bloqueo
+            # declarado del gate y la cancelación; éste cubre todo lo demás que
+            # escape de ``_gate_uia_output`` (un bug del adaptador, un error del
+            # executor). Mismo cleanup, ``raise`` pelado: ni ``RuntimeError`` ni
+            # ``KeyboardInterrupt``/``SystemExit`` se degradan ni se disfrazan.
             await kill_and_reap(proc)
             close_job(job)
             raise

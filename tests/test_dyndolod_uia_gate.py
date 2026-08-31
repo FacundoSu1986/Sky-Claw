@@ -622,13 +622,6 @@ class _PilaDeOwnership:
         return False
 
 
-@pytest.mark.parametrize(
-    ("tool", "ejecutable", "valor"),
-    [
-        ("TexGen", r"C:\Modding\DynDOLOD\TexGenx64.exe", OTRA_SALIDA),
-        ("DynDOLOD", r"C:\Modding\DynDOLOD\DynDOLODx64.exe", OTRA_SALIDA),
-    ],
-)
 def _spawn_de(proc):
     """Side_effect que retorna ``proc`` y se "await-ea" sincrónicamente.
 
@@ -1132,6 +1125,225 @@ def test_el_gate_no_lee_el_header_del_log_como_prueba_de_destino():
     assert not any("Using Output Path" in literal for literal in literales)
     atributos = {n.attr for n in ast.walk(metodo) if isinstance(n, ast.Attribute)}
     assert "_ruta_del_log" not in atributos and "_leer_log" not in atributos
+
+
+# ---------------------------------------------------------------------------
+# F1/F3/F4 — deadline externo al COM, ownership universal post-spawn y ciclo
+# de vida del apartamento COM (reviews adversariales de #528)
+# ---------------------------------------------------------------------------
+
+
+async def test_f3_una_excepcion_no_prevista_del_gate_limpia_proceso_y_job(tmp_path):
+    """F3 — un fallo no normalizado del gate NO deja el proceso sin ownership.
+
+    La tupla ``(DynDOLODPreflightUIAError, CancelledError)`` no cubre un bug del
+    adapter ni un error del executor: un ``RuntimeError`` de la fábrica (dentro
+    del hilo del gate, vía ``to_thread``) tiene que limpiar igual: kill+reap del
+    proceso, cierre del Job, y la excepción ORIGINAL propagada con su identidad
+    (no degradada a ``DynDOLODExecutionError`` genérico).
+    """
+    runner, proc, _observador = _preparar_corrida(
+        tmp_path,
+        rondas=[_ronda_output(SALIDA_ADMINISTRADA_TXT)],
+        ejecutable=r"C:\Modding\DynDOLOD\TexGenx64.exe",
+    )
+
+    def _fabrica_rota():
+        raise RuntimeError("boom")
+
+    runner._uia_observador_factory = _fabrica_rota
+
+    with (
+        patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc))),
+        _PilaDeOwnership(proc=proc) as pila,
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        await runner._execute_process(pathlib.Path(r"C:\Modding\DynDOLOD\TexGenx64.exe"), [], "TexGen")
+
+    assert proc.muertes == 1, "el proceso se mató pese a la excepción no prevista"
+    pila.mocks["kill_and_reap"].assert_awaited_once_with(proc)
+    pila.mocks["close_job"].assert_called_once_with(4242)
+
+
+async def test_f1_un_com_bloqueado_dispara_el_deadline_externo_y_limpia(tmp_path, monkeypatch):
+    """F1 — una observación bloqueada más allá del deadline NO cuelga el pipeline.
+
+    El deadline interno del gate sólo se consulta ENTRE observaciones: una
+    llamada que no vuelve jamás dejaría el ``to_thread`` corriendo y el pipeline
+    esperando. El deadline EXTERNO (``asyncio.wait_for`` sobre el ``to_thread``)
+    devuelve el control de forma acotada, termina el proceso, cierra el Job y
+    reporta UNKNOWN/ERROR_UIA — fail-closed. El test no espera segundos reales:
+    el deadline interno se configura corto y la gracia externa se monkeypatchea.
+
+    Lo que el test NO afirma (limitación documentada): cancelar el ``await`` no
+    mata al worker del pool ni a la llamada bloqueada dentro de él; el worker se
+    libera cuando esa llamada retorna. Por eso el test libera al worker antes de
+    terminar.
+    """
+    import threading
+    import time
+
+    listo = threading.Event()
+
+    class _ObservadorBloqueado:
+        """La primera observación queda bloqueada hasta que el test la libera."""
+
+        def ventanas_de_proceso(self, pid: int):
+            listo.wait(timeout=10)
+            raise ObservacionUIAError("liberado por el test")
+
+        def controles_de_ventana(self, ventana):
+            return ()
+
+        def leer_valor(self, control):
+            return None
+
+    monkeypatch.setattr(ddl, "_GRACIA_EXTERNA_DEL_GATE_SEGUNDOS", 0.1)
+
+    config = _config(tmp_path, timeout=0.2, intervalo=0.05)
+    runner = ddl.DynDOLODRunner(
+        config,
+        uia_localizador=_LocalizadorFalso([_proceso_falso_del_rig(r"C:\Modding\DynDOLOD\TexGenx64.exe")]),
+        uia_observador_factory=_ObservadorBloqueado,
+    )
+    proc = _ProcesoFalso()
+    try:
+        with (
+            patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc))),
+            _PilaDeOwnership(proc=proc) as pila,
+        ):
+            inicio = time.monotonic()
+            with pytest.raises(ddl.DynDOLODPreflightUIAError) as excinfo:
+                await runner._execute_process(pathlib.Path(r"C:\Modding\DynDOLOD\TexGenx64.exe"), [], "TexGen")
+            duracion = time.monotonic() - inicio
+
+        assert excinfo.value.resultado.estado is EstadoPreflight.UNKNOWN
+        assert duracion < 5.0, "el pipeline recuperó el control de forma acotada"
+        pila.mocks["kill_and_reap"].assert_awaited_once_with(proc)
+        pila.mocks["close_job"].assert_called_once_with(4242)
+    finally:
+        # Liberar al worker del pool: sin esto, el hilo queda bloqueado y los
+        # workers de ``to_thread`` se joinean al cierre del intérprete.
+        listo.set()
+        await asyncio.sleep(0.3)
+
+
+class _ObservadorQueSeLibera:
+    """Observador falso con ciclo de vida explícito (protocolo de liberación)."""
+
+    def __init__(self, rondas: Sequence[_Ronda]) -> None:
+        self._interno = _ObservadorPorRonda(rondas)
+        self.liberaciones = 0
+
+    def ventanas_de_proceso(self, pid: int):
+        return self._interno.ventanas_de_proceso(pid)
+
+    def controles_de_ventana(self, ventana):
+        return self._interno.controles_de_ventana(ventana)
+
+    def leer_valor(self, control):
+        return self._interno.leer_valor(control)
+
+    def liberar(self) -> None:
+        self.liberaciones += 1
+
+
+def _correr_gate_con_observador(observador) -> ResultadoPreflightUIA:
+    reloj = _RelojFalso()
+    return ejecutar_gate_sincrono(
+        _solicitud(),
+        fabrica_observador=lambda: observador,
+        localizador=_LocalizadorFalso([_proceso_falso_del_rig(r"C:\Modding\DynDOLOD\TexGenx64.exe")]),
+        timeout_segundos=5.0,
+        intervalo_segundos=1.0,
+        reloj=reloj,
+        dormir=reloj.dormir,
+        proceso_vivo=lambda: True,
+    )
+
+
+def test_f4_el_gate_libera_al_observador_en_match():
+    observador = _ObservadorQueSeLibera([_ronda_output(SALIDA_ADMINISTRADA_TXT)])
+    resultado = _correr_gate_con_observador(observador)
+    assert resultado.estado is EstadoPreflight.MATCH
+    assert observador.liberaciones == 1, "CoInitialize sin CoUninitialize: el apartamento queda abierto"
+
+
+def test_f4_el_gate_libera_al_observador_en_mismatch():
+    observador = _ObservadorQueSeLibera([_ronda_output(OTRA_SALIDA)])
+    resultado = _correr_gate_con_observador(observador)
+    assert resultado.estado is EstadoPreflight.MISMATCH
+    assert observador.liberaciones == 1
+
+
+def test_f4_el_gate_libera_al_observador_en_unknown_terminal():
+    observador = _ObservadorQueSeLibera([_ronda_dos_candidatos()])
+    resultado = _correr_gate_con_observador(observador)
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert observador.liberaciones == 1
+
+
+def test_f4_el_gate_libera_al_observador_cuando_la_observacion_falla():
+    class _ObservadorQueFalla(_ObservadorQueSeLibera):
+        def ventanas_de_proceso(self, pid: int):
+            raise ObservacionUIAError("sensor roto")
+
+        def __init__(self) -> None:
+            self.liberaciones = 0
+
+    observador = _ObservadorQueFalla()
+    resultado = _correr_gate_con_observador(observador)
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.ERROR_UIA
+    assert observador.liberaciones == 1, "incluso con la observación rota, el apartamento se cierra"
+
+
+def test_f4_el_gate_libera_al_observador_si_algo_inesperado_explota():
+    """Una excepción NO-ObservacionUIAError dentro del gate: igual se libera."""
+
+    class _ObservadorConBug(_ObservadorQueSeLibera):
+        def controles_de_ventana(self, ventana):
+            raise RuntimeError("bug del adapter")
+
+    observador = _ObservadorConBug([_ronda_output(SALIDA_ADMINISTRADA_TXT)])
+    # ``RuntimeError`` no está en ``_ERRORES_DE_ADAPTADOR``: propaga con
+    # identidad (no se disfraza de fallo del sensor), pero la liberación
+    # del observador ocurre igual en el ``finally`` del gate.
+    with pytest.raises(RuntimeError, match="bug del adapter"):
+        _correr_gate_con_observador(observador)
+    assert observador.liberaciones == 1
+
+
+def test_f4_un_observador_sin_protocolo_de_liberacion_no_rompe_el_gate():
+    """Backwards-compat: un observador sin ``liberar`` sigue funcionando igual."""
+    observador = _ObservadorPorRonda([_ronda_output(SALIDA_ADMINISTRADA_TXT)])
+    resultado = _correr_gate_con_observador(observador)
+    assert resultado.estado is EstadoPreflight.MATCH
+
+
+def test_f3_una_fabrica_con_bug_no_se_traga_dentro_del_gate():
+    """F3 a nivel gate: un RuntimeError de la fábrica propaga con identidad.
+
+    El gate traduce ``ObservacionUIAError`` a UNKNOWN/UIA_NO_DISPONIBLE; un bug
+    del adapter (``RuntimeError``, ``ValueError``…) NO se disfraza de fallo del
+    rig: sale con su tipo para que el seam lo limpie con ownership.
+    """
+
+    def _fabrica_rota():
+        raise RuntimeError("boom")
+
+    reloj = _RelojFalso()
+    with pytest.raises(RuntimeError, match="boom"):
+        ejecutar_gate_sincrono(
+            _solicitud(),
+            fabrica_observador=_fabrica_rota,
+            localizador=_LocalizadorFalso([_proceso_falso_del_rig(r"C:\Modding\DynDOLOD\TexGenx64.exe")]),
+            timeout_segundos=5.0,
+            intervalo_segundos=1.0,
+            reloj=reloj,
+            dormir=reloj.dormir,
+            proceso_vivo=lambda: True,
+        )
 
 
 def test_observar_output_sigue_siendo_la_unicas_decision():

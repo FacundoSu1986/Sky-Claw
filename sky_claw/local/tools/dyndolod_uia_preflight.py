@@ -554,6 +554,32 @@ class LocalizadorPsutil:
         return tuple(salida)
 
 
+@runtime_checkable
+class ObservadorLiberable(Protocol):
+    """Capacidad opcional del observador: liberar sus recursos en este hilo.
+
+    **No es parte de** :class:`ObservadorUIA` — el contrato de observación
+    sigue congelado en tres métodos. Es el punto de cierre del ciclo de vida
+    de quien abre un recurso por llamada: el backend Windows inicializa el
+    apartamento COM del hilo worker al construirse, y Microsoft exige un
+    ``CoUninitialize`` por cada ``CoInitialize`` exitoso — **incluido el
+    ``S_FALSE``** de re-inicializar un hilo reutilizado del pool de
+    ``asyncio.to_thread``, que es exactamente el caso del gate.
+
+    El gate detecta esta capacidad con ``isinstance`` y la invoca en su
+    ``finally``, así que el apartamento se cierra en el mismo hilo que lo
+    abrió en TODO camino: ``MATCH``, ``MISMATCH``, ``UNKNOWN`` de cualquier
+    razón, excepción del adaptador o del propio gate. La liberación es
+    ordenada — primero las referencias COM del observador, después el
+    ``CoUninitialize`` — porque soltar el apartamento con referencias vivas
+    es la forma documentada de conseguir un crash en vez de una limpieza.
+    """
+
+    def liberar(self) -> None:
+        """Libera las referencias y cierra el recurso del hilo. Idempotente."""
+        ...
+
+
 class ObservadorNoDisponible:
     """Observador que falla cerrado. Es el backend por defecto del PUERTO.
 
