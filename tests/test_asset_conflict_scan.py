@@ -624,6 +624,27 @@ def _formato_kwarg(value: ast.expr) -> str:
     return type(value).__name__
 
 
+def _targets_de(nodo: ast.Assign | ast.AnnAssign) -> list[ast.expr]:
+    """Normaliza los targets de una asignación simple o anotada."""
+    return nodo.targets if isinstance(nodo, ast.Assign) else [nodo.target]
+
+
+def _unica_llamada_al_builder(miembro: ast.FunctionDef) -> ast.Call:
+    """Devuelve la única llamada a build_orchestration_composition en __init__."""
+    llamadas = [
+        sub
+        for sub in ast.walk(miembro)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "build_orchestration_composition"
+    ]
+    assert len(llamadas) == 1, (
+        f"__init__ debe tener EXACTAMENTE UNA llamada a build_orchestration_composition "
+        f"(encontradas {len(llamadas)}) — múltiples llamadas podrían mezclar contratos"
+    )
+    return llamadas[0]
+
+
 def test_unique_seam_del_supervisor_bound_al_builder_es_plugin_guard() -> None:
     """Guardrail de familia (enumera, no muestrea).
 
@@ -649,18 +670,7 @@ def test_unique_seam_del_supervisor_bound_al_builder_es_plugin_guard() -> None:
     for miembro in clase.body:
         if not (isinstance(miembro, ast.FunctionDef) and miembro.name == "__init__"):
             continue
-        builder_calls = [
-            sub
-            for sub in ast.walk(miembro)
-            if isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Name)
-            and sub.func.id == "build_orchestration_composition"
-        ]
-        assert len(builder_calls) == 1, (
-            f"__init__ debe tener EXACTAMENTE UNA llamada a build_orchestration_composition "
-            f"(encontradas {len(builder_calls)})"
-        )
-        builder_call = builder_calls[0]
+        builder_call = _unica_llamada_al_builder(miembro)
         for kw in builder_call.keywords:
             assert kw.arg is not None, (
                 "build_orchestration_composition no puede usar `**kwargs` "
@@ -728,7 +738,7 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
         detecta la inversión plain/JSON y los callbacks viejos del supervisor.
       - se rastrea el binding vigente (local y self.attr) por orden de línea
         hasta el builder: reasignar una referencia a otro valor invalida el
-        binding para el oracle; NO hay dataflow general.
+        binding para el oracle; soporta Assign y AnnAssign; NO hay dataflow general.
 
     Mutaciones de contraste ejecutadas en el PR: la forma ``self.attr`` pura
     pasa (equivalente); un SEGUNDO scanner cableado, el swap plain/JSON,
@@ -742,17 +752,18 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
         if not (isinstance(miembro, ast.FunctionDef) and miembro.name == "__init__"):
             continue
 
-        # Recorremos las asignaciones en ORDEN DE LÍNEA para poder rastrear
-        # bindings vigentes (target = referencia) sin construir dataflow general.
+        # Recorremos las asignaciones (simples y anotadas) en ORDEN DE LÍNEA para
+        # poder rastrear bindings vigentes (target = referencia) sin dataflow general.
         asignaciones = sorted(
-            (n for n in ast.walk(miembro) if isinstance(n, ast.Assign)),
+            (n for n in ast.walk(miembro) if isinstance(n, (ast.Assign, ast.AnnAssign))),
             key=lambda n: n.lineno,
         )
 
         construcciones = [
             sub
             for sub in asignaciones
-            if isinstance(sub.value, ast.Call)
+            if sub.value is not None
+            and isinstance(sub.value, ast.Call)
             and isinstance(sub.value.func, ast.Name)
             and sub.value.func.id == "AssetConflictScanner"
         ]
@@ -792,24 +803,13 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
         )
 
         # 2. Exigir exactamente UNA llamada a build_orchestration_composition.
-        builder_calls = [
-            sub
-            for sub in ast.walk(miembro)
-            if isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Name)
-            and sub.func.id == "build_orchestration_composition"
-        ]
-        assert len(builder_calls) == 1, (
-            f"__init__ debe realizar EXACTAMENTE UNA llamada a build_orchestration_composition "
-            f"(encontradas {len(builder_calls)}) — múltiples llamadas podrían mezclar contratos"
-        )
-        builder_call = builder_calls[0]
+        builder_call = _unica_llamada_al_builder(miembro)
 
         # 3. Rastrear bindings vigentes de la identidad lógica del scanner
         #    desde su construcción hasta la llamada al builder.
         scanner_id = "asset_conflict_scanner#1"
         bindings: dict[tuple[str, str], str] = {}
-        for target in construccion.targets:
+        for target in _targets_de(construccion):
             ref = _referencia_logica(target)
             if ref is not None:
                 bindings[ref] = scanner_id
@@ -823,9 +823,9 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
                 continue
             if sub.lineno >= builder_call.lineno:
                 continue
-            val_ref = _referencia_logica(sub.value)
+            val_ref = _referencia_logica(sub.value) if sub.value is not None else None
             val_id = bindings.get(val_ref) if val_ref is not None else None
-            for target in sub.targets:
+            for target in _targets_de(sub):
                 target_ref = _referencia_logica(target)
                 if target_ref is not None:
                     if val_id == scanner_id:
