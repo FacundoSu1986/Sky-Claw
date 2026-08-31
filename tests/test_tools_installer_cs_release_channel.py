@@ -55,6 +55,5 @@ async def test_flujo_community_shaders_usa_canal_estable_de_github(
 
     asegurar_github.assert_awaited_once()
     assert asegurar_github.await_args.kwargs["releases_url"] == (
-        "https://api.github.com/repos/community-shaders/"
-        "skyrim-community-shaders/releases/latest"
+        "https://api.github.com/repos/community-shaders/skyrim-community-shaders/releases/latest"
     )
