@@ -14,6 +14,7 @@ algoritmo de selección de releases de GitHub.
 
 from __future__ import annotations
 
+import pathlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,7 +26,7 @@ from sky_claw.local.tools_installer import ToolsInstaller
 
 @pytest.mark.asyncio
 async def test_flujo_community_shaders_usa_canal_estable_de_github(
-    tmp_path,
+    tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """El flujo de Community Shaders debe entregar ``releases/latest`` al instalador."""
