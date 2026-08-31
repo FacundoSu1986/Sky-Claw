@@ -1,0 +1,42 @@
+version: 2
+
+updates:
+  # Gateway de Telegram en Node.js. package-lock.json está versionado, por lo que
+  # Dependabot puede actualizar manifiesto y lockfile juntos; CI valida con npm ci/audit.
+  - package-ecosystem: npm
+    directory: "/sky_claw/app/comms/telegram_gateway_node"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:15"
+      timezone: "America/Argentina/Buenos_Aires"
+    open-pull-requests-limit: 5
+    groups:
+      node-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Mantiene actualizadas las GitHub Actions fijadas por SHA sin debilitar el
+  # pinning inmutable. Los cambios major quedan fuera del grupo para revisión explícita.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: "America/Argentina/Buenos_Aires"
+    open-pull-requests-limit: 5
+    groups:
+      github-actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "chore(deps)"
