@@ -84,15 +84,11 @@ def test_inventario_de_seams_bound_resuelve_aliases_locales() -> None:
     tree = ast.parse(source)
     clase = next(n for n in tree.body if isinstance(n, ast.ClassDef))
     init = next(n for n in clase.body if isinstance(n, ast.FunctionDef) and n.name == "__init__")
-    nombres_metodo = {
-        n.name for n in clase.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    nombres_metodo = {n.name for n in clase.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     builder_calls = [
         n
         for n in ast.walk(init)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Name)
-        and n.func.id == "build_orchestration_composition"
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "build_orchestration_composition"
     ]
     assert len(builder_calls) == 1
     builder = builder_calls[0]
