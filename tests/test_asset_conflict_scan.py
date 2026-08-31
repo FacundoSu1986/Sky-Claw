@@ -271,6 +271,188 @@ def test_parse_modlist_funciona_cuando_el_validator_acepta(tmp_path: pathlib.Pat
     assert detector.parse_modlist() == ["ModAlto", "ModBajo"]
 
 
+def _crear_symlink_o_junction(target: pathlib.Path, link: pathlib.Path) -> None:
+    """Crea un symlink o directory junction compatible con Windows y POSIX."""
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except (OSError, NotImplementedError):
+        if target.is_dir():
+            try:
+                import _winapi
+
+                _winapi.CreateJunction(str(target), str(link))
+                return
+            except (ImportError, AttributeError, OSError):
+                pass
+        pytest.skip(f"No se pudo crear symlink/junction en esta plataforma: {link} -> {target}")
+
+
+def test_scan_mod_directory_rechaza_symlink_o_junction_fuera_del_sandbox(tmp_path: pathlib.Path) -> None:
+    """T-S5: Un mod que es un symlink/junction apuntando fuera del sandbox lanza
+    PathViolationError de forma fail-closed en scan_mod_directory() incluso cuando
+    calculate_checksums=False."""
+    sandbox = tmp_path / "sandbox"
+    mo2 = sandbox / "MO2"
+    mods = mo2 / "mods"
+    mods.mkdir(parents=True)
+
+    outside = tmp_path / "outside"
+    outside_mod = outside / "ModExterno"
+    outside_mod.mkdir(parents=True)
+    (outside_mod / "textures").mkdir()
+    (outside_mod / "textures" / "shared.dds").write_bytes(b"EXTERNO")
+
+    link_mod = mods / "ModExterno"
+    _crear_symlink_o_junction(outside_mod, link_mod)
+
+    validator = PathValidator(roots=[sandbox])
+    detector = AssetConflictDetector(mo2_mods_path=mods, path_validator=validator)
+
+    with pytest.raises(PathViolationError):
+        detector.scan_mod_directory("ModExterno", calculate_checksums=False)
+
+
+def test_scan_mod_directory_rechaza_symlink_roto_fuera_del_sandbox_antes_de_exists(tmp_path: pathlib.Path) -> None:
+    """T-S5b: Un mod symlink/junction apuntando a un path externo inexistente/roto
+    se valida y rechaza con PathViolationError ANTES de evaluar exists() (fail-closed)."""
+    sandbox = tmp_path / "sandbox"
+    mo2 = sandbox / "MO2"
+    mods = mo2 / "mods"
+    mods.mkdir(parents=True)
+
+    outside = tmp_path / "outside"
+    outside_mod = outside / "ModInexistente"
+    outside_mod.mkdir(parents=True)
+
+    link_mod = mods / "BrokenMod"
+    _crear_symlink_o_junction(outside_mod, link_mod)
+    outside_mod.rmdir()  # El link apunta a un destino inexistente fuera de las roots
+
+    validator = PathValidator(roots=[sandbox])
+    detector = AssetConflictDetector(mo2_mods_path=mods, path_validator=validator)
+
+    with pytest.raises(PathViolationError):
+        detector.scan_mod_directory("BrokenMod", calculate_checksums=False)
+
+
+def test_scan_mod_directory_rechaza_nested_symlink_o_junction_fuera_del_sandbox_antes_de_descenso(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-S6: Un subdirectorio symlink/junction que apunta fuera de las roots autorizadas
+    lanza PathViolationError de forma fail-closed ANTES de descender o enumerar
+    archivos del target externo (validate-before-descent)."""
+    sandbox = tmp_path / "sandbox"
+    mo2 = sandbox / "MO2"
+    mods = mo2 / "mods"
+    mod_a = mods / "ModA"
+    mod_a.mkdir(parents=True)
+    (mod_a / "textures").mkdir()
+    (mod_a / "textures" / "local.dds").write_bytes(b"LOCAL")
+
+    # Target externo con un archivo que NO debe ser alcanzado ni enumerado
+    outside = tmp_path / "outside"
+    outside_target = outside / "secret_assets"
+    outside_target.mkdir(parents=True)
+    (outside_target / "secret.dds").write_bytes(b"SECRET")
+
+    nested_link = mod_a / "textures" / "nested_outside"
+    _crear_symlink_o_junction(outside_target, nested_link)
+
+    validator = PathValidator(roots=[sandbox])
+    validated_paths: list[pathlib.Path] = []
+    original_validate = validator.validate
+
+    def spy_validate(path: str | pathlib.Path, *, strict_symlink: bool = True) -> pathlib.Path:
+        p = pathlib.Path(path)
+        validated_paths.append(p)
+        return original_validate(p, strict_symlink=strict_symlink)
+
+    validator.validate = spy_validate  # type: ignore[assignment]
+
+    import os
+
+    walk_roots_yielded: list[pathlib.Path] = []
+    original_walk = os.walk
+
+    def spy_walk(top: str | os.PathLike[str], **kwargs: object):
+        for root, dirs, files in original_walk(top, **kwargs):  # type: ignore[arg-type]
+            walk_roots_yielded.append(pathlib.Path(root))
+            yield root, dirs, files
+
+    import sky_claw.local.assets.asset_scanner as asset_scanner_module
+
+    monkeypatch.setattr(asset_scanner_module.os, "walk", spy_walk)
+
+    detector = AssetConflictDetector(mo2_mods_path=mods, path_validator=validator)
+
+    with pytest.raises(PathViolationError):
+        detector.scan_mod_directory("ModA", calculate_checksums=False)
+
+    # Validate-before-descent:
+    # 1. os.walk NUNCA descendió al directorio externo nested_link
+    assert nested_link not in walk_roots_yielded, (
+        f"os.walk descendió a {nested_link} antes de validar: {walk_roots_yielded}"
+    )
+    # 2. NINGÚN archivo dentro del target externo fue validado, recorrido ni enumerado
+    archivos_validados_str = [str(p) for p in validated_paths]
+    assert not any("secret.dds" in s for s in archivos_validados_str), (
+        f"El escáner enumeró archivos del target externo antes de validar el directorio: {archivos_validados_str}"
+    )
+
+
+def test_scan_mod_directory_funciona_con_mod_legitimo_en_sandbox(tmp_path: pathlib.Path) -> None:
+    """T-S7 (happy-path): un mod legítimo con assets dentro de la root autorizada
+    es recorrido normalmente y mapea todos sus assets."""
+    sandbox = tmp_path / "sandbox"
+    mo2 = sandbox / "MO2"
+    mods = mo2 / "mods"
+    mod_a = mods / "ModLegitimo"
+    (mod_a / "textures").mkdir(parents=True)
+    (mod_a / "textures" / "a.dds").write_bytes(b"DDS_DATA")
+    (mod_a / "meshes").mkdir(parents=True)
+    (mod_a / "meshes" / "b.nif").write_bytes(b"NIF_DATA")
+
+    validator = PathValidator(roots=[sandbox])
+    detector = AssetConflictDetector(mo2_mods_path=mods, path_validator=validator)
+
+    assets = detector.scan_mod_directory("ModLegitimo", calculate_checksums=False)
+
+    assert "textures/a.dds" in assets
+    assert "meshes/b.nif" in assets
+    assert assets["textures/a.dds"].asset_type == AssetType.TEXTURE
+    assert assets["meshes/b.nif"].asset_type == AssetType.MESH
+    assert assets["textures/a.dds"].size_bytes == 8
+
+
+def test_detect_conflicts_bloquea_symlink_externo_con_checksum_desactivado(tmp_path: pathlib.Path) -> None:
+    """T-S8: detect_conflicts() (ruta productiva de scan()) propaga PathViolationError
+    cuando un mod habilitado es un symlink a un directorio externo, aunque
+    calculate_checksums sea False."""
+    sandbox = tmp_path / "sandbox"
+    mo2 = sandbox / "MO2"
+    mods = mo2 / "mods"
+    mods.mkdir(parents=True)
+    profiles = mo2 / "profiles" / "Default"
+    profiles.mkdir(parents=True)
+    (profiles / "modlist.txt").write_text("+ModExterno\n", encoding="utf-8")
+
+    outside = tmp_path / "outside"
+    outside_mod = outside / "ModExterno"
+    outside_mod.mkdir(parents=True)
+    (outside_mod / "textures").mkdir()
+    (outside_mod / "textures" / "shared.dds").write_bytes(b"DATA")
+
+    link_mod = mods / "ModExterno"
+    _crear_symlink_o_junction(outside_mod, link_mod)
+
+    validator = PathValidator(roots=[sandbox])
+    detector = AssetConflictDetector(mo2_mods_path=mods, profile_name="Default", path_validator=validator)
+
+    with pytest.raises(PathViolationError):
+        detector.detect_conflicts()
+
+
 # ---------------------------------------------------------------------------
 # Errores durante la resolución lazy del detector
 # ---------------------------------------------------------------------------
@@ -467,23 +649,31 @@ def test_unique_seam_del_supervisor_bound_al_builder_es_plugin_guard() -> None:
     for miembro in clase.body:
         if not (isinstance(miembro, ast.FunctionDef) and miembro.name == "__init__"):
             continue
-        for sub in ast.walk(miembro):
+        builder_calls = [
+            sub
+            for sub in ast.walk(miembro)
+            if isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "build_orchestration_composition"
+        ]
+        assert len(builder_calls) == 1, (
+            f"__init__ debe tener EXACTAMENTE UNA llamada a build_orchestration_composition "
+            f"(encontradas {len(builder_calls)})"
+        )
+        builder_call = builder_calls[0]
+        for kw in builder_call.keywords:
+            assert kw.arg is not None, (
+                "build_orchestration_composition no puede usar `**kwargs` "
+                "porque impediría inventariar exhaustivamente los seams bound al supervisor"
+            )
+            valor = kw.value
             if (
-                isinstance(sub, ast.Call)
-                and isinstance(sub.func, ast.Name)
-                and sub.func.id == "build_orchestration_composition"
+                isinstance(valor, ast.Attribute)
+                and isinstance(valor.value, ast.Name)
+                and valor.value.id == "self"
+                and valor.attr in nombres_metodo
             ):
-                for kw in sub.keywords:
-                    if kw.arg is None:
-                        continue
-                    valor = kw.value
-                    if (
-                        isinstance(valor, ast.Attribute)
-                        and isinstance(valor.value, ast.Name)
-                        and valor.value.id == "self"
-                        and valor.attr in nombres_metodo
-                    ):
-                        bound_del_supervisor[kw.arg] = valor.attr
+                bound_del_supervisor[kw.arg] = valor.attr
         break
 
     assert bound_del_supervisor == {"plugin_limit_guard": "_run_plugin_limit_guard"}, (
@@ -522,26 +712,29 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
     o directamente en un atributo (``self._asset_scanner = AssetConflictScanner(...)``),
     ni si los callbacks nombran la variable local o el atributo de ``self``
     (ambas son REFACTORES EQUIVALENTES que deben pasar; un WIRING DIFERENTE
-    —otro scanner, otro método, callback viejo del supervisor— debe fallar).
+    —otro scanner, otro método, callback viejo del supervisor, alias reasignado— debe fallar).
 
     Invariantes:
       - EXACTAMENTE UNA construcción productiva de ``AssetConflictScanner``;
         un scanner duplicado rompe el test.
+      - EXACTAMENTE UNA llamada a ``build_orchestration_composition``; múltiples
+        llamadas no pueden mezclar contratos ni ocultar wires inválidos.
       - TODOS los argumentos se inventarían: ni posicionales, ni ``**extras``,
-        ni kwargs inesperados.
+        ni kwargs inesperados, tanto en el scanner como en el builder.
       - ``path_validator`` apunta al validator de modding (no ``_path_validator``
         del rollback ni un validator fabricado).
       - el MISMO objeto construido alimenta ``scan_asset_conflicts`` (vía
         ``.scan``) y ``scan_asset_conflicts_json`` (vía ``.scan_json``); se
         detecta la inversión plain/JSON y los callbacks viejos del supervisor.
-      - se rastrea el alias simple local→self (``self._asset_scanner = scanner``)
-        recorriendo las asignaciones en orden de línea; NO hay dataflow general
-        (containers, closures o returns no son referencias del scanner).
+      - se rastrea el binding vigente (local y self.attr) por orden de línea
+        hasta el builder: reasignar una referencia a otro valor invalida el
+        binding para el oracle; NO hay dataflow general.
 
     Mutaciones de contraste ejecutadas en el PR: la forma ``self.attr`` pura
     pasa (equivalente); un SEGUNDO scanner cableado, el swap plain/JSON,
     ``self.scan_asset_conflicts``, ``path_validator=self._path_validator``,
-    ``path_validator=fabricado()``, un kwarg extra y ``**extras`` fallan.
+    ``path_validator=fabricado()``, un kwarg extra, ``**extras`` en scanner,
+    ``**extras`` en builder, reasignación de alias local/self y segunda llamada al builder fallan.
     """
     arbol = _arbol_supervisor()
     clase = _cuerpo_supervisor(arbol)
@@ -550,7 +743,7 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
             continue
 
         # Recorremos las asignaciones en ORDEN DE LÍNEA para poder rastrear
-        # aliases simples (target = referencia) sin construir dataflow general.
+        # bindings vigentes (target = referencia) sin construir dataflow general.
         asignaciones = sorted(
             (n for n in ast.walk(miembro) if isinstance(n, ast.Assign)),
             key=lambda n: n.lineno,
@@ -598,39 +791,57 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
             "NO el backup-only del rollback ni un validator fabricado)"
         )
 
-        # 2. Identidad lógica del objeto: referencias destino de la construcción
-        #    (locales o self.attr) + aliases simples `target = <ref conocida>`.
-        refs_del_scanner: set[tuple[str, str]] = set()
+        # 2. Exigir exactamente UNA llamada a build_orchestration_composition.
+        builder_calls = [
+            sub
+            for sub in ast.walk(miembro)
+            if isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "build_orchestration_composition"
+        ]
+        assert len(builder_calls) == 1, (
+            f"__init__ debe realizar EXACTAMENTE UNA llamada a build_orchestration_composition "
+            f"(encontradas {len(builder_calls)}) — múltiples llamadas podrían mezclar contratos"
+        )
+        builder_call = builder_calls[0]
+
+        # 3. Rastrear bindings vigentes de la identidad lógica del scanner
+        #    desde su construcción hasta la llamada al builder.
+        scanner_id = "asset_conflict_scanner#1"
+        bindings: dict[tuple[str, str], str] = {}
         for target in construccion.targets:
             ref = _referencia_logica(target)
             if ref is not None:
-                refs_del_scanner.add(ref)
-        assert refs_del_scanner, (
+                bindings[ref] = scanner_id
+        assert any(v == scanner_id for v in bindings.values()), (
             "La construcción del scanner debe asignarse a un nombre local o a un "
             "atributo de self (no a suscripciones ni targets dinámicos)"
         )
-        for sub in asignaciones:
-            if sub is construccion:
-                continue
-            ref_valor = _referencia_logica(sub.value)
-            if ref_valor is None or ref_valor not in refs_del_scanner:
-                continue
-            for target in sub.targets:
-                ref = _referencia_logica(target)
-                if ref is not None:
-                    refs_del_scanner.add(ref)
 
-        # 3. Los callbacks del builder deben ser <ref del scanner>.scan / .scan_json.
+        for sub in asignaciones:
+            if sub.lineno <= construccion.lineno:
+                continue
+            if sub.lineno >= builder_call.lineno:
+                continue
+            val_ref = _referencia_logica(sub.value)
+            val_id = bindings.get(val_ref) if val_ref is not None else None
+            for target in sub.targets:
+                target_ref = _referencia_logica(target)
+                if target_ref is not None:
+                    if val_id == scanner_id:
+                        bindings[target_ref] = scanner_id
+                    else:
+                        bindings[target_ref] = "other"
+
+        # 4. Los callbacks del builder deben provenir de una referencia vigente del scanner.
         kwargs_al_builder: dict[str, ast.expr] = {}
-        for sub in ast.walk(miembro):
-            if (
-                isinstance(sub, ast.Call)
-                and isinstance(sub.func, ast.Name)
-                and sub.func.id == "build_orchestration_composition"
-            ):
-                for kw in sub.keywords:
-                    if kw.arg is not None:
-                        kwargs_al_builder[kw.arg] = kw.value
+        for kw in builder_call.keywords:
+            if kw.arg is None:
+                raise AssertionError(
+                    "build_orchestration_composition recibe `**kwargs` no nominales — "
+                    "los contratos del composition root deben ser explícitos"
+                )
+            kwargs_al_builder[kw.arg] = kw.value
 
         for builder_kwarg, attr in (
             ("scan_asset_conflicts", "scan"),
@@ -643,9 +854,9 @@ def test_supervisor_cablea_el_scanner_a_la_composition() -> None:
                 "y callbacks viejos del supervisor)"
             )
             ref_base = _referencia_logica(valor.value)
-            assert ref_base is not None and ref_base in refs_del_scanner, (
-                f"{builder_kwarg} usa un objeto distinto del scanner construido "
-                f"(refs del scanner: {sorted(refs_del_scanner)}) — identidad lógica rota"
+            assert ref_base is not None and bindings.get(ref_base) == scanner_id, (
+                f"{builder_kwarg} usa una referencia que no resuelve al scanner construido "
+                f"(ref: {ref_base}, bindings: {bindings}) — identidad lógica rota"
             )
         return
     raise AssertionError("No se encontró SupervisorAgent.__init__")
