@@ -1,12 +1,15 @@
-"""Strategy for the `validate_plugin_limit` tool.
+"""Estrategia de la tool ``validate_plugin_limit``.
 
-Thin adapter onto `supervisor._run_plugin_limit_guard(profile)`. That
-method stays on the supervisor (Spec §9) — wrapping it is a separate
-refactor.
+Adaptador fino sobre ``PluginLimitGuard.run(profile)`` (PR5). El guard se
+inyecta como callable de producción desde el ``SupervisorAgent.__init__`` vía
+``build_orchestration_composition``; los tests que necesiten reemplazar la
+implementación (vinculación tardía) lo hacen sobre el
+``OrchestrationDispatcherDependencies`` reconstruyendo el dispatcher con
+``dataclasses.replace``.
 
-Receives a **callable** for late-binding (so test fixtures can replace
-`supervisor._run_plugin_limit_guard = AsyncMock(...)`) and the default
-profile name to use when payload omits `profile`.
+Recibe un **callable** para mantener la estrategia testeable sin acoplarse al
+supervisor, y el getter del perfil por defecto para cuando el payload omite
+``profile``.
 """
 
 from __future__ import annotations
@@ -27,7 +30,8 @@ class ValidatePluginLimitStrategy:
         self.default_profile_getter = default_profile_getter
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
-        # Avoid eager evaluation of default_profile_getter() if "profile" key exists.
-        # dict.get(key, default) evaluates default first, so use explicit check instead.
+        # Evitar la evaluación ansiosa de default_profile_getter() cuando la
+        # clave "profile" ya existe: dict.get(key, default) evalúa el default
+        # primero, así que se usa una verificación explícita.
         profile = payload_dict["profile"] if "profile" in payload_dict else self.default_profile_getter()
         return await self.plugin_limit_guard(profile)

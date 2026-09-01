@@ -205,7 +205,7 @@ async def test_guard_usa_plugins_txt_y_descarta_modlist(tmp_path: pathlib.Path) 
     """El guard cuenta plugins habilitados, no carpetas de mods activas."""
     from unittest.mock import MagicMock
 
-    from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+    from sky_claw.app.orchestrator.plugin_limit_guard import PluginLimitGuard
 
     modlist = tmp_path / "modlist.txt"
     modlist.write_text(
@@ -217,11 +217,11 @@ async def test_guard_usa_plugins_txt_y_descarta_modlist(tmp_path: pathlib.Path) 
         encoding="utf-8",
     )
 
-    sup = SupervisorAgent.__new__(SupervisorAgent)
-    sup._path_resolver = MagicMock()  # type: ignore[attr-defined]
-    sup._path_resolver.resolve_modlist_path = MagicMock(return_value=modlist)
+    resolver = MagicMock()
+    resolver.resolve_modlist_path = MagicMock(return_value=modlist)
+    guard = PluginLimitGuard(path_resolver=resolver)
 
-    result = await sup._run_plugin_limit_guard("Default")
+    result = await guard.run("Default")
 
     assert result["valid"] is True
     # Solo A.esp y Light.esl están habilitados; B.esm no lleva '*'.
@@ -235,7 +235,10 @@ async def test_guard_lee_load_order_en_thread(tmp_path: pathlib.Path, monkeypatc
     import asyncio
     from unittest.mock import MagicMock
 
-    from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+    from sky_claw.app.orchestrator.plugin_limit_guard import (
+        PluginLimitGuard,
+        _read_active_plugins_blocking,
+    )
 
     modlist = tmp_path / "modlist.txt"
     modlist.write_text("+Carpeta.esp\n", encoding="utf-8")
@@ -257,16 +260,14 @@ async def test_guard_lee_load_order_en_thread(tmp_path: pathlib.Path, monkeypatc
 
     monkeypatch.setattr(asyncio, "to_thread", _spy)
 
-    sup = SupervisorAgent.__new__(SupervisorAgent)
-    sup._path_resolver = MagicMock()  # type: ignore[attr-defined]
-    sup._path_resolver.resolve_modlist_path = MagicMock(return_value=modlist)
+    resolver = MagicMock()
+    resolver.resolve_modlist_path = MagicMock(return_value=modlist)
+    guard = PluginLimitGuard(path_resolver=resolver)
 
-    result = await sup._run_plugin_limit_guard("Default")
+    result = await guard.run("Default")
 
     # Regresión funcional: se cuentan las tres entradas habilitadas reales.
     assert result["valid"] is True
     assert result["plugin_count"] == 3
     # La lectura del load order pasó por un thread.
-    from sky_claw.app.orchestrator.supervisor import _read_active_plugins_blocking
-
     assert _read_active_plugins_blocking in calls, f"to_thread no usado para el read: {calls}"

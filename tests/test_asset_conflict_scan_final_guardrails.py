@@ -78,13 +78,20 @@ def _ref(nodo: ast.expr) -> tuple[str, str] | None:
     return None
 
 
-def test_inventario_de_seams_bound_resuelve_aliases_locales() -> None:
-    """Un ``alias = self._metodo`` pasado al builder sigue contando como seam bound."""
-    source = inspect.getsource(supervisor_module.SupervisorAgent)
-    tree = ast.parse(source)
-    clase = next(n for n in tree.body if isinstance(n, ast.ClassDef))
-    init = next(n for n in clase.body if isinstance(n, ast.FunctionDef) and n.name == "__init__")
-    nombres_metodo = {n.name for n in clase.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+def _nombres_metodo(clase: ast.ClassDef) -> set[str]:
+    """Métodos reales de SupervisorAgent (FunctionDef / AsyncFunctionDef)."""
+    return {n.name for n in clase.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _inventario_de_seams_bound(init: ast.FunctionDef, nombres_metodo: set[str]) -> dict[str, str]:
+    """Resuelve, por orden de línea, qué callables bound al supervisor llegan al builder.
+
+    Sigue asignaciones ``alias = self._metodo`` (y reasignaciones de esos
+    aliases) hasta la única llamada ``build_orchestration_composition``, y
+    devuelve ``{kwarg: nombre_metodo}`` para cada seam bound detectado. Es el
+    instrumento exhaustivo (no de muestreo) que congela el inventario de
+    bound methods; un ``**kwargs`` en el builder lo rompe a propósito.
+    """
     builder_calls = [
         n
         for n in ast.walk(init)
@@ -137,5 +144,41 @@ def test_inventario_de_seams_bound_resuelve_aliases_locales() -> None:
                 metodo = bindings.get(ref_valor)
         if metodo is not None:
             seams[kw.arg] = metodo
+    return seams
 
-    assert seams == {"plugin_limit_guard": "_run_plugin_limit_guard"}
+
+def test_inventario_de_seams_bound_no_tiene_seams_tras_pr5() -> None:
+    """Tras PR5 el inventario de bound methods entregados al builder debe ser vacío."""
+    source = inspect.getsource(supervisor_module.SupervisorAgent)
+    tree = ast.parse(source)
+    clase = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    init = next(n for n in clase.body if isinstance(n, ast.FunctionDef) and n.name == "__init__")
+    seams = _inventario_de_seams_bound(init, _nombres_metodo(clase))
+
+    assert seams == {}, f"Tras PR5 no deben quedar seams bound de SupervisorAgent entregados al builder: {seams}"
+
+
+def test_inventario_de_seams_bound_detecta_alias_local_sintetico() -> None:
+    """Caso positivo sintético: el resolver SÍ detecta ``alias = self._metodo``.
+
+    La aserción ``== {}`` del caso productivo no demuestra que el algoritmo
+    siga detectando aliases; si el resolver se rompiera, quedaría verde de
+    forma espuria. Este test inyecta un ``alias = self._metodo`` sintético y
+    exige que el inventario lo capture, congelando el instrumento (no solo su
+    resultado actual).
+    """
+    fuente = (
+        "class SupervisorAgent:\n"
+        "    def _metodo(self):\n"
+        "        ...\n"
+        "    def __init__(self):\n"
+        "        alias = self._metodo\n"
+        "        build_orchestration_composition(algo=alias)\n"
+    )
+    tree = ast.parse(fuente)
+    clase = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    init = next(n for n in clase.body if isinstance(n, ast.FunctionDef) and n.name == "__init__")
+
+    seams = _inventario_de_seams_bound(init, {"_metodo"})
+
+    assert seams == {"algo": "_metodo"}, f"El resolver de aliases no detectó ``alias = self._metodo``: {seams}"

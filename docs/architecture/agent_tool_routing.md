@@ -62,10 +62,16 @@ con dependencias explícitas y resolución lazy
 asset conflict scan vive en `AssetConflictScanner`
 (`sky_claw/app/orchestrator/asset_conflict_scan.py`), que recibe el resolver de
 rutas y el validator de modding y expone `scan` / `scan_json` como callables
-estrechos. El único seam de dominio residual entregado al builder como callable
-bound al supervisor es `plugin_limit_guard=self._run_plugin_limit_guard`,
-previsto para **PR5** (extracción del seam de plugin-limit); no se anticipa
-PR6.
+estrechos. Desde **PR5** el gate M-04 (plugin-limit) vive en
+`PluginLimitGuard` (`sky_claw/app/orchestrator/plugin_limit_guard.py`), que
+recibe el `PathResolutionService` y expone su `run` como callable estrecho al
+builder — el supervisor ya no entrega bound methods de dominio. El parser
+puro de ``plugins.txt``/``loadorder.txt`` (``parse_active_plugins``) vive en
+`sky_claw/app/orchestrator/active_plugins.py`; las políticas de precedencia
+(``plugins.txt`` antes que ``loadorder.txt``, con la regla histórica de no
+caer a fallback cuando ``plugins.txt`` existe pero produce lista vacía)
+viven en el `PluginLimitGuard` y NO se unifican con las de
+`scan_record_conflicts`, que tiene precedencia distinta. No se anticipa PR6.
 
 `tool_dispatcher.py` no conoce ni consulta al supervisor. Los providers de
 preview y Synthesis son lazy y cierran solamente sobre sus servicios, paths,

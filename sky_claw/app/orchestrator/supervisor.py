@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
-from typing import Any, Literal
+from typing import Any
 
 from sky_claw.app.comms.interface import InterfaceAgent
 from sky_claw.app.core.contracts import PathValidatorProtocol
@@ -13,6 +13,7 @@ from sky_claw.app.core.models import HitlApprovalRequest
 from sky_claw.app.core.path_resolver import PathResolutionService, resolver_perfil_activo
 from sky_claw.app.core.windows_interop import ModdingToolsAgent
 from sky_claw.app.db.rollback_manager import RollbackManager
+from sky_claw.app.orchestrator.active_plugins import parse_active_plugins
 from sky_claw.app.orchestrator.asset_conflict_scan import AssetConflictScanner
 from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
 from sky_claw.app.orchestrator.maintenance_daemon import (
@@ -21,6 +22,7 @@ from sky_claw.app.orchestrator.maintenance_daemon import (
 from sky_claw.app.orchestrator.orchestration_composition import (
     build_orchestration_composition,
 )
+from sky_claw.app.orchestrator.plugin_limit_guard import PluginLimitGuard
 from sky_claw.app.orchestrator.rollback_factory import (
     RollbackComponents,
     create_rollback_components,
@@ -37,30 +39,6 @@ from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer, ConflictRep
 logger = logging.getLogger(__name__)
 
 
-def _read_active_plugins_blocking(modlist_path: pathlib.Path) -> list[str]:
-    """Lee el load order del perfil y devuelve sus plugins habilitados.
-
-    PT-1 (S-6): aislada para envolverla en ``asyncio.to_thread`` desde el guard
-    async y no bloquear el event loop.
-
-    ``modlist_path`` se usa solamente para localizar el directorio del perfil:
-    ``modlist.txt`` enumera *mods*, no el load order. ``plugins.txt`` contiene
-    las entradas habilitadas (``*``) y tiene precedencia; ``loadorder.txt`` es
-    el fallback para perfiles donde el primero no existe.
-    """
-    for filename, source in (("plugins.txt", "plugins_txt"), ("loadorder.txt", "loadorder")):
-        load_order_path = modlist_path.parent / filename
-        try:
-            if load_order_path.is_file():
-                return parse_active_plugins(
-                    load_order_path.read_text(encoding="utf-8-sig", errors="replace"),
-                    source=source,
-                )
-        except OSError as exc:
-            logger.warning("No se pudo leer el load order %s: %s", load_order_path, exc)
-    return []
-
-
 security_logger = logging.getLogger(f"{__name__}.security")
 
 # FASE 1.5: Constante para directorio de staging de backups
@@ -70,36 +48,6 @@ BACKUP_STAGING_DIR = ".skyclaw_backups/"
 #: de load orders grandes que legítimamente tardan varios minutos (review Codex
 #: #226). 15 min cubre perfiles pesados sin colgar la UI indefinidamente.
 DEEP_SCAN_TIMEOUT_SECONDS = 900
-
-PluginListSource = Literal["loadorder", "plugins_txt"]
-
-
-def parse_active_plugins(load_order_text: str, *, source: PluginListSource = "loadorder") -> list[str]:
-    """Extrae los plugins del load order (``loadorder.txt`` / ``plugins.txt``).
-
-    Seam puro (testeable sin supervisor). Formato de esos archivos de MO2/Skyrim
-    SE: un plugin por línea, en orden de carga; se ignoran vacíos y comentarios
-    (``#``). ``loadorder.txt`` no marca habilitados: sus plugins válidos se
-    conservan tal cual. ``plugins.txt`` sí usa ``*`` como marca de habilitado,
-    por lo que las líneas sin ``*`` se descartan. NO confundir con
-    ``modlist.txt``, que lista *mods* con prefijos ``+/-`` (review Copilot
-    #226). Se conservan solo ``.esp/.esm/.esl`` — ``.esl`` incluido porque
-    xEdit también reporta conflictos entre plugins ligeros.
-    """
-    plugins: list[str] = []
-    for raw in load_order_text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if source == "plugins_txt":
-            if not line.startswith("*"):
-                continue
-            name = line[1:].strip()
-        else:
-            name = line
-        if name.lower().endswith((".esp", ".esm", ".esl")):
-            plugins.append(name)
-    return plugins
 
 
 class SupervisorAgent:
@@ -191,8 +139,11 @@ class SupervisorAgent:
         # GrassRuntimeDepsProvider (sky_claw.app.orchestrator.grass_runtime_deps),
         # que recibe dependencias explícitas y se resuelve de forma lazy al
         # ejecutar el ritual. PR4: el scanner de conflictos de assets vive en
-        # AssetConflictScanner (sky_claw/app/orchestrator/asset_conflict_scan.py);
-        # el seam de plugin-limit sigue como callable estrecho (PR5 lo extraerá).
+        # AssetConflictScanner (sky_claw/app/orchestrator/asset_conflict_scan.py).
+        # PR5: el gate M-04 (plugin-limit) vive en PluginLimitGuard
+        # (sky_claw/app/orchestrator/plugin_limit_guard.py). El supervisor
+        # construye el guard y entrega su ``.run`` como callable estrecho —
+        # ya no expone un bound method propio al builder.
         grass_runtime_deps_provider = GrassRuntimeDepsProvider(
             path_resolver=self._path_resolver,
             path_validator=self._modding_validator,
@@ -203,6 +154,12 @@ class SupervisorAgent:
             path_validator=self._modding_validator,
         )
         self._asset_scanner = asset_conflict_scanner
+        # PR5 (Strangler Fig): el seam de plugin-limit deja de ser un bound
+        # method del Supervisor. Se construye el ``PluginLimitGuard`` acá
+        # (mismo scope que ``asset_conflict_scanner``) y se entrega su ``.run``
+        # al builder como callable estrecho; el supervisor no retiene el objeto
+        # porque solo lo necesita durante la construcción de la composición.
+        plugin_limit_guard = PluginLimitGuard(path_resolver=self._path_resolver)
         composition = build_orchestration_composition(
             scraper=self.scraper,
             lock_manager=self._lock_manager,
@@ -217,7 +174,7 @@ class SupervisorAgent:
             require_vfs=require_vfs,
             patch_advisor_llm=patch_advisor_llm,
             grass_runtime_deps_provider=grass_runtime_deps_provider,
-            plugin_limit_guard=self._run_plugin_limit_guard,
+            plugin_limit_guard=plugin_limit_guard.run,
             scan_asset_conflicts=asset_conflict_scanner.scan,
             scan_asset_conflicts_json=asset_conflict_scanner.scan_json,
         )
@@ -523,65 +480,10 @@ class SupervisorAgent:
     # FASE 6: Wrye Bash Integration
     # =========================================================================
 
-    async def _run_plugin_limit_guard(self, profile: str) -> dict[str, Any]:
-        """M-04/M-05: Gate preventivo — valida el límite de 254 plugins.
-
-        Recorre el modlist activo y llama a ConflictAnalyzer.validate_load_order_limit().
-        Si el límite se excede, retorna un dict de error con los detalles.
-        Este guard debe invocarse ANTES de ejecutar DynDOLOD, Synthesis o Wrye Bash.
-
-        Args:
-            profile: Nombre del perfil MO2 a inspeccionar.
-
-        Returns:
-            dict con ``valid=True`` si el límite no se excede,
-            o ``valid=False, error=<mensaje detallado>`` si lo supera.
-        """
-        logger.info(
-            "[M-04] Ejecutando validación de límite de plugins para perfil '%s'...",
-            profile,
-        )
-        try:
-            active_plugins: list[str] = []
-            modlist_path = self._path_resolver.resolve_modlist_path(profile)
-            # PT-1 (S-6): leer el modlist (I/O de archivo) en un thread para no
-            # bloquear el event loop; el parseo con criterio L-1 vive en el helper.
-            active_plugins = await asyncio.to_thread(_read_active_plugins_blocking, modlist_path)
-
-            analyzer = ConflictAnalyzer()
-            analyzer.validate_load_order_limit(active_plugins)
-        except RuntimeError as exc:
-            logger.critical(
-                "[M-04] Plugin limit EXCEEDED para perfil '%s': %s",
-                profile,
-                exc,
-            )
-            return {
-                "valid": False,
-                "profile": profile,
-                "plugin_count": len(active_plugins),
-                "limit": 254,
-                "error": str(exc),
-            }
-        except (ValueError, OSError) as exc:
-            logger.error(
-                "[M-04] Error inesperado durante validación de plugins: %s",
-                exc,
-                exc_info=True,
-            )
-            return {"valid": False, "error": str(exc)}
-
-        logger.info(
-            "[M-04] Plugin limit OK: %d / 254 activos en perfil '%s'.",
-            len(active_plugins),
-            profile,
-        )
-        return {
-            "valid": True,
-            "profile": profile,
-            "plugin_count": len(active_plugins),
-            "limit": 254,
-        }
+    # PR5: el gate M-04 (plugin-limit) vive en PluginLimitGuard
+    # (sky_claw/app/orchestrator/plugin_limit_guard.py). El supervisor ya no
+    # expone ``_run_plugin_limit_guard``: el orchestration builder recibe
+    # directamente ``PluginLimitGuard.run`` desde ``__init__``.
 
     async def execute_wrye_bash_pipeline(
         self,
@@ -674,8 +576,6 @@ class SupervisorAgent:
         Raises:
             RuntimeError: si faltan SKYRIM_PATH o XEDIT_PATH, o si xEdit falla.
         """
-        import pathlib
-
         from sky_claw.local.xedit.runner import XEditRunner
 
         profile = profile or self._path_resolver.get_active_profile()
