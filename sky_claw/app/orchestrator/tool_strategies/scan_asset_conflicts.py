@@ -1,11 +1,16 @@
-"""Strategies for `scan_asset_conflicts` and `scan_asset_conflicts_json`.
+"""Strategies para ``scan_asset_conflicts`` y ``scan_asset_conflicts_json``.
 
-Replaces supervisor.py:328-336. The handlers receive **callables** (not
-the cached detector) so that:
-  - The lazy-init semantics of supervisor.asset_detector are preserved
-    (the property builds the detector on first access).
-  - Tests can monkey-patch `supervisor.scan_asset_conflicts` after the
-    dispatcher is wired (late-binding via lambda re-resolving attribute).
+Las strategies reciben un **callable estrecho** (ni un detector ni el
+supervisor):
+
+- Producción cablea ``AssetConflictScanner.scan`` / ``.scan_json``
+  (``sky_claw/app/orchestrator/asset_conflict_scan.py``) directamente al
+  dispatcher. La resolución lazy vive en ``AssetConflictScanner.detector``: el
+  detector se construye en el primer acceso (``MO2_PATH`` puede hidratarse
+  después de haber construido el supervisor) y se memoiza.
+- El escaneo bloqueante (``rglob`` sincrónico + MD5 sobre todo el VFS de MO2)
+  corre fuera del event loop vía ``asyncio.to_thread``; la strategy no conoce
+  ni importa al Supervisor.
 """
 
 from __future__ import annotations

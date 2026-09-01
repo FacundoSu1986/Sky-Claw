@@ -227,6 +227,54 @@ def test_modulos_de_logging_tienen_override_mypy_strict() -> None:
     assert target_modules <= strict_modules
 
 
+def test_seams_pr5_orchestrator_bajo_mypy_strict() -> None:
+    """Los seams PR5 nacen bajo mypy estricto y no quedan silenciosamente exentos.
+
+    Guardrail hermético para el P1 de #540: ``active_plugins`` y
+    ``plugin_limit_guard`` viven bajo ``sky_claw/app/orchestrator/``, que el
+    override amplio ``sky_claw.app.orchestrator.*`` marca con
+    ``ignore_errors = true``. Sin una entrada estricta *explícita* por módulo,
+    ``mypy sky_claw/`` los tapa: el gate bloqueante saldría verde aunque estos
+    módulos de producción tuvieran errores de tipos reales (exactamente lo que
+    reprodujo el P1: ``source`` inferido como ``str`` en vez del ``Literal``
+    ``PluginListSource``).
+
+    Este test parsea ``pyproject.toml`` estructuralmente (no por substring) y
+    exige que ambos módulos figuren en un override ``strict = true`` /
+    ``ignore_errors = false``. Si alguien los quita de ahí, caen bajo el wildcard
+    ``ignore_errors``: ``mypy`` volvería a quedar verde por exención, pero este
+    test FALLA. La regla del hermano aplica: los dos módulos del par se congelan
+    juntos, no uno solo.
+    """
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    target_modules = {
+        "sky_claw.app.orchestrator.active_plugins",
+        "sky_claw.app.orchestrator.plugin_limit_guard",
+    }
+
+    strict_modules: set[str] = set()
+    ignore_modules: set[str] = set()
+    for override in pyproject["tool"]["mypy"]["overrides"]:
+        modules = override["module"]
+        if override.get("strict") is True and override.get("ignore_errors") is False:
+            strict_modules.update(modules)
+        if override.get("ignore_errors") is True:
+            ignore_modules.update(modules)
+            # Nunca listados literalmente en un override de exención (sería
+            # contradictorio con su membresía estricta).
+            assert target_modules.isdisjoint(modules)
+
+    # El riesgo es real: el wildcard que los taparía existe y está en modo
+    # exención. Si esto deja de ser cierto, el guardrail pierde su motivo — pero
+    # entonces tampoco habría exención silenciosa que atajar.
+    assert "sky_claw.app.orchestrator.*" in ignore_modules
+
+    # Núcleo del guardrail: ambos seams PR5 deben estar bajo mypy estricto.
+    assert target_modules <= strict_modules
+
+
 def test_el_parser_de_pe_es_dependencia_dura_no_opcional() -> None:
     """Sin ``pefile`` declarado, el gate de runtime de SKSE deja de proteger y pasa a bloquear.
 

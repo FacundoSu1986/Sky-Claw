@@ -26,7 +26,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 WORKFLOWS_DIR = RAIZ / ".github" / "workflows"
 POLICY_FILE = RAIZ / ".github" / "AI_REVIEW_DATA_POLICY.md"
 
-PINNED_ACTION_REF_ESPERADA = "570f67ed5fc8db5be74c18df070bc20079b64b0d"
+PINNED_ACTION_REF_ESPERADA = "4ebd5c5333c6ef21509e7304d27969eb825e6f22"
 CANONICAL_ACTION_REPO = "Codium-ai/pr-agent"
 
 CLAVES_ROUTING = (
@@ -82,6 +82,14 @@ def descubrir_invocaciones_qodo(
         if not isinstance(data, dict):
             continue
 
+        triggers_raw = data.get("on") if "on" in data else data.get(True, {})
+        if isinstance(triggers_raw, str):
+            triggers = {triggers_raw}
+        elif isinstance(triggers_raw, (list, dict)):
+            triggers = {str(t) for t in triggers_raw}
+        else:
+            triggers = set()
+
         jobs = data.get("jobs", {})
         if not isinstance(jobs, dict):
             continue
@@ -108,6 +116,7 @@ def descubrir_invocaciones_qodo(
                             "action_repo": action_repo.strip(),
                             "action_ref": action_ref.strip(),
                             "job_if": job_if,
+                            "workflow_triggers": triggers,
                             "env": step.get("env", {}) or {},
                         }
                     )
@@ -231,4 +240,48 @@ def test_modelos_configurados_coinciden_con_allowlist_de_politica() -> None:
         f"Discrepancia entre modelos configurados en workflows y allowlist en AI_REVIEW_DATA_POLICY.md.\n"
         f"No aprobados en política pero configurados en workflows: {modelos_configurados - modelos_aprobados}\n"
         f"Aprobados en política pero no configurados en workflows:  {modelos_aprobados - modelos_configurados}"
+    )
+
+
+def test_gate_dependabot_en_jobs_automaticos_pull_request() -> None:
+    """Verifica que TODA invocación automática de PR-Agent en pull_request excluya a dependabot[bot].
+
+    Deriva dinámicamente todas las invocaciones descubiertas: si el workflow se activa
+    por pull_request y el job no es un handler exclusivo de issue_comment (como comment-command),
+    debe incluir explícitamente 'github.event.pull_request.user.login != \\'dependabot[bot]\\''
+    en su cláusula if.
+    """
+    descubiertas = descubrir_invocaciones_qodo()
+    assert len(descubiertas) > 0, "No se descubrió ninguna invocación de Qodo/PR-Agent"
+
+    jobs_automaticos_evaluados = 0
+    for (archivo_nombre, job_id), steps in descubiertas.items():
+        for idx, step_metadata in enumerate(steps):
+            triggers = step_metadata.get("workflow_triggers", set())
+            job_if = step_metadata.get("job_if", "")
+
+            # Si el workflow no se activa por pull_request, no es un flujo de PR automático
+            if "pull_request" not in triggers and "pull_request_target" not in triggers:
+                continue
+
+            # comment-command es un disparador manual interactivo vía issue_comment
+            # (requiere comentario explícito de OWNER/MEMBER/COLLABORATOR y no sufre de falta de secrets de Dependabot)
+            if (
+                "issue_comment" in job_if
+                or "github.event.comment" in job_if
+                or "github.event_name == 'issue_comment'" in job_if
+            ):
+                continue
+
+            # Cualquier otro job que se ejecute bajo pull_request es automático y requiere el gate de Dependabot
+            jobs_automaticos_evaluados += 1
+            assert "github.event.pull_request.user.login != 'dependabot[bot]'" in job_if, (
+                f"El job {archivo_nombre} / {job_id} (step {idx}) es una invocación automática bajo pull_request "
+                f"pero no incluye 'github.event.pull_request.user.login != \\'dependabot[bot]\\'' en su cláusula if.\n"
+                f"Cláusula if actual: {job_if!r}"
+            )
+
+    # Ancla de integridad: asegurar que se evaluaron al menos las invocaciones automáticas esperadas
+    assert jobs_automaticos_evaluados >= 2, (
+        f"Se esperaban al menos 2 jobs automáticos bajo pull_request; se evaluaron {jobs_automaticos_evaluados}."
     )

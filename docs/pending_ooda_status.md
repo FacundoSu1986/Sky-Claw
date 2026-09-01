@@ -21,6 +21,13 @@
 > `_package_output_as_mod`— se releyeron contra `f8e8a4f`; ninguna arrastra el
 > baseline de 2026-08-08. **No** es una reverificación integral del resto de la
 > tabla.
+>
+> **Re-baseline parcial 2026-08-30 sobre `main` `89d81ad2` (#522):** cubre exclusivamente
+> las filas `T-22` y `T-24` — `prefers-reduced-motion` sobre animaciones decorativas y
+> foco visible de teclado (incluyendo inputs Quasar), ancladas en
+> `tests/test_gui_theme_contracts.py`. Ambas pasan a **Parcial**; no afirma el cierre
+> integral de transiciones ni el inventario exhaustivo de formularios/labels. **No** es una
+> reverificación integral del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
@@ -37,9 +44,9 @@ confirmarlo contra código y tests.
 | T-11 | Parcial | `local/xedit/` | Retirar BLE001 incrementalmente del resto del árbol | `pyproject.toml` |
 | T-12 | Parcial | `local/fomod/`, `local/loot/` | Migrar los módulos aún exentos a mypy estricto | `pyproject.toml` |
 | T-16c | Cerrado | #288, #306, #323 | — | tests de preflight por ritual |
-| T-22 | Abierto | — | Transiciones y `prefers-reduced-motion` | humano |
+| T-22 | Parcial | #522 para `prefers-reduced-motion` | Revisar/cerrar el resto del contrato de transiciones | `test_gui_theme_contracts.py` y humano |
 | T-23 | Abierto | — | Virtualizar listas grandes de mods | humano |
-| T-24 | Abierto | — | Labels y foco visible en formularios | humano |
+| T-24 | Parcial | #522 para foco visible de teclado | Inventario exhaustivo de labels y formularios accesibles | `test_gui_theme_contracts.py` y humano |
 | T-25 | Parcial | — | Cerrar T-27 y después ejecutar la matriz E2E con Skyrim, MO2 y herramientas reales | `TECHNICAL_REVIEW_TASKS.md:247-249`; humano |
 | T-26 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_action_manifest` |
 | T-27 | Parcial | ADR 0005 para Synthesis y salida administrada de Pandora | Migrar Pandora, DynDOLOD y Wrye Bash al flujo aislado USVFS con diff/promoción | código, ADR 0005 y `test_pandora_service.py` |

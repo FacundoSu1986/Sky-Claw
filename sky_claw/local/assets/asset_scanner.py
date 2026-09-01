@@ -13,15 +13,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
-    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.app.core.contracts import PathValidatorProtocol
 
 from sky_claw.app.security.path_validator import (
     PathViolationError,
@@ -106,7 +106,7 @@ class AssetConflictDetector:
         self,
         mo2_mods_path: Path,
         profile_name: str = "Default",
-        path_validator: PathValidator | None = None,
+        path_validator: PathValidatorProtocol | None = None,
     ) -> None:
         """
         Inicializa el detector.
@@ -287,11 +287,15 @@ class AssetConflictDetector:
 
         Args:
             mod_name: Nombre del mod (nombre del directorio)
+            calculate_checksums: Si es True, calcula hashes MD5 de los archivos.
 
         Returns:
             Diccionario {relative_path: AssetInfo}
         """
         mod_dir = self._mo2_mods_path / mod_name
+
+        if self._path_validator is not None:
+            self._path_validator.validate(mod_dir, strict_symlink=True)
 
         if not mod_dir.exists():
             logger.warning(f"Directorio de mod no encontrado: {mod_dir}")
@@ -301,56 +305,83 @@ class AssetConflictDetector:
 
         logger.info(f"Escaneando directorio de mod: {mod_name}")
 
-        for file_path in mod_dir.rglob("*"):
-            if not file_path.is_file():
-                continue
+        def _propagar_error_walk(error: OSError) -> None:
+            """Propaga errores de enumeración para no devolver mapas incompletos."""
+            raise error
 
-            # Obtener la ruta relativa desde el directorio del mod
-            try:
-                relative_path = file_path.relative_to(mod_dir)
-            except ValueError:
-                logger.warning(f"No se pudo obtener ruta relativa: {file_path}")
-                continue
+        for root_dir, dirnames, filenames in os.walk(
+            mod_dir,
+            topdown=True,
+            onerror=_propagar_error_walk,
+            followlinks=False,
+        ):
+            current_dir = Path(root_dir)
+            if self._path_validator is not None:
+                self._path_validator.validate(current_dir, strict_symlink=True)
 
-            # Convertir a string con barras normales (estilo Skyrim)
-            relative_path_str = str(relative_path).replace("\\", "/").lower()
+            # Validar todos los subdirectorios antes de descender (validate-before-descent)
+            if self._path_validator is not None:
+                for dirname in list(dirnames):
+                    candidate_dir = current_dir / dirname
+                    self._path_validator.validate(candidate_dir, strict_symlink=True)
 
-            # Verificar si está en un directorio crítico
-            path_parts = relative_path_str.split("/")
-            if path_parts and path_parts[0] not in self.CRITICAL_DIRS:
-                # No es un asset crítico, pero lo incluimos de todas formas
-                logger.debug(f"Asset fuera de directorios críticos: {relative_path_str}")
+            for filename in filenames:
+                file_path = current_dir / filename
+                if self._path_validator is not None:
+                    # La validación es solo un check de confinamiento: se conserva
+                    # el path léxico para mantener la identidad VFS de symlinks
+                    # aceptados dentro de las roots autorizadas.
+                    self._path_validator.validate(file_path, strict_symlink=True)
 
-            # Determinar tipo de asset
-            asset_type = self.get_asset_type(file_path)
+                if not file_path.is_file():
+                    continue
 
-            # Calcular checksum
-            if calculate_checksums:
+                # Obtener la ruta relativa desde el directorio del mod
                 try:
-                    checksum = self.calculate_checksum(file_path)
-                except (OSError, FileNotFoundError) as e:
-                    logger.warning(f"Error calculando checksum, usando placeholder: {e}")
-                    checksum = "ERROR"
-            else:
-                checksum = "SKIPPED"
+                    relative_path = file_path.relative_to(mod_dir)
+                except ValueError:
+                    logger.warning(f"No se pudo obtener ruta relativa: {file_path}")
+                    continue
 
-            # Obtener tamaño del archivo
-            try:
-                size_bytes = file_path.stat().st_size
-            except OSError as e:
-                logger.warning(f"Error obteniendo tamaño de archivo: {e}")
-                size_bytes = 0
+                # Convertir a string con barras normales (estilo Skyrim)
+                relative_path_str = str(relative_path).replace("\\", "/").lower()
 
-            asset_info = AssetInfo(
-                relative_path=relative_path_str,
-                asset_type=asset_type,
-                mod_name=mod_name,
-                size_bytes=size_bytes,
-                checksum=checksum,
-            )
+                # Verificar si está en un directorio crítico
+                path_parts = relative_path_str.split("/")
+                if path_parts and path_parts[0] not in self.CRITICAL_DIRS:
+                    # No es un asset crítico, pero lo incluimos de todas formas
+                    logger.debug(f"Asset fuera de directorios críticos: {relative_path_str}")
 
-            assets[relative_path_str] = asset_info
-            logger.debug(f"Asset mapeado: {relative_path_str} -> {mod_name}")
+                # Determinar tipo de asset
+                asset_type = self.get_asset_type(file_path)
+
+                # Calcular checksum
+                if calculate_checksums:
+                    try:
+                        checksum = self.calculate_checksum(file_path)
+                    except (OSError, FileNotFoundError) as e:
+                        logger.warning(f"Error calculando checksum, usando placeholder: {e}")
+                        checksum = "ERROR"
+                else:
+                    checksum = "SKIPPED"
+
+                # Obtener tamaño del archivo
+                try:
+                    size_bytes = file_path.stat().st_size
+                except OSError as e:
+                    logger.warning(f"Error obteniendo tamaño de archivo: {e}")
+                    size_bytes = 0
+
+                asset_info = AssetInfo(
+                    relative_path=relative_path_str,
+                    asset_type=asset_type,
+                    mod_name=mod_name,
+                    size_bytes=size_bytes,
+                    checksum=checksum,
+                )
+
+                assets[relative_path_str] = asset_info
+                logger.debug(f"Asset mapeado: {relative_path_str} -> {mod_name}")
 
         logger.info(f"Escaneo completado para {mod_name}: {len(assets)} assets encontrados")
         return assets
