@@ -187,7 +187,12 @@ def construir_dispatcher_grass(
     supervisor._dyndolod_service = MagicMock()
     supervisor._pandora_service = MagicMock()
     supervisor._grass_cache_service = service
-    supervisor._run_plugin_limit_guard = MagicMock()
+    # PR5: el guard se inyecta al composition root; ``crear_dependencias_desde_doble``
+    # usa ``getattr`` con fallback AsyncMock, así que el stub ya no es
+    # estrictamente necesario, pero se conserva para que el doble siga siendo
+    # awaitable si algún escenario toca ``validate_plugin_limit`` por la ruta
+    # histórica. ``MagicMock()`` NO es awaitable.
+    supervisor._run_plugin_limit_guard = AsyncMock(return_value={"valid": True})
     supervisor.execute_wrye_bash_pipeline = AsyncMock()
     supervisor.scan_asset_conflicts = AsyncMock()
     supervisor.scan_asset_conflicts_json = AsyncMock()

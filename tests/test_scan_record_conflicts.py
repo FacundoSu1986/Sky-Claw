@@ -14,10 +14,10 @@ from typing import Any
 
 import pytest
 
+from sky_claw.app.orchestrator.active_plugins import parse_active_plugins
 from sky_claw.app.orchestrator.supervisor import (
     DEEP_SCAN_TIMEOUT_SECONDS,
     SupervisorAgent,
-    parse_active_plugins,
 )
 from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
 

@@ -29,7 +29,7 @@ from tests._orchestration_dispatcher_dependencies import crear_dependencias_desd
 
 @pytest.fixture
 def supervisor() -> SupervisorAgent:
-    """Construction-free SupervisorAgent with only dispatch_tool's collaborators."""
+    """SupervisorAgent sin construcción real, solo con los colaboradores de dispatch_tool."""
     sup = SupervisorAgent.__new__(SupervisorAgent)
     sup.scraper = MagicMock()
     sup.scraper.query_nexus = AsyncMock()

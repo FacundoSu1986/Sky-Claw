@@ -645,18 +645,19 @@ def _unica_llamada_al_builder(miembro: ast.FunctionDef) -> ast.Call:
     return llamadas[0]
 
 
-def test_unique_seam_del_supervisor_bound_al_builder_es_plugin_guard() -> None:
+def test_no_quedan_seams_bound_del_supervisor_al_builder() -> None:
     """Guardrail de familia (enumera, no muestrea).
 
     De todos los kwargs entregados a ``build_orchestration_composition``, los
     que son métodos bound del supervisor (``self.<método>``) deben ser
-    exactamente:
-        plugin_limit_guard ← self._run_plugin_limit_guard
+    exactamente cero: ninguno.
 
-    Es el único seam de dominio residual que sigue bound al supervisor tras PR4.
-    PR5 (plugin-limit) debe romper esta ancla a propósito y actualizarla; un
-    callable bound nuevo que reaparezca sin pasar por la extracción la rompe
-    (mantiene el inventario exhaustivo, no un caso por cada seam).
+    Tras PR4, el único seam de dominio residual era
+    ``plugin_limit_guard ← self._run_plugin_limit_guard``. PR5 (plugin-limit)
+    lo extrajo a ``PluginLimitGuard.run`` (callable estrecho), así que el
+    inventario exige ahora ``{}``. Un callable bound que reaparezca sin pasar
+    por su extracción rompe este ancla (inventario exhaustivo, no un caso por
+    cada seam).
     """
     arbol = _arbol_supervisor()
     clase = _cuerpo_supervisor(arbol)
@@ -686,11 +687,11 @@ def test_unique_seam_del_supervisor_bound_al_builder_es_plugin_guard() -> None:
                 bound_del_supervisor[kw.arg] = valor.attr
         break
 
-    assert bound_del_supervisor == {"plugin_limit_guard": "_run_plugin_limit_guard"}, (
+    assert bound_del_supervisor == {}, (
         f"Seams bound al supervisor entregados al builder: {bound_del_supervisor}. "
-        "Se espera exactamente {plugin_limit_guard: _run_plugin_limit_guard} "
-        "(los demás seams ya están extraídos: grass → GrassRuntimeDepsProvider, "
-        "asset scan → AssetConflictScanner)"
+        "Tras PR5 (plugin-limit) el seam de domain debe estar extraído: "
+        "PluginLimitGuard entrega su .run como callable estrecho al builder. "
+        "Si reaparece un bound method de SupervisorAgent es wiring nuevo, no refactor."
     )
 
 
