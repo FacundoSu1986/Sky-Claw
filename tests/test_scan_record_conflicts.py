@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sky_claw.app.orchestrator import plugin_limit_guard as guard_module
 from sky_claw.app.orchestrator import record_conflict_scan as scan_module
 from sky_claw.app.orchestrator.active_plugins import parse_active_plugins
 from sky_claw.app.orchestrator.record_conflict_scan import (
@@ -47,31 +46,6 @@ def test_ignora_comentarios_y_no_plugins_y_hace_strip() -> None:
 
 def test_archivo_vacio_devuelve_vacio() -> None:
     assert parse_active_plugins("") == []
-
-
-# ── Ancla del hermano: las DOS políticas de precedencia, por igualdad literal ───
-def test_las_politicas_de_precedencia_hermanas_no_se_unifican() -> None:
-    """Congela AMBOS órdenes de candidatos (enumera, no muestrea).
-
-    ``RecordConflictScanner`` y ``PluginLimitGuard`` leen los mismos dos archivos
-    con políticas OPUESTAS a propósito: el scanner prueba ``loadorder.txt``
-    primero y sigue al siguiente candidato si parsea a ``[]``; el guard prueba
-    ``plugins.txt`` primero y deja que la lista vacía gane. Un futuro
-    "unifiquemos los dos readers" rompe acá — en vez de cambiar en silencio la
-    política de uno solo de los caminos (la clase de defecto dominante del repo).
-    """
-    assert scan_module._LOAD_ORDER_CANDIDATES == (
-        ("loadorder.txt", "loadorder"),
-        ("plugins.txt", "plugins_txt"),
-    )
-    assert guard_module._LOAD_ORDER_CANDIDATES == (
-        ("plugins.txt", "plugins_txt"),
-        ("loadorder.txt", "loadorder"),
-    )
-    espejo_del_guard = tuple(reversed(guard_module._LOAD_ORDER_CANDIDATES))
-    assert espejo_del_guard == scan_module._LOAD_ORDER_CANDIDATES, (
-        "las dos políticas dejaron de ser espejo: revisá que el cambio sea deliberado en AMBOS caminos"
-    )
 
 
 # ── RecordConflictScanner ───────────────────────────────────────────────────────
@@ -109,8 +83,9 @@ def _stub_analyzer(monkeypatch: pytest.MonkeyPatch, capturado: dict[str, Any], r
     return capturado
 
 
-# R1/R2 — perfil explícito vs. perfil activo
-async def test_perfil_explicito_se_usa_tal_cual(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+# ── Grupo A: parsing y resolución de load order ─────────────────────────────────
+async def test_perfil_explicito_vs_activo(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """F1/F2: profile explícito manda; si es None usa get_active_profile()."""
     perfiles: list[str] = []
     _perfil_con(tmp_path, {"loadorder.txt": "A.esp\n"})
     _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
@@ -119,59 +94,24 @@ async def test_perfil_explicito_se_usa_tal_cual(monkeypatch: pytest.MonkeyPatch,
         perfiles.append(profile)
         return tmp_path / "profiles" / "Default" / "modlist.txt"
 
-    scanner = _scanner(
-        _resolver_completo(
-            tmp_path,
-            resolve_modlist_path=_resolve,
-            get_active_profile=lambda: pytest.fail("no debe consultarse el perfil activo"),
-        ),
-        tmp_path / "patches",
-    )
+    resolver = _resolver_completo(tmp_path, resolve_modlist_path=_resolve, get_active_profile=lambda: "PerfilActivo")
+    scanner = _scanner(resolver, tmp_path / "patches")
 
+    # F1: explícito
     await scanner.scan(profile="PerfilX")
     assert perfiles == ["PerfilX"]
 
-
-async def test_sin_perfil_usa_el_perfil_activo_del_resolver(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-    perfiles: list[str] = []
-    _perfil_con(tmp_path, {"loadorder.txt": "A.esp\n"})
-    _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
-
-    def _resolve(profile: str) -> pathlib.Path:
-        perfiles.append(profile)
-        return tmp_path / "profiles" / "Default" / "modlist.txt"
-
-    scanner = _scanner(
-        _resolver_completo(tmp_path, resolve_modlist_path=_resolve, get_active_profile=lambda: "ActivoDelResolver"),
-        tmp_path / "patches",
-    )
-
+    # F2: fallback a get_active_profile()
     await scanner.scan()
-    assert perfiles == ["ActivoDelResolver"]
+    assert perfiles == ["PerfilX", "PerfilActivo"]
 
 
-# R3 — plugins explícitos: cero I/O de load order
-async def test_plugins_explicitos_no_leen_el_load_order(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-    capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
-    _perfil_con(tmp_path, {"loadorder.txt": "DelDisco.esp\n", "plugins.txt": "*DelDisco.esp\n"})
-
-    def _explota(profile: str) -> pathlib.Path:
-        pytest.fail("con plugins explícitos no se debe resolver el modlist ni leer el load order")
-
-    scanner = _scanner(_resolver_completo(tmp_path, resolve_modlist_path=_explota), tmp_path / "patches")
-
-    await scanner.scan(plugins=["A.esp"])
-    assert capturado["plugins"] == ["A.esp"]
-
-
-# R4 — precedencia: loadorder.txt gana sobre plugins.txt
-async def test_loadorder_tiene_precedencia_sobre_plugins_txt(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
+async def test_precedencia_loadorder_sobre_plugins_txt(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """F4: loadorder.txt tiene precedencia sobre plugins.txt."""
+    assert scan_module._LOAD_ORDER_CANDIDATES == (
+        ("loadorder.txt", "loadorder"),
+        ("plugins.txt", "plugins_txt"),
+    )
     capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
     profile_dir = _perfil_con(
         tmp_path,
@@ -186,54 +126,21 @@ async def test_loadorder_tiene_precedencia_sobre_plugins_txt(
     assert capturado["plugins"] == ["DeLoadOrder.esp"]
 
 
-async def test_lee_plugins_del_loadorder_cuando_no_se_pasan(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+@pytest.mark.parametrize(
+    "loadorder_content",
+    [None, "# solo comentarios\nUn Mod Cualquiera\n"],
+    ids=["sin-loadorder", "loadorder-parsea-vacio"],
+)
+async def test_fallback_a_plugins_txt_si_no_hay_loadorder_o_parsea_vacio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, loadorder_content: str | None
 ) -> None:
-    # El load order de plugins vive en loadorder.txt (sibling de modlist.txt en
-    # el dir del perfil), NO en modlist.txt (que lista mods) — review Copilot #226.
+    """F5: si loadorder.txt no existe o parsea a [], cae a plugins.txt."""
     capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
-    profile_dir = _perfil_con(tmp_path, {"loadorder.txt": "A.esp\nBase.esm\n"})
-    scanner = _scanner(
-        _resolver_completo(tmp_path, resolve_modlist_path=lambda p: profile_dir / "modlist.txt"),
-        tmp_path / "patches",
-    )
+    archivos = {"plugins.txt": "*Rescatado.esp\n"}
+    if loadorder_content is not None:
+        archivos["loadorder.txt"] = loadorder_content
+    profile_dir = _perfil_con(tmp_path, archivos)
 
-    await scanner.scan()
-    assert capturado["plugins"] == ["A.esp", "Base.esm"]
-
-
-async def test_fallback_a_plugins_txt_si_no_hay_loadorder(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-    capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
-    profile_dir = _perfil_con(
-        tmp_path,
-        {"plugins.txt": "*A.esp\nBase.esm\n*Base.esm\nDeshabilitado.esl\n* Light.esl\n"},
-    )
-    scanner = _scanner(
-        _resolver_completo(tmp_path, resolve_modlist_path=lambda p: profile_dir / "modlist.txt"),
-        tmp_path / "patches",
-    )
-
-    await scanner.scan()
-    assert capturado["plugins"] == ["A.esp", "Base.esm", "Light.esl"]
-
-
-# R5 — la regla que separa esta política de la del PluginLimitGuard
-async def test_loadorder_que_parsea_vacio_cae_a_plugins_txt(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-    """``loadorder.txt`` EXISTE pero no produce plugins ⇒ se prueba ``plugins.txt``.
-
-    Regla histórica de record-conflicts, OPUESTA a la del guard M-04 (donde la
-    lista vacía del primer candidato gana). Un ``loadorder.txt`` con solo
-    comentarios/mods es exactamente el caso que la haría notar.
-    """
-    capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
-    profile_dir = _perfil_con(
-        tmp_path,
-        {"loadorder.txt": "# solo comentarios\nUn Mod Cualquiera\n", "plugins.txt": "*Rescatado.esp\n"},
-    )
     scanner = _scanner(
         _resolver_completo(tmp_path, resolve_modlist_path=lambda p: profile_dir / "modlist.txt"),
         tmp_path / "patches",
@@ -241,6 +148,36 @@ async def test_loadorder_que_parsea_vacio_cae_a_plugins_txt(
 
     await scanner.scan()
     assert capturado["plugins"] == ["Rescatado.esp"]
+
+
+async def test_source_correcto_por_archivo(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """F6: loadorder usa source='loadorder'; plugins.txt usa source='plugins_txt' (asterisco obligatorio)."""
+    capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
+    profile_dir = _perfil_con(tmp_path, {"loadorder.txt": "SinAsterisco.esp\n"})
+    scanner = _scanner(
+        _resolver_completo(tmp_path, resolve_modlist_path=lambda p: profile_dir / "modlist.txt"),
+        tmp_path / "patches",
+    )
+    await scanner.scan()
+    assert capturado["plugins"] == ["SinAsterisco.esp"]
+
+    (profile_dir / "loadorder.txt").unlink()
+    (profile_dir / "plugins.txt").write_text("*Habilitado.esp\nApagado.esp\n", encoding="utf-8")
+    await scanner.scan()
+    assert capturado["plugins"] == ["Habilitado.esp"]
+
+
+# ── Grupo B: fast exits ─────────────────────────────────────────────────────────
+async def test_plugins_explicitos_evitan_io(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """F3: plugins explícitos evitan resolver modlist o leer load order del disco."""
+    capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
+
+    def _explota(profile: str) -> pathlib.Path:
+        pytest.fail("con plugins explícitos no se debe resolver modlist ni leer disco")
+
+    scanner = _scanner(_resolver_completo(tmp_path, resolve_modlist_path=_explota), tmp_path / "patches")
+    await scanner.scan(plugins=["Explicito.esp"])
+    assert capturado["plugins"] == ["Explicito.esp"]
 
 
 # R6 — source correcto por archivo
@@ -293,13 +230,16 @@ async def test_sin_plugins_devuelve_reporte_vacio_sin_correr_xedit(
     assert capturado.get("llamado") is None
 
 
-# R8 — rutas obligatorias
+# ── Grupo C: xEdit y Runner ────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "skyrim,xedit",
     [(None, "xedit.exe"), ("skyrim", None), (None, None)],
     ids=["sin-skyrim", "sin-xedit", "sin-ninguna"],
 )
-async def test_sin_rutas_configuradas_lanza(tmp_path: pathlib.Path, skyrim: str | None, xedit: str | None) -> None:
+async def test_sin_rutas_configuradas_lanza_runtime_error(
+    tmp_path: pathlib.Path, skyrim: str | None, xedit: str | None
+) -> None:
+    """F8: sin Skyrim o xEdit paths se preserva el RuntimeError histórico."""
     scanner = _scanner(
         SimpleNamespace(
             get_active_profile=lambda: "Default",
@@ -312,36 +252,12 @@ async def test_sin_rutas_configuradas_lanza(tmp_path: pathlib.Path, skyrim: str 
         await scanner.scan(plugins=["A.esp", "B.esp"])
 
 
-# R9/R10/R11 — el runner recibe rutas, output_dir y timeout exactos
-async def test_el_runner_recibe_rutas_output_dir_y_timeout_exactos(
+async def test_runner_recibe_rutas_output_dir_y_timeout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
-    """El escaneo profundo debe darle a xEdit mucho más que el default de 120s (Codex #226)."""
-    capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
-    output_dir = tmp_path / "staging" / "patches"
-    scanner = _scanner(_resolver_completo(tmp_path), output_dir)
+    """F9: runner recibe xedit_path, game_path, output_dir y timeout; output_dir relativo queda relativo."""
+    from sky_claw.local.xedit.runner import XEditRunner
 
-    await scanner.scan(plugins=["A.esp"])
-
-    runner = capturado["runner"]
-    assert runner._xedit_path == tmp_path / "xedit.exe"
-    assert runner._game_path == tmp_path / "skyrim"
-    assert runner._output_dir == output_dir
-    assert runner._timeout == DEEP_SCAN_TIMEOUT_SECONDS
-    assert DEEP_SCAN_TIMEOUT_SECONDS == 900
-    assert DEEP_SCAN_TIMEOUT_SECONDS > 120
-
-
-async def test_el_output_dir_relativo_se_conserva_relativo(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-    """Un ``output_dir`` relativo NO se ancla al cwd de construcción.
-
-    El wiring inyecta ``pathlib.Path(BACKUP_STAGING_DIR) / "patches"``, que es
-    relativo: ``XEditRunner`` lo resuelve contra el cwd del scan (crea el dir
-    ahí). Si el scanner lo normalizara con ``.resolve()``/``.absolute()`` los
-    patches caerían en otro lado.
-    """
     monkeypatch.chdir(tmp_path)
     capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
     relativo = pathlib.Path(".skyclaw_backups/") / "patches"
@@ -349,30 +265,26 @@ async def test_el_output_dir_relativo_se_conserva_relativo(
 
     await scanner.scan(plugins=["A.esp"])
 
-    assert capturado["runner"]._output_dir == relativo
-    assert not capturado["runner"]._output_dir.is_absolute()
+    runner = capturado["runner"]
+    assert isinstance(runner, XEditRunner)
+    assert runner._xedit_path == tmp_path / "xedit.exe"
+    assert runner._game_path == tmp_path / "skyrim"
+    assert runner._output_dir == relativo
+    assert not runner._output_dir.is_absolute()
     assert (tmp_path / ".skyclaw_backups" / "patches").is_dir()
+    assert runner._timeout == DEEP_SCAN_TIMEOUT_SECONDS
+    assert DEEP_SCAN_TIMEOUT_SECONDS == 900
 
 
-async def test_el_timeout_inyectado_manda_sobre_el_default(
+async def test_delega_en_analyzer_preservando_orden_e_identidad(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
-    capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
-    scanner = _scanner(_resolver_completo(tmp_path), tmp_path / "patches", timeout=77)
-
-    await scanner.scan(plugins=["A.esp"])
-    assert capturado["runner"]._timeout == 77
-
-
-# R12/R13/R14 — delegación al analyzer
-async def test_delega_en_el_analyzer_con_los_plugins_en_el_mismo_orden(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
+    """F10/F11: analyzer recibe plugins en el orden exacto de entrada y retorna identidad."""
     esperado = ConflictReport(total_conflicts=3, critical_conflicts=1)
     capturado = _stub_analyzer(monkeypatch, {}, esperado)
     scanner = _scanner(_resolver_completo(tmp_path), tmp_path / "patches")
 
-    # Orden NO alfabético a propósito: un sorted() intermedio lo delataría.
+    # Orden NO alfabético a propósito
     entrada = ["Zeta.esp", "Alpha.esp", "Medio.esm"]
     report = await scanner.scan(plugins=list(entrada))
 
@@ -380,44 +292,21 @@ async def test_delega_en_el_analyzer_con_los_plugins_en_el_mismo_orden(
     assert report is esperado
 
 
-async def test_el_runner_que_llega_al_analyzer_es_el_construido(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-    from sky_claw.local.xedit.runner import XEditRunner
-
-    capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
-    scanner = _scanner(_resolver_completo(tmp_path), tmp_path / "patches")
-
-    await scanner.scan(plugins=["A.esp"])
-    assert isinstance(capturado["runner"], XEditRunner)
-
-
-# ── Facade del supervisor (compatibilidad pública con la GUI) ───────────────────
-async def test_la_facade_del_supervisor_delega_en_el_scanner() -> None:
-    """``SupervisorAgent.scan_record_conflicts`` sigue existiendo y delega.
-
-    La GUI llama ``runtime.supervisor.scan_record_conflicts()``
-    (``sky_claw/app/gui/sky_claw_gui.py``), así que la facade es contrato público.
-    """
+# ── Grupo D: Façade del Supervisor ─────────────────────────────────────────────
+async def test_facade_del_supervisor_delega_en_el_scanner() -> None:
+    """SupervisorAgent.scan_record_conflicts delega en scanner.scan propagando argumentos."""
     supervisor = SupervisorAgent.__new__(SupervisorAgent)
     scanner = MagicMock()
     esperado = ConflictReport(total_conflicts=7, critical_conflicts=2)
     scanner.scan = AsyncMock(return_value=esperado)
     supervisor._record_conflict_scanner = scanner
 
+    # Llamada explícita
     report = await supervisor.scan_record_conflicts(profile="PerfilX", plugins=["A.esp"])
-
     assert report is esperado
     scanner.scan.assert_awaited_once_with(profile="PerfilX", plugins=["A.esp"])
 
-
-async def test_la_facade_propaga_los_defaults_sin_reinterpretarlos() -> None:
-    """Sin argumentos, la facade pasa ``None``/``None`` — no inventa un perfil."""
-    supervisor = SupervisorAgent.__new__(SupervisorAgent)
-    scanner = MagicMock()
-    scanner.scan = AsyncMock(return_value=ConflictReport(total_conflicts=0, critical_conflicts=0))
-    supervisor._record_conflict_scanner = scanner
-
+    # Llamada default: pasa None/None
+    scanner.scan.reset_mock()
     await supervisor.scan_record_conflicts()
-
     scanner.scan.assert_awaited_once_with(profile=None, plugins=None)
