@@ -277,6 +277,77 @@ def test_seams_pr5_pr6_orchestrator_bajo_mypy_strict() -> None:
     assert target_modules <= strict_modules
 
 
+def test_el_inventario_mypy_del_orchestrator_esta_congelado() -> None:
+    """La partición estricto/exento de ``sky_claw/app/orchestrator/`` se congela entera.
+
+    El test de arriba MUESTREA: nombra los seams que ya conocemos. Eso no ataja
+    al hermano que todavía no existe — un módulo NUEVO bajo ``orchestrator/``
+    cae por defecto bajo el wildcard ``sky_claw.app.orchestrator.*`` con
+    ``ignore_errors = true``, sale a producción sin type-check, y ningún test
+    se entera (hallazgo de CodeRabbit en #545).
+
+    Este ancla ENUMERA, como ``RITUAL_TOOL_MAP`` y el ancla AST de conexiones
+    SQLite: compara el inventario del disco contra la partición declarada, por
+    igualdad literal. Un archivo nuevo rompe el test hasta que alguien decida
+    explícitamente de qué lado va — que es la decisión que hoy se toma sola, y
+    siempre para el lado equivocado.
+
+    Mover un módulo de ``exentos`` a ``estrictos`` es progreso y solo pide
+    actualizar estos dos sets. El camino inverso exige justificarlo.
+    """
+    # Seams extraídos y módulos ya anotados: nacen o migraron a strict.
+    estrictos = {
+        "active_plugins",
+        "asset_conflict_scan",
+        "dispatcher_dependencies",
+        "grass_runtime_deps",
+        "orchestration_composition",
+        "plugin_limit_guard",
+        "record_conflict_scan",
+        "sandbox_promotion",
+        "sync_engine",
+    }
+    # Deuda de tipos preexistente, tapada por el wildcard. NO es una lista de
+    # "no hace falta": es el backlog de lo que todavía sale sin type-check.
+    exentos = {
+        "maintenance_daemon",
+        "rollback_factory",
+        "supervisor",
+        "telemetry_daemon",
+        "tool_dispatcher",
+        "tool_state_machine",
+        "watcher_daemon",
+        "ws_event_streamer",
+    }
+
+    paquete = REPO_ROOT / "sky_claw" / "app" / "orchestrator"
+    en_disco = {ruta.stem for ruta in paquete.glob("*.py") if ruta.stem != "__init__"}
+
+    assert en_disco == estrictos | exentos, (
+        "El inventario de sky_claw/app/orchestrator/ cambió: "
+        f"nuevos={sorted(en_disco - (estrictos | exentos))}, "
+        f"borrados={sorted((estrictos | exentos) - en_disco)}. "
+        "Un módulo nuevo cae bajo el wildcard ignore_errors y sale SIN type-check. "
+        "Decidí de qué lado va y agregalo a estrictos o a exentos."
+    )
+
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+    strict_modules: set[str] = set()
+    for override in pyproject["tool"]["mypy"]["overrides"]:
+        if override.get("strict") is True and override.get("ignore_errors") is False:
+            strict_modules.update(override["module"])
+
+    declarados = {f"sky_claw.app.orchestrator.{nombre}" for nombre in estrictos}
+    assert declarados <= strict_modules, (
+        f"módulos declarados estrictos que NO están en el override: {sorted(declarados - strict_modules)}"
+    )
+    # Y al revés: nadie en exentos puede estar colado en el override estricto
+    # sin haber actualizado la partición (mantiene los dos sets sincronizados).
+    colados = {f"sky_claw.app.orchestrator.{nombre}" for nombre in exentos} & strict_modules
+    assert not colados, f"{sorted(colados)} pasaron a estrictos pero siguen listados como exentos — movelos a estrictos"
+
+
 def test_el_parser_de_pe_es_dependencia_dura_no_opcional() -> None:
     """Sin ``pefile`` declarado, el gate de runtime de SKSE deja de proteger y pasa a bloquear.
 
