@@ -101,12 +101,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        id: setup_python_posix
         with:
           python-version: "3.11"
           cache: pip
       - name: Install dev dependencies
         run: pip install -e ".[dev]"
       - name: Run POSIX core tests
+        id: run_posix_tests
         run: |
           python -m pytest -q \
             tests/test_path_validator.py \

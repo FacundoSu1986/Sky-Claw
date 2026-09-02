@@ -7,6 +7,7 @@ informativa y acotada para las ramas POSIX del núcleo async documentadas en
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,12 @@ def _jobs() -> dict[str, Any]:
     return workflow["jobs"]
 
 
+def _paso_por_id(job: dict[str, Any], step_id: str) -> dict[str, Any]:
+    coincidencias = [step for step in job["steps"] if step.get("id") == step_id]
+    assert len(coincidencias) == 1, f"se esperaba exactamente un step con id={step_id!r}"
+    return coincidencias[0]
+
+
 def test_la_suite_completa_solo_certifica_windows() -> None:
     jobs = _jobs()
     test = jobs["test"]
@@ -49,9 +56,12 @@ def test_posix_conserva_una_senal_informativa_acotada() -> None:
     assert posix["runs-on"] == "ubuntu-latest"
     assert posix["continue-on-error"] is True
 
-    setup_python = next(step for step in posix["steps"] if step.get("uses", "").startswith("actions/setup-python@"))
+    setup_python = _paso_por_id(posix, "setup_python_posix")
     assert setup_python["with"]["python-version"] == "3.11"
 
-    ejecutar = next(step for step in posix["steps"] if step.get("name") == "Run POSIX core tests")
-    tokens = [token for token in ejecutar["run"].split() if token != "\\"]
-    assert tokens == ["python", "-m", "pytest", "-q", *OBJETIVOS_POSIX]
+    ejecutar = _paso_por_id(posix, "run_posix_tests")
+    tokens = shlex.split(ejecutar["run"].replace("\\\n", " "))
+    assert tokens[:3] == ["python", "-m", "pytest"]
+
+    objetivos_configurados = sorted(token for token in tokens if token.startswith("tests/"))
+    assert objetivos_configurados == sorted(OBJETIVOS_POSIX)
