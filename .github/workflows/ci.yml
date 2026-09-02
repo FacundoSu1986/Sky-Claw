@@ -72,9 +72,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest]
         python-version: ["3.11", "3.12"]
-    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
@@ -166,9 +165,7 @@ jobs:
     steps:
       - name: Check test matrix result
         run: |
-          # Ubuntu matrix jobs use continue-on-error so their failures are
-          # already masked in needs.test.result.  A 'failure' here means a
-          # Windows job failed — that is a hard blocker.
+          # Runtime tests are Windows-only; any matrix failure is a hard blocker.
           if [[ "${{ needs.test.result }}" != "success" ]]; then
             echo "Test matrix failed: ${{ needs.test.result }}"
             exit 1
