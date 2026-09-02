@@ -31,6 +31,7 @@ from sky_claw.app.orchestrator.dispatcher_dependencies import (
     build_synthesis_service_factory,
     build_wrye_bash_pipeline,
 )
+from sky_claw.app.orchestrator.dyndolod_readiness_hitl import ConfirmadorHITL
 from sky_claw.app.orchestrator.tool_dispatcher import (
     OrchestrationToolDispatcher,
     build_orchestration_dispatcher,
@@ -155,6 +156,15 @@ def build_orchestration_composition(
 
     # D2 (PR #493): mo2_profile es la identidad esperada del dueño del
     # handoff durable de DynDOLOD.
+    # T5-v2.1 (PR #528): el confirmador de readyness es la única ruta por la
+    # cual el operador autoriza la re-validación del Output antes de Start.
+    # El adapter reutiliza el HITLGuard existente (delta §15) — el guard ya
+    # parkea la categoría ``dyndolod_configuracion_lista`` con modal manual
+    # en la GUI y NUNCA la auto-aprueba con «Modo local» (delta §12).
+    # Si ``hitl_guard`` es None, el adapter responde
+    # ``CANAL_NO_DISPONIBLE`` en cada llamada — la corrida corta con el
+    # fail-closed correspondiente, sin auto-approve.
+    dyndolod_readiness_confirmador = ConfirmadorHITL(hitl_guard=hitl_guard)
     dyndolod_service = DynDOLODPipelineService(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
@@ -162,6 +172,7 @@ def build_orchestration_composition(
         path_resolver=path_resolver,
         event_bus=event_bus,
         mo2_profile=profile_name,
+        confirmador_de_configuracion=dyndolod_readiness_confirmador,
     )
 
     xedit_service = XEditPipelineService(

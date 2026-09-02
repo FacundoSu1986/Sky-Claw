@@ -62,8 +62,13 @@ Razones terminalmente NO transitorias, con el motivo por omisión: un
 
 from __future__ import annotations
 
+import enum
+import logging
+import pathlib
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Protocol
 
 from sky_claw.local.tools.dyndolod_uia_preflight import (
     EstadoPreflight,
@@ -142,6 +147,7 @@ def ejecutar_gate_sincrono(
     dormir: Callable[[float], None] = time.sleep,
     proceso_vivo: Callable[[], bool] | None = None,
     al_progreso: Callable[[ResultadoPreflightUIA], None] | None = None,
+    razones_transitorias: frozenset[RazonPreflight] = RAZONES_TRANSITORIAS_DE_INICIO,
 ) -> ResultadoPreflightUIA:
     """Ejecuta el gate hasta veredicto concluyente, deadline o muerte del proceso.
 
@@ -164,6 +170,14 @@ def ejecutar_gate_sincrono(
 
     ``al_progreso`` se invoca sólo cuando la razón CAMBIA (una GUI sana no debe
     generar un log por segundo), y nunca antes de la primera observación.
+
+    ``razones_transitorias`` selecciona la POLÍTICA de reintento: el gate
+    inicial (T5-v2) usa ``RAZONES_TRANSITORIAS_DE_INICIO`` (la GUI puede estar
+    todavía naciendo y hay un modal HITL arrancando); el final gate (T5-v2.1,
+    tras la confirmación humana) usa ``RAZONES_TRANSITORIAS_FINAL`` — quien ya
+    dijo "listo" no vuelve a abrir la ventana de arriba. Es un parámetro del
+    seam y no una bifurcación del loop: el poll/deadline/cleanup son el mismo
+    mecanismo para los dos.
     """
     if timeout_segundos <= 0 or intervalo_segundos <= 0:
         # Error de programación/configuración, no del rig: el gate no puede
@@ -187,7 +201,7 @@ def ejecutar_gate_sincrono(
             resultado = observar_output(solicitud, localizador=localizador, observador=observador)
             if resultado.estado is not EstadoPreflight.UNKNOWN:
                 return resultado
-            if resultado.razon not in RAZONES_TRANSITORIAS_DE_INICIO:
+            if resultado.razon not in razones_transitorias:
                 return resultado
             if proceso_vivo is not None and not proceso_vivo():
                 return resultado
@@ -209,3 +223,153 @@ def ejecutar_gate_sincrono(
         # de la superficie prohíbe ``getattr``.
         if isinstance(observador, ObservadorLiberable):
             observador.liberar()
+
+
+# =============================================================================
+# T5-v2.1 — Readyness del operador + final gate sobre la MISMA instancia
+# =============================================================================
+#
+# El ligado entre la espera de readyness y los dos gates UIA lo implementa el
+# runner en ``DynDOLODRunner._protocolo_de_readiness``: initial gate →
+# instrucciones al operador → confirmación HITL (con carrera explícita contra
+# la muerte del proceso) → final gate → aviso "Start habilitado". Este módulo
+# define SÓLO los tipos del puerto (la pregunta "el humano terminó de
+# configurar") para que un adaptador nuevo no tenga que conocer el runner.
+#
+# **Por qué no es un ``bool``.** Un bool aplasta cuatro cases distintos:
+# True (el operador aprobó), False (rechazó), timeout (nunca respondió)
+# y canal no disponible (ninguna superficie del rig puede preguntarle).
+# Los últimos tres deben ser fail-closed con distinta evidencia — aplastarlos
+# recrea el fallo mudo que esta etapa cierra.
+
+
+@dataclass(frozen=True)
+class OperatorConfigurationReadyRequest:
+    """Lo que el runner sabe sobre la instancia cuando pide la readyness.
+
+    **Inmutable y estrecho a propósito**: el confirmador no debe pedirle al
+    runner que recalcule nada. El pid es el de la instancia ORIGINAL
+    (``proc.pid``) — el mismo que el initial gate verificó; el
+    ``expected_output`` es el MISMO ``output_root`` que la solicitud del
+    initial gate llevaba — la única fuente de "lo que se esperaba", citada
+    por string en el argv.
+
+    ``timeout_seconds`` es el deadline de la confirmación que el runner pide
+    que el adaptador respete con su propio reloj; el runner ADEMÁS acota la
+    espera del callable con su ``asyncio.wait_for`` (defensa en profundidad:
+    un adaptador roto no puede colgar al runner de por vida).
+    """
+
+    tool_name: str
+    pid: int
+    executable: pathlib.Path
+    expected_output: pathlib.Path
+    timeout_seconds: float
+
+
+class ResultadoConfirmacion(enum.Enum):
+    """Lo que el puerto de confirmación puede responder.
+
+    **APROBADA** es el único valor que habilita el final gate. Las demás son
+    razones de CORTE del protocolo. ``TIMEOUT`` lo emite el canal humano (el
+    HITL no llegó en el plazo) y el runner también lo produce localmente si el
+    callable excede su presupuesto. ``CANAL_NO_DISPONIBLE`` cubre tanto "no
+    hay confirmador cableado" como "el canal existía pero falló": la corrida
+    se corta igual y la evidencia conserva el detalle.
+    """
+
+    APROBADA = "aprobada"
+    DENEGADA = "denegada"
+    TIMEOUT = "timeout"
+    CANAL_NO_DISPONIBLE = "canal_no_disponible"
+
+
+class ResolucionProtocoloReadiness(enum.Enum):
+    """El desenlace con el que el runner cierra el protocolo de readyness.
+
+    Incluye los mismos desenlaces del canal humano (tras traducir
+    ``ResultadoConfirmacion``) más ``PROCESO_TERMINO``: la muerte del proceso
+    DURANTE la espera de la confirmación. No es una decisión humana ni del
+    confirmador — es lifecycle del runner, y vive separado a propósito para
+    que ``ResultadoConfirmacion`` jamás pueda mentir con un valor que el
+    humano no eligió.
+    """
+
+    APROBADA = "aprobada"
+    DENEGADA = "denegada"
+    TIMEOUT = "timeout"
+    CANAL_NO_DISPONIBLE = "canal_no_disponible"
+    PROCESO_TERMINO = "proceso_termino"
+
+
+class ConfirmadorDeConfiguracion(Protocol):
+    """Puerto estrecho del runner hacia la superficie que conoce al operador.
+
+    El runner NO conoce NiceGUI ni Telegram: la traducción la hace el
+    adaptador (``ConfirmadorHITL`` en ``sky_claw.app.orchestrator``), que
+    reutiliza :class:`HITLGuard`. Un valor de retorno fuera de
+    ``ResultadoConfirmacion`` es bug del adaptador: el runner lo traduce a
+    ``CANAL_NO_DISPONIBLE``, nunca a un bool ni a un "continue".
+    """
+
+    async def confirmar(
+        self,
+        solicitud: OperatorConfigurationReadyRequest,
+    ) -> ResultadoConfirmacion:
+        """Bloquea hasta que el operador decide (o el canal falla).
+
+        DEBE respetar ``solicitud.timeout_seconds`` con su propio reloj;
+        el runner lo acota además desde afuera (defensa en profundidad).
+        """
+        ...
+
+    async def informar(self, *, tool: str, mensaje: str) -> None:
+        """Aviso POST-final-MATCH ("Output verificado, puede pulsar Start").
+
+        Es best-effort SOLO porque la instrucción contractual completa ya está
+        en el texto de la confirmación que el operador leyó para aprobar.
+        """
+        ...
+
+
+class ConfirmadorNoDisponible:
+    """confirmador fail-closed explícito para runners sin canal cableado.
+
+    Existe para que un llamador ("no tengo HITL disponible acá") pueda
+    declararlo explícitamente — y la evidencia diga ``canal_no_disponible``
+    en vez de confiar en la rama del runner para ``None``. El runner corta en
+    ``None`` igual; esta clase es la afirmación de intención, no la defensa.
+    """
+
+    async def confirmar(
+        self,
+        solicitud: OperatorConfigurationReadyRequest,
+    ) -> ResultadoConfirmacion:
+        return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+
+    async def informar(self, *, tool: str, mensaje: str) -> None:
+        # No hay superficie: la instrucción no llega a nadie; el fail-closed
+        # de ``confirmar`` ya corta antes de que esto importe. Solo log.
+        logging.getLogger(__name__).info("ConfirmadorNoDisponible.informar (sin superficie): %s — %s", tool, mensaje)
+
+
+#: Deadline por defecto de la ESPERA de readyness. Acotado y explícito a
+#: propósito: una readyness que nunca llega tiene que cortar, no colgar la
+#: GUI de DynDOLOD abierta para siempre. Cubre un preset normal sin reutilizar
+#: el deadline de 4 h de la corrida.
+DEFAULT_READINESS_TIMEOUT_SEGUNDOS = 600.0
+
+#: El FINAL gate (post-confirmación humana) no puede tolerar las razones
+#: transitorias del initial: una vez el operador declaró "configuración
+#: lista", un wizard sin ventana o sin control NO va a "resolverse solo" — el
+#: estado ya tendría que existir. Sólo ``VALOR_NO_LEIBLE`` queda transitorio
+#: (un Edit recién redibujado al aplicar el preset puede no exponer texto un
+#: latido), y el deadline final es corto. Es decisión de política: ante la
+#: duda, el final gate falla CERRADO (UNKNOWN) y la corrida muere; reintentar
+#: indefinidamente tras la confirmación abriría la ventana que T5-v2.1 cierra.
+#: Congelado por igualdad literal en los tests.
+RAZONES_TRANSITORIAS_FINAL: frozenset[RazonPreflight] = frozenset(
+    {
+        RazonPreflight.VALOR_NO_LEIBLE,
+    }
+)

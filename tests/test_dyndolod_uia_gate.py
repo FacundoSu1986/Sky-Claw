@@ -34,6 +34,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sky_claw.local.tools import dyndolod_runner as ddl
+from sky_claw.local.tools import dyndolod_uia_gate as g
 from sky_claw.local.tools.dyndolod_uia_gate import (
     GATE_UIA_INTERVALO_SEGUNDOS,
     GATE_UIA_TIMEOUT_SEGUNDOS,
@@ -537,23 +538,72 @@ def test_al_progreso_reporta_solo_cambios_de_razon():
 # ---------------------------------------------------------------------------
 
 
+class _ConfirmadorFalso:
+    """Adaptador mínimo del puerto ``ConfirmadorDeConfiguracion`` para tests.
+
+    Acepta un resultado fijo (``ResultadoConfirmacion``) que devuelve siempre
+    desde ``confirmar``. ``informar`` registra los mensajes en una lista para
+    que los tests puedan asertar que el runner lo invocó (ver §18/§19 del
+    delta). NO es un callable: es un objeto con los dos métodos del puerto.
+    """
+
+    def __init__(self, resultado: g.OperatorConfigurationReadyRequest | None = None) -> None:  # type: ignore[name-defined]
+        from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
+
+        self.resultado: ResultadoConfirmacion = resultado if resultado is not None else ResultadoConfirmacion.APROBADA
+        self.informes: list[tuple[str, str]] = []
+        self.solicitudes: list[object] = []
+
+    async def confirmar(self, solicitud):  # type: ignore[no-untyped-def]
+        self.solicitudes.append(solicitud)
+        return self.resultado
+
+    async def informar(self, *, tool: str, mensaje: str) -> None:
+        self.informes.append((tool, mensaje))
+
+
 def _preparar_corrida(
     tmp_path: pathlib.Path,
     *,
     rondas: Sequence[_Ronda],
     ejecutable: str,
     timeout: float = 5.0,
+    readiness: bool = True,
+    resultado_confirmacion: g.ResultadoConfirmacion | None = None,  # type: ignore[name-defined]
+    confirmador: g.ConfirmadorDeConfiguracion | None = None,  # type: ignore[name-defined]
 ):
-    """Runner real (gate real) + spawn falso + espías de ownership del proceso."""
+    """Runner real (gate real) + spawn falso + espías de ownership del proceso.
+
+    ``readiness`` (``True`` por defecto) inyecta un confirmador que aprueba.
+    ``False`` deja el confirmador en ``None`` (la corrida cae en
+    ``CANAL_NO_DISPONIBLE`` para AMBOS binarios, post-delta). Para inyectar
+    un resultado concreto (DENEGADA / TIMEOUT / PROCESO_TERMINO vía polling
+    del proceso) usar ``resultado_confirmacion`` o ``confirmador``.
+
+    El handshake ahora aplica a TexGen también: ``readiness=False`` corta la
+    corrida feliz de TexGen (delta §20, M10 invertido). Los tests G4/G7 que
+    lo asumen pasaban son del delta anterior; en este delta deben inyectar
+    explícitamente un confirmador que aprueba.
+    """
     config = _config(tmp_path, timeout=timeout)
     reloj = _RelojFalso()
     observador = _ObservadorPorRonda(rondas)
+    if confirmador is not None:
+        confirmador_inyectado = confirmador
+    elif readiness:
+        confirmador_inyectado = _ConfirmadorFalso(
+            resultado=g.ResultadoConfirmacion.APROBADA  # type: ignore[attr-defined]
+        )
+    else:
+        confirmador_inyectado = None
     runner = ddl.DynDOLODRunner(
         config,
         uia_localizador=_LocalizadorFalso([_proceso_falso_del_rig(ejecutable)]),
         uia_observador_factory=lambda: observador,
         uia_reloj=reloj,
         uia_dormir=reloj.dormir,
+        asyncio_sleep=asyncio.sleep,  # vigilia real mínima; tests que la quieren vacía parchean
+        confirmador_de_configuracion=confirmador_inyectado,
     )
     proc = _ProcesoFalso()
     return runner, proc, observador
@@ -1061,17 +1111,19 @@ def test_el_gate_corre_antes_de_la_espera_y_de_los_drains():
 def test_el_cleanup_del_gate_reusa_kill_and_reap_y_close_job():
     """§16/§17 — el gate NO crea otro sistema de ownership: reusa los helpers
     existentes (``kill_and_reap`` + ``close_job``) y conserva la identidad de
-    ``CancelledError``. Congelado por AST sobre el bloque ``except`` del seam.
+    ``CancelledError``. Congelado por AST sobre los bloques ``except`` del seam.
 
-    El gate se invoca DENTRO del ``try``; el ``except`` que lo acompaña es el que
-    cubre ``DynDOLODPreflightUIAError`` y ``asyncio.CancelledError`` a la vez y
-    cuyo cuerpo llama a ``kill_and_reap`` + ``close_job`` antes del ``raise``.
+    T5-v2.1: el seam tiene TRES handlers con la misma forma (initial gate,
+    readyness humana y final gate, los dos últimos exclusivos de DynDOLOD).
+    Cada uno cubre ``DynDOLODPreflightUIAError`` + ``asyncio.CancelledError``
+    y limpia con ``kill_and_reap`` + ``close_job`` antes del ``raise``. La
+    tupla de tipos los identifica inequívocamente frente a los handlers
+    ``ast.Name`` simples del timeout / ``Exception`` post-wait.
 
-    El runner tiene OTROS ``except`` que también llaman a ``kill_and_reap`` +
-    ``close_job`` (los de timeout / ``Exception``), pero son ``ast.Name``
-    simples, no ``ast.Tuple``. El handler del gate es el único con tipo tupla
-    de más de un elemento: esa es la firma inequívoca del coverage compartido
-    que pidió la review.
+    Se exige como mínimo UNO (el initial gate es obligatorio para ambos
+    hermanos). Los otros dos son la propiedad de DynDOLOD de T5-v2.1: que el
+    test los requiera por construcción significa que agregar readyness o
+    final gate sin cleanup rompe la suite aunque el resultado sea correcto.
     """
     seam = _funcion_del_runner("_execute_process")
     handlers = [hijo for hijo in ast.walk(seam) if isinstance(hijo, ast.ExceptHandler)]
@@ -1095,17 +1147,18 @@ def test_el_cleanup_del_gate_reusa_kill_and_reap_y_close_job():
         )
         and any(isinstance(n, ast.Raise) and n.exc is None for n in ast.walk(h))
     ]
-    assert len(handlers_del_gate) == 1, (
-        "el seam no tiene un único except con tipo tupla que cubra "
+    assert len(handlers_del_gate) >= 1, (
+        "el seam no tiene un except con tipo tupla que cubra "
         "DynDOLODPreflightUIAError + CancelledError y limpie con kill_and_reap + "
         "close_job antes del raise"
     )
-    handler = handlers_del_gate[0]
-    # Cubre ambas excepciones del gate en UNA sola cláusula (tuple), para que el
-    # cleanup sea idéntico en bloqueo y en cancelación.
-    tipos_dump = {ast.dump(elt) for elt in handler.type.elts}
-    assert any("DynDOLODPreflightUIAError" in t for t in tipos_dump)
-    assert any("CancelledError" in t for t in tipos_dump)
+    # Cada handler encontrado cubre AMBAS excepciones del gate en UNA sola
+    # cláusula (tuple), para que el cleanup sea idéntico en bloqueo y en
+    # cancelación.
+    for handler in handlers_del_gate:
+        tipos_dump = {ast.dump(elt) for elt in handler.type.elts}
+        assert any("DynDOLODPreflightUIAError" in t for t in tipos_dump)
+        assert any("CancelledError" in t for t in tipos_dump)
 
 
 def test_el_gate_no_lee_el_header_del_log_como_prueba_de_destino():

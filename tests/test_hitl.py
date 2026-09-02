@@ -194,6 +194,7 @@ class TestHitlProducerRequestIds:
     _EXPECTED_PRODUCERS = {
         "sky_claw/app/agent/tools/nexus_tools.py": {"download_mod": 1},
         "sky_claw/app/agent/tools/system_tools.py": {"install_mod_from_archive": 1},
+        "sky_claw/app/orchestrator/dyndolod_readiness_hitl.py": {"confirmar": 1},
         "sky_claw/app/orchestrator/preview/approval_gate.py": {"preview_then_execute": 1},
         "sky_claw/app/orchestrator/sandbox_promotion.py": {"_request_decision": 1},
         "sky_claw/app/orchestrator/sync_engine.py": {"_check_and_update_mod": 2},
@@ -212,6 +213,7 @@ class TestHitlProducerRequestIds:
     _EXPECTED_PREFIXES = {
         ("sky_claw/app/agent/tools/nexus_tools.py", "download_mod"): "nexus-download",
         ("sky_claw/app/agent/tools/system_tools.py", "install_mod_from_archive"): "mod-install",
+        ("sky_claw/app/orchestrator/dyndolod_readiness_hitl.py", "confirmar"): "dyndolod-readiness",
         ("sky_claw/app/orchestrator/sync_engine.py", "_check_and_update_mod"): "mod-update",
         ("sky_claw/local/tools_installer.py", "ensure_loot"): "loot-install",
         ("sky_claw/local/tools_installer.py", "ensure_xedit"): "xedit-install",
