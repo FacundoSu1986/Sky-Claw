@@ -13,7 +13,6 @@ from sky_claw.app.core.models import HitlApprovalRequest
 from sky_claw.app.core.path_resolver import PathResolutionService, resolver_perfil_activo
 from sky_claw.app.core.windows_interop import ModdingToolsAgent
 from sky_claw.app.db.rollback_manager import RollbackManager
-from sky_claw.app.orchestrator.active_plugins import parse_active_plugins
 from sky_claw.app.orchestrator.asset_conflict_scan import AssetConflictScanner
 from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
 from sky_claw.app.orchestrator.maintenance_daemon import (
@@ -23,6 +22,7 @@ from sky_claw.app.orchestrator.orchestration_composition import (
     build_orchestration_composition,
 )
 from sky_claw.app.orchestrator.plugin_limit_guard import PluginLimitGuard
+from sky_claw.app.orchestrator.record_conflict_scan import RecordConflictScanner
 from sky_claw.app.orchestrator.rollback_factory import (
     RollbackComponents,
     create_rollback_components,
@@ -34,20 +34,21 @@ from sky_claw.app.security.hitl import HITLGuard
 from sky_claw.app.security.network_gateway import NetworkGateway
 from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.assets import AssetConflictDetector, AssetConflictReport
-from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer, ConflictReport
+from sky_claw.local.xedit.conflict_analyzer import ConflictReport
 
 logger = logging.getLogger(__name__)
 
 
 security_logger = logging.getLogger(f"{__name__}.security")
 
-# FASE 1.5: Constante para directorio de staging de backups
+# FASE 1.5: Constante para directorio de staging de backups. NO es exclusiva del
+# record scan (el rollback la usa en _init_rollback_components), así que se queda
+# acá; PR6 le inyecta al scanner el subdirectorio de patches ya calculado.
 BACKUP_STAGING_DIR = ".skyclaw_backups/"
 
-#: Timeout (s) del análisis profundo de xEdit: el default de 120s mata escaneos
-#: de load orders grandes que legítimamente tardan varios minutos (review Codex
-#: #226). 15 min cubre perfiles pesados sin colgar la UI indefinidamente.
-DEEP_SCAN_TIMEOUT_SECONDS = 900
+# PR6: DEEP_SCAN_TIMEOUT_SECONDS se mudó a
+# sky_claw/app/orchestrator/record_conflict_scan.py junto con la lógica que lo
+# usaba — no tenía otro consumidor productivo.
 
 
 class SupervisorAgent:
@@ -160,6 +161,21 @@ class SupervisorAgent:
         # al builder como callable estrecho; el supervisor no retiene el objeto
         # porque solo lo necesita durante la construcción de la composición.
         plugin_limit_guard = PluginLimitGuard(path_resolver=self._path_resolver)
+        # PR6 (Strangler Fig): el análisis profundo de records vive en
+        # RecordConflictScanner (sky_claw/app/orchestrator/record_conflict_scan.py).
+        # A diferencia del guard M-04, el supervisor SÍ retiene el objeto: su
+        # facade pública ``scan_record_conflicts`` (la que llama la GUI) delega
+        # en él en runtime. El scanner NO recibe ``self``.
+        #
+        # ``output_dir`` se inyecta ya calculado para que el módulo extraído no
+        # importe BACKUP_STAGING_DIR del supervisor (evita la circularidad). Se
+        # mantiene RELATIVO a propósito: XEditRunner lo resuelve contra el cwd
+        # del scan, igual que antes de la extracción — un ``.resolve()`` acá lo
+        # anclaría al cwd de arranque y cambiaría dónde caen los patches.
+        self._record_conflict_scanner = RecordConflictScanner(
+            path_resolver=self._path_resolver,
+            output_dir=pathlib.Path(BACKUP_STAGING_DIR) / "patches",
+        )
         composition = build_orchestration_composition(
             scraper=self.scraper,
             lock_manager=self._lock_manager,
@@ -559,6 +575,12 @@ class SupervisorAgent:
     ) -> ConflictReport:
         """FASE 6: análisis PROFUNDO de conflictos a nivel record vía xEdit (read-only).
 
+        PR6 (Strangler Fig): la lógica real vive en ``RecordConflictScanner``
+        (sky_claw/app/orchestrator/record_conflict_scan.py). Esto es una FACADE
+        delegante: existe un caller externo real — la GUI llama
+        ``runtime.supervisor.scan_record_conflicts()`` en
+        ``sky_claw/app/gui/sky_claw_gui.py``.
+
         A diferencia de ``scan_asset_conflicts`` (escaneo liviano del VFS), corre
         xEdit como subproceso — es lento y requiere SSEEdit instalado — y detecta
         los conflictos de records que causan CTDs. El puente
@@ -576,41 +598,7 @@ class SupervisorAgent:
         Raises:
             RuntimeError: si faltan SKYRIM_PATH o XEDIT_PATH, o si xEdit falla.
         """
-        from sky_claw.local.xedit.runner import XEditRunner
-
-        profile = profile or self._path_resolver.get_active_profile()
-        if plugins is None:
-            # El load order de plugins vive en loadorder.txt (fallback plugins.txt),
-            # siblings de modlist.txt en el dir del perfil — NO en modlist.txt, que
-            # lista mods (review Copilot #226). utf-8-sig tolera BOM.
-            profile_dir = self._path_resolver.resolve_modlist_path(profile).parent
-            plugins = []
-            for candidate in ("loadorder.txt", "plugins.txt"):
-                lo_path = profile_dir / candidate
-                if lo_path.exists():
-                    plugins = parse_active_plugins(
-                        lo_path.read_text(encoding="utf-8-sig"),
-                        source="plugins_txt" if candidate == "plugins.txt" else "loadorder",
-                    )
-                    if plugins:
-                        break
-        if not plugins:
-            logger.info("Análisis profundo: sin plugins activos en perfil '%s'.", profile)
-            return ConflictReport(total_conflicts=0, critical_conflicts=0)
-
-        game_path = self._path_resolver.get_skyrim_path()
-        xedit_path = self._path_resolver.get_xedit_path()
-        if game_path is None or xedit_path is None:
-            raise RuntimeError("El análisis profundo requiere SKYRIM_PATH y XEDIT_PATH configurados.")
-
-        xedit_runner = XEditRunner(
-            xedit_path=xedit_path,
-            game_path=game_path,
-            output_dir=pathlib.Path(BACKUP_STAGING_DIR) / "patches",
-            timeout=DEEP_SCAN_TIMEOUT_SECONDS,
-        )
-        logger.info("Análisis profundo de conflictos: %d plugins, perfil '%s'.", len(plugins), profile)
-        return await ConflictAnalyzer().analyze(plugins, xedit_runner)
+        return await self._record_conflict_scanner.scan(profile=profile, plugins=plugins)
 
     def scan_asset_conflicts_json(self) -> str:
         """FASE 5: facade READ-ONLY del reporte JSON de conflictos de assets.

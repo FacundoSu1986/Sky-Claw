@@ -70,8 +70,14 @@ puro de ``plugins.txt``/``loadorder.txt`` (``parse_active_plugins``) vive en
 `sky_claw/app/orchestrator/active_plugins.py`; las políticas de precedencia
 (``plugins.txt`` antes que ``loadorder.txt``, con la regla histórica de no
 caer a fallback cuando ``plugins.txt`` existe pero produce lista vacía)
-viven en el `PluginLimitGuard` y NO se unifican con las de
-`scan_record_conflicts`, que tiene precedencia distinta. No se anticipa PR6.
+viven en el `PluginLimitGuard` y NO se unifican con las del scanner de
+records, que tiene precedencia distinta (`loadorder.txt` primero, y con
+fallback al siguiente candidato cuando el primero parsea a lista vacía).
+Desde **PR6** ese análisis profundo vive en `RecordConflictScanner`
+(`sky_claw/app/orchestrator/record_conflict_scan.py`), que recibe el
+`PathResolutionService` y el `output_dir` de los patches ya calculado;
+`SupervisorAgent.scan_record_conflicts` queda como facade delegante porque la
+GUI la llama directamente.
 
 `tool_dispatcher.py` no conoce ni consulta al supervisor. Los providers de
 preview y Synthesis son lazy y cierran solamente sobre sus servicios, paths,

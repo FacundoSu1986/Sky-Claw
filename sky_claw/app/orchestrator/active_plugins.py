@@ -1,7 +1,7 @@
 """Seam puro para parsear el load order activo de plugins.
 
 ``parse_active_plugins`` se mantiene acá porque tiene más de un consumidor
-(``PluginLimitGuard`` y ``scan_record_conflicts``) con políticas de lectura
+(``PluginLimitGuard`` y ``RecordConflictScanner``) con políticas de lectura
 **distintas** que no convierto en un único reader: este módulo es solo la
 función pura de parsing; las políticas de precedencia y fallback entre
 ``plugins.txt``/``loadorder.txt`` viven en cada consumidor.
