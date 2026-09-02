@@ -91,6 +91,31 @@ jobs:
           name: coverage-report-${{ matrix.os }}-py${{ matrix.python-version }}
           path: coverage.xml
 
+  # Linux/WSL2 ejecuta parte del core async, pero no es plataforma de entrega.
+  # Esta señal POSIX es informativa y deliberadamente menor que la suite Windows.
+  test-posix-core:
+    name: "🧪 POSIX Core / py3.11"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+      - name: Run POSIX core tests
+        run: |
+          python -m pytest -q \
+            tests/test_path_validator.py \
+            tests/test_preflight_wiring.py \
+            tests/test_dyndolod_uia_preflight.py::test_el_observador_por_defecto_falla_cerrado_en_vez_de_adivinar \
+            tests/test_dyndolod_uia_preflight.py::test_el_pipeline_con_el_observador_por_defecto_da_unknown_no_error \
+            tests/test_dyndolod_uia_preflight.py::test_uia_no_disponible_es_un_error_uia \
+            tests/test_dyndolod_uia_preflight.py::test_el_modulo_no_importa_nada_de_windows
+
   # ── Gate 4: Security ─────────────────────────────────
   security:
     name: "🛡️ Security Scan"
