@@ -33,6 +33,11 @@ from sky_claw.local.tools.dyndolod_uia_gate import (
     ResultadoConfirmacion,
 )
 
+#: Raíz del repo derivada de la ubicación de ESTE archivo (patrón canónico
+#: del repo: ``parents[1]`` desde ``tests/``). Portable en CI: GitHub
+#: Actions clona a ``D:\a\Sky-Claw\Sky-Claw`` — nunca una ruta local.
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
 PID = 4242
 
 
@@ -303,9 +308,7 @@ def test_ensure_runner_del_service_pasa_confirmador(tmp_path, monkeypatch):
     """
     import ast
 
-    fuente = pathlib.Path(
-        "E:/Skyclaw/worktrees/t5v2-uia-output-gate/sky_claw/local/tools/dyndolod_service.py"
-    ).read_text(encoding="utf-8")
+    fuente = (REPO_ROOT / "sky_claw" / "local" / "tools" / "dyndolod_service.py").read_text(encoding="utf-8")
     nodo = None
     for top in ast.parse(fuente).body:
         if isinstance(top, ast.ClassDef) and top.name == "DynDOLODPipelineService":
@@ -330,9 +333,9 @@ def test_composition_root_construye_confirmador_y_pasa_al_service(monkeypatch):
     """El composition root crea ``ConfirmadorHITL`` y lo pasa al service."""
     import ast
 
-    fuente = pathlib.Path(
-        "E:/Skyclaw/worktrees/t5v2-uia-output-gate/sky_claw/app/orchestrator/orchestration_composition.py"
-    ).read_text(encoding="utf-8")
+    fuente = (REPO_ROOT / "sky_claw" / "app" / "orchestrator" / "orchestration_composition.py").read_text(
+        encoding="utf-8"
+    )
     # ``ConfirmadorHITL`` aparece en el módulo.
     assert "ConfirmadorHITL" in fuente
     # Y se pasa a DynDOLODPipelineService como ``confirmador_de_configuracion``.
