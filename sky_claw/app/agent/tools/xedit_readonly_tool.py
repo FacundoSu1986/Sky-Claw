@@ -26,10 +26,7 @@ async def _ejecutar_script_canonico(xedit_runner: Any, script: str, plugins: lis
     """Stagea bytes canónicos, ejecuta y falla cerrado ante un resultado inválido."""
     stager = getattr(xedit_runner, "ensure_scripts_staged", None)
     if not callable(stager):
-        raise RuntimeError(
-            "El runner de xEdit no puede garantizar staging canónico; "
-            "run_xedit_script queda bloqueado."
-        )
+        raise RuntimeError("El runner de xEdit no puede garantizar staging canónico; run_xedit_script queda bloqueado.")
 
     await stager([script])
     result = await xedit_runner.run_script(script, plugins)
@@ -41,10 +38,7 @@ async def _ejecutar_script_canonico(xedit_runner: Any, script: str, plugins: lis
 
 def _conflictos_legacy(result: Any) -> list[dict[str, str]]:
     """Adapta resultados preparseados de runners legacy sin stdout de protocolo."""
-    return [
-        {"plugin": c.plugin, "record": c.record, "detail": c.detail}
-        for c in result.conflicts
-    ]
+    return [{"plugin": c.plugin, "record": c.record, "detail": c.detail} for c in result.conflicts]
 
 
 async def _ejecutar_conflictos(xedit_runner: Any, plugins: list[str]) -> dict[str, Any]:
@@ -60,9 +54,7 @@ async def _ejecutar_conflictos(xedit_runner: Any, plugins: list[str]) -> dict[st
 
     if raw_stdout.strip():
         if "total_conflicts" not in summary:
-            raise RuntimeError(
-                f"Salida de {script} truncada: falta SUMMARY|total_conflicts."
-            )
+            raise RuntimeError(f"Salida de {script} truncada: falta SUMMARY|total_conflicts.")
         if summary["total_conflicts"] != len(conflictos):
             raise RuntimeError(
                 f"Salida de {script} inconsistente: SUMMARY declara "
@@ -153,10 +145,7 @@ async def run_xedit_script(xedit_runner: Any, script_name: str, plugins: list[st
 
     stager = getattr(xedit_runner, "ensure_scripts_staged", None)
     if not callable(stager):
-        return _error_json(
-            "El runner de xEdit no puede garantizar staging canónico; "
-            "run_xedit_script queda bloqueado."
-        )
+        return _error_json("El runner de xEdit no puede garantizar staging canónico; run_xedit_script queda bloqueado.")
 
     try:
         if script == "list_all_conflicts.pas":
