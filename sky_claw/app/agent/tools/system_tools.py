@@ -23,27 +23,6 @@ from sky_claw.local.tools.output_targets import BODYSLIDE_MESHES_RESOURCE_ID
 
 logger = logging.getLogger(__name__)
 
-# Capability boundary for the LLM-facing read-only xEdit tool.  A syntactically
-# valid ``*.pas`` name is not enough: xEdit resolves it from its local
-# ``Edit Scripts`` directory, which may contain operator/community scripts with
-# write behavior.  Only Sky-Claw scripts whose bundled source explicitly
-# declares read-only behavior are selectable here.
-_XEDIT_AGENT_READ_ONLY_SCRIPTS: frozenset[str] = frozenset(
-    {
-        "dump_record_detail.pas",
-        "list_all_conflicts.pas",
-        "list_grass_worldspaces.pas",
-        "list_zero_bound_grass.pas",
-    }
-)
-
-# Backwards-compatible public alias used by the historical tool contract/tests.
-# It resolves to the canonical bundled script before staging/execution, so the
-# alias can never select an independent local file with the legacy name.
-_XEDIT_AGENT_SCRIPT_ALIASES: dict[str, str] = {
-    "list_conflicts.pas": "list_all_conflicts.pas",
-}
-
 
 async def check_load_order(mo2: Any, *, profile: str) -> str:
     """Read the MO2 modlist for the session profile.
@@ -191,45 +170,21 @@ async def run_loot_sort(
 
 
 async def run_xedit_script(xedit_runner: Any, script_name: str, plugins: list[str]) -> str:
-    """Run a Sky-Claw bundled read-only xEdit script in headless mode.
+    """Run an xEdit script in headless mode.
 
     Args are pre-validated by AsyncToolRegistry.execute() via XEditAnalysisParams.
 
-    SECURITY: this LLM-facing tool is a capability boundary.  Regex validation
-    prevents argument/path injection, but does not establish the provenance of
-    a Pascal script already present in xEdit's ``Edit Scripts`` directory.
-    Therefore only the explicit read-only Sky-Claw bundle is selectable here.
-    Mutating xEdit workflows remain outside this handler.
+    SECURITY: XEditRunner uses asyncio.create_subprocess_exec() with
+    argument list (shell=False equivalent). Input validation is delegated to
+    XEditRunner._validate_inputs() which enforces strict regex patterns.
+    No shell quoting needed - raw strings are passed safely.
     """
     if xedit_runner is None:
         return json.dumps({"error": "xEdit runner is not configured"})
-
-    canonical_script = _XEDIT_AGENT_SCRIPT_ALIASES.get(script_name, script_name)
-    if canonical_script not in _XEDIT_AGENT_READ_ONLY_SCRIPTS:
-        allowed = ", ".join(sorted(_XEDIT_AGENT_READ_ONLY_SCRIPTS))
-        return json.dumps(
-            {
-                "success": False,
-                "error": (
-                    f"xEdit script {script_name!r} is not allowed for the read-only agent tool. "
-                    f"Allowed scripts: {allowed}"
-                ),
-            }
-        )
-
     try:
-        # The production XEditRunner owns canonical bundle staging.  Check the
-        # method on the concrete class so MagicMock/trusted adapters do not
-        # fabricate it dynamically.  The allowlist above remains mandatory for
-        # every adapter, while the real runner also refreshes stale/tampered
-        # local bytes before xEdit resolves ``-script:<name>``.
-        if callable(getattr(type(xedit_runner), "ensure_scripts_staged", None)):
-            await xedit_runner.ensure_scripts_staged([canonical_script])
-        result = await xedit_runner.run_script(canonical_script, plugins)
-    except asyncio.CancelledError:
-        raise
+        result = await xedit_runner.run_script(script_name, plugins)
     except Exception as exc:
-        return json.dumps({"error": sanitize_for_prompt(str(exc), max_length=256)})
+        return json.dumps({"error": str(exc)})
     return json.dumps(
         {
             "success": result.success,
