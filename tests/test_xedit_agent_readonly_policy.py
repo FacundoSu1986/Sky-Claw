@@ -95,7 +95,7 @@ def test_el_schema_anuncia_exactamente_los_scripts_permitidos() -> None:
     schema = XEditAnalysisParams.model_json_schema()
 
     # Verificar
-    assert set(schema["properties"]["script_name"]["enum"]) == XEDIT_AGENT_ALLOWED_SCRIPT_NAMES
+    assert XEDIT_AGENT_ALLOWED_SCRIPT_NAMES == set(schema["properties"]["script_name"]["enum"])
 
 
 def test_el_schema_rechaza_un_pas_desconocido() -> None:
@@ -124,23 +124,25 @@ async def test_cada_script_canonico_stagea_y_ejecuta_su_parser(script_name: str)
     assert runner.ejecuciones == [(script_name, plugins)]
 
 
-def test_los_protocolos_devuelven_datos_estructurados_reales() -> None:
-    async def _ejecutar(script: str) -> dict[str, Any]:
-        return json.loads(await run_xedit_script(_RunnerConStagingCanonico(), script, ["Skyrim.esm"]))
+async def test_los_protocolos_devuelven_datos_estructurados_reales() -> None:
+    # Preparar / Actuar
+    conflictos = json.loads(
+        await run_xedit_script(_RunnerConStagingCanonico(), "list_all_conflicts.pas", ["Skyrim.esm"])
+    )
+    dump = json.loads(await run_xedit_script(_RunnerConStagingCanonico(), "dump_record_detail.pas", ["Skyrim.esm"]))
+    worldspaces = json.loads(
+        await run_xedit_script(_RunnerConStagingCanonico(), "list_grass_worldspaces.pas", ["Skyrim.esm"])
+    )
+    bounds = json.loads(
+        await run_xedit_script(_RunnerConStagingCanonico(), "list_zero_bound_grass.pas", ["Skyrim.esm"])
+    )
 
-    async def _verificar() -> None:
-        conflictos = await _ejecutar("list_all_conflicts.pas")
-        dump = await _ejecutar("dump_record_detail.pas")
-        worldspaces = await _ejecutar("list_grass_worldspaces.pas")
-        bounds = await _ejecutar("list_zero_bound_grass.pas")
-
-        assert conflictos["conflicts"][0]["form_id"] == "00012345"
-        assert conflictos["summary"]["total_conflicts"] == 1
-        assert dump["dumps"][0]["form_id"] == "00012345"
-        assert worldspaces["worldspaces"][0]["editor_id"] == "Tamriel"
-        assert bounds["findings"][0]["reason"] == "zeros"
-
-    asyncio.run(_verificar())
+    # Verificar
+    assert conflictos["conflicts"][0]["form_id"] == "00012345"
+    assert conflictos["summary"]["total_conflicts"] == 1
+    assert dump["dumps"][0]["form_id"] == "00012345"
+    assert worldspaces["worldspaces"][0]["editor_id"] == "Tamriel"
+    assert bounds["findings"][0]["reason"] == "zeros"
 
 
 async def test_el_alias_legacy_canonicaliza_antes_del_staging() -> None:
