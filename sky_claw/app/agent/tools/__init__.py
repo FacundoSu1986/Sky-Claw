@@ -59,10 +59,10 @@ from .system_tools import (
     run_bodyslide_batch,
     run_loot_sort,
     run_pandora,
-    run_xedit_script,
     toggle_mod,
     uninstall_mod,
 )
+from .xedit_readonly_tool import run_xedit_script
 
 logger = logging.getLogger(__name__)
 
@@ -501,7 +501,7 @@ class AsyncToolRegistry:
         )
         self._tools["run_xedit_script"] = ToolDescriptor(
             name="run_xedit_script",
-            description="Run an xEdit script in headless mode.",
+            description="Ejecuta un diagnóstico xEdit read-only conocido por Sky-Claw.",
             params_model=XEditAnalysisParams,
             fn=lambda script_name, plugins: run_xedit_script(self._xedit_runner, script_name, plugins),
         )
@@ -548,9 +548,11 @@ class AsyncToolRegistry:
         # they were never wired in production and always returned "not configured".
         #
         # HITL policy of the agent layer (decisión, no olvido): los tools destructivos
-        # de este registry LLM (run_loot_sort / run_xedit_script / run_pandora /
-        # run_bodyslide / generate_bashed_patch) NO piden aprobación HITL — solo el
-        # lock distribuido los serializa contra otros mutadores (GUI / preview).
+        # de este registry LLM (run_loot_sort / run_pandora / run_bodyslide /
+        # generate_bashed_patch) NO piden aprobación HITL — solo el lock distribuido
+        # los serializa contra otros mutadores (GUI / preview). `run_xedit_script`
+        # queda fuera de esta lista: esta superficie está limitada a diagnósticos
+        # read-only bundleados y stageados canónicamente.
         # El gate HITL vive en el dispatcher de la GUI (Rituales); acá el operador de
         # Telegram es el humano de confianza. Si esto cambia, agregar el gate de
         # aprobación es un cambio transversal aparte (no parchear tool por tool).

@@ -20,6 +20,8 @@ from pydantic import field_validator
 
 from sky_claw.config import SystemPaths
 
+from .xedit_policy import XEditAgentScriptName
+
 # HOTFIX: Sandbox directories for path validation
 ALLOWED_SANDBOX_DIRS = [
     SystemPaths.modding_root().resolve(),
@@ -118,13 +120,14 @@ class InstallModParams(pydantic.BaseModel):
 
 
 class XEditAnalysisParams(pydantic.BaseModel):
-    """Parameters for the ``run_xedit_analysis`` tool."""
+    """Parámetros del tool LLM ``run_xedit_script``."""
 
     model_config = pydantic.ConfigDict(strict=True)
 
-    script_name: str = pydantic.Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-]+\.pas$")
-    # SECURITY: max_length=50 prevents DoS via oversized plugin lists that
-    # would generate a command line exceeding Windows MAX_PATH limits for SSEEdit.exe.
+    # El Literal es la misma fuente de verdad que consume el handler: el schema
+    # anuncia exactamente las capacidades que la ejecución acepta.
+    script_name: XEditAgentScriptName
+    # SEGURIDAD: limita el tamaño del argv que terminará recibiendo SSEEdit.exe.
     plugins: list[str] = pydantic.Field(min_length=1, max_length=50)
 
 
