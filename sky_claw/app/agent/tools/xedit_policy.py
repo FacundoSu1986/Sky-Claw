@@ -19,12 +19,8 @@ XEDIT_AGENT_SCRIPT_ALIASES: dict[str, str] = {
     "list_conflicts.pas": "list_all_conflicts.pas",
 }
 
-XEDIT_AGENT_ALLOWED_SCRIPT_NAMES: frozenset[str] = frozenset(
-    cast(tuple[str, ...], get_args(XEditAgentScriptName))
-)
-XEDIT_AGENT_CANONICAL_SCRIPTS: frozenset[str] = XEDIT_AGENT_ALLOWED_SCRIPT_NAMES - frozenset(
-    XEDIT_AGENT_SCRIPT_ALIASES
-)
+XEDIT_AGENT_ALLOWED_SCRIPT_NAMES: frozenset[str] = frozenset(cast(tuple[str, ...], get_args(XEditAgentScriptName)))
+XEDIT_AGENT_CANONICAL_SCRIPTS: frozenset[str] = XEDIT_AGENT_ALLOWED_SCRIPT_NAMES - frozenset(XEDIT_AGENT_SCRIPT_ALIASES)
 
 
 def canonicalizar_script_xedit_del_agente(script_name: str) -> str:
