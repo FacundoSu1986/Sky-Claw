@@ -365,7 +365,7 @@ class TestXEditTool:
             result = json.loads(
                 await tool_reg.execute(
                     "run_xedit_script",
-                    {"script_name": "test.pas", "plugins": ["test.esp"]},
+                    {"script_name": "list_conflicts.pas", "plugins": ["test.esp"]},
                 )
             )
             assert "error" in result
@@ -393,6 +393,7 @@ class TestXEditTool:
             sync = SyncEngine(mo2, MagicMock(), registry)
 
             mock_runner = MagicMock()
+            mock_runner.ensure_scripts_staged = AsyncMock(return_value=[])
             mock_runner.run_script = AsyncMock(
                 return_value=XEditResult(
                     return_code=0,
