@@ -27,6 +27,12 @@ _ESPERADOS_CANONICOS = frozenset(
     }
 )
 _ESPERADOS_ALIASES = {"list_conflicts.pas": "list_all_conflicts.pas"}
+_CASOS_PROTOCOLO: dict[str, tuple[tuple[str | int, ...], object]] = {
+    "list_all_conflicts.pas": (("conflicts", 0, "form_id"), "00012345"),
+    "dump_record_detail.pas": (("dumps", 0, "form_id"), "00012345"),
+    "list_grass_worldspaces.pas": (("worldspaces", 0, "editor_id"), "Tamriel"),
+    "list_zero_bound_grass.pas": (("findings", 0, "reason"), "zeros"),
+}
 
 
 def _stdout_valido(script: str) -> str:
@@ -44,6 +50,13 @@ def _stdout_valido(script: str) -> str:
     if script == "list_zero_bound_grass.pas":
         return "ZEROBOUND|00012345|Grass01|Winner.esp|Origin.esm|zeros\nSUMMARY|total_gras=1|zero_bounds=1\n"
     raise AssertionError(f"Falta fixture para {script}")
+
+
+def _valor_en_ruta(payload: Any, ruta: tuple[str | int, ...]) -> Any:
+    actual = payload
+    for clave in ruta:
+        actual = actual[clave]
+    return actual
 
 
 class _RunnerConStagingCanonico:
@@ -117,25 +130,21 @@ async def test_cada_script_canonico_stagea_y_ejecuta_su_parser(script_name: str)
     assert runner.ejecuciones == [(script_name, plugins)]
 
 
-async def test_los_protocolos_devuelven_datos_estructurados_reales() -> None:
-    # Preparar / Actuar
-    conflictos = json.loads(
-        await run_xedit_script(_RunnerConStagingCanonico(), "list_all_conflicts.pas", ["Skyrim.esm"])
-    )
-    dump = json.loads(await run_xedit_script(_RunnerConStagingCanonico(), "dump_record_detail.pas", ["Skyrim.esm"]))
-    worldspaces = json.loads(
-        await run_xedit_script(_RunnerConStagingCanonico(), "list_grass_worldspaces.pas", ["Skyrim.esm"])
-    )
-    bounds = json.loads(
-        await run_xedit_script(_RunnerConStagingCanonico(), "list_zero_bound_grass.pas", ["Skyrim.esm"])
-    )
+def test_los_casos_de_protocolo_cubren_toda_la_allowlist_canonica() -> None:
+    # Preparar / Actuar / Verificar
+    assert not XEDIT_AGENT_CANONICAL_SCRIPTS.symmetric_difference(_CASOS_PROTOCOLO)
+
+
+@pytest.mark.parametrize("script_name", sorted(_CASOS_PROTOCOLO))
+async def test_cada_protocolo_devuelve_su_dato_estructurado(script_name: str) -> None:
+    # Preparar
+    ruta, esperado = _CASOS_PROTOCOLO[script_name]
+
+    # Actuar
+    resultado = json.loads(await run_xedit_script(_RunnerConStagingCanonico(), script_name, ["Skyrim.esm"]))
 
     # Verificar
-    assert conflictos["conflicts"][0]["form_id"] == "00012345"
-    assert conflictos["summary"]["total_conflicts"] == 1
-    assert dump["dumps"][0]["form_id"] == "00012345"
-    assert worldspaces["worldspaces"][0]["editor_id"] == "Tamriel"
-    assert bounds["findings"][0]["reason"] == "zeros"
+    assert _valor_en_ruta(resultado, ruta) == esperado
 
 
 async def test_el_alias_legacy_canonicaliza_antes_del_staging() -> None:
