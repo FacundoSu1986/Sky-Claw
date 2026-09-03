@@ -85,17 +85,19 @@ class _RunnerConStagingCanonico:
 
 def test_la_policy_congela_allowlist_y_aliases_completos() -> None:
     # Preparar / Actuar / Verificar
-    assert XEDIT_AGENT_CANONICAL_SCRIPTS == _ESPERADOS_CANONICOS
+    assert not XEDIT_AGENT_CANONICAL_SCRIPTS.symmetric_difference(_ESPERADOS_CANONICOS)
     assert XEDIT_AGENT_SCRIPT_ALIASES == _ESPERADOS_ALIASES
-    assert XEDIT_AGENT_ALLOWED_SCRIPT_NAMES == _ESPERADOS_CANONICOS | frozenset(_ESPERADOS_ALIASES)
+    esperados = _ESPERADOS_CANONICOS | frozenset(_ESPERADOS_ALIASES)
+    assert not XEDIT_AGENT_ALLOWED_SCRIPT_NAMES.symmetric_difference(esperados)
 
 
 def test_el_schema_anuncia_exactamente_los_scripts_permitidos() -> None:
     # Preparar / Actuar
     schema = XEditAnalysisParams.model_json_schema()
+    anunciados = set(schema["properties"]["script_name"]["enum"])
 
     # Verificar
-    assert XEDIT_AGENT_ALLOWED_SCRIPT_NAMES == set(schema["properties"]["script_name"]["enum"])
+    assert not XEDIT_AGENT_ALLOWED_SCRIPT_NAMES.symmetric_difference(anunciados)
 
 
 def test_el_schema_rechaza_un_pas_desconocido() -> None:
