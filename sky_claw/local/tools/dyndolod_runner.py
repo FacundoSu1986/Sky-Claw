@@ -144,6 +144,17 @@ _DRAIN_GRACE_SECONDS = 10.0
 #: esperar tiempo real.
 _POLL_PROCESO_DURANTE_READINESS_SEGUNDOS = 0.5
 
+#: Cota del aviso best-effort al operador (``_informar_operador``). El aviso
+#: NO es un gate: la instrucción contractual (qué configurar, no pulsar Start)
+#: ya viaja dentro de la confirmación. Pero el primer aviso ocurre ANTES de
+#: crear las tasks del protocolo y antes del ``asyncio.wait_for(proc.wait())``
+#: de ``_execute_process``, así que ningún deadline lo cubre: un canal
+#: (HITL/NiceGUI/Telegram) cuya corrutina ``informar`` nunca resuelve colgaría
+#: el pipeline con la GUI viva y sin vigilancia. Con esta cota, un canal que
+#: no avisa en plazo se trata igual que un fallo del canal (warning + seguir),
+#: porque el seam ya es best-effort. NO convierte el aviso en otro gate.
+_TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS = 30.0
+
 #: Switches de ruta cuyo dueño es ``DynDOLODConfig``: ``extra_args`` no puede
 #: redefinirlos (ver ``DynDOLODRunner._extra_args_admisibles``).
 #:
@@ -1332,7 +1343,7 @@ class DynDOLODRunner:
             await self._async_sleep(_POLL_PROCESO_DURANTE_READINESS_SEGUNDOS)
 
     async def _informar_operador(self, *, tool_name: str, mensaje: str) -> None:
-        """Best-effort: la instrucción completa ya viaja en la confirmación.
+        """Best-effort ACOTADO: la instrucción completa ya viaja en la confirmación.
 
         Se tragan excepciones del canal: si la superficie no puede avisar
         del "Start habilitado" después del final MATCH, la corrida NO se
@@ -1340,14 +1351,40 @@ class DynDOLODRunner:
         contractual vivía en la confirmación). El runner LOG el fallo para
         que la trazabilidad no se pierda, y la sección de Test de
         superficie del rig de R3b cubre el camino real (no el log solo).
+
+        El ``await`` se acota con ``_TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS``:
+        un canal cuya corrutina nunca resuelve se trata igual que un fallo
+        (warning + seguir). Es imprescindible porque el primer aviso ocurre
+        ANTES de crear las tasks del protocolo y del deadline del proceso en
+        :meth:`_execute_process`, así que sin la cota un canal colgado
+        colgaría el pipeline con la GUI viva. La cancelación externa NO se
+        absorbe: se re-lanza con su identidad (S9).
         """
         confirmador = self._confirmador_de_configuracion
         if confirmador is None:
             return
         try:
-            await confirmador.informar(tool=tool_name, mensaje=mensaje)
+            await asyncio.wait_for(
+                confirmador.informar(tool=tool_name, mensaje=mensaje),
+                timeout=_TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS,
+            )
         except asyncio.CancelledError:
+            # La cancelación externa preserva su identidad: la cota del aviso
+            # NO la absorbe (si lo hiciera, un shutdown quedaría atrapado en un
+            # canal colgado). ``asyncio.CancelledError`` es hija de
+            # ``BaseException``, así que el ``except Exception`` de abajo no la
+            # ve; este clause explícito la re-lanza igual.
             raise
+        except TimeoutError:
+            # El canal no avisó en plazo. Mismo tratamiento que un fallo del
+            # canal: el seam es best-effort y la corrida sigue.
+            logger.warning(
+                "informar al operador no respondió en %.1fs (tool=%s, mensaje=%r); se continúa",
+                _TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS,
+                tool_name,
+                mensaje,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
         except Exception:  # noqa: BLE001 - el seam es best-effort; un fallo del canal no tumba la corrida
             logger.warning(
                 "informar al operador falló (tool=%s, mensaje=%r): ver traceback",

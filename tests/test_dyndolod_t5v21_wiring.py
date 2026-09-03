@@ -42,7 +42,7 @@ PID = 4242
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Utilidades
 # ---------------------------------------------------------------------------
 
 
@@ -241,6 +241,44 @@ async def test_confirmador_hitl_guard_explotando_es_canal_no_disponible():
     adapter = ConfirmadorHITL(hitl_guard=_GuardRoto())
     resultado = await adapter.confirmar(_solicitud())
     assert resultado is ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+
+
+async def test_confirmador_hitl_request_id_usa_el_prefijo_por_default():
+    """F5 — sin prefijo custom, el request_id conserva 'dyndolod-readiness'.
+
+    El default NO cambia (lo ancla ``test_hitl.py::
+    test_prefijos_productivos_son_constantes_y_no_dependen_de_telegram``).
+    """
+    capturado: dict = {}
+
+    class _Guard:
+        async def request_approval(self, **kwargs):
+            capturado.update(kwargs)
+            return Decision.APPROVED
+
+    adapter = ConfirmadorHITL(hitl_guard=_Guard())
+    await adapter.confirmar(_solicitud())
+    assert capturado["request_id"].startswith("dyndolod-readiness-")
+
+
+async def test_confirmador_hitl_request_id_respeta_el_prefijo_configurado():
+    """F5 — un prefijo configurado SÍ se refleja en el request_id.
+
+    Regresión: antes ``new_hitl_request_id`` ignoraba ``self._prefix`` y todo
+    caller recibía "dyndolod-readiness". Ahora el prefijo fijado en
+    construcción (por la composición confiable) fluye al request_id.
+    """
+    capturado: dict = {}
+
+    class _Guard:
+        async def request_approval(self, **kwargs):
+            capturado.update(kwargs)
+            return Decision.APPROVED
+
+    adapter = ConfirmadorHITL(hitl_guard=_Guard(), prefix="prefijo-custom")
+    await adapter.confirmar(_solicitud())
+    assert capturado["request_id"].startswith("prefijo-custom-")
+    assert not capturado["request_id"].startswith("dyndolod-readiness")
 
 
 async def test_confirmador_hitl_informar_sin_on_informar_solo_logea():

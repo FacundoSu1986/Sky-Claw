@@ -547,7 +547,7 @@ class _ConfirmadorFalso:
     delta). NO es un callable: es un objeto con los dos métodos del puerto.
     """
 
-    def __init__(self, resultado: g.OperatorConfigurationReadyRequest | None = None) -> None:  # type: ignore[name-defined]
+    def __init__(self, resultado: g.ResultadoConfirmacion | None = None) -> None:
         from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
 
         self.resultado: ResultadoConfirmacion = resultado if resultado is not None else ResultadoConfirmacion.APROBADA
@@ -590,10 +590,14 @@ def _preparar_corrida(
     observador = _ObservadorPorRonda(rondas)
     if confirmador is not None:
         confirmador_inyectado = confirmador
+    elif resultado_confirmacion is not None:
+        # Precedencia explícita: un ``resultado_confirmacion`` inyectado NO
+        # puede quedar pisado por ``readiness=True`` (default). Antes esta
+        # rama no existía y DENEGADA/TIMEOUT caían en el confirmador que
+        # APRUEBA — verde silencioso sobre el corte fail-closed (F2).
+        confirmador_inyectado = _ConfirmadorFalso(resultado=resultado_confirmacion)
     elif readiness:
-        confirmador_inyectado = _ConfirmadorFalso(
-            resultado=g.ResultadoConfirmacion.APROBADA  # type: ignore[attr-defined]
-        )
+        confirmador_inyectado = _ConfirmadorFalso(resultado=g.ResultadoConfirmacion.APROBADA)
     else:
         confirmador_inyectado = None
     runner = ddl.DynDOLODRunner(
@@ -764,6 +768,47 @@ async def test_g4_g7_match_permite_continuar_al_camino_normal(tmp_path, tool, ej
     pila.mocks["kill_and_reap"].assert_not_awaited()
     # La salida normal TAMBIÉN cierra el job (contrato U-07 preexistente).
     pila.mocks["close_job"].assert_called_once_with(4242)
+
+
+@pytest.mark.parametrize(
+    ("resultado", "razon_esperada"),
+    [
+        (g.ResultadoConfirmacion.DENEGADA, "denegada"),
+        (g.ResultadoConfirmacion.TIMEOUT, "timeout"),
+        (g.ResultadoConfirmacion.CANAL_NO_DISPONIBLE, "canal_no_disponible"),
+    ],
+)
+async def test_f2_confirmacion_de_corte_no_llega_al_final_gate_y_limpia(tmp_path, resultado, razon_esperada):
+    """F2 — DENEGADA / TIMEOUT / CANAL_NO_DISPONIBLE cortan ANTES del final gate.
+
+    Regresión del confirmador falso que ignoraba ``resultado_confirmacion`` y
+    APROBABA siempre: un test que pedía DENEGADA/TIMEOUT medía el camino feliz
+    (verde silencioso sobre la rama fail-closed). Ahora la inyección se respeta
+    y el corte se observa por COMPORTAMIENTO, no por el valor guardado en el
+    doble: el protocolo lanza ``DynDOLODReadinessProtocolError`` con su razón,
+    el final gate NO corre (una sola observación, la del initial gate) y el
+    proceso se limpia (kill_and_reap una vez).
+    """
+    ejecutable = r"C:\Modding\DynDOLOD\DynDOLODx64.exe"
+    runner, proc, observador = _preparar_corrida(
+        tmp_path,
+        rondas=[_ronda_output(SALIDA_ADMINISTRADA_TXT, pid=PID)],
+        ejecutable=ejecutable,
+        resultado_confirmacion=resultado,
+    )
+    with (
+        patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc))),
+        _PilaDeOwnership(proc=proc) as pila,
+        pytest.raises(ddl.DynDOLODReadinessProtocolError) as excinfo,
+    ):
+        await runner._execute_process(pathlib.Path(ejecutable), [], "DynDOLOD")
+
+    assert excinfo.value.razon_protocolo.value == razon_esperada
+    # El initial MATCH consumió UNA observación; el final gate NO corrió.
+    assert observador.observaciones == 1
+    assert proc.esperas == 0
+    assert proc.muertes == 1
+    pila.mocks["kill_and_reap"].assert_awaited_once_with(proc)
 
 
 @pytest.mark.parametrize(
@@ -1108,31 +1153,17 @@ def test_el_gate_corre_antes_de_la_espera_y_de_los_drains():
     assert linea_del_gate < primera_task, "el gate quedó DESPUÉS de las tasks: la GUI se daría por lista sin veredicto"
 
 
-def test_el_cleanup_del_gate_reusa_kill_and_reap_y_close_job():
-    """§16/§17 — el gate NO crea otro sistema de ownership: reusa los helpers
-    existentes (``kill_and_reap`` + ``close_job``) y conserva la identidad de
-    ``CancelledError``. Congelado por AST sobre los bloques ``except`` del seam.
-
-    T5-v2.1: el seam tiene TRES handlers con la misma forma (initial gate,
-    readyness humana y final gate, los dos últimos exclusivos de DynDOLOD).
-    Cada uno cubre ``DynDOLODPreflightUIAError`` + ``asyncio.CancelledError``
-    y limpia con ``kill_and_reap`` + ``close_job`` antes del ``raise``. La
-    tupla de tipos los identifica inequívocamente frente a los handlers
-    ``ast.Name`` simples del timeout / ``Exception`` post-wait.
-
-    Se exige como mínimo UNO (el initial gate es obligatorio para ambos
-    hermanos). Los otros dos son la propiedad de DynDOLOD de T5-v2.1: que el
-    test los requiera por construcción significa que agregar readyness o
-    final gate sin cleanup rompe la suite aunque el resultado sea correcto.
-    """
-    seam = _funcion_del_runner("_execute_process")
-    handlers = [hijo for hijo in ast.walk(seam) if isinstance(hijo, ast.ExceptHandler)]
-    handlers_del_gate = [
-        h
-        for h in handlers
-        if isinstance(h.type, ast.Tuple)
+def _es_handler_de_cleanup_del_gate(h: ast.ExceptHandler) -> bool:
+    """Un ``except`` de tipo tupla que cubre el gate y limpia con el ownership
+    compartido: ``(DynDOLODPreflightUIAError, ..., CancelledError)`` seguido de
+    ``kill_and_reap`` + ``close_job`` + ``raise`` pelado. La tupla de tipos lo
+    distingue de los handlers ``ast.Name`` simples (timeout / ``Exception`` /
+    ``BaseException``) del resto del seam."""
+    return (
+        isinstance(h.type, ast.Tuple)
         and len(h.type.elts) >= 2
         and any("DynDOLODPreflightUIAError" in ast.dump(elt) for elt in h.type.elts)
+        and any("CancelledError" in ast.dump(elt) for elt in h.type.elts)
         and any(
             isinstance(n, ast.Call)
             and isinstance(n.func, (ast.Name, ast.Attribute))
@@ -1146,19 +1177,62 @@ def test_el_cleanup_del_gate_reusa_kill_and_reap_y_close_job():
             for n in ast.walk(h)
         )
         and any(isinstance(n, ast.Raise) and n.exc is None for n in ast.walk(h))
-    ]
-    assert len(handlers_del_gate) >= 1, (
-        "el seam no tiene un except con tipo tupla que cubra "
-        "DynDOLODPreflightUIAError + CancelledError y limpie con kill_and_reap + "
-        "close_job antes del raise"
     )
-    # Cada handler encontrado cubre AMBAS excepciones del gate en UNA sola
-    # cláusula (tuple), para que el cleanup sea idéntico en bloqueo y en
-    # cancelación.
-    for handler in handlers_del_gate:
-        tipos_dump = {ast.dump(elt) for elt in handler.type.elts}
-        assert any("DynDOLODPreflightUIAError" in t for t in tipos_dump)
-        assert any("CancelledError" in t for t in tipos_dump)
+
+
+def test_el_cleanup_del_gate_reusa_kill_and_reap_y_close_job():
+    """§16/§17 — el gate NO crea otro sistema de ownership: reusa los helpers
+    existentes (``kill_and_reap`` + ``close_job``) y conserva la identidad de
+    ``CancelledError``. Congelado por AST sobre los bloques ``except`` del seam.
+
+    T5-v2.1: tras el spawn, ``_execute_process`` ejecuta DOS operaciones
+    mutantes que deben limpiar el proceso si fallan —el initial gate
+    (``_gate_uia_output``) y el protocolo de readyness
+    (``_protocolo_de_readiness``)—. El final gate NO agrega un tercer handler:
+    vive DENTRO del protocolo, así que su ``DynDOLODPreflightUIAError`` propaga
+    al MISMO handler que la readyness. Por eso los handlers de cleanup de tipo
+    tupla son DOS, no tres. Cada uno cubre ``DynDOLODPreflightUIAError`` +
+    ``asyncio.CancelledError`` y limpia con ``kill_and_reap`` + ``close_job``
+    antes del ``raise``.
+
+    Igualdad + enumeración semántica, no cota inferior (F4). Con ``>= 1``,
+    borrar el cleanup de la readyness (o del initial) dejaba el ancla en verde:
+    el hermano sin cablear en persona. Acá se congela el conteo exacto Y la
+    correspondencia operación→handler, de modo que perder cualquiera de los dos
+    cleanup —o mover una operación mutante fuera de su ``try``— rompe la suite.
+    """
+    seam = _funcion_del_runner("_execute_process")
+    handlers_del_gate = [
+        h for h in ast.walk(seam) if isinstance(h, ast.ExceptHandler) and _es_handler_de_cleanup_del_gate(h)
+    ]
+
+    assert len(handlers_del_gate) == 2, (
+        "el seam debe tener DOS handlers de tipo tupla que cubran "
+        "DynDOLODPreflightUIAError + CancelledError y limpien con kill_and_reap + "
+        "close_job antes del raise (initial gate; readyness+final gate comparten uno); "
+        f"encontrados {len(handlers_del_gate)}"
+    )
+
+    # Enumeración semántica: cada operación mutante post-spawn está envuelta en
+    # un ``try`` cuyo handler de cleanup existe. Perder el cleanup de cualquiera
+    # —o sacar la operación de su ``try``— rompe acá por NOMBRE, no sólo por el
+    # conteo de arriba.
+    for operacion in ("_gate_uia_output", "_protocolo_de_readiness"):
+        tries_de_la_operacion = [
+            t
+            for t in ast.walk(seam)
+            if isinstance(t, ast.Try)
+            and any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == operacion
+                for stmt in t.body
+                for n in ast.walk(stmt)
+            )
+        ]
+        assert tries_de_la_operacion, f"{operacion} ya no está envuelto en un try del seam"
+        assert any(_es_handler_de_cleanup_del_gate(h) for t in tries_de_la_operacion for h in t.handlers), (
+            f"la operación mutante {operacion!r} perdió su handler de cleanup "
+            "(kill_and_reap + close_job + raise pelado antes de continuar)"
+        )
 
 
 def test_el_gate_no_lee_el_header_del_log_como_prueba_de_destino():

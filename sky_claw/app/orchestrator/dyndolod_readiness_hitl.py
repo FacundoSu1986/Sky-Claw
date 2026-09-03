@@ -71,11 +71,17 @@ class ConfirmadorHITL:
         on_informar: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         self._hitl_guard = hitl_guard
-        # El prefijo se mantiene como atributo de instancia para que un
-        # ``ConfirmadorHITL`` específico pueda identificar la operación
-        # (logger), pero el prefijo de ``new_hitl_request_id`` es el valor
-        # por default que usa la familia de productores humanos (delta
-        # §15, anclado en ``tests/test_hitl.py::_EXPECTED_PREFIXES``).
+        # El prefijo de ``new_hitl_request_id`` es ``self._prefix`` (F5): un
+        # caller que configure un prefijo propio ahora SÍ se refleja en el
+        # ``request_id`` (antes se ignoraba y todos caían en
+        # "dyndolod-readiness"). El DEFAULT sigue siendo el literal
+        # "dyndolod-readiness" que ancla la familia de productores humanos
+        # (delta §15, ``tests/test_hitl.py`` →
+        # ``test_prefijos_productivos_son_constantes_y_no_dependen_de_telegram``).
+        # ``prefix`` se fija en construcción por la composición confiable, NUNCA
+        # desde un mensaje de Telegram, así que la identidad sigue siendo un
+        # valor estable y no derivado del canal — la propiedad que el ancla
+        # protege.
         self._prefix = prefix
         self._on_informar = on_informar
 
@@ -115,7 +121,7 @@ class ConfirmadorHITL:
         # uuid corto para distinguir intentos distintos.
         from sky_claw.app.security.hitl import new_hitl_request_id
 
-        request_id = new_hitl_request_id("dyndolod-readiness")
+        request_id = new_hitl_request_id(self._prefix)
         try:
             decision = await self._hitl_guard.request_approval(
                 request_id=request_id,

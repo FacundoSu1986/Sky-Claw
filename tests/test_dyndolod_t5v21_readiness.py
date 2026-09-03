@@ -751,6 +751,80 @@ async def test_h13_informar_se_llama_en_cada_punto_esperado(tmp_path):
 
 
 # ===========================================================================
+# H14/H15 — F1: el aviso best-effort ``informar`` está acotado
+# ===========================================================================
+
+
+class _ConfirmadorInformarColgado:
+    """Confirmador cuyo ``informar`` nunca devuelve (canal que no responde)."""
+
+    def __init__(self) -> None:
+        self.empezo_a_informar = asyncio.Event()
+
+    async def confirmar(self, _request: OperatorConfigurationReadyRequest) -> ResultadoConfirmacion:
+        return ResultadoConfirmacion.APROBADA  # pragma: no cover
+
+    async def informar(self, *, tool: str, mensaje: str) -> None:
+        self.empezo_a_informar.set()
+        await asyncio.Event().wait()  # cuelga para siempre
+
+
+async def test_h14_informar_colgado_no_cuelga_el_protocolo(monkeypatch, tmp_path):
+    """H14 (F1) — un canal cuyo ``informar`` nunca devuelve NO cuelga el runner.
+
+    El aviso al operador es best-effort (la instrucción contractual viaja en
+    la confirmación). ``_informar_operador`` acota el ``await`` con
+    ``asyncio.wait_for`` y, si el canal no responde en plazo, loguea y sigue.
+    Sin la cota, ``_informar_operador`` se colgaría antes de cualquier
+    deadline del proceso; el ``wait_for`` externo de este test lo mata en 1 s
+    (RED controlado) en vez de esperar tiempo real.
+    """
+    ejecutable = r"C:\Modding\DynDOLOD\DynDOLODx64.exe"
+    confirmador = _ConfirmadorInformarColgado()
+    runner, _proc, _ = _preparar_corrida(
+        tmp_path,
+        rondas=[_ronda_output(SALIDA_ADMINISTRADA_TXT, pid=PID)],
+        ejecutable=ejecutable,
+        confirmador=confirmador,
+    )
+    # Cota del aviso reducida a ms: el test no espera el default de 30 s.
+    monkeypatch.setattr(ddl, "_TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS", 0.01)
+
+    # Con la cota, ``_informar_operador`` vuelve en ~0.01 s; sin ella, este
+    # guard externo lo corta en 1 s y el test falla (oracle del mutante
+    # "quitar asyncio.wait_for de informar").
+    await asyncio.wait_for(
+        runner._informar_operador(tool_name="DynDOLOD", mensaje="probando el aviso"),
+        timeout=1.0,
+    )
+
+
+async def test_h15_informar_preserva_la_cancelacion_externa(monkeypatch, tmp_path):
+    """H15 (F1) — la cota del aviso NO absorbe ``CancelledError``.
+
+    Cancelar la task que espera ``_informar_operador`` mientras ``informar``
+    sigue pendiente re-lanza la MISMA cancelación (no se degrada a warning +
+    continue). Cota amplia: el que corta es la cancelación externa, no el
+    timeout del aviso.
+    """
+    ejecutable = r"C:\Modding\DynDOLOD\DynDOLODx64.exe"
+    confirmador = _ConfirmadorInformarColgado()
+    runner, _proc, _ = _preparar_corrida(
+        tmp_path,
+        rondas=[_ronda_output(SALIDA_ADMINISTRADA_TXT, pid=PID)],
+        ejecutable=ejecutable,
+        confirmador=confirmador,
+    )
+    monkeypatch.setattr(ddl, "_TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS", 100.0)
+
+    tarea = asyncio.create_task(runner._informar_operador(tool_name="DynDOLOD", mensaje="probando el aviso"))
+    await asyncio.wait_for(confirmador.empezo_a_informar.wait(), timeout=1.0)
+    tarea.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+
+
+# ===========================================================================
 # G1..G5 — anclas AST
 # ===========================================================================
 

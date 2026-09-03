@@ -49,7 +49,7 @@ from test_dyndolod_t5v21_readiness import (  # noqa: E402
 )
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Utilidades
 # ---------------------------------------------------------------------------
 
 
@@ -94,7 +94,7 @@ async def test_m1_eliminar_final_gate_pone_r4b_red(tmp_path, monkeypatch):
     baseline GREEN after revert: y
     """
     ejecutable = r"C:\Modding\DynDOLOD\DynDOLODx64.exe"
-    runner, proc, _ = _preparar_corrida(
+    runner, proc, observador = _preparar_corrida(
         tmp_path,
         rondas=[
             _ronda_output(SALIDA_ADMINISTRADA_TXT, pid=PID),
@@ -103,11 +103,19 @@ async def test_m1_eliminar_final_gate_pone_r4b_red(tmp_path, monkeypatch):
         ejecutable=ejecutable,
     )
 
-    # M1: el final gate retorna MATCH siempre sin observar nada.
-    async def _m1_falso_final(*_args, **_kwargs):
-        return None
+    # M1 AISLADA (F3): sólo el FINAL gate desaparece; el initial sigue
+    # corriendo de verdad. Si M1 reemplazara el seam entero por un stub que
+    # devuelve None en toda ronda, también mataría el initial gate y este
+    # test pasaría por una mutación distinta de la documentada. Delegamos al
+    # método original salvo cuando ``etiqueta == "final"``.
+    gate_original = runner._gate_uia_output
 
-    monkeypatch.setattr(runner, "_gate_uia_output", _m1_falso_final)
+    async def _m1_bypass_solo_final(*args, etiqueta: str = "initial", **kwargs):
+        if etiqueta == "final":
+            return None  # el final gate no ocurre
+        return await gate_original(*args, etiqueta=etiqueta, **kwargs)
+
+    monkeypatch.setattr(runner, "_gate_uia_output", _m1_bypass_solo_final)
 
     with (
         patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc))),
@@ -117,6 +125,10 @@ async def test_m1_eliminar_final_gate_pone_r4b_red(tmp_path, monkeypatch):
 
     # M1 "sobrevive" si ``proc.esperas == 1`` (la corrida avanzó pese al TRAP).
     assert proc.esperas == 1, "M1: el final gate fue bypasseado; la corrida avanzó con un preset TRAP"
+    # Aislamiento: el initial gate SÍ observó (una vez, ronda MATCH); el final
+    # bypasseado NO observó el TRAP. Distingue M1 ("eliminar final gate") de
+    # M8 ("ignorar mismatch final"), que observa dos veces.
+    assert observador.observaciones == 1, "M1 no está aislada: el initial gate también fue anulado"
     pila.mocks["kill_and_reap"].assert_not_awaited()
 
 
@@ -467,7 +479,7 @@ async def test_m8_ignorar_final_mismatch_pone_r4b_red(tmp_path, monkeypatch):
     baseline GREEN after revert: y
     """
     ejecutable = r"C:\Modding\DynDOLOD\DynDOLODx64.exe"
-    runner, proc, _ = _preparar_corrida(
+    runner, proc, observador = _preparar_corrida(
         tmp_path,
         rondas=[
             _ronda_output(SALIDA_ADMINISTRADA_TXT, pid=PID),
@@ -476,11 +488,21 @@ async def test_m8_ignorar_final_mismatch_pone_r4b_red(tmp_path, monkeypatch):
         ejecutable=ejecutable,
     )
 
-    async def _final_que_miente(*_args, **_kwargs):
-        # M8: ignora el trap y retorna MATCH.
-        return None
+    # M8 AISLADA (F3): a diferencia de M1, el final gate SÍ observa (consume
+    # la ronda TRAP); lo único que se muta es la INTERPRETACIÓN del mismatch
+    # —se traga el ``DynDOLODPreflightUIAError`` y continúa como si fuera
+    # MATCH—. Así M8 representa "ignorar el mismatch final", no "no observar".
+    gate_original = runner._gate_uia_output
 
-    monkeypatch.setattr(runner, "_gate_uia_output", _final_que_miente)
+    async def _m8_final_ignora_mismatch(*args, etiqueta: str = "initial", **kwargs):
+        if etiqueta == "final":
+            try:
+                return await gate_original(*args, etiqueta=etiqueta, **kwargs)
+            except ddl.DynDOLODPreflightUIAError:
+                return None  # observó el TRAP pero ignora el veredicto
+        return await gate_original(*args, etiqueta=etiqueta, **kwargs)
+
+    monkeypatch.setattr(runner, "_gate_uia_output", _m8_final_ignora_mismatch)
 
     with (
         patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(side_effect=lambda *a, **k: _spawn_de(proc))),
@@ -490,6 +512,10 @@ async def test_m8_ignorar_final_mismatch_pone_r4b_red(tmp_path, monkeypatch):
 
     # M8 "sobrevive" si proc.esperas == 1: la corrida avanzó con TRAP.
     assert proc.esperas == 1
+    # Aislamiento: hubo DOS observaciones (initial MATCH + final que observó el
+    # TRAP). Que sean dos —y no una como en M1— prueba que M8 muta el veredicto
+    # y no la observación.
+    assert observador.observaciones == 2, "M8 no está aislada: el final gate no observó el TRAP"
     pila.mocks["kill_and_reap"].assert_not_awaited()
 
 
