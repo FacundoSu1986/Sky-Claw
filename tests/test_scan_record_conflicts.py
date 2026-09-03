@@ -151,7 +151,13 @@ async def test_fallback_a_plugins_txt_si_no_hay_loadorder_o_parsea_vacio(
 
 
 async def test_source_correcto_por_archivo(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
-    """F6: loadorder usa source='loadorder'; plugins.txt usa source='plugins_txt' (asterisco obligatorio)."""
+    """F6: loadorder.txt usa source='loadorder'; plugins.txt usa source='plugins_txt'.
+
+    El ``*`` solo filtra en ``plugins.txt`` (entradas activas); en ``loadorder.txt`` no
+    requiere ``*``. Si ``loadorder.txt`` se leyera con ``source="plugins_txt"`` sus
+    líneas sin ``*`` desaparecerían; si ``plugins.txt`` se leyera como ``loadorder`` se
+    colarían los deshabilitados y los nombres quedarían con el ``*`` pegado.
+    """
     capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
     profile_dir = _perfil_con(tmp_path, {"loadorder.txt": "SinAsterisco.esp\n"})
     scanner = _scanner(
@@ -178,29 +184,6 @@ async def test_plugins_explicitos_evitan_io(monkeypatch: pytest.MonkeyPatch, tmp
     scanner = _scanner(_resolver_completo(tmp_path, resolve_modlist_path=_explota), tmp_path / "patches")
     await scanner.scan(plugins=["Explicito.esp"])
     assert capturado["plugins"] == ["Explicito.esp"]
-
-
-# R6 — source correcto por archivo
-async def test_source_por_archivo_es_el_correcto(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
-    """El ``*`` solo filtra en ``plugins.txt``; en ``loadorder.txt`` no es marca.
-
-    Si ``loadorder.txt`` se leyera con ``source="plugins_txt"`` sus líneas sin
-    ``*`` desaparecerían; si ``plugins.txt`` se leyera como ``loadorder`` se
-    colarían los deshabilitados y los nombres quedarían con el ``*`` pegado.
-    """
-    capturado = _stub_analyzer(monkeypatch, {}, ConflictReport(total_conflicts=0, critical_conflicts=0))
-    profile_dir = _perfil_con(tmp_path, {"loadorder.txt": "SinAsterisco.esp\n"})
-    scanner = _scanner(
-        _resolver_completo(tmp_path, resolve_modlist_path=lambda p: profile_dir / "modlist.txt"),
-        tmp_path / "patches",
-    )
-    await scanner.scan()
-    assert capturado["plugins"] == ["SinAsterisco.esp"]
-
-    (profile_dir / "loadorder.txt").unlink()
-    (profile_dir / "plugins.txt").write_text("*Habilitado.esp\nApagado.esp\n", encoding="utf-8")
-    await scanner.scan()
-    assert capturado["plugins"] == ["Habilitado.esp"]
 
 
 # R7 — cero plugins: reporte vacío, sin xEdit y sin resolver sus rutas

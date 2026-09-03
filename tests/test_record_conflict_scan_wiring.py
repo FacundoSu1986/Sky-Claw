@@ -57,10 +57,21 @@ def _nombres_del_arbol(arbol: ast.AST) -> set[str]:
             nombres.add(nodo.attr)
         elif isinstance(nodo, ast.ImportFrom) and nodo.module:
             nombres.add(nodo.module)
-            nombres.update(alias.name for alias in nodo.names)
+            for alias in nodo.names:
+                nombres.add(alias.name)
+                nombres.add(f"{nodo.module}.{alias.name}")
         elif isinstance(nodo, ast.Import):
             nombres.update(alias.name for alias in nodo.names)
     return nombres
+
+
+def test_nombres_del_arbol_detecta_import_from_combinado() -> None:
+    """_nombres_del_arbol preserva tanto módulo base como el target completo de ImportFrom."""
+    arbol = ast.parse("from sky_claw.app.orchestrator import supervisor\n")
+    nombres = _nombres_del_arbol(arbol)
+    assert "sky_claw.app.orchestrator.supervisor" in nombres
+    assert "sky_claw.app.orchestrator" in nombres
+    assert "supervisor" in nombres
 
 
 def _llamadas_scanner(clase: ast.ClassDef) -> list[ast.Call]:
@@ -145,5 +156,10 @@ def test_la_facade_delega_en_el_scanner() -> None:
         and receptor.value.id == "self"
     ), "La llamada debe ser self._record_conflict_scanner.scan"
 
-    kwargs = {kw.arg: kw.value.id for kw in call.keywords if kw.arg and isinstance(kw.value, ast.Name)}
+    assert call.args == [], f"La facade no debe recibir argumentos posicionales (recibió {len(call.args)})"
+    assert len(call.keywords) == 2, f"La facade debe pasar exactamente dos keywords (recibió {len(call.keywords)})"
+    for kw in call.keywords:
+        assert kw.arg is not None, "La facade no debe usar **kwargs"
+
+    kwargs = {kw.arg: kw.value.id for kw in call.keywords if kw.arg is not None and isinstance(kw.value, ast.Name)}
     assert kwargs == {"profile": "profile", "plugins": "plugins"}, f"Kwargs delegados incorrectos: {kwargs}"
