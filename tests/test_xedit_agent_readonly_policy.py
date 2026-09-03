@@ -31,10 +31,7 @@ _ESPERADOS_ALIASES = {"list_conflicts.pas": "list_all_conflicts.pas"}
 
 def _stdout_valido(script: str) -> str:
     if script == "list_all_conflicts.pas":
-        return (
-            "CONFLICT|00012345|IronSword|WEAP|Winner.esp|Loser.esp\n"
-            "SUMMARY|total_conflicts=1|critical=0|minor=1\n"
-        )
+        return "CONFLICT|00012345|IronSword|WEAP|Winner.esp|Loser.esp\nSUMMARY|total_conflicts=1|critical=0|minor=1\n"
     if script == "dump_record_detail.pas":
         return (
             "DUMP_BEGIN|00012345|IronSword|WEAP\n"
@@ -43,15 +40,9 @@ def _stdout_valido(script: str) -> str:
             "DUMP_END|00012345\n"
         )
     if script == "list_grass_worldspaces.pas":
-        return (
-            "WSGRASS|0000003C|Tamriel|Skyrim.esm\n"
-            "SUMMARY|grass_worldspaces=1|land_scanned=1|ltex_grass=1\n"
-        )
+        return "WSGRASS|0000003C|Tamriel|Skyrim.esm\nSUMMARY|grass_worldspaces=1|land_scanned=1|ltex_grass=1\n"
     if script == "list_zero_bound_grass.pas":
-        return (
-            "ZEROBOUND|00012345|Grass01|Winner.esp|Origin.esm|zeros\n"
-            "SUMMARY|total_gras=1|zero_bounds=1\n"
-        )
+        return "ZEROBOUND|00012345|Grass01|Winner.esp|Origin.esm|zeros\nSUMMARY|total_gras=1|zero_bounds=1\n"
     raise AssertionError(f"Falta fixture para {script}")
 
 
