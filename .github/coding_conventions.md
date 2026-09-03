@@ -122,6 +122,6 @@ Si dos reglas colisionan, obedecé este orden:
 |------|-------------|----------|
 | Lint | Ruff | `ruff check` **y** `ruff format --check` sin errores |
 | Type Check | Mypy | **Bloqueante** (`mypy sky_claw/`) |
-| Test | Pytest | `--cov-fail-under=60`; matrix Windows+Ubuntu × py3.11/3.12, pero Ubuntu corre con `continue-on-error` — **solo Windows bloquea** |
+| Test | Pytest | Suite completa con `--cov-fail-under=60` en Windows × py3.11/3.12 (**bloqueante**); subconjunto del core POSIX en Ubuntu py3.11 (**informativo**) |
 | Security | Bandit + pip-audit + npm audit | SAST sin high/critical; `pip-audit --strict` sobre `requirements.lock` (hashes enforced); `npm audit` del gateway de Telegram |
 | Build | PyInstaller | `sky_claw.spec` (autoderiva el VERSIONINFO de la versión del paquete); depende de los gates anteriores |
