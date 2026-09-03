@@ -422,7 +422,7 @@ async def resolve_fomod(
     éxito) más los campos estructurados de la resolución.
     """
     if fomod_installer is None:
-        return json.dumps({"success": False, "message": "FomodInstaller is not configured."})
+        return json.dumps({"success": False, "message": "FOMOD installer is not configured."})
     from sky_claw.app.core.errors import FomodParserSecurityError
     from sky_claw.local.fomod.parser import FomodParseError, parse_fomod_string
     from sky_claw.local.fomod.resolver import FomodResolver
