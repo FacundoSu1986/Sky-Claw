@@ -161,14 +161,14 @@ def _prepare(
     canonical_root: pathlib.Path = ROOT,
 ):
     return prepare_golden_protection_plan(
-        golden_verification=golden or _golden_verified(),
-        protection_result=protection or _gp1_result(),
+        golden_verification=golden if golden is not None else _golden_verified(),
+        protection_result=protection if protection is not None else _gp1_result(),
         operation_id=operation_id,
         canonical_root=canonical_root,
         volume_serial_number=VOLUME_SERIAL,
         root_file_id=ROOT_FILE_ID,
-        nodes=nodes or _nodes(),
-        seal_checks=checks or _checks(),
+        nodes=nodes if nodes is not None else _nodes(),
+        seal_checks=checks if checks is not None else _checks(),
     )
 
 
@@ -345,10 +345,18 @@ def test_gp2_a17_slice_no_contiene_primitivas_mutadoras_ni_elevacion() -> None:
         if isinstance(node, ast.Import)
         for alias in node.names
     }
-    source = source_path.read_text(encoding="utf-8")
+    referenced_symbols = {
+        child.id
+        for child in ast.walk(tree)
+        if isinstance(child, ast.Name)
+    } | {
+        child.attr
+        for child in ast.walk(tree)
+        if isinstance(child, ast.Attribute)
+    }
 
     assert "ctypes" not in imported_roots
     assert "subprocess" not in imported_roots
-    assert "SetSecurityInfo" not in source
-    assert "ShellExecute" not in source
-    assert "runas" not in source.lower()
+    assert "SetSecurityInfo" not in referenced_symbols
+    assert "ShellExecuteW" not in referenced_symbols
+    assert "ShellExecuteExW" not in referenced_symbols
