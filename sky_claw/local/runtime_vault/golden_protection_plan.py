@@ -50,6 +50,12 @@ _PARENT_UNSAFE_RIGHTS = frozenset(
         GoldenProtectionRight.CHANGE_OWNER,
     }
 )
+_PARENT_CREATE_RIGHTS = frozenset(
+    {
+        GoldenProtectionRight.ADD_FILE,
+        GoldenProtectionRight.ADD_SUBDIRECTORY,
+    }
+)
 
 
 class GoldenProtectionPlanError(RuntimeVaultError):
@@ -196,7 +202,7 @@ class GoldenProtectionPlan:
     def __post_init__(self) -> None:
         if self.state is not GoldenProtectionPlanState.PREPARED:
             raise PlanCreationError("GoldenProtectionPlan sólo representa un candidate manifest PREPARED")
-        _validate_operation_id(self.operation_id)
+        operation_id = _validate_operation_id(self.operation_id)
         canonical_root = _normalize_windows_root(self.canonical_root)
         _validate_uint(self.volume_serial_number, "volume_serial_number")
         _validate_uint(self.root_file_id, "root_file_id")
@@ -213,6 +219,7 @@ class GoldenProtectionPlan:
             root_file_id=self.root_file_id,
         )
 
+        object.__setattr__(self, "operation_id", operation_id)
         object.__setattr__(self, "canonical_root", canonical_root)
         object.__setattr__(self, "policy_version", policy_version)
 
@@ -333,6 +340,21 @@ def _validate_protection_preconditions(result: GoldenProtectionResult) -> None:
     if unsafe:
         derechos = ", ".join(sorted(right.value for right in unsafe))
         raise PlanCreationError(f"PARENT_UNSAFE -> REFUSE_TO_APPLY ({derechos})")
+
+    observed_nodes = evidence.nodes
+    if observed_nodes is None or not observed_nodes:
+        raise PlanCreationError("GP1 no entregó un NodeSet completo para evaluar el root")
+    roots = [node for node in observed_nodes if node.relative_path in ("", ".")]
+    if len(roots) != 1 or roots[0].granted_rights is None:
+        raise PlanCreationError("la política del root no puede evaluarse de forma concluyente")
+    root = roots[0]
+    parent_create = parent.granted_rights & _PARENT_CREATE_RIGHTS
+    if GoldenProtectionRight.DELETE in root.granted_rights and parent_create:
+        derechos = ", ".join(sorted(right.value for right in parent_create))
+        raise PlanCreationError(
+            "PARENT_UNSAFE -> REFUSE_TO_APPLY (rename chain: root DELETE + parent "
+            f"{derechos})"
+        )
 
 
 def _validate_nodes_against_gp1(
@@ -479,10 +501,11 @@ def _validate_canonical_relpath(value: str) -> str:
     return value
 
 
-def _validate_operation_id(value: str) -> None:
+def _validate_operation_id(value: str) -> str:
     normalized = _validate_nonempty_text(value, "operation_id")
     if normalized in {".", ".."} or any(ch in normalized for ch in ("/", "\\", "\x00")):
         raise PlanCreationError("operation_id no puede escapar su directorio de staging")
+    return normalized
 
 
 def _validate_nonempty_text(value: str, field_name: str) -> str:
