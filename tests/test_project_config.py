@@ -227,24 +227,25 @@ def test_modulos_de_logging_tienen_override_mypy_strict() -> None:
     assert target_modules <= strict_modules
 
 
-def test_seams_pr5_orchestrator_bajo_mypy_strict() -> None:
-    """Los seams PR5 nacen bajo mypy estricto y no quedan silenciosamente exentos.
+def test_seams_pr5_pr6_orchestrator_bajo_mypy_strict() -> None:
+    """Los seams PR5/PR6 nacen bajo mypy estricto y no quedan silenciosamente exentos.
 
-    Guardrail hermético para el P1 de #540: ``active_plugins`` y
-    ``plugin_limit_guard`` viven bajo ``sky_claw/app/orchestrator/``, que el
-    override amplio ``sky_claw.app.orchestrator.*`` marca con
-    ``ignore_errors = true``. Sin una entrada estricta *explícita* por módulo,
-    ``mypy sky_claw/`` los tapa: el gate bloqueante saldría verde aunque estos
-    módulos de producción tuvieran errores de tipos reales (exactamente lo que
-    reprodujo el P1: ``source`` inferido como ``str`` en vez del ``Literal``
-    ``PluginListSource``).
+    Guardrail hermético para el P1 de #540: ``active_plugins``,
+    ``plugin_limit_guard`` y ``record_conflict_scan`` viven bajo
+    ``sky_claw/app/orchestrator/``, que el override amplio
+    ``sky_claw.app.orchestrator.*`` marca con ``ignore_errors = true``. Sin una
+    entrada estricta *explícita* por módulo, ``mypy sky_claw/`` los tapa: el gate
+    bloqueante saldría verde aunque estos módulos de producción tuvieran errores
+    de tipos reales (exactamente lo que reprodujo el P1: ``source`` inferido como
+    ``str`` en vez del ``Literal`` ``PluginListSource`` — el mismo patrón que
+    ``record_conflict_scan`` evita con su tuple anotado).
 
     Este test parsea ``pyproject.toml`` estructuralmente (no por substring) y
-    exige que ambos módulos figuren en un override ``strict = true`` /
+    exige que los tres módulos figuren en un override ``strict = true`` /
     ``ignore_errors = false``. Si alguien los quita de ahí, caen bajo el wildcard
     ``ignore_errors``: ``mypy`` volvería a quedar verde por exención, pero este
-    test FALLA. La regla del hermano aplica: los dos módulos del par se congelan
-    juntos, no uno solo.
+    test FALLA. La regla del hermano aplica: la familia se congela junta, no un
+    módulo suelto.
     """
     with (REPO_ROOT / "pyproject.toml").open("rb") as file:
         pyproject = tomllib.load(file)
@@ -252,6 +253,7 @@ def test_seams_pr5_orchestrator_bajo_mypy_strict() -> None:
     target_modules = {
         "sky_claw.app.orchestrator.active_plugins",
         "sky_claw.app.orchestrator.plugin_limit_guard",
+        "sky_claw.app.orchestrator.record_conflict_scan",
     }
 
     strict_modules: set[str] = set()
@@ -271,7 +273,7 @@ def test_seams_pr5_orchestrator_bajo_mypy_strict() -> None:
     # entonces tampoco habría exención silenciosa que atajar.
     assert "sky_claw.app.orchestrator.*" in ignore_modules
 
-    # Núcleo del guardrail: ambos seams PR5 deben estar bajo mypy estricto.
+    # Núcleo del guardrail: todos los seams PR5/PR6 bajo mypy estricto.
     assert target_modules <= strict_modules
 
 
