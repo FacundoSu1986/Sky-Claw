@@ -94,7 +94,7 @@ class NodeSecurityBackup:
     """
 
     relative_path: str
-    node_kind: GoldenProtectionNodeKind | str
+    node_kind: GoldenProtectionNodeKind
     volume_serial_number: int
     file_id: int
     pre_sd_bytes_b64: str
@@ -115,7 +115,11 @@ class NodeSecurityBackup:
 
         _validate_uint(self.volume_serial_number, "volume_serial_number")
         _validate_uint(self.file_id, "file_id")
-        if not isinstance(self.pre_sd_length, int) or isinstance(self.pre_sd_length, bool) or self.pre_sd_length <= 0:
+        if (
+            not isinstance(self.pre_sd_length, int)
+            or isinstance(self.pre_sd_length, bool)
+            or self.pre_sd_length <= 0
+        ):
             raise SecurityBackupIntegrityError("pre_sd_length debe ser un entero positivo")
         if not isinstance(self.dacl_control_flags, int) or isinstance(self.dacl_control_flags, bool):
             raise SecurityBackupIntegrityError("dacl_control_flags debe ser un entero")
@@ -200,9 +204,7 @@ class GoldenProtectionPlan:
             raise PlanCreationError("tree_digest debe ser TreeDigest")
         policy_version = _validate_nonempty_text(self.policy_version, "policy_version")
         if self.initial_protection_state not in _ALLOWED_INITIAL_STATES:
-            raise PlanCreationError(
-                "el plan mutador sólo admite estado inicial UNPROTECTED o WRITE_PROTECTED"
-            )
+            raise PlanCreationError("el plan mutador sólo admite estado inicial UNPROTECTED o WRITE_PROTECTED")
         if not isinstance(self.nodes, tuple):
             raise PlanCreationError("nodes debe ser una tupla inmutable")
         _validate_node_set(
@@ -275,6 +277,7 @@ def prepare_golden_protection_plan(
         )
 
     _validate_nodes_against_gp1(protection_result, nodes)
+    ordered_nodes = tuple(sorted(nodes, key=lambda node: (node.relative_path, node.node_kind.value)))
 
     return GoldenProtectionPlan(
         operation_id=operation_id,
@@ -284,7 +287,7 @@ def prepare_golden_protection_plan(
         tree_digest=descriptor.tree_digest,
         policy_version=policy_version,
         initial_protection_state=protection_result.state,
-        nodes=nodes,
+        nodes=ordered_nodes,
     )
 
 
