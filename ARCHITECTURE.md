@@ -6,6 +6,8 @@
 > `sky_claw/app/`, `sky_claw/local/` y ADR aprobados.
 > **Última verificación integral:** 2026-07-25 sobre `origin/main` `c6ab35e`.
 > **Sincronización DB/lifecycle:** 2026-08-16 sobre `main` `7156718`.
+> **Sincronización parcial xEdit LLM:** 2026-09-04 sobre `main` `10354c2b` (#548);
+> limitada a la frontera read-only de `run_xedit_script` en la ruta del agente.
 
 Sky-Claw es un plano de control local para operar flujos de modding de Skyrim
 SE/AE sobre Mod Organizer 2. Combina interfaces GUI, CLI y Telegram con dos
@@ -75,6 +77,13 @@ La referencia detallada y el alcance verificado están en
 
 No son alias ni comparten la misma API. El detalle está en
 [agent_tool_routing.md](docs/architecture/agent_tool_routing.md).
+
+En la ruta LLM, la capacidad de xEdit expuesta al agente (`run_xedit_script`) es
+**read-only** desde #548: sólo ejecuta una allowlist de scripts de diagnóstico
+bundleados, con la misma política compartida por el schema y el runtime, staging
+canónico obligatorio y fallo cerrado ante nombres desconocidos. Las rutas de xEdit
+que **mutan** (rituales vía `XEditPipelineService`) tienen otra frontera; ver
+[security_boundaries.md](docs/architecture/security_boundaries.md).
 
 ### Resultados de tools
 

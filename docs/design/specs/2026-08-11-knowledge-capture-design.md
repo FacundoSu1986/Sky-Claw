@@ -487,3 +487,41 @@ cuenta; **este trabajo no lo corrige**, solo lo deja registrado.
 
 **Ruido.** Un caso por operación llenaría el corpus de material sin valor. El criterio de apertura
 de §4.1 es una decisión de diseño que habrá que revisar con datos reales.
+
+## Addendum — 2026-09-04 (sincronización parcial sobre `main` `10354c2b`, PR #548)
+
+> **Alcance:** actualiza únicamente lo que la spec afirma sobre `run_xedit_script` en
+> §10 y §3.5. **No** reescribe el resto: el diseño se verificó sobre `main 6d52685`
+> (§2) y ese hallazgo se conserva como estado del baseline de agosto de 2026.
+
+Las afirmaciones de §10 (tabla de entrypoints y "Hallazgo colateral") y de §3.5
+describían `run_xedit_script` como una ejecución directa de xEdit "sin lock, sin
+journal y sin rollback", segunda superficie mutante sobre el mismo recurso que la
+ruta de Rituales. **Era correcto para el baseline de agosto de 2026.**
+
+El **PR #548** (`main 10354c2b`) restringió después esa superficie (verificado
+leyendo el código actual): el handler cableado se movió a
+`sky_claw/app/agent/tools/xedit_readonly_tool.py` y quedó limitado a una allowlist
+de scripts **bundleados read-only** (`XEDIT_AGENT_ALLOWED_SCRIPT_NAMES`), con la
+misma política compartida entre el schema (`XEditAnalysisParams`) y el runtime,
+staging canónico obligatorio vía `ensure_scripts_staged()` (fail-closed si el runner
+no puede probar provenance), nombres desconocidos que fallan cerrados y parsing por
+protocolo.
+
+**Consecuencia para esta spec:**
+
+- La caracterización de `run_xedit_script` como **capacidad mutante** del agente LLM
+  ya no describe `main`: esa superficie es hoy read-only.
+- La tabla de `evidence_capability` (§3.5) para xEdit sigue en pie **en lo que mide**
+  —exit code, `stderr` hasheado y truncamiento declarados en el camino de fallo, sin
+  evidencia estructurada en éxito— porque esa capacidad la aporta el `XEditRunner`,
+  que la ruta read-only sigue usando; lo que cambia es que la ejecución iniciada por
+  el agente ya no es un mutador sin lock/journal.
+- El punto de diseño sobre "entrypoints mutantes vs. capa de servicios" (§9/§10)
+  debe re-derivarse del código actual y **no** inferirse de la topología de agosto.
+  La ruta **mutante** de xEdit (Rituales → `XEditPipelineService`) no cambió con #548.
+
+**Nota de drift (preexistente, no corregido acá):** la función `run_xedit_script` de
+`sky_claw/app/agent/tools/system_tools.py` que §10 citaba en `:172-197` sigue
+existiendo pero **ya no está cableada** (el facade importa la versión read-only).
+Queda como código sin consumidor, a evaluar por su cuenta.

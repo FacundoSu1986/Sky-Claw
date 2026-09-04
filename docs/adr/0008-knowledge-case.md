@@ -402,3 +402,49 @@ a través de `XEditPipelineService` —con lock, journal y rollback— y la ruta
 ejecuta sin ninguna de las tres, sobre el mismo recurso. Es la topología "dos superficies, un
 recurso" que `AGENTS.md` declara clase de defecto dominante, y precede a este trabajo. Queda
 registrado para que se evalúe por su cuenta.
+
+## Addendum — 2026-09-04 (sincronización parcial sobre `main` `10354c2b`, PR #548)
+
+> **Alcance del addendum:** actualiza únicamente la caracterización de
+> `run_xedit_script` en la superficie del agente LLM. **No** revierte, reescribe ni
+> reverifica el resto del ADR. El hallazgo original —tabla de §Verificación y
+> "Hallazgo colateral" de arriba, sobre `main f8019c9…6d52685` a 2026-08-11— se
+> conserva intacto: describía la arquitectura vigente en ese baseline.
+
+El hallazgo histórico describía `run_xedit_script`
+(`sky_claw/app/agent/tools/system_tools.py:172-197` en aquel baseline) ejecutando
+scripts de xEdit de forma directa —"sin lock, sin journal y sin rollback"— sobre el
+mismo recurso que la ruta de Rituales, y lo señalaba como la topología "dos
+superficies, un recurso".
+
+El **PR #548** (`main 10354c2b`) restringió después la superficie LLM (verificado
+leyendo el código actual):
+
+- el handler cableado del tool `run_xedit_script` vive ahora en
+  `sky_claw/app/agent/tools/xedit_readonly_tool.py`, y el `AsyncToolRegistry` lo
+  cablea desde ahí (`sky_claw/app/agent/tools/__init__.py`);
+- la capacidad quedó limitada a una **allowlist de scripts bundleados read-only**
+  (`XEDIT_AGENT_ALLOWED_SCRIPT_NAMES` en `xedit_policy.py`), compartida entre el
+  schema Pydantic (`XEditAnalysisParams`) y el runtime — el schema anuncia
+  exactamente lo que la ejecución acepta;
+- un nombre desconocido **falla cerrado** (ValidationError del schema y error del
+  handler), y un runner que no pueda garantizar **staging canónico / provenance**
+  vía `ensure_scripts_staged()` también falla cerrado **antes** de ejecutar;
+- cada script se enruta a su parser/analyzer específico del protocolo.
+
+**Consecuencia para este ADR:** la caracterización antigua ya **no** describe
+correctamente el riesgo de *capacidad mutante* del LLM vía `run_xedit_script`. Esa
+superficie es hoy read-only (diagnósticos), no una segunda superficie mutante sobre
+el recurso compartido. Cualquier deuda restante de observabilidad/captura de
+conocimiento —que esta ruta no atraviese un servicio, o no emita evidencia de
+proceso en el camino de éxito— debe evaluarse **por separado y sobre el código
+actual**, no inferirse de la topología de agosto. La frontera de las rutas
+**mutantes** de xEdit (Rituales → `XEditPipelineService`, con lock/journal/rollback)
+es distinta y **no** cambió con #548.
+
+**Nota de drift de código (preexistente, fuera del alcance de este ADR y no
+corregido acá):** la función `run_xedit_script` de
+`sky_claw/app/agent/tools/system_tools.py` —la que el hallazgo citaba en `:172-197`—
+sigue existiendo pero **ya no está cableada** (el facade importa la versión
+read-only; nadie la importa ni la referencia). Se registra como código sin
+consumidor para que se evalúe por su cuenta, no como una ruta viva.

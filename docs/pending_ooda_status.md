@@ -28,6 +28,13 @@
 > `tests/test_gui_theme_contracts.py`. Ambas pasan a **Parcial**; no afirma el cierre
 > integral de transiciones ni el inventario exhaustivo de formularios/labels. **No** es una
 > reverificación integral del resto de la tabla.
+>
+> **Re-baseline parcial 2026-09-04 sobre `main` `10354c2b`:** cubre exclusivamente la
+> fila `F9` (Strangler Fig del composition root de `SupervisorAgent`), revalidada contra
+> los PR mergeados #518, #520, #524, #526/#527 y #540 y contra el árbol actual de
+> `sky_claw/app/orchestrator/`. Pasa de **Abierto** a **Parcial**; el PR6 (#545,
+> `RecordConflictScanner`) sigue **ABIERTO** y no se cuenta como integrado. **No** es una
+> reverificación integral del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
@@ -74,7 +81,7 @@ confirmarlo contra código y tests.
 | F6 | Cerrado | #331 | — | auditoría de resiliencia #319 |
 | F7 | Cerrado | #343 | — | auditoría de resiliencia #319 |
 | F8 | Cerrado | #343 | — | auditoría de resiliencia #319 |
-| F9 | Abierto | — | Reducir el composition root de `SupervisorAgent` incrementalmente | auditoría de resiliencia #319 |
+| F9 | Parcial | #518, #520, #524, #526/#527, #540 | Extraídos los seams PR1–PR5 del composition root de `SupervisorAgent` (dispatcher deps tipadas, composición de servicios, grass runtime deps, asset conflict scan y plugin-limit). Falta extraer el seam de `scan_record_conflicts` (PR6, en el PR #545 **aún ABIERTO** — no integrado en `main`) y la fachada residual `execute_wrye_bash_pipeline`; el resto del root (rollback, HITL, telemetría, event bus) queda fuera del roadmap de seams por ser lifecycle/UI, no adaptadores de dominio | `test_dispatcher_dependencies.py`, `test_orchestration_composition.py`, `test_grass_runtime_deps_provider.py`, `test_asset_conflict_scan.py`, `test_plugin_limit_guard.py` |
 | F8 USVFS | Parcial | ADR 0007 y smoke `vfs-health` | Migrar runners restantes y completar smokes reales de cancelación, perfil y rollback | historial OODA, addendum F8 USVFS |
 | Detección de enlaces | Cerrado | #404 y #405 | — | `test_links.py` |
 | Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |

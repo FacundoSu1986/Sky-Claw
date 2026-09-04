@@ -18,6 +18,10 @@ Sky-Claw is a local, AI-assisted control plane for Skyrim Special Edition and An
 >
 > **Sincronización release/empaquetado:** 2026-08-16 sobre `main` `f6d502c`;
 > limitada al estado público de los artefactos de `v0.2.4`.
+>
+> **Sincronización parcial xEdit LLM:** 2026-09-04 sobre `main` `10354c2b` (#548);
+> limitada a la frontera read-only de `run_xedit_script`. No implica reverificación
+> integral del resto del README.
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
@@ -73,7 +77,7 @@ Usuario (GUI / CLI / Telegram)
    |-- check_load_order  -> MO2Controller (modlist.txt)
    |-- detect_conflicts  -> SQL JOIN sobre dependencias
    |-- run_loot_sort     -> VfsExecutionBroker -> worker LOOT bajo MO2/USVFS
-   |-- run_xedit_script  -> XEditRunner
+   |-- run_xedit_script  -> xedit_readonly_tool (allowlist read-only + staging canónico) -> XEditRunner
    |-- download_mod      -> NexusDownloader + HITLGuard
          |
     MO2 Portable / Skyrim SE
@@ -132,6 +136,12 @@ Sky-Claw aplica una política de seguridad estricta:
 - **HITLGuard**: `download_mod` y los rituales que lo inyectan esperan una
   decisión humana; una ruta sin ese wiring no hereda HITL automáticamente.
 - **Sandboxing**: Todas las operaciones de archivo están restringidas al directorio de MO2 y carpetas de instalación autorizadas.
+- **xEdit del agente LLM read-only** (#548): la tool `run_xedit_script` que expone el
+  agente sólo ejecuta una allowlist de scripts de diagnóstico bundleados read-only;
+  el schema y el runtime comparten esa política, un nombre desconocido falla cerrado
+  y se exige staging canónico antes de ejecutar. Esto **no** convierte en read-only a
+  todas las rutas internas de xEdit: los rituales/orquestador mutantes usan otra
+  frontera (ver [fronteras de seguridad](docs/architecture/security_boundaries.md)).
 
 ---
 
