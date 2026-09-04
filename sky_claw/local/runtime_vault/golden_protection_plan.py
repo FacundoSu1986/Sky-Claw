@@ -121,11 +121,7 @@ class NodeSecurityBackup:
 
         _validate_uint(self.volume_serial_number, "volume_serial_number")
         _validate_uint(self.file_id, "file_id")
-        if (
-            not isinstance(self.pre_sd_length, int)
-            or isinstance(self.pre_sd_length, bool)
-            or self.pre_sd_length <= 0
-        ):
+        if not isinstance(self.pre_sd_length, int) or isinstance(self.pre_sd_length, bool) or self.pre_sd_length <= 0:
             raise SecurityBackupIntegrityError("pre_sd_length debe ser un entero positivo")
         if not isinstance(self.dacl_control_flags, int) or isinstance(self.dacl_control_flags, bool):
             raise SecurityBackupIntegrityError("dacl_control_flags debe ser un entero")
@@ -151,9 +147,7 @@ class NodeSecurityBackup:
         digest = _validate_sha256(self.pre_sd_sha256, "pre_sd_sha256")
         observed_digest = hashlib.sha256(sd_bytes).hexdigest()
         if observed_digest != digest:
-            raise SecurityBackupIntegrityError(
-                "sha256(base64_decode(pre_sd_bytes_b64)) no coincide con pre_sd_sha256"
-            )
+            raise SecurityBackupIntegrityError("sha256(base64_decode(pre_sd_bytes_b64)) no coincide con pre_sd_sha256")
 
         object.__setattr__(self, "relative_path", relative_path)
         object.__setattr__(self, "node_kind", node_kind)
@@ -321,8 +315,7 @@ def _validate_protection_preconditions(result: GoldenProtectionResult) -> None:
         raise PlanCreationError("protection_result debe ser GoldenProtectionResult")
     if result.state not in _ALLOWED_INITIAL_STATES:
         raise PlanCreationError(
-            "GP2 sólo prepara mutación desde UNPROTECTED o WRITE_PROTECTED; "
-            f"estado observado: {result.state.value}"
+            f"GP2 sólo prepara mutación desde UNPROTECTED o WRITE_PROTECTED; estado observado: {result.state.value}"
         )
     if result.assurance_scope != "CURRENT_EFFECTIVE_UNELEVATED_TOKEN":
         raise PlanCreationError("assurance_scope GP1 no coincide con el contrato GP2")
@@ -351,10 +344,7 @@ def _validate_protection_preconditions(result: GoldenProtectionResult) -> None:
     parent_create = parent.granted_rights & _PARENT_CREATE_RIGHTS
     if GoldenProtectionRight.DELETE in root.granted_rights and parent_create:
         derechos = ", ".join(sorted(right.value for right in parent_create))
-        raise PlanCreationError(
-            "PARENT_UNSAFE -> REFUSE_TO_APPLY (rename chain: root DELETE + parent "
-            f"{derechos})"
-        )
+        raise PlanCreationError(f"PARENT_UNSAFE -> REFUSE_TO_APPLY (rename chain: root DELETE + parent {derechos})")
 
 
 def _validate_nodes_against_gp1(
@@ -406,9 +396,7 @@ def _validate_node_set(
             raise PlanCreationError("todos los nodos deben pertenecer al volumen del root")
         physical_id = (node.volume_serial_number, node.file_id)
         if physical_id in physical_ids:
-            raise DuplicateFileIdError(
-                "DuplicateFileIdError: dos nodos comparten (VolumeSerialNumber, FileId)"
-            )
+            raise DuplicateFileIdError("DuplicateFileIdError: dos nodos comparten (VolumeSerialNumber, FileId)")
         physical_ids.add(physical_id)
         if node.relative_path == ".":
             root_nodes.append(node)
