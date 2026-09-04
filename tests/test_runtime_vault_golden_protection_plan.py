@@ -464,12 +464,6 @@ class TestGoldenProtectionPlan:
         volume_serial: int,
         root_file_id: int,
     ) -> None:
-        nodes = _nodes()
-        if volume_serial != VOLUME_SERIAL:
-            nodes = tuple(
-                _backup(node.relative_path, node.node_kind, node.file_id, volume_serial=volume_serial)
-                for node in nodes
-            )
         with pytest.raises(PlanCreationError):
             prepare_golden_protection_plan(
                 golden_verification=_golden_verified(),
@@ -478,7 +472,7 @@ class TestGoldenProtectionPlan:
                 canonical_root=ROOT,
                 volume_serial_number=volume_serial,
                 root_file_id=root_file_id,
-                nodes=nodes,
+                nodes=_nodes(),
                 seal_checks=_checks(),
             )
 
