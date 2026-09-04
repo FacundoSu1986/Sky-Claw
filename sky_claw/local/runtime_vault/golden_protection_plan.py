@@ -33,6 +33,7 @@ from sky_claw.local.runtime_vault.protection import (
     GoldenProtectionResult,
     GoldenProtectionRight,
     GoldenProtectionState,
+    classify_protection,
 )
 
 _SE_DACL_PROTECTED = 0x1000
@@ -313,6 +314,9 @@ def seal_golden_protection_plan(plan: GoldenProtectionPlan) -> SealedGoldenProte
 def _validate_protection_preconditions(result: GoldenProtectionResult) -> None:
     if not isinstance(result, GoldenProtectionResult):
         raise PlanCreationError("protection_result debe ser GoldenProtectionResult")
+    canonical_result = classify_protection(result.evidence)
+    if canonical_result != result:
+        raise PlanCreationError("protection_result no coincide con la clasificación canónica GP1")
     if result.state not in _ALLOWED_INITIAL_STATES:
         raise PlanCreationError(
             f"GP2 sólo prepara mutación desde UNPROTECTED o WRITE_PROTECTED; estado observado: {result.state.value}"
@@ -341,8 +345,10 @@ def _validate_protection_preconditions(result: GoldenProtectionResult) -> None:
     if len(roots) != 1 or roots[0].granted_rights is None:
         raise PlanCreationError("la política del root no puede evaluarse de forma concluyente")
     root = roots[0]
+    root_rights = root.granted_rights
+    assert root_rights is not None
     parent_create = parent.granted_rights & _PARENT_CREATE_RIGHTS
-    if GoldenProtectionRight.DELETE in root.granted_rights and parent_create:
+    if GoldenProtectionRight.DELETE in root_rights and parent_create:
         derechos = ", ".join(sorted(right.value for right in parent_create))
         raise PlanCreationError(f"PARENT_UNSAFE -> REFUSE_TO_APPLY (rename chain: root DELETE + parent {derechos})")
 
