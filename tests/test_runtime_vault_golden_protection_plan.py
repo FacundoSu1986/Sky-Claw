@@ -362,19 +362,10 @@ def test_gp2_a19_slice_no_contiene_primitivas_mutadoras_ni_elevacion() -> None:
     source_path = pathlib.Path("sky_claw/local/runtime_vault/golden_protection_plan.py")
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     imported_roots = {
-        alias.name.split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
+        alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
     }
-    referenced_symbols = {
-        child.id
-        for child in ast.walk(tree)
-        if isinstance(child, ast.Name)
-    } | {
-        child.attr
-        for child in ast.walk(tree)
-        if isinstance(child, ast.Attribute)
+    referenced_symbols = {child.id for child in ast.walk(tree) if isinstance(child, ast.Name)} | {
+        child.attr for child in ast.walk(tree) if isinstance(child, ast.Attribute)
     }
 
     assert "ctypes" not in imported_roots
