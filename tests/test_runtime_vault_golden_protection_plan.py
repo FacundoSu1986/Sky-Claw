@@ -74,6 +74,7 @@ def _gp1_result(
     *,
     state: GoldenProtectionState = GoldenProtectionState.UNPROTECTED,
     elevated: bool = False,
+    root_rights: frozenset[GoldenProtectionRight] = frozenset({GoldenProtectionRight.READ_DATA}),
     parent_rights: frozenset[GoldenProtectionRight] = frozenset({GoldenProtectionRight.READ_DATA}),
     nodes: tuple[NodeProtectionObservation, ...] | None = None,
 ) -> GoldenProtectionResult:
@@ -82,7 +83,7 @@ def _gp1_result(
             relative_path=".",
             node_kind="dir",
             owner_sid="S-1-5-21-1000",
-            granted_rights=frozenset({GoldenProtectionRight.READ_DATA}),
+            granted_rights=root_rights,
         ),
         NodeProtectionObservation(
             relative_path="Data/Skyrim.esm",
@@ -261,7 +262,23 @@ class TestGoldenProtectionPlan:
         with pytest.raises(PlanCreationError, match="PARENT_UNSAFE"):
             _prepare(protection=_gp1_result(parent_rights=frozenset({unsafe_right})))
 
-    def test_gp2_a10_nodeset_debe_ser_literalmente_igual_al_observado_por_gp1(self) -> None:
+    @pytest.mark.parametrize(
+        "create_right",
+        [GoldenProtectionRight.ADD_FILE, GoldenProtectionRight.ADD_SUBDIRECTORY],
+    )
+    def test_gp2_a10_rename_chain_root_delete_mas_parent_create_es_unsafe(
+        self,
+        create_right: GoldenProtectionRight,
+    ) -> None:
+        protection = _gp1_result(
+            root_rights=frozenset({GoldenProtectionRight.DELETE}),
+            parent_rights=frozenset({create_right}),
+        )
+
+        with pytest.raises(PlanCreationError, match="rename chain"):
+            _prepare(protection=protection)
+
+    def test_gp2_a11_nodeset_debe_ser_literalmente_igual_al_observado_por_gp1(self) -> None:
         observed = (
             NodeProtectionObservation(
                 relative_path=".",
@@ -273,7 +290,7 @@ class TestGoldenProtectionPlan:
         with pytest.raises(PlanCreationError, match="MANIFEST_NODE_SET"):
             _prepare(protection=_gp1_result(nodes=observed))
 
-    def test_gp2_a11_file_id_duplicado_falla_antes_de_mutacion(self) -> None:
+    def test_gp2_a12_file_id_duplicado_falla_antes_de_mutacion(self) -> None:
         duplicate = (
             _backup(".", GoldenProtectionNodeKind.DIR, ROOT_FILE_ID),
             _backup("Data/Skyrim.esm", GoldenProtectionNodeKind.FILE, ROOT_FILE_ID),
@@ -285,22 +302,27 @@ class TestGoldenProtectionPlan:
         "gate",
         ["reparse_points_absent", "external_hardlinks_absent", "post_inventory_structural_match"],
     )
-    def test_gp2_a12_cada_seal_gate_es_obligatorio(self, gate: str) -> None:
+    def test_gp2_a13_cada_seal_gate_es_obligatorio(self, gate: str) -> None:
         with pytest.raises(PlanCreationError, match="sellado exige"):
             _prepare(checks=_checks(**{gate: False}))
 
-    def test_gp2_a13_root_rv2_y_root_del_plan_deben_coincidir(self) -> None:
+    def test_gp2_a14_root_rv2_y_root_del_plan_deben_coincidir(self) -> None:
         with pytest.raises(PlanCreationError, match="canonical_root no coincide"):
             _prepare(canonical_root=pathlib.Path("G:/Otro/Golden"))
 
     @pytest.mark.parametrize("operation_id", ["../escape", "a/b", "a\\b", " "])
-    def test_gp2_a14_operation_id_no_puede_escapar_staging(self, operation_id: str) -> None:
+    def test_gp2_a15_operation_id_no_puede_escapar_staging(self, operation_id: str) -> None:
         with pytest.raises(PlanCreationError):
             _prepare(operation_id=operation_id)
 
+    def test_gp2_a16_operation_id_se_canonicaliza_antes_de_sellarlo(self) -> None:
+        plan = _prepare(operation_id="  gp2-op-001  ")
+
+        assert plan.operation_id == "gp2-op-001"
+
 
 class TestGoldenProtectionSeal:
-    def test_gp2_a15_manifest_es_json_canonico_determinista_y_digest_ligado(self) -> None:
+    def test_gp2_a17_manifest_es_json_canonico_determinista_y_digest_ligado(self) -> None:
         first = seal_golden_protection_plan(_prepare(nodes=_nodes()))
         second = seal_golden_protection_plan(_prepare(nodes=tuple(reversed(_nodes()))))
 
@@ -315,7 +337,7 @@ class TestGoldenProtectionSeal:
         assert b": " not in first.candidate_manifest_bytes
         assert b", " not in first.candidate_manifest_bytes
 
-    def test_gp2_a16_candidate_manifest_contiene_abi_pre_completo(self) -> None:
+    def test_gp2_a18_candidate_manifest_contiene_abi_pre_completo(self) -> None:
         sealed = seal_golden_protection_plan(_prepare())
         payload = json.loads(sealed.candidate_manifest_bytes)
         node = payload["nodes"][0]
@@ -336,7 +358,7 @@ class TestGoldenProtectionSeal:
         } == set(node)
 
 
-def test_gp2_a17_slice_no_contiene_primitivas_mutadoras_ni_elevacion() -> None:
+def test_gp2_a19_slice_no_contiene_primitivas_mutadoras_ni_elevacion() -> None:
     source_path = pathlib.Path("sky_claw/local/runtime_vault/golden_protection_plan.py")
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     imported_roots = {
