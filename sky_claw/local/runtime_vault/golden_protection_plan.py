@@ -21,6 +21,7 @@ import json
 import ntpath
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -38,6 +39,8 @@ from sky_claw.local.runtime_vault.protection import (
 
 _SE_DACL_PROTECTED = 0x1000
 _SID_RE = re.compile(r"^S-\d+(?:-\d+)+$")
+_MAX_VOLUME_SERIAL_NUMBER = (1 << 64) - 1
+_MAX_FILE_ID = (1 << 128) - 1
 _ALLOWED_INITIAL_STATES = frozenset(
     {
         GoldenProtectionState.UNPROTECTED,
@@ -120,8 +123,18 @@ class NodeSecurityBackup:
         except (TypeError, ValueError) as exc:
             raise SecurityBackupIntegrityError("node_kind debe ser 'dir' o 'file'") from exc
 
-        _validate_uint(self.volume_serial_number, "volume_serial_number")
-        _validate_uint(self.file_id, "file_id")
+        _validate_uint(
+            self.volume_serial_number,
+            "volume_serial_number",
+            max_value=_MAX_VOLUME_SERIAL_NUMBER,
+            error_cls=SecurityBackupIntegrityError,
+        )
+        _validate_uint(
+            self.file_id,
+            "file_id",
+            max_value=_MAX_FILE_ID,
+            error_cls=SecurityBackupIntegrityError,
+        )
         if not isinstance(self.pre_sd_length, int) or isinstance(self.pre_sd_length, bool) or self.pre_sd_length <= 0:
             raise SecurityBackupIntegrityError("pre_sd_length debe ser un entero positivo")
         if not isinstance(self.dacl_control_flags, int) or isinstance(self.dacl_control_flags, bool):
@@ -199,8 +212,12 @@ class GoldenProtectionPlan:
             raise PlanCreationError("GoldenProtectionPlan sólo representa un candidate manifest PREPARED")
         operation_id = _validate_operation_id(self.operation_id)
         canonical_root = _normalize_windows_root(self.canonical_root)
-        _validate_uint(self.volume_serial_number, "volume_serial_number")
-        _validate_uint(self.root_file_id, "root_file_id")
+        _validate_uint(
+            self.volume_serial_number,
+            "volume_serial_number",
+            max_value=_MAX_VOLUME_SERIAL_NUMBER,
+        )
+        _validate_uint(self.root_file_id, "root_file_id", max_value=_MAX_FILE_ID)
         if not isinstance(self.tree_digest, TreeDigest):
             raise PlanCreationError("tree_digest debe ser TreeDigest")
         policy_version = _validate_nonempty_text(self.policy_version, "policy_version")
@@ -232,9 +249,18 @@ class SealedGoldenProtectionPlan:
     staging_digest: str
 
     def __post_init__(self) -> None:
-        if not self.candidate_manifest_bytes:
-            raise PlanCreationError("candidate_manifest_bytes no puede ser vacío")
-        digest = _validate_sha256(self.staging_digest, "staging_digest")
+        if not isinstance(self.plan, GoldenProtectionPlan):
+            raise PlanCreationError("plan debe ser GoldenProtectionPlan")
+        if not isinstance(self.candidate_manifest_bytes, bytes) or not self.candidate_manifest_bytes:
+            raise PlanCreationError("candidate_manifest_bytes debe ser bytes no vacío")
+        expected_bytes = _canonical_manifest_bytes(self.plan)
+        if self.candidate_manifest_bytes != expected_bytes:
+            raise PlanCreationError("candidate_manifest_bytes no coincide con la serialización canónica de plan")
+        digest = _validate_sha256(
+            self.staging_digest,
+            "staging_digest",
+            error_cls=PlanCreationError,
+        )
         if hashlib.sha256(self.candidate_manifest_bytes).hexdigest() != digest:
             raise PlanCreationError("staging_digest no coincide con candidate_manifest_bytes")
         object.__setattr__(self, "staging_digest", digest)
@@ -279,7 +305,7 @@ def prepare_golden_protection_plan(
         )
 
     _validate_nodes_against_gp1(protection_result, nodes)
-    ordered_nodes = tuple(sorted(nodes, key=lambda node: (node.relative_path, node.node_kind.value)))
+    ordered_nodes = tuple(sorted(nodes, key=_bottom_up_node_sort_key))
 
     return GoldenProtectionPlan(
         operation_id=operation_id,
@@ -297,13 +323,7 @@ def seal_golden_protection_plan(plan: GoldenProtectionPlan) -> SealedGoldenProte
     """Serializa el candidate manifest en JSON canónico y calcula ``staging_digest``."""
     if not isinstance(plan, GoldenProtectionPlan):
         raise PlanCreationError("plan debe ser GoldenProtectionPlan")
-    payload = _plan_to_manifest_dict(plan)
-    manifest_bytes = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    manifest_bytes = _canonical_manifest_bytes(plan)
     return SealedGoldenProtectionPlan(
         plan=plan,
         candidate_manifest_bytes=manifest_bytes,
@@ -416,6 +436,11 @@ def _validate_node_set(
         raise PlanCreationError("root_file_id no coincide con el NodeSecurityBackup del root")
 
 
+def _bottom_up_node_sort_key(node: NodeSecurityBackup) -> tuple[int, str, str]:
+    depth = 0 if node.relative_path == "." else node.relative_path.count("/") + 1
+    return (-depth, node.relative_path, node.node_kind.value)
+
+
 def _plan_to_manifest_dict(plan: GoldenProtectionPlan) -> dict[str, object]:
     return {
         "TreeDigest": {
@@ -451,6 +476,15 @@ def _plan_to_manifest_dict(plan: GoldenProtectionPlan) -> dict[str, object]:
     }
 
 
+def _canonical_manifest_bytes(plan: GoldenProtectionPlan) -> bytes:
+    return json.dumps(
+        _plan_to_manifest_dict(plan),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
 def _decode_sd_bytes(value: str) -> bytes:
     if not isinstance(value, str) or not value:
         raise SecurityBackupIntegrityError("pre_sd_bytes_b64 debe ser Base64 no vacío")
@@ -463,12 +497,17 @@ def _decode_sd_bytes(value: str) -> bytes:
     return decoded
 
 
-def _validate_sha256(value: str, field_name: str) -> str:
+def _validate_sha256(
+    value: str,
+    field_name: str,
+    *,
+    error_cls: type[GoldenProtectionPlanError] = SecurityBackupIntegrityError,
+) -> str:
     if not isinstance(value, str):
-        raise SecurityBackupIntegrityError(f"{field_name} debe ser string")
+        raise error_cls(f"{field_name} debe ser string")
     normalized = value.strip().lower()
     if len(normalized) != 64 or any(ch not in "0123456789abcdef" for ch in normalized):
-        raise SecurityBackupIntegrityError(f"{field_name} debe ser SHA-256 hexadecimal de 64 caracteres")
+        raise error_cls(f"{field_name} debe ser SHA-256 hexadecimal de 64 caracteres")
     return normalized
 
 
@@ -477,9 +516,15 @@ def _validate_sid(value: str, field_name: str) -> None:
         raise SecurityBackupIntegrityError(f"{field_name} no tiene formato SID canónico S-...")
 
 
-def _validate_uint(value: int, field_name: str) -> None:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise PlanCreationError(f"{field_name} debe ser un entero >= 0")
+def _validate_uint(
+    value: int,
+    field_name: str,
+    *,
+    max_value: int,
+    error_cls: type[GoldenProtectionPlanError] = PlanCreationError,
+) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= max_value:
+        raise error_cls(f"{field_name} debe ser un entero entre 0 y {max_value}")
 
 
 def _validate_canonical_relpath(value: str) -> str:
@@ -497,9 +542,14 @@ def _validate_canonical_relpath(value: str) -> str:
 
 def _validate_operation_id(value: str) -> str:
     normalized = _validate_nonempty_text(value, "operation_id")
-    if normalized in {".", ".."} or any(ch in normalized for ch in ("/", "\\", "\x00")):
-        raise PlanCreationError("operation_id no puede escapar su directorio de staging")
-    return normalized
+    try:
+        parsed = uuid.UUID(normalized)
+    except (AttributeError, ValueError) as exc:
+        raise PlanCreationError("operation_id debe ser un UUID válido") from exc
+    canonical = str(parsed)
+    if normalized.lower() != canonical:
+        raise PlanCreationError("operation_id debe usar formato UUID canónico con guiones")
+    return canonical
 
 
 def _validate_nonempty_text(value: str, field_name: str) -> str:
