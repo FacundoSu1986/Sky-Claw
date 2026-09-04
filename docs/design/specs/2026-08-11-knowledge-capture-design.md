@@ -479,6 +479,16 @@ capa. Donde hay servicio, el servicio; donde no lo hay, el entrypoint. Y el ancl
 (§9) enumera esa lista, no la de servicios — si enumerara servicios, estos dos nacerían ciegos y
 la suite quedaría verde.
 
+> **Nota 2026-09-04 (superseded en parte por #548):** la caracterización de
+> `run_xedit_script` como mutador **sin lock, journal ni rollback** —tanto en la
+> tabla de entrypoints de arriba (líneas ~468-475) como en el "Hallazgo colateral"
+> de abajo— describe el **baseline de agosto de 2026**. En `main`, tras #548, la
+> superficie LLM de `run_xedit_script` es **read-only** (allowlist de scripts
+> bundleados, staging canónico, fallo cerrado), así que ya no es una segunda
+> superficie mutante sobre el recurso compartido. El texto original se conserva sin
+> reescribir (regla de docs históricos); ver el **Addendum — 2026-09-04** al pie
+> para el detalle y el alcance exacto.
+
 **Hallazgo colateral, preexistente y fuera de alcance:** que `run_xedit_script` ejecute scripts de
 xEdit sin lock, journal ni rollback mientras la ruta de Rituales usa `XEditPipelineService` con
 los tres, sobre el mismo recurso, es la topología "dos superficies, un recurso" que `AGENTS.md`
