@@ -29,11 +29,12 @@
 > integral de transiciones ni el inventario exhaustivo de formularios/labels. **No** es una
 > reverificación integral del resto de la tabla.
 >
-> **Re-baseline parcial 2026-09-04 sobre `main` `10354c2b`:** cubre exclusivamente la
+> **Re-baseline parcial 2026-09-04 sobre `main` `c4df8ce`:** cubre exclusivamente la
 > fila `F9` (Strangler Fig del composition root de `SupervisorAgent`), revalidada contra
-> los PR mergeados #518, #520, #524, #526/#527 y #540 y contra el árbol actual de
-> `sky_claw/app/orchestrator/`. Pasa de **Abierto** a **Parcial**; el PR6 (#545,
-> `RecordConflictScanner`) sigue **ABIERTO** y no se cuenta como integrado. **No** es una
+> los PR mergeados #518, #520, #524, #526/#527, #540 y **#545** —este último ya mergeado
+> por squash en `c4df8ce`, con `RecordConflictScanner` integrado en `main`
+> (`sky_claw/app/orchestrator/record_conflict_scan.py`)— y contra el árbol actual de
+> `sky_claw/app/orchestrator/`. Pasa de **Abierto** a **Parcial**. **No** es una
 > reverificación integral del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
@@ -81,7 +82,7 @@ confirmarlo contra código y tests.
 | F6 | Cerrado | #331 | — | auditoría de resiliencia #319 |
 | F7 | Cerrado | #343 | — | auditoría de resiliencia #319 |
 | F8 | Cerrado | #343 | — | auditoría de resiliencia #319 |
-| F9 | Parcial | #518, #520, #524, #526/#527, #540 | Extraídos los seams PR1–PR5 del composition root de `SupervisorAgent` (dispatcher deps tipadas, composición de servicios, grass runtime deps, asset conflict scan y plugin-limit). Falta extraer el seam de `scan_record_conflicts` (PR6, en el PR #545 **aún ABIERTO** — no integrado en `main`) y la fachada residual `execute_wrye_bash_pipeline`; el resto del root (rollback, HITL, telemetría, event bus) queda fuera del roadmap de seams por ser lifecycle/UI, no adaptadores de dominio. Nota de colisión: `docs/architecture/agent_tool_routing.md` todavía cierra ese párrafo con «No se anticipa PR6», línea que quedó desactualizada porque #545 sí extrae ese seam; la corrige el propio #545 al integrarse y por eso NO se toca en este PR docs-only (ver auditoría de colisión con #545) | `test_dispatcher_dependencies.py`, `test_orchestration_composition.py`, `test_grass_runtime_deps_provider.py`, `test_asset_conflict_scan.py`, `test_plugin_limit_guard.py` |
+| F9 | Parcial | #518, #520, #524, #526/#527, #540, #545 | Extraídos los seams de dominio PR1–PR6 del composition root de `SupervisorAgent` (dispatcher deps tipadas, composición de servicios, grass runtime deps, asset conflict scan, plugin-limit y —desde #545 mergeado— `RecordConflictScanner` para `scan_record_conflicts`); la generación de Wrye Bash también quedó extraída a `WryeBashPipelineService`. Las fachadas que restan en el supervisor (`scan_record_conflicts`, `scan_asset_conflicts`/`scan_asset_conflicts_json`, `asset_detector`, `execute_wrye_bash_pipeline`) son delegaciones legítimas hacia esos seams, conservadas por callers externos reales (GUI y bridges) — no requieren extracción. Falta el cierre del composition root sobre las responsabilidades de lifecycle/UI/rollback/HITL, que la auditoría #319 cedió al trabajo de lifecycle y quedan fuera del roadmap de seams de dominio | `test_dispatcher_dependencies.py`, `test_orchestration_composition.py`, `test_grass_runtime_deps_provider.py`, `test_asset_conflict_scan.py`, `test_plugin_limit_guard.py`, `test_record_conflict_scan_wiring.py`, `test_scan_record_conflicts.py` |
 | F8 USVFS | Parcial | ADR 0007 y smoke `vfs-health` | Migrar runners restantes y completar smokes reales de cancelación, perfil y rollback | historial OODA, addendum F8 USVFS |
 | Detección de enlaces | Cerrado | #404 y #405 | — | `test_links.py` |
 | Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |
