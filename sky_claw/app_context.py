@@ -261,8 +261,7 @@ def _raiz_datos_instancia_para_sandbox(mo2_root: pathlib.Path) -> pathlib.Path |
         )
         return None
     logger.info(
-        "AppContext: raíz de instancia MO2 (origen=%s) registrada en el "
-        "sandbox: %s",
+        "AppContext: raíz de instancia MO2 (origen=%s) registrada en el sandbox: %s",
         metadata.origen,
         raiz,
     )

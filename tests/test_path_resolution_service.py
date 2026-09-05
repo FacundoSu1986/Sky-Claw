@@ -1017,13 +1017,15 @@ class TestModsPathEsDirectorio:
             encoding="utf-8",
         )
 
-        with patch.dict(
-            os.environ,
-            {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(tmp_path / "no_lappdata")},
-            clear=True,
+        with (
+            patch.dict(
+                os.environ,
+                {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(tmp_path / "no_lappdata")},
+                clear=True,
+            ),
+            pytest.raises(RuntimeError, match="existe pero no es un directorio"),
         ):
-            with pytest.raises(RuntimeError, match="existe pero no es un directorio"):
-                path_resolver.get_mo2_mods_path()
+            path_resolver.get_mo2_mods_path()
 
     def test_mo2_mods_path_apuntando_a_archivo_falla_cerrado(
         self,
@@ -1034,9 +1036,11 @@ class TestModsPathEsDirectorio:
         archivo = tmp_path / "no_es_directorio.txt"
         archivo.write_text("x", encoding="utf-8")
 
-        with patch.dict(os.environ, {"MO2_MODS_PATH": str(archivo)}, clear=True):
-            with pytest.raises(RuntimeError, match="existe pero no es un directorio"):
-                path_resolver.get_mo2_mods_path()
+        with (
+            patch.dict(os.environ, {"MO2_MODS_PATH": str(archivo)}, clear=True),
+            pytest.raises(RuntimeError, match="existe pero no es un directorio"),
+        ):
+            path_resolver.get_mo2_mods_path()
 
 
 class TestResolveModlistSinSplitBrain:
@@ -1134,9 +1138,9 @@ class TestWiringProductivoAppContext:
         self,
         tmp_path: pathlib.Path,
     ) -> None:
-        from sky_claw.app_context import _construir_raices_sandbox
-        from sky_claw.app.security.path_validator import PathValidator
         from sky_claw.app.core.path_resolver import PathResolutionService
+        from sky_claw.app.security.path_validator import PathValidator
+        from sky_claw.app_context import _construir_raices_sandbox
 
         # Replica el rig: exe en un árbol, instance base en otro.
         exe_dir = tmp_path / "Apps" / "MO2"
@@ -1194,8 +1198,8 @@ class TestWiringProductivoAppContext:
         producción NO puede operar (la pre-PR configuración). El seam es lo
         que cierra la grieta.
         """
-        from sky_claw.app.security.path_validator import PathValidator
         from sky_claw.app.core.path_resolver import PathResolutionService
+        from sky_claw.app.security.path_validator import PathValidator
 
         exe_dir = tmp_path / "exe"
         exe_dir.mkdir(parents=True)
@@ -1220,13 +1224,15 @@ class TestWiringProductivoAppContext:
             path_validator=PathValidator(roots=roots),
             profile_name="Default",
         )
-        with patch.dict(
-            os.environ,
-            {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(local_app_data)},
-            clear=True,
+        with (
+            patch.dict(
+                os.environ,
+                {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(local_app_data)},
+                clear=True,
+            ),
+            pytest.raises(RuntimeError, match="fuera de las raíces permitidas"),
         ):
-            with pytest.raises(RuntimeError, match="fuera de las raíces permitidas"):
-                resolver.get_mo2_mods_path()
+            resolver.get_mo2_mods_path()
 
     def test_seam_rechaza_base_directory_en_raiz_de_unidad(
         self,
@@ -1278,7 +1284,7 @@ class TestAnclaConstructoresManualesDeMods:
         # (288) y en el paso legacy de get_mo2_mods_path (835). Cualquier
         # nueva construcción de `<base>/mods` debe ir por estas tres rutas
         # o extender el ancla con su racional.
-        "sky_claw/app/core/path_resolver.py": (228, 288, 835),
+        "sky_claw/app/core/path_resolver.py": (228, 288, 833),
         # Instaladores NGIO/FOMOD del agente LLM sobre mo2.root del registry:
         # superficie agente, layout portable asumido — fuera de alcance (PR-0).
         "sky_claw/app/agent/tools/external_tools.py": (239, 288),
@@ -1298,7 +1304,7 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/validators/preflight_sensors.py": (164,),
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": (312,),
         # Rollback/move-aside y staging de DynDOLOD bajo el árbol del broker.
-        "sky_claw/app_context.py": (1323,),
+        "sky_claw/app_context.py": (1322,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
         "sky_claw/local/tools/output_targets.py": (144,),
         "sky_claw/local/mo2/grass_profile.py": (227, 330),

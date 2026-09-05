@@ -716,9 +716,7 @@ class PathResolutionService:
         # explícitas que solo setean MO2_PATH sin INI cerca.
         if install_dir is not None:
             try:
-                return self._path_validator.validate(
-                    install_dir / "profiles" / profile / "modlist.txt"
-                )
+                return self._path_validator.validate(install_dir / "profiles" / profile / "modlist.txt")
             except Exception as exc:
                 logger.debug(
                     "MO2/profiles legacy inválido: %s — %s",
