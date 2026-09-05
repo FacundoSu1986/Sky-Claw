@@ -34,8 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allowlist de scripts de diagnóstico bundleados read-only (`xedit_readonly_tool.py`,
   `xedit_policy.py`): el schema Pydantic (`XEditAnalysisParams`) y el runtime comparten
   la misma política de nombres, un nombre desconocido falla cerrado en ambos, se exige
-  staging canónico (`ensure_scripts_staged()`) con provenance verificable antes de
-  ejecutar, y cada script se enruta a su parser/analyzer específico. No cambia las
+  pre-staging canónico (`ensure_scripts_staged()`) antes de ejecutar (el handler exige
+  el método y lo invoca, pero ignora su resultado y ejecuta por nombre de archivo: es
+  pre-staging, no provenance verificada — queda una ventana TOCTOU), y cada script se
+  enruta a su parser/analyzer específico. No cambia las
   rutas mutantes de xEdit del orquestador (`XEditPipelineService`), que conservan su
   frontera con lock/journal/rollback. Ancla: `tests/test_xedit_agent_readonly_policy.py`.
 

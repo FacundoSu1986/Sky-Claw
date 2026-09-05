@@ -428,8 +428,10 @@ leyendo el código actual):
   schema Pydantic (`XEditAnalysisParams`) y el runtime — el schema anuncia
   exactamente lo que la ejecución acepta;
 - un nombre desconocido **falla cerrado** (ValidationError del schema y error del
-  handler), y un runner que no pueda garantizar **staging canónico / provenance**
-  vía `ensure_scripts_staged()` también falla cerrado **antes** de ejecutar;
+  handler), y un runner que no exponga **pre-staging canónico** vía
+  `ensure_scripts_staged()` también falla cerrado **antes** de ejecutar (es
+  pre-staging, no provenance verificada: el handler ignora el resultado del staging y
+  ejecuta por nombre de archivo, dejando una ventana TOCTOU);
 - cada script se enruta a su parser/analyzer específico del protocolo.
 
 **Consecuencia para este ADR:** la caracterización antigua ya **no** describe

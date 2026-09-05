@@ -514,9 +514,10 @@ leyendo el código actual): el handler cableado se movió a
 `sky_claw/app/agent/tools/xedit_readonly_tool.py` y quedó limitado a una allowlist
 de scripts **bundleados read-only** (`XEDIT_AGENT_ALLOWED_SCRIPT_NAMES`), con la
 misma política compartida entre el schema (`XEditAnalysisParams`) y el runtime,
-staging canónico obligatorio vía `ensure_scripts_staged()` (fail-closed si el runner
-no puede probar provenance), nombres desconocidos que fallan cerrados y parsing por
-protocolo.
+pre-staging canónico obligatorio vía `ensure_scripts_staged()` (fail-closed si el
+runner no lo expone; es pre-staging, no provenance verificada — el handler ignora el
+resultado del staging y ejecuta por nombre de archivo, dejando una ventana TOCTOU),
+nombres desconocidos que fallan cerrados y parsing por protocolo.
 
 **Consecuencia para esta spec:**
 

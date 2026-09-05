@@ -38,9 +38,11 @@ Pydantic (`XEditAnalysisParams.script_name`, tipo `XEditAgentScriptName`) y el r
 comparten esa misma política (`XEDIT_AGENT_ALLOWED_SCRIPT_NAMES` en
 `sky_claw/app/agent/tools/xedit_policy.py`): el schema anuncia exactamente lo que la
 ejecución acepta, y un nombre desconocido falla cerrado tanto en la validación del
-schema como en el handler. Antes de ejecutar se exige **staging canónico** vía
-`ensure_scripts_staged()`; un runner que no lo provea queda bloqueado (fail-closed
-por provenance). Cada script se enruta a su parser/analyzer específico
+schema como en el handler. Antes de ejecutar se exige **pre-staging canónico** vía
+`ensure_scripts_staged()`; un runner que no exponga ese método queda bloqueado
+(fail-closed). Es pre-staging canónico, no atestación en el lanzamiento: el handler
+ignora el resultado de `ensure_scripts_staged()` y ejecuta por nombre de archivo, por
+lo que queda una ventana TOCTOU. Cada script se enruta a su parser/analyzer específico
 (`XEditOutputParser`, `parse_dump_output`, `GrassAnalyzer`). Ancla:
 `tests/test_xedit_agent_readonly_policy.py`. Esto **no** implica que todas las rutas
 internas de xEdit sean read-only: los rituales del orquestador ejecutan xEdit mutante
