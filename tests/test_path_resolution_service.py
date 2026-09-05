@@ -735,6 +735,94 @@ class TestGetMo2ModsPathDeInstancia:
         ):
             path_resolver.get_mo2_mods_path()
 
+    def test_scan_de_instancias_globales_con_error_falla_cerrado(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Un OSError al escanear la raíz de instancias NO degrada al legacy.
+
+        La raíz existe pero el scan aborta: hay metadata potencial inaccesible y
+        degradar a <exe>/mods sería la invención silenciosa que el PR elimina.
+        """
+        exe_dir = tmp_path / "exe"
+        exe_dir.mkdir(parents=True)
+        (exe_dir / "ModOrganizer.exe").write_bytes(b"fake exe")
+        (exe_dir / "mods").mkdir()  # trampa: si degradara, la elegiría
+        local_app_data = tmp_path / "LocalAppData"
+        raiz_instancias = local_app_data / "ModOrganizer"
+        raiz_instancias.mkdir(parents=True)
+
+        iteracion_original = pathlib.Path.iterdir
+
+        def _iteracion_que_falla(self: pathlib.Path, *args: object, **kwargs: object):
+            if self == raiz_instancias:
+                raise OSError("simulado")
+            return iteracion_original(self, *args, **kwargs)
+
+        with (
+            patch.dict(
+                os.environ,
+                {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(local_app_data)},
+                clear=True,
+            ),
+            patch.object(pathlib.Path, "iterdir", _iteracion_que_falla),
+            pytest.raises(RuntimeError, match="No se pudo escanear"),
+        ):
+            path_resolver.get_mo2_mods_path()
+
+    def test_multi_instancia_con_mo2_path_de_datos_deferre_al_legacy(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """MO2_PATH explícito apuntando a datos (sin exe) no falla con varias
+        instancias globales: la config del operador que funcionaba vía
+        <MO2_PATH>/mods sigue funcionando."""
+        datos = tmp_path / "datos"
+        mods_de_datos = datos / "mods"
+        mods_de_datos.mkdir(parents=True)
+        local_app_data = tmp_path / "LocalAppData"
+        for nombre in ("SkyrimSE", "Requiem"):
+            ini_dir = local_app_data / "ModOrganizer" / nombre
+            ini_dir.mkdir(parents=True)
+            (ini_dir / "ModOrganizer.ini").write_text(
+                _texto_ini_mo2(base_directory=_formato_qt(tmp_path / nombre)),
+                encoding="utf-8",
+            )
+
+        with patch.dict(
+            os.environ,
+            {"MO2_PATH": str(datos), "LOCALAPPDATA": str(local_app_data)},
+            clear=True,
+        ):
+            resultado = path_resolver.get_mo2_mods_path()
+
+        assert _mismo_path(resultado, mods_de_datos)
+
+    def test_mo2_path_de_datos_no_lo_preempta_una_instancia_ajena(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Un contenedor legacy declarado con MO2_PATH (mods/ sin INI) no es
+        preemptado por una instancia global no relacionada."""
+        datos = tmp_path / "contenedor_legacy"
+        mods_de_datos = datos / "mods"
+        mods_de_datos.mkdir(parents=True)
+        # Instancia global única cuyo base_directory es OTRO directorio.
+        _exe_dir, dir_de_instancia, _mods_dir, local_app_data = self._montar_instancia_global(tmp_path)
+
+        with patch.dict(
+            os.environ,
+            {"MO2_PATH": str(datos), "LOCALAPPDATA": str(local_app_data)},
+            clear=True,
+        ):
+            resultado = path_resolver.get_mo2_mods_path()
+
+        assert _mismo_path(resultado, mods_de_datos)
+        assert not _mismo_path(resultado, dir_de_instancia / "mods")
+
     def test_t7_regresion_exacta_del_bug_exe_dir_vs_base_directory(
         self,
         path_resolver: PathResolutionService,
@@ -849,8 +937,9 @@ class TestAnclaConstructoresManualesDeMods:
     # módulo relativo -> líneas con `expr / "mods"` (RHS literal)
     _CONSTRUCTORES: dict[str, tuple[int, ...]] = {
         # El propio resolver conserva el legacy portable (sujeto de este PR):
-        # se alcanza SOLO cuando no hay metadata de instancia.
-        "sky_claw/app/core/path_resolver.py": (678, 691),
+        # se alcanza SOLO cuando no hay metadata de instancia (o por deferencia
+        # ante MO2_PATH explícito de datos).
+        "sky_claw/app/core/path_resolver.py": (522, 728),
         # Instaladores NGIO/FOMOD del agente LLM sobre mo2.root del registry:
         # superficie agente, layout portable asumido — fuera de alcance (PR-0).
         "sky_claw/app/agent/tools/external_tools.py": (239, 288),

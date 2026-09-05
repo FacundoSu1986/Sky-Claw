@@ -234,7 +234,7 @@ class PathResolver(Protocol):
 
         Precedencia: ``MO2_MODS_PATH`` → metadata de la instancia
         (``ModOrganizer.ini``: ``base_directory``/``mod_directory``) →
-        legacy ``MO2_PATH/mods`` / auto-detección → ``RuntimeError``.
+        legacy ``<instalación>/mods`` → ``RuntimeError``.
         La instalación del programa (``ModOrganizer.exe``) y los datos de la
         instancia pueden vivir en discos distintos.
 
@@ -501,6 +501,26 @@ class PathResolutionService:
                 return validado
         return self.detect_mo2_path()
 
+    def _mo2_path_es_directorio_de_datos(
+        self,
+        install_dir: pathlib.Path | None,
+    ) -> bool:
+        """True si ``MO2_PATH`` explícito apunta a DATOS y no a una instalación.
+
+        Un operador puede configurar ``MO2_PATH`` con el directorio de datos de
+        su instancia (el que contiene ``mods/``, sin ``ModOrganizer.exe``) o
+        con un contenedor legacy; esa configuración funcionaba vía
+        ``<MO2_PATH>/mods`` antes de la resolución por metadata y sigue siendo
+        la declaración más explícita disponible. Cuando el directorio contiene
+        el ejecutable (instalación), la metadata de la instancia manda aunque
+        exista un ``<exe>/mods`` sobrante (el caso que este PR corrige).
+        """
+        if not os.environ.get("MO2_PATH", "") or install_dir is None:
+            return False
+        if (install_dir / "ModOrganizer.exe").is_file():
+            return False
+        return (install_dir / "mods").is_dir()
+
     def _raiz_de_instancias_globales(self) -> pathlib.Path | None:
         """Raíz de instancias globales de MO2 (%LOCALAPPDATA%/ModOrganizer).
 
@@ -592,12 +612,37 @@ class PathResolutionService:
         candidatas: list[pathlib.Path] = []
         try:
             for hijo in raiz.iterdir():
-                if hijo.is_dir() and (hijo / "ModOrganizer.ini").is_file():
+                try:
+                    es_instancia = hijo.is_dir() and (hijo / "ModOrganizer.ini").is_file()
+                except OSError:
+                    continue  # un hijo ilegible no aborta el scan del resto
+                if es_instancia:
                     candidatas.append(hijo)
         except OSError as exc:
-            logger.debug("No se pudo escanear %s: %s", raiz, exc)
-            return None
+            if raiz.is_dir():
+                # La raíz existe pero el scan abortó: hay metadata potencial
+                # inaccesible. Fail-closed con la misma regla que
+                # `_mods_dir_validado_de_ini`: degradar al legacy con evidencia
+                # presente sería inventar una ubicación que la instancia puede
+                # desmentir.
+                raise RuntimeError(
+                    f"No se pudo escanear la raíz de instancias globales de MO2 "
+                    f"{raiz}: {exc}. Configure MO2_MODS_PATH o MO2_PATH con la "
+                    f"ubicación correcta."
+                ) from exc
+            return None  # LOCALAPPDATA apunta a un directorio inexistente
         if not candidatas:
+            return None
+        # Un MO2_PATH explícito con semántica de DATOS (directorio sin exe y con
+        # mods/ resoluble) es la declaración del operador y funcionaba vía
+        # <MO2_PATH>/mods antes de la resolución por metadata: se respeta antes
+        # que instancias globales, no se la deja preemptar ni fallar cerrado.
+        if self._mo2_path_es_directorio_de_datos(install_dir):
+            logger.debug(
+                "MO2_PATH explícito apunta a datos con mods/ resoluble (%s): "
+                "deferencia al legacy antes que instancias globales.",
+                install_dir,
+            )
             return None
         if len(candidatas) > 1:
             nombres = ", ".join(sorted(h.name for h in candidatas))
@@ -628,7 +673,11 @@ class PathResolutionService:
            inexistente o varias instancias globales), falla cerrado: NO
            degrada a ``<instalación>/mods`` con evidencia en contra.
         3. Comportamiento legacy/portable (solo sin metadata de instancia):
-           ``MO2_PATH/mods`` y auto-detección ``<exe>/mods``.
+           ``<instalación>/mods``, donde la instalación es ``MO2_PATH``
+           validado o la auto-detección — una sola resolución compartida con
+           el paso 2 (``detect_mo2_path`` corre una vez por llamada). Un
+           ``MO2_PATH`` explícito con semántica de datos (sin exe, con
+           ``mods/``) se respeta aquí antes que instancias globales ajenas.
         4. ``RuntimeError`` fail-closed.
 
         Returns:
@@ -670,38 +719,18 @@ class PathResolutionService:
                     f"la instancia o configure MO2_MODS_PATH."
                 ) from exc
 
-        # 3a. Legacy: MO2_PATH/mods (sin metadata de instancia presente)
-        mo2_base_str = os.environ.get("MO2_PATH", "")
-        if mo2_base_str:
-            validated_base = self.validate_env_path(mo2_base_str, "MO2_PATH")
-            if validated_base is not None:
-                mods_path = validated_base / "mods"
-                try:
-                    resolved_mods = mods_path.resolve(strict=True)
-                    return resolved_mods
-                except (FileNotFoundError, OSError):
-                    logger.debug(
-                        "MO2_PATH/mods no existe: %s",
-                        mods_path,
-                    )
-
-        # 3b. Legacy: auto-detección <exe>/mods (sin metadata de instancia)
-        mo2_base = self.detect_mo2_path()
-        if mo2_base:
-            mods_path = mo2_base / "mods"
+        # 3. Legacy portable (solo sin metadata de instancia): <instalación>/mods.
+        # Reutiliza `install_dir` del paso 2: la única copia de "MO2_PATH
+        # validado → detect_mo2_path" vive en `_directorio_instalacion_mo2`, así
+        # que la auto-detección corre una sola vez por llamada. Este paso es
+        # además el destino de la deferencia por MO2_PATH explícito de datos.
+        if install_dir is not None:
+            mods_path = install_dir / "mods"
             try:
                 resolved_mods = mods_path.resolve(strict=True)
                 return resolved_mods
             except (FileNotFoundError, OSError):
-                logger.error(
-                    "Auto-detect MO2 mods path falló: %s",
-                    mods_path,
-                    exc_info=True,
-                    extra={
-                        "component": "PathResolutionService",
-                        "operation": "get_mo2_mods_path",
-                    },
-                )
+                logger.debug("MO2/mods legacy no existe: %s", mods_path)
 
         raise RuntimeError(
             "No se pudo detectar la ruta de MO2. Configure MO2_PATH o MO2_MODS_PATH en las variables de entorno."
