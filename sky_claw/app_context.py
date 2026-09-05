@@ -34,7 +34,10 @@ from sky_claw.app.core.metrics_server import (
     start_metrics_server,
     stop_metrics_server,
 )
-from sky_claw.app.core.path_resolver import PERFIL_MO2_POR_DEFECTO
+from sky_claw.app.core.path_resolver import (
+    PERFIL_MO2_POR_DEFECTO,
+    descubrir_metadata_instancia_mo2,
+)
 from sky_claw.app.core.tracing import configure_tracing, shutdown_tracing
 from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.db.journal import OperationJournal
@@ -194,6 +197,99 @@ class DatabaseContext:
         if self.registry is not None:
             await self.registry.close()
             self.registry = None
+
+
+# ---------------------------------------------------------------------------
+# Sandbox roots — trust boundary explícito para la raíz de la instancia MO2
+# ---------------------------------------------------------------------------
+# La raíz de instalación del programa (mo2_root, dir de ModOrganizer.exe) y
+# los datos de la instancia (raíz del ModOrganizer.ini) pueden vivir en
+# discos o árboles distintos desde MO2 2.4. Confiar ciegamente en el
+# ``base_directory`` declarado por un INI bajo %LOCALAPPDATA% para añadirlo
+# como raíz del sandbox ampliaría CRIT-003 sin un rationale verificable; en
+# cambio, el INI bajo LOCALAPPDATA es configuración del usuario de la
+# máquina (la misma clase de confianza que ``mo2_root`` en la config o
+# ``MO2_PATH`` en el entorno) y su ``base_directory`` es el resultado
+# determinístico del contrato PathSettings de MO2. Esta función aplica las
+# exclusiones de seguridad necesarias antes de devolver la raíz: que sea
+# absoluta, que exista, que sea un directorio, y que no sea una raíz de
+# unidad (lo que ampliaría el sandbox a una unidad completa). Si la metadata
+# no es utilizable (INI ilegible, base relativo, multi-instancia,
+# scan-error) NO se registra raíz: la resolución subsecuente fallará
+# cerrado en :meth:`get_mo2_mods_path` con la evidencia.
+
+
+def _raiz_datos_instancia_para_sandbox(mo2_root: pathlib.Path) -> pathlib.Path | None:
+    """Devuelve la raíz de datos de la instancia MO2 apta como raíz de sandbox.
+
+    Trust boundary explícito:
+      - fuente: SOLO la metadata de la instancia MO2 (portable INI junto al
+        ejecutable, o única instancia global bajo LOCALAPPDATA) — NO
+        ``base_directory`` crudo del INI sin canonicalizar;
+      - exclusiones: drive root (rechazado para no ampliar el sandbox a
+        una unidad completa), path inexistente o que no es directorio;
+      - fallo de la metadata: no se registra raíz y se loggea el motivo;
+        :meth:`get_mo2_mods_path` fallará cerrado después con la evidencia.
+
+    Returns:
+        Path canonicalizado y validado, o ``None`` si no se debe registrar.
+    """
+    try:
+        metadata = descubrir_metadata_instancia_mo2(mo2_root)
+    except RuntimeError as exc:
+        logger.warning(
+            "AppContext: la metadata de la instancia MO2 es inconsistente; "
+            "no se registra raíz de datos en el sandbox: %s",
+            exc,
+        )
+        return None
+    if metadata is None:
+        return None
+    raiz = metadata.raiz_datos
+    if raiz.parent == raiz:
+        logger.warning(
+            "AppContext: base_directory de la instancia MO2 es una raíz de "
+            "unidad (%s); no se registra como raíz del sandbox.",
+            raiz,
+        )
+        return None
+    if not raiz.is_dir():
+        logger.warning(
+            "AppContext: la base de la instancia MO2 (%s) no existe o no es "
+            "directorio; no se registra como raíz del sandbox.",
+            raiz,
+        )
+        return None
+    logger.info(
+        "AppContext: raíz de instancia MO2 (origen=%s) registrada en el sandbox: %s",
+        metadata.origen,
+        raiz,
+    )
+    return raiz
+
+
+def _construir_raices_sandbox(
+    mo2_root: pathlib.Path,
+    install_dir: pathlib.Path | None,
+    skyrim_path: pathlib.Path | None,
+) -> list[pathlib.Path]:
+    """Compone las raíces de CRIT-003 registrando la instancia MO2 si aplica.
+
+    Misma composición que :meth:`AppContext.start_minimal` aplica
+    inline; esta función es la versión testeable y trazable. El orden de
+    las raíces no importa funcionalmente (el validador hace contención),
+    pero se mantiene estable para que los logs y los tests sean
+    determinísticos.
+    """
+    roots: list[pathlib.Path] = [mo2_root, pathlib.Path(tempfile.gettempdir()) / "sky_claw"]
+    if install_dir and install_dir not in roots:
+        roots.append(install_dir)
+    if skyrim_path and skyrim_path not in roots:
+        roots.append(skyrim_path)
+    raiz_instancia = _raiz_datos_instancia_para_sandbox(mo2_root)
+    if raiz_instancia and raiz_instancia not in roots:
+        roots.append(raiz_instancia)
+    return roots
 
 
 class AppContext:
@@ -813,21 +909,18 @@ class AppContext:
             if local_cfg.install_dir:
                 install_dir = pathlib.Path(local_cfg.install_dir)
 
-            sandbox_roots: list[pathlib.Path] = [
-                mo2_root,
-                pathlib.Path(tempfile.gettempdir()) / "sky_claw",
-            ]
-            if install_dir and install_dir not in sandbox_roots:
-                sandbox_roots.append(install_dir)
-            # El directorio del juego suele vivir fuera de mo2_root/install_dir (MO2 y
-            # los tools se instalan aparte de Skyrim), así que sin esta raíz explícita
-            # `ensure_skse` no puede pasar su propio `validate(install_dir)` de entrada
-            # — el "Instalar" de SKSE de la GUI fallaría siempre con
-            # PathViolationError, egress y HITL ya aprobados y todo.
+            skyrim_path: pathlib.Path | None = None
             if local_cfg.skyrim_path:
                 skyrim_path = pathlib.Path(local_cfg.skyrim_path)
-                if skyrim_path not in sandbox_roots:
-                    sandbox_roots.append(skyrim_path)
+
+            # Las raíces se componen en :func:`_construir_raices_sandbox` para
+            # que la misma lógica (incluyendo el registro de la raíz de la
+            # instancia MO2 derivado de su metadata) sea testeable y trazable.
+            sandbox_roots = _construir_raices_sandbox(
+                mo2_root=mo2_root,
+                install_dir=install_dir,
+                skyrim_path=skyrim_path,
+            )
             # --- DESPUÉS (Seguro - Zero Trust) ---
             # Solo definir las carpetas estrictamente necesarias
             # Se elimina explícitamente mo2_parent para evitar Path Traversal encubierto

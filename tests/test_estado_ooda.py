@@ -53,6 +53,11 @@ _ITEMS = frozenset(
         "Etapa 6 (Wrye Bash) sin build headless",
         "Orden de masters sin validar",
         "Segundo parser TES4 sin gate",
+        # PR-0 (fix/mo2-resolve-instance-mods-dir): la instalación del programa
+        # (ModOrganizer.exe) y los datos de la instancia pueden vivir en discos
+        # distintos; get_mo2_mods_path() resuelve mods/ desde la metadata de la
+        # instancia. Ancla de la deuda hermanada en test_path_resolution_service.py.
+        "MO2 executable path != MO2 instance base_directory",
         # Rig T5 2026-08-11 (`INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` §7.3): el preset
         # persistido de TexGen pre-llena el campo Output de la GUI y desvía las
         # escrituras fuera del root del `-o:`, aunque el argv se parsee exacto. El
