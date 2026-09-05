@@ -47,11 +47,15 @@ SEAMS que cablea (``AssetConflictScanner``/``RecordConflictScanner``/``PluginLim
 declarados; lifecycle, bridges y facades de compatibilidad.
 
 **Alcance deliberado.** Ancla estructural, no oráculo de análisis de flujo
-(metaprompt §14). La única evasión conocida que queda fuera es el aliasing de
-DATOS (``svc = self; svc.dispatch(...)`` / ``inst = self``): rastrearlo exige
-data-flow y queda respaldado por los tests conductuales de
-``tests/test_supervisor_dispatch_tool.py``. NO congela: números de línea, forma de
-expresiones triviales, atributos del constructor, ni métodos privados.
+(metaprompt §14). **Limitación aceptada y explícita** (no la vendo como cubierta):
+un alias de DATOS —``svc = self; svc.dispatch(...)`` / ``inst = self``— NO lo
+detecta este ancla estático; rastrearlo exigiría data-flow. No es una brecha
+peligrosa: un alias que preserva el comportamiento sigue delegando en el
+dispatcher (no reabsorbe dominio), y uno que sí reabsorbe routing altera el
+comportamiento observable que fijan los tests conductuales de
+``tests/test_supervisor_dispatch_tool.py`` —pero el ancla por sí sola no lo
+prohíbe. NO congela: números de línea, forma de expresiones triviales, atributos
+del constructor, ni métodos privados.
 """
 
 from __future__ import annotations
