@@ -527,6 +527,50 @@ class TestGoldenProtectionSeal:
         } == set(node)
 
 
+# Frontera de dependencias del slice puro GP2: se congela por igualdad literal.
+# Un import nuevo rompe el ancla y obliga a decidir explícitamente si el slice
+# sigue siendo no destructivo o si la entrada es una exención justificada.
+GP2_IMPORT_ROOTS_PERMITIDOS = frozenset(
+    {
+        "__future__",
+        "base64",
+        "binascii",
+        "dataclasses",
+        "enum",
+        "hashlib",
+        "json",
+        "ntpath",
+        "os",
+        "re",
+        "sky_claw",
+        "uuid",
+    }
+)
+
+# Defensa en profundidad: el allowlist de roots no alcanza por sí solo, porque
+# roots legítimos ya permitidos (`os`) también exponen primitivas mutadoras.
+GP2_SIMBOLOS_PROHIBIDOS = frozenset(
+    {
+        "AdjustTokenPrivileges",
+        "CreateFileW",
+        "SetFileSecurity",
+        "SetFileSecurityW",
+        "SetNamedSecurityInfoW",
+        "SetSecurityInfo",
+        "ShellExecuteExW",
+        "ShellExecuteW",
+        "WinDLL",
+        "chmod",
+        "chown",
+        "icacls",
+        "popen",
+        "system",
+        "takeown",
+        "windll",
+    }
+)
+
+
 def test_gp2_a22_slice_no_contiene_primitivas_mutadoras_ni_elevacion() -> None:
     source_path = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -536,15 +580,20 @@ def test_gp2_a22_slice_no_contiene_primitivas_mutadoras_ni_elevacion() -> None:
         / "golden_protection_plan.py"
     )
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
+
+    # `import X` e `import from X` cuentan por igual: mirar sólo ast.Import deja
+    # pasar `from ctypes import windll`. Un import relativo aporta "." para que
+    # la igualdad falle en vez de colarse por `node.module is None`.
     imported_roots = {
         alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
+    } | {
+        node.module.split(".")[0] if node.level == 0 and node.module else "."
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
     }
     referenced_symbols = {child.id for child in ast.walk(tree) if isinstance(child, ast.Name)} | {
         child.attr for child in ast.walk(tree) if isinstance(child, ast.Attribute)
     }
 
-    assert "ctypes" not in imported_roots
-    assert "subprocess" not in imported_roots
-    assert "SetSecurityInfo" not in referenced_symbols
-    assert "ShellExecuteW" not in referenced_symbols
-    assert "ShellExecuteExW" not in referenced_symbols
+    assert imported_roots == GP2_IMPORT_ROOTS_PERMITIDOS
+    assert referenced_symbols & GP2_SIMBOLOS_PROHIBIDOS == set()
