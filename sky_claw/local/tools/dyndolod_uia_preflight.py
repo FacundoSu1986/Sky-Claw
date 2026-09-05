@@ -24,17 +24,18 @@ todavía no está establecida (eso es T5-v2). Por eso:
   corresponde, un patrón de lectura ausente, un error COM, una ruta que no se
   puede canonicalizar sin tocar el disco.
 
-**Por qué el observador es un puerto y no una llamada a COM.** Dos razones que
-se sostienen solas. (1) El paquete tiene que importarse en el CI de Ubuntu sin
-COM ni ``UIAutomationCore`` ni escritorio interactivo, así que acá no entra un
-import Windows-only ni siquiera perezoso —el ancla
-``test_el_modulo_no_importa_nada_de_windows`` lo congela—. (2) Todavía **no hay
-evidencia** de que TexGen/DynDOLOD expongan el campo *Output* por UIA: nadie
-midió su árbol. Inventar el selector antes de verlo sería exactamente el defecto
-que este módulo existe para evitar, así que los criterios del control son un
-INPUT (:class:`CriteriosDeControl`) y no una constante escrita de memoria. El
-backend Windows que produce esa evidencia vive fuera del runtime, en
-``local_scripts/scripts/probe_dyndolod_uia_readonly.py``.
+**Por qué el observador es un puerto y no una llamada a COM.** El paquete tiene
+que importarse en el CI de Ubuntu sin COM ni ``UIAutomationCore`` ni escritorio
+interactivo, así que acá no entra un import Windows-only ni siquiera perezoso
+—el ancla ``test_el_modulo_no_importa_nada_de_windows`` lo congela—. La
+evidencia del árbol UIA ya existe (rig T5A, 2026-08-29: único ``Edit``/``TEdit``
+con ``ValuePattern`` en ambas herramientas, ``AutomationId`` inestable), así que
+el selector SÍ existe como constante medida —:data:`SELECTORES_DE_OUTPUT`— y el
+backend Windows vive en el runtime (``dyndolod_uia_windows``) con el
+``comtypes`` perezoso adentro, no en este módulo; la sonda
+(``local_scripts/scripts/probe_dyndolod_uia_readonly.py``) importa ese mismo
+adaptador para el diagnóstico, para que lo que se mide y lo que decide sean la
+misma pieza.
 
 **Read-only enunciado como propiedad, no como recordatorio.** El protocolo
 :class:`ObservadorUIA` declara TRES métodos y los tres devuelven datos; no
@@ -63,9 +64,12 @@ pude comprobarlo"* en *"lo comprobé"*, más débilmente, sin decirlo.
    que ningún adaptador puede alimentar un veredicto con evidencia incompleta ni
    siquiera por descuido.
 
-Fuera de alcance (T5-v2 y posteriores): autoridad final entre preset y ``-o:``,
-limpieza del preset rancio, modificación de argumentos, ejecución de la
-generación, atribución de artefactos físicos.
+Fuera de alcance de ESTE módulo (posterior a T5-v2): auto-remediación del preset
+rancio, decisión final sobre dónde aterrizaron físicamente los bytes (eso lo
+atiesta el post-check del runner), y cualquier acción sobre la GUI. El gate que
+sí bloquea una corrida ante una divergencia vive en ``dyndolod_uia_gate`` + el
+seam de ``dyndolod_runner._execute_process``: MATCH deja continuar, todo lo
+demás termina el proceso antes de que el operador pueda iniciar la generación.
 """
 
 from __future__ import annotations
@@ -284,22 +288,31 @@ class ControlObservado:
 class CriteriosDeControl:
     """Cómo se reconoce el control de *Output*, provisto por el llamador.
 
-    **No hay un selector por defecto y eso es deliberado.** Nadie midió todavía
-    el árbol UIA de TexGen/DynDOLOD, así que cualquier constante acá sería una
-    invención con apariencia de evidencia. Los criterios se combinan con AND y
-    al menos uno tiene que estar puesto: un selector vacío matchea todos los
-    controles de la ventana y, con una sola caja de texto, daría un ``MATCH``
-    que no prueba nada.
+    **No hay un selector por defecto genérico y eso es deliberado** — el que
+    existe es el medido, y vive congelado en :data:`SELECTORES_DE_OUTPUT`. Los
+    criterios se combinan con AND y al menos uno tiene que estar puesto: un
+    selector vacío matchea todos los controles de la ventana y, con una sola
+    caja de texto, daría un ``MATCH`` que no prueba nada.
 
     ``AutomationId`` no basta por sí solo como autoridad —puede no existir, es
-    único sólo entre hermanos y no se garantiza estable entre builds—, por eso
-    los tres criterios son opcionales y combinables en vez de haber un campo
-    obligatorio.
+    único sólo entre hermanos y el rig T5A lo midió INESTABLE entre
+    lanzamientos (TexGen ``6293158``→``5113454``; DynDOLOD ``657180``→
+    ``8652478``, evidencia externa 2026-08-29)—, por eso los cuatro criterios
+    son opcionales y combinables en vez de haber un campo obligatorio.
+
+    ``class_name`` es la clase de ventana Win32 (en un VCL de Delphi, el nombre
+    de la clase Delphi: ``TEdit``, ``TMemo``…). Fue la propiedad que el rig
+    midió **única y estable** para el campo Output (``Edit``/``TEdit`` en 4/4
+    volcados de las dos herramientas): ``Edit`` solo colisiona con el ``TMemo``
+    del log y el ``Name`` de Output es vacío. La comparación es exacta, como la
+    de los demás criterios — no hay substring ni insensibilidad a mayúsculas:
+    ``TEdit`` y ``TEDIT`` son clases distintas para el registro de ventanas.
     """
 
     automation_id: str | None = None
     nombre: str | None = None
     tipo_de_control: str | None = None
+    class_name: str | None = None
 
     def _criterios(self) -> dict[str, str]:
         """Sólo los criterios con EVIDENCIA: los vacíos o en blanco no cuentan.
@@ -313,6 +326,7 @@ class CriteriosDeControl:
             "automation_id": self.automation_id,
             "nombre": self.nombre,
             "tipo_de_control": self.tipo_de_control,
+            "class_name": self.class_name,
         }
         return {campo: valor for campo, valor in candidatos.items() if valor is not None and valor.strip()}
 
@@ -332,12 +346,13 @@ class CriteriosDeControl:
         ancla read-only de la suite prohíbe `getattr` en esta superficie, y con
         razón — es el hueco por el que una llamada mutante entraría sin que su
         nombre aparezca en el árbol sintáctico. La enumeración explícita cuesta
-        tres líneas y mantiene el guard completo.
+        una línea por campo y mantiene el guard completo.
         """
         observados = {
             "automation_id": control.automation_id,
             "nombre": control.nombre,
             "tipo_de_control": control.tipo_de_control,
+            "class_name": control.class_name,
         }
         return all(observados[campo] == valor for campo, valor in self._criterios().items())
 
@@ -345,6 +360,40 @@ class CriteriosDeControl:
         """Los criterios con evidencia, tal como se aplicaron."""
         partes = [f"{campo}={valor!r}" for campo, valor in self._criterios().items()]
         return " ".join(partes) if partes else "(sin criterios)"
+
+
+#: Selector productivo del campo *Output*, UNA fuente por herramienta (T5-v2).
+#:
+#: La medición que lo sostiene (rig T5A, 2026-08-29, evidencia externa): en los
+#: dos binarios el campo Output es el ÚNICO control ``Edit`` con clase ``TEdit``
+#: del wizard (114 controles en TexGen, 52 en DynDOLOD), con ``ValuePattern``
+#: disponible y ``Name`` vacío; el ``AutomationId`` cambió entre lanzamientos en
+#: las dos herramientas, así que NO entra al selector. 4/4 volcados, único
+#: candidato. No es universalidad demostrada — es la medición disponible — y por
+#: eso la seguridad la da el pipeline (exactamente un candidato o ``UNKNOWN``),
+#: no el selector solo.
+#:
+#: Congelado por igualdad literal en ``tests/test_dyndolod_uia_preflight.py``:
+#: faltar una tool, sobrar una tercera, reaparecer el ``AutomationId`` o perder
+#: el ``class_name`` rompe el ancla. El AND de los dos criterios es lo que
+#: distingue Output del ``TMemo`` del log (``Edit``/``TMemo``), presente en las
+#: dos ventanas del rig.
+SELECTORES_DE_OUTPUT: dict[str, CriteriosDeControl] = {
+    "TexGen": CriteriosDeControl(tipo_de_control="Edit", class_name="TEdit"),
+    "DynDOLOD": CriteriosDeControl(tipo_de_control="Edit", class_name="TEdit"),
+}
+
+
+def selector_de_output(tool: str) -> CriteriosDeControl:
+    """El selector medido para ``tool``, o ``KeyError`` si no hay decisión.
+
+    Un caller con una tool ajena a :data:`TOOLS_OBSERVABLES` no recibe un
+    selector vacío "por las dudas": la excepción es deliberada, porque el
+    pipeline traduce la ausencia a ``UNKNOWN``/``TOOL_DESCONOCIDA`` y un
+    selector vacío saldría como ``SELECTOR_SIN_CRITERIOS`` disfrazando el olvido
+    de haber medido la GUI de esa herramienta.
+    """
+    return SELECTORES_DE_OUTPUT[tool]
 
 
 @dataclass(frozen=True)
@@ -454,10 +503,10 @@ class ObservadorUIA(Protocol):
         reporte cuando el control lo expone. Es a propósito y es un hueco
         conocido: los controles Win32/Delphi a veces exponen sólo ese patrón, y
         ahí este método devuelve ``None`` y el preflight responde ``UNKNOWN``
-        aunque el valor exista. Implementarlo a ciegas sería escribir una rama
-        COM que nadie puede ejercitar hasta que haya rig, y un valor leído mal
-        es peor que un ``UNKNOWN``: la sonda lo REPORTA justamente para que el
-        rig diga si hace falta. Cerrarlo es trabajo de T5-v2, no de acá.
+        aunque el valor exista. El rig T5A midió que el campo Output de ambas
+        herramientas expone ``ValuePattern``, así que el hueco no muerde al gate
+        productivo de T5-v2; si un build futuro lo cerrara, el gate degrada a
+        ``UNKNOWN`` —fail-closed, no a una lectura forzada.
         Hallazgo de review (Qodo); el contrato decía leerlo y no lo leía.
 
         ``None`` es "no lo expone", que termina en ``UNKNOWN``. No se confunde
@@ -505,15 +554,40 @@ class LocalizadorPsutil:
         return tuple(salida)
 
 
-class ObservadorNoDisponible:
-    """Observador que falla cerrado. Es el backend por defecto, y a propósito.
+@runtime_checkable
+class ObservadorLiberable(Protocol):
+    """Capacidad opcional del observador: liberar sus recursos en este hilo.
 
-    T5A no cablea un backend Windows en el runtime porque falta la evidencia que
-    lo justificaría: nadie midió el árbol UIA de TexGen/DynDOLOD, así que ni el
-    selector ni la decisión de dependencia (comtypes / pywinauto / uiautomation)
-    tienen todavía sobre qué apoyarse. Hasta entonces el pipeline responde
-    ``UNKNOWN`` con razón ``UIA_UNAVAILABLE``, que es la respuesta honesta, en
-    vez de un backend a medias que devolvería veredictos inventados.
+    **No es parte de** :class:`ObservadorUIA` — el contrato de observación
+    sigue congelado en tres métodos. Es el punto de cierre del ciclo de vida
+    de quien abre un recurso por llamada: el backend Windows inicializa el
+    apartamento COM del hilo worker al construirse, y Microsoft exige un
+    ``CoUninitialize`` por cada ``CoInitialize`` exitoso — **incluido el
+    ``S_FALSE``** de re-inicializar un hilo reutilizado del pool de
+    ``asyncio.to_thread``, que es exactamente el caso del gate.
+
+    El gate detecta esta capacidad con ``isinstance`` y la invoca en su
+    ``finally``, así que el apartamento se cierra en el mismo hilo que lo
+    abrió en TODO camino: ``MATCH``, ``MISMATCH``, ``UNKNOWN`` de cualquier
+    razón, excepción del adaptador o del propio gate. La liberación es
+    ordenada — primero las referencias COM del observador, después el
+    ``CoUninitialize`` — porque soltar el apartamento con referencias vivas
+    es la forma documentada de conseguir un crash en vez de una limpieza.
+    """
+
+    def liberar(self) -> None:
+        """Libera las referencias y cierra el recurso del hilo. Idempotente."""
+        ...
+
+
+class ObservadorNoDisponible:
+    """Observador que falla cerrado. Es el backend por defecto del PUERTO.
+
+    El backend real vive desde T5-v2 en ``dyndolod_uia_windows`` y el gate lo
+    inyecta explícito; esta clase sigue siendo el default de quien llama a
+    :func:`observar_output` sin inyectar nada: falla cerrado con ``UNKNOWN`` /
+    ``UIA_UNAVAILABLE``, que es la respuesta honesta cuando nadie proveyó un
+    sensor, en vez de un backend a medias que devolvería veredictos inventados.
     """
 
     def __init__(self, motivo: str = "no hay backend de UI Automation cableado (T5A: REAL_RIG_REQUIRED)") -> None:

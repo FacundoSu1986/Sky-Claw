@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -32,6 +33,29 @@ from sky_claw.app.security.links import (
     rmtree_link_aware,
 )
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
+from sky_claw.local.tools.dyndolod_uia_gate import (
+    DEFAULT_READINESS_TIMEOUT_SEGUNDOS,
+    GATE_UIA_INTERVALO_SEGUNDOS,
+    GATE_UIA_TIMEOUT_SEGUNDOS,
+    RAZONES_TRANSITORIAS_DE_INICIO,
+    RAZONES_TRANSITORIAS_FINAL,
+    ConfirmadorDeConfiguracion,
+    OperatorConfigurationReadyRequest,
+    ResolucionProtocoloReadiness,
+    ResultadoConfirmacion,
+    ejecutar_gate_sincrono,
+)
+from sky_claw.local.tools.dyndolod_uia_preflight import (
+    EstadoPreflight,
+    LocalizadorDeProcesos,
+    LocalizadorPsutil,
+    ObservadorUIA,
+    RazonPreflight,
+    ResultadoPreflightUIA,
+    SolicitudPreflightUIA,
+    selector_de_output,
+)
+from sky_claw.local.tools.dyndolod_uia_windows import construir_observador_windows
 from sky_claw.local.tools.output_targets import dyndolod_output_target
 
 # Import directo del MÓDULO y no del paquete `validators`: el gate sólo depende de
@@ -44,6 +68,26 @@ from sky_claw.local.validators.texgen_visibility import (
 from sky_claw.logging_config import pipeline_tx_id_var, subprocess_error_extra
 
 logger = logging.getLogger(__name__)
+
+#: Gracia del deadline EXTERNO del gate sobre el deadline interno (F1).
+#:
+#: El deadline interno de ``ejecutar_gate_sincrono`` se consulta ENTRE
+#: observaciones: una llamada COM que no retorna (bloqueo del provider, RPC
+#: colgada) haría que el ``asyncio.to_thread`` jamás completara y el pipeline
+#: quedara esperando para siempre a esa ronda. El ``asyncio.wait_for`` externo
+#: recupera el control en ``uia_gate_timeout_seconds + poll + esta gracia``.
+#:
+#: **Límite honesto (documentado, no escondido).** Cancelar el ``await`` NO
+#: mata al worker del pool ni interrumpe la llamada COM ya en curso: el hilo
+#: sigue ocupado hasta que la llamada retorna, y los workers del executor se
+#: joinean en el shutdown del intérprete. Lo que SÍ se garantiza — y lo
+#: testea ``test_f1_un_com_bloqueado_dispara_el_deadline_externo_y_limpia`` —
+#: es que el pipeline recupera el control acotado, el proceso muere y el Job
+#: se cierra. Matar físicamente una llamada COM bloqueada requeriría aislar
+#: la observación en un PROCESO helper (options bajo
+#: ``STOP_ARCHITECTURE_COM_TIMEOUT``); el ownership del proceso target y del
+#: Job hace que esa consecuencia operativa quede contenida.
+_GRACIA_EXTERNA_DEL_GATE_SEGUNDOS = 15.0
 
 #: Índice de etapa de DynDOLOD en el DAG de ``sky_claw/local/AGENTS.md`` §1
 #: (SOP §5 regla 5). Se define UNA vez y todos los registros de fallo la
@@ -88,6 +132,28 @@ def _tx_id() -> int | None:
 # sobrevive al padre, el write-end nunca cierra y `_drain` no vería EOF jamás; sin
 # esta cota, el `gather` del path de éxito colgaría `_execute_process` para siempre.
 _DRAIN_GRACE_SECONDS = 10.0
+
+#: Tick del polling que vigila la muerte del proceso durante el protocolo de
+#: readyness (T5-v2.1). Más fino que un segundo gastaría ciclos sin sentido
+#: (la vigilia sólo necesita enterarse de que el proceso murió); más grueso
+#: deja una ventana perceptible donde el runner no nota la muerte. 0.5 s es
+#: el mismo orden que el gate UIA poll (1 s) y permite que la vigilia
+#: reporte el fin del proceso dentro del mismo orden de magnitud que un
+#: humano tarda en leer el prompt. Cota y seam inyectable
+#: (``self._async_sleep``): los tests usan ``asyncio.sleep(0)`` para no
+#: esperar tiempo real.
+_POLL_PROCESO_DURANTE_READINESS_SEGUNDOS = 0.5
+
+#: Cota del aviso best-effort al operador (``_informar_operador``). El aviso
+#: NO es un gate: la instrucción contractual (qué configurar, no pulsar Start)
+#: ya viaja dentro de la confirmación. Pero el primer aviso ocurre ANTES de
+#: crear las tasks del protocolo y antes del ``asyncio.wait_for(proc.wait())``
+#: de ``_execute_process``, así que ningún deadline lo cubre: un canal
+#: (HITL/NiceGUI/Telegram) cuya corrutina ``informar`` nunca resuelve colgaría
+#: el pipeline con la GUI viva y sin vigilancia. Con esta cota, un canal que
+#: no avisa en plazo se trata igual que un fallo del canal (warning + seguir),
+#: porque el seam ya es best-effort. NO convierte el aviso en otro gate.
+_TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS = 30.0
 
 #: Switches de ruta cuyo dueño es ``DynDOLODConfig``: ``extra_args`` no puede
 #: redefinirlos (ver ``DynDOLODRunner._extra_args_admisibles``).
@@ -399,6 +465,74 @@ class DynDOLODValidationError(DynDOLODExecutionError):
         self.output_path = output_path
 
 
+class DynDOLODPreflightUIAError(DynDOLODExecutionError):
+    """El gate UIA de Output (T5-v2) bloqueó la corrida: MISMATCH o UNKNOWN.
+
+    No es un crash del tool: es la negativa deliberada a dejar la GUI lista para
+    el Start humano con la observación divergente o inconclusa. Lleva el
+    ``ResultadoPreflightUIA`` entero — estado, razón, valores esperado/observado,
+    pid y evidencia — para que las capas superiores (``run_full_pipeline`` lo
+    traduce a ``ToolExecutionResult(success=False)``, el servicio a su borde
+    ``success``/``message``) no tengan que re-derivar nada del mensaje.
+
+    El mensaje distingue explícitamente las dos clases de bloqueo
+    (§ "Resultado de fallo" del encargo): *UIA output mismatch* cuando la GUI
+    muestra OTRO destino, *preflight UIA inconcluso* cuando no pudo
+    demostrarse — y nunca "el tool crasheó", porque no lo hizo.
+    """
+
+    def __init__(self, resultado: ResultadoPreflightUIA) -> None:
+        self.resultado = resultado
+        esperado = resultado.valor_esperado_canonico or resultado.valor_esperado
+        observado = resultado.valor_observado_canonico or resultado.valor_observado
+        observado_txt = observado if observado is not None else "<sin lectura>"
+        super().__init__(
+            message=(
+                f"preflight UIA de Output bloqueó a {resultado.tool}: "
+                f"{resultado.estado.value} ({resultado.razon.value}) — {resultado.detalle} "
+                f"[esperado={esperado!r} observado={observado_txt!r} pid={resultado.pid}]"
+            ),
+            return_code=None,
+            stderr=None,
+        )
+
+
+class DynDOLODReadinessProtocolError(DynDOLODExecutionError):
+    """El protocolo humano de DynDOLOD/TexGen (T5-v2.1) no llegó a la confirmación.
+
+    Vive fuera de ``DynDOLODPreflightUIAError`` a propósito: aquella
+    representa fallos del GATE (observación UIA sobre el binario), esta
+    representa fallos del CASO HUMANO o del lifecycle del proceso —no lo
+    pidió el wizard, no lo pidió el rig, lo pidió el wiring del seam—. La
+    razón es un enum propio (``ResolucionProtocoloReadiness``), no una razón
+    UIA, así la evidencia diagnóstica nunca mezcla dominios.
+
+    Los valores posibles:
+    ``DENEGADA`` / ``TIMEOUT`` / ``CANAL_NO_DISPONIBLE`` (provienen del
+    canal humano) y ``PROCESO_TERMINO`` (el proceso del binario terminó por
+    su cuenta mientras el runner esperaba la confirmación — detectado por el
+    lazo ``asyncio.wait`` del seam, no por el callable).
+    """
+
+    def __init__(
+        self,
+        *,
+        razon: ResolucionProtocoloReadiness,
+        tool_name: str,
+        pid: int | None,
+        valor_esperado: str,
+    ) -> None:
+        self.razon_protocolo = razon
+        self.tool_name = tool_name
+        self.pid = pid
+        self.valor_esperado = valor_esperado
+        super().__init__(
+            message=(f"protocolo readyness de {tool_name}: {razon.value} [pid={pid} esperado={valor_esperado!r}]"),
+            return_code=None,
+            stderr=None,
+        )
+
+
 # =============================================================================
 # DATA CLASSES
 # =============================================================================
@@ -441,6 +575,31 @@ class DynDOLODConfig:
         preset: Nivel de calidad (Low, Medium, High) — metadato de la corrida
             (eventos, journal, preview). NO viaja en el argv: lo elige el humano
             en el asistente de la herramienta.
+        uia_gate_timeout_seconds: Deadline monotónico del gate UIA de Output
+            (T5-v2) — cuánto se espera a que la GUI exponga el campo Output
+            leíble ANTES de aceptar la instancia como lista para la
+            interacción. NO es el timeout de la corrida: es la ventana de
+            readiness, y tiene que cubrir el modal HITL de DynDOLOD
+            (``LOD billboard(s) not found.``, medido en el rig T5A) que exige
+            un clic humano antes de que el wizard exista. Agotado el plazo, la
+            corrida se bloquea fail-closed. Default:
+            ``GATE_UIA_TIMEOUT_SEGUNDOS`` (300 s).
+        uia_gate_poll_interval_seconds: Cadencia de sondeo UIA dentro del gate
+            (default: ``GATE_UIA_INTERVALO_SEGUNDOS``, 1 s). Cada sondeo es una
+            enumeración UIA completa del árbol, así que no baja de ahí por
+            default: más fino sólo gasta llamadas COM cross-process.
+        uia_final_gate_timeout_seconds: Deadline del FINAL gate (T5-v2.1), que
+            vuelve a observar la MISMA instancia después de que el operador
+            declara ready. Mismo significado que ``uia_gate_timeout_seconds``
+            pero aplicado al segundo gate. Default: ``GATE_UIA_TIMEOUT_SEGUNDOS``.
+        uia_final_gate_poll_interval_seconds: Cadencia del FINAL gate. Mismo
+            significado que ``uia_gate_poll_interval_seconds`` para el segundo
+            gate. Default: ``GATE_UIA_INTERVALO_SEGUNDOS``.
+        readiness_timeout_seconds: Deadline del callable de readyness del
+            operador (T5-v2.1). Cubre un preset normal (cargar, ajustar,
+            decidir Output). Agotado el plazo, el runner corta con
+            ``CONFIGURATION_READINESS_TIMEOUT`` y termina el árbol de procesos.
+            Default: ``DEFAULT_READINESS_TIMEOUT_SEGUNDOS`` (600 s).
     """
 
     game_path: pathlib.Path
@@ -457,6 +616,11 @@ class DynDOLODConfig:
     timeout_seconds: int = 14400  # 4 horas por defecto
     heartbeat_interval: int = 60  # Segundos entre logs de heartbeat
     preset: str = "Medium"  # Low, Medium, High
+    uia_gate_timeout_seconds: float = GATE_UIA_TIMEOUT_SEGUNDOS
+    uia_gate_poll_interval_seconds: float = GATE_UIA_INTERVALO_SEGUNDOS
+    uia_final_gate_timeout_seconds: float = GATE_UIA_TIMEOUT_SEGUNDOS
+    uia_final_gate_poll_interval_seconds: float = GATE_UIA_INTERVALO_SEGUNDOS
+    readiness_timeout_seconds: float = DEFAULT_READINESS_TIMEOUT_SEGUNDOS
 
     def __post_init__(self) -> None:
         """Resuelve defaults derivables y valida que los paths requeridos existan.
@@ -510,6 +674,22 @@ class DynDOLODConfig:
             raise ValueError(f"Game path does not exist: {self.game_path}")
         if not self.dyndolod_exe.exists():
             raise DynDOLODNotFoundError(self.dyndolod_exe)
+        # El gate no puede decidir con un presupuesto de tiempo nulo o negativo:
+        # es un error de configuración, se detecta acá y no dentro del gate,
+        # donde saldría disfrazado de "la GUI nunca respondió".
+        if self.uia_gate_timeout_seconds <= 0 or self.uia_gate_poll_interval_seconds <= 0:
+            raise ValueError(
+                "uia_gate_timeout_seconds y uia_gate_poll_interval_seconds deben ser > 0; "
+                f"recibidos {self.uia_gate_timeout_seconds=} y {self.uia_gate_poll_interval_seconds=}"
+            )
+        if self.uia_final_gate_timeout_seconds <= 0 or self.uia_final_gate_poll_interval_seconds <= 0:
+            raise ValueError(
+                "uia_final_gate_timeout_seconds y uia_final_gate_poll_interval_seconds deben ser > 0; "
+                f"recibidos {self.uia_final_gate_timeout_seconds=} y "
+                f"{self.uia_final_gate_poll_interval_seconds=}"
+            )
+        if self.readiness_timeout_seconds <= 0:
+            raise ValueError(f"readiness_timeout_seconds debe ser > 0; recibido {self.readiness_timeout_seconds=}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -650,14 +830,57 @@ class DynDOLODRunner:
     TEXGEN_MOD_NAME = "TexGen Output"
     DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
 
-    def __init__(self, config: DynDOLODConfig) -> None:
+    def __init__(
+        self,
+        config: DynDOLODConfig,
+        *,
+        uia_localizador: LocalizadorDeProcesos | None = None,
+        uia_observador_factory: Callable[[], ObservadorUIA] | None = None,
+        uia_reloj: Callable[[], float] | None = None,
+        uia_dormir: Callable[[float], None] | None = None,
+        asyncio_sleep: Callable[[float], Awaitable[None]] | None = None,
+        confirmador_de_configuracion: ConfirmadorDeConfiguracion | None = None,
+    ) -> None:
         """
         Inicializa el runner de DynDOLOD.
 
         Args:
             config: Configuración con paths y timeouts.
+            uia_localizador: Sensor de procesos para el gate UIA (T5-v2). Por
+                defecto :class:`LocalizadorPsutil`. Inyectable para tests — la
+                política del gate no cambia, sólo el sensor.
+            uia_observador_factory: Fábrica del observador UIA. Por defecto
+                :func:`construir_observador_windows` — el adaptador COM medido
+                en el rig T5A, que es el mismo que importa la sonda. La fábrica
+                se invoca DENTRO del hilo del gate (el apartamento COM es del
+                hilo); inyectable para tests.
+            uia_reloj / uia_dormir: Reloj monotónico y sleep del gate. Reales
+                por defecto; los tests los falsifican para no esperar segundos
+                reales contra el deadline (el gate es síncrono y corre en
+                ``to_thread``).
+            asyncio_sleep: Suspender la vigilia del proceso durante el protocolo
+                T5-v2.1. Por defecto ``asyncio.sleep``; los tests inyectan
+                ``asyncio.sleep(0)`` para no esperar tiempo real.
+            confirmador_de_configuracion: Implementación de
+                :class:`ConfirmadorDeConfiguracion` que responde la pregunta
+                "¿el operador terminó de configurar el wizard?" con un
+                :class:`ResultadoConfirmacion`. Se invoca entre el initial
+                MATCH y el final gate (T5-v2.1) para AMBOS binarios del runner
+                (TexGen incluido, por simetría del seam). Si es ``None``, el
+                pipeline falla cerrado con
+                ``DynDOLODReadinessProtocolError(razon=CANAL_NO_DISPONIBLE)``
+                — la ausencia de canal es un corte explícito, no un
+                auto-approve.
         """
         self._config = config
+        self._uia_localizador = uia_localizador if uia_localizador is not None else LocalizadorPsutil()
+        self._uia_observador_factory = (
+            uia_observador_factory if uia_observador_factory is not None else construir_observador_windows
+        )
+        self._uia_reloj = uia_reloj if uia_reloj is not None else time.monotonic
+        self._uia_dormir = uia_dormir if uia_dormir is not None else time.sleep
+        self._async_sleep = asyncio_sleep if asyncio_sleep is not None else asyncio.sleep
+        self._confirmador_de_configuracion = confirmador_de_configuracion
         logger.info(
             "DynDOLODRunner inicializado: dyndolod_exe=%s, texgen_exe=%s, timeout=%ds",
             config.dyndolod_exe,
@@ -913,6 +1136,386 @@ class DynDOLODRunner:
 
         return result
 
+    async def _gate_uia_output(
+        self,
+        *,
+        tool_name: str,
+        executable: pathlib.Path,
+        proc: Any,
+        timeout_segundos: float | None = None,
+        intervalo_segundos: float | None = None,
+        etiqueta: str = "initial",
+        razones_transitorias: frozenset[RazonPreflight] | None = None,
+    ) -> None:
+        """Gate UIA: Sky-Claw no acepta la instancia hasta un MATCH de Output.
+
+        Lee por UIA —sólo lectura— el campo Output de ESTA instancia (``proc.pid``)
+        y lo compara contra la salida administrada; si no coinciden, o si no se
+        pudo demostrar, lanza :class:`DynDOLODPreflightUIAError` y el llamador
+        termina el proceso. La autoridad es ``self._config.output_root`` — **la
+        misma fuente** que ``_build_xedit_args`` serializa en el ``-o:`` — así
+        que no hay dos lecturas de "lo esperado" que puedan divergir.
+
+        ``timeout_segundos`` / ``intervalo_segundos`` opcionales: el initial gate
+        usa ``self._config.uia_gate_timeout_seconds`` /
+        ``uia_gate_poll_interval_seconds``; el final gate (T5-v2.1) usa sus
+        equivalentes con prefijo ``uia_final_gate_*`` y etiqueta ``"final"`` para
+        diferenciar los registros.
+
+        ``razones_transitorias`` opcional: el initial gate usa
+        :data:`RAZONES_TRANSITORIAS_DE_INICIO` (la GUI puede estar naciendo);
+        el final gate T5-v2.1 pasa
+        :data:`RAZONES_TRANSITORIAS_FINAL` (un wizard que se minimiza tras la
+        confirmación no vuelve a aparecer solo). ``None`` = INICIO.
+
+        **Contrato DÉBIL (decisión de arquitectura, F2).** Lo que se garantiza:
+        Sky-Claw no considera la instancia lista ni continúa su pipeline hasta
+        ``MATCH``, y el operador no debe interactuar con Start durante el gate.
+        Lo que NO se garantiza: que el humano físicamente no pueda pulsar Start
+        antes del ``MATCH`` — la GUI es del binario y acepta input nativo desde
+        el spawn, y bloquearla exigiría mutar una ventana ajena, fuera del
+        alcance read-only de T5-v2. Es la limitación documentada de una etapa
+        asistida, no un invariante invocable.
+
+        El observador se construye DENTRO del hilo donde corre el sondeo
+        (``asyncio.to_thread``): COM ata su apartamento al hilo que inicializa.
+        El deadline EXTERNO (``asyncio.wait_for``) cubre el caso que el deadline
+        interno no puede alcanzar — una observación que jamás retorna; ver
+        ``_GRACIA_EXTERNA_DEL_GATE_SEGUNDOS`` y su límite documentado.
+
+        No es un veredicto de escritura física: un ``MATCH`` dice "lo que la GUI
+        muestra coincide con lo administrado" y habilita al operador; dónde
+        escribieron los bytes lo certifica el post-check, como siempre.
+        """
+        if timeout_segundos is None:
+            timeout_segundos = float(self._config.uia_gate_timeout_seconds)
+        if intervalo_segundos is None:
+            intervalo_segundos = float(self._config.uia_gate_poll_interval_seconds)
+
+        try:
+            criterios = selector_de_output(tool_name)
+        except KeyError:
+            # Una tool sin selector medido no tiene gate honesto disponible; el
+            # fail-closed la trata como UNKNOWN/TOOL_DESCONOCIDA, no como MATCH.
+            raise DynDOLODPreflightUIAError(
+                ResultadoPreflightUIA(
+                    estado=EstadoPreflight.UNKNOWN,
+                    razon=RazonPreflight.TOOL_DESCONOCIDA,
+                    tool=tool_name,
+                    detalle=f"{tool_name!r} no tiene selector UIA medido en SELECTORES_DE_OUTPUT",
+                    valor_esperado=str(self._config.output_root),
+                    pid=proc.pid if isinstance(proc.pid, int) else None,
+                )
+            ) from None
+
+        solicitud = SolicitudPreflightUIA(
+            tool=tool_name,
+            ejecutable_esperado=str(executable),
+            salida_administrada_esperada=str(self._config.output_root),
+            criterios_del_control=criterios,
+            pid=proc.pid if isinstance(proc.pid, int) else None,
+        )
+
+        def _registrar_transitorio(resultado: ResultadoPreflightUIA) -> None:
+            # Progreso del gate: una línea por CAMBIO de razón (una GUI sana no
+            # produce un log por segundo), para que un modal HITL largo —o una
+            # GUI que nunca termina de aparecer— sea visible mientras se espera.
+            logger.info(
+                "Gate UIA %s de %s (pid=%s): esperando la GUI (%s)",
+                etiqueta,
+                tool_name,
+                solicitud.pid,
+                resultado.razon.value,
+            )
+
+        try:
+            resultado = await asyncio.wait_for(
+                asyncio.to_thread(
+                    ejecutar_gate_sincrono,
+                    solicitud,
+                    fabrica_observador=self._uia_observador_factory,
+                    localizador=self._uia_localizador,
+                    timeout_segundos=timeout_segundos,
+                    intervalo_segundos=intervalo_segundos,
+                    reloj=self._uia_reloj,
+                    dormir=self._uia_dormir,
+                    proceso_vivo=lambda: proc.returncode is None,
+                    al_progreso=_registrar_transitorio,
+                    razones_transitorias=razones_transitorias
+                    if razones_transitorias is not None
+                    else RAZONES_TRANSITORIAS_DE_INICIO,
+                ),
+                timeout=(timeout_segundos + intervalo_segundos + _GRACIA_EXTERNA_DEL_GATE_SEGUNDOS),
+            )
+        except TimeoutError:
+            # F1: el gate interno nunca devolvió (una observación quedó
+            # bloqueada) y el deadline EXTERNO agotó su presupuesto. Fail-closed
+            # con la misma forma de siempre: UNKNOWN y razón del sensor — la
+            # observación no produjo veredicto, y tratarlo como MATCH sería la
+            # única salida inaceptable. El cleanup del proceso corre en el
+            # ``except`` del seam, como todo bloqueo del gate.
+            raise DynDOLODPreflightUIAError(
+                ResultadoPreflightUIA(
+                    estado=EstadoPreflight.UNKNOWN,
+                    razon=RazonPreflight.ERROR_UIA,
+                    tool=tool_name,
+                    detalle=(
+                        "el gate no completó ninguna observación dentro del deadline externo "
+                        f"({etiqueta}, una llamada UIA quedó bloqueada): la instancia no se considera lista"
+                    ),
+                    valor_esperado=str(self._config.output_root),
+                    pid=solicitud.pid,
+                )
+            ) from None
+        if resultado.estado is EstadoPreflight.MATCH:
+            logger.info(
+                "Gate UIA %s de %s (pid=%s): Output observado coincide con la salida administrada",
+                etiqueta,
+                tool_name,
+                solicitud.pid,
+            )
+            return
+        raise DynDOLODPreflightUIAError(resultado)
+
+    async def _llamar_confirmador_acotado(
+        self,
+        solicitud: OperatorConfigurationReadyRequest,
+    ) -> ResultadoConfirmacion:
+        """Llama al confirmador inyectado y traduce TODO desenlace defectuoso.
+
+        Contrato del puerto (:class:`ConfirmadorDeConfiguracion`): el
+        confirmador DEBE respetar ``solicitud.timeout_seconds`` con su
+        propio reloj. El runner acota ADEMÁS desde afuera con
+        ``asyncio.wait_for`` (defensa en profundidad: un adaptador roto no
+        puede colgar al pipeline). Un timeout externo, una excepción
+        cualquiera, o un retorno fuera del enum se traducen a un valor del
+        enum con evidencia — jamás a ``APROBADA``.
+        """
+        confirmador = self._confirmador_de_configuracion
+        assert confirmador is not None  # el caller lo validó antes
+        try:
+            resultado = await asyncio.wait_for(
+                confirmador.confirmar(solicitud),
+                timeout=float(self._config.readiness_timeout_seconds),
+            )
+        except TimeoutError:
+            logger.warning(
+                "readyness de %s (pid=%s): el canal humano no respondió en %.0fs",
+                solicitud.tool_name,
+                solicitud.pid,
+                float(self._config.readiness_timeout_seconds),
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
+            return ResultadoConfirmacion.TIMEOUT
+        except asyncio.CancelledError:
+            # La cancelación del await exterior preserva su identidad; el
+            # ``finally`` del seam de arriba cancela la otra task.
+            raise
+        except Exception as exc:  # noqa: BLE001 - traducir TODO fallo del canal a CANAL_NO_DISPONIBLE
+            logger.warning(
+                "readyness de %s (pid=%s): el confirmador lanzó %s",
+                solicitud.tool_name,
+                solicitud.pid,
+                exc,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        if not isinstance(resultado, ResultadoConfirmacion):
+            logger.warning(
+                "readyness de %s (pid=%s): el confirmador devolvió %r (fuera del enum)",
+                solicitud.tool_name,
+                solicitud.pid,
+                resultado,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        return resultado
+
+    async def _vigilar_proceso(self, proc: Any) -> None:
+        """Espera polling a que el proceso termine (lifecycle).
+
+        Reusa el seam inyectable ``self._async_sleep`` (tests lo falsifican
+        con un sleep(0) que no consume tiempo real; producción es
+        ``asyncio.sleep`` con el tick del módulo). Sale en la primera ronda
+        con ``proc.returncode`` no-None; nunca se pasa del vivo del proceso.
+        """
+        while proc.returncode is None:
+            await self._async_sleep(_POLL_PROCESO_DURANTE_READINESS_SEGUNDOS)
+
+    async def _informar_operador(self, *, tool_name: str, mensaje: str) -> None:
+        """Best-effort ACOTADO: la instrucción completa ya viaja en la confirmación.
+
+        Se tragan excepciones del canal: si la superficie no puede avisar
+        del "Start habilitado" después del final MATCH, la corrida NO se
+        cancela (el gate ya pasó, el humano ya autorizó; la instrucción
+        contractual vivía en la confirmación). El runner LOG el fallo para
+        que la trazabilidad no se pierda, y la sección de Test de
+        superficie del rig de R3b cubre el camino real (no el log solo).
+
+        El ``await`` se acota con ``_TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS``:
+        un canal cuya corrutina nunca resuelve se trata igual que un fallo
+        (warning + seguir). Es imprescindible porque el primer aviso ocurre
+        ANTES de crear las tasks del protocolo y del deadline del proceso en
+        :meth:`_execute_process`, así que sin la cota un canal colgado
+        colgaría el pipeline con la GUI viva. La cancelación externa NO se
+        absorbe: se re-lanza con su identidad (S9).
+        """
+        confirmador = self._confirmador_de_configuracion
+        if confirmador is None:
+            return
+        try:
+            await asyncio.wait_for(
+                confirmador.informar(tool=tool_name, mensaje=mensaje),
+                timeout=_TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS,
+            )
+        except asyncio.CancelledError:
+            # La cancelación externa preserva su identidad: la cota del aviso
+            # NO la absorbe (si lo hiciera, un shutdown quedaría atrapado en un
+            # canal colgado). ``asyncio.CancelledError`` es hija de
+            # ``BaseException``, así que el ``except Exception`` de abajo no la
+            # ve; este clause explícito la re-lanza igual.
+            raise
+        except TimeoutError:
+            # El canal no avisó en plazo. Mismo tratamiento que un fallo del
+            # canal: el seam es best-effort y la corrida sigue.
+            logger.warning(
+                "informar al operador no respondió en %.1fs (tool=%s, mensaje=%r); se continúa",
+                _TIMEOUT_DEL_AVISO_AL_OPERADOR_SEGUNDOS,
+                tool_name,
+                mensaje,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
+        except Exception:  # noqa: BLE001 - el seam es best-effort; un fallo del canal no tumba la corrida
+            logger.warning(
+                "informar al operador falló (tool=%s, mensaje=%r): ver traceback",
+                tool_name,
+                mensaje,
+                exc_info=True,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
+
+    async def _protocolo_de_readiness(
+        self,
+        *,
+        tool_name: str,
+        executable: pathlib.Path,
+        proc: Any,
+    ) -> None:
+        """T5-v2.1 — seam único del protocolo de readyness (ambos binarios).
+
+        Secuencia contractual::
+
+            1. Si no hay confirmador → ``CANAL_NO_DISPONIBLE`` fail-closed.
+            2. ``informar`` las instrucciones previas a la confirmación
+               (texto del wizard y la condición de Start: NO pulsar hasta
+               que se confirme en Sky-Claw).
+            3. Crear DOS tasks explícitas (confirmación + vigilia de proceso)
+               y ``asyncio.wait(..., FIRST_COMPLETED)``. PROCESO_TERMINO GANA
+               si termina primero, o si ambas terminan en la misma vuelta
+               (§26 — aprobar una instancia que ya murió no es "inocente"
+               sino una carrera de lifecycle).
+            4. APROBADA → ejecutar el FINAL gate (mismo pid, mismo
+               ``output_root``) con ``RAZONES_TRANSITORIAS_FINAL`` (el
+               final NO es reintento indefinido: ``CONTROL_NO_ENCONTRADO``
+               es terminal post-confirmación; el rig de T5A midió que un
+               wizard que se minimiza no vuelve a aparecer solo).
+            5. ``informar`` el "Start habilitado" (best-effort; ver
+               :meth:`_informar_operador`).
+            6. En TODA salida (incluida cancelación externa) las dos
+               tasks del seam se cancelan y se recolectan con
+               ``asyncio.gather(return_exceptions=True)``; no quedan
+               tasks huérfanas.
+
+        El ``except`` del SEAM en :meth:`_execute_process` captura
+        :class:`DynDOLODReadinessProtocolError` además de las excepciones
+        del gate: cleanup + raise, mismo ownership.
+        """
+        confirmador = self._confirmador_de_configuracion
+        pid = proc.pid if isinstance(proc.pid, int) else None
+        esperado = str(self._config.output_root)
+        if confirmador is None:
+            raise DynDOLODReadinessProtocolError(
+                razon=ResolucionProtocoloReadiness.CANAL_NO_DISPONIBLE,
+                tool_name=tool_name,
+                pid=pid,
+                valor_esperado=esperado,
+            )
+
+        solicitud = OperatorConfigurationReadyRequest(
+            tool_name=tool_name,
+            pid=pid if pid is not None else 0,
+            executable=executable,
+            expected_output=self._config.output_root,
+            timeout_seconds=float(self._config.readiness_timeout_seconds),
+        )
+
+        await self._informar_operador(
+            tool_name=tool_name,
+            mensaje=(
+                f"{tool_name} se está ejecutando (pid={pid}). Configurá preset/worldspaces en el wizard; "
+                "NO pulses Start. Cuando termines, confirmá «Configuración lista» en Sky-Claw: "
+                "se re-verificará el Output antes de autorizar Start."
+            ),
+        )
+
+        confirm_task = asyncio.create_task(self._llamar_confirmador_acotado(solicitud))
+        vigilia_task = asyncio.create_task(self._vigilar_proceso(proc))
+        try:
+            pendientes: set[asyncio.Task[object]] = {confirm_task, vigilia_task}
+            while pendientes:
+                done, pendientes = await asyncio.wait(pendientes, return_when=asyncio.FIRST_COMPLETED)
+                if vigilia_task in done:
+                    # §26: PROCESO_TERMINO gana si está en ``done``,
+                    # aunque la confirmación también lo esté (mismo turno).
+                    raise DynDOLODReadinessProtocolError(
+                        razon=ResolucionProtocoloReadiness.PROCESO_TERMINO,
+                        tool_name=tool_name,
+                        pid=pid,
+                        valor_esperado=esperado,
+                    )
+                if confirm_task in done:
+                    resultado = confirm_task.result()  # type: ignore[union-attr]
+                    if resultado is ResultadoConfirmacion.APROBADA:
+                        break  # sale del while; el ``finally`` cancela la vigilia
+                    mapa = {
+                        ResultadoConfirmacion.DENEGADA: ResolucionProtocoloReadiness.DENEGADA,
+                        ResultadoConfirmacion.TIMEOUT: ResolucionProtocoloReadiness.TIMEOUT,
+                        ResultadoConfirmacion.CANAL_NO_DISPONIBLE: ResolucionProtocoloReadiness.CANAL_NO_DISPONIBLE,
+                    }
+                    raise DynDOLODReadinessProtocolError(
+                        razon=mapa[resultado],
+                        tool_name=tool_name,
+                        pid=pid,
+                        valor_esperado=esperado,
+                    )
+        finally:
+            for tarea in (confirm_task, vigilia_task):
+                if not tarea.done():
+                    tarea.cancel()
+            # gather(return_exceptions=True) recolecta las cancelaciones
+            # como valores y evita el warning "Task exception was never
+            # retrieved" / "Task was destroyed but it is pending".
+            await asyncio.gather(confirm_task, vigilia_task, return_exceptions=True)
+
+        logger.info(
+            "Readyness del operador recibida para %s (pid=%s): ejecutando final UIA gate",
+            tool_name,
+            pid,
+        )
+        await self._gate_uia_output(
+            tool_name=tool_name,
+            executable=executable,
+            proc=proc,
+            timeout_segundos=float(self._config.uia_final_gate_timeout_seconds),
+            intervalo_segundos=float(self._config.uia_final_gate_poll_interval_seconds),
+            etiqueta="final",
+            razones_transitorias=RAZONES_TRANSITORIAS_FINAL,
+        )
+        await self._informar_operador(
+            tool_name=tool_name,
+            mensaje=(f"Output de {tool_name} verificado (pid={pid}). Puede pulsar Start en la GUI del wizard."),
+        )
+
     async def _execute_process(
         self,
         executable: pathlib.Path,
@@ -988,6 +1591,72 @@ class DynDOLODRunner:
         # nieto que sobreviva —incluso reparentado tras la salida del padre—, el
         # hueco que kill_and_reap no cubre en la salida normal. No-op fuera de Windows.
         job = assign_kill_on_close_job(proc.pid)
+
+        # T5-v2: gate UIA del campo Output. El proceso YA existe (la GUI tiene
+        # que estar viva para observarla) pero Sky-Claw NO la da por lista hasta
+        # el MATCH: un MISMATCH o un UNKNOWN terminal cortan acá, con el mismo
+        # ownership de siempre (kill_and_reap + close_job) — el pipeline nunca
+        # continúa sobre una observación divergente o inconclusa ni deja el
+        # proceso huérfano. Contrato DÉBIL y explícito: la GUI acepta input
+        # nativo desde el spawn, así que durante el gate el operador no debe
+        # interactuar con Start; bloquearla físicamente exigiría mutar la
+        # ventana ajena, fuera del alcance read-only de T5-v2. Es el ÚNICO seam
+        # por donde cruzan los dos lanzadores, así que cubrirlo acá cubre a
+        # TexGen y a DynDOLOD por construcción (no por recordatorio). Va ANTES
+        # de los drains y del heartbeat: durante el gate
+        # (≤ config.uia_gate_timeout_seconds + gracia externa) la espera la
+        # reporta el propio gate con su razón, y estos binarios son apps GUI
+        # (PE Subsystem 2) que no escriben al pipe, así que no hay nada que
+        # drenar en la ventana.
+        try:
+            await self._gate_uia_output(tool_name=tool_name, executable=executable, proc=proc)
+        except (DynDOLODPreflightUIAError, asyncio.CancelledError):
+            # El bloqueo del gate y la cancelación externa comparten el cleanup:
+            # matar el árbol y cerrar el Job. El raise preserva la identidad de
+            # CancelledError (no se degrada a un fallo de ejecución genérico).
+            await kill_and_reap(proc)
+            close_job(job)
+            raise
+        except BaseException:
+            # F3 — después del spawn, NINGUNA salida excepcional del gate deja
+            # el proceso sin ownership. El ``except`` de arriba cubre el bloqueo
+            # declarado del gate y la cancelación; éste cubre todo lo demás que
+            # escape de ``_gate_uia_output`` (un bug del adaptador, un error del
+            # executor). Mismo cleanup, ``raise`` pelado: ni ``RuntimeError`` ni
+            # ``KeyboardInterrupt``/``SystemExit`` se degradan ni se disfrazan.
+            await kill_and_reap(proc)
+            close_job(job)
+            raise
+
+        # T5-v2.1 — seam único del protocolo de readyness (ambos binarios):
+        #   initial UIA gate (arriba) → MATCH
+        #   → informar instrucciones al operador
+        #   → confirmación HITL (con vigilia del proceso)
+        #   → final UIA gate (mismo pid, mismo ``output_root``)
+        #   → informar "Start habilitado"
+        #   → process.wait normal
+        #
+        # TexGen Y DynDOLOD cruzan el MISMO protocolo (delta §20, M10
+        # invertido): bypass de uno solo debe fallar. La instrucción completa
+        # viaja con la confirmación; el aviso best-effort del "Start habilitado"
+        # se complementa con la instrucción contractual dentro del modal HITL.
+        try:
+            await self._protocolo_de_readiness(tool_name=tool_name, executable=executable, proc=proc)
+        except (DynDOLODPreflightUIAError, DynDOLODReadinessProtocolError, asyncio.CancelledError):
+            # El gate y la readyness comparten un mismo ownership: el runner
+            # NUNCA deja un proceso vivo si la verificación de Output o el
+            # canal humano falla. ``CancelledError`` preserva identidad (no se
+            # degrada a fallo genérico).
+            await kill_and_reap(proc)
+            close_job(job)
+            raise
+        except BaseException:
+            # F3 — un bug del adaptador, del executor, o un error no previsto
+            # del confirmador (que su wrapper ya no atrapa). Mismo cleanup,
+            # ``raise`` pelado: nada se degrada ni se disfraza.
+            await kill_and_reap(proc)
+            close_job(job)
+            raise
 
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []

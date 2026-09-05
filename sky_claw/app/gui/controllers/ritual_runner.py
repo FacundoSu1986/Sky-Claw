@@ -20,6 +20,7 @@ import pathlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.app.security.hitl import CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA
 from sky_claw.config import GUI_MAX_PENDING_HITL
 from sky_claw.local.tools.tool_result import normalize_tool_result
 from sky_claw.local.tools_installer import InstallVerification
@@ -742,6 +743,28 @@ def make_gui_hitl_notify(
                         "reason": getattr(req, "reason", ""),
                         "detail": getattr(req, "detail", ""),
                         "url": getattr(req, "url", "") or "",
+                        "category": category,
+                    },
+                    tab_id,
+                )
+            )
+            _gui_pending_request_id.set(req.request_id)
+            return
+        if category == CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA:
+            # T5-v2.1 (PR #528): la confirmación de «configuración lista» del
+            # protocolo DynDOLOD/TexGen NO se auto-aprueba con Modo local.
+            # Es la única señal que el rig del PR #528 necesita para cerrar el
+            # gap «el operador cambió el preset entre el initial MATCH y Start»;
+            # auto-aprobarla reproduce el R4b y elimina la única defensa que
+            # el runner tiene contra el desvío de Output. Mismo trato que
+            # ``download`` y ``sandbox_promotion``: parkeo manual, scopeado al
+            # cliente lanzador.
+            set_pending(
+                stamp_hitl_owner(
+                    {
+                        "request_id": req.request_id,
+                        "reason": getattr(req, "reason", ""),
+                        "detail": getattr(req, "detail", ""),
                         "category": category,
                     },
                     tab_id,

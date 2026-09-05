@@ -1151,7 +1151,17 @@ class TestExecuteProcessDrainGrace:
         runner = ddl.DynDOLODRunner(config)
         cwd = pathlib.Path.cwd()
 
-        with patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)) as create_process:
+        with (
+            patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)) as create_process,
+            # T5-v2: este test prueba el contrato de cwd del subproceso; el gate
+            # UIA tiene su propia suite (test_dyndolod_uia_gate.py).
+            # T5-v2.1: el handshake de readyness CRUZA AMBOS binarios (mismo
+            # seam, TexGen incluido); se mockea acá porque este test mide el cwd,
+            # no el protocolo (sin confirmador cableado cortaría con
+            # CANAL_NO_DISPONIBLE).
+            patch.object(runner, "_gate_uia_output", AsyncMock()),
+            patch.object(runner, "_protocolo_de_readiness", AsyncMock()),
+        ):
             await runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD")
 
         assert create_process.call_args.kwargs["cwd"] == cwd
@@ -1173,6 +1183,11 @@ class TestExecuteProcessDrainGrace:
         with (
             patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
             patch.object(ddl, "_DRAIN_GRACE_SECONDS", 0.1),
+            # T5-v2: el gate UIA tiene su propia suite; acá se prueba el drain.
+            # T5-v2.1: idem para el handshake de readyness, que CRUZA AMBOS
+            # binarios (mismo seam): se mockea porque este test mide el drain.
+            patch.object(runner, "_gate_uia_output", AsyncMock()),
+            patch.object(runner, "_protocolo_de_readiness", AsyncMock()),
         ):
             # Con el fix retorna dentro del grace (0.1s); sin él, el gather del
             # path de éxito cuelga y este wait_for externo dispararía TimeoutError.
@@ -1211,6 +1226,11 @@ class TestExecuteProcessDrainGrace:
             patch.object(ddl, "_DRAIN_GRACE_SECONDS", 0.1),
             patch.object(ddl, "assign_kill_on_close_job", assign_spy),
             patch.object(ddl, "close_job", close_spy),
+            # T5-v2: el gate UIA tiene su propia suite; acá se prueba el job.
+            # T5-v2.1: idem para el handshake de readyness, que CRUZA AMBOS
+            # binarios (mismo seam): se mockea porque este test mide el job.
+            patch.object(runner, "_gate_uia_output", AsyncMock()),
+            patch.object(runner, "_protocolo_de_readiness", AsyncMock()),
         ):
             await asyncio.wait_for(
                 runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD"),
@@ -1274,7 +1294,18 @@ class TestExecuteProcessCancellation:
         config = MagicMock(timeout_seconds=3600, heartbeat_interval=60)
         runner = ddl.DynDOLODRunner(config)
 
-        with patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
+        with (
+            patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
+            # T5-v2: la cancelación DURANTE el gate tiene su propio test en
+            # test_dyndolod_uia_gate.py; acá se mide la cancelación sobre la
+            # espera del proceso, con el gate ya superado.
+            # T5-v2.1: el handshake de readyness CRUZA AMBOS binarios (mismo
+            # seam); se mockea acá para que el test no toque el callable real y
+            # mida sólo la cancelación (sin confirmador cortaría con
+            # CANAL_NO_DISPONIBLE).
+            patch.object(runner, "_gate_uia_output", AsyncMock()),
+            patch.object(runner, "_protocolo_de_readiness", AsyncMock()),
+        ):
             task = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD"))
             try:
                 await wait_started.wait()
