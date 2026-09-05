@@ -116,7 +116,7 @@ _COMPOSICION = _tipos_de_la_composicion()
 _DOMINIO_EXPLICITO_INVOCAR = frozenset({"parse_active_plugins", "AssetConflictDetector"}) | _COMPOSICION
 
 # --- Capa de dominio por RUTA de módulo (cerrada salvo DTOs declarados) --------
-_PAQUETES_DE_DOMINIO = ("sky_claw.local.",)
+_RAIZ_DOMINIO = "sky_claw.local"
 _MODULOS_DE_DOMINIO_EXTRA = frozenset({"sky_claw.app.orchestrator.active_plugins"})
 
 # Únicos símbolos que el Supervisor puede importar de la capa de dominio: DTOs y
@@ -135,7 +135,28 @@ def _es_dominio_por_nombre(nombre: str) -> bool:
 
 
 def _es_modulo_de_dominio(ruta: str) -> bool:
-    return ruta.startswith(_PAQUETES_DE_DOMINIO) or ruta in _MODULOS_DE_DOMINIO_EXTRA
+    """¿``ruta`` (dotted) es el paquete de dominio, un submódulo suyo, o un extra?"""
+    return ruta == _RAIZ_DOMINIO or ruta.startswith(_RAIZ_DOMINIO + ".") or ruta in _MODULOS_DE_DOMINIO_EXTRA
+
+
+def _delega_al_dispatcher(nodo: ast.AST) -> bool:
+    """¿``nodo`` es una llamada de delegación al dispatcher extraído?
+
+    Acepta ``self._tool_dispatcher.dispatch(...)`` y ``<alias_local>.dispatch(...)``
+    (refactor equivalente M5), pero NO ``self.<otro_servicio>.dispatch(...)``: delegar
+    en un colaborador distinto no es delegar en el dispatcher (review interno #553).
+    """
+    if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "dispatch"):
+        return False
+    receptor = nodo.func.value
+    if (
+        isinstance(receptor, ast.Attribute)
+        and isinstance(receptor.value, ast.Name)
+        and receptor.value.id == "self"
+        and receptor.attr == "_tool_dispatcher"
+    ):
+        return True  # self._tool_dispatcher.dispatch(...)
+    return isinstance(receptor, ast.Name)  # alias local del dispatcher (M5)
 
 
 def _resolver_modulo(nodo: ast.ImportFrom) -> str:
@@ -181,6 +202,7 @@ def _nombres_invocados() -> set[str]:
 
 
 def _metodo_de_clase(clase: ast.ClassDef, nombre: str) -> ast.AsyncFunctionDef | ast.FunctionDef | None:
+    """Método DIRECTO de ``clase`` por nombre (no funciones anidadas ni de otras clases)."""
     for nodo in clase.body:
         if isinstance(nodo, (ast.AsyncFunctionDef, ast.FunctionDef)) and nodo.name == nombre:
             return nodo
@@ -221,12 +243,39 @@ def test_no_importa_dominio_de_herramientas() -> None:
                         ofensores.add(f"{modulo}.{alias.name}")
             else:
                 for alias in nodo.names:
-                    if alias.name != "*" and _es_dominio_por_nombre(alias.name):
+                    if alias.name == "*":
+                        continue
+                    # ``from sky_claw import local`` importa un SUBPAQUETE de dominio
+                    # por nombre: se detecta por la ruta combinada, no por el símbolo.
+                    subpaquete = f"{modulo}.{alias.name}" if modulo else alias.name
+                    if _es_modulo_de_dominio(subpaquete):
+                        ofensores.add(subpaquete)
+                    elif _es_dominio_por_nombre(alias.name):
                         ofensores.add(alias.name)
     assert not ofensores, (
         f"supervisor.py importó implementación de dominio: {sorted(ofensores)}. "
         "La capa sky_claw.local.* está cerrada salvo los DTOs declarados; el resto "
         "(runner/analyzer/servicio/helper) vive en su seam y se recibe ya construido."
+    )
+
+
+def test_allowlist_de_dtos_sin_entradas_muertas() -> None:
+    """El allowlist de DTOs de dominio no acumula entradas muertas.
+
+    Cada nombre de ``_DTOS_PERMITIDOS_DE_DOMINIO`` debe corresponder a un símbolo que
+    el Supervisor HOY importa de la capa de dominio. Así el allowlist no puede crecer
+    en silencio (un nombre agregado "para callar el test" que no se importa rompe acá)
+    — cierra el punto ciego de mantenimiento que señaló el review interno.
+    """
+    importados_de_dominio: set[str] = set()
+    for nodo in ast.walk(_SUPERVISOR_AST):
+        if isinstance(nodo, ast.ImportFrom) and _es_modulo_de_dominio(_resolver_modulo(nodo)):
+            importados_de_dominio.update(a.name for a in nodo.names)
+    muertas = _DTOS_PERMITIDOS_DE_DOMINIO - importados_de_dominio
+    assert not muertas, (
+        f"entradas del allowlist de DTOs que ya no se importan de la capa de dominio: {sorted(muertas)}. "
+        "Quitalas: un allowlist con nombres muertos es un punto ciego (dejaría pasar un import de "
+        "dominio con ese nombre sin que nadie lo note)."
     )
 
 
@@ -288,14 +337,11 @@ def test_dispatch_tool_sigue_delegando() -> None:
     fn = _metodo_de_clase(clase, "dispatch_tool")
     assert fn is not None, "desapareció el método SupervisorAgent.dispatch_tool (contrato de contracts.py roto)"
 
-    llamadas_dispatch = [
-        nodo
-        for nodo in ast.walk(fn)
-        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "dispatch"
-    ]
+    llamadas_dispatch = [nodo for nodo in ast.walk(fn) if _delega_al_dispatcher(nodo)]
     assert llamadas_dispatch, (
-        "dispatch_tool dejó de delegar en el dispatcher (no hay llamada .dispatch(...)): "
-        "el routing de tools vive en tool_strategies/ vía OrchestrationToolDispatcher."
+        "dispatch_tool dejó de delegar en self._tool_dispatcher.dispatch(...) (o un alias local): "
+        "el routing de tools vive en tool_strategies/ vía OrchestrationToolDispatcher, y delegar "
+        "en otro colaborador (self.<otro_servicio>.dispatch) no cuenta."
     )
 
     # ``tool_name`` sólo puede aparecer como argumento de un ``.dispatch(...)``.
