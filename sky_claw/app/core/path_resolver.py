@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from sky_claw.app.core.contracts import PathValidatorProtocol
@@ -123,13 +124,6 @@ def _leer_seccion_ini(texto: str, seccion: str) -> dict[str, str]:
     rechazaría, y este resolver solo necesita las claves de texto plano de
     ``[Settings]``. Cualquier línea malformada fuera de la sección se ignora;
     dentro de la sección, una clave repetida gana la última (como QSettings).
-
-    Args:
-        texto: Contenido completo del INI.
-        seccion: Nombre de la sección buscada (sin corchetes).
-
-    Returns:
-        Dict ``clave -> valor`` (sin comillas envolventes) de la sección.
     """
     valores: dict[str, str] = {}
     seccion_actual: str | None = None
@@ -143,7 +137,7 @@ def _leer_seccion_ini(texto: str, seccion: str) -> dict[str, str]:
                 seccion_actual = seccion
                 continue
             if seccion_actual == seccion:
-                break  # salimos de la sección buscada: no hay más datos
+                break
             continue
         if seccion_actual != seccion or "=" not in linea:
             continue
@@ -152,37 +146,212 @@ def _leer_seccion_ini(texto: str, seccion: str) -> dict[str, str]:
     return valores
 
 
+@dataclass(frozen=True, slots=True)
+class MetadataInstanciaMO2:
+    """Raíz de datos de la instancia MO2 según su ``ModOrganizer.ini``.
+
+    ``raiz_datos`` es ``base_directory`` (o el directorio del INI en portable).
+    ``mods`` es ``mod_directory`` (con ``%BASE_DIR%`` expandido) o
+    ``raiz_datos/mods``. ``origen`` describe la fuente: ``"portable"`` (INI
+    junto al ejecutable), ``"global"`` (única instancia bajo
+    ``%LOCALAPPDATA%\\ModOrganizer``) o ``"mo2_path_datos"`` (deferencia ante
+    un ``MO2_PATH`` explícito con semántica de datos).
+    """
+
+    raiz_datos: pathlib.Path
+    mods: pathlib.Path
+    origen: str
+
+
+def parsear_metadata_instancia_mo2(
+    contenido_ini: str,
+    directorio_del_ini: pathlib.Path,
+) -> MetadataInstanciaMO2 | None:
+    """Interpreta ``ModOrganizer.ini`` y devuelve la metadata de la instancia.
+
+    Contrato ``PathSettings`` de MO2 (verificado contra ``src/settings.cpp``):
+    ``base = [Settings] base_directory`` o ``directorio_del_ini``; ``mods =
+    [Settings] mod_directory`` (con ``%BASE_DIR%`` expandido) o ``base/mods``;
+    un valor no absoluto → fail-closed (``None``). Sin metadatos utilizables
+    también devuelve ``None``.
+    """
+    valores = _leer_seccion_ini(contenido_ini, _SECCION_SETTINGS_DE_MO2)
+    base_str = valores.get(_CLAVE_BASE_DIRECTORY_DE_MO2) or str(directorio_del_ini)
+    mods_str = valores.get(_CLAVE_MOD_DIRECTORY_DE_MO2) or f"{base_str}/mods"
+    if _VAR_BASE_DIR_DE_MO2 in mods_str:
+        mods_str = mods_str.replace(_VAR_BASE_DIR_DE_MO2, base_str)
+    base = pathlib.Path(base_str)
+    mods = pathlib.Path(mods_str)
+    if not mods.is_absolute() or not base.is_absolute():
+        return None
+    return MetadataInstanciaMO2(raiz_datos=base, mods=mods, origen="portable")
+
+
 def resolver_mods_dir_de_instancia_mo2(
     contenido_ini: str,
     directorio_del_ini: pathlib.Path,
 ) -> pathlib.Path | None:
-    """Directorio ``mods`` que declara la metadata de la instancia MO2.
+    """Directorio ``mods`` declarado por la metadata de la instancia MO2.
 
-    Implementa el contrato ``PathSettings`` de MO2 (verificado contra
-    ``src/settings.cpp`` de ModOrganizer2/modorganizer): ``mod_directory`` si
-    existe, si no ``base_directory/mods``, y cualquiera de los dos puede caer
-    al directorio del propio INI cuando la clave falta (portable).
-
-    Fail-closed ante un resultado no absoluto: MO2 resolvería un valor
-    relativo contra su cwd, y este resolver no depende del cwd. Devuelve
-    ``None`` en ese caso (o si la sección no aporta un path usable).
-
-    Args:
-        contenido_ini: Texto completo del ModOrganizer.ini de la instancia.
-        directorio_del_ini: Directorio donde vive ese INI (fallback de base).
-
-    Returns:
-        Path absoluto al directorio ``mods`` declarado, o ``None``.
+    Wrapper delgado sobre :func:`parsear_metadata_instancia_mo2` para
+    compatibilidad con tests previos: la misma semántica del contrato
+    ``PathSettings`` (mod_directory → ``%BASE_DIR%/mods`` → ``base/mods`` →
+    ``<ini_dir>/mods``). Devuelve ``None`` ante resultado no absoluto.
     """
-    valores = _leer_seccion_ini(contenido_ini, _SECCION_SETTINGS_DE_MO2)
-    base = valores.get(_CLAVE_BASE_DIRECTORY_DE_MO2) or str(directorio_del_ini)
-    mods = valores.get(_CLAVE_MOD_DIRECTORY_DE_MO2) or f"{base}/mods"
-    if _VAR_BASE_DIR_DE_MO2 in mods:
-        mods = mods.replace(_VAR_BASE_DIR_DE_MO2, base)
-    candidato = pathlib.Path(mods)
-    if not candidato.is_absolute():
+    metadata = parsear_metadata_instancia_mo2(contenido_ini, directorio_del_ini)
+    return metadata.mods if metadata is not None else None
+
+
+def _raiz_de_instancias_globales() -> pathlib.Path | None:
+    """Raíz de instancias globales de MO2 (``%LOCALAPPDATA%/ModOrganizer``)."""
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if not local_app_data:
         return None
-    return candidato
+    return pathlib.Path(local_app_data) / "ModOrganizer"
+
+
+def mo2_path_apunta_a_datos(install_dir: pathlib.Path | None) -> bool:
+    """``True`` si ``MO2_PATH`` explícito apunta a DATOS y no a una instalación.
+
+    Un operador puede configurar ``MO2_PATH`` con el directorio de datos de su
+    instancia (el que contiene ``mods/``, sin ``ModOrganizer.exe``) o con un
+    contenedor legacy; esa configuración funcionaba vía ``<MO2_PATH>/mods``
+    antes de la resolución por metadata y sigue siendo la declaración más
+    explícita disponible. Cuando el directorio contiene el ejecutable
+    (instalación), la metadata de la instancia manda aunque exista un
+    ``<exe>/mods`` sobrante (el caso que este PR corrige).
+    """
+    if not os.environ.get("MO2_PATH", "") or install_dir is None:
+        return False
+    if (install_dir / "ModOrganizer.exe").is_file():
+        return False
+    return (install_dir / "mods").is_dir()
+
+
+def descubrir_metadata_instancia_mo2(
+    install_dir: pathlib.Path | None,
+) -> MetadataInstanciaMO2 | None:
+    """Descubre la instancia MO2 activa y devuelve su metadata sin validar sandbox.
+
+    **Trust boundary explícito**: esta función SOLO deriva la raíz de datos
+    de la instancia desde (a) el INI portable junto al ejecutable
+    configurado/detectado, (b) un ``MO2_PATH`` explícito con semántica de
+    datos, o (c) el único INI de instancia global bajo
+    ``%LOCALAPPDATA%\\ModOrganizer``. Las raíces devueltas están
+    canonicalizadas (``resolve()``) y son absolutas — la confianza es de
+    configuración del operador/máquina (la misma clase que ``MO2_PATH`` o
+    ``mo2_root``). Los callers deben validarlas contra su sandbox antes de
+    operar sobre ellas; aquí se devuelven tal cual para que la capa de
+    ``AppContext`` las pueda registrar como raíces explícitas con un log
+    trazable.
+
+    Devuelve ``None`` cuando no hay evidencia de instancia (no hay INI
+    aplicable y no hay ``MO2_PATH`` de datos). Ante evidencia presente pero
+    inválida (INI ilegible, base_directory relativo, scan de instancias
+    abortado, varias instancias globales sin criterio) levanta
+    ``RuntimeError`` con la evidencia: degradar al ``<exe>/mods`` legacy con
+    evidencia en contra sería exactamente el defecto que este PR cierra.
+    """
+    # 1. Portable: el INI vive junto al ejecutable configurado o detectado.
+    if install_dir is not None:
+        ini_portable = install_dir / "ModOrganizer.ini"
+        if ini_portable.is_file():
+            try:
+                contenido = ini_portable.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError as exc:
+                raise RuntimeError(
+                    f"No se pudo leer el ModOrganizer.ini portable en {ini_portable}: "
+                    f"{exc}. Configure MO2_MODS_PATH o MO2_PATH con la ubicación correcta."
+                ) from exc
+            metadata = parsear_metadata_instancia_mo2(contenido, ini_portable.parent)
+            if metadata is None:
+                raise RuntimeError(
+                    f"El ModOrganizer.ini portable ({ini_portable}) declara un "
+                    f"directorio de mods o base no absoluto o vacío. Configure "
+                    f"MO2_MODS_PATH o MO2_PATH con la ubicación correcta."
+                )
+            return MetadataInstanciaMO2(
+                raiz_datos=_canonicalizar(metadata.raiz_datos),
+                mods=_canonicalizar(metadata.mods),
+                origen="portable",
+            )
+
+    # 2. Deferencia: un MO2_PATH explícito con semántica de datos (sin exe,
+    # con mods/ resoluble) es la declaración del operador y funcionaba vía
+    # <MO2_PATH>/mods antes de la resolución por metadata. Se respeta antes
+    # de cualquier escaneo global, lo que también evita que un escaneo
+    # accidental lea el LOCALAPPDATA real de la máquina del operador.
+    if mo2_path_apunta_a_datos(install_dir):
+        assert install_dir is not None
+        return MetadataInstanciaMO2(
+            raiz_datos=_canonicalizar(install_dir),
+            mods=_canonicalizar(install_dir / "mods"),
+            origen="mo2_path_datos",
+        )
+
+    # 3. Instancia global: %LOCALAPPDATA%/ModOrganizer/<instancia>/ModOrganizer.ini
+    raiz = _raiz_de_instancias_globales()
+    if raiz is None:
+        return None
+    candidatas: list[pathlib.Path] = []
+    try:
+        for hijo in raiz.iterdir():
+            try:
+                es_instancia = hijo.is_dir() and (hijo / "ModOrganizer.ini").is_file()
+            except OSError:
+                continue
+            if es_instancia:
+                candidatas.append(hijo)
+    except OSError as exc:
+        if raiz.is_dir():
+            raise RuntimeError(
+                f"No se pudo escanear la raíz de instancias globales de MO2 "
+                f"{raiz}: {exc}. Configure MO2_MODS_PATH o MO2_PATH con la "
+                f"ubicación correcta."
+            ) from exc
+        return None
+    if not candidatas:
+        return None
+    if len(candidatas) > 1:
+        nombres = ", ".join(sorted(h.name for h in candidatas))
+        raise RuntimeError(
+            f"Hay {len(candidatas)} instancias globales de MO2 bajo {raiz} "
+            f"({nombres}) y ninguna forma de elegir la activa. Configure "
+            f"MO2_MODS_PATH o MO2_PATH apuntando a la instancia correcta."
+        )
+    ini_global = candidatas[0] / "ModOrganizer.ini"
+    try:
+        contenido = ini_global.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError as exc:
+        raise RuntimeError(
+            f"No se pudo leer el ModOrganizer.ini de la instancia global en "
+            f"{ini_global}: {exc}. Configure MO2_MODS_PATH o MO2_PATH con la "
+            f"ubicación correcta."
+        ) from exc
+    metadata = parsear_metadata_instancia_mo2(contenido, ini_global.parent)
+    if metadata is None:
+        raise RuntimeError(
+            f"El ModOrganizer.ini global ({ini_global}) declara un directorio "
+            f"de mods o base no absoluto o vacío. Configure MO2_MODS_PATH o "
+            f"MO2_PATH con la ubicación correcta."
+        )
+    return MetadataInstanciaMO2(
+        raiz_datos=_canonicalizar(metadata.raiz_datos),
+        mods=_canonicalizar(metadata.mods),
+        origen="global",
+    )
+
+
+def _canonicalizar(path: pathlib.Path) -> pathlib.Path:
+    """``resolve()`` no estricto para canonicalizar antes de validar.
+
+    ``resolve(strict=False)`` normaliza separadores, colapsa ``..`` con
+    segmentos existentes y sigue symlinks/junctions sin exigir que el path
+    exista. La validación contra el sandbox y la existencia la hacen los
+    callers; aquí solo canonicalizamos el resultado del INI antes de que
+    ``PathValidator`` lo compare contra raíces también canonicalizadas.
+    """
+    return path.resolve(strict=False)
 
 
 @runtime_checkable
@@ -424,47 +593,147 @@ class PathResolutionService:
         logger.warning("Auto-detección de MO2 falló — ninguna ruta candidata válida")
         return None
 
-    def resolve_modlist_path(self, profile: str) -> pathlib.Path:
-        """Resuelve la ruta al ``modlist.txt`` para un perfil MO2.
+    def _directorio_instalacion_mo2(self) -> pathlib.Path | None:
+        """Instalación MO2 conocida (directorio del ejecutable), o ``None``.
 
-        Prioridad:
-        1. ``MO2_PATH`` environment variable (validada con PathValidator).
-        2. Auto-detección vía :meth:`detect_mo2_path`.
-        3. Fallback WSL2 ``/mnt/c/Modding/MO2`` (validado con PathValidator).
+        Usa ``MO2_PATH`` validado si está seteado; si no, cae a
+        :meth:`detect_mo2_path`. Es solo una *pista de instalación*: desde MO2
+        2.4 el directorio del ejecutable NO implica que ``mods/`` cuelgue de
+        él — la instancia lo declara en su ``ModOrganizer.ini``.
+        """
+        mo2_path_str = os.environ.get("MO2_PATH", "")
+        if mo2_path_str:
+            validado = self.validate_env_path(mo2_path_str, "MO2_PATH")
+            if validado is not None:
+                return validado
+        return self.detect_mo2_path()
+
+    def _metadata_de_instancia(
+        self,
+        install_dir: pathlib.Path | None,
+    ) -> MetadataInstanciaMO2 | None:
+        """Descubre la metadata de la instancia y la valida contra el sandbox.
+
+        Devuelve la metadata canonicalizada con ``raiz_datos`` y ``mods``
+        validados (ambos deben caer dentro de las raíces permitidas: la base
+        porque es la raíz de la que cuelgan ``profiles/`` y ``mods/``; el
+        directorio de mods porque es contra lo que operará cada tool).
+        ``None`` cuando no hay evidencia de instancia: el caller puede seguir
+        al comportamiento legacy.
+        """
+        try:
+            metadata = descubrir_metadata_instancia_mo2(install_dir)
+        except RuntimeError:
+            raise
+        if metadata is None:
+            return None
+        try:
+            raiz_validada = self._path_validator.validate(metadata.raiz_datos)
+            mods_validado = self._path_validator.validate(metadata.mods)
+        except Exception as exc:
+            security_logger.warning(
+                "Metadata de la instancia MO2 (raíz=%s, mods=%s) rechazada por "
+                "PathValidator: %s — el sandbox debe incluir la base de la "
+                "instancia o el operador debe configurar MO2_PATH/MO2_MODS_PATH.",
+                metadata.raiz_datos,
+                metadata.mods,
+                exc,
+            )
+            raise RuntimeError(
+                f"El directorio de la instancia MO2 (raíz={metadata.raiz_datos}, "
+                f"mods={metadata.mods}) queda fuera de las raíces permitidas del "
+                f"sandbox. Verifique que la base de la instancia esté registrada "
+                f"o configure MO2_MODS_PATH o MO2_PATH con la ubicación correcta."
+            ) from exc
+        return MetadataInstanciaMO2(
+            raiz_datos=raiz_validada,
+            mods=mods_validado,
+            origen=metadata.origen,
+        )
+
+    @staticmethod
+    def _exigir_directorio_mods(resolved: pathlib.Path, contexto: str) -> pathlib.Path:
+        """Fail-closed si el path existe pero no es un directorio (mods obligatorio)."""
+        if not resolved.is_dir():
+            raise RuntimeError(
+                f"La ruta de mods de MO2 ({resolved}) existe pero no es un "
+                f"directorio ({contexto}). Verifique la configuración de la "
+                f"instancia o MO2_MODS_PATH/MO2_PATH."
+            )
+        return resolved
+
+    def resolve_modlist_path(self, profile: str) -> pathlib.Path:
+        """Resuelve ``profiles/<profile>/modlist.txt`` desde la MISMA instancia
+        de datos que :meth:`get_mo2_mods_path` (sin split-brain).
+
+        El split-brain pre-PR era: ``get_mo2_mods_path`` derivaba del INI
+        mientras ``resolve_modlist_path`` seguía usando ``MO2_PATH/profiles``
+        (potencialmente otro árbol). Ahora ambos derivan de
+        :func:`descubrir_metadata_instancia_mo2` — la misma raíz de datos
+        proporciona tanto ``mods/`` como ``profiles/<profile>/``.
+
+        Precedencia:
+        1. **Metadata de la instancia** (misma función que
+           :meth:`get_mo2_mods_path`): portable junto al exe, deferencia por
+           ``MO2_PATH`` explícito de datos, o única instancia global. El
+           ``modlist.txt`` se construye como
+           ``raiz_datos/profiles/<profile>/modlist.txt`` y se valida contra
+           el sandbox (CRIT-003: ``profile`` no puede escapar la raíz).
+        2. Sin evidencia de instancia: ``<MO2_PATH>/profiles/<profile>/modlist.txt``
+           (legacy, preservado para compat portable y ``MO2_PATH`` de datos).
+        3. Fallback WSL2 ``/mnt/c/Modding/MO2`` (validado).
 
         Args:
-            profile: Nombre del perfil MO2.
+            profile: Nombre del perfil MO2 (inmutable para el caller).
 
         Returns:
-            Path al ``modlist.txt`` del perfil.
+            Path al ``modlist.txt`` del perfil dentro de una raíz del sandbox.
 
         Raises:
-            RuntimeError: Si ninguna ruta puede ser resuelta y validada.
+            RuntimeError: Si la metadata es inválida, si el ``modlist.txt``
+                construido escapa las raíces del sandbox, o si ninguna ruta
+                puede resolverse y validarse.
         """
-        # 1. MO2_PATH environment variable takes precedence
-        mo2_base_str = os.environ.get("MO2_PATH", "")
-        if mo2_base_str:
-            validated_base = self.validate_env_path(mo2_base_str, "MO2_PATH")
-            if validated_base:
-                return validated_base / "profiles" / profile / "modlist.txt"
-            logger.warning(
-                "MO2_PATH='%s' rechazado por validación de seguridad (CRIT-003). Intentando auto-detección.",
-                mo2_base_str,
-            )
+        install_dir = self._directorio_instalacion_mo2()
+        metadata = self._metadata_de_instancia(install_dir)
+        if metadata is not None:
+            modlist = metadata.raiz_datos / "profiles" / profile / "modlist.txt"
+            try:
+                return self._path_validator.validate(modlist)
+            except Exception as exc:
+                security_logger.warning(
+                    "modlist (%s) rechazado por PathValidator: %s",
+                    modlist,
+                    exc,
+                )
+                raise RuntimeError(
+                    f"La ruta de modlist ({modlist}) queda fuera de las raíces "
+                    f"permitidas del sandbox. Verifique que la base de la "
+                    f"instancia esté registrada o configure MO2_PATH."
+                ) from exc
 
-        # 2. Best-effort auto-detection
-        mo2_base = self.detect_mo2_path()
-        if mo2_base:
-            return mo2_base / "profiles" / profile / "modlist.txt"
+        # 2. Legacy portable (sin metadata de instancia): compat con configs
+        # explícitas que solo setean MO2_PATH sin INI cerca.
+        if install_dir is not None:
+            try:
+                return self._path_validator.validate(
+                    install_dir / "profiles" / profile / "modlist.txt"
+                )
+            except Exception as exc:
+                logger.debug(
+                    "MO2/profiles legacy inválido: %s — %s",
+                    install_dir / "profiles" / profile,
+                    exc,
+                )
 
         # 3. Fallback: WSL2 default path — también validado
         fallback_path = pathlib.Path("/mnt/c/Modding/MO2") / "profiles" / profile / "modlist.txt"
         try:
             validated_fallback = self._path_validator.validate(fallback_path)
             logger.warning(
-                "MO2_PATH no configurado y auto-detección falló para perfil '%s'. "
-                "Usando fallback WSL2 validado: %s. "
-                "Configure la variable de entorno MO2_PATH para evitar este aviso.",
+                "MO2_PATH no configurado y auto-detección/metadata falló para "
+                "perfil '%s'. Usando fallback WSL2 validado: %s. Configure la "
+                "variable de entorno MO2_PATH para evitar este aviso.",
                 profile,
                 validated_fallback,
             )
@@ -486,198 +755,29 @@ class PathResolutionService:
                 f"entorno o verifique la instalación de MO2."
             ) from exc
 
-    def _directorio_instalacion_mo2(self) -> pathlib.Path | None:
-        """Instalación MO2 conocida (directorio del ejecutable), o ``None``.
-
-        Usa ``MO2_PATH`` validado si está seteado; si no, cae a
-        :meth:`detect_mo2_path`. Es solo una *pista de instalación*: desde MO2
-        2.4 el directorio del ejecutable NO implica que ``mods/`` cuelgue de
-        él — la instancia lo declara en su ``ModOrganizer.ini``.
-        """
-        mo2_path_str = os.environ.get("MO2_PATH", "")
-        if mo2_path_str:
-            validado = self.validate_env_path(mo2_path_str, "MO2_PATH")
-            if validado is not None:
-                return validado
-        return self.detect_mo2_path()
-
-    def _mo2_path_es_directorio_de_datos(
-        self,
-        install_dir: pathlib.Path | None,
-    ) -> bool:
-        """True si ``MO2_PATH`` explícito apunta a DATOS y no a una instalación.
-
-        Un operador puede configurar ``MO2_PATH`` con el directorio de datos de
-        su instancia (el que contiene ``mods/``, sin ``ModOrganizer.exe``) o
-        con un contenedor legacy; esa configuración funcionaba vía
-        ``<MO2_PATH>/mods`` antes de la resolución por metadata y sigue siendo
-        la declaración más explícita disponible. Cuando el directorio contiene
-        el ejecutable (instalación), la metadata de la instancia manda aunque
-        exista un ``<exe>/mods`` sobrante (el caso que este PR corrige).
-        """
-        if not os.environ.get("MO2_PATH", "") or install_dir is None:
-            return False
-        if (install_dir / "ModOrganizer.exe").is_file():
-            return False
-        return (install_dir / "mods").is_dir()
-
-    def _raiz_de_instancias_globales(self) -> pathlib.Path | None:
-        """Raíz de instancias globales de MO2 (%LOCALAPPDATA%/ModOrganizer).
-
-        MO2 descubre las instancias globales escaneando los subdirectorios de
-        esa raíz que contienen un ``ModOrganizer.ini`` (instancemanager.cpp);
-        la instancia portable, en cambio, vive junto al ejecutable. Sin
-        ``LOCALAPPDATA`` no hay instancias globales que descubrir.
-        """
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        if not local_app_data:
-            return None
-        return pathlib.Path(local_app_data) / "ModOrganizer"
-
-    def _mods_dir_validado_de_ini(self, ini_path: pathlib.Path) -> pathlib.Path:
-        """Directorio ``mods`` declarado por *ini_path*, validado (fail-closed).
-
-        Raises:
-            RuntimeError: INI ilegible, metadata que no produce un path
-                absoluto, o path rechazado por ``PathValidator`` (CRIT-003).
-                Cada caso lleva la evidencia: degradar a ``<exe>/mods`` cuando
-                la instancia afirma otra ubicación sería exactamente el
-                defecto que este método viene a cerrar.
-        """
-        try:
-            contenido = ini_path.read_text(encoding="utf-8-sig", errors="replace")
-        except OSError as exc:
-            raise RuntimeError(
-                f"No se pudo leer el ModOrganizer.ini de la instancia MO2 en "
-                f"{ini_path}: {exc}. Configure MO2_MODS_PATH o MO2_PATH con la "
-                f"ubicación correcta."
-            ) from exc
-
-        mods_declarado = resolver_mods_dir_de_instancia_mo2(contenido, ini_path.parent)
-        if mods_declarado is None:
-            raise RuntimeError(
-                f"El ModOrganizer.ini de la instancia MO2 ({ini_path}) declara un "
-                f"directorio de mods no absoluto o vacío. Configure MO2_MODS_PATH "
-                f"o MO2_PATH con la ubicación correcta."
-            )
-        try:
-            return self._path_validator.validate(mods_declarado)
-        except Exception as exc:
-            security_logger.warning(
-                "mod_directory/base_directory de la instancia MO2 (%s) rechazado por PathValidator: %s — %s",
-                ini_path,
-                mods_declarado,
-                exc,
-            )
-            raise RuntimeError(
-                f"El directorio de mods que declara la instancia MO2 "
-                f"({mods_declarado}) queda fuera de las raíces permitidas del "
-                f"sandbox. Verifique que la base de la instancia esté registrada "
-                f"o configure MO2_MODS_PATH."
-            ) from exc
-
-    def _mods_dir_de_metadata_de_instancia(
-        self,
-        install_dir: pathlib.Path | None,
-    ) -> pathlib.Path | None:
-        """Directorio ``mods`` de la instancia MO2 de *install_dir*, o ``None``.
-
-        Orden de descubrimiento (el mismo de MO2, instancemanager.cpp):
-        1. instancia portable: ``ModOrganizer.ini`` junto al ejecutable — solo
-           posible con *install_dir* conocido;
-        2. instancia global: único subdirectorio de
-           ``%LOCALAPPDATA%/ModOrganizer`` con ``ModOrganizer.ini`` — no
-           requiere *install_dir* (MO2 descubre las instancias globales
-           escaneando esa raíz, no el ejecutable).
-
-        ``None`` significa que NO hay metadata de instancia (no hay INI
-        aplicable): el caller puede seguir al comportamiento legacy. Ante
-        evidencia presente pero inválida —INI ilegible, resultado relativo,
-        path fuera del sandbox, o varias instancias globales sin criterio de
-        selección— levanta ``RuntimeError`` (fail-closed): degradar a
-        ``<install_dir>/mods`` con evidencia en contra sería inventar una
-        ubicación que la instancia desmiente.
-        """
-        # 1. Portable: el INI vive junto al ejecutable.
-        if install_dir is not None:
-            ini_portable = install_dir / "ModOrganizer.ini"
-            if ini_portable.is_file():
-                logger.debug("Instancia portable de MO2 detectada: %s", ini_portable)
-                return self._mods_dir_validado_de_ini(ini_portable)
-
-        # 2. Instancia global: %LOCALAPPDATA%/ModOrganizer/<instancia>/ModOrganizer.ini
-        raiz = self._raiz_de_instancias_globales()
-        if raiz is None:
-            return None
-        candidatas: list[pathlib.Path] = []
-        try:
-            for hijo in raiz.iterdir():
-                try:
-                    es_instancia = hijo.is_dir() and (hijo / "ModOrganizer.ini").is_file()
-                except OSError:
-                    continue  # un hijo ilegible no aborta el scan del resto
-                if es_instancia:
-                    candidatas.append(hijo)
-        except OSError as exc:
-            if raiz.is_dir():
-                # La raíz existe pero el scan abortó: hay metadata potencial
-                # inaccesible. Fail-closed con la misma regla que
-                # `_mods_dir_validado_de_ini`: degradar al legacy con evidencia
-                # presente sería inventar una ubicación que la instancia puede
-                # desmentir.
-                raise RuntimeError(
-                    f"No se pudo escanear la raíz de instancias globales de MO2 "
-                    f"{raiz}: {exc}. Configure MO2_MODS_PATH o MO2_PATH con la "
-                    f"ubicación correcta."
-                ) from exc
-            return None  # LOCALAPPDATA apunta a un directorio inexistente
-        if not candidatas:
-            return None
-        # Un MO2_PATH explícito con semántica de DATOS (directorio sin exe y con
-        # mods/ resoluble) es la declaración del operador y funcionaba vía
-        # <MO2_PATH>/mods antes de la resolución por metadata: se respeta antes
-        # que instancias globales, no se la deja preemptar ni fallar cerrado.
-        if self._mo2_path_es_directorio_de_datos(install_dir):
-            logger.debug(
-                "MO2_PATH explícito apunta a datos con mods/ resoluble (%s): "
-                "deferencia al legacy antes que instancias globales.",
-                install_dir,
-            )
-            return None
-        if len(candidatas) > 1:
-            nombres = ", ".join(sorted(h.name for h in candidatas))
-            raise RuntimeError(
-                f"Hay {len(candidatas)} instancias globales de MO2 bajo {raiz} "
-                f"({nombres}) y ninguna forma de elegir la activa. Configure "
-                f"MO2_MODS_PATH o MO2_PATH apuntando a la instancia correcta."
-            )
-        ini_global = candidatas[0] / "ModOrganizer.ini"
-        logger.debug("Instancia global de MO2 detectada: %s", ini_global)
-        return self._mods_dir_validado_de_ini(ini_global)
-
     def get_mo2_mods_path(self) -> pathlib.Path:
-        """Obtiene la ruta al directorio ``mods`` de MO2.
+        """Obtiene la ruta al directorio ``mods`` de la instancia MO2 activa.
 
         Precedencia explícita (cada paso usa EAFP y validación con
         PathValidator):
 
         1. ``MO2_MODS_PATH``: override explícito del operador (contrato
-           vigente; gana siempre que sea válido y exista).
-        2. **Metadata de la instancia MO2**: el ``ModOrganizer.ini`` de la
-           instancia (portable junto al ejecutable, o global bajo
-           ``%LOCALAPPDATA%/ModOrganizer``) declara ``[Settings]
-           base_directory``/``mod_directory`` — la instalación del programa
-           (``ModOrganizer.exe``) y los datos de la instancia pueden vivir en
-           discos o árboles distintos. Si la metadata existe pero es inválida
-           (INI ilegible, path relativo, fuera del sandbox, directorio
-           inexistente o varias instancias globales), falla cerrado: NO
-           degrada a ``<instalación>/mods`` con evidencia en contra.
+           vigente; gana siempre que sea válido, exista y sea un directorio).
+        2. **Metadata de la instancia MO2** (misma fuente que
+           :meth:`resolve_modlist_path`): ``ModOrganizer.ini`` portable junto
+           al exe, deferencia por ``MO2_PATH`` explícito de datos, o única
+           instancia global bajo ``%LOCALAPPDATA%\\ModOrganizer``. La raíz de
+           datos y el directorio de mods se validan contra el sandbox (la base
+           de la instancia debe estar registrada como raíz; ver
+           ``AppContext._construir_raices_sandbox``). Si la metadata existe
+           pero es inválida (INI ilegible, path relativo, fuera del sandbox,
+           directorio inexistente o que no es directorio, varias instancias
+           globales), falla cerrado: NO degrada a ``<instalación>/mods`` con
+           evidencia en contra.
         3. Comportamiento legacy/portable (solo sin metadata de instancia):
            ``<instalación>/mods``, donde la instalación es ``MO2_PATH``
-           validado o la auto-detección — una sola resolución compartida con
-           el paso 2 (``detect_mo2_path`` corre una vez por llamada). Un
-           ``MO2_PATH`` explícito con semántica de datos (sin exe, con
-           ``mods/``) se respeta aquí antes que instancias globales ajenas.
+           validado o la auto-detección. También debe existir y ser un
+           directorio; un archivo en esa ruta es fail-closed.
         4. ``RuntimeError`` fail-closed.
 
         Returns:
@@ -685,7 +785,9 @@ class PathResolutionService:
 
         Raises:
             RuntimeError: Si ninguna ruta puede ser resuelta y validada, o si
-                la metadata de la instancia es inconsistente.
+                la metadata de la instancia es inconsistente (incluye
+                ``ModOrganizer.ini`` que apunta a un archivo en vez de un
+                directorio).
         """
         # 1. Override explícito: MO2_MODS_PATH
         mo2_mods_path_str = os.environ.get("MO2_MODS_PATH", "")
@@ -694,43 +796,50 @@ class PathResolutionService:
             if validated_path is not None:
                 try:
                     resolved = validated_path.resolve(strict=True)
-                    return resolved
                 except (FileNotFoundError, OSError) as exc:
                     logger.debug(
-                        "MO2_MODS_PATH resolved pero no existe: %s — %s",
+                        "MO2_MODS_PATH no resuelve: %s — %s",
                         validated_path,
                         exc,
                     )
+                else:
+                    self._exigir_directorio_mods(resolved, "MO2_MODS_PATH")
+                    return resolved
 
         # 2. Metadata de la instancia MO2 (instalación != datos de la instancia).
         # La instancia global se descubre desde %LOCALAPPDATA% y no necesita que
         # la instalación del ejecutable sea conocida: se intenta igual sin ella.
         install_dir = self._directorio_instalacion_mo2()
-        mods_de_instancia = self._mods_dir_de_metadata_de_instancia(install_dir)
-        if mods_de_instancia is not None:
+        metadata = self._metadata_de_instancia(install_dir)
+        if metadata is not None:
             try:
-                resolved = mods_de_instancia.resolve(strict=True)
-                return resolved
+                resolved = metadata.mods.resolve(strict=True)
             except (FileNotFoundError, OSError) as exc:
                 raise RuntimeError(
                     f"La instancia MO2 declara su directorio de mods en "
-                    f"{mods_de_instancia}, pero no existe. Verifique "
+                    f"{metadata.mods}, pero no existe. Verifique "
                     f"base_directory/mod_directory en el ModOrganizer.ini de "
                     f"la instancia o configure MO2_MODS_PATH."
                 ) from exc
+            self._exigir_directorio_mods(
+                resolved,
+                f"metadata de la instancia ({metadata.origen})",
+            )
+            return resolved
 
         # 3. Legacy portable (solo sin metadata de instancia): <instalación>/mods.
         # Reutiliza `install_dir` del paso 2: la única copia de "MO2_PATH
         # validado → detect_mo2_path" vive en `_directorio_instalacion_mo2`, así
-        # que la auto-detección corre una sola vez por llamada. Este paso es
-        # además el destino de la deferencia por MO2_PATH explícito de datos.
+        # que la auto-detección corre una sola vez por llamada.
         if install_dir is not None:
             mods_path = install_dir / "mods"
             try:
                 resolved_mods = mods_path.resolve(strict=True)
-                return resolved_mods
             except (FileNotFoundError, OSError):
                 logger.debug("MO2/mods legacy no existe: %s", mods_path)
+            else:
+                self._exigir_directorio_mods(resolved_mods, "legacy MO2_PATH")
+                return resolved_mods
 
         raise RuntimeError(
             "No se pudo detectar la ruta de MO2. Configure MO2_PATH o MO2_MODS_PATH en las variables de entorno."

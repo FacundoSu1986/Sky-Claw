@@ -859,11 +859,13 @@ class TestGuardiaTestsHermeticos:
 
     Guardia por AST: ninguna operación mutante del filesystem (mkdir,
     write_text, touch, open, replace, ...) puede recibir como argumento un
-    literal de ruta absoluta (drive de Windows o UNC). Los fixtures escriben
-    bajo ``tmp_path`` (variable, no literal); un test nuevo que cree
-    accidentalmente ``<volumen>\\Sky-Claw`` o toque la instancia MO2 del
-    operador rompe acá. Literales de drive en asserts o patches (solo lectura)
-    siguen permitidos.
+    literal de ruta absoluta (drive de Windows o UNC) — ni en sus args, ni
+    en el receiver. Un test que construya ``pathlib.Path("C:\\\\x").mkdir()``
+    o ``pathlib.Path(tmp)/"sub"/open("C:\\\\x", "w")`` viola el contrato. Los
+    fixtures escriben bajo ``tmp_path`` (variable, no literal); un test
+    nuevo que cree accidentalmente ``<volumen>\\Sky-Claw`` o toque la
+    instancia MO2 del operador rompe acá. Literales de drive en asserts o
+    patches (solo lectura) siguen permitidos.
     """
 
     _DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -888,29 +890,61 @@ class TestGuardiaTestsHermeticos:
         "open",
     }
 
-    def test_no_hay_literales_de_drive_en_operaciones_mutantes(self) -> None:
-        """Las escrituras nunca reciben rutas absolutas literales del operador."""
-        texto = pathlib.Path(__file__).read_text(encoding="utf-8")
-        arbol = ast.parse(texto)
+    @staticmethod
+    def _violaciones_de_mutacion(arbol: ast.AST) -> list[str]:
+        """Operaciones mutantes que reciben un literal de ruta absoluta.
+
+        Recorre cada ``Call`` cuyo ``func`` es un mutante y, además de mirar
+        sus argumentos directos, baja por la expresión del ``receiver``
+        (``func.value`` cuando ``func`` es ``Attribute``) para detectar
+        ``pathlib.Path("C:\\\\x").mkdir()`` y similares. Devuelve la lista de
+        violaciones en formato ``"<mutante>(...<literal>...)"``.
+        """
         violaciones: list[str] = []
+        drive_re = TestGuardiaTestsHermeticos._DRIVE_RE
+        unc_re = TestGuardiaTestsHermeticos._UNC_RE
+        mutadores = TestGuardiaTestsHermeticos._MUTADORES
+
+        def _buscar_literales(node: ast.AST | None) -> list[str]:
+            """Drena un sub-árbol en busca de literales de drive/UNC."""
+            encontrados: list[str] = []
+            for sub in ast.walk(node) if node is not None else ():
+                if (
+                    isinstance(sub, ast.Constant)
+                    and isinstance(sub.value, str)
+                    and (drive_re.match(sub.value) or unc_re.match(sub.value))
+                ):
+                    encontrados.append(sub.value)
+            return encontrados
+
         for nodo in ast.walk(arbol):
             if not isinstance(nodo, ast.Call):
                 continue
             func = nodo.func
-            if isinstance(func, ast.Attribute) and func.attr not in self._MUTADORES:
+            nombre_mutante: str | None = None
+            if isinstance(func, ast.Attribute) and func.attr in mutadores:
+                nombre_mutante = func.attr
+            elif isinstance(func, ast.Name) and func.id in mutadores:
+                nombre_mutante = func.id
+            if nombre_mutante is None:
                 continue
-            if isinstance(func, ast.Name) and func.id not in self._MUTADORES:
-                continue
+            # 1) Literales en args/keyword path del propio mutante.
             args = list(nodo.args) + [kw.value for kw in nodo.keywords if kw.arg == "path"]
             for arg in args:
-                if (
-                    isinstance(arg, ast.Constant)
-                    and isinstance(arg.value, str)
-                    and (self._DRIVE_RE.match(arg.value) or self._UNC_RE.match(arg.value))
-                ):
-                    violaciones.append(
-                        f"{func.attr if isinstance(func, ast.Attribute) else func.id}(...{arg.value!r}...)"
-                    )
+                encontrados = _buscar_literales(arg)
+                for lit in encontrados:
+                    violaciones.append(f"{nombre_mutante}(...{lit!r}...)")
+            # 2) Literales en el receiver (e.g. ``pathlib.Path("C:\\x").mkdir()``).
+            if isinstance(func, ast.Attribute):
+                receiver_lits = _buscar_literales(func.value)
+                for lit in receiver_lits:
+                    violaciones.append(f"<receiver:{lit!r}>.{nombre_mutante}()")
+        return violaciones
+
+    def test_no_hay_literales_de_drive_en_operaciones_mutantes(self) -> None:
+        """Las escrituras nunca reciben rutas absolutas literales del operador."""
+        texto = pathlib.Path(__file__).read_text(encoding="utf-8")
+        violaciones = self._violaciones_de_mutacion(ast.parse(texto))
         assert violaciones == [], (
             f"Operaciones mutantes con ruta absoluta literal: {violaciones}. Los tests solo escriben bajo tmp_path."
         )
@@ -921,6 +955,307 @@ class TestGuardiaTestsHermeticos:
         # En el fuente los backslashes van escapados (C:\\Modding\\...).
         assert "C:\\\\Modding\\\\ModOrganizer2" in texto
         assert "G:\\\\Modding\\\\MO2\\\\SkyrimSE" in texto
+
+    # Unit tests del detector con snippets aislados (herméticos: el snippet
+    # vive dentro de ``ast.parse(...)``, no como código de test ejecutable).
+    def test_detector_tacha_path_receiver_mutante(self) -> None:
+        """``pathlib.Path("C:\\\\x").mkdir()`` se detecta vía el receiver."""
+        # ``"C:\\\\x"`` aparece aquí solo como argumento de ast.parse: no es
+        # una mutación de filesystem en sí (la string se evalúa y se
+        # descarta). El detector debe marcarlo igual porque la INTENCIÓN del
+        # patrón es flaggear mutaciones con rutas absolutas.
+        fuente = 'import pathlib\npathlib.Path("C:\\\\x").mkdir()\n'
+        violaciones = self._violaciones_de_mutacion(ast.parse(fuente))
+        assert any("receiver" in v or r"C:\\x" in v for v in violaciones)
+
+    def test_detector_permite_path_receiver_con_variable(self) -> None:
+        """``pathlib.Path(tmp_path).mkdir()`` con variable NO se tacha."""
+        fuente = "pathlib.Path(tmp_path).mkdir(parents=True)\n"
+        violaciones = self._violaciones_de_mutacion(ast.parse(fuente))
+        assert violaciones == []
+
+    def test_detector_tacha_open_con_drive_literales(self) -> None:
+        """``open("C:\\\\x", "w")`` se detecta (mutante por nombre)."""
+        fuente = 'open("C:\\\\x", "w")\n'
+        violaciones = self._violaciones_de_mutacion(ast.parse(fuente))
+        assert any("open" in v and r"C:\\x" in v for v in violaciones)
+
+    def test_detector_permite_open_con_variable(self) -> None:
+        """``open(str(tmp_path/"x"), "w")`` NO se tacha."""
+        fuente = 'open(str(tmp_path / "x"), "w")\n'
+        violaciones = self._violaciones_de_mutacion(ast.parse(fuente))
+        assert violaciones == []
+
+
+class TestModsPathEsDirectorio:
+    """get_mo2_mods_path rechaza paths que existen pero no son directorios.
+
+    Cobertura del contrato: un ``ModOrganizer.ini`` (o un override
+    ``MO2_MODS_PATH``) que apunta a un archivo, no a un directorio, es
+    fail-closed. Sin este control, el resolver devolvería el path y los
+    callers fallarían luego con errores crípticos al listar/iterar el
+    directorio de mods.
+    """
+
+    def test_metadata_de_instancia_apuntando_a_archivo_falla_cerrado(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """``base_directory/mods`` resuelve a un archivo, no a un directorio."""
+        base = tmp_path / "instance"
+        base.mkdir()
+        # Crear un archivo en el lugar donde el resolver espera el directorio.
+        (base / "mods").write_text("no es un directorio", encoding="utf-8")
+        # INI portable junto al exe para que la metadata se descubra por la
+        # ruta portable (sin tocar LOCALAPPDATA real de la máquina).
+        exe_dir = tmp_path / "exe"
+        exe_dir.mkdir()
+        (exe_dir / "ModOrganizer.exe").write_bytes(b"fake")
+        (exe_dir / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(base)),
+            encoding="utf-8",
+        )
+
+        with patch.dict(
+            os.environ,
+            {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(tmp_path / "no_lappdata")},
+            clear=True,
+        ):
+            with pytest.raises(RuntimeError, match="existe pero no es un directorio"):
+                path_resolver.get_mo2_mods_path()
+
+    def test_mo2_mods_path_apuntando_a_archivo_falla_cerrado(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """``MO2_MODS_PATH`` apuntando a un archivo (no directorio) es fail-closed."""
+        archivo = tmp_path / "no_es_directorio.txt"
+        archivo.write_text("x", encoding="utf-8")
+
+        with patch.dict(os.environ, {"MO2_MODS_PATH": str(archivo)}, clear=True):
+            with pytest.raises(RuntimeError, match="existe pero no es un directorio"):
+                path_resolver.get_mo2_mods_path()
+
+
+class TestResolveModlistSinSplitBrain:
+    """``resolve_modlist_path`` deriva de la MISMA instancia que ``get_mo2_mods_path``.
+
+    El split-brain pre-PR era: ``get_mo2_mods_path`` derivaba del INI mientras
+    ``resolve_modlist_path`` seguía usando ``MO2_PATH/profiles`` (potencialmente
+    otro árbol). Tras este PR ambos comparten la fuente
+    :func:`descubrir_metadata_instancia_mo2`. Estos tests ejercitan tres
+    configuraciones (portable, global, MO2_PATH de datos) y assertan que
+    ``mods/`` y ``profiles/<profile>/`` cuelgan de la misma raíz de datos.
+    """
+
+    def test_modlist_y_mods_de_la_misma_instancia_global(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Instancia global única: ``profiles`` y ``mods`` viven bajo la misma base."""
+        exe_dir, dir_de_instancia, mods_dir, local_app_data = self._montar_instancia_global(tmp_path)
+        # Crear el profile que vamos a consultar (orden: primero el directorio
+        # padre, luego el archivo — pathlib.write_text no crea padres).
+        (dir_de_instancia / "profiles" / "Default").mkdir(parents=True, exist_ok=True)
+        (dir_de_instancia / "profiles" / "Default" / "modlist.txt").write_text("a", encoding="utf-8")
+
+        with patch.dict(
+            os.environ,
+            {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(local_app_data)},
+            clear=True,
+        ):
+            mods = path_resolver.get_mo2_mods_path()
+            modlist = path_resolver.resolve_modlist_path("Default")
+
+        assert _mismo_path(mods, mods_dir)
+        assert _mismo_path(modlist, dir_de_instancia / "profiles" / "Default" / "modlist.txt")
+        # Mismo árbol: modlist.parent.parent.parent == mods.parent
+        assert _mismo_path(modlist.parent.parent.parent, mods.parent)
+
+    def test_modlist_desde_mo2_path_datos_legado(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Un ``MO2_PATH`` de datos (sin exe, con mods/ y profiles/) se respeta."""
+        datos = tmp_path / "datos_legacy"
+        mods_de_datos = datos / "mods"
+        mods_de_datos.mkdir(parents=True)
+        (datos / "profiles" / "Default" / "modlist.txt").parent.mkdir(parents=True)
+        (datos / "profiles" / "Default" / "modlist.txt").write_text("a", encoding="utf-8")
+
+        with patch.dict(
+            os.environ,
+            {"MO2_PATH": str(datos), "LOCALAPPDATA": str(tmp_path / "no_lappdata")},
+            clear=True,
+        ):
+            mods = path_resolver.get_mo2_mods_path()
+            modlist = path_resolver.resolve_modlist_path("Default")
+
+        assert _mismo_path(mods, mods_de_datos)
+        assert _mismo_path(modlist, datos / "profiles" / "Default" / "modlist.txt")
+
+    @staticmethod
+    def _montar_instancia_global(tmp_path: pathlib.Path):
+        """Helper: replica el fixture de TestGetMo2ModsPathDeInstancia."""
+        exe_dir = tmp_path / "Modding" / "ModOrganizer2"
+        exe_dir.mkdir(parents=True)
+        (exe_dir / "ModOrganizer.exe").write_bytes(b"fake exe")
+        dir_de_instancia = tmp_path / "Modding" / "MO2" / "SkyrimSE"
+        mods_dir = dir_de_instancia / "mods"
+        mods_dir.mkdir(parents=True)
+        local_app_data = tmp_path / "LocalAppData"
+        ini_dir = local_app_data / "ModOrganizer" / "SkyrimSE"
+        ini_dir.mkdir(parents=True)
+        (ini_dir / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(dir_de_instancia)),
+            encoding="utf-8",
+        )
+        return exe_dir, dir_de_instancia, mods_dir, local_app_data
+
+
+class TestWiringProductivoAppContext:
+    """El wiring de producción AppContext → PathValidator → PathResolutionService
+    debe cerrar el gap de la instancia separada.
+
+    Sin la raíz de la instancia en el sandbox, ``get_mo2_mods_path`` fallaría
+    con "fuera de las raíces permitidas del sandbox" para una instalación
+    global donde ``ModOrganizer.exe`` y ``base_directory`` viven en raíces
+    distintas — el bug exacto del rig. Esta clase verifica que
+    :func:`_construir_raices_sandbox` registra la raíz de la instancia
+    detectada vía metadata, y que el ``PathResolutionService`` construido
+    con ese validator resuelve la ruta correcta.
+    """
+
+    def test_sandbox_de_app_context_registra_raiz_de_instancia_y_resuelve(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        from sky_claw.app_context import _construir_raices_sandbox
+        from sky_claw.app.security.path_validator import PathValidator
+        from sky_claw.app.core.path_resolver import PathResolutionService
+
+        # Replica el rig: exe en un árbol, instance base en otro.
+        exe_dir = tmp_path / "Apps" / "MO2"
+        exe_dir.mkdir(parents=True)
+        (exe_dir / "ModOrganizer.exe").write_bytes(b"fake")
+        instance_dir = tmp_path / "Modding" / "MO2" / "SkyrimSE"
+        mods_dir = instance_dir / "mods"
+        mods_dir.mkdir(parents=True)
+        local_app_data = tmp_path / "LocalAppData"
+        ini_dir = local_app_data / "ModOrganizer" / "SkyrimSE"
+        ini_dir.mkdir(parents=True)
+        (ini_dir / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(instance_dir)),
+            encoding="utf-8",
+        )
+
+        # El seam lee LOCALAPPDATA; el conftest ya lo parchó a un dir vacío
+        # por test, así que lo sobreescribimos con el nuestro para que la
+        # instancia esté visible.
+        with patch.dict(
+            os.environ,
+            {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(local_app_data)},
+            clear=True,
+        ):
+            # Las raíces se componen con la misma función que usa AppContext.
+            roots = _construir_raices_sandbox(
+                mo2_root=exe_dir,
+                install_dir=None,
+                skyrim_path=None,
+            )
+            # La raíz de la instancia DEBE estar registrada por el seam.
+            assert instance_dir in roots, f"raíz de instancia no registrada: {roots}"
+            assert exe_dir in roots
+
+            # El resolver construido con ese validator cierra el gap.
+            resolver = PathResolutionService(
+                path_validator=PathValidator(roots=roots),
+                profile_name="Default",
+            )
+            resultado = resolver.get_mo2_mods_path()
+            modlist = resolver.resolve_modlist_path("Default")
+        assert _mismo_path(resultado, mods_dir)
+        # profiles/<Default>/modlist.txt ni siquiera existe, pero el path
+        # construido se valida y vive bajo la misma raíz de instancia.
+        assert _mismo_path(modlist.parent.parent.parent, mods_dir.parent)
+
+    def test_sin_seam_el_mismo_wiring_falla_cerrado(
+        self,
+        tmp_path: pathlib.Path,
+        tmp_path_factory,
+    ) -> None:
+        """Composición paralela: mismas roots SIN la raíz de instancia → RuntimeError.
+
+        Demuestra que sin :func:`_construir_raices_sandbox` el wiring de
+        producción NO puede operar (la pre-PR configuración). El seam es lo
+        que cierra la grieta.
+        """
+        from sky_claw.app.security.path_validator import PathValidator
+        from sky_claw.app.core.path_resolver import PathResolutionService
+
+        exe_dir = tmp_path / "exe"
+        exe_dir.mkdir(parents=True)
+        (exe_dir / "ModOrganizer.exe").write_bytes(b"fake")
+        # La instancia vive FUERA del sandbox declarado: un directorio hermano
+        # generado con ``tmp_path_factory`` (no bajo ``tmp_path``).
+        instance_dir = tmp_path_factory.mktemp("instance_fuera_sandbox")
+        mods_dir = instance_dir / "mods"
+        mods_dir.mkdir(parents=True)
+        local_app_data = tmp_path / "LocalAppData"
+        ini_dir = local_app_data / "ModOrganizer" / "Inst"
+        ini_dir.mkdir(parents=True)
+        (ini_dir / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(instance_dir)),
+            encoding="utf-8",
+        )
+
+        # Sin el seam: sandbox = {exe_dir, tmp_path}. La instancia queda fuera.
+        roots = [exe_dir, tmp_path]
+        assert instance_dir not in roots  # sanity: instance realmente fuera
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=roots),
+            profile_name="Default",
+        )
+        with patch.dict(
+            os.environ,
+            {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(local_app_data)},
+            clear=True,
+        ):
+            with pytest.raises(RuntimeError, match="fuera de las raíces permitidas"):
+                resolver.get_mo2_mods_path()
+
+    def test_seam_rechaza_base_directory_en_raiz_de_unidad(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Si ``base_directory`` apunta a una raíz de unidad (``G:\\``), el seam la
+        rechaza para no ampliar el sandbox a una unidad completa.
+        """
+        from sky_claw.app_context import _raiz_datos_instancia_para_sandbox
+
+        exe_dir = tmp_path / "exe"
+        exe_dir.mkdir(parents=True)
+        (exe_dir / "ModOrganizer.exe").write_bytes(b"fake")
+        ini_dir = tmp_path / "LocalAppData" / "ModOrganizer" / "Inst"
+        ini_dir.mkdir(parents=True)
+        ini_dir = ini_dir
+        # base_directory = unidad raíz (e.g. "G:/" en este rig).
+        (ini_dir / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(tmp_path.anchor)),
+            encoding="utf-8",
+        )
+
+        with patch.dict(
+            os.environ,
+            {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(tmp_path / "LocalAppData")},
+            clear=True,
+        ):
+            raiz = _raiz_datos_instancia_para_sandbox(exe_dir)
+        assert raiz is None, f"drive root no debió registrarse como raíz de sandbox: {raiz}"
 
 
 class TestAnclaConstructoresManualesDeMods:
@@ -936,10 +1271,14 @@ class TestAnclaConstructoresManualesDeMods:
 
     # módulo relativo -> líneas con `expr / "mods"` (RHS literal)
     _CONSTRUCTORES: dict[str, tuple[int, ...]] = {
-        # El propio resolver conserva el legacy portable (sujeto de este PR):
-        # se alcanza SOLO cuando no hay metadata de instancia (o por deferencia
-        # ante MO2_PATH explícito de datos).
-        "sky_claw/app/core/path_resolver.py": (522, 728),
+        # El propio resolver construye `<base>/mods` desde la metadata de la
+        # instancia (mismo concepto que centraliza este PR: la "raíz de datos"
+        # de la instancia activa). Aparece en el helper de deferencia
+        # (228), en la construcción de la metadata del modo "mo2_path_datos"
+        # (288) y en el paso legacy de get_mo2_mods_path (835). Cualquier
+        # nueva construcción de `<base>/mods` debe ir por estas tres rutas
+        # o extender el ancla con su racional.
+        "sky_claw/app/core/path_resolver.py": (228, 288, 835),
         # Instaladores NGIO/FOMOD del agente LLM sobre mo2.root del registry:
         # superficie agente, layout portable asumido — fuera de alcance (PR-0).
         "sky_claw/app/agent/tools/external_tools.py": (239, 288),
@@ -959,7 +1298,7 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/validators/preflight_sensors.py": (164,),
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": (312,),
         # Rollback/move-aside y staging de DynDOLOD bajo el árbol del broker.
-        "sky_claw/app_context.py": (1229,),
+        "sky_claw/app_context.py": (1323,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
         "sky_claw/local/tools/output_targets.py": (144,),
         "sky_claw/local/mo2/grass_profile.py": (227, 330),
