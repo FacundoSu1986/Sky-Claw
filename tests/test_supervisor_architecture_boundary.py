@@ -172,18 +172,29 @@ def _resolver_modulo(nodo: ast.ImportFrom) -> str:
     return ".".join([*raiz, *([nodo.module] if nodo.module else [])])
 
 
+def _accede_estado_de_self(nodo: ast.AST) -> bool:
+    """¿En cualquier parte del subárbol se accede a ``self.__dict__`` / ``self.__class__``?
+
+    Recursivo a propósito: atrapa derivados como ``self.__dict__.copy()`` o
+    ``dict(self.__dict__)``, no sólo el acceso directo (review interno #553). NO
+    marca ``self.<colaborador>`` (atributos normales), que es inyección explícita.
+    """
+    return any(
+        isinstance(desc, ast.Attribute)
+        and isinstance(desc.value, ast.Name)
+        and desc.value.id == "self"
+        and desc.attr in {"__dict__", "__class__"}
+        for desc in ast.walk(nodo)
+    )
+
+
 def _expone_self(nodo: ast.expr) -> bool:
     """¿La expresión pasa ``self`` o su estado interno a un colaborador?"""
     real = nodo.value if isinstance(nodo, ast.Starred) else nodo
     if isinstance(real, ast.Name) and real.id == "self":
         return True  # self, *self, **self
-    if (
-        isinstance(real, ast.Attribute)
-        and isinstance(real.value, ast.Name)
-        and real.value.id == "self"
-        and real.attr in {"__dict__", "__class__"}
-    ):
-        return True  # self.__dict__ / self.__class__
+    if _accede_estado_de_self(real):
+        return True  # self.__dict__ / self.__class__, incl. self.__dict__.copy()
     # vars(self) / dict(self) / ... : una llamada que recibe self directamente.
     return isinstance(real, ast.Call) and any(isinstance(a, ast.Name) and a.id == "self" for a in real.args)
 
