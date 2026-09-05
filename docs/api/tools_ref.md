@@ -10,6 +10,10 @@
 > `sky_claw/local/tools/tool_result.py`.
 >
 > **Última verificación:** 2026-08-10 sobre `origin/main` `60f7957` más este cambio.
+>
+> **Sincronización parcial:** 2026-09-04 sobre `main` `10354c2b` (#548); cubre
+> únicamente la frontera read-only de `run_xedit_script`. No reverifica el resto de
+> la referencia.
 
 ## Ruta LLM
 
@@ -24,6 +28,26 @@ JSON Schema y ejecuta handlers async. Su inventario incorporado verificado es:
 `close_game` y `setup_tools`.
 
 La allowlist de sesión filtra tanto la enumeración visible como la ejecución.
+
+`run_xedit_script` es **read-only** (#548). El handler cableado vive en
+`sky_claw/app/agent/tools/xedit_readonly_tool.py` y sólo acepta una allowlist de
+scripts de diagnóstico bundleados: `dump_record_detail.pas`, `list_all_conflicts.pas`,
+`list_grass_worldspaces.pas`, `list_zero_bound_grass.pas`, más el alias legacy
+`list_conflicts.pas` que se canonicaliza a `list_all_conflicts.pas`. El schema
+Pydantic (`XEditAnalysisParams.script_name`, tipo `XEditAgentScriptName`) y el runtime
+comparten esa misma política (`XEDIT_AGENT_ALLOWED_SCRIPT_NAMES` en
+`sky_claw/app/agent/tools/xedit_policy.py`): el schema anuncia exactamente lo que la
+ejecución acepta, y un nombre desconocido falla cerrado tanto en la validación del
+schema como en el handler. Antes de ejecutar se exige **pre-staging canónico** vía
+`ensure_scripts_staged()`; un runner que no exponga ese método queda bloqueado
+(fail-closed). Es pre-staging canónico, no atestación en el lanzamiento: el handler
+ignora el resultado de `ensure_scripts_staged()` y ejecuta por nombre de archivo, por
+lo que queda una ventana TOCTOU. Cada script se enruta a su parser/analyzer específico
+(`XEditOutputParser`, `parse_dump_output`, `GrassAnalyzer`). Ancla:
+`tests/test_xedit_agent_readonly_policy.py`. Esto **no** implica que todas las rutas
+internas de xEdit sean read-only: los rituales del orquestador ejecutan xEdit mutante
+por otra frontera (`XEditPipelineService`, con lock/journal/rollback), con contratos
+distintos.
 
 Ninguna tool acepta un perfil de MO2 como argumento. El perfil queda fijo durante la
 sesión (`--profile` / `MO2_PROFILE`, ver [configuración](../user/configuration.md)) y

@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **`sky_claw/local/AGENTS.md` — SOP canónico del pipeline de modding de Skyrim para agentes IA** (orden cronológico de stages xEdit → CAO → BodySlide → Pandora → LOOT → Wrye Bash → Synthesis → No Grass In Objects → TexGen/DynDOLOD, reglas por tool, conflict resolution protocol, critical failure modes, code-editing rules para agentes). Cubre los tres subsistemas gobernados: `sky_claw/local/tools/`, `sky_claw/local/xedit/` y `sky_claw/antigravity/orchestrator/tool_strategies/`. Acompañado de **`sky_claw/antigravity/orchestrator/AGENTS.md`** (pointer que redirige a la SOP para que los agentes que editen el dispatcher la descubran). Referenciados desde el `AGENTS.md` raíz. *Audiencia: cualquier LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) que edite código del pipeline.*
+- **`sky_claw/local/AGENTS.md` — SOP canónico del pipeline de modding de Skyrim para agentes IA** (orden cronológico de stages xEdit → CAO → BodySlide → Pandora → LOOT → Wrye Bash → Synthesis → No Grass In Objects → TexGen/DynDOLOD, reglas por tool, conflict resolution protocol, critical failure modes, code-editing rules para agentes). Cubre los tres subsistemas gobernados: `sky_claw/local/tools/`, `sky_claw/local/xedit/` y `sky_claw/app/orchestrator/tool_strategies/`. Acompañado de **`sky_claw/app/orchestrator/AGENTS.md`** (pointer que redirige a la SOP para que los agentes que editen el dispatcher la descubran). Referenciados desde el `AGENTS.md` raíz. *Audiencia: cualquier LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) que edite código del pipeline.*
 
 ### Security
 - **`python-engineio` 4.13.1 → 4.13.3 (CVE-2026-48802, CVE-2026-48809) y
@@ -29,6 +29,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `langgraph`) y se regeneran `requirements.lock` **y** `uv.lock`. Solo cambian
   esos dos pins (el grafo transitivo no varía), así que no requiere re-bundlear
   el exe.
+- **Capacidad de xEdit del agente LLM restringida a read-only bundleado (#548).**
+  La tool `run_xedit_script` que expone el agente pasa a ejecutar únicamente una
+  allowlist de scripts de diagnóstico bundleados read-only (`xedit_readonly_tool.py`,
+  `xedit_policy.py`): el schema Pydantic (`XEditAnalysisParams`) y el runtime comparten
+  la misma política de nombres, un nombre desconocido falla cerrado en ambos, se exige
+  pre-staging canónico (`ensure_scripts_staged()`) antes de ejecutar (el handler exige
+  el método y lo invoca, pero ignora su resultado y ejecuta por nombre de archivo: es
+  pre-staging, no provenance verificada — queda una ventana TOCTOU), y cada script se
+  enruta a su parser/analyzer específico. No cambia las
+  rutas mutantes de xEdit del orquestador (`XEditPipelineService`), que conservan su
+  frontera con lock/journal/rollback. Ancla: `tests/test_xedit_agent_readonly_policy.py`.
+
+### Changed
+- **Política de plataformas de CI acotada a Windows para la suite completa (#546).**
+  La suite `pytest` con coverage se certifica en **Windows** (Python 3.11 y 3.12) y es
+  el único blocker duro; Linux queda como señal **POSIX acotada e informativa**
+  (`test-posix-core`: Ubuntu, Python 3.11, `continue-on-error: true`, subconjunto de
+  tests del núcleo async). Ancla: `tests/test_ci_platform_policy.py`.
 
 ### Fixed
 - **VERSIONINFO del `.exe` ahora se embebe y se deriva solo** (`sky_claw.spec`).

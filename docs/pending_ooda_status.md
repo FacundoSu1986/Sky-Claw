@@ -28,6 +28,14 @@
 > `tests/test_gui_theme_contracts.py`. Ambas pasan a **Parcial**; no afirma el cierre
 > integral de transiciones ni el inventario exhaustivo de formularios/labels. **No** es una
 > reverificación integral del resto de la tabla.
+>
+> **Re-baseline parcial 2026-09-04 sobre `main` `c4df8ce`:** cubre exclusivamente la
+> fila `F9` (Strangler Fig del composition root de `SupervisorAgent`), revalidada contra
+> los PR mergeados #518, #520, #524, #526/#527, #540 y **#545** —este último ya mergeado
+> por squash en `c4df8ce`, con `RecordConflictScanner` integrado en `main`
+> (`sky_claw/app/orchestrator/record_conflict_scan.py`)— y contra el árbol actual de
+> `sky_claw/app/orchestrator/`. Pasa de **Abierto** a **Parcial**. **No** es una
+> reverificación integral del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
@@ -74,7 +82,7 @@ confirmarlo contra código y tests.
 | F6 | Cerrado | #331 | — | auditoría de resiliencia #319 |
 | F7 | Cerrado | #343 | — | auditoría de resiliencia #319 |
 | F8 | Cerrado | #343 | — | auditoría de resiliencia #319 |
-| F9 | Abierto | — | Reducir el composition root de `SupervisorAgent` incrementalmente | auditoría de resiliencia #319 |
+| F9 | Parcial | #518, #520, #524, #526/#527, #540, #545 | Extraídos los seams de dominio PR1–PR6 del composition root de `SupervisorAgent` (dispatcher deps tipadas, composición de servicios, grass runtime deps, asset conflict scan, plugin-limit y —desde #545 mergeado— `RecordConflictScanner` para `scan_record_conflicts`); la generación de Wrye Bash también quedó extraída a `WryeBashPipelineService`. De las fachadas que restan en el supervisor hay que distinguir dos grupos, verificados contra el código: (a) `asset_detector` y `scan_record_conflicts` tienen callers productivos reales — la GUI accede a `runtime.supervisor.asset_detector` (`sky_claw/app/gui/sky_claw_gui.py:808`) y llama `runtime.supervisor.scan_record_conflicts()` (`sky_claw/app/gui/sky_claw_gui.py:860`); (b) `scan_asset_conflicts`/`scan_asset_conflicts_json` y `execute_wrye_bash_pipeline` no tienen caller productivo por la fachada — el path productivo del dispatcher se cablea directo desde los seams extraídos (`asset_conflict_scanner.scan`/`.scan_json` en `supervisor.py`; `build_wrye_bash_pipeline(service=...)` en la composition root) y esas fachadas se conservan sobre todo para que tests/harness BDD las monkeypatcheen con late-binding (`supervisor.py:537`). En ambos grupos las fachadas delegan en los seams y no requieren extracción. Falta el cierre del composition root sobre las responsabilidades de lifecycle/UI/rollback/HITL, que la auditoría #319 cedió al trabajo de lifecycle y quedan fuera del roadmap de seams de dominio | `test_dispatcher_dependencies.py`, `test_orchestration_composition.py`, `test_grass_runtime_deps_provider.py`, `test_asset_conflict_scan.py`, `test_plugin_limit_guard.py`, `test_record_conflict_scan_wiring.py`, `test_scan_record_conflicts.py` |
 | F8 USVFS | Parcial | ADR 0007 y smoke `vfs-health` | Migrar runners restantes y completar smokes reales de cancelación, perfil y rollback | historial OODA, addendum F8 USVFS |
 | Detección de enlaces | Cerrado | #404 y #405 | — | `test_links.py` |
 | Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |
