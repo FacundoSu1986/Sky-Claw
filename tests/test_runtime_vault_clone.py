@@ -1058,6 +1058,7 @@ class TestRuntimeCloneSuiteCanonico:
             "__init__",
             "clone",
             "golden",
+            "golden_protection_plan",
             "inventory",
             "locking",
             "models",
