@@ -19,10 +19,24 @@ volver al ``supervisor.py`` de cuatro maneras, y cada test cierra una:
   2. invocando/construyendo dominio in-situ —``XEditRunner()``, ``ConflictAnalyzer()``,
      ``parse_active_plugins(...)``, o el inline de un scan vía ``AssetConflictDetector()``—
      (``test_no_invoca_dominio_de_herramientas``);
-  3. pasando ``self`` pelado como service locator hacia la composición o el
-     dispatcher (``test_no_pasa_self_como_service_locator``, ver #518);
+  3. pasando ``self`` como service locator hacia la composición o el dispatcher
+     (``test_no_pasa_self_como_service_locator``, ver #518);
   4. reimplementando el routing de tools en la facade pública en vez de delegar en
      el dispatcher extraído (``test_dispatch_tool_sigue_delegando``).
+
+**Detección por convención, no por muestra** (review interno #553). El dominio se
+detecta por convención de nombre —cualquier símbolo con ``Runner`` o ``Analyzer``
+en el nombre— más un set explícito para los que no siguen convención
+(``parse_active_plugins``, ``AssetConflictDetector``, servicios de la composición).
+Así un runner/analyzer NUEVO o un alias (``XEditRunnerV2``, ``XEditPipelineRunner``,
+``ConflictAnalyzerImpl``) queda cubierto sin editar una lista literal: se enumera la
+FAMILIA por regla, no una muestra congelada.
+
+**Ancla sobre la clase, no sobre un ``__file__``** (review interno #553). El AST se
+resuelve desde ``inspect.getsourcefile(SupervisorAgent)``, así que si el módulo se
+renombra/mueve el guardrail SIGUE a la clase en vez de dar un falso verde sobre el
+archivo viejo; si el ancla se pierde del todo, falla ruidoso con mensaje explícito
+(no un ``FileNotFoundError`` críptico).
 
 Lo que el guardrail PERMITE deliberadamente (es la frontera SANA, no dominio):
 
@@ -34,61 +48,83 @@ Lo que el guardrail PERMITE deliberadamente (es la frontera SANA, no dominio):
     ``AssetConflictReport``, el tipo ``AssetConflictDetector``);
   - lifecycle, bridges de eventos y facades de compatibilidad (delegación estrecha).
 
-NO congela: números de línea, la forma de expresiones triviales, el conjunto de
-atributos del constructor, ni nombres de métodos privados — sólo la frontera. Un
-refactor equivalente de una delegación legítima debe seguir pasando (ver el test
-de ``dispatch_tool``, tolerante a renombres y a partir la expresión).
+**Alcance deliberado.** El guardrail es un ancla estructural, no un oráculo
+adversarial de análisis de flujo (metaprompt §14: proteger la frontera, no congelar
+sintaxis). Cubre la forma REALISTA de cada regresión; evasiones sintácticas
+rebuscadas (aliasar ``svc = self`` y pasar ``svc``; reimplementar el routing con un
+``if/elif`` sobre ``tool_name`` en vez de un ``match``) quedan respaldadas por los
+tests conductuales de ``tests/test_supervisor_dispatch_tool.py``, que fijan el
+comportamiento observable de ``dispatch_tool`` y romperían ante un router inline.
+NO congela: números de línea, forma de expresiones triviales, atributos del
+constructor, ni nombres de métodos privados.
 """
 
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 
-from sky_claw.app.orchestrator import supervisor as supervisor_mod
-
-_SUPERVISOR_SRC = Path(supervisor_mod.__file__)
-_SUPERVISOR_AST = ast.parse(_SUPERVISOR_SRC.read_text(encoding="utf-8"), filename=str(_SUPERVISOR_SRC))
+from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 
 
-# Símbolos de IMPLEMENTACIÓN de dominio (verificados en el repo). Importar
-# cualquiera al supervisor.py significa que el dominio volvió a cruzar la
-# frontera. El denylist es por NOMBRE de símbolo (no por módulo) a propósito: el
-# supervisor importa DTOs de estos mismos módulos —``ConflictReport`` de
-# ``conflict_analyzer``, ``AssetConflictReport`` de ``assets``— y esos SÍ son
-# legítimos (tipos de retorno de las facades).
-_DOMINIO_PROHIBIDO_IMPORTAR = frozenset(
-    {
-        "XEditRunner",  # sky_claw/local/xedit/runner.py
-        "ConflictAnalyzer",  # sky_claw/local/xedit/conflict_analyzer.py (NO ConflictReport)
-        "LOOTRunner",  # sky_claw/local/loot/cli.py
-        "DynDOLODRunner",  # sky_claw/local/tools/dyndolod_runner.py
-        "SynthesisRunner",  # sky_claw/local/tools/synthesis_runner.py
-        "PandoraRunner",  # sky_claw/local/tools/pandora_runner.py
-        "GrassCacheRunner",  # sky_claw/local/tools/grass_cache_runner.py
-        "WryeBashRunner",  # sky_claw/local/tools/wrye_bash_runner.py
-        "parse_active_plugins",  # sky_claw/app/orchestrator/active_plugins.py (re-parseo de plugins)
-    }
-)
+def _resolver_fuente_del_supervisor() -> tuple[Path, ast.Module]:
+    """Resuelve el archivo fuente del ``SupervisorAgent`` DESDE LA CLASE.
 
-# Callees que el Supervisor no debe INVOCAR: construir un runner/analyzer/detector
-# de dominio, construir un servicio que arma la composición, o llamar al parser de
-# plugins. Se chequea el nombre TERMINAL del callee, así que atrapa tanto
-# ``Foo(...)`` como ``modulo.Foo(...)`` sin depender de la forma del import.
+    Anclar sobre ``inspect.getsourcefile(SupervisorAgent)`` (y no sobre un
+    ``modulo.__file__`` fijo) hace que el guardrail siga a la clase si su módulo
+    se renombra o se mueve —cerrando el "falso verde por reflexión de módulo
+    congelado" (review interno #553)— y que un ancla perdida falle RUIDOSA con un
+    mensaje accionable en vez de un ``FileNotFoundError`` críptico.
+    """
+    ruta = inspect.getsourcefile(SupervisorAgent)
+    if ruta is None or not Path(ruta).is_file():
+        raise AssertionError(
+            f"el guardrail perdió su ancla: no pude localizar el fuente de "
+            f"SupervisorAgent (getsourcefile={ruta!r}). Si el módulo del Supervisor "
+            f"se movió, el ancla lo sigue por la clase; revisá que la clase siga "
+            f"siendo importable desde sky_claw.app.orchestrator.supervisor."
+        )
+    fuente = Path(ruta)
+    return fuente, ast.parse(fuente.read_text(encoding="utf-8"), filename=str(fuente))
+
+
+_SUPERVISOR_SRC, _SUPERVISOR_AST = _resolver_fuente_del_supervisor()
+
+
+# --- Detección de dominio: FAMILIA por convención + set explícito -------------
 #
-# NO incluye los seams que el Supervisor SÍ cablea en ``__init__``
-# (``AssetConflictScanner``, ``RecordConflictScanner``, ``PluginLimitGuard``,
-# ``GrassRuntimeDepsProvider``): construir esos es wiring legítimo — el dominio
-# vive dentro de ellos, no en el Supervisor.
-_DOMINIO_PROHIBIDO_INVOCAR = frozenset(
-    (_DOMINIO_PROHIBIDO_IMPORTAR - {"WryeBashRunner"})
-    | {
-        "AssetConflictDetector",  # inline de scan_asset_conflicts (el tipo SÍ se importa; construirlo NO)
-        "WryeBashPipelineService",  # la arma build_orchestration_composition, no el Supervisor
-        "GrassCacheService",  # idem
-        "WryeBashRunner",  # explícito para dejar el set legible
+# Convención: todo runner/analyzer de dominio lleva ``Runner`` o ``Analyzer`` en
+# el nombre. Detectar por convención (subcadena) —en vez de una lista literal de
+# nombres— cubre runners/analyzers NUEVOS y sus alias (``XEditRunnerV2``,
+# ``XEditPipelineRunner``, ``ConflictAnalyzerImpl``) sin tener que editarla: se
+# enumera la FAMILIA por regla, no una muestra. Ninguno de los imports/llamadas
+# legítimos de ``supervisor.py`` contiene esas subcadenas (los DTOs son
+# ``*Report``; los seams que cablea son ``*Scanner``/``*Guard``/``*Provider``).
+_SUBCADENAS_DE_DOMINIO = ("Runner", "Analyzer")
+
+# Símbolos de dominio que NO siguen la convención de nombre y hay que nombrar:
+#  - el parser puro del load order (re-parsear plugins en el Supervisor es dominio);
+_DOMINIO_EXPLICITO_IMPORTAR = frozenset({"parse_active_plugins"})
+#  - además, construir el detector de assets (inline de un scan) o los servicios
+#    que arma ``build_orchestration_composition`` es reabsorber dominio. NO se
+#    listan los seams que el Supervisor SÍ cablea (``AssetConflictScanner``,
+#    ``RecordConflictScanner``, ``PluginLimitGuard``, ``GrassRuntimeDepsProvider``):
+#    construir esos es wiring legítimo. El tipo ``AssetConflictDetector`` SÍ se
+#    importa (retorno de la facade); lo prohibido es CONSTRUIRLO.
+_DOMINIO_EXPLICITO_INVOCAR = frozenset(
+    {
+        "parse_active_plugins",
+        "AssetConflictDetector",
+        "WryeBashPipelineService",
+        "GrassCacheService",
     }
 )
+
+
+def _es_dominio(nombre: str, explicitos: frozenset[str]) -> bool:
+    """¿``nombre`` es implementación de dominio? Por convención o por el set explícito."""
+    return any(sub in nombre for sub in _SUBCADENAS_DE_DOMINIO) or nombre in explicitos
 
 
 def _nombres_importados() -> set[str]:
@@ -124,9 +160,28 @@ def _funcion(nombre: str) -> ast.AsyncFunctionDef | ast.FunctionDef | None:
     return None
 
 
+def test_guardrail_ancla_sobre_la_clase_supervisor() -> None:
+    """El ancla apunta al archivo donde vive ``SupervisorAgent`` HOY.
+
+    Si la clase se mueve a otro módulo, ``inspect.getsourcefile`` la sigue y el
+    AST analizado es el correcto; este test lo deja explícito y falla ruidoso si
+    el ancla dejara de coincidir con el módulo real de la clase (cierre del
+    "falso verde por módulo congelado", review interno #553).
+    """
+    fuente_de_la_clase = inspect.getsourcefile(SupervisorAgent)
+    assert fuente_de_la_clase is not None and Path(fuente_de_la_clase) == _SUPERVISOR_SRC, (
+        "el AST analizado no corresponde al archivo donde vive SupervisorAgent: "
+        f"clase en {fuente_de_la_clase!r} vs. ancla {_SUPERVISOR_SRC}."
+    )
+    assert _SUPERVISOR_SRC.name == "supervisor.py", (
+        f"SupervisorAgent se mudó a {_SUPERVISOR_SRC.name}: el guardrail lo sigue por la "
+        "clase, pero confirmá que el módulo nuevo es el hogar canónico del Supervisor."
+    )
+
+
 def test_no_importa_dominio_de_herramientas() -> None:
     """M3 (parcial) / regresión de import: ningún runner/analyzer/parser cruza al Supervisor."""
-    filtrados = _DOMINIO_PROHIBIDO_IMPORTAR & _nombres_importados()
+    filtrados = {n for n in _nombres_importados() if _es_dominio(n, _DOMINIO_EXPLICITO_IMPORTAR)}
     assert not filtrados, (
         f"supervisor.py importó implementación de dominio: {sorted(filtrados)}. "
         "Esa lógica vive en su seam (runner/analyzer/parser); el Supervisor sólo "
@@ -137,12 +192,12 @@ def test_no_importa_dominio_de_herramientas() -> None:
 def test_no_invoca_dominio_de_herramientas() -> None:
     """M1/M2/M4: el Supervisor no construye runners/analyzers/detectors ni re-parsea plugins.
 
-    Cubre construir ``XEditRunner``/``ConflictAnalyzer`` (M1/M2), inline de un scan
-    vía ``AssetConflictDetector`` (M4) y ``parse_active_plugins`` movido al
-    Supervisor (M3). Permite construir los seams de composición (no están en el
-    denylist).
+    Cubre construir ``XEditRunner``/``ConflictAnalyzer`` (M1/M2) —y cualquier alias
+    ``*Runner``/``*Analyzer`` por convención—, el inline de un scan vía
+    ``AssetConflictDetector`` (M4) y ``parse_active_plugins`` movido al Supervisor
+    (M3). Permite construir los seams de composición (no son dominio).
     """
-    filtrados = _DOMINIO_PROHIBIDO_INVOCAR & _nombres_invocados()
+    filtrados = {n for n in _nombres_invocados() if _es_dominio(n, _DOMINIO_EXPLICITO_INVOCAR)}
     assert not filtrados, (
         f"supervisor.py invocó/construyó dominio de herramientas: {sorted(filtrados)}. "
         "Cablealo en build_orchestration_composition / su seam e inyectá el resultado; "
@@ -151,20 +206,25 @@ def test_no_invoca_dominio_de_herramientas() -> None:
 
 
 def test_no_pasa_self_como_service_locator() -> None:
-    """#518: pasar ``self`` pelado a un colaborador es Service Locator.
+    """#518: pasar ``self`` a un colaborador es Service Locator.
 
-    Pasar ``self.<colaborador>`` (un atributo concreto) es inyección explícita y
-    NO cae acá — sólo miramos el ``Name`` pelado ``self`` como argumento.
+    Se bloquea ``self`` como argumento posicional, por keyword, o expandido
+    (``f(self)``, ``f(x=self)``, ``f(*self)``, ``f(**self)``). Pasar
+    ``self.<colaborador>`` (un atributo concreto) es inyección explícita y NO cae
+    acá. Evasiones por aliasing (``svc = self; svc.dispatch(...)``) exceden un
+    ancla AST y quedan respaldadas por los tests conductuales (ver docstring del módulo).
     """
     ofensores: set[str] = set()
     for nodo in ast.walk(_SUPERVISOR_AST):
         if not isinstance(nodo, ast.Call):
             continue
-        argumentos = [*nodo.args, *(kw.value for kw in nodo.keywords)]
-        if any(isinstance(arg, ast.Name) and arg.id == "self" for arg in argumentos):
+        # posicionales (incluye ``*self``), y valores de keyword (incluye ``**self``).
+        candidatos = [(arg.value if isinstance(arg, ast.Starred) else arg) for arg in nodo.args]
+        candidatos += [kw.value for kw in nodo.keywords]
+        if any(isinstance(arg, ast.Name) and arg.id == "self" for arg in candidatos):
             ofensores.add(ast.unparse(nodo.func))
     assert not ofensores, (
-        f"supervisor.py pasa `self` pelado a: {sorted(ofensores)}. Inyectá "
+        f"supervisor.py pasa `self` a: {sorted(ofensores)}. Inyectá "
         "dependencias explícitas (self.<colaborador>), no el Supervisor entero: un "
         "callee que recibe self puede alcanzar cualquier cosa en runtime (Service Locator)."
     )
@@ -177,8 +237,10 @@ def test_dispatch_tool_sigue_delegando() -> None:
 
     Robusto a refactors equivalentes (M5): sólo exige que exista una llamada
     ``.dispatch(...)`` y que NO haya un ``match`` dentro del método. Renombrar el
-    atributo del dispatcher o partir la expresión en dos líneas sigue pasando;
-    volver a un árbol de decisión sobre ``tool_name`` falla.
+    atributo del dispatcher o partir la expresión en dos líneas sigue pasando.
+    Un router equivalente por ``if/elif`` sobre ``tool_name`` excede un ancla AST
+    y queda respaldado por los tests conductuales de ``dispatch_tool``
+    (``tests/test_supervisor_dispatch_tool.py``), que fijan su comportamiento.
     """
     fn = _funcion("dispatch_tool")
     assert fn is not None, "desapareció la facade pública dispatch_tool (contrato de contracts.py roto)"
