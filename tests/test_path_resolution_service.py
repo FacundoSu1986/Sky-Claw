@@ -1295,9 +1295,14 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/app/agent/tools/external_tools.py": (220, 267),
         # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
         "sky_claw/local/fomod/plugin_state.py": (74,),
+        # BrokeredLootRunner: acepta mods_dir; líneas 61 y 221 son fallbacks legacy.
+        "sky_claw/local/mo2/brokered_loot.py": (61, 221),
         # MO2Controller: modo explícito recibe mods_dir; línea 125 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (125,),
-        "sky_claw/local/mo2/vfs_attestation.py": (189, 191, 233),
+        "sky_claw/local/mo2/vfs_attestation.py": (182, 243),
+        # VfsExecutionBroker.submit y VfsWorkerManifest: fallbacks legacy si no se pasa mods_dir.
+        "sky_claw/local/mo2/vfs_broker.py": (297,),
+        "sky_claw/local/mo2/vfs_manifest.py": (64,),
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.
         "sky_claw/local/discovery/scanner.py": (458,),
@@ -1310,9 +1315,9 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/validators/vfs_health.py": (141,),
         "sky_claw/local/validators/preflight_sensors.py": (193,),
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": (327,),
-        # AppContext: fallback legacy en bootstrap de MO2Controller (976) y
-        # handoff reconciliation (1377).
-        "sky_claw/app_context.py": (976, 1377),
+        # AppContext: fallback legacy en bootstrap de MO2Controller (975) y
+        # handoff reconciliation (1373).
+        "sky_claw/app_context.py": (975, 1373),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
         "sky_claw/local/tools/output_targets.py": (157,),
         "sky_claw/local/mo2/grass_profile.py": (227, 330),

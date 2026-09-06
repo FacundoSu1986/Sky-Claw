@@ -16,7 +16,7 @@ from typing import TypeAlias
 
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 
-VFS_PROTOCOL_VERSION = 1
+VFS_PROTOCOL_VERSION = 2
 ALLOWED_VFS_TOOL_IDS = frozenset({"health", "loot_sort"})
 ALLOWED_ROLLBACK_STATES = frozenset({"not_started", "not_required", "pending", "completed", "failed"})
 

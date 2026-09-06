@@ -24,7 +24,10 @@ class VfsBrokerProtocol(Protocol):
         job: VfsJob,
         *,
         challenge: VfsAttestationChallenge,
-        mo2_root: pathlib.Path,
+        mo2_root: pathlib.Path | None = None,
+        data_root: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | None = None,
+        install_root: pathlib.Path | None = None,
         virtual_data_dir: pathlib.Path,
         overwrite_mod: str | None = None,
     ) -> Awaitable[VfsJobResult]: ...
@@ -38,7 +41,10 @@ class BrokeredLootRunner:
         *,
         broker: VfsBrokerProtocol,
         instance_id: str,
-        mo2_root: pathlib.Path,
+        mo2_root: pathlib.Path | None = None,
+        data_root: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | None = None,
+        install_root: pathlib.Path | None = None,
         profile: str,
         game_data_dir: pathlib.Path,
         loot_exe: pathlib.Path,
@@ -48,7 +54,13 @@ class BrokeredLootRunner:
     ) -> None:
         self._broker = broker
         self._instance_id = instance_id
-        self._mo2_root = mo2_root.resolve()
+        resolved_data = data_root or mo2_root
+        if resolved_data is None:
+            raise ValueError("se requiere data_root o mo2_root")
+        self._data_root = resolved_data.resolve()
+        self._mods_dir = mods_dir.resolve() if mods_dir is not None else (self._data_root / "mods")
+        self._install_root = (install_root or mo2_root or self._data_root).resolve()
+        self._mo2_root = self._install_root
         self._profile = profile
         self._game_data_dir = game_data_dir.resolve()
         self._loot_exe = loot_exe.resolve()
@@ -73,11 +85,13 @@ class BrokeredLootRunner:
         """Crea un runner aislado que resuelve targets del perfil solicitado."""
         if profile == self._profile:
             return self
-        resolver = LoadOrderFileResolver(mo2_root=self._mo2_root, profile=profile)
+        resolver = LoadOrderFileResolver(mo2_root=self._data_root, profile=profile)
         return BrokeredLootRunner(
             broker=self._broker,
             instance_id=self._instance_id,
-            mo2_root=self._mo2_root,
+            data_root=self._data_root,
+            mods_dir=self._mods_dir,
+            install_root=self._install_root,
             profile=profile,
             game_data_dir=self._game_data_dir,
             loot_exe=self._loot_exe,
@@ -94,7 +108,8 @@ class BrokeredLootRunner:
         """Captura el fingerprint pre-HITL sin arrancar ningún worker."""
         challenge = await asyncio.to_thread(
             build_attestation_challenge,
-            mo2_root=self._mo2_root,
+            data_root=self._data_root,
+            mods_dir=self._mods_dir,
             profile=self._profile,
             physical_data_dir=self._game_data_dir,
         )
@@ -108,7 +123,8 @@ class BrokeredLootRunner:
             return challenge
         return await asyncio.to_thread(
             build_attestation_challenge,
-            mo2_root=self._mo2_root,
+            data_root=self._data_root,
+            mods_dir=self._mods_dir,
             profile=self._profile,
             physical_data_dir=self._game_data_dir,
         )
@@ -136,7 +152,9 @@ class BrokeredLootRunner:
         result = await self._broker.submit(
             job,
             challenge=challenge,
-            mo2_root=self._mo2_root,
+            data_root=self._data_root,
+            mods_dir=self._mods_dir,
+            install_root=self._install_root,
             virtual_data_dir=self._game_data_dir,
             overwrite_mod=self._overwrite_mod,
         )
@@ -176,7 +194,10 @@ def build_vfs_loot_runner(
     *,
     broker: VfsBrokerProtocol | None,
     instance_id: str | None,
-    mo2_root: pathlib.Path,
+    mo2_root: pathlib.Path | None = None,
+    data_root: pathlib.Path | None = None,
+    mods_dir: pathlib.Path | None = None,
+    install_root: pathlib.Path | None = None,
     game_path: pathlib.Path | None,
     loot_exe: pathlib.Path | None,
     profile: str,
@@ -189,11 +210,16 @@ def build_vfs_loot_runner(
         )
     if game_path is None or loot_exe is None or not loot_exe.is_file():
         return VfsRequiredLootRunner("F8 guard: faltan rutas verificadas de Skyrim o LOOT para ejecutar bajo USVFS.")
-    resolver = LoadOrderFileResolver(mo2_root=mo2_root, profile=profile)
+    effective_data = data_root or mo2_root
+    if effective_data is None:
+        return VfsRequiredLootRunner("F8 guard: falta la ruta de datos de MO2 para ejecutar bajo USVFS.")
+    resolver = LoadOrderFileResolver(mo2_root=effective_data, profile=profile)
     return BrokeredLootRunner(
         broker=broker,
         instance_id=instance_id,
-        mo2_root=mo2_root,
+        data_root=effective_data,
+        mods_dir=mods_dir or (effective_data / "mods"),
+        install_root=install_root or mo2_root or effective_data,
         profile=profile,
         game_data_dir=game_path / "Data",
         loot_exe=loot_exe,
