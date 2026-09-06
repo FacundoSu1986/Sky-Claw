@@ -223,8 +223,42 @@ class TestMO2PluginStateProvider:
         mod_dir.mkdir(parents=True)
         (mod_dir / "ModA.esp").write_text("esp", encoding="utf-8")
         provider = MO2PluginStateProvider(mo2_root)
-
         assert provider.file_state("ModA.esp") == FileState.MISSING
+
+    def test_split_roots_usa_mods_dir_y_data_root_con_trampa(self, tmp_path: pathlib.Path) -> None:
+        """MO2PluginStateProvider lee modlist de data_root y archivos de mods_dir."""
+        data_root = tmp_path / "Instance"
+        mods_dir = tmp_path / "CustomMods"
+        trap_mods = data_root / "mods"
+
+        data_root.mkdir(parents=True)
+        mods_dir.mkdir(parents=True)
+        trap_mods.mkdir(parents=True)
+
+        profile_dir = data_root / "profiles" / "Default"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "modlist.txt").write_text("+ModReal\n-ModDisabled\n", encoding="utf-8")
+
+        # Mod real en mods_dir
+        mod_real_dir = mods_dir / "ModReal"
+        mod_real_dir.mkdir(parents=True)
+        (mod_real_dir / "RealPlugin.esp").write_text("esp", encoding="utf-8")
+
+        mod_disabled_dir = mods_dir / "ModDisabled"
+        mod_disabled_dir.mkdir(parents=True)
+        (mod_disabled_dir / "DisabledPlugin.esp").write_text("esp", encoding="utf-8")
+
+        # Trampa en data_root / "mods": archivo que NO debe ser detectado
+        trap_mod_dir = trap_mods / "ModReal"
+        trap_mod_dir.mkdir(parents=True)
+        (trap_mod_dir / "TrapPlugin.esp").write_text("trap", encoding="utf-8")
+
+        provider = MO2PluginStateProvider(data_root=data_root, mods_dir=mods_dir)
+
+        assert provider.file_state("RealPlugin.esp") == FileState.ACTIVE
+        assert provider.file_state("DisabledPlugin.esp") == FileState.INACTIVE
+        # TrapPlugin no está en mods_dir, no debe existir
+        assert provider.file_state("TrapPlugin.esp") == FileState.MISSING
 
 
 # ---------------------------------------------------------------------------

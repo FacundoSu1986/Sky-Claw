@@ -207,7 +207,15 @@ def test_pathresolutionservice_tiene_un_unico_call_site_de_produccion() -> None:
         if n:
             hallados[str(py.relative_to(raiz.parents[0])).replace("\\", "/")] = n
 
-    assert hallados == {"sky_claw/app/orchestrator/supervisor.py": 1}, (
+    # Construcciones productivas autorizadas de PathResolutionService:
+    # 1. supervisor.py: el resolver centralizado inyectado al supervisor.
+    # 2. app_context.py: bootstrap de MO2Controller con mo2_install_dir=mo2_root
+    #    para resolver la topología install_root != data_root != mods_dir (Issue #557).
+    esperados = {
+        "sky_claw/app/orchestrator/supervisor.py": 1,
+        "sky_claw/app_context.py": 1,
+    }
+    assert hallados == esperados, (
         "Cambió el conjunto de construcciones productivas de "
         "PathResolutionService. Un resolver nuevo debe recibir mo2_install_dir "
         "(o eximirse con racional) o revive el split-brain "

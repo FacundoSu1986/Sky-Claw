@@ -1289,14 +1289,14 @@ class TestAnclaConstructoresManualesDeMods:
         # nueva construcción de `<base>/mods` debe ir por estas tres rutas
         # o extender el ancla con su racional.
         "sky_claw/app/core/path_resolver.py": (253, 314, 934),
-        # Instaladores NGIO/FOMOD del agente LLM sobre mo2.root del registry:
-        # superficie agente, layout portable asumido — fuera de alcance (PR-0).
-        "sky_claw/app/agent/tools/external_tools.py": (239, 288),
-        "sky_claw/app/agent/tools/system_tools.py": (279,),
-        "sky_claw/local/fomod/plugin_state.py": (106, 158, 162),
-        # Broker VFS real: su raíz EXIGE ModOrganizer.exe + árbol de datos
-        # juntos (layout portable por contrato) — no es la instancia de la GUI.
-        "sky_claw/local/mo2/vfs.py": (310,),
+        # Instaladores NGIO/FOMOD del agente LLM: ahora aceptan mods_dir explícito
+        # (Issue #557); las líneas 220 y 267 son el fallback legacy portable.
+        # system_tools.py ya no construye <expr> / "mods" porque usa mo2.mods_dir.
+        "sky_claw/app/agent/tools/external_tools.py": (220, 267),
+        # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
+        "sky_claw/local/fomod/plugin_state.py": (74,),
+        # MO2Controller: modo explícito recibe mods_dir; línea 125 es el fallback legacy.
+        "sky_claw/local/mo2/vfs.py": (125,),
         "sky_claw/local/mo2/vfs_attestation.py": (189, 191, 233),
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.
@@ -1310,8 +1310,9 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/validators/vfs_health.py": (141,),
         "sky_claw/local/validators/preflight_sensors.py": (193,),
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": (327,),
-        # Rollback/move-aside y staging de DynDOLOD bajo el árbol del broker.
-        "sky_claw/app_context.py": (1331,),
+        # AppContext: fallback legacy en bootstrap de MO2Controller (976) y
+        # handoff reconciliation (1377).
+        "sky_claw/app_context.py": (976, 1377),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
         "sky_claw/local/tools/output_targets.py": (157,),
         "sky_claw/local/mo2/grass_profile.py": (227, 330),
@@ -1938,6 +1939,7 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     #: Módulo → n.º de llamadas a ``get_mo2_path()`` (INSTALL/CAPABILITY).
     _INSTALL_O_CAPABILITY: dict[str, int] = {
+        "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
         "sky_claw/local/tools/wrye_bash_service.py": 1,
@@ -1946,6 +1948,7 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root()``.
     _INSTANCE_DATA: dict[str, int] = {
+        "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/dispatcher_dependencies.py": 1,
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
@@ -1960,6 +1963,7 @@ class TestAnclaSemanticaDeRaicesMo2:
     #: conflictos) y dyndolod (runner/permisos/preview): los consumidores de
     #: siempre; un sitio nuevo debe declarar su severidad.
     _MODS_ESTRICTO: dict[str, int] = {
+        "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/asset_conflict_scan.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 3,
     }

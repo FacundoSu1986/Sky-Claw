@@ -276,7 +276,7 @@ async def install_mod_from_archive(
     if fomod_installer is None:
         return json.dumps({"success": False, "message": "FOMOD installer is not configured."})
 
-    mo2_mods_dir = mo2.root / "mods"
+    mo2_mods_dir = mo2.mods_dir
     if lock_manager is not None:
         # API pública de la familia de instalación (T-31): el mismo recurso que
         # los autoinstaladores de tools sobre mods/.

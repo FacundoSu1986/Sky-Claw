@@ -268,6 +268,29 @@ def _raiz_datos_instancia_para_sandbox(mo2_root: pathlib.Path) -> pathlib.Path |
     return raiz
 
 
+def _mods_candidatos_para_sandbox(mo2_root: pathlib.Path) -> list[pathlib.Path]:
+    """Candidatos a directorio mods aptos como raíces de sandbox.
+
+    Registra tanto MO2_MODS_PATH como metadata.mods para que el PathValidator
+    los contenga y PathResolutionService pueda resolverlos con su precedencia canónica.
+    """
+    candidatos: list[pathlib.Path] = []
+    env_mods = os.environ.get("MO2_MODS_PATH", "").strip()
+    if env_mods:
+        p = pathlib.Path(env_mods).resolve(strict=False)
+        if p.is_absolute() and p.parent != p and p.is_dir():
+            candidatos.append(p)
+    try:
+        metadata = descubrir_metadata_instancia_mo2(mo2_root)
+    except RuntimeError:
+        metadata = None
+    if metadata is not None:
+        mods = metadata.mods.resolve(strict=False)
+        if mods.is_absolute() and mods.parent != mods and mods.is_dir() and mods not in candidatos:
+            candidatos.append(mods)
+    return candidatos
+
+
 def _construir_raices_sandbox(
     mo2_root: pathlib.Path,
     install_dir: pathlib.Path | None,
@@ -289,6 +312,9 @@ def _construir_raices_sandbox(
     raiz_instancia = _raiz_datos_instancia_para_sandbox(mo2_root)
     if raiz_instancia and raiz_instancia not in roots:
         roots.append(raiz_instancia)
+    for cand in _mods_candidatos_para_sandbox(mo2_root):
+        if cand not in roots:
+            roots.append(cand)
     return roots
 
 
@@ -934,7 +960,26 @@ class AppContext:
             # Solo definir las carpetas estrictamente necesarias
             # Se elimina explícitamente mo2_parent para evitar Path Traversal encubierto
             validator = PathValidator(roots=sandbox_roots)
-            mo2 = MO2Controller(mo2_root, validator)
+            from sky_claw.app.core.path_resolver import PathResolutionService
+
+            path_service = PathResolutionService(
+                path_validator=validator,
+                profile_name=active_profile,
+                mo2_install_dir=mo2_root,
+            )
+            resolved_install = path_service.get_mo2_path() or mo2_root
+            resolved_data = path_service.get_mo2_instance_data_root() or resolved_install
+            try:
+                resolved_mods = path_service.get_mo2_mods_path()
+            except Exception:
+                resolved_mods = resolved_data / "mods"
+
+            mo2 = MO2Controller(
+                install_root=resolved_install,
+                data_root=resolved_data,
+                mods_dir=resolved_mods,
+                path_validator=validator,
+            )
 
             await self._await_startup(self.network.initialize(nexus_key, self._args.staging_dir))
 
@@ -1410,7 +1455,11 @@ class AppContext:
                 path_validator=validator,
                 # Estado de plugins/mods instalados para evaluar fileDependency
                 # de FOMOD (parches condicionados a mods presentes/ausentes).
-                file_state_provider=MO2PluginStateProvider(mo2_root=mo2.root, profile=active_profile),
+                file_state_provider=MO2PluginStateProvider(
+                    data_root=mo2.data_root,
+                    mods_dir=mo2.mods_dir,
+                    profile=active_profile,
+                ),
             )
 
             tool_registry = AsyncToolRegistry(
@@ -1446,7 +1495,7 @@ class AppContext:
             )
 
             history_db = str(self._args.db_path).replace(".db", "_history.db")
-            mo2_profile_path = mo2.root / "profiles" / active_profile
+            mo2_profile_path = mo2.data_root / "profiles" / active_profile
 
             # F1: provisionar el vault (si SKYCLAW_VAULT_MASTER_KEY está seteada)
             # y cablearlo al router para habilitar el hot-swap Zero-Trust de

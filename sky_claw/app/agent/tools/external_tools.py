@@ -76,8 +76,9 @@ async def setup_tools(
     *,
     gateway: NetworkGateway | None = None,
     session: aiohttp.ClientSession | None = None,
+    mods_dir: pathlib.Path | None = None,
 ) -> str:
-    """Download and install tools (loot, xedit, pandora, bodyslide).
+    """Download and install tools (loot, xedit, pandora, bodyslide, ngio, community_shaders).
 
     Args are pre-validated by AsyncToolRegistry.execute() via SetupToolsParams.
 
@@ -216,8 +217,9 @@ async def setup_tools(
                     from sky_claw.local.discovery.scanner import detect_skyrim_edition
 
                     mo2_root = getattr(local_cfg, "mo2_root", None) if local_cfg else None
+                    target_mods_dir = mods_dir or (pathlib.Path(mo2_root) / "mods" if mo2_root else None)
                     skyrim_str = getattr(local_cfg, "skyrim_path", None) if local_cfg else None
-                    if not mo2_root:
+                    if not target_mods_dir:
                         results["ngio"] = _error_result("mo2_root no configurado: corré el escaneo de entorno primero.")
                         continue
                     if not skyrim_str:
@@ -236,7 +238,7 @@ async def setup_tools(
                     # pefile hace I/O síncrono de PE: fuera del event loop.
                     edition = await asyncio.to_thread(detect_skyrim_edition, skyrim_exe)
                     mods = await tools_installer.ensure_ngio(
-                        pathlib.Path(mo2_root) / "mods",
+                        target_mods_dir,
                         session,
                         downloader,
                         edition=edition,
@@ -262,8 +264,9 @@ async def setup_tools(
                     from sky_claw.local.discovery.scanner import detect_skyrim_edition, read_skyrim_version
 
                     mo2_root = getattr(local_cfg, "mo2_root", None) if local_cfg else None
+                    target_mods_dir = mods_dir or (pathlib.Path(mo2_root) / "mods" if mo2_root else None)
                     skyrim_str = getattr(local_cfg, "skyrim_path", None) if local_cfg else None
-                    if not mo2_root:
+                    if not target_mods_dir:
                         results["community_shaders"] = _error_result(
                             "mo2_root no configurado: corré el escaneo de entorno primero."
                         )
@@ -285,7 +288,7 @@ async def setup_tools(
                     edition = await asyncio.to_thread(detect_skyrim_edition, skyrim_exe)
                     game_version = await asyncio.to_thread(read_skyrim_version, skyrim_exe)
                     mods = await tools_installer.ensure_community_shaders(
-                        pathlib.Path(mo2_root) / "mods",
+                        target_mods_dir,
                         session,
                         downloader,
                         edition=edition,
