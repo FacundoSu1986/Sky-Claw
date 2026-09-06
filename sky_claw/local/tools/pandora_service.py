@@ -156,12 +156,14 @@ class PandoraPipelineService:
         if resolver is not None:
             g = resolver.get_skyrim_path()
             game = g if isinstance(g, pathlib.Path) else None
-            m = resolver.get_mo2_path()
+            # Raíz de DATOS (no instalación): overwrite y perfil cuelgan de la
+            # instancia. El raw usa el mismo árbol (no existe representación
+            # cruda sin resolver de la metadata; ver get_mo2_instance_data_root).
+            m = resolver.get_mo2_instance_data_root()
             mo2 = m if isinstance(m, pathlib.Path) else None
             rg = resolver.get_skyrim_path_raw()
             raw_game = rg if isinstance(rg, pathlib.Path) else None
-            rm = resolver.get_mo2_path_raw()
-            raw_mo2 = rm if isinstance(rm, pathlib.Path) else None
+            raw_mo2 = mo2
             e = resolver.get_pandora_exe()
             exe = e if isinstance(e, pathlib.Path) else None
         if self._pandora_exe is not None:
@@ -216,8 +218,8 @@ class PandoraPipelineService:
         )
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
-        # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks).
-        # scan_mods_dir solo con MO2 VALIDADA (``mo2`` sale de get_mo2_path()):
+        # vfs sobre el árbol de DATOS (el que los sensores leen).
+        # scan_mods_dir solo con MO2 VALIDADA (``mo2`` es la raíz de datos):
         # enumerar mods/ sobre una raíz sin contraparte validada listaría
         # directorios arbitrarios (review Codex #240). Antes iba fijo en False,
         # lo que dejaba el scan ciego incluso con una instancia legítima (U-01).

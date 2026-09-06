@@ -122,6 +122,7 @@ def synthesis_output_target(
     *,
     mo2: pathlib.Path | None,
     override: pathlib.Path | None,
+    mods_dir: pathlib.Path | None = None,
 ) -> pathlib.Path | None:
     """Destino de Synthesis: el override del sandbox manda; si no, el de siempre.
 
@@ -133,6 +134,12 @@ def synthesis_output_target(
 
     ``override`` es el ``SandboxClone.overwrite_copy`` de T-27b: con él, el run
     sandboxeado escribe en el clon y no en el overwrite real.
+
+    ``mo2`` es la raíz de DATOS de la instancia (no la instalación): el
+    ``overwrite`` y el fallback ``mods/`` cuelgan de los datos. ``mods_dir``
+    (de ``get_mo2_mods_path``) manda sobre ``mo2/"mods"`` cuando se conoce,
+    porque ``[Settings] mod_directory`` puede redefinir los mods fuera del
+    árbol de datos; sin él se conserva el fallback histórico.
     """
     if override is not None:
         return override
@@ -141,7 +148,8 @@ def synthesis_output_target(
     overwrite = mo2 / "overwrite"
     if overwrite.exists():
         return overwrite
-    return mo2 / "mods" / SYNTHESIS_MOD_NAME
+    base_mods = mods_dir if mods_dir is not None else mo2 / "mods"
+    return base_mods / SYNTHESIS_MOD_NAME
 
 
 def bodyslide_output_root(*, game: pathlib.Path | None) -> pathlib.Path | None:

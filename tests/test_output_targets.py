@@ -98,6 +98,9 @@ def _resolver(*, game: pathlib.Path | None = None, mo2: pathlib.Path | None = No
     resolver = MagicMock()
     resolver.get_skyrim_path.return_value = game
     resolver.get_mo2_path.return_value = mo2
+    # ``mo2`` es la raíz de DATOS para los consumers migrados (layout portable
+    # en estos tests: install == data).
+    resolver.get_mo2_instance_data_root.return_value = mo2
     resolver.get_skyrim_path_raw.return_value = str(game) if game is not None else None
     resolver.get_mo2_path_raw.return_value = str(mo2) if mo2 is not None else None
     return resolver
@@ -393,11 +396,14 @@ def test_dyndolod_staging_cuelga_de_la_raiz(tmp_path: pathlib.Path) -> None:
 
 
 def _synthesis(mo2: pathlib.Path, game: pathlib.Path) -> SynthesisPipelineService:
+    resolver = _resolver(game=game, mo2=mo2)
+    # Layout portable: mods/ cuelga de la raíz de datos.
+    resolver.get_mo2_mods_path.return_value = mo2 / "mods"
     return SynthesisPipelineService(
         lock_manager=MagicMock(),
         snapshot_manager=MagicMock(),
         journal=MagicMock(),
-        path_resolver=_resolver(game=game, mo2=mo2),
+        path_resolver=resolver,
         event_bus=MagicMock(),
     )
 

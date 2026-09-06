@@ -299,13 +299,20 @@ class ChainPreviewService:
         skyrim = self._path_resolver.get_skyrim_path()
         if isinstance(skyrim, pathlib.Path):
             game_data_dir = skyrim / "Data"
-        mo2 = self._path_resolver.get_mo2_path()
+        # Raíz de DATOS (no instalación): mods/overwrite del preview cuelgan
+        # de la instancia.
+        mo2 = self._path_resolver.get_mo2_instance_data_root()
         if not isinstance(mo2, pathlib.Path):
             # Auto-detección de MO2 (mismo fallback que el preflight de LOOT):
             # sin MO2_PATH pero instancia detectable, seguimos leyendo headers
             # reales en vez de degradar a la heurística (review Codex #267).
-            detected = self._path_resolver.detect_mo2_path()
-            mo2 = detected if isinstance(detected, pathlib.Path) else None
+            # Solo sin selección explícita: con un hint presente pero inválido,
+            # detectar otro árbol violaría el fail-closed.
+            if self._path_resolver.has_explicit_mo2_install_selection():
+                mo2 = None
+            else:
+                detected = self._path_resolver.detect_mo2_path()
+                mo2 = detected if isinstance(detected, pathlib.Path) else None
         mo2_ok = isinstance(mo2, pathlib.Path)
         sources = resolve_plugin_sources(
             game_data_dir=game_data_dir,

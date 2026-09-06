@@ -325,9 +325,17 @@ class LootSortingService:
 
         if self._path_resolver is not None:
             raw_game = self._path_resolver.get_skyrim_path_raw()
-            raw_mo2 = self._path_resolver.get_mo2_path_raw()
+            # Raíz de DATOS validada (no instalación): mods/overwrite del
+            # preflight cuelgan de la instancia. Es también el raw (no existe
+            # representación cruda sin resolver de la metadata).
+            raw_mo2 = self._path_resolver.get_mo2_instance_data_root()
             if raw_mo2 is not None:
-                mo2_validated = self._path_resolver.get_mo2_path() is not None
+                mo2_validated = True
+            elif self._path_resolver.has_explicit_mo2_install_selection():
+                # Hint presente pero inválido: prohibido degradar a detectar
+                # otra instalación (la selección explícita invalidada no es
+                # vía libre para B).
+                mo2_validated = False
             else:
                 # Sin MO2_PATH, el Supervisor puede resolver la instancia por
                 # auto-detección; ese candidato ya viene resuelto (pierde
@@ -490,7 +498,8 @@ class LootSortingService:
         mo2_root: pathlib.Path | None = None
         profile = "Default"
         if self._path_resolver is not None:
-            mo2_root = self._path_resolver.get_mo2_path()
+            # Raíz de DATOS: el resolver de load order lee profiles/<perfil>/.
+            mo2_root = self._path_resolver.get_mo2_instance_data_root()
             if mo2_root is not None:
                 profile = self._path_resolver.get_active_profile()
 
@@ -547,7 +556,9 @@ class LootSortingService:
             if self._path_resolver is None:
                 raise LOOTNotFoundError("Cannot run LOOT under USVFS: no path_resolver configured.")
             game_path = self._path_resolver.get_skyrim_path()
-            mo2_root = self._path_resolver.get_mo2_path()
+            # Raíz de DATOS: attestation y load order del broker leen el
+            # perfil (self-consistente: challenge y verify usan este valor).
+            mo2_root = self._path_resolver.get_mo2_instance_data_root()
             loot_exe = self._loot_exe or self._path_resolver.get_loot_exe()
             if game_path is None or mo2_root is None or loot_exe is None:
                 raise LOOTNotFoundError("Cannot run LOOT under USVFS: MO2, Skyrim or LOOT path is not configured.")

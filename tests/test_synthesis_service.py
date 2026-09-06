@@ -93,6 +93,10 @@ def mock_path_resolver(tmp_path: pathlib.Path) -> MagicMock:
 
     resolver.get_skyrim_path = MagicMock(return_value=game_path)
     resolver.get_mo2_path = MagicMock(return_value=mo2_path)
+    # Raíz de datos para los consumers migrados (layout portable en tests:
+    # install == data) y mods/ consistente con el output esperado.
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2_path)
+    resolver.get_mo2_mods_path = MagicMock(return_value=mo2_path / "mods")
     resolver.get_synthesis_exe = MagicMock(return_value=synthesis_exe)
     return resolver
 
@@ -333,6 +337,7 @@ async def test_runner_init_failure(
     """Invalid env paths return error dict without lock or journal."""
     mock_path_resolver.get_skyrim_path = MagicMock(return_value=None)
     mock_path_resolver.get_mo2_path = MagicMock(return_value=None)
+    mock_path_resolver.get_mo2_instance_data_root = MagicMock(return_value=None)
     mock_path_resolver.get_synthesis_exe = MagicMock(return_value=None)
 
     out = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])

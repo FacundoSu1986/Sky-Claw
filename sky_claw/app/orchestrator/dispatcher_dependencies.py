@@ -118,11 +118,13 @@ def build_synthesis_flow_provider(
         from sky_claw.app.orchestrator.sandbox_promotion import SandboxPromotionFlow
         from sky_claw.local.mo2.profile_sandbox import ProfileSandbox
 
-        mo2_path = path_resolver.get_mo2_path()
-        if mo2_path is None:
+        # Raíz de DATOS (no instalación): el sandbox clona profiles/ y
+        # overwrite, que cuelgan de la instancia (ver ProfileSandbox).
+        instance_data_root = path_resolver.get_mo2_instance_data_root()
+        if instance_data_root is None:
             raise RuntimeError("Cannot sandbox the Synthesis pipeline: MO2_PATH must be configured.")
         return SandboxPromotionFlow(
-            sandbox=ProfileSandbox(mo2_root=mo2_path, profile=profile_name),
+            sandbox=ProfileSandbox(mo2_root=instance_data_root, profile=profile_name),
             hitl_guard=hitl_guard,
         )
 

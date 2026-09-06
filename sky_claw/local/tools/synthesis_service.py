@@ -143,7 +143,9 @@ class SynthesisPipelineService:
             return self._synthesis_runner
 
         game_path = self._path_resolver.get_skyrim_path()
-        mo2_path = self._path_resolver.get_mo2_path()
+        # Raíz de DATOS de la instancia (no instalación): el destino
+        # (overwrite o mods/) cuelga de los datos. Ver output_targets.
+        mo2_path = self._path_resolver.get_mo2_instance_data_root()
         synthesis_exe = self._path_resolver.get_synthesis_exe()
 
         if not game_path or not mo2_path or not synthesis_exe:
@@ -160,7 +162,11 @@ class SynthesisPipelineService:
         # Fuente única compartida con _ensure_preflight (U-01 parte 2): estaban
         # copiados con un comentario "mismo cálculo que…", y el preflight sondeando
         # un destino distinto del que el runner escribe es un falso verde silencioso.
-        output_path = synthesis_output_target(mo2=mo2_path, override=self._output_path)
+        output_path = synthesis_output_target(
+            mo2=mo2_path,
+            override=self._output_path,
+            mods_dir=self._directorio_mods_best_effort(),
+        )
         assert output_path is not None  # mo2_path ya validado arriba
 
         config = SynthesisConfig(
@@ -183,6 +189,19 @@ class SynthesisPipelineService:
             output_path,
         )
         return self._synthesis_runner
+
+    def _directorio_mods_best_effort(self) -> pathlib.Path | None:
+        """``mods/`` de la instancia sin romper el fail-closed del caller.
+
+        Respeta ``[Settings] mod_directory`` (que puede vivir fuera del árbol
+        de datos) para el fallback ``mods/Synthesis Output`` del destino.
+        ``None`` si no resuelve: el destino degrada al ``<data>/mods`` histórico.
+        """
+        try:
+            return self._path_resolver.get_mo2_mods_path()
+        except Exception:  # noqa: BLE001 — boundary best-effort: sin mods resoluble se usa el fallback
+            logger.debug("mods/ de la instancia no resoluble; destino sin mod_directory.", exc_info=True)
+            return None
 
     def _ensure_patcher_pipeline(self) -> PatcherPipeline:
         """Inicializa lazily el PatcherPipeline.
@@ -229,7 +248,10 @@ class SynthesisPipelineService:
             return self._preflight
 
         game = self._path_resolver.get_skyrim_path()
-        mo2 = self._path_resolver.get_mo2_path()
+        # Raíz de DATOS (no instalación): overwrite, perfil y fuentes cuelgan
+        # de la instancia. El raw usa el mismo árbol (no existe representación
+        # cruda sin resolver de la metadata; ver get_mo2_instance_data_root).
+        mo2 = self._path_resolver.get_mo2_instance_data_root()
         if not isinstance(game, pathlib.Path) or not isinstance(mo2, pathlib.Path):
             return None
 
@@ -243,20 +265,24 @@ class SynthesisPipelineService:
         )
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
-        # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks) —
-        # builder compartido (T-16d): coacciona no-Path y guarda "al menos una raíz".
+        # vfs sobre el árbol de DATOS (el que el runner opera) — builder
+        # compartido (T-16d): coacciona no-Path y guarda "al menos una raíz".
         # scan_mods_dir: la raíz MO2 de acá ya está VALIDADA (el guard de arriba
-        # exige que get_mo2_path() sea un Path), así que enumerar mods/ es seguro
-        # — el False hardcodeado dejaba ciego el scan de symlinks (U-01).
+        # exige un Path de datos), así que enumerar mods/ es seguro — el False
+        # hardcodeado dejaba ciego el scan de symlinks (U-01).
         vfs_checker = build_vfs_sensor(
             raw_game=self._path_resolver.get_skyrim_path_raw(),
-            raw_mo2=self._path_resolver.get_mo2_path_raw(),
+            raw_mo2=mo2,
             scan_mods_dir=True,
         )
 
         # Output real donde Synthesis escribe — MISMO resolver que
         # _ensure_synthesis_runner, no una copia del cálculo (U-01 parte 2).
-        output_dir = synthesis_output_target(mo2=mo2, override=self._output_path)
+        output_dir = synthesis_output_target(
+            mo2=mo2,
+            override=self._output_path,
+            mods_dir=self._directorio_mods_best_effort(),
+        )
         assert output_dir is not None  # mo2 ya validado por el guard de arriba
 
         def _permissions():

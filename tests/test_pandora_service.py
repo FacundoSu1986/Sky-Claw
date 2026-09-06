@@ -369,10 +369,9 @@ async def test_ensure_preflight_construye_sensores_con_paths_resolubles(
 
     resolver = MagicMock()
     resolver.get_skyrim_path = MagicMock(return_value=game)
-    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2)
     resolver.get_pandora_exe = MagicMock(return_value=exe)
     resolver.get_skyrim_path_raw = MagicMock(return_value=game)
-    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
 
     svc = PandoraPipelineService(lock_manager=lock_manager, snapshot_manager=snapshot_manager, path_resolver=resolver)
 
@@ -399,10 +398,9 @@ def test_preflight_real_usa_el_game_del_runner_inyectado(
 
     resolver = MagicMock()
     resolver.get_skyrim_path = MagicMock(return_value=game_resolver)
-    resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2)
     resolver.get_pandora_exe = MagicMock(return_value=exe_resolver)
     resolver.get_skyrim_path_raw = MagicMock(return_value=game_resolver)
-    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
     resolver.get_active_profile = MagicMock(return_value="Default")
 
     runner = _runner_returning(game_runner)
@@ -485,10 +483,9 @@ def test_preflight_standalone_sin_mo2(
     exe.parent.mkdir(parents=True)
     resolver = MagicMock()
     resolver.get_skyrim_path = MagicMock(return_value=game)
-    resolver.get_mo2_path = MagicMock(return_value=None)  # sin MO2
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=None)  # sin MO2
     resolver.get_pandora_exe = MagicMock(return_value=exe)
     resolver.get_skyrim_path_raw = MagicMock(return_value=game)
-    resolver.get_mo2_path_raw = MagicMock(return_value=None)
 
     svc = PandoraPipelineService(lock_manager=lock_manager, snapshot_manager=snapshot_manager, path_resolver=resolver)
 
@@ -595,10 +592,9 @@ async def test_runner_inyectado_define_output_aunque_el_resolver_apunte_a_otro_g
 
     resolver = MagicMock()
     resolver.get_skyrim_path = MagicMock(return_value=game_resolver)
-    resolver.get_mo2_path = MagicMock(return_value=None)
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=None)
     resolver.get_pandora_exe = MagicMock(return_value=exe)
     resolver.get_skyrim_path_raw = MagicMock(return_value=game_resolver)
-    resolver.get_mo2_path_raw = MagicMock(return_value=None)
 
     async def _corre_y_falla() -> PandoraResult:
         _escribir_output(output_runner, "corrupto")

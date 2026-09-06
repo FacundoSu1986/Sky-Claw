@@ -152,6 +152,7 @@ def test_construir_dispatcher_no_resuelve_providers_ni_binarios() -> None:
     resolver.get_xedit_path.assert_not_called()
     resolver.get_loot_exe.assert_not_called()
     resolver.get_mo2_path.assert_not_called()
+    resolver.get_mo2_instance_data_root.assert_not_called()
 
 
 def test_preview_lazy_conserva_wiring_y_fallback_de_loot() -> None:
@@ -201,7 +202,8 @@ def test_preview_lazy_conserva_wiring_y_fallback_de_loot() -> None:
 
 def test_synthesis_lazy_conserva_sandbox_y_factory() -> None:
     resolver = MagicMock()
-    resolver.get_mo2_path.return_value = pathlib.Path("/mo2")
+    # El sandbox clona profiles/overwrite: recibe la raíz de DATOS, no install.
+    resolver.get_mo2_instance_data_root.return_value = pathlib.Path("/mo2")
     lock_manager = MagicMock()
     snapshot_manager = MagicMock()
     journal = MagicMock()

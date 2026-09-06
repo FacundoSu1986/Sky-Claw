@@ -630,21 +630,53 @@ class PathResolutionService:
         """
         if self._mo2_install_dir is not None:
             validado = self.validate_env_path(str(self._mo2_install_dir), "mo2_install_dir")
-            if validado is not None:
+            if validado is not None and self._es_directorio_real(validado, "mo2_install_dir"):
                 return validado
-            security_logger.warning(
-                "La instalación MO2 inyectada (%s) no valida contra el sandbox; "
-                "no se degrada a MO2_PATH/auto-detección para no reintroducir el "
-                "split-brain instalación-seleccionada != instalación-usada.",
+            # Sin warning adicional: validate_env_path ya reportó el rechazo de
+            # contención, y el cierre del capability gate va en debug para no
+            # duplicar ruido por llamada. No se degrada a MO2_PATH/auto-detección
+            # para no reintroducir el split-brain instalación-seleccionada !=
+            # instalación-usada.
+            logger.debug(
+                "Instalación MO2 inyectada no utilizable (%s); sin degradar a MO2_PATH/auto-detección.",
                 self._mo2_install_dir,
             )
             return None
         mo2_path_str = os.environ.get("MO2_PATH", "")
         if mo2_path_str:
             validado = self.validate_env_path(mo2_path_str, "MO2_PATH")
-            if validado is not None:
+            if validado is not None and self._es_directorio_real(validado, "MO2_PATH"):
                 return validado
+            logger.debug(
+                "MO2_PATH no utilizable como instalación; se intenta auto-detección.",
+            )
         return self.detect_mo2_path()
+
+    @staticmethod
+    def _es_directorio_real(path: pathlib.Path, etiqueta: str) -> bool:
+        """Capability gate: un hint/instalación solo existe si es un directorio real.
+
+        :meth:`PathValidator.validate` verifica contención y symlinks con
+        ``resolve()`` no estricto, así que un path fantasma o un archivo dentro
+        de una raíz permitida validaría igual. Sin este gate, un hint inexistente
+        abriría todos los ``is not None`` de capability (preflights, runners,
+        sandbox) sobre una instalación que no está ahí.
+
+        No se exige ``ModOrganizer.exe``: ``MO2_PATH`` admite por contrato la
+        semántica de datos (directorio con ``mods/`` sin ejecutable,
+        ``mo2_path_apunta_a_datos``), los resolvers standalone/herméticos operan
+        sobre directorios sin exe, y la presencia del ejecutable la decide el
+        composition root (broker F8) — no este getter.
+        """
+        try:
+            es_dir = path.is_dir()
+        except OSError as exc:
+            logger.debug("%s validado pero no inspeccionable (%s); fail-closed.", etiqueta, exc)
+            return False
+        if not es_dir:
+            logger.debug("%s validado pero no es un directorio (%s); fail-closed.", etiqueta, path)
+            return False
+        return True
 
     def _metadata_de_instancia(
         self,
@@ -903,10 +935,10 @@ class PathResolutionService:
         return self.validate_env_path(os.environ.get("SKYRIM_PATH", ""), "SKYRIM_PATH")
 
     def get_mo2_path(self) -> pathlib.Path | None:
-        """Resuelve la instalación MO2 configurada/seleccionada.
+        """Resuelve la instalación MO2 configurada/seleccionada (INSTALL ROOT).
 
         Espeja las ramas 1–2 de :meth:`_directorio_instalacion_mo2` —
-        instalacion inyectada validada → ``MO2_PATH`` validado— SIN su rama 3
+        instalación inyectada validada → ``MO2_PATH`` validado— SIN su rama 3
         de auto-detección. Getter ≠ detector (ver :meth:`detect_mo2_path`):
         varios consumidores usan ``get_mo2_path() is not None`` como gate de
         capability (scan de mods en xEdit/LOOT, construcción de preflights),
@@ -914,29 +946,82 @@ class PathResolutionService:
         "intenta encontrar una" — y la auto-detección escanearía el
         filesystem real en cada llamada.
 
+        Es **solo** el directorio del programa (``ModOrganizer.exe``): desde
+        MO2 2.4 los datos de la instancia (``profiles/``, ``overwrite/``,
+        ``mods/``) pueden vivir en otro árbol — ver
+        :meth:`get_mo2_instance_data_root`. Quien necesite datos de instancia
+        no debe derivarlos de acá.
+
         1. **Instalación inyectada** (``mo2_install_dir``, la que el
            composition root ya seleccionó): se valida contra el sandbox con
-           la misma primitiva que ``MO2_PATH``. Si NO valida, **no** se
-           degrada al entorno (reintroduciría el split-brain
-           instalación-seleccionada ≠ instalación-usada que la inyección
-           cierra): falla cerrado a ``None``.
-        2. ``MO2_PATH`` validado (standalone/legacy, sin composition root).
+           la misma primitiva que ``MO2_PATH`` y debe ser un directorio real
+           (:meth:`_es_directorio_real`). Si NO valida, **no** se degrada al
+           entorno (reintroduciría el split-brain instalación-seleccionada ≠
+           instalación-usada que la inyección cierra): falla cerrado a ``None``.
+        2. ``MO2_PATH`` validado (standalone/legacy, sin composition root),
+           también con gate de directorio real.
 
         Returns:
             Path validado a la instalación MO2, o ``None`` si no hay ninguna.
         """
         if self._mo2_install_dir is not None:
             validado = self.validate_env_path(str(self._mo2_install_dir), "mo2_install_dir")
-            if validado is not None:
+            if validado is not None and self._es_directorio_real(validado, "mo2_install_dir"):
                 return validado
-            security_logger.warning(
-                "La instalación MO2 inyectada (%s) no valida contra el sandbox; "
-                "get_mo2_path devuelve None (fail-closed, sin degradar a "
-                "MO2_PATH).",
+            # Sin warning adicional: validate_env_path ya reportó el rechazo.
+            logger.debug(
+                "La instalación MO2 inyectada (%s) no es utilizable; "
+                "get_mo2_path devuelve None (fail-closed, sin degradar a MO2_PATH).",
                 self._mo2_install_dir,
             )
             return None
-        return self.validate_env_path(os.environ.get("MO2_PATH", ""), "MO2_PATH")
+        validado = self.validate_env_path(os.environ.get("MO2_PATH", ""), "MO2_PATH")
+        if validado is not None and not self._es_directorio_real(validado, "MO2_PATH"):
+            return None
+        return validado
+
+    def has_explicit_mo2_install_selection(self) -> bool:
+        """``True`` si el composition root inyectó una instalación (válida o no).
+
+        Distingue **no hay hint** (fallback legacy/auto-detección permitido)
+        de **hay hint pero es inválido** (prohibido detectar otra instalación:
+        la selección explícita A invalidada no es vía libre para usar B).
+        Los consumers con fallback a :meth:`detect_mo2_path` deben consultar
+        esta señal antes de detectar.
+        """
+        return self._mo2_install_dir is not None
+
+    def get_mo2_instance_data_root(self) -> pathlib.Path | None:
+        """Raíz de DATOS de la instancia MO2 (``profiles/``, ``overwrite/``).
+
+        Hermana de :meth:`get_mo2_path` (que es solo INSTALL ROOT): deriva de
+        la metadata de la instancia —instalación seleccionada →
+        :func:`descubrir_metadata_instancia_mo2` → ``raiz_datos`` validada con
+        ``PathValidator``—, nunca de ``get_mo2_path() / "..."``.
+
+        Best-effort y ``None``-safe (para preflights que omiten sensores y
+        gates que fallan con su propio error): sin evidencia de instancia
+        separada, degrada al legacy portable (los datos cuelgan de la
+        instalación); sin instalación conocida, ``None``. El fail-closed con
+        evidencia ante metadata inválida vive en :meth:`get_mo2_mods_path` y
+        :meth:`resolve_modlist_path` (que lanzan); este accessor no los
+        sustituye.
+
+        Quien necesite el directorio de **mods** debe usar
+        :meth:`get_mo2_mods_path` (``[Settings] mod_directory`` puede
+        redefinirlo fuera de ``<data>/mods``), no ``<data>/mods`` a mano.
+        """
+        install_dir = self._directorio_instalacion_mo2()
+        try:
+            metadata = self._metadata_de_instancia(install_dir)
+        except RuntimeError as exc:
+            logger.debug("Metadata de instancia MO2 no utilizable (%s); sin raíz de datos.", exc)
+            return None
+        if metadata is not None:
+            return metadata.raiz_datos
+        if install_dir is not None and self._es_directorio_real(install_dir, "instance_data_legacy"):
+            return install_dir
+        return None
 
     # Accessors CRUDOS (sin resolver): el validate() de los getters de arriba
     # sigue los symlinks, borrando exactamente lo que el VfsHealthChecker del
@@ -944,24 +1029,37 @@ class PathResolutionService:
     # inspección read-only (lstat); nunca para abrir/escribir archivos.
 
     @staticmethod
-    def _raw_env_path(var_name: str) -> pathlib.Path | None:
-        """Path crudo desde *var_name*, degradando a None si es inválido.
+    def _sanitizar_raw(raw: str | pathlib.Path | None, etiqueta: str) -> pathlib.Path | None:
+        """Path crudo sanitizado estructuralmente, degradando a None si es inválido.
 
-        Un valor con bytes nulos no lanza al construir el Path pero explota
-        recién en los os-calls (lstat) del checker — mejor filtrarlo acá con
-        logging, como hacen los getters validados (review Copilot PR #240).
+        Mantiene el contrato raw —sin ``resolve()``, sin canonicalización, sin
+        seguir symlinks— pero filtra lo que explotaría recién en los os-calls
+        (``lstat``) del checker: un valor con bytes nulos no lanza al construir
+        el Path pero sí en ``lstat`` (``ValueError``, que ``link_kind`` no
+        captura — solo ``OSError``), así que se filtra acá con logging, como
+        hacen los getters validados (review Copilot PR #240).
+
+        Primitiva compartida entre el entorno (``_raw_env_path``) y el hint
+        inyectado (``get_mo2_path_raw``): el hint crudo no puede bypassearla.
         """
-        raw = os.environ.get(var_name, "")
-        if not raw:
+        if raw is None:
             return None
-        if "\x00" in raw:
-            security_logger.warning("%s crudo inválido (byte nulo embebido); se ignora.", var_name)
+        texto = str(raw)
+        if not texto:
+            return None
+        if "\x00" in texto:
+            security_logger.warning("%s crudo inválido (byte nulo embebido); se ignora.", etiqueta)
             return None
         try:
-            return pathlib.Path(raw)
+            return pathlib.Path(texto)
         except ValueError as exc:
-            security_logger.warning("%s crudo inválido para pathlib: %s", var_name, exc)
+            security_logger.warning("%s crudo inválido para pathlib: %s", etiqueta, exc)
             return None
+
+    @classmethod
+    def _raw_env_path(cls, var_name: str) -> pathlib.Path | None:
+        """Path crudo desde *var_name*, degradando a None si es inválido."""
+        return cls._sanitizar_raw(os.environ.get(var_name, ""), var_name)
 
     def get_skyrim_path_raw(self) -> pathlib.Path | None:
         """SKYRIM_PATH tal como está configurado, sin resolver symlinks."""
@@ -977,9 +1075,13 @@ class PathResolutionService:
         siguiera leyendo solo ``MO2_PATH`` dejaría al preflight de LOOT
         inspeccionando el árbol del entorno mientras las tools operan sobre
         la instalación inyectada.
+
+        Representa RAW INSTALL ROOT (no datos de instancia). Pasa por la
+        misma sanitización estructural que el entorno (NUL/construcción),
+        sin resolver ni canonicalizar.
         """
         if self._mo2_install_dir is not None:
-            return self._mo2_install_dir
+            return self._sanitizar_raw(self._mo2_install_dir, "mo2_install_dir")
         return self._raw_env_path("MO2_PATH")
 
     def get_dyndolod_exe(self) -> pathlib.Path | None:
