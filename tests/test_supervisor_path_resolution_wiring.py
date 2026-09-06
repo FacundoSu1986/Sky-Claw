@@ -168,3 +168,48 @@ def test_cable_appcontext_publica_y_bootloader_pasa_mo2_install_dir() -> None:
         "El bootloader de la GUI debe construir SupervisorAgent con "
         "mo2_install_dir=ctx.mo2_install_dir (cable AppContext→Supervisor)."
     )
+
+
+def test_pathresolutionservice_tiene_un_unico_call_site_de_produccion() -> None:
+    """Congela que hay UNA sola construcción productiva de PathResolutionService.
+
+    El fix del PR #552 vive en esa única instancia (la del supervisor, armada
+    con `mo2_install_dir`), y `build_orchestration_composition` la inyecta a
+    TODOS los servicios que llaman `get_mo2_mods_path`/`resolve_modlist_path`
+    (asset_conflict_scan, plugin_limit_guard, record_conflict_scan,
+    dyndolod_service). El agente LLM no construye su propio resolver: sus tools
+    de mods usan `mo2.root` directo (constructores `<raíz>/mods` congelados
+    aparte en `TestAnclaConstructoresManualesDeMods`).
+
+    Un segundo call site de producción sería un resolver capaz de saltarse la
+    pista de instalación —el "hermano suelto" del review pr-agent, la clase de
+    defecto #1 del repo (AGENTS.md)—. Rompe el ancla hasta que se decida si
+    recibe `mo2_install_dir` o se exime con racional. Se cuenta por módulo (no
+    por línea) para no romperse con shifts de línea ajenos.
+    """
+    raiz = _sky_claw_root()
+    hallados: dict[str, int] = {}
+    for py in sorted(raiz.rglob("*.py")):
+        # El módulo del resolver DEFINE la clase; no la construye.
+        if py.name == "path_resolver.py":
+            continue
+        try:
+            arbol = ast.parse(py.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        n = sum(
+            1
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Name)
+            and nodo.func.id == "PathResolutionService"
+        )
+        if n:
+            hallados[str(py.relative_to(raiz.parents[0])).replace("\\", "/")] = n
+
+    assert hallados == {"sky_claw/app/orchestrator/supervisor.py": 1}, (
+        "Cambió el conjunto de construcciones productivas de "
+        "PathResolutionService. Un resolver nuevo debe recibir mo2_install_dir "
+        "(o eximirse con racional) o revive el split-brain "
+        "instalación-seleccionada != instalación-usada."
+    )

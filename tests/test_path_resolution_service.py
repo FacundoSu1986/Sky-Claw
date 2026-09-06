@@ -1491,16 +1491,25 @@ class TestInstalacionMo2Inyectada:
         self,
         tmp_path: pathlib.Path,
     ) -> None:
-        """Un hint que NO valida contra el sandbox no cae a ``MO2_PATH``.
+        """Un hint inválido NO cae a ``MO2_PATH`` **ni** a ``detect_mo2_path``.
 
         Degradar al entorno reintroduciría el split-brain que la inyección
-        cierra. ``_directorio_instalacion_mo2`` devuelve ``None`` (sin
-        instalación conocida) y, sin instancia global, la resolución falla
-        cerrado — en vez de leer silenciosamente la metadata de ``wrong_auto``,
-        que SÍ está en el sandbox y resolvería si hubiera degradación.
+        cierra. Cuando hay hint, ``_directorio_instalacion_mo2`` NUNCA alcanza
+        las ramas 2 (``MO2_PATH``) ni 3 (auto-detección): si el hint no valida
+        devuelve ``None`` y la resolución sigue por metadata global/fail-closed.
+
+        El escenario es adversarial a propósito (cierra el hallazgo del review
+        pr-agent "Regresión funcional"): ambas puertas del entorno apuntan a una
+        instalación **válida dentro del sandbox** (``wrong_auto`` vía
+        ``MO2_PATH`` y vía un candidato de ``detect_mo2_path``). Si el resolver
+        degradara por cualquiera de las dos, devolvería ``wrong_auto/mods`` en
+        vez de fallar; que lance ``RuntimeError`` prueba que ninguna se consulta
+        con un hint presente. Sin instancia global (``LOCALAPPDATA`` ausente por
+        ``clear=True``) la resolución no tiene de dónde sacar metadata → falla
+        cerrado.
         """
         selected, wrong_auto, _mods_selected, _mods_wrong = self._montar_dos_instalaciones(tmp_path)
-        # Sandbox = solo wrong_auto + su instancia; `selected` queda fuera.
+        # Sandbox = solo wrong_auto + su instancia; `selected` (el hint) queda fuera.
         sandbox_roots = [wrong_auto, tmp_path / "instance_wrong"]
         resolver = PathResolutionService(
             path_validator=PathValidator(roots=sandbox_roots),
@@ -1508,6 +1517,13 @@ class TestInstalacionMo2Inyectada:
             mo2_install_dir=selected,
         )
         with (
+            # detect_mo2_path devolvería wrong_auto (válido en el sandbox) SI se
+            # llamara — no debe llamarse con un hint presente.
+            patch(
+                "sky_claw.app.core.path_resolver._CANDIDATE_MO2_PATHS",
+                (str(wrong_auto),),
+            ),
+            # MO2_PATH también válido en el sandbox — tampoco debe consultarse.
             patch.dict(os.environ, {"MO2_PATH": str(wrong_auto)}, clear=True),
             pytest.raises(RuntimeError),
         ):
