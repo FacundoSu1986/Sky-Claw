@@ -1281,10 +1281,10 @@ class TestAnclaConstructoresManualesDeMods:
         # instancia (mismo concepto que centraliza este PR: la "raíz de datos"
         # de la instancia activa). Aparece en el helper de deferencia
         # (228), en la construcción de la metadata del modo "mo2_path_datos"
-        # (288) y en el paso legacy de get_mo2_mods_path (835). Cualquier
+        # (288) y en el paso legacy de get_mo2_mods_path (871). Cualquier
         # nueva construcción de `<base>/mods` debe ir por estas tres rutas
         # o extender el ancla con su racional.
-        "sky_claw/app/core/path_resolver.py": (228, 288, 833),
+        "sky_claw/app/core/path_resolver.py": (228, 288, 871),
         # Instaladores NGIO/FOMOD del agente LLM sobre mo2.root del registry:
         # superficie agente, layout portable asumido — fuera de alcance (PR-0).
         "sky_claw/app/agent/tools/external_tools.py": (239, 288),
@@ -1304,7 +1304,7 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/validators/preflight_sensors.py": (164,),
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": (312,),
         # Rollback/move-aside y staging de DynDOLOD bajo el árbol del broker.
-        "sky_claw/app_context.py": (1322,),
+        "sky_claw/app_context.py": (1331,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
         "sky_claw/local/tools/output_targets.py": (144,),
         "sky_claw/local/mo2/grass_profile.py": (227, 330),
@@ -1343,3 +1343,257 @@ class TestAnclaConstructoresManualesDeMods:
             "nuevo representa el mismo concepto que get_mo2_mods_path(), "
             "centralízalo; si no, actualiza el mapa con su racional."
         )
+
+
+class TestInstalacionMo2Inyectada:
+    """La instalación MO2 inyectada por el composition root (``AppContext``)
+    manda sobre ``MO2_PATH``/auto-detección en el resolver.
+
+    Bloqueante del PR #552: ``AppContext`` seleccionaba una instalación y armaba
+    el sandbox con ella, pero ``PathResolutionService`` volvía a decidir por su
+    cuenta vía ``MO2_PATH`` → ``detect_mo2_path()``. Como la instalación es la
+    que localiza el ``ModOrganizer.ini`` portable, decidir distinto significa
+    leer la metadata de OTRA instancia (split-brain
+    instalación-seleccionada != instalación-usada): sandbox de A, metadata de B.
+    Con el código anterior (``mo2_install_dir`` inexistente) el caso de
+    divergencia devolvía ``mods`` de B; con la inyección devuelve el de A.
+    """
+
+    @staticmethod
+    def _montar_dos_instalaciones(
+        tmp_path: pathlib.Path,
+    ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path]:
+        """Dos instalaciones portables MO2, cada una con su instancia de datos.
+
+        ``selected`` es la que elige ``AppContext``; ``wrong_auto`` es la que
+        elegiría ``MO2_PATH``/la auto-detección. Cada exe tiene su
+        ``ModOrganizer.ini`` portable apuntando a una base distinta, así que la
+        instalación usada determina de forma unívoca el ``mods/`` resuelto.
+
+        Returns:
+            (selected, wrong_auto, mods_selected, mods_wrong)
+        """
+        selected = tmp_path / "selected"
+        wrong_auto = tmp_path / "wrong_auto"
+        data_selected = tmp_path / "instance_selected"
+        data_wrong = tmp_path / "instance_wrong"
+        mods_selected = data_selected / "mods"
+        mods_wrong = data_wrong / "mods"
+        for d in (selected, wrong_auto, mods_selected, mods_wrong):
+            d.mkdir(parents=True)
+        (selected / "ModOrganizer.exe").write_bytes(b"fake exe")
+        (wrong_auto / "ModOrganizer.exe").write_bytes(b"fake exe")
+        (selected / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(data_selected)),
+            encoding="utf-8",
+        )
+        (wrong_auto / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(data_wrong)),
+            encoding="utf-8",
+        )
+        return selected, wrong_auto, mods_selected, mods_wrong
+
+    def test_divergencia_hint_gana_sobre_mo2_path(self, tmp_path: pathlib.Path) -> None:
+        """Bloqueante / Caso C: hint=selected, MO2_PATH=wrong_auto → selected.
+
+        Modela deliberadamente DOS instalaciones. Con el código anterior el
+        resolver leía la metadata de ``wrong_auto`` (MO2_PATH) y devolvía
+        ``mods_wrong``; con la inyección devuelve ``mods_selected`` y el modlist
+        cuelga de la MISMA instancia (sin split-brain). El sandbox incluye ambas
+        instalaciones e instancias, así que la divergencia se distingue por el
+        RESULTADO, no por un fallo de validación.
+        """
+        selected, wrong_auto, mods_selected, mods_wrong = self._montar_dos_instalaciones(tmp_path)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(wrong_auto)}, clear=True):
+            mods = resolver.get_mo2_mods_path()
+            modlist = resolver.resolve_modlist_path("Default")
+        assert _mismo_path(mods, mods_selected)
+        assert not _mismo_path(mods, mods_wrong)
+        # modlist deriva de la misma raíz de instancia que mods (anti split-brain).
+        assert _mismo_path(modlist.parent.parent.parent, mods_selected.parent)
+
+    def test_sin_hint_usa_mo2_path_regresion_a(self, tmp_path: pathlib.Path) -> None:
+        """Caso A (regresión standalone): sin inyección, MO2_PATH configurado.
+
+        ``mo2_install_dir=None`` conserva el comportamiento legacy: la
+        instalación la decide ``MO2_PATH``.
+        """
+        selected, wrong_auto, _mods_selected, mods_wrong = self._montar_dos_instalaciones(tmp_path)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=None,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(wrong_auto)}, clear=True):
+            mods = resolver.get_mo2_mods_path()
+        assert _mismo_path(mods, mods_wrong)
+
+    def test_sin_hint_ni_env_cae_a_autodeteccion_regresion_b(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Caso B (regresión): sin hint ni MO2_PATH → ``detect_mo2_path()``."""
+        selected, _wrong_auto, mods_selected, _mods_wrong = self._montar_dos_instalaciones(tmp_path)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=None,
+        )
+        with (
+            patch(
+                "sky_claw.app.core.path_resolver._CANDIDATE_MO2_PATHS",
+                (str(selected),),
+            ),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            mods = resolver.get_mo2_mods_path()
+        assert _mismo_path(mods, mods_selected)
+
+    def test_hint_sin_ini_portable_resuelve_instancia_global_caso_d(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Caso D: el hint sin INI portable no bloquea la instancia global.
+
+        La instalación inyectada es solo una PISTA para localizar el
+        ``ModOrganizer.ini`` portable. Si no hay INI junto al exe, la única
+        instancia global bajo ``%LOCALAPPDATA%\\ModOrganizer`` sigue
+        resolviéndose (no se confunde ``mo2_install_dir`` con la raíz de datos).
+        """
+        selected = tmp_path / "selected"
+        selected.mkdir()
+        (selected / "ModOrganizer.exe").write_bytes(b"fake exe")  # sin ModOrganizer.ini
+        data_global = tmp_path / "instance_global"
+        mods_global = data_global / "mods"
+        mods_global.mkdir(parents=True)
+        local_app_data = tmp_path / "LocalAppData"
+        ini_dir = local_app_data / "ModOrganizer" / "SkyrimSE"
+        ini_dir.mkdir(parents=True)
+        (ini_dir / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(data_global)),
+            encoding="utf-8",
+        )
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=True):
+            # La rama 1 (hint) SÍ se ejecuta y devuelve `selected` (no se ignora
+            # el hint): lo que cae a global es la resolución de METADATA, porque
+            # `selected` no tiene INI portable — no la selección de instalación.
+            assert _mismo_path(resolver._directorio_instalacion_mo2(), selected)
+            mods = resolver.get_mo2_mods_path()
+        assert _mismo_path(mods, mods_global)
+
+    def test_hint_valido_con_metadata_fuera_del_sandbox_falla_cerrado(
+        self,
+        tmp_path: pathlib.Path,
+        tmp_path_factory: pytest.TempPathFactory,
+    ) -> None:
+        """Un hint válido cuyo INI portable apunta FUERA del sandbox falla cerrado.
+
+        Asimetría que podría abrir el cable: el hint valida contra el sandbox
+        (está bajo ``tmp_path``), pero el ``base_directory`` del ``ModOrganizer.ini``
+        portable apunta a un árbol NO sandboxeado. ``_metadata_de_instancia``
+        valida ``raiz_datos`` **y** ``mods`` de la metadata contra el sandbox, así
+        que la resolución falla cerrado en vez de operar sobre un path externo —
+        el mismo contrato que ``test_t6`` prueba para ``MO2_PATH``, ahora por la
+        puerta del hint inyectado.
+        """
+        selected = tmp_path / "selected"
+        selected.mkdir()
+        (selected / "ModOrganizer.exe").write_bytes(b"fake exe")
+        # base_directory FUERA del sandbox: un árbol generado con
+        # ``tmp_path_factory`` (no bajo ``tmp_path``), como en
+        # ``test_sin_seam_el_mismo_wiring_falla_cerrado``.
+        externo = tmp_path_factory.mktemp("instance_externa_mo2")
+        (externo / "mods").mkdir(parents=True)
+        (selected / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(externo)),
+            encoding="utf-8",
+        )
+        resolver = PathResolutionService(
+            # Sandbox = solo tmp_path; `externo` (la metadata) queda fuera.
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        # sanity: la metadata realmente vive fuera del sandbox (no bajo tmp_path).
+        assert not _mismo_path(externo, tmp_path) and tmp_path not in externo.parents
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            pytest.raises(RuntimeError, match="fuera de las raíces permitidas"),
+        ):
+            resolver.get_mo2_mods_path()
+
+    def test_hint_fuera_del_sandbox_no_degrada_al_entorno(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Un hint inválido NO cae a ``MO2_PATH`` **ni** a ``detect_mo2_path``.
+
+        Degradar al entorno reintroduciría el split-brain que la inyección
+        cierra. Cuando hay hint, ``_directorio_instalacion_mo2`` NUNCA alcanza
+        las ramas 2 (``MO2_PATH``) ni 3 (auto-detección): si el hint no valida
+        devuelve ``None`` y la resolución sigue por metadata global/fail-closed.
+
+        El escenario es adversarial a propósito (cierra el hallazgo del review
+        pr-agent "Regresión funcional"): ambas puertas del entorno apuntan a una
+        instalación **válida dentro del sandbox** (``wrong_auto`` vía
+        ``MO2_PATH`` y vía un candidato de ``detect_mo2_path``). Si el resolver
+        degradara por cualquiera de las dos, devolvería ``wrong_auto/mods`` en
+        vez de fallar; que lance ``RuntimeError`` prueba que ninguna se consulta
+        con un hint presente. Sin instancia global (``LOCALAPPDATA`` ausente por
+        ``clear=True``) la resolución no tiene de dónde sacar metadata → falla
+        cerrado.
+        """
+        selected, wrong_auto, _mods_selected, _mods_wrong = self._montar_dos_instalaciones(tmp_path)
+        # Sandbox = solo wrong_auto + su instancia; `selected` (el hint) queda fuera.
+        sandbox_roots = [wrong_auto, tmp_path / "instance_wrong"]
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=sandbox_roots),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        with (
+            # detect_mo2_path devolvería wrong_auto (válido en el sandbox) SI se
+            # llamara — no debe llamarse con un hint presente.
+            patch(
+                "sky_claw.app.core.path_resolver._CANDIDATE_MO2_PATHS",
+                (str(wrong_auto),),
+            ),
+            # MO2_PATH también válido en el sandbox — tampoco debe consultarse.
+            patch.dict(os.environ, {"MO2_PATH": str(wrong_auto)}, clear=True),
+            pytest.raises(RuntimeError),
+        ):
+            resolver.get_mo2_mods_path()
+
+    def test_directorio_instalacion_precedencia_hint_env_detect(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """``_directorio_instalacion_mo2``: hint > MO2_PATH > detect_mo2_path."""
+        selected, wrong_auto, _ms, _mw = self._montar_dos_instalaciones(tmp_path)
+        validator = PathValidator(roots=[tmp_path])
+
+        # 1. Hint inyectado gana aunque MO2_PATH apunte a otra instalación.
+        con_hint = PathResolutionService(path_validator=validator, mo2_install_dir=selected)
+        with patch.dict(os.environ, {"MO2_PATH": str(wrong_auto)}, clear=True):
+            assert _mismo_path(con_hint._directorio_instalacion_mo2(), selected)
+
+        # 2/3. Sin hint: MO2_PATH gana sobre detect; sin ninguno, detect.
+        sin_hint = PathResolutionService(path_validator=validator)
+        with patch(
+            "sky_claw.app.core.path_resolver._CANDIDATE_MO2_PATHS",
+            (str(selected),),
+        ):
+            with patch.dict(os.environ, {"MO2_PATH": str(wrong_auto)}, clear=True):
+                assert _mismo_path(sin_hint._directorio_instalacion_mo2(), wrong_auto)
+            with patch.dict(os.environ, {}, clear=True):
+                assert _mismo_path(sin_hint._directorio_instalacion_mo2(), selected)

@@ -330,6 +330,14 @@ class AppContext:
         # Resolved tools install dir, populated in start() — read by the GUI
         # "Instalar" button (Follow-up C). None until the full start path runs.
         self.install_dir: pathlib.Path | None = None
+        # Instalación MO2 seleccionada (dir de ``ModOrganizer.exe`` == ``mo2_root``),
+        # publicada por start_full. Es una CLASE DISTINTA de ``install_dir`` (que es
+        # el dir de instalación de tools) y de la raíz de datos de la instancia (que
+        # puede vivir en otro disco). Se publica porque el `SupervisorAgent` del
+        # bootloader de la GUI —que se construye FUERA de start_full— necesita la
+        # MISMA instalación para que su PathResolutionService no vuelva a decidir
+        # vía MO2_PATH/auto-detección (split-brain). None hasta que corra start_full.
+        self.mo2_install_dir: pathlib.Path | None = None
         # Perfil MO2 de la sesión (`--profile` / `MO2_PROFILE` / fallback), resuelto
         # por start_full. Se publica porque hay consumidores que NO se construyen
         # dentro de start_full y necesitan el mismo valor: el `SupervisorAgent` del
@@ -673,6 +681,7 @@ class AppContext:
         self.vfs_instance_id = None
         self.vfs_loot_runner = None
         self.install_dir = None
+        self.mo2_install_dir = None
         self.mo2_profile = PERFIL_MO2_POR_DEFECTO
         self.router = None
         self.polling = None
@@ -1493,6 +1502,11 @@ class AppContext:
             # GUI corría sus rituales sobre otro perfil que el agente.
             self.mo2_profile = active_profile
             self.install_dir = install_dir
+            # Instalación MO2 seleccionada (mo2_root), publicada por la misma razón
+            # que mo2_profile: el `SupervisorAgent` del bootloader se construye FUERA
+            # de start_full y debe recibir esta MISMA instalación para que su
+            # PathResolutionService no re-decida vía MO2_PATH/auto-detección.
+            self.mo2_install_dir = mo2_root
             self.sender = sender
             self.hitl = hitl
             self.sync_engine = sync_engine

@@ -13,6 +13,9 @@ green in CI while the exe failed. These tests cover the wiring seam directly.
 
 from __future__ import annotations
 
+import ast
+import pathlib
+
 import pytest
 
 from sky_claw.app.core.path_resolver import PathResolutionService
@@ -27,6 +30,10 @@ def _bare_supervisor(backup_validator: PathValidator) -> SupervisorAgent:
     sup.profile_name = "Default"
     sup._path_validator = backup_validator  # the rollback (backup-only) validator
     return sup
+
+
+def _sky_claw_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
 
 
 def test_make_path_resolver_prefers_injected_sandbox_validator(tmp_path) -> None:
@@ -76,3 +83,133 @@ def test_backup_only_validator_rejects_mo2_modlist(tmp_path, monkeypatch) -> Non
 
     with pytest.raises(RuntimeError):
         resolver.resolve_modlist_path("Default")
+
+
+# ---------------------------------------------------------------------------
+# PR #552: la instalación MO2 seleccionada por AppContext debe llegar al
+# resolver (cable AppContext → SupervisorAgent → PathResolutionService).
+# ---------------------------------------------------------------------------
+
+
+def test_make_path_resolver_enhebra_mo2_install_dir(tmp_path) -> None:
+    """``_make_path_resolver`` pasa el ``mo2_install_dir`` recibido al resolver.
+
+    Es la costura que ``SupervisorAgent.__init__`` usa para reutilizar la
+    instalación que AppContext seleccionó, en vez de re-decidir vía
+    ``MO2_PATH``/auto-detección.
+    """
+    sandbox = PathValidator(roots=[tmp_path])
+    selected = tmp_path / "selected"
+    sup = _bare_supervisor(PathValidator(roots=[tmp_path / ".skyclaw_backups"]))
+
+    resolver = sup._make_path_resolver(sandbox, mo2_install_dir=selected)
+
+    assert resolver._mo2_install_dir == selected
+
+
+def test_make_path_resolver_sin_install_dir_es_none(tmp_path) -> None:
+    """Backward compat: sin ``mo2_install_dir`` el resolver queda en legacy."""
+    sandbox = PathValidator(roots=[tmp_path])
+    sup = _bare_supervisor(PathValidator(roots=[tmp_path / ".skyclaw_backups"]))
+
+    resolver = sup._make_path_resolver(sandbox)
+
+    assert resolver._mo2_install_dir is None
+
+
+def test_cable_appcontext_publica_y_bootloader_pasa_mo2_install_dir() -> None:
+    """Ancla del cable AppContext → Supervisor (los dos eslabones no booteables).
+
+    El ``__init__`` del ``SupervisorAgent`` productivo lo arma el bootloader de
+    la GUI (``start_full`` corre antes y no lo instancia), así que este cable no
+    se puede ejercitar arrancando la app en un test. Se congela por AST:
+
+    1. ``app_context.py`` publica ``self.mo2_install_dir = mo2_root``.
+    2. ``_bootloader.py`` construye ``SupervisorAgent(...,
+       mo2_install_dir=ctx.mo2_install_dir)``.
+
+    Romper cualquiera de los dos deja al resolver del supervisor re-decidiendo
+    la instalación por su cuenta (el bug del PR #552).
+    """
+    raiz = _sky_claw_root()
+
+    # 1. AppContext publica mo2_root como self.mo2_install_dir.
+    ac = ast.parse((raiz / "app_context.py").read_text(encoding="utf-8"))
+    publica = any(
+        isinstance(nodo, ast.Assign)
+        and any(
+            isinstance(t, ast.Attribute)
+            and t.attr == "mo2_install_dir"
+            and isinstance(t.value, ast.Name)
+            and t.value.id == "self"
+            for t in nodo.targets
+        )
+        and isinstance(nodo.value, ast.Name)
+        and nodo.value.id == "mo2_root"
+        for nodo in ast.walk(ac)
+    )
+    assert publica, "AppContext debe publicar `self.mo2_install_dir = mo2_root` en start_full."
+
+    # 2. El bootloader pasa ctx.mo2_install_dir al SupervisorAgent.
+    bl = ast.parse((raiz / "app" / "gui" / "_bootloader.py").read_text(encoding="utf-8"))
+    pasa = False
+    for nodo in ast.walk(bl):
+        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "SupervisorAgent":
+            for kw in nodo.keywords:
+                if (
+                    kw.arg == "mo2_install_dir"
+                    and isinstance(kw.value, ast.Attribute)
+                    and kw.value.attr == "mo2_install_dir"
+                    and isinstance(kw.value.value, ast.Name)
+                    and kw.value.value.id == "ctx"
+                ):
+                    pasa = True
+    assert pasa, (
+        "El bootloader de la GUI debe construir SupervisorAgent con "
+        "mo2_install_dir=ctx.mo2_install_dir (cable AppContext→Supervisor)."
+    )
+
+
+def test_pathresolutionservice_tiene_un_unico_call_site_de_produccion() -> None:
+    """Congela que hay UNA sola construcción productiva de PathResolutionService.
+
+    El fix del PR #552 vive en esa única instancia (la del supervisor, armada
+    con `mo2_install_dir`), y `build_orchestration_composition` la inyecta a
+    TODOS los servicios que llaman `get_mo2_mods_path`/`resolve_modlist_path`
+    (asset_conflict_scan, plugin_limit_guard, record_conflict_scan,
+    dyndolod_service). El agente LLM no construye su propio resolver: sus tools
+    de mods usan `mo2.root` directo (constructores `<raíz>/mods` congelados
+    aparte en `TestAnclaConstructoresManualesDeMods`).
+
+    Un segundo call site de producción sería un resolver capaz de saltarse la
+    pista de instalación —el "hermano suelto" del review pr-agent, la clase de
+    defecto #1 del repo (AGENTS.md)—. Rompe el ancla hasta que se decida si
+    recibe `mo2_install_dir` o se exime con racional. Se cuenta por módulo (no
+    por línea) para no romperse con shifts de línea ajenos.
+    """
+    raiz = _sky_claw_root()
+    hallados: dict[str, int] = {}
+    for py in sorted(raiz.rglob("*.py")):
+        # El módulo del resolver DEFINE la clase; no la construye.
+        if py.name == "path_resolver.py":
+            continue
+        try:
+            arbol = ast.parse(py.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        n = sum(
+            1
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Name)
+            and nodo.func.id == "PathResolutionService"
+        )
+        if n:
+            hallados[str(py.relative_to(raiz.parents[0])).replace("\\", "/")] = n
+
+    assert hallados == {"sky_claw/app/orchestrator/supervisor.py": 1}, (
+        "Cambió el conjunto de construcciones productivas de "
+        "PathResolutionService. Un resolver nuevo debe recibir mo2_install_dir "
+        "(o eximirse con racional) o revive el split-brain "
+        "instalación-seleccionada != instalación-usada."
+    )
