@@ -159,6 +159,93 @@ def test_provider_memoiza_el_controller(tmp_path: pathlib.Path) -> None:
     assert primera.mo2 is segunda.mo2
 
 
+def test_provider_con_raices_separadas(tmp_path: pathlib.Path) -> None:
+    """Issue #557: con install != data != mods, el provider entrega raíces separadas."""
+    install = tmp_path / "MO2_Install"
+    install.mkdir()
+    data = tmp_path / "MO2_Data"
+    data.mkdir()
+    mods = tmp_path / "MO2_Mods"
+    mods.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+
+    resolver = MagicMock()
+    resolver.get_mo2_path.return_value = install
+    resolver.get_skyrim_path.return_value = game
+    resolver.get_mo2_instance_data_root.return_value = data
+    resolver.get_mo2_mods_path_para_destino.return_value = mods
+
+    provider = GrassRuntimeDepsProvider(
+        path_resolver=resolver,
+        path_validator=PathValidator(roots=[tmp_path]),
+        profile_name="MiPerfil",
+    )
+
+    deps = provider()
+
+    assert deps is not None
+    assert deps.mo2.install_root == install.resolve()
+    assert deps.mo2.data_root == data.resolve()
+    assert deps.mo2.mods_dir == mods.resolve()
+    assert deps.profile_manager.install_root == install.resolve()
+    assert deps.profile_manager.data_root == data.resolve()
+    assert deps.profile_manager.mods_dir == mods.resolve()
+    assert deps.overwrite_grass_dir == data / "overwrite" / "Grass"
+
+
+def test_provider_rechaza_mods_dir_unavailable(tmp_path: pathlib.Path) -> None:
+    """MODS_DIR_UNAVAILABLE jamás puede llegar a MO2Controller o GrassProfileManager."""
+    from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
+
+    mo2_root = tmp_path / "MO2"
+    mo2_root.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+
+    resolver = MagicMock()
+    resolver.get_mo2_path.return_value = mo2_root
+    resolver.get_skyrim_path.return_value = game
+    resolver.get_mo2_instance_data_root.return_value = mo2_root
+    resolver.get_mo2_mods_path_para_destino.return_value = MODS_DIR_UNAVAILABLE
+
+    provider = GrassRuntimeDepsProvider(
+        path_resolver=resolver,
+        path_validator=PathValidator(roots=[tmp_path]),
+        profile_name="Default",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="MODS_DIR declarado pero no disponible"):
+        provider()
+
+
+def test_provider_propaga_error_si_mods_para_destino_lanza(tmp_path: pathlib.Path) -> None:
+    """Fail-closed: si get_mo2_mods_path_para_destino() falla, el error se propaga."""
+    mo2_root = tmp_path / "MO2"
+    mo2_root.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+
+    resolver = MagicMock()
+    resolver.get_mo2_path.return_value = mo2_root
+    resolver.get_skyrim_path.return_value = game
+    resolver.get_mo2_instance_data_root.return_value = mo2_root
+    resolver.get_mo2_mods_path_para_destino.side_effect = RuntimeError("mod_directory declarado inválido")
+
+    provider = GrassRuntimeDepsProvider(
+        path_resolver=resolver,
+        path_validator=PathValidator(roots=[tmp_path]),
+        profile_name="Default",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="mod_directory declarado inválido"):
+        provider()
+
+
 # ---------------------------------------------------------------------------
 # Laziness (review Codex #301): la resolución ocurre al ejecutar el ritual
 # ---------------------------------------------------------------------------

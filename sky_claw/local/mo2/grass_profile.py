@@ -104,23 +104,29 @@ class GrassProfileManager:
     """Clona un perfil MO2 dedicado y le arma el mod de config del precache.
 
     Args:
-        mo2_root: Raíz de la instancia portable de MO2.
+        mo2_root: Raíz de la instancia portable de MO2 (compatibilidad legacy).
         path_validator: Sandbox de rutas (todas las escrituras se validan).
+        install_root: Directorio de instalación de MO2 (ModOrganizer.exe).
+        data_root: Directorio de datos de la instancia (profiles/, overwrite/).
+        mods_dir: Directorio donde residen los mods instalados.
         source_profile: Perfil a clonar (default ``"Default"``).
         clone_profile: Nombre del perfil dedicado (default
             ``"SkyClaw-GrassCache"``).
         config_mod_name: Nombre del mod de configuración (default
             ``"SkyClaw - Grass Precache Config"``).
         controller: :class:`MO2Controller` inyectable (default: uno nuevo sobre
-            ``mo2_root``/``path_validator``).
+            raíces / ``path_validator``).
         ini_editor: :class:`IniEditor` inyectable (default: uno nuevo).
     """
 
     def __init__(
         self,
-        mo2_root: pathlib.Path,
-        path_validator: PathValidator,
+        mo2_root: pathlib.Path | None = None,
+        path_validator: PathValidator | None = None,
         *,
+        install_root: pathlib.Path | None = None,
+        data_root: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | None = None,
         source_profile: str = "Default",
         clone_profile: str = _DEFAULT_CLONE_PROFILE,
         config_mod_name: str = _DEFAULT_CONFIG_MOD,
@@ -130,13 +136,65 @@ class GrassProfileManager:
         assert_safe_component(source_profile, field="source_profile")
         assert_safe_component(clone_profile, field="clone_profile")
         assert_safe_component(config_mod_name, field="config_mod_name")
-        self._root = mo2_root.resolve()
+
+        if path_validator is None and controller is not None:
+            path_validator = controller._validator
+        if path_validator is None:
+            raise ValueError("path_validator es obligatorio")
+
+        if controller is not None:
+            self._controller = controller
+            self._install_root = install_root.resolve() if install_root is not None else controller.install_root
+            self._data_root = data_root.resolve() if data_root is not None else controller.data_root
+            self._mods_dir = mods_dir.resolve() if mods_dir is not None else controller.mods_dir
+        elif install_root is not None and data_root is not None and mods_dir is not None:
+            self._install_root = install_root.resolve()
+            self._data_root = data_root.resolve()
+            self._mods_dir = mods_dir.resolve()
+            self._controller = MO2Controller(
+                install_root=self._install_root,
+                data_root=self._data_root,
+                mods_dir=self._mods_dir,
+                path_validator=path_validator,
+            )
+        else:
+            legacy_root = mo2_root or install_root
+            if legacy_root is None:
+                raise ValueError(
+                    "GrassProfileManager exige install_root, data_root y mods_dir, o mo2_root + path_validator."
+                )
+            resolved_legacy = legacy_root.resolve()
+            self._install_root = resolved_legacy
+            self._data_root = resolved_legacy
+            self._controller = MO2Controller(resolved_legacy, path_validator)
+            self._mods_dir = self._controller.mods_dir
+
+        self._root = self._data_root
         self._validator = path_validator
         self._source_profile = source_profile
         self._clone_profile = clone_profile
         self._config_mod_name = config_mod_name
-        self._controller = controller or MO2Controller(mo2_root, path_validator)
         self._ini = ini_editor or IniEditor()
+
+    @property
+    def install_root(self) -> pathlib.Path:
+        """Ruta de instalación de MO2 (donde reside ModOrganizer.exe)."""
+        return self._install_root
+
+    @property
+    def data_root(self) -> pathlib.Path:
+        """Ruta de datos de la instancia MO2 (donde residen profiles/ y overwrite/)."""
+        return self._data_root
+
+    @property
+    def mods_dir(self) -> pathlib.Path:
+        """Directorio donde residen los mods instalados."""
+        return self._mods_dir
+
+    @property
+    def root(self) -> pathlib.Path:
+        """Alias legacy para la raíz de datos."""
+        return self._data_root
 
     @property
     def clone_profile(self) -> str:
@@ -162,8 +220,8 @@ class GrassProfileManager:
                 ritual en curso; usar ``teardown`` primero).
             SandboxSymlinkError: Si el árbol de origen contiene symlinks.
         """
-        source = self._validator.validate(self._root / "profiles" / self._source_profile, strict_symlink=False)
-        dest = self._validator.validate(self._root / "profiles" / self._clone_profile, strict_symlink=False)
+        source = self._validator.validate(self._data_root / "profiles" / self._source_profile, strict_symlink=False)
+        dest = self._validator.validate(self._data_root / "profiles" / self._clone_profile, strict_symlink=False)
         return await asyncio.to_thread(self._clone_sync, source, dest)
 
     def _clone_sync(self, source: pathlib.Path, dest: pathlib.Path) -> pathlib.Path:
@@ -211,7 +269,7 @@ class GrassProfileManager:
         Raises:
             GrassProfileError: Si el clon todavía no existe (fail-closed).
         """
-        clon = self._root / "profiles" / self._clone_profile
+        clon = self._data_root / "profiles" / self._clone_profile
         if not clon.is_dir():
             raise GrassProfileError(
                 f"El perfil clon '{self._clone_profile}' no existe: llamá create_clone_profile() primero."
@@ -224,7 +282,7 @@ class GrassProfileManager:
         # (``os.path.islink()`` da False para un ``IO_REPARSE_TAG_MOUNT_POINT``),
         # el mismo agujero que ``profile_sandbox`` y ``_dir_rollback`` tenían
         # antes de consolidar en ``links.py`` — quedaba sin el fix acá.
-        raw_mod_dir = self._root / "mods" / self._config_mod_name
+        raw_mod_dir = self._mods_dir / self._config_mod_name
         try:
             tipo_de_enlace = await asyncio.to_thread(link_kind_or_raise_with_retry, raw_mod_dir)
         except OSError as exc:
@@ -290,7 +348,7 @@ class GrassProfileManager:
         Raises:
             GrassProfileError: Si el clon todavía no existe (fail-closed).
         """
-        if not (self._root / "profiles" / self._clone_profile).is_dir():
+        if not (self._data_root / "profiles" / self._clone_profile).is_dir():
             raise GrassProfileError(
                 f"El perfil clon '{self._clone_profile}' no existe: llamá create_clone_profile() primero."
             )
@@ -326,8 +384,8 @@ class GrassProfileManager:
             Lista de rutas que NO se pudieron eliminar (vacía en éxito total).
         """
         objetivos = [
-            self._root / "profiles" / self._clone_profile,
-            self._root / "mods" / self._config_mod_name,
+            self._data_root / "profiles" / self._clone_profile,
+            self._mods_dir / self._config_mod_name,
         ]
         fallidos: list[pathlib.Path] = []
         for objetivo in objetivos:

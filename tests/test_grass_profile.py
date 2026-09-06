@@ -368,3 +368,66 @@ async def test_teardown_reporta_fallos_e_intenta_ambos(
     assert fallidos == [clon]
     assert clon.exists(), "el clon quedó (borrado falló) y se reporta"
     assert not mod.exists(), "el mod SÍ se intentó y borró pese al fallo previo"
+
+
+async def test_grass_profile_manager_con_raices_separadas(tmp_path: pathlib.Path) -> None:
+    """Issue #557: GrassProfileManager opera correctamente con install != data != mods.
+
+    Verifica que el clon se crea en data_root/profiles, el mod en mods_dir, y que
+    ninguna operación contamina install_root ni data_root/mods (trampas).
+    """
+    install_dir = tmp_path / "MO2_Install"
+    install_dir.mkdir()
+    (install_dir / "ModOrganizer.exe").write_bytes(b"fake exe")
+
+    data_dir = tmp_path / "MO2_Data"
+    profile = data_dir / "profiles" / "Default"
+    profile.mkdir(parents=True)
+    (profile / "modlist.txt").write_bytes(_MODLIST)
+    (profile / "plugins.txt").write_bytes(_PLUGINS)
+    (profile / "Skyrim.ini").write_bytes(_SKYRIM_INI)
+    (profile / "settings.txt").write_bytes(_SETTINGS)
+    (data_dir / "overwrite").mkdir()
+
+    mods_dir = tmp_path / "MO2_Mods"
+    mods_dir.mkdir()
+
+    # Trampas: directorios mods/ en install y en data deben quedar intactos y vacíos.
+    trampa_install_mods = install_dir / "mods"
+    trampa_install_mods.mkdir(parents=True)
+    trampa_data_mods = data_dir / "mods"
+    trampa_data_mods.mkdir(parents=True)
+
+    validator = PathValidator(roots=[tmp_path])
+    mgr = GrassProfileManager(
+        install_root=install_dir,
+        data_root=data_dir,
+        mods_dir=mods_dir,
+        path_validator=validator,
+        source_profile="Default",
+    )
+
+    assert mgr.install_root == install_dir.resolve()
+    assert mgr.data_root == data_dir.resolve()
+    assert mgr.mods_dir == mods_dir.resolve()
+
+    # 1. create_clone_profile: clon en data_root / profiles
+    clon = await mgr.create_clone_profile()
+    assert clon == data_dir / "profiles" / "SkyClaw-GrassCache"
+    assert clon.is_dir()
+    assert not (install_dir / "profiles").exists()
+
+    # 2. build_config_mod: mod en mods_dir
+    mod_path = await mgr.build_config_mod(["Tamriel"])
+    assert mod_path == mods_dir / "SkyClaw - Grass Precache Config"
+    assert (mod_path / "SKSE" / "Plugins" / "GrassControl.ini").is_file()
+    assert list(trampa_install_mods.iterdir()) == []
+    assert list(trampa_data_mods.iterdir()) == []
+
+    # 3. teardown: limpia clon en data_root y mod en mods_dir
+    fallidos = await mgr.teardown()
+    assert fallidos == []
+    assert not clon.exists()
+    assert not mod_path.exists()
+    assert list(trampa_install_mods.iterdir()) == []
+    assert list(trampa_data_mods.iterdir()) == []
