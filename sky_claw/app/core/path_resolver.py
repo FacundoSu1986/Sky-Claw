@@ -437,15 +437,27 @@ class PathResolutionService:
         profile_name: Perfil MO2 de la sesión. Si se inyecta, **manda** sobre
             ``MO2_PROFILE`` (ver :func:`resolver_perfil_activo`). ``None`` deja que
             el entorno decida, para resolvers standalone y tests.
+        mo2_install_dir: Instalación MO2 (directorio de ``ModOrganizer.exe``) ya
+            seleccionada por el composition root (``AppContext``). Si se inyecta,
+            **manda** sobre ``MO2_PATH``/auto-detección en
+            :meth:`_directorio_instalacion_mo2`: el resolver reutiliza esa
+            decisión en vez de volver a elegir una instalación por su cuenta
+            (evita el split-brain instalación-seleccionada ≠ instalación-usada;
+            la instalación es la que localiza el ``ModOrganizer.ini`` portable).
+            ``None`` mantiene el comportamiento legacy (standalone, tests, y
+            callers sin composition root).
     """
 
     def __init__(
         self,
         path_validator: PathValidatorProtocol,
         profile_name: str | None = None,
+        *,
+        mo2_install_dir: pathlib.Path | None = None,
     ) -> None:
         self._path_validator = path_validator
         self._profile_name = profile_name
+        self._mo2_install_dir = mo2_install_dir
 
     def validate_env_path(self, path_str: str, var_name: str) -> pathlib.Path | None:
         """Valida un path de variable de entorno con PathValidator.
@@ -596,11 +608,37 @@ class PathResolutionService:
     def _directorio_instalacion_mo2(self) -> pathlib.Path | None:
         """Instalación MO2 conocida (directorio del ejecutable), o ``None``.
 
-        Usa ``MO2_PATH`` validado si está seteado; si no, cae a
-        :meth:`detect_mo2_path`. Es solo una *pista de instalación*: desde MO2
-        2.4 el directorio del ejecutable NO implica que ``mods/`` cuelgue de
-        él — la instancia lo declara en su ``ModOrganizer.ini``.
+        Precedencia:
+
+        1. **Instalación inyectada** (``mo2_install_dir``): la que el
+           composition root (``AppContext``) ya seleccionó y con la que armó el
+           sandbox. Gana sobre el entorno porque la decisión ya está tomada;
+           así el ``ModOrganizer.ini`` portable que se lee —y por ende la
+           instancia y sus ``mods/``/``profiles/``— cuelga de esta ruta y no de
+           una instalación distinta que ``MO2_PATH``/la auto-detección pudieran
+           elegir. Se valida contra el sandbox igual que ``MO2_PATH``. Si la
+           inyección NO valida, **no** se degrada al entorno: eso reintroduciría
+           el split-brain que la inyección cierra. Se sigue como "sin
+           instalación conocida" (``None``) y la resolución por metadata
+           global/fail-closed decide con la evidencia.
+        2. ``MO2_PATH`` validado (standalone/legacy, sin composition root).
+        3. :meth:`detect_mo2_path` (auto-detección).
+
+        Es solo una *pista de instalación*: desde MO2 2.4 el directorio del
+        ejecutable NO implica que ``mods/`` cuelgue de él — la instancia lo
+        declara en su ``ModOrganizer.ini``.
         """
+        if self._mo2_install_dir is not None:
+            validado = self.validate_env_path(str(self._mo2_install_dir), "mo2_install_dir")
+            if validado is not None:
+                return validado
+            security_logger.warning(
+                "La instalación MO2 inyectada (%s) no valida contra el sandbox; "
+                "no se degrada a MO2_PATH/auto-detección para no reintroducir el "
+                "split-brain instalación-seleccionada != instalación-usada.",
+                self._mo2_install_dir,
+            )
+            return None
         mo2_path_str = os.environ.get("MO2_PATH", "")
         if mo2_path_str:
             validado = self.validate_env_path(mo2_path_str, "MO2_PATH")
