@@ -107,6 +107,7 @@ def mock_path_resolver() -> MagicMock:
     resolver = MagicMock()
     resolver.get_skyrim_path = MagicMock(return_value=None)
     resolver.get_mo2_path = MagicMock(return_value=None)
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=None)
     resolver.get_mo2_mods_path = MagicMock(return_value=None)
     resolver.get_dyndolod_exe = MagicMock(return_value=None)
     resolver.get_texgen_exe = MagicMock(return_value=None)
@@ -1450,9 +1451,10 @@ async def test_ensure_preflight_construye_sensores_con_mo2_resoluble(
     resolver = MagicMock()
     resolver.get_skyrim_path = MagicMock(return_value=game)
     resolver.get_mo2_path = MagicMock(return_value=mo2)
+    # Raíz de datos para el preflight (portable: install == data).
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2)
     resolver.get_mo2_mods_path = MagicMock(return_value=mo2 / "mods")
     resolver.get_skyrim_path_raw = MagicMock(return_value=game)
-    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
     resolver.get_active_profile = MagicMock(return_value="Default")
 
     svc = DynDOLODPipelineService(
@@ -1477,10 +1479,10 @@ def _resolver_para_permisos(tmp_path: pathlib.Path) -> MagicMock:
     resolver = MagicMock()
     resolver.get_skyrim_path = MagicMock(return_value=game)
     resolver.get_mo2_path = MagicMock(return_value=mo2)
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2)
     resolver.get_mo2_mods_path = MagicMock(return_value=mo2 / "mods")
     resolver.get_dyndolod_exe = MagicMock(return_value=exe)
     resolver.get_skyrim_path_raw = MagicMock(return_value=game)
-    resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
     resolver.get_active_profile = MagicMock(return_value="Default")
     return resolver
 

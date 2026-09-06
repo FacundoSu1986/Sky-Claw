@@ -27,6 +27,8 @@ def _entorno(tmp_path: pathlib.Path):
     resolver = SimpleNamespace(
         get_skyrim_path=lambda: data.parent,
         get_mo2_path=lambda: mo2,
+        # Raíz de datos para attestation/load order (portable: install == data).
+        get_mo2_instance_data_root=lambda: mo2,
         get_loot_exe=lambda: loot,
         get_active_profile=lambda: "Default",
     )
