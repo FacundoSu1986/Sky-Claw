@@ -223,7 +223,14 @@ class PandoraPipelineService:
         # enumerar mods/ sobre una raíz sin contraparte validada listaría
         # directorios arbitrarios (review Codex #240). Antes iba fijo en False,
         # lo que dejaba el scan ciego incluso con una instancia legítima (U-01).
-        vfs_checker = build_vfs_sensor(raw_game=raw_game, raw_mo2=raw_mo2, scan_mods_dir=mo2 is not None)
+        # mods_dir: el MODS_DIR DECLARADO (mod_directory custom ≠ <datos>/mods).
+        mods_dir = self._path_resolver.get_mo2_mods_path_best_effort() if self._path_resolver is not None else None
+        vfs_checker = build_vfs_sensor(
+            raw_game=raw_game,
+            raw_mo2=raw_mo2,
+            scan_mods_dir=mo2 is not None,
+            mods_dir=mods_dir,
+        )
 
         # Permisos: targets recalculados POR CORRIDA dentro del closure (freshness).
         def _permissions() -> Any:
@@ -241,7 +248,12 @@ class PandoraPipelineService:
         visibility_check = build_vfs_visibility_sensor(
             game=game,
             sources_resolver=(
-                build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile=self._path_resolver.get_active_profile())
+                build_mo2_profile_sources_resolver(
+                    game=game,
+                    mo2=mo2,
+                    profile=self._path_resolver.get_active_profile(),
+                    mods_dir=mods_dir,
+                )
                 if game is not None and mo2 is not None and self._path_resolver is not None
                 else None
             ),

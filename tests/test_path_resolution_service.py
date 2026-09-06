@@ -1301,15 +1301,18 @@ class TestAnclaConstructoresManualesDeMods:
         # raíz que detectó el scanner: concepto de detección, no de instancia.
         "sky_claw/local/discovery/scanner.py": (458,),
         "sky_claw/app/gui/controllers/ritual_runner.py": (1033,),
-        # Preflight/preview/checkers read-only sobre mo2 raw/validado.
-        "sky_claw/local/tools/loot_service.py": (469,),
-        "sky_claw/local/validators/vfs_health.py": (123,),
-        "sky_claw/local/validators/preflight_sensors.py": (164,),
-        "sky_claw/app/orchestrator/preview/chain_preview_service.py": (319,),
+        # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
+        # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
+        # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
+        # ``mod_directory`` custom el valor declarado manda (get_mo2_mods_path*).
+        "sky_claw/local/tools/loot_service.py": (488,),
+        "sky_claw/local/validators/vfs_health.py": (134,),
+        "sky_claw/local/validators/preflight_sensors.py": (177,),
+        "sky_claw/app/orchestrator/preview/chain_preview_service.py": (323,),
         # Rollback/move-aside y staging de DynDOLOD bajo el árbol del broker.
         "sky_claw/app_context.py": (1331,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
-        "sky_claw/local/tools/output_targets.py": (151,),
+        "sky_claw/local/tools/output_targets.py": (157,),
         "sky_claw/local/mo2/grass_profile.py": (227, 330),
     }
 
@@ -1899,10 +1902,14 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     INSTALL_ROOT / CAPABILITY (``get_mo2_path``):
 
-    - grass_runtime_deps: el ``MO2Controller`` del ritual necesita
-      ``ModOrganizer.exe`` (``launch_game``) Y ``profiles/`` bajo la misma
-      raíz — asunción portable. Migrarlo a datos rompería el lanzamiento en
-      instancias separadas: deuda declarada, no olvido.
+    - grass_runtime_deps: DEUDA BLOQUEANTE #557 (no olvido deliberado sin
+      cerrar): ``MO2Controller``/``GrassProfileManager`` son monorraíz — el
+      MISMO root alimenta ``launch_game`` (necesita INSTALL:
+      ``ModOrganizer.exe``) y ``profiles/``+``mods/``+``overwrite/`` (necesitan
+      DATA). Migrar solo el provider a datos rompería el lanzamiento; la
+      corrección exige separar las raíces dentro de ``MO2Controller``
+      (issue #557, bloquea declarar cerrada la familia split-brain de #552 en
+      rigs con instancia separada).
     - dyndolod_service (runner): ``DynDOLODConfig.mo2_path`` no se usa en
       ejecución (solo ``mo2_mods_path``/outputs); INSTALL opaco.
     - wrye_bash_service (runner): ``WryeBashConfig.mo2_path`` sin uso en
@@ -1947,6 +1954,35 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/local/tools/wrye_bash_service.py": 1,
     }
 
+    #: Módulo → n.º de usos de ``get_mo2_mods_path()`` (MODS_DIR estricto,
+    #: falla cerrado con evidencia). asset_conflict_scan (escaneo de
+    #: conflictos) y dyndolod (runner/permisos/preview): los consumidores de
+    #: siempre; un sitio nuevo debe declarar su severidad.
+    _MODS_ESTRICTO: dict[str, int] = {
+        "sky_claw/app/orchestrator/asset_conflict_scan.py": 1,
+        "sky_claw/local/tools/dyndolod_service.py": 3,
+    }
+
+    #: Módulo → n.º de usos de ``get_mo2_mods_path_best_effort()``: sensores
+    #: read-only donde "sin mods" = omitir el sensor (lección #250). NO es
+    #: severidad válida para un destino de escritura (ver ``para_destino``).
+    _MODS_BEST_EFFORT: dict[str, int] = {
+        "sky_claw/app/orchestrator/preview/chain_preview_service.py": 1,
+        "sky_claw/local/tools/dyndolod_service.py": 1,
+        "sky_claw/local/tools/loot_service.py": 1,
+        "sky_claw/local/tools/pandora_service.py": 1,
+        "sky_claw/local/tools/synthesis_service.py": 1,
+        "sky_claw/local/tools/wrye_bash_service.py": 1,
+    }
+
+    #: Módulo → n.º de usos de ``get_mo2_mods_path_para_destino()`` (destino
+    #: de ESCRITURA: aborta con evidencia si la instancia declaró mods y no
+    #: resuelve — B de #555; contado como referencia enlazada/callable). Hoy
+    #: solo Synthesis (runner + preflight, misma fuente U-01 parte 2).
+    _MODS_PARA_DESTINO: dict[str, int] = {
+        "sky_claw/local/tools/synthesis_service.py": 2,
+    }
+
     #: Módulo → n.º de llamadas a ``get_mo2_path_raw()`` (raw install).
     _RAW_INSTALL: dict[str, int] = {
         "sky_claw/local/tools/xedit_service.py": 1,
@@ -1960,7 +1996,12 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     @staticmethod
     def _inventario(raiz: pathlib.Path, atributos: set[str]) -> dict[str, dict[str, int]]:
-        """Módulo → {atributo → n.º de llamadas} para los atributos dados."""
+        """Módulo → {atributo → n.º de usos} para los atributos dados.
+
+        Cuenta la llamada (``x.attr()``) Y la referencia enlazada
+        (``x.attr`` pasada como callable — el destino de Synthesis viaja así);
+        el Attribute que es ``func`` de un Call contado no se double-contabiliza.
+        """
         hallados: dict[str, dict[str, int]] = {}
         for py in sorted(raiz.rglob("*.py")):
             if py.name == "path_resolver.py":
@@ -1970,15 +2011,20 @@ class TestAnclaSemanticaDeRaicesMo2:
             except SyntaxError:
                 continue
             conteo: dict[str, int] = {}
+            func_ids: set[int] = set()
             for nodo in ast.walk(arbol):
                 if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr in atributos:
                     conteo[nodo.func.attr] = conteo.get(nodo.func.attr, 0) + 1
+                    func_ids.add(id(nodo.func))
+            for nodo in ast.walk(arbol):
+                if isinstance(nodo, ast.Attribute) and nodo.attr in atributos and id(nodo) not in func_ids:
+                    conteo[nodo.attr] = conteo.get(nodo.attr, 0) + 1
             if conteo:
                 hallados[str(py.relative_to(raiz.parents[0])).replace("\\", "/")] = conteo
         return hallados
 
     def test_cada_consumer_declara_que_raiz_necesita(self) -> None:
-        """Igualdad literal de los cuatro inventarios (no muestreo).
+        """Igualdad literal de los inventarios por tipo de raíz (no muestreo).
 
         Un consumer nuevo —o uno existente que cambie de accessor— rompe el
         ancla hasta clasificarlo en el docstring con su tipo de path. La
@@ -1993,6 +2039,9 @@ class TestAnclaSemanticaDeRaicesMo2:
                 "get_mo2_instance_data_root",
                 "get_mo2_path_raw",
                 "has_explicit_mo2_install_selection",
+                "get_mo2_mods_path",
+                "get_mo2_mods_path_best_effort",
+                "get_mo2_mods_path_para_destino",
             },
         )
 
@@ -2008,6 +2057,20 @@ class TestAnclaSemanticaDeRaicesMo2:
         assert _por_atributo("get_mo2_instance_data_root") == self._INSTANCE_DATA, (
             "Cambió el inventario de get_mo2_instance_data_root(). Clasifica "
             "el sitio nuevo en el docstring antes de que pase CI."
+        )
+        assert _por_atributo("get_mo2_mods_path") == self._MODS_ESTRICTO, (
+            "Cambió el inventario MODS estricto. Todo consumo de mods pasa por "
+            "get_mo2_mods_path() (o su severidad best-effort/para-destino), "
+            "nunca por <raíz>/mods a mano: mod_directory puede declarar otro árbol."
+        )
+        assert _por_atributo("get_mo2_mods_path_best_effort") == self._MODS_BEST_EFFORT, (
+            "Cambió el inventario MODS best-effort. Un destino de ESCRITURA no "
+            "puede usar esta severidad (ocultaría un mod_directory "
+            "irresoluble): usa get_mo2_mods_path() o _para_destino."
+        )
+        assert _por_atributo("get_mo2_mods_path_para_destino") == self._MODS_PARA_DESTINO, (
+            "Cambió el inventario MODS-para-destino. Todo destino de escritura "
+            "bajo mods debe declararse acá con su severidad fail-closed (B de #555)."
         )
         assert _por_atributo("get_mo2_path_raw") == self._RAW_INSTALL, (
             "Cambió el inventario raw-install. El raw de datos no existe como "
@@ -2233,8 +2296,13 @@ class TestRaizDeDatosDeInstanciaSeparada:
         *,
         mod_directory: pathlib.Path | None = None,
         con_overwrite: bool = True,
+        crear_mods: bool = True,
     ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
-        """Monta install + data separados; devuelve ``(install, data, mods)``."""
+        """Monta install + data separados; devuelve ``(install, data, mods)``.
+
+        ``crear_mods=False`` deja el directorio declarado SIN existir (caso
+        fail-closed del B de #555: mod_directory declarado e inexistente).
+        """
         install = tmp_path / "install"
         install.mkdir()
         (install / "ModOrganizer.exe").write_bytes(b"fake exe")
@@ -2244,7 +2312,8 @@ class TestRaizDeDatosDeInstanciaSeparada:
         if con_overwrite:
             (data / "overwrite").mkdir(parents=True)
         mods = mod_directory if mod_directory is not None else data / "mods"
-        mods.mkdir(parents=True)
+        if crear_mods:
+            mods.mkdir(parents=True)
         (install / "ModOrganizer.ini").write_text(
             _texto_ini_mo2(
                 base_directory=_formato_qt(data),
@@ -2540,9 +2609,9 @@ class TestRaizDeDatosDeInstanciaSeparada:
         capturados: list[pathlib.Path] = []
         original = sensores.build_mo2_profile_sources_resolver
 
-        def _espia(*, game, mo2, profile):  # type: ignore[no-untyped-def]
+        def _espia(*, game, mo2, profile, **extra):  # type: ignore[no-untyped-def]
             capturados.append(mo2)
-            return original(game=game, mo2=mo2, profile=profile)
+            return original(game=game, mo2=mo2, profile=profile, **extra)
 
         resolver = self._resolver_con_hint(tmp_path, install)
         servicios = [
@@ -2587,3 +2656,207 @@ class TestRaizDeDatosDeInstanciaSeparada:
         for mo2_usado in capturados:
             assert _mismo_path(mo2_usado, data), f"preflight sobre install: {mo2_usado}"
             assert not _mismo_path(mo2_usado, install)
+
+
+class TestModsDirSeparadoEnConsumidoresDeDatos:
+    """P1 (ronda 2 de #555): ``instance_data_root / "mods"`` NO es una
+    abstraccion del MODS_DIR.
+
+    ``[Settings] mod_directory`` puede declarar los mods fuera de
+    ``<base_directory>/mods`` (contrato PathSettings, mismo que ya cubre
+    ``get_mo2_mods_path``). Cada primitiva de datos (sources resolver,
+    sensor VFS, preview, LOOT) debe recibir POR SEPARADO la raiz de datos
+    (profiles/overwrite) y el MODS_DIR declarado; nadie puede reconstruir
+    ``<datos>/mods`` a mano cuando existe la declaracion.
+
+    Topologia adversarial: install != data != mods (los tres en arboles
+    distintos bajo ``tmp_path``).
+    """
+
+    @staticmethod
+    def _montar(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+        """install != data; ``mod_directory`` apunta a ModsPersonales."""
+        mods_custom = tmp_path / "ModsPersonales"
+        install, data, mods = TestRaizDeDatosDeInstanciaSeparada._montar_split(
+            tmp_path,
+            mod_directory=mods_custom,
+        )
+        (mods_custom / "UnMod").mkdir(parents=True)
+        return install, data, mods
+
+    @staticmethod
+    def _resolver(tmp_path: pathlib.Path, install: pathlib.Path) -> PathResolutionService:
+        return PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=install,
+        )
+
+    def test_preflights_reciben_mods_dir_declarado_no_el_default(self, tmp_path: pathlib.Path) -> None:
+        """Sources/VFS de los 4 preflights: mods = mod_directory, datos = data root."""
+        import sky_claw.local.validators.preflight_sensors as sensores
+        from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+        from sky_claw.local.tools.pandora_service import PandoraPipelineService
+        from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
+        from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
+
+        install, data, mods = self._montar(tmp_path)
+        juego = tmp_path / "game"
+        (juego / "Data").mkdir(parents=True)
+        capturados_prof: list[tuple[pathlib.Path | None, pathlib.Path | None]] = []
+        capturados_vfs: list[tuple[pathlib.Path | None, pathlib.Path | None]] = []
+        original_prof = sensores.build_mo2_profile_sources_resolver
+        original_vfs = sensores.build_vfs_sensor
+
+        def _esp_prof(*, game, mo2, profile, **extra):  # type: ignore[no-untyped-def]
+            capturados_prof.append((mo2, extra.get("mods_dir")))
+            return original_prof(game=game, mo2=mo2, profile=profile, **extra)
+
+        def _esp_vfs(**kw):  # type: ignore[no-untyped-def]
+            capturados_vfs.append((kw.get("raw_mo2"), kw.get("mods_dir")))
+            return original_vfs(**kw)
+
+        resolver = self._resolver(tmp_path, install)
+        servicios = [
+            DynDOLODPipelineService(
+                lock_manager=MagicMock(),
+                snapshot_manager=MagicMock(),
+                journal=MagicMock(),
+                path_resolver=resolver,
+                event_bus=MagicMock(),
+            ),
+            WryeBashPipelineService(
+                lock_manager=MagicMock(),
+                snapshot_manager=MagicMock(),
+                path_resolver=resolver,
+            ),
+            SynthesisPipelineService(
+                lock_manager=MagicMock(),
+                snapshot_manager=MagicMock(),
+                journal=MagicMock(),
+                path_resolver=resolver,
+                event_bus=MagicMock(),
+                pipeline_config_path=tmp_path / "pipeline.json",
+            ),
+            PandoraPipelineService(
+                lock_manager=MagicMock(),
+                snapshot_manager=MagicMock(),
+                path_resolver=resolver,
+            ),
+        ]
+        with (
+            patch.dict(os.environ, {"SKYRIM_PATH": str(juego)}, clear=True),
+            patch.object(sensores, "build_mo2_profile_sources_resolver", side_effect=_esp_prof),
+            patch.object(sensores, "build_vfs_sensor", side_effect=_esp_vfs),
+        ):
+            for servicio in servicios:
+                servicio._ensure_preflight()
+
+        assert capturados_prof and capturados_vfs
+        for mo2_usado, mods_usado in capturados_prof:
+            assert mo2_usado is not None and _mismo_path(mo2_usado, data)
+            assert mods_usado is not None and _mismo_path(mods_usado, mods), (
+                f"mods reconstruido desde la raiz de datos: {mods_usado}"
+            )
+        for raw_mo2, mods_dir in capturados_vfs:
+            assert raw_mo2 is not None and _mismo_path(raw_mo2, data)
+            assert mods_dir is not None and _mismo_path(mods_dir, mods), (
+                f"scan de mods sobre el default <datos>/mods: {mods_dir}"
+            )
+
+    def test_loot_y_preview_escanean_el_mods_declarado(self, tmp_path: pathlib.Path) -> None:
+        """LOOT (sources resolver) y ChainPreview: mods = mod_directory; overwrite = datos."""
+        import sky_claw.local.mo2.plugin_sources as psrc
+        from sky_claw.app.orchestrator.preview.chain_preview_service import ChainPreviewService
+        from sky_claw.local.tools.loot_service import LootSortingService
+
+        install, data, mods = self._montar(tmp_path)
+        juego = tmp_path / "game"
+        (juego / "Data").mkdir(parents=True)
+        capturados: list[dict[str, pathlib.Path | None]] = []
+        original = psrc.resolve_plugin_sources
+
+        def _esp(**kw):  # type: ignore[no-untyped-def]
+            capturados.append(kw)
+            return original(**kw)
+
+        resolver = self._resolver(tmp_path, install)
+        loot = LootSortingService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            path_resolver=resolver,
+        )
+        preview = ChainPreviewService.__new__(ChainPreviewService)
+        preview._path_resolver = resolver
+        preview._path_validator = PathValidator(roots=[tmp_path])
+        with (
+            patch.dict(os.environ, {"SKYRIM_PATH": str(juego)}, clear=True),
+            patch.object(psrc, "resolve_plugin_sources", _esp),
+        ):
+            loot._ensure_preflight()
+            preview._plugin_dirs()
+
+        assert capturados, "ni LOOT ni el preview resolvieron fuentes de plugins"
+        for kw in capturados:
+            mods_usado = kw["mo2_mods_dir"]
+            assert mods_usado is not None and _mismo_path(mods_usado, mods), f"mods reconstruido a mano: {mods_usado}"
+            overwrite_usado = kw["mo2_overwrite_dir"]
+            if overwrite_usado is not None:
+                assert _mismo_path(overwrite_usado, data / "overwrite")
+
+
+class TestSynthesisDestinoFailClosed:
+    """P2 (ronda 2 de #555): el destino de escritura no puede inventar
+    ``<datos>/mods`` cuando la instancia DECLARO otro ``mod_directory`` y ese
+    directorio no es resoluble.
+
+    Sin ``overwrite/`` en disco y con el MODS_DIR declarado inexistente, el
+    runner debe ABORTAR con evidencia (mismo espiritu que ``t5b`` del
+    resolver: degradar en silencio contra la evidencia del INI es el defecto
+    que la serie #552/#554/este PR cierra). El fallback a ``<datos>/mods``
+    solo es legitimo sin metadata (portable puro, donde Synthesis crea el
+    arbol).
+    """
+
+    def test_mod_directory_inexistente_sin_overwrite_aborta_con_evidencia(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
+
+        mods_roto = tmp_path / "ModsDeclaradosInexistentes"  # NO se crea
+        install, data, _mods = TestRaizDeDatosDeInstanciaSeparada._montar_split(
+            tmp_path,
+            mod_directory=mods_roto,
+            con_overwrite=False,
+            crear_mods=False,
+        )
+        juego = tmp_path / "game"
+        juego.mkdir()
+        exe = tmp_path / "Synthesis.exe"
+        exe.write_bytes(b"fake")
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=install,
+        )
+        servicio = SynthesisPipelineService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            journal=MagicMock(),
+            path_resolver=resolver,
+            event_bus=MagicMock(),
+            pipeline_config_path=tmp_path / "pipeline.json",
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"SKYRIM_PATH": str(juego), "SYNTHESIS_EXE": str(exe)},
+                clear=True,
+            ),
+            pytest.raises(RuntimeError, match="declara su directorio de mods"),
+        ):
+            servicio._ensure_synthesis_runner()
+        # No se fabrico el destino historico sobre <datos>/mods.
+        assert not (data / "mods" / "Synthesis Output").exists()
+        assert not (data / "mods").exists()

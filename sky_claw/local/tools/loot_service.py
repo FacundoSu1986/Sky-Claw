@@ -321,6 +321,9 @@ class LootSortingService:
         raw_game: pathlib.Path | None = None
         raw_mo2: pathlib.Path | None = None
         mo2_validated = False
+        # MODS_DIR declarado de la instancia resuelta (``mod_directory`` puede
+        # vivir fuera de <datos>/mods; enumerar el default sería un scan ciego).
+        mods_dir: pathlib.Path | None = None
         loot_exe = self._loot_exe
 
         if self._path_resolver is not None:
@@ -331,6 +334,7 @@ class LootSortingService:
             raw_mo2 = self._path_resolver.get_mo2_instance_data_root()
             if raw_mo2 is not None:
                 mo2_validated = True
+                mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
             elif self._path_resolver.has_explicit_mo2_install_selection():
                 # Hint presente pero inválido: prohibido degradar a detectar
                 # otra instalación (la selección explícita invalidada no es
@@ -349,7 +353,12 @@ class LootSortingService:
             mo2_validated = True  # raíz provista por el caller (instancia MO2 real)
 
         # Builder compartido (T-16d): rutas CRUDAS, guard de "al menos una raíz".
-        vfs_checker = build_vfs_sensor(raw_game=raw_game, raw_mo2=raw_mo2, scan_mods_dir=mo2_validated)
+        vfs_checker = build_vfs_sensor(
+            raw_game=raw_game,
+            raw_mo2=raw_mo2,
+            scan_mods_dir=mo2_validated,
+            mods_dir=mods_dir,
+        )
 
         # Espejo del fallback de _ensure_loot_runner: el preflight debe medir
         # la versión del binario que efectivamente va a correr.
@@ -357,7 +366,7 @@ class LootSortingService:
 
         # T-30w/T-21: el resolver de fuentes de plugins se comparte entre los
         # sensores de modlist y el check de headers del validador post-run.
-        sources_resolver = self._build_sources_resolver(raw_mo2, mo2_validated)
+        sources_resolver = self._build_sources_resolver(raw_mo2, mo2_validated, mods_dir)
         self._sources_resolver = sources_resolver
 
         # T-30w (builder compartido T-16d): cablear los sensores de
@@ -447,7 +456,12 @@ class LootSortingService:
 
         return _permissions
 
-    def _build_sources_resolver(self, raw_mo2: pathlib.Path | None, mo2_validated: bool):
+    def _build_sources_resolver(
+        self,
+        raw_mo2: pathlib.Path | None,
+        mo2_validated: bool,
+        mods_dir: pathlib.Path | None = None,
+    ):
         """Closure que re-resuelve las fuentes de plugins en cada llamada.
 
         Compartido por los sensores de modlist (T-30w) y el check de headers
@@ -466,7 +480,13 @@ class LootSortingService:
                 game_data_dir = skyrim / "Data"
 
         mo2_ok = mo2_validated and isinstance(raw_mo2, pathlib.Path)
-        mo2_mods_dir = raw_mo2 / "mods" if mo2_ok else None
+        # El MODS_DIR DECLARADO (pasado por el caller, `mod_directory` puede
+        # vivir fuera de <datos>/mods) manda sobre el default; la coacción
+        # isinstance defiende de resolvers mockeados y conserva el default
+        # histórico. El overwrite sigue colgando de la raíz de datos.
+        mo2_mods_dir = (
+            mods_dir if mo2_ok and isinstance(mods_dir, pathlib.Path) else (raw_mo2 / "mods" if mo2_ok else None)
+        )
         mo2_overwrite_dir = raw_mo2 / "overwrite" if mo2_ok else None
 
         # Para el set de HABILITADOS preferimos plugins.txt (activos con `*`)

@@ -273,10 +273,14 @@ class DynDOLODPipelineService:
         # scan_mods_dir: la raíz MO2 de acá ya está VALIDADA (el guard de arriba
         # exige un Path de datos), así que enumerar mods/ es seguro
         # — el False hardcodeado dejaba ciego el scan de symlinks (U-01).
+        # mods_dir: el MODS_DIR DECLARADO (``mod_directory`` puede vivir fuera
+        # de <datos>/mods; reconstruirlo a mano sería un scan ciego).
+        mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
         vfs_checker = build_vfs_sensor(
             raw_game=self._path_resolver.get_skyrim_path_raw(),
             raw_mo2=mo2,
             scan_mods_dir=True,
+            mods_dir=mods_dir,
         )
 
         # Permisos: los targets se recalculan POR CORRIDA dentro del closure
@@ -288,7 +292,10 @@ class DynDOLODPipelineService:
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
 
         resolver = build_mo2_profile_sources_resolver(
-            game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+            game=game,
+            mo2=mo2,
+            profile=self._path_resolver.get_active_profile(),
+            mods_dir=mods_dir,
         )
         masters_check, limits_check = build_modlist_sensors(resolver) if resolver is not None else (None, None)
         # DynDOLOD (stage 9) lee todo el load order ya estabilizado: un master

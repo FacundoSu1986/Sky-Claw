@@ -162,10 +162,14 @@ class SynthesisPipelineService:
         # Fuente única compartida con _ensure_preflight (U-01 parte 2): estaban
         # copiados con un comentario "mismo cálculo que…", y el preflight sondeando
         # un destino distinto del que el runner escribe es un falso verde silencioso.
+        # mods_dir llega como callable: solo se resuelve en la rama mods (sin
+        # overwrite), donde la declaración del INI es load-bearing — con
+        # mod_directory declarado e irresoluble aborta con evidencia vía
+        # get_mo2_mods_path_para_destino (no fabrica <datos>/mods en silencio).
         output_path = synthesis_output_target(
             mo2=mo2_path,
             override=self._output_path,
-            mods_dir=self._directorio_mods_best_effort(),
+            mods_dir=self._path_resolver.get_mo2_mods_path_para_destino,
         )
         assert output_path is not None  # mo2_path ya validado arriba
 
@@ -189,19 +193,6 @@ class SynthesisPipelineService:
             output_path,
         )
         return self._synthesis_runner
-
-    def _directorio_mods_best_effort(self) -> pathlib.Path | None:
-        """``mods/`` de la instancia sin romper el fail-closed del caller.
-
-        Respeta ``[Settings] mod_directory`` (que puede vivir fuera del árbol
-        de datos) para el fallback ``mods/Synthesis Output`` del destino.
-        ``None`` si no resuelve: el destino degrada al ``<data>/mods`` histórico.
-        """
-        try:
-            return self._path_resolver.get_mo2_mods_path()
-        except Exception:  # noqa: BLE001 — boundary best-effort: sin mods resoluble se usa el fallback
-            logger.debug("mods/ de la instancia no resoluble; destino sin mod_directory.", exc_info=True)
-            return None
 
     def _ensure_patcher_pipeline(self) -> PatcherPipeline:
         """Inicializa lazily el PatcherPipeline.
@@ -270,18 +261,23 @@ class SynthesisPipelineService:
         # scan_mods_dir: la raíz MO2 de acá ya está VALIDADA (el guard de arriba
         # exige un Path de datos), así que enumerar mods/ es seguro — el False
         # hardcodeado dejaba ciego el scan de symlinks (U-01).
+        # mods_dir: el MODS_DIR DECLARADO (mod_directory custom ≠ <datos>/mods).
+        mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
         vfs_checker = build_vfs_sensor(
             raw_game=self._path_resolver.get_skyrim_path_raw(),
             raw_mo2=mo2,
             scan_mods_dir=True,
+            mods_dir=mods_dir,
         )
 
-        # Output real donde Synthesis escribe — MISMO resolver que
-        # _ensure_synthesis_runner, no una copia del cálculo (U-01 parte 2).
+        # Output real donde Synthesis escribe — MISMO resolver y MISMA fuente
+        # del destino que _ensure_synthesis_runner (U-01 parte 2), incluido el
+        # callable de mods (rama mods solo; aborta con evidencia si la
+        # declaración del INI es irresoluble — B de #555).
         output_dir = synthesis_output_target(
             mo2=mo2,
             override=self._output_path,
-            mods_dir=self._directorio_mods_best_effort(),
+            mods_dir=self._path_resolver.get_mo2_mods_path_para_destino,
         )
         assert output_dir is not None  # mo2 ya validado por el guard de arriba
 
@@ -290,17 +286,20 @@ class SynthesisPipelineService:
             return WritePermissionsChecker(targets=[output_dir]).check()
 
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
-        masters_check, limits_check = self._build_modlist_checks(game, mo2)
+        masters_check, limits_check = self._build_modlist_checks(game, mo2, mods_dir)
         # Synthesis (stage 7) corre sobre el load order ya estabilizado por LOOT
         # y parcheado por Wrye Bash: un master invertido es CTD, no un warning.
-        order_check = self._build_master_order_check(game, mo2)
+        order_check = self._build_master_order_check(game, mo2, mods_dir)
 
         # U-01: Synthesis procesa TODO el modlist; sin la USVFS heredada el patch
         # saldría del juego base. Mismo perfil que alimenta masters/límites.
         visibility_check = build_vfs_visibility_sensor(
             game=game,
             sources_resolver=build_mo2_profile_sources_resolver(
-                game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+                game=game,
+                mo2=mo2,
+                profile=self._path_resolver.get_active_profile(),
+                mods_dir=mods_dir,
             ),
         )
 
@@ -316,12 +315,18 @@ class SynthesisPipelineService:
         )
         return self._preflight
 
-    def _build_master_order_check(self, game: pathlib.Path, mo2: pathlib.Path) -> Any:
+    def _build_master_order_check(
+        self,
+        game: pathlib.Path,
+        mo2: pathlib.Path,
+        mods_dir: pathlib.Path | None = None,
+    ) -> Any:
         """Closure del sensor de orden de masters del **perfil MO2 activo**.
 
         Mismo feed y mismo gate que :meth:`_build_modlist_checks`; sin
         perfil/fuentes resolubles → ``None`` → checkpoint "no configurado"
-        (omitido). No miente verde (lección #250).
+        (omitido). No miente verde (lección #250). ``mods_dir``: el MODS_DIR
+        declarado por la instancia (ver builders T-16d).
         """
         from sky_claw.local.validators.preflight_sensors import (
             build_master_order_sensor,
@@ -329,13 +334,21 @@ class SynthesisPipelineService:
         )
 
         resolver = build_mo2_profile_sources_resolver(
-            game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+            game=game,
+            mo2=mo2,
+            profile=self._path_resolver.get_active_profile(),
+            mods_dir=mods_dir,
         )
         if resolver is None:
             return None
         return build_master_order_sensor(resolver)
 
-    def _build_modlist_checks(self, game: pathlib.Path, mo2: pathlib.Path) -> tuple[Any, Any]:
+    def _build_modlist_checks(
+        self,
+        game: pathlib.Path,
+        mo2: pathlib.Path,
+        mods_dir: pathlib.Path | None = None,
+    ) -> tuple[Any, Any]:
         """Closures de masters/límites del **perfil MO2 activo**.
 
         Lee el load order de ``profiles/<perfil>/plugins.txt`` — NO el
@@ -344,6 +357,7 @@ class SynthesisPipelineService:
         resolver del perfil MO2 y el cableado de masters/límites son idénticos a
         los de DynDOLOD. Sin perfil/fuentes resolubles → ``(None, None)`` →
         checkpoints "no configurado" (omitidos). No miente verde (lección #250).
+        ``mods_dir``: el MODS_DIR declarado por la instancia (ver builders T-16d).
         """
         from sky_claw.local.validators.preflight_sensors import (
             build_mo2_profile_sources_resolver,
@@ -351,7 +365,10 @@ class SynthesisPipelineService:
         )
 
         resolver = build_mo2_profile_sources_resolver(
-            game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+            game=game,
+            mo2=mo2,
+            profile=self._path_resolver.get_active_profile(),
+            mods_dir=mods_dir,
         )
         if resolver is None:
             return None, None

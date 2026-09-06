@@ -314,9 +314,17 @@ class ChainPreviewService:
                 detected = self._path_resolver.detect_mo2_path()
                 mo2 = detected if isinstance(detected, pathlib.Path) else None
         mo2_ok = isinstance(mo2, pathlib.Path)
+        # El MODS_DIR declarado manda sobre <datos>/mods (mod_directory custom;
+        # isinstance defiende de resolvers mockeados → default histórico).
+        mods_declarado = self._path_resolver.get_mo2_mods_path_best_effort()
+        mo2_mods_dir = (
+            mods_declarado
+            if mo2_ok and isinstance(mods_declarado, pathlib.Path)
+            else (mo2 / "mods" if mo2_ok else None)
+        )
         sources = resolve_plugin_sources(
             game_data_dir=game_data_dir,
-            mo2_mods_dir=mo2 / "mods" if mo2_ok else None,
+            mo2_mods_dir=mo2_mods_dir,
             mo2_overwrite_dir=mo2 / "overwrite" if mo2_ok else None,
             load_order_file=None,
         )

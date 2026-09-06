@@ -913,6 +913,44 @@ class PathResolutionService:
             "No se pudo detectar la ruta de MO2. Configure MO2_PATH o MO2_MODS_PATH en las variables de entorno."
         )
 
+    def get_mo2_mods_path_best_effort(self) -> pathlib.Path | None:
+        """MODS_DIR declarado de la instancia, o ``None`` — para solo-lectura.
+
+        Espejo best-effort de :meth:`get_mo2_mods_path` para sensores de
+        preflight y previews: sin mods resoluble omiten el sensor ("no
+        configurado", lección #250) en vez de mentir verde. NO sustituye la
+        resolución exigida de los flujos mutantes, que sigue pasando por
+        :meth:`get_mo2_mods_path` (falla cerrado con evidencia).
+        """
+        try:
+            mods = self.get_mo2_mods_path()
+        except Exception:  # noqa: BLE001 — boundary best-effort declarado: el sensor se omite, no degrada a <datos>/mods inventado
+            logger.debug("MODS_DIR no resoluble (best-effort): se omite.", exc_info=True)
+            return None
+        return mods if isinstance(mods, pathlib.Path) else None
+
+    def get_mo2_mods_path_para_destino(self) -> pathlib.Path | None:
+        """MODS_DIR para un destino de ESCRITURA, sin fallback silencioso.
+
+        Semántica que exige Synthesis (y cualquier ritual que escriba bajo
+        ``mods/``): si la instancia DECLARÓ su ubicación de mods (metadata
+        presente) y esa declaración no es resoluble, falla cerrado con la
+        evidencia de :meth:`get_mo2_mods_path` — escribir en
+        ``<base_directory>/mods`` «por defecto» contra una declaración en
+        contra es exactamente la invención silenciosa que la serie #552/#554
+        eliminó del lado de lectura. Sin metadata de instancia (portable puro)
+        devuelve ``None`` y el caller conserva el default histórico, que la
+        herramienta crea.
+        """
+        install_dir = self._directorio_instalacion_mo2()
+        try:
+            metadata = self._metadata_de_instancia(install_dir)
+        except RuntimeError:
+            raise  # declarado e inconsistente: la evidencia manda, no se degrada
+        if metadata is None:
+            return None
+        return self.get_mo2_mods_path()
+
     def get_active_profile(self) -> str:
         """Obtiene el nombre del perfil activo de MO2.
 

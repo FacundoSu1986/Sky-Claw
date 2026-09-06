@@ -58,6 +58,10 @@ _ITEMS = frozenset(
         # distintos; get_mo2_mods_path() resuelve mods/ desde la metadata de la
         # instancia. Ancla de la deuda hermanada en test_path_resolution_service.py.
         "MO2 executable path != MO2 instance base_directory",
+        # #555 separó INSTALL/DATA/MODS/PROFILE en la superficie de lectura del
+        # resolver; MO2Controller (launch=INSTALL, modlist/mods=DATA) y el ritual
+        # grass siguen con una raíz única — deuda bloqueante issue #557.
+        "MO2Controller monorraíz (grass y surface agente)",
         # Rig T5 2026-08-11 (`INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` §7.3): el preset
         # persistido de TexGen pre-llena el campo Output de la GUI y desvía las
         # escrituras fuera del root del `-o:`, aunque el argv se parsee exacto. El

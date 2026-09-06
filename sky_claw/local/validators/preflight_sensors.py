@@ -52,6 +52,7 @@ def build_vfs_sensor(
     raw_game: pathlib.Path | None,
     raw_mo2: pathlib.Path | None,
     scan_mods_dir: bool,
+    mods_dir: pathlib.Path | None = None,
 ) -> VfsHealthChecker | None:
     """Construye el ``VfsHealthChecker`` sobre rutas CRUDAS.
 
@@ -59,14 +60,19 @@ def build_vfs_sensor(
     debe inspeccionar, así que el caller pasa las crudas. Coacciona a ``None``
     cualquier valor que no sea ``pathlib.Path`` (defiende de ``path_resolver``
     mockeados que devuelven no-``Path``). Sin ninguna raíz utilizable → ``None``.
+
+    ``mods_dir`` (de ``get_mo2_mods_path_best_effort``) separa el MODS_DIR
+    declarado de la raíz de datos: con ``mod_directory`` custom, el scan de
+    primer nivel recorre ÉL. ``None`` conserva el default ``<raíz>/mods``.
     """
     game = raw_game if isinstance(raw_game, pathlib.Path) else None
     mo2 = raw_mo2 if isinstance(raw_mo2, pathlib.Path) else None
+    mods = mods_dir if isinstance(mods_dir, pathlib.Path) else None
     if game is None and mo2 is None:
         return None
     from sky_claw.local.validators.vfs_health import VfsHealthChecker
 
-    return VfsHealthChecker(game_path=game, mo2_root=mo2, scan_mods_dir=scan_mods_dir)
+    return VfsHealthChecker(game_path=game, mo2_root=mo2, scan_mods_dir=scan_mods_dir, mods_dir=mods)
 
 
 def build_modlist_sensors(
@@ -131,6 +137,7 @@ def build_mo2_profile_sources_resolver(
     game: pathlib.Path,
     mo2: pathlib.Path,
     profile: str | None,
+    mods_dir: pathlib.Path | None = None,
 ) -> Callable[[], PluginSources] | None:
     """Resolver de fuentes de plugins desde el **perfil MO2 activo** (T-16c·2/3).
 
@@ -143,6 +150,12 @@ def build_mo2_profile_sources_resolver(
     (``assert_safe_component``). Devuelve ``None`` si el perfil no es resoluble o
     no hay archivo de load order → el caller reporta "no configurado", no miente
     verde (lección #250). El feed de ``build_modlist_sensors``.
+
+    ``mo2`` es la raíz de DATOS (de ella cuelgan ``profiles/`` y
+    ``overwrite/``); ``mods_dir`` es el MODS_DIR declarado
+    (``get_mo2_mods_path_best_effort``) — con ``mod_directory`` custom son
+    árboles distintos y enumerar el default sería un scan ciego. ``None``
+    conserva el default histórico ``<mo2>/mods`` (portable).
     """
     if not isinstance(profile, str):
         return None
@@ -161,7 +174,7 @@ def build_mo2_profile_sources_resolver(
     if load_order_file is None:
         return None
     game_data_dir = game / "Data"
-    mo2_mods_dir = mo2 / "mods"
+    mo2_mods_dir = mods_dir if isinstance(mods_dir, pathlib.Path) else mo2 / "mods"
     mo2_overwrite_dir = mo2 / "overwrite"
 
     def _resolve() -> PluginSources:
