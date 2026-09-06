@@ -903,7 +903,39 @@ class PathResolutionService:
         return self.validate_env_path(os.environ.get("SKYRIM_PATH", ""), "SKYRIM_PATH")
 
     def get_mo2_path(self) -> pathlib.Path | None:
-        """Resuelve MO2_PATH desde entorno validado."""
+        """Resuelve la instalación MO2 configurada/seleccionada.
+
+        Espeja las ramas 1–2 de :meth:`_directorio_instalacion_mo2` —
+        instalacion inyectada validada → ``MO2_PATH`` validado— SIN su rama 3
+        de auto-detección. Getter ≠ detector (ver :meth:`detect_mo2_path`):
+        varios consumidores usan ``get_mo2_path() is not None`` como gate de
+        capability (scan de mods en xEdit/LOOT, construcción de preflights),
+        así que ``None`` significa "sin instalación configurada", nunca
+        "intenta encontrar una" — y la auto-detección escanearía el
+        filesystem real en cada llamada.
+
+        1. **Instalación inyectada** (``mo2_install_dir``, la que el
+           composition root ya seleccionó): se valida contra el sandbox con
+           la misma primitiva que ``MO2_PATH``. Si NO valida, **no** se
+           degrada al entorno (reintroduciría el split-brain
+           instalación-seleccionada ≠ instalación-usada que la inyección
+           cierra): falla cerrado a ``None``.
+        2. ``MO2_PATH`` validado (standalone/legacy, sin composition root).
+
+        Returns:
+            Path validado a la instalación MO2, o ``None`` si no hay ninguna.
+        """
+        if self._mo2_install_dir is not None:
+            validado = self.validate_env_path(str(self._mo2_install_dir), "mo2_install_dir")
+            if validado is not None:
+                return validado
+            security_logger.warning(
+                "La instalación MO2 inyectada (%s) no valida contra el sandbox; "
+                "get_mo2_path devuelve None (fail-closed, sin degradar a "
+                "MO2_PATH).",
+                self._mo2_install_dir,
+            )
+            return None
         return self.validate_env_path(os.environ.get("MO2_PATH", ""), "MO2_PATH")
 
     # Accessors CRUDOS (sin resolver): el validate() de los getters de arriba
@@ -936,7 +968,18 @@ class PathResolutionService:
         return self._raw_env_path("SKYRIM_PATH")
 
     def get_mo2_path_raw(self) -> pathlib.Path | None:
-        """MO2_PATH tal como está configurado, sin resolver symlinks."""
+        """MO2_PATH tal como está configurado, sin resolver symlinks.
+
+        Hermano crudo de :meth:`get_mo2_path` (misma precedencia, SIN
+        validación ni resolución — el ``VfsHealthChecker`` necesita hacer
+        ``lstat`` del enlace, no del destino): con composición activa la
+        instalación seleccionada ES la configurada, y que el accessor crudo
+        siguiera leyendo solo ``MO2_PATH`` dejaría al preflight de LOOT
+        inspeccionando el árbol del entorno mientras las tools operan sobre
+        la instalación inyectada.
+        """
+        if self._mo2_install_dir is not None:
+            return self._mo2_install_dir
         return self._raw_env_path("MO2_PATH")
 
     def get_dyndolod_exe(self) -> pathlib.Path | None:

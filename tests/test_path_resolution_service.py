@@ -10,8 +10,10 @@ import ast
 import os
 import pathlib
 import re
+import shutil
+import tempfile
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -21,6 +23,7 @@ from sky_claw.app.core.path_resolver import (
     resolver_mods_dir_de_instancia_mo2,
 )
 from sky_claw.app.security.path_validator import PathValidator
+from tests._symlink_guard import symlink_guard
 
 if TYPE_CHECKING:
     pass
@@ -1597,3 +1600,554 @@ class TestInstalacionMo2Inyectada:
                 assert _mismo_path(sin_hint._directorio_instalacion_mo2(), wrong_auto)
             with patch.dict(os.environ, {}, clear=True):
                 assert _mismo_path(sin_hint._directorio_instalacion_mo2(), selected)
+
+
+class TestGetMo2PathHonraInstalacionSeleccionada:
+    """``get_mo2_path()`` (accessor de tools) honra la instalación inyectada.
+
+    Split-brain restante después de #554: ``_directorio_instalacion_mo2`` (la
+    fuente de mods/metadata) ya priorizaba el hint del composition root, pero
+    ``get_mo2_path()`` —el accessor que consumen DynDOLOD, Synthesis, Wrye
+    Bash, Pandora, LOOT, xEdit, grass, preview y el sandbox de Synthesis—
+    seguía leyendo SOLO ``MO2_PATH``. Con AppContext=A y MO2_PATH=B, la
+    instalación que decidía mods/ era A y la que veían los accessors de tools
+    era B: preflights y outputs apuntando a otra instalación.
+
+    Contrato nuevo (misma precedencia que ``_directorio_instalacion_mo2``
+    SIN auto-detección): inyectado validado → MO2_PATH validado → None.
+    El hint que no valida NO degrada al entorno (reintroduciría el
+    split-brain): falla cerrado a ``None``.
+    """
+
+    @staticmethod
+    def _montar_instalaciones(
+        tmp_path: pathlib.Path,
+    ) -> tuple[pathlib.Path, pathlib.Path]:
+        """Dos instalaciones MO2 dentro del sandbox: ``selected`` y ``env``.
+
+        Sólo importan como directorios: ``get_mo2_path()`` valida y devuelve,
+        no lee metadata. Ambas deben existir para que ``PathValidator``
+        (``resolve()``) las resuelva.
+        """
+        selected = tmp_path / "selected"
+        env_install = tmp_path / "wrong-env"
+        selected.mkdir()
+        env_install.mkdir()
+        return selected, env_install
+
+    def test_inyectada_gana_sobre_mo2_path(self, tmp_path: pathlib.Path) -> None:
+        """Caso P1 / I1: hint=selected, MO2_PATH=wrong-env → selected.
+
+        Reproduce el defecto ANTES del fix: ``get_mo2_path()`` ignoraba el
+        hint y devolvía ``wrong-env`` (la instalación del entorno), mientras
+        la metadata de mods/ colgaba de ``selected`` — split-brain entre el
+        accessor de tools y la resolución de instancia.
+        """
+        selected, env_install = self._montar_instalaciones(tmp_path)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+            ruta = resolver.get_mo2_path()
+        assert ruta is not None
+        assert _mismo_path(ruta, selected)
+        assert not _mismo_path(ruta, env_install)
+
+    def test_sin_inyeccion_conserva_mo2_path(self, tmp_path: pathlib.Path) -> None:
+        """I2: sin hint, MO2_PATH configurado → MO2_PATH (legacy intacto)."""
+        selected, env_install = self._montar_instalaciones(tmp_path)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=None,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+            ruta = resolver.get_mo2_path()
+        assert ruta is not None
+        assert _mismo_path(ruta, env_install)
+
+    def test_sin_inyeccion_ni_env_devuelve_none(self, tmp_path: pathlib.Path) -> None:
+        """I3: sin hint ni MO2_PATH → ``None`` (SIN auto-detección nueva).
+
+        ``get_mo2_path()`` nunca auto-detectó; convertir ``None`` en
+        "intenta detectar" cambiaría el significado de capability gates como
+        ``get_mo2_path() is not None`` (LOOT/xEdit/previews) y dispararía
+        escaneos del filesystem real en cada llamada.
+        """
+        selected, _env_install = self._montar_instalaciones(tmp_path)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=None,
+        )
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            # Adversarial: una instalación detectable existe; que siga en
+            # ``None`` prueba que el accessor NO llama a detect_mo2_path().
+            patch(
+                "sky_claw.app.core.path_resolver._CANDIDATE_MO2_PATHS",
+                (str(selected),),
+            ),
+        ):
+            ruta = resolver.get_mo2_path()
+        assert ruta is None
+
+    def test_inyectada_fuera_del_sandbox_falla_cerrado_a_none(
+        self,
+        tmp_path: pathlib.Path,
+        tmp_path_factory: pytest.TempPathFactory,
+    ) -> None:
+        """I4: hint fuera del sandbox + MO2_PATH válido → ``None``, NO degrada.
+
+        Degradar a B reharía el split-brain: instalación seleccionada A
+        (invalidada), instalación usada B. ``None`` es el "sin instalación
+        conocida" del fail-closed, misma decisión que toma
+        ``_directorio_instalacion_mo2`` con el hint inválido.
+        """
+        selected, env_install = self._montar_instalaciones(tmp_path)
+        # Sandbox = solo el entorno; `selected` (el hint) queda fuera.
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[env_install]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+            ruta = resolver.get_mo2_path()
+        assert ruta is None
+
+    def test_path_con_espacios_se_honra(self, tmp_path: pathlib.Path) -> None:
+        """E: instalación inyectada con espacios → se devuelve igual.
+
+        Las instalaciones reales viven en rutas como ``C:\\Modding\\MO2 Portátil``:
+        el accessor no debe corromperlas ni rechazarlas por espacios.
+        """
+        selected = tmp_path / "MO2 Selected Dir"
+        selected.mkdir()
+        env_install = tmp_path / "MO2 Env"
+        env_install.mkdir()
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+            ruta = resolver.get_mo2_path()
+        assert ruta is not None
+        assert _mismo_path(ruta, selected)
+
+    @symlink_guard
+    def test_symlink_del_hint_que_escapa_sandbox_falla_cerrado(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """F: symlink del hint que apunta FUERA del sandbox → ``None``.
+
+        El hint inyectado NO es confiable por venir del composition root
+        (FASE 9): pasa por el mismo ``validate_env_path`` que ``MO2_PATH``,
+        incluido el chequeo estricto de symlinks de ``PathValidator``. Un
+        symlink que escapa degrada a ``None`` sin degradar a ``MO2_PATH``.
+        """
+        externo = pathlib.Path(tempfile.mkdtemp(prefix="mo2_hint_externo_"))
+        try:
+            externo.mkdir(exist_ok=True)
+            link = tmp_path / "selected_link"
+            link.symlink_to(externo, target_is_directory=True)
+            env_install = tmp_path / "wrong-env"
+            env_install.mkdir(exist_ok=True)
+            resolver = PathResolutionService(
+                path_validator=PathValidator(roots=[tmp_path]),
+                profile_name="Default",
+                mo2_install_dir=link,
+            )
+            with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+                ruta = resolver.get_mo2_path()
+            assert ruta is None
+        finally:
+            shutil.rmtree(externo, ignore_errors=True)
+
+    @symlink_guard
+    def test_symlink_del_hint_dentro_del_sandbox_se_resuelve(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """F (contraparte): symlink del hint que apunta DENTRO del sandbox → válido.
+
+        ``PathValidator.validate`` resuelve el symlink y devuelve el destino:
+        el accessor devuelve el destino canonicalizado, igual que hace
+        ``MO2_PATH`` desde siempre (semántica del validate, no una nueva).
+        """
+        real = tmp_path / "selected_real"
+        real.mkdir()
+        link = tmp_path / "selected_link"
+        link.symlink_to(real, target_is_directory=True)
+        env_install = tmp_path / "wrong-env"
+        env_install.mkdir(exist_ok=True)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=link,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+            ruta = resolver.get_mo2_path()
+        assert ruta is not None
+        # El validate devuelve el destino resuelto (comportamiento MO2_PATH legacy).
+        assert _mismo_path(ruta, real)
+
+    def test_inyectada_coherente_con_metadata_y_modlist(self, tmp_path: pathlib.Path) -> None:
+        """I5: con hint, accessor e instancia derivan de la MISMA instalación.
+
+        El ``ModOrganizer.ini`` portable del hint declara la base de datos:
+        ``get_mo2_path()`` (fix) y ``get_mo2_mods_path()``/``resolve_modlist_path()``
+        (ya desde #554) cuelgan todos de ``selected`` — el modlist de la
+        instancia de ``wrong-env`` jamás se consulta.
+        """
+        selected, env_install = self._montar_instalaciones(tmp_path)
+        data_selected = tmp_path / "instance_selected"
+        mods_selected = data_selected / "mods"
+        profile_dir = data_selected / "profiles" / "Default"
+        mods_selected.mkdir(parents=True)
+        profile_dir.mkdir(parents=True)
+        (selected / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(data_selected)),
+            encoding="utf-8",
+        )
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+            ruta = resolver.get_mo2_path()
+            mods = resolver.get_mo2_mods_path()
+            modlist = resolver.resolve_modlist_path("Default")
+        assert ruta is not None
+        assert _mismo_path(ruta, selected)
+        assert _mismo_path(mods, mods_selected)
+        assert _mismo_path(modlist.parent.parent.parent, data_selected)
+
+    def test_crudo_con_inyectada_devuelve_la_seleccionada_sin_resolver(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Hermano crudo: con composición, ``get_mo2_path_raw`` = instalada.
+
+        El preflight de LOOT cruza el accessor VALIDADO (capability gate) con
+        el CRUDO (lstat de symlinks). Si el crudo siguiera leyendo solo
+        ``MO2_PATH``, el sensor VFS inspeccionaría el árbol del entorno
+        mientras las tools operan sobre la inyectada — otra forma del
+        split-brain.
+        """
+        selected, env_install = self._montar_instalaciones(tmp_path)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+            crudo = resolver.get_mo2_path_raw()
+            ruta = resolver.get_mo2_path()
+        assert crudo is not None
+        assert _mismo_path(crudo, selected)
+        assert ruta is not None
+        assert _mismo_path(ruta, selected)
+
+    def test_crudo_sin_inyeccion_conserva_mo2_path(self, tmp_path: pathlib.Path) -> None:
+        """Hermano crudo sin composición: legacy intacto (MO2_PATH)."""
+        selected, env_install = self._montar_instalaciones(tmp_path)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=None,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+            crudo = resolver.get_mo2_path_raw()
+        assert crudo is not None
+        assert _mismo_path(crudo, env_install)
+
+    def test_crudo_sin_inyeccion_ni_env_devuelve_none(self, tmp_path: pathlib.Path) -> None:
+        """Hermano crudo sin nada: ``None``, sin auto-detección (legacy)."""
+        selected, _env_install = self._montar_instalaciones(tmp_path)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=None,
+        )
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "sky_claw.app.core.path_resolver._CANDIDATE_MO2_PATHS",
+                (str(selected),),
+            ),
+        ):
+            crudo = resolver.get_mo2_path_raw()
+        assert crudo is None
+
+
+class TestAnclaConsumidoresGetMo2Path:
+    """Ancla exhaustiva de los call sites productivos de ``get_mo2_path()``.
+
+    Cambiar la semántica de ``get_mo2_path`` afecta la selección de instalación
+    MO2 que ven TODAS las tools del dispatcher: es el accessor que decide si un
+    ritual muta la instalación que AppContext seleccionó o una del entorno
+    (split-brain instalación-seleccionada != instalación-usada). Un consumer
+    nuevo SIN clasificar aquí revive ese split-brain en silencio: el test
+    fuerza a leer su semántica de ``None`` y su mutabilidad antes de tocar el
+    accessor.
+    """
+
+    #: Call sites productivos congelados (HEAD con el fix, por módulo):
+    #: - dyndolod_service: _ensure_runner (mutable, init del runner) y
+    #:   _ensure_preflight (gate del preflight) — None desactiva preflight y
+    #:   aborta el runner.
+    #: - pandora_service: _resolve_pandora_paths (fallback del preflight; None
+    #:   omite sensores overwrite/scan pero NO aborta: gate opcional).
+    #: - loot_service: capability gate del VFS scan + _ensure_load_order_resolver
+    #:   + _ensure_loot_runner (USVFS) — None degrada a detect/_mo2_root o
+    #:   falla el runner brokered.
+    #: - wrye_bash_service: _ensure_preflight y _ensure_runner (mutable).
+    #: - synthesis_service: _ensure_runner (mutable) y _ensure_preflight.
+    #: - xedit_service: scan_mods_dir del VFS sensor (capability gate).
+    #: - dispatcher_dependencies: sandbox de Synthesis (falla si None).
+    #: - grass_runtime_deps: deps del ritual de grass (None → sin ritual).
+    #: - chain_preview_service: dirs de plugins del preview (read-only con
+    #:   fallback a detect_mo2_path).
+    _CONSUMIDORES_ESPERADOS: dict[str, int] = {
+        "sky_claw/local/tools/dyndolod_service.py": 2,
+        "sky_claw/local/tools/pandora_service.py": 1,
+        "sky_claw/local/tools/loot_service.py": 3,
+        "sky_claw/local/tools/wrye_bash_service.py": 2,
+        "sky_claw/local/tools/synthesis_service.py": 2,
+        "sky_claw/local/tools/xedit_service.py": 1,
+        "sky_claw/app/orchestrator/dispatcher_dependencies.py": 1,
+        "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
+        "sky_claw/app/orchestrator/preview/chain_preview_service.py": 1,
+    }
+
+    def test_todos_los_consumidores_productivos_estan_clasificados(self) -> None:
+        """Enumera por AST TODOS los call sites productivos de ``get_mo2_path()``.
+
+        Igualdad literal del inventario (no muestreo): un consumer nuevo rompe
+        el ancla hasta clasificarlo en el docstring con su semántica de None y
+        su mutabilidad. La definición del accessor (``path_resolver.py``) y los
+        tests no cuentan como consumo.
+        """
+        raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+        hallados: dict[str, int] = {}
+        for py in sorted(raiz.rglob("*.py")):
+            if py.name == "path_resolver.py":
+                continue
+            try:
+                arbol = ast.parse(py.read_text(encoding="utf-8"))
+            except SyntaxError:
+                continue
+            n = sum(
+                1
+                for nodo in ast.walk(arbol)
+                if isinstance(nodo, ast.Call)
+                and isinstance(nodo.func, ast.Attribute)
+                and nodo.func.attr == "get_mo2_path"
+            )
+            if n:
+                hallados[str(py.relative_to(raiz.parents[0])).replace("\\", "/")] = n
+
+        assert hallados == self._CONSUMIDORES_ESPERADOS, (
+            "Cambió el inventario de call sites de get_mo2_path(). Un consumer "
+            "nuevo debe clasificarse ANTES de cambiar la semántica del accessor: "
+            "cambiar get_mo2_path afecta la selección de instalación MO2 que "
+            "ven las tools (split-brain instalación-seleccionada != "
+            "instalación-usada)."
+        )
+
+
+class TestConsumidoresGetMo2PathConComposicion:
+    """Los arquetipos de consumidor de ``get_mo2_path()`` con el fix activo.
+
+    No se mockea el accessor: se arma un ``PathResolutionService`` REAL con
+    ``mo2_install_dir`` inyectado y el entorno divergente, y se ejecuta la
+    lógica productiva de cada familia. Demostración exigida: devolver la
+    instalación inyectada NO activa ninguna operación insegura — los paths
+    siguen saliendo por ``PathValidator`` y los gates conservan su semántica
+    de fail-closed.
+    """
+
+    def test_consumer_mutable_sandbox_de_synthesis_arma_sobre_la_inyectada(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Consumer MUTABLE: ``build_synthesis_flow_provider`` (dispatcher).
+
+        El sandbox de promoción de Synthesis muta modlist/plugins de la
+        instancia: si el provider tomara ``MO2_PATH`` del entorno, armaría el
+        sandbox sobre OTRA instalación que la seleccionada. Con el fix arma
+        sobre la inyectada aunque el entorno diga otra cosa (y sin env, antes
+        del fix fallaba con RuntimeError aunque hubiera composición activa).
+        """
+        from sky_claw.app.orchestrator.dispatcher_dependencies import (
+            build_synthesis_flow_provider,
+        )
+
+        selected = tmp_path / "selected"
+        selected.mkdir()
+        env_install = tmp_path / "wrong-env"
+        env_install.mkdir()
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        with patch.dict(os.environ, {"MO2_PATH": str(env_install)}, clear=True):
+            flow = build_synthesis_flow_provider(
+                path_resolver=resolver,
+                profile_name="Default",
+                hitl_guard=None,
+            )()
+        assert flow._sandbox._mo2_root == selected.resolve()
+
+    def test_consumer_mutable_sin_nada_configurado_falla_cerrado(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Consumer MUTABLE, rama fail-closed: sin instalación conocida, error.
+
+        El RuntimeError del provider es el gate que impide armar un sandbox
+        sin instalación; el fix no lo afloja.
+        """
+        from sky_claw.app.orchestrator.dispatcher_dependencies import (
+            build_synthesis_flow_provider,
+        )
+
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=None,
+        )
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "sky_claw.app.core.path_resolver._CANDIDATE_MO2_PATHS",
+                (str(tmp_path / "no-existe"),),
+            ),
+            pytest.raises(RuntimeError, match="MO2_PATH must be configured"),
+        ):
+            build_synthesis_flow_provider(
+                path_resolver=resolver,
+                profile_name="Default",
+                hitl_guard=None,
+            )()
+
+    def test_consumer_gate_preflight_de_dyndolod_existe_con_inyectada(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Consumer GATE: preflight de DynDOLOD se construye con la inyectada.
+
+        Misma familia booleana que ``get_mo2_path() is not None`` en xEdit y
+        LOOT: sin env, antes del fix el preflight no existía (None → sin gate
+        → ritual sin sensores) aunque la instalación seleccionada estuviera
+        allí. Con el fix, el gate existe y opera sobre la instalación
+        seleccionada: los sensores que enumera ``mods/`` (``scan_mods_dir``)
+        sólo se activan con raíz VALIDADA por el sandbox — propiedad que el
+        constructor ``build_vfs_sensor`` conserva (la enumeración exige la
+        contraparte validada; el raw crudo es sólo para ``lstat``).
+        """
+        from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+
+        selected = tmp_path / "selected"
+        selected.mkdir()
+        game = tmp_path / "game"
+        game.mkdir()
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        servicio = DynDOLODPipelineService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            journal=MagicMock(),
+            path_resolver=resolver,
+            event_bus=MagicMock(),
+        )
+        with patch.dict(
+            os.environ,
+            {"SKYRIM_PATH": str(game)},
+            clear=True,
+        ):
+            preflight = servicio._ensure_preflight()
+        assert preflight is not None
+
+    def test_consumer_gate_no_se_abre_con_inyectada_invalida(
+        self,
+        tmp_path: pathlib.Path,
+        tmp_path_factory: pytest.TempPathFactory,
+    ) -> None:
+        """Consumer GATE, rama de seguridad: hint inválido → sin preflight.
+
+        La propiedad de seguridad del arquetipo gate: un hint que no valida
+        contra el sandbox NO abre el gate (el preflight queda ``None``, igual
+        que con el accessor legacy), aunque ``get_mo2_path_raw`` sí devuelva
+        el path crudo para lstat — la enumeración de ``mods/`` exige la
+        contraparte validada y esa sigue siendo ``None``.
+        """
+        from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+
+        selected = tmp_path_factory.mktemp("fuera_del_sandbox")
+        game = tmp_path / "game"
+        game.mkdir()
+        resolver = PathResolutionService(
+            # Sandbox = solo tmp_path; `selected` queda fuera.
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        servicio = DynDOLODPipelineService(
+            lock_manager=MagicMock(),
+            snapshot_manager=MagicMock(),
+            journal=MagicMock(),
+            path_resolver=resolver,
+            event_bus=MagicMock(),
+        )
+        with patch.dict(os.environ, {"SKYRIM_PATH": str(game)}, clear=True):
+            preflight = servicio._ensure_preflight()
+        assert preflight is None
+
+    def test_consumer_readonly_preview_lee_de_la_inyectada_con_fallback_intacto(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Consumer READ-ONLY: preview de plugins sobre la instalación inyectada.
+
+        ``_plugin_dirs`` es best-effort y read-only (cuenta headers): con el
+        fix lee ``mods/``/``overwrite/`` de la instalación seleccionada sin
+        ``MO2_PATH``; su fallback a ``detect_mo2_path()`` (contrato propio del
+        preview, preexistente) queda intacto para el caso sin composición.
+        Cada dir sigue pasando por ``PathValidator`` antes de leerse.
+        """
+        from sky_claw.app.orchestrator.preview.chain_preview_service import (
+            ChainPreviewService,
+        )
+
+        selected = tmp_path / "selected"
+        # mods/ con un mod de verdad: _plugin_dirs agrega cada mod individual
+        # (precedencia del VFS), no la raíz mods/ — más overwrite/ completo.
+        mod = selected / "mods" / "Mi Mod"
+        mod.mkdir(parents=True)
+        (selected / "overwrite").mkdir(parents=True)
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        # Construcción mínima (sólo lo que _plugin_dirs lee), patrón __new__
+        # de los tests de wiring de supervisor.
+        servicio = ChainPreviewService.__new__(ChainPreviewService)
+        servicio._path_resolver = resolver
+        servicio._path_validator = PathValidator(roots=[tmp_path])
+
+        with patch.dict(os.environ, {}, clear=True):
+            dirs = servicio._plugin_dirs()
+
+        assert selected.resolve() / "overwrite" in dirs
+        assert mod.resolve() in dirs
