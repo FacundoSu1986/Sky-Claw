@@ -1484,8 +1484,53 @@ class TestInstalacionMo2Inyectada:
             mo2_install_dir=selected,
         )
         with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=True):
+            # La rama 1 (hint) SÍ se ejecuta y devuelve `selected` (no se ignora
+            # el hint): lo que cae a global es la resolución de METADATA, porque
+            # `selected` no tiene INI portable — no la selección de instalación.
+            assert _mismo_path(resolver._directorio_instalacion_mo2(), selected)
             mods = resolver.get_mo2_mods_path()
         assert _mismo_path(mods, mods_global)
+
+    def test_hint_valido_con_metadata_fuera_del_sandbox_falla_cerrado(
+        self,
+        tmp_path: pathlib.Path,
+        tmp_path_factory: pytest.TempPathFactory,
+    ) -> None:
+        """Un hint válido cuyo INI portable apunta FUERA del sandbox falla cerrado.
+
+        Asimetría que podría abrir el cable: el hint valida contra el sandbox
+        (está bajo ``tmp_path``), pero el ``base_directory`` del ``ModOrganizer.ini``
+        portable apunta a un árbol NO sandboxeado. ``_metadata_de_instancia``
+        valida ``raiz_datos`` **y** ``mods`` de la metadata contra el sandbox, así
+        que la resolución falla cerrado en vez de operar sobre un path externo —
+        el mismo contrato que ``test_t6`` prueba para ``MO2_PATH``, ahora por la
+        puerta del hint inyectado.
+        """
+        selected = tmp_path / "selected"
+        selected.mkdir()
+        (selected / "ModOrganizer.exe").write_bytes(b"fake exe")
+        # base_directory FUERA del sandbox: un árbol generado con
+        # ``tmp_path_factory`` (no bajo ``tmp_path``), como en
+        # ``test_sin_seam_el_mismo_wiring_falla_cerrado``.
+        externo = tmp_path_factory.mktemp("instance_externa_mo2")
+        (externo / "mods").mkdir(parents=True)
+        (selected / "ModOrganizer.ini").write_text(
+            _texto_ini_mo2(base_directory=_formato_qt(externo)),
+            encoding="utf-8",
+        )
+        resolver = PathResolutionService(
+            # Sandbox = solo tmp_path; `externo` (la metadata) queda fuera.
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=selected,
+        )
+        # sanity: la metadata realmente vive fuera del sandbox (no bajo tmp_path).
+        assert not _mismo_path(externo, tmp_path) and tmp_path not in externo.parents
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            pytest.raises(RuntimeError, match="fuera de las raíces permitidas"),
+        ):
+            resolver.get_mo2_mods_path()
 
     def test_hint_fuera_del_sandbox_no_degrada_al_entorno(
         self,
