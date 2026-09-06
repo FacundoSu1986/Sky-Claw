@@ -1288,7 +1288,7 @@ class TestAnclaConstructoresManualesDeMods:
         # (288) y en el paso legacy de get_mo2_mods_path (903). Cualquier
         # nueva construcción de `<base>/mods` debe ir por estas tres rutas
         # o extender el ancla con su racional.
-        "sky_claw/app/core/path_resolver.py": (253, 314, 933),
+        "sky_claw/app/core/path_resolver.py": (253, 314, 934),
         # Instaladores NGIO/FOMOD del agente LLM sobre mo2.root del registry:
         # superficie agente, layout portable asumido — fuera de alcance (PR-0).
         "sky_claw/app/agent/tools/external_tools.py": (239, 288),
@@ -2657,6 +2657,43 @@ class TestRaizDeDatosDeInstanciaSeparada:
         for mo2_usado in capturados:
             assert _mismo_path(mo2_usado, data), f"preflight sobre install: {mo2_usado}"
             assert not _mismo_path(mo2_usado, install)
+
+    def test_metadata_de_instancia_preserva_mod_directory_declarado_custom(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """La metadata validada preserva mod_directory_declarado=True cuando el INI declara mod_directory."""
+        mods_custom = tmp_path / "ModsPersonales"
+        install, data, mods = self._montar_split(
+            tmp_path,
+            mod_directory=mods_custom,
+        )
+        resolver = self._resolver_con_hint(tmp_path, install)
+        with patch.dict(os.environ, {}, clear=True):
+            metadata = resolver._metadata_de_instancia(install)
+
+        assert metadata is not None
+        assert _mismo_path(metadata.raiz_datos, data)
+        assert _mismo_path(metadata.mods, mods)
+        assert metadata.mod_directory_declarado is True
+
+    def test_metadata_de_instancia_mod_directory_declarado_es_false_en_layout_default(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """La metadata validada tiene mod_directory_declarado=False en layout default sin mod_directory."""
+        install, data, mods = self._montar_split(
+            tmp_path,
+            mod_directory=None,
+        )
+        resolver = self._resolver_con_hint(tmp_path, install)
+        with patch.dict(os.environ, {}, clear=True):
+            metadata = resolver._metadata_de_instancia(install)
+
+        assert metadata is not None
+        assert _mismo_path(metadata.raiz_datos, data)
+        assert _mismo_path(metadata.mods, mods)
+        assert metadata.mod_directory_declarado is False
 
 
 class TestModsDirSeparadoEnConsumidoresDeDatos:

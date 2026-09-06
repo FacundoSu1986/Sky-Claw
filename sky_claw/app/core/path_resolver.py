@@ -753,6 +753,7 @@ class PathResolutionService:
             raiz_datos=raiz_validada,
             mods=mods_validado,
             origen=metadata.origen,
+            mod_directory_declarado=metadata.mod_directory_declarado,
         )
 
     @staticmethod
