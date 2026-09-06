@@ -483,10 +483,14 @@ class LootSortingService:
         # El MODS_DIR DECLARADO (pasado por el caller, `mod_directory` puede
         # vivir fuera de <datos>/mods) manda sobre el default; la coacción
         # isinstance defiende de resolvers mockeados y conserva el default
-        # histórico. El overwrite sigue colgando de la raíz de datos.
-        mo2_mods_dir = (
-            mods_dir if mo2_ok and isinstance(mods_dir, pathlib.Path) else (raw_mo2 / "mods" if mo2_ok else None)
-        )
+        from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
+
+        if mods_dir is MODS_DIR_UNAVAILABLE:
+            mo2_mods_dir = None
+        elif mo2_ok and isinstance(mods_dir, pathlib.Path):
+            mo2_mods_dir = mods_dir
+        else:
+            mo2_mods_dir = raw_mo2 / "mods" if mo2_ok else None
         mo2_overwrite_dir = raw_mo2 / "overwrite" if mo2_ok else None
 
         # Para el set de HABILITADOS preferimos plugins.txt (activos con `*`)

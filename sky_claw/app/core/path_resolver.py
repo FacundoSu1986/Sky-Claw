@@ -146,6 +146,22 @@ def _leer_seccion_ini(texto: str, seccion: str) -> dict[str, str]:
     return valores
 
 
+class _ModsDirUnavailableSentinel:
+    """Señal opaca de que la instancia declaró un MODS_DIR pero no es resoluble."""
+
+    def __repr__(self) -> str:
+        return "<MODS_DIR_UNAVAILABLE>"
+
+
+MODS_DIR_UNAVAILABLE = _ModsDirUnavailableSentinel()
+
+
+def ini_declara_mod_directory(contenido_ini: str) -> bool:
+    """True si la sección [Settings] del INI declara explícitamente `mod_directory`."""
+    valores = _leer_seccion_ini(contenido_ini, _SECCION_SETTINGS_DE_MO2)
+    return _CLAVE_MOD_DIRECTORY_DE_MO2 in valores
+
+
 @dataclass(frozen=True, slots=True)
 class MetadataInstanciaMO2:
     """Raíz de datos de la instancia MO2 según su ``ModOrganizer.ini``.
@@ -156,11 +172,14 @@ class MetadataInstanciaMO2:
     junto al ejecutable), ``"global"`` (única instancia bajo
     ``%LOCALAPPDATA%\\ModOrganizer``) o ``"mo2_path_datos"`` (deferencia ante
     un ``MO2_PATH`` explícito con semántica de datos).
+    ``mod_directory_declarado`` indica si ``mod_directory`` estuvo explícitamente
+    presente en la sección ``[Settings]`` del INI.
     """
 
     raiz_datos: pathlib.Path
     mods: pathlib.Path
     origen: str
+    mod_directory_declarado: bool = False
 
 
 def parsear_metadata_instancia_mo2(
@@ -177,6 +196,7 @@ def parsear_metadata_instancia_mo2(
     """
     valores = _leer_seccion_ini(contenido_ini, _SECCION_SETTINGS_DE_MO2)
     base_str = valores.get(_CLAVE_BASE_DIRECTORY_DE_MO2) or str(directorio_del_ini)
+    custom_mods = _CLAVE_MOD_DIRECTORY_DE_MO2 in valores
     mods_str = valores.get(_CLAVE_MOD_DIRECTORY_DE_MO2) or f"{base_str}/mods"
     if _VAR_BASE_DIR_DE_MO2 in mods_str:
         mods_str = mods_str.replace(_VAR_BASE_DIR_DE_MO2, base_str)
@@ -184,7 +204,12 @@ def parsear_metadata_instancia_mo2(
     mods = pathlib.Path(mods_str)
     if not mods.is_absolute() or not base.is_absolute():
         return None
-    return MetadataInstanciaMO2(raiz_datos=base, mods=mods, origen="portable")
+    return MetadataInstanciaMO2(
+        raiz_datos=base,
+        mods=mods,
+        origen="portable",
+        mod_directory_declarado=custom_mods,
+    )
 
 
 def resolver_mods_dir_de_instancia_mo2(
@@ -274,6 +299,7 @@ def descubrir_metadata_instancia_mo2(
                 raiz_datos=_canonicalizar(metadata.raiz_datos),
                 mods=_canonicalizar(metadata.mods),
                 origen="portable",
+                mod_directory_declarado=metadata.mod_directory_declarado,
             )
 
     # 2. Deferencia: un MO2_PATH explícito con semántica de datos (sin exe,
@@ -287,6 +313,7 @@ def descubrir_metadata_instancia_mo2(
             raiz_datos=_canonicalizar(install_dir),
             mods=_canonicalizar(install_dir / "mods"),
             origen="mo2_path_datos",
+            mod_directory_declarado=False,
         )
 
     # 3. Instancia global: %LOCALAPPDATA%/ModOrganizer/<instancia>/ModOrganizer.ini
@@ -339,6 +366,7 @@ def descubrir_metadata_instancia_mo2(
         raiz_datos=_canonicalizar(metadata.raiz_datos),
         mods=_canonicalizar(metadata.mods),
         origen="global",
+        mod_directory_declarado=metadata.mod_directory_declarado,
     )
 
 
@@ -422,6 +450,12 @@ class PathResolver(Protocol):
         Returns:
             Nombre del perfil activo o ``'Default'`` si no se puede determinar.
         """
+        ...
+
+    def get_mo2_mods_path_best_effort(
+        self,
+    ) -> pathlib.Path | _ModsDirUnavailableSentinel | None:
+        """MODS_DIR declarado de la instancia, señal opaca de no-resoluble, o ``None``."""
         ...
 
 
@@ -861,18 +895,14 @@ class PathResolutionService:
         mo2_mods_path_str = os.environ.get("MO2_MODS_PATH", "")
         if mo2_mods_path_str:
             validated_path = self.validate_env_path(mo2_mods_path_str, "MO2_MODS_PATH")
-            if validated_path is not None:
-                try:
-                    resolved = validated_path.resolve(strict=True)
-                except (FileNotFoundError, OSError) as exc:
-                    logger.debug(
-                        "MO2_MODS_PATH no resuelve: %s — %s",
-                        validated_path,
-                        exc,
-                    )
-                else:
-                    self._exigir_directorio_mods(resolved, "MO2_MODS_PATH")
-                    return resolved
+            if validated_path is None:
+                raise RuntimeError(f"MO2_MODS_PATH ({mo2_mods_path_str}) falló la validación de seguridad.")
+            try:
+                resolved = validated_path.resolve(strict=True)
+            except (FileNotFoundError, OSError) as exc:
+                raise RuntimeError(f"MO2_MODS_PATH ({validated_path}) no existe o no es accesible.") from exc
+            self._exigir_directorio_mods(resolved, "MO2_MODS_PATH")
+            return resolved
 
         # 2. Metadata de la instancia MO2 (instalación != datos de la instancia).
         # La instancia global se descubre desde %LOCALAPPDATA% y no necesita que
@@ -913,19 +943,88 @@ class PathResolutionService:
             "No se pudo detectar la ruta de MO2. Configure MO2_PATH o MO2_MODS_PATH en las variables de entorno."
         )
 
-    def get_mo2_mods_path_best_effort(self) -> pathlib.Path | None:
-        """MODS_DIR declarado de la instancia, o ``None`` — para solo-lectura.
+    def tiene_mods_declarado(self) -> bool:
+        """Indica si la instancia o el entorno DECLARARON una ruta de mods.
+
+        True si:
+        - ``MO2_MODS_PATH`` está configurado y no vacío en el entorno.
+        - O el archivo ``ModOrganizer.ini`` de la instancia declara
+          sintácticamente ``mod_directory`` en ``[Settings]`` (incluso si el
+          path es inválido, no absoluto o falla validación).
+
+        False cuando no hay declaración explícita y el layout es el default
+        ``<base_directory>/mods`` o portable puro sin metadata.
+        """
+        if bool(os.environ.get("MO2_MODS_PATH", "")):
+            return True
+
+        install_dir = self._directorio_instalacion_mo2()
+        if install_dir is not None:
+            ini_portable = install_dir / "ModOrganizer.ini"
+            if ini_portable.is_file():
+                try:
+                    contenido = ini_portable.read_text(encoding="utf-8-sig", errors="replace")
+                    if ini_declara_mod_directory(contenido):
+                        return True
+                except OSError:
+                    return True
+
+        raiz = _raiz_de_instancias_globales()
+        if raiz is not None and raiz.is_dir():
+            try:
+                for hijo in raiz.iterdir():
+                    ini_global = hijo / "ModOrganizer.ini"
+                    if ini_global.is_file():
+                        try:
+                            contenido = ini_global.read_text(encoding="utf-8-sig", errors="replace")
+                            if ini_declara_mod_directory(contenido):
+                                return True
+                        except OSError:
+                            return True
+            except OSError:
+                pass
+
+        try:
+            metadata = self._metadata_de_instancia(install_dir)
+            if metadata is not None and metadata.mod_directory_declarado:
+                return True
+        except RuntimeError:
+            return True
+
+        return False
+
+    def get_mo2_mods_path_best_effort(
+        self,
+    ) -> pathlib.Path | _ModsDirUnavailableSentinel | None:
+        """MODS_DIR declarado de la instancia, señal opaca de no-resoluble, o ``None``.
 
         Espejo best-effort de :meth:`get_mo2_mods_path` para sensores de
-        preflight y previews: sin mods resoluble omiten el sensor ("no
-        configurado", lección #250) en vez de mentir verde. NO sustituye la
-        resolución exigida de los flujos mutantes, que sigue pasando por
-        :meth:`get_mo2_mods_path` (falla cerrado con evidencia).
+        preflight y previews:
+        - Si el directorio de mods resuelve: devuelve el :class:`pathlib.Path`
+          validado (:data:`RESOLVED`).
+        - Si la instancia DECLARÓ un ``mod_directory`` (o ``MO2_MODS_PATH``)
+          pero este no es resoluble o es inválido: devuelve
+          :data:`MODS_DIR_UNAVAILABLE` (:data:`DECLARED_BUT_UNAVAILABLE`). Los
+          sensores omiten el escaneo y NO degradan al default ``<datos>/mods``
+          (evita falso verde sobre un árbol inventado).
+        - Si no hay metadata o la instancia no declaró un ``mod_directory``
+          custom: devuelve ``None`` (:data:`DEFAULT_ALLOWED`), permitiendo el
+          fallback al default histórico ``<datos>/mods`` para layouts portables.
         """
         try:
             mods = self.get_mo2_mods_path()
-        except Exception:  # noqa: BLE001 — boundary best-effort declarado: el sensor se omite, no degrada a <datos>/mods inventado
-            logger.debug("MODS_DIR no resoluble (best-effort): se omite.", exc_info=True)
+        except Exception:  # noqa: BLE001 — boundary best-effort declarado
+            if self.tiene_mods_declarado():
+                logger.debug(
+                    "MODS_DIR declarado pero no resoluble (best-effort): "
+                    "se emite MODS_DIR_UNAVAILABLE para omitir escaneo.",
+                    exc_info=True,
+                )
+                return MODS_DIR_UNAVAILABLE
+            logger.debug(
+                "MODS_DIR no resoluble sin declaración custom (best-effort): fallback default permitido.",
+                exc_info=True,
+            )
             return None
         return mods if isinstance(mods, pathlib.Path) else None
 

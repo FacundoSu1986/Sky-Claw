@@ -52,7 +52,7 @@ def build_vfs_sensor(
     raw_game: pathlib.Path | None,
     raw_mo2: pathlib.Path | None,
     scan_mods_dir: bool,
-    mods_dir: pathlib.Path | None = None,
+    mods_dir: pathlib.Path | object | None = None,
 ) -> VfsHealthChecker | None:
     """Construye el ``VfsHealthChecker`` sobre rutas CRUDAS.
 
@@ -64,10 +64,19 @@ def build_vfs_sensor(
     ``mods_dir`` (de ``get_mo2_mods_path_best_effort``) separa el MODS_DIR
     declarado de la raíz de datos: con ``mod_directory`` custom, el scan de
     primer nivel recorre ÉL. ``None`` conserva el default ``<raíz>/mods``.
+    Si es ``MODS_DIR_UNAVAILABLE``, se omite el escaneo de mods.
     """
     game = raw_game if isinstance(raw_game, pathlib.Path) else None
     mo2 = raw_mo2 if isinstance(raw_mo2, pathlib.Path) else None
-    mods = mods_dir if isinstance(mods_dir, pathlib.Path) else None
+    from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
+
+    mods: object
+    if mods_dir is MODS_DIR_UNAVAILABLE:
+        mods = MODS_DIR_UNAVAILABLE
+    elif isinstance(mods_dir, pathlib.Path):
+        mods = mods_dir
+    else:
+        mods = None
     if game is None and mo2 is None:
         return None
     from sky_claw.local.validators.vfs_health import VfsHealthChecker
@@ -137,7 +146,7 @@ def build_mo2_profile_sources_resolver(
     game: pathlib.Path,
     mo2: pathlib.Path,
     profile: str | None,
-    mods_dir: pathlib.Path | None = None,
+    mods_dir: pathlib.Path | object | None = None,
 ) -> Callable[[], PluginSources] | None:
     """Resolver de fuentes de plugins desde el **perfil MO2 activo** (T-16c·2/3).
 
@@ -174,7 +183,14 @@ def build_mo2_profile_sources_resolver(
     if load_order_file is None:
         return None
     game_data_dir = game / "Data"
-    mo2_mods_dir = mods_dir if isinstance(mods_dir, pathlib.Path) else mo2 / "mods"
+    from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
+
+    if mods_dir is MODS_DIR_UNAVAILABLE:
+        mo2_mods_dir = None
+    elif isinstance(mods_dir, pathlib.Path):
+        mo2_mods_dir = mods_dir
+    else:
+        mo2_mods_dir = mo2 / "mods"
     mo2_overwrite_dir = mo2 / "overwrite"
 
     def _resolve() -> PluginSources:

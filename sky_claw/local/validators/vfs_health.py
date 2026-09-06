@@ -89,7 +89,7 @@ class VfsHealthChecker:
         game_path: pathlib.Path | None = None,
         mo2_root: pathlib.Path | None = None,
         scan_mods_dir: bool = True,
-        mods_dir: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | object | None = None,
     ) -> None:
         self._game_path = game_path
         self._mo2_root = mo2_root
@@ -131,8 +131,15 @@ class VfsHealthChecker:
             # El MODS_DIR declarado manda sobre <raíz>/mods: con
             # ``mod_directory`` custom escanear el default sería ceguera
             # voluntaria (mismo contrato que get_mo2_mods_path centraliza).
-            mods_dir = self._mods_dir if self._mods_dir is not None else self._mo2_root / "mods"
-            if self._scan_mods_dir and mods_dir.is_dir():
+            from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
+
+            if self._mods_dir is MODS_DIR_UNAVAILABLE:
+                mods_dir = None
+            elif self._mods_dir is not None:
+                mods_dir = self._mods_dir
+            else:
+                mods_dir = self._mo2_root / "mods"
+            if self._scan_mods_dir and mods_dir is not None and mods_dir.is_dir():
                 for mod_dir in sorted(mods_dir.iterdir()):
                     add(mod_dir, "warning", _REMEDIATION_MO2)
 
