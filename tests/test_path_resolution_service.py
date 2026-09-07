@@ -1318,8 +1318,8 @@ class TestAnclaConstructoresManualesDeMods:
         # AppContext: fallback legacy en bootstrap de MO2Controller (975).
         # Handoff reconciliation usa mo2.mods_dir directamente (Issue #557).
         "sky_claw/app_context.py": (975,),
-        # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None (250).
-        "sky_claw/__main__.py": (250,),
+        # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None (257).
+        "sky_claw/__main__.py": (257,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
         "sky_claw/local/tools/output_targets.py": (157,),
         # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.
