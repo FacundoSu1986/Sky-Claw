@@ -1295,8 +1295,8 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/app/agent/tools/external_tools.py": (220, 267),
         # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
         "sky_claw/local/fomod/plugin_state.py": (74,),
-        # BrokeredLootRunner: acepta mods_dir; líneas 61 y 221 son fallbacks legacy.
-        "sky_claw/local/mo2/brokered_loot.py": (61, 221),
+        # BrokeredLootRunner: acepta mods_dir; líneas 61 y 233 son fallbacks legacy.
+        "sky_claw/local/mo2/brokered_loot.py": (61, 233),
         # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (127,),
         "sky_claw/local/mo2/vfs_attestation.py": (182, 243),
@@ -1921,6 +1921,7 @@ class TestAnclaSemanticaDeRaicesMo2:
       rigs con instancia separada).
     - dyndolod_service (runner): ``DynDOLODConfig.mo2_path`` no se usa en
       ejecución (solo ``mo2_mods_path``/outputs); INSTALL opaco.
+    - loot_service: install_root para BrokeredLootRunner en lazy _ensure_loot_runner.
     - wrye_bash_service (runner): ``WryeBashConfig.mo2_path`` sin uso en
       ejecución headless; INSTALL opaco.
     - xedit_service: capability gate del scan (no deriva paths de datos; el
@@ -1932,9 +1933,8 @@ class TestAnclaSemanticaDeRaicesMo2:
     - chain_preview_service: ``mods/``/``overwrite/`` del preview (+ señal
       explícita antes de ``detect_mo2_path``).
     - dyndolod_service (preflight): overwrite + profile sources.
-    - loot_service (3): preflight (sources/overwrite, + señal antes de
-      detect), ``LoadOrderFileResolver`` (profiles/<perfil>/) y runner
-      brokered (attestation autoconsistente sobre el perfil).
+    - loot_service (2): preflight (sources/overwrite, + señal antes de
+      detect) y ``LoadOrderFileResolver`` (profiles/<perfil>/).
     - pandora_service: overwrite + perfil.
     - synthesis_service (2): output target y preflight.
     - wrye_bash_service (preflight): overwrite + profile sources.
@@ -1943,6 +1943,8 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     - app_context: bootstrap de MO2Controller para operaciones mutantes
       (falla cerrado con RuntimeError si la metadata es corrupta o queda fuera del sandbox).
+    - loot_service: data_root para BrokeredLootRunner en lazy _ensure_loot_runner
+      (falla cerrado con RuntimeError si la metadata es corrupta).
 
     RAW_INSTALL_FOR_LSTAT (``get_mo2_path_raw``): solo xedit (VFS lstat sobre
     install). Los preflights migrados usan la raíz de datos validada como raw
@@ -1955,6 +1957,7 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
+        "sky_claw/local/tools/loot_service.py": 1,
         "sky_claw/local/tools/wrye_bash_service.py": 1,
         "sky_claw/local/tools/xedit_service.py": 1,
     }
@@ -1965,7 +1968,7 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/app/orchestrator/dispatcher_dependencies.py": 1,
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
-        "sky_claw/local/tools/loot_service.py": 3,
+        "sky_claw/local/tools/loot_service.py": 2,
         "sky_claw/local/tools/pandora_service.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
         "sky_claw/local/tools/wrye_bash_service.py": 1,
@@ -1974,6 +1977,7 @@ class TestAnclaSemanticaDeRaicesMo2:
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root_estricto()``.
     _INSTANCE_DATA_ESTRICTO: dict[str, int] = {
         "sky_claw/app_context.py": 1,
+        "sky_claw/local/tools/loot_service.py": 1,
     }
 
     #: Módulo → n.º de usos de ``get_mo2_mods_path()`` (MODS_DIR estricto,
@@ -1983,6 +1987,7 @@ class TestAnclaSemanticaDeRaicesMo2:
     _MODS_ESTRICTO: dict[str, int] = {
         "sky_claw/app/orchestrator/asset_conflict_scan.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 3,
+        "sky_claw/local/tools/loot_service.py": 1,
     }
 
     #: Módulo → n.º de usos de ``get_mo2_mods_path_best_effort()``: sensores
