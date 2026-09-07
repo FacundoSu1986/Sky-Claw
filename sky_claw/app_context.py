@@ -969,10 +969,8 @@ class AppContext:
             )
             resolved_install = path_service.get_mo2_path() or mo2_root
             resolved_data = path_service.get_mo2_instance_data_root() or resolved_install
-            try:
-                resolved_mods = path_service.get_mo2_mods_path()
-            except Exception:
-                resolved_mods = resolved_data / "mods"
+            destino_mods = path_service.get_mo2_mods_path_para_destino()
+            resolved_mods = destino_mods if destino_mods is not None else (resolved_data / "mods")
 
             mo2 = MO2Controller(
                 install_root=resolved_install,
