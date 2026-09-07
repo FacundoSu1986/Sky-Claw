@@ -21,7 +21,12 @@ import psutil
 from sky_claw.app.security.file_permissions import restrict_to_owner
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
-from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
+from sky_claw.local.mo2.vfs_contracts import (
+    VFS_MANIFEST_PROTOCOL_VERSION,
+    VFS_PROTOCOL_VERSION,
+    VfsJob,
+    VfsJobResult,
+)
 from sky_claw.local.mo2.vfs_ipc import (
     VfsFrameError,
     read_authenticated_message,
@@ -301,7 +306,7 @@ class VfsExecutionBroker:
             await self.wait_until_ready()
             manifest_path = self._jobs_dir / f"{job.job_id}.json"
             manifest = VfsWorkerManifest(
-                protocol_version=VFS_PROTOCOL_VERSION,
+                protocol_version=VFS_MANIFEST_PROTOCOL_VERSION,
                 job=job,
                 challenge=challenge,
                 data_root=effective_data.resolve(),
