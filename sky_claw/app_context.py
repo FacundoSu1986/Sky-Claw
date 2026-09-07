@@ -370,6 +370,7 @@ class AppContext:
         # bootloader de la GUI es el caso que motivó esto. Arranca en el mismo
         # fallback que `_resolve_mo2_profile` para que nunca sea None.
         self.mo2_profile: str = PERFIL_MO2_POR_DEFECTO
+        self.mo2: MO2Controller | None = None
 
         # ARC-02: AsyncExitStack para compensación atómica ante fallos
         self._exit_stack = AsyncExitStack()
@@ -715,6 +716,7 @@ class AppContext:
         self.sender = None
         self.sync_engine = None
         self.tools_installer = None
+        self.mo2 = None
 
     async def _rollback_startup(self) -> None:
         try:
@@ -978,6 +980,7 @@ class AppContext:
                 mods_dir=resolved_mods,
                 path_validator=validator,
             )
+            self.mo2 = mo2
 
             await self._await_startup(self.network.initialize(nexus_key, self._args.staging_dir))
 
@@ -1371,7 +1374,7 @@ class AppContext:
                 from sky_claw.local.tools.artifact_digest import digest_arbol
                 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 
-                mods_root = pathlib.Path(mo2_root) / "mods" if mo2_root else None
+                mods_root = mo2.mods_dir
                 game_path = configured_game if isinstance(configured_game, pathlib.Path) else None
                 data_dir = game_path / "Data" if game_path is not None else None
                 if game_path is not None and data_dir is not None and mods_root is not None:
@@ -1428,10 +1431,11 @@ class AppContext:
                         # juego, así que sin esa raíz su backup queda huérfano para
                         # siempre.
                         productores=construir_productores_de_move_aside(
-                            mo2_root=mo2_root,
+                            mo2_root=mo2.install_root,
+                            mods_dir=mo2.mods_dir,
                             game=configured_game,
                         ),
-                        sandbox_root=mo2_root / ".skyclaw_sandbox",
+                        sandbox_root=mo2.data_root / ".skyclaw_sandbox",
                         lock_manager=lock_manager,
                     )
                 )
