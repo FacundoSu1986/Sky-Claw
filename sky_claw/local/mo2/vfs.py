@@ -135,9 +135,9 @@ class MO2Controller:
                 )
             if mo2_root is not None and mo2_root.resolve() != install_root.resolve():
                 raise ValueError("mo2_root diverge de install_root")
-            self._install_root = install_root.resolve()
-            self._data_root = data_root.resolve()
-            self._mods_dir = mods_dir.resolve()
+            self._install_root = path_validator.validate(install_root)
+            self._data_root = path_validator.validate(data_root)
+            self._mods_dir = path_validator.validate(mods_dir)
 
         self._root = self._install_root  # alias legacy para self.root
         self._validator = path_validator

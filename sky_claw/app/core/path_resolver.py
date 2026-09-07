@@ -1170,6 +1170,23 @@ class PathResolutionService:
             return install_dir
         return None
 
+    def get_mo2_instance_data_root_estricto(self) -> pathlib.Path | None:
+        """Raíz de DATOS de la instancia MO2 estricta (falla cerrado ante metadata corrupta).
+
+        A diferencia de :meth:`get_mo2_instance_data_root`, propaga ``RuntimeError``
+        si la metadata de la instancia existe pero es inválida o queda fuera del
+        sandbox, evitando que operaciones mutantes degraden silenciosamente a la
+        instalación. Devuelve ``None`` solo si no hay evidencia de instancia ni
+        instalación conocida.
+        """
+        install_dir = self._directorio_instalacion_mo2()
+        metadata = self._metadata_de_instancia(install_dir)
+        if metadata is not None:
+            return metadata.raiz_datos
+        if install_dir is not None and self._es_directorio_real(install_dir, "instance_data_legacy"):
+            return install_dir
+        return None
+
     # Accessors CRUDOS (sin resolver): el validate() de los getters de arriba
     # sigue los symlinks, borrando exactamente lo que el VfsHealthChecker del
     # preflight necesita inspeccionar (review Codex PR #239). Solo para
