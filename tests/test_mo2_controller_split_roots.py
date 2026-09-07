@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sky_claw.app.security.path_validator import PathValidator
+from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.local.mo2.vfs import MO2Controller
 
 
@@ -307,3 +307,259 @@ class TestMO2ControllerSplitRootsContract:
         data_root, mods_dir = scanner._resolve_mo2_instance_roots(mo2_root)
         assert mods_dir != cwd_resolved
         assert mods_dir == mo2_root / "mods"
+
+    def test_constructor_explicito_rechaza_install_root_fuera_de_sandbox(self, tmp_path: pathlib.Path) -> None:
+        """P1-A1.1: install_root fuera de sandbox -> PathViolationError fail-closed."""
+        sandbox = tmp_path / "Sandbox"
+        sandbox.mkdir()
+        validator = PathValidator(roots=[sandbox])
+        outside = tmp_path / "Outside"
+        outside.mkdir()
+        data = sandbox / "Data"
+        mods = sandbox / "Mods"
+        data.mkdir()
+        mods.mkdir()
+        with pytest.raises(PathViolationError):
+            MO2Controller(install_root=outside, data_root=data, mods_dir=mods, path_validator=validator)
+
+    def test_constructor_explicito_rechaza_data_root_fuera_de_sandbox(self, tmp_path: pathlib.Path) -> None:
+        """P1-A1.2: data_root fuera de sandbox -> PathViolationError fail-closed."""
+        sandbox = tmp_path / "Sandbox"
+        sandbox.mkdir()
+        validator = PathValidator(roots=[sandbox])
+        outside = tmp_path / "Outside"
+        outside.mkdir()
+        install = sandbox / "Install"
+        mods = sandbox / "Mods"
+        install.mkdir()
+        mods.mkdir()
+        with pytest.raises(PathViolationError):
+            MO2Controller(install_root=install, data_root=outside, mods_dir=mods, path_validator=validator)
+
+    def test_constructor_explicito_rechaza_mods_dir_fuera_de_sandbox(self, tmp_path: pathlib.Path) -> None:
+        """P1-A1.3: mods_dir fuera de sandbox -> PathViolationError fail-closed."""
+        sandbox = tmp_path / "Sandbox"
+        sandbox.mkdir()
+        validator = PathValidator(roots=[sandbox])
+        outside = tmp_path / "Outside"
+        outside.mkdir()
+        install = sandbox / "Install"
+        data = sandbox / "Data"
+        install.mkdir()
+        data.mkdir()
+        with pytest.raises(PathViolationError):
+            MO2Controller(install_root=install, data_root=data, mods_dir=outside, path_validator=validator)
+
+    def test_constructor_explicito_rechaza_symlink_que_escapa_del_sandbox(self, tmp_path: pathlib.Path) -> None:
+        """P1-A1.4: symlink/junction que escapa del sandbox -> PathViolationError fail-closed."""
+        sandbox = tmp_path / "Sandbox"
+        sandbox.mkdir()
+        validator = PathValidator(roots=[sandbox])
+        outside = tmp_path / "Outside"
+        outside.mkdir()
+        data = sandbox / "Data"
+        mods = sandbox / "Mods"
+        data.mkdir()
+        mods.mkdir()
+        symlink_install = sandbox / "SymlinkInstall"
+        try:
+            symlink_install.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks no soportados o privilegios insuficientes en esta plataforma")
+        with pytest.raises(PathViolationError):
+            MO2Controller(install_root=symlink_install, data_root=data, mods_dir=mods, path_validator=validator)
+
+    def test_constructor_explicito_raices_separadas_validas_y_autorizadas_aceptadas(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """P1-A1.5: roots separadas válidas y autorizadas siguen funcionando."""
+        install = tmp_path / "Install"
+        data = tmp_path / "Data"
+        mods = tmp_path / "Mods"
+        install.mkdir()
+        data.mkdir()
+        mods.mkdir()
+        validator = PathValidator(roots=[install, data, mods])
+        ctrl = MO2Controller(install_root=install, data_root=data, mods_dir=mods, path_validator=validator)
+        assert ctrl.install_root == install.resolve()
+        assert ctrl.data_root == data.resolve()
+        assert ctrl.mods_dir == mods.resolve()
+
+    def test_bootstrap_mo2_mods_path_con_ini_corrupto_falla_y_no_toca_install_traps(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1-A2.A: MO2_MODS_PATH válido + ModOrganizer.ini corrupto aborta y no degrada a INSTALL."""
+        from sky_claw.app.core.path_resolver import PathResolutionService
+        from sky_claw.app_context import _construir_raices_sandbox
+
+        install = tmp_path / "MO2_Install"
+        install.mkdir()
+        (install / "ModOrganizer.exe").write_bytes(b"fake-exe")
+        (install / "ModOrganizer.ini").write_text("[Settings]\nbase_directory = relative_bad\n", encoding="utf-8")
+
+        install_profiles = install / "profiles" / "Default"
+        install_profiles.mkdir(parents=True)
+        trap_modlist = install_profiles / "modlist.txt"
+        trap_modlist.write_text("# INSTALL TRAP\n", encoding="utf-8")
+        install_overwrite = install / "overwrite"
+        install_overwrite.mkdir()
+        trap_overwrite = install_overwrite / "trap.txt"
+        trap_overwrite.write_text("trap", encoding="utf-8")
+
+        custom_mods = tmp_path / "CustomMods"
+        custom_mods.mkdir()
+        monkeypatch.setenv("MO2_MODS_PATH", str(custom_mods))
+
+        sandbox_roots = _construir_raices_sandbox(mo2_root=install, install_dir=None, skyrim_path=None)
+        validator = PathValidator(roots=sandbox_roots)
+        svc = PathResolutionService(path_validator=validator, profile_name="Default", mo2_install_dir=install)
+
+        with pytest.raises(RuntimeError):
+            svc.get_mo2_instance_data_root_estricto()
+
+        assert trap_modlist.read_text(encoding="utf-8") == "# INSTALL TRAP\n"
+        assert trap_overwrite.read_text(encoding="utf-8") == "trap"
+
+    def test_bootstrap_base_directory_fuera_de_sandbox_falla_y_no_toca_install_traps(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """P1-A2.B: base_directory fuera de sandbox aborta y no degrada a INSTALL."""
+        from sky_claw.app.core.path_resolver import PathResolutionService
+
+        install = tmp_path / "MO2_Install"
+        install.mkdir()
+        (install / "ModOrganizer.exe").write_bytes(b"fake-exe")
+        outside_data = tmp_path / "OutsideData"
+        outside_data.mkdir()
+        (install / "ModOrganizer.ini").write_text(
+            f"[Settings]\nbase_directory = {outside_data}\n",
+            encoding="utf-8",
+        )
+
+        install_profiles = install / "profiles" / "Default"
+        install_profiles.mkdir(parents=True)
+        trap_modlist = install_profiles / "modlist.txt"
+        trap_modlist.write_text("# INSTALL TRAP\n", encoding="utf-8")
+        install_overwrite = install / "overwrite"
+        install_overwrite.mkdir()
+        trap_overwrite = install_overwrite / "trap.txt"
+        trap_overwrite.write_text("trap", encoding="utf-8")
+
+        validator = PathValidator(roots=[install])
+        svc = PathResolutionService(path_validator=validator, profile_name="Default", mo2_install_dir=install)
+
+        with pytest.raises(RuntimeError, match="queda fuera de las raíces permitidas del sandbox"):
+            svc.get_mo2_instance_data_root_estricto()
+
+        assert trap_modlist.read_text(encoding="utf-8") == "# INSTALL TRAP\n"
+        assert trap_overwrite.read_text(encoding="utf-8") == "trap"
+
+    def test_bootstrap_portable_sin_metadata_install_data_iguales_funciona(self, tmp_path: pathlib.Path) -> None:
+        """P1-A2.C: Layout portable sin metadata resuelve install == data y funciona normalmente."""
+        from sky_claw.app.core.path_resolver import PathResolutionService
+
+        install = tmp_path / "MO2_Portable"
+        install.mkdir()
+        (install / "ModOrganizer.exe").write_bytes(b"fake-exe")
+
+        validator = PathValidator(roots=[install])
+        svc = PathResolutionService(path_validator=validator, profile_name="Default", mo2_install_dir=install)
+
+        resolved_install = svc.get_mo2_path()
+        resolved_data = svc.get_mo2_instance_data_root_estricto()
+        assert resolved_install == install.resolve()
+        assert resolved_data == install.resolve()
+
+    def test_sandbox_roots_no_autoriza_metadata_mods_shadowed_por_env(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1-A3.1: MO2_MODS_PATH válido autoriza solo custom_a, no custom_b (shadowed)."""
+        from sky_claw.app.core.path_resolver import PathResolutionService
+        from sky_claw.app_context import _construir_raices_sandbox, _mods_candidatos_para_sandbox
+
+        mo2_root = tmp_path / "MO2_Install"
+        mo2_root.mkdir()
+        (mo2_root / "ModOrganizer.exe").write_bytes(b"fake")
+
+        custom_a = tmp_path / "CustomA_Env"
+        custom_a.mkdir()
+        custom_b = tmp_path / "CustomB_Meta"
+        custom_b.mkdir()
+
+        (mo2_root / "ModOrganizer.ini").write_text(
+            f"[Settings]\nmod_directory = {custom_b}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("MO2_MODS_PATH", str(custom_a))
+
+        candidatos = _mods_candidatos_para_sandbox(mo2_root)
+        assert custom_a.resolve() in candidatos
+        assert custom_b.resolve() not in candidatos
+
+        roots = _construir_raices_sandbox(mo2_root, None, None)
+        validator = PathValidator(roots=roots)
+        assert custom_a.resolve() in validator.roots
+        assert custom_b.resolve() not in validator.roots
+
+        svc = PathResolutionService(path_validator=validator, profile_name="Default", mo2_install_dir=mo2_root)
+        assert svc.get_mo2_mods_path() == custom_a.resolve()
+
+    def test_sandbox_roots_env_mods_invalido_no_autoriza_metadata_como_fallback(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1-A3.2: MO2_MODS_PATH inválido no autoriza metadata como fallback silencioso y falla cerrado."""
+        from sky_claw.app.core.path_resolver import PathResolutionService
+        from sky_claw.app_context import _construir_raices_sandbox, _mods_candidatos_para_sandbox
+
+        mo2_root = tmp_path / "MO2_Install"
+        mo2_root.mkdir()
+        (mo2_root / "ModOrganizer.exe").write_bytes(b"fake")
+
+        custom_b = tmp_path / "CustomB_Meta"
+        custom_b.mkdir()
+        (mo2_root / "ModOrganizer.ini").write_text(
+            f"[Settings]\nmod_directory = {custom_b}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("MO2_MODS_PATH", "relativo_invalido")
+
+        candidatos = _mods_candidatos_para_sandbox(mo2_root)
+        assert custom_b.resolve() not in candidatos
+        assert len(candidatos) == 0
+
+        roots = _construir_raices_sandbox(mo2_root, None, None)
+        validator = PathValidator(roots=roots)
+        assert custom_b.resolve() not in validator.roots
+
+        svc = PathResolutionService(path_validator=validator, profile_name="Default", mo2_install_dir=mo2_root)
+        with pytest.raises(RuntimeError):
+            svc.get_mo2_mods_path()
+
+    def test_sandbox_roots_sin_env_autoriza_metadata_mods(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1-A3.3: Sin MO2_MODS_PATH, metadata.mods custom se autoriza y resuelve con normalidad."""
+        from sky_claw.app.core.path_resolver import PathResolutionService
+        from sky_claw.app_context import _construir_raices_sandbox, _mods_candidatos_para_sandbox
+
+        monkeypatch.delenv("MO2_MODS_PATH", raising=False)
+        mo2_root = tmp_path / "MO2_Install"
+        mo2_root.mkdir()
+        (mo2_root / "ModOrganizer.exe").write_bytes(b"fake")
+
+        custom_b = tmp_path / "CustomB_Meta"
+        custom_b.mkdir()
+        (mo2_root / "ModOrganizer.ini").write_text(
+            f"[Settings]\nmod_directory = {custom_b}\n",
+            encoding="utf-8",
+        )
+
+        candidatos = _mods_candidatos_para_sandbox(mo2_root)
+        assert custom_b.resolve() in candidatos
+
+        roots = _construir_raices_sandbox(mo2_root, None, None)
+        validator = PathValidator(roots=roots)
+        assert custom_b.resolve() in validator.roots
+
+        svc = PathResolutionService(path_validator=validator, profile_name="Default", mo2_install_dir=mo2_root)
+        assert svc.get_mo2_mods_path() == custom_b.resolve()

@@ -580,19 +580,25 @@ class LootSortingService:
             if self._path_resolver is None:
                 raise LOOTNotFoundError("Cannot run LOOT under USVFS: no path_resolver configured.")
             game_path = self._path_resolver.get_skyrim_path()
-            # Raíz de DATOS: attestation y load order del broker leen el
-            # perfil (self-consistente: challenge y verify usan este valor).
-            mo2_root = self._path_resolver.get_mo2_instance_data_root()
+            try:
+                data_root = self._path_resolver.get_mo2_instance_data_root_estricto()
+                mods_dir = self._path_resolver.get_mo2_mods_path()
+            except RuntimeError as exc:
+                raise LOOTNotFoundError(f"Cannot run LOOT under USVFS: {exc}") from exc
+
+            install_root = self._path_resolver.get_mo2_path()
             loot_exe = self._loot_exe or self._path_resolver.get_loot_exe()
-            if game_path is None or mo2_root is None or loot_exe is None:
+            if game_path is None or data_root is None or install_root is None or loot_exe is None:
                 raise LOOTNotFoundError("Cannot run LOOT under USVFS: MO2, Skyrim or LOOT path is not configured.")
             from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner
 
-            resolver = LoadOrderFileResolver(mo2_root=mo2_root, profile=profile)
+            resolver = LoadOrderFileResolver(mo2_root=data_root, profile=profile)
             runner = BrokeredLootRunner(
                 broker=self._vfs_broker,
                 instance_id=self._vfs_instance_id,
-                mo2_root=mo2_root,
+                install_root=install_root,
+                data_root=data_root,
+                mods_dir=mods_dir,
                 profile=profile,
                 game_data_dir=game_path / "Data",
                 loot_exe=loot_exe,

@@ -615,3 +615,136 @@ async def test_vfs_health_standalone_resuelve_metadata_fuera_de_install_root(tmp
         assert submit_kwargs["install_root"] == install_root
         assert submit_kwargs["data_root"] == data_root
         assert submit_kwargs["mods_dir"] == mods_dir
+
+
+def test_loot_sorting_service_lazy_construction_propaga_split_roots(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2-B1: LootSortingService lazy (_ensure_loot_runner) resuelve y propaga INSTALL, DATA y MODS separados."""
+    from unittest.mock import MagicMock
+
+    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.local.tools.loot_service import LootSortingService
+
+    install = tmp_path / "Install"
+    data = tmp_path / "Data"
+    mods = tmp_path / "CustomMods"
+    game = tmp_path / "Skyrim"
+
+    install.mkdir()
+    data.mkdir()
+    mods.mkdir()
+    game.mkdir()
+    (game / "Data").mkdir()
+
+    (install / "ModOrganizer.exe").write_bytes(b"fake-exe")
+    (install / "loot.exe").write_bytes(b"fake-loot")
+
+    # Trampas en Install/mods y Data/mods
+    install_trap_mods = install / "mods"
+    install_trap_mods.mkdir()
+    (install_trap_mods / "InstallTrapMod").mkdir()
+
+    data_trap_mods = data / "mods"
+    data_trap_mods.mkdir()
+    (data_trap_mods / "DataTrapMod").mkdir()
+
+    # Perfil en Data/profiles/Test
+    profile_dir = data / "profiles" / "Test"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "modlist.txt").write_text("+TestMod\n", encoding="utf-8")
+
+    # Mod real habilitado en CustomMods
+    (mods / "TestMod").mkdir()
+    (mods / "TestMod" / "plugin.esp").write_bytes(b"fake-plugin")
+
+    # ModOrganizer.ini en install declara base_directory y mod_directory
+    ini_content = (
+        f"[Settings]\nbase_directory = {data.as_posix()}\nmod_directory = {mods.as_posix()}\nselected_profile = Test\n"
+    )
+    (install / "ModOrganizer.ini").write_text(ini_content, encoding="utf-8")
+
+    validator = PathValidator(roots=[install, data, mods, game])
+    resolver = PathResolutionService(
+        path_validator=validator,
+        profile_name="Test",
+        mo2_install_dir=install,
+    )
+    monkeypatch.setenv("SKYRIM_PATH", str(game))
+    monkeypatch.setenv("LOOT_EXE", str(install / "loot.exe"))
+
+    broker = MagicMock()
+    service = LootSortingService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=resolver,
+        vfs_broker=broker,
+        loot_runner=None,
+    )
+
+    runner = service._ensure_loot_runner("Test")
+    assert runner.install_root == install.resolve()
+    assert runner.data_root == data.resolve()
+    assert runner.mods_dir == mods.resolve()
+
+
+def test_loot_sorting_service_lazy_construction_mods_dir_invalido_falla_cerrado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2-B1: Si el MODS_DIR declarado en metadata es inválido/inexistente, falla cerrado sin fallback a Data/mods."""
+    from unittest.mock import MagicMock
+
+    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.local.tools.loot_service import LOOTNotFoundError, LootSortingService
+
+    install = tmp_path / "Install"
+    data = tmp_path / "Data"
+    non_existent_mods = tmp_path / "NonExistentMods"
+    game = tmp_path / "Skyrim"
+
+    install.mkdir()
+    data.mkdir()
+    game.mkdir()
+    (game / "Data").mkdir()
+
+    (install / "ModOrganizer.exe").write_bytes(b"fake-exe")
+    (install / "loot.exe").write_bytes(b"fake-loot")
+
+    # Trampa en Data/mods
+    data_trap_mods = data / "mods"
+    data_trap_mods.mkdir()
+
+    profile_dir = data / "profiles" / "Test"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "modlist.txt").write_text("", encoding="utf-8")
+
+    ini_content = (
+        "[Settings]\n"
+        f"base_directory = {data.as_posix()}\n"
+        f"mod_directory = {non_existent_mods.as_posix()}\n"
+        "selected_profile = Test\n"
+    )
+    (install / "ModOrganizer.ini").write_text(ini_content, encoding="utf-8")
+
+    validator = PathValidator(roots=[install, data, non_existent_mods, game])
+    resolver = PathResolutionService(
+        path_validator=validator,
+        profile_name="Test",
+        mo2_install_dir=install,
+    )
+    monkeypatch.setenv("SKYRIM_PATH", str(game))
+    monkeypatch.setenv("LOOT_EXE", str(install / "loot.exe"))
+
+    broker = MagicMock()
+    service = LootSortingService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=resolver,
+        vfs_broker=broker,
+        loot_runner=None,
+    )
+
+    with pytest.raises(LOOTNotFoundError):
+        service._ensure_loot_runner("Test")

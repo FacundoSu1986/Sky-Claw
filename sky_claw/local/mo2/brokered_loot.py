@@ -81,6 +81,18 @@ class BrokeredLootRunner:
         """Resultado ligado a la invocación async actual."""
         return self._last_result.get()
 
+    @property
+    def install_root(self) -> pathlib.Path:
+        return self._install_root
+
+    @property
+    def data_root(self) -> pathlib.Path:
+        return self._data_root
+
+    @property
+    def mods_dir(self) -> pathlib.Path:
+        return self._mods_dir
+
     def for_profile(self, profile: str) -> BrokeredLootRunner:
         """Crea un runner aislado que resuelve targets del perfil solicitado."""
         if profile == self._profile:

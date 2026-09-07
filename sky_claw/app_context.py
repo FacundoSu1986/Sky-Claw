@@ -271,8 +271,11 @@ def _raiz_datos_instancia_para_sandbox(mo2_root: pathlib.Path) -> pathlib.Path |
 def _mods_candidatos_para_sandbox(mo2_root: pathlib.Path) -> list[pathlib.Path]:
     """Candidatos a directorio mods aptos como raíces de sandbox.
 
-    Registra tanto MO2_MODS_PATH como metadata.mods para que el PathValidator
-    los contenga y PathResolutionService pueda resolverlos con su precedencia canónica.
+    Respeta la precedencia canónica de resolución (MO2_MODS_PATH > metadata.mods):
+    si MO2_MODS_PATH está presente, registra exclusivamente dicho candidato (si es
+    absoluto y válido) y NUNCA autoriza metadata.mods (evitando shadowed roots y
+    fallback silencioso ante variable inválida). Si MO2_MODS_PATH está ausente,
+    metadata.mods se registra normalmente.
     """
     candidatos: list[pathlib.Path] = []
     env_mods = os.environ.get("MO2_MODS_PATH", "").strip()
@@ -282,6 +285,8 @@ def _mods_candidatos_para_sandbox(mo2_root: pathlib.Path) -> list[pathlib.Path]:
             p = raw_env.resolve(strict=False)
             if p.parent != p and p.is_dir():
                 candidatos.append(p)
+        return candidatos
+
     try:
         metadata = descubrir_metadata_instancia_mo2(mo2_root)
     except RuntimeError:
@@ -972,7 +977,7 @@ class AppContext:
                 mo2_install_dir=mo2_root,
             )
             resolved_install = path_service.get_mo2_path() or mo2_root
-            resolved_data = path_service.get_mo2_instance_data_root() or resolved_install
+            resolved_data = path_service.get_mo2_instance_data_root_estricto() or resolved_install
             destino_mods = path_service.get_mo2_mods_path_para_destino()
             resolved_mods = destino_mods if destino_mods is not None else (resolved_data / "mods")
 
