@@ -285,7 +285,10 @@ class GrassCacheService:
             return  # deps concretas (tests) o ya pobladas
         if self._runtime_deps_provider is None:
             return
-        deps = self._runtime_deps_provider()
+        try:
+            deps = self._runtime_deps_provider()
+        except RuntimeError as exc:
+            raise GrassCacheServiceError(f"Error resolviendo dependencias de MO2 para grass cache: {exc}") from exc
         if deps is None:
             return
         self._profile_manager = deps.profile_manager
@@ -353,7 +356,7 @@ class GrassCacheService:
             pm = self._require(self._profile_manager, "profile_manager (GrassProfileManager)")
             mo2 = self._require(self._mo2, "mo2 (MO2Controller)")
             config = self._build_runner_config(params, pm)
-        except GrassCacheServiceError as exc:
+        except (GrassCacheServiceError, RuntimeError) as exc:
             return self._error(str(exc), inicio)
 
         await self._publish(

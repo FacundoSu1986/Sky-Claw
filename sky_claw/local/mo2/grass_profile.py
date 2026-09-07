@@ -137,37 +137,58 @@ class GrassProfileManager:
         assert_safe_component(clone_profile, field="clone_profile")
         assert_safe_component(config_mod_name, field="config_mod_name")
 
-        if path_validator is None and controller is not None:
-            path_validator = controller._validator
         if path_validator is None:
             raise ValueError("path_validator es obligatorio")
 
         if controller is not None:
-            self._controller = controller
-            self._install_root = install_root.resolve() if install_root is not None else controller.install_root
-            self._data_root = data_root.resolve() if data_root is not None else controller.data_root
-            self._mods_dir = mods_dir.resolve() if mods_dir is not None else controller.mods_dir
-        elif install_root is not None and data_root is not None and mods_dir is not None:
-            self._install_root = install_root.resolve()
-            self._data_root = data_root.resolve()
-            self._mods_dir = mods_dir.resolve()
-            self._controller = MO2Controller(
-                install_root=self._install_root,
-                data_root=self._data_root,
-                mods_dir=self._mods_dir,
-                path_validator=path_validator,
-            )
-        else:
-            legacy_root = mo2_root or install_root
-            if legacy_root is None:
+            if install_root is not None and install_root.resolve() != controller.install_root.resolve():
                 raise ValueError(
-                    "GrassProfileManager exige install_root, data_root y mods_dir, o mo2_root + path_validator."
+                    f"install_root explícito ({install_root}) diverge del controller provisto ({controller.install_root})"
                 )
-            resolved_legacy = legacy_root.resolve()
-            self._install_root = resolved_legacy
-            self._data_root = resolved_legacy
-            self._controller = MO2Controller(resolved_legacy, path_validator)
-            self._mods_dir = self._controller.mods_dir
+            if data_root is not None and data_root.resolve() != controller.data_root.resolve():
+                raise ValueError(
+                    f"data_root explícito ({data_root}) diverge del controller provisto ({controller.data_root})"
+                )
+            if mods_dir is not None and mods_dir.resolve() != controller.mods_dir.resolve():
+                raise ValueError(
+                    f"mods_dir explícito ({mods_dir}) diverge del controller provisto ({controller.mods_dir})"
+                )
+            if mo2_root is not None and mo2_root.resolve() != controller.data_root.resolve():
+                raise ValueError(
+                    f"mo2_root explícito ({mo2_root}) diverge del controller provisto ({controller.data_root})"
+                )
+            self._controller = controller
+            self._install_root = controller.install_root
+            self._data_root = controller.data_root
+            self._mods_dir = controller.mods_dir
+        else:
+            tiene_alguno_explicito = install_root is not None or data_root is not None or mods_dir is not None
+            if tiene_alguno_explicito:
+                if install_root is None or data_root is None or mods_dir is None:
+                    raise ValueError(
+                        "GrassProfileManager en modo explícito exige install_root, data_root y mods_dir completos."
+                    )
+                if mo2_root is not None and mo2_root.resolve() != data_root.resolve():
+                    raise ValueError("mo2_root diverge de data_root explícito")
+                self._install_root = install_root.resolve()
+                self._data_root = data_root.resolve()
+                self._mods_dir = mods_dir.resolve()
+                self._controller = MO2Controller(
+                    install_root=self._install_root,
+                    data_root=self._data_root,
+                    mods_dir=self._mods_dir,
+                    path_validator=path_validator,
+                )
+            else:
+                if mo2_root is None:
+                    raise ValueError(
+                        "GrassProfileManager exige install_root, data_root y mods_dir, o mo2_root + path_validator."
+                    )
+                resolved_legacy = mo2_root.resolve()
+                self._install_root = resolved_legacy
+                self._data_root = resolved_legacy
+                self._controller = MO2Controller(resolved_legacy, path_validator)
+                self._mods_dir = self._controller.mods_dir
 
         self._root = self._data_root
         self._validator = path_validator
