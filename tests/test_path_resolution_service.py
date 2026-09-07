@@ -1315,9 +1315,9 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/validators/vfs_health.py": (141,),
         "sky_claw/local/validators/preflight_sensors.py": (193,),
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": (327,),
-        # AppContext: fallback legacy en bootstrap de MO2Controller (977).
+        # AppContext: fallback legacy en bootstrap de MO2Controller (982).
         # Handoff reconciliation usa mo2.mods_dir directamente (Issue #557).
-        "sky_claw/app_context.py": (977,),
+        "sky_claw/app_context.py": (982,),
         # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None (257).
         "sky_claw/__main__.py": (257,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
@@ -1939,6 +1939,11 @@ class TestAnclaSemanticaDeRaicesMo2:
     - synthesis_service (2): output target y preflight.
     - wrye_bash_service (preflight): overwrite + profile sources.
 
+    INSTANCE_DATA_ROOT_ESTRICTO (``get_mo2_instance_data_root_estricto``):
+
+    - app_context: bootstrap de MO2Controller para operaciones mutantes
+      (falla cerrado con RuntimeError si la metadata es corrupta o queda fuera del sandbox).
+
     RAW_INSTALL_FOR_LSTAT (``get_mo2_path_raw``): solo xedit (VFS lstat sobre
     install). Los preflights migrados usan la raíz de datos validada como raw
     (no existe representación cruda sin resolver de la metadata).
@@ -1957,7 +1962,6 @@ class TestAnclaSemanticaDeRaicesMo2:
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root()``.
     _INSTANCE_DATA: dict[str, int] = {
         "sky_claw/__main__.py": 1,
-        "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/dispatcher_dependencies.py": 1,
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
@@ -1965,6 +1969,11 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/local/tools/pandora_service.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
         "sky_claw/local/tools/wrye_bash_service.py": 1,
+    }
+
+    #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root_estricto()``.
+    _INSTANCE_DATA_ESTRICTO: dict[str, int] = {
+        "sky_claw/app_context.py": 1,
     }
 
     #: Módulo → n.º de usos de ``get_mo2_mods_path()`` (MODS_DIR estricto,
@@ -2051,6 +2060,7 @@ class TestAnclaSemanticaDeRaicesMo2:
             {
                 "get_mo2_path",
                 "get_mo2_instance_data_root",
+                "get_mo2_instance_data_root_estricto",
                 "get_mo2_path_raw",
                 "has_explicit_mo2_install_selection",
                 "get_mo2_mods_path",
@@ -2070,6 +2080,10 @@ class TestAnclaSemanticaDeRaicesMo2:
         )
         assert _por_atributo("get_mo2_instance_data_root") == self._INSTANCE_DATA, (
             "Cambió el inventario de get_mo2_instance_data_root(). Clasifica "
+            "el sitio nuevo en el docstring antes de que pase CI."
+        )
+        assert _por_atributo("get_mo2_instance_data_root_estricto") == self._INSTANCE_DATA_ESTRICTO, (
+            "Cambió el inventario de get_mo2_instance_data_root_estricto(). Clasifica "
             "el sitio nuevo en el docstring antes de que pase CI."
         )
         assert _por_atributo("get_mo2_mods_path") == self._MODS_ESTRICTO, (
@@ -3319,3 +3333,23 @@ class TestModsDeclaradoInvalidoSinFallbackADefault:
         assert capturados_loot, "LOOT no resolvió fuentes"
         for kw in capturados_loot:
             assert kw.get("mo2_mods_dir") is None, f"LOOT reconstruyó data/mods: {kw.get('mo2_mods_dir')}"
+
+
+def test_get_mo2_instance_data_root_estricto_falla_cerrado_con_metadata_invalida(tmp_path: pathlib.Path) -> None:
+    """Demuestra que get_mo2_instance_data_root_estricto propaga RuntimeError si
+    la metadata de instancia es inválida/corrupta, a diferencia del accessor regular
+    que degrada silenciosamente a None."""
+    install = tmp_path / "MO2"
+    install.mkdir()
+    (install / "ModOrganizer.exe").write_bytes(b"fake")
+    (install / "ModOrganizer.ini").write_text("[Settings]\nbase_directory = relativo_invalido\n", encoding="utf-8")
+
+    validator = PathValidator(roots=[tmp_path])
+    svc = PathResolutionService(path_validator=validator, profile_name="Default", mo2_install_dir=install)
+
+    # get_mo2_instance_data_root es best-effort y None-safe
+    assert svc.get_mo2_instance_data_root() is None
+
+    # get_mo2_instance_data_root_estricto es fail-closed
+    with pytest.raises(RuntimeError, match="directorio de mods o base no absoluto"):
+        svc.get_mo2_instance_data_root_estricto()
