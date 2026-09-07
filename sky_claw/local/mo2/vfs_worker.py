@@ -174,7 +174,8 @@ async def execute_worker_manifest(
         proof = await asyncio.to_thread(
             verify_vfs_attestation,
             challenge=manifest.challenge,
-            mo2_root=manifest.mo2_root,
+            data_root=manifest.data_root,
+            mods_dir=manifest.mods_dir,
             profile=manifest.job.profile,
             virtual_data_dir=manifest.virtual_data_dir,
         )
@@ -269,7 +270,15 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     if type(update_masterlist) is not bool:
         raise ValueError("payload.update_masterlist debe ser bool")
     game_path = manifest.virtual_data_dir.parent.resolve()
-    validator = PathValidator(roots=[loot_exe.parent.resolve(), game_path, manifest.mo2_root])
+    validator = PathValidator(
+        roots=[
+            loot_exe.parent.resolve(),
+            game_path,
+            manifest.data_root,
+            manifest.mods_dir,
+            manifest.install_root,
+        ]
+    )
     runner = LOOTRunner(
         LOOTConfig(
             loot_exe=loot_exe.resolve(),

@@ -12,6 +12,7 @@ import pytest
 
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge import runtime as bridge_runtime
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
+    PROTOCOL_VERSION,
     BridgeCommandError,
     BridgeEventOutbox,
     BridgeLaunchController,
@@ -158,7 +159,7 @@ def test_launch_request_solo_acepta_manifest_bajo_jobs_root(tmp_path: pathlib.Pa
 
     request = validate_launch_request(
         {
-            "protocol_version": 1,
+            "protocol_version": PROTOCOL_VERSION,
             "type": "launch_worker",
             "job_id": "job-1",
             "profile": "Default",
@@ -180,7 +181,7 @@ def test_launch_request_overwrite_es_nombre_de_mod_y_no_ruta(tmp_path: pathlib.P
 
     request = validate_launch_request(
         {
-            "protocol_version": 1,
+            "protocol_version": PROTOCOL_VERSION,
             "type": "launch_worker",
             "job_id": "job-1",
             "profile": "Default",
@@ -195,7 +196,7 @@ def test_launch_request_overwrite_es_nombre_de_mod_y_no_ruta(tmp_path: pathlib.P
     with pytest.raises(BridgeCommandError, match="overwrite_mod"):
         validate_launch_request(
             {
-                "protocol_version": 1,
+                "protocol_version": PROTOCOL_VERSION,
                 "type": "launch_worker",
                 "job_id": "job-2",
                 "profile": "Default",
@@ -215,7 +216,7 @@ def test_launch_request_rechaza_manifest_fuera_del_jobs_root(tmp_path: pathlib.P
     with pytest.raises(BridgeCommandError, match="jobs_root"):
         validate_launch_request(
             {
-                "protocol_version": 1,
+                "protocol_version": PROTOCOL_VERSION,
                 "type": "launch_worker",
                 "job_id": "job-1",
                 "profile": "Default",
@@ -233,7 +234,7 @@ def test_worker_args_no_admiten_executable_desde_el_request(tmp_path: pathlib.Pa
     manifest.write_text("{}", encoding="utf-8")
     request = validate_launch_request(
         {
-            "protocol_version": 1,
+            "protocol_version": PROTOCOL_VERSION,
             "type": "launch_worker",
             "job_id": "job-1",
             "profile": "Default",
@@ -258,7 +259,7 @@ def test_launch_request_rechaza_campos_desconocidos() -> None:
     with pytest.raises(BridgeCommandError, match="campos no permitidos"):
         validate_launch_request(
             {
-                "protocol_version": 1,
+                "protocol_version": PROTOCOL_VERSION,
                 "type": "launch_worker",
                 "job_id": "job-1",
                 "profile": "Default",
@@ -295,7 +296,7 @@ def test_controller_lanza_worker_fijo_con_perfil_explicito(tmp_path: pathlib.Pat
 
     controller.launch(
         {
-            "protocol_version": 1,
+            "protocol_version": PROTOCOL_VERSION,
             "type": "launch_worker",
             "job_id": "job-1",
             "profile": "ExplicitProfile",
@@ -347,7 +348,7 @@ def test_controller_monitor_usa_waiter_win32_y_no_api_mo2(tmp_path: pathlib.Path
 
     controller.launch(
         {
-            "protocol_version": 1,
+            "protocol_version": PROTOCOL_VERSION,
             "type": "launch_worker",
             "job_id": "job-1",
             "profile": "Default",
@@ -391,7 +392,7 @@ def test_controller_no_lanza_si_no_puede_crear_job_object(tmp_path: pathlib.Path
     with pytest.raises(BridgeCommandError, match="indisponible"):
         controller.launch(
             {
-                "protocol_version": 1,
+                "protocol_version": PROTOCOL_VERSION,
                 "type": "launch_worker",
                 "job_id": "job-1",
                 "profile": "Default",
@@ -430,7 +431,7 @@ def test_monitor_emite_worker_exit_si_espera_win32_falla(tmp_path: pathlib.Path)
 
     controller.launch(
         {
-            "protocol_version": 1,
+            "protocol_version": PROTOCOL_VERSION,
             "type": "launch_worker",
             "job_id": "job-1",
             "profile": "Default",
@@ -468,7 +469,7 @@ def test_controller_cancel_termina_job_object_completo(tmp_path: pathlib.Path) -
     )
     controller.launch(
         {
-            "protocol_version": 1,
+            "protocol_version": PROTOCOL_VERSION,
             "type": "launch_worker",
             "job_id": "job-1",
             "profile": "Default",
@@ -477,7 +478,7 @@ def test_controller_cancel_termina_job_object_completo(tmp_path: pathlib.Path) -
         }
     )
 
-    controller.cancel({"protocol_version": 1, "type": "cancel", "job_id": "job-1"})
+    controller.cancel({"protocol_version": PROTOCOL_VERSION, "type": "cancel", "job_id": "job-1"})
 
     assert job_object.terminated is True
     organizer.release.set()

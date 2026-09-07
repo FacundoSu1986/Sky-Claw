@@ -215,7 +215,7 @@ async def _reportar_como_worker(
         assert ack["type"] == "hello_ack"
         await write_authenticated_message(
             writer,
-            {"protocol_version": 1, "type": "job_result", "result": result},
+            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "job_result", "result": result},
             secret,
         )
         if expect_ack:

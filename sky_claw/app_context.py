@@ -1280,14 +1280,11 @@ class AppContext:
             vfs_loot_runner = build_vfs_loot_runner(
                 broker=broker,
                 instance_id=instance_id if broker is not None else None,
-                mo2_root=mo2_root,
+                install_root=mo2.install_root,
+                data_root=mo2.data_root,
+                mods_dir=mo2.mods_dir,
                 game_path=configured_game,
                 loot_exe=loot_exe,
-                # Este runner es el que MUTA plugins.txt/loadorder.txt, y lo comparten
-                # el tool `run_loot_sort` del agente y el ritual LOOT de la GUI. Con el
-                # literal "Default" que había acá, ordenar el load order iba siempre al
-                # perfil equivocado — sin que `--profile` ni `MO2_PROFILE` pudieran
-                # corregirlo.
                 profile=active_profile,
             )
             self.vfs_broker = broker
