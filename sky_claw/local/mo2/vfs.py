@@ -107,10 +107,10 @@ class MO2Controller:
         self,
         install_root: pathlib.Path | None = None,
         path_validator: PathValidator | None = None,
+        launch_timeout: int = DEFAULT_SPAWN_TIMEOUT,
         *,
         data_root: pathlib.Path | None = None,
         mods_dir: pathlib.Path | None = None,
-        launch_timeout: int = DEFAULT_SPAWN_TIMEOUT,
         mo2_root: pathlib.Path | None = None,
     ) -> None:
         if path_validator is None:
@@ -120,6 +120,8 @@ class MO2Controller:
 
         if legacy_root is not None and data_root is None and mods_dir is None:
             # Modo legacy portable: install == data, mods == data / "mods"
+            if mo2_root is not None and install_root is not None and mo2_root.resolve() != install_root.resolve():
+                raise ValueError("mo2_root e install_root divergen en modo legacy")
             self._install_root = legacy_root.resolve()
             self._data_root = self._install_root
             self._mods_dir = (self._data_root / "mods").resolve()
@@ -131,6 +133,8 @@ class MO2Controller:
                     "MO2Controller en modo explícito exige install_root, data_root y mods_dir. "
                     "No se permiten combinaciones parciales."
                 )
+            if mo2_root is not None and mo2_root.resolve() != install_root.resolve():
+                raise ValueError("mo2_root diverge de install_root")
             self._install_root = install_root.resolve()
             self._data_root = data_root.resolve()
             self._mods_dir = mods_dir.resolve()
