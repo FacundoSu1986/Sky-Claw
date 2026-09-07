@@ -893,6 +893,10 @@ class TestGuardiaTestsHermeticos:
         "copy2",
         "open",
     }
+    _METODOS_CONTENIDO = {
+        "write_text",
+        "write_bytes",
+    }
 
     @staticmethod
     def _violaciones_de_mutacion(arbol: ast.AST) -> list[str]:
@@ -908,6 +912,7 @@ class TestGuardiaTestsHermeticos:
         drive_re = TestGuardiaTestsHermeticos._DRIVE_RE
         unc_re = TestGuardiaTestsHermeticos._UNC_RE
         mutadores = TestGuardiaTestsHermeticos._MUTADORES
+        metodos_contenido = TestGuardiaTestsHermeticos._METODOS_CONTENIDO
 
         def _buscar_literales(node: ast.AST | None) -> list[str]:
             """Drena un sub-árbol en busca de literales de drive/UNC."""
@@ -933,11 +938,15 @@ class TestGuardiaTestsHermeticos:
             if nombre_mutante is None:
                 continue
             # 1) Literales en args/keyword path del propio mutante.
-            args = list(nodo.args) + [kw.value for kw in nodo.keywords if kw.arg == "path"]
-            for arg in args:
-                encontrados = _buscar_literales(arg)
-                for lit in encontrados:
-                    violaciones.append(f"{nombre_mutante}(...{lit!r}...)")
+            # Excluimos los métodos de contenido sobre receivers (write_text/write_bytes),
+            # donde el argumento es el payload a escribir y no una ruta destino.
+            es_metodo_contenido = isinstance(func, ast.Attribute) and func.attr in metodos_contenido
+            if not es_metodo_contenido:
+                args = list(nodo.args) + [kw.value for kw in nodo.keywords if kw.arg == "path"]
+                for arg in args:
+                    encontrados = _buscar_literales(arg)
+                    for lit in encontrados:
+                        violaciones.append(f"{nombre_mutante}(...{lit!r}...)")
             # 2) Literales en el receiver (e.g. ``pathlib.Path("C:\\x").mkdir()``).
             if isinstance(func, ast.Attribute):
                 receiver_lits = _buscar_literales(func.value)
@@ -987,6 +996,24 @@ class TestGuardiaTestsHermeticos:
     def test_detector_permite_open_con_variable(self) -> None:
         """``open(str(tmp_path/"x"), "w")`` NO se tacha."""
         fuente = 'open(str(tmp_path / "x"), "w")\n'
+        violaciones = self._violaciones_de_mutacion(ast.parse(fuente))
+        assert violaciones == []
+
+    def test_detector_tacha_path_receiver_write_text(self) -> None:
+        """``pathlib.Path("C:\\\\outside\\\\file.txt").write_text("x")`` se detecta vía receiver."""
+        fuente = 'import pathlib\npathlib.Path("C:\\\\outside\\\\file.txt").write_text("x")\n'
+        violaciones = self._violaciones_de_mutacion(ast.parse(fuente))
+        assert any("receiver" in v and r"C:\\outside" in v for v in violaciones)
+
+    def test_detector_permite_string_contenido_en_write_text(self) -> None:
+        """``path.write_text("C:\\\\texto")`` con string de contenido NO se tacha (no es ruta destino)."""
+        fuente = 'path.write_text("C:\\\\texto\\\\no\\\\es\\\\ruta")\n'
+        violaciones = self._violaciones_de_mutacion(ast.parse(fuente))
+        assert violaciones == []
+
+    def test_detector_permite_path_relativo(self) -> None:
+        """``pathlib.Path("relativo/sub/dir").mkdir()`` NO se tacha."""
+        fuente = 'pathlib.Path("relativo/sub/dir").mkdir()\n'
         violaciones = self._violaciones_de_mutacion(ast.parse(fuente))
         assert violaciones == []
 
@@ -2182,7 +2209,7 @@ class TestConsumidoresGetMo2PathConComposicion:
                 "sky_claw.app.core.path_resolver._CANDIDATE_MO2_PATHS",
                 (str(tmp_path / "no-existe"),),
             ),
-            pytest.raises(RuntimeError, match="MO2_PATH must be configured"),
+            pytest.raises(RuntimeError, match="instance data root could not be resolved"),
         ):
             build_synthesis_flow_provider(
                 path_resolver=resolver,
