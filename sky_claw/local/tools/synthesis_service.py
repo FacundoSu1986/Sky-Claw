@@ -412,7 +412,12 @@ class SynthesisPipelineService:
         # Preflight brutal ANTES de tocar nada (T-16c·2, STAGE 7): un semáforo ROJO
         # (p. ej. >254 masters, u output sin permisos) cancela Synthesis sin correr el
         # pipeline ni abrir transacción. Amarillo/verde no bloquean; se surface al panel.
-        preflight = self._ensure_preflight()
+        try:
+            preflight = self._ensure_preflight()
+        except RuntimeError as exc:
+            logger.error("Error en resolución para preflight de Synthesis (stage 7): %s", exc)
+            return self._error_dict(str(exc))
+
         preflight_report = None
         if preflight is not None:
             preflight_report = await preflight.run()
@@ -428,7 +433,7 @@ class SynthesisPipelineService:
         try:
             runner = self._ensure_synthesis_runner()
             pipeline = self._ensure_patcher_pipeline()
-        except SynthesisExecutionError as exc:
+        except (SynthesisExecutionError, RuntimeError) as exc:
             logger.error("Error inicializando Synthesis (stage 7): %s", exc)
             return _attach_preflight(self._error_dict(str(exc)), preflight_report)
 

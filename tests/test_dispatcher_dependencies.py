@@ -246,6 +246,25 @@ def test_synthesis_lazy_conserva_sandbox_y_factory() -> None:
     )
 
 
+def test_synthesis_flow_provider_lanza_runtime_error_distinguiendo_raices() -> None:
+    """Verifica que el error no asume ciegamente MO2_PATH y distingue la raíz de datos."""
+    resolver = MagicMock()
+    resolver.get_mo2_instance_data_root.return_value = None
+    flow_provider = build_synthesis_flow_provider(
+        path_resolver=resolver,
+        profile_name="Perfil",
+        hitl_guard=None,
+    )
+    import pytest
+
+    with pytest.raises(RuntimeError) as exc_info:
+        flow_provider()
+    msg = str(exc_info.value)
+    assert "the MO2 instance data root could not be resolved" in msg
+    assert "Configure or select the MO2 installation if absent" in msg
+    assert "base_directory" in msg
+
+
 async def test_wrye_bash_callable_acepta_cero_args_y_preserva_fallback() -> None:
     service = MagicMock()
     service.execute_pipeline = MagicMock()

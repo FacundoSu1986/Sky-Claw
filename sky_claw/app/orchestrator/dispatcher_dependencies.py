@@ -122,7 +122,10 @@ def build_synthesis_flow_provider(
         # overwrite, que cuelgan de la instancia (ver ProfileSandbox).
         instance_data_root = path_resolver.get_mo2_instance_data_root()
         if instance_data_root is None:
-            raise RuntimeError("Cannot sandbox the Synthesis pipeline: MO2_PATH must be configured.")
+            raise RuntimeError(
+                "Cannot sandbox the Synthesis pipeline: the MO2 instance data root could not be resolved. "
+                "Configure or select the MO2 installation if absent, or verify the instance base_directory metadata."
+            )
         return SandboxPromotionFlow(
             sandbox=ProfileSandbox(mo2_root=instance_data_root, profile=profile_name),
             hitl_guard=hitl_guard,
