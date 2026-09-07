@@ -87,6 +87,9 @@ class _FakeHITL:
 class _FakeMO2:
     def __init__(self, root: pathlib.Path) -> None:
         self.root = root
+        self.install_root = root
+        self.data_root = root
+        self.mods_dir = root / "mods"
         self.added: list[str] = []
         self.added_profiles: list[str] = []
         self._fail_modlist = False
