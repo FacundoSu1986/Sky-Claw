@@ -128,6 +128,9 @@ class _FakeMO2:
 
     def __init__(self) -> None:
         self.root = pathlib.Path.home() / "MO2Portable"
+        self.install_root = self.root
+        self.data_root = self.root
+        self.mods_dir = self.root / "mods"
         self.perfiles_vistos: list[tuple[str, str]] = []
 
     async def read_modlist(self, profile: str) -> AsyncIterator[tuple[str, bool]]:

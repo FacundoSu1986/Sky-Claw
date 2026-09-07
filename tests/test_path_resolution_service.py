@@ -1289,19 +1289,24 @@ class TestAnclaConstructoresManualesDeMods:
         # nueva construcción de `<base>/mods` debe ir por estas tres rutas
         # o extender el ancla con su racional.
         "sky_claw/app/core/path_resolver.py": (253, 314, 934),
-        # Instaladores NGIO/FOMOD del agente LLM sobre mo2.root del registry:
-        # superficie agente, layout portable asumido — fuera de alcance (PR-0).
-        "sky_claw/app/agent/tools/external_tools.py": (239, 288),
-        "sky_claw/app/agent/tools/system_tools.py": (279,),
-        "sky_claw/local/fomod/plugin_state.py": (106, 158, 162),
-        # Broker VFS real: su raíz EXIGE ModOrganizer.exe + árbol de datos
-        # juntos (layout portable por contrato) — no es la instancia de la GUI.
-        "sky_claw/local/mo2/vfs.py": (310,),
-        "sky_claw/local/mo2/vfs_attestation.py": (189, 191, 233),
+        # Instaladores NGIO/FOMOD del agente LLM: ahora aceptan mods_dir explícito
+        # (Issue #557); las líneas 220 y 267 son el fallback legacy portable.
+        # system_tools.py ya no construye <expr> / "mods" porque usa mo2.mods_dir.
+        "sky_claw/app/agent/tools/external_tools.py": (220, 267),
+        # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
+        "sky_claw/local/fomod/plugin_state.py": (74,),
+        # BrokeredLootRunner: acepta mods_dir; líneas 61 y 233 son fallbacks legacy.
+        "sky_claw/local/mo2/brokered_loot.py": (61, 233),
+        # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
+        "sky_claw/local/mo2/vfs.py": (127,),
+        "sky_claw/local/mo2/vfs_attestation.py": (182, 243),
+        # VfsExecutionBroker.submit y VfsWorkerManifest: fallbacks legacy si no se pasa mods_dir.
+        "sky_claw/local/mo2/vfs_broker.py": (302,),
+        "sky_claw/local/mo2/vfs_manifest.py": (61,),
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.
-        "sky_claw/local/discovery/scanner.py": (458,),
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1033,),
+        "sky_claw/local/discovery/scanner.py": (467, 787),
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1039,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
@@ -1310,11 +1315,15 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/validators/vfs_health.py": (141,),
         "sky_claw/local/validators/preflight_sensors.py": (193,),
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": (327,),
-        # Rollback/move-aside y staging de DynDOLOD bajo el árbol del broker.
-        "sky_claw/app_context.py": (1331,),
+        # AppContext: fallback legacy en bootstrap de MO2Controller (982).
+        # Handoff reconciliation usa mo2.mods_dir directamente (Issue #557).
+        "sky_claw/app_context.py": (982,),
+        # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None (257).
+        "sky_claw/__main__.py": (257,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
         "sky_claw/local/tools/output_targets.py": (157,),
-        "sky_claw/local/mo2/grass_profile.py": (227, 330),
+        # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.
+        "sky_claw/app/orchestrator/grass_runtime_deps.py": (81,),
     }
 
     @staticmethod
@@ -1903,16 +1912,10 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     INSTALL_ROOT / CAPABILITY (``get_mo2_path``):
 
-    - grass_runtime_deps: DEUDA BLOQUEANTE #557 (no olvido deliberado sin
-      cerrar): ``MO2Controller``/``GrassProfileManager`` son monorraíz — el
-      MISMO root alimenta ``launch_game`` (necesita INSTALL:
-      ``ModOrganizer.exe``) y ``profiles/``+``mods/``+``overwrite/`` (necesitan
-      DATA). Migrar solo el provider a datos rompería el lanzamiento; la
-      corrección exige separar las raíces dentro de ``MO2Controller``
-      (issue #557, bloquea declarar cerrada la familia split-brain de #552 en
-      rigs con instancia separada).
+    - grass_runtime_deps: get_mo2_path() es solo INSTALL_ROOT (para ModOrganizer.exe / launch_game en MO2Controller).
     - dyndolod_service (runner): ``DynDOLODConfig.mo2_path`` no se usa en
       ejecución (solo ``mo2_mods_path``/outputs); INSTALL opaco.
+    - loot_service: install_root para BrokeredLootRunner en lazy _ensure_loot_runner.
     - wrye_bash_service (runner): ``WryeBashConfig.mo2_path`` sin uso en
       ejecución headless; INSTALL opaco.
     - xedit_service: capability gate del scan (no deriva paths de datos; el
@@ -1924,12 +1927,20 @@ class TestAnclaSemanticaDeRaicesMo2:
     - chain_preview_service: ``mods/``/``overwrite/`` del preview (+ señal
       explícita antes de ``detect_mo2_path``).
     - dyndolod_service (preflight): overwrite + profile sources.
-    - loot_service (3): preflight (sources/overwrite, + señal antes de
-      detect), ``LoadOrderFileResolver`` (profiles/<perfil>/) y runner
-      brokered (attestation autoconsistente sobre el perfil).
+    - loot_service (2): preflight (sources/overwrite, + señal antes de
+      detect) y ``LoadOrderFileResolver`` (profiles/<perfil>/).
     - pandora_service: overwrite + perfil.
     - synthesis_service (2): output target y preflight.
     - wrye_bash_service (preflight): overwrite + profile sources.
+
+    INSTANCE_DATA_ROOT_ESTRICTO (``get_mo2_instance_data_root_estricto``):
+
+    - app_context: bootstrap de MO2Controller para operaciones mutantes
+      (falla cerrado con RuntimeError si la metadata es corrupta o queda fuera del sandbox).
+    - grass_runtime_deps: profiles/ y overwrite/Grass para operaciones mutantes
+      (falla cerrado con RuntimeError si la metadata es corrupta).
+    - loot_service: data_root para BrokeredLootRunner en lazy _ensure_loot_runner
+      (falla cerrado con RuntimeError si la metadata es corrupta).
 
     RAW_INSTALL_FOR_LSTAT (``get_mo2_path_raw``): solo xedit (VFS lstat sobre
     install). Los preflights migrados usan la raíz de datos validada como raw
@@ -1938,21 +1949,32 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     #: Módulo → n.º de llamadas a ``get_mo2_path()`` (INSTALL/CAPABILITY).
     _INSTALL_O_CAPABILITY: dict[str, int] = {
+        "sky_claw/__main__.py": 1,
+        "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
+        "sky_claw/local/tools/loot_service.py": 1,
         "sky_claw/local/tools/wrye_bash_service.py": 1,
         "sky_claw/local/tools/xedit_service.py": 1,
     }
 
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root()``.
     _INSTANCE_DATA: dict[str, int] = {
+        "sky_claw/__main__.py": 1,
         "sky_claw/app/orchestrator/dispatcher_dependencies.py": 1,
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
-        "sky_claw/local/tools/loot_service.py": 3,
+        "sky_claw/local/tools/loot_service.py": 2,
         "sky_claw/local/tools/pandora_service.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
         "sky_claw/local/tools/wrye_bash_service.py": 1,
+    }
+
+    #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root_estricto()``.
+    _INSTANCE_DATA_ESTRICTO: dict[str, int] = {
+        "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
+        "sky_claw/app_context.py": 1,
+        "sky_claw/local/tools/loot_service.py": 1,
     }
 
     #: Módulo → n.º de usos de ``get_mo2_mods_path()`` (MODS_DIR estricto,
@@ -1962,6 +1984,7 @@ class TestAnclaSemanticaDeRaicesMo2:
     _MODS_ESTRICTO: dict[str, int] = {
         "sky_claw/app/orchestrator/asset_conflict_scan.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 3,
+        "sky_claw/local/tools/loot_service.py": 1,
     }
 
     #: Módulo → n.º de usos de ``get_mo2_mods_path_best_effort()``: sensores
@@ -1978,9 +2001,11 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     #: Módulo → n.º de usos de ``get_mo2_mods_path_para_destino()`` (destino
     #: de ESCRITURA: aborta con evidencia si la instancia declaró mods y no
-    #: resuelve — B de #555; contado como referencia enlazada/callable). Hoy
-    #: solo Synthesis (runner + preflight, misma fuente U-01 parte 2).
+    #: resuelve — B de #555; contado como referencia enlazada/callable).
     _MODS_PARA_DESTINO: dict[str, int] = {
+        "sky_claw/__main__.py": 1,
+        "sky_claw/app_context.py": 1,
+        "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
     }
 
@@ -2038,6 +2063,7 @@ class TestAnclaSemanticaDeRaicesMo2:
             {
                 "get_mo2_path",
                 "get_mo2_instance_data_root",
+                "get_mo2_instance_data_root_estricto",
                 "get_mo2_path_raw",
                 "has_explicit_mo2_install_selection",
                 "get_mo2_mods_path",
@@ -2057,6 +2083,10 @@ class TestAnclaSemanticaDeRaicesMo2:
         )
         assert _por_atributo("get_mo2_instance_data_root") == self._INSTANCE_DATA, (
             "Cambió el inventario de get_mo2_instance_data_root(). Clasifica "
+            "el sitio nuevo en el docstring antes de que pase CI."
+        )
+        assert _por_atributo("get_mo2_instance_data_root_estricto") == self._INSTANCE_DATA_ESTRICTO, (
+            "Cambió el inventario de get_mo2_instance_data_root_estricto(). Clasifica "
             "el sitio nuevo en el docstring antes de que pase CI."
         )
         assert _por_atributo("get_mo2_mods_path") == self._MODS_ESTRICTO, (
@@ -2695,6 +2725,81 @@ class TestRaizDeDatosDeInstanciaSeparada:
         assert _mismo_path(metadata.mods, mods)
         assert metadata.mod_directory_declarado is False
 
+    def test_grass_runtime_deps_usa_data_y_mods_separados_de_install(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Issue #557: GrassRuntimeDepsProvider arma MO2Controller y GrassProfileManager
+        con install != data != mods y overwrite en data, nunca en install."""
+        from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
+
+        mods_custom = tmp_path / "ModsPersonales"
+        install, data, _ = self._montar_split(
+            tmp_path,
+            mod_directory=mods_custom,
+        )
+        juego = tmp_path / "game"
+        juego.mkdir()
+        resolver = self._resolver_con_hint(tmp_path, install)
+        validator = PathValidator(roots=[tmp_path])
+        provider = GrassRuntimeDepsProvider(
+            path_resolver=resolver,
+            path_validator=validator,
+            profile_name="Default",
+        )
+
+        with patch.dict(os.environ, {"SKYRIM_PATH": str(juego)}, clear=True):
+            deps = provider()
+
+        assert deps is not None
+        # MO2Controller recibe las tres raíces separadas:
+        assert _mismo_path(deps.mo2.install_root, install)
+        assert _mismo_path(deps.mo2.data_root, data)
+        assert _mismo_path(deps.mo2.mods_dir, mods_custom)
+        # GrassProfileManager recibe las tres raíces separadas:
+        assert _mismo_path(deps.profile_manager.install_root, install)
+        assert _mismo_path(deps.profile_manager.data_root, data)
+        assert _mismo_path(deps.profile_manager.mods_dir, mods_custom)
+        # overwrite_grass_dir cuelga de DATA, nunca de INSTALL:
+        assert _mismo_path(deps.overwrite_grass_dir, data / "overwrite" / "Grass")
+        assert not str(deps.overwrite_grass_dir.resolve()).startswith(str(install.resolve()))
+
+    def test_grass_deps_con_mod_directory_invalido_falla_cerrado_sin_caer_en_trampa_data_mods(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Regresión Issue #557: si la instancia declaró un mod_directory inexistente,
+        GrassRuntimeDepsProvider falla cerrado (RuntimeError) y NUNCA cae en una trampa
+        <data>/mods ni entrega MODS_DIR_UNAVAILABLE al controller."""
+        from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
+
+        mods_inexistente = tmp_path / "mods_fantasma_inexistente"
+        install, data, _ = self._montar_split(
+            tmp_path,
+            mod_directory=mods_inexistente,
+            crear_mods=False,
+        )
+        # Trampa: creamos <data>/mods para verificar que Grass NO cae en el fallback silencioso
+        trampa_mods = data / "mods"
+        trampa_mods.mkdir(parents=True)
+        (trampa_mods / "ModTrampa").mkdir()
+
+        juego = tmp_path / "game"
+        juego.mkdir()
+        resolver = self._resolver_con_hint(tmp_path, install)
+        validator = PathValidator(roots=[tmp_path])
+        provider = GrassRuntimeDepsProvider(
+            path_resolver=resolver,
+            path_validator=validator,
+            profile_name="Default",
+        )
+
+        with (
+            patch.dict(os.environ, {"SKYRIM_PATH": str(juego)}, clear=True),
+            pytest.raises(RuntimeError, match="declara su directorio de mods.*pero no existe"),
+        ):
+            provider()
+
 
 class TestModsDirSeparadoEnConsumidoresDeDatos:
     """P1 (ronda 2 de #555): ``instance_data_root / "mods"`` NO es una
@@ -2898,6 +3003,146 @@ class TestSynthesisDestinoFailClosed:
         # No se fabrico el destino historico sobre <datos>/mods.
         assert not (data / "mods" / "Synthesis Output").exists()
         assert not (data / "mods").exists()
+
+
+class TestGetMo2ModsPathParaDestinoContrato:
+    """Contrato write-safe de get_mo2_mods_path_para_destino (PR #559 / Issue #557).
+
+    1. MO2_MODS_PATH explícito válido → devolver ese Path.
+    2. MO2_MODS_PATH explícito inválido → RuntimeError / fail-closed.
+    3. Metadata con mod_directory/base válida → MODS_DIR correspondiente.
+    4. Metadata declarada pero inconsistente → RuntimeError / fail-closed.
+    5. Ausencia real de metadata Y ausencia de MO2_MODS_PATH → None (DEFAULT_ALLOWED).
+    """
+
+    def test_portable_sin_metadata_con_mo2_mods_path_valido(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """1. Portable sin metadata + MO2_MODS_PATH custom válido -> devuelve ese Path."""
+        install = tmp_path / "MO2"
+        install.mkdir()
+        (install / "ModOrganizer.exe").write_bytes(b"fake")
+
+        custom_mods = tmp_path / "ExternalMods"
+        custom_mods.mkdir()
+
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=install,
+        )
+
+        with patch.dict(os.environ, {"MO2_MODS_PATH": str(custom_mods)}, clear=True):
+            resultado = resolver.get_mo2_mods_path_para_destino()
+
+        assert resultado == custom_mods.resolve()
+
+    def test_mo2_mods_path_invalido_con_trampa_data_mods(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """2. MO2_MODS_PATH inválido + trampa data/mods -> RuntimeError, no toca la trampa."""
+        install = tmp_path / "MO2"
+        install.mkdir()
+        (install / "ModOrganizer.exe").write_bytes(b"fake")
+
+        data = tmp_path / "InstanceData"
+        data.mkdir()
+        data_mods_trap = data / "mods"
+        data_mods_trap.mkdir(parents=True)
+        (data_mods_trap / "trap.txt").write_text("data trap", encoding="utf-8")
+
+        mods_invalido = tmp_path / "ModsInexistentes"
+
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=install,
+        )
+
+        with (
+            patch.dict(os.environ, {"MO2_MODS_PATH": str(mods_invalido)}, clear=True),
+            pytest.raises(RuntimeError, match="no existe o no es accesible"),
+        ):
+            resolver.get_mo2_mods_path_para_destino()
+
+        # La trampa sigue intacta y no fue consumida
+        assert (data_mods_trap / "trap.txt").read_text(encoding="utf-8") == "data trap"
+
+    def test_metadata_invalida_con_trampa_data_mods(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """4. Metadata inválida (mod_directory rota) + trampa data/mods -> RuntimeError fail-closed."""
+        mods_roto = tmp_path / "ModsRotos"  # No se crea
+        install, data, _mods = TestRaizDeDatosDeInstanciaSeparada._montar_split(
+            tmp_path,
+            mod_directory=mods_roto,
+            con_overwrite=True,
+            crear_mods=False,
+        )
+        data_mods_trap = data / "mods"
+        data_mods_trap.mkdir(parents=True)
+        (data_mods_trap / "trap.txt").write_text("data trap", encoding="utf-8")
+
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=install,
+        )
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            pytest.raises(RuntimeError, match="declara su directorio de mods"),
+        ):
+            resolver.get_mo2_mods_path_para_destino()
+
+        assert (data_mods_trap / "trap.txt").read_text(encoding="utf-8") == "data trap"
+
+    def test_ausencia_real_de_metadata_y_mo2_mods_path_devuelve_none(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """5. Ausencia real de metadata y de MO2_MODS_PATH -> None (DEFAULT_ALLOWED)."""
+        install = tmp_path / "MO2"
+        install.mkdir()
+        (install / "ModOrganizer.exe").write_bytes(b"fake")
+
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=install,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            resultado = resolver.get_mo2_mods_path_para_destino()
+
+        assert resultado is None
+
+    def test_metadata_valida_devuelve_mods_dir_correspondiente(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """3. Metadata válida -> devuelve MODS_DIR correspondiente."""
+        mods_legit = tmp_path / "CustomMods"
+        install, data, mods = TestRaizDeDatosDeInstanciaSeparada._montar_split(
+            tmp_path,
+            mod_directory=mods_legit,
+            con_overwrite=True,
+            crear_mods=True,
+        )
+
+        resolver = PathResolutionService(
+            path_validator=PathValidator(roots=[tmp_path]),
+            profile_name="Default",
+            mo2_install_dir=install,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            resultado = resolver.get_mo2_mods_path_para_destino()
+
+        assert resultado == mods_legit.resolve()
 
 
 class TestModsDeclaradoInvalidoSinFallbackADefault:
@@ -3166,3 +3411,23 @@ class TestModsDeclaradoInvalidoSinFallbackADefault:
         assert capturados_loot, "LOOT no resolvió fuentes"
         for kw in capturados_loot:
             assert kw.get("mo2_mods_dir") is None, f"LOOT reconstruyó data/mods: {kw.get('mo2_mods_dir')}"
+
+
+def test_get_mo2_instance_data_root_estricto_falla_cerrado_con_metadata_invalida(tmp_path: pathlib.Path) -> None:
+    """Demuestra que get_mo2_instance_data_root_estricto propaga RuntimeError si
+    la metadata de instancia es inválida/corrupta, a diferencia del accessor regular
+    que degrada silenciosamente a None."""
+    install = tmp_path / "MO2"
+    install.mkdir()
+    (install / "ModOrganizer.exe").write_bytes(b"fake")
+    (install / "ModOrganizer.ini").write_text("[Settings]\nbase_directory = relativo_invalido\n", encoding="utf-8")
+
+    validator = PathValidator(roots=[tmp_path])
+    svc = PathResolutionService(path_validator=validator, profile_name="Default", mo2_install_dir=install)
+
+    # get_mo2_instance_data_root es best-effort y None-safe
+    assert svc.get_mo2_instance_data_root() is None
+
+    # get_mo2_instance_data_root_estricto es fail-closed
+    with pytest.raises(RuntimeError, match="directorio de mods o base no absoluto"):
+        svc.get_mo2_instance_data_root_estricto()

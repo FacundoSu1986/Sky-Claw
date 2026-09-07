@@ -362,8 +362,14 @@ class EnvironmentScanner:
         # ── 2. Detect MO2 ─────────────────────────────────────────────
         mo2_path = await self._find_mo2()
         if mo2_path:
-            profiles = self._list_mo2_profiles(mo2_path)
-            snap.mo2 = MO2Info(path=mo2_path, profiles=profiles)
+            data_root, mods_dir = self._resolve_mo2_instance_roots(mo2_path)
+            profiles = self._list_mo2_profiles(mo2_path, data_root=data_root)
+            snap.mo2 = MO2Info(
+                path=mo2_path,
+                profiles=profiles,
+                data_root=data_root,
+                mods_dir=mods_dir,
+            )
             snap.health_messages.append(f"✅ Mod Organizer 2 detectado ({len(profiles)} perfiles)")
         else:
             snap.health_messages.append(
@@ -455,7 +461,12 @@ class EnvironmentScanner:
                     # review del PR #442): un mod con el DLL pero sin Shaders/
                     # (bug real CS 1.8.0) NO se muestra como instalado — la GUI
                     # conserva la acción de reparación.
-                    mod_dir = pathlib.Path(mo2_root) / "mods" / COMMUNITY_SHADERS_MOD_NAME
+                    mods_target = (
+                        snap.mo2.mods_dir
+                        if snap.mo2 is not None and snap.mo2.mods_dir is not None
+                        else pathlib.Path(mo2_root) / "mods"
+                    )
+                    mod_dir = mods_target / COMMUNITY_SHADERS_MOD_NAME
                     sentinel = mod_dir / "SKSE" / "Plugins" / "CommunityShaders.dll"
                     found = sentinel if sentinel.is_file() and (mod_dir / "Shaders").is_dir() else None
             else:
@@ -748,9 +759,40 @@ class EnvironmentScanner:
             return "steam"
         return "unknown"
 
-    def _list_mo2_profiles(self, mo2_root: pathlib.Path) -> list[str]:
+    def _resolve_mo2_instance_roots(self, mo2_install_dir: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+        """Resuelve data_root y mods_dir para una instalación MO2 detectada."""
+        import os
+
+        from sky_claw.app.core.path_resolver import descubrir_metadata_instancia_mo2
+
+        env_mods = os.environ.get("MO2_MODS_PATH", "").strip()
+        mods_from_env: pathlib.Path | None = None
+        if env_mods:
+            raw_mods = pathlib.Path(env_mods)
+            if raw_mods.is_absolute():
+                resolved_env = raw_mods.resolve()
+                if resolved_env.is_dir():
+                    mods_from_env = resolved_env
+
+        try:
+            metadata = descubrir_metadata_instancia_mo2(mo2_install_dir)
+        except Exception:
+            metadata = None
+
+        if metadata is not None:
+            data_root = metadata.raiz_datos
+            mods_dir = mods_from_env or metadata.mods
+        else:
+            data_root = mo2_install_dir
+            mods_dir = mods_from_env or (mo2_install_dir / "mods")
+
+        return data_root, mods_dir
+
+    def _list_mo2_profiles(self, mo2_root: pathlib.Path, data_root: pathlib.Path | None = None) -> list[str]:
         """List available MO2 profiles."""
-        profiles_dir = mo2_root / "profiles"
+        profiles_dir = (data_root / "profiles") if data_root is not None else (mo2_root / "profiles")
+        if not profiles_dir.is_dir() and data_root is not None:
+            profiles_dir = mo2_root / "profiles"
         if not profiles_dir.is_dir():
             return ["Default"]
         try:

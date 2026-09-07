@@ -65,5 +65,5 @@ def test_app_context_propaga_un_mismo_perfil_a_fomod_registry_y_router() -> None
 
     assert "profile=active_profile" in source
     assert "mo2_profile=active_profile" in source
-    assert 'mo2.root / "profiles" / active_profile' in source
+    assert 'mo2.data_root / "profiles" / active_profile' in source
     assert 'mo2_profile = os.path.join(mo2_root, "profiles", "Default")' not in source

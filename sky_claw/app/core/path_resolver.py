@@ -1032,23 +1032,32 @@ class PathResolutionService:
     def get_mo2_mods_path_para_destino(self) -> pathlib.Path | None:
         """MODS_DIR para un destino de ESCRITURA, sin fallback silencioso.
 
-        Semántica que exige Synthesis (y cualquier ritual que escriba bajo
-        ``mods/``): si la instancia DECLARÓ su ubicación de mods (metadata
-        presente) y esa declaración no es resoluble, falla cerrado con la
-        evidencia de :meth:`get_mo2_mods_path` — escribir en
-        ``<base_directory>/mods`` «por defecto» contra una declaración en
-        contra es exactamente la invención silenciosa que la serie #552/#554
-        eliminó del lado de lectura. Sin metadata de instancia (portable puro)
-        devuelve ``None`` y el caller conserva el default histórico, que la
-        herramienta crea.
+        Semántica write-safe exigida por Synthesis, Grass y AppContext:
+        1. ``MO2_MODS_PATH`` explícito válido → devuelve ese :class:`pathlib.Path`.
+        2. ``MO2_MODS_PATH`` explícito inválido → ``RuntimeError`` / fail-closed.
+        3. Metadata de instancia con ``mod_directory``/``base_directory`` válida
+           → MODS_DIR correspondiente.
+        4. Metadata declarada pero inconsistente → ``RuntimeError`` / fail-closed.
+        5. Ausencia real de metadata Y ausencia de ``MO2_MODS_PATH`` → ``None``
+           (:data:`DEFAULT_ALLOWED`), permitiendo al caller usar el default
+           histórico (p. ej. ``data_root / "mods"``).
         """
+        # 1-2. Override explícito de entorno: MO2_MODS_PATH manda y falla cerrado si es inválido
+        if bool(os.environ.get("MO2_MODS_PATH", "")):
+            return self.get_mo2_mods_path()
+
+        # 3-4. Metadata de instancia (mod_directory / base_directory)
         install_dir = self._directorio_instalacion_mo2()
         try:
             metadata = self._metadata_de_instancia(install_dir)
         except RuntimeError:
-            raise  # declarado e inconsistente: la evidencia manda, no se degrada
+            raise  # caso 4: declarado e inconsistente -> fail-closed
+
         if metadata is None:
+            # 5. Ausencia real de metadata y ausencia de MO2_MODS_PATH -> None
             return None
+
+        # 3. Metadata válida (o falla si el directorio declarado no existe / no es dir)
         return self.get_mo2_mods_path()
 
     def get_active_profile(self) -> str:
@@ -1155,6 +1164,23 @@ class PathResolutionService:
         except RuntimeError as exc:
             logger.debug("Metadata de instancia MO2 no utilizable (%s); sin raíz de datos.", exc)
             return None
+        if metadata is not None:
+            return metadata.raiz_datos
+        if install_dir is not None and self._es_directorio_real(install_dir, "instance_data_legacy"):
+            return install_dir
+        return None
+
+    def get_mo2_instance_data_root_estricto(self) -> pathlib.Path | None:
+        """Raíz de DATOS de la instancia MO2 estricta (falla cerrado ante metadata corrupta).
+
+        A diferencia de :meth:`get_mo2_instance_data_root`, propaga ``RuntimeError``
+        si la metadata de la instancia existe pero es inválida o queda fuera del
+        sandbox, evitando que operaciones mutantes degraden silenciosamente a la
+        instalación. Devuelve ``None`` solo si no hay evidencia de instancia ni
+        instalación conocida.
+        """
+        install_dir = self._directorio_instalacion_mo2()
+        metadata = self._metadata_de_instancia(install_dir)
         if metadata is not None:
             return metadata.raiz_datos
         if install_dir is not None and self._es_directorio_real(install_dir, "instance_data_legacy"):

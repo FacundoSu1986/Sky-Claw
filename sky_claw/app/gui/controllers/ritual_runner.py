@@ -1008,6 +1008,7 @@ async def run_ritual_install(
         snapshot = store.get(STORE_KEY_ENV)
         mo2 = getattr(snapshot, "mo2", None)
         mo2_root = getattr(mo2, "path", None)
+        mo2_mods = getattr(mo2, "mods_dir", None)
         skyrim = getattr(snapshot, "skyrim", None)
         game_dir = getattr(skyrim, "path", None)
         if mo2_root is None:
@@ -1030,7 +1031,12 @@ async def run_ritual_install(
             return
         network = getattr(app_context, "network", None)
         downloader = getattr(network, "downloader", None) if network is not None else None
-        install_dir = pathlib.Path(mo2_root) / "mods"
+        if mo2_mods is not None:
+            install_dir = pathlib.Path(mo2_mods)
+        elif getattr(app_context, "mo2", None) is not None and getattr(app_context.mo2, "mods_dir", None) is not None:
+            install_dir = app_context.mo2.mods_dir
+        else:
+            install_dir = pathlib.Path(mo2_root) / "mods"
         cs_kwargs = {
             "edition": getattr(skyrim, "edition", None),
             "game_version": getattr(skyrim, "version", "") or "",

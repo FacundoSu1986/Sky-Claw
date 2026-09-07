@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
-from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, JsonValue, VfsJob
+from sky_claw.local.mo2.vfs_contracts import VFS_MANIFEST_PROTOCOL_VERSION, JsonValue, VfsJob
 
 
 class VfsManifestError(RuntimeError):
@@ -28,22 +28,58 @@ def _absolute_path(raw: object, *, field: str) -> pathlib.Path:
     return path.resolve()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class VfsWorkerManifest:
     """Todo lo que necesita el worker, salvo el secreto guardado en descriptor."""
 
     protocol_version: int
     job: VfsJob
     challenge: VfsAttestationChallenge
-    mo2_root: pathlib.Path
+    data_root: pathlib.Path
+    mods_dir: pathlib.Path
+    install_root: pathlib.Path
     virtual_data_dir: pathlib.Path
     descriptor_path: pathlib.Path
+
+    def __init__(
+        self,
+        *,
+        protocol_version: int = VFS_MANIFEST_PROTOCOL_VERSION,
+        job: VfsJob,
+        challenge: VfsAttestationChallenge,
+        data_root: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | None = None,
+        install_root: pathlib.Path | None = None,
+        mo2_root: pathlib.Path | None = None,
+        virtual_data_dir: pathlib.Path,
+        descriptor_path: pathlib.Path,
+    ) -> None:
+        resolved_data = data_root if data_root is not None else mo2_root
+        if resolved_data is None:
+            raise ValueError("se requiere data_root o mo2_root")
+        resolved_install = install_root if install_root is not None else (mo2_root or resolved_data)
+        resolved_mods = mods_dir if mods_dir is not None else (resolved_data / "mods")
+        object.__setattr__(self, "protocol_version", protocol_version)
+        object.__setattr__(self, "job", job)
+        object.__setattr__(self, "challenge", challenge)
+        object.__setattr__(self, "data_root", resolved_data.resolve())
+        object.__setattr__(self, "mods_dir", resolved_mods.resolve())
+        object.__setattr__(self, "install_root", resolved_install.resolve())
+        object.__setattr__(self, "virtual_data_dir", virtual_data_dir.resolve())
+        object.__setattr__(self, "descriptor_path", descriptor_path.resolve())
+
+    @property
+    def mo2_root(self) -> pathlib.Path:
+        """Alias de compatibilidad legacy hacia install_root."""
+        return self.install_root
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> VfsWorkerManifest:
         version = raw.get("protocol_version")
-        if type(version) is not int or version != VFS_PROTOCOL_VERSION:
-            raise VfsManifestError("versión de protocolo incompatible en manifiesto")
+        if type(version) is not int or version != VFS_MANIFEST_PROTOCOL_VERSION:
+            raise VfsManifestError(
+                f"versión de protocolo incompatible en manifiesto: esperada {VFS_MANIFEST_PROTOCOL_VERSION}, recibida {version!r}"
+            )
         raw_job = raw.get("job")
         raw_challenge = raw.get("challenge")
         if not isinstance(raw_job, Mapping) or not isinstance(raw_challenge, Mapping):
@@ -54,11 +90,24 @@ class VfsWorkerManifest:
             raise VfsManifestError("job y challenge no apuntan al mismo perfil")
         if job.expected_fingerprint != challenge.profile_fingerprint:
             raise VfsManifestError("job y challenge no comparten fingerprint")
+
+        data_root_raw = raw.get("data_root")
+        mods_dir_raw = raw.get("mods_dir")
+        install_root_raw = raw.get("install_root")
+        if data_root_raw is None or mods_dir_raw is None:
+            raise VfsManifestError("data_root y mods_dir son obligatorios en el manifiesto")
+
+        data_root = _absolute_path(data_root_raw, field="data_root")
+        mods_dir = _absolute_path(mods_dir_raw, field="mods_dir")
+        install_root = data_root if install_root_raw is None else _absolute_path(install_root_raw, field="install_root")
+
         return cls(
             protocol_version=version,
             job=job,
             challenge=challenge,
-            mo2_root=_absolute_path(raw.get("mo2_root"), field="mo2_root"),
+            data_root=data_root,
+            mods_dir=mods_dir,
+            install_root=install_root,
             virtual_data_dir=_absolute_path(raw.get("virtual_data_dir"), field="virtual_data_dir"),
             descriptor_path=_absolute_path(raw.get("descriptor_path"), field="descriptor_path"),
         )
@@ -69,7 +118,9 @@ class VfsWorkerManifest:
             "protocol_version": self.protocol_version,
             "job": self.job.to_dict(),
             "challenge": challenge,
-            "mo2_root": str(self.mo2_root),
+            "data_root": str(self.data_root),
+            "mods_dir": str(self.mods_dir),
+            "install_root": str(self.install_root),
             "virtual_data_dir": str(self.virtual_data_dir),
             "descriptor_path": str(self.descriptor_path),
         }

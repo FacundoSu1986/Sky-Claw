@@ -983,3 +983,23 @@ async def test_sin_flag_es_noop(tmp_path: pathlib.Path) -> None:
     assert removed is False
     assert not (tmp_path / "PrecacheGrass.txt").exists()
     mgr.acquire_lock.assert_not_awaited()  # sin flag → ni consulta el lock
+
+
+async def test_generate_captura_runtime_error_de_resolucion_de_raices() -> None:
+    """GrassCacheService.generate convierte RuntimeError de resolución de raíces
+    en resultado estructurado de error (GrassCacheServiceError -> success: False, message: ...)
+    sin propagar excepción cruda.
+    """
+
+    def provider_con_error():
+        raise RuntimeError("mod_directory declarado pero no disponible en disco")
+
+    service = GrassCacheService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        runtime_deps_provider=provider_con_error,
+    )
+    result = await service.generate({"worldspaces": ["Tamriel"], "force_stage_guard": True})
+    assert result["success"] is False
+    assert "Error resolviendo dependencias de MO2 para grass cache" in result["message"]
+    assert "mod_directory declarado pero no disponible en disco" in result["message"]

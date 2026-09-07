@@ -224,6 +224,8 @@ async def _install_vfs_bridge(args: argparse.Namespace) -> pathlib.Path:
 
 async def _run_vfs_health(args: argparse.Namespace) -> None:
     """Ejecuta worker+nieto bajo USVFS sin arrancar el resto del daemon."""
+    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.security.path_validator import PathValidator
     from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
     from sky_claw.local.mo2.vfs_broker import VfsBrokerError, VfsExecutionBroker, vfs_instance_id
     from sky_claw.local.mo2.vfs_contracts import VfsJob
@@ -234,7 +236,27 @@ async def _run_vfs_health(args: argparse.Namespace) -> None:
         raise VfsBrokerError(f"ModOrganizer.exe no existe bajo {root}")
     if game is None or not (game / "Data").is_dir():
         raise VfsBrokerError("--skyrim-path debe apuntar a una instalacion con Data")
-    instance_id = vfs_instance_id(root)
+
+    # Resuelve explícitamente install_root, data_root y mods_dir
+    from sky_claw.app_context import _construir_raices_sandbox
+
+    sandbox_roots = _construir_raices_sandbox(
+        mo2_root=root,
+        install_dir=None,
+        skyrim_path=game,
+    )
+    validator = PathValidator(roots=sandbox_roots)
+    path_service = PathResolutionService(
+        path_validator=validator,
+        profile_name=args.vfs_profile,
+        mo2_install_dir=root,
+    )
+    resolved_install = path_service.get_mo2_path() or root
+    resolved_data = path_service.get_mo2_instance_data_root() or resolved_install
+    destino_mods = path_service.get_mo2_mods_path_para_destino()
+    resolved_mods = destino_mods if destino_mods is not None else (resolved_data / "mods")
+
+    instance_id = vfs_instance_id(resolved_install)
     broker = VfsExecutionBroker(
         instance_id=instance_id,
         state_dir=Config.DEFAULT_CONFIG_DIR / "vfs_bridge" / instance_id,
@@ -243,7 +265,8 @@ async def _run_vfs_health(args: argparse.Namespace) -> None:
     try:
         challenge = await asyncio.to_thread(
             build_attestation_challenge,
-            mo2_root=root,
+            data_root=resolved_data,
+            mods_dir=resolved_mods,
             profile=args.vfs_profile,
             physical_data_dir=game / "Data",
         )
@@ -259,7 +282,9 @@ async def _run_vfs_health(args: argparse.Namespace) -> None:
         result = await broker.submit(
             job,
             challenge=challenge,
-            mo2_root=root,
+            install_root=resolved_install,
+            data_root=resolved_data,
+            mods_dir=resolved_mods,
             virtual_data_dir=game / "Data",
         )
         if not result.success:

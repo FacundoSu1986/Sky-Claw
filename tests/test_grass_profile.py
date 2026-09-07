@@ -37,6 +37,7 @@ from sky_claw.local.mo2.profile_sandbox import (
     ProfileNotFoundError,
     SandboxSymlinkError,
 )
+from sky_claw.local.mo2.vfs import MO2Controller
 from tests._symlink_guard import crear_junction, junction_guard
 
 
@@ -368,3 +369,250 @@ async def test_teardown_reporta_fallos_e_intenta_ambos(
     assert fallidos == [clon]
     assert clon.exists(), "el clon quedó (borrado falló) y se reporta"
     assert not mod.exists(), "el mod SÍ se intentó y borró pese al fallo previo"
+
+
+async def test_grass_profile_manager_con_raices_separadas(tmp_path: pathlib.Path) -> None:
+    """Issue #557: GrassProfileManager opera correctamente con install != data != mods.
+
+    Verifica que el clon se crea en data_root/profiles, el mod en mods_dir, y que
+    ninguna operación contamina install_root ni data_root/mods (trampas).
+    """
+    install_dir = tmp_path / "MO2_Install"
+    install_dir.mkdir()
+    (install_dir / "ModOrganizer.exe").write_bytes(b"fake exe")
+
+    data_dir = tmp_path / "MO2_Data"
+    profile = data_dir / "profiles" / "Default"
+    profile.mkdir(parents=True)
+    (profile / "modlist.txt").write_bytes(_MODLIST)
+    (profile / "plugins.txt").write_bytes(_PLUGINS)
+    (profile / "Skyrim.ini").write_bytes(_SKYRIM_INI)
+    (profile / "settings.txt").write_bytes(_SETTINGS)
+    (data_dir / "overwrite").mkdir()
+
+    mods_dir = tmp_path / "MO2_Mods"
+    mods_dir.mkdir()
+
+    # Trampas: directorios mods/ en install y en data deben quedar intactos y vacíos.
+    trampa_install_mods = install_dir / "mods"
+    trampa_install_mods.mkdir(parents=True)
+    trampa_data_mods = data_dir / "mods"
+    trampa_data_mods.mkdir(parents=True)
+
+    validator = PathValidator(roots=[tmp_path])
+    mgr = GrassProfileManager(
+        install_root=install_dir,
+        data_root=data_dir,
+        mods_dir=mods_dir,
+        path_validator=validator,
+        source_profile="Default",
+    )
+
+    assert mgr.install_root == install_dir.resolve()
+    assert mgr.data_root == data_dir.resolve()
+    assert mgr.mods_dir == mods_dir.resolve()
+
+    # 1. create_clone_profile: clon en data_root / profiles
+    clon = await mgr.create_clone_profile()
+    assert clon == data_dir / "profiles" / "SkyClaw-GrassCache"
+    assert clon.is_dir()
+    assert not (install_dir / "profiles").exists()
+
+    # 2. build_config_mod: mod en mods_dir
+    mod_path = await mgr.build_config_mod(["Tamriel"])
+    assert mod_path == mods_dir / "SkyClaw - Grass Precache Config"
+    assert (mod_path / "SKSE" / "Plugins" / "GrassControl.ini").is_file()
+    assert list(trampa_install_mods.iterdir()) == []
+    assert list(trampa_data_mods.iterdir()) == []
+
+    # 3. teardown: limpia clon en data_root y mod en mods_dir
+    fallidos = await mgr.teardown()
+    assert fallidos == []
+    assert not clon.exists()
+    assert not mod_path.exists()
+    assert list(trampa_install_mods.iterdir()) == []
+    assert list(trampa_data_mods.iterdir()) == []
+
+
+def test_grass_profile_manager_adopta_raices_de_controller(tmp_path: pathlib.Path) -> None:
+    """GrassProfileManager adopta install_root, data_root y mods_dir del controller provisto."""
+    install = tmp_path / "MO2_Install"
+    data = tmp_path / "MO2_Data"
+    mods = tmp_path / "MO2_Mods"
+    for p in (install, data, mods):
+        p.mkdir()
+    (install / "ModOrganizer.exe").write_bytes(b"fake exe")
+
+    validator = PathValidator(roots=[tmp_path])
+    ctrl = MO2Controller(
+        install_root=install,
+        data_root=data,
+        mods_dir=mods,
+        path_validator=validator,
+    )
+
+    mgr = GrassProfileManager(controller=ctrl, path_validator=validator)
+    assert mgr.install_root == install.resolve()
+    assert mgr.data_root == data.resolve()
+    assert mgr.mods_dir == mods.resolve()
+
+    mgr2 = GrassProfileManager(
+        install_root=install,
+        data_root=data,
+        mods_dir=mods,
+        controller=ctrl,
+        path_validator=validator,
+    )
+    assert mgr2.install_root == install.resolve()
+
+
+def test_grass_profile_manager_rechaza_raices_divergentes_de_controller(tmp_path: pathlib.Path) -> None:
+    """GrassProfileManager rechaza con ValueError si las raíces explícitas difieren del controller."""
+    install = tmp_path / "MO2_Install"
+    data = tmp_path / "MO2_Data"
+    mods = tmp_path / "MO2_Mods"
+    otradir = tmp_path / "Other"
+    for p in (install, data, mods, otradir):
+        p.mkdir()
+    (install / "ModOrganizer.exe").write_bytes(b"fake exe")
+
+    validator = PathValidator(roots=[tmp_path])
+    ctrl = MO2Controller(
+        install_root=install,
+        data_root=data,
+        mods_dir=mods,
+        path_validator=validator,
+    )
+
+    with pytest.raises(ValueError, match="install_root explícito .* diverge del controller"):
+        GrassProfileManager(install_root=otradir, controller=ctrl, path_validator=validator)
+
+    with pytest.raises(ValueError, match="data_root explícito .* diverge del controller"):
+        GrassProfileManager(data_root=otradir, controller=ctrl, path_validator=validator)
+
+    with pytest.raises(ValueError, match="mods_dir explícito .* diverge del controller"):
+        GrassProfileManager(mods_dir=otradir, controller=ctrl, path_validator=validator)
+
+    with pytest.raises(ValueError, match="mo2_root explícito .* diverge del controller"):
+        GrassProfileManager(mo2_root=otradir, controller=ctrl, path_validator=validator)
+
+
+def test_grass_profile_manager_rechaza_raices_parciales(tmp_path: pathlib.Path) -> None:
+    """Modo explícito exige la terna install_root + data_root + mods_dir."""
+    d1 = tmp_path / "d1"
+    d2 = tmp_path / "d2"
+    d1.mkdir()
+    d2.mkdir()
+    validator = PathValidator(roots=[tmp_path])
+
+    with pytest.raises(ValueError, match="exige install_root, data_root y mods_dir completos"):
+        GrassProfileManager(install_root=d1, path_validator=validator)
+
+    with pytest.raises(ValueError, match="exige install_root, data_root y mods_dir completos"):
+        GrassProfileManager(data_root=d1, path_validator=validator)
+
+    with pytest.raises(ValueError, match="exige install_root, data_root y mods_dir completos"):
+        GrassProfileManager(mods_dir=d1, path_validator=validator)
+
+    with pytest.raises(ValueError, match="exige install_root, data_root y mods_dir completos"):
+        GrassProfileManager(install_root=d1, data_root=d2, path_validator=validator)
+
+
+def test_grass_profile_manager_exige_path_validator_incluso_con_controller(tmp_path: pathlib.Path) -> None:
+    """path_validator es obligatorio; no se extrae de controller._validator."""
+    install = tmp_path / "MO2_Install"
+    data = tmp_path / "MO2_Data"
+    mods = tmp_path / "MO2_Mods"
+    for p in (install, data, mods):
+        p.mkdir()
+    (install / "ModOrganizer.exe").write_bytes(b"fake exe")
+
+    validator = PathValidator(roots=[tmp_path])
+    ctrl = MO2Controller(
+        install_root=install,
+        data_root=data,
+        mods_dir=mods,
+        path_validator=validator,
+    )
+
+    with pytest.raises(ValueError, match="path_validator es obligatorio"):
+        GrassProfileManager(controller=ctrl)
+
+
+async def test_grass_integracion_custom_mod_directory_y_trampas(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integración Grass con custom mod_directory:
+    - Instancia portable sin metadata de mod_directory
+    - Variable MO2_MODS_PATH apuntando a carpeta custom externa
+    - Flujo Grass completo (create_clone_profile + build_config_mod)
+    - Mod de configuración se escribe EXCLUSIVAMENTE en la carpeta custom
+    - Trampas <data>/mods e <install>/mods quedan intactas.
+    """
+    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
+
+    mo2_dir = tmp_path / "MO2_Portable"
+    mo2_dir.mkdir()
+    (mo2_dir / "ModOrganizer.exe").write_bytes(b"fake-exe")
+
+    profile = mo2_dir / "profiles" / "Default"
+    profile.mkdir(parents=True)
+    (profile / "modlist.txt").write_bytes(_MODLIST)
+    (profile / "plugins.txt").write_bytes(_PLUGINS)
+    (profile / "Skyrim.ini").write_bytes(_SKYRIM_INI)
+    (profile / "settings.txt").write_bytes(_SETTINGS)
+    (mo2_dir / "overwrite").mkdir()
+
+    game_dir = tmp_path / "Skyrim"
+    game_dir.mkdir()
+    (game_dir / "Data").mkdir()
+    (game_dir / "SkyrimSE.exe").write_bytes(b"fake-exe")
+
+    custom_mods_dir = tmp_path / "External_Custom_Mods"
+    custom_mods_dir.mkdir()
+
+    # Trampas de regresión: <data>/mods e <install>/mods
+    trampa_install_mods = mo2_dir / "mods"
+    trampa_install_mods.mkdir()
+
+    monkeypatch.setenv("MO2_MODS_PATH", str(custom_mods_dir))
+    monkeypatch.setenv("SKYRIM_PATH", str(game_dir))
+
+    validator = PathValidator(roots=[tmp_path])
+    path_resolver = PathResolutionService(
+        path_validator=validator,
+        profile_name="Default",
+        mo2_install_dir=mo2_dir,
+    )
+
+    provider = GrassRuntimeDepsProvider(
+        path_resolver=path_resolver,
+        path_validator=validator,
+        profile_name="Default",
+    )
+
+    deps = provider()
+    assert deps is not None
+    pm = deps.profile_manager
+
+    # 1. Crear clon
+    clon = await pm.create_clone_profile()
+    assert clon.is_dir()
+    assert clon == mo2_dir / "profiles" / "SkyClaw-GrassCache"
+
+    # 2. Construir mod de config
+    mod_path = await pm.build_config_mod(["Tamriel"])
+    assert mod_path == custom_mods_dir / "SkyClaw - Grass Precache Config"
+    assert (mod_path / "SKSE" / "Plugins" / "GrassControl.ini").is_file()
+
+    # Verificar que las trampas no fueron contaminadas
+    assert list(trampa_install_mods.iterdir()) == []
+    assert custom_mods_dir != trampa_install_mods
+
+    # 3. Teardown
+    fallidos = await pm.teardown()
+    assert fallidos == []
+    assert not mod_path.exists()
+    assert not clon.exists()
+    assert list(trampa_install_mods.iterdir()) == []

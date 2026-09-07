@@ -21,7 +21,12 @@ import psutil
 from sky_claw.app.security.file_permissions import restrict_to_owner
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
-from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
+from sky_claw.local.mo2.vfs_contracts import (
+    VFS_MANIFEST_PROTOCOL_VERSION,
+    VFS_PROTOCOL_VERSION,
+    VfsJob,
+    VfsJobResult,
+)
 from sky_claw.local.mo2.vfs_ipc import (
     VfsFrameError,
     read_authenticated_message,
@@ -276,7 +281,10 @@ class VfsExecutionBroker:
         job: VfsJob,
         *,
         challenge: VfsAttestationChallenge,
-        mo2_root: pathlib.Path,
+        mo2_root: pathlib.Path | None = None,
+        data_root: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | None = None,
+        install_root: pathlib.Path | None = None,
         virtual_data_dir: pathlib.Path,
         overwrite_mod: str | None = None,
     ) -> VfsJobResult:
@@ -288,14 +296,22 @@ class VfsExecutionBroker:
         if job.profile != challenge.profile or job.expected_fingerprint != challenge.profile_fingerprint:
             raise VfsBrokerError("job y attestation no comparten perfil/fingerprint")
 
+        effective_data = data_root or mo2_root
+        if effective_data is None:
+            raise VfsBrokerError("se requiere data_root o mo2_root")
+        effective_mods = mods_dir or (effective_data / "mods")
+        effective_install = install_root or mo2_root or effective_data
+
         async with self._instance_lock:
             await self.wait_until_ready()
             manifest_path = self._jobs_dir / f"{job.job_id}.json"
             manifest = VfsWorkerManifest(
-                protocol_version=VFS_PROTOCOL_VERSION,
+                protocol_version=VFS_MANIFEST_PROTOCOL_VERSION,
                 job=job,
                 challenge=challenge,
-                mo2_root=mo2_root.resolve(),
+                data_root=effective_data.resolve(),
+                mods_dir=effective_mods.resolve(),
+                install_root=effective_install.resolve(),
                 virtual_data_dir=virtual_data_dir.resolve(),
                 descriptor_path=self._descriptor_path,
             )
