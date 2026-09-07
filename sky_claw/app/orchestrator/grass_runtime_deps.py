@@ -64,8 +64,8 @@ class GrassRuntimeDepsProvider:
 
         # Separación INSTALL_ROOT vs INSTANCE_DATA_ROOT vs MODS_DIR (Issue #557):
         # install_root es para lanzar ModOrganizer.exe / SkyrimSE.exe.
-        # data_root es para profiles/ y overwrite/ (degrada a install_root si no hay instancia separada).
-        data_root_candidate = self._path_resolver.get_mo2_instance_data_root()
+        # data_root es para profiles/ y overwrite/ (falla cerrado con RuntimeError si la metadata es corrupta).
+        data_root_candidate = self._path_resolver.get_mo2_instance_data_root_estricto()
         data_root = data_root_candidate if isinstance(data_root_candidate, pathlib.Path) else mo2_root
 
         # Contrato write-safe: Grass escribe en mods/ (config mod) y overwrite/.
