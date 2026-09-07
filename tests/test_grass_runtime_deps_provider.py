@@ -27,6 +27,8 @@ import inspect
 import pathlib
 from unittest.mock import MagicMock
 
+import pytest
+
 from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
 from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.mo2.grass_profile import GrassProfileManager
@@ -157,6 +159,156 @@ def test_provider_memoiza_el_controller(tmp_path: pathlib.Path) -> None:
 
     assert primera is not None and segunda is not None
     assert primera.mo2 is segunda.mo2
+
+
+def test_provider_con_raices_separadas(tmp_path: pathlib.Path) -> None:
+    """Issue #557: con install != data != mods, el provider entrega raíces separadas."""
+    install = tmp_path / "MO2_Install"
+    install.mkdir()
+    data = tmp_path / "MO2_Data"
+    data.mkdir()
+    mods = tmp_path / "MO2_Mods"
+    mods.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+
+    resolver = MagicMock()
+    resolver.get_mo2_path.return_value = install
+    resolver.get_skyrim_path.return_value = game
+    resolver.get_mo2_instance_data_root.return_value = data
+    resolver.get_mo2_instance_data_root_estricto.return_value = data
+    resolver.get_mo2_mods_path_para_destino.return_value = mods
+
+    provider = GrassRuntimeDepsProvider(
+        path_resolver=resolver,
+        path_validator=PathValidator(roots=[tmp_path]),
+        profile_name="MiPerfil",
+    )
+
+    deps = provider()
+
+    assert deps is not None
+    assert deps.mo2.install_root == install.resolve()
+    assert deps.mo2.data_root == data.resolve()
+    assert deps.mo2.mods_dir == mods.resolve()
+    assert deps.profile_manager.install_root == install.resolve()
+    assert deps.profile_manager.data_root == data.resolve()
+    assert deps.profile_manager.mods_dir == mods.resolve()
+    assert deps.overwrite_grass_dir == data / "overwrite" / "Grass"
+
+
+def test_provider_rechaza_mods_dir_unavailable(tmp_path: pathlib.Path) -> None:
+    """MODS_DIR_UNAVAILABLE jamás puede llegar a MO2Controller o GrassProfileManager."""
+    from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
+
+    mo2_root = tmp_path / "MO2"
+    mo2_root.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+
+    resolver = MagicMock()
+    resolver.get_mo2_path.return_value = mo2_root
+    resolver.get_skyrim_path.return_value = game
+    resolver.get_mo2_instance_data_root.return_value = mo2_root
+    resolver.get_mo2_instance_data_root_estricto.return_value = mo2_root
+    resolver.get_mo2_mods_path_para_destino.return_value = MODS_DIR_UNAVAILABLE
+
+    provider = GrassRuntimeDepsProvider(
+        path_resolver=resolver,
+        path_validator=PathValidator(roots=[tmp_path]),
+        profile_name="Default",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="MODS_DIR declarado pero no disponible"):
+        provider()
+
+
+def test_provider_propaga_error_si_mods_para_destino_lanza(tmp_path: pathlib.Path) -> None:
+    """Fail-closed: si get_mo2_mods_path_para_destino() falla, el error se propaga."""
+    mo2_root = tmp_path / "MO2"
+    mo2_root.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+
+    resolver = MagicMock()
+    resolver.get_mo2_path.return_value = mo2_root
+    resolver.get_skyrim_path.return_value = game
+    resolver.get_mo2_instance_data_root.return_value = mo2_root
+    resolver.get_mo2_instance_data_root_estricto.return_value = mo2_root
+    resolver.get_mo2_mods_path_para_destino.side_effect = RuntimeError("mod_directory declarado inválido")
+
+    provider = GrassRuntimeDepsProvider(
+        path_resolver=resolver,
+        path_validator=PathValidator(roots=[tmp_path]),
+        profile_name="Default",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="mod_directory declarado inválido"):
+        provider()
+
+
+def test_provider_falla_cerrado_si_data_root_estricto_lanza(tmp_path: pathlib.Path) -> None:
+    """Fail-closed: si la metadata de instancia existe pero es inválida, el error se propaga sin degradar a mo2_root."""
+    mo2_root = tmp_path / "MO2"
+    mo2_root.mkdir()
+    game = tmp_path / "Skyrim"
+    game.mkdir()
+
+    resolver = MagicMock()
+    resolver.get_mo2_path.return_value = mo2_root
+    resolver.get_skyrim_path.return_value = game
+    resolver.get_mo2_instance_data_root_estricto.side_effect = RuntimeError("base_directory de la instancia inválido")
+    resolver.get_mo2_mods_path_para_destino.return_value = tmp_path / "Mods"
+
+    provider = GrassRuntimeDepsProvider(
+        path_resolver=resolver,
+        path_validator=PathValidator(roots=[tmp_path]),
+        profile_name="Default",
+    )
+
+    with pytest.raises(RuntimeError, match="base_directory de la instancia inválido"):
+        provider()
+
+
+def test_provider_falla_cerrado_con_metadata_invalida_y_mo2_mods_path(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si ModOrganizer.ini es corrupto/inválido, el provider falla cerrado con RuntimeError
+    incluso si MO2_MODS_PATH está presente, sin degradar a install_root."""
+    from sky_claw.app.core.path_resolver import PathResolutionService
+
+    install = tmp_path / "MO2_Install"
+    install.mkdir()
+    (install / "ModOrganizer.exe").write_bytes(b"fake-exe")
+    # INI con base_directory no absoluto (inválido)
+    (install / "ModOrganizer.ini").write_text("[Settings]\nbase_directory = relativo_invalido\n", encoding="utf-8")
+
+    custom_mods = tmp_path / "Custom_Mods"
+    custom_mods.mkdir()
+    monkeypatch.setenv("MO2_MODS_PATH", str(custom_mods))
+
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    monkeypatch.setenv("SKYRIM_PATH", str(game))
+
+    validator = PathValidator(roots=[tmp_path])
+    path_service = PathResolutionService(
+        path_validator=validator,
+        profile_name="Default",
+        mo2_install_dir=install,
+    )
+    provider = GrassRuntimeDepsProvider(
+        path_resolver=path_service,
+        path_validator=validator,
+        profile_name="Default",
+    )
+
+    with pytest.raises(RuntimeError):
+        provider()
 
 
 # ---------------------------------------------------------------------------

@@ -1322,7 +1322,8 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/__main__.py": (257,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
         "sky_claw/local/tools/output_targets.py": (157,),
-        "sky_claw/local/mo2/grass_profile.py": (227, 330),
+        # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.
+        "sky_claw/app/orchestrator/grass_runtime_deps.py": (81,),
     }
 
     @staticmethod
@@ -1911,14 +1912,7 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     INSTALL_ROOT / CAPABILITY (``get_mo2_path``):
 
-    - grass_runtime_deps: DEUDA BLOQUEANTE #557 (no olvido deliberado sin
-      cerrar): ``MO2Controller``/``GrassProfileManager`` son monorraíz — el
-      MISMO root alimenta ``launch_game`` (necesita INSTALL:
-      ``ModOrganizer.exe``) y ``profiles/``+``mods/``+``overwrite/`` (necesitan
-      DATA). Migrar solo el provider a datos rompería el lanzamiento; la
-      corrección exige separar las raíces dentro de ``MO2Controller``
-      (issue #557, bloquea declarar cerrada la familia split-brain de #552 en
-      rigs con instancia separada).
+    - grass_runtime_deps: get_mo2_path() es solo INSTALL_ROOT (para ModOrganizer.exe / launch_game en MO2Controller).
     - dyndolod_service (runner): ``DynDOLODConfig.mo2_path`` no se usa en
       ejecución (solo ``mo2_mods_path``/outputs); INSTALL opaco.
     - loot_service: install_root para BrokeredLootRunner en lazy _ensure_loot_runner.
@@ -1943,6 +1937,8 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     - app_context: bootstrap de MO2Controller para operaciones mutantes
       (falla cerrado con RuntimeError si la metadata es corrupta o queda fuera del sandbox).
+    - grass_runtime_deps: profiles/ y overwrite/Grass para operaciones mutantes
+      (falla cerrado con RuntimeError si la metadata es corrupta).
     - loot_service: data_root para BrokeredLootRunner en lazy _ensure_loot_runner
       (falla cerrado con RuntimeError si la metadata es corrupta).
 
@@ -1976,6 +1972,7 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root_estricto()``.
     _INSTANCE_DATA_ESTRICTO: dict[str, int] = {
+        "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/app_context.py": 1,
         "sky_claw/local/tools/loot_service.py": 1,
     }
@@ -2008,6 +2005,7 @@ class TestAnclaSemanticaDeRaicesMo2:
     _MODS_PARA_DESTINO: dict[str, int] = {
         "sky_claw/__main__.py": 1,
         "sky_claw/app_context.py": 1,
+        "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
     }
 
@@ -2726,6 +2724,81 @@ class TestRaizDeDatosDeInstanciaSeparada:
         assert _mismo_path(metadata.raiz_datos, data)
         assert _mismo_path(metadata.mods, mods)
         assert metadata.mod_directory_declarado is False
+
+    def test_grass_runtime_deps_usa_data_y_mods_separados_de_install(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Issue #557: GrassRuntimeDepsProvider arma MO2Controller y GrassProfileManager
+        con install != data != mods y overwrite en data, nunca en install."""
+        from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
+
+        mods_custom = tmp_path / "ModsPersonales"
+        install, data, _ = self._montar_split(
+            tmp_path,
+            mod_directory=mods_custom,
+        )
+        juego = tmp_path / "game"
+        juego.mkdir()
+        resolver = self._resolver_con_hint(tmp_path, install)
+        validator = PathValidator(roots=[tmp_path])
+        provider = GrassRuntimeDepsProvider(
+            path_resolver=resolver,
+            path_validator=validator,
+            profile_name="Default",
+        )
+
+        with patch.dict(os.environ, {"SKYRIM_PATH": str(juego)}, clear=True):
+            deps = provider()
+
+        assert deps is not None
+        # MO2Controller recibe las tres raíces separadas:
+        assert _mismo_path(deps.mo2.install_root, install)
+        assert _mismo_path(deps.mo2.data_root, data)
+        assert _mismo_path(deps.mo2.mods_dir, mods_custom)
+        # GrassProfileManager recibe las tres raíces separadas:
+        assert _mismo_path(deps.profile_manager.install_root, install)
+        assert _mismo_path(deps.profile_manager.data_root, data)
+        assert _mismo_path(deps.profile_manager.mods_dir, mods_custom)
+        # overwrite_grass_dir cuelga de DATA, nunca de INSTALL:
+        assert _mismo_path(deps.overwrite_grass_dir, data / "overwrite" / "Grass")
+        assert not str(deps.overwrite_grass_dir.resolve()).startswith(str(install.resolve()))
+
+    def test_grass_deps_con_mod_directory_invalido_falla_cerrado_sin_caer_en_trampa_data_mods(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Regresión Issue #557: si la instancia declaró un mod_directory inexistente,
+        GrassRuntimeDepsProvider falla cerrado (RuntimeError) y NUNCA cae en una trampa
+        <data>/mods ni entrega MODS_DIR_UNAVAILABLE al controller."""
+        from sky_claw.app.orchestrator.grass_runtime_deps import GrassRuntimeDepsProvider
+
+        mods_inexistente = tmp_path / "mods_fantasma_inexistente"
+        install, data, _ = self._montar_split(
+            tmp_path,
+            mod_directory=mods_inexistente,
+            crear_mods=False,
+        )
+        # Trampa: creamos <data>/mods para verificar que Grass NO cae en el fallback silencioso
+        trampa_mods = data / "mods"
+        trampa_mods.mkdir(parents=True)
+        (trampa_mods / "ModTrampa").mkdir()
+
+        juego = tmp_path / "game"
+        juego.mkdir()
+        resolver = self._resolver_con_hint(tmp_path, install)
+        validator = PathValidator(roots=[tmp_path])
+        provider = GrassRuntimeDepsProvider(
+            path_resolver=resolver,
+            path_validator=validator,
+            profile_name="Default",
+        )
+
+        with (
+            patch.dict(os.environ, {"SKYRIM_PATH": str(juego)}, clear=True),
+            pytest.raises(RuntimeError, match="declara su directorio de mods.*pero no existe"),
+        ):
+            provider()
 
 
 class TestModsDirSeparadoEnConsumidoresDeDatos:
