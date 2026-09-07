@@ -277,9 +277,11 @@ def _mods_candidatos_para_sandbox(mo2_root: pathlib.Path) -> list[pathlib.Path]:
     candidatos: list[pathlib.Path] = []
     env_mods = os.environ.get("MO2_MODS_PATH", "").strip()
     if env_mods:
-        p = pathlib.Path(env_mods).resolve(strict=False)
-        if p.is_absolute() and p.parent != p and p.is_dir():
-            candidatos.append(p)
+        raw_env = pathlib.Path(env_mods)
+        if raw_env.is_absolute():
+            p = raw_env.resolve(strict=False)
+            if p.parent != p and p.is_dir():
+                candidatos.append(p)
     try:
         metadata = descubrir_metadata_instancia_mo2(mo2_root)
     except RuntimeError:

@@ -285,3 +285,25 @@ class TestMO2ControllerSplitRootsContract:
         assert ctrl.mods_dir / DynDOLODRunner.DYNDOLLOD_MOD_NAME in dyndolod.destinos
         assert split_topology["install"] / "mods" / DynDOLODRunner.DYNDOLLOD_MOD_NAME not in dyndolod.destinos
         assert split_topology["data"] / "mods" / DynDOLODRunner.DYNDOLLOD_MOD_NAME not in dyndolod.destinos
+
+    def test_mo2_mods_path_relativo_rechazado_en_sandbox_y_scanner(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MO2_MODS_PATH relativo (p.ej. '.') se rechaza y no se registra como raíz de sandbox ni en scanner."""
+        from sky_claw.app_context import _mods_candidatos_para_sandbox
+        from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+        mo2_root = tmp_path / "MO2_Install"
+        mo2_root.mkdir()
+        (mo2_root / "ModOrganizer.exe").write_bytes(b"fake-exe")
+
+        # Con MO2_MODS_PATH relativo a un directorio existente como '.'
+        monkeypatch.setenv("MO2_MODS_PATH", ".")
+        candidatos = _mods_candidatos_para_sandbox(mo2_root)
+        cwd_resolved = pathlib.Path(".").resolve()
+        assert cwd_resolved not in candidatos
+
+        scanner = EnvironmentScanner()
+        data_root, mods_dir = scanner._resolve_mo2_instance_roots(mo2_root)
+        assert mods_dir != cwd_resolved
+        assert mods_dir == mo2_root / "mods"

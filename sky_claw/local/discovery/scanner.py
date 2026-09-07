@@ -766,7 +766,13 @@ class EnvironmentScanner:
         from sky_claw.app.core.path_resolver import descubrir_metadata_instancia_mo2
 
         env_mods = os.environ.get("MO2_MODS_PATH", "").strip()
-        mods_from_env = pathlib.Path(env_mods).resolve() if env_mods else None
+        mods_from_env: pathlib.Path | None = None
+        if env_mods:
+            raw_mods = pathlib.Path(env_mods)
+            if raw_mods.is_absolute():
+                resolved_env = raw_mods.resolve()
+                if resolved_env.is_dir():
+                    mods_from_env = resolved_env
 
         try:
             metadata = descubrir_metadata_instancia_mo2(mo2_install_dir)
