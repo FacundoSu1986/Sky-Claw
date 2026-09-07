@@ -247,3 +247,41 @@ class TestMO2ControllerSplitRootsContract:
             assert cmd_args[0] == expected_exe
             assert cmd_args[1:3] == ("-p", "Test")
             assert kwargs["cwd"] == str(split_topology["install"])
+
+    def test_mo2_controller_posicion_launch_timeout_compatible(self, tmp_path: pathlib.Path) -> None:
+        """MO2Controller conserva compatibilidad posicional con 3 argumentos: (root, validator, timeout)."""
+        (tmp_path / "ModOrganizer.exe").write_bytes(b"exe")
+        validator = PathValidator(roots=[tmp_path])
+        ctrl = MO2Controller(tmp_path, validator, 42)
+        assert ctrl._spawn_timeout == 42
+        assert ctrl.install_root == tmp_path.resolve()
+        assert ctrl.data_root == tmp_path.resolve()
+        assert ctrl.mods_dir == (tmp_path / "mods").resolve()
+
+    def test_recovery_productores_usan_mods_dir_sin_tocar_trampas(
+        self, split_topology: dict[str, pathlib.Path]
+    ) -> None:
+        """construir_productores_de_move_aside usa mods_dir de MO2Controller sin volver a install/mods."""
+        from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
+        from sky_claw.local.tools.rollback_reconciler import construir_productores_de_move_aside
+
+        ctrl = MO2Controller(
+            install_root=split_topology["install"],
+            data_root=split_topology["data"],
+            mods_dir=split_topology["mods"],
+            path_validator=PathValidator(
+                roots=[split_topology["install"], split_topology["data"], split_topology["mods"]]
+            ),
+        )
+        game = split_topology["install"] / "Skyrim"
+        game.mkdir(parents=True, exist_ok=True)
+
+        productores = construir_productores_de_move_aside(
+            mo2_root=ctrl.install_root,
+            mods_dir=ctrl.mods_dir,
+            game=game,
+        )
+        dyndolod = next(p for p in productores if p.nombre == "dyndolod")
+        assert ctrl.mods_dir / DynDOLODRunner.DYNDOLLOD_MOD_NAME in dyndolod.destinos
+        assert split_topology["install"] / "mods" / DynDOLODRunner.DYNDOLLOD_MOD_NAME not in dyndolod.destinos
+        assert split_topology["data"] / "mods" / DynDOLODRunner.DYNDOLLOD_MOD_NAME not in dyndolod.destinos

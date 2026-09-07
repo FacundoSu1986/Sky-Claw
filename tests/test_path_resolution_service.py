@@ -1305,8 +1305,8 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/mo2/vfs_manifest.py": (61,),
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.
-        "sky_claw/local/discovery/scanner.py": (458,),
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1033,),
+        "sky_claw/local/discovery/scanner.py": (467, 781),
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1039,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
@@ -1315,9 +1315,9 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/validators/vfs_health.py": (141,),
         "sky_claw/local/validators/preflight_sensors.py": (193,),
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": (327,),
-        # AppContext: fallback legacy en bootstrap de MO2Controller (973) y
-        # handoff reconciliation (1371).
-        "sky_claw/app_context.py": (973, 1371),
+        # AppContext: fallback legacy en bootstrap de MO2Controller (975).
+        # Handoff reconciliation usa mo2.mods_dir directamente (Issue #557).
+        "sky_claw/app_context.py": (975,),
         # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None (250).
         "sky_claw/__main__.py": (250,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
