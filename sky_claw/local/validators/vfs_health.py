@@ -73,8 +73,14 @@ class VfsHealthChecker:
     Args:
         game_path: Instalación de Skyrim (ella y sus ancestros se inspeccionan;
             un enlace acá es ``critical`` por el caso LOOT/libloot).
-        mo2_root: Instancia portable de MO2 (raíz, ancestros, ``mods/``,
-            ``profiles/``, ``overwrite/`` y el primer nivel de ``mods/``).
+        mo2_root: Raíz de datos de la instancia MO2 (ella, sus ancestros,
+            ``mods/``, ``profiles/``, ``overwrite/`` y el primer nivel de
+            ``mods/``).
+        mods_dir: MODS_DIR declarado por la instancia
+            (``get_mo2_mods_path``). ``[Settings] mod_directory`` puede vivir
+            fuera de ``<mo2_root>/mods``: con este valor se escanea ÉL, no el
+            default. ``None`` conserva el default histórico (layout portable y
+            callers que aún no lo pasan).
     """
 
     def __init__(
@@ -83,9 +89,11 @@ class VfsHealthChecker:
         game_path: pathlib.Path | None = None,
         mo2_root: pathlib.Path | None = None,
         scan_mods_dir: bool = True,
+        mods_dir: pathlib.Path | object | None = None,
     ) -> None:
         self._game_path = game_path
         self._mo2_root = mo2_root
+        self._mods_dir = mods_dir
         # Enumerar mods/ (iterdir) sobre una ruta NO validada por el sandbox
         # permitiría listar directorios arbitrarios (review Codex PR #240):
         # el caller lo deshabilita cuando la ruta cruda no tiene contraparte
@@ -120,8 +128,18 @@ class VfsHealthChecker:
             for subdir in _MO2_SUBDIRS:
                 sub_path = self._mo2_root / subdir
                 add(sub_path, "warning", _REMEDIATION_MO2)
-            mods_dir = self._mo2_root / "mods"
-            if self._scan_mods_dir and mods_dir.is_dir():
+            # El MODS_DIR declarado manda sobre <raíz>/mods: con
+            # ``mod_directory`` custom escanear el default sería ceguera
+            # voluntaria (mismo contrato que get_mo2_mods_path centraliza).
+            from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
+
+            if self._mods_dir is MODS_DIR_UNAVAILABLE:
+                mods_dir = None
+            elif self._mods_dir is not None:
+                mods_dir = self._mods_dir
+            else:
+                mods_dir = self._mo2_root / "mods"
+            if self._scan_mods_dir and mods_dir is not None and mods_dir.is_dir():
                 for mod_dir in sorted(mods_dir.iterdir()):
                     add(mod_dir, "warning", _REMEDIATION_MO2)
 

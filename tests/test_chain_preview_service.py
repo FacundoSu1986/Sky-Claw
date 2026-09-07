@@ -40,12 +40,15 @@ def _resolver_without_paths() -> MagicMock:
     for getter in (
         "get_skyrim_path",
         "get_mo2_path",
+        "get_mo2_instance_data_root",
         "get_mo2_mods_path",
         "get_dyndolod_exe",
         "get_texgen_exe",
         "get_xedit_path",
     ):
         setattr(resolver, getter, MagicMock(return_value=None))
+    # Sin hint por defecto: el fallback a detect_mo2_path sigue permitido.
+    resolver.has_explicit_mo2_install_selection = MagicMock(return_value=False)
     return resolver
 
 
@@ -375,7 +378,7 @@ class TestLimitesConFlagsReales:
         (mo2 / "mods" / "ModA").mkdir(parents=True)
         resolver = _resolver_without_paths()
         resolver.get_skyrim_path = MagicMock(return_value=skyrim)
-        resolver.get_mo2_path = MagicMock(return_value=mo2)
+        resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2)
         analyzer = MagicMock()
         analyzer.validate_load_order_limit = MagicMock(return_value=None)
 
@@ -397,7 +400,9 @@ class TestLimitesConFlagsReales:
         (mo2 / "mods" / "ModDetectado").mkdir(parents=True)
         resolver = _resolver_without_paths()
         resolver.get_skyrim_path = MagicMock(return_value=skyrim)
-        resolver.get_mo2_path = MagicMock(return_value=None)  # MO2_PATH sin setear
+        resolver.get_mo2_instance_data_root = MagicMock(return_value=None)  # sin datos
+        # Sin selección explícita (default del helper): el fallback a detect
+        # sigue permitido.
         resolver.detect_mo2_path = MagicMock(return_value=mo2)  # pero detectable
         analyzer = MagicMock()
         analyzer.validate_load_order_limit = MagicMock(return_value=None)
@@ -431,7 +436,7 @@ class TestLimitesConFlagsReales:
         (afuera / "mods" / "ModX").mkdir(parents=True)
         resolver = _resolver_without_paths()
         resolver.get_skyrim_path = MagicMock(return_value=sandbox / "Skyrim")
-        resolver.get_mo2_path = MagicMock(return_value=afuera)
+        resolver.get_mo2_instance_data_root = MagicMock(return_value=afuera)
         analyzer = MagicMock()
         analyzer.validate_load_order_limit = MagicMock(return_value=None)
 

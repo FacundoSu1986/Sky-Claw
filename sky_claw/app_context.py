@@ -34,7 +34,10 @@ from sky_claw.app.core.metrics_server import (
     start_metrics_server,
     stop_metrics_server,
 )
-from sky_claw.app.core.path_resolver import PERFIL_MO2_POR_DEFECTO
+from sky_claw.app.core.path_resolver import (
+    PERFIL_MO2_POR_DEFECTO,
+    descubrir_metadata_instancia_mo2,
+)
 from sky_claw.app.core.tracing import configure_tracing, shutdown_tracing
 from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.db.journal import OperationJournal
@@ -196,6 +199,132 @@ class DatabaseContext:
             self.registry = None
 
 
+# ---------------------------------------------------------------------------
+# Sandbox roots — trust boundary explícito para la raíz de la instancia MO2
+# ---------------------------------------------------------------------------
+# La raíz de instalación del programa (mo2_root, dir de ModOrganizer.exe) y
+# los datos de la instancia (raíz del ModOrganizer.ini) pueden vivir en
+# discos o árboles distintos desde MO2 2.4. Confiar ciegamente en el
+# ``base_directory`` declarado por un INI bajo %LOCALAPPDATA% para añadirlo
+# como raíz del sandbox ampliaría CRIT-003 sin un rationale verificable; en
+# cambio, el INI bajo LOCALAPPDATA es configuración del usuario de la
+# máquina (la misma clase de confianza que ``mo2_root`` en la config o
+# ``MO2_PATH`` en el entorno) y su ``base_directory`` es el resultado
+# determinístico del contrato PathSettings de MO2. Esta función aplica las
+# exclusiones de seguridad necesarias antes de devolver la raíz: que sea
+# absoluta, que exista, que sea un directorio, y que no sea una raíz de
+# unidad (lo que ampliaría el sandbox a una unidad completa). Si la metadata
+# no es utilizable (INI ilegible, base relativo, multi-instancia,
+# scan-error) NO se registra raíz: la resolución subsecuente fallará
+# cerrado en :meth:`get_mo2_mods_path` con la evidencia.
+
+
+def _raiz_datos_instancia_para_sandbox(mo2_root: pathlib.Path) -> pathlib.Path | None:
+    """Devuelve la raíz de datos de la instancia MO2 apta como raíz de sandbox.
+
+    Trust boundary explícito:
+      - fuente: SOLO la metadata de la instancia MO2 (portable INI junto al
+        ejecutable, o única instancia global bajo LOCALAPPDATA) — NO
+        ``base_directory`` crudo del INI sin canonicalizar;
+      - exclusiones: drive root (rechazado para no ampliar el sandbox a
+        una unidad completa), path inexistente o que no es directorio;
+      - fallo de la metadata: no se registra raíz y se loggea el motivo;
+        :meth:`get_mo2_mods_path` fallará cerrado después con la evidencia.
+
+    Returns:
+        Path canonicalizado y validado, o ``None`` si no se debe registrar.
+    """
+    try:
+        metadata = descubrir_metadata_instancia_mo2(mo2_root)
+    except RuntimeError as exc:
+        logger.warning(
+            "AppContext: la metadata de la instancia MO2 es inconsistente; "
+            "no se registra raíz de datos en el sandbox: %s",
+            exc,
+        )
+        return None
+    if metadata is None:
+        return None
+    raiz = metadata.raiz_datos
+    if raiz.parent == raiz:
+        logger.warning(
+            "AppContext: base_directory de la instancia MO2 es una raíz de "
+            "unidad (%s); no se registra como raíz del sandbox.",
+            raiz,
+        )
+        return None
+    if not raiz.is_dir():
+        logger.warning(
+            "AppContext: la base de la instancia MO2 (%s) no existe o no es "
+            "directorio; no se registra como raíz del sandbox.",
+            raiz,
+        )
+        return None
+    logger.info(
+        "AppContext: raíz de instancia MO2 (origen=%s) registrada en el sandbox: %s",
+        metadata.origen,
+        raiz,
+    )
+    return raiz
+
+
+def _mods_candidatos_para_sandbox(mo2_root: pathlib.Path) -> list[pathlib.Path]:
+    """Candidatos a directorio mods aptos como raíces de sandbox.
+
+    Respeta la precedencia canónica de resolución (MO2_MODS_PATH > metadata.mods):
+    si MO2_MODS_PATH está presente, registra exclusivamente dicho candidato (si es
+    absoluto y válido) y NUNCA autoriza metadata.mods (evitando shadowed roots y
+    fallback silencioso ante variable inválida). Si MO2_MODS_PATH está ausente,
+    metadata.mods se registra normalmente.
+    """
+    candidatos: list[pathlib.Path] = []
+    env_mods = os.environ.get("MO2_MODS_PATH", "").strip()
+    if env_mods:
+        raw_env = pathlib.Path(env_mods)
+        if raw_env.is_absolute():
+            p = raw_env.resolve(strict=False)
+            if p.parent != p and p.is_dir():
+                candidatos.append(p)
+        return candidatos
+
+    try:
+        metadata = descubrir_metadata_instancia_mo2(mo2_root)
+    except RuntimeError:
+        metadata = None
+    if metadata is not None:
+        mods = metadata.mods.resolve(strict=False)
+        if mods.is_absolute() and mods.parent != mods and mods.is_dir() and mods not in candidatos:
+            candidatos.append(mods)
+    return candidatos
+
+
+def _construir_raices_sandbox(
+    mo2_root: pathlib.Path,
+    install_dir: pathlib.Path | None,
+    skyrim_path: pathlib.Path | None,
+) -> list[pathlib.Path]:
+    """Compone las raíces de CRIT-003 registrando la instancia MO2 si aplica.
+
+    Misma composición que :meth:`AppContext.start_minimal` aplica
+    inline; esta función es la versión testeable y trazable. El orden de
+    las raíces no importa funcionalmente (el validador hace contención),
+    pero se mantiene estable para que los logs y los tests sean
+    determinísticos.
+    """
+    roots: list[pathlib.Path] = [mo2_root, pathlib.Path(tempfile.gettempdir()) / "sky_claw"]
+    if install_dir and install_dir not in roots:
+        roots.append(install_dir)
+    if skyrim_path and skyrim_path not in roots:
+        roots.append(skyrim_path)
+    raiz_instancia = _raiz_datos_instancia_para_sandbox(mo2_root)
+    if raiz_instancia and raiz_instancia not in roots:
+        roots.append(raiz_instancia)
+    for cand in _mods_candidatos_para_sandbox(mo2_root):
+        if cand not in roots:
+            roots.append(cand)
+    return roots
+
+
 class AppContext:
     """Manages lifecycle of all async resources."""
 
@@ -234,12 +363,21 @@ class AppContext:
         # Resolved tools install dir, populated in start() — read by the GUI
         # "Instalar" button (Follow-up C). None until the full start path runs.
         self.install_dir: pathlib.Path | None = None
+        # Instalación MO2 seleccionada (dir de ``ModOrganizer.exe`` == ``mo2_root``),
+        # publicada por start_full. Es una CLASE DISTINTA de ``install_dir`` (que es
+        # el dir de instalación de tools) y de la raíz de datos de la instancia (que
+        # puede vivir en otro disco). Se publica porque el `SupervisorAgent` del
+        # bootloader de la GUI —que se construye FUERA de start_full— necesita la
+        # MISMA instalación para que su PathResolutionService no vuelva a decidir
+        # vía MO2_PATH/auto-detección (split-brain). None hasta que corra start_full.
+        self.mo2_install_dir: pathlib.Path | None = None
         # Perfil MO2 de la sesión (`--profile` / `MO2_PROFILE` / fallback), resuelto
         # por start_full. Se publica porque hay consumidores que NO se construyen
         # dentro de start_full y necesitan el mismo valor: el `SupervisorAgent` del
         # bootloader de la GUI es el caso que motivó esto. Arranca en el mismo
         # fallback que `_resolve_mo2_profile` para que nunca sea None.
         self.mo2_profile: str = PERFIL_MO2_POR_DEFECTO
+        self.mo2: MO2Controller | None = None
 
         # ARC-02: AsyncExitStack para compensación atómica ante fallos
         self._exit_stack = AsyncExitStack()
@@ -577,6 +715,7 @@ class AppContext:
         self.vfs_instance_id = None
         self.vfs_loot_runner = None
         self.install_dir = None
+        self.mo2_install_dir = None
         self.mo2_profile = PERFIL_MO2_POR_DEFECTO
         self.router = None
         self.polling = None
@@ -584,6 +723,7 @@ class AppContext:
         self.sender = None
         self.sync_engine = None
         self.tools_installer = None
+        self.mo2 = None
 
     async def _rollback_startup(self) -> None:
         try:
@@ -813,26 +953,41 @@ class AppContext:
             if local_cfg.install_dir:
                 install_dir = pathlib.Path(local_cfg.install_dir)
 
-            sandbox_roots: list[pathlib.Path] = [
-                mo2_root,
-                pathlib.Path(tempfile.gettempdir()) / "sky_claw",
-            ]
-            if install_dir and install_dir not in sandbox_roots:
-                sandbox_roots.append(install_dir)
-            # El directorio del juego suele vivir fuera de mo2_root/install_dir (MO2 y
-            # los tools se instalan aparte de Skyrim), así que sin esta raíz explícita
-            # `ensure_skse` no puede pasar su propio `validate(install_dir)` de entrada
-            # — el "Instalar" de SKSE de la GUI fallaría siempre con
-            # PathViolationError, egress y HITL ya aprobados y todo.
+            skyrim_path: pathlib.Path | None = None
             if local_cfg.skyrim_path:
                 skyrim_path = pathlib.Path(local_cfg.skyrim_path)
-                if skyrim_path not in sandbox_roots:
-                    sandbox_roots.append(skyrim_path)
+
+            # Las raíces se componen en :func:`_construir_raices_sandbox` para
+            # que la misma lógica (incluyendo el registro de la raíz de la
+            # instancia MO2 derivado de su metadata) sea testeable y trazable.
+            sandbox_roots = _construir_raices_sandbox(
+                mo2_root=mo2_root,
+                install_dir=install_dir,
+                skyrim_path=skyrim_path,
+            )
             # --- DESPUÉS (Seguro - Zero Trust) ---
             # Solo definir las carpetas estrictamente necesarias
             # Se elimina explícitamente mo2_parent para evitar Path Traversal encubierto
             validator = PathValidator(roots=sandbox_roots)
-            mo2 = MO2Controller(mo2_root, validator)
+            from sky_claw.app.core.path_resolver import PathResolutionService
+
+            path_service = PathResolutionService(
+                path_validator=validator,
+                profile_name=active_profile,
+                mo2_install_dir=mo2_root,
+            )
+            resolved_install = path_service.get_mo2_path() or mo2_root
+            resolved_data = path_service.get_mo2_instance_data_root_estricto() or resolved_install
+            destino_mods = path_service.get_mo2_mods_path_para_destino()
+            resolved_mods = destino_mods if destino_mods is not None else (resolved_data / "mods")
+
+            mo2 = MO2Controller(
+                install_root=resolved_install,
+                data_root=resolved_data,
+                mods_dir=resolved_mods,
+                path_validator=validator,
+            )
+            self.mo2 = mo2
 
             await self._await_startup(self.network.initialize(nexus_key, self._args.staging_dir))
 
@@ -1125,14 +1280,11 @@ class AppContext:
             vfs_loot_runner = build_vfs_loot_runner(
                 broker=broker,
                 instance_id=instance_id if broker is not None else None,
-                mo2_root=mo2_root,
+                install_root=mo2.install_root,
+                data_root=mo2.data_root,
+                mods_dir=mo2.mods_dir,
                 game_path=configured_game,
                 loot_exe=loot_exe,
-                # Este runner es el que MUTA plugins.txt/loadorder.txt, y lo comparten
-                # el tool `run_loot_sort` del agente y el ritual LOOT de la GUI. Con el
-                # literal "Default" que había acá, ordenar el load order iba siempre al
-                # perfil equivocado — sin que `--profile` ni `MO2_PROFILE` pudieran
-                # corregirlo.
                 profile=active_profile,
             )
             self.vfs_broker = broker
@@ -1226,7 +1378,7 @@ class AppContext:
                 from sky_claw.local.tools.artifact_digest import digest_arbol
                 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 
-                mods_root = pathlib.Path(mo2_root) / "mods" if mo2_root else None
+                mods_root = mo2.mods_dir
                 game_path = configured_game if isinstance(configured_game, pathlib.Path) else None
                 data_dir = game_path / "Data" if game_path is not None else None
                 if game_path is not None and data_dir is not None and mods_root is not None:
@@ -1283,10 +1435,11 @@ class AppContext:
                         # juego, así que sin esa raíz su backup queda huérfano para
                         # siempre.
                         productores=construir_productores_de_move_aside(
-                            mo2_root=mo2_root,
+                            mo2_root=mo2.install_root,
+                            mods_dir=mo2.mods_dir,
                             game=configured_game,
                         ),
-                        sandbox_root=mo2_root / ".skyclaw_sandbox",
+                        sandbox_root=mo2.data_root / ".skyclaw_sandbox",
                         lock_manager=lock_manager,
                     )
                 )
@@ -1308,7 +1461,11 @@ class AppContext:
                 path_validator=validator,
                 # Estado de plugins/mods instalados para evaluar fileDependency
                 # de FOMOD (parches condicionados a mods presentes/ausentes).
-                file_state_provider=MO2PluginStateProvider(mo2_root=mo2.root, profile=active_profile),
+                file_state_provider=MO2PluginStateProvider(
+                    data_root=mo2.data_root,
+                    mods_dir=mo2.mods_dir,
+                    profile=active_profile,
+                ),
             )
 
             tool_registry = AsyncToolRegistry(
@@ -1344,7 +1501,7 @@ class AppContext:
             )
 
             history_db = str(self._args.db_path).replace(".db", "_history.db")
-            mo2_profile_path = mo2.root / "profiles" / active_profile
+            mo2_profile_path = mo2.data_root / "profiles" / active_profile
 
             # F1: provisionar el vault (si SKYCLAW_VAULT_MASTER_KEY está seteada)
             # y cablearlo al router para habilitar el hot-swap Zero-Trust de
@@ -1400,6 +1557,11 @@ class AppContext:
             # GUI corría sus rituales sobre otro perfil que el agente.
             self.mo2_profile = active_profile
             self.install_dir = install_dir
+            # Instalación MO2 seleccionada (mo2_root), publicada por la misma razón
+            # que mo2_profile: el `SupervisorAgent` del bootloader se construye FUERA
+            # de start_full y debe recibir esta MISMA instalación para que su
+            # PathResolutionService no re-decida vía MO2_PATH/auto-detección.
+            self.mo2_install_dir = mo2_root
             self.sender = sender
             self.hitl = hitl
             self.sync_engine = sync_engine

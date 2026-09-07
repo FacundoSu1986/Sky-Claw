@@ -546,6 +546,12 @@ def run_nicegui(
             hitl_guard=ctx.hitl,
             lifecycle=ctx.lifecycle.manager,
             path_validator=ctx.sandbox_validator,
+            # Instalación MO2 que start_full ya seleccionó (== el mo2_root con el
+            # que se armó el sandbox). Sin esto el PathResolutionService del
+            # supervisor re-decidía la instalación vía MO2_PATH/auto-detección y
+            # podía leer la metadata de una instancia distinta a la del sandbox
+            # (split-brain instalación-seleccionada != instalación-usada).
+            mo2_install_dir=ctx.mo2_install_dir,
             # C2: compartir el único NetworkGateway del AppContext (misma caché DNS
             # pinning + reglas de egress que el router/tools), sin duplicar política.
             gateway=ctx.network.gateway,

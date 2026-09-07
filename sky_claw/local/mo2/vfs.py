@@ -105,11 +105,41 @@ class MO2Controller:
 
     def __init__(
         self,
-        mo2_root: pathlib.Path,
-        path_validator: PathValidator,
+        install_root: pathlib.Path | None = None,
+        path_validator: PathValidator | None = None,
         launch_timeout: int = DEFAULT_SPAWN_TIMEOUT,
+        *,
+        data_root: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | None = None,
+        mo2_root: pathlib.Path | None = None,
     ) -> None:
-        self._root = mo2_root.resolve()
+        if path_validator is None:
+            raise ValueError("path_validator es obligatorio")
+
+        legacy_root = mo2_root or (install_root if data_root is None and mods_dir is None else None)
+
+        if legacy_root is not None and data_root is None and mods_dir is None:
+            # Modo legacy portable: install == data, mods == data / "mods"
+            if mo2_root is not None and install_root is not None and mo2_root.resolve() != install_root.resolve():
+                raise ValueError("mo2_root e install_root divergen en modo legacy")
+            self._install_root = legacy_root.resolve()
+            self._data_root = self._install_root
+            self._mods_dir = (self._data_root / "mods").resolve()
+        else:
+            # Modo explícito: install_root, data_root y mods_dir son OBLIGATORIOS.
+            # Se rechazan combinaciones parciales sin fallback silencioso.
+            if not (install_root is not None and data_root is not None and mods_dir is not None):
+                raise ValueError(
+                    "MO2Controller en modo explícito exige install_root, data_root y mods_dir. "
+                    "No se permiten combinaciones parciales."
+                )
+            if mo2_root is not None and mo2_root.resolve() != install_root.resolve():
+                raise ValueError("mo2_root diverge de install_root")
+            self._install_root = path_validator.validate(install_root)
+            self._data_root = path_validator.validate(data_root)
+            self._mods_dir = path_validator.validate(mods_dir)
+
+        self._root = self._install_root  # alias legacy para self.root
         self._validator = path_validator
         self._modlist_lock = asyncio.Lock()
         self._spawn_timeout = launch_timeout
@@ -131,8 +161,21 @@ class MO2Controller:
         self._procs_lock = asyncio.Lock()
 
     @property
+    def install_root(self) -> pathlib.Path:
+        return self._install_root
+
+    @property
+    def data_root(self) -> pathlib.Path:
+        return self._data_root
+
+    @property
+    def mods_dir(self) -> pathlib.Path:
+        return self._mods_dir
+
+    @property
     def root(self) -> pathlib.Path:
-        return self._root
+        """Alias legacy de install_root para compatibilidad de callers externos."""
+        return self._install_root
 
     async def read_modlist(
         self,
@@ -150,7 +193,7 @@ class MO2Controller:
         Corrupt or unparseable lines are logged and skipped.
         """
         assert_safe_component(profile, field="profile")
-        modlist_path = self._root / "profiles" / profile / "modlist.txt"
+        modlist_path = self._data_root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
         async with aiofiles.open(validated, encoding="utf-8-sig") as fh:
@@ -189,7 +232,7 @@ class MO2Controller:
         """
         assert_safe_component(mod_name, field="mod_name")
         assert_safe_component(profile, field="profile")
-        modlist_path = self._root / "profiles" / profile / "modlist.txt"
+        modlist_path = self._data_root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
         async with self._modlist_lock:
@@ -234,7 +277,7 @@ class MO2Controller:
         """
         assert_safe_component(mod_name, field="mod_name")
         assert_safe_component(profile, field="profile")
-        modlist_path = self._root / "profiles" / profile / "modlist.txt"
+        modlist_path = self._data_root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
         async with self._modlist_lock:
@@ -272,7 +315,7 @@ class MO2Controller:
         """
         assert_safe_component(mod_name, field="mod_name")
         assert_safe_component(profile, field="profile")
-        modlist_path = self._root / "profiles" / profile / "modlist.txt"
+        modlist_path = self._data_root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
         async with self._modlist_lock:
@@ -307,7 +350,7 @@ class MO2Controller:
             mod_name: The mod directory name.
         """
         assert_safe_component(mod_name, field="mod_name")
-        mod_dir = self._root / "mods" / mod_name
+        mod_dir = self._mods_dir / mod_name
 
         # Fail-closed sobre la ruta CRUDA, antes de validate(). No es redundante
         # con el borrado link-aware de abajo: PathValidator.validate() gatea
@@ -357,7 +400,7 @@ class MO2Controller:
                 in the process table within the configured timeout.
         """
         assert_safe_component(profile, field="profile")
-        mo2_exe = self._root / "ModOrganizer.exe"
+        mo2_exe = self._install_root / "ModOrganizer.exe"
         validated_exe = self._validator.validate(mo2_exe)
 
         if not validated_exe.exists():
@@ -366,7 +409,7 @@ class MO2Controller:
         # TASK-011: cwd must be the native filesystem path.
         # Under WSL2 this is the Linux path (/mnt/c/...); on native Windows
         # it is the Windows path (C:\...).  We do NOT translate it here.
-        cwd_native = str(self._root)
+        cwd_native = str(self._install_root)
 
         cmd = [str(validated_exe), "-p", profile, "moshortcut://SKSE"]
 

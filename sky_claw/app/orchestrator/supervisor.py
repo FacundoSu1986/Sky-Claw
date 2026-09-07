@@ -72,6 +72,13 @@ class SupervisorAgent:
         # start_full monte el router). None = advisor no disponible: los
         # conflictos críticos sin script fallan closed con mensaje accionable.
         patch_advisor_llm: LLMCallable | None = None,
+        # Instalación MO2 (directorio de ``ModOrganizer.exe``) que AppContext ya
+        # seleccionó y con la que armó el sandbox. Se enhebra al
+        # PathResolutionService para que la resolución de rutas reutilice la
+        # MISMA instalación que el composition root, en vez de volver a decidir
+        # vía MO2_PATH/auto-detección (split-brain instalación-seleccionada !=
+        # instalación-usada). None (standalone/tests) mantiene el legacy.
+        mo2_install_dir: pathlib.Path | None = None,
     ):
         self.db = DatabaseAgent()
         # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
@@ -102,7 +109,10 @@ class SupervisorAgent:
         # sandbox (mo2_root/install_dir — the validator AppContext injects),
         # NOT the backup-only rollback validator above, which would reject
         # every real MO2 path and abort the GUI agent bootstrap.
-        self._path_resolver = self._make_path_resolver(path_validator)
+        # La instalación MO2 seleccionada por AppContext se enhebra acá para que
+        # el resolver no vuelva a decidir vía MO2_PATH/auto-detección.
+        self._mo2_install_dir = mo2_install_dir
+        self._path_resolver = self._make_path_resolver(path_validator, mo2_install_dir)
 
         # Resolver ruta de modlist: MO2_PATH env var > auto-detección > fallback WSL2
         self.modlist_path = str(self._path_resolver.resolve_modlist_path(self.profile_name))
@@ -216,7 +226,11 @@ class SupervisorAgent:
         # (no solo el middleware) para la aprobación post-run del diff.
         self._hitl_guard = hitl_guard
 
-    def _make_path_resolver(self, sandbox_validator: PathValidatorProtocol | None) -> PathResolutionService:
+    def _make_path_resolver(
+        self,
+        sandbox_validator: PathValidatorProtocol | None,
+        mo2_install_dir: pathlib.Path | None = None,
+    ) -> PathResolutionService:
         """Build the MO2 path resolver.
 
         MO2 path resolution must validate against the *modding* sandbox roots
@@ -226,6 +240,10 @@ class SupervisorAgent:
         every real MO2 path (Blocker 3: the GUI supervisor never bootstrapped).
         Prefer the injected sandbox validator; fall back to the rollback
         validator only when none is provided (standalone / tests).
+
+        ``mo2_install_dir`` es la instalación MO2 que ``AppContext`` ya
+        seleccionó; se pasa al resolver para que reutilice esa decisión en vez
+        de re-elegir vía ``MO2_PATH``/auto-detección. ``None`` = legacy.
         """
         resolution_validator = sandbox_validator if sandbox_validator is not None else self._path_validator
         # El ritual de grass escribe en <MO2>/profiles y <MO2>/mods, así que
@@ -235,6 +253,7 @@ class SupervisorAgent:
         return PathResolutionService(
             path_validator=resolution_validator,
             profile_name=self.profile_name,
+            mo2_install_dir=mo2_install_dir,
         )
 
     def _init_rollback_components(self) -> None:

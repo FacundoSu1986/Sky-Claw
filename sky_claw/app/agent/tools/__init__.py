@@ -642,6 +642,7 @@ class AsyncToolRegistry:
                 self._downloader,
                 tools,
                 gateway=self._resolve_gateway(),
+                mods_dir=getattr(self._mo2, "mods_dir", None),
             ),
         )
 

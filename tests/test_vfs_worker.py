@@ -141,7 +141,7 @@ def test_descriptor_rechaza_host_no_loopback(tmp_path: pathlib.Path) -> None:
     descriptor.write_text(
         json.dumps(
             {
-                "protocol_version": 1,
+                "protocol_version": VFS_PROTOCOL_VERSION,
                 "host": "0.0.0.0",
                 "port": 1234,
                 "token": base64.urlsafe_b64encode(b"x" * 32).decode("ascii"),
@@ -172,7 +172,7 @@ async def test_worker_reporta_resultado_por_su_canal_autenticado(tmp_path: pathl
     await write_authenticated_message(
         bridge_writer,
         {
-            "protocol_version": 1,
+            "protocol_version": VFS_PROTOCOL_VERSION,
             "type": "hello",
             "role": "bridge",
             "instance_id": "portable-main",
@@ -205,7 +205,7 @@ async def test_worker_reporta_resultado_por_su_canal_autenticado(tmp_path: pathl
         await write_authenticated_message(
             bridge_writer,
             {
-                "protocol_version": 1,
+                "protocol_version": VFS_PROTOCOL_VERSION,
                 "type": "event",
                 "event": "worker_exit",
                 "job_id": manifest.job.job_id,

@@ -167,15 +167,21 @@ def _profile_fingerprint(
 
 def build_attestation_challenge(
     *,
-    mo2_root: pathlib.Path,
+    mo2_root: pathlib.Path | None = None,
+    data_root: pathlib.Path | None = None,
+    mods_dir: pathlib.Path | None = None,
     profile: str,
     physical_data_dir: pathlib.Path,
 ) -> VfsAttestationChallenge:
     """Elige un archivo efectivo de mod que el ``Data`` físico no contiene."""
     profile_name = _validated_profile(profile)
-    root = mo2_root.resolve()
+    root = data_root or mo2_root
+    if root is None:
+        raise VfsAttestationError("se requiere data_root o mo2_root")
+    data_resolved = root.resolve()
+    mods_resolved = mods_dir.resolve() if mods_dir is not None else (data_resolved / "mods")
     data = physical_data_dir.resolve()
-    profile_dir = root / "profiles" / profile_name
+    profile_dir = data_resolved / "profiles" / profile_name
     enabled = _enabled_mods(profile_dir / "modlist.txt")
     if not enabled:
         raise VfsAttestationError("el perfil no tiene mods habilitados para construir un canary elegible")
@@ -183,12 +189,12 @@ def build_attestation_challenge(
     # modlist.txt crece de menor a mayor prioridad en el contrato vigente del
     # proyecto. Al bajar desde el final, descartamos archivos reemplazados por
     # overwrite o por un mod de prioridad mayor.
-    higher_roots: list[pathlib.Path] = [root / "overwrite"]
+    higher_roots: list[pathlib.Path] = [data_resolved / "overwrite"]
     for mod_name in reversed(enabled):
         safe_mod = _validated_profile(mod_name)
-        mod_root = root / "mods" / safe_mod
+        mod_root = mods_resolved / safe_mod
         if not mod_root.is_dir():
-            raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {root / 'mods'}")
+            raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
         for relative, source in _iter_mod_files(mod_root):
             if (data / relative).exists():
                 continue
@@ -220,7 +226,9 @@ def build_attestation_challenge(
 def verify_vfs_attestation(
     *,
     challenge: VfsAttestationChallenge,
-    mo2_root: pathlib.Path,
+    mo2_root: pathlib.Path | None = None,
+    data_root: pathlib.Path | None = None,
+    mods_dir: pathlib.Path | None = None,
     profile: str,
     virtual_data_dir: pathlib.Path,
 ) -> VfsAttestationProof:
@@ -228,14 +236,18 @@ def verify_vfs_attestation(
     profile_name = _validated_profile(profile)
     if profile_name != challenge.profile:
         raise VfsAttestationError(f"perfil incorrecto: worker={profile_name!r}, challenge={challenge.profile!r}")
-    root = mo2_root.resolve()
+    root = data_root or mo2_root
+    if root is None:
+        raise VfsAttestationError("se requiere data_root o mo2_root")
+    data_resolved = root.resolve()
+    mods_resolved = mods_dir.resolve() if mods_dir is not None else (data_resolved / "mods")
     relative = pathlib.Path(*challenge.relative_path.parts)
-    source = root / "mods" / _validated_profile(challenge.source_mod) / relative
+    source = mods_resolved / _validated_profile(challenge.source_mod) / relative
     current_source_sha = _sha256_file(source)
     if current_source_sha != challenge.sha256:
         raise VfsAttestationError("el canary cambió después del preview")
     current_fingerprint = _profile_fingerprint(
-        profile_dir=root / "profiles" / profile_name,
+        profile_dir=data_resolved / "profiles" / profile_name,
         profile=profile_name,
         source_mod=challenge.source_mod,
         relative_path=challenge.relative_path,

@@ -264,6 +264,8 @@ async def test_execute_synthesis_pipeline_sin_guard_deniega_fail_closed(supervis
     supervisor._hitl_guard = None
     supervisor._path_resolver = MagicMock()
     supervisor._path_resolver.get_mo2_path.return_value = tmp_path
+    # El provider del sandbox consume la raíz de DATOS, no install.
+    supervisor._path_resolver.get_mo2_instance_data_root.return_value = tmp_path
     from sky_claw.app.orchestrator.dispatcher_dependencies import build_synthesis_flow_provider
 
     factory_calls: list[tuple[pathlib.Path, object]] = []
