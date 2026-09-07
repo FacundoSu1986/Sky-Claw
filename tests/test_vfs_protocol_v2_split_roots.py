@@ -537,3 +537,81 @@ async def test_vfs_health_standalone_resuelve_raices_separadas(tmp_path: pathlib
         assert submit_kwargs["install_root"] == install_root
         assert submit_kwargs["data_root"] == data_root
         assert submit_kwargs["mods_dir"] == mods_dir
+
+
+async def test_vfs_health_standalone_resuelve_metadata_fuera_de_install_root(tmp_path: pathlib.Path) -> None:
+    """_run_vfs_health resuelve data_root y mods_dir externos vía metadata registrada en el sandbox."""
+    import argparse
+    from unittest.mock import AsyncMock, patch
+
+    from sky_claw.__main__ import _run_vfs_health
+
+    install_root = tmp_path / "MO2_Install"
+    data_root = tmp_path / "External_MO2_Data"
+    mods_dir = tmp_path / "External_Mods"
+    game = tmp_path / "Skyrim"
+
+    for p in (install_root, data_root / "profiles" / "Default", mods_dir, game / "Data"):
+        p.mkdir(parents=True, exist_ok=True)
+    (install_root / "ModOrganizer.exe").write_bytes(b"fake-exe")
+    (data_root / "profiles" / "Default" / "modlist.txt").write_text("", encoding="utf-8")
+
+    # ModOrganizer.ini declara base_directory y mod_directory fuera de install_root
+    ini_content = (
+        "[Settings]\n"
+        f"base_directory = {data_root.as_posix()}\n"
+        f"mod_directory = {mods_dir.as_posix()}\n"
+        "selected_profile = Default\n"
+    )
+    (install_root / "ModOrganizer.ini").write_text(ini_content, encoding="utf-8")
+
+    args = argparse.Namespace(
+        mo2_root=str(install_root),
+        skyrim_path=str(game),
+        vfs_profile="Default",
+        vfs_timeout=10.0,
+    )
+
+    fake_challenge = VfsAttestationChallenge(
+        profile="Default",
+        source_mod="ModA",
+        relative_path=pathlib.PurePosixPath("canary.txt"),
+        sha256="c" * 64,
+        profile_fingerprint="f" * 64,
+    )
+    fake_result = VfsJobResult(
+        protocol_version=1,
+        job_id="test-job",
+        success=True,
+        message="",
+        exit_code=0,
+        stdout="ok",
+        stderr="",
+        outputs=(),
+        rollback_state="not_required",
+        attestation={"profile": "Default", "profile_fingerprint": "f" * 64},
+        tool_result={},
+    )
+
+    with (
+        patch(
+            "sky_claw.local.mo2.vfs_attestation.build_attestation_challenge", return_value=fake_challenge
+        ) as mock_challenge,
+        patch("sky_claw.local.mo2.vfs_broker.VfsExecutionBroker.start", new_callable=AsyncMock),
+        patch(
+            "sky_claw.local.mo2.vfs_broker.VfsExecutionBroker.submit", new_callable=AsyncMock, return_value=fake_result
+        ) as mock_submit,
+        patch("sky_claw.local.mo2.vfs_broker.VfsExecutionBroker.close", new_callable=AsyncMock),
+    ):
+        await _run_vfs_health(args)
+
+        mock_challenge.assert_called_once()
+        challenge_kwargs = mock_challenge.call_args.kwargs
+        assert challenge_kwargs["data_root"] == data_root
+        assert challenge_kwargs["mods_dir"] == mods_dir
+
+        mock_submit.assert_called_once()
+        submit_kwargs = mock_submit.call_args.kwargs
+        assert submit_kwargs["install_root"] == install_root
+        assert submit_kwargs["data_root"] == data_root
+        assert submit_kwargs["mods_dir"] == mods_dir

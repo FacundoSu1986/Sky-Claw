@@ -238,7 +238,14 @@ async def _run_vfs_health(args: argparse.Namespace) -> None:
         raise VfsBrokerError("--skyrim-path debe apuntar a una instalacion con Data")
 
     # Resuelve explícitamente install_root, data_root y mods_dir
-    validator = PathValidator(roots=[root, game])
+    from sky_claw.app_context import _construir_raices_sandbox
+
+    sandbox_roots = _construir_raices_sandbox(
+        mo2_root=root,
+        install_dir=None,
+        skyrim_path=game,
+    )
+    validator = PathValidator(roots=sandbox_roots)
     path_service = PathResolutionService(
         path_validator=validator,
         profile_name=args.vfs_profile,
