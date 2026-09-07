@@ -211,9 +211,11 @@ def test_pathresolutionservice_tiene_un_unico_call_site_de_produccion() -> None:
     # 1. supervisor.py: el resolver centralizado inyectado al supervisor.
     # 2. app_context.py: bootstrap de MO2Controller con mo2_install_dir=mo2_root
     #    para resolver la topología install_root != data_root != mods_dir (Issue #557).
+    # 3. __main__.py: _run_vfs_health resuelve install_root, data_root y mods_dir.
     esperados = {
         "sky_claw/app/orchestrator/supervisor.py": 1,
         "sky_claw/app_context.py": 1,
+        "sky_claw/__main__.py": 1,
     }
     assert hallados == esperados, (
         "Cambió el conjunto de construcciones productivas de "

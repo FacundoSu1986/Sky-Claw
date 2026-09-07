@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 1
 _LAUNCH_FIELDS = frozenset({"protocol_version", "type", "job_id", "profile", "manifest_path", "overwrite_mod"})
 
 

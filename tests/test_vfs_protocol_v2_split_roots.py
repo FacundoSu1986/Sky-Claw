@@ -15,6 +15,7 @@ from sky_claw.local.mo2.vfs_attestation import (
     verify_vfs_attestation,
 )
 from sky_claw.local.mo2.vfs_contracts import (
+    VFS_MANIFEST_PROTOCOL_VERSION,
     VFS_PROTOCOL_VERSION,
     VfsJob,
     VfsJobResult,
@@ -29,9 +30,10 @@ from sky_claw.local.mo2.vfs_worker import (
 )
 
 
-def test_vfs_protocol_version_es_2() -> None:
-    """El protocolo VFS debe estar en version 2 para soportar raices separadas."""
-    assert VFS_PROTOCOL_VERSION == 2
+def test_vfs_protocol_versions() -> None:
+    """El protocolo de manifiesto es v2 (multi-raíz); transporte bridge es v1 (compatible)."""
+    assert VFS_MANIFEST_PROTOCOL_VERSION == 2
+    assert VFS_PROTOCOL_VERSION == 1
 
 
 def test_vfs_manifest_split_roots_roundtrip(tmp_path: pathlib.Path) -> None:
@@ -63,7 +65,7 @@ def test_vfs_manifest_split_roots_roundtrip(tmp_path: pathlib.Path) -> None:
     )
 
     manifest = VfsWorkerManifest(
-        protocol_version=VFS_PROTOCOL_VERSION,
+        protocol_version=VFS_MANIFEST_PROTOCOL_VERSION,
         job=job,
         challenge=challenge,
         data_root=data_root,
@@ -78,7 +80,7 @@ def test_vfs_manifest_split_roots_roundtrip(tmp_path: pathlib.Path) -> None:
     assert payload["data_root"] == str(data_root.resolve())
     assert payload["mods_dir"] == str(mods_dir.resolve())
     assert payload["install_root"] == str(install_root.resolve())
-    assert payload["mo2_root"] == str(install_root.resolve())
+    assert "mo2_root" not in payload  # V2 no serializa mo2_root engañoso
 
     restored = VfsWorkerManifest.from_dict(payload)
     assert restored.protocol_version == 2
@@ -147,6 +149,78 @@ def test_vfs_manifest_v2_exige_data_root_y_mods_dir(tmp_path: pathlib.Path) -> N
 
     with pytest.raises(VfsManifestError, match="data_root"):
         VfsWorkerManifest.from_dict(raw)
+
+
+def test_vfs_manifest_rechaza_install_root_vacio(tmp_path: pathlib.Path) -> None:
+    """install_root="" no es tratado como ausencia sino como valor inválido (fail-closed)."""
+    challenge = VfsAttestationChallenge(
+        profile="Default",
+        source_mod="ModA",
+        relative_path=pathlib.PurePosixPath("canary.txt"),
+        sha256="a" * 64,
+        profile_fingerprint="b" * 64,
+    )
+    job = VfsJob.create(
+        instance_id="portable-main",
+        profile="Default",
+        tool_id="health",
+        payload={},
+        timeout_seconds=10.0,
+        expected_fingerprint="b" * 64,
+        mutation_targets=(),
+    )
+    raw = {
+        "protocol_version": 2,
+        "job": job.to_dict(),
+        "challenge": challenge.to_dict(),
+        "data_root": str(tmp_path / "data"),
+        "mods_dir": str(tmp_path / "mods"),
+        "install_root": "",  # string vacío inválido
+        "virtual_data_dir": str(tmp_path / "virtual"),
+        "descriptor_path": str(tmp_path / "descriptor.json"),
+    }
+
+    with pytest.raises(VfsManifestError, match="install_root"):
+        VfsWorkerManifest.from_dict(raw)
+
+
+def test_vfs_manifest_sin_install_root_usa_data_root(tmp_path: pathlib.Path) -> None:
+    """Si install_root es None en manifest v2 (omisión legítima), usa data_root."""
+    data_root = tmp_path / "data"
+    mods_dir = tmp_path / "mods"
+    virtual = tmp_path / "virtual"
+    desc = tmp_path / "descriptor.json"
+    for p in (data_root, mods_dir, virtual, desc.parent):
+        p.mkdir(parents=True, exist_ok=True)
+
+    challenge = VfsAttestationChallenge(
+        profile="Default",
+        source_mod="ModA",
+        relative_path=pathlib.PurePosixPath("canary.txt"),
+        sha256="a" * 64,
+        profile_fingerprint="b" * 64,
+    )
+    job = VfsJob.create(
+        instance_id="portable-main",
+        profile="Default",
+        tool_id="health",
+        payload={},
+        timeout_seconds=10.0,
+        expected_fingerprint="b" * 64,
+        mutation_targets=(),
+    )
+    raw = {
+        "protocol_version": 2,
+        "job": job.to_dict(),
+        "challenge": challenge.to_dict(),
+        "data_root": str(data_root),
+        "mods_dir": str(mods_dir),
+        "virtual_data_dir": str(virtual),
+        "descriptor_path": str(desc),
+    }
+
+    restored = VfsWorkerManifest.from_dict(raw)
+    assert restored.install_root == data_root.resolve()
 
 
 def test_attestation_con_raices_divididas_y_trampa_en_data_mods(tmp_path: pathlib.Path) -> None:
@@ -369,3 +443,97 @@ async def test_brokered_loot_runner_con_raices_divididas(tmp_path: pathlib.Path)
     assert call_kwargs["data_root"] == data_root.resolve()
     assert call_kwargs["mods_dir"] == mods_dir.resolve()
     assert call_kwargs["install_root"] == install_root.resolve()
+
+
+def test_installed_bridge_v1_compatibility(tmp_path: pathlib.Path) -> None:
+    """Verifica que el bridge v1 instalado en MO2 carga el descriptor sin romper."""
+    import json
+
+    from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import PROTOCOL_VERSION as BRIDGE_PROTO
+    from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker
+
+    assert BRIDGE_PROTO == 1
+    assert VFS_PROTOCOL_VERSION == 1
+
+    broker = VfsExecutionBroker(
+        instance_id="test-inst",
+        state_dir=tmp_path / "broker_state",
+    )
+    broker._write_descriptor(12345)
+    raw = json.loads(broker._descriptor_path.read_text(encoding="utf-8"))
+    assert raw["protocol_version"] == 1
+
+
+async def test_vfs_health_standalone_resuelve_raices_separadas(tmp_path: pathlib.Path) -> None:
+    """_run_vfs_health resuelve install_root, data_root y mods_dir vía PathResolutionService."""
+    import argparse
+    from unittest.mock import AsyncMock, patch
+
+    from sky_claw.__main__ import _run_vfs_health
+
+    install_root = tmp_path / "MO2_Install"
+    data_root = tmp_path / "MO2_Data"
+    mods_dir = tmp_path / "Custom_Mods"
+    game = tmp_path / "Skyrim"
+
+    for p in (install_root, data_root, mods_dir, game / "Data"):
+        p.mkdir(parents=True, exist_ok=True)
+    (install_root / "ModOrganizer.exe").write_bytes(b"fake-exe")
+
+    args = argparse.Namespace(
+        mo2_root=str(install_root),
+        skyrim_path=str(game),
+        vfs_profile="Default",
+        vfs_timeout=10.0,
+    )
+
+    fake_challenge = VfsAttestationChallenge(
+        profile="Default",
+        source_mod="ModA",
+        relative_path=pathlib.PurePosixPath("canary.txt"),
+        sha256="c" * 64,
+        profile_fingerprint="f" * 64,
+    )
+    fake_result = VfsJobResult(
+        protocol_version=1,
+        job_id="test-job",
+        success=True,
+        message="",
+        exit_code=0,
+        stdout="ok",
+        stderr="",
+        outputs=(),
+        rollback_state="not_required",
+        attestation={"profile": "Default", "profile_fingerprint": "f" * 64},
+        tool_result={},
+    )
+
+    with (
+        patch(
+            "sky_claw.app.core.path_resolver.PathResolutionService.get_mo2_instance_data_root", return_value=data_root
+        ),
+        patch(
+            "sky_claw.app.core.path_resolver.PathResolutionService.get_mo2_mods_path_para_destino",
+            return_value=mods_dir,
+        ),
+        patch(
+            "sky_claw.local.mo2.vfs_attestation.build_attestation_challenge", return_value=fake_challenge
+        ) as mock_challenge,
+        patch("sky_claw.local.mo2.vfs_broker.VfsExecutionBroker.start", new_callable=AsyncMock),
+        patch(
+            "sky_claw.local.mo2.vfs_broker.VfsExecutionBroker.submit", new_callable=AsyncMock, return_value=fake_result
+        ) as mock_submit,
+        patch("sky_claw.local.mo2.vfs_broker.VfsExecutionBroker.close", new_callable=AsyncMock),
+    ):
+        await _run_vfs_health(args)
+
+        mock_challenge.assert_called_once()
+        challenge_kwargs = mock_challenge.call_args.kwargs
+        assert challenge_kwargs["data_root"] == data_root
+        assert challenge_kwargs["mods_dir"] == mods_dir
+
+        mock_submit.assert_called_once()
+        submit_kwargs = mock_submit.call_args.kwargs
+        assert submit_kwargs["install_root"] == install_root
+        assert submit_kwargs["data_root"] == data_root
+        assert submit_kwargs["mods_dir"] == mods_dir

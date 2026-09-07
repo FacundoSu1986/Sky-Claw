@@ -1301,8 +1301,8 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/mo2/vfs.py": (127,),
         "sky_claw/local/mo2/vfs_attestation.py": (182, 243),
         # VfsExecutionBroker.submit y VfsWorkerManifest: fallbacks legacy si no se pasa mods_dir.
-        "sky_claw/local/mo2/vfs_broker.py": (297,),
-        "sky_claw/local/mo2/vfs_manifest.py": (64,),
+        "sky_claw/local/mo2/vfs_broker.py": (302,),
+        "sky_claw/local/mo2/vfs_manifest.py": (61,),
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.
         "sky_claw/local/discovery/scanner.py": (458,),
@@ -1318,6 +1318,8 @@ class TestAnclaConstructoresManualesDeMods:
         # AppContext: fallback legacy en bootstrap de MO2Controller (973) y
         # handoff reconciliation (1371).
         "sky_claw/app_context.py": (973, 1371),
+        # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None (250).
+        "sky_claw/__main__.py": (250,),
         "sky_claw/local/tools/rollback_reconciler.py": (236,),
         "sky_claw/local/tools/output_targets.py": (157,),
         "sky_claw/local/mo2/grass_profile.py": (227, 330),
@@ -1944,6 +1946,7 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     #: Módulo → n.º de llamadas a ``get_mo2_path()`` (INSTALL/CAPABILITY).
     _INSTALL_O_CAPABILITY: dict[str, int] = {
+        "sky_claw/__main__.py": 1,
         "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
@@ -1953,6 +1956,7 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     #: Módulo → n.º de llamadas a ``get_mo2_instance_data_root()``.
     _INSTANCE_DATA: dict[str, int] = {
+        "sky_claw/__main__.py": 1,
         "sky_claw/app_context.py": 1,
         "sky_claw/app/orchestrator/dispatcher_dependencies.py": 1,
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": 1,
@@ -1988,6 +1992,7 @@ class TestAnclaSemanticaDeRaicesMo2:
     #: de ESCRITURA: aborta con evidencia si la instancia declaró mods y no
     #: resuelve — B de #555; contado como referencia enlazada/callable).
     _MODS_PARA_DESTINO: dict[str, int] = {
+        "sky_claw/__main__.py": 1,
         "sky_claw/app_context.py": 1,
         "sky_claw/local/tools/synthesis_service.py": 2,
     }

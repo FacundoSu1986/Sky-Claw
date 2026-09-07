@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
-from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, JsonValue, VfsJob
+from sky_claw.local.mo2.vfs_contracts import VFS_MANIFEST_PROTOCOL_VERSION, JsonValue, VfsJob
 
 
 class VfsManifestError(RuntimeError):
@@ -44,7 +44,7 @@ class VfsWorkerManifest:
     def __init__(
         self,
         *,
-        protocol_version: int,
+        protocol_version: int = VFS_MANIFEST_PROTOCOL_VERSION,
         job: VfsJob,
         challenge: VfsAttestationChallenge,
         data_root: pathlib.Path | None = None,
@@ -54,29 +54,31 @@ class VfsWorkerManifest:
         virtual_data_dir: pathlib.Path,
         descriptor_path: pathlib.Path,
     ) -> None:
-        resolved_data = data_root or mo2_root
+        resolved_data = data_root if data_root is not None else mo2_root
         if resolved_data is None:
             raise ValueError("se requiere data_root o mo2_root")
+        resolved_install = install_root if install_root is not None else (mo2_root or resolved_data)
+        resolved_mods = mods_dir if mods_dir is not None else (resolved_data / "mods")
         object.__setattr__(self, "protocol_version", protocol_version)
         object.__setattr__(self, "job", job)
         object.__setattr__(self, "challenge", challenge)
         object.__setattr__(self, "data_root", resolved_data.resolve())
-        object.__setattr__(self, "mods_dir", (mods_dir or (resolved_data / "mods")).resolve())
-        object.__setattr__(self, "install_root", (install_root or mo2_root or resolved_data).resolve())
+        object.__setattr__(self, "mods_dir", resolved_mods.resolve())
+        object.__setattr__(self, "install_root", resolved_install.resolve())
         object.__setattr__(self, "virtual_data_dir", virtual_data_dir.resolve())
         object.__setattr__(self, "descriptor_path", descriptor_path.resolve())
 
     @property
     def mo2_root(self) -> pathlib.Path:
-        """Alias de compatibilidad hacia install_root / data_root."""
-        return self.install_root or self.data_root
+        """Alias de compatibilidad legacy hacia install_root."""
+        return self.install_root
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> VfsWorkerManifest:
         version = raw.get("protocol_version")
-        if type(version) is not int or version != VFS_PROTOCOL_VERSION:
+        if type(version) is not int or version != VFS_MANIFEST_PROTOCOL_VERSION:
             raise VfsManifestError(
-                f"versión de protocolo incompatible en manifiesto: esperada {VFS_PROTOCOL_VERSION}, recibida {version!r}"
+                f"versión de protocolo incompatible en manifiesto: esperada {VFS_MANIFEST_PROTOCOL_VERSION}, recibida {version!r}"
             )
         raw_job = raw.get("job")
         raw_challenge = raw.get("challenge")
@@ -97,7 +99,7 @@ class VfsWorkerManifest:
 
         data_root = _absolute_path(data_root_raw, field="data_root")
         mods_dir = _absolute_path(mods_dir_raw, field="mods_dir")
-        install_root = _absolute_path(install_root_raw or data_root_raw, field="install_root")
+        install_root = data_root if install_root_raw is None else _absolute_path(install_root_raw, field="install_root")
 
         return cls(
             protocol_version=version,
@@ -119,7 +121,6 @@ class VfsWorkerManifest:
             "data_root": str(self.data_root),
             "mods_dir": str(self.mods_dir),
             "install_root": str(self.install_root),
-            "mo2_root": str(self.mo2_root),
             "virtual_data_dir": str(self.virtual_data_dir),
             "descriptor_path": str(self.descriptor_path),
         }
