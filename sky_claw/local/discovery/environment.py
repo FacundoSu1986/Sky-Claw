@@ -49,6 +49,8 @@ class MO2Info:
     path: Path
     profiles: list[str] = field(default_factory=list)
     active_profile: str = "Default"
+    data_root: Path | None = None
+    mods_dir: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)

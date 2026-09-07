@@ -750,3 +750,57 @@ def test_el_staging_de_texgen_esta_declarado_como_destino_reconciliable(tmp_path
     assert raiz is not None
     assert raiz / DynDOLODRunner.TEXGEN_OUTPUT_NAME in dyndolod.destinos
     assert dyndolod.lock_resource_id == "dyndolod-pipeline"
+
+
+def test_construir_productores_con_mods_dir_separado_ignora_trampas(tmp_path: pathlib.Path) -> None:
+    """En layout install != data != mods, los destinos de DynDOLOD se ubican en mods_dir
+    y nunca en <install>/mods ni <data>/mods (trampas)."""
+    install = tmp_path / "MO2_Install"
+    data = tmp_path / "MO2_Data"
+    custom_mods = tmp_path / "Custom_Mods"
+    game = tmp_path / "Skyrim"
+    for p in (install, data, custom_mods, game):
+        p.mkdir(parents=True, exist_ok=True)
+
+    trap_install_mods = install / "mods"
+    trap_data_mods = data / "mods"
+    trap_install_mods.mkdir()
+    trap_data_mods.mkdir()
+
+    productores = construir_productores_de_move_aside(
+        mo2_root=install,
+        mods_dir=custom_mods,
+        game=game,
+    )
+    dyndolod = next(p for p in productores if p.nombre == "dyndolod")
+    dyndolod_destinos = set(dyndolod.destinos)
+
+    # DynDOLOD Output y TexGen Output deben residir bajo custom_mods
+    assert custom_mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME in dyndolod_destinos
+    assert custom_mods / DynDOLODRunner.TEXGEN_MOD_NAME in dyndolod_destinos
+
+    # Las trampas en install/mods y data/mods no deben ser alcanzadas
+    assert trap_install_mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME not in dyndolod_destinos
+    assert trap_data_mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME not in dyndolod_destinos
+    assert trap_install_mods / DynDOLODRunner.TEXGEN_MOD_NAME not in dyndolod_destinos
+    assert trap_data_mods / DynDOLODRunner.TEXGEN_MOD_NAME not in dyndolod_destinos
+
+
+async def test_reconcile_sandbox_con_data_root_separado_descarta_clon(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El sandbox huérfano reside bajo data_root/.skyclaw_sandbox y se descarta correctamente."""
+    data = tmp_path / "MO2_Data"
+    sandbox = data / ".skyclaw_sandbox"
+    sandbox.mkdir(parents=True)
+    clon = _clon_sandbox(sandbox, con_backup_de_promote=False)
+    _envejecer(clon)
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[],
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+    assert not clon.exists()
+    assert resultado.descartados == (clon,)
