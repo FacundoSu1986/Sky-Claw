@@ -482,7 +482,9 @@ def test_matrix_m1_m16_tiene_evidencia_ejecutable() -> None:
     )
     # M14 — constructor reasignado a nombre neutro.
     assert _ofensores_invocaciones(
-        ast.parse("from sky_claw.local.assets import AssetConflictDetector\nDetector = AssetConflictDetector\nDetector()\n")
+        ast.parse(
+            "from sky_claw.local.assets import AssetConflictDetector\nDetector = AssetConflictDetector\nDetector()\n"
+        )
     )
     # M15 — alias del dispatcher rebotado.
     assert dispatch(
