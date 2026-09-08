@@ -35,14 +35,14 @@ async def client(router, session, aiohttp_client, monkeypatch):
 @pytest.mark.parametrize("raw_json", ["[]", "null", "123", '"texto"', "true"])
 @pytest.mark.asyncio
 async def test_http_rechaza_json_que_no_es_objeto(client, router, raw_json) -> None:
-    # Arrange / Act
+    # Preparación / Actuar
     response = await client.post(
         "/api/chat",
         data=raw_json,
         headers={"Content-Type": "application/json"},
     )
 
-    # Assert
+    # Verificación
     assert response.status == 400
     router.chat.assert_not_awaited()
 
@@ -50,30 +50,30 @@ async def test_http_rechaza_json_que_no_es_objeto(client, router, raw_json) -> N
 @pytest.mark.parametrize("message", [None, 123, [], {}, True])
 @pytest.mark.asyncio
 async def test_http_rechaza_message_que_no_es_string(client, router, message) -> None:
-    # Arrange / Act
+    # Preparación / Actuar
     response = await client.post("/api/chat", json={"message": message})
 
-    # Assert
+    # Verificación
     assert response.status == 400
     router.chat.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_http_rechaza_solo_espacios_sin_llamar_al_router(client, router) -> None:
-    # Arrange / Act
+    # Preparación / Actuar
     response = await client.post("/api/chat", json={"message": "   \t  "})
 
-    # Assert
+    # Verificación
     assert response.status == 400
     router.chat.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_http_normaliza_espacios_de_un_string_valido(client, router) -> None:
-    # Arrange / Act
+    # Preparación / Actuar
     response = await client.post("/api/chat", json={"message": "  hola  "})
 
-    # Assert
+    # Verificación
     assert response.status == 200
     router.chat.assert_awaited_once()
     args, kwargs = router.chat.await_args
@@ -81,18 +81,33 @@ async def test_http_normaliza_espacios_de_un_string_valido(client, router) -> No
     assert kwargs["chat_id"] == "web-session"
 
 
+@pytest.mark.asyncio
+async def test_http_rechaza_cuerpo_con_charset_invalido(client, router) -> None:
+    # Preparación / Actuar: bytes no-UTF-8 hacen que aiohttp Request.text()
+    # levante UnicodeDecodeError (subclase de ValueError) antes del json.loads.
+    response = await client.post(
+        "/api/chat",
+        data=b'\xff\xfe{"message": "hola"}',
+        headers={"Content-Type": "application/json"},
+    )
+
+    # Verificación
+    assert response.status == 400
+    router.chat.assert_not_awaited()
+
+
 @pytest.mark.parametrize("root", [[], None, 7, "texto", True])
 @pytest.mark.asyncio
 async def test_ws_rechaza_json_raiz_no_objeto(router, session, root) -> None:
-    # Arrange
+    # Preparación
     web_app = WebApp(router=router, session=session)
     ws = MagicMock()
     ws.send_json = AsyncMock()
 
-    # Act
+    # Actuar
     await web_app._handle_ws_ui_message(ws, json.dumps(root))
 
-    # Assert
+    # Verificación
     router.chat.assert_not_awaited()
     ws.send_json.assert_awaited_once()
 
@@ -100,16 +115,16 @@ async def test_ws_rechaza_json_raiz_no_objeto(router, session, root) -> None:
 @pytest.mark.parametrize("payload", [[], None, 7, "texto", True])
 @pytest.mark.asyncio
 async def test_ws_rechaza_payload_no_objeto_sin_romper_el_handler(router, session, payload) -> None:
-    # Arrange
+    # Preparación
     web_app = WebApp(router=router, session=session)
     ws = MagicMock()
     ws.send_json = AsyncMock()
     raw = json.dumps({"type": "command", "command": "chat", "payload": payload})
 
-    # Act
+    # Actuar
     await web_app._handle_ws_ui_message(ws, raw)
 
-    # Assert
+    # Verificación
     router.chat.assert_not_awaited()
     ws.send_json.assert_awaited_once()
 
@@ -117,34 +132,50 @@ async def test_ws_rechaza_payload_no_objeto_sin_romper_el_handler(router, sessio
 @pytest.mark.parametrize("text", [None, 123, [], {}, True])
 @pytest.mark.asyncio
 async def test_ws_no_coerciona_texto_de_otro_tipo(router, session, text) -> None:
-    # Arrange
+    # Preparación
     web_app = WebApp(router=router, session=session)
     ws = MagicMock()
     ws.send_json = AsyncMock()
     raw = json.dumps({"type": "command", "command": "chat", "payload": {"text": text}})
 
-    # Act
+    # Actuar
     await web_app._handle_ws_ui_message(ws, raw)
 
-    # Assert
+    # Verificación
     router.chat.assert_not_awaited()
     ws.send_json.assert_awaited_once()
 
 
 @pytest.mark.asyncio
+async def test_ws_rechaza_texto_de_solo_espacios_con_mensaje_de_error(router, session) -> None:
+    # Preparación
+    web_app = WebApp(router=router, session=session)
+    ws = MagicMock()
+    ws.send_json = AsyncMock()
+    raw = json.dumps({"type": "command", "command": "chat", "payload": {"text": " \t "}})
+
+    # Actuar
+    await web_app._handle_ws_ui_message(ws, raw)
+
+    # Verificación
+    router.chat.assert_not_awaited()
+    ws.send_json.assert_awaited_once_with({"type": "response", "payload": {"response": "⚠️ Empty message."}})
+
+
+@pytest.mark.asyncio
 async def test_ws_sigue_disponible_despues_de_un_mensaje_invalido(router, session) -> None:
-    # Arrange
+    # Preparación
     web_app = WebApp(router=router, session=session)
     ws = MagicMock()
     ws.send_json = AsyncMock()
     invalid = json.dumps({"type": "command", "command": "chat", "payload": {"text": 42}})
     valid = json.dumps({"type": "command", "command": "chat", "payload": {"text": "  hola  "}})
 
-    # Act
+    # Actuar
     await web_app._handle_ws_ui_message(ws, invalid)
     await web_app._handle_ws_ui_message(ws, valid)
 
-    # Assert
+    # Verificación
     router.chat.assert_awaited_once()
     args, kwargs = router.chat.await_args
     assert args[0] == "hola"
@@ -152,16 +183,24 @@ async def test_ws_sigue_disponible_despues_de_un_mensaje_invalido(router, sessio
     assert ws.send_json.await_count == 2
 
 
-def test_http_y_ws_comparten_el_mismo_validador_de_texto() -> None:
-    """Ancla de familia: una superficie nueva no debe divergir silenciosamente."""
+def test_toda_superficie_que_despacha_al_router_normaliza_el_texto() -> None:
+    """Ancla enumerante: congela la familia completa de despachadores de chat.
 
-    def llamadas_de(func) -> set[str]:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
-        return {
-            node.func.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
+    Detecta por AST todos los métodos de ``WebApp`` que llaman a
+    ``self._router.chat``. Un despachador nuevo rompe la igualdad literal
+    hasta que se escriba su cobertura, y debe usar ``_normalize_chat_text``
+    para no divergir silenciosamente del contrato HTTP/WS.
+    """
+    arbol = ast.parse(textwrap.dedent(inspect.getsource(WebApp)))
+    clase = next(nodo for nodo in arbol.body if isinstance(nodo, ast.ClassDef))
+    despachadores: dict[str, set[str]] = {}
+    for metodo in clase.body:
+        if not isinstance(metodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        llamadas = {ast.unparse(nodo.func) for nodo in ast.walk(metodo) if isinstance(nodo, ast.Call)}
+        if "self._router.chat" in llamadas:
+            despachadores[metodo.name] = llamadas
 
-    assert "_normalize_chat_text" in llamadas_de(WebApp._handle_chat)
-    assert "_normalize_chat_text" in llamadas_de(WebApp._handle_ws_ui_message)
+    assert set(despachadores) == {"_handle_chat", "_handle_ws_ui_message"}
+    for nombre, llamadas in despachadores.items():
+        assert "_normalize_chat_text" in llamadas, f"{nombre} despacha al router sin normalizar el texto"

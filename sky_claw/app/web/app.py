@@ -324,7 +324,7 @@ class WebApp:
         """Handle one text frame: route command/chat to the LLM router."""
         try:
             data = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:  # JSONDecodeError es subclase de ValueError
             await ws.send_json({"type": "response", "payload": {"response": "⚠️ Invalid chat frame."}})
             return
         if not isinstance(data, dict):
@@ -381,7 +381,10 @@ class WebApp:
 
         try:
             data: Any = await request.json()
-        except json.JSONDecodeError:
+        except ValueError:
+            # Cubre json.JSONDecodeError y UnicodeDecodeError (charset inválido):
+            # ambas derivan de ValueError. TypeError no es alcanzable acá porque
+            # aiohttp Request.text() siempre devuelve str antes del loads.
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
         if not isinstance(data, dict):
