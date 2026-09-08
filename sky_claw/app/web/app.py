@@ -65,6 +65,18 @@ def _dev_no_auth_enabled() -> bool:
     return os.environ.get("SKY_CLAW_DEV_NO_AUTH") == "1"
 
 
+def _normalize_chat_text(value: object) -> str | None:
+    """Normaliza texto externo sin convertir valores de otros tipos.
+
+    HTTP y WebSocket comparten este boundary para que números, listas, objetos
+    o ``null`` nunca se conviertan accidentalmente en prompts válidos.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
 class WebApp:
     """Lightweight chat aiohttp service for the NiceGUI Forge interface.
 
@@ -316,9 +328,17 @@ class WebApp:
             return
         if not (isinstance(data, dict) and data.get("type") == "command" and data.get("command") == "chat"):
             return  # YAGNI: non-chat commands ignored gracefully (future agentic phase)
-        text = str((data.get("payload") or {}).get("text", "")).strip()
-        if not text:
-            await ws.send_json({"type": "response", "payload": {"response": "⚠️ Empty message."}})
+
+        payload = data.get("payload")
+        if not isinstance(payload, dict):
+            await ws.send_json({"type": "response", "payload": {"response": "⚠️ Invalid chat message."}})
+            return
+
+        raw_text = payload.get("text", "")
+        text = _normalize_chat_text(raw_text)
+        if text is None:
+            message = "⚠️ Empty message." if isinstance(raw_text, str) else "⚠️ Invalid chat message."
+            await ws.send_json({"type": "response", "payload": {"response": message}})
             return
         if self._router is None:
             await ws.send_json(
@@ -356,13 +376,18 @@ class WebApp:
             )
 
         try:
-            data: dict[str, Any] = await request.json()
+            data: Any = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
-        message = data.get("message", "").strip()
-        if not message:
-            return web.json_response({"error": "Empty message"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Invalid chat payload"}, status=400)
+
+        raw_message = data.get("message", "")
+        message = _normalize_chat_text(raw_message)
+        if message is None:
+            error = "Empty message" if isinstance(raw_message, str) else "Invalid message"
+            return web.json_response({"error": error}, status=400)
 
         try:
             response = await self._router.chat(message, self._session, chat_id=self._chat_id)
