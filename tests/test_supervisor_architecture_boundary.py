@@ -79,6 +79,24 @@ def _es_dominio_por_nombre(nombre: str) -> bool:
     return any(sub in nombre for sub in _SUBCADENAS_DE_DOMINIO) or nombre in _DOMINIO_EXPLICITO_INVOCAR
 
 
+def _facades_publicas_de_dominio() -> frozenset[str]:
+    """Deriva properties públicas del Supervisor cuyo retorno es dominio construible."""
+    nombres: set[str] = set()
+    for nombre, miembro in vars(SupervisorAgent).items():
+        if not isinstance(miembro, property) or miembro.fget is None:
+            continue
+        retorno = miembro.fget.__annotations__.get("return")
+        if retorno is None:
+            continue
+        texto = retorno if isinstance(retorno, str) else getattr(retorno, "__name__", str(retorno))
+        if _es_dominio_por_nombre(texto):
+            nombres.add(nombre)
+    return frozenset(nombres)
+
+
+_FACADES_PUBLICAS_DE_DOMINIO = _facades_publicas_de_dominio()
+
+
 def _es_modulo_de_dominio(ruta: str) -> bool:
     """Identifica la raíz de dominio, sus submódulos y extras cerrados."""
     return ruta == _RAIZ_DOMINIO or ruta.startswith(_RAIZ_DOMINIO + ".") or ruta in _MODULOS_DE_DOMINIO_EXTRA
@@ -100,10 +118,15 @@ def _targets_nombre(nodo: ast.Assign | ast.AnnAssign) -> list[str]:
 
 
 def _bindings_import_module(arbol: ast.AST) -> frozenset[str]:
-    """Bindings que alguna vez fueron alias directos de ``import_module``."""
+    """Bindings que alguna vez fueron aliases de ``importlib.import_module``."""
     bindings: set[str] = set()
+    modulos_importlib: set[str] = set()
     for nodo in ast.walk(arbol):
-        if isinstance(nodo, ast.ImportFrom) and nodo.module == "importlib":
+        if isinstance(nodo, ast.Import):
+            for alias in nodo.names:
+                if alias.name == "importlib":
+                    modulos_importlib.add(alias.asname or alias.name)
+        elif isinstance(nodo, ast.ImportFrom) and nodo.module == "importlib":
             for alias in nodo.names:
                 if alias.name == "import_module":
                     bindings.add(alias.asname or alias.name)
@@ -118,7 +141,14 @@ def _bindings_import_module(arbol: ast.AST) -> frozenset[str]:
             if not isinstance(nodo, (ast.Assign, ast.AnnAssign)):
                 continue
             valor = nodo.value
-            if not isinstance(valor, ast.Name) or valor.id not in bindings:
+            desde_binding = isinstance(valor, ast.Name) and valor.id in bindings
+            desde_atributo = (
+                isinstance(valor, ast.Attribute)
+                and valor.attr == "import_module"
+                and isinstance(valor.value, ast.Name)
+                and valor.value.id in modulos_importlib
+            )
+            if not (desde_binding or desde_atributo):
                 continue
             for target in _targets_nombre(nodo):
                 if target not in bindings:
@@ -228,7 +258,7 @@ def _ofensores_invocaciones(arbol: ast.Module) -> set[str]:
         if not isinstance(nodo.func, ast.Attribute):
             continue
 
-        # Un tipo de dominio allowlisted puede cruzar como símbolo/tipo, pero no
+        # Un tipo/facade de dominio allowlisted puede cruzar como valor, pero no
         # ejecutar comportamiento de dominio dentro del Supervisor.
         receptor = nodo.func.value
         if isinstance(receptor, ast.Name):
@@ -236,6 +266,14 @@ def _ofensores_invocaciones(arbol: ast.Module) -> set[str]:
             if _es_dominio_por_nombre(propietario):
                 ofensores.add(f"{propietario}.{nodo.func.attr}")
                 continue
+        if (
+            isinstance(receptor, ast.Attribute)
+            and isinstance(receptor.value, ast.Name)
+            and receptor.value.id == "self"
+            and receptor.attr in _FACADES_PUBLICAS_DE_DOMINIO
+        ):
+            ofensores.add(f"self.{receptor.attr}.{nodo.func.attr}")
+            continue
         if _es_dominio_por_nombre(nodo.func.attr):
             ofensores.add(nodo.func.attr)
     return ofensores
@@ -322,9 +360,10 @@ def _llamada_dispatch_valida(
     route_name: str,
     payload_name: str,
 ) -> bool:
-    """Valida la única llamada permitida por la fachada ``dispatch_tool``."""
-    if isinstance(expr, ast.Await):
-        expr = expr.value
+    """Valida la única llamada permitida por la fachada async ``dispatch_tool``."""
+    if not isinstance(expr, ast.Await):
+        return False
+    expr = expr.value
     if not (isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "dispatch"):
         return False
     receptor = expr.func.value
@@ -372,7 +411,7 @@ def _errores_dispatch(fn: ast.AsyncFunctionDef | ast.FunctionDef) -> list[str]:
         route_name="tool_name",
         payload_name="payload_dict",
     ):
-        errores.append("retorno no delega exactamente a _tool_dispatcher.dispatch(tool_name, payload_dict)")
+        errores.append("retorno no delega exactamente con await a _tool_dispatcher.dispatch(tool_name, payload_dict)")
     return errores
 
 
@@ -524,9 +563,12 @@ def test_regresiones_de_review_fresca() -> None:
             "AssetConflictDetector.detect_conflicts(detector)\n"
         )
     )
-    # Alias de un nivel de import_module.
+    # Alias de un nivel de import_module, directo y vía atributo de importlib.
     assert _ofensores_imports(
         ast.parse("from importlib import import_module\nload = import_module\nload('sky_claw.local.plugins')\n")
+    )
+    assert _ofensores_imports(
+        ast.parse("import importlib\nload = importlib.import_module\nload('sky_claw.local.plugins')\n")
     )
     # Una delegación escondida en una coroutine anidada no satisface la fachada.
     assert _errores_dispatch(
@@ -537,3 +579,12 @@ def test_regresiones_de_review_fresca() -> None:
             "    return {}\n"
         )
     )
+    # La fachada async debe esperar el dispatcher; devolver la coroutine es inválido.
+    assert _errores_dispatch(
+        _funcion_sintetica(
+            "async def dispatch_tool(self, tool_name, payload_dict):\n"
+            "    return self._tool_dispatcher.dispatch(tool_name, payload_dict)\n"
+        )
+    )
+    # La property pública del detector no puede usarse para reabsorber el scan.
+    assert _ofensores_invocaciones(ast.parse("self.asset_detector.detect_conflicts()\n"))
