@@ -24,6 +24,18 @@ def _bindings_constructor_dominio(arbol: ast.Module) -> frozenset[str]:
     return frozenset(bindings)
 
 
+def _bindings_paquete_raiz(arbol: ast.Module) -> frozenset[str]:
+    """Bindings directos creados por ``import sky_claw [as ...]``."""
+    bindings: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Import):
+            continue
+        for alias in nodo.names:
+            if alias.name == "sky_claw":
+                bindings.add(alias.asname or alias.name)
+    return frozenset(bindings)
+
+
 def _defaults_de_constructor_dominio(arbol: ast.Module) -> set[str]:
     """Detecta defaults que capturan un constructor de dominio ejecutable."""
     bindings = _bindings_constructor_dominio(arbol)
@@ -41,12 +53,20 @@ def _defaults_de_constructor_dominio(arbol: ast.Module) -> set[str]:
 def _reexports_constructor_dominio(arbol: ast.Module) -> set[str]:
     """Fuerza que el constructor cruce desde su módulo canónico, no desde la raíz."""
     ofensores: set[str] = set()
+    bindings_raiz = _bindings_paquete_raiz(arbol)
     for nodo in ast.walk(arbol):
-        if not isinstance(nodo, ast.ImportFrom) or boundary._resolver_modulo(nodo) != "sky_claw":
+        if isinstance(nodo, ast.ImportFrom) and boundary._resolver_modulo(nodo) == "sky_claw":
+            for alias in nodo.names:
+                if alias.name == _CONSTRUCTOR_DOMINIO:
+                    ofensores.add(alias.asname or alias.name)
             continue
-        for alias in nodo.names:
-            if alias.name == _CONSTRUCTOR_DOMINIO:
-                ofensores.add(alias.asname or alias.name)
+        if (
+            isinstance(nodo, ast.Attribute)
+            and nodo.attr == _CONSTRUCTOR_DOMINIO
+            and isinstance(nodo.value, ast.Name)
+            and nodo.value.id in bindings_raiz
+        ):
+            ofensores.add(f"{nodo.value.id}.{nodo.attr}")
     return ofensores
 
 
@@ -88,8 +108,14 @@ def test_supervisor_no_captura_constructor_dominio_en_defaults() -> None:
 def test_supervisor_no_importa_constructor_desde_reexport_raiz() -> None:
     assert not _reexports_constructor_dominio(boundary._SUPERVISOR_AST)
 
-    mutante = ast.parse("from sky_claw import AssetConflictDetector as Detector\nDetector()\n")
-    assert _reexports_constructor_dominio(mutante) == {"Detector"}
+    desde_raiz = ast.parse("from sky_claw import AssetConflictDetector as Detector\nDetector()\n")
+    assert _reexports_constructor_dominio(desde_raiz) == {"Detector"}
+
+    cualificado = ast.parse("import sky_claw\nsky_claw.AssetConflictDetector()\n")
+    assert _reexports_constructor_dominio(cualificado) == {"sky_claw.AssetConflictDetector"}
+
+    cualificado_alias = ast.parse("import sky_claw as sc\nsc.AssetConflictDetector()\n")
+    assert _reexports_constructor_dominio(cualificado_alias) == {"sc.AssetConflictDetector"}
 
 
 def test_import_builtin_directo_tiene_ancla_independiente() -> None:
