@@ -47,6 +47,9 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODRunner,
     DynDOLODTimeoutError,
 )
+from sky_claw.local.tools.dyndolod_uia_gate import (
+    ConfirmadorDeConfiguracion,
+)
 from sky_claw.local.tools.output_targets import dyndolod_output_target
 from sky_claw.logging_config import correlacion_de_transaccion
 
@@ -161,6 +164,7 @@ class DynDOLODPipelineService:
         event_bus: CoreEventBus,
         preflight: PreflightService | None = None,
         mo2_profile: str | None = None,
+        confirmador_de_configuracion: ConfirmadorDeConfiguracion | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -173,6 +177,12 @@ class DynDOLODPipelineService:
         # significa "no resoluble" y falla cerrado antes de mutar (nunca se crea
         # un handoff resumible sin dueño).
         self._mo2_profile = mo2_profile
+
+        # T5-v2.1: confirmador de readyness humana (delta §16). El composition
+        # root pasa un adapter que traduce ``HITLGuard`` al puerto del runner;
+        # preview/dry-run paths pueden pasar ``None`` (el runner corta con
+        # CANAL_NO_DISPONIBLE, fail-closed, sin invocar la readyness).
+        self._confirmador_de_configuracion = confirmador_de_configuracion
 
         # Lazy init — runner requiere env vars que pueden no existir aún.
         self._runner: DynDOLODRunner | None = None
@@ -224,7 +234,10 @@ class DynDOLODPipelineService:
             texgen_exe=texgen_exe,
         )
 
-        self._runner = DynDOLODRunner(config)
+        self._runner = DynDOLODRunner(
+            config,
+            confirmador_de_configuracion=self._confirmador_de_configuracion,
+        )
         logger.info(
             "DynDOLODRunner inicializado: game=%s, dyndolod=%s",
             game_path,

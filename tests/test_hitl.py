@@ -194,6 +194,7 @@ class TestHitlProducerRequestIds:
     _EXPECTED_PRODUCERS = {
         "sky_claw/app/agent/tools/nexus_tools.py": {"download_mod": 1},
         "sky_claw/app/agent/tools/system_tools.py": {"install_mod_from_archive": 1},
+        "sky_claw/app/orchestrator/dyndolod_readiness_hitl.py": {"confirmar": 1},
         "sky_claw/app/orchestrator/preview/approval_gate.py": {"preview_then_execute": 1},
         "sky_claw/app/orchestrator/sandbox_promotion.py": {"_request_decision": 1},
         "sky_claw/app/orchestrator/sync_engine.py": {"_check_and_update_mod": 2},
@@ -212,6 +213,7 @@ class TestHitlProducerRequestIds:
     _EXPECTED_PREFIXES = {
         ("sky_claw/app/agent/tools/nexus_tools.py", "download_mod"): "nexus-download",
         ("sky_claw/app/agent/tools/system_tools.py", "install_mod_from_archive"): "mod-install",
+        ("sky_claw/app/orchestrator/dyndolod_readiness_hitl.py", "confirmar"): "dyndolod-readiness",
         ("sky_claw/app/orchestrator/sync_engine.py", "_check_and_update_mod"): "mod-update",
         ("sky_claw/local/tools_installer.py", "ensure_loot"): "loot-install",
         ("sky_claw/local/tools_installer.py", "ensure_xedit"): "xedit-install",
@@ -298,6 +300,49 @@ class TestHitlProducerRequestIds:
 
         assert discovered == self._EXPECTED_PRODUCERS
 
+    @staticmethod
+    def _default_del_parametro_prefix(tree: ast.AST, productor: str) -> str | None:
+        """Default del parámetro keyword-only ``prefix`` del ``__init__`` de la
+        clase que define ``productor``, SÓLO si ``self._prefix = prefix`` se
+        asigna directo del parámetro.
+
+        F5: un productor puede pasar ``self._prefix`` a ``new_hitl_request_id``
+        en vez de un literal. La propiedad que este ancla protege —prefijo
+        CONSTANTE, no derivado de Telegram— se conserva si el prefijo se fija en
+        construcción con un default constante y ``self._prefix`` no es más que
+        una copia del parámetro. Devuelve esa constante, o ``None`` si el patrón
+        no se cumple (y entonces el caller falla el ancla).
+        """
+        for clase in ast.walk(tree):
+            if not isinstance(clase, ast.ClassDef):
+                continue
+            metodos = {n.name for n in clase.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            if productor not in metodos:
+                continue
+            init = next((n for n in clase.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"), None)
+            if init is None:
+                return None
+            asigna_directo = any(
+                isinstance(stmt, ast.Assign)
+                and isinstance(stmt.value, ast.Name)
+                and stmt.value.id == "prefix"
+                and any(
+                    isinstance(t, ast.Attribute)
+                    and t.attr == "_prefix"
+                    and isinstance(t.value, ast.Name)
+                    and t.value.id == "self"
+                    for t in stmt.targets
+                )
+                for stmt in ast.walk(init)
+            )
+            if not asigna_directo:
+                return None
+            for arg, default in zip(init.args.kwonlyargs, init.args.kw_defaults, strict=True):
+                if arg.arg == "prefix" and isinstance(default, ast.Constant) and isinstance(default.value, str):
+                    return default.value
+            return None
+        return None
+
     def test_prefijos_productivos_son_constantes_y_no_dependen_de_telegram(self) -> None:
         root = pathlib.Path(__file__).resolve().parents[1]
 
@@ -321,8 +366,25 @@ class TestHitlProducerRequestIds:
             ]
             assert len(helper_calls) == 1, f"prefijo ambiguo en {relative}:{function_name}"
             prefix_argument = helper_calls[0].args[0]
-            assert isinstance(prefix_argument, ast.Constant) and isinstance(prefix_argument.value, str)
-            assert prefix_argument.value == expected_prefix
+            if isinstance(prefix_argument, ast.Constant):
+                assert isinstance(prefix_argument.value, str)
+                assert prefix_argument.value == expected_prefix
+            else:
+                # F5: ``self._prefix`` es admisible si —y sólo si— es una copia
+                # directa de un parámetro ``prefix`` con default constante fijado
+                # en construcción (no derivado de Telegram). Cualquier otra forma
+                # (una expresión, un atributo distinto) falla el ancla.
+                assert (
+                    isinstance(prefix_argument, ast.Attribute)
+                    and prefix_argument.attr == "_prefix"
+                    and isinstance(prefix_argument.value, ast.Name)
+                    and prefix_argument.value.id == "self"
+                ), f"prefijo no constante ni self._prefix en {relative}:{function_name}"
+                resuelto = self._default_del_parametro_prefix(tree, function_name)
+                assert resuelto == expected_prefix, (
+                    f"self._prefix en {relative}:{function_name} no proviene de un "
+                    f"parámetro prefix con default constante {expected_prefix!r}"
+                )
 
             # El request_id es una identidad del guard y ya no está condicionado
             # por el límite de callback_data; Telegram lo tokeniza en su boundary.

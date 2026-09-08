@@ -35,6 +35,19 @@ class Decision(enum.Enum):
     TIMEOUT = "timeout"
 
 
+#: Categoría HITL semántica para el protocolo T5-v2.1 de DynDOLOD/TexGen
+#: (readyness humana antes de revalidar el Output). El guardrail de «Modo
+#: local» (T5-v2.1 §12) NUNCA la auto-aprueba — el operador debe confirmar
+#: manualmente que terminó de configurar. Es la única categoría «de
+#: runtime» del pipeline que no tiene atajo: ``download`` es egress, no
+#: se auto-aprueba; ``sandbox_promotion`` es revisión post-run, no se
+#: auto-aprueba; ``tool_execution`` se auto-aprueba en Modo local; ESTA
+#: categoría también queda fuera del auto-approve porque aprobar
+#: automáticamente la confirmación de configuración reproduciría el
+#: R4b del rig (#528) sin que el humano pueda siquiera ver la GUI.
+CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA = "dyndolod_configuracion_lista"
+
+
 @dataclass
 class HITLRequest:
     """Describes a pending authorisation request."""
@@ -127,11 +140,19 @@ class HITLGuard:
         url: str | None = None,
         detail: str = "",
         category: str = "scope",
+        timeout: float | None = None,
     ) -> Decision:
         """Pausa la ejecución y espera la autorización del operador.
 
         *request_id* es un identificador proporcionado por el caller (por ejemplo,
         ``"download-10-20"``). Si no se proporciona, se genera un UUID único.
+
+        *timeout* override por-solicitud: si es ``None``, se usa el timeout
+        global del guard (``self._timeout``); si es ``float``, sólo esta
+        solicitud usa ese valor. Es el seam que el protocolo T5-v2.1 usa
+        para acotar la espera del callable ``ConfirmadorDeConfiguracion``
+        por request (delta §10, §39). El override es estrictamente
+        per-solicitud: el timeout global no cambia.
 
         Devuelve la :class:`Decision` del operador. Según la política fail-secure,
         si no llega respuesta durante el timeout se devuelve ``Decision.TIMEOUT``
@@ -140,6 +161,7 @@ class HITLGuard:
         """
         if request_id is None:
             request_id = str(uuid.uuid4())
+        effective_timeout = float(timeout) if timeout is not None else self._timeout
         req = HITLRequest(
             request_id=request_id,
             reason=reason,
@@ -166,7 +188,7 @@ class HITLGuard:
             logger.info("HITL: awaiting operator decision for %s", request_id)
 
             try:
-                await asyncio.wait_for(req._event.wait(), timeout=self._timeout)
+                await asyncio.wait_for(req._event.wait(), timeout=effective_timeout)
             except TimeoutError:
                 # F6: commitear el timeout bajo el lock (primer escritor gana). Si
                 # un respond se coló en la ventana de la race y ya resolvió la

@@ -56,6 +56,14 @@ dependencies = [
     # Transitive (via nicegui); floor at >=5.16.2 to fix CVE-2026-48804
     # (5.16.1 flagged by pip-audit, same advisory wave as python-engineio).
     "python-socketio>=5.16.2",
+    # T5-v2: backend real de UI Automation puro-Python/COM para el rig Windows.
+    # MIT. NO se carga en CIs Linux (import perezoso en
+    # ``dyndolod_uia_windows.construir_observador_windows``); esto es
+    # intencional: el preflight (``dyndolod_uia_preflight``) es puro y solo se
+    # atca a COM cuando el gate lo necesita. Semver inferior/bajo cortado para
+    # que una versión <1.4.16 (sin el fix de SAFEARRAY de BSTR en arrays de
+    # ``IUIAutomationElementArray::GetElement``) no dispare errores en el rig.
+    "comtypes>=1.4.16,<2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -295,6 +303,8 @@ module = [
     "sky_claw.local.xedit.record_dump_parser",  # Fase 1 AI-assisted: parser del dump, estricto
     "sky_claw.local.tools.rollback_reconciler",  # U-08: reconciliador de arranque, nace estricto
     "sky_claw.local.tools.dyndolod_uia_preflight",  # T5A: preflight UIA read-only, nace estricto
+    "sky_claw.local.tools.dyndolod_uia_windows",    # T5-v2: backend COM real, nace estricto
+    "sky_claw.local.tools.dyndolod_uia_gate",      # T5-v2: gate del preflight (runner seam), nace estricto
     "sky_claw.local.fomod.*",  # T-12: instalador FOMOD anotado a strict (parser/resolver/models/installer)
     "sky_claw.local.loot.*",  # T-12: cliente LOOT a strict (cli/masterlist/parser/version)
     # Primitiva de detección de enlaces: módulo nuevo, nace estricto. El opt-in es

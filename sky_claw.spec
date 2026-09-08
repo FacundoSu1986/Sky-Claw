@@ -189,6 +189,16 @@ hiddenimports = [
     "sky_claw.app.security.loop_guardrail",
     "sky_claw.app.agent.xml_tool_call_parser",
     "sky_claw.app.agent.hermes_parser",  # Shim de importación legado.
+    # T5-v2: backend COM UIA real — comtypes se importa perezosamente y
+    # PyInstaller no lo ve en la fase de análisis. Los submodules generado
+    # (``comtypes.gen.UiAutomationClient``) y los helpers client se
+    # resuelven en tiempo de ejecución; los tipos que PyInstaller ve tienen
+    # que ser los que el runner importa a nivel de módulo (vía
+    # ``dyndolod_uia_windows``).
+    "comtypes",
+    "comtypes.client",
+    "comtypes.gen.UIAutomationClient",
+    "sky_claw.local.tools.dyndolod_uia_windows",
 ]
 
 a = Analysis(

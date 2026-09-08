@@ -136,23 +136,32 @@ class TestTrySendWithRollback:
         """
         restored: list[str] = []
         notifications: list[str] = []
+        rollback_completed = asyncio.Event()
+        tasks: list[asyncio.Task[None]] = []
 
         async def _failing_async() -> None:
             await asyncio.sleep(0)  # yield once
             raise ConnectionError("daemon offline")
 
         def _on_send(_msg: str) -> asyncio.Task[None]:
-            return asyncio.create_task(_failing_async())
+            task = asyncio.create_task(_failing_async())
+            tasks.append(task)
+            return task
+
+        def _notify(text: str) -> None:
+            notifications.append(text)
+            rollback_completed.set()
 
         _try_send_with_rollback(
             msg="hello",
             on_send=_on_send,
             restore_fn=restored.append,
-            notify_fn=notifications.append,
+            notify_fn=_notify,
         )
 
-        # Yield long enough for the Task to fail and the done_callback to run.
-        await asyncio.sleep(0.05)
+        assert len(tasks) == 1
+        await asyncio.wait_for(rollback_completed.wait(), timeout=1.0)
+        assert tasks[0].done()
 
         assert restored == ["hello"], (
             "Async send failure must restore the text — the optimistic clear lost it from the input"
@@ -165,12 +174,15 @@ class TestTrySendWithRollback:
         """Happy async path: Task completes successfully → no rollback, no notify."""
         restored: list[str] = []
         notifications: list[str] = []
+        tasks: list[asyncio.Task[None]] = []
 
         async def _succeeding_async() -> None:
             await asyncio.sleep(0)
 
         def _on_send(_msg: str) -> asyncio.Task[None]:
-            return asyncio.create_task(_succeeding_async())
+            task = asyncio.create_task(_succeeding_async())
+            tasks.append(task)
+            return task
 
         _try_send_with_rollback(
             msg="hello",
@@ -178,8 +190,14 @@ class TestTrySendWithRollback:
             restore_fn=restored.append,
             notify_fn=notifications.append,
         )
-        await asyncio.sleep(0.05)
 
+        assert len(tasks) == 1
+        await tasks[0]
+        await asyncio.sleep(0)
+
+        assert tasks[0].done()
+        assert not tasks[0].cancelled()
+        assert tasks[0].exception() is None
         assert restored == []
         assert notifications == []
 
@@ -188,12 +206,15 @@ class TestTrySendWithRollback:
         """A cancelled Task is part of normal shutdown — not a user-facing failure."""
         restored: list[str] = []
         notifications: list[str] = []
+        tasks: list[asyncio.Task[None]] = []
 
         async def _slow() -> None:
             await asyncio.sleep(10)
 
         def _on_send(_msg: str) -> asyncio.Task[None]:
-            return asyncio.create_task(_slow())
+            task = asyncio.create_task(_slow())
+            tasks.append(task)
+            return task
 
         _try_send_with_rollback(
             msg="hello",
@@ -201,12 +222,17 @@ class TestTrySendWithRollback:
             restore_fn=restored.append,
             notify_fn=notifications.append,
         )
-        # Grab the task from the registry by cancelling all tasks except this one.
-        for task in asyncio.all_tasks():
-            if task is not asyncio.current_task() and not task.done():
-                task.cancel()
-        await asyncio.sleep(0.05)
 
+        assert len(tasks) == 1
+        target_task = tasks[0]
+        target_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await target_task
+
+        await asyncio.sleep(0)
+
+        assert target_task.cancelled()
         assert restored == [], "Cancellation must not trigger restore"
         assert notifications == [], "Cancellation must not surface to the user"
 
