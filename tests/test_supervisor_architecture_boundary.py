@@ -25,9 +25,7 @@ _SUBCADENAS_DE_DOMINIO = ("Runner", "Analyzer")
 _DTOS_PERMITIDOS_DE_DOMINIO = frozenset(
     {"LLMCallable", "AssetConflictDetector", "AssetConflictReport", "ConflictReport"}
 )
-_ACCESORES_INTERNOS_DE_SELF = frozenset(
-    {"__dict__", "__class__", "__getattribute__", "__getattr__"}
-)
+_ACCESORES_INTERNOS_DE_SELF = frozenset({"__dict__", "__class__", "__getattribute__", "__getattr__"})
 
 
 def _resolver_fuente_del_supervisor() -> tuple[Path, ast.Module]:
@@ -147,11 +145,7 @@ def _ofensores_imports(arbol: ast.Module) -> set[str]:
                     ofensores.add(alias.name)
             continue
 
-        if (
-            isinstance(nodo, ast.Call)
-            and isinstance(nodo.func, ast.Name)
-            and nodo.func.id == "__import__"
-        ):
+        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "__import__":
             ofensores.add("__import__")
     return ofensores
 
@@ -191,9 +185,7 @@ def _ofensores_invocaciones(arbol: ast.Module) -> set[str]:
             )
             if alias_de_constructor or _es_self_facade_de_dominio(valor):
                 destinos = _targets_nombre(nodo)
-                ofensores.add(
-                    f"alias de dominio: {','.join(destinos) or ast.unparse(nodo)}"
-                )
+                ofensores.add(f"alias de dominio: {','.join(destinos) or ast.unparse(nodo)}")
             continue
 
         if not isinstance(nodo, ast.Call):
@@ -234,9 +226,7 @@ def _captura_self_anidado(nodo: ast.AST) -> bool:
     bases_de_atributo = {
         id(desc.value)
         for desc in ast.walk(nodo)
-        if isinstance(desc, ast.Attribute)
-        and isinstance(desc.value, ast.Name)
-        and desc.value.id == "self"
+        if isinstance(desc, ast.Attribute) and isinstance(desc.value, ast.Name) and desc.value.id == "self"
     }
     return any(
         isinstance(desc, ast.Name) and desc.id == "self" and id(desc) not in bases_de_atributo
@@ -302,16 +292,12 @@ def _llamada_dispatch_valida(
         return False
     llamada = expr.value
     if not (
-        isinstance(llamada, ast.Call)
-        and isinstance(llamada.func, ast.Attribute)
-        and llamada.func.attr == "dispatch"
+        isinstance(llamada, ast.Call) and isinstance(llamada.func, ast.Attribute) and llamada.func.attr == "dispatch"
     ):
         return False
     receptor = llamada.func.value
     receptor_ok = _es_self_tool_dispatcher(receptor) or (
-        receptor_alias is not None
-        and isinstance(receptor, ast.Name)
-        and receptor.id == receptor_alias
+        receptor_alias is not None and isinstance(receptor, ast.Name) and receptor.id == receptor_alias
     )
     if not receptor_ok or llamada.keywords or len(llamada.args) != 2:
         return False
@@ -350,18 +336,10 @@ def _errores_dispatch(fn: ast.AsyncFunctionDef | ast.FunctionDef) -> list[str]:
     retorno: ast.Return | None = None
     if len(cuerpo) == 1 and isinstance(cuerpo[0], ast.Return):
         retorno = cuerpo[0]
-    elif (
-        len(cuerpo) == 2
-        and isinstance(cuerpo[0], (ast.Assign, ast.AnnAssign))
-        and isinstance(cuerpo[1], ast.Return)
-    ):
+    elif len(cuerpo) == 2 and isinstance(cuerpo[0], (ast.Assign, ast.AnnAssign)) and isinstance(cuerpo[1], ast.Return):
         asignacion = cuerpo[0]
         targets = _targets_nombre(asignacion)
-        if (
-            len(targets) == 1
-            and asignacion.value is not None
-            and _es_self_tool_dispatcher(asignacion.value)
-        ):
+        if len(targets) == 1 and asignacion.value is not None and _es_self_tool_dispatcher(asignacion.value):
             alias = targets[0]
             retorno = cuerpo[1]
 
@@ -369,10 +347,7 @@ def _errores_dispatch(fn: ast.AsyncFunctionDef | ast.FunctionDef) -> list[str]:
         errores.append("la fachada debe ser delegación directa (o alias local de un nivel)")
         return errores
     if not _llamada_dispatch_valida(retorno.value, receptor_alias=alias):
-        errores.append(
-            "retorno no delega exactamente con await a "
-            "_tool_dispatcher.dispatch(tool_name, payload_dict)"
-        )
+        errores.append("retorno no delega exactamente con await a _tool_dispatcher.dispatch(tool_name, payload_dict)")
     return errores
 
 
@@ -448,9 +423,7 @@ def test_matrix_m1_m16_tiene_evidencia_ejecutable() -> None:
         "    return await self._tool_dispatcher.dispatch(tool_name, payload_dict)\n"
     )  # M5
     assert _ofensores_service_locator(_funcion_sintetica("def f(self):\n    consume(self)\n"))  # M6
-    assert _ofensores_service_locator(
-        _funcion_sintetica("def f(self):\n    consume(self.__dict__.copy())\n")
-    )  # M7
+    assert _ofensores_service_locator(_funcion_sintetica("def f(self):\n    consume(self.__dict__.copy())\n"))  # M7
     assert not dispatch(
         "async def dispatch_tool(self, tool_name, payload_dict):\n"
         "    d = self._tool_dispatcher\n"
@@ -459,12 +432,8 @@ def test_matrix_m1_m16_tiene_evidencia_ejecutable() -> None:
     assert _ofensores_invocaciones(
         ast.parse("from sky_claw.local.assets import AssetConflictDetector as Detector\nDetector()\n")
     )  # M9
-    assert _ofensores_imports(
-        ast.parse("import importlib\nimportlib.import_module('sky_claw.local.plugins')\n")
-    )  # M10
-    assert _ofensores_service_locator(
-        _funcion_sintetica("def f(self):\n    consume(lambda: self)\n")
-    )  # M11
+    assert _ofensores_imports(ast.parse("import importlib\nimportlib.import_module('sky_claw.local.plugins')\n"))  # M10
+    assert _ofensores_service_locator(_funcion_sintetica("def f(self):\n    consume(lambda: self)\n"))  # M11
     assert dispatch(
         "async def dispatch_tool(self, tool_name, payload_dict):\n"
         "    router = self._legacy_router\n"
@@ -475,8 +444,7 @@ def test_matrix_m1_m16_tiene_evidencia_ejecutable() -> None:
     )  # M13
     assert _ofensores_invocaciones(
         ast.parse(
-            "from sky_claw.local.assets import AssetConflictDetector\n"
-            "Detector = AssetConflictDetector\nDetector()\n"
+            "from sky_claw.local.assets import AssetConflictDetector\nDetector = AssetConflictDetector\nDetector()\n"
         )
     )  # M14
     assert dispatch(
@@ -485,9 +453,7 @@ def test_matrix_m1_m16_tiene_evidencia_ejecutable() -> None:
         "    d = self._legacy_router\n"
         "    return await d.dispatch(tool_name, payload_dict)\n"
     )  # M15
-    assert _ofensores_service_locator(
-        _funcion_sintetica("def f(self):\n    consume(self.__getattribute__)\n")
-    )  # M16
+    assert _ofensores_service_locator(_funcion_sintetica("def f(self):\n    consume(self.__getattribute__)\n"))  # M16
 
 
 def test_regresiones_de_review_fresca() -> None:
@@ -500,9 +466,7 @@ def test_regresiones_de_review_fresca() -> None:
         )
     )
     # Handoff directo y alias local de self.
-    assert _ofensores_service_locator(
-        _funcion_sintetica("def f(self, service):\n    service.supervisor = self\n")
-    )
+    assert _ofensores_service_locator(_funcion_sintetica("def f(self, service):\n    service.supervisor = self\n"))
     assert _ofensores_service_locator(
         _funcion_sintetica("def f(self, service):\n    owner = self\n    service.owner = owner\n")
     )
@@ -522,16 +486,9 @@ def test_regresiones_de_review_fresca() -> None:
     )
     # La fachada pública del detector tampoco puede aliasarse para ejecutar dominio.
     assert _ofensores_invocaciones(ast.parse("self.asset_detector.detect_conflicts()\n"))
-    assert _ofensores_invocaciones(
-        ast.parse("detector = self.asset_detector\ndetector.detect_conflicts()\n")
-    )
+    assert _ofensores_invocaciones(ast.parse("detector = self.asset_detector\ndetector.detect_conflicts()\n"))
     # La carga dinámica queda prohibida como mecanismo, también con keyword name=.
-    assert _ofensores_imports(
-        ast.parse(
-            "import importlib\n"
-            "importlib.import_module(name='sky_claw.local.plugins')\n"
-        )
-    )
+    assert _ofensores_imports(ast.parse("import importlib\nimportlib.import_module(name='sky_claw.local.plugins')\n"))
     # Delegación escondida, sin await o decorada no satisface la fachada.
     assert _errores_dispatch(
         _funcion_sintetica(
