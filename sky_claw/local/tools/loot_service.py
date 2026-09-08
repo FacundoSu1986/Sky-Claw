@@ -321,13 +321,25 @@ class LootSortingService:
         raw_game: pathlib.Path | None = None
         raw_mo2: pathlib.Path | None = None
         mo2_validated = False
+        # MODS_DIR declarado de la instancia resuelta (``mod_directory`` puede
+        # vivir fuera de <datos>/mods; enumerar el default sería un scan ciego).
+        mods_dir: pathlib.Path | None = None
         loot_exe = self._loot_exe
 
         if self._path_resolver is not None:
             raw_game = self._path_resolver.get_skyrim_path_raw()
-            raw_mo2 = self._path_resolver.get_mo2_path_raw()
+            # Raíz de DATOS validada (no instalación): mods/overwrite del
+            # preflight cuelgan de la instancia. Es también el raw (no existe
+            # representación cruda sin resolver de la metadata).
+            raw_mo2 = self._path_resolver.get_mo2_instance_data_root()
             if raw_mo2 is not None:
-                mo2_validated = self._path_resolver.get_mo2_path() is not None
+                mo2_validated = True
+                mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
+            elif self._path_resolver.has_explicit_mo2_install_selection():
+                # Hint presente pero inválido: prohibido degradar a detectar
+                # otra instalación (la selección explícita invalidada no es
+                # vía libre para B).
+                mo2_validated = False
             else:
                 # Sin MO2_PATH, el Supervisor puede resolver la instancia por
                 # auto-detección; ese candidato ya viene resuelto (pierde
@@ -341,7 +353,12 @@ class LootSortingService:
             mo2_validated = True  # raíz provista por el caller (instancia MO2 real)
 
         # Builder compartido (T-16d): rutas CRUDAS, guard de "al menos una raíz".
-        vfs_checker = build_vfs_sensor(raw_game=raw_game, raw_mo2=raw_mo2, scan_mods_dir=mo2_validated)
+        vfs_checker = build_vfs_sensor(
+            raw_game=raw_game,
+            raw_mo2=raw_mo2,
+            scan_mods_dir=mo2_validated,
+            mods_dir=mods_dir,
+        )
 
         # Espejo del fallback de _ensure_loot_runner: el preflight debe medir
         # la versión del binario que efectivamente va a correr.
@@ -349,7 +366,7 @@ class LootSortingService:
 
         # T-30w/T-21: el resolver de fuentes de plugins se comparte entre los
         # sensores de modlist y el check de headers del validador post-run.
-        sources_resolver = self._build_sources_resolver(raw_mo2, mo2_validated)
+        sources_resolver = self._build_sources_resolver(raw_mo2, mo2_validated, mods_dir)
         self._sources_resolver = sources_resolver
 
         # T-30w (builder compartido T-16d): cablear los sensores de
@@ -439,7 +456,12 @@ class LootSortingService:
 
         return _permissions
 
-    def _build_sources_resolver(self, raw_mo2: pathlib.Path | None, mo2_validated: bool):
+    def _build_sources_resolver(
+        self,
+        raw_mo2: pathlib.Path | None,
+        mo2_validated: bool,
+        mods_dir: pathlib.Path | None = None,
+    ):
         """Closure que re-resuelve las fuentes de plugins en cada llamada.
 
         Compartido por los sensores de modlist (T-30w) y el check de headers
@@ -458,7 +480,17 @@ class LootSortingService:
                 game_data_dir = skyrim / "Data"
 
         mo2_ok = mo2_validated and isinstance(raw_mo2, pathlib.Path)
-        mo2_mods_dir = raw_mo2 / "mods" if mo2_ok else None
+        # El MODS_DIR DECLARADO (pasado por el caller, `mod_directory` puede
+        # vivir fuera de <datos>/mods) manda sobre el default; la coacción
+        # isinstance defiende de resolvers mockeados y conserva el default
+        from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
+
+        if mods_dir is MODS_DIR_UNAVAILABLE:
+            mo2_mods_dir = None
+        elif mo2_ok and isinstance(mods_dir, pathlib.Path):
+            mo2_mods_dir = mods_dir
+        else:
+            mo2_mods_dir = raw_mo2 / "mods" if mo2_ok else None
         mo2_overwrite_dir = raw_mo2 / "overwrite" if mo2_ok else None
 
         # Para el set de HABILITADOS preferimos plugins.txt (activos con `*`)
@@ -490,7 +522,8 @@ class LootSortingService:
         mo2_root: pathlib.Path | None = None
         profile = "Default"
         if self._path_resolver is not None:
-            mo2_root = self._path_resolver.get_mo2_path()
+            # Raíz de DATOS: el resolver de load order lee profiles/<perfil>/.
+            mo2_root = self._path_resolver.get_mo2_instance_data_root()
             if mo2_root is not None:
                 profile = self._path_resolver.get_active_profile()
 
@@ -547,17 +580,25 @@ class LootSortingService:
             if self._path_resolver is None:
                 raise LOOTNotFoundError("Cannot run LOOT under USVFS: no path_resolver configured.")
             game_path = self._path_resolver.get_skyrim_path()
-            mo2_root = self._path_resolver.get_mo2_path()
+            try:
+                data_root = self._path_resolver.get_mo2_instance_data_root_estricto()
+                mods_dir = self._path_resolver.get_mo2_mods_path()
+            except RuntimeError as exc:
+                raise LOOTNotFoundError(f"Cannot run LOOT under USVFS: {exc}") from exc
+
+            install_root = self._path_resolver.get_mo2_path()
             loot_exe = self._loot_exe or self._path_resolver.get_loot_exe()
-            if game_path is None or mo2_root is None or loot_exe is None:
+            if game_path is None or data_root is None or install_root is None or loot_exe is None:
                 raise LOOTNotFoundError("Cannot run LOOT under USVFS: MO2, Skyrim or LOOT path is not configured.")
             from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner
 
-            resolver = LoadOrderFileResolver(mo2_root=mo2_root, profile=profile)
+            resolver = LoadOrderFileResolver(mo2_root=data_root, profile=profile)
             runner = BrokeredLootRunner(
                 broker=self._vfs_broker,
                 instance_id=self._vfs_instance_id,
-                mo2_root=mo2_root,
+                install_root=install_root,
+                data_root=data_root,
+                mods_dir=mods_dir,
                 profile=profile,
                 game_data_dir=game_path / "Data",
                 loot_exe=loot_exe,

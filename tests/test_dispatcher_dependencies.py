@@ -152,6 +152,7 @@ def test_construir_dispatcher_no_resuelve_providers_ni_binarios() -> None:
     resolver.get_xedit_path.assert_not_called()
     resolver.get_loot_exe.assert_not_called()
     resolver.get_mo2_path.assert_not_called()
+    resolver.get_mo2_instance_data_root.assert_not_called()
 
 
 def test_preview_lazy_conserva_wiring_y_fallback_de_loot() -> None:
@@ -201,7 +202,8 @@ def test_preview_lazy_conserva_wiring_y_fallback_de_loot() -> None:
 
 def test_synthesis_lazy_conserva_sandbox_y_factory() -> None:
     resolver = MagicMock()
-    resolver.get_mo2_path.return_value = pathlib.Path("/mo2")
+    # El sandbox clona profiles/overwrite: recibe la raíz de DATOS, no install.
+    resolver.get_mo2_instance_data_root.return_value = pathlib.Path("/mo2")
     lock_manager = MagicMock()
     snapshot_manager = MagicMock()
     journal = MagicMock()
@@ -242,6 +244,25 @@ def test_synthesis_lazy_conserva_sandbox_y_factory() -> None:
         pipeline_config_path=pipeline_config_path,
         output_path=pathlib.Path("/clone/overwrite"),
     )
+
+
+def test_synthesis_flow_provider_lanza_runtime_error_distinguiendo_raices() -> None:
+    """Verifica que el error no asume ciegamente MO2_PATH y distingue la raíz de datos."""
+    resolver = MagicMock()
+    resolver.get_mo2_instance_data_root.return_value = None
+    flow_provider = build_synthesis_flow_provider(
+        path_resolver=resolver,
+        profile_name="Perfil",
+        hitl_guard=None,
+    )
+    import pytest
+
+    with pytest.raises(RuntimeError) as exc_info:
+        flow_provider()
+    msg = str(exc_info.value)
+    assert "the MO2 instance data root could not be resolved" in msg
+    assert "Configure or select the MO2 installation if absent" in msg
+    assert "base_directory" in msg
 
 
 async def test_wrye_bash_callable_acepta_cero_args_y_preserva_fallback() -> None:

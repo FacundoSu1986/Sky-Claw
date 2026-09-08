@@ -65,6 +65,9 @@ def mock_path_resolver(tmp_path: pathlib.Path) -> MagicMock:
     synthesis_exe.touch()
     resolver.get_skyrim_path = MagicMock(return_value=game_path)
     resolver.get_mo2_path = MagicMock(return_value=mo2_path)
+    # Raíz de datos para runner/preflight (portable: install == data).
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2_path)
+    resolver.get_mo2_mods_path = MagicMock(return_value=mo2_path / "mods")
     resolver.get_synthesis_exe = MagicMock(return_value=synthesis_exe)
     return resolver
 

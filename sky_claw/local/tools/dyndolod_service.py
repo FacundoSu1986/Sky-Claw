@@ -250,7 +250,10 @@ class DynDOLODPipelineService:
             return self._preflight
 
         game = self._path_resolver.get_skyrim_path()
-        mo2 = self._path_resolver.get_mo2_path()
+        # Raíz de DATOS (no instalación): overwrite, perfil y fuentes cuelgan
+        # de la instancia. El raw usa el mismo árbol (no existe representación
+        # cruda sin resolver de la metadata; ver get_mo2_instance_data_root).
+        mo2 = self._path_resolver.get_mo2_instance_data_root()
         if not isinstance(game, pathlib.Path) or not isinstance(mo2, pathlib.Path):
             return None
 
@@ -266,14 +269,18 @@ class DynDOLODPipelineService:
         )
         from sky_claw.local.validators.write_permissions import WritePermissionsChecker
 
-        # vfs sobre rutas CRUDAS (las resueltas ya siguieron los symlinks).
+        # vfs sobre el árbol de DATOS (el que los sensores leen).
         # scan_mods_dir: la raíz MO2 de acá ya está VALIDADA (el guard de arriba
-        # exige que get_mo2_path() sea un Path), así que enumerar mods/ es seguro
+        # exige un Path de datos), así que enumerar mods/ es seguro
         # — el False hardcodeado dejaba ciego el scan de symlinks (U-01).
+        # mods_dir: el MODS_DIR DECLARADO (``mod_directory`` puede vivir fuera
+        # de <datos>/mods; reconstruirlo a mano sería un scan ciego).
+        mods_dir = self._path_resolver.get_mo2_mods_path_best_effort()
         vfs_checker = build_vfs_sensor(
             raw_game=self._path_resolver.get_skyrim_path_raw(),
-            raw_mo2=self._path_resolver.get_mo2_path_raw(),
+            raw_mo2=mo2,
             scan_mods_dir=True,
+            mods_dir=mods_dir,
         )
 
         # Permisos: los targets se recalculan POR CORRIDA dentro del closure
@@ -285,7 +292,10 @@ class DynDOLODPipelineService:
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
 
         resolver = build_mo2_profile_sources_resolver(
-            game=game, mo2=mo2, profile=self._path_resolver.get_active_profile()
+            game=game,
+            mo2=mo2,
+            profile=self._path_resolver.get_active_profile(),
+            mods_dir=mods_dir,
         )
         masters_check, limits_check = build_modlist_sensors(resolver) if resolver is not None else (None, None)
         # DynDOLOD (stage 9) lee todo el load order ya estabilizado: un master

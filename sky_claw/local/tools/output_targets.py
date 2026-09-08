@@ -47,12 +47,13 @@ USVFS?— para el único servicio donde la respuesta no es constante.
 
 from __future__ import annotations
 
+import pathlib
 from typing import TYPE_CHECKING
 
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 
 if TYPE_CHECKING:
-    import pathlib
+    from collections.abc import Callable
 
 #: Subdirectorio administrado que Sky-Claw pasa a Pandora como ruta de salida
 #: explícita absoluta. Vive acá para que todos los consumidores compartan el
@@ -122,6 +123,7 @@ def synthesis_output_target(
     *,
     mo2: pathlib.Path | None,
     override: pathlib.Path | None,
+    mods_dir: pathlib.Path | Callable[[], pathlib.Path | None] | None = None,
 ) -> pathlib.Path | None:
     """Destino de Synthesis: el override del sandbox manda; si no, el de siempre.
 
@@ -133,6 +135,15 @@ def synthesis_output_target(
 
     ``override`` es el ``SandboxClone.overwrite_copy`` de T-27b: con él, el run
     sandboxeado escribe en el clon y no en el overwrite real.
+
+    ``mo2`` es la raíz de DATOS de la instancia (no la instalación): el
+    ``overwrite`` y el fallback ``mods/`` cuelgan de los datos. ``mods_dir`` es
+    el MODS_DIR (puede ser un callable 0-arg que lo resuelve —evaluado SOLO en
+    la rama mods, nunca cuando el ``overwrite`` existe y mods es
+    irrelevante—). Manda sobre ``mo2/"mods"`` cuando se conoce, porque
+    ``[Settings] mod_directory`` puede redefinir los mods fuera del árbol de
+    datos; valores no-``Path`` (mocks) y ``None`` conservan el default
+    histórico.
     """
     if override is not None:
         return override
@@ -141,7 +152,10 @@ def synthesis_output_target(
     overwrite = mo2 / "overwrite"
     if overwrite.exists():
         return overwrite
-    return mo2 / "mods" / SYNTHESIS_MOD_NAME
+    if callable(mods_dir):
+        mods_dir = mods_dir()
+    base_mods = mods_dir if isinstance(mods_dir, pathlib.Path) else mo2 / "mods"
+    return base_mods / SYNTHESIS_MOD_NAME
 
 
 def bodyslide_output_root(*, game: pathlib.Path | None) -> pathlib.Path | None:

@@ -54,10 +54,27 @@ def _mtime_ns(path: pathlib.Path) -> int | None:
 
 
 class MO2PluginStateProvider:
-    """Estado de archivos derivado de una instancia portable de MO2."""
+    """Estado de archivos derivado de una instancia portable o separada de MO2."""
 
-    def __init__(self, mo2_root: pathlib.Path, profile: str = _DEFAULT_PROFILE) -> None:
-        self._mo2_root = mo2_root
+    def __init__(
+        self,
+        mo2_root: pathlib.Path | None = None,
+        profile: str = _DEFAULT_PROFILE,
+        *,
+        data_root: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | None = None,
+    ) -> None:
+        if data_root is not None and mods_dir is not None:
+            self._data_root = data_root.resolve()
+            self._mods_dir = mods_dir.resolve()
+            self._mo2_root = mo2_root.resolve() if mo2_root is not None else self._data_root
+        elif mo2_root is not None:
+            self._mo2_root = mo2_root.resolve()
+            self._data_root = self._mo2_root
+            self._mods_dir = self._data_root / "mods"
+        else:
+            raise ValueError("MO2PluginStateProvider requiere mo2_root o (data_root y mods_dir)")
+
         self._profile = profile
         self._active_files: frozenset[str] = frozenset()
         self._inactive_files: frozenset[str] = frozenset()
@@ -76,6 +93,14 @@ class MO2PluginStateProvider:
         # El índice se construye una sola vez; el lock protege el doble-chequeo
         # cuando la resolución corre en un hilo (asyncio.to_thread).
         self._index_lock = threading.Lock()
+
+    @property
+    def data_root(self) -> pathlib.Path:
+        return self._data_root
+
+    @property
+    def mods_dir(self) -> pathlib.Path:
+        return self._mods_dir
 
     def file_state(self, path: str) -> FileState:
         """Estado del archivo *path* (relativo a ``Data/``)."""
@@ -103,7 +128,7 @@ class MO2PluginStateProvider:
             return True
         if self._modlist_snapshot != self._leer_modlist_crudo():
             return True
-        if self._mods_root_mtime != _mtime_ns(self._mo2_root / "mods"):
+        if self._mods_root_mtime != _mtime_ns(self._mods_dir):
             return True
         enabled_mods, disabled_mods = self._read_modlist()
         conocidos = enabled_mods | disabled_mods
@@ -114,7 +139,7 @@ class MO2PluginStateProvider:
     def _leer_modlist_crudo(self) -> str:
         """Contenido crudo de modlist.txt ("" si ilegible/ausente)."""
         try:
-            return (self._mo2_root / "profiles" / self._profile / _MODLIST_NAME).read_text(encoding="utf-8-sig")
+            return (self._data_root / "profiles" / self._profile / _MODLIST_NAME).read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             return ""
 
@@ -155,11 +180,11 @@ class MO2PluginStateProvider:
         self._active_files = frozenset(active)
         self._inactive_files = frozenset(inactive)
         self._modlist_snapshot = self._leer_modlist_crudo()
-        self._mods_root_mtime = _mtime_ns(self._mo2_root / "mods")
+        self._mods_root_mtime = _mtime_ns(self._mods_dir)
         self._indexed = True
 
     def _mod_dir(self, mod_name: str) -> pathlib.Path:
-        return self._mo2_root / "mods" / mod_name
+        return self._mods_dir / mod_name
 
     def _scan_mod(self, mod_name: str) -> frozenset[str]:
         """Paths relativos (normalizados) de un solo mod."""
@@ -183,7 +208,7 @@ class MO2PluginStateProvider:
         """
         enabled: set[str] = set()
         disabled: set[str] = set()
-        modlist_path = self._mo2_root / "profiles" / self._profile / _MODLIST_NAME
+        modlist_path = self._data_root / "profiles" / self._profile / _MODLIST_NAME
         try:
             lines = modlist_path.read_text(encoding="utf-8-sig").splitlines()
         except (OSError, UnicodeDecodeError) as exc:

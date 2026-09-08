@@ -211,7 +211,8 @@ async def reconcile_orphan_rollback_backups(
 
 def construir_productores_de_move_aside(
     *,
-    mo2_root: pathlib.Path | None,
+    mo2_root: pathlib.Path | None = None,
+    mods_dir: pathlib.Path | None = None,
     game: pathlib.Path | None = None,
 ) -> list[ProductorDeMoveAside]:
     """Los productores reales, con destinos exactos — fuente única del cableado.
@@ -226,14 +227,14 @@ def construir_productores_de_move_aside(
     """
     productores: list[ProductorDeMoveAside] = []
     # DynDOLOD/TexGen mueven aparte TRES destinos, y no todos cuelgan de la misma
-    # raíz: los dos mods de salida empaquetados viven bajo `<mo2>/mods`, y el
-    # staging crudo de TexGen bajo la raíz administrada del juego. Las constantes
-    # son las mismas que consume `dyndolod_service` al construir sus
-    # `DirectoryRollback`; declarar el padre daría autoridad sobre otros
-    # directorios con un sufijo de rollback válido.
+    # raíz: los dos mods de salida empaquetados viven bajo `<mo2>/mods` (o mods_dir
+    # explícito en topología dividida), y el staging crudo de TexGen bajo la raíz
+    # administrada del juego. Las constantes son las mismas que consume
+    # `dyndolod_service` al construir sus `DirectoryRollback`; declarar el padre
+    # daría autoridad sobre otros directorios con un sufijo de rollback válido.
     destinos_dyndolod: list[pathlib.Path] = []
-    if mo2_root is not None:
-        mods = mo2_root / "mods"
+    mods = mods_dir if mods_dir is not None else (mo2_root / "mods" if mo2_root is not None else None)
+    if mods is not None:
         destinos_dyndolod += [
             mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME,
             mods / DynDOLODRunner.TEXGEN_MOD_NAME,

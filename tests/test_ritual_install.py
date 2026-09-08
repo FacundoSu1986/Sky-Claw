@@ -687,3 +687,89 @@ async def test_install_community_shaders_sin_config_path_degrada_a_warning(tmp_p
     assert fb is not None
     assert fb["type"] == "warning"  # NO "positive": nada se persistió
     assert "persist" in fb["text"].lower()
+
+
+async def test_install_community_shaders_usa_custom_mods_dir_con_trampas(tmp_path: pathlib.Path) -> None:
+    """Demuestra que la GUI instala Community Shaders en MODS y el scanner lo detecta
+    desde MODS cuando la topología es INSTALL != DATA != MODS, manteniendo las
+    trampas <install>/mods y <data>/mods completamente intactas."""
+    from unittest.mock import AsyncMock
+
+    from sky_claw.app.gui.views.forge_dashboard import STORE_KEY_ENV
+    from sky_claw.local.discovery.environment import EnvironmentSnapshot, MO2Info, SkyrimEdition, SkyrimInfo
+    from sky_claw.local.discovery.scanner import EnvironmentScanner
+    from sky_claw.local.tools_installer import COMMUNITY_SHADERS_MOD_NAME, ModInstallResult
+
+    install_root = tmp_path / "Install"
+    data_root = tmp_path / "Data"
+    custom_mods = tmp_path / "CustomMods"
+    game_path = tmp_path / "Skyrim"
+
+    for p in (install_root, data_root, custom_mods, game_path):
+        p.mkdir(parents=True, exist_ok=True)
+
+    # Crear trampas
+    trap_install_mods = install_root / "mods"
+    trap_data_mods = data_root / "mods"
+    trap_install_mods.mkdir()
+    trap_data_mods.mkdir()
+
+    # Stub Skyrim
+    (game_path / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    # Configurar MO2 snapshot con split roots
+    store = ReactiveStore()
+    mo2_info = MO2Info(
+        path=install_root,
+        profiles=["Default"],
+        data_root=data_root,
+        mods_dir=custom_mods,
+    )
+    store.set(
+        STORE_KEY_ENV,
+        EnvironmentSnapshot(
+            skyrim=SkyrimInfo(path=game_path, exe_name="SkyrimSE.exe", edition=SkyrimEdition.AE, version="1.6.1170"),
+            mo2=mo2_info,
+        ),
+    )
+
+    cs_mod_dir = custom_mods / COMMUNITY_SHADERS_MOD_NAME
+    installer = _FakeInstaller(
+        cs_result=[
+            ModInstallResult(
+                mod_name=COMMUNITY_SHADERS_MOD_NAME,
+                mod_dir=cs_mod_dir,
+                version="v1.8.2",
+                already_existed=False,
+            )
+        ]
+    )
+    from types import SimpleNamespace
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\n', encoding="utf-8")
+    ctx = _FakeAppContext(installer, network=SimpleNamespace(downloader="dl"), config_path=config_path)
+
+    await run_ritual_install("community_shaders", app_context=ctx, store=store)
+
+    # 1. GUI instala en MODS (custom_mods), NO en install/mods ni data/mods
+    assert installer.calls == [("ensure_community_shaders", custom_mods, "sess")]
+
+    # Simular que el instalador dejó el mod en custom_mods
+    cs_skse = cs_mod_dir / "SKSE" / "Plugins"
+    cs_skse.mkdir(parents=True, exist_ok=True)
+    (cs_skse / "CommunityShaders.dll").write_bytes(b"cs-dll")
+    (cs_mod_dir / "Shaders").mkdir(parents=True, exist_ok=True)
+
+    # 2. Scanner lo detecta desde MODS
+    scanner = EnvironmentScanner(skyrim_path=game_path)
+    scanner._find_mo2 = AsyncMock(return_value=install_root)
+    scanner._resolve_mo2_instance_roots = lambda _root: (data_root, custom_mods)
+
+    snap = await scanner.scan()
+    assert "community_shaders" in snap.tools
+    assert snap.tools["community_shaders"].exe_path == cs_skse / "CommunityShaders.dll"
+
+    # 3. Las trampas en Install/mods y Data/mods permanecen intactas y vacías
+    assert list(trap_install_mods.iterdir()) == []
+    assert list(trap_data_mods.iterdir()) == []

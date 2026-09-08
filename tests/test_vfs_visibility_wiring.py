@@ -110,6 +110,10 @@ def _resolver(*, skyrim: pathlib.Path, mo2: pathlib.Path) -> MagicMock:
     resolver.get_skyrim_path = MagicMock(return_value=skyrim)
     resolver.get_mo2_path_raw = MagicMock(return_value=mo2)
     resolver.get_mo2_path = MagicMock(return_value=mo2)
+    # Raíz de datos para los preflights migrados (portable: install == data).
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2)
+    resolver.get_mo2_mods_path = MagicMock(return_value=mo2 / "mods")
+    resolver.has_explicit_mo2_install_selection = MagicMock(return_value=False)
     resolver.detect_mo2_path = MagicMock(return_value=mo2)
     resolver.get_active_profile = MagicMock(return_value="Default")
     resolver.get_loot_exe = MagicMock(return_value=None)

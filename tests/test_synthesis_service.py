@@ -93,6 +93,10 @@ def mock_path_resolver(tmp_path: pathlib.Path) -> MagicMock:
 
     resolver.get_skyrim_path = MagicMock(return_value=game_path)
     resolver.get_mo2_path = MagicMock(return_value=mo2_path)
+    # Raíz de datos para los consumers migrados (layout portable en tests:
+    # install == data) y mods/ consistente con el output esperado.
+    resolver.get_mo2_instance_data_root = MagicMock(return_value=mo2_path)
+    resolver.get_mo2_mods_path = MagicMock(return_value=mo2_path / "mods")
     resolver.get_synthesis_exe = MagicMock(return_value=synthesis_exe)
     return resolver
 
@@ -333,6 +337,7 @@ async def test_runner_init_failure(
     """Invalid env paths return error dict without lock or journal."""
     mock_path_resolver.get_skyrim_path = MagicMock(return_value=None)
     mock_path_resolver.get_mo2_path = MagicMock(return_value=None)
+    mock_path_resolver.get_mo2_instance_data_root = MagicMock(return_value=None)
     mock_path_resolver.get_synthesis_exe = MagicMock(return_value=None)
 
     out = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
@@ -340,6 +345,81 @@ async def test_runner_init_failure(
     assert out["success"] is False
     assert "Cannot initialize" in out["stderr"]
     mock_journal.begin_transaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_destino_invalido_devuelve_error_dict_sin_runtime_error(
+    synthesis_service: SynthesisPipelineService,
+    mock_path_resolver: MagicMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Caso A: Sin overwrite, resolver de mods para destino lanza RuntimeError -> contrato canónico."""
+    # Eliminamos overwrite para forzar la rama mods_dir
+    overwrite = mock_path_resolver.get_mo2_path.return_value / "overwrite"
+    if overwrite.is_dir():
+        overwrite.rmdir()
+
+    mock_path_resolver.get_mo2_mods_path_para_destino.side_effect = RuntimeError(
+        "El directorio de mods declarado 'Z:\\Inexistente' no existe."
+    )
+
+    # NO debe propagar RuntimeError; debe retornar dict canónico con success=False y message
+    res = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
+    assert isinstance(res, dict)
+    assert res["success"] is False
+    assert "El directorio de mods declarado" in res["message"]
+    assert "El directorio de mods declarado" in res["stderr"]
+    assert res["output_esp"] is None
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_destino_apunta_a_archivo_devuelve_error_dict(
+    synthesis_service: SynthesisPipelineService,
+    mock_path_resolver: MagicMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Caso B: mod_directory apunta a un archivo -> mismo contrato canónico de error."""
+    overwrite = mock_path_resolver.get_mo2_path.return_value / "overwrite"
+    if overwrite.is_dir():
+        overwrite.rmdir()
+
+    mock_path_resolver.get_mo2_mods_path_para_destino.side_effect = RuntimeError(
+        "La ruta de mods de MO2 existe pero no es un directorio."
+    )
+
+    res = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
+    assert isinstance(res, dict)
+    assert res["success"] is False
+    assert "existe pero no es un directorio" in res["message"]
+    assert res["output_esp"] is None
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_runner_init_runtime_error_con_preflight_existente(
+    synthesis_service: SynthesisPipelineService,
+    mock_path_resolver: MagicMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si el preflight ya existía y el runner falla con RuntimeError, devuelve error canónico."""
+    fake_preflight = AsyncMock()
+    fake_report = MagicMock()
+    fake_report.blocks_mutations = False
+    fake_report.status.value = "green"
+    fake_preflight.run = AsyncMock(return_value=fake_report)
+    synthesis_service._preflight = fake_preflight
+
+    overwrite = mock_path_resolver.get_mo2_path.return_value / "overwrite"
+    if overwrite.is_dir():
+        overwrite.rmdir()
+
+    mock_path_resolver.get_mo2_mods_path_para_destino.side_effect = RuntimeError(
+        "Fallo de resolución de destino en runner."
+    )
+
+    res = await synthesis_service.execute_pipeline(patcher_ids=["patcher_a"])
+    assert isinstance(res, dict)
+    assert res["success"] is False
+    assert "Fallo de resolución de destino en runner." in res["message"]
 
 
 # =============================================================================
