@@ -327,7 +327,10 @@ class WebApp:
         except (json.JSONDecodeError, ValueError):
             await ws.send_json({"type": "response", "payload": {"response": "⚠️ Invalid chat frame."}})
             return
-        if not (isinstance(data, dict) and data.get("type") == "command" and data.get("command") == "chat"):
+        if not isinstance(data, dict):
+            await ws.send_json({"type": "response", "payload": {"response": "⚠️ Invalid chat frame."}})
+            return
+        if not (data.get("type") == "command" and data.get("command") == "chat"):
             return  # YAGNI: non-chat commands ignored gracefully (future agentic phase)
 
         payload = data.get("payload")
