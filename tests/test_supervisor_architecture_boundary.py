@@ -115,7 +115,7 @@ def _resolver_modulo(nodo: ast.ImportFrom) -> str:
     return ".".join([*raiz, *([nodo.module] if nodo.module else [])])
 
 
-def _targets_nombre(nodo: ast.Assign | ast.AnnAssign) -> list[str]:
+def _targets_nombre(nodo: ast.Assign | ast.AnnAssign | ast.NamedExpr) -> list[str]:
     """Nombres simples escritos por una asignación."""
     objetivos = nodo.targets if isinstance(nodo, ast.Assign) else [nodo.target]
     return [objetivo.id for objetivo in objetivos if isinstance(objetivo, ast.Name)]
@@ -191,7 +191,7 @@ def _ofensores_invocaciones(arbol: ast.Module) -> set[str]:
     bindings = _bindings_construibles_de_dominio(arbol)
     ofensores: set[str] = set()
     for nodo in ast.walk(arbol):
-        if isinstance(nodo, (ast.Assign, ast.AnnAssign)) and nodo.value is not None:
+        if isinstance(nodo, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and nodo.value is not None:
             valor = nodo.value
             referencia_a_dominio = any(
                 (isinstance(sub, ast.Name) and (sub.id in bindings or _es_dominio_por_nombre(sub.id)))
@@ -509,6 +509,7 @@ def test_regresiones_de_review_fresca() -> None:
     # La fachada pública del detector tampoco puede aliasarse para ejecutar dominio.
     assert _ofensores_invocaciones(ast.parse("self.asset_detector.detect_conflicts()\n"))
     assert _ofensores_invocaciones(ast.parse("detector = self.asset_detector\ndetector.detect_conflicts()\n"))
+    assert _ofensores_invocaciones(ast.parse("(detector := self.asset_detector).detect_conflicts()\n"))
     # La carga dinámica queda prohibida como mecanismo, también con keyword name=.
     assert _ofensores_imports(ast.parse("import importlib\nimportlib.import_module(name='sky_claw.local.plugins')\n"))
     # Delegación escondida, sin await o decorada no satisface la fachada.
