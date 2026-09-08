@@ -106,6 +106,8 @@ confirmarlo contra código y tests.
 
 <!-- markdownlint-enable MD013 -->
 
+| DynDOLOD ya no se lanza tras una etapa TexGen fallida | Cerrado (PR fail-stop) | Antes, un TexGen que fallaba —por proceso, por excepción, sin output atribuible o con su empaquetado roto— dejaba el pipeline en `success=False` pero DynDOLOD arrancaba igual: 30+ min de corrida y un "DynDOLOD Output" recién empaquetado que el rollback del servicio retiraba. El gate del spawn ahora corta ANTES de `run_dyndolod` cuando `run_texgen=True` y la cadena no quedó completa: veredicto TexGen válido → output contractual → packaging exitoso → visibilidad demostrada. `dyndolod_result` queda en `None` (evidencia honesta de que la herramienta no se ejecutó), `needs_deployment` sigue reservado al corte por visibilidad tras packaging exitoso (F1), y `texgen_packaging_attempted` conserva su semántica (el boundary de reemplazo del artifact se cruzó o no). `run_texgen=False` conserva el camino de Resume/sin-TexGen: con "TexGen Output" preservado se re-verifica contra el `Data`; sin él, DynDOLOD corre como antes | **Abiertos, no tocados por este PR:** external per-tool staging (subroots exclusivos, bloqueado por el gate de aceptación de `sky_claw/local/AGENTS.md` §1); preset `OutputPath=` (sección propia arriba); volcado del log real completo contra la taxonomía; freshness cleanup; #528 (UIA output gate, downstream de este trabajo); rigs finales | `test_dyndolod_service.py` (T1–T8 del fail-stop: success=False, excepción, output None, packaging fallido, visibilidad, happy path, `run_texgen=False` con/sin mod preservado, efectos laterales sobre `mods/`, y el corte atravesando `DynDOLODPipelineService.execute` por el camino estándar) |
+
 ## TexGen: preset persistido puede desviar `OutputPath` fuera del staging administrado
 
 > **Estado:** `OPEN / FOLLOW-UP — evidencia dinámica confirmada, fix no diseñado
@@ -167,15 +169,17 @@ acá como riesgos).
 
 **Precisión sobre el alcance de esa contención** (revisor Codex, PR #485,
 verificado contra el código): el `_package_output_as_mod` que no corre es el de
-TexGen y **solo ese**. `run_full_pipeline` no corta ahí — sigue a
-`run_dyndolod` incondicionalmente (`dyndolod_runner.py:1088`) y, si DynDOLOD
-sale bien, **sí empaqueta su salida a `mods/`** (`:1094-1100`). El pipeline
-igual reporta `success=False` porque la fórmula exige `texgen_mod_path` cuando
-`run_texgen` (`:1160-1167`), pero para entonces ya hay un mod escrito en
-`mods/`, y retirarlo depende del rollback del servicio, no de este gate. La
-redacción anterior decía "`_package_output_as_mod` nunca corre", que es falso
-como enunciado general: hay **dos** call sites de empaquetado y toda tarea que
-razone sobre esta contención tiene que trazar los dos.
+TexGen y **solo ese** — en su momento `run_full_pipeline` no cortaba ahí y
+DynDOLOD seguía corriendo y empaquetando su salida a `mods/` aunque la fórmula
+de `success` terminara en rojo. **Eso cambió con el gate fail-stop del PR
+fail-stop**: cuando `run_texgen=True`, DynDOLOD solo se lanza después de la
+cadena completa —veredicto TexGen válido → output atribuible → packaging
+exitoso → visibilidad demostrada en el `Data`—, así que un preset que desvía
+las escrituras (TexGen falla por artefacto rancio, su packaging no corre)
+ahora corta ANTES del spawn: no hay corrida de DynDOLOD ni mod recién
+empaquetado que el rollback deba retirar. El corte sigue sin resolver el
+defecto de fondo (el `OutputPath` del preset manda sobre el `-o:`), que es lo
+que este ítem persigue.
 
 Consecuencias **derivadas, no reproducidas** en el rig, que el gate de
 frescura **no** cubre porque ocurren en el path del preset — fuera de
