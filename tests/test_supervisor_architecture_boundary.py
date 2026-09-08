@@ -27,9 +27,7 @@ _SUBCADENAS_DE_DOMINIO = ("Runner", "Analyzer")
 _DTOS_PERMITIDOS_DE_DOMINIO = frozenset(
     {"LLMCallable", "AssetConflictDetector", "AssetConflictReport", "ConflictReport"}
 )
-_ACCESORES_INTERNOS_DE_SELF = frozenset(
-    {"__dict__", "__class__", "__getattribute__", "__getattr__"}
-)
+_ACCESORES_INTERNOS_DE_SELF = frozenset({"__dict__", "__class__", "__getattribute__", "__getattr__"})
 
 
 def _resolver_fuente_del_supervisor() -> tuple[Path, ast.Module]:
@@ -291,9 +289,7 @@ def _delega_al_dispatcher(nodo: ast.AST, alias_locales: set[str]) -> bool:
     if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "dispatch"):
         return False
     receptor = nodo.func.value
-    return _es_self_tool_dispatcher(receptor) or (
-        isinstance(receptor, ast.Name) and receptor.id in alias_locales
-    )
+    return _es_self_tool_dispatcher(receptor) or (isinstance(receptor, ast.Name) and receptor.id in alias_locales)
 
 
 def _errores_dispatch(fn: ast.AsyncFunctionDef | ast.FunctionDef) -> list[str]:
@@ -391,9 +387,7 @@ def test_mutantes_de_import_ejercitan_el_analizador_completo() -> None:
 def test_alias_directo_de_constructor_ejercita_el_analizador_completo() -> None:
     """M14: un constructor de dominio reasignado a nombre neutro sigue prohibido."""
     arbol = ast.parse(
-        "from sky_claw.local.assets import AssetConflictDetector\n"
-        "Detector = AssetConflictDetector\n"
-        "Detector()\n"
+        "from sky_claw.local.assets import AssetConflictDetector\nDetector = AssetConflictDetector\nDetector()\n"
     )
     assert _ofensores_invocaciones(arbol)
 
