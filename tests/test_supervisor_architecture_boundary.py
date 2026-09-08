@@ -147,12 +147,24 @@ def _ofensores_imports(arbol: ast.Module) -> set[str]:
                 subpaquete = f"{modulo}.{alias.name}" if modulo else alias.name
                 if _es_modulo_de_dominio(subpaquete):
                     ofensores.add(subpaquete)
-                elif _es_dominio_por_nombre(alias.name) and alias.name not in _DTOS_PERMITIDOS_DE_DOMINIO:
+                elif (
+                    _es_dominio_por_nombre(alias.name)
+                    and alias.name not in _DTOS_PERMITIDOS_DE_DOMINIO
+                    and not (modulo in ("asyncio", "asyncio.runners") and alias.name == "Runner")
+                ):
                     ofensores.add(alias.name)
             continue
 
-        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "__import__":
-            ofensores.add("__import__")
+        if isinstance(nodo, ast.Call):
+            if isinstance(nodo.func, ast.Name) and nodo.func.id == "__import__":
+                ofensores.add("__import__")
+            elif (
+                isinstance(nodo.func, ast.Attribute)
+                and isinstance(nodo.func.value, ast.Name)
+                and nodo.func.value.id == "builtins"
+                and nodo.func.attr == "__import__"
+            ):
+                ofensores.add("builtins.__import__")
     return ofensores
 
 
@@ -176,6 +188,19 @@ def _bindings_construibles_de_dominio(arbol: ast.Module) -> frozenset[str]:
     return frozenset(bindings)
 
 
+def _bindings_asyncio_runner(arbol: ast.AST) -> frozenset[str]:
+    """Símbolos importados desde asyncio stdlib correspondientes a Runner."""
+    bindings: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.ImportFrom):
+            modulo = _resolver_modulo(nodo)
+            if modulo in ("asyncio", "asyncio.runners"):
+                for alias in nodo.names:
+                    if alias.name == "Runner":
+                        bindings.add(alias.asname or alias.name)
+    return frozenset(bindings)
+
+
 def _es_self_facade_de_dominio(nodo: ast.AST) -> bool:
     """Reconoce ``self.<property pública que retorna dominio>``."""
     return (
@@ -189,12 +214,16 @@ def _es_self_facade_de_dominio(nodo: ast.AST) -> bool:
 def _ofensores_invocaciones(arbol: ast.Module) -> set[str]:
     """Bloquea construcción, aliasing e invocación de dominio en el Supervisor."""
     bindings = _bindings_construibles_de_dominio(arbol)
+    bindings_asyncio = _bindings_asyncio_runner(arbol)
     ofensores: set[str] = set()
     for nodo in ast.walk(arbol):
         if isinstance(nodo, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and nodo.value is not None:
             valor = nodo.value
             referencia_a_dominio = any(
-                (isinstance(sub, ast.Name) and (sub.id in bindings or _es_dominio_por_nombre(sub.id)))
+                (
+                    isinstance(sub, ast.Name)
+                    and (sub.id in bindings or (_es_dominio_por_nombre(sub.id) and sub.id not in bindings_asyncio))
+                )
                 or _es_self_facade_de_dominio(sub)
                 for sub in ast.walk(valor)
             )
@@ -207,7 +236,7 @@ def _ofensores_invocaciones(arbol: ast.Module) -> set[str]:
             continue
         if isinstance(nodo.func, ast.Name):
             nombre = nodo.func.id
-            if nombre in bindings or _es_dominio_por_nombre(nombre):
+            if nombre in bindings or (_es_dominio_por_nombre(nombre) and nombre not in bindings_asyncio):
                 ofensores.add(nombre)
             continue
         if not isinstance(nodo.func, ast.Attribute):
@@ -277,6 +306,16 @@ def _ofensores_service_locator(arbol: ast.AST) -> set[str]:
 
         if isinstance(nodo, (ast.Yield, ast.YieldFrom)) and nodo.value is not None and _expone_self(nodo.value):
             ofensores.add(f"yield {ast.unparse(nodo.value)}")
+            continue
+
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defaults: list[ast.expr] = [
+                *nodo.args.defaults,
+                *(d for d in nodo.args.kw_defaults if d is not None),
+            ]
+            for default in defaults:
+                if _expone_self(default):
+                    ofensores.add(f"default {nodo.name}: {ast.unparse(default)}")
             continue
     return ofensores
 
@@ -416,10 +455,32 @@ def test_no_pasa_self_como_service_locator() -> None:
     assert not ofensores, f"supervisor.py expone self a: {sorted(ofensores)}"
 
 
+_ENTRADAS_PERMITIDAS_DE_ROUTING = frozenset({"dispatch_tool"})
+
+
+def _metodos_routing_de_clase(clase: ast.ClassDef) -> list[ast.AsyncFunctionDef | ast.FunctionDef]:
+    """Encuentra métodos directos de la clase anclados al routing de herramientas por ``tool_name``."""
+    return [
+        nodo
+        for nodo in clase.body
+        if isinstance(nodo, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and (
+            any(arg.arg == "tool_name" for arg in [*nodo.args.posonlyargs, *nodo.args.args, *nodo.args.kwonlyargs])
+            or any(isinstance(sub, ast.Name) and sub.id == "tool_name" for sub in ast.walk(nodo))
+        )
+    ]
+
+
 def test_dispatch_tool_sigue_siendo_fachada_estrecha() -> None:
-    """``dispatch_tool`` conserva firma, await y delegación directa."""
-    fn = _metodo_de_clase(_clase_supervisor(), "dispatch_tool")
-    assert fn is not None, "desapareció SupervisorAgent.dispatch_tool"
+    """``dispatch_tool`` es la única fachada de routing y conserva delegación directa."""
+    clase = _clase_supervisor()
+    metodos_routing = _metodos_routing_de_clase(clase)
+    nombres_routing = {m.name for m in metodos_routing}
+    assert nombres_routing == _ENTRADAS_PERMITIDAS_DE_ROUTING, (
+        f"entradas de routing no autorizadas en SupervisorAgent: {sorted(nombres_routing - _ENTRADAS_PERMITIDAS_DE_ROUTING)}"
+    )
+
+    fn = metodos_routing[0]
     errores = _errores_dispatch(fn)
     assert not errores, f"dispatch_tool reabsorbió routing: {errores}"
 
@@ -570,5 +631,20 @@ def test_regresiones_de_review_fresca() -> None:
     )
     # asyncio.Runner no se clasifica erróneamente como dominio (F5).
     assert not _ofensores_invocaciones(ast.parse("import asyncio\nasyncio.Runner()\n"))
+    # from asyncio import Runner no se clasifica erróneamente como dominio (unqualified).
+    arbol_asyncio_runner = ast.parse("from asyncio import Runner\nRunner()\n")
+    assert not _ofensores_imports(arbol_asyncio_runner)
+    assert not _ofensores_invocaciones(arbol_asyncio_runner)
     # Runner importado desde sky_claw.local.* sí se bloquea como dominio.
     assert _ofensores_invocaciones(ast.parse("from sky_claw.local.xedit.runner import XEditRunner\nXEditRunner()\n"))
+    arbol_domain_runner = ast.parse("from sky_claw.local.xedit.runner import XEditRunner as Runner\nRunner()\n")
+    assert _ofensores_imports(arbol_domain_runner)
+    assert _ofensores_invocaciones(arbol_domain_runner)
+    # builtins.__import__ cualificado directo bloqueado en imports.
+    mutante_builtins_import = ast.parse("import builtins\nbuiltins.__import__('sky_claw.local.plugins')\n")
+    assert "builtins.__import__" in _ofensores_imports(mutante_builtins_import)
+    # self capturado en defaults de funciones anidadas bloqueado en service locator.
+    mutante_default_self = ast.parse(
+        "def method(self):\n    def callback(owner=self):\n        pass\n    collaborator.register(callback)\n"
+    )
+    assert _ofensores_service_locator(mutante_default_self)

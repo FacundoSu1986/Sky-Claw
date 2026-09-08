@@ -71,24 +71,33 @@ def _reexports_constructor_dominio(arbol: ast.Module) -> set[str]:
 
 
 def _calls_import_builtin(arbol: ast.Module) -> set[str]:
-    """Ancla independientemente la forma directa ``__import__(...)``."""
-    return {
-        ast.unparse(nodo)
-        for nodo in ast.walk(arbol)
-        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "__import__"
-    }
+    """Ancla independientemente las formas directas de ``__import__(...)``."""
+    llamadas: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        es_nombre_directo = isinstance(nodo.func, ast.Name) and nodo.func.id == "__import__"
+        es_builtins_cualificado = (
+            isinstance(nodo.func, ast.Attribute)
+            and isinstance(nodo.func.value, ast.Name)
+            and nodo.func.value.id == "builtins"
+            and nodo.func.attr == "__import__"
+        )
+        if es_nombre_directo or es_builtins_cualificado:
+            llamadas.add(ast.unparse(nodo))
+    return llamadas
 
 
 def _errores_dispatch_de_clase(clase: ast.ClassDef) -> list[str]:
-    """Congela unicidad y ausencia de defaults en la firma pública."""
-    metodos = [
-        nodo
-        for nodo in clase.body
-        if isinstance(nodo, (ast.AsyncFunctionDef, ast.FunctionDef)) and nodo.name == "dispatch_tool"
-    ]
-    if len(metodos) != 1:
-        return [f"dispatch_tool debe tener una única definición directa; encontradas={len(metodos)}"]
-    fn = metodos[0]
+    """Congela unicidad, ausencia de defaults y rechazo de métodos hermanos de routing."""
+    metodos_routing = boundary._metodos_routing_de_clase(clase)
+    nombres_routing = {m.name for m in metodos_routing}
+    if nombres_routing != boundary._ENTRADAS_PERMITIDAS_DE_ROUTING:
+        extra = sorted(nombres_routing - boundary._ENTRADAS_PERMITIDAS_DE_ROUTING)
+        return [f"métodos de routing no autorizados: {extra}"]
+    if len(metodos_routing) != 1:
+        return [f"dispatch_tool debe tener una única definición directa; encontradas={len(metodos_routing)}"]
+    fn = metodos_routing[0]
     if fn.args.defaults or any(default is not None for default in fn.args.kw_defaults):
         return ["dispatch_tool no admite defaults"]
     return []
@@ -125,6 +134,10 @@ def test_import_builtin_directo_tiene_ancla_independiente() -> None:
     assert _calls_import_builtin(mutante)
     assert boundary._ofensores_imports(mutante)
 
+    cualificado = ast.parse("import builtins\nbuiltins.__import__('sky_claw.local.plugins')\n")
+    assert _calls_import_builtin(cualificado)
+    assert "builtins.__import__" in boundary._ofensores_imports(cualificado)
+
 
 def test_dispatch_tool_tiene_una_definicion_y_cero_defaults() -> None:
     assert not _errores_dispatch_de_clase(boundary._clase_supervisor())
@@ -146,3 +159,15 @@ def test_dispatch_tool_tiene_una_definicion_y_cero_defaults() -> None:
     ).body[0]
     assert isinstance(duplicada, ast.ClassDef)
     assert _errores_dispatch_de_clase(duplicada)
+
+    hermano_routing = ast.parse(
+        "class SupervisorAgent:\n"
+        "    async def dispatch_tool(self, tool_name, payload_dict):\n"
+        "        return await self._tool_dispatcher.dispatch(tool_name, payload_dict)\n"
+        "    async def legacy_route(self, tool_name, payload_dict):\n"
+        "        if tool_name == 'loot':\n"
+        "            return {}\n"
+        "        return await self._legacy_router.dispatch(tool_name, payload_dict)\n"
+    ).body[0]
+    assert isinstance(hermano_routing, ast.ClassDef)
+    assert _errores_dispatch_de_clase(hermano_routing)
