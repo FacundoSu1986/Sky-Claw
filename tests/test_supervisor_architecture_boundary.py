@@ -482,10 +482,7 @@ def test_matrix_m1_m16_tiene_evidencia_ejecutable() -> None:
     )
     # M14 — constructor reasignado a nombre neutro.
     assert _ofensores_invocaciones(
-        ast.parse(
-            "from sky_claw.local.assets import AssetConflictDetector\n"
-            "Detector = AssetConflictDetector\nDetector()\n"
-        )
+        ast.parse("from sky_claw.local.assets import AssetConflictDetector\nDetector = AssetConflictDetector\nDetector()\n")
     )
     # M15 — alias del dispatcher rebotado.
     assert dispatch(
@@ -527,11 +524,7 @@ def test_regresiones_de_review_fresca() -> None:
     )
     # Alias de un nivel de import_module.
     assert _ofensores_imports(
-        ast.parse(
-            "from importlib import import_module\n"
-            "load = import_module\n"
-            "load('sky_claw.local.plugins')\n"
-        )
+        ast.parse("from importlib import import_module\nload = import_module\nload('sky_claw.local.plugins')\n")
     )
     # Una delegación escondida en una coroutine anidada no satisface la fachada.
     assert _errores_dispatch(
