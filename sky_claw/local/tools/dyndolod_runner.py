@@ -1291,7 +1291,9 @@ class DynDOLODRunner:
            va a abrir. Empaquetar en ``mods/`` no lo demuestra: Sky-Claw corre
            standalone y no hereda la USVFS de MO2. Sin esa prueba, fail-closed —
            DynDOLOD no se lanza.
-        4. Ejecutar DynDOLOD (después de que TexGen esté listo Y sea visible)
+        4. Ejecutar DynDOLOD — SÓLO si la etapa TexGen de esta corrida quedó apta:
+           veredicto válido, output atribuible, packaging exitoso y visibilidad
+           demostrada. Cualquier fallo anterior corta ANTES del spawn.
         5. Empaquetar DynDOLOD_Output como "DynDOLOD Output"
 
         Args:
@@ -1314,13 +1316,13 @@ class DynDOLODRunner:
         dyndolod_result: ToolExecutionResult | None = None
         texgen_mod_path: pathlib.Path | None = None
         dyndolod_mod_path: pathlib.Path | None = None
-        # C: si el handoff con TexGen no se puede DEMOSTRAR, DynDOLOD no se lanza.
-        # Arranca en True porque sin `run_texgen` no hay salida nueva cuya
-        # visibilidad afirmar: el gate mide "el TexGen que ESTA corrida generó", y
-        # con la etapa apagada esa proposición no tiene sujeto. Sólo lo baja el
-        # propio gate — un fallo previo de TexGen o de su empaquetado deja el
-        # camino como estaba (el pipeline ya sale rojo por su cuenta) y cambiar
-        # eso sería otra decisión, no la de este fix.
+        # C (review de #493): el gate de VISIBILIDAD. Mide exactamente eso —que la
+        # salida que ESTA corrida generó es visible en el `Data` físico que
+        # DynDOLOD va a abrir— y nada más. Arranca en True porque sin `run_texgen`
+        # no hay salida nueva cuya visibilidad afirmar: con la etapa apagada esa
+        # proposición no tiene sujeto. Bajarlo NO autoriza DynDOLOD por sí solo:
+        # el spawn lo decide el gate del paso 2, que además exige que la etapa
+        # TexGen de esta corrida haya quedado apta (ver `dyndolod_bloqueado_por`).
         handoff_verificado = True
         #: F1: sube SÓLO cuando el corte es "falta desplegar", nunca cuando algo
         #: se rompió. Es la condición que autoriza al servicio a preservar el mod
@@ -1423,6 +1425,17 @@ class DynDOLODRunner:
                                 )
                 elif not texgen_result.success:
                     errors.extend(texgen_result.errors)
+                else:
+                    # F3 (éxito inconsistente): `success=True` sin `output_path`.
+                    # El post-check resuelve la salida antes de construir el
+                    # resultado, así que un None acá significa que no hay árbol
+                    # atribuible: nada que empaquetar ni cuya visibilidad
+                    # verificar. Antes este estado caía ENTRE las dos ramas de
+                    # arriba sin agregar ningún error y DynDOLOD arrancaba igual.
+                    errors.append(
+                        "TexGen reportó éxito pero no dejó un output_path atribuible: sin su "
+                        "salida no hay nada que empaquetar ni cuya visibilidad verificar."
+                    )
 
             except DynDOLODExecutionError as e:
                 errors.append(f"TexGen execution failed: {e}")
@@ -1488,19 +1501,39 @@ class DynDOLODRunner:
                             extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
                         )
 
-        # Paso 2: Ejecutar DynDOLOD — SÓLO si el handoff quedó demostrado.
+        # Paso 2: Ejecutar DynDOLOD — SÓLO si la etapa TexGen de ESTA corrida
+        # quedó apta para el handoff y su salida quedó demostrada ante el `Data`.
+        # Con `run_texgen=True` eso exige la cadena completa: veredicto válido →
+        # output atribuible → packaging exitoso → visibilidad demostrada.
         # Nota: DynDOLOD puede ejecutarse sin TexGen si sus texturas ya existen.
         #
-        # El guard cuelga de todo el paso y no del `run_dyndolod` solo: si el
-        # handoff no se pudo probar, tampoco hay nada que empaquetar ni veredicto
-        # que emitir sobre una corrida que no ocurrió. `dyndolod_result` queda en
-        # `None` y la fórmula de `success` de más abajo ya lo exige no-nulo, así
-        # que el pipeline sale rojo sin ninguna rama nueva.
-        if not handoff_verificado:
+        # Una sola autoridad decide el spawn: `dyndolod_bloqueado_por` es None
+        # exactamente cuando TODAS las condiciones pasan, y su valor cuando no —
+        # la razón honesta del corte, que el log nombra en vez de afirmar "no
+        # visible" de una salida que quizá nunca existió. No reemplaza a
+        # `handoff_verificado` (que sigue midiendo SÓLO visibilidad) ni duplica la
+        # fórmula de `success`: computa la franquicia del spawn y deja que la
+        # fórmula final —que exige `dyndolod_result` no nulo— haga el resto.
+        dyndolod_bloqueado_por: str | None = None
+        if run_texgen:
+            if texgen_result is None or not texgen_result.success:
+                dyndolod_bloqueado_por = "TexGen no completó su corrida con éxito"
+            elif texgen_result.output_path is None:
+                dyndolod_bloqueado_por = "TexGen reportó éxito pero no dejó una salida atribuible"
+            elif texgen_mod_path is None:
+                dyndolod_bloqueado_por = f"el empaquetado de '{self.TEXGEN_MOD_NAME}' falló"
+            elif not handoff_verificado:
+                dyndolod_bloqueado_por = f"la salida de TexGen no es visible en {self._config.data_dir}"
+        elif not handoff_verificado:
+            dyndolod_bloqueado_por = (
+                f"el '{self.TEXGEN_MOD_NAME}' preservado no es visible en {self._config.data_dir}"
+            )
+
+        if dyndolod_bloqueado_por is not None:
             logger.error(
-                "DynDOLOD no se lanza: la salida de TexGen no es visible en %s. La etapa se corta "
-                "ANTES del spawn — es el único punto donde el fallo cuesta segundos y no 30+ min.",
-                self._config.data_dir,
+                "DynDOLOD no se lanza: %s. La etapa se corta ANTES del spawn — es el único punto "
+                "donde el fallo cuesta segundos y no 30+ min.",
+                dyndolod_bloqueado_por,
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
             )
         else:
@@ -1577,19 +1610,22 @@ class DynDOLODRunner:
         # contradiciéndose sobre la misma transacción (review Qodo, PR #471).
         #
         # CONSECUENCIA, decidida y no lateral (review Qodo, PR #471, "Regresión
-        # transaccional"): un fallo SOLO del empaquetado de TexGen ahora tumba la
-        # corrida entera — el servicio lanza, el journal no commitea y los
-        # `DirectoryRollback` revierten también el mod de DynDOLOD recién
-        # empaquetado. Es lo correcto y es la doctrina del repo (U-11: no
-        # reportar éxito sobre un estado indeterminado; nada de commits
-        # parciales): con el mod de TexGen ausente el resultado NO es usable
-        # —MO2 no despliega esas texturas y el juego queda con los meshes de LOD
-        # sin ellas—, así que "éxito parcial" sería el falso verde de nuevo, con
-        # otra cara. Lo que se pierde es acotado: el rollback cubre los mods
-        # EMPAQUETADOS bajo `mods/`, no el staging crudo del `-o:`, que queda
-        # explícitamente fuera del move-aside; los GB que DynDOLOD generó siguen
-        # en disco y lo que hay que rehacer es la corrida, no el trabajo perdido
-        # para siempre. Anclado en
+        # transaccional"): un fallo SOLO del empaquetado de TexGen tumba la
+        # corrida entera — el servicio lanza, el journal no commitea. Es lo
+        # correcto y es la doctrina del repo (U-11: no reportar éxito sobre un
+        # estado indeterminado; nada de commits parciales): con el mod de TexGen
+        # ausente el resultado NO es usable —MO2 no despliega esas texturas y el
+        # juego queda con los meshes de LOD sin ellas—, así que "éxito parcial"
+        # sería el falso verde de nuevo, con otra cara.
+        #
+        # Desde el gate fail-stop del paso 2 la consecuencia es MÁS corta de lo
+        # que era cuando este comentario se escribió: el empaquetado fallido de
+        # TexGen corta ANTES del spawn, así que no hay "mod de DynDOLOD recién
+        # empaquetado" que el rollback deba retirar — DynDOLOD ni siquiera
+        # arrancó y el único staging que queda es el crudo del `-o:`, que está
+        # explícitamente fuera del move-aside. Lo que se pierde sigue siendo
+        # acotado y lo que hay que rehacer es la corrida, no trabajo perdido.
+        # Anclado en
         # `test_el_empaquetado_fallido_de_texgen_no_commitea_la_transaccion`.
         success = (
             dyndolod_result is not None
