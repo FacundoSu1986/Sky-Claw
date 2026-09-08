@@ -1,72 +1,13 @@
-"""Guardrail arquitectónico del cierre del Strangler Fig de ``SupervisorAgent`` (PR7).
+"""Guardrail arquitectónico del cierre del Strangler Fig de ``SupervisorAgent``.
 
-PR1–PR6 estrangularon la lógica de dominio de herramientas fuera del
-``SupervisorAgent`` hacia seams dedicados (``OrchestrationToolDispatcher``,
-``build_orchestration_composition``, ``GrassRuntimeDepsProvider``,
-``AssetConflictScanner``, ``RecordConflictScanner``, ``PluginLimitGuard``). PR7 no
-extrae nada nuevo —ya no queda lógica de dominio residual en el Supervisor: sus
-responsabilidades son lifecycle, bridges de eventos, wiring de composición y
-facades de compatibilidad— sino que **congela la frontera** para que ese dominio
-no vuelva a entrar.
+PR1–PR6 extrajeron el dominio de herramientas. PR7 no crea otro seam: congela
+la frontera para que ``SupervisorAgent`` conserve únicamente lifecycle, wiring,
+bridges de eventos/interfaz y fachadas de compatibilidad.
 
-La frontera se define por CÓMO reingresaría el dominio, no por la sintaxis exacta
-del código de hoy (el review de #545 revirtió un ancla que fijaba forma AST
-trivial: acá no se repite ese error). Cada test cierra una vía de reingreso, y se
-enumera la FAMILIA por regla, no una muestra (reviews internos + review Codex de #553):
-
-  1. **Import de la capa de dominio** (``test_no_importa_dominio_de_herramientas``).
-     La capa ``sky_claw.local.*`` (+ el parser ``active_plugins``) está CERRADA: el
-     Supervisor sólo puede importar de ahí un allowlist chico de DTOs/tipos de
-     retorno de sus facades; cualquier otro símbolo —runner, analyzer, servicio, o
-     un helper de nombre NEUTRO (``load_plugins``, ``resolve_load_order``, …)— es un
-     ofensor, sin depender de convención de nombre. Se cubren: ``from X import Nombre``,
-     ``import X`` (forma-módulo, con o sin alias), ``from X import *``, imports RELATIVOS
-     (``from ...local import y``) y el **import DINÁMICO** con string constante
-     (``importlib.import_module("sky_claw.local.x")`` / ``__import__("...")``), cuya
-     ruta viaja como ``Constant`` y no como nodo ``Import`` (review Codex #553).
-  2. **Construcción/invocación de dominio** (``test_no_invoca_dominio_de_herramientas``):
-     runners/analyzers por convención de nombre, los tipos que PRODUCE la
-     composición (por introspección de ``OrchestrationComposition``) y un set
-     explícito (``AssetConflictDetector`` inline de scan, ``parse_active_plugins``).
-     Los **alias de import** de un símbolo construible de dominio se normalizan al
-     original antes de aplicar el denylist: ``AssetConflictDetector as Detector`` +
-     ``Detector()`` no esquiva la regla (review Codex #553).
-  3. **Service Locator** (``test_no_pasa_self_como_service_locator``, #518): pasar
-     ``self`` —posicional, keyword, expandido (``*self``/``**self``), su estado
-     (``vars(self)``, ``self.__dict__``, ``self.__class__``) o ``self`` CAPTURADO
-     dentro de un contenedor/closure (``lambda: self``, ``{"k": self}``, ``[self]``)—
-     a un colaborador (review Codex #553). ``self.<colaborador>`` sigue permitido.
-  4. **Routing inline** (``test_dispatch_tool_sigue_delegando``): en la facade
-     pública ``tool_name`` sólo puede fluir como argumento a ``.dispatch(...)``;
-     cualquier otro uso (``match``/``if``/``for``/``[tool_name]``/``getattr(...)``/
-     ``except``→fallback) es routing reabsorbido. El receptor de ``.dispatch`` debe
-     ser ``self._tool_dispatcher`` o un alias LOCAL asignado desde él —un alias de
-     OTRO colaborador (``router = self._legacy_router``) no cuenta (review Codex #553).
-
-**Ancla sobre la CLASE.** El AST se resuelve desde ``inspect.getsourcefile(SupervisorAgent)``
-y las búsquedas de método se acotan a su ``ClassDef``: si el módulo se
-renombra/mueve el guardrail SIGUE a la clase (no da falso verde sobre el archivo
-viejo) y no valida un ``dispatch_tool`` homónimo; si el ancla se pierde, falla
-ruidoso.
-
-Lo que PERMITE deliberadamente: delegar a servicios cableados
-(``self._wrye_bash_service.execute_pipeline(...)``); construir en ``__init__`` los
-SEAMS que cablea (``AssetConflictScanner``/``RecordConflictScanner``/``PluginLimitGuard``/
-``GrassRuntimeDepsProvider``/``PathResolutionService``); importar los DTOs
-declarados; lifecycle, bridges y facades de compatibilidad.
-
-**Alcance deliberado.** Ancla estructural, no oráculo de análisis de flujo
-(metaprompt §14). La resolución de alias que hace el guardrail es de UN nivel y
-acotada a su función/módulo (asignaciones directas), no un motor de data-flow.
-**Limitación aceptada y explícita** (no la vendo como cubierta): un alias de DATOS
-del PROPIO Supervisor —``svc = self; svc.dispatch(...)`` / ``inst = self``— NO lo
-detecta este ancla estático; rastrear que ``svc`` ES ``self`` a varios saltos
-exigiría data-flow. No es una brecha peligrosa: un alias que preserva el
-comportamiento sigue delegando en el dispatcher (no reabsorbe dominio), y uno que
-sí reabsorbe routing altera el comportamiento observable que fijan los tests
-conductuales de ``tests/test_supervisor_dispatch_tool.py`` —pero el ancla por sí
-sola no lo prohíbe. NO congela: números de línea, forma de expresiones triviales,
-atributos del constructor, ni métodos privados.
+El guardrail protege cuatro vías de reingreso: imports de dominio, construcción
+o invocación de dominio, ``self`` como Service Locator y routing inline en
+``dispatch_tool``. Las mutaciones sintéticas ejercitan los analizadores
+COMPLETOS, no helpers aislados.
 """
 
 from __future__ import annotations
@@ -79,18 +20,23 @@ from pathlib import Path
 from sky_claw.app.orchestrator.orchestration_composition import OrchestrationComposition
 from sky_claw.app.orchestrator.supervisor import SupervisorAgent
 
-_PAQUETE_SUPERVISOR = SupervisorAgent.__module__.rpartition(".")[0]  # sky_claw.app.orchestrator
+_PAQUETE_SUPERVISOR = SupervisorAgent.__module__.rpartition(".")[0]
+_RAIZ_DOMINIO = "sky_claw.local"
+_MODULOS_DE_DOMINIO_EXTRA = frozenset({"sky_claw.app.orchestrator.active_plugins"})
+_SUBCADENAS_DE_DOMINIO = ("Runner", "Analyzer")
+_DTOS_PERMITIDOS_DE_DOMINIO = frozenset(
+    {"LLMCallable", "AssetConflictDetector", "AssetConflictReport", "ConflictReport"}
+)
+_ACCESORES_INTERNOS_DE_SELF = frozenset(
+    {"__dict__", "__class__", "__getattribute__", "__getattr__"}
+)
 
 
 def _resolver_fuente_del_supervisor() -> tuple[Path, ast.Module]:
-    """Resuelve el archivo fuente del ``SupervisorAgent`` DESDE LA CLASE (falla ruidoso)."""
+    """Resuelve el fuente desde la clase, no desde un nombre de archivo congelado."""
     ruta = inspect.getsourcefile(SupervisorAgent)
     if ruta is None or not Path(ruta).is_file():
-        raise AssertionError(
-            f"el guardrail perdió su ancla: no pude localizar el fuente de "
-            f"SupervisorAgent (getsourcefile={ruta!r}). El ancla sigue a la clase; "
-            f"revisá que siga siendo importable desde sky_claw.app.orchestrator.supervisor."
-        )
+        raise AssertionError(f"no pude localizar el fuente de SupervisorAgent: {ruta!r}")
     fuente = Path(ruta)
     return fuente, ast.parse(fuente.read_text(encoding="utf-8"), filename=str(fuente))
 
@@ -98,193 +44,191 @@ def _resolver_fuente_del_supervisor() -> tuple[Path, ast.Module]:
 _SUPERVISOR_SRC, _SUPERVISOR_AST = _resolver_fuente_del_supervisor()
 
 
-def _clase_supervisor() -> ast.ClassDef:
-    """La ``ClassDef`` de ``SupervisorAgent`` en el AST anclado (falla ruidoso si no está)."""
-    for nodo in ast.walk(_SUPERVISOR_AST):
+def _clase_supervisor(arbol: ast.Module = _SUPERVISOR_AST) -> ast.ClassDef:
+    """Devuelve la ``ClassDef`` de ``SupervisorAgent`` o falla ruidosamente."""
+    for nodo in arbol.body:
         if isinstance(nodo, ast.ClassDef) and nodo.name == "SupervisorAgent":
             return nodo
-    raise AssertionError("no se encontró la ClassDef de SupervisorAgent en el AST anclado")
+    raise AssertionError("no se encontró la ClassDef de SupervisorAgent")
 
 
-# --- Familia de dominio: convención + introspección de la composición ---------
-_SUBCADENAS_DE_DOMINIO = ("Runner", "Analyzer")
+def _metodo_de_clase(
+    clase: ast.ClassDef,
+    nombre: str,
+) -> ast.AsyncFunctionDef | ast.FunctionDef | None:
+    """Busca un método directo de la clase, excluyendo homónimos externos."""
+    for nodo in clase.body:
+        if isinstance(nodo, (ast.AsyncFunctionDef, ast.FunctionDef)) and nodo.name == nombre:
+            return nodo
+    return None
 
 
 def _tipos_de_la_composicion() -> frozenset[str]:
-    """Nombres de los tipos que PRODUCE ``build_orchestration_composition``.
-
-    El Supervisor RECIBE todos estos objetos (``composition.X``) y no debe construir
-    ninguno. Se derivan por INTROSPECCIÓN de las anotaciones del dataclass
-    ``OrchestrationComposition`` (no una lista a mano): 7 servicios + dispatcher/
-    deps/middleware/máquina de estados. Un servicio NUEVO queda cubierto sin tocar
-    este test —enumera la familia, no una muestra.
-    """
+    """Deriva los tipos producidos por ``OrchestrationComposition`` por introspección."""
     nombres: set[str] = set()
     for anotacion in OrchestrationComposition.__annotations__.values():
         texto = anotacion if isinstance(anotacion, str) else getattr(anotacion, "__name__", str(anotacion))
-        nombres.update(re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", texto))  # identificadores de clase
+        nombres.update(re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", texto))
     return frozenset(nombres)
 
 
 _COMPOSICION = _tipos_de_la_composicion()
-
 _DOMINIO_EXPLICITO_INVOCAR = frozenset({"parse_active_plugins", "AssetConflictDetector"}) | _COMPOSICION
-
-# --- Capa de dominio por RUTA de módulo (cerrada salvo DTOs declarados) --------
-_RAIZ_DOMINIO = "sky_claw.local"
-_MODULOS_DE_DOMINIO_EXTRA = frozenset({"sky_claw.app.orchestrator.active_plugins"})
-
-# Únicos símbolos que el Supervisor puede importar de la capa de dominio: DTOs y
-# tipos de retorno de sus facades. Cualquier otro nombre (runner/analyzer/servicio
-# o un helper de nombre neutro) importado de esa capa es un ofensor —así el ancla
-# no depende de que el dominio se llame ``*Runner``. Este set es la frontera: si
-# una facade nueva necesita otro DTO de dominio, se agrega acá explícitamente.
-_DTOS_PERMITIDOS_DE_DOMINIO = frozenset(
-    {"LLMCallable", "AssetConflictDetector", "AssetConflictReport", "ConflictReport"}
-)
 
 
 def _es_dominio_por_nombre(nombre: str) -> bool:
-    """¿``nombre`` es dominio por convención o por ser un tipo de la composición?"""
+    """Identifica runners/analyzers y símbolos producidos por la composición."""
     return any(sub in nombre for sub in _SUBCADENAS_DE_DOMINIO) or nombre in _DOMINIO_EXPLICITO_INVOCAR
 
 
 def _es_modulo_de_dominio(ruta: str) -> bool:
-    """¿``ruta`` (dotted) es el paquete de dominio, un submódulo suyo, o un extra?"""
+    """Identifica la raíz de dominio, sus submódulos y extras cerrados."""
     return ruta == _RAIZ_DOMINIO or ruta.startswith(_RAIZ_DOMINIO + ".") or ruta in _MODULOS_DE_DOMINIO_EXTRA
 
 
-def _modulo_de_import_dinamico(nodo: ast.AST) -> str | None:
-    """Ruta (dotted) de un import DINÁMICO con string constante, si ``nodo`` lo es.
+def _resolver_modulo(nodo: ast.ImportFrom) -> str:
+    """Resuelve un ``ImportFrom`` absoluto o relativo respecto del paquete Supervisor."""
+    if not nodo.level:
+        return nodo.module or ""
+    partes = _PAQUETE_SUPERVISOR.split(".")
+    raiz = partes[: len(partes) - (nodo.level - 1)]
+    return ".".join([*raiz, *([nodo.module] if nodo.module else [])])
 
-    Cubre ``importlib.import_module("sky_claw.local.x")`` y ``__import__("...")``: la
-    ruta viaja como ``Constant`` str dentro de un ``ast.Call``, no como nodo
-    ``Import``/``ImportFrom``, así que el guard de imports estáticos no la ve (review
-    Codex #553). Sólo se resuelve el caso de ruta CONSTANTE —una ruta computada en
-    runtime excede un ancla estática y no es un reingreso "naive".
-    """
+
+def _bindings_import_module(arbol: ast.AST) -> frozenset[str]:
+    """Bindings locales equivalentes a ``importlib.import_module``."""
+    bindings: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.ImportFrom) or nodo.module != "importlib":
+            continue
+        for alias in nodo.names:
+            if alias.name == "import_module":
+                bindings.add(alias.asname or alias.name)
+    return frozenset(bindings)
+
+
+def _modulo_de_import_dinamico(
+    nodo: ast.AST,
+    bindings_import_module: frozenset[str],
+) -> str | None:
+    """Extrae la ruta constante de ``import_module``/``__import__`` si aplica."""
     if not isinstance(nodo, ast.Call):
         return None
     callee = nodo.func
-    es_import_module = isinstance(callee, ast.Attribute) and callee.attr == "import_module"
+    es_import_module_attr = isinstance(callee, ast.Attribute) and callee.attr == "import_module"
+    es_import_module_directo = isinstance(callee, ast.Name) and callee.id in bindings_import_module
     es_dunder_import = isinstance(callee, ast.Name) and callee.id == "__import__"
-    if not (es_import_module or es_dunder_import):
+    if not (es_import_module_attr or es_import_module_directo or es_dunder_import):
         return None
     if nodo.args and isinstance(nodo.args[0], ast.Constant) and isinstance(nodo.args[0].value, str):
         return nodo.args[0].value
     return None
 
 
-def _es_self_tool_dispatcher(nodo: ast.AST) -> bool:
-    """¿``nodo`` es exactamente ``self._tool_dispatcher``?"""
-    return (
-        isinstance(nodo, ast.Attribute)
-        and isinstance(nodo.value, ast.Name)
-        and nodo.value.id == "self"
-        and nodo.attr == "_tool_dispatcher"
-    )
+def _ofensores_imports(arbol: ast.Module) -> set[str]:
+    """Analizador completo de imports que cruzan la frontera de dominio."""
+    ofensores: set[str] = set()
+    bindings_import_module = _bindings_import_module(arbol)
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            ofensores.update(alias.name for alias in nodo.names if _es_modulo_de_dominio(alias.name))
+            continue
+        if isinstance(nodo, ast.ImportFrom):
+            modulo = _resolver_modulo(nodo)
+            if _es_modulo_de_dominio(modulo):
+                for alias in nodo.names:
+                    if alias.name == "*":
+                        ofensores.add(f"{modulo}.*")
+                    elif alias.name not in _DTOS_PERMITIDOS_DE_DOMINIO:
+                        ofensores.add(f"{modulo}.{alias.name}")
+            else:
+                for alias in nodo.names:
+                    if alias.name == "*":
+                        continue
+                    subpaquete = f"{modulo}.{alias.name}" if modulo else alias.name
+                    if _es_modulo_de_dominio(subpaquete):
+                        ofensores.add(subpaquete)
+                    elif _es_dominio_por_nombre(alias.name):
+                        ofensores.add(alias.name)
+            continue
+        ruta = _modulo_de_import_dinamico(nodo, bindings_import_module)
+        if ruta is not None and _es_modulo_de_dominio(ruta):
+            ofensores.add(f"{ruta} (import dinámico)")
+    return ofensores
 
 
-def _alias_locales_del_dispatcher(fn: ast.AST) -> set[str]:
-    """Nombres locales asignados desde ``self._tool_dispatcher`` dentro de ``fn``.
-
-    Resuelve el alias local del refactor equivalente (M8: ``d = self._tool_dispatcher``)
-    SIN volverse un motor de data-flow: es un scan de asignaciones de UN nivel dentro
-    de la función. Un alias de OTRO colaborador (``router = self._legacy_router``) NO
-    entra, así que ``router.dispatch(...)`` deja de contar como delegación al
-    dispatcher extraído (review Codex #553).
-    """
-    alias: set[str] = set()
-    for nodo in ast.walk(fn):
-        if isinstance(nodo, ast.Assign) and _es_self_tool_dispatcher(nodo.value):
-            for objetivo in nodo.targets:
-                if isinstance(objetivo, ast.Name):
-                    alias.add(objetivo.id)
-        elif (
-            isinstance(nodo, ast.AnnAssign)
-            and nodo.value is not None
-            and _es_self_tool_dispatcher(nodo.value)
-            and isinstance(nodo.target, ast.Name)
-        ):
-            alias.add(nodo.target.id)
-    return alias
-
-
-def _delega_al_dispatcher(nodo: ast.AST, alias_locales: set[str]) -> bool:
-    """¿``nodo`` es una llamada de delegación al dispatcher extraído?
-
-    Acepta ``self._tool_dispatcher.dispatch(...)`` y ``<alias>.dispatch(...)`` donde
-    ``<alias>`` es un nombre LOCAL asignado desde ``self._tool_dispatcher`` (refactor
-    equivalente M8). NO acepta ``self.<otro_servicio>.dispatch(...)`` ni un alias de
-    otro colaborador: delegar en un colaborador distinto no es delegar en el
-    dispatcher (reviews interno + Codex #553).
-    """
-    if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "dispatch"):
-        return False
-    receptor = nodo.func.value
-    if _es_self_tool_dispatcher(receptor):
-        return True  # self._tool_dispatcher.dispatch(...)
-    return isinstance(receptor, ast.Name) and receptor.id in alias_locales  # alias local del dispatcher (M8)
-
-
-def _resolver_modulo(nodo: ast.ImportFrom) -> str:
-    """Ruta absoluta del módulo de un ``ImportFrom``, resolviendo imports relativos.
-
-    ``from ...local import x`` (``level>0``) se resuelve contra el paquete del
-    Supervisor para que la regla por ruta de módulo también los vea.
-    """
-    if not nodo.level:
-        return nodo.module or ""
-    partes = _PAQUETE_SUPERVISOR.split(".")
-    raiz = partes[: len(partes) - (nodo.level - 1)]  # level 1 = paquete actual
-    return ".".join([*raiz, *([nodo.module] if nodo.module else [])])
+def _targets_nombre(nodo: ast.Assign | ast.AnnAssign) -> list[str]:
+    """Nombres simples escritos por una asignación de un nivel."""
+    objetivos = nodo.targets if isinstance(nodo, ast.Assign) else [nodo.target]
+    return [objetivo.id for objetivo in objetivos if isinstance(objetivo, ast.Name)]
 
 
 def _alias_de_simbolos_de_dominio(arbol: ast.Module) -> dict[str, str]:
-    """Mapa ``binding local -> símbolo original`` para imports construibles de dominio.
-
-    ``from sky_claw.local.assets import AssetConflictDetector as Detector`` liga
-    ``Detector`` al símbolo original ``AssetConflictDetector``; sin resolver el alias
-    ``Detector()`` esquivaría el denylist de invocación (review Codex #553). Sólo
-    interesan los símbolos que YA son dominio-por-nombre (construir un DTO permitido
-    como ``AssetConflictDetector`` es reingreso; un DTO puro como ``ConflictReport``
-    no —importarlo Y construirlo es legítimo, no fabrica un runner/detector).
-    """
+    """Normaliza imports y asignaciones directas de constructores de dominio."""
     mapa: dict[str, str] = {}
     for nodo in ast.walk(arbol):
-        if isinstance(nodo, ast.ImportFrom) and _es_modulo_de_dominio(_resolver_modulo(nodo)):
-            for alias in nodo.names:
-                if alias.asname and _es_dominio_por_nombre(alias.name):
-                    mapa[alias.asname] = alias.name
+        if not isinstance(nodo, ast.ImportFrom) or not _es_modulo_de_dominio(_resolver_modulo(nodo)):
+            continue
+        for alias in nodo.names:
+            if _es_dominio_por_nombre(alias.name):
+                mapa[alias.asname or alias.name] = alias.name
+
+    asignaciones = sorted(
+        (nodo for nodo in ast.walk(arbol) if isinstance(nodo, (ast.Assign, ast.AnnAssign))),
+        key=lambda nodo: getattr(nodo, "lineno", 0),
+    )
+    for nodo in asignaciones:
+        valor = nodo.value
+        if valor is None or not isinstance(valor, ast.Name):
+            continue
+        origen = mapa.get(valor.id)
+        if origen is None and _es_dominio_por_nombre(valor.id):
+            origen = valor.id
+        for target in _targets_nombre(nodo):
+            if origen is None:
+                mapa.pop(target, None)
+            else:
+                mapa[target] = origen
     return mapa
 
 
-def _accede_estado_de_self(nodo: ast.AST) -> bool:
-    """¿En cualquier parte del subárbol se accede a ``self.__dict__`` / ``self.__class__``?
+def _nombres_invocados(arbol: ast.AST) -> set[str]:
+    """Recolecta el nombre terminal de cada callee."""
+    invocados: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        if isinstance(nodo.func, ast.Name):
+            invocados.add(nodo.func.id)
+        elif isinstance(nodo.func, ast.Attribute):
+            invocados.add(nodo.func.attr)
+    return invocados
 
-    Recursivo a propósito: atrapa derivados como ``self.__dict__.copy()`` o
-    ``dict(self.__dict__)``, no sólo el acceso directo (review interno #553). NO
-    marca ``self.<colaborador>`` (atributos normales), que es inyección explícita.
-    """
+
+def _ofensores_invocaciones(arbol: ast.Module) -> set[str]:
+    """Analizador completo de construcción/invocación de dominio."""
+    alias = _alias_de_simbolos_de_dominio(arbol)
+    ofensores: set[str] = set()
+    for nombre in _nombres_invocados(arbol):
+        normalizado = alias.get(nombre, nombre)
+        if _es_dominio_por_nombre(normalizado):
+            ofensores.add(normalizado if normalizado == nombre else f"{nombre} (alias de {normalizado})")
+    return ofensores
+
+
+def _accede_estado_de_self(nodo: ast.AST) -> bool:
+    """Detecta estado/accesores internos que exponen el Supervisor por nombre."""
     return any(
         isinstance(desc, ast.Attribute)
         and isinstance(desc.value, ast.Name)
         and desc.value.id == "self"
-        and desc.attr in {"__dict__", "__class__"}
+        and desc.attr in _ACCESORES_INTERNOS_DE_SELF
         for desc in ast.walk(nodo)
     )
 
 
 def _captura_self_anidado(nodo: ast.AST) -> bool:
-    """¿El subárbol captura ``self`` PELADO (no como ``self.<attr>``) en cualquier nivel?
-
-    Atrapa ``self`` suelto y también capturado dentro de un contenedor o closure:
-    ``f(self)``, ``f(*self)``, ``vars(self)``, ``f(lambda: self)``, ``f({"k": self})``,
-    ``f([self])`` — el colaborador recibe el Supervisor entero y puede usarlo como
-    service locator (review Codex #553). ``self.<colaborador>`` NO cae acá: ese
-    ``self`` es la BASE de un ``Attribute`` (inyección explícita de una dependencia),
-    no un valor suelto.
-    """
+    """Detecta ``self`` como valor, incluso dentro de contenedores o closures."""
     bases_de_atributo = {
         id(desc.value)
         for desc in ast.walk(nodo)
@@ -297,190 +241,71 @@ def _captura_self_anidado(nodo: ast.AST) -> bool:
 
 
 def _expone_self(nodo: ast.expr) -> bool:
-    """¿La expresión pasa ``self`` o su estado interno a un colaborador?"""
+    """Dice si una expresión entrega el Supervisor entero o acceso interno equivalente."""
     real = nodo.value if isinstance(nodo, ast.Starred) else nodo
-    # self.__dict__ / self.__class__ (incl. self.__dict__.copy()): estado interno.
-    if _accede_estado_de_self(real):
-        return True
-    # self pelado o capturado en contenedor/closure: self, *self, **self, vars(self),
-    # lambda: self, {"k": self}, [self]. self.<colaborador> queda permitido.
-    return _captura_self_anidado(real)
+    return _accede_estado_de_self(real) or _captura_self_anidado(real)
 
 
-def _nombres_invocados() -> set[str]:
-    """Nombre terminal del callee de cada llamada (``Foo(...)`` / ``mod.Foo(...)`` -> ``Foo``)."""
-    invocados: set[str] = set()
-    for nodo in ast.walk(_SUPERVISOR_AST):
-        if isinstance(nodo, ast.Call):
-            callee = nodo.func
-            if isinstance(callee, ast.Name):
-                invocados.add(callee.id)
-            elif isinstance(callee, ast.Attribute):
-                invocados.add(callee.attr)
-    return invocados
-
-
-def _metodo_de_clase(clase: ast.ClassDef, nombre: str) -> ast.AsyncFunctionDef | ast.FunctionDef | None:
-    """Método DIRECTO de ``clase`` por nombre (no funciones anidadas ni de otras clases)."""
-    for nodo in clase.body:
-        if isinstance(nodo, (ast.AsyncFunctionDef, ast.FunctionDef)) and nodo.name == nombre:
-            return nodo
-    return None
-
-
-def test_guardrail_ancla_sobre_la_clase_supervisor() -> None:
-    """El ancla apunta al archivo donde vive ``SupervisorAgent`` HOY (falla ruidoso si no)."""
-    fuente_de_la_clase = inspect.getsourcefile(SupervisorAgent)
-    assert fuente_de_la_clase is not None and Path(fuente_de_la_clase) == _SUPERVISOR_SRC, (
-        "el AST analizado no corresponde al archivo donde vive SupervisorAgent: "
-        f"clase en {fuente_de_la_clase!r} vs. ancla {_SUPERVISOR_SRC}."
-    )
-    assert _clase_supervisor() is not None
-
-
-def test_no_importa_dominio_de_herramientas() -> None:
-    """La capa de dominio está CERRADA: sólo DTOs declarados cruzan al Supervisor.
-
-    Cubre ``from X import Nombre``, ``import X`` (forma-módulo), ``from X import *``,
-    imports relativos y el import DINÁMICO con string constante. De la capa de
-    dominio (``sky_claw.local.*`` + ``active_plugins``) sólo se admiten los nombres de
-    ``_DTOS_PERMITIDOS_DE_DOMINIO`` —cualquier otro (runner/analyzer/servicio, o un
-    helper de nombre neutro) es ofensor sin depender de convención. De módulos
-    NO-dominio se rechazan runners/analyzers y tipos de la composición por nombre.
-    """
+def _ofensores_service_locator(arbol: ast.AST) -> set[str]:
+    """Analizador completo de argumentos que convierten ``self`` en Service Locator."""
     ofensores: set[str] = set()
-    for nodo in ast.walk(_SUPERVISOR_AST):
-        if isinstance(nodo, ast.Import):
-            ofensores.update(a.name for a in nodo.names if _es_modulo_de_dominio(a.name))
-        elif isinstance(nodo, ast.ImportFrom):
-            modulo = _resolver_modulo(nodo)
-            if _es_modulo_de_dominio(modulo):
-                for alias in nodo.names:
-                    if alias.name == "*":
-                        ofensores.add(f"{modulo}.* (star import de la capa de dominio)")
-                    elif alias.name not in _DTOS_PERMITIDOS_DE_DOMINIO:
-                        ofensores.add(f"{modulo}.{alias.name}")
-            else:
-                for alias in nodo.names:
-                    if alias.name == "*":
-                        continue
-                    # ``from sky_claw import local`` importa un SUBPAQUETE de dominio
-                    # por nombre: se detecta por la ruta combinada, no por el símbolo.
-                    subpaquete = f"{modulo}.{alias.name}" if modulo else alias.name
-                    if _es_modulo_de_dominio(subpaquete):
-                        ofensores.add(subpaquete)
-                    elif _es_dominio_por_nombre(alias.name):
-                        ofensores.add(alias.name)
-        else:
-            # Import dinámico (importlib.import_module / __import__) con ruta constante.
-            ruta_dinamica = _modulo_de_import_dinamico(nodo)
-            if ruta_dinamica is not None and _es_modulo_de_dominio(ruta_dinamica):
-                ofensores.add(f"{ruta_dinamica} (import dinámico)")
-    assert not ofensores, (
-        f"supervisor.py importó implementación de dominio: {sorted(ofensores)}. "
-        "La capa sky_claw.local.* está cerrada salvo los DTOs declarados; el resto "
-        "(runner/analyzer/servicio/helper) vive en su seam y se recibe ya construido."
-    )
-
-
-def test_allowlist_de_dtos_sin_entradas_muertas() -> None:
-    """El allowlist de DTOs de dominio no acumula entradas muertas.
-
-    Cada nombre de ``_DTOS_PERMITIDOS_DE_DOMINIO`` debe corresponder a un símbolo que
-    el Supervisor HOY importa de la capa de dominio. Así el allowlist no puede crecer
-    en silencio (un nombre agregado "para callar el test" que no se importa rompe acá)
-    — cierra el punto ciego de mantenimiento que señaló el review interno.
-    """
-    importados_de_dominio: set[str] = set()
-    for nodo in ast.walk(_SUPERVISOR_AST):
-        if isinstance(nodo, ast.ImportFrom) and _es_modulo_de_dominio(_resolver_modulo(nodo)):
-            importados_de_dominio.update(a.name for a in nodo.names)
-    muertas = _DTOS_PERMITIDOS_DE_DOMINIO - importados_de_dominio
-    assert not muertas, (
-        f"entradas del allowlist de DTOs que ya no se importan de la capa de dominio: {sorted(muertas)}. "
-        "Quitalas: un allowlist con nombres muertos es un punto ciego (dejaría pasar un import de "
-        "dominio con ese nombre sin que nadie lo note)."
-    )
-
-
-def test_no_invoca_dominio_de_herramientas() -> None:
-    """M1/M2/M4: el Supervisor no construye runners/analyzers/detectors, ni ningún
-    servicio de la composición, ni re-parsea plugins.
-
-    Por convención (``*Runner``/``*Analyzer`` y alias), por introspección de
-    ``OrchestrationComposition`` (los 7 servicios + componentes) y explícito
-    (``AssetConflictDetector`` inline de scan, ``parse_active_plugins``). Un símbolo
-    construible de dominio IMPORTADO con alias se normaliza al original antes de
-    aplicar el denylist (``AssetConflictDetector as Detector`` -> ``Detector()`` es
-    reingreso, review Codex #553). Permite los seams que el Supervisor cablea y
-    servicios no-dominio como ``PathResolutionService`` (no es tipo de la composición).
-    """
-    invocados = _nombres_invocados()
-    alias_de_dominio = _alias_de_simbolos_de_dominio(_SUPERVISOR_AST)
-    filtrados = {n for n in invocados if _es_dominio_por_nombre(n)}
-    filtrados |= {f"{n} (alias de {alias_de_dominio[n]})" for n in invocados if n in alias_de_dominio}
-    assert not filtrados, (
-        f"supervisor.py invocó/construyó dominio de herramientas: {sorted(filtrados)}. "
-        "Cablealo en build_orchestration_composition / su seam e inyectá el resultado; "
-        "el Supervisor coordina, no fabrica runners, servicios, scanners ni parsers."
-    )
-
-
-def test_no_pasa_self_como_service_locator() -> None:
-    """#518: pasar ``self`` (o su estado) a un colaborador es Service Locator.
-
-    Bloquea ``self`` posicional/keyword/expandido (``f(self)``, ``f(x=self)``,
-    ``f(*self)``, ``f(**self)``), su estado interno (``vars(self)``, ``self.__dict__``,
-    ``self.__class__``) y ``self`` CAPTURADO dentro de un contenedor/closure
-    (``lambda: self``, ``{"k": self}``, ``[self]`` — review Codex #553). Pasar
-    ``self.<colaborador>`` (atributo concreto) es inyección explícita y NO cae acá. El
-    aliasing de datos del propio Supervisor (``svc = self``) excede un ancla AST y
-    queda respaldado por los conductuales.
-    """
-    ofensores: set[str] = set()
-    for nodo in ast.walk(_SUPERVISOR_AST):
+    for nodo in ast.walk(arbol):
         if not isinstance(nodo, ast.Call):
             continue
         argumentos: list[ast.expr] = [*nodo.args, *(kw.value for kw in nodo.keywords)]
         if any(_expone_self(arg) for arg in argumentos):
             ofensores.add(ast.unparse(nodo.func))
-    assert not ofensores, (
-        f"supervisor.py pasa `self` (o su estado) a: {sorted(ofensores)}. Inyectá "
-        "dependencias explícitas (self.<colaborador>), no el Supervisor entero: un "
-        "callee que recibe self puede alcanzar cualquier cosa en runtime (Service Locator)."
+    return ofensores
+
+
+def _es_self_tool_dispatcher(nodo: ast.AST) -> bool:
+    """Dice si el nodo es exactamente ``self._tool_dispatcher``."""
+    return (
+        isinstance(nodo, ast.Attribute)
+        and isinstance(nodo.value, ast.Name)
+        and nodo.value.id == "self"
+        and nodo.attr == "_tool_dispatcher"
     )
 
 
-def test_dispatch_tool_sigue_delegando() -> None:
-    """La facade pública ``dispatch_tool`` (contrato en contracts.py) delega en el
-    dispatcher extraído: ``tool_name`` sólo puede fluir como argumento a
-    ``.dispatch(...)``.
+def _alias_locales_del_dispatcher(fn: ast.AST) -> set[str]:
+    """Acepta sólo aliases directos del dispatcher que nunca sean reasignados."""
+    desde_dispatcher: set[str] = set()
+    desde_otro_valor: set[str] = set()
+    asignaciones = sorted(
+        (nodo for nodo in ast.walk(fn) if isinstance(nodo, (ast.Assign, ast.AnnAssign))),
+        key=lambda nodo: getattr(nodo, "lineno", 0),
+    )
+    for nodo in asignaciones:
+        valor = nodo.value
+        for target in _targets_nombre(nodo):
+            if valor is not None and _es_self_tool_dispatcher(valor):
+                desde_dispatcher.add(target)
+            else:
+                desde_otro_valor.add(target)
+    return desde_dispatcher - desde_otro_valor
 
-    Acotado a la ``ClassDef`` de ``SupervisorAgent``. Regla EXHAUSTIVA (no muestreo
-    de formas): toda referencia a ``tool_name`` en el método debe ser un argumento de
-    una llamada ``.dispatch(...)``; cualquier otro uso —``match``, ``if``/``elif``,
-    ternario, ``for tool_name in ...``, ``tabla[tool_name]``, ``getattr(_, tool_name)``,
-    ``except``→fallback por tool_name— es routing reabsorbido y falla. El receptor de
-    ``.dispatch`` debe ser ``self._tool_dispatcher`` o un alias LOCAL asignado desde él;
-    un alias de otro colaborador no cuenta (review Codex #553). Un refactor equivalente
-    que sólo delega (partir la expresión, renombrar el atributo del dispatcher) sigue
-    pasando.
-    """
-    clase = _clase_supervisor()
-    fn = _metodo_de_clase(clase, "dispatch_tool")
-    assert fn is not None, "desapareció el método SupervisorAgent.dispatch_tool (contrato de contracts.py roto)"
 
-    alias_del_dispatcher = _alias_locales_del_dispatcher(fn)
-    llamadas_dispatch = [nodo for nodo in ast.walk(fn) if _delega_al_dispatcher(nodo, alias_del_dispatcher)]
-    assert llamadas_dispatch, (
-        "dispatch_tool dejó de delegar en self._tool_dispatcher.dispatch(...) (o un alias local de él): "
-        "el routing de tools vive en tool_strategies/ vía OrchestrationToolDispatcher, y delegar "
-        "en otro colaborador (self.<otro_servicio>.dispatch o un alias suyo) no cuenta."
+def _delega_al_dispatcher(nodo: ast.AST, alias_locales: set[str]) -> bool:
+    """Reconoce delegación al dispatcher real o a un alias local no rebotado."""
+    if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "dispatch"):
+        return False
+    receptor = nodo.func.value
+    return _es_self_tool_dispatcher(receptor) or (
+        isinstance(receptor, ast.Name) and receptor.id in alias_locales
     )
 
-    # ``tool_name`` sólo puede aparecer como argumento de un ``.dispatch(...)``.
+
+def _errores_dispatch(fn: ast.AsyncFunctionDef | ast.FunctionDef) -> list[str]:
+    """Analizador completo de la frontera de ``dispatch_tool``."""
+    alias = _alias_locales_del_dispatcher(fn)
+    llamadas = [nodo for nodo in ast.walk(fn) if _delega_al_dispatcher(nodo, alias)]
+    errores: list[str] = []
+    if not llamadas:
+        errores.append("sin delegación a _tool_dispatcher.dispatch")
+
     permitidos: set[int] = set()
-    for llamada in llamadas_dispatch:
+    for llamada in llamadas:
         for arg in llamada.args:
             real = arg.value if isinstance(arg, ast.Starred) else arg
             if isinstance(real, ast.Name) and real.id == "tool_name":
@@ -488,65 +313,129 @@ def test_dispatch_tool_sigue_delegando() -> None:
         for kw in llamada.keywords:
             if isinstance(kw.value, ast.Name) and kw.value.id == "tool_name":
                 permitidos.add(id(kw.value))
-    fuera = [n for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id == "tool_name" and id(n) not in permitidos]
-    assert not fuera, (
-        f"dispatch_tool usa tool_name fuera de la delegación ({len(fuera)} referencia(s) "
-        "en match/if/for/subscript/getattr/except…). tool_name sólo debe fluir como "
-        "argumento a _tool_dispatcher.dispatch(...); la selección de estrategia por "
-        "tool_name es responsabilidad del OrchestrationToolDispatcher, no del Supervisor."
+
+    fuera = [
+        nodo
+        for nodo in ast.walk(fn)
+        if isinstance(nodo, ast.Name) and nodo.id == "tool_name" and id(nodo) not in permitidos
+    ]
+    if fuera:
+        errores.append(f"tool_name fuera de delegación: {len(fuera)}")
+    return errores
+
+
+def _funcion_sintetica(fuente: str) -> ast.AsyncFunctionDef | ast.FunctionDef:
+    """Parsea una única función sintética para mutation tests end-to-end."""
+    arbol = ast.parse(fuente)
+    fn = arbol.body[0]
+    assert isinstance(fn, (ast.AsyncFunctionDef, ast.FunctionDef))
+    return fn
+
+
+def test_guardrail_ancla_sobre_la_clase_supervisor() -> None:
+    """El AST corresponde al archivo donde vive ``SupervisorAgent`` hoy."""
+    fuente = inspect.getsourcefile(SupervisorAgent)
+    assert fuente is not None and Path(fuente) == _SUPERVISOR_SRC
+    assert _clase_supervisor().name == "SupervisorAgent"
+
+
+def test_no_importa_dominio_de_herramientas() -> None:
+    """La capa de dominio sólo cruza mediante el allowlist de DTOs declarado."""
+    ofensores = _ofensores_imports(_SUPERVISOR_AST)
+    assert not ofensores, f"supervisor.py importó dominio: {sorted(ofensores)}"
+
+
+def test_allowlist_de_dtos_sin_entradas_muertas() -> None:
+    """El allowlist no acumula excepciones que ya no se usan."""
+    importados: set[str] = set()
+    for nodo in ast.walk(_SUPERVISOR_AST):
+        if isinstance(nodo, ast.ImportFrom) and _es_modulo_de_dominio(_resolver_modulo(nodo)):
+            importados.update(alias.name for alias in nodo.names)
+    muertas = _DTOS_PERMITIDOS_DE_DOMINIO - importados
+    assert not muertas, f"DTOs permitidos pero no importados: {sorted(muertas)}"
+
+
+def test_no_invoca_dominio_de_herramientas() -> None:
+    """El Supervisor no construye ni invoca dominio de herramientas."""
+    ofensores = _ofensores_invocaciones(_SUPERVISOR_AST)
+    assert not ofensores, f"supervisor.py invocó/construyó dominio: {sorted(ofensores)}"
+
+
+def test_no_pasa_self_como_service_locator() -> None:
+    """El Supervisor no entrega ``self`` ni accesores internos a colaboradores."""
+    ofensores = _ofensores_service_locator(_SUPERVISOR_AST)
+    assert not ofensores, f"supervisor.py expone self a: {sorted(ofensores)}"
+
+
+def test_dispatch_tool_sigue_delegando() -> None:
+    """``dispatch_tool`` delega y ``tool_name`` no participa en routing inline."""
+    fn = _metodo_de_clase(_clase_supervisor(), "dispatch_tool")
+    assert fn is not None, "desapareció SupervisorAgent.dispatch_tool"
+    errores = _errores_dispatch(fn)
+    assert not errores, f"dispatch_tool reabsorbió routing: {errores}"
+
+
+def test_mutantes_de_import_ejercitan_el_analizador_completo() -> None:
+    """M9/M10/M13: imports por alias y APIs dinámicas fallan end-to-end."""
+    mutantes = (
+        "from sky_claw.local.assets import AssetConflictDetector as Detector\nDetector()\n",
+        "import importlib\nimportlib.import_module('sky_claw.local.plugins')\n",
+        "from importlib import import_module\nimport_module('sky_claw.local.plugins')\n",
+        "from importlib import import_module as load_module\nload_module('sky_claw.local.plugins')\n",
     )
+    for fuente in mutantes:
+        arbol = ast.parse(fuente)
+        assert _ofensores_imports(arbol) or _ofensores_invocaciones(arbol), fuente
 
 
-# --- Anclas de regresión de los helpers de frontera (review Codex #553) --------
-# Fijan que las cuatro vías de bypass que reportó Codex quedan detectadas, contra
-# fragmentos SINTÉTICOS (no dependen de que supervisor.py hoy las tenga).
+def test_alias_directo_de_constructor_ejercita_el_analizador_completo() -> None:
+    """M14: un constructor de dominio reasignado a nombre neutro sigue prohibido."""
+    arbol = ast.parse(
+        "from sky_claw.local.assets import AssetConflictDetector\n"
+        "Detector = AssetConflictDetector\n"
+        "Detector()\n"
+    )
+    assert _ofensores_invocaciones(arbol)
 
 
-def test_import_dinamico_de_dominio_se_detecta() -> None:
-    """Codex #553: import dinámico con string constante de dominio es reingreso."""
-    for fuente in (
-        'importlib.import_module("sky_claw.local.plugins")',
-        '__import__("sky_claw.local.xedit.runner")',
+def test_mutantes_service_locator_ejercitan_el_analizador_completo() -> None:
+    """M11/M16: closures, contenedores y accessors ligados de self fallan end-to-end."""
+    for expresion in (
+        "consume(lambda: self)",
+        "consume({'supervisor': self})",
+        "consume(self.__dict__.copy())",
+        "consume(self.__getattribute__)",
     ):
-        ruta = _modulo_de_import_dinamico(ast.parse(fuente, mode="eval").body)
-        assert ruta is not None and _es_modulo_de_dominio(ruta), fuente
-    # Un import dinámico NO-dominio se resuelve pero no se marca como ofensor.
-    ruta_no_dominio = _modulo_de_import_dinamico(ast.parse('importlib.import_module("json")', mode="eval").body)
-    assert ruta_no_dominio == "json" and not _es_modulo_de_dominio(ruta_no_dominio)
-    # Una ruta NO constante no se resuelve (no es reingreso naive).
-    assert _modulo_de_import_dinamico(ast.parse("importlib.import_module(nombre)", mode="eval").body) is None
+        fn = _funcion_sintetica(f"def f(self):\n    {expresion}\n")
+        assert _ofensores_service_locator(fn), expresion
+    permitido = _funcion_sintetica("def f(self):\n    consume(self._tool_dispatcher)\n")
+    assert not _ofensores_service_locator(permitido)
 
 
-def test_alias_de_simbolo_de_dominio_construible_se_normaliza() -> None:
-    """Codex #553: ``AssetConflictDetector as Detector`` liga un símbolo construible."""
-    arbol = ast.parse("from sky_claw.local.assets import AssetConflictDetector as Detector, AssetConflictReport as Rep")
-    # Sólo el símbolo construible-de-dominio (Detector) se mapea; el DTO puro (Rep) no.
-    assert _alias_de_simbolos_de_dominio(arbol) == {"Detector": "AssetConflictDetector"}
-
-
-def test_captura_self_anidado_atrapa_contenedores_y_closures() -> None:
-    """Codex #553: ``self`` envuelto en lambda/dict/list expone el Supervisor entero."""
-    for fuente in ("lambda: self", "{'s': self}", "[self]", "(self,)", "self", "vars(self)"):
-        assert _captura_self_anidado(ast.parse(fuente, mode="eval").body), fuente
-    # self.<colaborador> NO es captura: ese self es base de un Attribute (inyección).
-    for permitido in ("self.foo", "self.foo.bar", "self._tool_dispatcher"):
-        assert not _captura_self_anidado(ast.parse(permitido, mode="eval").body), permitido
-
-
-def test_alias_local_del_dispatcher_distingue_colaboradores() -> None:
-    """Codex #553: sólo un alias local de ``self._tool_dispatcher`` cuenta como delegación."""
-    fn = ast.parse(
+def test_mutantes_dispatch_ejercitan_el_analizador_completo() -> None:
+    """M4/M5/M12/M15 y M8: routing/rebinding falla; alias equivalente pasa."""
+    mutantes = (
+        "async def dispatch_tool(self, tool_name, payload):\n"
+        "    if tool_name == 'x':\n"
+        "        return {}\n"
+        "    return await self._tool_dispatcher.dispatch(tool_name, payload)\n",
+        "async def dispatch_tool(self, tool_name, payload):\n"
+        "    table.get(tool_name)\n"
+        "    return await self._tool_dispatcher.dispatch(tool_name, payload)\n",
+        "async def dispatch_tool(self, tool_name, payload):\n"
+        "    router = self._legacy_router\n"
+        "    return await router.dispatch(tool_name, payload)\n",
         "async def dispatch_tool(self, tool_name, payload):\n"
         "    d = self._tool_dispatcher\n"
-        "    router = self._legacy_router\n"
-        "    router.dispatch(tool_name, payload)\n"
-        "    return d.dispatch(tool_name, payload)\n"
-    ).body[0]
-    alias = _alias_locales_del_dispatcher(fn)
-    assert alias == {"d"}  # router (otro colaborador) NO entra
-    resultados = {
-        ast.unparse(nodo.func): _delega_al_dispatcher(nodo, alias)
-        for nodo in ast.walk(fn)
-        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "dispatch"
-    }
-    assert resultados == {"d.dispatch": True, "router.dispatch": False}
+        "    d = self._legacy_router\n"
+        "    return await d.dispatch(tool_name, payload)\n",
+    )
+    for fuente in mutantes:
+        assert _errores_dispatch(_funcion_sintetica(fuente)), fuente
+
+    equivalente = _funcion_sintetica(
+        "async def dispatch_tool(self, tool_name, payload):\n"
+        "    d = self._tool_dispatcher\n"
+        "    return await d.dispatch(tool_name, payload)\n"
+    )
+    assert not _errores_dispatch(equivalente)
