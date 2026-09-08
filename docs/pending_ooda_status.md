@@ -403,7 +403,7 @@ agotado. Lo pendiente se divide en cuatro clases:
    éxito, error, timeout y cancelación;
 2. **aislamiento pendiente:** T-27 sigue abierto hasta que Pandora, DynDOLOD y
    Wrye Bash lean y ejecuten dentro del sandbox USVFS con diff/promoción;
-3. **deuda incremental no bloqueante:** T-10/T-11/T-12, F9 y los residuales de
+3. **deuda incremental no bloqueante:** T-10/T-11/T-12 y los residuales de
    bajo valor;
 4. **decisión de diseño pendiente, bloqueante solo para su propio alcance:**
    "Preset de TexGen desvía `OutputPath`" (arriba). No encaja en las otras
