@@ -68,8 +68,9 @@ def _dev_no_auth_enabled() -> bool:
 def _normalize_chat_text(value: object) -> str | None:
     """Normaliza texto externo sin convertir valores de otros tipos.
 
-    HTTP y WebSocket comparten este boundary para que números, listas, objetos
-    o ``null`` nunca se conviertan accidentalmente en prompts válidos.
+    HTTP y WebSocket comparten esta frontera de entrada para que números,
+    listas, objetos o ``null`` nunca se conviertan accidentalmente en prompts
+    válidos.
     """
     if not isinstance(value, str):
         return None
