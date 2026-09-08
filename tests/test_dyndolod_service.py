@@ -5356,9 +5356,7 @@ async def test_texgen_exitoso_sin_output_atribuible_no_lanza_dyndolod(
     assert any("output_path" in e for e in result.errors), result.errors
     # El log del gate nombra la causa real (salida no atribuible), no la falsa
     # (empaquetado fallido, que nunca ocurrió).
-    gates: list[logging.LogRecord] = [
-        r for r in _records_de_fallo(caplog) if "DynDOLOD no se lanza" in r.getMessage()
-    ]
+    gates: list[logging.LogRecord] = [r for r in _records_de_fallo(caplog) if "DynDOLOD no se lanza" in r.getMessage()]
     assert gates, "el corte del pipeline no emitió el registro del gate"
     assert "salida atribuible" in gates[0].getMessage(), (
         f"la razón del gate es falsa: {gates[0].getMessage()!r} — el empaquetado nunca se intentó"

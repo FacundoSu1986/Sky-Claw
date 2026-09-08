@@ -1525,9 +1525,7 @@ class DynDOLODRunner:
             elif not handoff_verificado:
                 dyndolod_bloqueado_por = f"la salida de TexGen no es visible en {self._config.data_dir}"
         elif not handoff_verificado:
-            dyndolod_bloqueado_por = (
-                f"el '{self.TEXGEN_MOD_NAME}' preservado no es visible en {self._config.data_dir}"
-            )
+            dyndolod_bloqueado_por = f"el '{self.TEXGEN_MOD_NAME}' preservado no es visible en {self._config.data_dir}"
 
         if dyndolod_bloqueado_por is not None:
             logger.error(
