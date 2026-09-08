@@ -32,11 +32,15 @@ async def client(router, session, aiohttp_client, monkeypatch):
     return await aiohttp_client(app)
 
 
-@pytest.mark.parametrize("payload", [[], None, 123, "texto", True])
+@pytest.mark.parametrize("raw_json", ["[]", "null", "123", '"texto"', "true"])
 @pytest.mark.asyncio
-async def test_http_rechaza_json_que_no_es_objeto(client, router, payload) -> None:
+async def test_http_rechaza_json_que_no_es_objeto(client, router, raw_json) -> None:
     # Arrange / Act
-    response = await client.post("/api/chat", json=payload)
+    response = await client.post(
+        "/api/chat",
+        data=raw_json,
+        headers={"Content-Type": "application/json"},
+    )
 
     # Assert
     assert response.status == 400
@@ -77,7 +81,23 @@ async def test_http_normaliza_espacios_de_un_string_valido(client, router) -> No
     assert kwargs["chat_id"] == "web-session"
 
 
-@pytest.mark.parametrize("payload", [[], 7, "texto", True])
+@pytest.mark.parametrize("root", [[], None, 7, "texto", True])
+@pytest.mark.asyncio
+async def test_ws_rechaza_json_raiz_no_objeto(router, session, root) -> None:
+    # Arrange
+    web_app = WebApp(router=router, session=session)
+    ws = MagicMock()
+    ws.send_json = AsyncMock()
+
+    # Act
+    await web_app._handle_ws_ui_message(ws, json.dumps(root))
+
+    # Assert
+    router.chat.assert_not_awaited()
+    ws.send_json.assert_awaited_once()
+
+
+@pytest.mark.parametrize("payload", [[], None, 7, "texto", True])
 @pytest.mark.asyncio
 async def test_ws_rechaza_payload_no_objeto_sin_romper_el_handler(router, session, payload) -> None:
     # Arrange
