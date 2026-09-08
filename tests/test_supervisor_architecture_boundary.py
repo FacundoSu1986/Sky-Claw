@@ -77,17 +77,18 @@ def _es_dominio_por_nombre(nombre: str) -> bool:
     return any(sub in nombre for sub in _SUBCADENAS_DE_DOMINIO) or nombre in _DOMINIO_EXPLICITO_INVOCAR
 
 
-def _facades_publicas_de_dominio() -> frozenset[str]:
+def _facades_publicas_de_dominio(clase: type = SupervisorAgent) -> frozenset[str]:
     """Deriva properties públicas cuyo retorno es un tipo de dominio construible."""
     nombres: set[str] = set()
-    for nombre, miembro in vars(SupervisorAgent).items():
+    for nombre, miembro in vars(clase).items():
         if not isinstance(miembro, property) or miembro.fget is None:
             continue
         retorno = miembro.fget.__annotations__.get("return")
         if retorno is None:
             continue
         texto = retorno if isinstance(retorno, str) else getattr(retorno, "__name__", str(retorno))
-        if _es_dominio_por_nombre(texto):
+        identificadores = re.findall(r"\b[A-Z][A-Za-z0-9_]*\b", texto)
+        if any(_es_dominio_por_nombre(ident) for ident in identificadores):
             nombres.add(nombre)
     return frozenset(nombres)
 
@@ -98,6 +99,11 @@ _FACADES_PUBLICAS_DE_DOMINIO = _facades_publicas_de_dominio()
 def _es_modulo_de_dominio(ruta: str) -> bool:
     """Identifica la raíz de dominio, sus submódulos y extras cerrados."""
     return ruta == _RAIZ_DOMINIO or ruta.startswith(_RAIZ_DOMINIO + ".") or ruta in _MODULOS_DE_DOMINIO_EXTRA
+
+
+def _es_importlib(ruta: str) -> bool:
+    """Identifica el paquete importlib y cualquiera de sus submódulos."""
+    return ruta == "importlib" or ruta.startswith("importlib.")
 
 
 def _resolver_modulo(nodo: ast.ImportFrom) -> str:
@@ -121,14 +127,14 @@ def _ofensores_imports(arbol: ast.Module) -> set[str]:
     for nodo in ast.walk(arbol):
         if isinstance(nodo, ast.Import):
             for alias in nodo.names:
-                if alias.name == "importlib" or _es_modulo_de_dominio(alias.name):
+                if _es_importlib(alias.name) or _es_modulo_de_dominio(alias.name):
                     ofensores.add(alias.name)
             continue
 
         if isinstance(nodo, ast.ImportFrom):
             modulo = _resolver_modulo(nodo)
             for alias in nodo.names:
-                if modulo == "importlib" and alias.name == "import_module":
+                if _es_importlib(modulo):
                     ofensores.add(f"{modulo}.{alias.name}")
                     continue
                 if modulo == "builtins" and alias.name == "__import__":
@@ -154,11 +160,18 @@ def _bindings_construibles_de_dominio(arbol: ast.Module) -> frozenset[str]:
     """Bindings importados cuyo uso ejecutable reabsorbería dominio."""
     bindings: set[str] = set()
     for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            for alias in nodo.names:
+                if _es_modulo_de_dominio(alias.name):
+                    bindings.add(alias.asname or alias.name)
+            continue
         if not isinstance(nodo, ast.ImportFrom):
             continue
         modulo = _resolver_modulo(nodo)
         for alias in nodo.names:
-            if _es_modulo_de_dominio(modulo) and _es_dominio_por_nombre(alias.name):
+            if _es_modulo_de_dominio(modulo) and (
+                _es_dominio_por_nombre(alias.name) or alias.name not in _DTOS_PERMITIDOS_DE_DOMINIO
+            ):
                 bindings.add(alias.asname or alias.name)
     return frozenset(bindings)
 
@@ -180,10 +193,12 @@ def _ofensores_invocaciones(arbol: ast.Module) -> set[str]:
     for nodo in ast.walk(arbol):
         if isinstance(nodo, (ast.Assign, ast.AnnAssign)) and nodo.value is not None:
             valor = nodo.value
-            alias_de_constructor = isinstance(valor, ast.Name) and (
-                valor.id in bindings or _es_dominio_por_nombre(valor.id)
+            referencia_a_dominio = any(
+                (isinstance(sub, ast.Name) and (sub.id in bindings or _es_dominio_por_nombre(sub.id)))
+                or _es_self_facade_de_dominio(sub)
+                for sub in ast.walk(valor)
             )
-            if alias_de_constructor or _es_self_facade_de_dominio(valor):
+            if referencia_a_dominio:
                 destinos = _targets_nombre(nodo)
                 ofensores.add(f"alias de dominio: {','.join(destinos) or ast.unparse(nodo)}")
             continue
@@ -205,8 +220,6 @@ def _ofensores_invocaciones(arbol: ast.Module) -> set[str]:
         if _es_self_facade_de_dominio(receptor):
             ofensores.add(f"{ast.unparse(receptor)}.{nodo.func.attr}")
             continue
-        if _es_dominio_por_nombre(nodo.func.attr):
-            ofensores.add(nodo.func.attr)
     return ofensores
 
 
@@ -256,6 +269,15 @@ def _ofensores_service_locator(arbol: ast.AST) -> set[str]:
             objetivos = nodo.targets if isinstance(nodo, ast.Assign) else [nodo.target]
             for objetivo in objetivos:
                 ofensores.add(f"handoff self -> {ast.unparse(objetivo)}")
+            continue
+
+        if isinstance(nodo, ast.Return) and nodo.value is not None and _expone_self(nodo.value):
+            ofensores.add(f"return {ast.unparse(nodo.value)}")
+            continue
+
+        if isinstance(nodo, (ast.Yield, ast.YieldFrom)) and nodo.value is not None and _expone_self(nodo.value):
+            ofensores.add(f"yield {ast.unparse(nodo.value)}")
+            continue
     return ofensores
 
 
@@ -511,3 +533,41 @@ def test_regresiones_de_review_fresca() -> None:
             "    return await self._tool_dispatcher.dispatch(tool_name, payload_dict)\n"
         )
     )
+    # Carga dinámica bloqueada en importlib y todos sus submódulos (F1).
+    assert _ofensores_imports(ast.parse("import importlib.util\n"))
+    assert _ofensores_imports(ast.parse("from importlib.util import spec_from_file_location\n"))
+    # Handoffs directos de self vía return y yield bloqueados (F2).
+    assert _ofensores_service_locator(_funcion_sintetica("def f(self):\n    return self\n"))
+    assert _ofensores_service_locator(_funcion_sintetica("def f(self):\n    yield self\n"))
+
+    # Anotaciones compuestas de facades de dominio (F3).
+    def _crear_propiedad(retorno: str) -> property:
+        def getter(self: object) -> None:
+            pass
+
+        getter.__annotations__["return"] = retorno
+        return property(getter)
+
+    class _FachadasCompuestas:
+        detector_union = _crear_propiedad("AssetConflictDetector | None")
+        detector_opcional = _crear_propiedad("Optional[AssetConflictDetector]")
+        detector_cualificado = _crear_propiedad("assets.AssetConflictDetector")
+        no_dominio = _crear_propiedad("str | None")
+
+    assert _facades_publicas_de_dominio(_FachadasCompuestas) == {
+        "detector_union",
+        "detector_opcional",
+        "detector_cualificado",
+    }
+    # Alias de constructor en RHS compuesto bloqueado (F4).
+    assert _ofensores_invocaciones(
+        ast.parse(
+            "from sky_claw.local.assets import AssetConflictDetector\n"
+            "Detector = AssetConflictDetector if enabled else FakeDetector\n"
+            "Detector()\n"
+        )
+    )
+    # asyncio.Runner no se clasifica erróneamente como dominio (F5).
+    assert not _ofensores_invocaciones(ast.parse("import asyncio\nasyncio.Runner()\n"))
+    # Runner importado desde sky_claw.local.* sí se bloquea como dominio.
+    assert _ofensores_invocaciones(ast.parse("from sky_claw.local.xedit.runner import XEditRunner\nXEditRunner()\n"))
