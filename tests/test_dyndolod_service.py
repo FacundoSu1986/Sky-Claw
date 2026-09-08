@@ -5321,17 +5321,27 @@ async def test_texgen_excepcion_no_lanza_dyndolod(tmp_path: pathlib.Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_texgen_exitoso_sin_output_atribuible_no_lanza_dyndolod(tmp_path: pathlib.Path) -> None:
+async def test_texgen_exitoso_sin_output_atribuible_no_lanza_dyndolod(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """T3: `success=True` sin `output_path` es un éxito inconsistente — fail-closed.
 
     Sin la ruta de su salida no hay nada que empaquetar ni cuya visibilidad
     verificar: `success=True` no puede leerse como "la etapa quedó apta" si el
     output contractual no existe.
+
+    La RAZÓN del corte es parte del contrato, no decoración: el empaquetado ni
+    siquiera se intentó, así que el log del gate tiene que decir que la salida
+    no es atribuible — afirmar "el empaquetado falló" (lo que diría si el
+    chequeo de output_path no existiera) es el mensaje falso que esta familia de
+    gates vino a eliminar.
     """
     config, runner = _runner_texgen(tmp_path)
     texgen_result = ToolExecutionResult(True, "TexGen", 0, "", "", output_path=None)
     run_dyndolod = AsyncMock()
     with (
+        caplog.at_level(logging.WARNING),
         patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
         patch.object(runner, "run_dyndolod", run_dyndolod),
     ):
@@ -5344,6 +5354,15 @@ async def test_texgen_exitoso_sin_output_atribuible_no_lanza_dyndolod(tmp_path: 
     assert result.texgen_mod_path is None
     # Accionable: el error tiene que nombrar el output faltante, no un genérico.
     assert any("output_path" in e for e in result.errors), result.errors
+    # El log del gate nombra la causa real (salida no atribuible), no la falsa
+    # (empaquetado fallido, que nunca ocurrió).
+    gates: list[logging.LogRecord] = [
+        r for r in _records_de_fallo(caplog) if "DynDOLOD no se lanza" in r.getMessage()
+    ]
+    assert gates, "el corte del pipeline no emitió el registro del gate"
+    assert "salida atribuible" in gates[0].getMessage(), (
+        f"la razón del gate es falsa: {gates[0].getMessage()!r} — el empaquetado nunca se intentó"
+    )
 
 
 @pytest.mark.asyncio
