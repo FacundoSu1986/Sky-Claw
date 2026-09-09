@@ -36,6 +36,21 @@
 > (`sky_claw/app/orchestrator/record_conflict_scan.py`)— y contra el árbol actual de
 > `sky_claw/app/orchestrator/`. Pasa de **Abierto** a **Parcial**. **No** es una
 > reverificación integral del resto de la tabla.
+>
+> **Re-baseline parcial 2026-09-08 sobre `main` `cafea4d` (#552):** cubre
+> exclusivamente la fila `F9` (cierre del Strangler Fig de *dominio* de
+> `SupervisorAgent`), re-auditada contra el `main` actual con el stack de #552 ya
+> mergeado (`fix(mo2): resolve mods directory from instance metadata`), que amplió
+> el wiring del composition root (`mo2_install_dir` → `_make_path_resolver` →
+> `PathResolutionService`) **sin** reintroducir lógica de dominio, y congelada por
+> el guardrail arquitectónico de #553 (PR7). La auditoría final confirma
+> `DOMAIN_LOGIC = ∅` sobre las cuatro vías de reingreso (import de
+> `sky_claw.local.*`/parser, construcción de runners/analyzers/servicios de la
+> composición, `self` como service-locator, y routing inline de `tool_name` en
+> `dispatch_tool`), verificado por la mutation matrix M1–M16 sobre el `supervisor.py`
+> mergeado. La fila `F9` pasa de **Parcial** a **Cerrado** en su eje de dominio; el
+> re-baseline previo 2026-09-04 sobre `c4df8ce` queda como histórico. **No** es una
+> reverificación integral del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
@@ -82,7 +97,7 @@ confirmarlo contra código y tests.
 | F6 | Cerrado | #331 | — | auditoría de resiliencia #319 |
 | F7 | Cerrado | #343 | — | auditoría de resiliencia #319 |
 | F8 | Cerrado | #343 | — | auditoría de resiliencia #319 |
-| F9 | Parcial | #518, #520, #524, #526/#527, #540, #545 | Extraídos los seams de dominio PR1–PR6 del composition root de `SupervisorAgent` (dispatcher deps tipadas, composición de servicios, grass runtime deps, asset conflict scan, plugin-limit y —desde #545 mergeado— `RecordConflictScanner` para `scan_record_conflicts`); la generación de Wrye Bash también quedó extraída a `WryeBashPipelineService`. De las fachadas que restan en el supervisor hay que distinguir dos grupos, verificados contra el código: (a) `asset_detector` y `scan_record_conflicts` tienen callers productivos reales — la GUI accede a `runtime.supervisor.asset_detector` (`sky_claw/app/gui/sky_claw_gui.py:808`) y llama `runtime.supervisor.scan_record_conflicts()` (`sky_claw/app/gui/sky_claw_gui.py:860`); (b) `scan_asset_conflicts`/`scan_asset_conflicts_json` y `execute_wrye_bash_pipeline` no tienen caller productivo por la fachada — el path productivo del dispatcher se cablea directo desde los seams extraídos (`asset_conflict_scanner.scan`/`.scan_json` en `supervisor.py`; `build_wrye_bash_pipeline(service=...)` en la composition root) y esas fachadas se conservan sobre todo para que tests/harness BDD las monkeypatcheen con late-binding (`supervisor.py:537`). En ambos grupos las fachadas delegan en los seams y no requieren extracción. Falta el cierre del composition root sobre las responsabilidades de lifecycle/UI/rollback/HITL, que la auditoría #319 cedió al trabajo de lifecycle y quedan fuera del roadmap de seams de dominio | `test_dispatcher_dependencies.py`, `test_orchestration_composition.py`, `test_grass_runtime_deps_provider.py`, `test_asset_conflict_scan.py`, `test_plugin_limit_guard.py`, `test_record_conflict_scan_wiring.py`, `test_scan_record_conflicts.py` |
+| F9 | Cerrado | #518, #520, #524, #526/#527, #540, #545, #553 | **Strangler Fig de dominio: cerrado** con PR7/#553. PR1–PR6 (#518, #520, #524, #526/#527, #540, #545) extrajeron los seams de dominio del composition root de `SupervisorAgent`: dispatcher deps tipadas, composición de servicios, grass runtime deps, asset conflict scan, plugin-limit y —desde #545— `RecordConflictScanner` para `scan_record_conflicts`; la generación de Wrye Bash quedó extraída a `WryeBashPipelineService`. #553 (PR7) no extrae un séptimo seam —ya no queda dominio residual— sino que **congela la frontera** con un guardrail que enumera por AST la familia de reingresos (import de `sky_claw.local.*`/parser, construcción de runners/analyzers/servicios de la composición, `self` como service-locator, routing inline de `tool_name` en `dispatch_tool`), anclado sobre la CLASE `SupervisorAgent` vía `inspect.getsourcefile`. La re-auditoría final sobre `main` `cafea4d` (post-#552, que amplió el wiring `mo2_install_dir` → `PathResolutionService` sin reintroducir dominio) confirma `DOMAIN_LOGIC = ∅`, verificado por la mutation matrix M1–M16. Las fachadas que restan delegan en los seams y no son dominio: (a) `asset_detector`/`scan_record_conflicts` tienen callers productivos reales en la GUI (`sky_claw/app/gui/sky_claw_gui.py:808` y `:860`); (b) `scan_asset_conflicts`/`scan_asset_conflicts_json` y `execute_wrye_bash_pipeline` conservan compatibilidad con tests/harness BDD (late-binding). **Fuera del roadmap de dominio** (no lo cierra #553, no es dominio): lifecycle/UI (`start`, demonios, bridges de evento/interfaz), rollback (`execute_rollback`/`get_rollback_manager`) y HITL siguen siendo responsabilidades legítimas del composition root; su rediseño (`LifecycleCoordinator`/rollback) es trabajo posterior que la auditoría #319 cedió al eje de lifecycle. `SupervisorAgent` **no** fue eliminado ni se le extrajo el lifecycle: conserva lifecycle, wiring de composición, bridges de evento/interfaz y fachadas de compatibilidad. | `test_supervisor_architecture_boundary.py` (guardrail de frontera: imports/invocación/service-locator/routing + ancla sobre la clase; mutation matrix M1–M16), `test_dispatcher_dependencies.py`, `test_orchestration_composition.py`, `test_grass_runtime_deps_provider.py`, `test_asset_conflict_scan.py`, `test_plugin_limit_guard.py`, `test_record_conflict_scan_wiring.py`, `test_scan_record_conflicts.py` |
 | F8 USVFS | Parcial | ADR 0007 y smoke `vfs-health` | Migrar runners restantes y completar smokes reales de cancelación, perfil y rollback | historial OODA, addendum F8 USVFS |
 | Detección de enlaces | Cerrado | #404 y #405 | — | `test_links.py` |
 | Borrado recursivo | Cerrado | #405 y #416 | — | `test_borrado_recursivo.py` |
@@ -392,7 +407,7 @@ agotado. Lo pendiente se divide en cuatro clases:
    éxito, error, timeout y cancelación;
 2. **aislamiento pendiente:** T-27 sigue abierto hasta que Pandora, DynDOLOD y
    Wrye Bash lean y ejecuten dentro del sandbox USVFS con diff/promoción;
-3. **deuda incremental no bloqueante:** T-10/T-11/T-12, F9 y los residuales de
+3. **deuda incremental no bloqueante:** T-10/T-11/T-12 y los residuales de
    bajo valor;
 4. **decisión de diseño pendiente, bloqueante solo para su propio alcance:**
    "Preset de TexGen desvía `OutputPath`" (arriba). No encaja en las otras
