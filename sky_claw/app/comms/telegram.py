@@ -577,7 +577,7 @@ class TelegramWebhook:
                 return web.Response(status=401, text="Unauthorized")
 
         try:
-            data: dict[str, Any] = await request.json()
+            data: Any = await request.json()
             await self.process_update(data)
         except (ValueError, TypeError):
             logger.warning("Invalid JSON in Telegram update")
@@ -586,17 +586,22 @@ class TelegramWebhook:
 
         return web.Response(status=200)
 
-    async def process_update(self, data: dict[str, Any]) -> None:
+    async def process_update(self, data: object) -> None:
         """Procesa un update de Telegram mediante el dispatcher autoritativo.
 
         Webhook y long polling usan esta misma ruta. La deduplicación y la
         autorización ocurren antes de enrutar mensajes o callbacks, de modo
-        que un callback no pueda eludir el límite HITL.
+        que un callback no pueda eludir el límite HITL. Los mensajes de chat
+        se validan por tipo antes de cualquier comando o despacho al LLM.
         """
         correlation_id_var.set(str(uuid.uuid4()))
+        if not isinstance(data, dict):
+            logger.warning("Telegram update rechazado: el JSON raíz debe ser un objeto")
+            return
+
         update_id = data.get("update_id")
-        if update_id is None:
-            logger.warning("Telegram update missing update_id")
+        if not isinstance(update_id, int) or isinstance(update_id, bool):
+            logger.warning("Telegram update missing or invalid update_id")
             return
 
         # Deduplication — Telegram re-sends if it doesn't get 200 fast enough.
@@ -614,13 +619,41 @@ class TelegramWebhook:
             await self._handle_callback_query(callback_query)
             return
 
-        # Extrae chat_id y texto del mensaje.
-        message = data.get("message", {})
-        text = message.get("text", "")
-        chat = message.get("chat", {})
-        chat_id = chat.get("id")
+        # Extrae y valida la forma mínima del mensaje antes de tocar strings.
+        message = data.get("message")
+        if message is None:
+            return
+        if not isinstance(message, dict):
+            logger.warning("Telegram update rechazado: message debe ser un objeto")
+            return
 
-        if not text or chat_id is None:
+        raw_text = message.get("text")
+        if not isinstance(raw_text, str):
+            logger.warning("Telegram update rechazado: message.text debe ser string")
+            return
+        text = raw_text.strip()
+        if not text:
+            return
+
+        chat = message.get("chat")
+        from_user = message.get("from")
+        reply_message = message.get("reply_to_message")
+        if not isinstance(chat, dict) or not isinstance(from_user, dict):
+            logger.warning("Telegram update rechazado: chat/from deben ser objetos")
+            return
+        if reply_message is not None and not isinstance(reply_message, dict):
+            logger.warning("Telegram update rechazado: reply_to_message debe ser objeto")
+            return
+
+        chat_id = chat.get("id")
+        sender_id = from_user.get("id")
+        if (
+            not isinstance(chat_id, int)
+            or isinstance(chat_id, bool)
+            or not isinstance(sender_id, int)
+            or isinstance(sender_id, bool)
+        ):
+            logger.warning("Telegram update rechazado: chat.id/from.id deben ser enteros")
             return
 
         if not self._validate_private_operator(message):
@@ -638,7 +671,7 @@ class TelegramWebhook:
                 return
 
         # Intercepta el comando de actualización.
-        if text.strip() == "/update_mods":
+        if text == "/update_mods":
             task = asyncio.create_task(self._handle_update_mods_command(chat_id))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
