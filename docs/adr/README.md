@@ -5,9 +5,10 @@
 >
 > **Audiencia:** desarrolladores, operadores y agentes.
 >
-> **Fuentes canónicas:** ADR 0001–0010 en este directorio.
+> **Fuentes canónicas:** ADR 0001–0011 en este directorio.
 >
-> **Última verificación:** 2026-08-26 sobre `origin/main` `faa1317d`.
+> **Última verificación:** 2026-09-09 sobre `origin/main` `5e5e9448`; el ADR 0011
+> entra como Propuesta junto al PR documental que lo agrega.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
@@ -19,6 +20,7 @@
 - [0008 — El KnowledgeCase](0008-knowledge-case.md)
 - [0009 — RV-GP1: Golden Protection Status](0009-runtime-vault-golden-protection-status.md)
 - [0010 — RV-GP2: Protect Golden / Golden Protection Apply](0010-runtime-vault-golden-protection-apply.md)
+- [0011 — DynDOLOD PR-2: external_work_root y binding de propiedad](0011-dyndolod-external-work-root.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.

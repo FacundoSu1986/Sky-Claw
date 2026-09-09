@@ -251,6 +251,16 @@ dejaría de ser candidata de nadie. Siguen ABIERTOS y bloqueados: cambian el
 La nomenclatura de v1 sigue siendo la correcta para ese trabajo: la evidencia
 T5-B fija la regla RELATIVA (`-o:X` → `X/textures`), no el valor de X.
 
+> **Referencia posterior a este re-baseline (2026-09-09):** el lifecycle y el
+> ownership del root externo de ese trabajo quedaron decididos en
+> [ADR 0011](../../adr/0011-dyndolod-external-work-root.md) —
+> `external_work_root` como preferencia persistente exclusiva por instancia,
+> identidad `binding_id` + evidencia `resource_binding`, y máquina de estados
+> del root A–G. Este roadmap conserva su baseline `f8e8a4f`; la descomposición
+> vigente de la implementación vive en el
+> [plan de resolución de PR-2](2026-09-09-dyndolod-pr2-resolution.md). El gate
+> de rig no cambia.
+
 Lo que T3 no cambia:
 
 **El preset es una restricción de diseño, no una nota al pie.** El rig midió que
