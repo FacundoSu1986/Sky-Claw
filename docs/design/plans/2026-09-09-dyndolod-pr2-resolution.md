@@ -46,8 +46,12 @@ DirectoryRollback, pytest; Windows y binarios reales para aceptación.
   detección/borrado link-aware (`sky_claw/app/security/links.py`,
   `is_link`/`link_kind`/`rmtree_link_aware`, anclada por `tests/test_links.py`),
   `PathValidator.validate` con `strict_symlink`, escritura atómica
-  temporal + `os.replace` (patrón de `Config.save()` y `local_config.py`),
-  `escribir_campo`/`guardar_config`/`persistir_campo` con merge-on-save.
+  temporal + `os.replace` (patrón de `Config.save()` y `local_config.py`;
+  `os.replace` sirve para actualizar un archivo propio, NO para la creación
+  single-winner del binding — para eso el árbol aún no tiene primitiva adecuada
+  y P0.1 la construye), maquinaria de locks distribuidos cross-process
+  (`test_distributed_locks.py`), `escribir_campo`/`guardar_config`/
+  `persistir_campo` con merge-on-save.
   El mecanismo de Known Folders **no existe** en el árbol: es construcción de P0.
 
 ### Evidencia externa localizada y revisada
@@ -103,11 +107,16 @@ para admisión, binding y transición; la derivación de outputs sigue en
 `output_targets.py`. No convertir el nuevo módulo en un segundo Config.
 
 **Contrato del binding (ADR 0011 §2.2–2.4):** `binding_id` UUID generado una vez
-al inicializar el root; `resource_binding` = evidencia canonicalizada
-(`game_path`, `mo2_instance_data_root`, `mo2_mods_path`); metadata
-`.sky-claw-binding.json` en el root, fuera de los subroots movibles, escrita
-atómicamente y creada single-winner; máquina de estados A–G de la spec, con
-rechazo fail-closed en D, E, F y G.
+al inicializar el root; `resource_binding` = objeto anidado con la evidencia
+canonicalizada (`game_path`, `mo2_instance_data_root`, `mo2_mods_path`);
+`config_path` NO pertenece al binding (schema v1 congelado, cerrado; campo
+fuera de schema = caso E fail-closed); metadata
+`.sky-claw-binding.json` en el root, fuera de los subroots movibles; escritura
+atómica con `os.replace` reservada a actualizaciones del binding propio, y
+**creación inicial single-winner no-reemplazante** (nunca `os.replace` para
+crear: el perdedor no reemplaza el archivo del ganador — lo relee, valida el
+`resource_binding` publicado y continúa sólo si es compatible); máquina de
+estados A–H de la spec, con rechazo fail-closed en D, E, F, G y H.
 
 **Tests:** `tests/test_local_config_persistencia.py`,
 `tests/test_path_resolution_service.py`,
@@ -116,11 +125,20 @@ rechazo fail-closed en D, E, F y G.
 
 - [ ] Escribir casos rojos: campo ausente, persistencia/reinicio/merge concurrente,
   raíz ajena (F), raíz solapada, enlaces, owner distinto y config copiada del
-  mismo owner, y **la máquina de estados A–G enumerada caso por caso** (un test
-  paramétrico que liste A–G, no una muestra).
+  mismo owner, y **la máquina de estados A–H enumerada caso por caso** (un test
+  paramétrico que liste A–H, no una muestra).
 - [ ] Single-winner del binding: dos inicializaciones concurrentes del mismo
-  root vacío producen exactamente un binding (o un ganador claro y un perdedor
-  fail-closed).
+  root vacío producen exactamente un binding, **con primitiva
+  no-reemplazante** (creación exclusiva, lock cross-process alrededor del
+  check + publish, o mecanismo equivalente con la propiedad demostrable):
+  el perdedor NO reemplaza el archivo del ganador — lo relee, valida el
+  `resource_binding` publicado y continúa sólo si es compatible. `os.replace`
+  queda reservado a actualizaciones del binding propio, nunca a la creación.
+- [ ] Caso H: mismo `resource_binding` ya tiene otro root activo → rechazo con
+  transición explícita. La detección es instalacional vía el estado durable de
+  coordinación (P0.2); este punto queda anclado con su test cuando ese estado
+  exista, y hasta entonces cualquier root con un binding compatible pero sin
+  registro de unicidad se trata fail-closed, no como caso C indistinto.
 - [ ] Metadata corrupta y schema desconocido → rechazo fail-closed (caso E).
 - [ ] Congelar el censo de constructores de resolver, incluido health CLI de
   `__main__.py`: comprobar que la ausencia del campo no rompe ese consumidor.
@@ -129,8 +147,14 @@ rechazo fail-closed en D, E, F y G.
   Registrar en sandbox solo la familia administrada y metadatos precisos
   necesarios; nunca un ancestro arbitrario ni toda una unidad.
 - [ ] Mecanismo de Known Folders prohibidos para la admisión: construirlo con
-  su test (identidades resueltas + `tempfile.gettempdir()` + perfil de usuario),
-  sin búsqueda de substrings y sin prometer detección universal de proveedores
+  su test parametrizado sobre el conjunto cerrado v1 de la ADR §2.7
+  (`Documents`, `Desktop`, `Downloads` — cada carpeta justificada en el ADR):
+  cada Known Folder contractual, resuelto por identificador con la API de
+  Known Folders de Windows (ruta efectiva vigente, incluidas redirecciones a
+  otros volúmenes), hace rechazar el `external_work_root`. El caso de prueba
+  incluye al menos una carpeta redirigida (p. ej. Documents en otro volumen o
+  en OneDrive). Sin búsqueda de substrings, sin derivar desde `%USERPROFILE%`
+  (no refleja redirecciones) y sin prometer detección universal de proveedores
   cloud.
 - [ ] Declarar el nuevo módulo workspace con typing estricto en `pyproject.toml`,
   como el reconciliador, en vez de heredar la exención general de tools.
@@ -170,6 +194,10 @@ es distinto del work root y no se deriva del cwd ni de una env var de staging.
 - [ ] Persistir referencia a la raíz activa y transición antes del cambio TOML.
   Testear interrupción en cada frontera y edición manual del TOML: no olvidar
   old root ni activar otro si hay backups/PENDING o no puede inspeccionarse.
+  Este estado durable de coordinación es también el que hace detectable el
+  caso H (unicidad de `external_work_root` activo por `resource_binding`,
+  instalacional): registrarlo con clave de `resource_binding` y probar que dos
+  roots con el mismo `resource_binding` no pueden quedar ambos activos.
 - [ ] Cambio de preferencia = aplicar en próximo arranque (ADR 0011 §2.5), sin
   hot-reload de AppContext/PathValidator/runner cache/reconciler/TX activas.
 - [ ] Confirmar verdes y revisión de wiring. P0 es requisito previo, no una
@@ -323,12 +351,24 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
 **Tests:** `test_rollback_reconciler.py`, `test_startup_recovery_order.py`,
 `test_orphan_evidence_producer_contract.py`, `test_dir_rollback.py`.
 
-- [ ] Rojo: igualdad exacta de dos roots crudos + dos mods + target legacy
-  reconciliable; detectar productores nuevos por introspección/AST.
-- [ ] Inyectar raíces desde el mismo layout/registro que el service. Mantener
-  legacy `textures` explícito; no mover ni borrar la familia histórica completa.
-  El root legacy `<game>/Sky-Claw/DynDOLOD` queda intacto (sin migrar, borrar,
-  mover ni adoptar).
+- [ ] Rojo: igualdad exacta de dos roots crudos + dos mods, con la familia de
+  targets separada por rol: los `ACTIVE_TARGET` (subroots del
+  `external_work_root`) como únicos destinos mutables de los productores
+  nuevos, y el `LEGACY_RECOVERY_ONLY_TARGET`
+  (`<game>/Sky-Claw/DynDOLOD/textures`) sólo en la superficie de recovery;
+  detectar productores nuevos por introspección/AST.
+- [ ] Recuperación legacy separada de la familia mutante: el startup recovery
+  puede descubrir backups legacy de versiones anteriores y restaurar
+  conservadoramente el destino exacto `<game>/Sky-Claw/DynDOLOD/textures`
+  cuando el contrato histórico lo exige y es inequívoco; ante ambigüedad
+  preserva ambos y exige intervención manual. Test explícito: **legacy
+  recovery puede restaurar un backup histórico, pero ninguna corrida nueva
+  usa, mueve ni adopta el legacy** — ni migrarlo, borrarlo, adoptarlo como
+  staging ni crear `DirectoryRollback` nuevos sobre él.
+- [ ] Inyectar raíces desde el mismo layout/registro que el service. No mover
+  ni borrar la familia histórica completa: el root legacy
+  `<game>/Sky-Claw/DynDOLOD` queda intacto salvo la restauración conservadora
+  de recovery descrita arriba.
 - [ ] Probar crash tras cada move-aside, tras mkdir y tras copia parcial; cubrir
   todos los targets y conservar ambigüedad cuando existen backup y destino.
 - [ ] Verde: startup no consume evidencia antes del handoff; edición de config
@@ -364,16 +404,20 @@ y afirma comportamiento/bytes. No basta comparar dos helpers que comparten error
 | T-PR2-18 | Cwd distintos, mismos recursos → dos procesos → exclusión real hasta recovery |
 | T-PR2-19 | Cambio root + crash/disco ausente → startup → conserva referencia vieja y bloquea activación |
 | T-PR2-20 | Volúmenes compartidos/distintos + fallo de copia/ENOSPC → rollback → backups íntegros |
-| T-PR2-21 | Estados de root A–G enumerados → inicializar/utilizar/rechazar según la tabla de la spec |
-| T-PR2-22 | Binding init concurrente single-winner + metadata corrupta → un binding o fail-closed |
+| T-PR2-21 | Estados de root A–H enumerados → inicializar/utilizar/rechazar según la tabla de la spec (H incluye doble activación del mismo `resource_binding`) |
+| T-PR2-22 | Dos procesos reales (o mecanismo equivalente cross-process, no sólo coroutines) inicializan el mismo root vacío → exactamente un binding publicado con primitiva no-reemplazante; el perdedor NO reemplaza el archivo del ganador: lo relee, valida el `resource_binding` y continúa sólo si es compatible; metadata corrupta → fail-closed |
+| T-PR2-23 | Backup legacy histórico → startup recovery → restaura el destino exacto `<game>/Sky-Claw/DynDOLOD/textures` o preserva ambos ante ambigüedad; y ningún productor nuevo declara el legacy: ninguna corrida nueva lo usa, mueve, adopta ni crea `DirectoryRollback` sobre él |
 
 T-PR2-14 enumera **familias**, no solo dos casos conocidos: consumidores de
 layout, emisores `-o:`, lanzadores, productores de move-aside y superficies de
 composición. Reutilizar los anclas existentes de familias de outputs, producers,
 runner correlacionado y constructores de resolver. Agregar un tercero debe romper
-el test hasta registrar su receta de comportamiento. T-PR2-21/22 anclan la
-máquina de estados y el single-winner del binding **enumerando**, en el estilo de
-`test_ritual_dispatch.py` y `test_db_connection_invariant.py`.
+el test hasta registrar su receta de comportamiento. T-PR2-21/22/23 anclan la
+máquina de estados, el single-winner del binding y la frontera del legacy
+**enumerando**, en el estilo de
+`test_ritual_dispatch.py` y `test_db_connection_invariant.py`. T-PR2-22 exige
+la propiedad entre **procesos** del SO: dos coroutines en un mismo proceso
+comparten locks y no demuestran cross-process.
 
 ## 7. Verificación y cierre
 

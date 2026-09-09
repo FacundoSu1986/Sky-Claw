@@ -6,7 +6,11 @@
 >
 > **Fuente canónica del diseño acordado:** archivos bajo `specs/` y `plans/`.
 >
-> **Última verificación del índice:** 2026-08-10 sobre `claude/remove-superpowers-reintroduction-ldo2eb` `87b778e4`.
+> **Última verificación del índice:** 2026-09-09 sobre el PR documental de
+> ADR 0011 (`docs/dyndolod-external-work-root`), que agrega las entradas
+> fechadas 2026-09-09. La verificación previa —2026-08-10 sobre
+> `claude/remove-superpowers-reintroduction-ldo2eb` `87b778e4`— queda como
+> **histórica**: no cubre esas entradas nuevas.
 
 Los archivos de este directorio explican una intención aprobada en su momento. No
 deben usarse como referencia runtime sin comprobar el código actual y los ADR

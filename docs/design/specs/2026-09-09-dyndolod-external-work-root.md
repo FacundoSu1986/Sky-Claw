@@ -40,17 +40,28 @@ de entorno y promesa de concurrencia — todas rechazadas, con el motivo.
 
 ## 2. Identidad y binding
 
-**La tupla de paths NO es identidad durable** (ADR 0011 §2.2). Se separan:
+**La tupla de paths NO es identidad durable** (ADR 0011 §2.2). Dos conceptos con
+significado congelado:
 
-- **`binding_id`** — UUID generado **una única vez** al inicializar un work root.
+- **`resource_binding`** — identifica los **recursos de la instancia lógica**
+  observada: `game_path`, `mo2_instance_data_root`, `mo2_mods_path`,
+  canonicalizados con las primitivas existentes (`resolve(strict=False)` no
+  estricto como `_canonicalizar` de `path_resolver.py`; comparación contra el
+  sandbox con `PathValidator`).
+- **`binding_id`** — UUID generado **una única vez** al inicializar un work
+  root; identifica el **ownership concreto** de ese `external_work_root`.
   Nunca por hash de paths; nunca hostname/usuario/SID.
-- **`resource_binding`** — evidencia de los recursos asociados al binding:
-  `game_path`, `mo2_instance_data_root`, `mo2_mods_path`, canonicalizados con las
-  primitivas existentes (`resolve(strict=False)` no estricto como
-  `_canonicalizar` de `path_resolver.py`; comparación contra el sandbox con
-  `PathValidator`).
 
-`config_path` se documenta como procedencia, **no** identidad. El perfil MO2 **no**
+**Regla de identidad:** dos configuraciones que resuelven el mismo
+`resource_binding` son la misma instancia lógica, y una misma instancia lógica
+**no puede tener dos `external_work_root` activos simultáneamente**. Cambiar de
+root exige una transición/rebind explícita; PR-2 NO implementa rebind automático
+(casos G y H de la máquina de estados). La detección/rechazo de "mismo
+`resource_binding` en dos roots" es instalacional: la provee el estado durable
+de coordinación de etapa 9 (prerrequisito P0.2 del plan), no el JSON local del
+binding, que sólo describe su propio root.
+
+El perfil MO2 **no**
 crea otro work root: los mods empaquetados se comparten entre perfiles de una
 instancia; cambiar perfil invalida el contexto del handoff según su contrato
 vigente y no reutiliza su evidencia.
@@ -67,27 +78,45 @@ repo: Sky-Claw ya usa estado con punto (`.skyclaw_backups`); la diferencia
 deliberada es que este binding vive dentro del root elegido por el usuario para
 que la propiedad viaje con el directorio.
 
-Schema mínimo:
+**Schema v1 congelado:**
 
 ```json
 {
   "schema_version": 1,
   "binding_id": "<uuid>",
-  "game_path": "<canonical>",
-  "mo2_instance_data_root": "<canonical>",
-  "mo2_mods_path": "<canonical>"
+  "resource_binding": {
+    "game_path": "<canonical>",
+    "mo2_instance_data_root": "<canonical>",
+    "mo2_mods_path": "<canonical>"
+  }
 }
 ```
 
-Sin metadata extra; sin timestamps. El writer **no se implementa acá**. La spec
-declara para la implementación futura:
+Los tres campos de evidencia viven **sólo** como objeto anidado
+`resource_binding`; no existen representaciones planas contractuales.
+`config_path` **NO pertenece al binding**: puede aparecer como procedencia en
+logs/diagnóstico fuera del archivo, nunca como metadata contractual. Política
+de campos extra, explícita: cualquier campo fuera de este schema (raíz o dentro
+de `resource_binding`) es schema desconocido → caso E, RECHAZAR fail-closed;
+extender el schema exige `schema_version` nueva y su ADR. Sin timestamps.
 
-- escritura **atómica** (temporal + `os.replace` en el mismo directorio, como
-  `Config.save()` y los serializadores de `local_config.py`);
-- creación inicial **single-winner** (dos inicializaciones concurrentes del mismo
-  root no pueden producir dos bindings);
+El writer **no se implementa acá**. La spec declara para la implementación
+futura:
+
+- creación inicial **single-winner no-reemplazante**: exactamente un proceso
+  publica el binding; el perdedor NO reemplaza el archivo del ganador — lo
+  relee, valida el binding publicado y continúa sólo si el `resource_binding`
+  publicado es compatible (si no, fail-closed). `os.replace()` por sí solo NO
+  provee esta propiedad: exige una primitiva adecuada (creación exclusiva,
+  lock cross-process alrededor del check + publish, u otro mecanismo
+  equivalente con la propiedad demostrable); T-PR2-22 la valida con dos
+  procesos reales o un mecanismo equivalente cross-process, no sólo coroutines;
+- escritura **atómica con `os.replace`** — sólo para actualizaciones donde
+  reemplazar es contractualmente válido (temporal + `os.replace` en el mismo
+  directorio, como `Config.save()` y los serializadores de `local_config.py`);
 - **nunca reescribir silenciosamente un binding ajeno**;
-- **metadata corrupta o schema desconocido = fail-closed**.
+- **metadata corrupta o schema desconocido = fail-closed** (caso E, incluye
+  campos fuera del schema v1).
 
 ## 4. Máquina de estados del root (normativa)
 
@@ -97,9 +126,14 @@ declara para la implementación futura:
 | B | Root existente y vacío, sin binding | Permitido inicializar |
 | C | Root con binding válido para los mismos recursos | Permitido utilizar |
 | D | Root no vacío, sin binding | **RECHAZAR** — no adoptar contenido automáticamente |
-| E | Metadata corrupta / schema desconocido | **RECHAZAR fail-closed** |
+| E | Metadata corrupta / schema desconocido (incluye cualquier campo fuera del schema v1) | **RECHAZAR fail-closed** |
 | F | Binding perteneciente a otros recursos | **RECHAZAR** |
 | G | Binding propio cuyo `resource_binding` ya no coincide con la resolución actual | **RECHAZAR** — requiere transición/rebind explícito; PR-2 NO implementa rebind automático |
+| H | Root con binding válido para los mismos recursos, pero ese `resource_binding` ya tiene otro `external_work_root` activo | **RECHAZAR** — requiere transición/rebind explícito, igual que G. Detección instalacional vía el estado durable de coordinación (P0.2 del plan), no vía el JSON local |
+
+C y F se resuelven por comparación exacta del `resource_binding` contra la
+resolución canonicalizada del arranque; H consulta además el estado de
+coordinación. No hay tercera vía ni degradación.
 
 ## 5. Cambio de preferencia
 
@@ -123,7 +157,12 @@ Propiedades de admisión (ADR 0011 §2.7):
 - puede vivir en otro volumen local (si admite rename y locks);
 - **no solapa en NINGUNA dirección** con: game; Data; SteamApps; MO2 install; MO2
   instance data root; profiles; mods; overwrite; DynDOLOD/TexGen install dirs;
-  TEMP; Windows Known Folders prohibidos según los mecanismos existentes;
+  TEMP (`tempfile.gettempdir()`); y el **conjunto cerrado de Windows Known
+  Folders prohibidos**, v1: `Documents`, `Desktop`, `Downloads` — resueltos por
+  identificador con la API de Known Folders de Windows (ruta efectiva vigente,
+  incluidas redirecciones a otros volúmenes), nunca derivados de
+  `%USERPROFILE%` ni por substrings. Justificación y cierre del conjunto en
+  [ADR 0011 §2.7](../../adr/0011-dyndolod-external-work-root.md);
 - **no amplía `PathValidator`** autorizando toda una unidad o ancestro amplio:
   sólo el root admitido + destinos derivados (familia y metadatos);
 - sin búsqueda ingenua de substrings (`"Steam"`, `"OneDrive"`) para establecer
@@ -139,7 +178,9 @@ La implementación reutiliza las primitivas existentes
 (`sky_claw/app/security/links.py` — `is_link`/`link_kind`/`rmtree_link_aware` — y
 `PathValidator.validate` con `strict_symlink`) antes de inventar un subsistema.
 El mecanismo de Known Folders **no existe hoy** en el árbol: su construcción es
-requisito de P0 con su test, no una primitiva que se finja tener.
+requisito de P0 con el conjunto congelado de la ADR §2.7 y su test parametrizado
+(cada Known Folder contractual, incluida una ruta redirigida a otro volumen, →
+`external_work_root` rechazado), no una primitiva que se finja tener.
 
 ## 7. Layout
 
@@ -169,11 +210,28 @@ congelan como constantes en PR-2.
 <game>/Sky-Claw/DynDOLOD
 ```
 
-PR-2 **NO lo migra, NO lo borra, NO lo mueve, NO lo adopta automáticamente**.
-Queda intacto. Nota operativa: puede contener GB de generaciones anteriores; su
-limpieza es otro cambio, si alguna vez se decide (inventario explícito, nunca
-barrido por sufijo parecido). El reconciliador conserva el target legacy
-`<root>/textures` durante la transición.
+**Distinción conceptual de targets** (los nombres de implementación se deciden
+en PR-2): los subroots del `external_work_root` (§7) son los
+`ACTIVE_TARGET`; el destino histórico del root legacy,
+`<game>/Sky-Claw/DynDOLOD/textures` — ruta completa siempre nombrada así, nunca
+`<root>/textures` (ambiguo entre los dos mundos) —, es
+`LEGACY_RECOVERY_ONLY_TARGET`.
+
+PR-2 **NO lo migra, NO lo borra, NO lo mueve, NO lo adopta automáticamente como
+staging nuevo, y NO crea nuevos `DirectoryRollback` sobre él**. Ninguna corrida
+nueva usa, mueve ni adopta el árbol legacy. Nota operativa: puede contener GB de
+generaciones anteriores; su limpieza es otro cambio, si alguna vez se decide
+(inventario explícito, nunca barrido por sufijo parecido).
+
+El rol recovery-only es la ÚNICA superficie de escritura admitida sobre ese
+árbol, y es restaurativa, no productiva: el startup recovery SÍ puede descubrir
+backups legacy creados por versiones anteriores y restaurar conservadoramente
+el destino exacto `<game>/Sky-Claw/DynDOLOD/textures` cuando el contrato
+histórico de recovery lo exige y es inequívoco; ante ambigüedad preserva ambos
+(backup y destino) y exige intervención manual. Los productores activos de la
+familia nueva declaran sólo sus `ACTIVE_TARGET`; la reconciliación de backups
+legacy queda separada de la familia de move-aside mutante (el plan P2.3 lo
+congela con su test).
 
 ## 9. Concurrencia
 
@@ -187,7 +245,11 @@ NO GARANTIZADA POR PR-2
 
 Motivo: exe, INI, logs, Data, mods y otros recursos físicos pueden seguir
 compartidos. No se inventa locking global adicional en este PR documental. La
-creación inicial del binding debe ser single-winner atómica en la implementación.
+creación inicial del binding debe ser **single-winner no-reemplazante** en la
+implementación (§3): `os.replace()` por sí solo no la provee. Una misma
+instancia lógica (mismo `resource_binding`) no puede tener dos
+`external_work_root` activos: el caso H de la máquina de estados lo rechaza vía
+el estado durable de coordinación (P0.2 del plan).
 El dominio de coordinación de etapa 9 (serialización por usuario, estado durable
 independiente de cwd) sigue siendo prerrequisito P0 del plan — este documento no
 lo promete resuelto.
@@ -226,7 +288,10 @@ conserva el alcance transaccional actual (no descartar el backup TexGen si un
 fallo de DynDOLOD debe restaurarlo); el corte F1 mantiene solo el mod TexGen; la
 TX queda PENDING; `mutation_coverage_complete` sigue en `False`. El reconciliador
 declara los dos roots crudos y los dos mods por igualdad exacta con los
-productores reales.
+productores reales. Bajo PR-2 esos productores apuntan a los `ACTIVE_TARGET`
+del `external_work_root` (§7); el target legacy (§8) sólo entra a esa
+declaración como `LEGACY_RECOVERY_ONLY_TARGET`, en la superficie de recovery de
+arranque y nunca como destino de una corrida nueva.
 
 **Retención:** la generación actual y los backups necesarios hasta
 commit/rollback; sin histórico ilimitado ni purga por antigüedad; ENOSPC produce
@@ -260,7 +325,7 @@ pero **no demuestra** cómo se comporta la versión del binario del rig.
 La corrección manual del campo Output es admisible como procedimiento asistido
 documentado, con preset rancio presente al iniciar y evidencia antes/después; no
 se registra como PASS hasta ejecutar y revisar ambas corridas. PR-2 preserva
-#552, los cuatro prerrequisitos #567, flags, F1, resume, taxonomía del log y
-freshness. No implementa UIA, limpieza de firmas, soporte ZIP ni soluciona
-activación MO2 por copiar archivos a mods. Cada cierre exige su evidencia propia
-en el [plan](../plans/2026-09-09-dyndolod-pr2-resolution.md).
+el contrato #552, los cuatro prerrequisitos #567, flags, F1, resume, taxonomía
+del log y freshness. No implementa UIA, limpieza de firmas, soporte ZIP ni
+soluciona activación MO2 por copiar archivos a mods. Cada cierre exige su
+evidencia propia en el [plan](../plans/2026-09-09-dyndolod-pr2-resolution.md).
