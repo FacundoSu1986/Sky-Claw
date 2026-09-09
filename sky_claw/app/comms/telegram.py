@@ -660,9 +660,11 @@ class TelegramWebhook:
             logger.warning("Telegram update rechazado: el operador debe usar su chat privado autorizado.")
             return
 
-        # Intercepta comandos HITL antes de enrutar al LLM.
+        # Intercepta comandos HITL antes de enrutar al LLM. El parser recibe el
+        # texto original para conservar el request_id opaco; sólo el chat normal
+        # usa la versión normalizada.
         if self._hitl is not None:
-            parsed = _parse_hitl_command(text)
+            parsed = _parse_hitl_command(raw_text)
             if parsed is not None:
                 approved, request_id = parsed
                 task = asyncio.create_task(self._handle_hitl_command(chat_id, approved, request_id, update_id, message))
