@@ -198,6 +198,15 @@ class TelegramPolling:
 
             results = data.get("result", [])
             for update in results:
+                # Los elementos de `result` también tienen contrato: un
+                # no-objeto reventaría en update.get() y mataría el loop antes
+                # de despachar los updates válidos posteriores del lote. No va
+                # a la DLQ porque la cola es de dicts y no representa un
+                # update; el log deja la traza del elemento rechazado.
+                if not isinstance(update, dict):
+                    logger.error("Elemento de getUpdates no es un objeto: %r. Descartado.", update)
+                    continue
+
                 update_id = update.get("update_id")
                 if not isinstance(update_id, int) or isinstance(update_id, bool):
                     # Un update_id malformado no avanza el offset: si se
