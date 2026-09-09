@@ -187,19 +187,29 @@ def test_inventario_de_productores_congelado_por_igualdad_literal() -> None:
 
 #: Símbolos que DERIVAN las identidades de la familia gestionada (Sección 10
 #: del protocolo): los mods empaquetados bajo el staging MO2 y el staging
-#: crudo administrado. Están definidos en ``dyndolod_runner`` /
-#: ``output_targets``; un productor que quiera nombrar la familia tiene que
-#: pasar por alguno de estos nombres (directo, con alias de import, o vía
-#: atributo).
-_SIMBOLOS_FAMILIA = {
-    "TEXGEN_MOD_NAME",
-    "DYNDOLLOD_MOD_NAME",
-    "TEXGEN_OUTPUT_NAME",
-    "DYNDLOLOD_OUTPUT_NAME",
-    "DYNDOLOD_OUTPUT_ROOT",
-    "SKY_CLAW_MANAGED_DIR",
-    "dyndolod_output_target",
+#: crudo administrado. Se declaran POR MÓDULO CANÓNICO y cada entrada se
+#: congela contra el AST real de su módulo (test_los_simbolos_de_familia_...):
+#: un typo o un símbolo inexistente ROMPE el ancla en vez de quedar como
+#: entrada muerta en el allowlist. Un productor que quiera nombrar la familia
+#: tiene que pasar por alguno de estos nombres (directo, con alias de import, o
+#: vía atributo).
+_SIMBOLOS_FAMILIA_POR_MODULO: dict[str, set[str]] = {
+    "local/tools/dyndolod_runner.py": {
+        "TEXGEN_MOD_NAME",
+        "DYNDOLLOD_MOD_NAME",
+        "TEXGEN_OUTPUT_NAME",
+        "DYNDOLLOD_OUTPUT_NAME",
+    },
+    "local/tools/output_targets.py": {
+        "SKY_CLAW_MANAGED_DIR",
+        "DYNDOLOD_OUTPUT_ROOT",
+        "dyndolod_output_target",
+    },
 }
+
+#: Nombre de la familia, indistinto del módulo dueño. Derivado del mapping:
+#: una sola fuente de verdad para el guard de referencias.
+_SIMBOLOS_FAMILIA = set().union(*_SIMBOLOS_FAMILIA_POR_MODULO.values())
 
 #: Literales exactos de los DOS mods empaquetados. El staging crudo usa
 #: nombres genéricos (``textures``, ``DynDOLOD_Output``) que otros contextos
@@ -230,6 +240,63 @@ def _referencias_a_familia(arbol: ast.AST) -> list[str]:
         elif isinstance(nodo, ast.Constant) and isinstance(nodo.value, str) and nodo.value in _LITERALES_FAMILIA:
             refs.append(repr(nodo.value))
     return refs
+
+
+def _identificadores_definidos(arbol: ast.AST) -> set[str]:
+    """Nombres definidos a nivel módulo o clase: constantes de módulo, atributos
+    de clase, clases y funciones. NO entra en cuerpos de función: un símbolo que
+    sólo vive como variable local no cuenta como definido en el módulo."""
+    definidos: set[str] = set()
+    en_funcion: list[bool] = [False]
+
+    class V(ast.NodeVisitor):
+        def _funcion(self, n: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            definidos.add(n.name)
+            en_funcion.append(True)
+            self.generic_visit(n)
+            en_funcion.pop()
+
+        def visit_FunctionDef(self, n: ast.FunctionDef) -> None:
+            self._funcion(n)
+
+        def visit_AsyncFunctionDef(self, n: ast.AsyncFunctionDef) -> None:
+            self._funcion(n)
+
+        def visit_ClassDef(self, n: ast.ClassDef) -> None:
+            definidos.add(n.name)
+            self.generic_visit(n)
+
+        def visit_Assign(self, n: ast.Assign) -> None:
+            if not en_funcion[-1]:
+                for objetivo in n.targets:
+                    if isinstance(objetivo, ast.Name):
+                        definidos.add(objetivo.id)
+
+        def visit_AnnAssign(self, n: ast.AnnAssign) -> None:
+            if not en_funcion[-1] and isinstance(n.target, ast.Name):
+                definidos.add(n.target.id)
+
+    V().visit(arbol)
+    return definidos
+
+
+@pytest.mark.parametrize(
+    "ruta_modulo,simbolos",
+    list(_SIMBOLOS_FAMILIA_POR_MODULO.items()),
+    ids=list(_SIMBOLOS_FAMILIA_POR_MODULO),
+)
+def test_los_simbolos_de_familia_existen_en_su_modulo_canonico(ruta_modulo: str, simbolos: set[str]) -> None:
+    """TODO símbolo declarado por el test como parte de la familia gestionada
+    DEBE existir como símbolo real del módulo canónico que lo declara.
+
+    La propiedad ataca la entrada muerta: un typo en el allowlist
+    (``DYNDLOLOD_OUTPUT_NAME`` por ``DYNDOLLOD_OUTPUT_NAME``) es un símbolo que
+    ningún productor referencia, así que el guard de exclusividad queda verde
+    con menos cobertura de la declarada y nada falla. Congelar cada entrada
+    contra el AST del módulo dueño la vuelve a romper: typo ⇒ TEST FAIL."""
+    arbol = ast.parse((_RAIZ_SKY_CLAW / ruta_modulo).read_text(encoding="utf-8"))
+    faltantes = simbolos - _identificadores_definidos(arbol)
+    assert not faltantes, f"{ruta_modulo} no define los símbolos de familia declarados: {sorted(faltantes)}"
 
 
 @pytest.mark.parametrize("modulo", _PRODUCTORES_NO_DYNDOLOD)
