@@ -199,6 +199,14 @@ class TelegramPolling:
             results = data.get("result", [])
             for update in results:
                 update_id = update.get("update_id")
+                if not isinstance(update_id, int) or isinstance(update_id, bool):
+                    # Un update_id malformado no avanza el offset: si se
+                    # copiara tal cual a _last_update_id, el offset+1 quedaría
+                    # envenenado (TypeError en el próximo ciclo o confirmación
+                    # de updates nunca entregados). Se va a la DLQ sin tocarlo.
+                    logger.error("Update de Telegram con update_id malformado: %r. Routing to DLQ.", update_id)
+                    await self._dlq.put(update)
+                    continue
 
                 try:
                     await self._process_raw_update(update)
@@ -210,8 +218,7 @@ class TelegramPolling:
                     )
                     await self._dlq.put(update)
 
-                if update_id is not None:
-                    self._last_update_id = update_id
+                self._last_update_id = update_id
 
     async def _process_raw_update(self, update: dict[str, Any]) -> None:
         """Process a single raw update dict."""
