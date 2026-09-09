@@ -251,7 +251,8 @@ def _identificadores_definidos(arbol: ast.AST) -> set[str]:
 
     class V(ast.NodeVisitor):
         def _funcion(self, n: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-            definidos.add(n.name)
+            if not en_funcion[-1]:
+                definidos.add(n.name)
             en_funcion.append(True)
             self.generic_visit(n)
             en_funcion.pop()
@@ -263,7 +264,8 @@ def _identificadores_definidos(arbol: ast.AST) -> set[str]:
             self._funcion(n)
 
         def visit_ClassDef(self, n: ast.ClassDef) -> None:
-            definidos.add(n.name)
+            if not en_funcion[-1]:
+                definidos.add(n.name)
             self.generic_visit(n)
 
         def visit_Assign(self, n: ast.Assign) -> None:
@@ -278,6 +280,48 @@ def _identificadores_definidos(arbol: ast.AST) -> set[str]:
 
     V().visit(arbol)
     return definidos
+
+
+def test_simbolo_de_familia_solo_como_definicion_local_es_faltante() -> None:
+    """Un símbolo de la familia que sólo existe como función/clase ANIDADA
+    dentro de otra función NO es un símbolo real del módulo canónico: el guard
+    debe reportarlo como faltante. Falso verde detectado por CodeRabbit y
+    Copilot: una FunctionDef/ClassDef local se agregaba a ``definidos`` aunque
+    no fuera visible en ámbito de módulo o clase."""
+    fuente = (
+        "def envoltura():\n"
+        "    def DYNDOLLOD_OUTPUT_NAME():\n"
+        "        return 'no es el atributo real'\n"
+        "    class DYNDOLOD_OUTPUT_ROOT:\n"
+        "        pass\n"
+        "    return DYNDOLLOD_OUTPUT_NAME()\n"
+    )
+    definidos = _identificadores_definidos(ast.parse(fuente))
+    assert "DYNDOLLOD_OUTPUT_NAME" not in definidos
+    assert "DYNDOLOD_OUTPUT_ROOT" not in definidos
+
+
+def test_definiciones_de_modulo_y_de_clase_siguen_contando() -> None:
+    """El fix no recorta el contrato: constantes de módulo, clases, funciones,
+    métodos y atributos de clase siguen contando como símbolos visibles en
+    ámbito de módulo o clase."""
+    fuente = (
+        "SKY_CLAW_MANAGED_DIR = 'Sky-Claw'\n"
+        "class DynDOLODRunner:\n"
+        "    TEXGEN_OUTPUT_NAME = 'textures'\n"
+        "    def metodo(self):\n"
+        "        pass\n"
+        "def dyndolod_output_target():\n"
+        "    return None\n"
+    )
+    definidos = _identificadores_definidos(ast.parse(fuente))
+    assert {
+        "SKY_CLAW_MANAGED_DIR",
+        "DynDOLODRunner",
+        "TEXGEN_OUTPUT_NAME",
+        "metodo",
+        "dyndolod_output_target",
+    } <= definidos
 
 
 @pytest.mark.parametrize(
