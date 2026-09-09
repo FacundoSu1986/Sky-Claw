@@ -357,14 +357,32 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
   nuevos, y el `LEGACY_RECOVERY_ONLY_TARGET`
   (`<game>/Sky-Claw/DynDOLOD/textures`) sólo en la superficie de recovery;
   detectar productores nuevos por introspección/AST.
-- [ ] Recuperación legacy separada de la familia mutante: el startup recovery
-  puede descubrir backups legacy de versiones anteriores y restaurar
-  conservadoramente el destino exacto `<game>/Sky-Claw/DynDOLOD/textures`
-  cuando el contrato histórico lo exige y es inequívoco; ante ambigüedad
-  preserva ambos y exige intervención manual. Test explícito: **legacy
-  recovery puede restaurar un backup histórico, pero ninguna corrida nueva
-  usa, mueve ni adopta el legacy** — ni migrarlo, borrarlo, adoptarlo como
-  staging ni crear `DirectoryRollback` nuevos sobre él.
+- [ ] Recuperación legacy separada de la familia mutante, congelando el
+  **predicado cerrado de ADR §2.9 / spec §8** (el que `rollback_reconciler` ya
+  aplica a un destino move-aside), no un happy-path suelto. `T-PR2-23` enumera la
+  familia completa sobre el único `LEGACY_RECOVERY_ONLY_TARGET`
+  `<game>/Sky-Claw/DynDOLOD/textures`; cada caso ejerce el boundary real de
+  `reconcile_orphan_rollback_backups` y afirma disco, no dos helpers:
+  - **A. backup legacy válido + target ausente** (bajo lock seguro) → RESTORE al
+    target exacto vía `rename` O(1); target queda con el estado previo.
+  - **B. backup legacy válido + target presente** → PRESERVE BOTH; ni el backup
+    ni el target se tocan; intervención manual.
+  - **C. sibling no relacionado** (sufijo válido, basename ≠ `textures`) →
+    IGNORE; ni se restaura ni se borra.
+  - **D. sufijo `.rollback-*` inválido** (corto, no numérico, no anclado) →
+    IGNORE (piso `\d{12,}`).
+  - **E. entrada link/junction/reparse** con nombre de backup → IGNORE; nunca se
+    restaura como directorio administrado siguiendo el enlace.
+  - **F. lock del productor `dyndolod-pipeline` vivo** (aun en otra instancia) →
+    SKIP sin mutación; se reporta como omitido.
+  - **G. ausencia de backup válido** → NO-OP.
+  - **H. target ausente pero el `rename` de restauración falla (`OSError`)** →
+    preservar el backup y avisar; nunca se pierde la única copia. Más:
+    **idempotencia** — una segunda pasada sobre lo ya restaurado es NO-OP.
+  Test explícito adicional: **legacy recovery puede restaurar un backup
+  histórico, pero ninguna corrida nueva usa, mueve ni adopta el legacy** — ni
+  migrarlo, borrarlo, adoptarlo como staging, pasarlo como `-o:` ni crear
+  `DirectoryRollback` nuevos sobre él.
 - [ ] Inyectar raíces desde el mismo layout/registro que el service. No mover
   ni borrar la familia histórica completa: el root legacy
   `<game>/Sky-Claw/DynDOLOD` queda intacto salvo la restauración conservadora
@@ -406,7 +424,7 @@ y afirma comportamiento/bytes. No basta comparar dos helpers que comparten error
 | T-PR2-20 | Volúmenes compartidos/distintos + fallo de copia/ENOSPC → rollback → backups íntegros |
 | T-PR2-21 | Estados de root A–H enumerados → inicializar/utilizar/rechazar según la tabla de la spec (H incluye doble activación del mismo `resource_binding`) |
 | T-PR2-22 | Dos procesos reales (o mecanismo equivalente cross-process, no sólo coroutines) inicializan el mismo root vacío → exactamente un binding publicado con primitiva no-reemplazante; el perdedor NO reemplaza el archivo del ganador: lo relee, valida el `resource_binding` y continúa sólo si es compatible; metadata corrupta → fail-closed |
-| T-PR2-23 | Backup legacy histórico → startup recovery → restaura el destino exacto `<game>/Sky-Claw/DynDOLOD/textures` o preserva ambos ante ambigüedad; y ningún productor nuevo declara el legacy: ninguna corrida nueva lo usa, mueve, adopta ni crea `DirectoryRollback` sobre él |
+| T-PR2-23 | Familia enumerada A–H del predicado cerrado de recovery legacy (ADR §2.9 / spec §8) sobre el único `LEGACY_RECOVERY_ONLY_TARGET` `<game>/Sky-Claw/DynDOLOD/textures`, vía `reconcile_orphan_rollback_backups`: **A** válido + target ausente → restaura; **B** válido + target presente → preserva ambos; **C** sibling con basename ≠ `textures` → ignora; **D** sufijo inválido (`< 12` dígitos / no numérico) → ignora; **E** enlace/junction con nombre de backup → nunca restaura siguiendo el enlace; **F** lock `dyndolod-pipeline` vivo → skip sin mutar; **G** sin backup válido → no-op; **H** target ausente + `rename` falla (`OSError`) → preserva el backup, e idempotencia en segunda pasada. Además: ningún productor nuevo declara el legacy —ninguna corrida nueva lo usa, mueve, adopta, pasa como `-o:` ni crea `DirectoryRollback` sobre él |
 
 T-PR2-14 enumera **familias**, no solo dos casos conocidos: consumidores de
 layout, emisores `-o:`, lanzadores, productores de move-aside y superficies de

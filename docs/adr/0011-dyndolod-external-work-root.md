@@ -319,15 +319,65 @@ en PR-2):
   destino histórico dentro del root legacy, ruta completa siempre nombrada así,
   nunca como `<root>/textures` (el placeholder es ambiguo entre ambos mundos).
 
-El rol de ese target legacy es **sólo recovery**: el startup recovery SÍ puede
-descubrir backups legacy creados por versiones anteriores de Sky-Claw y
-restaurar conservadoramente el destino exacto
-`<game>/Sky-Claw/DynDOLOD/textures` cuando el contrato histórico de recovery lo
-exige y es inequívoco; ante ambigüedad (backup y destino presentes, o
-correspondencia dudosa) preserva ambos y exige intervención manual. Ninguna
-corrida nueva usa, mueve ni adopta el legacy como staging: la reconciliación de
-backups legacy y los `DirectoryRollback` de productores activos son superficies
-distintas y no se mezclan (el plan P2.3 congela esa separación con su test).
+El rol de ese target legacy es **sólo recovery**: restaurativo, no productivo.
+**"Inequívoco" deja de ser un adjetivo suelto: es el predicado cerrado que
+`rollback_reconciler` YA aplica a un destino move-aside**
+(`reconcile_orphan_rollback_backups` → `_listar_backups_move_aside`
++ `_reconciliar_move_aside`, bajo `_bajo_el_lock_del_ritual`), no un mecanismo
+nuevo. Un backup bajo el root legacy es candidato de restauración ÚNICAMENTE si
+se cumplen TODAS estas condiciones; si alguna falla, el recovery no lo toca:
+
+1. **Target exacto.** Corresponde al único `LEGACY_RECOVERY_ONLY_TARGET`,
+   `<game>/Sky-Claw/DynDOLOD/textures`
+   (`dyndolod_output_target(game) / DynDOLODRunner.TEXGEN_OUTPUT_NAME`, con
+   `TEXGEN_OUTPUT_NAME == "textures"`). Nunca el padre
+   `<game>/Sky-Claw/DynDOLOD` ni el placeholder `<root>/textures`.
+2. **Sibling exacto.** Es un hijo DIRECTO del parent del target
+   (`<game>/Sky-Claw/DynDOLOD/`) cuyo basename, tras quitar el sufijo, es
+   literalmente `textures` (igualdad exacta con el nombre del destino declarado;
+   no glob, no prefijo). Un sibling con otro basename no le pertenece.
+3. **Sufijo válido.** El nombre termina en `.rollback-<nonce>` con `<nonce>` de
+   **≥12 dígitos decimales**
+   (`_SUFIJO_MOVE_ASIDE = re.compile(r"\.rollback-\d{12,}$")`). El productor
+   `DirectoryRollback` emite `time.time_ns()` (19 dígitos); el piso de 12 es el
+   umbral de admisión del reconciliador, no un `time_ns` exacto —por eso este
+   contrato congela `≥12 dígitos`, no "el nonce de `time_ns`".
+4. **Directorio físico real, no enlace.** La entrada candidata es un directorio
+   real; un enlace (symlink/junction/reparse point) con nombre de backup se
+   IGNORA y nunca se restaura siguiéndolo (`is_link` → skip con log), y lo que no
+   es directorio no entra a la lista. Un backup legítimo lo produce un `rename`
+   O(1), que nunca deja un enlace.
+5. **Lock del productor.** La reconciliación adquiere el lock del ritual
+   productor, `dyndolod-pipeline`, con el agente del reconciliador y TTL corto.
+   Un lock **vivo** (no expirado, aun en otra instancia de Sky-Claw) o un
+   `acquire_lock` fallido → **SKIP sin mutar** (se reporta como omitido): ritual
+   en curso ⇒ el backup es legítimo, no huérfano.
+6. **Decisión por presencia del target** (marcador durable en disco, medido con
+   `path_present`, que cuenta un enlace roto como presente):
+   - **Target AUSENTE** → restaurar el backup al target exacto con un `rename`
+     O(1). Si el `rename` lanza `OSError`, preservar el backup y avisar (nunca se
+     pierde la única copia).
+   - **Target PRESENTE** → **NO sobrescribir, NO borrar; preservar backup +
+     target** y exigir intervención manual (estado ambiguo: el filesystem no
+     prueba si la salida presente está completa).
+
+| Entrada | Veredicto |
+|---|---|
+| Sibling con basename distinto (aunque el sufijo sea válido) | IGNORE — no es su target |
+| Sufijo `.rollback-*` inválido (corto, no numérico, no anclado al final) | IGNORE |
+| Nombre de backup pero no es un directorio real | IGNORE (no entra a la lista) / fail-safe |
+| Enlace symlink/junction/reparse | IGNORE — nunca restaurar siguiendo el enlace |
+| Lock del productor vivo | SKIP sin mutar |
+| Backup válido + target presente | PRESERVE BOTH — nunca reemplazar |
+| Backup válido + target ausente bajo lock seguro | RESTORE |
+| Sin backup válido | NO-OP |
+
+Fuera de este predicado, ninguna corrida nueva usa, mueve, migra, adopta ni crea
+`DirectoryRollback` sobre el legacy, ni lo pasa como `-o:`. Los productores
+activos de la familia nueva declaran sólo sus `ACTIVE_TARGET`; el legacy entra a
+la declaración del reconciliador únicamente como `LEGACY_RECOVERY_ONLY_TARGET`,
+en la superficie de recovery de arranque (el plan P2.3 y `T-PR2-23` congelan la
+familia completa A–H).
 
 ### 2.10 Born-empty
 
