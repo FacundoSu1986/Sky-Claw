@@ -26,7 +26,13 @@ def _webhook() -> tuple[TelegramWebhook, MagicMock, MagicMock]:
     return webhook, router, sender
 
 
-def _update(update_id: int, text: object = "hola", *, chat: object | None = None, sender: object | None = None) -> dict:
+def _update(
+    update_id: int,
+    text: object = "hola",
+    *,
+    chat: object | None = None,
+    sender: object | None = None,
+) -> dict:
     return {
         "update_id": update_id,
         "message": {
@@ -134,3 +140,20 @@ async def test_telegram_sigue_disponible_despues_de_un_mensaje_invalido() -> Non
     # Verificación
     router.chat.assert_awaited_once_with("hola", webhook._session, chat_id="123")
     sender.send.assert_awaited_once_with(123, "respuesta")
+
+
+@pytest.mark.asyncio
+async def test_telegram_no_normaliza_el_request_id_hitl_opaco() -> None:
+    # Preparación
+    webhook, router, _sender = _webhook()
+    hitl = MagicMock()
+    hitl.respond = AsyncMock(return_value=False)
+    webhook._hitl = hitl
+
+    # Actuar
+    await webhook.process_update(_update(60, "  /approve req-1  "))
+    await _drain(webhook)
+
+    # Verificación
+    hitl.respond.assert_awaited_once_with("req-1  ", True)
+    router.chat.assert_not_awaited()
