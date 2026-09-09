@@ -23,8 +23,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from sky_claw.app.security.links import (
     iter_archivos_propios,
@@ -593,6 +594,80 @@ class DynDOLODPipelineResult:
     errors: list[str] = field(default_factory=list)
     needs_deployment: bool = False
     texgen_packaging_attempted: bool = False
+
+
+# =============================================================================
+# POLICY DE SPAWN DE DYNDOLOD (PR #567 — Finding P1)
+# =============================================================================
+#
+# Autoridad única y enumerable sobre los prerrequisitos que la etapa TexGen
+# debe satisfacer para autorizar el spawn de DynDOLOD cuando run_texgen=True:
+#   1. texgen_success: la corrida terminó con éxito contractual.
+#   2. attributable_output: TexGen reportó output_path no nulo.
+#   3. packaging_success: el empaquetado generó texgen_mod_path.
+#   4. visibility_success: la salida está físicamente visible en Data.
+#
+# Cada regla devuelve None si se cumple, o la causa honesta de bloqueo si no.
+
+
+class TexGenGateState(NamedTuple):
+    """Estado observable de la etapa TexGen evaluado por la policy de spawn."""
+
+    texgen_result: ToolExecutionResult | None
+    texgen_mod_path: pathlib.Path | None
+    handoff_verificado: bool
+    data_dir: pathlib.Path | None
+    texgen_mod_name: str
+
+
+def _check_texgen_success(state: TexGenGateState) -> str | None:
+    if state.texgen_result is None or not state.texgen_result.success:
+        return "TexGen no completó su corrida con éxito"
+    return None
+
+
+def _check_attributable_output(state: TexGenGateState) -> str | None:
+    if state.texgen_result is None or state.texgen_result.output_path is None:
+        return "TexGen reportó éxito pero no dejó una salida atribuible"
+    return None
+
+
+def _check_packaging_success(state: TexGenGateState) -> str | None:
+    if state.texgen_mod_path is None:
+        return f"el empaquetado de '{state.texgen_mod_name}' falló"
+    return None
+
+
+def _check_visibility_success(state: TexGenGateState) -> str | None:
+    if not state.handoff_verificado:
+        if state.data_dir is None:
+            return "no hay Data configurado para verificar el handoff de TexGen"
+        return f"la salida de TexGen no es visible en {state.data_dir}"
+    return None
+
+
+DYNDOLOD_TEXGEN_GATE_POLICY: dict[str, Callable[[TexGenGateState], str | None]] = {
+    "texgen_success": _check_texgen_success,
+    "attributable_output": _check_attributable_output,
+    "packaging_success": _check_packaging_success,
+    "visibility_success": _check_visibility_success,
+}
+
+#: Alias canónico de la policy de spawn para anclas e introspección.
+DYNDOLOD_SPAWN_POLICY = DYNDOLOD_TEXGEN_GATE_POLICY
+
+
+def evaluar_gate_texgen(state: TexGenGateState) -> str | None:
+    """Evalúa la policy de prerrequisitos de TexGen para autorizar el spawn de DynDOLOD.
+
+    Retorna la razón de bloqueo si algún prerrequisito no se cumple, o None si
+    todos se satisfacen.
+    """
+    for check in DYNDOLOD_TEXGEN_GATE_POLICY.values():
+        motivo = check(state)
+        if motivo is not None:
+            return motivo
+    return None
 
 
 # =============================================================================
@@ -1516,16 +1591,23 @@ class DynDOLODRunner:
         # fórmula final —que exige `dyndolod_result` no nulo— haga el resto.
         dyndolod_bloqueado_por: str | None = None
         if run_texgen:
-            if texgen_result is None or not texgen_result.success:
-                dyndolod_bloqueado_por = "TexGen no completó su corrida con éxito"
-            elif texgen_result.output_path is None:
-                dyndolod_bloqueado_por = "TexGen reportó éxito pero no dejó una salida atribuible"
-            elif texgen_mod_path is None:
-                dyndolod_bloqueado_por = f"el empaquetado de '{self.TEXGEN_MOD_NAME}' falló"
-            elif not handoff_verificado:
-                dyndolod_bloqueado_por = f"la salida de TexGen no es visible en {self._config.data_dir}"
+            gate_state = TexGenGateState(
+                texgen_result=texgen_result,
+                texgen_mod_path=texgen_mod_path,
+                handoff_verificado=handoff_verificado,
+                data_dir=self._config.data_dir,
+                texgen_mod_name=self.TEXGEN_MOD_NAME,
+            )
+            dyndolod_bloqueado_por = evaluar_gate_texgen(gate_state)
         elif not handoff_verificado:
-            dyndolod_bloqueado_por = f"el '{self.TEXGEN_MOD_NAME}' preservado no es visible en {self._config.data_dir}"
+            if self._config.data_dir is None:
+                dyndolod_bloqueado_por = (
+                    f"no hay Data configurado para verificar el '{self.TEXGEN_MOD_NAME}' preservado"
+                )
+            else:
+                dyndolod_bloqueado_por = (
+                    f"el '{self.TEXGEN_MOD_NAME}' preservado no es visible en {self._config.data_dir}"
+                )
 
         if dyndolod_bloqueado_por is not None:
             logger.error(
@@ -1534,6 +1616,8 @@ class DynDOLODRunner:
                 dyndolod_bloqueado_por,
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
             )
+            if not errors:
+                errors.append(dyndolod_bloqueado_por)
         else:
             try:
                 dyndolod_result = await self.run_dyndolod(

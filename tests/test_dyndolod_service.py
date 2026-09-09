@@ -5457,6 +5457,167 @@ async def test_run_texgen_false_con_output_preservado_no_visible_no_lanza_dyndol
 
 
 # =============================================================================
+# POLICY ENUMERABLE DEL GATE DE SPAWN (Finding P1)
+# =============================================================================
+
+
+def test_dyndolod_spawn_policy_congela_la_familia_completa() -> None:
+    """La policy de prerrequisitos de TexGen para DynDOLOD está congelada por igualdad exacta."""
+    from sky_claw.local.tools.dyndolod_runner import (
+        DYNDOLOD_SPAWN_POLICY,
+        DYNDOLOD_TEXGEN_GATE_POLICY,
+    )
+
+    conceptos_esperados = {
+        "texgen_success",
+        "attributable_output",
+        "packaging_success",
+        "visibility_success",
+    }
+    assert set(DYNDOLOD_TEXGEN_GATE_POLICY.keys()) == conceptos_esperados
+    assert set(DYNDOLOD_SPAWN_POLICY.keys()) == conceptos_esperados
+    assert tuple(DYNDOLOD_TEXGEN_GATE_POLICY.keys()) == (
+        "texgen_success",
+        "attributable_output",
+        "packaging_success",
+        "visibility_success",
+    )
+
+
+@pytest.mark.parametrize(
+    ("requisito_fallido", "esperado_en_bloqueo"),
+    [
+        ("texgen_success", "TexGen no completó su corrida con éxito"),
+        ("attributable_output", "salida atribuible"),
+        ("packaging_success", "empaquetado"),
+        ("visibility_success", "no es visible"),
+    ],
+)
+def test_gate_texgen_falla_si_un_solo_requisito_falla(
+    requisito_fallido: str,
+    esperado_en_bloqueo: str,
+) -> None:
+    """Para CADA requisito: si sólo ese requisito falla → DynDOLOD queda bloqueado."""
+    from sky_claw.local.tools.dyndolod_runner import TexGenGateState, evaluar_gate_texgen
+
+    texgen_result = ToolExecutionResult(
+        success=requisito_fallido != "texgen_success",
+        tool_name="TexGen",
+        return_code=0 if requisito_fallido != "texgen_success" else 1,
+        stdout="",
+        stderr="",
+        output_path=pathlib.Path("/tmp/texgen_out") if requisito_fallido != "attributable_output" else None,
+    )
+    texgen_mod_path = pathlib.Path("/tmp/mods/TexGen Output") if requisito_fallido != "packaging_success" else None
+    handoff_verificado = requisito_fallido != "visibility_success"
+    data_dir = pathlib.Path("/tmp/data")
+
+    state = TexGenGateState(
+        texgen_result=texgen_result,
+        texgen_mod_path=texgen_mod_path,
+        handoff_verificado=handoff_verificado,
+        data_dir=data_dir,
+        texgen_mod_name="TexGen Output",
+    )
+    bloqueado = evaluar_gate_texgen(state)
+    assert bloqueado is not None
+    assert esperado_en_bloqueo in bloqueado
+
+
+def test_gate_texgen_autoriza_cuando_todos_los_requisitos_son_validos() -> None:
+    """Todos los requisitos válidos → DynDOLOD puede ejecutarse."""
+    from sky_claw.local.tools.dyndolod_runner import TexGenGateState, evaluar_gate_texgen
+
+    state = TexGenGateState(
+        texgen_result=ToolExecutionResult(True, "TexGen", 0, "", "", output_path=pathlib.Path("/tmp/out")),
+        texgen_mod_path=pathlib.Path("/tmp/mods/TexGen Output"),
+        handoff_verificado=True,
+        data_dir=pathlib.Path("/tmp/data"),
+        texgen_mod_name="TexGen Output",
+    )
+    assert evaluar_gate_texgen(state) is None
+
+
+@pytest.mark.asyncio
+async def test_data_dir_none_no_lanza_dyndolod_y_reporta_falta_de_data(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """data_dir=None → DynDOLOD no se lanza, el log identifica falta de Data y no contiene 'visible en None'."""
+    config, runner = _runner_texgen(tmp_path)
+    object.__setattr__(config, "data_dir", None)
+    runner._config = config
+
+    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    _escribir_salida(texgen_staging, "a.dds", b"TEXTURA")
+
+    async def _texgen_ok(**_kw: object) -> ToolExecutionResult:
+        return ToolExecutionResult(True, "TexGen", 0, "", "", output_path=texgen_staging)
+
+    run_dyndolod = AsyncMock()
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(runner, "run_texgen", AsyncMock(side_effect=_texgen_ok)),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.dyndolod_result is None
+    assert result.needs_deployment is False
+
+    # El mensaje del gate identifica falta de Data y NO dice "visible en None"
+    gates = [r.getMessage() for r in caplog.records if "DynDOLOD no se lanza" in r.getMessage()]
+    assert gates, "no se emitió el registro del gate de spawn"
+    gate_msg = gates[0]
+    assert "visible en None" not in gate_msg
+    assert "Data" in gate_msg
+    assert any("Data" in e for e in result.errors)
+
+
+@pytest.mark.asyncio
+async def test_texgen_fallido_con_errors_vacios_agrega_causa_del_gate(
+    tmp_path: pathlib.Path,
+) -> None:
+    """texgen_result.success=False con errors=[] → result.errors recibe la causa del gate (evita 'Unknown error')."""
+    config, runner = _runner_texgen(tmp_path)
+    texgen_result = ToolExecutionResult(False, "TexGen", 1, "", "", errors=[])
+    run_dyndolod = AsyncMock()
+    with (
+        patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.dyndolod_result is None
+    assert len(result.errors) > 0, "result.errors no debe quedar vacío"
+    assert any("TexGen no completó" in e for e in result.errors), result.errors
+    assert "Unknown error" not in "; ".join(result.errors)
+
+
+@pytest.mark.asyncio
+async def test_texgen_fallido_con_errors_existentes_conserva_errors_sin_duplicar(
+    tmp_path: pathlib.Path,
+) -> None:
+    """texgen_result.success=False con errors existentes → conserva errors específicos sin duplicar ni reemplazar."""
+    config, runner = _runner_texgen(tmp_path)
+    texgen_result = ToolExecutionResult(False, "TexGen", 1, "", "", errors=["TexGen crashed with SIGSEGV"])
+    run_dyndolod = AsyncMock()
+    with (
+        patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.errors == ["TexGen crashed with SIGSEGV"]
+
+
+# =============================================================================
 # F1 — HANDOFF "NEEDS DEPLOYMENT" (review de #493)
 #
 # El gate C corta bien, pero el rollback borraba la salida que el propio mensaje

@@ -41,7 +41,7 @@ cinco switches administrados —case-insensitive— y exige `list[str]` en runti
 su análisis de riesgo y su lista de investigación previa. No hay fix diseñado.
 
 **#471 cableó `pipeline_stage`/`tx_id`** en los registros de fallo del runner y
-corrigió la fórmula de `run_full_pipeline` (`dyndolod_runner.py:1160-1167`) para
+corrigió la fórmula de `DynDOLODRunner.run_full_pipeline` para
 que el mod de TexGen sin empaquetar también vuelque el pipeline a rojo.
 
 > **Precisión que cambia el tamaño de T2:** #471 **no** tocó las fórmulas de éxito
@@ -266,14 +266,15 @@ cambia y el post-check marca artefacto rancio → `success=False`. La corrida fa
 cerrada, no en silencio.
 
 **Pero la contención es más chica de lo que suena, y hay que decir cuánto.** El
-`_package_output_as_mod` que no corre es **el de TexGen, y solo ese**
-(`dyndolod_runner.py:1042`, condicionado a `texgen_result.success`).
-Históricamente `run_full_pipeline` **no cortaba** ahí: seguía a `run_dyndolod`
-incondicionalmente (`:1088`) y, si DynDOLOD salía bien, **empaquetaba su salida
-a `mods/`** (`:1094-1100`). El pipeline reportaba `success=False` porque la
-fórmula exige `texgen_mod_path` cuando `run_texgen` (`:1160-1167`), pero para
-entonces ya se escribió un mod en `mods/`, y limpiarlo dependía del rollback
-del servicio de afuera, no del gate.
+`DynDOLODRunner._package_output_as_mod` que no corre es **el de TexGen, y solo ese**
+(en `DynDOLODRunner.run_full_pipeline`, condicionado a `texgen_result.success`).
+Históricamente `DynDOLODRunner.run_full_pipeline` **no cortaba** ahí: seguía a
+`DynDOLODRunner.run_dyndolod` incondicionalmente y, si DynDOLOD salía bien,
+**empaquetaba su salida a `mods/`** con `DynDOLODRunner._package_output_as_mod`.
+El pipeline reportaba `success=False` porque la fórmula de
+`DynDOLODRunner.run_full_pipeline` exige `texgen_mod_path` cuando `run_texgen`,
+pero para entonces ya se escribió un mod en `mods/`, y limpiarlo dependía del
+rollback del servicio de afuera, no del gate.
 
 **Eso quedó cerrado por el gate fail-stop** (PR posterior a este roadmap): con
 `run_texgen=True`, DynDOLOD solo se lanza cuando la etapa TexGen de la corrida
