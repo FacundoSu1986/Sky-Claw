@@ -540,3 +540,106 @@ async def test_fallo_durante_polling_cierra_la_sesion_propietaria() -> None:
     sesion_propietaria.close.assert_awaited_once()
     assert polling._session is None
     assert polling._running is False
+
+
+def _getupdates_mock(resultados: list[dict]) -> MagicMock:
+    """Gateway mockeado que responde getUpdates con ``resultados``."""
+    respuesta = MagicMock()
+    respuesta.status = 200
+    respuesta.json = AsyncMock(return_value={"ok": True, "result": resultados})
+    contexto = MagicMock()
+    contexto.__aenter__ = AsyncMock(return_value=respuesta)
+    contexto.__aexit__ = AsyncMock(return_value=False)
+    gateway = MagicMock()
+    gateway.request = AsyncMock(return_value=contexto)
+    return gateway
+
+
+@pytest.mark.asyncio
+async def test_update_id_malformado_no_envenena_el_offset_del_polling() -> None:
+    # Preparación
+    handler = MagicMock()
+    handler.process_update = AsyncMock()
+    gateway = _getupdates_mock(
+        [
+            {
+                "update_id": "7",
+                "message": {"text": "malo", "chat": {"id": 123}, "from": {"id": 123}},
+            },
+            {
+                "update_id": 8,
+                "message": {"text": "bueno", "chat": {"id": 123}, "from": {"id": 123}},
+            },
+        ]
+    )
+    polling = TelegramPolling(
+        token="123:ABC",
+        webhook_handler=handler,
+        gateway=gateway,
+        session=MagicMock(spec=aiohttp.ClientSession),
+        interval=0,
+        authorized_chat_id=123,
+    )
+
+    # Actuar
+    await polling._poll_once()
+
+    # Verificación
+    handler.process_update.assert_awaited_once()  # sólo el update válido alcanzó el boundary
+    assert polling._dlq.qsize() == 1  # el malformado fue a la DLQ, no al estado interno
+    params = gateway.request.await_args.kwargs["params"]
+    assert params["offset"] == 1  # el request de este ciclo partió del offset 0+1
+    assert polling._last_update_id == 8  # el offset avanzó sólo con el entero real
+
+
+@pytest.mark.asyncio
+async def test_elemento_no_objeto_en_result_no_bloquea_los_updates_validos() -> None:
+    # Preparación: un primitivo en `result` va seguido de un update válido.
+    handler = MagicMock()
+    handler.process_update = AsyncMock()
+    gateway = _getupdates_mock(
+        [
+            "basura",
+            {"update_id": 9, "message": {"text": "bueno", "chat": {"id": 123}, "from": {"id": 123}}},
+        ]
+    )
+    polling = TelegramPolling(
+        token="123:ABC",
+        webhook_handler=handler,
+        gateway=gateway,
+        session=MagicMock(spec=aiohttp.ClientSession),
+        interval=0,
+        authorized_chat_id=123,
+    )
+
+    # Actuar
+    await polling._poll_once()
+
+    # Verificación
+    handler.process_update.assert_awaited_once()  # el válido posterior se despachó
+    assert polling._dlq.qsize() == 0  # el primitivo no entró a la DLQ de dicts
+    assert polling._last_update_id == 9  # el offset avanzó con el update válido
+
+
+@pytest.mark.asyncio
+async def test_update_id_bool_no_avanza_el_offset_del_polling() -> None:
+    # Preparación: True es instancia de int pero el contrato lo rechaza.
+    handler = MagicMock()
+    handler.process_update = AsyncMock()
+    gateway = _getupdates_mock([{"update_id": True, "message": {"text": "bool", "chat": {"id": 123}}}])
+    polling = TelegramPolling(
+        token="123:ABC",
+        webhook_handler=handler,
+        gateway=gateway,
+        session=MagicMock(spec=aiohttp.ClientSession),
+        interval=0,
+        authorized_chat_id=123,
+    )
+
+    # Actuar
+    await polling._poll_once()
+
+    # Verificación
+    handler.process_update.assert_not_awaited()
+    assert polling._dlq.qsize() == 1
+    assert polling._last_update_id == 0

@@ -577,7 +577,7 @@ class TelegramWebhook:
                 return web.Response(status=401, text="Unauthorized")
 
         try:
-            data: dict[str, Any] = await request.json()
+            data: Any = await request.json()
             await self.process_update(data)
         except (ValueError, TypeError):
             logger.warning("Invalid JSON in Telegram update")
@@ -586,17 +586,22 @@ class TelegramWebhook:
 
         return web.Response(status=200)
 
-    async def process_update(self, data: dict[str, Any]) -> None:
+    async def process_update(self, data: object) -> None:
         """Procesa un update de Telegram mediante el dispatcher autoritativo.
 
         Webhook y long polling usan esta misma ruta. La deduplicación y la
         autorización ocurren antes de enrutar mensajes o callbacks, de modo
-        que un callback no pueda eludir el límite HITL.
+        que un callback no pueda eludir el límite HITL. Los mensajes de chat
+        se validan por tipo antes de cualquier comando o despacho al LLM.
         """
         correlation_id_var.set(str(uuid.uuid4()))
+        if not isinstance(data, dict):
+            logger.warning("Telegram update rechazado: el JSON raíz debe ser un objeto")
+            return
+
         update_id = data.get("update_id")
-        if update_id is None:
-            logger.warning("Telegram update missing update_id")
+        if not isinstance(update_id, int) or isinstance(update_id, bool):
+            logger.warning("Telegram update rechazado: update_id debe ser un entero (no bool)")
             return
 
         # Deduplication — Telegram re-sends if it doesn't get 200 fast enough.
@@ -614,22 +619,52 @@ class TelegramWebhook:
             await self._handle_callback_query(callback_query)
             return
 
-        # Extrae chat_id y texto del mensaje.
-        message = data.get("message", {})
-        text = message.get("text", "")
-        chat = message.get("chat", {})
-        chat_id = chat.get("id")
+        # Extrae y valida la forma mínima del mensaje antes de tocar strings.
+        message = data.get("message")
+        if message is None:
+            return
+        if not isinstance(message, dict):
+            logger.warning("Telegram update rechazado: message debe ser un objeto")
+            return
 
-        if not text or chat_id is None:
+        raw_text = message.get("text")
+        if not isinstance(raw_text, str):
+            logger.warning("Telegram update rechazado: message.text debe ser string")
+            return
+        text = raw_text.strip()
+        if not text:
+            return
+
+        chat = message.get("chat")
+        from_user = message.get("from")
+        reply_message = message.get("reply_to_message")
+        if not isinstance(chat, dict) or not isinstance(from_user, dict):
+            logger.warning("Telegram update rechazado: chat/from deben ser objetos")
+            return
+        if reply_message is not None and not isinstance(reply_message, dict):
+            logger.warning("Telegram update rechazado: reply_to_message debe ser objeto")
+            return
+
+        chat_id = chat.get("id")
+        sender_id = from_user.get("id")
+        if (
+            not isinstance(chat_id, int)
+            or isinstance(chat_id, bool)
+            or not isinstance(sender_id, int)
+            or isinstance(sender_id, bool)
+        ):
+            logger.warning("Telegram update rechazado: chat.id/from.id deben ser enteros")
             return
 
         if not self._validate_private_operator(message):
             logger.warning("Telegram update rechazado: el operador debe usar su chat privado autorizado.")
             return
 
-        # Intercepta comandos HITL antes de enrutar al LLM.
+        # Intercepta comandos HITL antes de enrutar al LLM. El parser recibe el
+        # texto original para conservar el request_id opaco; sólo el chat normal
+        # usa la versión normalizada.
         if self._hitl is not None:
-            parsed = _parse_hitl_command(text)
+            parsed = _parse_hitl_command(raw_text)
             if parsed is not None:
                 approved, request_id = parsed
                 task = asyncio.create_task(self._handle_hitl_command(chat_id, approved, request_id, update_id, message))
@@ -638,7 +673,7 @@ class TelegramWebhook:
                 return
 
         # Intercepta el comando de actualización.
-        if text.strip() == "/update_mods":
+        if text == "/update_mods":
             task = asyncio.create_task(self._handle_update_mods_command(chat_id))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
@@ -711,6 +746,30 @@ class TelegramWebhook:
 
     async def _handle_callback_query(self, query: dict[str, Any]) -> None:
         """Procesa el clic de un operador en un botón inline (aprobar/denegar)."""
+        # Contrato estricto de entrada: _validate_sender y la extracción de
+        # chat_id hacen .get() sobre los sub-objetos from, message, chat y
+        # reply_to_message. Un primitivo en cualquiera de ellos revienta con
+        # AttributeError y cae en el catch-all del webhook (o al DLQ del
+        # polling) en lugar de un rechazo controlado. "Ausente" se tolera:
+        # lo maneja la validación anti-spoofing o el guard de data/chat_id
+        # existente; "presente y no objeto" se rechaza aquí.
+        message = query.get("message")
+        forma_invalida = (
+            ("from" in query and not isinstance(query["from"], dict))
+            or ("message" in query and not isinstance(message, dict))
+            or (isinstance(message, dict) and "chat" in message and not isinstance(message["chat"], dict))
+            or ("reply_to_message" in query and not isinstance(query["reply_to_message"], dict))
+            or (
+                isinstance(message, dict)
+                and "reply_to_message" in message
+                and not isinstance(message["reply_to_message"], dict)
+            )
+        )
+        if forma_invalida:
+            logger.warning("Telegram callback_query rechazado: from/message/chat/reply_to_message deben ser objetos")
+            await self._answer_callback_query_safely(query, text="Invalid callback")
+            return
+
         # H-03: Validación anti-spoofing
         if not self._validate_private_operator(query):
             logger.warning("Intento de spoofing HITL detectado y bloqueado en callback_query.")
