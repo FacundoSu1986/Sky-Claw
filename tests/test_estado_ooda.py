@@ -84,6 +84,11 @@ _ITEMS = frozenset(
         # namespace compartido, propiedad del staging y visibilidad en el Data
         # físico— y cada una tiene su propio conjunto de anclas.
         "Fronteras del handoff TexGen → DynDOLOD",
+        # Fail-stop gate del PR #567: TexGen fallido —por proceso, excepción,
+        # salida no atribuible o empaquetado roto— corta ANTES del spawn de
+        # DynDOLOD, evitando 30+ min de corrida y un mod efímero que el rollback
+        # retiraba.
+        "DynDOLOD ya no se lanza tras una etapa TexGen fallida",
     }
 )
 
@@ -485,3 +490,11 @@ def test_medicion_de_arboles_se_apoya_en_el_censo_de_medidores() -> None:
     assert not (eximidos & set(MECANISMO_DE_BORRADO))
     assert fila["Estado"] == "Cerrado"
     assert "test_borrado_recursivo.py" in fila["Verificado por"]
+
+
+def test_dyndolod_fail_stop_registrado_en_ooda() -> None:
+    """DynDOLOD fail-stop gate registrado como cerrado con sus verificaciones."""
+    fila = _tabla()["DynDOLOD ya no se lanza tras una etapa TexGen fallida"]
+    assert fila["Estado"] == "Cerrado"
+    assert "test_dyndolod_service.py" in fila["Verificado por"]
+    assert "fail-stop" in fila["Verificado por"]

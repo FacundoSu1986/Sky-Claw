@@ -4522,26 +4522,20 @@ async def test_el_fallo_por_exit_code_lleva_etapa_y_correlacion(
 async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Un falso verde: TexGen anduvo, su mod NO se empaquetó, y el pipeline decía éxito.
+    """T4: el mod de TexGen sin empaquetar corta el pipeline ANTES de DynDOLOD.
 
-    La fórmula de ``success`` exigía ``texgen_result.success`` —que el binario
-    haya ANDADO— pero no ``texgen_mod_path``, mientras que para DynDOLOD sí
-    exigía las dos cosas. Asimetría entre dos ramas de la misma expresión: el
-    defecto hermano del repo, dentro de una sola línea.
+    La fórmula de ``success`` exige ``texgen_mod_path`` cuando ``run_texgen`` —
+    ese fue el falso verde original (PR #471): DynDOLOD salía bien y el pipeline
+    igual reportaba éxito mientras el mod de TexGen nunca llegaba a ``mods/``.
+    Pero tumbaba la corrida DEMASIADO TARDE: DynDOLOD ya había corrido 30+ min y
+    su mod recién empaquetado iba directo al rollback. Sin salida de TexGen
+    instalada según el contrato no hay nada que DynDOLOD pueda consumir, así que
+    el corte es ANTES del spawn, no después: `dyndolod_result` queda en `None` y
+    nadie empaqueta una corrida que no ocurrió.
 
-    Consecuencia real: DynDOLOD lee las texturas de TexGen del staging crudo
-    (``-o:``), no de ``mods/``, así que su corrida sale bien y el pipeline
-    reporta éxito — pero el mod nunca llega a ``mods/``, MO2 no lo despliega y
-    el juego queda con los meshes de LOD sin las texturas que les corresponden.
-    Falso verde de la misma familia que U-06 persiguió.
-
-    Se arregla en el PR del stage index porque es ese PR el que vuelve la
-    contradicción OBSERVABLE: desde que el registro lleva ``pipeline_stage=9``,
-    un dashboard cuenta un fallo de etapa 9 para un ``tx_id`` cuyo journal
-    commiteó éxito. Dos señales persistidas que se contradicen para la misma
-    transacción (review Qodo, PR #471, "Falso verde").
-
-    Ningún test cubría este camino — por eso sobrevivió.
+    El corte sigue subiendo `needs_deployment=False`: esto se rompió —no hay
+    artefacto válido esperando despliegue—, distinción que solo el corte por
+    visibilidad merece (F1, review de #493).
     """
     from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
 
@@ -4588,7 +4582,10 @@ async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
         "el binario de TexGen anduvo: el fallo es del empaquetado, no de la herramienta"
     )
     assert result.texgen_mod_path is None
-    assert result.dyndolod_mod_path is not None, "DynDOLOD sí se empaquetó: el pipeline no falla por él"
+    assert result.dyndolod_result is None, "DynDOLOD no corrió: sin TexGen empaquetado no hay spawn"
+    assert result.dyndolod_mod_path is None, "no se empaqueta la salida de una corrida que no ocurrió"
+    assert result.texgen_packaging_attempted is True, "el boundary del supersede se cruzó aunque fallara"
+    assert result.needs_deployment is False, "fallo de packaging es fallo de herramienta, no 'falta desplegar'"
     assert result.success is False, (
         "el pipeline reportó éxito con el mod de TexGen sin empaquetar: MO2 no despliega esas "
         "texturas y el juego queda con los meshes de LOD sin ellas. La fórmula de `success` tiene "
@@ -4659,6 +4656,44 @@ async def test_el_empaquetado_fallido_de_texgen_no_commitea_la_transaccion(
     assert any("TexGen" in str(e) for e in resultado["errors"]), (
         f"el error reportado tiene que nombrar a TexGen: {resultado['errors']}"
     )
+
+
+@pytest.mark.asyncio
+async def test_fallo_de_texgen_atraviesa_el_servicio_por_el_camino_estandar(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El corte del runner llega al service como un fallo NORMAL, no como rama nueva.
+
+    TexGen muere con exit 1 → el runner corta ANTES de DynDOLOD →
+    ``run_full_pipeline`` devuelve ``success=False`` con ``dyndolod_result=None``
+    y SIN ``needs_deployment`` → el service lo trata por el camino estándar
+    (``raise DynDOLODExecutionError("DynDOLOD pipeline failed: …")``): TX no
+    commiteada, sin payload de preservación. El gate nuevo no introduce una
+    respuesta transaccional que el service no reconozca.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.data_dir is not None
+    config.data_dir.mkdir()
+    service._runner = runner
+
+    fake = _EjecucionFalsa(return_code=1)
+    run_dyndolod = AsyncMock()
+    with (
+        patch.object(runner, "_execute_process", fake),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        resultado = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert resultado["success"] is False
+    mock_journal.commit_transaction.assert_not_awaited()
+    # Camino estándar de fallo de dominio, con la causa original en el mensaje.
+    assert "DynDOLOD pipeline failed" in str(resultado.get("message", "")), resultado.get("message")
+    assert any("TexGen" in str(e) for e in resultado["errors"]), resultado["errors"]
+    # El corte NO es needs_deployment: nada válido quedó esperando despliegue.
+    assert "needs_deployment" not in resultado
 
 
 @pytest.mark.asyncio
@@ -5187,6 +5222,9 @@ async def test_no_se_lanza_dyndolod_si_texgen_no_es_visible_en_data(tmp_path: pa
     assert (mod_texgen / "textures" / "a.dds").exists(), "TexGen sí se generó y se empaquetó"
     run_dyndolod.assert_not_awaited()
     assert result.success is False
+    # El corte por visibilidad es el ÚNICO que sube needs_deployment: el mod
+    # empaquetado existe y lo único pendiente es que el operador lo materialice.
+    assert result.needs_deployment is True
 
 
 @pytest.mark.asyncio
@@ -5231,6 +5269,352 @@ async def test_no_se_lanza_dyndolod_si_data_tiene_una_version_vieja_de_texgen(tm
 
     run_dyndolod.assert_not_awaited()
     assert result.success is False
+
+
+# =============================================================================
+# FAIL-STOP: la etapa TexGen rota no autoriza el spawn de DynDOLOD
+#
+# El gate C (visibilidad) era la ÚNICA cosa que cortaba antes del spawn. Un
+# TexGen que falló —por proceso, por excepción, sin salida atribuible o con su
+# empaquetado roto— dejaba `handoff_verificado` en True y DynDOLOD arrancaba
+# igual: 30+ min de corrida y un "DynDOLOD Output" recién empaquetado que el
+# rollback del servicio revierte, porque la fórmula de `success` ya exigía
+# `texgen_mod_path`. El corte es ANTES de `run_dyndolod`, no después.
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_texgen_fallido_no_lanza_dyndolod(tmp_path: pathlib.Path) -> None:
+    """T1: TexGen reporta `success=False` → DynDOLOD NO se lanza."""
+    config, runner = _runner_texgen(tmp_path)
+    texgen_result = ToolExecutionResult(False, "TexGen", 1, "", "", errors=["exit 1"])
+    run_dyndolod = AsyncMock()
+    with (
+        patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.dyndolod_result is None, "DynDOLOD no corrió: no hay resultado que emitir"
+    # Un fallo de proceso NO es "falta desplegar": nada válido se generó.
+    assert result.needs_deployment is False
+
+
+@pytest.mark.asyncio
+async def test_texgen_excepcion_no_lanza_dyndolod(tmp_path: pathlib.Path) -> None:
+    """T2: `run_texgen` lanza `DynDOLODExecutionError` → DynDOLOD NO se lanza."""
+    config, runner = _runner_texgen(tmp_path)
+    run_dyndolod = AsyncMock()
+    with (
+        patch.object(runner, "run_texgen", AsyncMock(side_effect=DynDOLODExecutionError("boom"))),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.dyndolod_result is None
+    assert result.needs_deployment is False
+    assert any("TexGen execution failed" in e for e in result.errors), result.errors
+
+
+@pytest.mark.asyncio
+async def test_texgen_exitoso_sin_output_atribuible_no_lanza_dyndolod(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """T3: `success=True` sin `output_path` es un éxito inconsistente — fail-closed.
+
+    Sin la ruta de su salida no hay nada que empaquetar ni cuya visibilidad
+    verificar: `success=True` no puede leerse como "la etapa quedó apta" si el
+    output contractual no existe.
+
+    La RAZÓN del corte es parte del contrato, no decoración: el empaquetado ni
+    siquiera se intentó, así que el log del gate tiene que decir que la salida
+    no es atribuible — afirmar "el empaquetado falló" (lo que diría si el
+    chequeo de output_path no existiera) es el mensaje falso que esta familia de
+    gates vino a eliminar.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    texgen_result = ToolExecutionResult(True, "TexGen", 0, "", "", output_path=None)
+    run_dyndolod = AsyncMock()
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.dyndolod_result is None
+    assert result.needs_deployment is False
+    assert result.texgen_mod_path is None
+    # Accionable: el error tiene que nombrar el output faltante, no un genérico.
+    assert any("output_path" in e for e in result.errors), result.errors
+    # El log del gate nombra la causa real (salida no atribuible), no la falsa
+    # (empaquetado fallido, que nunca ocurrió).
+    gates: list[logging.LogRecord] = [r for r in _records_de_fallo(caplog) if "DynDOLOD no se lanza" in r.getMessage()]
+    assert gates, "el corte del pipeline no emitió el registro del gate"
+    assert "salida atribuible" in gates[0].getMessage(), (
+        f"la razón del gate es falsa: {gates[0].getMessage()!r} — el empaquetado nunca se intentó"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallo_de_texgen_no_toca_el_output_de_dyndolod(tmp_path: pathlib.Path) -> None:
+    """T-efectos: tras un fallo de TexGen, `mods/` queda EXACTAMENTE como estaba.
+
+    No se lanza DynDOLOD, no se intenta empaquetar su salida, no aparece un
+    "DynDOLOD Output" nuevo y una trampa preexistente no cambia un byte.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    mod_dyndolod = config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME
+    _escribir_salida(mod_dyndolod, "preexistente.esp", b"BYTES-DE-UNA-CORRIDA-ANTERIOR")
+
+    empaquetados: list[str] = []
+
+    async def _empaquetar(
+        output_path: pathlib.Path,
+        mod_name: str,
+        *,
+        preservar_directorio_raiz: bool = False,
+    ) -> pathlib.Path:
+        del output_path, preservar_directorio_raiz
+        empaquetados.append(mod_name)
+        return config.mo2_mods_path / mod_name
+
+    texgen_result = ToolExecutionResult(False, "TexGen", 1, "", "", errors=["exit 1"])
+    run_dyndolod = AsyncMock()
+    with (
+        patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+        patch.object(runner, "_package_output_as_mod", _empaquetar),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert empaquetados == [], "no se puede intentar empaquetar la salida de una corrida que no ocurrió"
+    assert (mod_dyndolod / "preexistente.esp").read_bytes() == b"BYTES-DE-UNA-CORRIDA-ANTERIOR"
+    assert sorted(p.name for p in config.mo2_mods_path.iterdir()) == [DynDOLODRunner.DYNDOLLOD_MOD_NAME], (
+        "no aparece un 'DynDOLOD Output' nuevo ni ningún otro mod tras el corte"
+    )
+    assert result.success is False
+    assert result.dyndolod_result is None
+
+
+@pytest.mark.asyncio
+async def test_run_texgen_false_sin_output_preservado_lanza_dyndolod(tmp_path: pathlib.Path) -> None:
+    """T7: el uso legítimo preexistente —DynDOLOD sin TexGen nuevo— no se rompe.
+
+    Sin un "TexGen Output" administrado por Sky-Claw no hay salida cuya
+    visibilidad afirmar, y el camino de Resume/sin-TexGen conserva su contrato.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.data_dir is not None
+    config.data_dir.mkdir()
+    assert not (config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME).exists()
+    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+
+    async def _dyndolod_ok(**_kw: object) -> ToolExecutionResult:
+        _escribir_salida(dyndolod_staging, "DynDOLOD.esp", b"esp")
+        return ToolExecutionResult(True, "DynDOLOD", 0, "", "", output_path=dyndolod_staging)
+
+    run_dyndolod = AsyncMock(side_effect=_dyndolod_ok)
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await runner.run_full_pipeline(run_texgen=False)
+
+    run_dyndolod.assert_awaited_once()
+    assert result.success is True, result.errors
+    assert result.dyndolod_mod_path is not None
+
+
+@pytest.mark.asyncio
+async def test_run_texgen_false_con_output_preservado_no_visible_no_lanza_dyndolod(
+    tmp_path: pathlib.Path,
+) -> None:
+    """T8: la continuación con un despliegue pendiente corta antes del spawn.
+
+    El mod preservado existe pero el `Data` no lo tiene: el gate de visibilidad
+    del camino de Resume sigue siendo el único `needs_deployment=True`.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.data_dir is not None
+    config.data_dir.mkdir()
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    _escribir_salida(mod_texgen / DynDOLODRunner.TEXGEN_OUTPUT_NAME, "a.dds", b"PRESERVADO")
+
+    run_dyndolod = AsyncMock()
+    with patch.object(runner, "run_dyndolod", run_dyndolod):
+        result = await runner.run_full_pipeline(run_texgen=False)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.dyndolod_result is None
+    assert result.needs_deployment is True
+
+
+# =============================================================================
+# POLICY ENUMERABLE DEL GATE DE SPAWN (Finding P1)
+# =============================================================================
+
+
+def test_dyndolod_spawn_policy_congela_la_familia_completa() -> None:
+    """La policy de prerrequisitos de TexGen para DynDOLOD está congelada por igualdad exacta."""
+    from sky_claw.local.tools.dyndolod_runner import (
+        DYNDOLOD_SPAWN_POLICY,
+        DYNDOLOD_TEXGEN_GATE_POLICY,
+    )
+
+    conceptos_esperados = {
+        "texgen_success",
+        "attributable_output",
+        "packaging_success",
+        "visibility_success",
+    }
+    assert set(DYNDOLOD_TEXGEN_GATE_POLICY.keys()) == conceptos_esperados
+    assert set(DYNDOLOD_SPAWN_POLICY.keys()) == conceptos_esperados
+    assert tuple(DYNDOLOD_TEXGEN_GATE_POLICY.keys()) == (
+        "texgen_success",
+        "attributable_output",
+        "packaging_success",
+        "visibility_success",
+    )
+
+
+@pytest.mark.parametrize(
+    ("requisito_fallido", "esperado_en_bloqueo"),
+    [
+        ("texgen_success", "TexGen no completó su corrida con éxito"),
+        ("attributable_output", "salida atribuible"),
+        ("packaging_success", "empaquetado"),
+        ("visibility_success", "no es visible"),
+    ],
+)
+def test_gate_texgen_falla_si_un_solo_requisito_falla(
+    requisito_fallido: str,
+    esperado_en_bloqueo: str,
+) -> None:
+    """Para CADA requisito: si sólo ese requisito falla → DynDOLOD queda bloqueado."""
+    from sky_claw.local.tools.dyndolod_runner import TexGenGateState, evaluar_gate_texgen
+
+    texgen_result = ToolExecutionResult(
+        success=requisito_fallido != "texgen_success",
+        tool_name="TexGen",
+        return_code=0 if requisito_fallido != "texgen_success" else 1,
+        stdout="",
+        stderr="",
+        output_path=pathlib.Path("/tmp/texgen_out") if requisito_fallido != "attributable_output" else None,
+    )
+    texgen_mod_path = pathlib.Path("/tmp/mods/TexGen Output") if requisito_fallido != "packaging_success" else None
+    handoff_verificado = requisito_fallido != "visibility_success"
+    data_dir = pathlib.Path("/tmp/data")
+
+    state = TexGenGateState(
+        texgen_result=texgen_result,
+        texgen_mod_path=texgen_mod_path,
+        handoff_verificado=handoff_verificado,
+        data_dir=data_dir,
+        texgen_mod_name="TexGen Output",
+    )
+    bloqueado = evaluar_gate_texgen(state)
+    assert bloqueado is not None
+    assert esperado_en_bloqueo in bloqueado
+
+
+def test_gate_texgen_autoriza_cuando_todos_los_requisitos_son_validos() -> None:
+    """Todos los requisitos válidos → DynDOLOD puede ejecutarse."""
+    from sky_claw.local.tools.dyndolod_runner import TexGenGateState, evaluar_gate_texgen
+
+    state = TexGenGateState(
+        texgen_result=ToolExecutionResult(True, "TexGen", 0, "", "", output_path=pathlib.Path("/tmp/out")),
+        texgen_mod_path=pathlib.Path("/tmp/mods/TexGen Output"),
+        handoff_verificado=True,
+        data_dir=pathlib.Path("/tmp/data"),
+        texgen_mod_name="TexGen Output",
+    )
+    assert evaluar_gate_texgen(state) is None
+
+
+@pytest.mark.asyncio
+async def test_data_dir_none_no_lanza_dyndolod_y_reporta_falta_de_data(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """data_dir=None → DynDOLOD no se lanza, el log identifica falta de Data y no contiene 'visible en None'."""
+    config, runner = _runner_texgen(tmp_path)
+    object.__setattr__(config, "data_dir", None)
+    runner._config = config
+
+    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    _escribir_salida(texgen_staging, "a.dds", b"TEXTURA")
+
+    async def _texgen_ok(**_kw: object) -> ToolExecutionResult:
+        return ToolExecutionResult(True, "TexGen", 0, "", "", output_path=texgen_staging)
+
+    run_dyndolod = AsyncMock()
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(runner, "run_texgen", AsyncMock(side_effect=_texgen_ok)),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.dyndolod_result is None
+    assert result.needs_deployment is False
+
+    # El mensaje del gate identifica falta de Data y NO dice "visible en None"
+    gates = [r.getMessage() for r in caplog.records if "DynDOLOD no se lanza" in r.getMessage()]
+    assert gates, "no se emitió el registro del gate de spawn"
+    gate_msg = gates[0]
+    assert "visible en None" not in gate_msg
+    assert "Data" in gate_msg
+    assert any("Data" in e for e in result.errors)
+
+
+@pytest.mark.asyncio
+async def test_texgen_fallido_con_errors_vacios_agrega_causa_del_gate(
+    tmp_path: pathlib.Path,
+) -> None:
+    """texgen_result.success=False con errors=[] → result.errors recibe la causa del gate (evita 'Unknown error')."""
+    config, runner = _runner_texgen(tmp_path)
+    texgen_result = ToolExecutionResult(False, "TexGen", 1, "", "", errors=[])
+    run_dyndolod = AsyncMock()
+    with (
+        patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.dyndolod_result is None
+    assert len(result.errors) > 0, "result.errors no debe quedar vacío"
+    assert any("TexGen no completó" in e for e in result.errors), result.errors
+    assert "Unknown error" not in "; ".join(result.errors)
+
+
+@pytest.mark.asyncio
+async def test_texgen_fallido_con_errors_existentes_conserva_errors_sin_duplicar(
+    tmp_path: pathlib.Path,
+) -> None:
+    """texgen_result.success=False con errors existentes → conserva errors específicos sin duplicar ni reemplazar."""
+    config, runner = _runner_texgen(tmp_path)
+    texgen_result = ToolExecutionResult(False, "TexGen", 1, "", "", errors=["TexGen crashed with SIGSEGV"])
+    run_dyndolod = AsyncMock()
+    with (
+        patch.object(runner, "run_texgen", AsyncMock(return_value=texgen_result)),
+        patch.object(runner, "run_dyndolod", run_dyndolod),
+    ):
+        result = await runner.run_full_pipeline(run_texgen=True)
+
+    run_dyndolod.assert_not_awaited()
+    assert result.success is False
+    assert result.errors == ["TexGen crashed with SIGSEGV"]
 
 
 # =============================================================================
