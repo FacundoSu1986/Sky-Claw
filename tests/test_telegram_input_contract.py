@@ -112,18 +112,141 @@ async def test_telegram_rechaza_texto_de_solo_espacios() -> None:
     assert not webhook._tasks
 
 
-@pytest.mark.parametrize("field,value", [("chat", []), ("chat", "123"), ("from", []), ("from", "123")])
+@pytest.mark.parametrize(
+    "clave,valor",
+    [
+        ("chat", []),
+        ("chat", "123"),
+        ("from", []),
+        ("from", "123"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_telegram_rechaza_shapes_anidados_invalidos(field, value) -> None:
+async def test_telegram_rechaza_shapes_anidados_invalidos(clave, valor) -> None:
     # Preparación
     webhook, router, _sender = _webhook()
-    kwargs = {field: value}
+    update = _update(40, "hola")
+    # La clave es la de cable de Telegram ("from"), no un kwarg del helper:
+    # cada caso debe alcanzar process_update() con exactamente un shape
+    # anidado malformado y el resto del mensaje válido.
+    update["message"][clave] = valor
 
     # Actuar
-    await webhook.process_update(_update(40, "hola", **kwargs))
+    await webhook.process_update(update)
 
     # Verificación
     router.chat.assert_not_awaited()
+    assert not webhook._tasks
+
+
+# Matriz que enumera CADA campo validado por el boundary process_update():
+# raíz JSON (test_webhook_rechaza_json_raiz_no_objeto), update_id,
+# message, message.text, chat/from, chat.id/from.id, reply_to_message y
+# los shapes internos de callback_query. Cada campo tiene su matriz de
+# valores claramente inválidos y su aserto de no-enrutado / no-task.
+@pytest.mark.parametrize("update_id", [None, "1", 1.0, True, [], {}])
+@pytest.mark.asyncio
+async def test_telegram_rechaza_update_id_invalido(update_id) -> None:
+    # Preparación
+    webhook, router, _sender = _webhook()
+    update = _update(45, "hola")
+    update["update_id"] = update_id
+
+    # Actuar
+    await webhook.process_update(update)
+
+    # Verificación
+    router.chat.assert_not_awaited()
+    assert not webhook._tasks
+    # El rechazo ocurre antes de la deduplicación: no consume un registro.
+    assert not webhook._seen_updates
+
+
+@pytest.mark.parametrize(
+    "campo,objeto",
+    [
+        ("chat", {"id": "123"}),
+        ("chat", {"id": 123.0}),
+        ("chat", {"id": True}),
+        ("chat", {"id": None}),
+        ("chat", {}),
+        ("from", {"id": "123"}),
+        ("from", {"id": 123.0}),
+        ("from", {"id": True}),
+        ("from", {"id": None}),
+        ("from", {}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_telegram_rechaza_ids_internos_invalidos(campo, objeto) -> None:
+    # Preparación
+    webhook, router, _sender = _webhook()
+    update = _update(46, "hola")
+    update["message"][campo] = objeto
+
+    # Actuar
+    await webhook.process_update(update)
+
+    # Verificación
+    router.chat.assert_not_awaited()
+    assert not webhook._tasks
+
+
+@pytest.mark.parametrize("reply", ["texto", [], 123, True])
+@pytest.mark.asyncio
+async def test_telegram_rechaza_reply_to_message_no_objeto(reply) -> None:
+    # Preparación
+    webhook, router, _sender = _webhook()
+    update = _update(47, "hola")
+    update["message"]["reply_to_message"] = reply
+
+    # Actuar
+    await webhook.process_update(update)
+
+    # Verificación
+    router.chat.assert_not_awaited()
+    assert not webhook._tasks
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"from": None},
+        {"from": "usuario"},
+        {"from": []},
+        {"from": 7},
+        {"message": None},
+        {"message": "mensaje"},
+        {"message": {"chat": None}},
+        {"message": {"chat": "chat"}},
+        {"message": {"chat": []}},
+        {"reply_to_message": "respuesta"},
+        {"message": {"chat": {"id": 123}, "reply_to_message": 5}},
+    ],
+)
+@pytest.mark.asyncio
+async def test_telegram_rechaza_callback_query_con_shapes_internos_invalidos(mutation) -> None:
+    # Preparación
+    webhook, router, sender = _webhook()
+    sender.answer_callback_query = AsyncMock()
+    hitl = MagicMock()
+    hitl.respond = AsyncMock(return_value=True)
+    webhook._hitl = hitl
+    callback = {
+        "id": "callback-1",
+        "from": {"id": 123},
+        "message": {"chat": {"id": 123}, "message_id": 9},
+        "data": "hitl:approve:token",
+    }
+    callback.update(mutation)
+
+    # Actuar
+    await webhook.process_update({"update_id": 48, "callback_query": callback})
+
+    # Verificación: rechazo controlado, sin AttributeError y sin resolver HITL.
+    hitl.respond.assert_not_awaited()
+    router.chat.assert_not_awaited()
+    sender.answer_callback_query.assert_awaited_once_with("callback-1", text="Invalid callback")
     assert not webhook._tasks
 
 

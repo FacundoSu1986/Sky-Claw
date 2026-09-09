@@ -601,7 +601,7 @@ class TelegramWebhook:
 
         update_id = data.get("update_id")
         if not isinstance(update_id, int) or isinstance(update_id, bool):
-            logger.warning("Telegram update missing or invalid update_id")
+            logger.warning("Telegram update rechazado: update_id debe ser un entero (no bool)")
             return
 
         # Deduplication — Telegram re-sends if it doesn't get 200 fast enough.
@@ -746,6 +746,30 @@ class TelegramWebhook:
 
     async def _handle_callback_query(self, query: dict[str, Any]) -> None:
         """Procesa el clic de un operador en un botón inline (aprobar/denegar)."""
+        # Contrato estricto de entrada: _validate_sender y la extracción de
+        # chat_id hacen .get() sobre los sub-objetos from, message, chat y
+        # reply_to_message. Un primitivo en cualquiera de ellos revienta con
+        # AttributeError y cae en el catch-all del webhook (o al DLQ del
+        # polling) en lugar de un rechazo controlado. "Ausente" se tolera:
+        # lo maneja la validación anti-spoofing o el guard de data/chat_id
+        # existente; "presente y no objeto" se rechaza aquí.
+        message = query.get("message")
+        forma_invalida = (
+            ("from" in query and not isinstance(query["from"], dict))
+            or ("message" in query and not isinstance(message, dict))
+            or (isinstance(message, dict) and "chat" in message and not isinstance(message["chat"], dict))
+            or ("reply_to_message" in query and not isinstance(query["reply_to_message"], dict))
+            or (
+                isinstance(message, dict)
+                and "reply_to_message" in message
+                and not isinstance(message["reply_to_message"], dict)
+            )
+        )
+        if forma_invalida:
+            logger.warning("Telegram callback_query rechazado: from/message/chat/reply_to_message deben ser objetos")
+            await self._answer_callback_query_safely(query, text="Invalid callback")
+            return
+
         # H-03: Validación anti-spoofing
         if not self._validate_private_operator(query):
             logger.warning("Intento de spoofing HITL detectado y bloqueado en callback_query.")
