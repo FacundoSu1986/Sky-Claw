@@ -302,6 +302,12 @@ module = [
     # `ignore_errors` de arriba y `sky_claw/app/**` tiene BLE001 exento, así que sin
     # esta línea el módulo saldría a producción sin type-check NI guard de except.
     "sky_claw.app.security.links",
+    # P0 de ADR 0011: los dos módulos nuevos nacen estrictos por el MISMO motivo
+    # que `links` — `sky_claw.app.security.*` y `sky_claw.local.tools.*` están en
+    # la lista `ignore_errors` de arriba, así que sin este opt-in saldrían a
+    # producción sin type-check, y `sky_claw/app/**` además tiene BLE001 exento.
+    "sky_claw.app.security.known_folders",
+    "sky_claw.local.tools.dyndolod_workspace",
 ]
 strict = true
 ignore_errors = false
