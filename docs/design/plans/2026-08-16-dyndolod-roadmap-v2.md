@@ -246,10 +246,22 @@ Lo que estas tres NO son: la solución definitiva de A. Esa son los **subroots
 exclusivos por herramienta** (`<raíz>/TexGen` y `<raíz>/DynDOLOD` como el `-o:`
 de cada una), que eliminan la clase en vez de la instancia — la raíz compartida
 dejaría de ser candidata de nadie. Siguen ABIERTOS y bloqueados: cambian el
-`-o:`, así que caen bajo el gate de aceptación de `sky_claw/local/AGENTS.md` §1
+`-o:`, así que caen bajo el gate de aceptación de `sky_claw/local/AGENTS.md` §2.9
 (dos corridas de rig separadas, root con espacios, con preset rancio presente).
 La nomenclatura de v1 sigue siendo la correcta para ese trabajo: la evidencia
 T5-B fija la regla RELATIVA (`-o:X` → `X/textures`), no el valor de X.
+
+> **Superseded (2026-09-09):** el párrafo anterior es histórico — usa el
+> vocabulario de este re-baseline (baseline `f8e8a4f`) y NO define el contrato
+> de ese trabajo. El lifecycle, el layout y la identidad quedaron congelados por
+> [ADR 0011](../../adr/0011-dyndolod-external-work-root.md), su
+> [spec](../specs/2026-09-09-dyndolod-external-work-root.md) y el
+> [plan de resolución de PR-2](2026-09-09-dyndolod-pr2-resolution.md): los
+> subroots viven bajo la preferencia persistente `external_work_root` como
+> `external_work_root/DynDOLOD/TexGen` y `external_work_root/DynDOLOD/DynDOLOD`
+> (§2.8 de la spec), no como `<raíz>/TexGen` sobre la raíz administrada
+> compartida; la identidad es `binding_id` + `resource_binding` y la máquina de
+> estados del root es A–H. El gate de rig (§2.9) no cambia.
 
 Lo que T3 no cambia:
 

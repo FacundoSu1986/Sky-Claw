@@ -6,7 +6,11 @@
 >
 > **Fuente canónica del diseño acordado:** archivos bajo `specs/` y `plans/`.
 >
-> **Última verificación del índice:** 2026-08-10 sobre `claude/remove-superpowers-reintroduction-ldo2eb` `87b778e4`.
+> **Última verificación del índice:** 2026-09-09 sobre el PR documental de
+> ADR 0011 (`docs/dyndolod-external-work-root`), que agrega las entradas
+> fechadas 2026-09-09. La verificación previa —2026-08-10 sobre
+> `claude/remove-superpowers-reintroduction-ldo2eb` `87b778e4`— queda como
+> **histórica**: no cubre esas entradas nuevas.
 
 Los archivos de este directorio explican una intención aprobada en su momento. No
 deben usarse como referencia runtime sin comprobar el código actual y los ADR
@@ -22,6 +26,7 @@ Diseño acordado antes de implementar: contexto, decisión y alcance.
 - [#454 — Perfil FOMOD y frontera segura de resultados de tools](specs/2026-08-09-fomod-profile-and-tool-output-security-design.md)
 - [Knowledge Capture — captura local de casos verificables](specs/2026-08-11-knowledge-capture-design.md) — spec sin implementación: acompaña a [ADR 0008](../adr/0008-knowledge-case.md) y precede a su desarrollo, así que no lleva número de PR de implementación como el resto del índice.
 - [Game Design Profile — intención de diseño del usuario](specs/2026-08-18-game-design-profile-intent.md) — propuesta documental sin implementación: registra el boundary y las fases futuras para traducir objetivos de experiencia a un perfil validado antes de cualquier planificación o mutación.
+- [DynDOLOD PR-2 — contrato de trabajo externo](specs/2026-09-09-dyndolod-external-work-root.md) — decisión de lifecycle, propiedad y admisión de `external_work_root` cerrada por [ADR 0011](../adr/0011-dyndolod-external-work-root.md); sin implementación y con el gate de rig abierto.
 
 ## Planes de implementación (`plans/`)
 
@@ -33,6 +38,7 @@ Descomposición en tareas de una spec o de un objetivo concreto.
 - [#454 — FOMOD Profile and Tool Output Security](plans/2026-08-09-fomod-profile-and-tool-output-security.md)
 - [Roadmap DynDOLOD v2 — etapa 9](plans/2026-08-16-dyndolod-roadmap-v2.md) — plan **sin implementación**: re-baselinea el trabajo pendiente de la etapa 9 contra `main` y ordena los bloques que siguen, así que no lleva número de PR de implementación como el resto del índice.
 - [Roadmap post-auditoría GUI Forge](plans/2026-08-30-forge-gui-audit-roadmap.md) — plan **sin implementación**: conserva deuda estructural, integridad y propuestas visuales posteriores al cierre de #522.
+- [DynDOLOD PR-2 — resolución y aceptación](plans/2026-09-09-dyndolod-pr2-resolution.md) — plan **sin implementación**: prerrequisitos de lifecycle (P0), procedimiento de rig por herramienta, matriz AAA y separación de los gates de lanzamiento e integración.
 
 El número es el PR que mergeó cada documento junto con su implementación. Para
 saber qué sigue vigente, contrastar con el código, los tests y los ADR
