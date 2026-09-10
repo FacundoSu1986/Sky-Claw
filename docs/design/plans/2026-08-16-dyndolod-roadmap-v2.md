@@ -21,7 +21,7 @@
 | Bloque | Estado | Cerrado en | Qué queda |
 |---|---|---|---|
 | T1 — contrato de argv | **CERRADO** | #462 | — |
-| T5 — validación de argv en rig | **CERRADO** (gate de lanzamiento) | T5-v2 2026-09-10 — `../../validation/2026-09-10_t5v2_dyndolod_stage9.md` | Criterios 8–10 del checklist → rig de ownership post-PR-2 |
+| T5 — validación de argv en rig | **CERRADO** (solo gate de lanzamiento; checklist T5-v2 queda PARCIAL 7/10) | T5-v2 2026-09-10 — `../../validation/2026-09-10_t5v2_dyndolod_stage9.md` | Criterios 8–10 del checklist → rig de ownership post-PR-2 |
 | Preset desvía `OutputPath` | **ABIERTO** (nuevo) | registrado en #463 | Precedencia y mecanismo |
 | T2 — clasificación del log | **PENDIENTE — próximo** | — | Todo; superficie intacta |
 | T3 — staging y salida | **PENDIENTE — rebase** | — | Rediseño con el preset como restricción |
@@ -322,8 +322,11 @@ visibilidad; si falla, el trabajo es investigar el perfil de MO2, no parchear T3
 > ejercitados con corrección asistida del campo Output, cero desvío al decoy,
 > restauración verificada). Criterios 8–10 (ZIP, dos mods disjuntos, visibilidad
 > billboards) NO se ejercitaron: corren con el rig de servicio completo
-> posterior a PR-2. El checklist se conserva como precedente contractual: un
-> cambio futuro al builder compartido o a los binarios re-abre el requisito.
+> posterior a PR-2, así que el checklist T5-v2 completo queda **PARCIAL (7/10)**
+> — lo único cerrado es el gate de lanzamiento. El checklist se conserva como
+> precedente contractual: un cambio futuro que altere cómo se construye o
+> serializa el argv (builder `_build_xedit_args`, path de spawn/serialización en
+> `DynDOLODRunner._execute_process`) o a los binarios re-abre el requisito.
 
 v1 aceptaba *"el log declara `Using Output Path:` igual a la raíz administrada"*.
 **Ese criterio ya no sirve**: el rig probó que el encabezado ecoa el argv mientras

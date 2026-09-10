@@ -66,10 +66,13 @@ DirectoryRollback, pytest; Windows y binarios reales para aceptación.
 | `...\t5a_20260830\manifests\session_manifest.json` y `output_manifest_sha256.csv` | Inventario fechado para contrastar resultados | Estado actual de presets o inputs |
 | `E:\Skyclaw_Main_Sync\dyndolod\_rig_test\rig_harness.py` | Harness histórico con argv anterior a #462 | Aceptación del launcher de producción; `--raw` tampoco lo prueba |
 
-Los informes siguen **fuera del repo**, aunque se encontraron en esta máquina.
-Su etiqueta histórica PASS no cambia el gate actual. En T5a, «presets intactos»
+Los informes históricos (2026-08-10, 2026-08-11 y T5a/2026-08-29) siguen **fuera
+del repo**, aunque se encontraron en esta máquina; el informe T5-v2 2026-09-10 de
+la fila anterior está **commiteado**. La etiqueta histórica PASS de T5a no
+cerraba el gate entonces. En T5a, «presets intactos»
 no equivale a integridad byte a byte: el propio informe registra una reescritura
-por Start. El rig nuevo debe capturar y restaurar el estado real de ese día.
+por Start. El rig T5-v2 capturó y restauró el estado real del día con hashes
+before/after.
 
 ## 2. Orden de entrega y condiciones de avance
 
@@ -100,7 +103,9 @@ actual y prueba lanzamiento/archivos/preset — **ejecutado y PASS el 2026-09-10
 (informe commiteado). El rig posterior prueba el servicio completo con el nuevo
 layout y packaging: los criterios 8–10 del checklist T5-v2 siguen siendo SU barra
 de aceptación. El gate de lanzamiento quedó cerrado y no se reabre salvo cambios
-al builder compartido (`_build_xedit_args`) o a los binarios.
+que alteren cómo se construye o serializa el argv: el builder compartido
+(`_build_xedit_args`), el path de spawn/serialización que lo transporta
+(`DynDOLODRunner._execute_process` → `create_subprocess_exec`), o los binarios.
 
 ## 3. P0 — lifecycle antes de activar la nueva raíz
 

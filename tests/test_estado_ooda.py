@@ -374,6 +374,17 @@ def test_el_sop_declara_que_su_evidencia_de_rig_es_externa() -> None:
         f"o declara fechas que ya no cita: {sorted(declaradas - citadas)}"
     )
 
+    # T5-v2 (2026-09-10) cerró el gate con un informe COMMITEADO en el árbol: se
+    # ancla por su ruta explícita y NO por el patrón rig+fecha, que queda reservado
+    # para los informes históricos "fuera del repo". Enumerado, no muestreado: si
+    # §2.9 deja de citar el informe, o el archivo deja de existir, el ancla se rompe
+    # y obliga a releer el estado del gate.
+    informe_t5v2 = "docs/validation/2026-09-10_t5v2_dyndolod_stage9.md"
+    assert informe_t5v2 in texto, "§2.9 dejó de citar el informe commiteado del cierre T5-v2"
+    assert (_RAIZ / "docs" / "validation" / "2026-09-10_t5v2_dyndolod_stage9.md").is_file(), (
+        "el informe T5-v2 citado por §2.9 no existe en el árbol"
+    )
+
 
 def test_la_cita_de_rig_no_se_arma_cruzando_dos_celdas() -> None:
     """Dos celdas vecinas no pueden fabricar una cita que ninguna contiene.
