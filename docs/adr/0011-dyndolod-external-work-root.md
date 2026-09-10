@@ -414,6 +414,15 @@ esperado, preset stale presente deliberadamente y sin desvío al preset stale. L
 documentación oficial de DynDOLOD (dyndolod.info) describe la línea de comandos;
 **no demuestra** el comportamiento real del binario del rig.
 
+**Cerrado:** el gate quedó satisfecho el 2026-09-10 por la corrida T5-v2 —
+informe commiteado:
+[`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../validation/2026-09-10_t5v2_dyndolod_stage9.md)
+(PASS en ambos binarios: root con espacio, eco exacto, archivos físicos en el
+root, presets stale ejercitados con corrección asistida, cero desvío,
+restauración verificada). No generaliza a otros binarios/versiones y no cubre
+los criterios 8–10 del checklist, que corresponden al rig de ownership
+posterior a PR-2.
+
 ---
 
 ## 3. Alternativas evaluadas

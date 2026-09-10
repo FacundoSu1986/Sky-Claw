@@ -26,7 +26,7 @@ Diseño acordado antes de implementar: contexto, decisión y alcance.
 - [#454 — Perfil FOMOD y frontera segura de resultados de tools](specs/2026-08-09-fomod-profile-and-tool-output-security-design.md)
 - [Knowledge Capture — captura local de casos verificables](specs/2026-08-11-knowledge-capture-design.md) — spec sin implementación: acompaña a [ADR 0008](../adr/0008-knowledge-case.md) y precede a su desarrollo, así que no lleva número de PR de implementación como el resto del índice.
 - [Game Design Profile — intención de diseño del usuario](specs/2026-08-18-game-design-profile-intent.md) — propuesta documental sin implementación: registra el boundary y las fases futuras para traducir objetivos de experiencia a un perfil validado antes de cualquier planificación o mutación.
-- [DynDOLOD PR-2 — contrato de trabajo externo](specs/2026-09-09-dyndolod-external-work-root.md) — decisión de lifecycle, propiedad y admisión de `external_work_root` cerrada por [ADR 0011](../adr/0011-dyndolod-external-work-root.md); sin implementación y con el gate de rig abierto.
+- [DynDOLOD PR-2 — contrato de trabajo externo](specs/2026-09-09-dyndolod-external-work-root.md) — decisión de lifecycle, propiedad y admisión de `external_work_root` cerrada por [ADR 0011](../adr/0011-dyndolod-external-work-root.md); sin implementación —el gate de rig quedó cerrado por [T5-v2](../validation/2026-09-10_t5v2_dyndolod_stage9.md) y el bloqueo restante es P0.
 
 ## Planes de implementación (`plans/`)
 

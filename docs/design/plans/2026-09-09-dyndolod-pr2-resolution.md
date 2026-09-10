@@ -2,7 +2,9 @@
 
 > **Para agentes implementadores:** ejecutar por tareas con
 > `superpowers:subagent-driven-development` o `superpowers:executing-plans`.
-> **Estado:** propuesta documental, sin implementación ni corridas nuevas de rig.
+> **Estado:** propuesta documental, sin implementación. **Gate de lanzamiento:
+> PASS** (T5-v2, 2026-09-10 — [informe commiteado](../../validation/2026-09-10_t5v2_dyndolod_stage9.md));
+> PR-2 pasa a estar bloqueado únicamente por P0.
 > **Decisión:** cerrada por [ADR 0011](../../adr/0011-dyndolod-external-work-root.md);
 > su detalle normativo vive en la
 > [spec del contrato](../specs/2026-09-09-dyndolod-external-work-root.md).
@@ -60,6 +62,7 @@ DirectoryRollback, pytest; Windows y binarios reales para aceptación.
 |---|---|---|
 | `C:\Modding\DynDOLOD RigTest\_rig_test\evidence\INFORME_T5_ARGV_DYNDOLOD_ALPHA209.md` | Quoting observado y desvío TexGen con preset; corridas positivas posteriores sin preset | Gate endurecido con ambos presets y runner actual |
 | `C:\Modding\DynDOLOD RigTest\_rig_test\evidence\t5a_20260830\INFORME_T5A_REAL_RIG_20260829.md` | 1362 archivos TexGen en destino del preset, cero en su `-o:`; DynDOLOD generado sin preset | PASS de T5-v2; TexGen no tiene rc capturado y los lanzamientos fueron directos |
+| [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md) — **commiteado en el repo** (raw externo: `E:\Sky-Claw T5 Rig\evidence\2026-09-10_1640\`, huellado en el informe) | **Gate de lanzamiento PASS**: dos corridas separadas por el runner, roots con espacios, eco `Using Output Path:` exacto, outputs físicos en el root, presets rancios ejercitados (TexGen auto-carga; DynDOLOD aplica en Advanced) con corrección asistida, cero desvío, restauración verificada | Criterios 8–10 del checklist (ZIP, dos mods disjuntos, visibilidad billboards) y el rig de servicio completo post-PR-2 |
 | `...\t5a_20260830\manifests\session_manifest.json` y `output_manifest_sha256.csv` | Inventario fechado para contrastar resultados | Estado actual de presets o inputs |
 | `E:\Skyclaw_Main_Sync\dyndolod\_rig_test\rig_harness.py` | Harness histórico con argv anterior a #462 | Aceptación del launcher de producción; `--raw` tampoco lo prueba |
 
@@ -86,15 +89,18 @@ flowchart TD
 ```
 
 Los dos carriles iniciales pueden prepararse en paralelo. Cada cambio tiene rama
-y PR propios. P0 no cambia el `-o:` productivo. El cambio de launch no se aprueba
-ni mergea sin las dos corridas exigidas por `sky_claw/local/AGENTS.md` §2.9. El
-siguiente plan de PR-2 mantiene además la condición conservadora de no comenzar
-su implementación hasta reunir esa evidencia.
+y PR propios. P0 no cambia el `-o:` productivo. Las dos corridas exigidas por
+`sky_claw/local/AGENTS.md` §2.9 se ejecutaron y el gate quedó **PASS**
+(2026-09-10 — informe commiteado arriba): PR-2 deja de estar bloqueado por T5 y
+pasa a estar bloqueado únicamente por P0. La secuencia vigente es ADR 0011 ✅ →
+T5-v2 ✅ → P0 → PR-2 → rig de ownership/packaging → PR-3 → adaptar #528.
 
 **No hay dependencia circular:** el gate inicial usa la inyección del runner
-actual y prueba lanzamiento/archivos/preset. El rig posterior prueba el servicio
-completo con el nuevo layout y packaging. T5-v2 completo conserva sus diez
-puntos; no se marca cerrado por aprobar solo el gate inicial.
+actual y prueba lanzamiento/archivos/preset — **ejecutado y PASS el 2026-09-10**
+(informe commiteado). El rig posterior prueba el servicio completo con el nuevo
+layout y packaging: los criterios 8–10 del checklist T5-v2 siguen siendo SU barra
+de aceptación. El gate de lanzamiento quedó cerrado y no se reabre salvo cambios
+al builder compartido (`_build_xedit_args`) o a los binarios.
 
 ## 3. P0 — lifecycle antes de activar la nueva raíz
 

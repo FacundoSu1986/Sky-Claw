@@ -11,3 +11,4 @@ Cada paquete registra lo observado en un rig concreto. Un estado `Bloqueado` o
 runner.
 
 - [Inventario GA del 2026-07-30](2026-07-30_ga_rig_inventory.md)
+- [Gate T5-v2 DynDOLOD etapa 9 — 2026-09-10](2026-09-10_t5v2_dyndolod_stage9.md)
