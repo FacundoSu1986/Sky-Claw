@@ -103,8 +103,9 @@ actual y prueba lanzamiento/archivos/preset — **ejecutado y PASS el 2026-09-10
 (informe commiteado). El rig posterior prueba el servicio completo con el nuevo
 layout y packaging: los criterios 8–10 del checklist T5-v2 siguen siendo SU barra
 de aceptación. El gate de lanzamiento quedó cerrado y no se reabre salvo cambios
-que alteren cómo se construye o serializa el argv: el builder compartido
-(`_build_xedit_args`), el path de spawn/serialización que lo transporta
+que alteren cómo se construye o serializa el argv, o el destino que declara: el
+builder compartido (`_build_xedit_args`), los subroots/roots administrados que
+emite para `-o:`, el path de spawn/serialización que lo transporta
 (`DynDOLODRunner._execute_process` → `create_subprocess_exec`), o los binarios.
 
 ## 3. P0 — lifecycle antes de activar la nueva raíz

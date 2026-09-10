@@ -4,7 +4,7 @@
 > (Propuesta hasta el merge de ese PR). No implementada; el gate de rig de
 > `sky_claw/local/AGENTS.md` §2.9 que este documento no levanta quedó cerrado por
 > T5-v2 (2026-09-10 —
-> [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../validation/2026-09-10_t5v2_dyndolod_stage9.md))
+> [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md))
 > y el bloqueo de implementación pasa a ser P0.
 > **Baseline:** `origin/main` `5e5e9448db0d4015b3bf0dc4c1df10fdc49e226c`,
 > verificado el 2026-09-09 mediante fetch y lectura de código.
@@ -373,7 +373,7 @@ una con: root con espacio, `Using Output Path:` exacto, archivos físicos en el
 root esperado, preset stale presente deliberadamente y sin desvío al preset stale.
 **Esas dos corridas se ejecutaron y el gate quedó cerrado el 2026-09-10** —
 informe commiteado:
-[`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../validation/2026-09-10_t5v2_dyndolod_stage9.md).
+[`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md).
 La [documentación oficial de TexGen](https://dyndolod.info/Help/TexGen) recomienda
 salida dedicada externa (consultada 2026-09-09) y describe la línea de comandos,
 pero **no demuestra** cómo se comporta la versión del binario del rig.

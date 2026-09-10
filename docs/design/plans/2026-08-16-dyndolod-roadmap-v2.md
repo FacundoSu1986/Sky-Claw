@@ -325,7 +325,8 @@ visibilidad; si falla, el trabajo es investigar el perfil de MO2, no parchear T3
 > posterior a PR-2, así que el checklist T5-v2 completo queda **PARCIAL (7/10)**
 > — lo único cerrado es el gate de lanzamiento. El checklist se conserva como
 > precedente contractual: un cambio futuro que altere cómo se construye o
-> serializa el argv (builder `_build_xedit_args`, path de spawn/serialización en
+> serializa el argv o el destino que declara (builder `_build_xedit_args`,
+> subroots `-o:`, path de spawn/serialización en
 > `DynDOLODRunner._execute_process`) o a los binarios re-abre el requisito.
 
 v1 aceptaba *"el log declara `Using Output Path:` igual a la raíz administrada"*.
