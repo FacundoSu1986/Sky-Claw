@@ -128,12 +128,13 @@ def test_focus_visible_pisa_el_reset_de_quasar_en_inputs() -> None:
 # y emisiones inline del shell). Enumerar la familia completa —no muestrear— es
 # lo que hace que una animación nueva sin política de movimiento reducido rompa
 # el test en CI (AGENTS.md: anclar con enumeración, no con ejemplos).
-_ANIMACIONES_POR_CLASE_CSS: dict[str, set[str]] = {
-    # keyframes aplicados por reglas del stylesheet → selectores que los aplican.
-    "sky-pulse-amber": {".sky-active-rune"},
-    "sky-pulse-soft": {".sky-connection-dot--connected"},
-    "sky-fade-up": {".sky-animate-in"},
-}
+#
+# Animaciones aplicadas por reglas del stylesheet: NINGUNA hoy — las tres v3
+# (sky-pulse-amber/soft, sky-fade-up) solo las emitían el sidebar/header legacy
+# y murieron con la isla pre-Forge. El mapa queda VACÍO a propósito: cualquier
+# `animation:` nueva en styles.css rompe el ancla hasta que reciba su política
+# de movimiento reducido.
+_ANIMACIONES_POR_CLASE_CSS: dict[str, set[str]] = {}
 
 _ANIMACIONES_INLINE: dict[str, str] = {
     # keyframes emitidos por forge_dashboard.py en estilos inline → clase
@@ -307,3 +308,64 @@ def test_rituales_atenuan_decoracion_nunca_el_texto() -> None:
         assert "opacity" not in estilo, f"{estado}: opacity global en la tarjeta (ataca al texto)"
         assert float(estilo["deco_opacity"]) <= 1.0
         assert estilo["card_border"].startswith("rgba(200,168,106")
+
+
+# ── Limpieza de la isla pre-Forge (C3/A3 del roadmap GUI) ────────────────────
+
+#: Archivos que se eliminaron porque SOLO los alcanzaba el render muerto del
+#: viejo home (``render_dashboard_page_content``/secciones legacy). Si reaparece
+#: cualquiera, el ancla se rompe a propósito — reintroducir el viejo shell
+#: significaba (de hecho) dos shells con dos paletas conviviendo.
+_MODULOS_LEGACY_ELIMINADOS = (
+    "views/layout/__init__.py",
+    "views/layout/header.py",
+    "views/layout/sidebar.py",
+    "views/sections/stats_section.py",
+    "views/sections/features_section.py",
+    "views/sections/mods_preview.py",
+    "views/sections/cta_section.py",
+    "views/components/chat_bubble.py",
+    "views/components/feature_card.py",
+    "views/components/mod_item.py",
+    "views/components/stat_card.py",
+)
+
+
+def test_modulos_legacy_eliminados_no_reaparecen() -> None:
+    """La isla pre-Forge quedó vacía: ninguno de los módulos borrados puede
+    reaparecer (ningún recreador silencioso de importlib ni copy accidental).
+
+    Las rutas se resuelven contra ``_GUI_DIR`` (que ya es ``app/gui``) — el bug
+    original duplicaba el prefijo ``views/views/`` y el ancla siempre pasaba en
+    falso positivo (encontrado por Codex/Copilot en #572)."""
+    for rel in _MODULOS_LEGACY_ELIMINADOS:
+        assert not (_GUI_DIR / rel).exists(), f"módulo legacy reintroducido: {rel}"
+
+
+def test_superficie_publica_de_views_es_la_fachada_forja() -> None:
+    """El paquete ``views`` solo exporta ``render_dashboard`` (la fachada que
+    sky_claw_gui.py consume: delega en ``render_forge_dashboard``). Si vuelve un
+    create_* sin emisores en el Forge, el ancla lo detecta."""
+    import sky_claw.app.gui.views as views_pkg
+
+    assert views_pkg.__all__ == ["render_dashboard"]
+
+
+def test_medievalsharp_fuera_del_bundle() -> None:
+    """MedievalSharp se retiró (A3): estaba empaquetada y nunca aplicada — 61 KB
+    de peso muerto en el exe. La que no puede reaparecer es la REGLA
+    ``font-family: 'MedievalSharp'`` (en cualquier forma: comillas simples,
+    dobles o sin comillas — el regex se evalúa sobre el CSS SIN comentarios, así
+    que el propio comentario documental del retiro no lo dispara) y los woff2."""
+    css_sin_comentarios = re.sub(r"/\*.*?\*/", "", _FONTS, flags=re.DOTALL)
+    # re.IGNORECASE: los nombres de font-family son case-insensitive en CSS —
+    # "medievalsharp" minúscula restauraría la familia sin romper el ancla
+    # (revisión CodeRabbit #572).
+    assert not re.search(
+        r"font-family\s*:\s*['\"]?MedievalSharp['\"]?",
+        css_sin_comentarios,
+        flags=re.IGNORECASE,
+    ), "regla font-family MedievalSharp reintroducida"
+    fonts_dir = _GUI_DIR / "assets" / "fonts"
+    remanentes = sorted(p.name for p in fonts_dir.iterdir() if p.name.lower().startswith("medievalsharp"))
+    assert remanentes == [], f"woff2 de MedievalSharp residuales: {remanentes}"

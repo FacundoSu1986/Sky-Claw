@@ -10,52 +10,23 @@ REGLAS DE ORO:
 4. Flujo de Datos: Las Vistas reciben datos vía props y callbacks.
 
 Estructura:
-- components/ : Componentes atómicos reutilizables (botones, tarjetas, etc.)
-- layout/ : Componentes de layout (header, sidebar, etc.)
-- sections/ : Secciones compuestas (stats, features, etc.)
-- pages/ : Páginas completas (dashboard, mods, etc.)
+- components/ : Componentes atómicos reutilizables (botones)
+- sections/ : Secciones compuestas (paneles por evento del shell Forge)
+- pages/ : Páginas completas (dashboard)
+
+El shell Forge se renderiza ENTERO desde ``views/forge_dashboard.py``
+(``render_forge_dashboard``); el paquete ``views`` solo reexporta la fachada
+``render_dashboard`` que ``sky_claw_gui.py`` consume (delega en el Forge). Los
+módulos pre-Forge (layout/header, sidebar y las secciones del viejo home) ya no
+existen — dos shells/paletas paralelos fue exactamente el defecto que la
+limpieza cerró; el ancla ``tests/test_gui_theme_contracts.py`` congela la
+superficie pública para no reintroducirlos.
 """
 
-# Componentes atómicos
 from __future__ import annotations
 
-from .components.buttons import create_cta_button
-from .components.chat_bubble import create_chat_message
-from .components.feature_card import create_feature_card
-from .components.mod_item import create_mod_list_item
-from .components.stat_card import create_stat_card
-from .layout.header import create_header
-
-# Layout
-from .layout.sidebar import create_sidebar
-
-# Páginas completas
-from .pages.dashboard_page import render_dashboard, render_dashboard_page_content
-from .sections.chat_preview import create_chat_preview
-from .sections.cta_section import create_cta_section
-from .sections.features_section import create_features_section
-from .sections.mods_preview import create_mods_preview
-
-# Secciones compuestas
-from .sections.stats_section import create_stats_section
+from .pages.dashboard_page import render_dashboard
 
 __all__ = [
-    "create_chat_message",
-    "create_chat_preview",
-    "create_cta_button",
-    "create_cta_section",
-    "create_feature_card",
-    "create_features_section",
-    "create_header",
-    "create_mod_list_item",
-    "create_mods_preview",
-    # Layout
-    "create_sidebar",
-    # Componentes atómicos
-    "create_stat_card",
-    # Secciones
-    "create_stats_section",
-    # Páginas
     "render_dashboard",
-    "render_dashboard_page_content",
 ]
