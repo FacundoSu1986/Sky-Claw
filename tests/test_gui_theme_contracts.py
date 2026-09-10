@@ -358,9 +358,14 @@ def test_medievalsharp_fuera_del_bundle() -> None:
     dobles o sin comillas — el regex se evalúa sobre el CSS SIN comentarios, así
     que el propio comentario documental del retiro no lo dispara) y los woff2."""
     css_sin_comentarios = re.sub(r"/\*.*?\*/", "", _FONTS, flags=re.DOTALL)
-    assert not re.search(r"font-family\s*:\s*['\"]?MedievalSharp['\"]?", css_sin_comentarios), (
-        "regla font-family MedievalSharp reintroducida"
-    )
+    # re.IGNORECASE: los nombres de font-family son case-insensitive en CSS —
+    # "medievalsharp" minúscula restauraría la familia sin romper el ancla
+    # (revisión CodeRabbit #572).
+    assert not re.search(
+        r"font-family\s*:\s*['\"]?MedievalSharp['\"]?",
+        css_sin_comentarios,
+        flags=re.IGNORECASE,
+    ), "regla font-family MedievalSharp reintroducida"
     fonts_dir = _GUI_DIR / "assets" / "fonts"
     remanentes = sorted(p.name for p in fonts_dir.iterdir() if p.name.lower().startswith("medievalsharp"))
     assert remanentes == [], f"woff2 de MedievalSharp residuales: {remanentes}"
