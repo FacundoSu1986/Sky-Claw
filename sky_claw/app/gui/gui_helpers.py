@@ -36,9 +36,11 @@ def _load_css() -> None:
     # WCAG-AA contrast.
     ui.colors(primary="#8b6d23", secondary="#5d4037", accent="#ff9d00", dark="#0b0e14")
 
-    # Bundled medieval webfonts (Cinzel body / MedievalSharp display / Noto Sans
-    # Runic). Served offline from gui/assets/fonts via add_static_files("/assets"),
-    # so the frozen exe renders the theme with no network call at boot.
+    # Bundled medieval webfonts (Cinzel display / EB Garamond cuerpo / Noto Sans
+    # Runic / Spline Sans Mono). Served offline from gui/assets/fonts via
+    # add_static_files("/assets"), so the frozen exe renders the theme with no
+    # network call at boot. (MedievalSharp se retiró: estaba empaquetada y nunca
+    # aplicada — A3 del roadmap GUI.)
     ui.add_head_html('<link rel="stylesheet" href="/assets/fonts/fonts.css">')
 
     # Define playSkyrimSound up front: stat/feature cards and CTA buttons call it

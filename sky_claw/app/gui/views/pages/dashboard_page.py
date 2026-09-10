@@ -1,34 +1,17 @@
 """Página principal del dashboard.
 
-Orquesta todas las secciones del dashboard para formar la vista completa.
-VIEW PURO - Sin lógica de negocio, solo composición de vistas.
+``render_dashboard`` ES la fachada histórica que ``sky_claw_gui.py`` invoca;
+hoy delega 1:1 en ``views/forge_dashboard.py`` (shell Forge v4.0). La vieja
+isla pre-Forge que vivía debajo (cols/scroller sections, home sections, page
+content) no llegaba a ejecutarse: se eliminó con la limpieza de código muerto.
 
-Esta página es un "presentador" que:
-1. Recibe todos los datos necesarios como parámetros
-2. Recibe callbacks para eventos del usuario
-3. Compone las secciones visuales
+VIEW PURO - Sin lógica de negocio, solo composición de vistas.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-
-from nicegui import ui
-
-from ..mod_list import build_mod_list
-from ..sections.chat_preview import create_chat_preview
-from ..sections.cta_section import create_cta_section
-from ..sections.features_section import create_features_section
-from ..sections.mods_preview import create_mods_preview
-from ..sections.stats_section import create_stats_section
-
-# Paleta Nordic — el área de trabajo recibe un resplandor de antorcha (ámbar
-# arriba, oro al fondo) sobre la textura de piedra del body.
-COLORS = {
-    "glow_violet": "#ff9d00",  # ámbar de antorcha (antes violeta)
-    "glow_cyan": "#ffb300",  # oro (antes cyan)
-}
 
 
 def render_dashboard(
@@ -133,9 +116,10 @@ def render_dashboard(
     )
 
 
-# ── Parte 5: contenido por sección ─────────────────────────────────────────────
+# ── Helpers compartidos por los controllers activos ──────────────────────────
 
-#: Secciones del sidebar sin vista dedicada todavía (placeholder honesto).
+#: Secciones del sidebar sin vista dedicada (placeholders honestos): usado por
+#: el controlador de navegación y su test ancla.
 _PLACEHOLDER_SECTIONS: tuple[str, ...] = ("Conflicts", "Downloads", "Settings")
 
 
@@ -150,126 +134,3 @@ def mods_for_list(mods: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for m in mods
     ]
-
-
-def _render_active_section(
-    active_section: str,
-    *,
-    stats: dict[str, Any],
-    mods: list[dict[str, Any]],
-    chat_messages: list[dict[str, Any]],
-    is_thinking: bool,
-    callbacks: dict[str, Callable],
-) -> None:
-    """Despacha el contenido del área principal según la sección activa."""
-    if active_section == "Mods":
-        build_mod_list(
-            mods=mods_for_list(mods),
-            on_toggle=callbacks.get("on_mod_toggle"),
-        )
-        return
-    if active_section in _PLACEHOLDER_SECTIONS:
-        _render_placeholder_section(active_section, callbacks)
-        return
-    # Default: Dashboard (home)
-    _render_home_sections(
-        stats=stats,
-        mods=mods,
-        chat_messages=chat_messages,
-        is_thinking=is_thinking,
-        callbacks=callbacks,
-    )
-
-
-def _render_placeholder_section(section: str, callbacks: dict[str, Callable]) -> None:
-    """Sección sin vista dedicada: placeholder explícito + vuelta al Dashboard.
-
-    Mejor un placeholder honesto que re-renderizar silenciosamente el home
-    (el usuario sabría que navegó pero vería el mismo contenido).
-    """
-    with ui.element("div").classes("flex flex-col items-center justify-center py-24 gap-4"):
-        ui.icon("construction", size="3rem").classes("text-[#ff9d00]")
-        ui.label(section).classes("text-white text-3xl font-bold")
-        ui.label("Esta sección llega en una próxima iteración.").classes("text-[#9ca3af]")
-        on_navigate = callbacks.get("on_navigate")
-        if on_navigate:
-            ui.button(
-                "Volver al Dashboard",
-                on_click=lambda: on_navigate("Dashboard"),
-            ).props("unelevated no-caps")
-
-
-def render_dashboard_page_content(
-    stats: dict[str, Any],
-    mods: list[dict[str, Any]],
-    chat_messages: list[dict[str, Any]],
-    is_thinking: bool,
-    callbacks: dict[str, Callable],
-) -> None:
-    """Renderiza solo el contenido del dashboard (sin sidebar ni header).
-
-    Útil para integración en layouts personalizados o testing.
-
-    Args:
-        Ver render_dashboard() para descripción completa de parámetros.
-    """
-    # Contenido con fondo gradiente
-    with (
-        ui.element("div")
-        .classes("flex-1 p-8 overflow-y-auto sky-scrollbar")
-        .style(
-            f"background: radial-gradient(ellipse at top, "
-            f"{COLORS['glow_violet']}12, transparent 50%), "
-            f"radial-gradient(ellipse at bottom right, "
-            f"{COLORS['glow_cyan']}8, transparent 50%);"
-        )
-    ):
-        _render_home_sections(
-            stats=stats,
-            mods=mods,
-            chat_messages=chat_messages,
-            is_thinking=is_thinking,
-            callbacks=callbacks,
-        )
-
-
-def _render_home_sections(
-    *,
-    stats: dict[str, Any],
-    mods: list[dict[str, Any]],
-    chat_messages: list[dict[str, Any]],
-    is_thinking: bool,
-    callbacks: dict[str, Callable],
-) -> None:
-    """Secciones del home del dashboard (compartidas por ambos renderers)."""
-    # Encabezado rúnico (set-piece): runas grabadas sobre la sección. Decorativo
-    # — aria-hidden para que los lectores de pantalla no anuncien los glifos.
-    ui.html('<div class="sky-rune-divider" aria-hidden="true">ᚦᚢ&nbsp;&nbsp;ᛞᚱᚪᚷᚩᚾᛒᚩᚱᚾ&nbsp;&nbsp;ᚷᚱᛖᛖᛏᛁᚾᚷᛋ</div>')
-
-    # Sección de estadísticas
-    create_stats_section(stats)
-
-    # Sección de features
-    create_features_section(
-        on_feature_click=callbacks.get("on_feature_click"),
-    )
-
-    # Grid de 2 columnas: Mods Preview + Chat Preview
-    with ui.element("div").classes("grid grid-cols-2 gap-8 mb-8"):
-        create_mods_preview(
-            mods=mods,
-            on_view_all=callbacks.get("on_view_all_mods"),
-            on_mod_click=callbacks.get("on_mod_click"),
-        )
-
-        create_chat_preview(
-            messages=chat_messages,
-            is_thinking=is_thinking,
-            on_send_message=callbacks.get("on_send_message"),
-        )
-
-    # Sección de Call-to-Action
-    create_cta_section(
-        on_primary_action=callbacks.get("on_cta_primary", lambda: None),
-        on_secondary_action=callbacks.get("on_cta_secondary"),
-    )

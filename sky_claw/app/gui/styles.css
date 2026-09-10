@@ -105,28 +105,14 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     background: radial-gradient(135% 95% at 50% -5%, transparent 60%, rgba(0, 0, 0, 0.42));
 }
 
-/* Scrollbars talladas */
-.sky-scrollbar {
-    scrollbar-width: thin;
-    scrollbar-color: #6a5a38 rgba(0, 0, 0, 0.28);
-}
-.sky-scrollbar::-webkit-scrollbar { width: 10px; height: 10px; }
-.sky-scrollbar::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.28); }
-.sky-scrollbar::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, #6a5a38, #352b1a);
-    border-radius: 10px; border: 2px solid transparent; background-clip: padding-box;
-}
-.sky-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(180deg, #8a7444, #4a3c24); background-clip: padding-box;
-}
-
-/* El shell Forge (forge_dashboard.py) usa su propia clase de scroll — antes
-   caía al scrollbar nativo del navegador (gris claro), que rompía la lectura
-   "piedra tallada" del fondo. Misma receta que .sky-scrollbar.
+/* Scrollbars talladas del shell Forge (forge_dashboard.py) — la clase
+   ``sc-scroll`` cubre los 3 contenedores con scroll (contenido principal,
+   Orden de Carga, chat). Antes no existía regla y caían a la scrollbar nativa
+   gris del navegador, rompiendo la lectura "piedra tallada".
    scrollbar-width/color es el fallback estándar (Firefox): los pseudoselectores
    ::-webkit-scrollbar solo aplican en Chromium — el webview por defecto de
    NiceGUI — pero el shell también puede abrirse en un navegador externo.
-   El mismo par de propiedades va en .sky-scrollbar (ruta legacy). */
+   (La clase legacy .sky-scrollbar murió con la isla pre-Forge). */
 .sc-scroll {
     scrollbar-width: thin;
     scrollbar-color: #6a5a38 rgba(0, 0, 0, 0.28);
@@ -142,104 +128,19 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   3. SIDEBAR — MADERA Y PIEDRA CON FILO DE ORO
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-sidebar {
-    background: linear-gradient(176deg, #241710 0%, #1a120c 46%, #0d0907 100%) !important;
-    border-right: 1px solid rgba(200, 168, 106, 0.32) !important;
-    position: relative;
-    box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.03), 14px 0 40px -20px rgba(0, 0, 0, 0.9);
-}
-.sky-sidebar::after {
-    content: '';
-    position: absolute; top: 0; right: 0; bottom: 0; width: 1px;
-    background: linear-gradient(180deg, transparent, var(--sky-gold), transparent);
-    opacity: 0.55; pointer-events: none;
-}
-
-.sky-connection-dot {
-    width: 9px; height: 9px; border-radius: 50%; display: inline-block;
-    background: var(--sky-text-muted);
-}
-.sky-connection-dot--connected {
-    background: var(--sky-green);
-    box-shadow: 0 0 9px rgba(95, 156, 107, 0.7);
-    animation: sky-pulse-soft 2.6s ease-in-out infinite;
-}
-
-/* Resplandor "magicka" estático (logo, avatar, chips focales) */
-.sky-glow-static {
-    box-shadow: 0 0 18px var(--sky-glow), inset 0 1px 0 rgba(255, 255, 255, 0.12);
-    border: 1px solid var(--sky-gold) !important;
-}
+    3. SHELL FORJA — el sidebar vive en inline styles del Forge (forge_dashboard.py)
+    ═══════════════════════════════════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   4. HEADER — DINTEL DE MADERA TALLADA
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-.sky-header {
-    background: linear-gradient(180deg, rgba(26, 18, 12, 0.96), rgba(11, 14, 20, 0.92)) !important;
-    border-bottom: 1px solid rgba(62, 39, 35, 0.9) !important;
-    position: relative;
-    backdrop-filter: blur(8px);
-    box-shadow: 0 8px 26px -14px rgba(0, 0, 0, 0.9);
-}
-.sky-header::after {
-    content: '';
-    position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
-    background: linear-gradient(90deg, transparent, var(--sky-glow), transparent);
-}
-
-/* Inputs — campo de cuero con runa de foco dorada */
-.sky-input-premium,
-.sky-input-premium .q-field__control {
-    background: rgba(62, 39, 35, 0.55) !important;
-    border: 1px solid rgba(200, 168, 106, 0.30) !important;
-    border-radius: 6px !important;
-    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45);
-}
-.sky-input-premium input,
-.sky-input-premium .q-field__native,
-.sky-input-premium textarea {
-    color: var(--sky-text-primary) !important;
-    font-family: var(--sky-font-family);
-}
-.sky-input-premium input::placeholder,
-.sky-input-premium .q-field__native::placeholder { color: rgba(219, 196, 161, 0.45) !important; }
-.sky-input-premium:focus-within,
-.sky-input-premium .q-field__control:focus-within {
-    border-color: var(--sky-gold) !important;
-    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45), 0 0 14px var(--sky-glow);
-}
-
-.sky-card-hover { transition: all var(--sky-transition); cursor: pointer; }
-.sky-card-hover:hover { transform: translateY(-2px); box-shadow: 0 0 18px var(--sky-glow); }
+    4. HEADER — idem: el dintel del Forge ya está emitido por el shell
+    ═══════════════════════════════════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   5. TARJETA DE PERGAMINO (stat cards / feature cards)
-   ═══════════════════════════════════════════════════════════════════════════════════ */
+    5. SUPERFICIES COMPARTIDAS (glow overlay / paneles vidrio)
+    ═══════════════════════════════════════════════════════════════════════════════════ */
 
-.sky-parchment-card {
-    background-image: linear-gradient(168deg, rgba(255, 250, 235, 0.10), rgba(60, 40, 16, 0.10)), url('/assets/parchment.png');
-    background-size: cover; background-position: center;
-    border: 2px solid var(--sky-parchment-edge);
-    border-radius: 5px;
-    box-shadow: 0 16px 34px -18px rgba(0, 0, 0, 0.8), inset 0 0 40px rgba(0, 0, 0, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.18);
-    position: relative; overflow: hidden;
-    color: var(--sky-parchment-text);
-    transition: transform var(--sky-transition), border-color var(--sky-transition), box-shadow var(--sky-transition);
-}
-.sky-parchment-card::before {
-    content: '';
-    position: absolute; top: 5px; left: 5px; right: 5px; bottom: 5px;
-    border: 1px solid rgba(92, 74, 42, 0.28); border-radius: 3px; pointer-events: none;
-}
-.sky-parchment-card:hover {
-    transform: translateY(-3px);
-    border-color: var(--sky-gold-deep);
-    box-shadow: 0 22px 44px -18px rgba(0, 0, 0, 0.9), 0 0 18px var(--sky-glow), inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
+/* La tarjeta de pergamino (.sky-parchment-card) murió con las stat/feature cards
+   del viejo home; el shell Forge compone sus propias tarjetas inline. */
 
 .sky-technical-stat { font-family: var(--sky-font-mono); font-weight: 600; color: var(--sky-parchment-text); }
 
@@ -433,44 +334,11 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 .sky-health-text { font-size: 0.92rem; color: var(--sky-text-primary); line-height: 1.6; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   11. BADGES, PANELES OSCUROS Y DIÁLOGO
-   ═══════════════════════════════════════════════════════════════════════════════════ */
+    11. BADGES
+    ═══════════════════════════════════════════════════════════════════════════════════ */
 
-.sky-badge { padding: 0.25rem 0.75rem; border-radius: 99px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
-.sky-badge--success { background: rgba(95, 156, 107, 0.18); color: #9bbf8e; border: 1px solid rgba(95, 156, 107, 0.4); }
-.sky-badge--error   { background: rgba(216, 88, 78, 0.16); color: #e88a82; border: 1px solid rgba(216, 88, 78, 0.45); }
-.sky-badge--rune,
-.sky-badge--violet  { background: var(--sky-glow); color: var(--sky-gold-bright); border: 1px solid var(--sky-gold); letter-spacing: 0.08em; }
-
-/* Paneles oscuros (chat / mods preview) — vidrio forjado */
-.sky-chat-panel,
-.sky-mods-panel {
-    background: linear-gradient(180deg, rgba(30, 22, 16, 0.5), rgba(11, 14, 19, 0.86)) !important;
-    border: 1px solid rgba(62, 39, 35, 0.95) !important;
-    border-radius: 12px;
-    box-shadow: 0 20px 44px -22px rgba(0, 0, 0, 0.85), inset 0 0 40px rgba(0, 0, 0, 0.4) !important;
-}
-
-/* Diálogo estilo Skyrim (chat) */
-.sky-dialog-box {
-    background: rgba(11, 14, 20, 0.85); backdrop-filter: blur(12px);
-    border: 1px solid var(--sky-gold-dim); border-radius: 3px;
-    padding: 1.25rem; margin-bottom: 2rem; position: relative;
-}
-.sky-dialog-box--user  { border-right: 4px solid var(--sky-gold); }
-.sky-dialog-box--agent { border-left: 4px solid var(--sky-gold); }
-
-/* Divisor rúnico (set-piece) */
-.sky-rune-divider {
-    display: flex; align-items: center; justify-content: center; gap: 0.75rem;
-    margin: 0.25rem 0 1.25rem; color: var(--sky-gold); opacity: 0.85;
-    font-family: var(--sky-font-runic); font-size: 1rem; letter-spacing: 0.3em;
-    text-shadow: 0 0 10px var(--sky-glow);
-}
-.sky-rune-divider::before, .sky-rune-divider::after {
-    content: ''; flex: 1; height: 1px;
-    background: linear-gradient(90deg, transparent, var(--sky-gold-dim), transparent);
-}
+/* (.sky-badge y variantes murieron con el viejo home; si hubiera pills vivas
+   serían .sky-badge-count —mod_list.py— o pills inline del shell Forge). */
 
 .sky-glow-amber { box-shadow: 0 0 20px var(--sky-glow); border-color: var(--sky-gold); }
 .sky-rune-glow  { font-family: var(--sky-font-runic); color: var(--sky-gold); text-shadow: 0 0 8px var(--sky-glow); }
@@ -556,14 +424,13 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 .sky-wizard-nordic { background: linear-gradient(180deg, #241a12, #110c08); border: 1px solid rgba(200, 168, 106, 0.42); padding: 3rem; color: var(--sky-text-primary); box-shadow: 0 0 100px rgba(0, 0, 0, 0.8); }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   13. ANIMACIONES
-   ═══════════════════════════════════════════════════════════════════════════════════ */
-
-@keyframes sky-pulse-amber { 0%, 100% { opacity: 0.85; } 50% { opacity: 1; text-shadow: 0 0 15px var(--sky-glow); } }
-@keyframes sky-pulse-soft  { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
-@keyframes sky-fade-up     { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-.sky-active-rune { font-family: var(--sky-font-runic); animation: sky-pulse-amber 3s infinite; }
+    13. ANIMACIONES v3 (PURGADAS)
+    sky-pulse-amber / sky-pulse-soft / sky-fade-up y sus clases
+    (.sky-active-rune / .sky-connection-dot--connected / .sky-animate-in) solo las
+    emitían el sidebar/header legacy — sin emisores, la regla y su keyframe eran
+    peso muerto en el stylesheet. Las keyframes vivas del shell están en §14 y la
+    política de movimiento reducido en §15.
+    ═══════════════════════════════════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
    14. FORGE PANEL — keyframes del rediseño HiFi (hero/embers/shimmer/pulse)
@@ -576,7 +443,6 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 @keyframes scBlink   { 0%, 75%, 100% { opacity: 0.25; } 38% { opacity: 1; } }
 @keyframes scSpin    { to { transform: rotate(360deg); } }
 @keyframes scFade    { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-.sky-animate-in  { animation: sky-fade-up 0.5s ease-out forwards; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
     15. ACCESIBILIDAD — FOCO VISIBLE Y MOVIMIENTO REDUCIDO
@@ -607,21 +473,18 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 }
 
 /* Respeta "reducir movimiento" del SO con una política DIRIGIDA a lo decorativo:
-   aurora, brasas, shimmer, pulso del dot de conexión, blink del chat y fades de
-   entrada. Nada de selector universal (*, *::before, *::after): congelaba también
-   spinners e indicadores de carga de Quasar/NiceGUI y transiciones funcionales
-   ajenas al tema. Las transiciones del tema (hover, iniciadas por el usuario)
-   se conservan; scroll-behavior no hace falta tocarlo (el tema nunca pide smooth).
-   Los !important ganan a los estilos inline que emite el Forge. Los keyframes
-   inline del shell viajan con clases marcadoras emitidas por
-   views/forge_dashboard.py (el test de contratos congela la familia completa):
-   .sc-deco — decoración que queda estática sin ambigüedad (el estado lo siguen
-   dando el color/etiqueta/texto) — y .sc-ember — partículas que se apagan del
-   todo, porque sin animación quedarían como puntos fijos en vez de fundirse. */
+   aurora, brasas, shimmer, pulsos y blink del chat. Nada de selector universal
+   (*, *::before, *::after): congelaba también spinners e indicadores de carga
+   de Quasar/NiceGUI y transiciones funcionales ajenas al tema. Las transiciones
+   del tema (hover, iniciadas por el usuario) se conservan; scroll-behavior no
+   hace falta tocarlo (el tema nunca pide smooth). Los !important ganan a los
+   estilos inline que emite el Forge. Los keyframes inline del shell viajan con
+   clases marcadoras emitidas por views/forge_dashboard.py (el test de contratos
+   congela la familia completa): .sc-deco — decoración que queda estática sin
+   ambigüedad (el estado lo siguen dando el color/etiqueta/texto) — y
+   .sc-ember — partículas que se apagan del todo, porque sin animación quedarían
+   como puntos fijos en vez de fundirse. */
 @media (prefers-reduced-motion: reduce) {
-    .sky-connection-dot--connected,
-    .sky-active-rune,
-    .sky-animate-in,
     .sc-deco {
         animation: none !important;
     }
