@@ -5,8 +5,8 @@ preview manifest). Las secciones son "tontas" - solo componen componentes
 visuales.
 
 Las secciones del viejo home pre-Forge (cta/features/mods_preview/stats) se
-eliminan en el PR de limpieza: el shell Forge no las renderiza y el shell viene
-endo desde ``render_forge_dashboard``.
+eliminaron en el PR de limpieza: el shell Forge no las renderizaba — el home
+actual lo dibuja entero ``render_forge_dashboard``.
 """
 
 from __future__ import annotations

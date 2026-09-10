@@ -85,19 +85,12 @@ Objetivos:
 ### A3 — MedievalSharp: alcance y decisión de adopción vs. eliminación
 
 **Estado:** **RESUELTO (eliminación)** en #572 — la familia quedó fuera de
-`fonts.css` y los dos woff2 fuera del bundle; ancla en
-`tests/test_gui_theme_contracts.py::test_medievalsharp_fuera_del_bundle`.
+`fonts.css` y los dos woff2 fuera del bundle y del árbol; ancla en
+`tests/test_gui_theme_contracts.py::test_medievalsharp_fuera_del_bundle`
+(regex sobre CSS sin comentarios: cubre comillas simples, dobles y
+declaración sin comillas).
 Si en el futuro se le quisiera dar rol (p. ej. títulos diegéticos), adoptarla
-exige reintroducir el asset + el ancla aplica presión creciente.
-
-El empaquetado ya es un hecho congelado en el árbol: `sky_claw.spec:109-115` añade el directorio entero `sky_claw/app/gui/assets` a `datas`, y `tests/test_pyinstaller.py:44-52` congela ese contrato exacto en CI, por lo que ambos archivos WOFF2 de MedievalSharp (~61 KB combinados) ya se incluyen en la distribución congelada.
-
-El trabajo pendiente queda acotado a:
-
-1. **reachability CSS/runtime:** auditar exhaustivamente si alguna regla de `styles.css` o superficie de UI invoca la familia tipográfica `MedievalSharp`;
-2. **impacto de tamaño y decisión:**
-   - si se le asigna un rol visual justificado (p. ej. display/títulos diegéticos específicos), documentarlo y anclar su consumo;
-   - si no tiene reachability y no se adopta, eliminar los dos archivos WOFF2 y su `@font-face` en `fonts.css`, reduciendo el bundle distribuido sin romper contratos.
+exige reintroducir el asset más la regla, y el ancla aplica presión consciente.
 
 ### C3 — Layout/sections legacy: depuración con exclusión de componentes activos
 

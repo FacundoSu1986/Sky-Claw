@@ -333,10 +333,13 @@ _MODULOS_LEGACY_ELIMINADOS = (
 
 def test_modulos_legacy_eliminados_no_reaparecen() -> None:
     """La isla pre-Forge quedó vacía: ninguno de los módulos borrados puede
-    reaparecer (ningún recreador silencioso de importlib ni copy accidental)."""
-    base = _GUI_DIR / "views"
+    reaparecer (ningún recreador silencioso de importlib ni copy accidental).
+
+    Las rutas se resuelven contra ``_GUI_DIR`` (que ya es ``app/gui``) — el bug
+    original duplicaba el prefijo ``views/views/`` y el ancla siempre pasaba en
+    falso positivo (encontrado por Codex/Copilot en #572)."""
     for rel in _MODULOS_LEGACY_ELIMINADOS:
-        assert not (base / rel).exists(), f"módulo legacy reintroducido: {rel}"
+        assert not (_GUI_DIR / rel).exists(), f"módulo legacy reintroducido: {rel}"
 
 
 def test_superficie_publica_de_views_es_la_fachada_forja() -> None:
@@ -351,10 +354,13 @@ def test_superficie_publica_de_views_es_la_fachada_forja() -> None:
 def test_medievalsharp_fuera_del_bundle() -> None:
     """MedievalSharp se retiró (A3): estaba empaquetada y nunca aplicada — 61 KB
     de peso muerto en el exe. La que no puede reaparecer es la REGLA
-    (``font-family: 'MedievalSharp'``) y los woff2; el nombre en un comentario
-    documental es aceptable (de hecho el propio fonts.css lo menciona para
-    justificar el retiro)."""
-    assert "font-family: 'MedievalSharp'" not in _FONTS
+    ``font-family: 'MedievalSharp'`` (en cualquier forma: comillas simples,
+    dobles o sin comillas — el regex se evalúa sobre el CSS SIN comentarios, así
+    que el propio comentario documental del retiro no lo dispara) y los woff2."""
+    css_sin_comentarios = re.sub(r"/\*.*?\*/", "", _FONTS, flags=re.DOTALL)
+    assert not re.search(r"font-family\s*:\s*['\"]?MedievalSharp['\"]?", css_sin_comentarios), (
+        "regla font-family MedievalSharp reintroducida"
+    )
     fonts_dir = _GUI_DIR / "assets" / "fonts"
     remanentes = sorted(p.name for p in fonts_dir.iterdir() if p.name.lower().startswith("medievalsharp"))
     assert remanentes == [], f"woff2 de MedievalSharp residuales: {remanentes}"

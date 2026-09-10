@@ -28,46 +28,33 @@ def render_dashboard(
     downloads: dict[str, Any] | None = None,
     resolved_conflicts: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Renderiza la página completa del dashboard.
+    """Renderiza la página completa del dashboard (shell Forge v4.0).
 
-    Compone todas las secciones del dashboard en el layout principal:
-    - Sidebar (navegación lateral)
-    - Header (encabezado)
-    - Stats Section (estadísticas)
-    - Features Section (características)
-    - Mods Preview + Chat Preview (grid 2 columnas)
-    - CTA Section (call-to-action)
+    Fachada de compatibilidad: los parámetros se reenvían 1:1 a
+    ``forge_dashboard.render_forge_dashboard``, que dibuja el shell completo
+    (sidebar del Draconato, header, hero "Salve Dovahkiin", plaquetas de
+    stats, Rituales, Orden de Carga, Asistente Arcano) y despacha el contenido
+    por ``active_section`` (Dashboard / Mods / Conflicts / Downloads /
+    Settings, todas con vista dedicada en el shell).
 
     Args:
-        stats: Estadísticas para la sección de stats con claves:
-            - active_mods: Variable reactiva con número de mods activos
-            - pending_updates: Variable reactiva con actualizaciones pendientes
-            - conflicts_count: Variable reactiva con conteo de conflictos
-            - storage_used: Variable reactiva con almacenamiento usado (GB)
-        mods: Lista de mods para preview, cada uno con:
-            - name: str - Nombre del mod
-            - status: str - Estado ('active', 'update', 'conflict', 'inactive')
-            - size_mb: int/float - Tamaño en MB
-        chat_messages: Mensajes del chat, cada uno con:
-            - content: str - Contenido del mensaje
-            - is_user: bool - True si es del usuario
-            - timestamp: str - Timestamp del mensaje
-        is_thinking: Estado de procesamiento del agente
-        callbacks: Dict con callbacks:
-            - on_send_message: Callable[[str], None] - Envío de mensaje chat
-            - on_view_all_mods: Callable - Ver todos los mods
-            - on_mod_click: Callable[[str], None] - Clic en un mod
-            - on_navigate: Callable[[str], None] - Navegación
-            - on_cta_primary: Callable - Acción principal CTA
-            - on_cta_secondary: Callable - Acción secundaria CTA (opcional)
-            - on_feature_click: Callable[[str], None] - Clic en feature (opcional)
-            - on_mod_toggle: Callable[[str, bool], Awaitable] - Toggle de mod en
-              la sección Mods (opcional; sin él los switches se muestran
-              deshabilitados)
-        active_section: Sección activa de ``NAV_SECTIONS`` (Parte 5). Decide el
-            highlight del sidebar Y el contenido del área principal:
-            "Dashboard" → home, "Mods" → lista completa, resto → placeholder.
-            En producción la provee el store (``store.get("active_section")``).
+        stats: Estadísticas del hero/plaquetas — claves esperadas:
+            ``active_mods``, ``pending_updates``, ``conflicts_count``,
+            ``storage_used``.
+        mods: Lista de mods con ``name``, ``status`` ('active', 'update',
+            'conflict', 'inactive') y ``size_mb`` (opc. ``version``).
+        chat_messages: Mensajes del Asistente con ``content`` e ``is_user``.
+        is_thinking: Estado de procesamiento del agente.
+        callbacks: Diccionario de callbacks de la UI — los que consume el
+            shell (navegación, envío de chat, rituales, HITL, disputas,
+            ajustes…) viven documentados junto a cada sección de
+            ``forge_dashboard.py``.
+        active_section: Sección activa del shell (la provee el store;
+            ``store.get("active_section")`` en producción).
+        identity: Identidad del usuario (nombre/rol) del sidebar.
+        search_query, conflicts_list, resolved_conflicts, settings,
+        downloads: Secciones dedicadas del shell; ver
+            ``render_forge_dashboard`` para el detalle.
 
     Example:
         Los ``stats`` son los proxies reactivos del viewmodel (``ReactiveState``,
@@ -84,14 +71,7 @@ def render_dashboard(
         ...     mods=[{'name': 'Test Mod', 'status': 'active', 'size_mb': 100}],
         ...     chat_messages=[],
         ...     is_thinking=False,
-        ...     callbacks={
-        ...         'on_send_message': lambda msg: print(f"Send: {msg}"),
-        ...         'on_view_all_mods': lambda: print("View all"),
-        ...         'on_mod_click': lambda name: print(f"Mod: {name}"),
-        ...         'on_navigate': lambda page: print(f"Navigate: {page}"),
-        ...         'on_cta_primary': lambda: print("Start!"),
-        ...         'on_cta_secondary': lambda: print("Demo!"),
-        ...     },
+        ...     callbacks={'on_navigate': print, 'on_send_message': print},
         ...     active_section="Dashboard",
         ... )
     """
