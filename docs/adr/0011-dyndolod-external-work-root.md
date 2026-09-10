@@ -1,9 +1,11 @@
 # ADR 0011 — DynDOLOD PR-2: `external_work_root` y binding de propiedad
 
 **Fecha:** 2026-09-09
-**Estado:** Propuesta (docs-only; este PR no implementa código productivo ni levanta el
-gate de rig de `sky_claw/local/AGENTS.md` §2.9). La aceptación formal ocurre con el
-merge de este PR documental; la implementación sigue bloqueada por ese gate.
+**Estado:** Aceptada (propuesta originalmente en #570; formalizada tras el cierre
+del gate de lanzamiento T5-v2 por el informe 2026-09-10, ver §2.12). P0 es el único
+prerrequisito restante para comenzar PR-2; la implementación de PR-2 reabrirá el
+gate de lanzamiento al mutar los subroots administrados de `-o:` y exigirá repetir
+las dos corridas reales antes de su merge.
 **Contexto de origen:** `origin/main` `5e5e9448db0d4015b3bf0dc4c1df10fdc49e226c`
 (post-merge #569), verificado por `fetch` + lectura de código el 2026-09-09.
 **Alcance:** cerrar la decisión arquitectónica de lifecycle, identidad, propiedad y
@@ -34,7 +36,9 @@ La clase de defecto A se elimina con **subroots exclusivos por herramienta** —
 `-o:` distinto por binario sobre una raíz de trabajo externa—, que es el alcance de
 PR-2. Ese cambio toca `-o:`, así que cae bajo el gate de aceptación de
 `sky_claw/local/AGENTS.md` §2.9 (dos corridas reales separadas, una por binario).
-Ese gate sigue abierto y este ADR no lo levanta.
+El gate de lanzamiento inicial previo a PR-2 quedó cerrado por T5-v2 el 2026-09-10
+(ver §2.12); la implementación posterior de PR-2 reabrirá el gate al modificar los
+subroots de `-o:`.
 
 ### 1.2 Qué faltaba
 
@@ -42,7 +46,8 @@ El lifecycle de esa raíz externa **no estaba decidido**: dónde vive, quién es
 dueño, cómo se vincula a una instancia, qué ocurre ante colisión, corrupción o
 cambio de preferencia. Sin esa decisión, PR-2 no tiene contrato de implementación
 y cualquier cableado de P0 sería arbitrariedad reversible en el peor sentido.
-Este ADR cierra ese hueco; el gate de rig es un blocker distinto y permanece.
+Este ADR cierra ese hueco; el gate de rig era un blocker distinto —cerrado por
+T5-v2 el 2026-09-10 (§2.12)— y el blocker de implementación pasa a ser P0.
 
 ### 1.3 Riesgos de decidir mal
 
@@ -407,12 +412,27 @@ No se retira freshness todavía: pertenece a PR-3, posterior al rig de ownership
 
 ### 2.12 Gate T5
 
-**Este ADR NO levanta el gate de rig.** Después de aprobar esta documentación
-siguen haciendo falta dos corridas reales separadas (TexGen y DynDOLOD), cada una
-con: root con espacio, `Using Output Path:` exacto, archivos físicos en el root
-esperado, preset stale presente deliberadamente y sin desvío al preset stale. La
-documentación oficial de DynDOLOD (dyndolod.info) describe la línea de comandos;
-**no demuestra** el comportamiento real del binario del rig.
+**Antecedente histórico:** al redactarse originalmente este ADR en #570, el gate
+de rig previo seguía abierto y exigía dos corridas reales separadas (TexGen y
+DynDOLOD), cada una con: root con espacio, `Using Output Path:` exacto, archivos
+físicos en el root esperado y presets stale ejercitados sin desvío.
+
+**Estado formal del gate de lanzamiento: CERRADO (2026-09-10).** El gate de
+lanzamiento T5-v2 quedó satisfecho por la corrida documentada en
+[`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../validation/2026-09-10_t5v2_dyndolod_stage9.md)
+(T5-V2 LAUNCH GATE: PASS en ambos binarios: root con espacio, eco exacto, archivos
+físicos en el root, presets stale ejercitados con corrección asistida, cero desvío
+al decoy y restauración verificada; criterios 1–7 demostrados). El checklist T5-v2
+completo permanece **PARCIAL (7/10)**: los criterios 8–10 corresponden al rig de
+ownership posterior a PR-2.
+
+**Lifecycle y reapertura ante PR-2:** P0 es el único prerrequisito para COMENZAR
+la implementación de PR-2. Al modificar los subroots administrados de salida
+usados por `-o:`, PR-2 **reabre** el gate de lanzamiento. PR-2 NO puede
+mergearse hasta repetir las dos corridas de rig reales (TexGen + DynDOLOD) sobre
+el candidato de PR-2 bajo las condiciones canónicas del gate (dos herramientas,
+root con espacios, `Using Output Path:` exacto, outputs físicos, stale preset
+ejercitado y cero desvío).
 
 ---
 

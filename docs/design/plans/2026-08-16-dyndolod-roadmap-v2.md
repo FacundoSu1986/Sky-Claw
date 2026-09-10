@@ -21,7 +21,7 @@
 | Bloque | Estado | Cerrado en | Qué queda |
 |---|---|---|---|
 | T1 — contrato de argv | **CERRADO** | #462 | — |
-| T5 — validación de argv en rig | **PARCIAL** | rig 2026-08-11 | Aceptación endurecida; ver T5-v2 |
+| T5 — validación de argv en rig | **CERRADO** (solo gate de lanzamiento; checklist T5-v2 queda PARCIAL 7/10) | T5-v2 2026-09-10 — `../../validation/2026-09-10_t5v2_dyndolod_stage9.md` | Criterios 8–10 del checklist → rig de ownership post-PR-2 |
 | Preset desvía `OutputPath` | **ABIERTO** (nuevo) | registrado en #463 | Precedencia y mecanismo |
 | T2 — clasificación del log | **PENDIENTE — próximo** | — | Todo; superficie intacta |
 | T3 — staging y salida | **PENDIENTE — rebase** | — | Rediseño con el preset como restricción |
@@ -315,6 +315,24 @@ visibilidad; si falla, el trabajo es investigar el perfil de MO2, no parchear T3
 
 ## T5-v2 — rig E2E (aceptación endurecida)
 
+> **Estado:**
+> - **T5-V2 LAUNCH GATE: PASS (CERRADO — 2026-09-10).** Informe commiteado:
+>   [`../../validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md).
+>   Criterios 1–7: PASS en ambos binarios (corridas por el runner, roots con
+>   espacios, eco exacto, archivos físicos en el root declarado, presets rancios
+>   ejercitados con corrección asistida del campo Output, cero desvío al decoy,
+>   restauración verificada, cierre regular `Exit TexGen` / `Save and Exit` sin
+>   interferencia).
+> - **T5-V2 FULL CHECKLIST: PARCIAL (7/10).** Criterios 8–10 (ZIP, dos mods
+>   disjuntos, visibilidad billboards) NO se ejercitaron: corresponden al rig de
+>   servicio completo posterior a PR-2. No se afirma T5-v2 FULL PASS mientras
+>   haya criterios obligatorios sin ejecutar.
+> - **Lifecycle ante PR-2:** P0 es el único prerrequisito para COMENZAR PR-2.
+>   PR-2, al cambiar los subroots administrados usados por `-o:`, REABRE el gate
+>   de lanzamiento. PR-2 no puede mergearse sin repetir las dos corridas de rig
+>   reales (TexGen + DynDOLOD) sobre el candidato PR-2. No se puede presentar la
+>   evidencia del builder viejo como autorización permanente para el builder nuevo.
+
 v1 aceptaba *"el log declara `Using Output Path:` igual a la raíz administrada"*.
 **Ese criterio ya no sirve**: el rig probó que el encabezado ecoa el argv mientras
 las escrituras van al preset. La aceptación pasa a exigir las cuatro cosas:
@@ -346,8 +364,12 @@ esto. Son diez, y ninguno es opcional:
 
 **Qué se exige del resultado**
 
-7. cerrando con **`Save and Exit`**, las dos corridas dan `success=True`; TexGen
-   deja su subárbol `textures` y DynDOLOD su `DynDOLOD.esp`, **sin pisarse**;
+7. cerrando regularmente con el botón correspondiente de cada herramienta
+   (**`Exit TexGen`** para TexGen, sin empaquetar ZIP; **`Save and Exit`** para
+   DynDOLOD, persistiendo los plugins), las dos corridas dan `success=True`;
+   TexGen deja su subárbol `textures` y DynDOLOD sus plugins (`DynDOLOD.esm`,
+   `DynDOLOD.esp`, `Occlusion.esp`), **sin pisarse** (mutua aislación y 0
+   cross-writes demostradas);
 8. una corrida cerrada con `Zip and Exit` se reporta `exito_no_empaquetable`, no
    un rojo genérico de artefacto ausente;
 9. `_package_output_as_mod` produce **dos** mods de MO2 con contenidos disjuntos.
