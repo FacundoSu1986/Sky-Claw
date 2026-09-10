@@ -485,8 +485,10 @@ restauración en fallo, dos mods con procedencia separada, handoff y visibilidad
 de billboards en el Data que DynDOLOD declara. Esos son los criterios adicionales
 8, 9 y 10 de T5-v2 (criterio 8 — Zip and Exit / `exito_no_empaquetable`; criterio 9
 — dos mods disjuntos vía packaging; criterio 10 — visibilidad TexGen → DynDOLOD;
-el criterio 7 ya quedó satisfecho en el gate de lanzamiento T5-v2: Save/Exit regular,
-`success=True`, outputs disjuntos). Una copia a mods no prueba activación MO2.
+el criterio 7 ya quedó satisfecho en el gate de lanzamiento T5-v2: cierre regular
+específico por herramienta —`Exit TexGen` para TexGen sin ZIP, `Save and Exit` para
+DynDOLOD persistiendo plugins—, `success=True`, mutua aislación y outputs disjuntos
+sin pisarse). Una copia a mods no prueba activación MO2.
 
 Rebasar/adaptar #528 al root esperado **por herramienta** y probar MATCH,
 MISMATCH y lectura indeterminada. Su aborto ante MISMATCH debe tener una vía

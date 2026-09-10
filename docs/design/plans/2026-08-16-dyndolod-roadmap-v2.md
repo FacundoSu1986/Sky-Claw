@@ -364,8 +364,12 @@ esto. Son diez, y ninguno es opcional:
 
 **Qué se exige del resultado**
 
-7. cerrando con **`Save and Exit`**, las dos corridas dan `success=True`; TexGen
-   deja su subárbol `textures` y DynDOLOD su `DynDOLOD.esp`, **sin pisarse**;
+7. cerrando regularmente con el botón correspondiente de cada herramienta
+   (**`Exit TexGen`** para TexGen, sin empaquetar ZIP; **`Save and Exit`** para
+   DynDOLOD, persistiendo los plugins), las dos corridas dan `success=True`;
+   TexGen deja su subárbol `textures` y DynDOLOD sus plugins (`DynDOLOD.esm`,
+   `DynDOLOD.esp`, `Occlusion.esp`), **sin pisarse** (mutua aislación y 0
+   cross-writes demostradas);
 8. una corrida cerrada con `Zip and Exit` se reporta `exito_no_empaquetable`, no
    un rojo genérico de artefacto ausente;
 9. `_package_output_as_mod` produce **dos** mods de MO2 con contenidos disjuntos.
