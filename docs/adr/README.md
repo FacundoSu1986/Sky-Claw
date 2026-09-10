@@ -7,8 +7,8 @@
 >
 > **Fuentes canónicas:** ADR 0001–0011 en este directorio.
 >
-> **Última verificación:** 2026-09-09 sobre `origin/main` `5e5e9448`; el ADR 0011
-> entra como Propuesta junto al PR documental que lo agrega.
+> **Última verificación:** 2026-09-10; ADR 0011 aceptado tras el merge de #570
+> y actualizado con el cierre del launch gate T5-v2 en #571.
 
 - [0001 — Leveled lists](0001-leveled-lists.md)
 - [0002 — Caja negra de vuelo](0002-norte-caja-negra.md)
