@@ -47,6 +47,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODRunner,
     DynDOLODTimeoutError,
 )
+from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
 from sky_claw.local.tools.output_targets import dyndolod_output_target
 from sky_claw.logging_config import correlacion_de_transaccion
 
@@ -149,6 +150,9 @@ class DynDOLODPipelineService:
         journal: Journal de operaciones para trazabilidad.
         path_resolver: Servicio de resolución de rutas validadas.
         event_bus: Bus de eventos para publicación de ciclo de vida.
+        stage9_coordination: Coordinación cross-process de etapa 9 (P0 de
+            ADR 0011). Se adquiere ANTES del lock transaccional y se suelta
+            DESPUÉS de que rollback y recovery terminaron de mutar.
     """
 
     def __init__(
@@ -161,6 +165,7 @@ class DynDOLODPipelineService:
         event_bus: CoreEventBus,
         preflight: PreflightService | None = None,
         mo2_profile: str | None = None,
+        stage9_coordination: Stage9Coordination | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -173,6 +178,15 @@ class DynDOLODPipelineService:
         # significa "no resoluble" y falla cerrado antes de mutar (nunca se crea
         # un handoff resumible sin dueño).
         self._mo2_profile = mo2_profile
+
+        # P0.2 (ADR 0011): coordinación cross-process de etapa 9 sobre estado
+        # durable por usuario. `None` conserva EXACTAMENTE el comportamiento
+        # previo — es lo que usan los dobles de test que construyen el servicio
+        # con mocks—, y el censo de constructores
+        # (`tests/test_dyndolod_workspace.py::test_censo_de_constructores_del_servicio_dyndolod`)
+        # exige que TODO sitio de construcción de producción la pase: un default
+        # permisivo sin censo sería la forma más silenciosa del defecto hermano.
+        self._stage9_coordination = stage9_coordination
 
         # Lazy init — runner requiere env vars que pueden no existir aún.
         self._runner: DynDOLODRunner | None = None
@@ -1153,8 +1167,23 @@ class DynDOLODPipelineService:
         # 3. Ejecutar bajo lock transaccional + rollback de directorios.
         # AsyncExitStack: el lock se adquiere primero y se libera último; los
         # DirectoryRollback se restauran ANTES de soltar el lock.
+        #
+        # P0.2 (ADR 0011): ANTES de todo eso va la coordinación cross-process de
+        # etapa 9, cuando está cableada. Es el primer eslabón del orden fijo
+        # (`dyndolod_workspace.ORDEN_DE_ADQUISICION`) y se suelta último, así que
+        # ningún move-aside puede empezar mientras otro proceso tiene el ritual.
+        # El `tx_lock` de abajo NO la sustituye: vive en el `locks.db` de
+        # `.skyclaw_backups/`, que es relativo al cwd — dos instancias lanzadas
+        # desde directorios distintos abren dos bases y no se excluyen.
         try:
             async with contextlib.AsyncExitStack() as tx_stack:
+                if self._stage9_coordination is not None:
+                    await tx_stack.enter_async_context(
+                        self._stage9_coordination.sostener_ritual(
+                            agent_id="dyndolod-pipeline-service",
+                            metadata={"preset": preset, "run_texgen": run_texgen},
+                        )
+                    )
                 # Ligado a variable para consultar su ``lease_lost`` desde el veto de
                 # los DirectoryRollback de más abajo (review Codex #399).
                 tx_lock = SnapshotTransactionLock(

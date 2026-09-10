@@ -64,6 +64,7 @@ from sky_claw.local.mo2.brokered_loot import (
 )
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker, vfs_instance_id
+from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
 
 # Audit #190: shared lock-DB staging dir. MUST match the orchestrator's
@@ -724,6 +725,72 @@ class AppContext:
         self.sync_engine = None
         self.tools_installer = None
         self.mo2 = None
+        #: Coordinación cross-process de etapa 9 (P0.2 de ADR 0011), sobre
+        #: estado durable POR USUARIO — no bajo `.skyclaw_backups/`, que es
+        #: relativo al cwd y por eso no excluye dos instancias lanzadas desde
+        #: directorios distintos.
+        self.stage9_coordination = None
+        #: `WorkspaceResuelto` del arranque, o `None` = DynDOLOD administrado
+        #: NO CONFIGURADO (estado normal y honesto: el resto de Sky-Claw
+        #: funciona igual, sin fallback silencioso a ninguna raíz derivada).
+        self.dyndolod_workspace = None
+
+    async def _resolver_workspace_de_dyndolod(self, *, local_cfg, game, mo2):
+        """Resuelve la propiedad del `external_work_root` para ESTE arranque.
+
+        Best-effort en el sentido acotado del arranque: un rechazo del workspace
+        —root ajeno, no vacío, metadata corrupta, transición insegura— deja
+        DynDOLOD administrado sin configurar y lo dice, pero **no** tumba
+        Sky-Claw. Eso no relaja el fail-closed: el veredicto sigue siendo
+        "no se usa ese root", que es lo que protege los datos; lo que no hace es
+        convertir un problema de una etapa en un arranque fallido de todo el
+        producto.
+        """
+        from sky_claw.local.tools.dyndolod_workspace import (
+            RaicesProhibidas,
+            ResourceBinding,
+            WorkspaceRechazadoError,
+            registro_de_roots_activos,
+            resolver_workspace,
+        )
+
+        preferencia = getattr(local_cfg, "external_work_root", "") or ""
+        if not preferencia.strip():
+            return None
+        if game is None or mo2 is None or mo2.mods_dir is None:
+            logger.info(
+                "external_work_root configurado pero la instancia lógica no resuelve todavía "
+                "(juego/MO2/mods): DynDOLOD administrado queda NO CONFIGURADO este arranque."
+            )
+            return None
+
+        try:
+            return await resolver_workspace(
+                preferencia=preferencia,
+                recursos=ResourceBinding.desde_paths(
+                    game_path=game,
+                    mo2_instance_data_root=mo2.data_root,
+                    mo2_mods_path=mo2.mods_dir,
+                ),
+                prohibidas=RaicesProhibidas.desde_entorno(
+                    game=game,
+                    mo2_install=mo2.install_root,
+                    mo2_instance_data_root=mo2.data_root,
+                    mo2_mods_path=mo2.mods_dir,
+                    dyndolod_exe=pathlib.Path(local_cfg.dyndolod_exe)
+                    if getattr(local_cfg, "dyndolod_exe", "")
+                    else None,
+                    texgen_exe=pathlib.Path(local_cfg.texgen_exe) if getattr(local_cfg, "texgen_exe", "") else None,
+                ),
+                registro=registro_de_roots_activos(),
+                coordinacion=self.stage9_coordination,
+            )
+        except WorkspaceRechazadoError as exc:
+            # Una línea legible, no un stack de 200: es una condición de
+            # admisión esperable y el mensaje ya nombra etapa, root, caso A–H,
+            # motivo y la acción que el operador tiene que tomar.
+            logger.warning("external_work_root rechazado: %s", exc)
+            return None
 
     async def _rollback_startup(self) -> None:
         try:
@@ -1277,6 +1344,31 @@ class AppContext:
                 )
 
             configured_game = pathlib.Path(local_cfg.skyrim_path) if local_cfg.skyrim_path else None
+
+            # ----------------------------------------------------------------
+            # P0 de ADR 0011 — propiedad del `external_work_root`
+            # ----------------------------------------------------------------
+            # Se resuelve UNA vez, acá, y el resultado es un snapshot inmutable
+            # del arranque: cambiar la preferencia persiste ahora y se aplica en
+            # el PRÓXIMO arranque, nunca en caliente (§2.5 del ADR). Mutar el
+            # root en vivo movería el piso debajo de `AppContext`, de las raíces
+            # del `PathValidator`, del runner cacheado, del reconciliador y de
+            # las transacciones activas.
+            #
+            # ATENCIÓN — esto es CAPACIDAD, no activación: el runner de etapa 9
+            # sigue emitiendo su `-o:` productivo de siempre
+            # (`output_targets.dyndolod_output_target`). Activar estos subroots
+            # es PR-2, y reabre el gate de lanzamiento T5.
+            self.stage9_coordination = construir_coordinacion_de_etapa9(lifecycle=self.lifecycle.manager)
+            self._push_startup_cleanup(self.stage9_coordination.close)
+            self.dyndolod_workspace = await self._await_startup(
+                self._resolver_workspace_de_dyndolod(
+                    local_cfg=local_cfg,
+                    game=configured_game,
+                    mo2=mo2,
+                )
+            )
+
             vfs_loot_runner = build_vfs_loot_runner(
                 broker=broker,
                 instance_id=instance_id if broker is not None else None,
@@ -1441,6 +1533,11 @@ class AppContext:
                         ),
                         sandbox_root=mo2.data_root / ".skyclaw_sandbox",
                         lock_manager=lock_manager,
+                        # P0.2 (ADR 0011): desde P0 el ritual de etapa 9 se toma en
+                        # la base durable por usuario. Sin esto el guard de DynDOLOD
+                        # miraría el `locks.db` relativo al cwd y vería LIBRE un
+                        # ritual en vuelo en otra instancia.
+                        coordinacion_etapa9=self.stage9_coordination,
                     )
                 )
             except Exception:

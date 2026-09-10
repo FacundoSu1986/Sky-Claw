@@ -37,25 +37,29 @@ estados, y el registro durable de root activo.
 **Orden de adquisición** (§21 del contrato de P0; no hay ciclos):
 
 ```text
-coordinación de workspace  (dyndolod-workspace, DB durable)   ← sólo arranque
+dyndolod-workspace            coordinación de propiedad (DB durable, sólo arranque)
         ↓
-coordinación del ritual    (dyndolod-pipeline, DB durable)
+dyndolod-pipeline             coordinación del ritual   (DB durable)
         ↓
-lock transaccional + snapshots  (SnapshotTransactionLock)
+snapshot-transaction-lock     lock transaccional + snapshots del servicio
         ↓
-transacción del journal
+journal                       transacción de operaciones
         ↓
-DirectoryRollback (move-aside)
+directory-rollback            move-aside de los destinos
         ↓
-handoff / recovery
+handoff/recovery              reconciliación y restauración
 ```
 
-Se libera en orden inverso, y **nunca** se suelta la coordinación mientras un
-proceso hijo, un rollback o una recuperación siguen mutando.
+Ese orden vive como DATO en :data:`ORDEN_DE_ADQUISICION`, no sólo como prosa,
+para que un test lo pueda enumerar: una reordenación silenciosa es un deadlock
+esperando a que dos caminos la tomen al revés. Se libera en orden inverso, y
+**nunca** se suelta la coordinación mientras un proceso hijo, un rollback o una
+recuperación siguen mutando.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import enum
@@ -69,12 +73,18 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Final
 
+from sky_claw.app.db.locks import (
+    DistributedLockManager,
+    LockAcquisitionError,
+    SnapshotTransactionLock,
+)
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.app.security import known_folders
 from sky_claw.app.security.links import is_link
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -1015,7 +1025,13 @@ class RegistroDeRootActivo:
         actual = entradas.get(clave)
         entrada = EntradaDeRegistro(
             clave=clave,
-            root=actual.root if actual is not None else str(hacia),
+            # El root activo YA apunta al nuevo, pero el marcador conserva el
+            # viejo: las dos mitades viajan en la MISMA escritura atómica. Si
+            # sólo se repuntara, una muerte dura acá borraría del mapa el root
+            # que todavía puede tener backups; si sólo se marcara, el arranque
+            # siguiente vería el root nuevo como caso H contra el viejo y la
+            # transición no podría avanzar nunca.
+            root=str(hacia),
             binding_id=actual.binding_id if actual is not None else "",
             transicion_pendiente=TransicionPendiente(
                 desde=actual.root if actual is not None else None,
@@ -1144,3 +1160,434 @@ def exigir_veredicto(
         razon=razones[estado],
         accion_requerida=acciones[estado],
     )
+
+
+# ---------------------------------------------------------------------------
+# P0.2 — coordinación durable de etapa 9
+# ---------------------------------------------------------------------------
+
+#: Orden FIJO de adquisición de la familia de etapa 9 (§21 del contrato de P0).
+#: Se declara como dato, no como prosa, para que el test lo pueda enumerar: una
+#: reordenación silenciosa es un deadlock esperando a que dos caminos la tomen
+#: al revés.
+ORDEN_DE_ADQUISICION: Final[tuple[str, ...]] = (
+    "dyndolod-workspace",
+    "dyndolod-pipeline",
+    "snapshot-transaction-lock",
+    "journal",
+    "directory-rollback",
+    "handoff/recovery",
+)
+
+#: Subdirectorio del estado durable donde vive lo de etapa 9.
+_SUBDIR_DE_ETAPA9: Final[str] = "dyndolod"
+_ARCHIVO_DE_LOCKS: Final[str] = "stage9_locks.db"
+_ARCHIVO_DE_ROOTS_ACTIVOS: Final[str] = "active_roots.json"
+
+
+def ruta_de_estado_de_etapa9(base: pathlib.Path | None = None) -> pathlib.Path:
+    """Directorio de estado durable de etapa 9.
+
+    Por usuario, estable entre arranques e independiente del `cwd`, del
+    worktree, del `external_work_root` y de TEMP. **No** se deriva de ninguna
+    variable de entorno: una segunda fuente de selección reabre el split-brain
+    que la capa de resolución ya cerró para MODS/PROFILE (#552/#555), y además
+    haría que el lugar donde vive la memoria de "qué root está activo" pudiera
+    cambiar entre arranques sin que nadie lo note.
+
+    `base` existe para tests y para callers que ya tienen un directorio de
+    estado propio; en producción se omite.
+    """
+    from sky_claw.config import SystemPaths
+
+    raiz = base if base is not None else SystemPaths.runtime_state_dir()
+    return raiz / _SUBDIR_DE_ETAPA9
+
+
+class Stage9Coordination:
+    """Coordinación cross-process de la etapa 9, sobre estado durable.
+
+    **Qué reutiliza y qué agrega.** Reutiliza el `DistributedLockManager` que ya
+    serializa los rituales del árbol —mismo esquema SQLite, mismos leases con
+    TTL, misma renovación por heartbeat vía `SnapshotTransactionLock`— y
+    conserva el identificador del ritual, ``dyndolod-pipeline``. Lo único que
+    cambia es DÓNDE vive el archivo: `.skyclaw_backups/locks.db` es relativo al
+    `cwd`, así que dos instancias lanzadas desde directorios distintos abren dos
+    bases distintas y no se excluyen. Un lock que no serializa es peor que no
+    tener lock, porque promete exclusión.
+
+    No se migran los otros rituales a esta base: mover `journal.db`, los
+    snapshots y los locks de LOOT/Pandora/BodySlide es un cambio de blast radius
+    mucho mayor que P0, y el contrato de P0 lo excluye explícitamente. Lo que se
+    mueve es la coordinación de etapa 9, que es la que este trabajo tiene que
+    hacer demostrable.
+
+    **Dos recursos, no uno.** El ritual mantiene ``dyndolod-pipeline``; la
+    resolución de propiedad del workspace usa ``dyndolod-workspace``. Son
+    distintos a propósito: la resolución corre en el ARRANQUE, y hacerla esperar
+    al lock del ritual colgaría el arranque de Sky-Claw detrás de una generación
+    de LODs de 30+ minutos que está corriendo en otra instancia.
+    """
+
+    RECURSO_DEL_RITUAL: Final[str] = "dyndolod-pipeline"
+    RECURSO_DEL_WORKSPACE: Final[str] = "dyndolod-workspace"
+
+    #: TTL corto para la resolución de propiedad: es una operación de arranque de
+    #: milisegundos, no una generación de LODs.
+    TTL_DEL_WORKSPACE: Final[float] = 30.0
+
+    def __init__(
+        self,
+        *,
+        lock_manager: DistributedLockManager,
+        snapshot_manager: FileSnapshotManager,
+    ) -> None:
+        self._lock_manager = lock_manager
+        self._snapshot_manager = snapshot_manager
+        self._inicializado = False
+        self._guardia = asyncio.Lock()
+
+    @property
+    def lock_manager(self) -> DistributedLockManager:
+        return self._lock_manager
+
+    async def initialize(self) -> None:
+        """Abre la DB de coordinación. Idempotente y perezosa.
+
+        Se inicializa sola en el primer uso para que los composition roots
+        SÍNCRONOS (`SupervisorAgent.__init__`) puedan construir la coordinación
+        sin un `await`: si la inicialización fuera obligación del caller, el
+        primer camino que se olvidara de llamarla correría sin exclusión y sin
+        error visible — el defecto hermano en su forma más silenciosa.
+        """
+        async with self._guardia:
+            if self._inicializado:
+                return
+            await self._lock_manager.initialize()
+            self._inicializado = True
+
+    async def close(self) -> None:
+        async with self._guardia:
+            if not self._inicializado:
+                return
+            await self._lock_manager.close()
+            self._inicializado = False
+
+    @contextlib.asynccontextmanager
+    async def sostener_ritual(
+        self,
+        *,
+        agent_id: str,
+        ttl: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AsyncIterator[SnapshotTransactionLock]:
+        """Sostiene el ritual de etapa 9 mientras dure el bloque.
+
+        Se apoya en `SnapshotTransactionLock` —el mismo que ya usa el servicio—
+        con ``target_files=[]``: el rollback de DynDOLOD es el move-aside de
+        `DirectoryRollback` (los `Output/` pesan GBs), no el snapshot manager.
+        De ahí salen gratis el heartbeat de renovación, `lease_lost` y
+        `assert_owned`, que es exactamente la "semántica real de leases" que el
+        contrato pide conservar en vez de reinventar.
+
+        La liberación va en el ``finally`` del context manager: no se suelta la
+        coordinación mientras el cuerpo sigue corriendo —proceso hijo vivo,
+        rollback restaurando, recovery mutando— ni siquiera por el camino de
+        excepción o cancelación.
+        """
+        await self.initialize()
+        sostenido = SnapshotTransactionLock(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self._snapshot_manager,
+            resource_id=self.RECURSO_DEL_RITUAL,
+            agent_id=agent_id,
+            target_files=[],
+            ttl=ttl,
+            metadata=metadata,
+        )
+        async with sostenido:
+            yield sostenido
+
+    @contextlib.asynccontextmanager
+    async def sostener_workspace(self, *, agent_id: str) -> AsyncIterator[None]:
+        """Serializa la resolución de propiedad del workspace entre procesos.
+
+        Cubre el check + publish del binding y la mutación del registro de root
+        activo como una unidad: sin esto, dos arranques simultáneos podrían leer
+        ambos "no hay root activo" y registrar cada uno el suyo.
+
+        Raises:
+            WorkspaceRechazadoError: motivo ``OCUPADO`` si otro proceso está
+                resolviendo el workspace ahora mismo. Es un rechazo honesto y
+                reintentable, no una espera indefinida en el arranque.
+        """
+        await self.initialize()
+        try:
+            await self._lock_manager.acquire_lock(self.RECURSO_DEL_WORKSPACE, agent_id, ttl=self.TTL_DEL_WORKSPACE)
+        except LockAcquisitionError as exc:
+            raise WorkspaceRechazadoError(
+                motivo=MotivoDeRechazo.OCUPADO,
+                razon="otro proceso está resolviendo la propiedad del external_work_root",
+                accion_requerida="reintentar; si persiste, verificar que no quedó una instancia colgada",
+            ) from exc
+        try:
+            yield
+        finally:
+            await self._lock_manager.release_lock(self.RECURSO_DEL_WORKSPACE, agent_id)
+
+
+def construir_coordinacion_de_etapa9(
+    *,
+    base: pathlib.Path | None = None,
+    lifecycle: Any = None,
+) -> Stage9Coordination:
+    """Arma la coordinación sobre el estado durable por usuario.
+
+    `lifecycle` es el `DatabaseLifecycleManager` opcional (M-01.1): con él, la
+    conexión sale del lifecycle (WAL recovery + pragmas hardenizadas + shutdown
+    coordinado), igual que journal y el resto de los lock managers del árbol.
+    """
+    directorio = ruta_de_estado_de_etapa9(base)
+    directorio.mkdir(parents=True, exist_ok=True)
+    return Stage9Coordination(
+        lock_manager=DistributedLockManager(db_path=directorio / _ARCHIVO_DE_LOCKS, lifecycle=lifecycle),
+        snapshot_manager=FileSnapshotManager(snapshot_dir=directorio / "snapshots"),
+    )
+
+
+def registro_de_roots_activos(base: pathlib.Path | None = None) -> RegistroDeRootActivo:
+    """Registro durable de root activo, junto a la DB de coordinación."""
+    return RegistroDeRootActivo(ruta_de_estado_de_etapa9(base) / _ARCHIVO_DE_ROOTS_ACTIVOS)
+
+
+# ---------------------------------------------------------------------------
+# Transición de root y resolución del workspace (boundary = arranque)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class InspeccionDeRootViejo:
+    """Lo que se pudo averiguar del root que se está por dejar de usar."""
+
+    inspeccionable: bool
+    backups: tuple[pathlib.Path, ...]
+    detalle: str = ""
+
+
+def inspeccionar_root_para_transicion(root: pathlib.Path) -> InspeccionDeRootViejo:
+    """¿El root viejo está quiescente como para dejarlo de usar?
+
+    Busca residuo de move-aside (``<dir>.rollback-<nonce>``) con la MISMA regex
+    que el reconciliador (`rollback_reconciler.SUFIJO_MOVE_ASIDE`), no con una
+    propia: dos definiciones de "esto es un backup nuestro" se endurecen por
+    separado y la que se olvida deja de ver backups reales.
+
+    Un root que ya no existe es quiescente: no hay nada que perder. Un root que
+    no se puede recorrer NO lo es — "no pude mirar" nunca se reporta como "está
+    limpio".
+    """
+    from sky_claw.local.tools.rollback_reconciler import SUFIJO_MOVE_ASIDE
+
+    if not root.exists():
+        return InspeccionDeRootViejo(inspeccionable=True, backups=(), detalle="el root ya no existe")
+
+    encontrados: list[pathlib.Path] = []
+    try:
+        for actual, directorios, archivos in os.walk(root, onerror=_relanzar_error_de_walk):
+            for nombre in (*directorios, *archivos):
+                if SUFIJO_MOVE_ASIDE.search(nombre):
+                    encontrados.append(pathlib.Path(actual) / nombre)
+    except OSError as exc:
+        return InspeccionDeRootViejo(
+            inspeccionable=False,
+            backups=tuple(encontrados),
+            detalle=f"no se pudo recorrer el root viejo ({exc})",
+        )
+    return InspeccionDeRootViejo(inspeccionable=True, backups=tuple(encontrados))
+
+
+def _relanzar_error_de_walk(exc: OSError) -> None:
+    """`os.walk` se traga los errores por default: acá NO.
+
+    Un `PermissionError` a mitad del recorrido significa "no pude inspeccionar",
+    y el default silencioso lo convertiría en "no encontré backups" — un
+    fail-open exactamente donde el contrato exige fail-closed.
+    """
+    raise exc
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class WorkspaceResuelto:
+    """Snapshot INMUTABLE del workspace resuelto en ESTE arranque.
+
+    Es frozen a propósito: el contrato de ADR 0011 §2.5 es "persistir ahora,
+    aplicar en el próximo arranque". Un objeto mutable invitaría a que alguien
+    lo "actualizara" cuando cambia el TOML, y eso mutaría en caliente el root
+    bajo `AppContext`, las raíces del `PathValidator`, el runner cacheado, el
+    reconciliador y las transacciones activas — precisamente lo que el ADR
+    rechaza por diseño.
+    """
+
+    root: pathlib.Path
+    binding: BindingDocument
+    estado: EstadoDelRoot
+    recien_inicializado: bool
+
+
+_AGENTE_DEL_RESOLVER: Final[str] = "dyndolod-workspace-resolver"
+
+
+async def _validar_transicion(
+    viejo: pathlib.Path,
+    *,
+    nuevo: pathlib.Path,
+    recursos: ResourceBinding,
+    coordinacion: Stage9Coordination,
+    inspector: Callable[[pathlib.Path], InspeccionDeRootViejo],
+    sonda_de_transaccion_pendiente: Callable[[], Awaitable[bool]] | None,
+) -> None:
+    """Fail-closed de la transición (§25). No devuelve nada: o pasa, o levanta.
+
+    Se niega a activar otra raíz —y sobre todo a OLVIDAR la vieja— mientras el
+    root viejo tenga backups, una transacción PENDING, un ritual vivo o un
+    estado que no se pueda inspeccionar. Ninguno de esos casos se degrada a
+    warning: perder de vista un root con la única copia recuperable de una
+    generación es exactamente la clase de daño silencioso que el ADR ataja.
+
+    Deliberadamente NO escribe nada en el registro cuando rechaza: el root viejo
+    sigue siendo el activo registrado, así que el próximo arranque vuelve a
+    encontrarlo. "Actualizar el registro para que parezca que la transición
+    terminó" está prohibido por escrito.
+    """
+
+    def _rechazar(razon: str, *, motivo: MotivoDeRechazo) -> WorkspaceRechazadoError:
+        return WorkspaceRechazadoError(
+            motivo=motivo,
+            root=nuevo,
+            clave_de_recursos=recursos.clave(),
+            razon=razon,
+            accion_requerida=(
+                f"resolver el estado pendiente de {viejo} antes de activar {nuevo}; "
+                "Sky-Claw no abandona una raíz de trabajo con estado sin resolver"
+            ),
+        )
+
+    await coordinacion.initialize()
+    info = await coordinacion.lock_manager.get_lock_info(Stage9Coordination.RECURSO_DEL_RITUAL)
+    if info is not None and not info.is_expired:
+        raise _rechazar(
+            f"hay un ritual de etapa 9 en curso ({info.agent_id}); no se cambia de raíz en vuelo",
+            motivo=MotivoDeRechazo.OCUPADO,
+        )
+
+    inspeccion = inspector(viejo)
+    if not inspeccion.inspeccionable:
+        raise _rechazar(
+            f"no se puede inspeccionar el root viejo {viejo}: {inspeccion.detalle}",
+            motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
+        )
+    if inspeccion.backups:
+        raise _rechazar(
+            f"el root viejo {viejo} conserva {len(inspeccion.backups)} backup(s) de move-aside sin reconciliar",
+            motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
+        )
+
+    if sonda_de_transaccion_pendiente is not None:
+        try:
+            pendiente = await sonda_de_transaccion_pendiente()
+        except Exception as exc:  # noqa: BLE001 - boundary: no poder mirar es no poder afirmar
+            raise _rechazar(
+                f"no se pudo verificar si hay transacciones pendientes del root viejo ({exc})",
+                motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
+            ) from exc
+        if pendiente:
+            raise _rechazar(
+                f"el root viejo {viejo} tiene una transacción PENDING sin resolver",
+                motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
+            )
+
+
+async def resolver_workspace(
+    *,
+    preferencia: str | None,
+    recursos: ResourceBinding,
+    prohibidas: RaicesProhibidas,
+    registro: RegistroDeRootActivo,
+    coordinacion: Stage9Coordination,
+    agent_id: str = _AGENTE_DEL_RESOLVER,
+    inspector: Callable[[pathlib.Path], InspeccionDeRootViejo] = inspeccionar_root_para_transicion,
+    sonda_de_transaccion_pendiente: Callable[[], Awaitable[bool]] | None = None,
+) -> WorkspaceResuelto | None:
+    """Resuelve la propiedad del `external_work_root` para ESTE arranque.
+
+    Es el único punto que compone la capacidad completa de P0::
+
+        preferencia → admisión → coordinación → transición → estado A–H
+                    → binding → registro de root activo
+
+    Returns:
+        El workspace resuelto, o ``None`` cuando la preferencia está ausente:
+        **DynDOLOD administrado NO CONFIGURADO**. Eso NO es un error — el resto
+        de Sky-Claw arranca y funciona igual, y no hay fallback silencioso a
+        ninguna raíz derivada.
+
+    Raises:
+        WorkspaceRechazadoError: cualquier otro camino que no se pueda demostrar
+            seguro (ruta inadmisible, root ajeno o no vacío, metadata corrupta,
+            transición insegura, coordinación ocupada).
+    """
+    if preferencia is None or not preferencia.strip():
+        logger.info(
+            "DynDOLOD administrado NO CONFIGURADO: external_work_root ausente. "
+            "El resto de Sky-Claw funciona normalmente.",
+            extra={"pipeline_stage": _ETAPA, "motivo": MotivoDeRechazo.NO_CONFIGURADO.value},
+        )
+        return None
+
+    admitido = admitir_root(preferencia, prohibidas=prohibidas)
+    root = pathlib.Path(admitido)
+    clave = recursos.clave()
+
+    async with coordinacion.sostener_workspace(agent_id=agent_id):
+        entrada = registro.entrada(clave)
+        if entrada is not None:
+            pendiente = entrada.transicion_pendiente
+            # El root a dejar es el `desde` del marcador cuando una transición
+            # quedó a medias (el registro ya repuntó), y el activo registrado
+            # cuando la preferencia acaba de cambiar. Mirar sólo `entrada.root`
+            # haría que una transición interrumpida se diera por terminada.
+            viejo = pathlib.Path(pendiente.desde) if pendiente and pendiente.desde else pathlib.Path(entrada.root)
+            if viejo != root:
+                await _validar_transicion(
+                    viejo,
+                    nuevo=root,
+                    recursos=recursos,
+                    coordinacion=coordinacion,
+                    inspector=inspector,
+                    sonda_de_transaccion_pendiente=sonda_de_transaccion_pendiente,
+                )
+                # Recién con la transición VALIDADA se registra la intención y se
+                # repunta el activo — en una sola escritura atómica, y siempre
+                # antes de publicar o usar el root nuevo.
+                registro.registrar_transicion(clave=clave, hacia=root, motivo="cambio de preferencia")
+                logger.info(
+                    "Transición de external_work_root validada y registrada.",
+                    extra={"pipeline_stage": _ETAPA, "desde": str(viejo), "hacia": str(root)},
+                )
+
+        estado = exigir_veredicto(root, recursos=recursos, registro=registro)
+        if estado is EstadoDelRoot.C_BINDING_COMPATIBLE:
+            documento = leer_binding(root)
+            if documento is None:  # pragma: no cover - el veredicto C lo garantiza
+                raise _rechazo_de_schema(root, "el binding desapareció tras el veredicto")
+            recien_inicializado = False
+        else:
+            documento, recien_inicializado = publicar_binding(root, recursos)
+
+        registro.registrar_activa(clave=clave, root=root, binding_id=documento.binding_id)
+        return WorkspaceResuelto(
+            root=root,
+            binding=documento,
+            estado=estado,
+            recien_inicializado=recien_inicializado,
+        )

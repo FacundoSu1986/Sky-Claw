@@ -148,6 +148,11 @@ _SITIOS_LOCK_MANAGER_PRODUCTIVOS: set[tuple[str, str, str]] = {
     ("sky_claw/app_context.py", "_start_full_inner", "tools_installer_lock_manager"),
     ("sky_claw/app_context.py", "_start_full_inner", "lock_manager"),
     ("sky_claw/app/orchestrator/rollback_factory.py", "create_rollback_components", "lock_manager"),
+    # P0.2 de ADR 0011: coordinación cross-process de etapa 9 sobre estado
+    # durable POR USUARIO. Entra al inventario como cualquier otro: recibe
+    # `lifecycle=` para participar del boundary (WAL recovery + pragmas
+    # hardenizadas + shutdown coordinado), y no queda exento por ser nuevo.
+    ("sky_claw/local/tools/dyndolod_workspace.py", "construir_coordinacion_de_etapa9", "<sin-variable>"),
 }
 
 

@@ -811,3 +811,855 @@ def test_el_temp_real_del_sistema_es_raiz_prohibida_por_default() -> None:
     assert dict(prohibidas.entradas)["temp"] == pathlib.Path(_tempfile.gettempdir()).resolve()
     with pytest.raises(ws.WorkspaceRechazadoError):
         ws.admitir_root(pathlib.Path(_tempfile.gettempdir()) / "sky-claw", prohibidas=prohibidas)
+
+
+# ---------------------------------------------------------------------------
+# P0.2 — estado durable, coordinación cross-process y transición de root
+# ---------------------------------------------------------------------------
+
+
+def test_el_estado_durable_no_depende_del_cwd_ni_del_work_root(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La ubicación es por usuario y estable: ni cwd, ni worktree, ni TEMP, ni el root.
+
+    Es EL defecto que P0.2 cierra: `.skyclaw_backups/` es relativo, así que dos
+    instancias de Sky-Claw lanzadas desde directorios distintos abren dos
+    `locks.db` distintos y no se excluyen entre sí. Un lock que no serializa es
+    peor que no tener lock: promete exclusión y no la da.
+    """
+    from sky_claw.config import Config, SystemPaths
+
+    (tmp_path / "otro_cwd").mkdir()
+    desde_aca = ws.ruta_de_estado_de_etapa9()
+    monkeypatch.chdir(tmp_path / "otro_cwd")
+    desde_alla = ws.ruta_de_estado_de_etapa9()
+
+    assert desde_aca == desde_alla
+    assert desde_aca.is_absolute()
+    assert SystemPaths.runtime_state_dir() == Config.DEFAULT_CONFIG_DIR / "state"
+    # Ni TEMP ni el propio work root pueden contenerla.
+    import tempfile as _tempfile
+
+    assert not str(desde_aca).startswith(str(pathlib.Path(_tempfile.gettempdir()).resolve()))
+
+
+def test_el_estado_durable_no_sale_de_una_variable_de_entorno(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin env var de staging: una segunda fuente reabre el split-brain de #552."""
+    antes = ws.ruta_de_estado_de_etapa9()
+    for variable in ("SKY_CLAW_STATE_DIR", "SKYCLAW_STATE_DIR", "SKY_CLAW_EXTERNAL_WORK_ROOT"):
+        monkeypatch.setenv(variable, "/algo/que/no/deberia/importar")
+    assert ws.ruta_de_estado_de_etapa9() == antes
+
+
+async def test_la_coordinacion_reusa_el_ritual_y_los_leases_existentes(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Se conserva `dyndolod-pipeline` y la semántica de leases del árbol."""
+    coordinacion = ws.construir_coordinacion_de_etapa9(base=tmp_path / "estado")
+    try:
+        assert coordinacion.RECURSO_DEL_RITUAL == "dyndolod-pipeline"
+        async with coordinacion.sostener_ritual(agent_id="test") as sostenido:
+            assert sostenido.lock_info is not None
+            await sostenido.assert_owned()
+            info = await coordinacion.lock_manager.get_lock_info("dyndolod-pipeline")
+            assert info is not None and not info.is_expired
+        assert await coordinacion.lock_manager.get_lock_info("dyndolod-pipeline") is None
+    finally:
+        await coordinacion.close()
+
+
+_GUION_RITUAL = """\
+import json, pathlib, sys, time
+sys.path.insert(0, {raiz!r})
+import asyncio
+from sky_claw.local.tools import dyndolod_workspace as ws
+
+estado = pathlib.Path(sys.argv[1])
+salida = pathlib.Path(sys.argv[2])
+señal = pathlib.Path(sys.argv[3])
+rol = sys.argv[4]
+# El cwd de cada proceso es DISTINTO a propósito: si la coordinación dependiera
+# del cwd (como `.skyclaw_backups/locks.db`), los dos entrarían al ritual.
+import os
+os.chdir(sys.argv[5])
+
+async def main():
+    coordinacion = ws.construir_coordinacion_de_etapa9(base=estado)
+    try:
+        if rol == "primero":
+            async with coordinacion.sostener_ritual(agent_id="proceso-a"):
+                señal.write_text("dentro", encoding="utf-8")
+                # Se queda adentro hasta que el segundo terminó de intentarlo.
+                while not (señal.parent / "segundo_listo").exists():
+                    await asyncio.sleep(0.02)
+            salida.write_text(json.dumps({{"entro": True}}), encoding="utf-8")
+        else:
+            while not señal.exists():
+                time.sleep(0.02)
+            try:
+                async with coordinacion.sostener_ritual(agent_id="proceso-b", ttl=2.0):
+                    salida.write_text(json.dumps({{"entro": True}}), encoding="utf-8")
+            except Exception as exc:
+                salida.write_text(
+                    json.dumps({{"entro": False, "error": type(exc).__name__}}), encoding="utf-8"
+                )
+            (señal.parent / "segundo_listo").write_text("ok", encoding="utf-8")
+    finally:
+        await coordinacion.close()
+
+asyncio.run(main())
+"""
+
+
+def _correr_dos_procesos_de_ritual(tmp_path: pathlib.Path, *, estado: pathlib.Path) -> list[dict]:
+    """Lanza dos procesos REALES con cwd distinto contra el mismo ritual."""
+    raiz_repo = str(pathlib.Path(ws.__file__).resolve().parents[3])
+    guion = tmp_path / "ritual.py"
+    guion.write_text(_GUION_RITUAL.format(raiz=raiz_repo), encoding="utf-8")
+    señal = tmp_path / "señales" / "primero_dentro"
+    señal.parent.mkdir(parents=True, exist_ok=True)
+
+    procesos = []
+    salidas = []
+    for indice, rol in ((1, "primero"), (2, "segundo")):
+        cwd = tmp_path / f"cwd_{indice}"
+        cwd.mkdir(exist_ok=True)
+        salida = tmp_path / f"ritual_{indice}.json"
+        salidas.append(salida)
+        procesos.append(
+            subprocess.Popen(  # noqa: S603 - argv fijo, sin shell
+                [sys.executable, str(guion), str(estado), str(salida), str(señal), rol, str(cwd)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        )
+    for proceso in procesos:
+        _, err = proceso.communicate(timeout=180)
+        assert proceso.returncode == 0, err.decode(errors="replace")
+    return [json.loads(s.read_text(encoding="utf-8")) for s in salidas]
+
+
+def test_dos_procesos_con_cwd_distinto_no_entran_al_mismo_ritual(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§20: A con cwd=X y B con cwd=Y sobre el MISMO recurso → el segundo no entra.
+
+    Dos coroutines del mismo intérprete no prueban nada acá: comparten el
+    módulo, el event loop y la conexión. La propiedad es cross-process, y el
+    `cwd` distinto es lo que distingue una coordinación durable de una que
+    depende de desde dónde se lanzó el proceso.
+    """
+    primero, segundo = _correr_dos_procesos_de_ritual(tmp_path, estado=tmp_path / "estado")
+
+    assert primero["entro"] is True
+    assert segundo["entro"] is False, "el segundo entró al ritual con el primero adentro"
+    assert segundo["error"] == "LockAcquisitionError"
+
+
+def test_la_coordinacion_no_depende_del_pathname_del_work_root(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Work roots distintos, MISMO ejecutable/recursos → siguen serializados.
+
+    El exe, los INI, los logs, el `Data` y los mods se comparten aunque los work
+    roots difieran (ADR 0011 §2.6): una coordinación identificada por el
+    pathname del root prometería concurrencia que el filesystem no da. Se ancla
+    que el identificador del ritual NO lleva el root adentro.
+    """
+    coordinacion_a = ws.construir_coordinacion_de_etapa9(base=tmp_path / "estado")
+    coordinacion_b = ws.construir_coordinacion_de_etapa9(base=tmp_path / "estado")
+
+    assert coordinacion_a.RECURSO_DEL_RITUAL == coordinacion_b.RECURSO_DEL_RITUAL
+    assert "work" not in coordinacion_a.RECURSO_DEL_RITUAL
+    # Y la exclusión real, con dos procesos y dos work roots distintos:
+    primero, segundo = _correr_dos_procesos_de_ritual(tmp_path, estado=tmp_path / "estado")
+    assert (primero["entro"], segundo["entro"]) == (True, False)
+
+
+async def test_perder_la_lease_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """Lease perdida ⇒ no se afirma exclusividad, y la salida del bloque LEVANTA.
+
+    Fail-closed en las dos mitades: `assert_owned` corta ANTES de la mutación
+    siguiente, y la salida limpia del bloque tampoco puede reportar éxito — si
+    el bloque terminara en silencio, el caller creería que el ritual corrió con
+    exclusividad cuando otro dueño ya se llevó el lock a mitad de camino. Se
+    reutiliza la semántica de leases que el árbol ya tiene, no una propia.
+    """
+    from sky_claw.app.db.locks import LockLeaseLostError
+
+    coordinacion = ws.construir_coordinacion_de_etapa9(base=tmp_path / "estado")
+    perdida_vista_desde_el_cuerpo = False
+    try:
+        with pytest.raises(LockLeaseLostError):
+            async with coordinacion.sostener_ritual(agent_id="dueño", ttl=60.0) as sostenido:
+                # Otro dueño se lleva el lock por debajo (expiración forzada).
+                await coordinacion.lock_manager.force_release("dyndolod-pipeline")
+                await coordinacion.lock_manager.acquire_lock("dyndolod-pipeline", "intruso", ttl=60.0)
+                with pytest.raises(LockLeaseLostError):
+                    await sostenido.assert_owned()
+                perdida_vista_desde_el_cuerpo = sostenido.lease_lost
+
+        assert perdida_vista_desde_el_cuerpo is True
+        # Y el lock del intruso sigue siendo del intruso: no se lo robamos al salir.
+        info = await coordinacion.lock_manager.get_lock_info("dyndolod-pipeline")
+        assert info is not None and info.agent_id == "intruso"
+    finally:
+        await coordinacion.lock_manager.force_release("dyndolod-pipeline")
+        await coordinacion.close()
+
+
+async def test_la_coordinacion_se_libera_recien_al_salir_del_bloque(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Ni una cancelación ni una excepción sueltan la coordinación antes de tiempo.
+
+    El orden importa: mientras el cuerpo sigue corriendo —proceso hijo vivo,
+    rollback restaurando, recovery mutando— la coordinación NO se suelta, y se
+    suelta SIEMPRE al salir, también por el camino de excepción.
+    """
+    coordinacion = ws.construir_coordinacion_de_etapa9(base=tmp_path / "estado")
+    vistos: list[bool] = []
+    try:
+        with pytest.raises(RuntimeError):
+            async with coordinacion.sostener_ritual(agent_id="dueño"):
+                info = await coordinacion.lock_manager.get_lock_info("dyndolod-pipeline")
+                vistos.append(info is not None and not info.is_expired)
+                raise RuntimeError("el ritual explotó a mitad de una mutación")
+
+        assert vistos == [True]
+        assert await coordinacion.lock_manager.get_lock_info("dyndolod-pipeline") is None
+    finally:
+        await coordinacion.close()
+
+
+def test_el_orden_de_adquisicion_esta_documentado_y_es_aciclico() -> None:
+    """§21: el orden vive escrito en el módulo, no en la cabeza de quien lo escribió."""
+    doc = ws.__doc__ or ""
+    orden = ws.ORDEN_DE_ADQUISICION
+    assert orden == (
+        "dyndolod-workspace",
+        "dyndolod-pipeline",
+        "snapshot-transaction-lock",
+        "journal",
+        "directory-rollback",
+        "handoff/recovery",
+    )
+    assert len(set(orden)) == len(orden), "un nombre repetido sería un ciclo"
+    for nombre in orden:
+        assert nombre in doc, f"{nombre} no está en el orden documentado del módulo"
+
+
+# ---------------------------------------------------------------------------
+# Resolución de workspace, unicidad de root activo y transición
+# ---------------------------------------------------------------------------
+
+
+def _coordinacion(tmp_path: pathlib.Path) -> ws.Stage9Coordination:
+    return ws.construir_coordinacion_de_etapa9(base=tmp_path / "estado")
+
+
+async def test_preferencia_ausente_es_no_configurado_y_no_rompe_nada(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Ausente ⇒ `None` (NO CONFIGURADO), no una excepción que tumbe el arranque."""
+    coordinacion = _coordinacion(tmp_path)
+    try:
+        for vacia in (None, "", "   "):
+            assert (
+                await ws.resolver_workspace(
+                    preferencia=vacia,
+                    recursos=_instancia(tmp_path),
+                    prohibidas=_prohibidas(tmp_path),
+                    registro=_registro(tmp_path),
+                    coordinacion=coordinacion,
+                )
+                is None
+            )
+    finally:
+        await coordinacion.close()
+
+
+async def test_resolver_inicializa_y_recuerda_el_root_activo(tmp_path: pathlib.Path) -> None:
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    root = tmp_path / "Sky-Claw Work"
+    try:
+        resuelto = await ws.resolver_workspace(
+            preferencia=str(root),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert resuelto is not None
+        assert resuelto.root == root.resolve()
+        assert resuelto.recien_inicializado is True
+        assert resuelto.estado is ws.EstadoDelRoot.A_AUSENTE
+
+        entrada = registro.entrada(recursos.clave())
+        assert entrada is not None
+        assert entrada.root == str(root.resolve())
+        assert entrada.binding_id == resuelto.binding.binding_id
+        assert entrada.transicion_pendiente is None, "una transición terminada no deja marcador"
+
+        # Segundo arranque sobre el mismo root: caso C, sin re-inicializar.
+        otra_vez = await ws.resolver_workspace(
+            preferencia=str(root),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert otra_vez is not None
+        assert otra_vez.estado is ws.EstadoDelRoot.C_BINDING_COMPATIBLE
+        assert otra_vez.recien_inicializado is False
+        assert otra_vez.binding.binding_id == resuelto.binding.binding_id
+    finally:
+        await coordinacion.close()
+
+
+async def test_dos_roots_con_el_mismo_resource_binding_no_quedan_ambos_activos(
+    tmp_path: pathlib.Path,
+) -> None:
+    """La unicidad instalacional es el caso H, y NO se puede probar con los JSON locales.
+
+    Los dos roots tienen un binding perfectamente válido para los mismos
+    recursos; mirados de a uno, los dos son caso C. Lo que los distingue es el
+    estado durable de la instalación, que es por lo que el ADR le asigna la
+    detección a P0.2 y no al archivo del binding.
+    """
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    root_a = tmp_path / "Work A"
+    root_b = tmp_path / "Work B"
+    try:
+        await ws.resolver_workspace(
+            preferencia=str(root_a),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        # B se inicializa "a mano" con un binding válido para los MISMOS recursos.
+        ws.publicar_binding(root_b, recursos)
+
+        assert ws.evaluar_estado(root_b, recursos=recursos, registro=registro) is ws.EstadoDelRoot.H_OTRO_ROOT_ACTIVO
+        # Y el registro sigue nombrando a UNO solo.
+        assert registro.entrada(recursos.clave()).root == str(root_a.resolve())
+    finally:
+        await coordinacion.close()
+
+
+async def test_la_transicion_se_registra_durablemente_antes_de_activar(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§24: persistir preferencia → reinicio → inspeccionar → validar → activar."""
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+    vistos: list[tuple[str, object]] = []
+    try:
+        await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+
+        def _inspector(root: pathlib.Path) -> ws.InspeccionDeRootViejo:
+            # Al inspeccionar, el registro TODAVÍA nombra al viejo: la
+            # transición no puede haberse dado por hecha antes de validarla.
+            vistos.append((str(root), registro.entrada(recursos.clave()).root))
+            return ws.inspeccionar_root_para_transicion(root)
+
+        resuelto = await ws.resolver_workspace(
+            preferencia=str(nuevo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+            inspector=_inspector,
+        )
+
+        assert vistos == [(str(viejo.resolve()), str(viejo.resolve()))]
+        assert resuelto is not None
+        assert resuelto.root == nuevo.resolve()
+        entrada = registro.entrada(recursos.clave())
+        assert entrada.root == str(nuevo.resolve())
+        assert entrada.transicion_pendiente is None
+        # El root viejo NO se toca: ni se migra, ni se borra, ni se adopta.
+        assert (viejo / ws.ARCHIVO_DE_BINDING).exists()
+    finally:
+        await coordinacion.close()
+
+
+def _sabotear_con_backups(viejo: pathlib.Path) -> None:
+    (viejo / "DynDOLOD").mkdir(parents=True, exist_ok=True)
+    (viejo / "DynDOLOD" / "textures.rollback-1757462400000000000").mkdir()
+
+
+def _inspector_ciego(_root: pathlib.Path) -> ws.InspeccionDeRootViejo:
+    """Lo que devuelve el inspector REAL ante un root que no puede recorrer.
+
+    No se usa `chmod(0o000)` para producirlo: el CI de este repo corre como root
+    en Linux, donde los bits de permiso no detienen la lectura, así que ese
+    montaje probaría el camino feliz creyendo que prueba el otro. El
+    comportamiento del inspector ante un `OSError` real se ancla aparte, en
+    `test_el_inspector_no_reporta_limpio_lo_que_no_pudo_recorrer`.
+    """
+    return ws.InspeccionDeRootViejo(inspeccionable=False, backups=(), detalle="permiso denegado al recorrer")
+
+
+@pytest.mark.parametrize(
+    ("etiqueta", "sabotear", "inspector"),
+    [
+        ("backups de move-aside pendientes", _sabotear_con_backups, None),
+        ("el root viejo no se puede inspeccionar", lambda _viejo: None, _inspector_ciego),
+    ],
+)
+async def test_un_root_viejo_no_quiescente_bloquea_la_transicion(
+    tmp_path: pathlib.Path, etiqueta: str, sabotear, inspector
+) -> None:
+    """§25: con backups o sin poder inspeccionar, NO se olvida ni se activa otra."""
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+    extra = {} if inspector is None else {"inspector": inspector}
+    try:
+        await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        sabotear(viejo)
+
+        with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+            await ws.resolver_workspace(
+                preferencia=str(nuevo),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+                **extra,
+            )
+
+        assert excinfo.value.motivo is ws.MotivoDeRechazo.TRANSICION_REQUERIDA, etiqueta
+        # NO se olvidó el root viejo y NO se activó el nuevo.
+        assert registro.entrada(recursos.clave()).root == str(viejo.resolve())
+        assert not (nuevo / ws.ARCHIVO_DE_BINDING).exists()
+    finally:
+        await coordinacion.close()
+
+
+def test_el_inspector_no_reporta_limpio_lo_que_no_pudo_recorrer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`os.walk` se traga los errores por default; acá eso sería un fail-OPEN.
+
+    Un `PermissionError` a mitad del recorrido tiene que reportarse como "no
+    pude inspeccionar", no como "no encontré backups": la diferencia entre las
+    dos respuestas es si la transición avanza abandonando una raíz que quizá
+    conserva la única copia recuperable de una generación.
+    """
+    viejo = tmp_path / "Work Viejo"
+    viejo.mkdir()
+
+    def _walk_que_falla(_root, onerror=None, **_kwargs):
+        if onerror is not None:
+            onerror(PermissionError(13, "Permission denied"))
+        return iter(())
+
+    monkeypatch.setattr(ws.os, "walk", _walk_que_falla)
+
+    inspeccion = ws.inspeccionar_root_para_transicion(viejo)
+
+    assert inspeccion.inspeccionable is False
+    assert inspeccion.backups == ()
+    assert "no se pudo recorrer" in inspeccion.detalle
+
+
+def test_el_inspector_encuentra_el_residuo_con_la_regex_del_reconciliador(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Misma definición de "backup nuestro" que `rollback_reconciler`, no otra."""
+    from sky_claw.local.tools.rollback_reconciler import SUFIJO_MOVE_ASIDE
+
+    viejo = tmp_path / "Work Viejo"
+    (viejo / "DynDOLOD").mkdir(parents=True)
+    residuo = viejo / "DynDOLOD" / "textures.rollback-1757462400000000000"
+    residuo.mkdir()
+    # Un nombre PARECIDO que la regex del reconciliador no admite tampoco cuenta acá.
+    (viejo / "DynDOLOD" / "textures.rollback-123").mkdir()
+
+    inspeccion = ws.inspeccionar_root_para_transicion(viejo)
+
+    assert inspeccion.inspeccionable is True
+    assert inspeccion.backups == (residuo,)
+    assert SUFIJO_MOVE_ASIDE.search(residuo.name)
+
+
+async def test_un_ritual_vivo_bloquea_la_transicion_como_ocupado(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un ritual en vuelo (aun en otra instancia) no se atropella: OCUPADO."""
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+    try:
+        await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        await coordinacion.initialize()
+        await coordinacion.lock_manager.acquire_lock("dyndolod-pipeline", "otra-instancia", ttl=120.0)
+
+        with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+            await ws.resolver_workspace(
+                preferencia=str(nuevo),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+            )
+
+        assert excinfo.value.motivo is ws.MotivoDeRechazo.OCUPADO
+        assert registro.entrada(recursos.clave()).root == str(viejo.resolve())
+    finally:
+        await coordinacion.lock_manager.force_release("dyndolod-pipeline")
+        await coordinacion.close()
+
+
+async def test_una_transaccion_pendiente_bloquea_la_transicion(tmp_path: pathlib.Path) -> None:
+    """Una TX PENDING del root viejo no se abandona cambiando de raíz."""
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+
+    async def _hay_pendiente() -> bool:
+        return True
+
+    try:
+        await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+            await ws.resolver_workspace(
+                preferencia=str(nuevo),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+                sonda_de_transaccion_pendiente=_hay_pendiente,
+            )
+        assert excinfo.value.motivo is ws.MotivoDeRechazo.TRANSICION_REQUERIDA
+        assert registro.entrada(recursos.clave()).root == str(viejo.resolve())
+    finally:
+        await coordinacion.close()
+
+
+async def test_una_transicion_interrumpida_se_revalida_en_el_proximo_arranque(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Interrupción entre "registrar" y "activar": el marcador sobrevive y se revalida.
+
+    El proceso murió después de repuntar el registro al root nuevo y antes de
+    confirmar la activación. El próximo arranque no puede dar la transición por
+    terminada: el marcador nombra el root viejo, así que se lo vuelve a
+    inspeccionar — y si mientras tanto le aparecieron backups, se bloquea.
+    """
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+    try:
+        await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        # Muerte dura justo después del registro durable de la transición.
+        registro.registrar_transicion(clave=recursos.clave(), hacia=nuevo, motivo="preferencia cambiada")
+        assert registro.entrada(recursos.clave()).transicion_pendiente is not None
+
+        # Y en el ínterin el root viejo quedó con residuo de move-aside.
+        (viejo / "DynDOLOD").mkdir(parents=True, exist_ok=True)
+        (viejo / "DynDOLOD" / "textures.rollback-1757462400000000000").mkdir()
+
+        with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+            await ws.resolver_workspace(
+                preferencia=str(nuevo),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+            )
+        assert excinfo.value.motivo is ws.MotivoDeRechazo.TRANSICION_REQUERIDA
+        assert "Work Viejo" in excinfo.value.razon
+        # El marcador sigue vivo: la transición NO se dio por terminada.
+        assert registro.entrada(recursos.clave()).transicion_pendiente is not None
+    finally:
+        await coordinacion.close()
+
+
+async def test_edicion_manual_del_toml_reconcilia_contra_el_estado_durable(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§26: el TOML NO es autoridad de propiedad; se reconcilia contra lo durable.
+
+    El usuario edita `external_work_root` a mano y reinicia. El sistema tiene
+    que reconciliar preferencia + binding local + registro durable + recovery
+    pendiente, y fallar cerrado si no puede demostrar una transición segura.
+    """
+    from sky_claw.config import Config
+    from sky_claw.local.local_config import persistir_campo
+
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    config_path = tmp_path / "config.toml"
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+    try:
+        persistir_campo(config_path, "external_work_root", str(viejo))
+        await ws.resolver_workspace(
+            preferencia=Config(config_path).external_work_root,
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+
+        # Edición MANUAL del TOML + residuo pendiente en el root viejo.
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(str(viejo), str(nuevo)),
+            encoding="utf-8",
+        )
+        (viejo / "DynDOLOD").mkdir(parents=True, exist_ok=True)
+        (viejo / "DynDOLOD" / "textures.rollback-1757462400000000000").mkdir()
+
+        with pytest.raises(ws.WorkspaceRechazadoError):
+            await ws.resolver_workspace(
+                preferencia=Config(config_path).external_work_root,
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+            )
+        assert registro.entrada(recursos.clave()).root == str(viejo.resolve()), (
+            "el TOML editado a mano hizo olvidar el root viejo"
+        )
+    finally:
+        await coordinacion.close()
+
+
+async def test_cambiar_la_preferencia_no_hace_hot_reload(tmp_path: pathlib.Path) -> None:
+    """§27: lo resuelto en ESTE arranque no muta cuando cambia la preferencia.
+
+    `WorkspaceResuelto` es un snapshot inmutable del arranque. Cambiar el TOML
+    en caliente no puede mover el root debajo de un `AppContext`, un
+    `PathValidator`, un runner cacheado, el reconciliador ni una TX activa: el
+    boundary es el próximo arranque, y eso se ve acá en que el objeto ya
+    resuelto sigue nombrando el root de antes.
+    """
+    import dataclasses as _dc
+
+    from sky_claw.local.local_config import persistir_campo
+
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    config_path = tmp_path / "config.toml"
+    viejo = tmp_path / "Work Viejo"
+    try:
+        persistir_campo(config_path, "external_work_root", str(viejo))
+        resuelto = await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert resuelto is not None
+
+        persistir_campo(config_path, "external_work_root", str(tmp_path / "Work Nuevo"))
+
+        assert resuelto.root == viejo.resolve()
+        assert _dc.is_dataclass(resuelto) and resuelto.__dataclass_params__.frozen
+        with pytest.raises(_dc.FrozenInstanceError):
+            resuelto.root = tmp_path / "Work Nuevo"  # type: ignore[misc]
+    finally:
+        await coordinacion.close()
+
+
+# ---------------------------------------------------------------------------
+# Frontera P0 / PR-2: la capacidad existe, la activación NO
+# ---------------------------------------------------------------------------
+
+
+def test_p0_no_cambia_el_output_productivo_del_runner(tmp_path: pathlib.Path) -> None:
+    """`P0 CAPABILITY != PR-2 ACTIVATION`, verificado sobre el argv REAL.
+
+    Si un cambio de P0 hiciera que el `-o:` del runner apunte al work root
+    externo, sería SCOPE VIOLATION: PR-2 reabre el gate de lanzamiento T5 al
+    tocar esos subroots, y este PR no lo reabre. Se mide el argv que el runner
+    construye, no un comentario que diga que no cambió.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
+    from sky_claw.local.tools.output_targets import (
+        DYNDOLOD_OUTPUT_ROOT,
+        SKY_CLAW_MANAGED_DIR,
+        dyndolod_output_target,
+    )
+
+    game = tmp_path / "Skyrim Special Edition"
+    (game / "Data").mkdir(parents=True)
+    exe = tmp_path / "tools" / "DynDOLOD" / "DynDOLODx64.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+
+    # La derivación productiva sigue colgando del juego, no del work root.
+    esperado = game.resolve() / SKY_CLAW_MANAGED_DIR / DYNDOLOD_OUTPUT_ROOT
+    assert dyndolod_output_target(game=game) == esperado
+
+    config = DynDOLODConfig(dyndolod_exe=exe, game_path=game, mo2_path=None, mo2_mods_path=None)
+    assert config.output_root == esperado
+
+    runner = DynDOLODRunner(config)
+    argv = runner._build_xedit_args(None)
+    salidas = [arg for arg in argv if arg.startswith("-o:")]
+    assert len(salidas) == 1
+    assert str(esperado) in salidas[0]
+    assert "Sky-Claw Work" not in salidas[0]
+
+
+def test_ni_output_targets_ni_el_runner_conocen_el_workspace() -> None:
+    """Ancla de importación: la capacidad de P0 no puede filtrarse al `-o:`.
+
+    El test de arriba mide el argv de HOY; éste cierra la clase. Mientras
+    `output_targets` y el runner no importen el módulo de workspace, no hay
+    forma de que la derivación de salida empiece a depender de él sin romper
+    acá primero.
+    """
+    import ast
+
+    for modulo in ("output_targets", "dyndolod_runner"):
+        ruta = pathlib.Path(ws.__file__).with_name(f"{modulo}.py")
+        arbol = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
+        importados = set()
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Import):
+                importados.update(alias.name for alias in nodo.names)
+            elif isinstance(nodo, ast.ImportFrom) and nodo.module:
+                importados.add(nodo.module)
+        assert not any("dyndolod_workspace" in nombre for nombre in importados), modulo
+
+
+def test_p0_no_toca_el_root_legacy(tmp_path: pathlib.Path) -> None:
+    """El árbol legacy `<game>/Sky-Claw/DynDOLOD` queda intacto: ni migrar ni adoptar.
+
+    P0 no lo migra, no lo borra, no lo mueve, no lo adopta como staging nuevo y
+    no crea `DirectoryRollback` sobre él. Lo único que P0 hace con un root viejo
+    es LEERLO para negarse a abandonarlo con backups pendientes.
+    """
+    from sky_claw.local.tools.output_targets import dyndolod_output_target
+
+    game = tmp_path / "game"
+    legacy = dyndolod_output_target(game=game)
+    (legacy / "textures").mkdir(parents=True)
+    (legacy / "textures" / "lod.dds").write_bytes(b"generacion anterior")
+    antes = sorted(p.relative_to(legacy).as_posix() for p in legacy.rglob("*"))
+
+    inspeccion = ws.inspeccionar_root_para_transicion(legacy)
+
+    assert inspeccion.inspeccionable is True
+    assert inspeccion.backups == ()
+    despues = sorted(p.relative_to(legacy).as_posix() for p in legacy.rglob("*"))
+    assert despues == antes
+    assert (legacy / "textures" / "lod.dds").read_bytes() == b"generacion anterior"
+
+
+#: Sitios de PRODUCCIÓN que construyen `DynDOLODPipelineService`. Igualdad
+#: literal, como `RITUAL_TOOL_MAP`: un constructor nuevo rompe el ancla hasta
+#: que se decida si participa de la coordinación de etapa 9. Sin esto, el
+#: default `stage9_coordination=None` sería exactamente el defecto dominante de
+#: este repo —un camino coordinado y su gemelo no— en su forma más silenciosa,
+#: porque no falla nada: simplemente no hay exclusión.
+CONSTRUCTORES_DEL_SERVICIO_DYNDOLOD: frozenset[str] = frozenset(
+    {
+        "sky_claw/app/orchestrator/orchestration_composition.py",
+        "sky_claw/app/orchestrator/preview/chain_preview_service.py",
+    }
+)
+
+
+def test_censo_de_constructores_del_servicio_dyndolod() -> None:
+    """Todo constructor de producción pasa `stage9_coordination=`, sin excepciones."""
+    import ast
+
+    raiz = pathlib.Path(ws.__file__).resolve().parents[3]
+    paquete = raiz / "sky_claw"
+    encontrados: dict[str, bool] = {}
+    for archivo in paquete.rglob("*.py"):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
+        for nodo in ast.walk(arbol):
+            if (
+                isinstance(nodo, ast.Call)
+                and isinstance(nodo.func, ast.Name)
+                and nodo.func.id == "DynDOLODPipelineService"
+            ):
+                clave = archivo.relative_to(raiz).as_posix()
+                pasa = any(kw.arg == "stage9_coordination" for kw in nodo.keywords)
+                encontrados[clave] = encontrados.get(clave, True) and pasa
+
+    assert set(encontrados) == CONSTRUCTORES_DEL_SERVICIO_DYNDOLOD
+    sin_coordinacion = sorted(k for k, v in encontrados.items() if not v)
+    assert not sin_coordinacion, f"construyen el servicio sin coordinar: {sin_coordinacion}"
+
+
+def test_el_reconciliador_rutea_el_ritual_de_etapa9_a_la_base_durable(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El guard de recovery mira la MISMA base donde el servicio toma el ritual.
+
+    Es el hermano del cableado del servicio: si el reconciliador siguiera
+    mirando el `locks.db` relativo al cwd, vería LIBRE un ritual en vuelo en
+    otra instancia y restauraría un backup que su productor todavía usa.
+    """
+    from sky_claw.app.db.locks import DistributedLockManager
+    from sky_claw.local.tools.rollback_reconciler import _manager_del_ritual
+
+    por_defecto = DistributedLockManager(db_path=tmp_path / "cwd_locks.db")
+    coordinacion = ws.construir_coordinacion_de_etapa9(base=tmp_path / "estado")
+
+    assert _manager_del_ritual("dyndolod-pipeline", por_defecto, coordinacion) is coordinacion.lock_manager
+    # Los otros rituales NO se migran incidentalmente.
+    for otro in ("behavior-graphs", "bodyslide-meshes", "load-order"):
+        assert _manager_del_ritual(otro, por_defecto, coordinacion) is por_defecto
+    # Y sin coordinación cableada, todo conserva el comportamiento previo.
+    assert _manager_del_ritual("dyndolod-pipeline", por_defecto, None) is por_defecto

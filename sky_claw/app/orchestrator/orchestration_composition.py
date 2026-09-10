@@ -42,6 +42,7 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     LoopGuardrailMiddleware,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
 from sky_claw.local.tools.grass_cache_service import GrassCacheService
 from sky_claw.local.tools.loot_service import LootSortingService
 from sky_claw.local.tools.pandora_service import PandoraPipelineService
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from sky_claw.app.security.path_validator import PathValidator
     from sky_claw.local.ai.patch_advisor_llm import LLMCallable
     from sky_claw.local.assets import AssetConflictReport
+    from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
     from sky_claw.local.tools.grass_cache_service import GrassRuntimeDeps
     from sky_claw.local.tools.loot_service import LootRunnerProtocol
 
@@ -124,6 +126,13 @@ def build_orchestration_composition(
     plugin_limit_guard: Callable[[str], Awaitable[dict[str, Any]]],
     scan_asset_conflicts: Callable[[], list[AssetConflictReport]],
     scan_asset_conflicts_json: Callable[[], str],
+    # P0 de ADR 0011: coordinación cross-process de etapa 9 (estado durable por
+    # usuario). Se INYECTA cuando el llamador ya tiene una viva —`AppContext`
+    # construye la suya para el recovery de arranque— y se construye acá cuando
+    # no: el composition root es quien arma el grafo, y el `SupervisorAgent` no
+    # puede construirla sin cruzar la frontera de dominio que
+    # `tests/test_supervisor_architecture_boundary.py` custodia.
+    stage9_coordination: Stage9Coordination | None = None,
 ) -> OrchestrationComposition:
     """Construye el grafo completo de servicios, providers, middleware y dispatcher.
 
@@ -135,6 +144,14 @@ def build_orchestration_composition(
     todos los servicios usan construcción perezosa de runners.
     **NO** invoca los seams residuales (grass, plugin-limit, asset scan).
     """
+
+    # P0.2 (ADR 0011): la coordinación de etapa 9 vive en estado durable POR
+    # USUARIO, no bajo `_BACKUP_STAGING_DIR` — que es relativo al cwd, y por eso
+    # dos instancias lanzadas desde directorios distintos abrirían dos
+    # `locks.db` y no se excluirían. Se inicializa sola en el primer uso, así
+    # que este composition root sigue siendo síncrono.
+    if stage9_coordination is None:
+        stage9_coordination = construir_coordinacion_de_etapa9()
 
     # ------------------------------------------------------------------
     # 1. Ruta de configuración compartida de Synthesis
@@ -162,6 +179,7 @@ def build_orchestration_composition(
         path_resolver=path_resolver,
         event_bus=event_bus,
         mo2_profile=profile_name,
+        stage9_coordination=stage9_coordination,
     )
 
     xedit_service = XEditPipelineService(
@@ -261,6 +279,7 @@ def build_orchestration_composition(
         snapshot_manager=snapshot_manager,
         journal=journal,
         event_bus=event_bus,
+        stage9_coordination=stage9_coordination,
     )
 
     # ------------------------------------------------------------------

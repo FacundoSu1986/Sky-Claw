@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from sky_claw.app.security.path_validator import PathValidator
     from sky_claw.local.assets import AssetConflictReport
     from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+    from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
     from sky_claw.local.tools.grass_cache_service import GrassCacheService
     from sky_claw.local.tools.loot_service import LootSortingService
     from sky_claw.local.tools.pandora_service import PandoraPipelineService
@@ -67,6 +68,7 @@ def build_preview_chain_service_provider(
     snapshot_manager: FileSnapshotManager,
     journal: OperationJournal,
     event_bus: CoreEventBus,
+    stage9_coordination: Stage9Coordination | None = None,
 ) -> Callable[[], ChainPreviewService]:
     """Cierra dependencias concretas y difiere la resolución de binarios."""
 
@@ -101,6 +103,7 @@ def build_preview_chain_service_provider(
             loot_runner=loot_runner,
             xedit_runner=xedit_runner,
             conflict_analyzer=ConflictAnalyzer(),
+            stage9_coordination=stage9_coordination,
         )
 
     return provide

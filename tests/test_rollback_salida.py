@@ -36,6 +36,13 @@ _NO_SON_MUTADORES: dict[str, str] = {
         "es el dry-run: usa force_rollback=True, que YA revierte siempre — el "
         "caso que este archivo cubre es el contrario (salida limpia sin revertir)."
     ),
+    "sky_claw/local/tools/dyndolod_workspace.py": (
+        "provee la COORDINACIÓN de etapa 9 (P0 de ADR 0011): compone el lock "
+        "con target_files=[] para que el mutador real —dyndolod_service, que "
+        "sí figura abajo con su mecanismo 'directorio'— lo sostenga. No produce "
+        "salida propia que revertir: su única escritura es el binding de "
+        "propiedad, que nace por creación exclusiva y jamás se reemplaza."
+    ),
 }
 
 #: Módulo → mecanismo con el que revierte su SALIDA ante un run fallido.

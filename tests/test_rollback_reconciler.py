@@ -70,8 +70,17 @@ USUARIOS_DEL_MOVE_ASIDE: dict[str, str] = {
     "sky_claw/app/agent/tools/system_tools.py": "bodyslide",
 }
 
-#: Excluido con motivo: consume el prefijo, no lo produce (es este reconciliador).
-_CONSUMIDOR = "sky_claw/local/tools/rollback_reconciler.py"
+#: Excluidos con motivo: **consumen** el prefijo, no lo producen. El
+#: reconciliador es quien barre el residuo; `dyndolod_workspace` lo LEE para
+#: decidir si un `external_work_root` viejo está quiescente antes de dejar de
+#: usarlo (P0 de ADR 0011), y lo hace con la MISMA
+#: `rollback_reconciler.SUFIJO_MOVE_ASIDE` —no con una regex propia—, que es
+#: justamente lo que lo mantiene del lado de los consumidores. Si algún día
+#: creara backups, tendría que pasar a `PRODUCTORES_DEL_NOMBRE` con su familia.
+_CONSUMIDORES = {
+    "sky_claw/local/tools/rollback_reconciler.py",
+    "sky_claw/local/tools/dyndolod_workspace.py",
+}
 
 
 def _modulos_con_el_nombre(literal: str) -> set[str]:
@@ -85,7 +94,7 @@ def _modulos_con_el_nombre(literal: str) -> set[str]:
 def test_todo_productor_de_backups_tiene_su_familia_reconciliada() -> None:
     """Guard de completitud: un productor nuevo de ``rollback-*`` obliga a decidir
     cómo se reconcilia su residuo, en vez de dejarlo leakear en silencio."""
-    assert _modulos_con_el_nombre("rollback-") - {_CONSUMIDOR} == set(PRODUCTORES_DEL_NOMBRE)
+    assert _modulos_con_el_nombre("rollback-") - _CONSUMIDORES == set(PRODUCTORES_DEL_NOMBRE)
 
 
 def test_todo_usuario_del_move_aside_tiene_su_productor_declarado() -> None:

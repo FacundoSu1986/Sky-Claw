@@ -167,7 +167,13 @@ def test_preview_lazy_conserva_wiring_y_fallback_de_loot() -> None:
         "journal": MagicMock(),
         "event_bus": MagicMock(),
     }
-    provider = build_preview_chain_service_provider(path_resolver=resolver, **colaboradores)
+    # P0.2 (ADR 0011): la coordinación de etapa 9 tiene que ATRAVESAR el
+    # provider hasta el servicio. Se inyecta un centinela en vez de `None` para
+    # que el ancla distinga "se cableó" de "quedó en el default".
+    coordinacion = MagicMock(name="stage9_coordination")
+    provider = build_preview_chain_service_provider(
+        path_resolver=resolver, stage9_coordination=coordinacion, **colaboradores
+    )
 
     with (
         patch("sky_claw.local.loot.cli.LOOTConfig") as loot_config,
@@ -197,6 +203,7 @@ def test_preview_lazy_conserva_wiring_y_fallback_de_loot() -> None:
         loot_runner=loot_runner.return_value,
         xedit_runner=xedit_runner.return_value,
         conflict_analyzer=analyzer.return_value,
+        stage9_coordination=coordinacion,
     )
 
 
