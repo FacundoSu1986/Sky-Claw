@@ -1,11 +1,12 @@
 # DynDOLOD PR-2: contrato de trabajo externo
 
 > **Estado:** decisión arquitectónica cerrada por [ADR 0011](../../adr/0011-dyndolod-external-work-root.md)
-> (Propuesta hasta el merge de ese PR). No implementada; el gate de rig de
-> `sky_claw/local/AGENTS.md` §2.9 que este documento no levanta quedó cerrado por
-> T5-v2 (2026-09-10 —
-> [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md))
-> y el bloqueo de implementación pasa a ser P0.
+> (Aceptada). No implementada; el gate de lanzamiento inicial previo a PR-2
+> (`sky_claw/local/AGENTS.md` §2.9) quedó cerrado por T5-v2 (2026-09-10 —
+> [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md):
+> T5-V2 LAUNCH GATE: PASS; T5-V2 FULL CHECKLIST: PARTIAL 7/10). P0 es el único
+> prerrequisito para comenzar PR-2; la implementación de PR-2 reabrirá el gate
+> de lanzamiento al mutar los subroots de salida usados por `-o:`.
 > **Baseline:** `origin/main` `5e5e9448db0d4015b3bf0dc4c1df10fdc49e226c`,
 > verificado el 2026-09-09 mediante fetch y lectura de código.
 > **Alcance:** lifecycle, identidad, propiedad, admisión y fronteras de PR-2.
@@ -367,13 +368,24 @@ rename atómico.
 
 ## 13. Gate T5 y alcance honesto
 
-**Este contrato NO levanta el gate de rig.** Al aprobarse esta documentación
-siguen haciendo falta **dos corridas reales separadas** (TexGen y DynDOLOD), cada
-una con: root con espacio, `Using Output Path:` exacto, archivos físicos en el
-root esperado, preset stale presente deliberadamente y sin desvío al preset stale.
-**Esas dos corridas se ejecutaron y el gate quedó cerrado el 2026-09-10** —
-informe commiteado:
+**Antecedente histórico:** al redactarse inicialmente esta documentación, seguían haciendo
+falta dos corridas reales separadas (TexGen y DynDOLOD) con root con espacio,
+`Using Output Path:` exacto, archivos físicos en el root esperado y presets stale
+ejercitados sin desvío.
+
+**Estado formal del gate de lanzamiento: CERRADO (2026-09-10).** Esas dos corridas se
+ejecutaron y el gate de lanzamiento quedó satisfecho (T5-V2 LAUNCH GATE: PASS;
+T5-V2 FULL CHECKLIST: PARTIAL 7/10) — informe commiteado:
 [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md).
+Los criterios 8–10 del checklist completo quedan pendientes para el rig de
+ownership posterior a PR-2.
+
+**Reapertura ante PR-2:** P0 es el único prerrequisito para COMENZAR PR-2. Al
+cambiar los subroots administrados de salida usados por `-o:`, PR-2 **reabre** el
+gate de lanzamiento. PR-2 no puede mergearse sin repetir las dos corridas de rig
+reales (TexGen + DynDOLOD) sobre el candidato PR-2 bajo las condiciones
+canónicas del gate.
+
 La [documentación oficial de TexGen](https://dyndolod.info/Help/TexGen) recomienda
 salida dedicada externa (consultada 2026-09-09) y describe la línea de comandos,
 pero **no demuestra** cómo se comporta la versión del binario del rig.

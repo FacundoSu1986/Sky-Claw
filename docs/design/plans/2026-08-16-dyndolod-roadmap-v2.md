@@ -315,19 +315,23 @@ visibilidad; si falla, el trabajo es investigar el perfil de MO2, no parchear T3
 
 ## T5-v2 — rig E2E (aceptación endurecida)
 
-> **Estado: gate de lanzamiento CERRADO — 2026-09-10.** Informe commiteado:
-> [`../../validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md).
-> Criterios 1–7: PASS en ambos binarios (corridas por el runner, roots con
-> espacios, eco exacto, archivos físicos en el root declarado, presets rancios
-> ejercitados con corrección asistida del campo Output, cero desvío al decoy,
-> restauración verificada). Criterios 8–10 (ZIP, dos mods disjuntos, visibilidad
-> billboards) NO se ejercitaron: corren con el rig de servicio completo
-> posterior a PR-2, así que el checklist T5-v2 completo queda **PARCIAL (7/10)**
-> — lo único cerrado es el gate de lanzamiento. El checklist se conserva como
-> precedente contractual: un cambio futuro que altere cómo se construye o
-> serializa el argv o el destino que declara (builder `_build_xedit_args`,
-> subroots `-o:`, path de spawn/serialización en
-> `DynDOLODRunner._execute_process`) o a los binarios re-abre el requisito.
+> **Estado:**
+> - **T5-V2 LAUNCH GATE: PASS (CERRADO — 2026-09-10).** Informe commiteado:
+>   [`../../validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md).
+>   Criterios 1–7: PASS en ambos binarios (corridas por el runner, roots con
+>   espacios, eco exacto, archivos físicos en el root declarado, presets rancios
+>   ejercitados con corrección asistida del campo Output, cero desvío al decoy,
+>   restauración verificada, cierre regular `Exit TexGen` / `Save and Exit` sin
+>   interferencia).
+> - **T5-V2 FULL CHECKLIST: PARCIAL (7/10).** Criterios 8–10 (ZIP, dos mods
+>   disjuntos, visibilidad billboards) NO se ejercitaron: corresponden al rig de
+>   servicio completo posterior a PR-2. No se afirma T5-v2 FULL PASS mientras
+>   haya criterios obligatorios sin ejecutar.
+> - **Lifecycle ante PR-2:** P0 es el único prerrequisito para COMENZAR PR-2.
+>   PR-2, al cambiar los subroots administrados usados por `-o:`, REABRE el gate
+>   de lanzamiento. PR-2 no puede mergearse sin repetir las dos corridas de rig
+>   reales (TexGen + DynDOLOD) sobre el candidato PR-2. No se puede presentar la
+>   evidencia del builder viejo como autorización permanente para el builder nuevo.
 
 v1 aceptaba *"el log declara `Using Output Path:` igual a la raíz administrada"*.
 **Ese criterio ya no sirve**: el rig probó que el encabezado ecoa el argv mientras

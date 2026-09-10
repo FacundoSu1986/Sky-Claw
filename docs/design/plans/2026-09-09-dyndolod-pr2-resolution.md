@@ -93,20 +93,30 @@ flowchart TD
 
 Los dos carriles iniciales pueden prepararse en paralelo. Cada cambio tiene rama
 y PR propios. P0 no cambia el `-o:` productivo. Las dos corridas exigidas por
-`sky_claw/local/AGENTS.md` §2.9 se ejecutaron y el gate quedó **PASS**
-(2026-09-10 — informe commiteado arriba): PR-2 deja de estar bloqueado por T5 y
-pasa a estar bloqueado únicamente por P0. La secuencia vigente es ADR 0011 ✅ →
-T5-v2 ✅ → P0 → PR-2 → rig de ownership/packaging → PR-3 → adaptar #528.
+`sky_claw/local/AGENTS.md` §2.9 se ejecutaron y el gate de lanzamiento quedó **PASS**
+(2026-09-10 — informe commiteado arriba): **P0 es el único prerrequisito restante
+para COMENZAR PR-2**. La secuencia vigente para arrancar es ADR 0011 ✅ →
+T5-v2 Launch Gate ✅ → P0 → PR-2.
 
-**No hay dependencia circular:** el gate inicial usa la inyección del runner
-actual y prueba lanzamiento/archivos/preset — **ejecutado y PASS el 2026-09-10**
-(informe commiteado). El rig posterior prueba el servicio completo con el nuevo
-layout y packaging: los criterios 8–10 del checklist T5-v2 siguen siendo SU barra
-de aceptación. El gate de lanzamiento quedó cerrado y no se reabre salvo cambios
-que alteren cómo se construye o serializa el argv, o el destino que declara: el
-builder compartido (`_build_xedit_args`), los subroots/roots administrados que
-emite para `-o:`, el path de spawn/serialización que lo transporta
-(`DynDOLODRunner._execute_process` → `create_subprocess_exec`), o los binarios.
+**Lifecycle del gate de lanzamiento y reapertura obligatoria en PR-2:**
+1. El gate de lanzamiento inicial previo a PR-2 quedó **CERRADO** sobre el runner
+   actual (criterios 1–7 demostrados en rig real, informe commiteado).
+2. **PR-2, al cambiar los subroots administrados usados por `-o:`, REABRE el gate
+   de lanzamiento.** El contrato estipula que alterar el builder compartido
+   (`_build_xedit_args`), los subroots/roots administrados que emite para `-o:`, el
+   path de spawn/serialización (`DynDOLODRunner._execute_process` →
+   `create_subprocess_exec`) o los binarios invalida la autorización previa. No se
+   puede presentar la evidencia del builder viejo como autorización permanente para
+   el builder/path nuevo.
+3. **PR-2 NO puede MERGEARSE hasta repetir las dos corridas reales (TexGen +
+   DynDOLOD) sobre el candidato PR-2.** Ese re-run puede formar parte del rig de
+   servicio post-PR2, pero debe incluir obligatoriamente la familia canónica del
+   gate de lanzamiento: dos herramientas separadas, root con espacios, `Using
+   Output Path:` exacto, outputs físicos atribuibles, stale preset ejercitado y cero
+   diversion.
+4. El rig posterior a PR-2 evaluará los criterios restantes del checklist T5-v2:
+   8 (Zip and Exit / `exito_no_empaquetable`), 9 (dos mods disjuntos vía packaging)
+   y 10 (visibilidad de billboards TexGen → DynDOLOD bajo el Data Path declarado).
 
 ## 3. P0 — lifecycle antes de activar la nueva raíz
 
@@ -473,15 +483,18 @@ runtime, DI y ramas afectadas.
 Después de PR-2, ejecutar servicio completo en rig y demostrar roots born-empty,
 restauración en fallo, dos mods con procedencia separada, handoff y visibilidad
 de billboards en el Data que DynDOLOD declara. Esos son los criterios adicionales
-7, 9 y 10 de T5-v2. Una copia a mods no prueba activación MO2.
+8, 9 y 10 de T5-v2 (criterio 8 — Zip and Exit / `exito_no_empaquetable`; criterio 9
+— dos mods disjuntos vía packaging; criterio 10 — visibilidad TexGen → DynDOLOD;
+el criterio 7 ya quedó satisfecho en el gate de lanzamiento T5-v2: Save/Exit regular,
+`success=True`, outputs disjuntos). Una copia a mods no prueba activación MO2.
 
 Rebasar/adaptar #528 al root esperado **por herramienta** y probar MATCH,
 MISMATCH y lectura indeterminada. Su aborto ante MISMATCH debe tener una vía
 asistida clara de corregir/reintentar; no declarar que arregla el preset.
 
 PR-3 solo puede retirar mecanismos de freshness cuando haya evidencia de que la
-propiedad que protegían queda cubierta en todas las ramas. ZIP tiene su
-entrega/aceptación propia (criterio 8); mientras falte, T5 completo sigue parcial.
+propiedad que protegían queda cubierta en todas las ramas. Mientras falte el rig
+completo post-PR2, el checklist T5-v2 completo permanece parcial (7/10).
 
 **Definición de cierre de PR-2:** contrato admitido y persistente, P0 verificado,
 gate inicial con ambas tools, implementación revisada, tests apropiados verdes,

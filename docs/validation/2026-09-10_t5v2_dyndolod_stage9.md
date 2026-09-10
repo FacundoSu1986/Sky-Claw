@@ -2,8 +2,9 @@
 
 > **Audiencia:** maintainers, reviewers y agentes.
 >
-> **Estado:** cierre del REAL-RIG ACCEPTANCE GATE (`sky_claw/local/AGENTS.md`
-> §2.9 punto 1). Resultado: **T5-V2 PASS** en ambos binarios.
+> **Estado:** cierre del REAL-RIG LAUNCH GATE (`sky_claw/local/AGENTS.md`
+> §2.9 punto 1). Resultado: **T5-V2 LAUNCH GATE: PASS** en ambos binarios;
+> **T5-V2 FULL CHECKLIST: PARCIAL (7/10)**.
 >
 > **Alcance de la evidencia:** corridas de aceptación de lanzamiento. NO
 > implementa PR-2 ni P0; NO cambia el `-o:` productivo; NO toca #528 ni la
@@ -65,6 +66,7 @@ el contrato por herramienta de #528.
 | Output físico | `textures\…` — 1362 archivos, ≈132 MB (manifiesto externo completo con SHA-256) |
 | Preset stale | `DynDOLOD_SSE_TexGen.ini` reescrito con `OutputPath=E:\Sky-Claw T5 Rig\Stale TexGen\` (sha `a576309a…`); la GUI **pre-cargó el campo Output con el stale** al abrir (dump UIA 16:45:56); el operador corrigió **solo** el campo Output antes de Start |
 | Escrituras al decoy | `Stale TexGen`: **0 archivos** (15 destinos vigilados antes/después; solo cambiaron la raíz administrada y los logs) |
+| Cierre (criterio 7) | Diálogo modal ofrecido al terminar (`snap_165036_387.png`): opciones `[Exit TexGen]` / `[Zip and Exit]` / `[Check log]` / `[Restart]`; cerrado con **`Exit TexGen`** regular (TexGen genera textures directas, no plugins `.esp`); log confirma `[00:45] TexGen completed successfully` |
 | Runner verdict | `success=True`, `rc=0`, artefacto fresco, marker de ESTA corrida (ventana atribuible: 320.494 → 415.277 B, prefijo re-hasheado), sin terminales — 425,6 s |
 | Restoration | 3/3 archivos con SHA-256 idéntico al original (`restoration.json`, `ok=true`); el tool re-grabó el preset al pulsar Start y la restauración devolvió los bytes originales |
 
@@ -81,20 +83,26 @@ el contrato por herramienta de #528.
 | Output físico | `DynDOLOD.esm` (141.665 B, `7be6c7aa…`), `DynDOLOD.esp` (258.335 B, `321b4048…`), `Occlusion.esp` (9.366.899 B, `4b355c2d…`) — 1117 archivos, ≈672 MB |
 | Preset stale | `DynDOLOD_SSE_Default.ini` **creado** por el rig (no existía; registrado) con `OutputPath=E:\Sky-Claw T5 Rig\Stale DynDOLOD\` (59 B, sha `7db22ff3…`). El wizard simple mantuvo el campo Output en el root del `-o:` (16:54:56); **al entrar en Advanced el campo pasó al `OutputPath` del preset** (`Stale DynDOLOD`, 16:58:57); el operador corrigió **solo** el campo Output de vuelta al root administrado (17:00:48) antes de Medium/OK |
 | Escrituras al decoy | `Stale DynDOLOD`: **0 archivos**; la salida TexGen de la corrida 1 quedó intacta (0/0/0) y ningún otro destino vigilado cambió |
+| Cierre (criterio 7) | Diálogo modal ofrecido tras plugins (`snap_170454_674.png`); cerrado con **`Save and Exit`**, registrado explícitamente en el log: `[03:40] User says "Save and Exit"`, seguido de `Saving … DynDOLOD.esm`, `DynDOLOD.esp` y `Occlusion.esp` |
 | Runner verdict | `success=True`, `rc=0`, artefactos frescos, markers de ESTA corrida (ventana atribuible: 966.019 → 1.931.279 B, prefijo re-hasheado), sin terminales — 748,4 s |
 | Restoration | preset creado eliminado (ausencia verificada); `DynDOLOD.ini` y `DynDOLOD_SSE.ini` restaurados con SHA-256 idéntico (`ok=true`) |
 
 ## Acceptance matrix
 
-| Criterio | TexGen | DynDOLOD |
-| --- | ------ | -------- |
-| Runner real (API pública del runner de Sky-Claw) | PASS | PASS |
-| Root con espacio | PASS | PASS |
-| `Using Output Path:` exacto | PASS | PASS |
-| Output físico atribuible | PASS | PASS |
-| Preset stale ejercitado | PASS | PASS |
-| Cero diversion al decoy | PASS | PASS |
-| Restoration verificada | PASS | PASS |
+| Criterio T5-v2 (roadmap §T5-v2) | TexGen | DynDOLOD | Estado |
+|---|---|---|---|
+| **1.** Runner real (API pública del runner de Sky-Claw) | PASS (`DynDOLODRunner.run_texgen()`) | PASS (`DynDOLODRunner.run_dyndolod()`) | **PASS** |
+| **2.** Raíz administrada con espacios | PASS (`E:\Sky-Claw T5 Rig\TexGen Output\`) | PASS (`E:\Sky-Claw T5 Rig\DynDOLOD Output\`) | **PASS** |
+| **3.** Argv correcto y serialización sin fallas | PASS (`-sse`, `-o:`, `-t:`, `-d:`, `-m:`, `-p:`) | PASS (idéntico baseline + subroot DynDOLOD) | **PASS** |
+| **4.** `Using Output Path:` exacto en log | PASS (`Using Output Path: E:\Sky-Claw T5 Rig\TexGen Output\`) | PASS (`Using Output Path: E:\Sky-Claw T5 Rig\DynDOLOD Output\`) | **PASS** |
+| **5.** Output físico atribuible en subcarpeta | PASS (1362 archivos en `textures/`, ≈132 MB) | PASS (1117 archivos, plugins `DynDOLOD.esm`/`.esp`, `Occlusion.esp`, ≈672 MB) | **PASS** |
+| **6.** Preset stale ejercitado y cero desvío al decoy | PASS (preset rancio auto-cargado; 0 archivos en `Stale TexGen`) | PASS (preset rancio aplicado al pasar a Advanced; 0 archivos en `Stale DynDOLOD`) | **PASS** |
+| **7.** Cierre regular y mutua aislación de salidas | DEMOSTRADO / PASS (modal cerrado con `Exit TexGen`, sin ZIP, sin interferencia en DynDOLOD) | DEMOSTRADO / PASS (modal cerrado con `Save and Exit`, plugins guardados, sin interferencia en TexGen) | **PASS** |
+| **8.** Empaquetado ZIP de salida / detección `Zip and Exit` | PENDIENTE (fuera de alcance de este launch gate) | PENDIENTE (fuera de alcance de este launch gate) | **PENDIENTE** (rig post-PR-2) |
+| **9.** Instalación como dos mods disjuntos en MO2 (`_package_output_as_mod`) | PENDIENTE (fuera de alcance de este launch gate) | PENDIENTE (fuera de alcance de este launch gate) | **PENDIENTE** (rig post-PR-2) |
+| **10.** Visibilidad de billboards TexGen → DynDOLOD en Data Path | PENDIENTE (fuera de alcance de este launch gate) | PENDIENTE (fuera de alcance de este launch gate) | **PENDIENTE** (rig post-PR-2) |
+
+> **Nota de arnés:** La restauración de presets e INIs (`restoration.json`, SHA-256 idénticos, `ok=true`) fue verificada al 100% en ambos ejecutables como garantía de no contaminación entre corridas.
 
 ## Serialización — observación acotada
 
@@ -182,8 +190,15 @@ completos y screenshots permanecen externos. Sin secretos en este documento.
 ## Veredicto
 
 ```text
-T5-V2 PASS
+T5-V2 LAUNCH GATE: PASS
+T5-V2 FULL CHECKLIST: PARTIAL (7/10)
 ```
 
-TexGen PASS completo y DynDOLOD PASS completo. El REAL-RIG ACCEPTANCE GATE de
-`sky_claw/local/AGENTS.md` §2.9 queda cerrado por esta evidencia.
+TexGen PASS y DynDOLOD PASS para los criterios 1–7 del launch gate. El REAL-RIG
+ACCEPTANCE GATE de lanzamiento (`sky_claw/local/AGENTS.md` §2.9) queda **CERRADO**
+por esta evidencia.
+
+Los criterios 8–10 (empaquetado ZIP de salida, instalación como dos mods
+disjuntos en MO2 vía packaging, visibilidad de billboards TexGen → DynDOLOD en
+el Data Path) permanecen **PENDIENTES** para el rig de servicio completo
+posterior a PR-2.
