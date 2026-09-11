@@ -223,7 +223,22 @@ es distinto del work root y no se deriva del cwd ni de una env var de staging.
   Este estado durable de coordinación es también el que hace detectable el
   caso H (unicidad de `external_work_root` activo por `resource_binding`,
   instalacional): registrarlo con clave de `resource_binding` y probar que dos
-  roots con el mismo `resource_binding` no pueden quedar ambos activos.
+  roots con el mismo `resource_binding` no pueden quedar ambos **registrados**
+  activos a la vez.
+
+**Alcance exacto de lo que P0.2 entrega — y lo que NO** (observación del hilo P1
+de review de #573, deferred-by-design). La unicidad que P0.2 garantiza es la del
+**registro durable**: dos arranques que presenten el mismo `resource_binding` no
+pueden quedar ambos registrados como activos (caso H, sobre `RegistroDeRootActivo`,
+cuya mutación corre bajo la coordinación). Lo que P0.2 **NO** provee es la
+**exclusividad de uso de un `WorkspaceResuelto` vivo** durante toda la vida del
+proceso que lo conserva: hoy no hay lease de proceso, así que un proceso A que
+resolvió root A y sigue vivo conserva su snapshot aunque otro proceso B
+transicione el registro a root B. Es inofensivo mientras P0 no conecte ese root a
+mutación productiva —`P0 CAPABILITY != PR-2 ACTIVATION`, el `-o:` sigue siendo
+`<game>/Sky-Claw/DynDOLOD`— y se convierte en defecto en cuanto PR-2 escriba a
+través del snapshot. Por eso esa exclusividad es un **gate duro de activación de
+PR-2** (P2.0, abajo), no algo que P0 pueda dar por hecho.
 - [x] Cambio de preferencia = aplicar en próximo arranque (ADR 0011 §2.5), sin
   hot-reload de AppContext/PathValidator/runner cache/reconciler/TX activas.
 - [x] Confirmar verdes y revisión de wiring. P0 es requisito previo, no una
@@ -328,6 +343,33 @@ para auditar; no commitear GBs, binarios de terceros ni secretos. Si los archivo
 crudos quedan externos, mantener expresamente esa condición y su localización.
 
 ## 5. PR-2 — implementación después del gate
+
+### P2.0 Gate de ownership del root vivo — BLOQUEANTE antes de P2.1
+
+Antes de que `external_work_root` pueda convertirse en destino **MUTABLE** —es
+decir, antes de que P2.1 conecte cualquier root derivado al `-o:` productivo—
+este gate tiene que estar cerrado. No es opcional ni "mejor esfuerzo": es la
+mitad de la unicidad que P0.2 dejó fuera de alcance a propósito (ver la nota de
+alcance en P0.2) y es la observación del hilo P1 de review de #573.
+
+- [ ] Mantener una **lease/fence de ownership** durante TODA la vida del
+  `WorkspaceResuelto` que vaya a usarse para mutar — no sólo durante la
+  resolución de arranque, que es lo único que P0.2 cubre.
+- [ ] Un proceso con snapshot viejo **NO** puede mutar root A después de que el
+  registro haya transicionado a root B.
+- [ ] Pérdida de esa lease ⇒ **fail-closed** antes de cualquier mutación (mismo
+  criterio que los fences `assert_owned()` que P0 ya aplica al ritual de etapa 9).
+- [ ] Test obligatorio con **DOS PROCESOS** (no dos coroutines, por el mismo
+  motivo que `test_single_winner_entre_dos_procesos_reales`):
+  - A resuelve root A y permanece vivo;
+  - B intenta activar root B;
+  - B debe rechazar/bloquear mientras A conserve ownership, **o** A debe quedar
+    invalidado de forma demostrable antes de que B mute.
+- [ ] PR-2 **no puede** conectar el workspace al `-o:` hasta que este test pase.
+  El invariante de alcance de P0
+  (`test_p0_no_cambia_el_output_productivo_del_runner`,
+  `test_ni_output_targets_ni_el_runner_conocen_el_workspace`) es lo que hoy hace
+  inofensivo el hueco; PR-2 lo levanta, así que PR-2 asume este gate.
 
 ### P2.1 Derivación y modelo
 
