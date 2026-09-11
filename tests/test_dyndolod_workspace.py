@@ -17,6 +17,7 @@ no ataja al tercero.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import inspect
@@ -25,6 +26,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -1417,6 +1419,7 @@ def test_el_orden_de_adquisicion_esta_documentado_y_es_aciclico() -> None:
     orden = ws.ORDEN_DE_ADQUISICION
     assert orden == (
         "dyndolod-workspace",
+        "dyndolod-ownership",
         "dyndolod-pipeline",
         "snapshot-transaction-lock",
         "journal",
@@ -1482,6 +1485,9 @@ async def test_resolver_inicializa_y_recuerda_el_root_activo(tmp_path: pathlib.P
         assert entrada.binding_id == resuelto.binding.binding_id
         assert entrada.transicion_pendiente is None, "una transición terminada no deja marcador"
 
+        # P2.0: un "arranque siguiente" en el MISMO proceso exige liberar la
+        # lease del primero — la exclusividad del snapshot vivo es de proceso.
+        await resuelto.ownership.liberar()
         # Segundo arranque sobre el mismo root: caso C, sin re-inicializar.
         otra_vez = await ws.resolver_workspace(
             preferencia=str(root),
@@ -1494,6 +1500,7 @@ async def test_resolver_inicializa_y_recuerda_el_root_activo(tmp_path: pathlib.P
         assert otra_vez.estado is ws.EstadoDelRoot.C_BINDING_COMPATIBLE
         assert otra_vez.recien_inicializado is False
         assert otra_vez.binding.binding_id == resuelto.binding.binding_id
+        await otra_vez.ownership.liberar()
     finally:
         await coordinacion.close()
 
@@ -1542,13 +1549,17 @@ async def test_la_transicion_se_registra_durablemente_antes_de_activar(
     nuevo = tmp_path / "Work Nuevo"
     vistos: list[tuple[str, object]] = []
     try:
-        await ws.resolver_workspace(
+        primero = await ws.resolver_workspace(
             preferencia=str(viejo),
             recursos=recursos,
             prohibidas=_prohibidas(tmp_path),
             registro=registro,
             coordinacion=coordinacion,
         )
+        assert primero is not None
+        # P2.0: la lease del "arranque anterior" se libera para poder simular el
+        # siguiente arranque en el mismo proceso.
+        await primero.ownership.liberar()
 
         def _inspector(root: pathlib.Path) -> ws.InspeccionDeRootViejo:
             # Al inspeccionar, el registro TODAVÍA nombra al viejo: la
@@ -1573,6 +1584,7 @@ async def test_la_transicion_se_registra_durablemente_antes_de_activar(
         assert entrada.transicion_pendiente is None
         # El root viejo NO se toca: ni se migra, ni se borra, ni se adopta.
         assert (viejo / ws.ARCHIVO_DE_BINDING).exists()
+        await resuelto.ownership.liberar()
     finally:
         await coordinacion.close()
 
@@ -1598,13 +1610,15 @@ async def test_la_transicion_sostiene_el_ritual_mientras_valida_y_activa(
     nuevo = tmp_path / "Work Nuevo"
     dueños: list[str | None] = []
     try:
-        await ws.resolver_workspace(
+        primero = await ws.resolver_workspace(
             preferencia=str(viejo),
             recursos=recursos,
             prohibidas=_prohibidas(tmp_path),
             registro=registro,
             coordinacion=coordinacion,
         )
+        assert primero is not None
+        await primero.ownership.liberar()
 
         async def _sonda() -> bool:
             manager = await coordinacion.manager_del_ritual()
@@ -1628,6 +1642,7 @@ async def test_la_transicion_sostiene_el_ritual_mientras_valida_y_activa(
         # próximo pipeline de etapa 9 no arrancaría nunca.
         manager = await coordinacion.manager_del_ritual()
         assert await manager.get_lock_info(ws.Stage9Coordination.RECURSO_DEL_RITUAL) is None
+        await resuelto.ownership.liberar()
     finally:
         await coordinacion.close()
 
@@ -1695,13 +1710,15 @@ async def test_un_root_viejo_no_quiescente_bloquea_la_transicion(
     nuevo = tmp_path / "Work Nuevo"
     extra = {} if inspector is None else {"inspector": inspector}
     try:
-        await ws.resolver_workspace(
+        primero = await ws.resolver_workspace(
             preferencia=str(viejo),
             recursos=recursos,
             prohibidas=_prohibidas(tmp_path),
             registro=registro,
             coordinacion=coordinacion,
         )
+        assert primero is not None
+        await primero.ownership.liberar()
         sabotear(viejo)
 
         with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
@@ -1779,13 +1796,17 @@ async def test_un_ritual_vivo_bloquea_la_transicion_como_ocupado(
     viejo = tmp_path / "Work Viejo"
     nuevo = tmp_path / "Work Nuevo"
     try:
-        await ws.resolver_workspace(
+        primero = await ws.resolver_workspace(
             preferencia=str(viejo),
             recursos=recursos,
             prohibidas=_prohibidas(tmp_path),
             registro=registro,
             coordinacion=coordinacion,
         )
+        assert primero is not None
+        # Se libera la lease de este "arranque" para que el bloqueo de abajo sea
+        # el del RITUAL vivo y no el de la exclusividad de proceso (P2.0).
+        await primero.ownership.liberar()
         await coordinacion.initialize()
         await (await coordinacion.manager_del_ritual()).acquire_lock("dyndolod-pipeline", "otra-instancia", ttl=120.0)
 
@@ -1817,13 +1838,15 @@ async def test_una_transaccion_pendiente_bloquea_la_transicion(tmp_path: pathlib
         return True
 
     try:
-        await ws.resolver_workspace(
+        primero = await ws.resolver_workspace(
             preferencia=str(viejo),
             recursos=recursos,
             prohibidas=_prohibidas(tmp_path),
             registro=registro,
             coordinacion=coordinacion,
         )
+        assert primero is not None
+        await primero.ownership.liberar()
         with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
             await ws.resolver_workspace(
                 preferencia=str(nuevo),
@@ -1855,13 +1878,15 @@ async def test_una_transicion_interrumpida_se_revalida_en_el_proximo_arranque(
     viejo = tmp_path / "Work Viejo"
     nuevo = tmp_path / "Work Nuevo"
     try:
-        await ws.resolver_workspace(
+        primero = await ws.resolver_workspace(
             preferencia=str(viejo),
             recursos=recursos,
             prohibidas=_prohibidas(tmp_path),
             registro=registro,
             coordinacion=coordinacion,
         )
+        assert primero is not None
+        await primero.ownership.liberar()
         # Muerte dura justo después del registro durable de la transición.
         registro.registrar_transicion(clave=recursos.clave(), hacia=nuevo, motivo="preferencia cambiada")
         assert registro.entrada(recursos.clave()).transicion_pendiente is not None
@@ -1906,13 +1931,15 @@ async def test_edicion_manual_del_toml_reconcilia_contra_el_estado_durable(
     nuevo = tmp_path / "Work Nuevo"
     try:
         persistir_campo(config_path, "external_work_root", str(viejo))
-        await ws.resolver_workspace(
+        primero = await ws.resolver_workspace(
             preferencia=Config(config_path).external_work_root,
             recursos=recursos,
             prohibidas=_prohibidas(tmp_path),
             registro=registro,
             coordinacion=coordinacion,
         )
+        assert primero is not None
+        await primero.ownership.liberar()
 
         # Edición MANUAL del TOML: se reescribe el archivo como lo haría el
         # usuario con un editor de texto. NO se usa `persistir_campo` a propósito
@@ -1987,6 +2014,7 @@ async def test_cambiar_la_preferencia_no_hace_hot_reload(tmp_path: pathlib.Path)
         assert _dc.is_dataclass(resuelto) and resuelto.__dataclass_params__.frozen
         with pytest.raises(_dc.FrozenInstanceError):
             resuelto.root = tmp_path / "Work Nuevo"  # type: ignore[misc]
+        await resuelto.ownership.liberar()
     finally:
         await coordinacion.close()
 
@@ -2658,17 +2686,19 @@ async def test_resolver_workspace_no_congela_el_event_loop(tmp_path: pathlib.Pat
             latidos += 1
 
     try:
-        await ws.resolver_workspace(
+        primero = await ws.resolver_workspace(
             preferencia=str(viejo),
             recursos=recursos,
             prohibidas=_prohibidas(tmp_path),
             registro=registro,
             coordinacion=coordinacion,
         )
+        assert primero is not None
+        await primero.ownership.liberar()
 
         tarea = asyncio.create_task(_ticker())
         try:
-            await ws.resolver_workspace(
+            resuelto = await ws.resolver_workspace(
                 preferencia=str(nuevo),
                 recursos=recursos,
                 prohibidas=_prohibidas(tmp_path),
@@ -2680,6 +2710,9 @@ async def test_resolver_workspace_no_congela_el_event_loop(tmp_path: pathlib.Pat
             tarea.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await tarea
+
+        assert resuelto is not None
+        await resuelto.ownership.liberar()
 
         # Con el inspector de 0.4 s fuera del loop, el ticker de 10 ms tuvo que
         # latir muchas veces. Si corriera EN el loop, quedaría cerca de cero.
@@ -2731,3 +2764,746 @@ async def test_perder_la_lease_del_workspace_aborta_antes_de_escribir(
     finally:
         await (await coordinacion.manager_del_ritual()).force_release(coordinacion.RECURSO_DEL_WORKSPACE)
         await coordinacion.close()
+
+
+def test_la_lease_de_ownership_es_por_instancia_logica_no_por_root(tmp_path: pathlib.Path) -> None:
+    """§17/§18: X+rootA y X+rootB compiten por el MISMO recurso; X e Y no.
+
+    El resource_id de la lease larga se deriva de `ResourceBinding.clave()`
+    (la identidad durable de la instancia lógica), nunca del pathname del
+    root ni de un recurso global único: dos roots para la misma instancia
+    tienen que excluirse y dos instancias no deben serializarse entre sí.
+    """
+    recursos = _instancia(tmp_path)
+    misma = _instancia(tmp_path)
+    otra = _instancia(tmp_path, sufijo="_otra")
+
+    rid = ws.Stage9Coordination.resource_id_de_ownership(recursos.clave())
+    assert ws.Stage9Coordination.RECURSO_DEL_OWNERSHIP_VIVO == "dyndolod-ownership"
+    assert rid.startswith("dyndolod-ownership-")
+    assert rid == ws.Stage9Coordination.resource_id_de_ownership(misma.clave())
+    assert rid != ws.Stage9Coordination.resource_id_de_ownership(otra.clave())
+
+
+def test_la_identidad_de_owner_distingue_procesos(tmp_path: pathlib.Path) -> None:
+    """§6: dos instancias de coordinación (dos procesos) tienen agent_id propio.
+
+    Con un `agent_id` fijo global, un holder podría RENOVAR o LIBERAR la lease
+    de otro: `renew_lock`/`release_lock` matchean por `resource_id + agent_id`.
+    La identidad por proceso cierra esa clase; el token `acquired_at` del
+    `assert_owned` cierra la readquisición.
+    """
+    a = _coordinacion(tmp_path)
+    b = _coordinacion(tmp_path)
+    assert a.identidad_de_owner != b.identidad_de_owner
+    assert a.identidad_de_owner.startswith("dyndolod-owner-")
+
+
+async def test_el_snapshot_sin_ownership_vivo_no_puede_mutar(tmp_path: pathlib.Path) -> None:
+    """§16: snapshot viejo + ownership perdido => `assert_owned()` fail-closed.
+
+    No alcanza con probar que B no entra: el `WorkspaceResuelto` que A conserva
+    tiene que quedar FENCED cuando su lease deja de ser suya. La pérdida es REAL
+    (otro dueño reclama el recurso por debajo), no un flag simulado.
+    """
+    from sky_claw.app.db.locks import LockLeaseLostError
+
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    root = tmp_path / "Sky-Claw Work"
+    rid = ws.Stage9Coordination.resource_id_de_ownership(recursos.clave())
+    try:
+        resuelto = await ws.resolver_workspace(
+            preferencia=str(root),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert resuelto is not None and resuelto.ownership is not None
+        await resuelto.assert_owned()  # lease válida => OK
+
+        manager = await coordinacion.manager_del_ritual()
+        await manager.force_release(rid)
+        await manager.acquire_lock(rid, "intruso", ttl=120.0)
+
+        with pytest.raises(LockLeaseLostError):
+            await resuelto.assert_owned()
+    finally:
+        await (await coordinacion.manager_del_ritual()).force_release(rid)
+        await coordinacion.close()
+
+
+async def test_el_segundo_resolver_del_mismo_binding_rechaza_ocupado(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§17: mismo `resource_binding`, otro root => OCUPADO mientras el primero vive."""
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    root_a = tmp_path / "Work A"
+    root_b = tmp_path / "Work B"
+    try:
+        primero = await ws.resolver_workspace(
+            preferencia=str(root_a),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert primero is not None
+
+        with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+            await ws.resolver_workspace(
+                preferencia=str(root_b),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+            )
+        assert excinfo.value.motivo is ws.MotivoDeRechazo.OCUPADO
+        assert registro.entrada(recursos.clave()).root == str(root_a.resolve())
+
+        # Al liberar el primero, el segundo puede avanzar (transición validada).
+        await primero.ownership.liberar()
+        segundo = await ws.resolver_workspace(
+            preferencia=str(root_b),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert segundo is not None and segundo.root == root_b.resolve()
+        assert registro.entrada(recursos.clave()).root == str(root_b.resolve())
+        await segundo.ownership.liberar()
+    finally:
+        await coordinacion.close()
+
+
+async def test_dos_bindings_distintos_sostienen_ownership_simultaneo(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§18: X e Y coexisten; no hay un lock de vida global entre instalaciones."""
+    recursos_x = _instancia(tmp_path)
+    recursos_y = _instancia(tmp_path, sufijo="_otra")
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    try:
+        x = await ws.resolver_workspace(
+            preferencia=str(tmp_path / "Work X"),
+            recursos=recursos_x,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        y = await ws.resolver_workspace(
+            preferencia=str(tmp_path / "Work Y"),
+            recursos=recursos_y,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert x is not None and y is not None
+        assert x.ownership.resource_id != y.ownership.resource_id
+
+        await x.assert_owned()
+        await y.assert_owned()
+        manager = await coordinacion.manager_del_ritual()
+        info_x = await manager.get_lock_info(x.ownership.resource_id)
+        info_y = await manager.get_lock_info(y.ownership.resource_id)
+        assert info_x is not None and not info_x.is_expired
+        assert info_y is not None and not info_y.is_expired
+
+        await x.ownership.liberar()
+        await y.ownership.liberar()
+    finally:
+        await coordinacion.close()
+
+
+async def test_el_heartbeat_mantiene_viva_la_lease_de_ownership(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§20: lease viva > TTL nominal porque el heartbeat renueva."""
+    recursos = _instancia(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    try:
+        ownership = await coordinacion.adquirir_ownership_vivo(recursos=recursos, ttl=0.3)
+        await asyncio.sleep(0.6)  # el doble del TTL nominal
+        await ownership.assert_owned()
+        await ownership.liberar()
+    finally:
+        await coordinacion.close()
+
+
+async def test_un_holder_muerto_no_bloquea_la_readquisicion(tmp_path: pathlib.Path) -> None:
+    """§20: sin renovación (holder muerto), otro proceso readquiere tras expirar.
+
+    Dos COORDINACIONES distintas = dos procesos. El holder deja de renovar
+    (`auto_renew=False` es la muerte dura sin cleanup), su lease expira, el
+    nuevo adquiere. Además la identidad de owner por proceso cierra la clase
+    "A libera la lease de B": el holder muerto no puede tocar la lease ajena.
+    """
+    from sky_claw.app.db.locks import LockLeaseLostError
+
+    recursos = _instancia(tmp_path)
+    coordinacion_a = _coordinacion(tmp_path)
+    coordinacion_b = _coordinacion(tmp_path)
+    try:
+        muerto = await coordinacion_a.adquirir_ownership_vivo(recursos=recursos, ttl=0.4, auto_renew=False)
+        await asyncio.sleep(0.7)  # expiró: nadie renovó
+
+        vivo = await coordinacion_b.adquirir_ownership_vivo(recursos=recursos)
+        await vivo.assert_owned()
+
+        # El snapshot del holder muerto queda fenced.
+        with pytest.raises(LockLeaseLostError):
+            await muerto.assert_owned()
+
+        # Y su `liberar` no puede liberar la lease del nuevo dueño.
+        await muerto.liberar()
+        await vivo.assert_owned()
+        await vivo.liberar()
+    finally:
+        await coordinacion_a.close()
+        await coordinacion_b.close()
+
+
+async def test_el_rechazo_post_ownership_libera_la_lease(tmp_path: pathlib.Path) -> None:
+    """§21: un startup que falla después de adquirir ownership libera la lease."""
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+    rid = ws.Stage9Coordination.resource_id_de_ownership(recursos.clave())
+    try:
+        primero = await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert primero is not None
+        await primero.ownership.liberar()
+
+        _sabotear_con_backups(viejo)
+        with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+            await ws.resolver_workspace(
+                preferencia=str(nuevo),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+            )
+        assert excinfo.value.motivo is ws.MotivoDeRechazo.TRANSICION_REQUERIDA
+
+        manager = await coordinacion.manager_del_ritual()
+        assert await manager.get_lock_info(rid) is None, "el rechazo dejó la lease viva"
+    finally:
+        await coordinacion.close()
+
+
+async def test_la_cancelacion_durante_la_resolucion_libera_la_lease(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§21: cancelación a mitad de resolución => cleanup correcto, sin lease viva."""
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+    rid = ws.Stage9Coordination.resource_id_de_ownership(recursos.clave())
+
+    def _inspector_lento(root: pathlib.Path) -> ws.InspeccionDeRootViejo:
+        time.sleep(1.0)
+        return ws.inspeccionar_root_para_transicion(root)
+
+    try:
+        primero = await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert primero is not None
+        await primero.ownership.liberar()
+
+        tarea = asyncio.create_task(
+            ws.resolver_workspace(
+                preferencia=str(nuevo),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+                inspector=_inspector_lento,
+            )
+        )
+        await asyncio.sleep(0.15)
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        manager = await coordinacion.manager_del_ritual()
+        assert await manager.get_lock_info(rid) is None, "la cancelación dejó la lease viva"
+    finally:
+        await coordinacion.close()
+
+
+async def test_perder_la_lease_de_ownership_aborta_la_resolucion_sin_escribir(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§13: lease de ownership perdida a MEDIA resolución => aborta sin escribir.
+
+    La sonda de §25 corre DENTRO de la validación de transición, con la lease
+    de ownership ya tomada: acá roba el recurso por debajo. El fence la detecta
+    antes de `registrar_transicion`/`registrar_activa`, y el registro durable
+    no queda repuntado a la raíz nueva.
+    """
+    from sky_claw.app.db.locks import LockLeaseLostError
+
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+    rid = ws.Stage9Coordination.resource_id_de_ownership(recursos.clave())
+
+    async def _sonda_que_roba() -> bool:
+        manager = await coordinacion.manager_del_ritual()
+        await manager.force_release(rid)
+        await manager.acquire_lock(rid, "intruso", ttl=120.0)
+        return False
+
+    try:
+        primero = await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert primero is not None
+        await primero.ownership.liberar()
+
+        with pytest.raises(LockLeaseLostError):
+            await ws.resolver_workspace(
+                preferencia=str(nuevo),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+                sonda_de_transaccion_pendiente=_sonda_que_roba,
+            )
+
+        entrada = registro.entrada(recursos.clave())
+        assert entrada is not None and entrada.root == str(viejo.resolve())
+        assert entrada.transicion_pendiente is None, "la transición no se registró bajo una lease ajena"
+    finally:
+        await (await coordinacion.manager_del_ritual()).force_release(rid)
+        await coordinacion.close()
+
+
+def test_el_cleanup_del_ownership_vivo_cierra_despues_de_resolver_y_antes_de_la_coordinacion() -> None:
+    """§11: el orden de teardown está congelado, no escrito en prosa.
+
+    La lease de ownership se adquiere en la resolución y se libera en el
+    cleanup del `AppContext`. El registro del cierre de la coordinación —la
+    DB que sostiene la lease— está ANTES de la resolución en el fuente, y el
+    de la liberación DESPUÉS: el LIFO del exit stack hace que la liberación
+    corra después de cerrar los consumidores del runtime y antes de que la DB
+    de la lease se cierre. Reordenar cualquiera de las dos rompe este ancla.
+    """
+    import ast as _ast
+
+    import sky_claw.app_context as app_context_mod
+
+    fuente = pathlib.Path(app_context_mod.__file__).read_text(encoding="utf-8")
+    arbol = _ast.parse(fuente)
+    inner = next(n for n in _ast.walk(arbol) if isinstance(n, _ast.AsyncFunctionDef) and n.name == "_start_full_inner")
+
+    posicion_resolucion: int | None = None
+    push_liberar: int | None = None
+    push_coordinacion: int | None = None
+    for nodo in _ast.walk(inner):
+        if not isinstance(nodo, _ast.Call):
+            continue
+        if isinstance(nodo.func, _ast.Attribute) and nodo.func.attr == "_resolver_workspace_de_dyndolod":
+            posicion_resolucion = nodo.lineno
+            continue
+        es_push_cleanup = (isinstance(nodo.func, _ast.Name) and nodo.func.id == "_push_startup_cleanup") or (
+            isinstance(nodo.func, _ast.Attribute) and nodo.func.attr == "_push_startup_cleanup"
+        )
+        if not es_push_cleanup or not nodo.args:
+            continue
+        arg = nodo.args[0]
+        if not isinstance(arg, _ast.Attribute):
+            continue
+        if arg.attr == "_liberar_ownership_del_workspace":
+            push_liberar = nodo.lineno
+        if arg.attr == "close" and isinstance(arg.value, _ast.Attribute) and arg.value.attr == "stage9_coordination":
+            push_coordinacion = nodo.lineno
+
+    assert posicion_resolucion is not None, "el resolver dejó de correr en _start_full_inner"
+    assert push_coordinacion is not None, "la coordinación ya no se cierra en el cleanup del arranque"
+    assert push_liberar is not None, "la lease de ownership ya no se libera en el cleanup del arranque"
+    assert push_coordinacion < posicion_resolucion < push_liberar, (
+        "el cierre de la coordinación debe registrarse antes de resolver, "
+        "y la liberación del ownership después (LIFO del exit stack)"
+    )
+
+
+async def test_el_helper_de_liberacion_suelta_la_lease_del_snapshot(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§10/§11: `_liberar_ownership_del_workspace` (que `AppContext` registra)
+    suelta la lease larga; el snapshot queda sin derecho a mutar."""
+    from sky_claw.app_context import AppContext
+
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    root = tmp_path / "Sky-Claw Work"
+    rid = ws.Stage9Coordination.resource_id_de_ownership(recursos.clave())
+    try:
+        resuelto = await ws.resolver_workspace(
+            preferencia=str(root),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+        assert resuelto is not None
+
+        manager = await coordinacion.manager_del_ritual()
+        assert await manager.get_lock_info(rid) is not None
+
+        await AppContext._liberar_ownership_del_workspace(resuelto)
+
+        assert await manager.get_lock_info(rid) is None, "la liberación no soltó la lease"
+    finally:
+        await coordinacion.close()
+
+
+async def test_preferencia_ausente_no_adquiere_lease_de_ownership(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§22: sin `external_work_root` no se adquiere ownership innecesario."""
+    coordinacion = _coordinacion(tmp_path)
+    try:
+        resuelto = await ws.resolver_workspace(
+            preferencia=None,
+            recursos=_instancia(tmp_path),
+            prohibidas=_prohibidas(tmp_path),
+            registro=_registro(tmp_path),
+            coordinacion=coordinacion,
+        )
+        assert resuelto is None
+        rid = ws.Stage9Coordination.resource_id_de_ownership(_instancia(tmp_path).clave())
+        manager = await coordinacion.manager_del_ritual()
+        assert await manager.get_lock_info(rid) is None
+    finally:
+        await coordinacion.close()
+
+
+def test_las_escrituras_del_registro_van_fenceadas_por_el_ownership() -> None:
+    """Ancla de hermanos: `registrar_transicion` y `registrar_activa` tienen
+    fence de ownership previo en `resolver_workspace`.
+
+    Las dos son mutaciones del registro durable; una sin fence reintroduciría
+    el defecto de este repo —el fix en un camino, su gemelo intacto— con la
+    forma más silenciosa posible.
+    """
+    import ast
+
+    fuente = pathlib.Path(ws.__file__).read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    resolver = next(
+        n for n in ast.walk(arbol) if isinstance(n, ast.AsyncFunctionDef) and n.name == "resolver_workspace"
+    )
+    escrituras: list[tuple[int, str]] = []
+    fences_previos: list[int] = []
+    for nodo in ast.walk(resolver):
+        # Las escrituras viajan como argumento de `asyncio.to_thread(...)`, así
+        # que no son nodos `Call`: se detecta la REFERENCIA
+        # `registro.registrar_*` donde aparezca.
+        if (
+            isinstance(nodo, ast.Attribute)
+            and nodo.attr in ("registrar_transicion", "registrar_activa")
+            and isinstance(nodo.value, ast.Name)
+            and nodo.value.id == "registro"
+        ):
+            escrituras.append((nodo.lineno, nodo.attr))
+        if (
+            isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Attribute)
+            and nodo.func.attr == "assert_owned"
+            and isinstance(nodo.func.value, ast.Name)
+            and nodo.func.value.id == "ownership"
+        ):
+            fences_previos.append(nodo.lineno)
+    assert escrituras, "no hay escrituras del registro en resolver_workspace"
+    for linea, nombre in escrituras:
+        anteriores = [f for f in fences_previos if f < linea]
+        assert anteriores, f"{nombre} (línea {linea}) no tiene fence de ownership previo"
+
+
+_GUION_OWNERSHIP_VIVO = """\
+import json, os, pathlib, sys, time
+sys.path.insert(0, {raiz!r})
+import asyncio
+from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.local.tools import dyndolod_workspace as ws
+
+estado = pathlib.Path(sys.argv[1])
+salida = pathlib.Path(sys.argv[2])
+señales = pathlib.Path(sys.argv[3])
+rol = sys.argv[4]
+root = pathlib.Path(sys.argv[5])
+ttl = float(sys.argv[6])
+crash = sys.argv[7] == "1"
+game, mo2data, mods = (pathlib.Path(sys.argv[8]), pathlib.Path(sys.argv[9]), pathlib.Path(sys.argv[10]))
+temp = pathlib.Path(sys.argv[11])
+cwd = pathlib.Path(sys.argv[12])
+os.chdir(cwd)
+
+recursos = ws.ResourceBinding.desde_paths(
+    game_path=game, mo2_instance_data_root=mo2data, mo2_mods_path=mods
+)
+prohibidas = ws.RaicesProhibidas.desde_entorno(
+    game=game,
+    mo2_install=pathlib.Path(mo2data).parent / "mo2_install",
+    mo2_instance_data_root=mo2data,
+    mo2_mods_path=mods,
+    dyndolod_exe=temp.parent / "tools" / "DynDOLOD" / "DynDOLODx64.exe",
+    texgen_exe=temp.parent / "tools" / "TexGen" / "TexGenx64.exe",
+    temp_dir=temp,
+    known_folders_prohibidos=(),
+)
+
+
+def _coordinacion():
+    directorio = ws.ruta_de_estado_de_etapa9(estado)
+    directorio.mkdir(parents=True, exist_ok=True)
+    return ws.Stage9Coordination(
+        lock_manager=DistributedLockManager(
+            db_path=directorio / "stage9_locks.db",
+            max_retries=3,
+            backoff_base=0.05,
+            backoff_max=0.1,
+        ),
+        snapshot_manager=FileSnapshotManager(snapshot_dir=directorio / "snapshots"),
+    )
+
+
+def _esperar(marcador: pathlib.Path, plazo: float = 90.0) -> None:
+    limite = time.monotonic() + plazo
+    while not marcador.exists():
+        if time.monotonic() >= limite:
+            raise TimeoutError(f"el proceso no vio {{marcador.name}}")
+        time.sleep(0.02)
+
+
+async def _resolver(coordinacion, registro):
+    return await ws.resolver_workspace(
+        preferencia=str(root), recursos=recursos, prohibidas=prohibidas,
+        registro=registro, coordinacion=coordinacion,
+        ttl_del_ownership_vivo=ttl,
+    )
+
+
+async def main():
+    coordinacion = _coordinacion()
+    try:
+        registro = ws.registro_de_roots_activos(estado)
+        if rol == "holder":
+            resuelto = await _resolver(coordinacion, registro)
+            (señales / "holder_resolvio").write_text("ok", encoding="utf-8")
+            while not (señales / "retador_termino").exists():
+                await asyncio.sleep(0.02)
+            if crash:
+                # Muerte dura: sin liberar. La lease queda y expira por TTL.
+                salida.write_text(json.dumps({{"ok": True, "root": str(resuelto.root)}}), encoding="utf-8")
+                os._exit(0)
+            await resuelto.ownership.liberar()
+            (señales / "holder_libero").write_text("ok", encoding="utf-8")
+            salida.write_text(json.dumps({{"ok": True, "root": str(resuelto.root)}}), encoding="utf-8")
+        else:
+            _esperar(señales / "holder_resolvio")
+            try:
+                await _resolver(coordinacion, registro)
+                fase1 = {{"entro": True}}
+            except ws.WorkspaceRechazadoError as exc:
+                fase1 = {{"entro": False, "motivo": exc.motivo.value}}
+            except Exception as exc:  # noqa: BLE001 - el guión reporta, el test juzga
+                fase1 = {{"entro": False, "error": type(exc).__name__}}
+            _entrada = registro.entrada(recursos.clave())
+            registro_en_fase1 = None if _entrada is None else _entrada.root
+            (señales / "retador_termino").write_text("ok", encoding="utf-8")
+            if crash:
+                fase2 = None
+                for _ in range(200):
+                    await asyncio.sleep(0.1)
+                    try:
+                        await _resolver(coordinacion, registro)
+                        fase2 = {{"entro": True}}
+                        break
+                    except ws.WorkspaceRechazadoError as exc:
+                        if exc.motivo.value != "busy":
+                            fase2 = {{"entro": False, "motivo": exc.motivo.value}}
+                            break
+                    except Exception as exc:  # noqa: BLE001
+                        fase2 = {{"entro": False, "error": type(exc).__name__}}
+                        break
+                if fase2 is None:
+                    fase2 = {{"entro": False, "error": "timeout-reintentos"}}
+            else:
+                _esperar(señales / "holder_libero")
+                try:
+                    await _resolver(coordinacion, registro)
+                    fase2 = {{"entro": True}}
+                except ws.WorkspaceRechazadoError as exc:
+                    fase2 = {{"entro": False, "motivo": exc.motivo.value}}
+                except Exception as exc:  # noqa: BLE001
+                    fase2 = {{"entro": False, "error": type(exc).__name__}}
+            salida.write_text(
+                json.dumps({{"fase1": fase1, "fase2": fase2, "registro_en_fase1": registro_en_fase1}}),
+                encoding="utf-8",
+            )
+    finally:
+        await coordinacion.close()
+
+asyncio.run(main())
+"""
+
+
+def _correr_ownership_vivo(
+    tmp_path: pathlib.Path,
+    *,
+    estado: pathlib.Path,
+    root_a: pathlib.Path,
+    root_b: pathlib.Path,
+    ttl: float,
+    crash: bool,
+) -> tuple[dict, dict]:
+    """Lanza holder + retador REALES, con cwd distinto, contra el mismo estado."""
+    raiz_repo = str(pathlib.Path(ws.__file__).resolve().parents[3])
+    guion = tmp_path / "ownership_vivo.py"
+    guion.write_text(_GUION_OWNERSHIP_VIVO.format(raiz=raiz_repo), encoding="utf-8")
+    señales = tmp_path / "señales_ownership"
+    señales.mkdir(exist_ok=True)
+    recursos = _instancia(tmp_path)
+    cwd_a = tmp_path / "cwd_a"
+    cwd_b = tmp_path / "cwd_b"
+    cwd_a.mkdir(exist_ok=True)
+    cwd_b.mkdir(exist_ok=True)
+    procesos: list[subprocess.Popen[bytes]] = []
+    for rol, cwd, root in (("holder", cwd_a, root_a), ("retador", cwd_b, root_b)):
+        salida = tmp_path / f"ownership_{rol}.json"
+        procesos.append(
+            subprocess.Popen(  # noqa: S603 - argv fijo, sin shell
+                [
+                    sys.executable,
+                    str(guion),
+                    str(estado),
+                    str(salida),
+                    str(señales),
+                    rol,
+                    str(root),
+                    f"{ttl:.1f}",
+                    str(int(crash)),
+                    recursos.game_path,
+                    recursos.mo2_instance_data_root,
+                    recursos.mo2_mods_path,
+                    str(tmp_path / "temp"),
+                    str(cwd),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        )
+    resultados: list[dict] = []
+    try:
+        for rol, proceso in (("holder", procesos[0]), ("retador", procesos[1])):
+            _, err = proceso.communicate(timeout=180)
+            assert proceso.returncode == 0, f"{rol}: {err.decode(errors='replace')}"
+            resultados.append(json.loads((tmp_path / f"ownership_{rol}.json").read_text(encoding="utf-8")))
+    finally:
+        # Un proceso que quedó vivo (esperando una señal que nunca llegó) no
+        # puede seguir colgado: su cwd mantiene el tmp_path bloqueado en
+        # Windows y envenena la limpieza de pytest.
+        for proceso in procesos:
+            if proceso.poll() is None:
+                proceso.kill()
+                proceso.wait(timeout=10)
+    return resultados[0], resultados[1]
+
+
+def test_dos_procesos_ownership_vivo_root_a_vs_root_b(tmp_path: pathlib.Path) -> None:
+    """§15: A conserva ownership de X+root A; B intenta activar X+root B.
+
+    DOS PROCESOS reales, cwd distintos, MISMO estado durable: B rechaza
+    OCUPADO mientras A vive, el registro sigue apuntando a A, y recién cuando
+    A libera (con TODAS las validaciones P0 de transición de por medio) B
+    activa su root.
+    """
+    estado = tmp_path / "estado"
+    root_a = tmp_path / "Work A"
+    root_b = tmp_path / "Work B"
+    holder, retador = _correr_ownership_vivo(
+        tmp_path, estado=estado, root_a=root_a, root_b=root_b, ttl=60.0, crash=False
+    )
+
+    assert holder["ok"] is True
+    assert retador["fase1"] == {"entro": False, "motivo": "busy"}
+    assert retador["fase2"] == {"entro": True}
+
+    recursos = _instancia(tmp_path)
+    registro = ws.registro_de_roots_activos(estado)
+    # Mientras A conservó ownership, el registro NO se movió a B.
+    assert retador["registro_en_fase1"] == str(root_a.resolve())
+    # Tras liberar y revalidar la transición, B activó su root.
+    assert registro.entrada(recursos.clave()).root == str(root_b.resolve())
+
+
+def test_dos_procesos_ownership_vivo_mismo_root(tmp_path: pathlib.Path) -> None:
+    """§23: B con X+root A (el MISMO root) también respeta la exclusividad.
+
+    No basta "un solo pathname en el registro": mientras A vive, B no puede
+    ser un segundo holder vivo aunque quiera exactamente el mismo root.
+    """
+    estado = tmp_path / "estado"
+    root_a = tmp_path / "Work A"
+    holder, retador = _correr_ownership_vivo(
+        tmp_path, estado=estado, root_a=root_a, root_b=root_a, ttl=60.0, crash=False
+    )
+
+    assert holder["ok"] is True
+    assert retador["fase1"] == {"entro": False, "motivo": "busy"}
+    # Tras la liberación limpia de A, B resuelve el mismo root (caso C).
+    assert retador["fase2"] == {"entro": True}
+
+
+def test_dos_procesos_muerte_dura_expira_y_permite_reacquisicion(tmp_path: pathlib.Path) -> None:
+    """§12/§15/§20: A muere SIN cleanup; la lease expira y B readquiere.
+
+    La muerte dura no deja un ownership permanente que haya que borrar a mano:
+    el heartbeat de A deja de renovar, la lease expira por TTL y B la reclama.
+    Antes de activar su root, B pasa la transición completa de P0 (inspección
+    del root viejo, ritual libre).
+    """
+    estado = tmp_path / "estado"
+    root_a = tmp_path / "Work A"
+    root_b = tmp_path / "Work B"
+    holder, retador = _correr_ownership_vivo(tmp_path, estado=estado, root_a=root_a, root_b=root_b, ttl=1.2, crash=True)
+
+    assert holder["ok"] is True
+    assert retador["fase1"] == {"entro": False, "motivo": "busy"}
+    assert retador["fase2"] == {"entro": True}
+
+    recursos = _instancia(tmp_path)
+    registro = ws.registro_de_roots_activos(estado)
+    assert registro.entrada(recursos.clave()).root == str(root_b.resolve())

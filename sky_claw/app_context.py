@@ -853,6 +853,20 @@ class AppContext:
             )
             return None
 
+    @staticmethod
+    async def _liberar_ownership_del_workspace(workspace) -> None:
+        """Libera la lease de ownership vivo del snapshot del arranque (P2.0).
+
+        Se registra en el cleanup del `AppContext` para que la lease larga viva
+        exactamente la vida del contexto que conserva el `WorkspaceResuelto`:
+        se libera en el shutdown correspondiente, nunca con `__del__`, `atexit`
+        ni un singleton informal. La liberación es idempotente y tolerante a
+        lease ya perdida (ver `OwnershipDeWorkspaceVivo.liberar`).
+        """
+        ownership = getattr(workspace, "ownership", None)
+        if ownership is not None:
+            await ownership.liberar()
+
     async def _rollback_startup(self) -> None:
         try:
             await self._close_cleanup_generation(
@@ -1634,6 +1648,18 @@ class AppContext:
                     journal=journal,
                 )
             )
+
+            # P2.0 — la lease LARGA de ownership del snapshot vivo se conserva
+            # mientras este contexto viva y se libera en su shutdown. El push va
+            # DESPUÉS de la resolución y ANTES del cierre de la coordinación
+            # (que se registró más arriba): el LIFO del exit stack hace que la
+            # liberación corra después de cerrar los consumidores del runtime y
+            # antes de que la DB de la lease se cierre. `WorkspaceResuelto` sin
+            # ownership (`None`) no ocurre en este camino: toda resolución
+            # exitosa adquirió su lease; el `None` del resolver (NO CONFIGURADO)
+            # no registra nada.
+            if self.dyndolod_workspace is not None:
+                self._push_startup_cleanup(self._liberar_ownership_del_workspace, self.dyndolod_workspace)
 
             # Auditoría FOMOD: el motor (parser/resolver/installer) existía pero
             # nunca se cableó — las tools preview_mod_installer /
