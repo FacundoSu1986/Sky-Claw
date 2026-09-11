@@ -451,6 +451,7 @@ class _Boton:
 
     clases: frozenset[str]
     estilos: tuple[str | None, ...]
+    keywords: bool
 
 
 def _es_llamada_ui(node: ast.AST, metodo: str) -> bool:
@@ -543,7 +544,12 @@ def _inventario_botones() -> dict[str, _Boton]:
                 variable = f"botón#{ordinal}"
             clases: set[str] = set()
             estilos: list[str | None] = []
+            keywords = False
             for attr, llamada in eslabones:
+                # add/remove/replace por keyword modifican el conjunto final de
+                # clases/estilos sin pasar por los args posicionales: fail-closed,
+                # el parser no los interpreta.
+                keywords = keywords or bool(llamada.keywords)
                 for arg in llamada.args:
                     if attr == "classes" and isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                         clases |= set(arg.value.split())
@@ -551,7 +557,7 @@ def _inventario_botones() -> dict[str, _Boton]:
                         # Un estilo dinámico (f-string) podría esconder cualquier
                         # propiedad: se marca None y el test lo exige verificable.
                         estilos.append(arg.value if isinstance(arg, ast.Constant) else None)
-            inventario[f"{funcion}:{variable}"] = _Boton(frozenset(clases), tuple(estilos))
+            inventario[f"{funcion}:{variable}"] = _Boton(frozenset(clases), tuple(estilos), keywords)
 
     _Visitante().visit(arbol)
     return inventario
@@ -626,6 +632,10 @@ def test_botones_c2_del_shell_inventario_exhaustivo_y_sin_receta_inline() -> Non
             f"{identidad}: clases inesperadas {sorted(boton.clases)}; el contrato espera "
             f"sc-btn + exactamente la variante {variante}"
         )
+        assert not boton.keywords, (
+            f"{identidad}: .classes()/.style() con keywords (add/remove/replace) no verificables "
+            "por el parser; el contrato exige los literales posicionales"
+        )
         assert all(estilo is not None for estilo in boton.estilos), (
             f"{identidad}: .style() dinámico no verificable por AST; el contrato exige "
             "un literal para poder congelar las propiedades"
@@ -641,12 +651,12 @@ def test_botones_c2_del_shell_inventario_exhaustivo_y_sin_receta_inline() -> Non
 
 
 def _regla_css(selector: str) -> str:
-    """Texto de la regla plana de styles.css cuyo selector coincide exactamente
-    (``index`` simple confundiría ``.sc-btn:disabled`` con ``.sc-btn:disabled:hover``)."""
+    """Cuerpo (declaraciones) de la regla plana de styles.css cuyo selector
+    coincide exactamente (``index`` simple confundiría ``.sc-btn:disabled`` con
+    ``.sc-btn:disabled:hover``)."""
     coincidencia = re.search(re.escape(selector) + r"\s*\{", _STYLES)
     assert coincidencia, f"selector ausente en styles.css: {selector}"
-    inicio = coincidencia.start()
-    return _STYLES[inicio : _STYLES.index("}", inicio)]
+    return _STYLES[coincidencia.end() : _STYLES.index("}", coincidencia.end())]
 
 
 def test_receta_sc_btn_centralizada_con_estado_disabled() -> None:
@@ -663,8 +673,18 @@ def test_receta_sc_btn_centralizada_con_estado_disabled() -> None:
     (atenúa la receta sin arrastrar el texto con opacity), cursor honesto y
     sin estados :hover/:active engañosos ni animaciones.
     """
-    receta_re = r"linear-gradient\(\s*180deg\s*,\s*#f3dca0\s*,\s*#c8a86a\s*58%\s*,\s*#9c7a40\s*\)"
-    assert len(re.findall(receta_re, _STYLES)) == 1, "la receta oro debe existir exactamente una vez (en .sc-btn--gold)"
+    # La variante oro vive en SU bloque de styles.css. La verificación es sobre
+    # el bloque y por propiedad, no un conteo global de la grafía del gradiente:
+    # hay otras familias doradas en el tema (var(--sky-gold), var(--sky-gold-deep))
+    # deliberadamente fuera de C2, y la no-reintroducción inline en los
+    # consumidores ya la garantiza el inventario AST.
+    assert len(re.findall(r"\.sc-btn--gold\s*\{", _STYLES)) == 1, ".sc-btn--gold debe declararse exactamente una vez"
+    oro = _declaraciones((_regla_css(".sc-btn--gold"),))
+    assert oro["background"].startswith("linear-gradient(180deg"), "la receta oro es un gradiente vertical"
+    for parada in ("#f3dca0", "#c8a86a", "#9c7a40"):
+        assert parada in oro["background"], f"stop {parada} ausente de la receta oro"
+    assert "#1c130a" in oro["color"], "la tinta del CTA es oscura"
+    assert "#f6e6bd" in oro["border"], "el filo del CTA es claro"
     for variante in _VARIANTES_SC_BTN:
         assert f".sc-btn--{variante}" in _STYLES, f"falta la variante .sc-btn--{variante} en styles.css"
 
