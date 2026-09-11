@@ -39,11 +39,13 @@ estados, y el registro durable de root activo.
 ```text
 dyndolod-workspace            coordinación de propiedad (DB durable, sólo arranque)
         ↓
+dyndolod-ownership            lease LARGA de ownership del snapshot vivo (P2.0)
+        ↓
 dyndolod-pipeline             coordinación del ritual   (DB durable)
         ↓
 snapshot-transaction-lock     lock transaccional + snapshots del servicio
         ↓
-journal                       transacción de operaciones
+journal                      transacción de operaciones
         ↓
 directory-rollback            move-aside de los destinos
         ↓
@@ -78,6 +80,7 @@ from typing import TYPE_CHECKING, Any, Final
 from sky_claw.app.db.locks import (
     DistributedLockManager,
     LockAcquisitionError,
+    LockLeaseLostError,
     SnapshotTransactionLock,
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
@@ -1413,8 +1416,16 @@ def exigir_veredicto(
 #: Se declara como dato, no como prosa, para que el test lo pueda enumerar: una
 #: reordenación silenciosa es un deadlock esperando a que dos caminos la tomen
 #: al revés.
+#:
+#: ``dyndolod-ownership`` es la lease LARGA de P2.0: se adquiere DENTRO del
+#: boundary del lock corto (`dyndolod-workspace`) y se conserva toda la vida
+#: del `WorkspaceResuelto` — se libera en el shutdown, nunca adentro de un lock
+#: posterior. El ritual (`dyndolod-pipeline`) se toma después, ya con el
+#: ownership en mano, en el mismo orden tanto en la transición del resolver
+#: como en una corrida futura de etapa 9: no hay ciclo.
 ORDEN_DE_ADQUISICION: Final[tuple[str, ...]] = (
     "dyndolod-workspace",
+    "dyndolod-ownership",
     "dyndolod-pipeline",
     "snapshot-transaction-lock",
     "journal",
@@ -1474,6 +1485,18 @@ class Stage9Coordination:
 
     RECURSO_DEL_RITUAL: Final[str] = "dyndolod-pipeline"
     RECURSO_DEL_WORKSPACE: Final[str] = "dyndolod-workspace"
+    #: Familia del recurso de ownership VIVO (P2.0). El resource_id concreto se
+    #: deriva por instancia lógica: ``dyndolod-ownership-<clave>``, donde
+    #: ``clave`` es `ResourceBinding.clave()`. NO es un recurso global — dos
+    #: instancias lógicas distintas no se serializan entre sí — y NO lleva el
+    #: pathname del root: dos roots para la misma instancia compiten por el
+    #: MISMO recurso, que es exactamente la propiedad que P2.0 necesita.
+    RECURSO_DEL_OWNERSHIP_VIVO: Final[str] = "dyndolod-ownership"
+
+    @classmethod
+    def resource_id_de_ownership(cls, clave: str) -> str:
+        """Resource_id de la lease de vida para la instancia lógica *clave*."""
+        return f"{cls.RECURSO_DEL_OWNERSHIP_VIVO}-{clave}"
 
     #: TTL corto para la resolución de propiedad: es una operación de arranque de
     #: milisegundos, no una generación de LODs. Corto NO significa frágil: el
@@ -1482,6 +1505,15 @@ class Stage9Coordination:
     #: pierde la exclusión — y si la lease se pierde igual, la salida levanta en
     #: vez de reportar un éxito que no se puede sostener.
     TTL_DEL_WORKSPACE: Final[float] = 30.0
+
+    #: TTL NOMINAL de la lease de ownership vivo (P2.0). No es un plazo de vida:
+    #: el heartbeat la renueva cada ``TTL / RENEW_DIVISOR`` mientras el proceso
+    #: viva, así que una lease legítima vive indefinidamente. El TTL sólo fija la
+    #: ventana de detección de un holder muerto: si un proceso desaparece sin
+    #: cleanup, nadie renueva y su lease expira en este plazo, y recién entonces
+    #: otra instancia puede reclamar la propiedad.
+    TTL_DEL_OWNERSHIP_VIVO: Final[float] = 60.0
+    RENEW_DIVISOR_DEL_OWNERSHIP_VIVO: Final[float] = 3.0
 
     def __init__(
         self,
@@ -1629,6 +1661,145 @@ class Stage9Coordination:
         else:
             await sostenido.__aexit__(None, None, None)
 
+    async def adquirir_ownership_vivo(
+        self,
+        *,
+        recursos: ResourceBinding,
+        ttl: float | None = None,
+        renew_divisor: float | None = None,
+        auto_renew: bool = True,
+    ) -> OwnershipDeWorkspaceVivo:
+        """Adquiere la lease LARGA de ownership vivo de la instancia lógica.
+
+        **Qué es y qué NO es.** Es la mitad de la unicidad que P0.2 dejó fuera
+        de alcance a propósito: la exclusividad del `WorkspaceResuelto` VIVO, no
+        sólo la del registro durable. Mientras el handle que devuelve siga vivo
+        (con su heartbeat renovando), NINGÚN otro proceso puede resolver ni
+        activar otro root para el MISMO `resource_binding` — ni siquiera el
+        mismo root (§23): es exclusividad de proceso, no de pathname.
+
+        **Por qué reusa `SnapshotTransactionLock` y no otra cosa.** Ya aporta
+        exactamente la semántica de leases que el contrato pide: heartbeat de
+        renovación, `lease_lost`, `assert_owned()` (con el token `acquired_at`
+        que detecta la readquisición por otro dueño) y liberación en
+        `__aexit__`. `target_files=[]`: el "rollback" del workspace es la
+        transición del registro, no snapshots de archivos.
+
+        **Resource_id por instancia lógica, owner por ADQUISICIÓN.** El recurso
+        es ``dyndolod-ownership-<clave>`` (dos roots del mismo
+        `resource_binding` compiten; dos bindings distintos no). El `agent_id`
+        es un UUID fresco por adquisición: `renew_lock`/`release_lock` matchean
+        por ``resource_id + agent_id``, así que ningún holder puede renovar ni
+        liberar la lease de OTRO — ni otro proceso (agents distintos), ni un
+        handle viejo de la MISMA coordinación que readquirió tras expirar (el
+        handle viejo liberaría la lease nueva si el agent fuera compartido; con
+        agent por adquisición no matchea). El token `acquired_at` de
+        `assert_owned` cierra la readquisición por otro proceso.
+
+        **Boundary.** Se llama DENTRO de `sostener_workspace` (ver
+        `resolver_workspace`): la adquisición y la activación forman una unidad
+        frente a otros resolvers, y no existe la ventana "resolví → solté →
+        adquirí" que P2.0 cierra.
+
+        Raises:
+            WorkspaceRechazadoError: motivo ``OCUPADO`` si otra instancia
+                conserva el ownership vivo de esta instancia lógica. Es
+                fail-fast y reintentable: el rechazo ocurre ANTES de tocar el
+                registro durable.
+        """
+        await self.initialize()
+        agent_id = f"dyndolod-owner-{uuid.uuid4().hex}"
+        sostenido = SnapshotTransactionLock(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self._snapshot_manager,
+            resource_id=self.resource_id_de_ownership(recursos.clave()),
+            agent_id=agent_id,
+            target_files=[],
+            ttl=ttl if ttl is not None else self.TTL_DEL_OWNERSHIP_VIVO,
+            auto_renew=auto_renew,
+            renew_divisor=renew_divisor if renew_divisor is not None else self.RENEW_DIVISOR_DEL_OWNERSHIP_VIVO,
+        )
+        try:
+            await sostenido.__aenter__()
+        except LockAcquisitionError as exc:
+            raise WorkspaceRechazadoError(
+                motivo=MotivoDeRechazo.OCUPADO,
+                clave_de_recursos=recursos.clave(),
+                razon=("otro proceso conserva el ownership vivo del external_work_root de esta instancia lógica"),
+                accion_requerida=(
+                    "reintentar; si persiste, verificar que no quedó otra instancia "
+                    "de Sky-Claw viva sobre esta instalación"
+                ),
+            ) from exc
+        return OwnershipDeWorkspaceVivo(sostenido, self.resource_id_de_ownership(recursos.clave()), agent_id)
+
+
+class OwnershipDeWorkspaceVivo:
+    """Handle de la lease LARGA de ownership del workspace vivo (P2.0).
+
+    **Por qué existe y quién lo conserva.** El `WorkspaceResuelto` del arranque
+    vive toda la vida del proceso (`AppContext`), y su derecho a usarse para
+    mutar —la exclusividad frente a otros procesos— tiene que vivir lo mismo.
+    Este handle envuelve la lease de :meth:`Stage9Coordination.adquirir_ownership_vivo`
+    y es lo que un consumidor futuro (P2.1) fenceará antes de cada mutación.
+
+    **Los dos conceptos que NO se mezclan.** El registro durable
+    (`RegistroDeRootActivo`) responde "cuál root es el activo"; esta lease
+    responde "qué proceso posee ahora el derecho vivo a usarlo". La lease no
+    agrega NADA al binding ni al registro — es una fila de ``resource_locks``
+    con TTL y heartbeat, que muere sola por expiración si el proceso muere.
+
+    **`liberar` es tolerante a lease perdida y es idempotente.** En el shutdown
+    no interesa si la lease ya se perdió: no hay nada que proteger, y que el
+    cleanup falle por eso convertiría un cierre normal en una excepción. El
+    fence es `assert_owned`, que SÍ falla cerrado.
+    """
+
+    def __init__(self, lock: SnapshotTransactionLock, resource_id: str, agent_id: str) -> None:
+        self._lock = lock
+        self._resource_id = resource_id
+        self._agent_id = agent_id
+        self._liberado = False
+
+    @property
+    def resource_id(self) -> str:
+        return self._resource_id
+
+    @property
+    def agent_id(self) -> str:
+        return self._agent_id
+
+    @property
+    def lease_lost(self) -> bool:
+        return self._lock.lease_lost
+
+    async def assert_owned(self, *, verify_db: bool = True) -> None:
+        """Fence: levanta `LockLeaseLostError` si esta lease ya no es la vigente.
+
+        Se llama antes de cada mutación futura (P2.1) y ya dentro del resolver,
+        antes de cada escritura del registro durable. La pérdida NO se esconde
+        en un log: queda representada como excepción fail-closed.
+        """
+        await self._lock.assert_owned(verify_db=verify_db)
+
+    async def liberar(self) -> None:
+        """Suelta la lease (shutdown limpio). Idempotente; tolera lease perdida."""
+        if self._liberado:
+            return
+        self._liberado = True
+        try:
+            await self._lock.__aexit__(None, None, None)
+        except LockLeaseLostError:
+            # No es un incidente de etapa 9: es el cierre de un contexto cuyo
+            # ownership ya se perdió (otro proceso lo reclamó). La lease expira
+            # sola; el aviso lleva el resource_id para correlacionar, no el
+            # pipeline_stage de una corrida.
+            logger.warning(
+                "Ownership vivo ya perdido al liberar (%s); la lease expira sola.",
+                self._resource_id,
+                extra={"resource_id": self._resource_id},
+            )
+
 
 def construir_coordinacion_de_etapa9(
     *,
@@ -1720,12 +1891,37 @@ class WorkspaceResuelto:
     bajo `AppContext`, las raíces del `PathValidator`, el runner cacheado, el
     reconciliador y las transacciones activas — precisamente lo que el ADR
     rechaza por diseño.
+
+    **P2.0 — `ownership`.** Desde P2.0 el snapshot que vaya a usarse para mutar
+    conserva la lease LARGA de ownership vivo (`OwnershipDeWorkspaceVivo`) que
+    lo hace exclusivo frente a otros procesos. El handle viaja CON el snapshot:
+    así no hay forma de tener un snapshot sin su fence, y el shutdown del
+    contexto que lo conserva (`AppContext`) libera la lease. `None` es un
+    estado construido a mano (tests, callers internos) que NO autoriza a mutar:
+    `assert_owned()` lo rechaza fail-closed.
     """
 
     root: pathlib.Path
     binding: BindingDocument
     estado: EstadoDelRoot
     recien_inicializado: bool
+    ownership: OwnershipDeWorkspaceVivo | None = None
+
+    async def assert_owned(self) -> None:
+        """Fence P2.0: snapshot sin ownership vivo != derecho a mutar.
+
+        Un `WorkspaceResuelto` que perdió su lease (expiró, otro proceso la
+        reclamó) NO puede autorizar ninguna mutación posterior: el registro
+        puede haber transicionado a otro root mientras este snapshot sigue
+        vivo. Levanta `LockLeaseLostError`, el mismo error del lock manager —
+        no se crea una excepción paralela para renombrarla.
+        """
+        if self.ownership is None:
+            raise LockLeaseLostError(
+                f"El workspace {self.root} no conserva ownership vivo: "
+                "sin lease no hay derecho a mutar su external_work_root"
+            )
+        await self.ownership.assert_owned()
 
 
 _AGENTE_DEL_RESOLVER: Final[str] = "dyndolod-workspace-resolver"
@@ -1740,6 +1936,7 @@ async def _transicion_validada(
     coordinacion: Stage9Coordination,
     inspector: Callable[[pathlib.Path], InspeccionDeRootViejo],
     sonda_de_transaccion_pendiente: Callable[[], Awaitable[bool]] | None,
+    ownership: OwnershipDeWorkspaceVivo,
 ) -> AsyncIterator[SnapshotTransactionLock]:
     """Fail-closed de la transición (§25), con el ritual SOSTENIDO mientras dura.
 
@@ -1754,11 +1951,15 @@ async def _transicion_validada(
     concurrente no puede empezar en el medio porque el lock está tomado.
 
     El orden es el congelado en :data:`ORDEN_DE_ADQUISICION` —``dyndolod-workspace``
-    (ya sostenido por el caller) y recién después ``dyndolod-pipeline``—, así que
-    no hay ciclo con el servicio, que toma el ritual sin sostener el workspace.
+    y ``dyndolod-ownership`` (ambos ya sostenidos por el caller) y recién
+    después ``dyndolod-pipeline``—, así que no hay ciclo con el servicio, que
+    toma el ritual sin sostener el workspace.
 
     Yields el lock del ritual para que el caller pueda ``assert_owned()`` justo
-    antes de la escritura durable.
+    antes de la escritura durable. La lease de ownership vivo también se
+    fencea acá, con las otras dos: es la que excluye a OTRA INSTANCIA, y una
+    transición escrita bajo una lease perdida repuntaría el registro a un root
+    que nadie tiene derecho de activar.
 
     Se niega a activar otra raíz —y sobre todo a OLVIDAR la vieja— mientras el
     root viejo tenga backups, una transacción PENDING, un ritual vivo o un
@@ -1852,24 +2053,45 @@ async def resolver_workspace(
     agent_id: str = _AGENTE_DEL_RESOLVER,
     inspector: Callable[[pathlib.Path], InspeccionDeRootViejo] = inspeccionar_root_para_transicion,
     sonda_de_transaccion_pendiente: Callable[[], Awaitable[bool]] | None = None,
+    ttl_del_ownership_vivo: float | None = None,
+    renew_divisor_del_ownership_vivo: float | None = None,
 ) -> WorkspaceResuelto | None:
     """Resuelve la propiedad del `external_work_root` para ESTE arranque.
 
     Es el único punto que compone la capacidad completa de P0::
 
         preferencia → admisión → coordinación → transición → estado A–H
-                    → binding → registro de root activo
+                    → binding → registro de root activo → ownership vivo
+
+    **P2.0 — el boundary de ownership.** La lease larga
+    (``dyndolod-ownership-<clave>``) se adquiere DENTRO de ``sostener_workspace``,
+    antes de tocar el registro: no existe la ventana "resolví root A → solté
+    todos los locks → ... → adquirí la lease" en la que otro proceso pudiera
+    activar root B para esta instancia. Si otra instancia conserva el ownership
+    vivo, la resolución rechaza ``OCUPADO`` ANTES de escribir nada — fail-fast y
+    reintentable. La lease viaja en el `WorkspaceResuelto.ownership` y su
+    liberación es responsabilidad del contexto que lo conserva (`AppContext`),
+    no de esta función: es una lease de VIDA, no de resolución.
+
+    **Qué NO hace.** No conecta el root al `-o:` (P2.1), no escribe bajo el
+    `external_work_root`, no degrada ninguna validación P0 (backups, PENDING,
+    old-root, A–H, binding): tras readquirir ownership —incluso tras la muerte
+    dura de un holder— la transición se revalida completa.
 
     Returns:
         El workspace resuelto, o ``None`` cuando la preferencia está ausente:
         **DynDOLOD administrado NO CONFIGURADO**. Eso NO es un error — el resto
         de Sky-Claw arranca y funciona igual, y no hay fallback silencioso a
-        ninguna raíz derivada.
+        ninguna raíz derivada. Tampoco se adquiere ninguna lease de ownership:
+        un usuario sin esta capacidad no paga locks.
 
     Raises:
         WorkspaceRechazadoError: cualquier otro camino que no se pueda demostrar
             seguro (ruta inadmisible, root ajeno o no vacío, metadata corrupta,
-            transición insegura, coordinación ocupada).
+            transición insegura, coordinación ocupada, ownership vivo en manos
+            de otro proceso).
+        LockLeaseLostError: la lease de ownership se perdió a mitad de la
+            resolución: no se registra nada bajo una exclusión que ya no existe.
     """
     if preferencia is not None and not isinstance(preferencia, str):
         # Un TOML editado a mano puede traer `external_work_root = 3`. Sin esta
@@ -1902,65 +2124,96 @@ async def resolver_workspace(
     root = pathlib.Path(admitido)
     clave = recursos.clave()
 
-    async with coordinacion.sostener_workspace(agent_id=agent_id) as sostenido:
-        entrada = await asyncio.to_thread(registro.entrada, clave)
-        if entrada is not None:
-            pendiente = entrada.transicion_pendiente
-            # El root a dejar es el `desde` del marcador cuando una transición
-            # quedó a medias (el registro ya repuntó), y el activo registrado
-            # cuando la preferencia acaba de cambiar. Mirar sólo `entrada.root`
-            # haría que una transición interrumpida se diera por terminada.
-            viejo = pathlib.Path(pendiente.desde) if pendiente and pendiente.desde else pathlib.Path(entrada.root)
-            if viejo != root:
-                async with _transicion_validada(
-                    viejo,
-                    nuevo=root,
-                    recursos=recursos,
-                    coordinacion=coordinacion,
-                    inspector=inspector,
-                    sonda_de_transaccion_pendiente=sonda_de_transaccion_pendiente,
-                ) as ritual:
-                    # Recién con la transición VALIDADA —y con el ritual todavía
-                    # SOSTENIDO— se registra la intención y se repunta el activo:
-                    # en una sola escritura atómica, y siempre antes de publicar
-                    # o usar el root nuevo.
-                    # Antes de CADA escritura crítica se reconfirma la propiedad de
-                    # las DOS leases contra la DB: entre la adquisición y este punto
-                    # corrió I/O de disco de duración no acotada (inspección del root
-                    # viejo), así que "las tenía cuando entré" no es evidencia de
-                    # "las tengo ahora". Si alguna se perdió, levanta y no se
-                    # escribe nada. Se fencean las dos porque protegen cosas
-                    # distintas: el workspace excluye a otro resolver, el ritual
-                    # excluye a una etapa 9 arrancando sobre el root viejo.
-                    await sostenido.assert_owned()
-                    await ritual.assert_owned()
-                    await asyncio.to_thread(
-                        registro.registrar_transicion, clave=clave, hacia=root, motivo="cambio de preferencia"
-                    )
-                    logger.info(
-                        "Transición de external_work_root validada y registrada.",
-                        extra={"pipeline_stage": _ETAPA, "desde": str(viejo), "hacia": str(root)},
-                    )
+    # La liberación del ownership envuelve TODO el `async with`: si el
+    # `__aexit__` del lock corto levanta (lease del workspace perdida entre el
+    # último fence y la salida del contexto), la excepción nace FUERA de
+    # cualquier try anidado y esta liberación es la única que la cubre. Una
+    # liberación anidada adentro del bloque dejaría la lease huérfana hasta su
+    # TTL — revisión Codex/Copilot, finding P1.
+    ownership: OwnershipDeWorkspaceVivo | None = None
+    try:
+        async with coordinacion.sostener_workspace(agent_id=agent_id) as sostenido:
+            # P2.0 — lease de ownership vivo, DENTRO del boundary del lock corto.
+            # Se adquiere ANTES de mirar el registro y de tocar el disco: si otra
+            # instancia conserva el ownership, el rechazo es OCUPADO y no se hace
+            # ningún trabajo (ni se escribe nada) por esta resolución.
+            ownership = await coordinacion.adquirir_ownership_vivo(
+                recursos=recursos,
+                ttl=ttl_del_ownership_vivo,
+                renew_divisor=renew_divisor_del_ownership_vivo,
+            )
+            entrada = await asyncio.to_thread(registro.entrada, clave)
+            if entrada is not None:
+                pendiente = entrada.transicion_pendiente
+                # El root a dejar es el `desde` del marcador cuando una transición
+                # quedó a medias (el registro ya repuntó), y el activo registrado
+                # cuando la preferencia acaba de cambiar. Mirar sólo `entrada.root`
+                # haría que una transición interrumpida se diera por terminada.
+                viejo = pathlib.Path(pendiente.desde) if pendiente and pendiente.desde else pathlib.Path(entrada.root)
+                if viejo != root:
+                    async with _transicion_validada(
+                        viejo,
+                        nuevo=root,
+                        recursos=recursos,
+                        coordinacion=coordinacion,
+                        inspector=inspector,
+                        sonda_de_transaccion_pendiente=sonda_de_transaccion_pendiente,
+                        ownership=ownership,
+                    ) as ritual:
+                        # Recién con la transición VALIDADA —y con el ritual todavía
+                        # SOSTENIDO— se registra la intención y se repunta el activo:
+                        # en una sola escritura atómica, y siempre antes de publicar
+                        # o usar el root nuevo.
+                        # Antes de CADA escritura crítica se reconfirma la propiedad de
+                        # las TRES leases contra la DB: entre la adquisición y este punto
+                        # corrió I/O de disco de duración no acotada (inspección del root
+                        # viejo), así que "las tenía cuando entré" no es evidencia de
+                        # "las tengo ahora". Si alguna se perdió, levanta y no se
+                        # escribe nada. Las tres protegen cosas distintas: el workspace
+                        # excluye a otro resolver, el ownership excluye a otra instancia
+                        # viva, el ritual excluye a una etapa 9 arrancando sobre el root
+                        # viejo.
+                        await sostenido.assert_owned()
+                        await ownership.assert_owned()
+                        await ritual.assert_owned()
+                        await asyncio.to_thread(
+                            registro.registrar_transicion, clave=clave, hacia=root, motivo="cambio de preferencia"
+                        )
+                        logger.info(
+                            "Transición de external_work_root validada y registrada.",
+                            extra={"pipeline_stage": _ETAPA, "desde": str(viejo), "hacia": str(root)},
+                        )
 
-        estado = await asyncio.to_thread(exigir_veredicto, root, recursos=recursos, registro=registro)
-        if estado is EstadoDelRoot.C_BINDING_COMPATIBLE:
-            # Se estrecha en una variable aparte para que el tipo DECLARADO de
-            # `documento` sea `BindingDocument` y no `BindingDocument | None`:
-            # con el offload a `to_thread` la primera asignación pasó a ser la
-            # opcional, y el strict del módulo (que es opt-in, no heredado)
-            # marcaba los dos usos de abajo.
-            leido = await asyncio.to_thread(leer_binding, root)
-            if leido is None:  # pragma: no cover - el veredicto C lo garantiza
-                raise _rechazo_de_schema(root, "el binding desapareció tras el veredicto")
-            documento, recien_inicializado = leido, False
-        else:
-            documento, recien_inicializado = await asyncio.to_thread(publicar_binding, root, recursos)
+            estado = await asyncio.to_thread(exigir_veredicto, root, recursos=recursos, registro=registro)
+            if estado is EstadoDelRoot.C_BINDING_COMPATIBLE:
+                # Se estrecha en una variable aparte para que el tipo DECLARADO de
+                # `documento` sea `BindingDocument` y no `BindingDocument | None`:
+                # con el offload a `to_thread` la primera asignación pasó a ser la
+                # opcional, y el strict del módulo (que es opt-in, no heredado)
+                # marcaba los dos usos de abajo.
+                leido = await asyncio.to_thread(leer_binding, root)
+                if leido is None:  # pragma: no cover - el veredicto C lo garantiza
+                    raise _rechazo_de_schema(root, "el binding desapareció tras el veredicto")
+                documento, recien_inicializado = leido, False
+            else:
+                documento, recien_inicializado = await asyncio.to_thread(publicar_binding, root, recursos)
 
-        await sostenido.assert_owned()
-        await asyncio.to_thread(registro.registrar_activa, clave=clave, root=root, binding_id=documento.binding_id)
-        return WorkspaceResuelto(
-            root=root,
-            binding=documento,
-            estado=estado,
-            recien_inicializado=recien_inicializado,
-        )
+            await sostenido.assert_owned()
+            await ownership.assert_owned()
+            await asyncio.to_thread(registro.registrar_activa, clave=clave, root=root, binding_id=documento.binding_id)
+            return WorkspaceResuelto(
+                root=root,
+                binding=documento,
+                estado=estado,
+                recien_inicializado=recien_inicializado,
+                ownership=ownership,
+            )
+    except BaseException:
+        # §21: cualquier camino que falle DESPUÉS de adquirir la lease de
+        # ownership (rechazo de transición, excepción, cancelación, o el propio
+        # `__aexit__` del lock corto levantando) la libera. Una lease huérfana
+        # hasta su TTL por un error recuperable sería un bloqueo de minutos
+        # para la próxima instancia.
+        if ownership is not None:
+            await ownership.liberar()
+        raise

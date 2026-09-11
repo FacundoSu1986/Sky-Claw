@@ -3,10 +3,12 @@
 > **Para agentes implementadores:** ejecutar por tareas con
 > `superpowers:subagent-driven-development` o `superpowers:executing-plans`.
 > **Estado:** **P0 IMPLEMENTADO** (rama `feat/dyndolod-workspace-p0`,
-> 2026-09-10); **PR-2 NO IMPLEMENTADO**. **Gate de lanzamiento: PASS** (T5-v2,
-> 2026-09-10 — [informe commiteado](../../validation/2026-09-10_t5v2_dyndolod_stage9.md)).
-> Con P0 entregado, PR-2 queda **habilitado para comenzar** — no iniciado: el
-> `-o:` productivo no cambió y su implementación reabrirá el gate.
+> 2026-09-10); **P2.0 (gate de ownership del root vivo) IMPLEMENTADO**
+> (rama `feat/dyndolod-workspace-lifetime-ownership`, 2026-09-11 — §5 abajo);
+> **PR-2 NO IMPLEMENTADO** (P2.1/P2.2/P2.3 pendientes). **Gate de lanzamiento:
+> PASS** (T5-v2, 2026-09-10 — [informe commiteado](../../validation/2026-09-10_t5v2_dyndolod_stage9.md)).
+> Con P0 y P2.0 entregados, P2.1 queda **habilitado para comenzar** — no
+> iniciado: el `-o:` productivo no cambió y su implementación reabrirá el gate.
 > **Decisión:** cerrada por [ADR 0011](../../adr/0011-dyndolod-external-work-root.md);
 > su detalle normativo vive en la
 > [spec del contrato](../specs/2026-09-09-dyndolod-external-work-root.md).
@@ -344,7 +346,7 @@ crudos quedan externos, mantener expresamente esa condición y su localización.
 
 ## 5. PR-2 — implementación después del gate
 
-### P2.0 Gate de ownership del root vivo — BLOQUEANTE antes de P2.1
+### P2.0 Gate de ownership del root vivo — BLOQUEANTE antes de P2.1 — ✅ IMPLEMENTADO
 
 Antes de que `external_work_root` pueda convertirse en destino **MUTABLE** —es
 decir, antes de que P2.1 conecte cualquier root derivado al `-o:` productivo—
@@ -352,24 +354,27 @@ este gate tiene que estar cerrado. No es opcional ni "mejor esfuerzo": es la
 mitad de la unicidad que P0.2 dejó fuera de alcance a propósito (ver la nota de
 alcance en P0.2) y es la observación del hilo P1 de review de #573.
 
-- [ ] Mantener una **lease/fence de ownership** durante TODA la vida del
-  `WorkspaceResuelto` que vaya a usarse para mutar — no sólo durante la
-  resolución de arranque, que es lo único que P0.2 cubre.
-- [ ] Un proceso con snapshot viejo **NO** puede mutar root A después de que el
-  registro haya transicionado a root B.
-- [ ] Pérdida de esa lease ⇒ **fail-closed** antes de cualquier mutación (mismo
-  criterio que los fences `assert_owned()` que P0 ya aplica al ritual de etapa 9).
-- [ ] Test obligatorio con **DOS PROCESOS** (no dos coroutines, por el mismo
-  motivo que `test_single_winner_entre_dos_procesos_reales`):
-  - A resuelve root A y permanece vivo;
-  - B intenta activar root B;
-  - B debe rechazar/bloquear mientras A conserve ownership, **o** A debe quedar
-    invalidado de forma demostrable antes de que B mute.
-- [ ] PR-2 **no puede** conectar el workspace al `-o:` hasta que este test pase.
-  El invariante de alcance de P0
-  (`test_p0_no_cambia_el_output_productivo_del_runner`,
-  `test_ni_output_targets_ni_el_runner_conocen_el_workspace`) es lo que hoy hace
-  inofensivo el hueco; PR-2 lo levanta, así que PR-2 asume este gate.
+Implementado (rama `feat/dyndolod-workspace-lifetime-ownership`, 2026-09-11):
+
+- [x] Lease/fence de ownership (`dyndolod-ownership-<clave>`) durante TODA la
+  vida del `WorkspaceResuelto`, no sólo durante la resolución. Se adquiere
+  DENTRO del boundary del lock corto (`sostener_workspace`) y se libera en el
+  shutdown de `AppContext` (el owner del snapshot), no por `__del__`/`atexit`.
+  Reutiliza `SnapshotTransactionLock` con `target_files=[]` (heartbeat de
+  renovación, `lease_lost`, `assert_owned` con token `acquired_at`) — no se
+  inventó una primitiva nueva.
+- [x] Un proceso con snapshot viejo NO puede mutar: `WorkspaceResuelto.assert_owned()`
+  levanta `LockLeaseLostError` fail-closed cuando su lease ya no es la vigente.
+- [x] Pérdida de esa lease ⇒ fail-closed antes de cada escritura del registro
+  durable (las dos `registro.registrar_*` van fenceadas por ownership).
+- [x] Test obligatorio con **DOS PROCESOS reales** (no coroutines): A resuelve
+  root A y conserva ownership; B intenta activar root B (y también root A) y
+  rechaza OCUPADO mientras A vive; el registro sigue apuntando a A. Tras
+  liberar/matar A y expirar la lease, B readquiere pasando TODAS las
+  validaciones P0 de transición.
+- [x] El `-o:` productivo NO cambió: `test_p0_no_cambia_el_output_productivo_del_runner`
+  y `test_ni_output_targets_ni_el_runner_conocen_el_workspace` siguen verdes.
+  P2.1 sigue sin implementar.
 
 ### P2.1 Derivación y modelo
 
