@@ -2785,18 +2785,38 @@ def test_la_lease_de_ownership_es_por_instancia_logica_no_por_root(tmp_path: pat
     assert rid != ws.Stage9Coordination.resource_id_de_ownership(otra.clave())
 
 
-def test_la_identidad_de_owner_distingue_procesos(tmp_path: pathlib.Path) -> None:
-    """§6: dos instancias de coordinación (dos procesos) tienen agent_id propio.
+async def test_cada_adquisicion_tiene_una_identidad_de_owner_distinta(
+    tmp_path: pathlib.Path,
+) -> None:
+    """§6: owner por ADQUISICIÓN, no por coordinación ni por proceso.
 
-    Con un `agent_id` fijo global, un holder podría RENOVAR o LIBERAR la lease
-    de otro: `renew_lock`/`release_lock` matchean por `resource_id + agent_id`.
-    La identidad por proceso cierra esa clase; el token `acquired_at` del
-    `assert_owned` cierra la readquisición.
+    `release_lock`/`renew_lock` matchean por ``resource_id + agent_id``. Si el
+    agent fuera compartido entre adquisiciones de la misma coordinación, un
+    handle VIEJO que se limpie después de una readquisición borraría la lease
+    NUEVA (el SQL no mira `acquired_at`). Agent fresco por adquisición cierra
+    la clase; el token `acquired_at` de `assert_owned` cierra la readquisición
+    entre procesos. Revisión Codex/Copilot, finding P2.
     """
-    a = _coordinacion(tmp_path)
-    b = _coordinacion(tmp_path)
-    assert a.identidad_de_owner != b.identidad_de_owner
-    assert a.identidad_de_owner.startswith("dyndolod-owner-")
+    from sky_claw.app.db.locks import LockLeaseLostError
+
+    recursos = _instancia(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    try:
+        viejo = await coordinacion.adquirir_ownership_vivo(recursos=recursos, ttl=0.3, auto_renew=False)
+        await asyncio.sleep(0.4)  # expiró sin renovación
+
+        nuevo = await coordinacion.adquirir_ownership_vivo(recursos=recursos)
+        assert viejo.agent_id != nuevo.agent_id
+
+        # El handle viejo NO puede liberar la lease nueva: agent distinto.
+        await viejo.liberar()
+        await nuevo.assert_owned()
+        # Y el snapshot viejo queda fenced.
+        with pytest.raises(LockLeaseLostError):
+            await viejo.assert_owned()
+        await nuevo.liberar()
+    finally:
+        await coordinacion.close()
 
 
 async def test_el_snapshot_sin_ownership_vivo_no_puede_mutar(tmp_path: pathlib.Path) -> None:
@@ -3248,6 +3268,51 @@ def test_las_escrituras_del_registro_van_fenceadas_por_el_ownership() -> None:
     for linea, nombre in escrituras:
         anteriores = [f for f in fences_previos if f < linea]
         assert anteriores, f"{nombre} (línea {linea}) no tiene fence de ownership previo"
+
+
+def test_la_liberacion_del_ownership_envuelve_al_async_with_del_workspace() -> None:
+    """Ancla de forma (finding P1 de Codex/Copilot): la liberación del ownership
+    envuelve el `async with sostener_workspace`, no vive adentro.
+
+    Si el `__aexit__` del lock corto levanta —lease del workspace perdida entre
+    el último fence y la salida del contexto— la excepción nace FUERA de
+    cualquier try anidado al `async with`. Una liberación anidada adentro
+    dejaría la lease de ownership huérfana hasta su TTL. El try que contiene el
+    `async with` tiene que ser el que libera.
+    """
+
+    def _contiene(nodo: ast.AST, contenedor: ast.AST) -> bool:
+        return any(n is nodo for n in ast.walk(contenedor))
+
+    import ast
+
+    fuente = pathlib.Path(ws.__file__).read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    resolver = next(
+        n for n in ast.walk(arbol) if isinstance(n, ast.AsyncFunctionDef) and n.name == "resolver_workspace"
+    )
+    con_workspace = next(
+        n
+        for n in ast.walk(resolver)
+        if isinstance(n, ast.AsyncWith)
+        and isinstance(n.items[0].context_expr, ast.Call)
+        and isinstance(n.items[0].context_expr.func, ast.Attribute)
+        and n.items[0].context_expr.func.attr == "sostener_workspace"
+    )
+    try_externo = next(n for n in ast.walk(resolver) if isinstance(n, ast.Try) and _contiene(con_workspace, n))
+    libera_el_ownership = any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "liberar"
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "ownership"
+        for handler in try_externo.handlers
+        for n in ast.walk(handler)
+    )
+    assert libera_el_ownership, (
+        "la liberación del ownership no está en el try que envuelve el `async with`: "
+        "un `__aexit__` que levante filtraría la lease hasta su TTL"
+    )
 
 
 _GUION_OWNERSHIP_VIVO = """\

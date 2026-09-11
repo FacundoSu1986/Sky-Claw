@@ -1525,18 +1525,6 @@ class Stage9Coordination:
         self._snapshot_manager = snapshot_manager
         self._inicializado = False
         self._guardia = asyncio.Lock()
-        #: Identidad de owner de la lease de vida: UUID por PROCESO (una por
-        #: instancia de coordinación). `renew_lock`/`release_lock` matchean por
-        #: ``resource_id + agent_id``: con un `agent_id` fijo global, un holder
-        #: podría renovar o liberar la lease de otro. La identidad por proceso
-        #: cierra esa clase; el token `acquired_at` de `assert_owned` cierra la
-        #: readquisición por otro proceso con la misma identidad.
-        self._identidad_de_owner = f"dyndolod-owner-{uuid.uuid4().hex}"
-
-    @property
-    def identidad_de_owner(self) -> str:
-        """Identidad del owner de la lease larga de ESTE proceso."""
-        return self._identidad_de_owner
 
     async def manager_del_ritual(self) -> DistributedLockManager:
         """El lock manager de etapa 9, **garantizado abierto**.
@@ -1697,11 +1685,16 @@ class Stage9Coordination:
         `__aexit__`. `target_files=[]`: el "rollback" del workspace es la
         transición del registro, no snapshots de archivos.
 
-        **Resource_id por instancia lógica, owner por proceso.** El recurso es
-        ``dyndolod-ownership-<clave>`` (dos roots del mismo `resource_binding`
-        compiten; dos bindings distintos no). El `agent_id` es la identidad por
-        proceso de esta coordinación: `renew_lock`/`release_lock` matchean por
-        agent, así que ningún holder puede renovar ni liberar la lease de otro.
+        **Resource_id por instancia lógica, owner por ADQUISICIÓN.** El recurso
+        es ``dyndolod-ownership-<clave>`` (dos roots del mismo
+        `resource_binding` compiten; dos bindings distintos no). El `agent_id`
+        es un UUID fresco por adquisición: `renew_lock`/`release_lock` matchean
+        por ``resource_id + agent_id``, así que ningún holder puede renovar ni
+        liberar la lease de OTRO — ni otro proceso (agents distintos), ni un
+        handle viejo de la MISMA coordinación que readquirió tras expirar (el
+        handle viejo liberaría la lease nueva si el agent fuera compartido; con
+        agent por adquisición no matchea). El token `acquired_at` de
+        `assert_owned` cierra la readquisición por otro proceso.
 
         **Boundary.** Se llama DENTRO de `sostener_workspace` (ver
         `resolver_workspace`): la adquisición y la activación forman una unidad
@@ -1715,11 +1708,12 @@ class Stage9Coordination:
                 registro durable.
         """
         await self.initialize()
+        agent_id = f"dyndolod-owner-{uuid.uuid4().hex}"
         sostenido = SnapshotTransactionLock(
             lock_manager=self._lock_manager,
             snapshot_manager=self._snapshot_manager,
             resource_id=self.resource_id_de_ownership(recursos.clave()),
-            agent_id=self._identidad_de_owner,
+            agent_id=agent_id,
             target_files=[],
             ttl=ttl if ttl is not None else self.TTL_DEL_OWNERSHIP_VIVO,
             auto_renew=auto_renew,
@@ -1737,9 +1731,7 @@ class Stage9Coordination:
                     "de Sky-Claw viva sobre esta instalación"
                 ),
             ) from exc
-        return OwnershipDeWorkspaceVivo(
-            sostenido, self.resource_id_de_ownership(recursos.clave()), self._identidad_de_owner
-        )
+        return OwnershipDeWorkspaceVivo(sostenido, self.resource_id_de_ownership(recursos.clave()), agent_id)
 
 
 class OwnershipDeWorkspaceVivo:
@@ -2132,17 +2124,24 @@ async def resolver_workspace(
     root = pathlib.Path(admitido)
     clave = recursos.clave()
 
-    async with coordinacion.sostener_workspace(agent_id=agent_id) as sostenido:
-        # P2.0 — lease de ownership vivo, DENTRO del boundary del lock corto.
-        # Se adquiere ANTES de mirar el registro y de tocar el disco: si otra
-        # instancia conserva el ownership, el rechazo es OCUPADO y no se hace
-        # ningún trabajo (ni se escribe nada) por esta resolución.
-        ownership = await coordinacion.adquirir_ownership_vivo(
-            recursos=recursos,
-            ttl=ttl_del_ownership_vivo,
-            renew_divisor=renew_divisor_del_ownership_vivo,
-        )
-        try:
+    # La liberación del ownership envuelve TODO el `async with`: si el
+    # `__aexit__` del lock corto levanta (lease del workspace perdida entre el
+    # último fence y la salida del contexto), la excepción nace FUERA de
+    # cualquier try anidado y esta liberación es la única que la cubre. Una
+    # liberación anidada adentro del bloque dejaría la lease huérfana hasta su
+    # TTL — revisión Codex/Copilot, finding P1.
+    ownership: OwnershipDeWorkspaceVivo | None = None
+    try:
+        async with coordinacion.sostener_workspace(agent_id=agent_id) as sostenido:
+            # P2.0 — lease de ownership vivo, DENTRO del boundary del lock corto.
+            # Se adquiere ANTES de mirar el registro y de tocar el disco: si otra
+            # instancia conserva el ownership, el rechazo es OCUPADO y no se hace
+            # ningún trabajo (ni se escribe nada) por esta resolución.
+            ownership = await coordinacion.adquirir_ownership_vivo(
+                recursos=recursos,
+                ttl=ttl_del_ownership_vivo,
+                renew_divisor=renew_divisor_del_ownership_vivo,
+            )
             entrada = await asyncio.to_thread(registro.entrada, clave)
             if entrada is not None:
                 pendiente = entrada.transicion_pendiente
@@ -2209,10 +2208,12 @@ async def resolver_workspace(
                 recien_inicializado=recien_inicializado,
                 ownership=ownership,
             )
-        except BaseException:
-            # §21: cualquier camino que falle DESPUÉS de adquirir la lease de
-            # ownership (rechazo de transición, excepción, cancelación) la
-            # libera. Una lease huérfana hasta su TTL por un error recuperable
-            # sería un bloqueo de minutos para la próxima instancia.
+    except BaseException:
+        # §21: cualquier camino que falle DESPUÉS de adquirir la lease de
+        # ownership (rechazo de transición, excepción, cancelación, o el propio
+        # `__aexit__` del lock corto levantando) la libera. Una lease huérfana
+        # hasta su TTL por un error recuperable sería un bloqueo de minutos
+        # para la próxima instancia.
+        if ownership is not None:
             await ownership.liberar()
-            raise
+        raise
