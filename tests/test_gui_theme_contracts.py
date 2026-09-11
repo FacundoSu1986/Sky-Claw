@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 _GUI_DIR = Path(__file__).resolve().parent.parent / "sky_claw" / "app" / "gui"
@@ -373,23 +374,306 @@ def test_medievalsharp_fuera_del_bundle() -> None:
 
 # ── C2 — recetas de botón centralizadas ──────────────────────────────────────
 
-#: Tokens de receta que cuando aparecen en forge_dashboard.py son síntoma de
-#: una receta reintroducida inline (el resto del CSS que los contiene es
-#: declarativo/de estado, no un botón).
-_RECETA_GHOST = "border:1px solid rgba(200,168,106,.35)"
-_RECETA_DANGER = "border:1.5px solid rgba(216,88,78,.5)"
+#: Variantes semánticas válidas de la familia ``.sc-btn`` (sección 6b de styles.css).
+_VARIANTES_SC_BTN = frozenset({"gold", "ghost", "danger"})
+
+#: Propiedades de la receta visual central: un consumidor C2 NO puede
+#: redefinirlas inline. Lo que sí conserva inline es geometría/contexto
+#: (padding, margin, gap, display, tamaño, tipografía puntual, la sombra del
+#: CTA y su transición). La verificación es ESTRUCTURAL — nombre de propiedad
+#: declarado en el ``.style(...)``, no grafía: ``border:1px solid rgba(197,82,74,.5)``
+#: y ``border : 1px solid rgba(197, 82, 74, 0.5)`` son la MISMA violación.
+_PROPIEDADES_RECETA_CENTRAL = frozenset(
+    {
+        "color",
+        "background",
+        "background-color",
+        "background-image",
+        "border",
+        "border-color",
+        "border-width",
+        "border-style",
+        "border-radius",
+        "font-family",
+        "font-weight",
+        "cursor",
+    }
+)
+
+#: Inventario C2 EXHAUSTIVO de los consumidores de la familia en el shell:
+#: identidad estable → variante. La identidad es ``función:variable_asignada``
+#: (mismo anclaje por función que el censo de ``sc-scroll``; el número de línea
+#: NO participa porque las líneas cambian con cualquier reflow). Igualdad
+#: exacta, no muestreo: agregar, quitar o cambiar la variante de un consumidor
+#: rompe el test.
+_CONSUMIDORES_C2: dict[str, str] = {
+    "_hitl_modal_panel:deny": "danger",
+    "_hitl_modal_panel:ok": "gold",
+    "_ritual_feedback_panel:r": "gold",
+    "_hero:btn": "gold",
+    "_mods_screen:upd_btn": "gold",
+    "_conflicts_screen:scan_btn": "gold",
+    "_conflict_row:btn": "gold",
+    "_open_resolve_dialog:cancel": "ghost",
+    "_open_resolve_dialog:ok": "gold",
+    "_settings_screen:btn": "gold",
+    "_downloads_screen:deny": "danger",
+    "_downloads_screen:approve": "gold",
+    "_placeholder:b": "gold",
+}
+
+#: Botones del shell deliberadamente FUERA de C2, decididos por identidad
+#: semántica (no una allowlist anónima): conservan receta propia porque su
+#: aspecto es dinámico por estado o icónico-minimalista. Si alguno adopta
+#: ``.sc-btn`` o desaparece, el test rompe: salir de esta familia también es
+#: una decisión consciente que hay que escribir acá.
+_EXCEPCIONES_FUERA_DE_C2: dict[str, str] = {
+    "_nav_item:btn": "ítem de navegación del sidebar: fondo/marker dinámicos por estado activo",
+    "_modo_local_panel:btn": "toggle Modo local: color/borde dinámicos según el estado on/off",
+    "_ritual_feedback_panel:x": "botón icónico × de dismiss del panel de feedback",
+    "_ritual_preflight_panel:x": "botón icónico × de dismiss del panel de preflight",
+    "_header:gear": "botón icónico de Ajustes 40×40 (gear, sin texto)",
+    "_ritual_card:b": "acción de tarjeta de ritual: color/borde dinámicos por estado del tool",
+    "_orden_carga:vb": "link subrayado «Ver Todo», sin caja de botón",
+    "_asistente:sb": "botón icónico de envío del chat (flecha)",
+    "_conflicts_screen:deep_btn": "escaneo profundo (xEdit): secundario deliberado del escaneo liviano",
+}
+
+#: El CTA hero extiende la transición de la receta (transform/box-shadow);
+#: pisarla SIN ``filter`` deja el brightness del hover cambiando sin transición.
+_TRANSICION_DEBE_INCLUIR_FILTER = frozenset({"_hero:btn"})
 
 
-def test_botones_del_shell_tienen_receta_en_un_solo_lugar() -> None:
-    """C2: las recetas de botón del shell viven en styles.css (.sc-btn--gold /
-    --ghost / --danger); el Forge las referencia por clase, no inline. Si alguien
-    vuelve a escribir el gradiente oro en forge_dashboard.py, el ancla rompe.
-    El match de la receta es tolerante a whitespace (el CSS con espacios y el
-    inline sin espacios deben reconocerse como la MISMA receta)."""
+@dataclass(frozen=True)
+class _Boton:
+    """Estado de clases/estilos de un botón del censo (``None`` = estilo
+    dinámico no verificable por AST)."""
+
+    clases: frozenset[str]
+    estilos: tuple[str | None, ...]
+
+
+def _es_llamada_ui(node: ast.AST, metodo: str) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "ui"
+        and node.func.attr == metodo
+    )
+
+
+def _desarmar_cadena(expresion: ast.expr) -> tuple[ast.expr, list[tuple[str, ast.Call]]]:
+    """Desarma una cadena de métodos ``a.b(...).c(...)`` → (raíz, eslabones).
+
+    Devuelve la raíz de la cadena (``Name('ui')`` para llamadas ``ui.*``) y los
+    eslabones como pares ``(nombre_método, Call)`` del más externo al más interno.
+    """
+    eslabones: list[tuple[str, ast.Call]] = []
+    actual: ast.expr = expresion
+    while isinstance(actual, ast.Call) and isinstance(actual.func, ast.Attribute):
+        eslabones.append((actual.func.attr, actual))
+        actual = actual.func.value
+    return actual, eslabones
+
+
+def _inventario_botones() -> dict[str, _Boton]:
+    """Censo AST determinístico de TODO botón emitido por forge_dashboard.py.
+
+    Identidad ``función_contenedora:variable`` — estable ante reflow de líneas.
+    Para un botón sin variable, ``función:botón#<ordinal>`` por orden de
+    aparición dentro de la función (documentado: un botón nuevo sin variable
+    desplaza los ordinales y rompe el ancla a propósito — obliga a clasificarlo
+    antes de dejarlo pasar). Funciones anidadas se unen con ``.``.
+
+    Solo captura botones que encabezan la expresión de un statement (asignación
+    o expresión). Otras formas (``with ui.element(...) as b``, botones anidados
+    en argumentos) quedan fuera del inventario pero el censo total los cuenta,
+    así que el test rompe fail-closed en lugar de dejarlos pasar sin clasificar.
+    """
+    arbol = ast.parse(_FORGE)
+    inventario: dict[str, _Boton] = {}
+
+    class _Visitante(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._pila: list[str] = []
+            self._anonimos: dict[str, int] = {}
+
+        def _con_funcion(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            self._pila.append(node.name)
+            self.generic_visit(node)
+            self._pila.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._con_funcion(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._con_funcion(node)
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                self._registrar(node.targets[0].id, node.value)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if isinstance(node.target, ast.Name) and node.value is not None:
+                self._registrar(node.target.id, node.value)
+            self.generic_visit(node)
+
+        def visit_Expr(self, node: ast.Expr) -> None:
+            self._registrar(None, node.value)
+            self.generic_visit(node)
+
+        def _registrar(self, variable: str | None, expresion: ast.expr) -> None:
+            base, eslabones = _desarmar_cadena(expresion)
+            if not (isinstance(base, ast.Name) and base.id == "ui"):
+                return
+            elemento = next((llamada for attr, llamada in eslabones if attr == "element"), None)
+            if (
+                elemento is None
+                or not elemento.args
+                or not isinstance(elemento.args[0], ast.Constant)
+                or elemento.args[0].value != "button"
+            ):
+                return
+            funcion = ".".join(self._pila) if self._pila else "<módulo>"
+            if variable is None:
+                ordinal = self._anonimos.get(funcion, 0) + 1
+                self._anonimos[funcion] = ordinal
+                variable = f"botón#{ordinal}"
+            clases: set[str] = set()
+            estilos: list[str | None] = []
+            for attr, llamada in eslabones:
+                for arg in llamada.args:
+                    if attr == "classes" and isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        clases |= set(arg.value.split())
+                    elif attr == "style":
+                        # Un estilo dinámico (f-string) podría esconder cualquier
+                        # propiedad: se marca None y el test lo exige verificable.
+                        estilos.append(arg.value if isinstance(arg, ast.Constant) else None)
+            inventario[f"{funcion}:{variable}"] = _Boton(frozenset(clases), tuple(estilos))
+
+    _Visitante().visit(arbol)
+    return inventario
+
+
+def _censo_total_de_botones() -> int:
+    """Todo botón posible del shell: ``ui.element("button")``, cualquier
+    ``ui.element`` con tag dinámico no verificable, y los componentes botón de
+    Quasar (``ui.button``/``ui.icon_button``/``ui.toggle_button``) — ninguna de
+    estas formas existe hoy fuera del inventario; su aparición rompe el test."""
+    arbol = ast.parse(_FORGE)
+    total = 0
+    for node in ast.walk(arbol):
+        if _es_llamada_ui(node, "element") and node.args:
+            primero = node.args[0]
+            if (isinstance(primero, ast.Constant) and primero.value == "button") or not isinstance(
+                primero, ast.Constant
+            ):
+                total += 1
+        elif any(_es_llamada_ui(node, metodo) for metodo in ("button", "icon_button", "toggle_button")):
+            total += 1
+    return total
+
+
+def _declaraciones(estilos: tuple[str | None, ...]) -> dict[str, str]:
+    """Aplana los strings ``.style(...)`` en pares propiedad→valor."""
+    props: dict[str, str] = {}
+    for bloque in estilos:
+        for declaracion in bloque.split(";"):
+            if ":" not in declaracion:
+                continue
+            propiedad, _, valor = declaracion.partition(":")
+            props[propiedad.strip().lower()] = valor.strip()
+    return props
+
+
+def test_botones_c2_del_shell_inventario_exhaustivo_y_sin_receta_inline() -> None:
+    """C2: los consumidores del shell usan ``.sc-btn`` + exactamente UNA
+    variante semántica, y ninguna redeclara inline la receta central.
+
+    A diferencia de un regex sobre la receta (que un cambio de whitespace, un
+    ``var(...)`` o un ``0.5`` evadía), este ancla es por AST: enumera TODOS los
+    botones del archivo y particiona en consumidores C2 + excepciones
+    deliberadas por IGUALDAD EXACTA. Un botón nuevo sin clasificar, un
+    consumidor que pierde su clase, o una receta reintroducida bajo cualquier
+    grafía rompen el test (AGENTS.md: enumerar, no muestrear).
+    """
+    inventario = _inventario_botones()
+    total = _censo_total_de_botones()
+    assert len(inventario) == total, (
+        f"hay {total - len(inventario)} botón(es) que el inventario no captura "
+        "(with-as, anidado en argumentos, ui.button de Quasar…): clasifícalo en "
+        "_CONSUMIDORES_C2 o _EXCEPCIONES_FUERA_DE_C2 antes de dejarlo pasar"
+    )
+
+    con_familia = {identidad for identidad, boton in inventario.items() if "sc-btn" in boton.clases}
+    sin_familia = set(inventario) - con_familia
+    assert con_familia == set(_CONSUMIDORES_C2), (
+        f"el conjunto de consumidores C2 cambió: extra={sorted(con_familia - set(_CONSUMIDORES_C2))}, "
+        f"faltante={sorted(set(_CONSUMIDORES_C2) - con_familia)}"
+    )
+    assert sin_familia == set(_EXCEPCIONES_FUERA_DE_C2), (
+        f"el conjunto de excepciones deliberadas cambió: extra={sorted(sin_familia - set(_EXCEPCIONES_FUERA_DE_C2))}, "
+        f"faltante={sorted(set(_EXCEPCIONES_FUERA_DE_C2) - sin_familia)}"
+    )
+
+    for identidad, variante in _CONSUMIDORES_C2.items():
+        boton = inventario[identidad]
+        # Igualdad exacta de clases: sc-btn presente, UNA variante, la esperada,
+        # y ninguna clase extra sin decisión consciente.
+        assert boton.clases == {"sc-btn", f"sc-btn--{variante}"}, (
+            f"{identidad}: clases inesperadas {sorted(boton.clases)}; el contrato espera "
+            f"sc-btn + exactamente la variante {variante}"
+        )
+        assert all(estilo is not None for estilo in boton.estilos), (
+            f"{identidad}: .style() dinámico no verificable por AST; el contrato exige "
+            "un literal para poder congelar las propiedades"
+        )
+        declaradas = _declaraciones(boton.estilos)
+        reintroducidas = sorted(set(declaradas) & _PROPIEDADES_RECETA_CENTRAL)
+        assert not reintroducidas, f"{identidad}: receta central reintroducida inline: {reintroducidas}"
+        if identidad in _TRANSICION_DEBE_INCLUIR_FILTER:
+            assert "filter" in declaradas.get("transition", ""), (
+                f"{identidad}: su transition inline pisa la de .sc-btn sin incluir filter "
+                "(el brightness del hover cambiaría sin transición)"
+            )
+
+
+def _regla_css(selector: str) -> str:
+    """Texto de la regla plana de styles.css cuyo selector coincide exactamente
+    (``index`` simple confundiría ``.sc-btn:disabled`` con ``.sc-btn:disabled:hover``)."""
+    coincidencia = re.search(re.escape(selector) + r"\s*\{", _STYLES)
+    assert coincidencia, f"selector ausente en styles.css: {selector}"
+    inicio = coincidencia.start()
+    return _STYLES[inicio : _STYLES.index("}", inicio)]
+
+
+def test_receta_sc_btn_centralizada_con_estado_disabled() -> None:
+    """C2 (styles.css): la receta vive ÚNICAMENTE acá y la familia tiene los
+    estados completos que exige el roadmap — base, hover, active (foco de
+    teclado cubierto por la política global :focus-visible, ya anclada) y
+    disabled, hoy explícito.
+
+    El disabled usa ``:disabled`` porque NiceGUI aplica ``element.props("disabled")``
+    como el atributo HTML ``disabled`` del ``<button>`` nativo (nicegui.js pasa
+    los props a ``Vue.h(tag nativo, props)``), así que la pseudo-clase es el
+    selector real que coincide. Un botón que no responde no debe sugerir
+    interacción: el mismo mecanismo ``filter`` del hover llevado a gris apagado
+    (atenúa la receta sin arrastrar el texto con opacity), cursor honesto y
+    sin estados :hover/:active engañosos ni animaciones.
+    """
     receta_re = r"linear-gradient\(\s*180deg\s*,\s*#f3dca0\s*,\s*#c8a86a\s*58%\s*,\s*#9c7a40\s*\)"
     assert len(re.findall(receta_re, _STYLES)) == 1, "la receta oro debe existir exactamente una vez (en .sc-btn--gold)"
-    assert ".sc-btn--gold" in _STYLES and ".sc-btn--ghost" in _STYLES and ".sc-btn--danger" in _STYLES
-    # Y ninguna receta inline en el shell:
-    assert not re.search(receta_re, _FORGE), "receta oro reintroducida inline en forge_dashboard.py"
-    assert _RECETA_GHOST not in _FORGE, "receta ghost inline reintroducida"
-    assert _RECETA_DANGER not in _FORGE, "receta danger inline reintroducida"
+    for variante in _VARIANTES_SC_BTN:
+        assert f".sc-btn--{variante}" in _STYLES, f"falta la variante .sc-btn--{variante} en styles.css"
+
+    bloque = _regla_css(".sc-btn:disabled")
+    assert "cursor: not-allowed" in bloque, "el cursor debe denegar la interacción"
+    assert "filter:" in bloque, "el estado debe comunicarse atenuando la receta via filter"
+
+    hover = _regla_css(".sc-btn:disabled:hover")
+    assert "filter:" in hover, ":hover sobre un botón deshabilitado no puede aplicar el brightness(1.07) del válido"
+
+    activo = _regla_css(".sc-btn:disabled:active")
+    assert "transform: none" in activo, ":active no debe hundir un botón que no responde"

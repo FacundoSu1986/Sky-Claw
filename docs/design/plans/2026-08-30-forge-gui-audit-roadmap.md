@@ -74,8 +74,24 @@ El proceso NiceGUI comparte un único `ReactiveStore` entre todas las pestañas 
 **Estado:** **RESUELTO** en #577 — familia `.sc-btn` (base + `--gold` /
 `--ghost` / `--danger`) en la sección 6b de `styles.css`, consumida por los 13
 call-sites del shell. Unificadas las dos recetas divergentes de "Denegar"
-(HITL modal vs Puerta de Descargas). Ancla en
-`test_gui_theme_contracts.py::test_botones_del_shell_tienen_receta_en_un_solo_lugar`.
+(HITL modal vs Puerta de Descargas). Estados completos: base, hover, active y
+disabled (`.sc-btn:disabled` con cursor honesto y gris apagado vía `filter`,
+el mecanismo del hover; NiceGUI aplica `props("disabled")` como atributo
+`disabled` del `<button>` nativo); el foco de teclado sigue cubierto por la
+política global `:focus-visible`. La transición inline del CTA hero extiende
+la de la receta sin pisar su `filter`.
+
+Ancla por AST en
+`test_gui_theme_contracts.py::test_botones_c2_del_shell_inventario_exhaustivo_y_sin_receta_inline`:
+enumera TODOS los botones de `forge_dashboard.py` y particiona por igualdad
+exacta en 13 consumidores C2 (identidad `función:variable` → variante) + 9
+excepciones deliberadas fuera de la familia (nav del sidebar, toggles de
+estado, botones icónicos, link «Ver Todo», acción de tarjeta de ritual,
+escaneo profundo); un botón nuevo sin clasificar, un consumidor que pierde la
+clase o cambia de variante, o una receta central reintroducida inline bajo
+cualquier grafía (verificación por nombre de propiedad, no por string) rompen
+el test. Complemento CSS en
+`test_receta_sc_btn_centralizada_con_estado_disabled` (receta única + estados).
 
 ### A3 — MedievalSharp: alcance y decisión de adopción vs. eliminación
 

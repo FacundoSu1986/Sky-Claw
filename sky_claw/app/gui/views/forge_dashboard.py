@@ -1025,7 +1025,10 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
                     .style(
                         "display:flex; align-items:center; gap:11px; padding:15px 26px;"
                         "font-size:15px; letter-spacing:.12em;"
-                        "box-shadow:0 0 24px rgba(200,168,106,.45), inset 0 1px 0 rgba(255,255,255,.5); transition:transform .2s, box-shadow .2s;"
+                        "box-shadow:0 0 24px rgba(200,168,106,.45), inset 0 1px 0 rgba(255,255,255,.5);"
+                        # La transición inline extiende la de .sc-btn: sin "filter" acá,
+                        # el brightness del hover cambiaba sin transición.
+                        "transition:filter .2s ease, transform .2s, box-shadow .2s;"
                     )
                 )
                 if prepare:
