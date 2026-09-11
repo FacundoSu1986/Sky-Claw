@@ -1,7 +1,11 @@
 # DynDOLOD PR-2: contrato de trabajo externo
 
 > **Estado:** decisión arquitectónica cerrada por [ADR 0011](../../adr/0011-dyndolod-external-work-root.md)
-> (Aceptada). No implementada; el gate de lanzamiento inicial previo a PR-2
+> (Aceptada). **P0 IMPLEMENTADO** (preferencia, binding v1, admisión, A–H,
+> single-winner cross-process, coordinación durable y transición restart-only:
+> `sky_claw/local/tools/dyndolod_workspace.py`,
+> `sky_claw/app/security/known_folders.py`); **PR-2 NO IMPLEMENTADO** — los
+> subroots de §7 no llegan al `-o:` todavía. El gate de lanzamiento inicial previo a PR-2
 > (`sky_claw/local/AGENTS.md` §2.9) quedó cerrado por T5-v2 (2026-09-10 —
 > [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md):
 > T5-V2 LAUNCH GATE: PASS; T5-V2 FULL CHECKLIST: PARTIAL 7/10). P0 es el único
@@ -104,8 +108,9 @@ de campos extra, explícita: cualquier campo fuera de este schema (raíz o dentr
 de `resource_binding`) es schema desconocido → caso E, RECHAZAR fail-closed;
 extender el schema exige `schema_version` nueva y su ADR. Sin timestamps.
 
-El writer **no se implementa acá**. La spec declara para la implementación
-futura:
+El writer **no se implementó en el PR documental**; P0 lo implementó después
+(`dyndolod_workspace.publicar_binding` / `_crear_binding_exclusivo` /
+`reescribir_binding_propio`), respetando lo que la spec declaraba:
 
 - creación inicial **single-winner no-reemplazante**: exactamente un proceso
   publica el binding; el perdedor NO reemplaza el archivo del ganador — lo
@@ -113,8 +118,9 @@ futura:
   publicado es compatible (si no, fail-closed). `os.replace()` por sí solo NO
   provee esta propiedad: exige una primitiva adecuada (creación exclusiva,
   lock cross-process alrededor del check + publish, u otro mecanismo
-  equivalente con la propiedad demostrable); T-PR2-22 la valida con dos
-  procesos reales o un mecanismo equivalente cross-process, no sólo coroutines;
+  equivalente con la propiedad demostrable). **Implementado con `os.open` +
+  `O_CREAT | O_EXCL`**; T-PR2-22 se valida con dos procesos reales
+  (`test_single_winner_entre_dos_procesos_reales`), no con coroutines;
 - escritura **atómica con `os.replace`** — sólo para actualizaciones donde
   reemplazar es contractualmente válido (temporal + `os.replace` en el mismo
   directorio, como `Config.save()` y los serializadores de `local_config.py`);
@@ -181,10 +187,10 @@ admitido mediante un componente redirigido.
 La implementación reutiliza las primitivas existentes
 (`sky_claw/app/security/links.py` — `is_link`/`link_kind`/`rmtree_link_aware` — y
 `PathValidator.validate` con `strict_symlink`) antes de inventar un subsistema.
-El mecanismo de Known Folders **no existe hoy** en el árbol: su construcción es
-requisito de P0 con el conjunto congelado de la ADR §2.7 y su test parametrizado
-(cada Known Folder contractual, incluida una ruta redirigida a otro volumen, →
-`external_work_root` rechazado), no una primitiva que se finja tener.
+El mecanismo de Known Folders **no existía** en el árbol: P0 lo construyó en
+`sky_claw/app/security/known_folders.py` con el conjunto congelado de la ADR §2.7
+y su test parametrizado (cada Known Folder contractual, incluida una ruta
+redirigida a otro volumen, → `external_work_root` rechazado).
 
 ## 7. Layout
 
@@ -305,8 +311,12 @@ instancia lógica (mismo `resource_binding`) no puede tener dos
 `external_work_root` activos: el caso H de la máquina de estados lo rechaza vía
 el estado durable de coordinación (P0.2 del plan).
 El dominio de coordinación de etapa 9 (serialización por usuario, estado durable
-independiente de cwd) sigue siendo prerrequisito P0 del plan — este documento no
-lo promete resuelto.
+independiente de cwd) era prerrequisito P0 del plan y **P0 lo entregó**:
+`Stage9Coordination` sobre `SystemPaths.runtime_state_dir()`, con el ritual
+`dyndolod-pipeline` y los leases existentes, más `RegistroDeRootActivo` para la
+unicidad de root activo por `resource_binding`. Lo que este documento sigue **sin**
+prometer es ejecución simultánea entre instancias (§9, arriba): los recursos
+físicos compartidos no cambiaron.
 
 ## 10. Born-empty
 

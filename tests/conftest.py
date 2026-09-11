@@ -30,6 +30,7 @@ from sky_claw.app.core.db_lifecycle import (
 )
 from sky_claw.app.db.async_registry import AsyncModRegistry
 from sky_claw.app.security.network_gateway import NetworkGateway
+from sky_claw.config import SystemPaths
 from sky_claw.logging_config import correlation_id_var
 from tests._lifecycle_guard import close_registry_then_lifecycle, find_leaked_threads
 
@@ -210,6 +211,50 @@ def _localappdata_aislado(
     ausente la borran con ``monkeypatch.delenv``.
     """
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path_factory.mktemp("localappdata_aislado")))
+
+
+@pytest.fixture(autouse=True)
+def _aislar_estado_durable_de_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Redirige el estado durable POR USUARIO a un directorio por test.
+
+    ``SystemPaths.runtime_state_dir()`` es ``~/.sky_claw/state`` y no se deriva de
+    ninguna variable de entorno **a propósito** (P0.2 de ADR 0011: una segunda
+    fuente de selección reabre el split-brain que la resolución de rutas ya
+    cerró). Esa misma propiedad hace que un test que arranque ``AppContext`` cree
+    y abra la DB de coordinación de etapa 9 en el HOME real del desarrollador —
+    estado compartido entre corridas, y en CI entre jobs.
+
+    Autouse y a nivel de `SystemPaths` —no de cada caller— por la razón de
+    siempre acá: aislarlo test por test sería el defecto hermano garantizado, con
+    el próximo camino que consulte el estado durable escribiendo en el HOME sin
+    que nada falle.
+    """
+    raiz = tmp_path_factory.mktemp("estado_durable_aislado")
+    monkeypatch.setattr(SystemPaths, "runtime_state_dir", classmethod(lambda cls: raiz))
+
+
+#: El ``classmethod`` REAL, capturado al importar el conftest — antes de que la
+#: fixture de arriba lo sustituya en ningún test.
+_RUNTIME_STATE_DIR_REAL = SystemPaths.__dict__["runtime_state_dir"]
+
+
+@pytest.fixture()
+def estado_durable_real(
+    _aislar_estado_durable_de_runtime: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Devuelve ``SystemPaths.runtime_state_dir`` a su implementación real.
+
+    Para los pocos tests cuyo SUJETO es la ubicación misma (que sea por usuario,
+    estable entre arranques e independiente del cwd/TEMP): con el aislamiento
+    puesto verificarían la fixture en vez del contrato. Depende explícitamente de
+    la fixture de aislamiento para que el orden sea un dato y no una casualidad
+    de cómo pytest resuelve autouse.
+    """
+    monkeypatch.setattr(SystemPaths, "runtime_state_dir", _RUNTIME_STATE_DIR_REAL)
 
 
 @pytest.fixture()

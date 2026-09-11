@@ -168,6 +168,55 @@ el valor vivo del keyring prevalece sobre memoria o plaintext obsoletos; una
 escritura rechazada queda pendiente para reintento. Ancla:
 `tests/test_config_secretos_sin_keyring.py`.
 
+**Propiedad del `external_work_root` (P0 de [ADR 0011](docs/adr/0011-dyndolod-external-work-root.md)).**
+`sky_claw/local/tools/dyndolod_workspace.py` contesta **una sola vez** las cuatro
+preguntas del work root externo —admisión, binding, estado y coordinación— porque
+repartirlas garantizaba el defecto de arriba: cada superficie que resolviera
+"¿puedo usar este root?" por su cuenta contestaría distinto. Cuatro propiedades
+del mecanismo, cada una con su receta:
+
+- *la creación del binding es single-winner sólo si la primitiva es
+  no-reemplazante*: `os.open` con `O_CREAT | O_EXCL`, nunca `os.replace` (que
+  sustituiría el binding de un publicador concurrente). `os.replace` queda
+  reservado a reescribir el binding PROPIO. Ancla: `test_single_winner_entre_dos_procesos_reales`
+  (DOS PROCESOS reales — dos coroutines verían exclusión aunque la primitiva
+  fuera un `threading.Lock`); quitarle el `O_EXCL` al código lo hace fallar.
+- *el lock del ritual sólo excluye si TODOS los mutadores lo toman en la MISMA
+  base*: la coordinación de etapa 9 vive en `SystemPaths.runtime_state_dir()`, no
+  en `.skyclaw_backups/`, que es relativo al cwd. Anclas:
+  `test_dos_procesos_con_cwd_distinto_no_entran_al_mismo_ritual` y
+  `test_el_reconciliador_rutea_el_ritual_de_etapa9_a_la_base_durable` — el
+  servicio y el recovery son hermanos y los dos se verifican.
+- *un lock sólo excluye si está ABIERTO y si TODAS las leases de la corrida
+  participan*. Las dos mitades de la misma clase, y las dos aparecieron acá: la
+  coordinación abría su DB de forma perezosa y entregaba el manager crudo por una
+  property SÍNCRONA, que no tiene dónde cumplir esa promesa — el recovery del
+  arranque recibía un manager cerrado y su `LockError` abortaba el barrido
+  ENTERO, invisible dentro de un boundary best-effort; y el servicio entraba al
+  lock cross-process pero descartaba el objeto, así que el veto de rollback y los
+  fences de provenance miraban sólo la otra lease. Recetas: el acceso al manager
+  es `async` (`Stage9Coordination.manager_del_ritual`) y no hay accesor síncrono,
+  así que no se puede sostener sin haberlo abierto; y el veto/los fences se
+  verifican por AST contra un conjunto de leases congelado por igualdad literal.
+  Anclas: `test_el_barrido_de_arranque_corre_con_una_coordinacion_recien_construida`
+  (reproduce el `LockError` real),
+  `test_la_coordinacion_no_expone_el_manager_por_una_property_sincrona` y
+  `test_todas_las_leases_de_la_corrida_participan_del_veto_y_de_los_fences`.
+- *P0 CAPABILITY != PR-2 ACTIVATION*: P0 configura, valida y coordina, pero el
+  `-o:` productivo sigue siendo `<game>/Sky-Claw/DynDOLOD`. Anclas:
+  `test_p0_no_cambia_el_output_productivo_del_runner` (sobre el argv REAL) y
+  `test_ni_output_targets_ni_el_runner_conocen_el_workspace` (cierra la clase por
+  import, no sólo el caso de hoy).
+
+La máquina de estados A–H se **enumera** caso por caso con su disco montado
+(`test_maquina_de_estados_enumerada`) y la tabla de veredictos se congela por
+igualdad literal; el schema v1 del binding es cerrado (cualquier campo de más ⇒
+caso E fail-closed) y el censo de constructores del servicio DynDOLOD exige que
+todo sitio de producción pase la coordinación. *Historia: el contrato se decidió
+en #570 y se implementó en P0; el test de dos procesos encontró la ventana entre
+el `O_EXCL` y la escritura del contenido, que ningún test de una sola coroutine
+podía ver.*
+
 ## Pendientes conocidos
 
 Ver [`docs/pending_ooda_status.md`](docs/pending_ooda_status.md) para el inventario

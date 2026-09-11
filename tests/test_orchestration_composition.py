@@ -65,6 +65,10 @@ _CAMPOS_COMPOSITION = [
     "tool_dispatcher",
     "loop_guardrail_middleware",
     "tool_state_machine",
+    # P0 de ADR 0011: la coordinación de etapa 9 que quedó cableada al grafo. Se
+    # devuelve porque abre una conexión SQLite sobre la DB durable y hay que
+    # poder cerrarla; sin exponerla, la de respaldo quedaba viva y sin dueño.
+    "stage9_coordination",
 ]
 
 
@@ -389,6 +393,15 @@ def _awaits_del_bloque(stmts: list[ast.stmt]) -> list[str]:
 
 
 def test_shutdown_order_invariante() -> None:
+    """Orden de apagado congelado por igualdad literal.
+
+    `self._cerrar_coordinacion_propia` va ÚLTIMO, y la posición no es estética:
+    la coordinación de etapa 9 es el eslabón MÁS EXTERNO del orden de
+    adquisición (`dyndolod_workspace.ORDEN_DE_ADQUISICION`), así que se suelta
+    al final — después de que el `drain()` haya dejado salir el trabajo en vuelo
+    y de que journal y DB estén cerrados. Cierra sólo la coordinación que este
+    grafo construyó; la inyectada la cierra su dueño (`AppContext`).
+    """
     orden = _nombres_de_await_en_finally_de_start()
     assert orden == [
         "_tool_dispatcher.drain",
@@ -396,4 +409,5 @@ def test_shutdown_order_invariante() -> None:
         "_lock_manager.close",
         "journal.close",
         "db.close",
+        "self._cerrar_coordinacion_propia",
     ], f"El orden de shutdown cambió: {orden}"

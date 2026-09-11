@@ -555,6 +555,12 @@ def run_nicegui(
             # C2: compartir el único NetworkGateway del AppContext (misma caché DNS
             # pinning + reglas de egress que el router/tools), sin duplicar política.
             gateway=ctx.network.gateway,
+            # P0 (ADR 0011): la MISMA coordinación de etapa 9 que el recovery de
+            # arranque, para que el ritual de la GUI y el barrido de residuo
+            # miren la misma DB durable — y para que el cierre lo haga el único
+            # dueño (el cleanup de AppContext), en vez de quedar una conexión
+            # SQLite viva por cada supervisor construido.
+            stage9_coordination=ctx.stage9_coordination,
             loot_runner=ctx.vfs_loot_runner,
             # La GUI es el path productivo: nunca degrada a un subprocess LOOT
             # standalone si el bridge/broker no quedo disponible.

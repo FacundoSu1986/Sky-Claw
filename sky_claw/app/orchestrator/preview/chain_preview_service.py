@@ -32,6 +32,7 @@ from sky_claw.app.orchestrator.preview.manifest import (
     StageChangeSet,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.xedit_service import XEditPipelineService
 from sky_claw.local.xedit.patch_advisor import recommend
@@ -98,6 +99,7 @@ class ChainPreviewService:
         loot_runner: LOOTRunner,
         xedit_runner: XEditRunner,
         conflict_analyzer: ConflictAnalyzer,
+        stage9_coordination: Stage9Coordination | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -119,12 +121,19 @@ class ChainPreviewService:
             path_resolver=path_resolver,
             event_bus=event_bus,
         )
+        # El preview sólo invoca este servicio con ``dry_run=True`` (plan-only,
+        # la etapa más cara nunca se lanza), así que hoy la coordinación no
+        # llega a adquirirse: `execute` retorna antes de tocar el lock. Se cablea
+        # igual — cuesta cero y deja el camino coordinado si alguna vez muta,
+        # en vez de dejar acá el hermano sin cablear que este repo comete una y
+        # otra vez. El censo de constructores lo exige por igualdad literal.
         self._dyndolod_service = DynDOLODPipelineService(
             lock_manager=lock_manager,
             snapshot_manager=snapshot_manager,
             journal=journal,
             path_resolver=path_resolver,
             event_bus=event_bus,
+            stage9_coordination=stage9_coordination,
         )
 
     # ------------------------------------------------------------------

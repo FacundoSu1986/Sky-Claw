@@ -134,6 +134,26 @@ class SystemPaths:
     def modding_root(cls) -> pathlib.Path:
         return cls.get_base_drive() / "Modding"
 
+    @classmethod
+    def runtime_state_dir(cls) -> pathlib.Path:
+        """Estado durable de runtime POR USUARIO, estable entre arranques.
+
+        Hermano de :attr:`Config.DEFAULT_CONFIG_DIR` (``~/.sky_claw``) y por el
+        mismo motivo: es el único lugar del árbol cuya ubicación no depende de
+        desde dónde se lanzó el proceso. El estado de coordinación de etapa 9
+        (P0.2 de ADR 0011) vive acá y **no** en ``.skyclaw_backups/``, que es
+        relativo al ``cwd``: dos instancias de Sky-Claw lanzadas desde
+        directorios distintos abrirían dos ``locks.db`` distintos y no se
+        excluirían entre sí, que es exactamente el defecto que la coordinación
+        cross-process viene a cerrar.
+
+        Deliberadamente NO se deriva de una variable de entorno de staging, del
+        ``external_work_root`` (que es dato administrado por este estado, no su
+        contenedor) ni de ``TEMP`` (descartable). Los consumidores pueden
+        inyectar otro directorio por constructor para tests.
+        """
+        return Config.DEFAULT_CONFIG_DIR / "state"
+
 
 class _DatosConfig(dict[str, Any]):
     """Estado sincronizado de ``Config`` con generaciones por clave.
@@ -333,6 +353,16 @@ class Config:
             "pandora_exe": "",
             "bodyslide_exe": "",
             "skyrim_path": "",
+            # ADR 0011 §2.1 — raíz de trabajo externa del pipeline DynDOLOD/TexGen.
+            # Vacía = DynDOLOD administrado NO CONFIGURADO: el resto de Sky-Claw
+            # arranca igual y NO hay fallback silencioso (ni `game`, ni su padre,
+            # ni MO2, ni `install_dir`, ni `%TEMP%`, ni `Documents`, ni
+            # `C:\Sky-Claw`, ni el cwd). Tampoco hay variable de entorno: una
+            # segunda fuente de selección reabre el split-brain que la capa de
+            # resolución ya cerró para MODS/PROFILE (#552/#555). El default vacío
+            # es lo que hace que "no configurado" sea un estado leíble y no un
+            # `AttributeError` en el primer consumidor que olvide el `getattr`.
+            "external_work_root": "",
             "llm_provider": "deepseek",
             "llm_model": "",  # legacy global model — migrated to {provider}_model on load
             "anthropic_model": "",

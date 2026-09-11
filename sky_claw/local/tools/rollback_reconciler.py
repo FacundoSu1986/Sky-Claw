@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
+from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
 from sky_claw.local.tools.output_targets import (
     BODYSLIDE_MESHES_RESOURCE_ID,
     bodyslide_output_root,
@@ -75,7 +76,13 @@ _RECONCILE_TTL_SECONDS = 60.0
 #: el piso distingue nuestros nonces de un backup corto con el mismo basename.
 #: ``time_ns()`` devuelve 19 dígitos (y ≥16 desde 1970), así que el piso no deja
 #: afuera ningún backup real y vuelve el falso positivo prácticamente imposible.
-_SUFIJO_MOVE_ASIDE = re.compile(r"\.rollback-\d{12,}$")
+#:
+#: PÚBLICO a propósito (P0 de ADR 0011): la validación de transición de
+#: `dyndolod_workspace` necesita RECONOCER un residuo de move-aside para negarse
+#: a olvidar un root viejo que todavía tiene backups. Escribir allá su propia
+#: regex sería el defecto hermano en su forma más barata — dos definiciones de
+#: "esto es un backup nuestro" que se pueden endurecer por separado.
+SUFIJO_MOVE_ASIDE = re.compile(r"\.rollback-\d{12,}$")
 
 #: Nombre del backup que ``ProfileSandbox._apply_changes`` crea dentro del clon
 #: antes de tocar el árbol real (fase 0).
@@ -169,6 +176,7 @@ async def reconcile_orphan_rollback_backups(
     productores: Sequence[ProductorDeMoveAside],
     sandbox_root: pathlib.Path | None,
     lock_manager: DistributedLockManager,
+    coordinacion_etapa9: Stage9Coordination | None = None,
 ) -> ReconcileOutcome:
     """Reconcilia el residuo de rollback de una muerte dura previa (U-08 mitad 2).
 
@@ -185,6 +193,15 @@ async def reconcile_orphan_rollback_backups(
         sandbox_root: ``<mo2>/.skyclaw_sandbox``. ``None`` → no-op.
         lock_manager: El MISMO que serializa los rituales, para que el guard de
             concurrencia mire los locks reales y no una copia.
+        coordinacion_etapa9: Coordinación cross-process de etapa 9 (P0 de
+            ADR 0011). Cuando se inyecta, el guard del productor ``dyndolod``
+            consulta SU lock manager en vez del de ``.skyclaw_backups/``. No es
+            un detalle de cableado: desde P0.2 el servicio toma el ritual en la
+            base durable, así que un reconciliador que siguiera mirando la base
+            relativa al cwd vería el lock LIBRE con la corrida en vuelo en otra
+            instancia — y restauraría un backup que su productor todavía está
+            usando. Es el defecto hermano exacto que este repo comete: arreglar
+            el camino del servicio y dejar el de recovery mirando otra cosa.
 
     Returns:
         El :class:`ReconcileOutcome` con lo que se hizo y lo que se dejó.
@@ -194,7 +211,7 @@ async def reconcile_orphan_rollback_backups(
         await _bajo_el_lock_del_ritual(
             nombre=productor.nombre,
             resource_id=productor.lock_resource_id,
-            lock_manager=lock_manager,
+            lock_manager=await _manager_del_ritual(productor.lock_resource_id, lock_manager, coordinacion_etapa9),
             acc=acc,
             accion=functools.partial(_reconciliar_move_aside, productor.destinos, acc),
         )
@@ -207,6 +224,34 @@ async def reconcile_orphan_rollback_backups(
             accion=functools.partial(_reconciliar_clones_sandbox, sandbox_root, acc),
         )
     return acc.cerrar()
+
+
+async def _manager_del_ritual(
+    resource_id: str,
+    por_defecto: DistributedLockManager,
+    coordinacion: Stage9Coordination | None,
+) -> DistributedLockManager:
+    """El lock manager donde vive REALMENTE el lock de ese ritual, ya ABIERTO.
+
+    Enunciado como propiedad del mecanismo y no como caso especial de DynDOLOD:
+    *el guard de un ritual sólo sirve si mira la MISMA base donde ese ritual
+    toma su lock*. La etapa 9 se mudó a la base durable por usuario (P0.2 de
+    ADR 0011); los demás rituales siguen en la base relativa al cwd. El ruteo
+    va por el `resource_id` del productor —no por su nombre— para que un
+    productor nuevo que declare `dyndolod-pipeline` quede coordinado por
+    construcción.
+
+    Es `async` porque la coordinación abre su DB de forma perezosa y este es su
+    PRIMER uso en el arranque: el camino que la construye —``AppContext``— no
+    resuelve el workspace cuando `external_work_root` está sin configurar, que
+    es el default. Pedir el manager por el accesor async lo abre; tomarlo crudo
+    devolvía uno cerrado, cuyo `LockError` abortaba el barrido completo (todos
+    los productores, no sólo DynDOLOD) dentro de un boundary best-effort que lo
+    hacía invisible.
+    """
+    if coordinacion is not None and resource_id == Stage9Coordination.RECURSO_DEL_RITUAL:
+        return await coordinacion.manager_del_ritual()
+    return por_defecto
 
 
 def construir_productores_de_move_aside(
@@ -308,7 +353,7 @@ def _destinos_bodyslide_por_escaneo(raiz: pathlib.Path) -> tuple[pathlib.Path, .
     destinos = {
         hijo.with_name(basename)
         for hijo in raiz.iterdir()
-        if _SUFIJO_MOVE_ASIDE.search(hijo.name) and (basename := _SUFIJO_MOVE_ASIDE.sub("", hijo.name))
+        if SUFIJO_MOVE_ASIDE.search(hijo.name) and (basename := SUFIJO_MOVE_ASIDE.sub("", hijo.name))
     }
     return tuple(sorted(destinos))
 
@@ -374,7 +419,7 @@ async def _reconciliar_move_aside(destinos: Sequence[pathlib.Path], acc: _Acumul
       Se preservan ambos y se avisa.
     """
     for backup in await asyncio.to_thread(_listar_backups_move_aside, destinos):
-        destino = backup.with_name(_SUFIJO_MOVE_ASIDE.sub("", backup.name))
+        destino = backup.with_name(SUFIJO_MOVE_ASIDE.sub("", backup.name))
         # ``path_present`` y no ``exists``: si el destino es un enlace ROTO,
         # ``exists()`` da False y caeríamos al ``rename`` de abajo, que **reemplaza**
         # el enlace en silencio — destruyendo algo del usuario que este
@@ -423,8 +468,8 @@ def _listar_backups_move_aside(destinos: Sequence[pathlib.Path]) -> list[pathlib
         if not raiz.is_dir():
             continue
         for hijo in sorted(raiz.iterdir()):
-            sufijo = _SUFIJO_MOVE_ASIDE.search(hijo.name)
-            if sufijo is None or _SUFIJO_MOVE_ASIDE.sub("", hijo.name) != destino.name:
+            sufijo = SUFIJO_MOVE_ASIDE.search(hijo.name)
+            if sufijo is None or SUFIJO_MOVE_ASIDE.sub("", hijo.name) != destino.name:
                 continue
             # ``is_dir()`` **sigue** el enlace, así que un symlink/junction a
             # directorio llamado ``X.rollback-<nonce>`` entraba como backup legítimo

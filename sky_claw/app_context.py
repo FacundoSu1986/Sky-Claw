@@ -64,6 +64,7 @@ from sky_claw.local.mo2.brokered_loot import (
 )
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker, vfs_instance_id
+from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
 
 # Audit #190: shared lock-DB staging dir. MUST match the orchestrator's
@@ -724,6 +725,133 @@ class AppContext:
         self.sync_engine = None
         self.tools_installer = None
         self.mo2 = None
+        #: Coordinación cross-process de etapa 9 (P0.2 de ADR 0011), sobre
+        #: estado durable POR USUARIO — no bajo `.skyclaw_backups/`, que es
+        #: relativo al cwd y por eso no excluye dos instancias lanzadas desde
+        #: directorios distintos.
+        self.stage9_coordination = None
+        #: `WorkspaceResuelto` del arranque, o `None` = DynDOLOD administrado
+        #: NO CONFIGURADO (estado normal y honesto: el resto de Sky-Claw
+        #: funciona igual, sin fallback silencioso a ninguna raíz derivada).
+        self.dyndolod_workspace = None
+
+    @staticmethod
+    def _sonda_de_transaccion_pendiente(journal):
+        """Sonda §25: ¿queda una transacción PENDING de una corrida sin cerrar?
+
+        Conservadora a propósito: pregunta por CUALQUIER PENDING del journal, no
+        sólo por las que nombran el root viejo. La razón es que el vínculo
+        transacción→root no existe como dato —el journal indexa rutas de
+        destino, y en P0 los destinos productivos todavía son los legacy—, así
+        que filtrar por root exigiría inferirlo, y una inferencia equivocada acá
+        deja pasar justo la transición que §25 prohíbe. El costo del exceso es
+        acotado: `journal.open()` ya barrió las PENDING viejas de sesiones
+        anteriores, así que una PENDING viva en el arranque es evidencia de una
+        corrida realmente interrumpida — exactamente el caso en el que no se
+        cambia de raíz.
+
+        Se expone como `staticmethod` que devuelve el callable para que la
+        dependencia sea el journal y no `self`: así el test la puede ejercer sin
+        levantar un `AppContext`.
+        """
+
+        async def _sonda() -> bool:
+            from sky_claw.app.db.journal import TransactionStatus
+
+            pendientes = await journal.list_recent_transactions(limit=1, status=TransactionStatus.PENDING)
+            return bool(pendientes)
+
+        return _sonda
+
+    async def _resolver_workspace_de_dyndolod(self, *, local_cfg, game, mo2, journal=None):
+        """Resuelve la propiedad del `external_work_root` para ESTE arranque.
+
+        Best-effort en el sentido acotado del arranque: un rechazo del workspace
+        —root ajeno, no vacío, metadata corrupta, transición insegura— deja
+        DynDOLOD administrado sin configurar y lo dice, pero **no** tumba
+        Sky-Claw. Eso no relaja el fail-closed: el veredicto sigue siendo
+        "no se usa ese root", que es lo que protege los datos; lo que no hace es
+        convertir un problema de una etapa en un arranque fallido de todo el
+        producto.
+        """
+        from sky_claw.local.tools.dyndolod_workspace import (
+            RaicesProhibidas,
+            ResourceBinding,
+            WorkspaceRechazadoError,
+            registro_de_roots_activos,
+            resolver_workspace,
+        )
+
+        preferencia = getattr(local_cfg, "external_work_root", "") or ""
+        # Sólo se corta acá el caso barato y abrumadoramente común (cadena
+        # vacía = no configurado). Un valor que NO es cadena —un TOML editado a
+        # mano con `external_work_root = 3`— sigue de largo a propósito:
+        # `resolver_workspace` es el dueño de esa regla y lo rechaza con un
+        # mensaje que nombra el campo y la acción, en vez del `AttributeError`
+        # que producía `.strip()` sobre un int.
+        if isinstance(preferencia, str) and not preferencia.strip():
+            return None
+        if game is None or mo2 is None or mo2.mods_dir is None:
+            logger.info(
+                "external_work_root configurado pero la instancia lógica no resuelve todavía "
+                "(juego/MO2/mods): DynDOLOD administrado queda NO CONFIGURADO este arranque."
+            )
+            return None
+
+        try:
+            return await resolver_workspace(
+                preferencia=preferencia,
+                recursos=ResourceBinding.desde_paths(
+                    game_path=game,
+                    mo2_instance_data_root=mo2.data_root,
+                    mo2_mods_path=mo2.mods_dir,
+                ),
+                prohibidas=RaicesProhibidas.desde_entorno(
+                    game=game,
+                    mo2_install=mo2.install_root,
+                    mo2_instance_data_root=mo2.data_root,
+                    mo2_mods_path=mo2.mods_dir,
+                    dyndolod_exe=pathlib.Path(local_cfg.dyndolod_exe)
+                    if getattr(local_cfg, "dyndolod_exe", "")
+                    else None,
+                    texgen_exe=pathlib.Path(local_cfg.texgen_exe) if getattr(local_cfg, "texgen_exe", "") else None,
+                ),
+                registro=registro_de_roots_activos(),
+                coordinacion=self.stage9_coordination,
+                # §25: sin esto el fail-closed de "transacción PENDING sin
+                # resolver" era test-only — el parámetro existía y producción
+                # nunca lo llenaba.
+                sonda_de_transaccion_pendiente=(
+                    self._sonda_de_transaccion_pendiente(journal) if journal is not None else None
+                ),
+            )
+        except WorkspaceRechazadoError as exc:
+            # Una línea legible, no un stack de 200: es una condición de
+            # admisión esperable y el mensaje ya nombra etapa, root, caso A–H,
+            # motivo y la acción que el operador tiene que tomar.
+            logger.warning("external_work_root rechazado: %s", exc)
+            return None
+        except Exception:
+            # El docstring de arriba promete que un problema de ESTA etapa no
+            # tumba Sky-Claw, y hasta acá sólo lo cumplía para el rechazo
+            # esperable: un `OSError` del registro durable, un fallo de la DB de
+            # coordinación o un `PermissionError` al canonicalizar se propagaban
+            # y mataban el arranque completo. Lo marcó el revisor adversarial y
+            # es exacto — una promesa en prosa que el código no sostenía.
+            #
+            # Esto NO relaja el fail-closed: el veredicto sigue siendo "no se usa
+            # ese root" (se devuelve `None` = NO CONFIGURADO), que es lo que
+            # protege los datos. Lo que cambia es que una etapa rota deja de
+            # tumbar el producto entero. Con `exc_info` porque, a diferencia del
+            # rechazo de admisión, esto SÍ es un incidente inesperado y el stack
+            # es la evidencia. Mismo patrón best-effort que los otros bloques de
+            # arranque de este archivo (recovery de rollback, precache huérfano).
+            logger.warning(
+                "Resolución del external_work_root falló de forma inesperada; DynDOLOD "
+                "administrado queda NO CONFIGURADO este arranque (no bloquea el resto).",
+                exc_info=True,
+            )
+            return None
 
     async def _rollback_startup(self) -> None:
         try:
@@ -1277,6 +1405,27 @@ class AppContext:
                 )
 
             configured_game = pathlib.Path(local_cfg.skyrim_path) if local_cfg.skyrim_path else None
+
+            # ----------------------------------------------------------------
+            # P0 de ADR 0011 — propiedad del `external_work_root`
+            # ----------------------------------------------------------------
+            # Se resuelve UNA vez, acá, y el resultado es un snapshot inmutable
+            # del arranque: cambiar la preferencia persiste ahora y se aplica en
+            # el PRÓXIMO arranque, nunca en caliente (§2.5 del ADR). Mutar el
+            # root en vivo movería el piso debajo de `AppContext`, de las raíces
+            # del `PathValidator`, del runner cacheado, del reconciliador y de
+            # las transacciones activas.
+            #
+            # ATENCIÓN — esto es CAPACIDAD, no activación: el runner de etapa 9
+            # sigue emitiendo su `-o:` productivo de siempre
+            # (`output_targets.dyndolod_output_target`). Activar estos subroots
+            # es PR-2, y reabre el gate de lanzamiento T5.
+            # La coordinación se construye ACÁ porque el barrido de residuo de
+            # rollback (más abajo) la necesita; la RESOLUCIÓN del workspace, en
+            # cambio, corre después del journal — ver el bloque que la ejecuta.
+            self.stage9_coordination = construir_coordinacion_de_etapa9(lifecycle=self.lifecycle.manager)
+            self._push_startup_cleanup(self.stage9_coordination.close)
+
             vfs_loot_runner = build_vfs_loot_runner(
                 broker=broker,
                 instance_id=instance_id if broker is not None else None,
@@ -1441,6 +1590,11 @@ class AppContext:
                         ),
                         sandbox_root=mo2.data_root / ".skyclaw_sandbox",
                         lock_manager=lock_manager,
+                        # P0.2 (ADR 0011): desde P0 el ritual de etapa 9 se toma en
+                        # la base durable por usuario. Sin esto el guard de DynDOLOD
+                        # miraría el `locks.db` relativo al cwd y vería LIBRE un
+                        # ritual en vuelo en otra instancia.
+                        coordinacion_etapa9=self.stage9_coordination,
                     )
                 )
             except Exception:
@@ -1448,6 +1602,38 @@ class AppContext:
                     "Reconciliación de backups de rollback huérfanos falló (no bloquea el arranque)",
                     exc_info=True,
                 )
+
+            # P0 de ADR 0011 — propiedad del `external_work_root`.
+            #
+            # Corre DESPUÉS del journal y del barrido de residuo, y las dos cosas
+            # son requisitos de la transición (§25), no preferencias de orden:
+            #
+            #   * la sonda de transacción PENDING necesita el journal ABIERTO —
+            #     resolver antes dejaba el fail-closed de §25 sin sonda en
+            #     producción, o sea sólo vivo en los tests;
+            #   * el barrido restaura/descarta el residuo de move-aside, y la
+            #     transición se niega a dejar un root viejo con backups sin
+            #     reconciliar. Resolver antes rechazaría por una condición que el
+            #     paso siguiente del mismo arranque acababa de limpiar.
+            #
+            # El resultado es un snapshot inmutable del arranque: cambiar la
+            # preferencia persiste ahora y se aplica en el PRÓXIMO arranque, nunca
+            # en caliente (§2.5 del ADR). Mutar el root en vivo movería el piso
+            # debajo de `AppContext`, de las raíces del `PathValidator`, del runner
+            # cacheado, del reconciliador y de las transacciones activas.
+            #
+            # ATENCIÓN — esto es CAPACIDAD, no activación: el runner de etapa 9
+            # sigue emitiendo su `-o:` productivo de siempre
+            # (`output_targets.dyndolod_output_target`). Activar estos subroots es
+            # PR-2, y reabre el gate de lanzamiento T5.
+            self.dyndolod_workspace = await self._await_startup(
+                self._resolver_workspace_de_dyndolod(
+                    local_cfg=local_cfg,
+                    game=configured_game,
+                    mo2=mo2,
+                    journal=journal,
+                )
+            )
 
             # Auditoría FOMOD: el motor (parser/resolver/installer) existía pero
             # nunca se cableó — las tools preview_mod_installer /

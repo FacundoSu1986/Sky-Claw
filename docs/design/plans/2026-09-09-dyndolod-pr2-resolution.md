@@ -2,9 +2,11 @@
 
 > **Para agentes implementadores:** ejecutar por tareas con
 > `superpowers:subagent-driven-development` o `superpowers:executing-plans`.
-> **Estado:** propuesta documental, sin implementación. **Gate de lanzamiento:
-> PASS** (T5-v2, 2026-09-10 — [informe commiteado](../../validation/2026-09-10_t5v2_dyndolod_stage9.md));
-> PR-2 pasa a estar bloqueado únicamente por P0.
+> **Estado:** **P0 IMPLEMENTADO** (rama `feat/dyndolod-workspace-p0`,
+> 2026-09-10); **PR-2 NO IMPLEMENTADO**. **Gate de lanzamiento: PASS** (T5-v2,
+> 2026-09-10 — [informe commiteado](../../validation/2026-09-10_t5v2_dyndolod_stage9.md)).
+> Con P0 entregado, PR-2 queda **habilitado para comenzar** — no iniciado: el
+> `-o:` productivo no cambió y su implementación reabrirá el gate.
 > **Decisión:** cerrada por [ADR 0011](../../adr/0011-dyndolod-external-work-root.md);
 > su detalle normativo vive en la
 > [spec del contrato](../specs/2026-09-09-dyndolod-external-work-root.md).
@@ -50,11 +52,12 @@ DirectoryRollback, pytest; Windows y binarios reales para aceptación.
   `PathValidator.validate` con `strict_symlink`, escritura atómica
   temporal + `os.replace` (patrón de `Config.save()` y `local_config.py`;
   `os.replace` sirve para actualizar un archivo propio, NO para la creación
-  single-winner del binding — para eso el árbol aún no tiene primitiva adecuada
-  y P0.1 la construye), maquinaria de locks distribuidos cross-process
-  (`test_distributed_locks.py`), `escribir_campo`/`guardar_config`/
-  `persistir_campo` con merge-on-save.
-  El mecanismo de Known Folders **no existe** en el árbol: es construcción de P0.
+  single-winner del binding — para eso el árbol no tenía primitiva adecuada y
+  **P0.1 la construyó** con `os.open` + `O_CREAT | O_EXCL`), maquinaria de locks
+  distribuidos cross-process (`test_distributed_locks.py`),
+  `escribir_campo`/`guardar_config`/`persistir_campo` con merge-on-save.
+  El mecanismo de Known Folders **no existía** en el árbol: lo construyó P0 en
+  `sky_claw/app/security/known_folders.py`.
 
 ### Evidencia externa localizada y revisada
 
@@ -92,11 +95,12 @@ flowchart TD
 ```
 
 Los dos carriles iniciales pueden prepararse en paralelo. Cada cambio tiene rama
-y PR propios. P0 no cambia el `-o:` productivo. Las dos corridas exigidas por
-`sky_claw/local/AGENTS.md` §2.9 se ejecutaron y el gate de lanzamiento quedó **PASS**
-(2026-09-10 — informe commiteado arriba): **P0 es el único prerrequisito restante
-para COMENZAR PR-2**. La secuencia vigente para arrancar es ADR 0011 ✅ →
-T5-v2 Launch Gate ✅ → P0 → PR-2.
+y PR propios. P0 no cambia el `-o:` productivo, y el ancla
+`test_p0_no_cambia_el_output_productivo_del_runner` lo verifica sobre el argv
+real. Las dos corridas exigidas por `sky_claw/local/AGENTS.md` §2.9 se ejecutaron
+y el gate de lanzamiento quedó **PASS** (2026-09-10 — informe commiteado arriba).
+La secuencia vigente es ADR 0011 ✅ → T5-v2 Launch Gate ✅ → P0 ✅ → **PR-2 (no
+iniciado, habilitado para comenzar)**.
 
 **Lifecycle del gate de lanzamiento y reapertura obligatoria en PR-2:**
 1. El gate de lanzamiento inicial previo a PR-2 quedó **CERRADO** sobre el runner
@@ -120,7 +124,7 @@ T5-v2 Launch Gate ✅ → P0 → PR-2.
 
 ## 3. P0 — lifecycle antes de activar la nueva raíz
 
-### P0.1 Preferencia, binding y admisión
+### P0.1 Preferencia, binding y admisión — ✅ IMPLEMENTADO
 
 **Modificar:** `sky_claw/config.py`, `sky_claw/app/core/path_resolver.py`,
 `sky_claw/app_context.py`, `sky_claw/app/orchestrator/supervisor.py` y sus puntos
@@ -145,30 +149,30 @@ estados A–H de la spec, con rechazo fail-closed en D, E, F, G y H.
 `tests/test_supervisor_path_resolution_wiring.py`,
 `tests/test_mo2_controller_split_roots.py`, nuevo `tests/test_dyndolod_workspace.py`.
 
-- [ ] Escribir casos rojos: campo ausente, persistencia/reinicio/merge concurrente,
+- [x] Escribir casos rojos: campo ausente, persistencia/reinicio/merge concurrente,
   raíz ajena (F), raíz solapada, enlaces, owner distinto y config copiada del
   mismo owner, y **la máquina de estados A–H enumerada caso por caso** (un test
   paramétrico que liste A–H, no una muestra).
-- [ ] Single-winner del binding: dos inicializaciones concurrentes del mismo
+- [x] Single-winner del binding: dos inicializaciones concurrentes del mismo
   root vacío producen exactamente un binding, **con primitiva
   no-reemplazante** (creación exclusiva, lock cross-process alrededor del
   check + publish, o mecanismo equivalente con la propiedad demostrable):
   el perdedor NO reemplaza el archivo del ganador — lo relee, valida el
   `resource_binding` publicado y continúa sólo si es compatible. `os.replace`
   queda reservado a actualizaciones del binding propio, nunca a la creación.
-- [ ] Caso H: mismo `resource_binding` ya tiene otro root activo → rechazo con
+- [x] Caso H: mismo `resource_binding` ya tiene otro root activo → rechazo con
   transición explícita. La detección es instalacional vía el estado durable de
   coordinación (P0.2); este punto queda anclado con su test cuando ese estado
   exista, y hasta entonces cualquier root con un binding compatible pero sin
   registro de unicidad se trata fail-closed, no como caso C indistinto.
-- [ ] Metadata corrupta y schema desconocido → rechazo fail-closed (caso E).
-- [ ] Congelar el censo de constructores de resolver, incluido health CLI de
+- [x] Metadata corrupta y schema desconocido → rechazo fail-closed (caso E).
+- [x] Congelar el censo de constructores de resolver, incluido health CLI de
   `__main__.py`: comprobar que la ausencia del campo no rompe ese consumidor.
-- [ ] Ejecutar esos tests y comprobar el motivo de fallo antes de implementar.
-- [ ] Agregar default vacío, accessor validado y binding atómico versionado.
+- [x] Ejecutar esos tests y comprobar el motivo de fallo antes de implementar.
+- [x] Agregar default vacío, accessor validado y binding atómico versionado.
   Registrar en sandbox solo la familia administrada y metadatos precisos
   necesarios; nunca un ancestro arbitrario ni toda una unidad.
-- [ ] Mecanismo de Known Folders prohibidos para la admisión: construirlo con
+- [x] Mecanismo de Known Folders prohibidos para la admisión: construirlo con
   su test parametrizado sobre el conjunto cerrado v1 de la ADR §2.7
   (`Documents`, `Desktop`, `Downloads` — cada carpeta justificada en el ADR):
   cada Known Folder contractual, resuelto por identificador con la API de
@@ -178,14 +182,14 @@ estados A–H de la spec, con rechazo fail-closed en D, E, F, G y H.
   en OneDrive). Sin búsqueda de substrings, sin derivar desde `%USERPROFILE%`
   (no refleja redirecciones) y sin prometer detección universal de proveedores
   cloud.
-- [ ] Declarar el nuevo módulo workspace con typing estricto en `pyproject.toml`,
+- [x] Declarar el nuevo módulo workspace con typing estricto en `pyproject.toml`,
   como el reconciliador, en vez de heredar la exención general de tools.
-- [ ] Probar que todavía se conserva el `-o:` actual: P0 configura capacidad,
+- [x] Probar que todavía se conserva el `-o:` actual: P0 configura capacidad,
   pero no activa PR-2 ni modifica packaging.
-- [ ] Ejecutar pruebas verdes; actualizar documentación del contrato real;
+- [x] Ejecutar pruebas verdes; actualizar documentación del contrato real;
   revisar y registrar el cambio en su PR.
 
-### P0.2 Coordinación y transición durable
+### P0.2 Coordinación y transición durable — ✅ IMPLEMENTADO
 
 **Modificar:** `sky_claw/app_context.py`,
 `sky_claw/app/orchestrator/rollback_factory.py`,
@@ -200,29 +204,44 @@ es distinto del work root y no se deriva del cwd ni de una env var de staging.
 `tests/test_startup_recovery_order.py`, `tests/test_dir_rollback.py`,
 `tests/test_rollback_reconciler.py` y tests de composición.
 
-- [ ] Escribir primero un test con dos procesos/cwd distintos que intentan mutar
+- [x] Escribir primero un test con dos procesos/cwd distintos que intentan mutar
   el mismo recurso. El segundo debe bloquear o fallar antes del move-aside.
   Repetir con work roots distintos y ejecutable compartido.
-- [ ] Enumerar servicio, preview, recuperación, resume y entrada al runner:
+- [x] Enumerar servicio, preview, recuperación, resume y entrada al runner:
   todos los mutadores productivos deben adquirir la coordinación común. El
   runner público de rig se usa aislado y no promete transacción de servicio.
-- [ ] Inyectar un gestor de etapa 9 con DB común bajo estado durable por
+- [x] Inyectar un gestor de etapa 9 con DB común bajo estado durable por
   usuario, ubicación independiente de cwd. Mantener `dyndolod-pipeline`, leases
   y renovación; definir un orden de adquisición fijo con locks/journals
   existentes. No migrar los otros rituales incidentalmente.
-- [ ] Probar pérdida de lease, cancelación y crash: no liberar coordinación
+- [x] Probar pérdida de lease, cancelación y crash: no liberar coordinación
   mientras procesos o tareas de restauración siguen mutando. Preservar orden de
   recovery de journal, handoff y backups.
-- [ ] Persistir referencia a la raíz activa y transición antes del cambio TOML.
+- [x] Persistir referencia a la raíz activa y transición antes del cambio TOML.
   Testear interrupción en cada frontera y edición manual del TOML: no olvidar
   old root ni activar otro si hay backups/PENDING o no puede inspeccionarse.
   Este estado durable de coordinación es también el que hace detectable el
   caso H (unicidad de `external_work_root` activo por `resource_binding`,
   instalacional): registrarlo con clave de `resource_binding` y probar que dos
-  roots con el mismo `resource_binding` no pueden quedar ambos activos.
-- [ ] Cambio de preferencia = aplicar en próximo arranque (ADR 0011 §2.5), sin
+  roots con el mismo `resource_binding` no pueden quedar ambos **registrados**
+  activos a la vez.
+
+**Alcance exacto de lo que P0.2 entrega — y lo que NO** (observación del hilo P1
+de review de #573, deferred-by-design). La unicidad que P0.2 garantiza es la del
+**registro durable**: dos arranques que presenten el mismo `resource_binding` no
+pueden quedar ambos registrados como activos (caso H, sobre `RegistroDeRootActivo`,
+cuya mutación corre bajo la coordinación). Lo que P0.2 **NO** provee es la
+**exclusividad de uso de un `WorkspaceResuelto` vivo** durante toda la vida del
+proceso que lo conserva: hoy no hay lease de proceso, así que un proceso A que
+resolvió root A y sigue vivo conserva su snapshot aunque otro proceso B
+transicione el registro a root B. Es inofensivo mientras P0 no conecte ese root a
+mutación productiva —`P0 CAPABILITY != PR-2 ACTIVATION`, el `-o:` sigue siendo
+`<game>/Sky-Claw/DynDOLOD`— y se convierte en defecto en cuanto PR-2 escriba a
+través del snapshot. Por eso esa exclusividad es un **gate duro de activación de
+PR-2** (P2.0, abajo), no algo que P0 pueda dar por hecho.
+- [x] Cambio de preferencia = aplicar en próximo arranque (ADR 0011 §2.5), sin
   hot-reload de AppContext/PathValidator/runner cache/reconciler/TX activas.
-- [ ] Confirmar verdes y revisión de wiring. P0 es requisito previo, no una
+- [x] Confirmar verdes y revisión de wiring. P0 es requisito previo, no una
   declaración de soporte multiproceso basada en el nombre de un lock.
 
 ## 4. Rig inicial — dos corridas separadas
@@ -324,6 +343,33 @@ para auditar; no commitear GBs, binarios de terceros ni secretos. Si los archivo
 crudos quedan externos, mantener expresamente esa condición y su localización.
 
 ## 5. PR-2 — implementación después del gate
+
+### P2.0 Gate de ownership del root vivo — BLOQUEANTE antes de P2.1
+
+Antes de que `external_work_root` pueda convertirse en destino **MUTABLE** —es
+decir, antes de que P2.1 conecte cualquier root derivado al `-o:` productivo—
+este gate tiene que estar cerrado. No es opcional ni "mejor esfuerzo": es la
+mitad de la unicidad que P0.2 dejó fuera de alcance a propósito (ver la nota de
+alcance en P0.2) y es la observación del hilo P1 de review de #573.
+
+- [ ] Mantener una **lease/fence de ownership** durante TODA la vida del
+  `WorkspaceResuelto` que vaya a usarse para mutar — no sólo durante la
+  resolución de arranque, que es lo único que P0.2 cubre.
+- [ ] Un proceso con snapshot viejo **NO** puede mutar root A después de que el
+  registro haya transicionado a root B.
+- [ ] Pérdida de esa lease ⇒ **fail-closed** antes de cualquier mutación (mismo
+  criterio que los fences `assert_owned()` que P0 ya aplica al ritual de etapa 9).
+- [ ] Test obligatorio con **DOS PROCESOS** (no dos coroutines, por el mismo
+  motivo que `test_single_winner_entre_dos_procesos_reales`):
+  - A resuelve root A y permanece vivo;
+  - B intenta activar root B;
+  - B debe rechazar/bloquear mientras A conserve ownership, **o** A debe quedar
+    invalidado de forma demostrable antes de que B mute.
+- [ ] PR-2 **no puede** conectar el workspace al `-o:` hasta que este test pase.
+  El invariante de alcance de P0
+  (`test_p0_no_cambia_el_output_productivo_del_runner`,
+  `test_ni_output_targets_ni_el_runner_conocen_el_workspace`) es lo que hoy hace
+  inofensivo el hueco; PR-2 lo levanta, así que PR-2 asume este gate.
 
 ### P2.1 Derivación y modelo
 

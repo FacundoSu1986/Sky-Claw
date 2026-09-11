@@ -337,6 +337,7 @@ async def test_el_merge_on_save_conserva_lo_que_el_otro_camino_guardo(
         ("anthropic_model", "claude-sonnet-5"),
         ("install_dir", "D:/Otro/Tools"),
         ("first_run", False),
+        ("external_work_root", "E:/Sky-Claw Work"),
     ],
 )
 async def test_un_config_vivo_no_pisa_campos_frescos_que_vienen_de_defaults(
@@ -937,3 +938,83 @@ def test_ancla_detecta_todas_las_formas_de_llamar_tomli_w_dump() -> None:
     assert _usa_tomli_w_dump(ast.parse(forma_dumps_from)) is True
     assert _usa_tomli_w_dump(ast.parse(forma_inocua)) is False
     assert _usa_tomli_w_dump(ast.parse(forma_modulo_distinto)) is False
+
+
+# ---------------------------------------------------------------------------
+# `external_work_root` — preferencia persistente de P0 (ADR 0011 §2.1/§2.5)
+# ---------------------------------------------------------------------------
+# La preferencia entra por el mismo mecanismo que el resto: default vacío en
+# `_load_defaults()`, escritura por `escribir_campo` y persistencia por el
+# merge-on-save de `Config.save()`. Los tests de acá cubren el contrato de
+# CONFIG; el de admisión/binding/ownership vive en
+# `tests/test_dyndolod_workspace.py`.
+
+
+def test_external_work_root_nace_vacio_en_los_defaults(tmp_path: pathlib.Path) -> None:
+    """Ausente ⇒ DynDOLOD administrado NO CONFIGURADO, sin fallback (ADR 0011 §2.1).
+
+    El default vacío es lo que hace que "no configurado" sea un estado honesto y
+    no un `AttributeError`: `Config.__getattr__` sólo lee de `_data`, así que sin
+    la entrada en `_load_defaults()` cada consumidor tendría que usar `getattr`
+    con default — y el primero que lo olvidara tumbaría el arranque.
+    """
+    cfg = Config(tmp_path / "config.toml")
+
+    assert "external_work_root" in cfg._data
+    assert cfg.external_work_root == ""
+
+
+def test_external_work_root_ausente_no_rompe_la_construccion_ni_el_save(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un config real de usuario SIN el campo sigue construyendo y guardando."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_TOML_DE_USUARIO, encoding="utf-8")
+
+    cfg = Config(config_path)
+    assert cfg.external_work_root == ""
+
+    escribir_campo(cfg, "loot_exe", "D:/Otro/LOOT.exe")
+    cfg.save()
+
+    en_disco = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert en_disco["mo2_root"] == "D:/Modding/MO2"
+    assert en_disco["loot_exe"] == "D:/Otro/LOOT.exe"
+
+
+def test_external_work_root_persiste_y_sobrevive_al_reinicio(tmp_path: pathlib.Path) -> None:
+    """Persistir ahora → leer en el próximo arranque (contrato de ADR 0011 §2.5)."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_TOML_DE_USUARIO, encoding="utf-8")
+
+    cfg = Config(config_path)
+    escribir_campo(cfg, "external_work_root", "E:/Sky-Claw Work")
+    guardar_config(cfg, config_path)
+
+    # "Reinicio": objeto nuevo, misma ruta.
+    reiniciado = Config(config_path)
+    assert reiniciado.external_work_root == "E:/Sky-Claw Work"
+    # Y no se perdió nada del usuario.
+    assert reiniciado.mo2_root == "D:/Modding/MO2"
+
+
+def test_external_work_root_de_una_config_copiada_viaja_con_el_archivo(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Copiar el `config.toml` copia la PREFERENCIA, no la propiedad del root.
+
+    La distinción es la razón de ser del binding: la preferencia dice "quiero
+    trabajar acá"; quién es el dueño lo dice `.sky-claw-binding.json` dentro del
+    root (ver `tests/test_dyndolod_workspace.py`). Acá sólo se ancla que la copia
+    del archivo no pierde ni inventa el campo.
+    """
+    origen = tmp_path / "origen" / "config.toml"
+    origen.parent.mkdir()
+    origen.write_text(_TOML_DE_USUARIO, encoding="utf-8")
+    persistir_campo(origen, "external_work_root", "E:/Sky-Claw Work")
+
+    destino = tmp_path / "copia" / "config.toml"
+    destino.parent.mkdir()
+    destino.write_text(origen.read_text(encoding="utf-8"), encoding="utf-8")
+
+    assert Config(destino).external_work_root == "E:/Sky-Claw Work"
