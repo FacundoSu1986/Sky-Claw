@@ -5,10 +5,14 @@
 > **Estado:** **P0 IMPLEMENTADO** (rama `feat/dyndolod-workspace-p0`,
 > 2026-09-10); **P2.0 (gate de ownership del root vivo) IMPLEMENTADO**
 > (rama `feat/dyndolod-workspace-lifetime-ownership`, 2026-09-11 — §5 abajo);
-> **PR-2 NO IMPLEMENTADO** (P2.1/P2.2/P2.3 pendientes). **Gate de lanzamiento:
-> PASS** (T5-v2, 2026-09-10 — [informe commiteado](../../validation/2026-09-10_t5v2_dyndolod_stage9.md)).
-> Con P0 y P2.0 entregados, P2.1 queda **habilitado para comenzar** — no
-> iniciado: el `-o:` productivo no cambió y su implementación reabrirá el gate.
+> **P2.1 (derivación y modelo de outputs externos) IMPLEMENTADO COMO CANDIDATO**
+> (rama `feat/dyndolod-pr2-external-staging`, 2026-09-11 — PR-2 `DRAFT`,
+> **NOT READY TO MERGE**); **P2.2 (servicio/transacción/packaging) y P2.3
+> (recovery/migración) NO IMPLEMENTADOS**. **Gate de lanzamiento: REOPENED por
+> P2.1** — T5-v2 (2026-09-10) quedó PASS sobre el builder/root VIEJO
+> ([informe commiteado](../../validation/2026-09-10_t5v2_dyndolod_stage9.md)) y
+> **no** certifica el nuevo `-o:`: hace falta repetir las dos corridas reales
+> sobre el candidato PR-2 completo (P2.1 + P2.2 + P2.3) antes de mergear.
 > **Decisión:** cerrada por [ADR 0011](../../adr/0011-dyndolod-external-work-root.md);
 > su detalle normativo vive en la
 > [spec del contrato](../specs/2026-09-09-dyndolod-external-work-root.md).
@@ -376,22 +380,29 @@ Implementado (rama `feat/dyndolod-workspace-lifetime-ownership`, 2026-09-11):
   y `test_ni_output_targets_ni_el_runner_conocen_el_workspace` siguen verdes.
   P2.1 sigue sin implementar.
 
-### P2.1 Derivación y modelo
+### P2.1 Derivación y modelo — ✅ CANDIDATO (PR-2 DRAFT)
 
-**Archivos:** `output_targets.py`, `dyndolod_runner.py`;
-**tests:** `test_output_targets.py`, `test_dyndolod_service.py`,
-`test_contrato_argumentos_cli.py` (todos bajo sus directorios actuales).
+**Archivos:** `output_targets.py`, `dyndolod_runner.py` (+ adaptación mecánica de
+`dyndolod_service.py` y `rollback_reconciler.py`); **tests:**
+`test_output_targets.py`, `test_dyndolod_service.py`,
+`test_contrato_argumentos_cli.py`, `test_dyndolod_workspace.py`,
+`test_orphan_evidence_producer_contract.py`, `test_path_resolution_service.py`
+(ancla de línea) y los fixtures de los tests de etapa 9.
 
-- [ ] Escribir rojo T-PR2-01…03 y anclas de consumidores: un builder por tool,
+- [x] Escribir rojo T-PR2-01…03 y anclas de consumidores: un builder por tool,
   raíces hermanas exclusivas, familia jamás empaquetable y aliases rechazados.
-- [ ] Añadir en `output_targets.py` derivación pura desde raíz admitida;
+- [x] Añadir en `output_targets.py` derivación pura desde raíz admitida;
   representar `family_root`, `texgen_root`, `dyndolod_root` explícitamente
   (layout §7 de la spec; los strings se congelan como constantes).
-- [ ] Migrar cada uso de `output_root`; actualizar la interfaz pública de forma
+- [x] Migrar cada uso de `output_root`; actualizar la interfaz pública de forma
   explícita y sus fixtures, sin alias que siga apuntando al viejo juego.
-- [ ] Mantener `_build_xedit_args` compartido, seleccionando el `-o:` por tool,
+- [x] Mantener `_build_xedit_args` compartido, seleccionando el `-o:` por tool,
   y adaptar anclas AST al nuevo selector sin rebajar protección de extra_args.
-- [ ] Verde: ambas ramas de launcher y constructor de argv, incluyendo espacios.
+- [x] Verde: ambas ramas de launcher y constructor de argv, incluyendo espacios.
+- [ ] **Deferred a P2.2:** wiring del `WorkspaceResuelto` de producción
+  (`AppContext.dyndolod_workspace`) al `DynDOLODPipelineService`
+  (`external_work_root`). P2.1 modela y conecta el `-o:` del runner; el
+  servicio, sin esa inyección, queda NO CONFIGURADO fail-closed.
 
 ### P2.2 Servicio, transacción y packaging
 

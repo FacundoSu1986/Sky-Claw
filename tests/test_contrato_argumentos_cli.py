@@ -82,6 +82,7 @@ from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunn
 # la enumeración de los switches administrados SALGA del código en vez de ser una
 # tercera lista escrita a mano que puede desalinearse en silencio.
 from sky_claw.local.tools.dyndolod_runner import _GAME_MODES_ADMINISTRADOS, _LETRAS_ADMINISTRADAS
+from sky_claw.local.tools.output_targets import HerramientaDynDOLOD
 from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 from sky_claw.local.tools.wrye_bash_runner import (
     WryeBashConfig,
@@ -650,6 +651,9 @@ async def test_dyndolod_construye_el_vector_verificado(tmp_path: pathlib.Path) -
     plugins_file.touch()
     output_root = tmp_path / "salida"
     temp_dir = tmp_path / "temp"
+    from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
+
+    layout = derivar_layout_de_dyndolod(external_work_root=output_root)
 
     config = DynDOLODConfig(
         game_path=game,
@@ -660,19 +664,20 @@ async def test_dyndolod_construye_el_vector_verificado(tmp_path: pathlib.Path) -
         data_dir=game / "Data",
         ini_dir=ini_dir,
         plugins_file=plugins_file,
-        output_root=output_root,
+        external_work_root=output_root,
         temp_dir=temp_dir,
     )
     runner = DynDOLODRunner(config)
 
-    esperado = [
+    esperado_comun = [
         "-sse",
-        f"-o:{output_root}\\",
         f"-d:{game / 'Data'}\\",
         f"-m:{ini_dir}\\",
         f"-p:{plugins_file}",
         f"-t:{temp_dir}\\",
     ]
+    esperado_texgen = [esperado_comun[0], f"-o:{layout.texgen_root}\\", *esperado_comun[1:]]
+    esperado_dyndolod = [esperado_comun[0], f"-o:{layout.dyndolod_root}\\", *esperado_comun[1:]]
 
     with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
         await runner.run_texgen()
@@ -681,8 +686,9 @@ async def test_dyndolod_construye_el_vector_verificado(tmp_path: pathlib.Path) -
         texgen_argv = ejecutar.call_args_list[0].kwargs["args"]
         dyndolod_argv = ejecutar.call_args_list[1].kwargs["args"]
 
-    assert texgen_argv == esperado, "TexGen debe emitir exactamente el vector verificado"
-    assert dyndolod_argv == esperado, "DynDOLOD comparte el parser de xEdit: mismo vector"
+    assert texgen_argv == esperado_texgen, "TexGen debe emitir exactamente el vector verificado"
+    assert dyndolod_argv == esperado_dyndolod, "DynDOLOD comparte el parser de xEdit: mismo vector con SU -o:"
+    assert texgen_argv[1] != dyndolod_argv[1], "cada herramienta recibe su subroot exclusivo, no uno compartido"
     assert "Medium" not in dyndolod_argv, "el preset lo elige el humano en el asistente; no viaja en el argv"
     assert "-game" not in texgen_argv and "-game" not in dyndolod_argv
     assert "--expert" not in dyndolod_argv
@@ -715,10 +721,11 @@ async def test_dyndolod_config_default_omite_m_y_p(tmp_path: pathlib.Path) -> No
             mo2_path=tmp_path / "MO2",
             mo2_mods_path=tmp_path / "MO2" / "mods",
             dyndolod_exe=dyndolod_exe,
+            external_work_root=tmp_path / "salida",
         )
     )
 
-    argv = runner._build_xedit_args(None)
+    argv = runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)
     assert argv[0] == "-sse"
     assert len(argv) == 4, f"-sse + -o: + -d: + -t:, sin -m:/-p:; obtenido: {argv}"
     assert argv[1].startswith("-o:")
@@ -851,7 +858,7 @@ def _runner_con_raiz(tmp_path: pathlib.Path, carpeta: str, *, sin_espacios: bool
             data_dir=game / "Data",
             ini_dir=ini_dir,
             plugins_file=plugins_file,
-            output_root=raiz / "salida",
+            external_work_root=raiz / "salida",
             temp_dir=raiz / "temp",
         )
     )
@@ -940,7 +947,7 @@ def test_dyndolod_argv_sin_espacios_sobrevive_los_dos_parsers(tmp_path: pathlib.
 
     runner, dyndolod_exe = _runner_con_raiz(tmp_path, "Sky-Claw", sin_espacios=True)
 
-    argv = runner._build_xedit_args(None)
+    argv = runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)
     assert len(argv) == 6, f"-sse + los cinco switches de ruta; obtenido: {argv}"
     assert not [a for a in argv if " " in a], "este caso exige rutas sin espacios"
 
@@ -999,7 +1006,7 @@ def test_dyndolod_argv_con_espacios_diverge_entre_crt_y_delphi(tmp_path: pathlib
     """
     runner, dyndolod_exe = _runner_con_raiz(tmp_path, "Program Files Sky Claw")
 
-    argv = runner._build_xedit_args(None)
+    argv = runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)
     con_espacios = [a for a in argv if " " in a]
     assert con_espacios, "este caso exige rutas con espacios"
 
@@ -1062,6 +1069,7 @@ async def test_dyndolod_extra_args_con_comillas_es_rechazado(tmp_path: pathlib.P
             mo2_mods_path=tmp_path / "MO2" / "mods",
             dyndolod_exe=dyndolod_exe,
             texgen_exe=texgen_exe,
+            external_work_root=tmp_path / "salida",
         )
     )
 
@@ -1072,7 +1080,7 @@ async def test_dyndolod_extra_args_con_comillas_es_rechazado(tmp_path: pathlib.P
 
     # Un extra_args limpio sigue pasando: la validación rechaza comillas, no el
     # mecanismo de argumentos extra.
-    argv = runner._build_xedit_args(["-B:C:\\backups\\"])
+    argv = runner._build_xedit_args(["-B:C:\\backups\\"], herramienta=HerramientaDynDOLOD.DYNDOLOD)
     assert argv[-1] == "-B:C:\\backups\\"
 
 
@@ -1338,8 +1346,8 @@ def test_dyndolod_extra_args_none_y_lista_vacia_son_ausencia_legitima(
     """
     runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
 
-    base = runner._build_xedit_args(None)
-    assert runner._build_xedit_args(ausencia) == base
+    base = runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)
+    assert runner._build_xedit_args(ausencia, herramienta=HerramientaDynDOLOD.DYNDOLOD) == base
     assert len(base) == 6, f"-sse + los cinco switches de ruta; obtenido: {base}"
 
 
@@ -1370,7 +1378,9 @@ async def test_generate_lods_no_puede_inyectar_switches_por_payload(tmp_path: pa
         """Stub del servicio: reenvía al runner como hace `DynDOLODPipelineService`."""
 
         async def execute(self, **kwargs: Any) -> dict[str, Any]:
-            return {"argv": runner._build_xedit_args(kwargs.get("dyndolod_args"))}
+            return {
+                "argv": runner._build_xedit_args(kwargs.get("dyndolod_args"), herramienta=HerramientaDynDOLOD.DYNDOLOD)
+            }
 
     estrategia = GenerateLodsStrategy(_ServicioFalso())  # type: ignore[arg-type]
 
@@ -1481,19 +1491,19 @@ async def test_dyndolod_modo_vr_se_fija_por_config_no_por_ruta(tmp_path: pathlib
 
     # SSE explícito aunque el path contenga "VR": la ruta NO decide.
     sse = _runner(tmp_path / "a" / "CVR" / "Skyrim Special Edition", "sse")
-    assert sse._build_xedit_args(None)[0] == "-sse"
+    assert sse._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)[0] == "-sse"
     assert sse._modo() == "SSE"
 
     # VR explícito: switch suelto y nombre de log TES5VR.
     vr = _runner(tmp_path / "b" / "Skyrim VR", "tes5vr")
-    assert vr._build_xedit_args(None)[0] == "-tes5vr"
+    assert vr._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)[0] == "-tes5vr"
     assert vr._modo() == "TES5VR"
 
     # Default inferido: instalaciones reales de VR se detectan solas, por el
     # NOMBRE de la carpeta del juego (con o sin espacio).
     for nombre in ("Skyrim VR", "SkyrimVR"):
         inferido_vr = _runner(tmp_path / f"vr-{nombre.replace(' ', '')}" / nombre, None)
-        assert inferido_vr._build_xedit_args(None)[0] == "-tes5vr"
+        assert inferido_vr._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)[0] == "-tes5vr"
         assert inferido_vr._modo() == "TES5VR"
 
     # Y el caso que el docstring del runner nombra como el bug: una instalación
@@ -1507,7 +1517,9 @@ async def test_dyndolod_modo_vr_se_fija_por_config_no_por_ruta(tmp_path: pathlib
     # (review adversarial #441). Se piden las dos marcas en el nombre.
     for vr_no_canonico in ("Skyrim-VR", "VR Skyrim", "Skyrim VR - portable", "SkyrimVR Modded"):
         inferido = _runner(tmp_path / f"nc-{vr_no_canonico.replace(' ', '_')}" / vr_no_canonico, None)
-        assert inferido._build_xedit_args(None)[0] == "-tes5vr", f"{vr_no_canonico} es una instalación VR"
+        assert inferido._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)[0] == "-tes5vr", (
+            f"{vr_no_canonico} es una instalación VR"
+        )
         assert inferido._modo() == "TES5VR"
 
     # Y los ambiguos DENTRO del nombre de la carpeta del juego: comparar por
@@ -1515,12 +1527,16 @@ async def test_dyndolod_modo_vr_se_fija_por_config_no_por_ruta(tmp_path: pathlib
     # — el mismo error del substring sobre la ruta, más chico (review #441).
     for sse_ambiguo in ("Skyrim CVR", "Skyrim VRamDisk Edition", "Skyrim SE - CVR build"):
         inferido = _runner(tmp_path / f"amb-{sse_ambiguo.replace(' ', '_')}" / sse_ambiguo, None)
-        assert inferido._build_xedit_args(None)[0] == "-sse", f"{sse_ambiguo} no tiene `vr` como token"
+        assert inferido._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)[0] == "-sse", (
+            f"{sse_ambiguo} no tiene `vr` como token"
+        )
         assert inferido._modo() == "SSE"
 
     for ambiguo in ("CVR", "VRamDisk", "SteamVR"):
         inferido_sse = _runner(tmp_path / ambiguo / "Skyrim Special Edition", None)
-        assert inferido_sse._build_xedit_args(None)[0] == "-sse", f"{ambiguo} no es un marcador de VR"
+        assert inferido_sse._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)[0] == "-sse", (
+            f"{ambiguo} no es un marcador de VR"
+        )
         assert inferido_sse._modo() == "SSE"
 
 

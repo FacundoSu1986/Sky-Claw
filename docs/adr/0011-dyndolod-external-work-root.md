@@ -9,10 +9,12 @@ coordinación durable de etapa 9 y transición restart-only viven en
 `sky_claw/local/tools/dyndolod_workspace.py` y
 `sky_claw/app/security/known_folders.py`, anclados por
 `tests/test_dyndolod_workspace.py` y `tests/test_known_folders.py`. Eso habilita
-**comenzar** PR-2; **PR-2 sigue NO IMPLEMENTADO** —el `-o:` productivo no
-cambió—, y su implementación reabrirá el gate de lanzamiento al mutar los
-subroots administrados de `-o:`, exigiendo repetir las dos corridas reales antes
-de su merge.
+**comenzar** PR-2. **P2.1 (derivación + per-tool `-o:`) IMPLEMENTADO COMO
+CANDIDATO** en la rama `feat/dyndolod-pr2-external-staging` (PR-2 `DRAFT`, no
+mergeable): los subroots administrados de `-o:` SÍ cambiaron, así que **el gate
+de lanzamiento quedó REABIERTO** y exige repetir las dos corridas reales sobre
+el candidato PR-2 completo antes de su merge. **P2.2 y P2.3 siguen NO
+IMPLEMENTADOS.**
 **Contexto de origen:** `origin/main` `5e5e9448db0d4015b3bf0dc4c1df10fdc49e226c`
 (post-merge #569), verificado por `fetch` + lectura de código el 2026-09-09.
 **Alcance:** cerrar la decisión arquitectónica de lifecycle, identidad, propiedad y

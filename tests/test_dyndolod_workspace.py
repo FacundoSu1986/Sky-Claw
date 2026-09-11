@@ -2024,40 +2024,46 @@ async def test_cambiar_la_preferencia_no_hace_hot_reload(tmp_path: pathlib.Path)
 # ---------------------------------------------------------------------------
 
 
-def test_p0_no_cambia_el_output_productivo_del_runner(tmp_path: pathlib.Path) -> None:
-    """`P0 CAPABILITY != PR-2 ACTIVATION`, verificado sobre el argv REAL.
+def test_p21_activa_el_layout_externo_en_el_runner(tmp_path: pathlib.Path) -> None:
+    """P2.1 SÍ cambia el `-o:`: cada herramienta recibe su subroot externo.
 
-    Si un cambio de P0 hiciera que el `-o:` del runner apunte al work root
-    externo, sería SCOPE VIOLATION: PR-2 reabre el gate de lanzamiento T5 al
-    tocar esos subroots, y este PR no lo reabre. Se mide el argv que el runner
-    construye, no un comentario que diga que no cambió.
+    Antes de PR-2, P0 sólo entregaba CAPACIDAD y el `-o:` seguía colgando del
+    juego (`<game>/Sky-Claw/DynDOLOD`). P2.1 activa el layout derivado del
+    `external_work_root`: se mide sobre el argv REAL del runner, y el root legacy
+    del juego NO aparece en ningún `-o:`.
     """
     from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
-    from sky_claw.local.tools.output_targets import (
-        DYNDOLOD_OUTPUT_ROOT,
-        SKY_CLAW_MANAGED_DIR,
-        dyndolod_output_target,
-    )
+    from sky_claw.local.tools.output_targets import HerramientaDynDOLOD, derivar_layout_de_dyndolod
 
     game = tmp_path / "Skyrim Special Edition"
     (game / "Data").mkdir(parents=True)
     exe = tmp_path / "tools" / "DynDOLOD" / "DynDOLODx64.exe"
     exe.parent.mkdir(parents=True)
     exe.write_bytes(b"")
+    external = tmp_path / "Sky-Claw Work Root"
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
 
-    # La derivación productiva sigue colgando del juego, no del work root.
-    esperado = game.resolve() / SKY_CLAW_MANAGED_DIR / DYNDOLOD_OUTPUT_ROOT
-    assert dyndolod_output_target(game=game) == esperado
-
-    config = DynDOLODConfig(dyndolod_exe=exe, game_path=game, mo2_path=None, mo2_mods_path=None)
-    assert config.output_root == esperado
+    config = DynDOLODConfig(
+        dyndolod_exe=exe,
+        game_path=game,
+        mo2_path=None,
+        mo2_mods_path=None,
+        external_work_root=external,
+    )
+    assert config.output_layout == layout
 
     runner = DynDOLODRunner(config)
-    argv = runner._build_xedit_args(None)
-    salidas = [arg for arg in argv if arg.startswith("-o:")]
-    assert len(salidas) == 1
-    assert str(esperado) in salidas[0]
-    assert "Sky-Claw Work" not in salidas[0]
+    o_texgen = [
+        a for a in runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.TEXGEN) if a.startswith("-o:")
+    ]
+    o_dyndolod = [
+        a for a in runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD) if a.startswith("-o:")
+    ]
+    assert len(o_texgen) == 1 and len(o_dyndolod) == 1
+    assert str(layout.texgen_root) in o_texgen[0]
+    assert str(layout.dyndolod_root) in o_dyndolod[0]
+    legacy = game.resolve() / "Sky-Claw" / "DynDOLOD"
+    assert str(legacy) not in o_texgen[0] and str(legacy) not in o_dyndolod[0]
 
 
 def test_ni_output_targets_ni_el_runner_conocen_el_workspace() -> None:
@@ -2089,10 +2095,10 @@ def test_p0_no_toca_el_root_legacy(tmp_path: pathlib.Path) -> None:
     no crea `DirectoryRollback` sobre él. Lo único que P0 hace con un root viejo
     es LEERLO para negarse a abandonarlo con backups pendientes.
     """
-    from sky_claw.local.tools.output_targets import dyndolod_output_target
+    from sky_claw.local.tools.output_targets import dyndolod_legacy_recovery_target
 
     game = tmp_path / "game"
-    legacy = dyndolod_output_target(game=game)
+    legacy = dyndolod_legacy_recovery_target(game=game)
     (legacy / "textures").mkdir(parents=True)
     (legacy / "textures" / "lod.dds").write_bytes(b"generacion anterior")
     antes = sorted(p.relative_to(legacy).as_posix() for p in legacy.rglob("*"))

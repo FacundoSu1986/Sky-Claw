@@ -24,12 +24,16 @@ from __future__ import annotations
 import pathlib
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.output_targets import (
+    HerramientaDynDOLOD,
     bashed_patch_target,
     bodyslide_output_target,
-    dyndolod_output_target,
+    derivar_layout_de_dyndolod,
+    dyndolod_legacy_recovery_target,
     pandora_output_target,
     synthesis_output_target,
 )
@@ -172,64 +176,204 @@ def test_pandora_service_sondea_solo_el_destino_administrado(tmp_path: pathlib.P
 
 
 # ---------------------------------------------------------------------------
-# DynDOLOD — el subproceso HEREDA el cwd, y los dos hermanos deben coincidir
+# DynDOLOD — un subroot EXCLUSIVO por herramienta, hermanos entre sí
 # ---------------------------------------------------------------------------
 
 
-def test_dyndolod_salida_determinista_bajo_la_raiz(tmp_path: pathlib.Path) -> None:
-    """Con ``-o:`` la salida es determinista bajo la raíz administrada.
-
-    TexGen escribe ``textures`` dentro del ``-o:``. DynDOLOD conserva su candidato
-    primario ``DynDOLOD_Output`` y el fallback acotado a la raíz. El cwd / dir del
-    exe / raíz MO2 ya NO son raíces de staging: el subproceso recibe ``-o:`` y
-    escribe solo en la raíz administrada.
-    """
+def _runner_dyndolod(
+    tmp_path: pathlib.Path,
+    *,
+    external_work_root: pathlib.Path,
+) -> tuple[DynDOLODRunner, object]:
+    """Runner real con la raíz externa inyectada (P2.1)."""
     mo2 = tmp_path / "mo2"
+    mo2.mkdir(exist_ok=True)
     exe_dir = tmp_path / "dyndolod"
-    mo2.mkdir()
-    exe_dir.mkdir()
+    exe_dir.mkdir(exist_ok=True)
     game = tmp_path / "game"
-    game.mkdir()
+    game.mkdir(exist_ok=True)
     exe = exe_dir / "DynDOLODx64.exe"
     exe.write_text("", encoding="utf-8")
-
-    runner = DynDOLODRunner(
-        DynDOLODConfig(
-            game_path=game,
-            mo2_path=mo2,
-            mo2_mods_path=mo2 / "mods",
-            dyndolod_exe=exe,
-        )
+    config = DynDOLODConfig(
+        game_path=game,
+        mo2_path=mo2,
+        mo2_mods_path=mo2 / "mods",
+        dyndolod_exe=exe,
+        external_work_root=external_work_root,
     )
-    root = runner._config.output_root
-    assert root == game.resolve() / "Sky-Claw" / "DynDOLOD"
+    return DynDOLODRunner(config), config.output_layout
 
-    # Sin nada en disco: los stagings se resuelven como candidatos bajo la raíz.
-    assert runner._find_dyndolod_output() == root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
-    assert runner._candidatos_de_salida("TexGen") == [root / "textures"]
-    assert runner._find_texgen_output() == root / "textures"
 
-    # Interpretación A: la herramienta crea la subcarpeta dentro del -o:.
-    staging = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+def test_dyndolod_salida_determinista_bajo_los_subroots(tmp_path: pathlib.Path) -> None:
+    """Con ``-o:`` cada herramienta escribe bajo SU subroot exclusivo.
+
+    TexGen escribe ``texgen_root/textures``; DynDOLOD conserva su candidato
+    primario ``DynDOLOD_Output`` y el fallback acotado a su propio root. El cwd,
+    el dir del exe y la raíz MO2 no son raíces de staging, y la familia tampoco
+    es candidata de ninguna de las dos.
+    """
+    external = tmp_path / "Work Root"
+    runner, layout = _runner_dyndolod(tmp_path, external_work_root=external)
+    expected = derivar_layout_de_dyndolod(external_work_root=external)
+    assert layout == expected
+    assert runner._config.output_layout == expected
+
+    # Sin nada en disco: los stagings se resuelven como candidatos bajo su root.
+    assert runner._find_dyndolod_output() == layout.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert runner._candidatos_de_salida("TexGen") == [layout.texgen_root / "textures"]
+    assert runner._find_texgen_output() == layout.texgen_root / "textures"
+
+    # Interpretación A: la herramienta crea la subcarpeta dentro de su -o:.
+    staging = layout.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     staging.mkdir(parents=True)
     (staging / "DynDOLOD.esp").write_text("salida real", encoding="utf-8")
     assert runner._find_dyndolod_output() == staging
 
-    # Interpretación B: escribe directo en la raíz (fallback acotado).
+    # Interpretación B: escribe directo en su root exclusivo (fallback acotado).
     (staging / "DynDOLOD.esp").unlink()
     staging.rmdir()
-    (root / "DynDOLOD.esp").write_text("directo", encoding="utf-8")
-    assert runner._find_dyndolod_output() == root
+    (layout.dyndolod_root / "DynDOLOD.esp").write_text("directo", encoding="utf-8")
+    assert runner._find_dyndolod_output() == layout.dyndolod_root
+
+
+def test_dyndolod_sin_work_root_no_tiene_layout_ni_fallback_legacy(tmp_path: pathlib.Path) -> None:
+    """Sin ``external_work_root`` NO hay layout ni fallback al root del juego.
+
+    ``DynDOLODConfig`` ya no deriva un ``output_root`` de ``game_path``: la
+    ausencia de la preferencia es "NO CONFIGURADO", no una licencia para escribir
+    en ``<game>/Sky-Claw/DynDOLOD``.
+    """
+    mo2 = tmp_path / "mo2"
+    mo2.mkdir()
+    game = tmp_path / "game"
+    game.mkdir()
+    exe = tmp_path / "DynDOLODx64.exe"
+    exe.write_text("", encoding="utf-8")
+
+    config = DynDOLODConfig(game_path=game, mo2_path=mo2, mo2_mods_path=mo2 / "mods", dyndolod_exe=exe)
+
+    assert config.output_layout is None
+    assert not hasattr(config, "output_root")
+    runner = DynDOLODRunner(config)
+    assert runner._candidatos_de_salida("TexGen") == []
+    assert runner._candidatos_de_salida("DynDOLOD") == []
+
+
+def test_layout_puro_deriva_family_texgen_y_dyndolod_hermanos(tmp_path: pathlib.Path) -> None:
+    """T-PR2-02: derivación determinista desde un root con espacios.
+
+    Los tres paths derivan del MISMO ``external_work_root``; los dos subroots son
+    hermanos (mismo padre), distintos, y ninguno contiene al otro. La función es
+    pura: no crea el root ni deja nada en disco.
+    """
+    external = pathlib.Path("E:/Sky-Claw Work Root")
+
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
+
+    assert layout.family_root == external / "DynDOLOD"
+    assert layout.texgen_root == external / "DynDOLOD" / "TexGen"
+    assert layout.dyndolod_root == external / "DynDOLOD" / "DynDOLOD"
+    assert layout.texgen_root.parent == layout.family_root
+    assert layout.dyndolod_root.parent == layout.family_root
+    assert layout.texgen_root != layout.dyndolod_root
+    assert not layout.texgen_root.is_relative_to(layout.dyndolod_root)
+    assert not layout.dyndolod_root.is_relative_to(layout.texgen_root)
+    assert layout.texgen_root.is_relative_to(external)
+    assert layout.dyndolod_root.is_relative_to(external)
+    # PURA: no toca el filesystem (la raíz no existe en un disco real).
+    assert not layout.family_root.exists()
+
+
+def test_family_root_jamas_es_output_de_una_herramienta(tmp_path: pathlib.Path) -> None:
+    """T-PR2-03: la familia es namespace, no unidad empaquetable ni ``-o:``."""
+
+    external = tmp_path / "external"
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
+
+    for herramienta in (HerramientaDynDOLOD.TEXGEN, HerramientaDynDOLOD.DYNDOLOD):
+        assert layout.raiz_de(herramienta) != layout.family_root
+        assert layout.raiz_de(herramienta).parent == layout.family_root
+
+    # El selector no acepta cadenas arbitrarias: un valor fuera del enum falla.
+    with pytest.raises(ValueError):
+        layout.raiz_de("TexGen")  # type: ignore[arg-type]
+
+    runner, layout = _runner_dyndolod(tmp_path, external_work_root=external)
+    for tool in ("TexGen", "DynDOLOD"):
+        candidatos = runner._candidatos_de_salida(tool)
+        assert candidatos
+        assert layout.family_root not in candidatos
+        for candidato in candidatos:
+            assert candidato.is_relative_to(layout.texgen_root) or candidato.is_relative_to(layout.dyndolod_root)
+
+
+def test_texgen_y_dyndolod_reciben_subroots_distintos_en_el_argv(tmp_path: pathlib.Path) -> None:
+    """T-PR2-01: dos lanzadores, dos ``-o:``, sobre el argv real del builder.
+
+    Con un ``external_work_root`` que contiene espacios, el ``-o:`` de cada
+    herramienta apunta a su subroot exclusivo y nunca a la familia ni al de la
+    hermana. Se llega hasta el argv que el runner entregaría al spawn.
+    """
+    external = tmp_path / "Sky-Claw PR2 Work Root"
+    runner, layout = _runner_dyndolod(tmp_path, external_work_root=external)
+
+    argv_texgen = runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.TEXGEN)
+    argv_dyndolod = runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)
+
+    o_texgen = [a for a in argv_texgen if a.startswith("-o:")]
+    o_dyndolod = [a for a in argv_dyndolod if a.startswith("-o:")]
+    assert len(o_texgen) == 1 and len(o_dyndolod) == 1
+    # Cada uno lleva SU subroot (con el ``\`` final del contrato), con espacios.
+    assert str(layout.texgen_root) in o_texgen[0]
+    assert str(layout.dyndolod_root) in o_dyndolod[0]
+    # Ni la familia ni el subroot de la hermana viajan en el ``-o:``.
+    assert str(layout.family_root) + "\\" not in (o_texgen[0], o_dyndolod[0])
+    assert str(layout.dyndolod_root) not in o_texgen[0]
+    assert str(layout.texgen_root) not in o_dyndolod[0]
+    assert o_texgen[0] != o_dyndolod[0]
+
+
+def test_dyndolod_legacy_recovery_target_es_solo_recovery(tmp_path: pathlib.Path) -> None:
+    """El root legacy sigue derivable, pero con nombre y rol de RECOVERY.
+
+    Ningún productor nuevo (runner/servicio) lo importa ni lo usa como ``-o:``:
+    el hijo roto de este test —si el runner volviera a cablearlo— se mide en el
+    censo de consumidores de ``test_consumidores_del_legacy_...``.
+    """
+    game = tmp_path / "segmento" / ".." / "game"
+
+    assert dyndolod_legacy_recovery_target(game=game) == game.resolve() / "Sky-Claw" / "DynDOLOD"
+    assert dyndolod_legacy_recovery_target(game=None) is None
+
+
+def test_consumidores_del_root_legacy_no_son_productivos() -> None:
+    """Censo AST (RED 7): sólo el reconciliador importa el target legacy.
+
+    Un productor nuevo que vuelva a cablear ``dyndolod_legacy_recovery_target``
+    (o el viejo ``dyndolod_output_target``) para emitir un ``-o:`` rompe acá
+    antes de llegar a producción. El runner de etapa 9 debe conocer la raíz
+    externa, no el root del juego.
+    """
+    import ast
+
+    raiz = pathlib.Path(__file__).resolve().parent.parent / "sky_claw"
+    importadores: set[str] = set()
+    for py in sorted(raiz.rglob("*.py")):
+        arbol = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.ImportFrom) and (nodo.module or "").endswith("output_targets"):
+                for alias in nodo.names:
+                    if alias.name in {"dyndolod_legacy_recovery_target", "dyndolod_output_target"}:
+                        importadores.add(py.relative_to(raiz.parent).as_posix())
+
+    assert importadores == {"sky_claw/local/tools/rollback_reconciler.py"}
 
 
 def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Los dos hermanos: el sondeo de permisos y la búsqueda de salida miran la
-    MISMA raíz administrada (la propiedad que el ancla viejo fijaba con el cwd).
-
-    La parte que ancla la CLASE de defecto: sacar la raíz de un solo lado —o
-    agregarle una raíz nueva a uno solo— rompe acá antes de llegar a producción.
+    """Los dos hermanos: el sondeo de permisos y la búsqueda de salida miran los
+    MISMOS subroots derivados del ``external_work_root`` admitido.
     """
     game = tmp_path / "game"
     game.mkdir()
@@ -239,6 +383,7 @@ def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
     exe_dir.mkdir()
     exe = exe_dir / "DynDOLODx64.exe"
     exe.write_text("", encoding="utf-8")
+    external = tmp_path / "Work Root"
 
     resolver = _resolver(game=game, mo2=mo2)
     resolver.get_mo2_mods_path.return_value = mo2 / "mods"
@@ -250,42 +395,31 @@ def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
         journal=MagicMock(),
         path_resolver=resolver,
         event_bus=MagicMock(),
+        external_work_root=external,
     )
-    runner = DynDOLODRunner(
-        DynDOLODConfig(
-            game_path=game,
-            mo2_path=mo2,
-            mo2_mods_path=mo2 / "mods",
-            dyndolod_exe=exe,
-        )
-    )
+    runner, layout = _runner_dyndolod(tmp_path, external_work_root=external)
 
     targets = svc._permission_targets()
-    root = runner._config.output_root
-    assert root is not None
-    assert root in targets
-    assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME in targets
+    assert layout.texgen_root in targets
+    assert layout.dyndolod_root in targets
+    assert layout.texgen_root / "textures" in targets
+    assert layout.dyndolod_root / "DynDOLOD_Output" in targets
     texgen_candidates = runner._candidatos_de_salida("TexGen")
-    assert texgen_candidates == [root / "textures"]
+    assert texgen_candidates == [layout.texgen_root / "textures"]
     assert texgen_candidates[0] in targets
-    assert root / "TexGen_Output" not in targets
+    assert layout.texgen_root / "TexGen_Output" not in targets
 
-    # Para poder CREAR la raíz en el primer run hay que sondear un eslabón que
-    # EXISTA: con la raíz anidada bajo Sky-Claw/, `root.parent` tampoco está en
-    # disco todavía y el checker se lo saltearía, dejando mudo justo el sondeo
-    # que este assert cubre.
-    assert game in targets
-    assert not root.parent.exists()
+    # La raíz externa admitida se sondea (existe) para poder CREAR los subroots.
+    assert external in targets
 
-    # El dir del exe SÍ se sondea: no es staging de salida, pero es donde la
-    # herramienta escribe su log —el que `_leer_log` lee para dar el veredicto—
-    # y su INI. Con el tool en un árbol de solo lectura, omitirlo dejaba el
-    # preflight verde y el post-check sin evidencia.
+    # El dir del exe SÍ se sondea: es donde la herramienta escribe su log —el
+    # que `_leer_log` lee para dar el veredicto— y su INI.
     assert exe_dir in targets
     assert exe_dir / "Logs" in targets
 
-    # La raíz MO2 sigue fuera: con `-o:` dejó de ser raíz de staging.
+    # La raíz MO2 no es raíz de staging, y el root legacy del juego tampoco.
     assert mo2 not in targets
+    assert (game.resolve() / "Sky-Claw" / "DynDOLOD") not in targets
 
 
 def test_preflight_no_sondea_fuera_del_juego_si_el_game_path_no_existe(tmp_path: pathlib.Path) -> None:
@@ -359,35 +493,6 @@ def test_preflight_no_sondea_el_padre_existente_del_juego_ausente(tmp_path: path
     targets = svc._permission_targets()
     assert montado not in targets, "el padre del juego está fuera del árbol del juego"
     assert tmp_path not in targets
-
-
-def test_dyndolod_tiene_una_raiz_administrada_unica(tmp_path: pathlib.Path) -> None:
-    """La salida de DynDOLOD/TexGen vive bajo UNA raíz administrada (patrón Pandora).
-
-    Los binarios la reciben vía ``-o:`` (patrón (b): ruta explícita en el comando),
-    así que el destino deja de depender del cwd/dir del exe/raíz MO2 del proceso.
-    ``None`` sin juego, mismo contrato que ``pandora_output_target``.
-    """
-    game = tmp_path / "segmento" / ".." / "game"
-
-    assert dyndolod_output_target(game=game) == game.resolve() / "Sky-Claw" / "DynDOLOD"
-    assert dyndolod_output_target(game=None) is None
-
-
-def test_dyndolod_staging_cuelga_de_la_raiz(tmp_path: pathlib.Path) -> None:
-    """Los dos stagings de la herramienta viven bajo la raíz administrada.
-
-    Ancla los contratos físicos independientes: DynDOLOD crea
-    ``DynDOLOD_Output`` y TexGen crea ``textures`` DENTRO del valor de ``-o:``.
-    Si alguien renombra las constantes del runner o cambia la raíz, esto se rompe
-    antes de llegar a producción.
-    """
-    game = tmp_path / "game"
-    root = dyndolod_output_target(game=game)
-    assert root is not None
-
-    assert root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME == game.resolve() / "Sky-Claw" / "DynDOLOD" / "DynDOLOD_Output"
-    assert root / DynDOLODRunner.TEXGEN_OUTPUT_NAME == game.resolve() / "Sky-Claw" / "DynDOLOD" / "textures"
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.output_targets import (
     BODYSLIDE_MESHES_RESOURCE_ID,
     bodyslide_output_root,
-    dyndolod_output_target,
+    dyndolod_legacy_recovery_target,
     pandora_output_target,
 )
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
@@ -755,7 +755,7 @@ def test_el_staging_de_texgen_esta_declarado_como_destino_reconciliable(tmp_path
     productores = construir_productores_de_move_aside(mo2_root=mo2, game=game)
 
     dyndolod = next(p for p in productores if p.nombre == "dyndolod")
-    raiz = dyndolod_output_target(game=game)
+    raiz = dyndolod_legacy_recovery_target(game=game)
     assert raiz is not None
     assert raiz / DynDOLODRunner.TEXGEN_OUTPUT_NAME in dyndolod.destinos
     assert dyndolod.lock_resource_id == "dyndolod-pipeline"

@@ -106,6 +106,27 @@
 > 8–10 del checklist T5-v2 (**PARCIAL 7/10**), ni la precedencia de presets, ni
 > freshness, ni #528 (draft preservado, no integrado), ni T-PR2-23. **No** es
 > una reverificación integral del resto de la tabla.
+>
+> **Re-baseline parcial 2026-09-11 sobre `main` `c000dc4d` (#578) — P2.1
+> CANDIDATO (rama `feat/dyndolod-pr2-external-staging`, PR-2 DRAFT):** cubre
+> exclusivamente la **derivación y el modelo de outputs externos** de P2.1 en
+> `sky_claw/local/tools/output_targets.py` y `dyndolod_runner.py`. El layout
+> productivo pasa a
+> `external_work_root/DynDOLOD/{TexGen,DynDOLOD}`: TexGen y DynDOLOD reciben
+> ``-o:`` a subroots EXCLUSIVOS y hermanos (nunca la familia, nunca el root del
+> juego), `DynDOLODConfig` deja de derivar de ``game_path`` y toma
+> ``external_work_root`` (ausencia = NO CONFIGURADO, fail-closed antes del spawn),
+> el target legacy `<game>/Sky-Claw/DynDOLOD` queda marcado
+> ``LEGACY_RECOVERY_ONLY`` (`dyndolod_legacy_recovery_target`, consumido sólo por
+> el reconciliador). **REABRE el gate de lanzamiento T5** al cambiar los subroots
+> de ``-o:``: la autorización de T5-v2 (2026-09-10) es sobre el builder/root
+> VIEJO y no certifica el nuevo. **No** cierra PR-2: P2.2 (servicio/transacción/
+> packaging: wiring de producción del `WorkspaceResuelto` al servicio, born-empty,
+> rollback) y P2.3 (recovery/migración de la familia legacy) siguen NO
+> IMPLEMENTADOS; tampoco los criterios 8–10 del checklist T5-v2 (**PARCIAL
+> 7/10**), ni la precedencia de presets, ni freshness, ni #528 (draft preservado,
+> no integrado). **PR-2 NOT READY TO MERGE.** **No** es una reverificación
+> integral del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de

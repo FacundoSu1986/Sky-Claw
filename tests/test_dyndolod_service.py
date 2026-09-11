@@ -39,12 +39,26 @@ from sky_claw.local.tools.dyndolod_runner import (
     ToolExecutionResult,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
 from sky_claw.local.validators.preflight import (
     PreflightCheck,
     PreflightReport,
     PreflightStatus,
 )
 from sky_claw.logging_config import correlacion_de_transaccion, pipeline_tx_id_var
+
+
+def _mock_config(tmp_path: pathlib.Path) -> MagicMock:
+    """``DynDOLODConfig`` mockeado, con un ``output_layout`` REAL.
+
+    El servicio deriva los subroots exclusivos de ``runner._config.output_layout``;
+    un ``MagicMock`` desnudo haría que ``layout.texgen_root / nombre`` sea otro
+    mock y el ``DirectoryRollback`` explotaría con un target no-Path.
+    """
+    config = MagicMock()
+    config.output_layout = derivar_layout_de_dyndolod(external_work_root=tmp_path / "Work Root")
+    return config
+
 
 # =============================================================================
 # Fixtures
@@ -239,7 +253,7 @@ async def test_execute_success_publishes_events(
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
 
     # Provide _config for path resolution
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -274,7 +288,7 @@ async def test_execute_success_returns_pipeline_data(
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
 
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -303,7 +317,7 @@ async def test_execute_domain_error_sin_snapshot_deja_tx_pendiente(
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_failure_result())
 
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -338,7 +352,7 @@ async def test_execute_timeout_error_deja_tx_pendiente(
         side_effect=DynDOLODTimeoutError(timeout_seconds=14400, tool_name="DynDOLOD")
     )
 
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -368,7 +382,7 @@ async def test_unexpected_oserror_reports_pending_and_emits_completed(
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(side_effect=OSError("Disk full during validation"))
 
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -406,7 +420,7 @@ async def test_unexpected_error_no_intenta_cerrar_journal_sin_cobertura(
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(side_effect=RuntimeError("Unexpected crash"))
 
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -444,7 +458,7 @@ async def test_lock_acquisition_failure_returns_error(
     )
 
     mock_runner = AsyncMock(spec=DynDOLODRunner)
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -516,7 +530,7 @@ async def test_validation_failure_deja_tx_pendiente(
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=False)
 
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -577,7 +591,7 @@ async def test_exit_cero_sin_output_path_no_se_reporta_como_exito(
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result(dyndolod_output=None))
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
 
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -641,7 +655,7 @@ async def test_exit_cero_sin_dyndolod_result_no_se_reporta_como_exito(
     )
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
 
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -720,7 +734,7 @@ async def test_execute_dry_run_without_texgen_omits_texgen(
 def _mock_runner_with_output(mods: pathlib.Path) -> AsyncMock:
     """Runner mock con _config real y los nombres de mod expuestos."""
     mock_runner = AsyncMock(spec=DynDOLODRunner)
-    mock_config = MagicMock()
+    mock_config = _mock_config(mods)
     mock_config.mo2_mods_path = mods
     mock_runner._config = mock_config
     # spec=DynDOLODRunner deja los class attrs como Mock; fijarlos a los strings reales.
@@ -999,7 +1013,7 @@ async def test_cancelacion_durante_cierre_de_tx_no_pierde_el_log_del_incidente(
     principio no depende de qué rama es alcanzable hoy.
     """
     mock_runner = AsyncMock(spec=DynDOLODRunner)
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     mock_runner._config = mock_config
     mock_runner.DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
@@ -1342,7 +1356,7 @@ def _wire_runner(service: DynDOLODPipelineService, tmp_path: pathlib.Path) -> As
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -1487,7 +1501,15 @@ def _resolver_para_permisos(tmp_path: pathlib.Path) -> MagicMock:
     return resolver
 
 
-def _svc(resolver: MagicMock, mock_lock_manager, mock_snapshot_manager, mock_journal, mock_event_bus):
+def _svc(
+    resolver: MagicMock,
+    mock_lock_manager,
+    mock_snapshot_manager,
+    mock_journal,
+    mock_event_bus,
+    *,
+    external_work_root: pathlib.Path | None = None,
+):
 
     return DynDOLODPipelineService(
         lock_manager=mock_lock_manager,
@@ -1496,6 +1518,7 @@ def _svc(resolver: MagicMock, mock_lock_manager, mock_snapshot_manager, mock_jou
         path_resolver=resolver,
         event_bus=mock_event_bus,
         mo2_profile="Default",  # D2: el gate de perfil exige identidad de dueño
+        external_work_root=external_work_root,
     )
 
 
@@ -1507,15 +1530,21 @@ def test_permission_targets_incluye_staging_y_empaquetado(
     tmp_path: pathlib.Path,
 ) -> None:
     """El sensor de permisos sondea el empaquetado (mods/*), el staging crudo bajo
-    la raíz administrada única (game/Sky-Claw/DynDOLOD) donde la herramienta
-    escribe con ``-o:``, y el dir del exe donde escribe su log e INI
-    (review #311 F2, reescrito con la raíz única)."""
+    los subroots EXCLUSIVOS derivados del ``external_work_root`` admitido, y el
+    dir del exe donde escribe su log e INI (P2.1)."""
     resolver = _resolver_para_permisos(tmp_path)
-    svc = _svc(resolver, mock_lock_manager, mock_snapshot_manager, mock_journal, mock_event_bus)
+    external = tmp_path / "Work Root"
+    svc = _svc(
+        resolver,
+        mock_lock_manager,
+        mock_snapshot_manager,
+        mock_journal,
+        mock_event_bus,
+        external_work_root=external,
+    )
     mo2 = tmp_path / "MO2"
     exe_dir = tmp_path / "DynDOLOD"
-    game = tmp_path / "Skyrim"
-    root = game / "Sky-Claw" / "DynDOLOD"
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
 
     targets = svc._permission_targets()
 
@@ -1523,15 +1552,16 @@ def test_permission_targets_incluye_staging_y_empaquetado(
     assert mo2 / "mods" in targets
     assert mo2 / "mods" / "DynDOLOD Output" in targets
     assert mo2 / "mods" / "TexGen Output" in targets
-    # Staging crudo bajo la raíz administrada única
-    assert root in targets
-    assert root / "DynDOLOD_Output" in targets
-    assert root / "textures" in targets
-    assert root / "TexGen_Output" not in targets
-    # El primer ancestro EXISTENTE se sondea para poder CREAR la raíz en el primer
-    # run: `root.parent` (game/Sky-Claw) tampoco existe todavía, y el checker se
-    # salta las rutas inexistentes.
-    assert game in targets
+    # Staging crudo bajo los subroots exclusivos del layout
+    assert external in targets
+    assert layout.family_root in targets
+    assert layout.texgen_root in targets
+    assert layout.texgen_root / "textures" in targets
+    assert layout.dyndolod_root in targets
+    assert layout.dyndolod_root / "DynDOLOD_Output" in targets
+    assert layout.texgen_root / "TexGen_Output" not in targets
+    # El root legacy del juego ya NO es raíz de staging productiva.
+    assert (tmp_path / "Skyrim" / "Sky-Claw" / "DynDOLOD") not in targets
     # Dir del exe: el log que `_leer_log` lee para dar el veredicto vive ahí.
     assert exe_dir in targets
     assert exe_dir / "Logs" in targets
@@ -1623,11 +1653,10 @@ def _wire_runner_ok(service: DynDOLODPipelineService, tmp_path: pathlib.Path) ->
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     mock_config.mo2_path = tmp_path / "MO2"
     mock_config.dyndolod_exe = tmp_path / "DynDOLOD" / "DynDOLODx64.exe"
-    mock_config.output_root = tmp_path / "DynDOLOD"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
     service._runner = mock_runner
@@ -1655,11 +1684,13 @@ async def test_dyndolod_persiste_manifiesto_y_informe(
     assert manifest.tool == "DynDOLOD"
     # Empaquetado bajo mods/
     assert str(tmp_path / "mods" / "DynDOLOD Output") in manifest.files_touched
-    # Staging crudo bajo la raíz administrada única (subcarpetas + la raíz)
-    assert str(tmp_path / "DynDOLOD" / "DynDOLOD_Output") in manifest.files_touched
-    assert str(tmp_path / "DynDOLOD" / "textures") in manifest.files_touched
-    assert str(tmp_path / "DynDOLOD" / "TexGen_Output") not in manifest.files_touched
-    assert str(tmp_path / "DynDOLOD") in manifest.files_touched
+    # Staging crudo bajo los subroots exclusivos del layout (no una raíz compartida)
+    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path / "Work Root")
+    assert str(layout.dyndolod_root / "DynDOLOD_Output") in manifest.files_touched
+    assert str(layout.texgen_root / "textures") in manifest.files_touched
+    assert str(layout.dyndolod_root) in manifest.files_touched
+    assert str(layout.texgen_root) in manifest.files_touched
+    assert str(layout.texgen_root / "TexGen_Output") not in manifest.files_touched
     informes = await _informe_ultima_tx(real_journal)
     assert len(informes) == 1
     assert informes[0].transaction_status == "committed"
@@ -1856,6 +1887,7 @@ def _runner_texgen(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunn
         mo2_mods_path=tmp_path / "MO2" / "mods",
         dyndolod_exe=dyndolod_exe,
         texgen_exe=texgen_exe,
+        external_work_root=tmp_path / "Work Root",
     )
     return config, DynDOLODRunner(config)
 
@@ -1943,8 +1975,8 @@ async def test_exit_cero_con_error_en_log_no_es_exito(tmp_path: pathlib.Path) ->
     por mutación).
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
 
     fake = _EjecucionFalsa(
         return_code=0,
@@ -1974,8 +2006,8 @@ async def test_exit_cero_con_error_en_log_no_es_exito_dyndolod(tmp_path: pathlib
     DynDOLOD, así que lo único que falla es el gate de terminales.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     fake = _EjecucionFalsa(
         return_code=0,
         al_ejecutar=_corrida_que_completa(
@@ -2038,8 +2070,8 @@ async def test_exit_cero_sin_artefacto_no_es_exito(tmp_path: pathlib.Path, tool:
 async def test_exit_cero_con_artefacto_y_log_limpio_es_exito(tmp_path: pathlib.Path) -> None:
     """Contracara: exit 0 + DynDOLOD.esp + log sin errores → success=True."""
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
 
     fake = _EjecucionFalsa(
         return_code=0,
@@ -2057,8 +2089,8 @@ async def test_exit_cero_con_artefacto_y_log_limpio_es_exito(tmp_path: pathlib.P
 async def test_warning_en_log_no_tumba_el_exito(tmp_path: pathlib.Path) -> None:
     """Un warning (no error) con artefacto y exit 0 sigue siendo éxito."""
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     fake = _EjecucionFalsa(
         return_code=0,
         al_ejecutar=_corrida_que_completa(
@@ -2095,8 +2127,8 @@ async def test_log_ausente_es_fallo_aunque_el_artefacto_exista(tmp_path: pathlib
     ejecutable en vez de prosa.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
 
     fake = _EjecucionFalsa(
         return_code=0,
@@ -2118,7 +2150,7 @@ async def test_la_herramienta_puede_escribir_directo_en_la_raiz(tmp_path: pathli
     artefacto: la resolución no puede perder la salida real del run.
     """
     config, runner = _runner_texgen(tmp_path)
-    root = config.output_root
+    root = config.dyndolod_root
     assert root is not None
 
     fake = _EjecucionFalsa(
@@ -2136,7 +2168,7 @@ async def test_la_herramienta_puede_escribir_directo_en_la_raiz(tmp_path: pathli
 async def test_texgen_acepta_textures_generado_durante_la_corrida(tmp_path: pathlib.Path) -> None:
     """T3: el artefacto físico real de TexGen es ``root/textures``."""
     config, runner = _runner_texgen(tmp_path)
-    root = config.output_root
+    root = config.texgen_root
     assert root is not None
     artefacto = root / "textures" / "terrain" / "lodgen" / "example.dds"
 
@@ -2159,7 +2191,7 @@ async def test_texgen_acepta_textures_generado_durante_la_corrida(tmp_path: path
 async def test_texgen_output_obsoleto_no_es_fallback(tmp_path: pathlib.Path) -> None:
     """T3: crear el staging legado durante la corrida no satisface el contrato."""
     config, runner = _runner_texgen(tmp_path)
-    root = config.output_root
+    root = config.texgen_root
     assert root is not None
     legado = root / "TexGen_Output"
 
@@ -2189,7 +2221,7 @@ async def test_texgen_no_acepta_el_staging_de_dyndolod_como_salida(tmp_path: pat
     sin salida real, fail-closed.
     """
     config, runner = _runner_texgen(tmp_path)
-    root = config.output_root
+    root = config.texgen_root
     assert root is not None
     ajeno = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
 
@@ -2212,10 +2244,9 @@ async def test_texgen_no_acepta_el_staging_de_dyndolod_como_salida(tmp_path: pat
 async def test_pipeline_entrega_a_packaging_la_fuente_texgen_exacta(tmp_path: pathlib.Path) -> None:
     """T3/M4: frescura y packaging consumen el mismo ``root/textures`` exacto."""
     config, runner = _runner_texgen(tmp_path)
-    root = config.output_root
-    assert root is not None and config.data_dir is not None
-    texgen = root / "textures"
-    dyndolod = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.texgen_root is not None and config.dyndolod_root is not None and config.data_dir is not None
+    texgen = config.texgen_root / "textures"
+    dyndolod = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     # La salida de TexGen existe y está materializada en el `Data` que DynDOLOD
     # va a abrir: sin eso el gate de visibilidad (hallazgo C de #493) corta antes
     # del spawn y este test mediría el corte, no la fuente que recibe el packaging.
@@ -2252,10 +2283,9 @@ async def test_pipeline_entrega_a_packaging_la_fuente_texgen_exacta(tmp_path: pa
 async def test_pipeline_preserva_textures_como_raiz_data_del_mod_mo2(tmp_path: pathlib.Path) -> None:
     """T3: empaquetar ``root/textures`` no puede eliminar el prefijo Data-relative."""
     config, runner = _runner_texgen(tmp_path)
-    root = config.output_root
-    assert root is not None
-    texgen = root / "textures"
-    dyndolod = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.texgen_root is not None and config.dyndolod_root is not None
+    texgen = config.texgen_root / "textures"
+    dyndolod = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     _escribir_salida(texgen / "terrain", "example.dds", b"dds")
     _escribir_salida(dyndolod, "DynDOLOD.esp", b"esp")
     # Idem: el mod conserva `textures/` como raíz Data-relative, y para llegar a
@@ -2298,8 +2328,8 @@ async def test_staging_previo_sin_escritura_no_es_exito_texgen(tmp_path: pathlib
     no hay salida nueva que empaquetar aunque TexGen declare haber terminado.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     staging.mkdir(parents=True)
     (staging / "vieja.dds").write_bytes(b"\x00")
 
@@ -2323,8 +2353,8 @@ async def test_staging_previo_sin_escritura_no_es_exito_dyndolod(tmp_path: pathl
     criterio que los separa.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     staging.mkdir(parents=True)
     (staging / "DynDOLOD.esp").write_text("de la corrida anterior", encoding="utf-8")
 
@@ -2345,8 +2375,8 @@ async def test_escritura_durante_la_corrida_si_es_exito(tmp_path: pathlib.Path) 
     anterior — el flujo habitual del operador.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     staging.mkdir(parents=True)
     (staging / "DynDOLOD.esp").write_text("vieja", encoding="utf-8")
 
@@ -2375,8 +2405,8 @@ async def test_staging_previo_recien_escrito_tampoco_pasa(tmp_path: pathlib.Path
     (mtime contra mtime), no contra un reloj externo.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     _escribir_salida(staging, "DynDOLOD.esp", b"de la corrida anterior")
 
     fake = _EjecucionFalsa(return_code=0)
@@ -2399,7 +2429,7 @@ async def test_elige_el_candidato_fresco_cuando_los_dos_coexisten(tmp_path: path
     30+ minutos de generación.
     """
     config, runner = _runner_texgen(tmp_path)
-    root = config.output_root
+    root = config.dyndolod_root
     assert root is not None
     viejo = root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     _escribir_salida(viejo, "DynDOLOD.esp", b"corrida anterior")
@@ -2433,8 +2463,8 @@ async def test_corrida_abortada_sin_regenerar_el_esp_no_es_exito(tmp_path: pathl
     Por eso la firma es del artefacto que DECIDE el veredicto, no de sus vecinos.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     meshes = staging / "meshes" / "lod"
     meshes.mkdir(parents=True)
     (staging / "DynDOLOD.esp").write_text("de la corrida anterior", encoding="utf-8")
@@ -2465,8 +2495,8 @@ async def test_reescritura_con_el_mismo_mtime_sigue_siendo_fresca(tmp_path: path
     las dos versiones es el tamaño, y la firma tiene que verlo.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     esp = staging / "DynDOLOD.esp"
     _escribir_salida(staging, "DynDOLOD.esp", b"corta")
     congelado = esp.stat().st_mtime
@@ -2499,8 +2529,8 @@ async def test_firma_previa_ilegible_no_cuenta_como_artefacto_fresco(tmp_path: p
     como resultado nuevo. El falso verde reconstituido por un ``except``.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     _escribir_salida(staging, "DynDOLOD.esp", b"de la corrida anterior")
 
     stat_real = pathlib.Path.stat
@@ -2541,8 +2571,8 @@ async def test_artefacto_previo_con_mtime_adelantado_no_descarta_la_corrida(tmp_
     rojo sobre una salida buena. La comparación es por desigualdad.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     esp = staging / "DynDOLOD.esp"
     _escribir_salida(staging, "DynDOLOD.esp", b"restaurada de un snapshot")
     futuro = time.time() + 86400
@@ -2570,8 +2600,8 @@ async def test_esp_regenerado_dentro_de_un_arbol_existente_es_exito(tmp_path: pa
     rompe el caso habitual de rehacer LODs encima de una corrida anterior.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     meshes = staging / "meshes" / "lod"
     meshes.mkdir(parents=True)
     (staging / "DynDOLOD.esp").write_text("vieja", encoding="utf-8")
@@ -2790,7 +2820,7 @@ async def test_started_event_anuncia_etapa_asistida(
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -2813,7 +2843,7 @@ async def test_resultado_exitoso_lleva_assisted(
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -2838,7 +2868,7 @@ async def test_ruta_de_config_faltante_bloquea_antes_del_lock(
     """
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(return_value=_make_success_result())
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     (tmp_path / "Data").mkdir()
@@ -4415,7 +4445,7 @@ async def test_el_servicio_pone_su_tx_id_al_alcance_del_runner(
     mock_runner = AsyncMock(spec=DynDOLODRunner)
     mock_runner.run_full_pipeline = AsyncMock(side_effect=_pipeline_que_mira_la_correlacion)
     mock_runner.validate_dyndolod_output = AsyncMock(return_value=True)
-    mock_config = MagicMock()
+    mock_config = _mock_config(tmp_path)
     mock_config.mo2_mods_path = tmp_path / "mods"
     (mock_config.mo2_mods_path / "DynDOLOD Output").mkdir(parents=True)
     mock_runner._config = mock_config
@@ -4540,9 +4570,9 @@ async def test_el_empaquetado_fallido_de_texgen_vuelca_el_pipeline_a_rojo(
     from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
 
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     # Las DOS herramientas declaran completitud: el sujeto de este test es el
     # empaquetado, no el log, y sin los dos marcadores fallaría por otro motivo.
 
@@ -4624,9 +4654,9 @@ async def test_el_empaquetado_fallido_de_texgen_no_commitea_la_transaccion(
 
     config, runner = _runner_texgen(tmp_path)
     (config.game_path / "Data").mkdir()
-    assert config.output_root is not None
-    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    assert config.output_layout is not None
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     service._runner = runner
 
     corridas = {"n": 0}
@@ -4978,71 +5008,64 @@ async def test_la_validacion_de_salida_sondea_sin_declarar_fallo_de_etapa(
 
 
 @pytest.mark.asyncio
-async def test_pipeline_no_empaqueta_root_compartido_de_dyndolod(tmp_path: pathlib.Path) -> None:
-    """A: si DynDOLOD aterriza en la raíz administrada, esa raíz NO es empaquetable.
+async def test_pipeline_empaqueta_el_root_exclusivo_de_dyndolod_sin_absorber_texgen(
+    tmp_path: pathlib.Path,
+) -> None:
+    """P2.1: con subroots HERMANOS, empaquetar el root exclusivo de DynDOLOD no
+    absorbe el artefacto de TexGen (que vive en su propio root).
 
-    La raíz la comparten las dos herramientas (`-o:` es el mismo valor para
-    ambas), así que sus hijos no se pueden atribuir a una sola: empaquetarla
-    entera copia ``root/textures`` —el artefacto de TexGen— dentro de "DynDOLOD
-    Output", y el operador termina con las mismas texturas desplegadas por dos
-    mods distintos.
-
-    La DETECCIÓN sigue reconociendo la raíz (interpretación B de ``-o:``, con su
-    gate de ``DynDOLOD.esp``): lo que se prohíbe es el OWNERSHIP, no el hallazgo.
+    Antes de PR-2 la raíz era compartida por ambos ``-o:``, así que empaquetarla
+    entera copiaba ``root/textures`` —el artefacto de TexGen— dentro de "DynDOLOD
+    Output". Ahora el root de TexGen es un hermano, no un hijo del de DynDOLOD:
+    la contaminación es estructuralmente imposible.
     """
     config, runner = _runner_texgen(tmp_path)
-    root = config.output_root
-    assert root is not None
-    # Corrida ANTERIOR de TexGen: su artefacto ya vive bajo la raíz compartida.
-    _escribir_salida(root / DynDOLODRunner.TEXGEN_OUTPUT_NAME, "texgen.dds", b"texturas de TexGen")
+    assert config.texgen_root is not None and config.dyndolod_root is not None
+    # Corrida ANTERIOR de TexGen: su artefacto vive bajo SU root, no bajo el de
+    # DynDOLOD.
+    _escribir_salida(config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME, "texgen.dds", b"texturas de TexGen")
 
     fake = _EjecucionFalsa(
         return_code=0,
         al_ejecutar=_corrida_que_completa(
-            tmp_path, "DynDOLOD", lambda: _escribir_salida(root, "DynDOLOD.esp", b"esp de esta corrida")
+            tmp_path, "DynDOLOD", lambda: _escribir_salida(config.dyndolod_root, "DynDOLOD.esp", b"esp de esta corrida")
         ),
     )
     with patch.object(runner, "_execute_process", fake):
         result = await runner.run_full_pipeline(run_texgen=False)
 
     mod_dyndolod = config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME
+    assert result.success is True
+    assert mod_dyndolod.exists()
     assert not (mod_dyndolod / DynDOLODRunner.TEXGEN_OUTPUT_NAME).exists(), (
-        "el mod de DynDOLOD absorbió el artefacto de TexGen desde la raíz compartida"
+        "el mod de DynDOLOD absorbió el artefacto de TexGen: los subroots dejaron de ser hermanos"
     )
-    assert not mod_dyndolod.exists(), "no se puede empaquetar un namespace compartido: fail-closed antes de mutar"
-    assert result.success is False
-    assert result.dyndolod_mod_path is None
 
 
 @pytest.mark.asyncio
-async def test_el_root_compartido_no_es_empaquetable_aunque_no_haya_textures(tmp_path: pathlib.Path) -> None:
-    """A (ancla de política): la regla es *namespace compartido*, no el nombre ``textures``.
+async def test_la_familia_no_es_empaquetable_aunque_no_haya_textures(tmp_path: pathlib.Path) -> None:
+    """A (ancla de política P2.1): la FAMILIA ``<external>/DynDOLOD`` es namespace,
+    no unidad empaquetable.
 
-    Un filtro que excluyera ``textures`` por nombre dejaría pasar cualquier otro
-    hijo ajeno de la raíz —acá el ``DynDOLOD_Output`` de una corrida anterior, que
-    NO tiene ``DynDOLOD.esp`` y por eso no gana como candidato— y seguiría
-    produciendo un mod con contenido que esta corrida no generó. Este test es lo
-    que impide que el fix degenere en una lista de nombres.
+    Un filtro por nombre dejaría pasar cualquier hijo ajeno de la familia. Lo que
+    no es empaquetable es el DIRECTORIO de familia —sus hijos pueden pertenecer a
+    cualquiera de las dos herramientas—; los subroots de herramienta sí son
+    unidades propias. Ninguna corrida produce la familia como ``-o:``, así que el
+    guard se ejercita directo.
     """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
     config, runner = _runner_texgen(tmp_path)
-    root = config.output_root
-    assert root is not None
-    # Residuo ajeno bajo la raíz, sin `textures` a la vista y sin `DynDOLOD.esp`
-    # adentro (así no gana como candidato y la raíz sigue siendo la elegida).
-    _escribir_salida(root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME, "residuo.esp", b"corrida anterior")
+    assert config.output_layout is not None
+    family = config.output_layout.family_root
+    # Residuo ajeno, sin `DynDOLOD.esp` (la existencia no es la que decide: la
+    # familia nunca es empaquetable, poblada o no).
+    _escribir_salida(family / "residuo.ajeno", "x.dds", b"corrida anterior")
 
-    fake = _EjecucionFalsa(
-        return_code=0,
-        al_ejecutar=_corrida_que_completa(
-            tmp_path, "DynDOLOD", lambda: _escribir_salida(root, "DynDOLOD.esp", b"esp de esta corrida")
-        ),
-    )
-    with patch.object(runner, "_execute_process", fake):
-        result = await runner.run_full_pipeline(run_texgen=False)
+    with pytest.raises(DynDOLODValidationError, match="FAMILIA"):
+        await runner._package_output_as_mod(family, DynDOLODRunner.DYNDOLLOD_MOD_NAME)
 
-    mod_dyndolod = config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME
-    assert not mod_dyndolod.exists()
-    assert result.success is False
+    assert not (config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME).exists()
 
 
 @pytest.mark.asyncio
@@ -5059,10 +5082,10 @@ async def test_el_staging_de_texgen_no_hereda_archivos_de_una_corrida_anterior(
     """
     config, runner = _runner_texgen(tmp_path)
     data_dir = config.data_dir
-    assert data_dir is not None and config.output_root is not None
+    assert data_dir is not None and config.output_layout is not None
     data_dir.mkdir()
-    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     _escribir_salida(texgen_staging, "old.dds", b"corrida anterior")
     service._runner = runner
 
@@ -5094,9 +5117,9 @@ async def test_el_staging_previo_de_texgen_se_restaura_byte_a_byte_si_texgen_fal
 ) -> None:
     """B-rollback: apartar el staging previo obliga a poder devolverlo EXACTO."""
     config, runner = _runner_texgen(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir()
-    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_salida(texgen_staging, "old.dds", b"BYTES-EXACTOS-DE-LA-CORRIDA-ANTERIOR")
     service._runner = runner
 
@@ -5121,7 +5144,7 @@ async def test_el_staging_previo_de_texgen_se_restaura_byte_a_byte_si_texgen_fal
     assert result["success"] is False
     assert (texgen_staging / "old.dds").read_bytes() == b"BYTES-EXACTOS-DE-LA-CORRIDA-ANTERIOR"
     assert not (texgen_staging / "parcial.dds").exists()
-    assert not list(config.output_root.glob(f"{DynDOLODRunner.TEXGEN_OUTPUT_NAME}.rollback-*"))
+    assert not list(config.texgen_root.glob(f"{DynDOLODRunner.TEXGEN_OUTPUT_NAME}.rollback-*"))
     del_staging = [dr for dr in creados if getattr(dr, "target", None) == texgen_staging]
     assert del_staging, "el staging de TexGen no quedó bajo un DirectoryRollback"
     assert all(dr.rollback_completed for dr in del_staging)
@@ -5138,9 +5161,9 @@ async def test_sin_staging_previo_un_texgen_fallido_no_deja_residuo(
     apartar, "restaurar" significa que el directorio vuelva a NO existir.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir()
-    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     service._runner = runner
 
     fake = _EjecucionFalsa(
@@ -5152,7 +5175,7 @@ async def test_sin_staging_previo_un_texgen_fallido_no_deja_residuo(
 
     assert result["success"] is False
     assert not texgen_staging.exists(), "el parcial de un primer run fallido quedó en disco"
-    assert not list(config.output_root.glob(f"{DynDOLODRunner.TEXGEN_OUTPUT_NAME}.rollback-*"))
+    assert not list(config.texgen_root.glob(f"{DynDOLODRunner.TEXGEN_OUTPUT_NAME}.rollback-*"))
 
 
 def _pipeline_texgen_visible(
@@ -5179,10 +5202,10 @@ def _pipeline_texgen_visible(
     """
     config, runner = _runner_texgen(tmp_path)
     data_dir = config.data_dir
-    assert data_dir is not None and config.output_root is not None
+    assert data_dir is not None and config.output_layout is not None
     data_dir.mkdir()
-    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
 
     def _salida_texgen() -> None:
         _escribir_salida(texgen_staging, "a.dds", b"CURRENT!")
@@ -5416,7 +5439,7 @@ async def test_run_texgen_false_sin_output_preservado_lanza_dyndolod(tmp_path: p
     assert config.data_dir is not None
     config.data_dir.mkdir()
     assert not (config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME).exists()
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
 
     async def _dyndolod_ok(**_kw: object) -> ToolExecutionResult:
         _escribir_salida(dyndolod_staging, "DynDOLOD.esp", b"esp")
@@ -5548,7 +5571,7 @@ async def test_data_dir_none_no_lanza_dyndolod_y_reporta_falta_de_data(
     object.__setattr__(config, "data_dir", None)
     runner._config = config
 
-    texgen_staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    texgen_staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_salida(texgen_staging, "a.dds", b"TEXTURA")
 
     async def _texgen_ok(**_kw: object) -> ToolExecutionResult:
@@ -5634,10 +5657,10 @@ def _pipeline_con_texgen_current(
 ) -> tuple[DynDOLODConfig, DynDOLODRunner, pathlib.Path, pathlib.Path]:
     """Runner con TexGen que genera CURRENT y un ``Data`` que NO lo tiene."""
     config, runner = _runner_texgen(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir()
     service._runner = runner
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     return config, runner, staging, mod_texgen
 
@@ -5737,7 +5760,7 @@ async def test_sin_mod_previo_el_primer_run_igual_deja_current_desplegable(
     assert result["success"] is False
     assert (mod_texgen / "textures" / "a.dds").read_bytes() == b"CURRENT!"
     assert not staging.exists(), "el staging crudo del primer run no puede sobrevivir"
-    assert not list(config.output_root.glob(f"{DynDOLODRunner.TEXGEN_OUTPUT_NAME}.rollback-*"))
+    assert not list(config.texgen_root.glob(f"{DynDOLODRunner.TEXGEN_OUTPUT_NAME}.rollback-*"))
 
 
 @pytest.mark.asyncio
@@ -5797,7 +5820,7 @@ async def test_la_continuacion_usa_el_mod_preservado_sin_regenerar_texgen(
     cierra verificando el mod guardado contra el ``Data`` materializado.
     """
     config, runner, staging, mod_texgen = _pipeline_con_texgen_current(tmp_path, service)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
 
     with (
         patch.object(runner, "_execute_process", _texgen_que_genera_current(tmp_path, staging)),
@@ -5882,7 +5905,7 @@ async def test_dyndolod_sin_texgen_output_empaquetado_no_gatea_la_continuacion(
     continuación cuelga de que ESE mod exista, así que este caso pasa igual.
     """
     config, runner, _staging, mod_texgen = _pipeline_con_texgen_current(tmp_path, service)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     assert not mod_texgen.exists()
 
     async def _dyndolod_ok(**_kw: object) -> ToolExecutionResult:

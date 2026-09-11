@@ -48,7 +48,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODTimeoutError,
 )
 from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
-from sky_claw.local.tools.output_targets import dyndolod_output_target
+from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
 from sky_claw.logging_config import correlacion_de_transaccion
 
 if TYPE_CHECKING:
@@ -166,6 +166,7 @@ class DynDOLODPipelineService:
         preflight: PreflightService | None = None,
         mo2_profile: str | None = None,
         stage9_coordination: Stage9Coordination | None = None,
+        external_work_root: pathlib.Path | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -178,6 +179,13 @@ class DynDOLODPipelineService:
         # significa "no resoluble" y falla cerrado antes de mutar (nunca se crea
         # un handoff resumible sin dueño).
         self._mo2_profile = mo2_profile
+
+        # P2.1 (ADR 0011): raíz de trabajo externa admitida, de la que se derivan
+        # los subroots exclusivos de cada herramienta. `None` es "NO CONFIGURADO":
+        # el runner falla cerrado antes de spawnear en vez de inventar un destino
+        # legacy. El wiring de PRODUCCIÓN desde `AppContext.dyndolod_workspace` es
+        # P2.2 (servicio/transacción); P2.1 sólo modela y conecta el `-o:`.
+        self._external_work_root = external_work_root
 
         # P0.2 (ADR 0011): coordinación cross-process de etapa 9 sobre estado
         # durable por usuario. `None` conserva EXACTAMENTE el comportamiento
@@ -236,6 +244,7 @@ class DynDOLODPipelineService:
             mo2_mods_path=mo2_mods_path,
             dyndolod_exe=dyndolod_exe,
             texgen_exe=texgen_exe,
+            external_work_root=self._external_work_root,
         )
 
         self._runner = DynDOLODRunner(config)
@@ -337,12 +346,13 @@ class DynDOLODPipelineService:
 
         - ``mods/`` (padre donde empaqueta los mods) + los mod dirs empaquetados
           (``DynDOLOD Output``/``TexGen Output``).
-        - El **staging crudo** bajo la raíz administrada única
-          (``output_targets.dyndolod_output_target`` → ``game/Sky-Claw/DynDOLOD``):
-          el primer ancestro EXISTENTE de la raíz (para poder CREARLA en el primer
-          run), ``root``, ``root/DynDOLOD_Output`` y ``root/textures``. El
-          cwd y la raíz MO2 dejaron de ser raíces de staging con ``-o:``, así que
-          no se sondean.
+        - El **staging crudo** bajo los subroots exclusivos derivados del
+          ``external_work_root`` admitido (P2.1 de ADR 0011): la raíz admitida
+          —para probar que los subroots se pueden CREAR en el primer run—, la
+          familia, cada subroot de herramienta y el artefacto físico
+          (``texgen_root/textures``, ``dyndolod_root/DynDOLOD_Output``). El cwd,
+          la raíz MO2 y el root legacy del juego ya NO son raíces de staging: el
+          ``-o:`` sale del layout admitido.
         - El **directorio del ejecutable**: no es staging de salida, pero SÍ es
           superficie de escritura de la herramienta, y una que este servicio
           depende de leer. ``DynDOLODRunner._leer_log`` busca el veredicto de la
@@ -365,16 +375,24 @@ class DynDOLODPipelineService:
         if isinstance(mods, pathlib.Path):
             candidates += [mods, mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME, mods / DynDOLODRunner.TEXGEN_MOD_NAME]
 
-        game = self._path_resolver.get_skyrim_path()
-        root = dyndolod_output_target(game=game if isinstance(game, pathlib.Path) else None)
-        if root is not None:
-            ancestro = self._primer_ancestro_existente(root, tope=game if isinstance(game, pathlib.Path) else None)
-            if ancestro is not None:
-                candidates.append(ancestro)
+        # P2.1: el staging crudo cuelga de los subroots EXCLUSIVOS derivados del
+        # external_work_root admitido, no del root legacy del juego. Sin la
+        # preferencia configurada no hay staging que sondear (NO CONFIGURADO); la
+        # raíz admitida sí se sondea —existe— para probar que los subroots se
+        # pueden CREAR en el primer run.
+        layout = (
+            derivar_layout_de_dyndolod(external_work_root=self._external_work_root)
+            if self._external_work_root is not None
+            else None
+        )
+        if layout is not None:
             candidates += [
-                root,
-                root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME,
-                root / DynDOLODRunner.TEXGEN_OUTPUT_NAME,
+                self._external_work_root,
+                layout.family_root,
+                layout.texgen_root,
+                layout.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME,
+                layout.dyndolod_root,
+                layout.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME,
             ]
 
         # Dir del exe: donde la herramienta escribe su log y su INI.
@@ -384,50 +402,6 @@ class DynDOLODPipelineService:
 
         seen: set[pathlib.Path] = set()
         return [p for p in candidates if not (p in seen or seen.add(p))]
-
-    @staticmethod
-    def _primer_ancestro_existente(ruta: pathlib.Path, *, tope: pathlib.Path | None) -> pathlib.Path | None:
-        """Primer directorio existente subiendo desde ``ruta``, sin pasar de ``tope``.
-
-        El sondeo de permisos se salta las rutas inexistentes, así que preguntar
-        por un padre que tampoco existe no verifica nada: para responder "¿puedo
-        CREAR la raíz administrada?" hay que preguntarle al primer eslabón que sí
-        está en disco.
-
-        ``tope`` (el directorio del juego) corta el ascenso. Sin él, un game path
-        mal configurado o todavía no montado hacía subir hasta la raíz del volumen
-        y el preflight terminaba sondeando —y aprobando— un directorio ajeno al
-        juego: un verde sobre una configuración inválida, que recién fallaba
-        después en ``DynDOLODConfig.__post_init__`` (review adversarial #441). Si
-        ni el tope existe, no hay nada honesto que sondear: ``None``.
-
-        **El tope se RESUELVE antes de comparar, y la comparación es de
-        pertenencia, no de igualdad.** ``ruta`` viene de
-        ``dyndolod_output_target``, que construye sobre ``game.resolve()``,
-        mientras que el tope llega crudo del path resolver; ``Path.__eq__`` es
-        léxico, así que un ``..`` o un junction en la ruta configurada hacía que
-        el tope no fuera nunca ancestro literal de la raíz y el corte no
-        disparara — el ascenso seguía hasta el volumen, que es justo lo que este
-        parámetro vino a impedir (segunda review adversarial, PR #441).
-        ``is_relative_to`` corta al SALIR del árbol del juego, sin depender de
-        acertar el eslabón exacto.
-
-        **El límite se evalúa ANTES que la existencia**, y ese orden es el
-        invariante: al revés, un ancestro existente FUERA del árbol del juego se
-        devuelve antes de llegar al corte. El caso realista no es exótico —disco
-        montado y carpeta del juego ausente, o un typo en un path profundo— y
-        deja al preflight sondeando y aprobando un directorio foráneo: el mismo
-        verde sobre configuración inválida, por tercera vía (review adversarial
-        #441). Preguntar "¿sigo dentro del juego?" antes que "¿existe?" es lo que
-        hace que la respuesta no dependa de qué haya montado alrededor.
-        """
-        tope_resuelto = tope.resolve() if tope is not None else None
-        for padre in ruta.parents:
-            if tope_resuelto is not None and not padre.is_relative_to(tope_resuelto):
-                return None
-            if padre.exists():
-                return padre
-        return None
 
     def _primera_ruta_de_config_faltante(self, runner: DynDOLODRunner) -> pathlib.Path | None:
         """Primera ruta declarada por la config del runner que no existe (o ``None``).
@@ -1130,13 +1104,13 @@ class DynDOLODPipelineService:
         # es inerte. Su barrido tras una muerte dura lo declara
         # ``rollback_reconciler.construir_productores_de_move_aside``.
         #
-        # ``isinstance`` y no ``is not None``: en producción
-        # ``DynDOLODConfig.__post_init__`` garantiza un ``Path`` (deriva de un
-        # ``game_path`` que ya validó que existe), así que la rama negativa sólo
-        # la toman los dobles de test con un ``_config`` mockeado.
-        raiz_administrada = runner._config.output_root
-        if run_texgen and isinstance(raiz_administrada, pathlib.Path):
-            rollback_dirs.append(raiz_administrada / DynDOLODRunner.TEXGEN_OUTPUT_NAME)
+        # P2.1: el staging crudo de cada herramienta cuelga de SU subroot
+        # exclusivo (hermanos, derivados del external_work_root), no de una raíz
+        # compartida. El move-aside sigue siendo el mismo mecanismo; sólo cambia
+        # la raíz sobre la que opera.
+        layout = runner._config.output_layout
+        if run_texgen and layout is not None:
+            rollback_dirs.append(layout.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME)
 
         # T-26: los paths que el ritual reescribe (independiente del snapshot) —
         # el files_touched del ActionManifest. Incluye los mods de salida
@@ -1145,17 +1119,21 @@ class DynDOLODPipelineService:
         # exe (review Codex #312): son mutaciones persistentes que el operador
         # puede necesitar auditar/limpiar tras un run fallido.
         manifest_targets: list[pathlib.Path] = [mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME]
-        _staging_names = [DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME]
         if run_texgen:
             manifest_targets.append(mods_path / DynDOLODRunner.TEXGEN_MOD_NAME)
-            _staging_names.append(DynDOLODRunner.TEXGEN_OUTPUT_NAME)
-        # Staging crudo bajo la raíz administrada única (-o:): los candidatos que
-        # el runner resuelve (subcarpeta por staging + la raíz como fallback
-        # acotado). Ya no se enumeran raíces ajenas (mo2/exe/cwd).
-        _staging_root = runner._config.output_root
-        if _staging_root is not None:
-            manifest_targets += [_staging_root / _name for _name in _staging_names]
-            manifest_targets.append(_staging_root)
+        # Staging crudo bajo los subroots exclusivos del layout (-o:): cada
+        # herramienta escribe sólo en el suyo. Ya no se enumeran raíces ajenas
+        # (mo2/exe/cwd) ni la raíz compartida legacy.
+        if layout is not None:
+            manifest_targets += [
+                layout.dyndolod_root,
+                layout.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME,
+            ]
+            if run_texgen:
+                manifest_targets += [
+                    layout.texgen_root,
+                    layout.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME,
+                ]
 
         # Cobertura honesta: DynDOLOD/TexGen también escriben staging crudo. Esas
         # ubicaciones pueden ser compartidas y todavía no están bajo move-aside;

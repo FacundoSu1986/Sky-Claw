@@ -48,7 +48,7 @@ from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
 from sky_claw.local.tools.output_targets import (
     BODYSLIDE_MESHES_RESOURCE_ID,
     bodyslide_output_root,
-    dyndolod_output_target,
+    dyndolod_legacy_recovery_target,
     pandora_output_target,
 )
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
@@ -286,13 +286,15 @@ def construir_productores_de_move_aside(
         ]
     # El staging crudo entró al move-aside con el fix B del review de #493, y sin
     # declararlo acá su residuo quedaría fuera del barrido: tras una muerte dura,
-    # el backup del staging bajo la raíz administrada es la ÚNICA copia del árbol
-    # previo. La raíz se deriva de la MISMA función que usa el servicio —igual que
-    # Pandora— para que un cambio del destino administrado no haya que replicarlo
-    # acá (hermano del defecto #388).
-    raiz_administrada = dyndolod_output_target(game=game)
-    if raiz_administrada is not None:
-        destinos_dyndolod.append(raiz_administrada / DynDOLODRunner.TEXGEN_OUTPUT_NAME)
+    # el backup del staging bajo el root legacy es la ÚNICA copia del árbol
+    # previo. P2.1 retiró ese destino de la ruta PRODUCTIVA (los productores
+    # nuevos escriben en los subroots del external_work_root), así que acá sólo
+    # queda como LEGACY_RECOVERY_ONLY_TARGET: la raíz se deriva de la MISMA
+    # función que nombraba el destino histórico —igual que Pandora— para que el
+    # barrido de un backup huérfano siga restaurando `<game>/Sky-Claw/DynDOLOD/textures`.
+    raiz_legacy = dyndolod_legacy_recovery_target(game=game)
+    if raiz_legacy is not None:
+        destinos_dyndolod.append(raiz_legacy / DynDOLODRunner.TEXGEN_OUTPUT_NAME)
     if destinos_dyndolod:
         productores.append(
             ProductorDeMoveAside(

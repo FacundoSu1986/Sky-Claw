@@ -203,7 +203,12 @@ _SIMBOLOS_FAMILIA_POR_MODULO: dict[str, set[str]] = {
     "local/tools/output_targets.py": {
         "SKY_CLAW_MANAGED_DIR",
         "DYNDOLOD_OUTPUT_ROOT",
-        "dyndolod_output_target",
+        "DYNDOLOD_TEXGEN_SUBROOT_NAME",
+        "DYNDOLOD_TOOL_SUBROOT_NAME",
+        "DynDOLODOutputLayout",
+        "HerramientaDynDOLOD",
+        "derivar_layout_de_dyndolod",
+        "dyndolod_legacy_recovery_target",
     },
 }
 
@@ -416,6 +421,7 @@ def _entorno(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner]:
         mo2_mods_path=tmp_path / "MO2" / "mods",
         dyndolod_exe=exe_dir / "DynDOLODx64.exe",
         texgen_exe=exe_dir / "TexGenx64.exe",
+        external_work_root=tmp_path / "Work Root",
     )
     # data_dir tiene default derivado y el preflight falla rápido si no existe.
     assert config.data_dir is not None
@@ -427,7 +433,9 @@ class _ProcesoFalsoTexgen:
     """Fake de ``DynDOLODRunner._execute_process`` que produce salida real."""
 
     def __init__(self, config: DynDOLODConfig) -> None:
-        self._staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+        layout = config.output_layout
+        assert layout is not None
+        self._staging = layout.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
         self._logs = config.dyndolod_exe.parent / "Logs"
 
     async def __call__(self, *args: object, **kwargs: object) -> tuple[str, str, int, float]:
