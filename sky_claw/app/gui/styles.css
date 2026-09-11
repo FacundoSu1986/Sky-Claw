@@ -201,8 +201,71 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 .sky-btn-nordic:active { transform: translateY(0); }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   7. EL MOTOR INVISIBLE — RITUALES DE LA FORJA
-   ═══════════════════════════════════════════════════════════════════════════════════ */
+    6b. BOTONES DEL SHELL FORGE — receta única de la familia .sc-btn (C2 del roadmap)
+    Antes el gradiente oro estaba inline ~10 veces en forge_dashboard.py y había dos
+    recetas "Denegar" divergentes para la misma acción (HITL modal vs Descargas):
+    repetir en cada call-site garantiza drift visual.
+
+    En los call-sites migrados por C2 la receta vive acá —color/fondo/borde/radio y
+    los estados base/hover/active/disabled; el foco de teclado lo cubre la política
+    global :focus-visible—. Lo que sigue inline en forge_dashboard.py es
+    GEOMETRÍA/CONTEXTO (padding, tamaño, tipografía puntual, la sombra del CTA):
+    el ancla AST de test_gui_theme_contracts.py congela el inventario de
+    consumidores y prohíbe redefinir la receta inline. Los demás botones del shell
+    con semántica visual propia (nav del sidebar, toggles de estado, botones
+    icónicos, link «Ver Todo», acción de tarjeta de ritual, escaneo profundo)
+    quedan FUERA de esta familia e igual de inventariados por ese contrato.
+    ═══════════════════════════════════════════════════════════════════════════════════ */
+
+.sc-btn {
+    cursor: pointer;
+    font-family: var(--sky-font-display);
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    border-radius: 4px;
+    transition: filter 0.2s ease;
+}
+.sc-btn:hover { filter: brightness(1.07); }
+.sc-btn:active { transform: translateY(1px); }
+
+/* Deshabilitado: un botón que no responde no debe sugerir interacción. El mismo
+   mecanismo filter del hover, llevado a gris apagado — atenúa la receta sin
+   arrastrar el texto con opacity — y sin animaciones. NiceGUI aplica
+   .props("disabled") como atributo HTML disabled del <button> nativo, así que
+   :disabled es el selector real; :hover/:disabled explícitos porque :hover sí
+   aplica sobre elementos deshabilitados y pisaría el gris con el brightness. */
+.sc-btn:disabled {
+    cursor: not-allowed;
+    filter: grayscale(0.6) brightness(0.65);
+}
+.sc-btn:disabled:hover { filter: grayscale(0.6) brightness(0.65); }
+.sc-btn:disabled:active { transform: none; }
+
+/* CTA — oro fundido, tinta oscura */
+.sc-btn--gold {
+    color: #1c130a;
+    background: linear-gradient(180deg, #f3dca0, #c8a86a 58%, #9c7a40);
+    border: 1.5px solid #f6e6bd;
+}
+
+/* Secundario neutro — filo de oro tenue */
+.sc-btn--ghost {
+    color: #c9c0aa;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(200, 168, 106, 0.35);
+}
+
+/* Negar — carmesí de advertencia (HITL modal y Puerta de Descargas) */
+.sc-btn--danger {
+    color: #e88a82;
+    background: rgba(216, 88, 78, 0.12);
+    border: 1.5px solid rgba(216, 88, 78, 0.5);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════
+    7. EL MOTOR INVISIBLE — RITUALES DE LA FORJA
+    ═══════════════════════════════════════════════════════════════════════════════════ */
 
 .sky-action-master { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 1.2rem; margin-bottom: 1rem; }
 

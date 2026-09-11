@@ -764,17 +764,11 @@ def _hitl_modal_panel() -> None:
             "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC.</div>"
         )
         with ui.element("div").style("display:flex; gap:11px; justify-content:flex-end;"):
-            deny = ui.element("button").style(
-                "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px; letter-spacing:.08em;"
-                "color:#e88a82; background:rgba(0,0,0,.3); border:1px solid rgba(197,82,74,.5); border-radius:4px;"
-            )
+            deny = ui.element("button").classes("sc-btn sc-btn--danger").style("padding:9px 18px;")
             deny.on("click", lambda _=None, rid=request_id: _respond_hitl(rid, False))
             with deny:
                 ui.html("Denegar")
-            ok = ui.element("button").style(
-                "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-weight:700; font-size:12px; letter-spacing:.08em;"
-                "color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
-            )
+            ok = ui.element("button").classes("sc-btn sc-btn--gold").style("padding:9px 18px;")
             ok.on("click", lambda _=None, rid=request_id: _respond_hitl(rid, True))
             with ok:
                 ui.html("Aprobar")
@@ -828,10 +822,10 @@ def _ritual_feedback_panel() -> None:
                     fn(tool_key_de_la_corrida)
 
             if callable(resume_fn):
-                r = ui.element("button").style(
-                    "cursor:pointer; margin-top:0; padding:6px 12px; font-family:'Cinzel',serif; font-size:11px;"
-                    "font-weight:700; letter-spacing:.06em; color:#1c130a;"
-                    "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+                r = (
+                    ui.element("button")
+                    .classes("sc-btn sc-btn--gold")
+                    .style("margin-top:0; padding:6px 12px; font-size:11px; letter-spacing:.06em;")
                 )
                 r.on("click", _on_resume)
                 with r:
@@ -1025,11 +1019,17 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
                     f"<div style=\"display:flex; justify-content:space-between; margin-top:7px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#8a8270;\"><span>Integridad {integrity}%</span><span>{_e(conflicts)} conflictos</span></div></div>"
                 )
                 prepare = _cb(callbacks, "on_cta_primary")
-                btn = ui.element("button").style(
-                    "display:flex; align-items:center; gap:11px; padding:15px 26px; cursor:pointer; font-family:'Cinzel',serif;"
-                    "font-weight:700; font-size:15px; letter-spacing:.12em; color:#1c130a;"
-                    "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
-                    "box-shadow:0 0 24px rgba(200,168,106,.45), inset 0 1px 0 rgba(255,255,255,.5); transition:transform .2s, box-shadow .2s;"
+                btn = (
+                    ui.element("button")
+                    .classes("sc-btn sc-btn--gold")
+                    .style(
+                        "display:flex; align-items:center; gap:11px; padding:15px 26px;"
+                        "font-size:15px; letter-spacing:.12em;"
+                        "box-shadow:0 0 24px rgba(200,168,106,.45), inset 0 1px 0 rgba(255,255,255,.5);"
+                        # La transición inline extiende la de .sc-btn: sin "filter" acá,
+                        # el brightness del hover cambiaba sin transición.
+                        "transition:filter .2s ease, transform .2s, box-shadow .2s;"
+                    )
                 )
                 if prepare:
                     btn.on("click", lambda _=None: prepare())
@@ -1418,10 +1418,10 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
         # sidebar (pending_updates). Espejo de "Detectar disputas" de Conflictos.
         on_check = _cb(callbacks, "on_check_updates")
         if on_check is not None:
-            upd_btn = ui.element("button").style(
-                "flex-shrink:0; padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px;"
-                " letter-spacing:.06em; color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40);"
-                " border:1.5px solid #f6e6bd; border-radius:4px;"
+            upd_btn = (
+                ui.element("button")
+                .classes("sc-btn sc-btn--gold")
+                .style("flex-shrink:0; padding:9px 18px; font-size:12px; letter-spacing:.06em;")
             )
             with upd_btn:
                 ui.html("Buscar actualizaciones")
@@ -1460,10 +1460,10 @@ def _conflicts_screen(
         )
         on_scan = _cb(callbacks, "on_conflict_scan")
         if on_scan is not None:
-            scan_btn = ui.element("button").style(
-                "flex-shrink:0; padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px;"
-                " letter-spacing:.06em; color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40);"
-                " border:1.5px solid #f6e6bd; border-radius:4px;"
+            scan_btn = (
+                ui.element("button")
+                .classes("sc-btn sc-btn--gold")
+                .style("flex-shrink:0; padding:9px 18px; font-size:12px; letter-spacing:.06em;")
             )
             with scan_btn:
                 ui.html("Detectar disputas")
@@ -1552,9 +1552,10 @@ def _conflict_row(c: dict[str, Any], on_resolve: Callable | None) -> None:
             "</div>"
         )
         if on_resolve is not None:
-            btn = ui.element("button").style(
-                "flex-shrink:0; padding:8px 16px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px; letter-spacing:.06em; color:#1c130a;"
-                "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+            btn = (
+                ui.element("button")
+                .classes("sc-btn sc-btn--gold")
+                .style("flex-shrink:0; padding:8px 16px; font-size:12px; letter-spacing:.06em;")
             )
             with btn:
                 ui.html("Resolver")
@@ -1587,16 +1588,18 @@ def _open_resolve_dialog(c: dict[str, Any], on_resolve: Callable) -> None:
             .style("width:100%; margin-bottom:16px;")
         )
         with ui.element("div").style("display:flex; gap:11px; justify-content:flex-end;"):
-            cancel = ui.element("button").style(
-                "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px; letter-spacing:.08em;"
-                "color:#c9c0aa; background:rgba(0,0,0,.3); border:1px solid rgba(200,168,106,.35); border-radius:4px;"
+            cancel = (
+                ui.element("button")
+                .classes("sc-btn sc-btn--ghost")
+                .style("padding:9px 18px; font-size:12px; letter-spacing:.08em;")
             )
             with cancel:
                 ui.html("Cancelar")
             cancel.on("click", lambda _=None: dialog.close())
-            ok = ui.element("button").style(
-                "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-weight:700; font-size:12px; letter-spacing:.08em;"
-                "color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+            ok = (
+                ui.element("button")
+                .classes("sc-btn sc-btn--gold")
+                .style("padding:9px 18px; font-size:12px; letter-spacing:.08em;")
             )
             with ok:
                 ui.html("Resolver")
@@ -1700,10 +1703,10 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
             payload["llm_provider"] = str(provider_toggle.value or "")
             on_save(payload)
 
-        btn = ui.element("button").style(
-            "align-self:flex-start; padding:11px 24px; cursor:pointer; font-family:'Cinzel',serif;"
-            " letter-spacing:.08em; color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40);"
-            " border:1.5px solid #f6e6bd; border-radius:4px;"
+        btn = (
+            ui.element("button")
+            .classes("sc-btn sc-btn--gold")
+            .style("align-self:flex-start; padding:11px 24px; letter-spacing:.08em;")
         )
         with btn:
             ui.html("Guardar Ajustes")
@@ -1754,18 +1757,18 @@ def _downloads_screen(downloads: dict[str, Any], callbacks: dict[str, Callable])
             if on_respond is not None:
                 rid = str(pending.get("request_id") or "")
                 with ui.element("div").style("display:flex; gap:12px; margin-top:4px;"):
-                    deny = ui.element("button").style(
-                        "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px;"
-                        f" letter-spacing:.06em; color:{RED_SOFT}; background:rgba(216,88,78,.12);"
-                        f" border:1.5px solid rgba(216,88,78,.5); border-radius:4px;"
+                    deny = (
+                        ui.element("button")
+                        .classes("sc-btn sc-btn--danger")
+                        .style("padding:9px 18px; font-size:12px; letter-spacing:.06em;")
                     )
                     with deny:
                         ui.html("Denegar")
                     deny.on("click", lambda _=None, r=rid: on_respond(r, False))
-                    approve = ui.element("button").style(
-                        "padding:9px 18px; cursor:pointer; font-family:'Cinzel',serif; font-size:12px;"
-                        " letter-spacing:.06em; color:#1c130a; background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40);"
-                        " border:1.5px solid #f6e6bd; border-radius:4px;"
+                    approve = (
+                        ui.element("button")
+                        .classes("sc-btn sc-btn--gold")
+                        .style("padding:9px 18px; font-size:12px; letter-spacing:.06em;")
                     )
                     with approve:
                         ui.html("Aprobar")
@@ -1826,9 +1829,10 @@ def _placeholder(section: str, callbacks: dict[str, Callable]) -> None:
         )
         on_nav = _cb(callbacks, "on_navigate")
         if on_nav:
-            b = ui.element("button").style(
-                "margin-top:8px; padding:11px 22px; cursor:pointer; font-family:'Cinzel',serif; letter-spacing:.08em; color:#1c130a;"
-                "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1.5px solid #f6e6bd; border-radius:4px;"
+            b = (
+                ui.element("button")
+                .classes("sc-btn sc-btn--gold")
+                .style("margin-top:8px; padding:11px 22px; letter-spacing:.08em;")
             )
             with b:
                 ui.html("Volver al Panel")
