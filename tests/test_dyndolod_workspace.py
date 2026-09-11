@@ -827,6 +827,33 @@ def test_fuera_de_windows_no_se_inventa_un_veredicto_de_unidad(monkeypatch: pyte
     assert ws._unidad_de_red(pathlib.PureWindowsPath(r"Z:\work")) is None
 
 
+def test_el_prefijo_extendido_se_quita_antes_de_preguntar_el_tipo_de_unidad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermano del fix de solapamiento: `GetDriveTypeW` recibe la raíz SIN `\\\\?\\`.
+
+    RED contra el gemelo del defecto que arregló `8dd6f5f`: `resolve()` puede
+    devolver `\\\\?\\C:\\...` en rutas largas, y el ancla resultante (`\\\\?\\C:\\`) no
+    es una raíz de volumen que `GetDriveTypeW` reconozca — un root local largo y
+    legítimo se clasificaría como indeterminado y se rechazaría. Se ejerce con
+    `PureWindowsPath` literal, sin `resolve()`, para que valga igual en Linux y
+    Windows.
+    """
+    vistas: list[str] = []
+
+    def _falso(raiz: str) -> int:
+        vistas.append(raiz)
+        return 3  # DRIVE_FIXED: un disco local de verdad
+
+    monkeypatch.setattr(ws, "_hay_unidades_mapeadas", lambda: True)
+    monkeypatch.setattr(ws, "_tipo_de_unidad", _falso)
+
+    razon = ws._unidad_de_red(pathlib.PureWindowsPath(r"\\?\C:\Users\facha\ruta larguísima\Sky-Claw Work"))
+
+    assert vistas == ["C:\\"], "se preguntó por el ancla CON prefijo extendido, que GetDriveTypeW no reconoce"
+    assert razon is None, "un volumen fijo local no es una unidad de red"
+
+
 def test_admitir_rechaza_un_root_en_una_unidad_de_red(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """La admisión integra el veredicto de volumen, no sólo el prefijo UNC."""
     monkeypatch.setattr(ws, "_unidad_de_red", lambda canonico: "la unidad Z:\\ es un recurso de red mapeado")

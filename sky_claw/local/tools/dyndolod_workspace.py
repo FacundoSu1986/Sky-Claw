@@ -846,7 +846,14 @@ def _unidad_de_red(canonico: pathlib.PurePath) -> str | None:
     """
     if not _hay_unidades_mapeadas():
         return None
-    ancla_de_volumen = pathlib.PureWindowsPath(canonico).anchor
+    # Hermano del fix del prefijo extendido en `_partes_normalizadas`: `resolve()`
+    # puede devolver `\\?\C:\...` en rutas largas, y entonces el ancla es `\\?\C:\`,
+    # que `GetDriveTypeW` NO reconoce como raíz de volumen (devuelve UNKNOWN/NO_ROOT).
+    # Sin normalizar, un root local largo y legítimo se clasificaría como
+    # indeterminado y se rechazaría (falso positivo). El prefijo es una anotación
+    # para el kernel, no parte de la identidad del volumen: se quita antes de
+    # preguntarle al sistema, igual que en la comparación de solapamiento.
+    ancla_de_volumen = _ancla_sin_prefijo_extendido(pathlib.PureWindowsPath(canonico).anchor)
     if not ancla_de_volumen:  # pragma: no cover - `admitir_root` ya exigió absoluta
         return None
     tipo = _tipo_de_unidad(ancla_de_volumen)
