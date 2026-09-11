@@ -2090,6 +2090,75 @@ def test_el_arranque_cablea_la_sonda_y_resuelve_despues_del_journal() -> None:
     )
 
 
+class _CoordinacionEspia:
+    """Stand-in que sólo registra si le pidieron cerrar."""
+
+    def __init__(self) -> None:
+        self.cierres = 0
+
+    async def close(self) -> None:
+        self.cierres += 1
+
+
+@pytest.mark.parametrize(
+    ("propia", "cierres_esperados"),
+    [(True, 1), (False, 0)],
+)
+async def test_el_supervisor_cierra_la_coordinacion_propia_y_nunca_la_ajena(
+    propia: bool, cierres_esperados: int
+) -> None:
+    """Quién construyó, cierra — y las dos mitades importan.
+
+    La de respaldo (la arma el composition root cuando nadie inyecta) no tiene
+    dueño: su conexión SQLite sobre la DB durable sobrevivía al supervisor. La
+    INYECTADA sí lo tiene —`AppContext` la registra en su cleanup— y cerrarla acá
+    le sacaría la coordinación de abajo al resto del proceso. Un fix que sólo
+    mirara el primer caso rompería el segundo: es el hermano exacto.
+
+    Se ejerce el método sin construir un supervisor: el grafo completo no aporta
+    nada a esta regla y haría el test imposible de correr sin I/O real.
+    """
+    from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+
+    supervisor = SupervisorAgent.__new__(SupervisorAgent)
+    espia = _CoordinacionEspia()
+    supervisor._stage9_coordination = espia
+    supervisor._owns_stage9_coordination = propia
+
+    await supervisor._cerrar_coordinacion_propia()
+
+    assert espia.cierres == cierres_esperados
+
+
+def test_el_apagado_del_supervisor_cierra_la_coordinacion() -> None:
+    """Ancla de cableado: el método existe Y el apagado lo llama.
+
+    Sin esta mitad, el método de arriba podía quedar correcto y muerto — la
+    forma más silenciosa del defecto, porque el test de comportamiento sigue en
+    verde mientras la conexión queda viva en producción.
+    """
+    import ast as _ast
+
+    from sky_claw.app.orchestrator import supervisor as modulo
+
+    arbol = _ast.parse(pathlib.Path(modulo.__file__).read_text(encoding="utf-8"))
+    start = next(n for n in _ast.walk(arbol) if isinstance(n, _ast.AsyncFunctionDef) and n.name == "start")
+    finales = [n for n in _ast.walk(start) if isinstance(n, _ast.Try) for n in n.finalbody]
+    llamadas = {
+        n.func.attr
+        for bloque in finales
+        for n in _ast.walk(bloque)
+        if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Attribute)
+    }
+    assert "_cerrar_coordinacion_propia" in llamadas, (
+        "el apagado del supervisor no cierra la coordinación de etapa 9 que construyó"
+    )
+    # Y la propiedad se decide por el parámetro, no por inspeccionar el objeto.
+    init = next(n for n in _ast.walk(arbol) if isinstance(n, _ast.FunctionDef) and n.name == "__init__")
+    fuente_init = _ast.unparse(init)
+    assert "self._owns_stage9_coordination = stage9_coordination is None" in fuente_init
+
+
 async def test_el_reconciliador_rutea_el_ritual_de_etapa9_a_la_base_durable(
     tmp_path: pathlib.Path,
 ) -> None:

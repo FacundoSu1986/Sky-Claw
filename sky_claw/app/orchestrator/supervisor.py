@@ -232,6 +232,13 @@ class SupervisorAgent:
         # que sea alcanzable desde el dueño del supervisor. Una coordinación que
         # el grafo usa pero nadie referencia no se puede cerrar.
         self._stage9_coordination = composition.stage9_coordination
+        # Quién construyó, cierra. La inyectada tiene dueño —`AppContext`, que la
+        # registra en su cleanup— y cerrarla acá le sacaría la coordinación de
+        # abajo al resto del proceso; la de respaldo NO tiene ninguno, así que su
+        # conexión SQLite sobre la DB durable sobrevivía al supervisor. Se guarda
+        # la RESPUESTA (¿la construyó el builder?) y no el objeto: preguntarle al
+        # objeto si es propio no se puede.
+        self._owns_stage9_coordination = stage9_coordination is None
 
         # Fail-closed: sin hitl_guard, las tools destructivas se DENIEGAN.
         if hitl_guard is None:
@@ -332,6 +339,20 @@ class SupervisorAgent:
             # FASE 1.5: Cerrar journal al terminar
             await self.journal.close()
             await self.db.close()
+            # Último, igual que se suelta último su lock: la coordinación de
+            # etapa 9 es el eslabón MÁS EXTERNO del orden fijo
+            # (`dyndolod_workspace.ORDEN_DE_ADQUISICION`).
+            await self._cerrar_coordinacion_propia()
+
+    async def _cerrar_coordinacion_propia(self) -> None:
+        """Cierra la coordinación de etapa 9 **sólo si la construyó este grafo**.
+
+        Método propio y no dos líneas dentro del ``finally`` para que la regla
+        —cerrar lo propio, nunca lo ajeno— se pueda ejercer sin levantar un
+        supervisor entero. Ancla: `tests/test_dyndolod_workspace.py`.
+        """
+        if self._owns_stage9_coordination and self._stage9_coordination is not None:
+            await self._stage9_coordination.close()
 
     async def _run_daemons_and_interface(self) -> None:
         """Corre los loops de los demonios + la interfaz con fail-fast real (H-2).
