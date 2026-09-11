@@ -528,15 +528,37 @@ def publicar_binding(root: pathlib.Path, recursos: ResourceBinding) -> tuple[Bin
 
     Raises:
         WorkspaceRechazadoError: el binding publicado por el ganador pertenece a
-            otros recursos (motivo ``AJENO``), o quedó corrupto (caso E).
+            otros recursos (motivo ``AJENO``), quedó corrupto (caso E), o el root
+            configurado no se pudo inicializar en disco (motivo ``INVALIDO``).
     """
-    root.mkdir(parents=True, exist_ok=True)
     documento = BindingDocument(
         schema_version=SCHEMA_VERSION,
         binding_id=nuevo_binding_id(),
         resource_binding=recursos,
     )
-    if _crear_binding_exclusivo(root, documento):
+    # Un root de sólo lectura, en una unidad desconectada o sin espacio levanta
+    # `OSError` acá. Dejarlo propagar crudo lo convertía en "falla inesperada" en
+    # el boundary del arranque: un stack de 200 líneas en vez de la única frase
+    # que el operador necesita —qué root, qué pasó y qué hacer—, y el veredicto
+    # final es el mismo (no se usa ese root). El resto del módulo contesta
+    # SIEMPRE con `WorkspaceRechazadoError`; esta era la última grieta por la que
+    # se escapaba otra cosa.
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        gano = _crear_binding_exclusivo(root, documento)
+    except OSError as exc:
+        raise WorkspaceRechazadoError(
+            motivo=MotivoDeRechazo.INVALIDO,
+            root=root,
+            clave_de_recursos=recursos.clave(),
+            razon=f"no se pudo inicializar el external_work_root en disco ({exc})",
+            accion_requerida=(
+                "verificar que la ruta exista o se pueda crear, que el volumen esté "
+                "montado y con espacio, y que el usuario tenga permiso de escritura"
+            ),
+        ) from exc
+
+    if gano:
         logger.info(
             "external_work_root inicializado: binding publicado.",
             extra={"pipeline_stage": _ETAPA, "root": str(root), "binding_id": documento.binding_id},

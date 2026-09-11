@@ -881,6 +881,44 @@ def test_single_winner_entre_dos_procesos_reales(tmp_path: pathlib.Path) -> None
     assert publicado.resource_binding == recursos
 
 
+@pytest.mark.parametrize(
+    ("etiqueta", "romper"),
+    [
+        ("no se puede crear el directorio", "mkdir"),
+        ("no se puede escribir el binding", "open"),
+    ],
+)
+def test_un_root_que_no_se_puede_inicializar_se_rechaza_con_accion(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, etiqueta: str, romper: str
+) -> None:
+    """Un `OSError` de disco es un RECHAZO legible, no una "falla inesperada".
+
+    Volumen desconectado, root de sólo lectura o sin espacio: el veredicto final
+    es el mismo (no se usa ese root), pero el `OSError` crudo llegaba al boundary
+    del arranque como incidente con stack, sin nombrar el campo ni la acción. El
+    módulo contesta SIEMPRE con `WorkspaceRechazadoError`; ésta era la grieta.
+    """
+    recursos = _instancia(tmp_path)
+    root = tmp_path / "work"
+
+    def _estalla(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    if romper == "mkdir":
+        monkeypatch.setattr(pathlib.Path, "mkdir", _estalla)
+    else:
+        root.mkdir()
+        monkeypatch.setattr(ws.os, "open", _estalla)
+
+    with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+        ws.publicar_binding(root, recursos)
+
+    assert excinfo.value.motivo is ws.MotivoDeRechazo.INVALIDO
+    assert "no se pudo inicializar" in excinfo.value.razon
+    assert "permiso de escritura" in excinfo.value.accion_requerida
+    assert isinstance(excinfo.value.__cause__, OSError), "se preserva la causa técnica"
+
+
 def test_actualizar_un_binding_propio_si_usa_reemplazo_atomico(tmp_path: pathlib.Path) -> None:
     """`os.replace` es legítimo para reescribir el binding PROPIO (temporal + replace)."""
     recursos = _instancia(tmp_path)
