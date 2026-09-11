@@ -71,16 +71,11 @@ El proceso NiceGUI comparte un único `ReactiveStore` entre todas las pestañas 
 
 ### C2 — Centralizar clases de botón
 
-**Estado:** pendiente estructural.  
-**Intención:** extraer estilos repetidos de CTA/acciones del shell a clases semánticas como `.sc-btn-gold` y `.sc-btn-ghost` en `styles.css`.
-
-La auditoría detectó repetición del patrón visual dorado en múltiples superficies (hero y distintos paneles/modales). Antes de editar, el PR debe inventariar por introspección/búsqueda todas las recetas equivalentes y congelar el conjunto para no migrar solo una muestra.
-
-Objetivos:
-
-- una única receta de base/hover/focus/disabled por variante;
-- evitar que cada panel redefina gradiente, borde y foco inline;
-- conservar semántica y callbacks; cambio puramente de presentación.
+**Estado:** **RESUELTO** en #577 — familia `.sc-btn` (base + `--gold` /
+`--ghost` / `--danger`) en la sección 6b de `styles.css`, consumida por los 13
+call-sites del shell. Unificadas las dos recetas divergentes de "Denegar"
+(HITL modal vs Puerta de Descargas). Ancla en
+`test_gui_theme_contracts.py::test_botones_del_shell_tienen_receta_en_un_solo_lugar`.
 
 ### A3 — MedievalSharp: alcance y decisión de adopción vs. eliminación
 
