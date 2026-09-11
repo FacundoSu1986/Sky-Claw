@@ -1472,11 +1472,26 @@ async def test_edicion_manual_del_toml_reconcilia_contra_el_estado_durable(
             coordinacion=coordinacion,
         )
 
-        # Edición MANUAL del TOML + residuo pendiente en el root viejo.
-        config_path.write_text(
-            config_path.read_text(encoding="utf-8").replace(str(viejo), str(nuevo)),
-            encoding="utf-8",
-        )
+        # Edición MANUAL del TOML: se reescribe el archivo como lo haría el
+        # usuario con un editor de texto. NO se usa `persistir_campo` a propósito
+        # — el punto del caso es que la preferencia cambió por FUERA de toda la
+        # maquinaria de workspace.
+        #
+        # Se escribe la línea TOML directamente en vez de un `str.replace` del
+        # path crudo sobre el archivo: en Windows el serializador escapa las
+        # barras invertidas (`"D:\\a\\Work Viejo"`), así que el `replace` del
+        # path sin escapar no encontraba NADA — el montaje era un no-op, la
+        # preferencia seguía apuntando al root viejo y el test verificaba "el
+        # mismo root otra vez" creyendo que verificaba una transición. Verde en
+        # POSIX, rojo en Windows, y sin probar nada en ninguno de los dos.
+        # `json.dumps` produce el mismo escapado de barras y comillas que exige
+        # una basic string de TOML, en cualquier plataforma.
+        config_path.write_text(f"external_work_root = {json.dumps(str(nuevo))}\n", encoding="utf-8")
+        # El montaje tiene que haber mutado algo de verdad. Esta aserción es la
+        # que convierte "el test no prueba nada" en un fallo visible.
+        assert Config(config_path).external_work_root == str(nuevo)
+
+        # Y el root viejo quedó con residuo de move-aside sin reconciliar.
         (viejo / "DynDOLOD").mkdir(parents=True, exist_ok=True)
         (viejo / "DynDOLOD" / "textures.rollback-1757462400000000000").mkdir()
 
