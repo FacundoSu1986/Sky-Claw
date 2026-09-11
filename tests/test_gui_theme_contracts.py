@@ -650,13 +650,24 @@ def test_botones_c2_del_shell_inventario_exhaustivo_y_sin_receta_inline() -> Non
             )
 
 
+def _reglas_independientes(selector: str) -> list[str]:
+    """Cuerpos de las reglas planas de styles.css cuyo selector coincide como
+    SELECTOR INDEPENDIENTE: anclado al inicio de línea, así un selector
+    compuesto (``.contenedor .sc-btn--gold {``) no cuenta como la receta —
+    solo una regla global ``.sc-btn--gold {`` alimenta a los 13 consumidores.
+    (Un ``index``/search sin anclar además confundiría ``.sc-btn:disabled``
+    con ``.sc-btn:disabled:hover``.)"""
+    patron = rf"(?m)^[ \t]*{re.escape(selector)}[ \t]*\{{"
+    return [
+        _STYLES[coincidencia.end() : _STYLES.index("}", coincidencia.end())]
+        for coincidencia in re.finditer(patron, _STYLES)
+    ]
+
+
 def _regla_css(selector: str) -> str:
-    """Cuerpo (declaraciones) de la regla plana de styles.css cuyo selector
-    coincide exactamente (``index`` simple confundiría ``.sc-btn:disabled`` con
-    ``.sc-btn:disabled:hover``)."""
-    coincidencia = re.search(re.escape(selector) + r"\s*\{", _STYLES)
-    assert coincidencia, f"selector ausente en styles.css: {selector}"
-    return _STYLES[coincidencia.end() : _STYLES.index("}", coincidencia.end())]
+    reglas = _reglas_independientes(selector)
+    assert len(reglas) == 1, f"selector independiente ausente o duplicado en styles.css: {selector}"
+    return reglas[0]
 
 
 def test_receta_sc_btn_centralizada_con_estado_disabled() -> None:
@@ -678,7 +689,9 @@ def test_receta_sc_btn_centralizada_con_estado_disabled() -> None:
     # hay otras familias doradas en el tema (var(--sky-gold), var(--sky-gold-deep))
     # deliberadamente fuera de C2, y la no-reintroducción inline en los
     # consumidores ya la garantiza el inventario AST.
-    assert len(re.findall(r"\.sc-btn--gold\s*\{", _STYLES)) == 1, ".sc-btn--gold debe declararse exactamente una vez"
+    assert len(_reglas_independientes(".sc-btn--gold")) == 1, (
+        ".sc-btn--gold debe declararse exactamente una vez como regla independiente"
+    )
     oro = _declaraciones((_regla_css(".sc-btn--gold"),))
     assert oro["background"].startswith("linear-gradient(180deg"), "la receta oro es un gradiente vertical"
     for parada in ("#f3dca0", "#c8a86a", "#9c7a40"):
@@ -688,12 +701,13 @@ def test_receta_sc_btn_centralizada_con_estado_disabled() -> None:
     for variante in _VARIANTES_SC_BTN:
         assert f".sc-btn--{variante}" in _STYLES, f"falta la variante .sc-btn--{variante} en styles.css"
 
-    bloque = _regla_css(".sc-btn:disabled")
-    assert "cursor: not-allowed" in bloque, "el cursor debe denegar la interacción"
-    assert "filter:" in bloque, "el estado debe comunicarse atenuando la receta via filter"
+    # Normalizado por _declaraciones: no depende del whitespace del CSS.
+    bloque = _declaraciones((_regla_css(".sc-btn:disabled"),))
+    assert bloque.get("cursor") == "not-allowed", "el cursor debe denegar la interacción"
+    assert "filter" in bloque, "el estado debe comunicarse atenuando la receta via filter"
 
-    hover = _regla_css(".sc-btn:disabled:hover")
-    assert "filter:" in hover, ":hover sobre un botón deshabilitado no puede aplicar el brightness(1.07) del válido"
+    hover = _declaraciones((_regla_css(".sc-btn:disabled:hover"),))
+    assert "filter" in hover, ":hover sobre un botón deshabilitado no puede aplicar el brightness(1.07) del válido"
 
-    activo = _regla_css(".sc-btn:disabled:active")
-    assert "transform: none" in activo, ":active no debe hundir un botón que no responde"
+    activo = _declaraciones((_regla_css(".sc-btn:disabled:active"),))
+    assert activo.get("transform") == "none", ":active no debe hundir un botón que no responde"
