@@ -27,6 +27,7 @@ import pytest
 
 from sky_claw.app.security import known_folders
 from sky_claw.local.tools import dyndolod_workspace as ws
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 # ---------------------------------------------------------------------------
 # Andamiaje: una instancia lógica mínima (game + datos MO2 + mods)
@@ -525,10 +526,7 @@ def test_un_destino_fuera_del_root_se_rechaza(tmp_path: pathlib.Path) -> None:
         ws.validar_destino_administrado(root, tmp_path / "otro" / "cosa")
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" and not os.environ.get("SKYCLAW_TEST_SYMLINKS"),
-    reason="crear symlinks en Windows exige privilegio de desarrollador",
-)
+@symlink_guard
 def test_un_symlink_que_escapa_del_root_se_rechaza(tmp_path: pathlib.Path) -> None:
     """El componente redirigido es el vector: se mira el ENLACE, no sólo el final."""
     root = tmp_path / "work"
@@ -544,10 +542,7 @@ def test_un_symlink_que_escapa_del_root_se_rechaza(tmp_path: pathlib.Path) -> No
     assert "enlace" in excinfo.value.razon.lower()
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" and not os.environ.get("SKYCLAW_TEST_SYMLINKS"),
-    reason="crear symlinks en Windows exige privilegio de desarrollador",
-)
+@symlink_guard
 def test_un_symlink_que_no_escapa_no_se_sigue_igual(tmp_path: pathlib.Path) -> None:
     """Fail-closed: un enlace interno tampoco es un destino administrado válido.
 
@@ -564,10 +559,32 @@ def test_un_symlink_que_no_escapa_no_se_sigue_igual(tmp_path: pathlib.Path) -> N
         ws.validar_destino_administrado(root, root / "DynDOLOD" / "TexGen")
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" and not os.environ.get("SKYCLAW_TEST_SYMLINKS"),
-    reason="crear symlinks en Windows exige privilegio de desarrollador",
-)
+@symlink_guard
+@junction_guard
+def test_un_junction_que_escapa_del_root_se_rechaza(tmp_path: pathlib.Path) -> None:
+    """El hermano que importa: un JUNCTION, no un symlink.
+
+    `os.path.islink()` devuelve **False** para un junction, así que una defensa
+    escrita contra symlinks lo deja pasar entero. Por eso la contención se apoya
+    en `links.is_link` —que mira el `st_reparse_tag`— y por eso este test crea un
+    junction de verdad con `mklink /J` en vez de un symlink disfrazado. Sólo
+    puede correr en Windows, que es la única plataforma donde existe el modo de
+    falla.
+    """
+    root = tmp_path / "work"
+    root.mkdir()
+    afuera = tmp_path / "afuera"
+    afuera.mkdir()
+    motivo = crear_junction(root / "DynDOLOD", afuera)
+    assert motivo is None, f"el helper de junction falló: {motivo}"
+
+    with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+        ws.validar_destino_administrado(root, root / "DynDOLOD" / "TexGen")
+
+    assert excinfo.value.motivo is ws.MotivoDeRechazo.INVALIDO
+    assert "enlace" in excinfo.value.razon.lower()
+
+
 def test_un_root_que_es_un_enlace_se_canonicaliza_antes_de_admitir(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1663,3 +1680,28 @@ def test_el_reconciliador_rutea_el_ritual_de_etapa9_a_la_base_durable(
         assert _manager_del_ritual(otro, por_defecto, coordinacion) is por_defecto
     # Y sin coordinación cableada, todo conserva el comportamiento previo.
     assert _manager_del_ritual("dyndolod-pipeline", por_defecto, None) is por_defecto
+
+
+def test_el_health_cli_arranca_sin_external_work_root(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Consumidor real de `Config`: la ausencia del campo no lo rompe.
+
+    `__main__._parse_args` construye un `Config` de verdad para derivar defaults
+    de la CLI (entre ellos el chat id de Telegram). Es el consumidor que el plan
+    de P0 pide comprobar, y comprueba algo concreto: que el campo nuevo entre por
+    `_load_defaults()` y no por un `getattr` disperso que el primer caller en
+    olvidarlo convertiría en `AttributeError` durante el arranque.
+    """
+    from sky_claw import __main__ as cli
+    from sky_claw.config import Config
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "anthropic"\nmo2_root = "D:/MO2"\n', encoding="utf-8")
+    monkeypatch.setattr(Config, "DEFAULT_CONFIG_FILE", config_path)
+    monkeypatch.setattr(Config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+    assert "external_work_root" not in config_path.read_text(encoding="utf-8")
+
+    args = cli._parse_args(["--mode", "vfs-health", "--skyrim-path", str(tmp_path / "game")])
+
+    assert args.mode == "vfs-health"
+    assert Config(config_path).external_work_root == ""

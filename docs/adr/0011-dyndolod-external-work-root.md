@@ -2,10 +2,17 @@
 
 **Fecha:** 2026-09-09
 **Estado:** Aceptada (propuesta originalmente en #570; formalizada tras el cierre
-del gate de lanzamiento T5-v2 por el informe 2026-09-10, ver §2.12). P0 es el único
-prerrequisito restante para comenzar PR-2; la implementación de PR-2 reabrirá el
-gate de lanzamiento al mutar los subroots administrados de `-o:` y exigirá repetir
-las dos corridas reales antes de su merge.
+del gate de lanzamiento T5-v2 por el informe 2026-09-10, ver §2.12). **P0
+IMPLEMENTADO** (rama `feat/dyndolod-workspace-p0`, 2026-09-10): preferencia,
+binding v1, admisión, máquina de estados A–H, single-winner cross-process,
+coordinación durable de etapa 9 y transición restart-only viven en
+`sky_claw/local/tools/dyndolod_workspace.py` y
+`sky_claw/app/security/known_folders.py`, anclados por
+`tests/test_dyndolod_workspace.py` y `tests/test_known_folders.py`. Eso habilita
+**comenzar** PR-2; **PR-2 sigue NO IMPLEMENTADO** —el `-o:` productivo no
+cambió—, y su implementación reabrirá el gate de lanzamiento al mutar los
+subroots administrados de `-o:`, exigiendo repetir las dos corridas reales antes
+de su merge.
 **Contexto de origen:** `origin/main` `5e5e9448db0d4015b3bf0dc4c1df10fdc49e226c`
 (post-merge #569), verificado por `fetch` + lectura de código el 2026-09-09.
 **Alcance:** cerrar la decisión arquitectónica de lifecycle, identidad, propiedad y
@@ -13,9 +20,12 @@ fronteras de la raíz de trabajo externo (`external_work_root`) que PR-2 usará 
 `-o:` de TexGen y DynDOLOD; la máquina de estados del root; el cambio de preferencia;
 la admisión de rutas; el layout; el comportamiento frente al root legacy; los límites
 de concurrencia; y los contratos que no cambian (#552, #567).
-**Reglas de exclusión:** sin código de producción; sin cambiar `-o:`/`-d:`/`-t:`/`-m:`/`-p:`;
+**Reglas de exclusión (del PR documental #570 que produjo este ADR, conservadas
+como historia):** sin código de producción; sin cambiar `-o:`/`-d:`/`-t:`/`-m:`/`-p:`;
 sin writer de metadata; sin UUIDs reales de instancia; sin migración; sin tocar #528;
-sin retirar freshness; sin ejecutar el rig.
+sin retirar freshness; sin ejecutar el rig. El PR de P0 levantó las dos primeras
+que le correspondían —código de producción y writer del binding— y **mantuvo
+todas las demás**, `-o:` incluido.
 
 ---
 
@@ -153,7 +163,8 @@ explícitamente: cualquier campo no presente en este schema (raíz o dentro de
 (RECHAZAR fail-closed). Extender el schema exige versión nueva
 (`schema_version`) y su ADR, no un campo suelto.
 
-La implementación futura declara y verifica:
+La implementación de P0 declara y verifica (`dyndolod_workspace.publicar_binding`,
+`_crear_binding_exclusivo`, `reescribir_binding_propio`):
 
 - **creación inicial single-winner no-reemplazante.** `os.replace()` por sí
   solo NO provee single-winner: puede sustituir un binding publicado
@@ -164,16 +175,25 @@ La implementación futura declara y verifica:
   el `resource_binding` publicado es compatible (si no, fail-closed). Candidatas:
   creación exclusiva (no-reemplazante); lock cross-process alrededor del
   check + publish (el repo ya tiene maquinaria de locks distribuidos); u otro
-  mecanismo equivalente con la misma propiedad. La API concreta no se congela
-  acá — el árbol aún no tiene una adecuada — y T-PR2-22 la valida con **dos
-  procesos reales o un mecanismo equivalente cross-process, no sólo coroutines**;
+  mecanismo equivalente con la misma propiedad. **Implementado con creación
+  exclusiva** (`os.open` con `O_CREAT | O_EXCL`): creación y chequeo de
+  existencia son un solo paso del kernel, el perdedor recibe `FileExistsError`
+  en vez de pisar, y la propiedad no depende de que los dos procesos compartan
+  memoria, event loop ni intérprete. T-PR2-22 se valida con **dos procesos
+  reales** (`test_single_winner_entre_dos_procesos_reales`), no con coroutines:
+  quitarle el `O_EXCL` al código hace fallar ese test. Nota de implementación —
+  el `O_EXCL` reclama el NOMBRE de forma atómica pero el contenido se escribe
+  después, así que el perdedor puede leer cero bytes; el camino del perdedor, y
+  **sólo** ése (donde ya se sabe que hay un publicador concurrente), espera de
+  forma acotada mientras el archivo esté vacío. Un documento con bytes que no
+  parsea sigue siendo caso E al instante;
 - **escritura atómica con `os.replace`** — reservada a actualizaciones donde
   reemplazar es contractualmente válido (reescritura del binding propio por su
   dueño), con el patrón temporal + `os.replace` en el mismo directorio que usan
   `Config.save()` y los serializadores de `local_config.py`;
 - **nunca reescribir silenciosamente un binding ajeno**;
 - **metadata corrupta o schema desconocido = fail-closed** (caso E, incluye
-  campos fuera del schema v1). No se implementa el writer en este PR.
+  campos fuera del schema v1).
 
 ### 2.4 Máquina de estados del root (normativa)
 
@@ -237,7 +257,11 @@ coordinación de etapa 9 (el mismo dominio que serializa la instancia por
 usuario con ubicación independiente de cwd, prerrequisito P0 del plan):
 mientras ese estado no exista, el caso H se declara como requisito P0 y su
 ausencia debe tratarse fail-closed, no ignorarse. No se inventa un catálogo
-global de bindings fuera de ese dominio.
+global de bindings fuera de ese dominio. **Implementado en P0.2** como
+`RegistroDeRootActivo` (JSON por usuario bajo `SystemPaths.runtime_state_dir()`,
+escritura atómica, mutado siempre bajo la coordinación cross-process): el lock
+que ya existía aporta la exclusión y el registro aporta la memoria, sin inventar
+una segunda base ni un catálogo entre instalaciones.
 
 ### 2.7 Admisión de rutas
 
@@ -264,9 +288,11 @@ Como propiedad (no como algoritmo congelado):
   políticas de limpieza de almacenamiento) que borran o mueven contenido como
   parte de su ciclo de vida normal. El conjunto es cerrado para v1; agregar una
   carpeta exige enmienda de este ADR con su propia justificación de riesgo, no
-  intuición. No existe hoy una API de Known Folders dedicada en el árbol:
-  construirla con ese conjunto congelado es requisito de P0, no una primitiva
-  existente que se esté fingiendo tener;
+  intuición. No existía una API de Known Folders dedicada en el árbol:
+  **P0 la construyó** en `sky_claw/app/security/known_folders.py`
+  (`SHGetKnownFolderPath` por GUID, conjunto cerrado v1, seam para tests), con un
+  ancla de fuente que impide que reaparezcan `%USERPROFILE%` o la búsqueda por
+  substring;
 - no se amplía `PathValidator` autorizando toda una unidad o ancestro amplio: se
   autoriza **sólo el root admitido + destinos derivados** (la familia y los
   metadatos);
@@ -468,17 +494,19 @@ ejercitado y cero desvío).
 
 **Costos y obligaciones:**
 
-1. La preferencia nueva debe entrar a `Config._load_defaults()` (vacía) en P0,
-   con anclas del contrato de persistencia (`tests/test_local_config_persistencia.py`).
-2. La máquina de estados A–H exige tests que la **enumeren**, no que la muestreen
-   (patrón de `AGENTS.md` raíz): el plan lleva los IDs T-PR2-21/22/23. La
-   detección del caso H añade la obligación de que el estado durable de
-   coordinación (P0.2) registre el root activo por `resource_binding`.
-3. La admisión de rutas necesita un mecanismo de Known Folders que **no existe
-   hoy** en el árbol: se declara como construcción de P0 con el conjunto cerrado
-   de la §2.7 (`Documents`, `Desktop`, `Downloads`) y su test parametrizado —
-   cada Known Folder contractual, incluida una ruta redirigida a otro volumen,
-   hace rechazar el `external_work_root` —, no como primitiva vigente.
+1. ✅ La preferencia entra a `Config._load_defaults()` (vacía), con anclas del
+   contrato de persistencia en `tests/test_local_config_persistencia.py`
+   (incluida la parametrización sobre campos que SÍ vienen de `_load_defaults()`).
+2. ✅ La máquina de estados A–H tiene su test paramétrico que la **enumera**
+   (`test_maquina_de_estados_enumerada`: ocho casos, cada uno con su disco
+   montado) más el ancla de igualdad literal de la tabla de veredictos —
+   T-PR2-21 y T-PR2-22 cubiertos, y el caso H se detecta contra el registro
+   durable de P0.2. **T-PR2-23 (familia A–H del recovery legacy) sigue
+   ABIERTO**: pertenece a PR-2, que es quien cambia los productores.
+3. ✅ El mecanismo de Known Folders está construido con el conjunto cerrado de
+   la §2.7 (`Documents`, `Desktop`, `Downloads`) y su test parametrizado: cada
+   Known Folder contractual, incluida una redirigida a otro volumen, hace
+   rechazar el `external_work_root`.
 4. `sky_claw/local/AGENTS.md` §2.9 punto 4 sigue describiendo el root compartido
    vigente: es correcto hasta que PR-2 cambie el `-o:`, y se enmienda en ese mismo
    PR (regla del roadmap: enmendar SOP y código juntos).
