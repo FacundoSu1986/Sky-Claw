@@ -31,7 +31,13 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     resolve_ritual_resume_action,
     resolve_visible_pending_hitl,
 )
-from sky_claw.app.gui.icons import _ICON_LOCK, _ICON_SHIELD_CHECK, _ICON_SWORDS, _ICON_UNLOCK
+from sky_claw.app.gui.icons import (
+    _ICON_DRAGON_EYE,
+    _ICON_LOCK,
+    _ICON_SHIELD_CHECK,
+    _ICON_SWORDS,
+    _ICON_UNLOCK,
+)
 from sky_claw.app.gui.state import get_store
 
 from .sections import create_preflight_panel
@@ -440,12 +446,7 @@ def _sidebar(
             '<div style="position:relative; width:46px; height:46px; flex-shrink:0; border-radius:50%; display:flex; align-items:center; justify-content:center;'
             " background:radial-gradient(circle at 50% 38%, #2a1d12, #0c0805); border:1.5px solid #c8a86a;"
             ' box-shadow:0 0 18px rgba(200,168,106,.45), inset 0 0 12px rgba(0,0,0,.7);">'
-            '<svg width="30" height="30" viewBox="0 0 48 48" fill="none">'
-            '<path d="M5 24C13 14 35 14 43 24C35 34 13 34 5 24Z" fill="#0a0705" stroke="#c8a86a" stroke-width="1.5"/>'
-            '<ellipse cx="24" cy="24" rx="9" ry="9" fill="url(#scIris)"/>'
-            '<path d="M24 15C26.6 18.2 26.6 29.8 24 33C21.4 29.8 21.4 18.2 24 15Z" fill="#120a06"/>'
-            '<defs><radialGradient id="scIris" cx="50%" cy="42%" r="60%"><stop offset="0%" stop-color="#ffd071"/>'
-            '<stop offset="55%" stop-color="#d49a36"/><stop offset="100%" stop-color="#7a531f"/></radialGradient></defs></svg></div>'
+            f"{_ICON_DRAGON_EYE}</div>"
             '<div style="min-width:0;">'
             '<div style="font-family:\'Cinzel\',serif; font-weight:800; font-size:19px; letter-spacing:.16em; color:#f1e6cf; line-height:1;">SKY<span style="color:#c8a86a;">·</span>CLAW</div>'
             "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12.5px; color:#9a7f4f; margin-top:3px;\">Forja del Dovahkiin</div>"

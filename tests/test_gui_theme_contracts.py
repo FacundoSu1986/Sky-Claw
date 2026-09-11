@@ -369,3 +369,20 @@ def test_medievalsharp_fuera_del_bundle() -> None:
     fonts_dir = _GUI_DIR / "assets" / "fonts"
     remanentes = sorted(p.name for p in fonts_dir.iterdir() if p.name.lower().startswith("medievalsharp"))
     assert remanentes == [], f"woff2 de MedievalSharp residuales: {remanentes}"
+
+
+def test_emblema_dragon_unico_y_compartido() -> None:
+    """D4: el ojo de dragón es UNA sola constante (``_ICON_DRAGON_EYE`` en
+    icons.py) referenciada por los dos lugares donde debe aparecer la marca:
+    el sidebar del shell y la cabecera del wizard de primer arranque. Una
+    copia divergente del path del ojo fuera del registro rompe el ancla —
+    el roadmap exige reutilizar el recurso, no clonarlo."""
+    icons = (_GUI_DIR / "icons.py").read_text(encoding="utf-8")
+    path_ojo = "M5 24C13 14 35 14 43 24C35 34 13 34 5 24Z"
+    assert icons.count(path_ojo) == 1, "el path del emblema debe existir exactamente una vez en el registro"
+    for consumidor, nombre in (
+        ("views/forge_dashboard.py", "sidebar del shell"),
+        ("setup_wizard.py", "cabecera del wizard"),
+    ):
+        src = (_GUI_DIR / consumidor).read_text(encoding="utf-8")
+        assert "_ICON_DRAGON_EYE" in src, f"el {nombre} no usa el emblema compartido"
