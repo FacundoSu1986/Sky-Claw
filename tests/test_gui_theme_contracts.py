@@ -371,18 +371,82 @@ def test_medievalsharp_fuera_del_bundle() -> None:
     assert remanentes == [], f"woff2 de MedievalSharp residuales: {remanentes}"
 
 
+def _fuentes_gui() -> dict[str, str]:
+    """Mapa ``ruta relativa a app/gui`` → fuente, para los censos por AST."""
+    return {
+        str(p.relative_to(_GUI_DIR)).replace("\\", "/"): p.read_text(encoding="utf-8")
+        for p in sorted(_GUI_DIR.rglob("*.py"))
+    }
+
+
 def test_emblema_dragon_unico_y_compartido() -> None:
     """D4: el ojo de dragón es UNA sola constante (``_ICON_DRAGON_EYE`` en
     icons.py) referenciada por los dos lugares donde debe aparecer la marca:
-    el sidebar del shell y la cabecera del wizard de primer arranque. Una
-    copia divergente del path del ojo fuera del registro rompe el ancla —
-    el roadmap exige reutilizar el recurso, no clonarlo."""
-    icons = (_GUI_DIR / "icons.py").read_text(encoding="utf-8")
+    el sidebar del shell y la cabecera del wizard de primer arranque.
+
+    La verificación es por INTROSPECCIÓN AST, no por presencia de texto
+    (revisiones CodeRabbit/Codex en #579): un ``import`` huérfano o una
+    interpolación reemplazada por un SVG pegado no engañan al ancla.
+    """
+    fuentes = _fuentes_gui()
     path_ojo = "M5 24C13 14 35 14 43 24C35 34 13 34 5 24Z"
-    assert icons.count(path_ojo) == 1, "el path del emblema debe existir exactamente una vez en el registro"
-    for consumidor, nombre in (
-        ("views/forge_dashboard.py", "sidebar del shell"),
-        ("setup_wizard.py", "cabecera del wizard"),
-    ):
-        src = (_GUI_DIR / consumidor).read_text(encoding="utf-8")
-        assert "_ICON_DRAGON_EYE" in src, f"el {nombre} no usa el emblema compartido"
+
+    # (1) El path del emblema vive exactamente una vez en TODO el árbol gui —
+    # una copia pegada en cualquier otro archivo rompe el censo.
+    total = sum(src.count(path_ojo) for src in fuentes.values())
+    assert total == 1, f"copias del path del emblema fuera del registro: {total}"
+
+    # (2) Consumidores REALES de la constante: nodos ast.Name en contexto Load
+    # (los `from .icons import ...` son ImportFrom, no cargan el nombre, así que
+    # conservar la importación sin usarla ya no pasa el ancla).
+    consumidores: dict[str, int] = {}
+    for rel, src in fuentes.items():
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Name) and node.id == "_ICON_DRAGON_EYE" and isinstance(node.ctx, ast.Load):
+                consumidores[rel] = consumidores.get(rel, 0) + 1
+    assert set(consumidores) == {"setup_wizard.py", "views/forge_dashboard.py"}, (
+        f"consumidores del emblema cambiaron: {sorted(consumidores)}"
+    )
+    assert all(cargas >= 1 for cargas in consumidores.values())
+
+
+#: Registro vivo de iconos, congelado por igualdad literal (censo por AST sobre
+#: los Assign de nivel superior de icons.py). La purga de las 12 constantes
+#: legacy del wizard no estaba anclada: reintroducirlas sin consumidor pasaba en
+#: verde (revisión Codex #579).
+_REGISTRO_ICONOS_VIVO = frozenset(
+    {
+        "_ICON_ROCKET",
+        "_ICON_SHIELD_CHECK",
+        "_ICON_SWORDS",
+        "_ICON_LOCK",
+        "_ICON_UNLOCK",
+        "_ICON_DRAGON_EYE",
+    }
+)
+
+
+def test_registro_iconos_congelado_y_sin_muertos() -> None:
+    """icons.py define EXACTAMENTE el registro vivo, y cada constante definida
+    se carga al menos una vez fuera de icons.py: un registro que crece con
+    constantes muertas vuelve a ser el viejo inventario divergente."""
+    fuentes = _fuentes_gui()
+    tree_icons = ast.parse(fuentes["icons.py"])
+    definidos = {
+        node.targets[0].id
+        for node in tree_icons.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id.startswith("_ICON_")
+    }
+    assert definidos == set(_REGISTRO_ICONOS_VIVO), f"registro de iconos cambió: {sorted(definidos)}"
+
+    cargas: dict[str, int] = {}
+    for rel, src in fuentes.items():
+        if rel == "icons.py":
+            continue
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Name) and node.id in definidos and isinstance(node.ctx, ast.Load):
+                cargas[node.id] = cargas.get(node.id, 0) + 1
+    sin_consumidor = sorted(definidos - set(cargas))
+    assert not sin_consumidor, f"iconos definidos sin consumidor: {sin_consumidor}"
