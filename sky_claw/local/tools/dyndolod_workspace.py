@@ -833,7 +833,10 @@ def admitir_root(candidato: pathlib.PurePath | str, *, prohibidas: RaicesProhibi
     * absoluta, no UNC/red —ni sintáctica ni por unidad mapeada—, no raíz de
       volumen;
     * el conjunto de raíces prohibidas tiene que estar COMPLETO: una prohibición
-      que no se pudo resolver (`prohibidas.indeterminadas`) rechaza, no se ignora;
+      que no se pudo resolver (`prohibidas.indeterminadas`) rechaza, no se
+      ignora — pero DESPUÉS del solapamiento, para que un root que ya se puede
+      probar prohibido se rechace nombrando con qué solapa y no con qué no se
+      pudo comparar;
     * sin solapamiento en NINGUNA dirección con juego, Data, biblioteca Steam,
       instalación y datos de MO2, profiles, mods, overwrite, instalaciones de
       DynDOLOD/TexGen, TEMP y las Known Folders prohibidas;
@@ -888,9 +891,29 @@ def admitir_root(candidato: pathlib.PurePath | str, *, prohibidas: RaicesProhibi
             accion_requerida="elegir un directorio en un volumen LOCAL (no una unidad mapeada a un share)",
         )
 
-    # Fail-closed sobre el conjunto de prohibiciones INCOMPLETO. No se admite
-    # contra evidencia parcial: si la API de Known Folders no contestó, este
-    # root podría SER `Documents` y el solapamiento de abajo diría que no.
+    # La evidencia que SÍ tenemos manda sobre la que falta. Los dos rechazos son
+    # fail-closed y el veredicto final es el mismo —no se usa este root—, pero el
+    # ORDEN decide qué lee el operador: con las prohibiciones al revés, un root
+    # que demostrablemente ES `Documents` se rechazaba diciendo "no se pudo
+    # resolver Desktop", que no nombra el problema real ni la acción que lo
+    # arregla. Primero se nombra lo que se puede probar; recién si no hay
+    # solapamiento demostrado pesa lo que no se pudo mirar.
+    solapadas = prohibidas.solapadas_con(canonico)
+    if solapadas:
+        raise WorkspaceRechazadoError(
+            motivo=MotivoDeRechazo.INVALIDO,
+            root=canonico,
+            razon=("el external_work_root solapa (en alguna dirección) con: " + ", ".join(solapadas)),
+            accion_requerida=(
+                "elegir un directorio dedicado, externo al juego, a MO2, a las "
+                "instalaciones de herramientas, a TEMP y a las carpetas de usuario"
+            ),
+        )
+
+    # Sin solapamiento demostrado, un conjunto de prohibiciones INCOMPLETO sigue
+    # siendo un rechazo: la ausencia de evidencia no es evidencia de ausencia —
+    # este root podría SER la carpeta que no se pudo resolver, y el chequeo de
+    # arriba, con esa entrada faltante, diría que no.
     if prohibidas.indeterminadas:
         raise WorkspaceRechazadoError(
             motivo=MotivoDeRechazo.INVALIDO,
@@ -903,18 +926,6 @@ def admitir_root(candidato: pathlib.PurePath | str, *, prohibidas: RaicesProhibi
             accion_requerida=(
                 "reintentar; si persiste, verificar que el shell de Windows responde "
                 "(las carpetas de usuario se resuelven por la API de Known Folders)"
-            ),
-        )
-
-    solapadas = prohibidas.solapadas_con(canonico)
-    if solapadas:
-        raise WorkspaceRechazadoError(
-            motivo=MotivoDeRechazo.INVALIDO,
-            root=canonico,
-            razon=("el external_work_root solapa (en alguna dirección) con: " + ", ".join(solapadas)),
-            accion_requerida=(
-                "elegir un directorio dedicado, externo al juego, a MO2, a las "
-                "instalaciones de herramientas, a TEMP y a las carpetas de usuario"
             ),
         )
     return canonico

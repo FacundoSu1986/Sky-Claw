@@ -426,6 +426,27 @@ def test_admision_admite_otro_volumen_local(tmp_path: pathlib.Path) -> None:
     assert admitido == otro_volumen.resolve()
 
 
+#: Rutas inertes para las Known Folders que un test NO está ejerciendo. Existen
+#: porque el conjunto v1 es CERRADO y la admisión falla cerrado sobre lo que no
+#: se pudo resolver: dejar dos carpetas sin contestar hacía que el veredicto
+#: dependiera de la PLATAFORMA que corre el test (en Linux no hay Known Folders
+#: y no falta nada; en Windows faltan dos y el rechazo cambia de razón). El seam
+#: existe justamente para que el contrato se ejerza igual en todos lados.
+_RUTAS_INERTES_DE_KNOWN_FOLDERS: dict[str, str] = {
+    "Documents": r"Q:\inerte\Documents",
+    "Desktop": r"Q:\inerte\Desktop",
+    "Downloads": r"Q:\inerte\Downloads",
+}
+
+
+def _resolver_todas_las_known_folders(carpeta: str, ruta_efectiva: str):
+    """Resuelve el conjunto CERRADO completo: *carpeta* en su ruta, el resto inerte."""
+    rutas = dict(_RUTAS_INERTES_DE_KNOWN_FOLDERS)
+    rutas[carpeta] = ruta_efectiva
+    por_guid = {known_folders.IDENTIFICADORES[nombre]: ruta for nombre, ruta in rutas.items()}
+    return por_guid.get
+
+
 @pytest.mark.parametrize(
     ("carpeta", "ruta_efectiva"),
     [
@@ -442,8 +463,7 @@ def test_admision_rechaza_los_known_folders_por_identificador(
     tmp_path: pathlib.Path, carpeta: str, ruta_efectiva: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Cada Known Folder contractual hace rechazar el root, redirigida incluida."""
-    guid = known_folders.IDENTIFICADORES[carpeta]
-    monkeypatch.setattr(known_folders, "_resolver_por_api", lambda g: ruta_efectiva if g == guid else None)
+    monkeypatch.setattr(known_folders, "_resolver_por_api", _resolver_todas_las_known_folders(carpeta, ruta_efectiva))
     prohibidas = ws.RaicesProhibidas.desde_entorno(
         game=tmp_path / "game",
         mo2_install=None,
@@ -466,11 +486,10 @@ def test_una_carpeta_con_nombre_parecido_no_es_una_known_folder(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Sin búsqueda de substrings: `Mis Documentos de Trabajo` no es `Documents`."""
-    guid = known_folders.IDENTIFICADORES["Documents"]
     monkeypatch.setattr(
         known_folders,
         "_resolver_por_api",
-        lambda g: r"C:\Users\facha\Documents" if g == guid else None,
+        _resolver_todas_las_known_folders("Documents", r"C:\Users\facha\Documents"),
     )
     prohibidas = ws.RaicesProhibidas.desde_entorno(
         game=tmp_path / "game",
@@ -484,6 +503,70 @@ def test_una_carpeta_con_nombre_parecido_no_es_una_known_folder(
 
     admitido = ws.admitir_root(pathlib.PureWindowsPath(r"E:\Mis Documentos de Trabajo"), prohibidas=prohibidas)
     assert admitido == pathlib.PureWindowsPath(r"E:\Mis Documentos de Trabajo")
+
+
+@pytest.mark.parametrize("hay_known_folders", [True, False])
+def test_el_veredicto_de_admision_no_depende_de_la_plataforma(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, hay_known_folders: bool
+) -> None:
+    """Con el conjunto CERRADO resuelto entero, el veredicto es el mismo en todos lados.
+
+    RED contra un fallo que la suite de Linux no podía ver: los fixtures de
+    Known Folders resolvían UNA carpeta y dejaban las otras dos sin contestar.
+    En Linux eso no falta nada (no existen); en Windows son dos indeterminadas y
+    el rechazo cambiaba de razón. El seam existe para que el contrato se ejerza
+    igual en las dos plataformas — un test que sólo pasa en una no ancla nada.
+    """
+    monkeypatch.setattr(known_folders, "plataforma_resuelve_known_folders", lambda: hay_known_folders)
+    monkeypatch.setattr(
+        known_folders,
+        "_resolver_por_api",
+        _resolver_todas_las_known_folders("Documents", r"C:\Users\facha\Documents"),
+    )
+    prohibidas = ws.RaicesProhibidas.desde_entorno(
+        game=tmp_path / "game",
+        mo2_install=None,
+        mo2_instance_data_root=None,
+        mo2_mods_path=None,
+        dyndolod_exe=None,
+        texgen_exe=None,
+        temp_dir=tmp_path / "temp",
+    )
+
+    assert prohibidas.indeterminadas == ()
+    with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+        ws.admitir_root(pathlib.PureWindowsPath(r"C:\Users\facha\Documents\Sky-Claw Work"), prohibidas=prohibidas)
+    assert "Documents" in excinfo.value.razon
+
+
+def test_el_solapamiento_demostrado_se_nombra_antes_que_la_evidencia_que_falta(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Los dos rechazos son fail-closed; el ORDEN decide qué lee el operador.
+
+    Un root que demostrablemente ES `Documents` tiene que rechazarse diciendo
+    con QUÉ solapa, no "no se pudo resolver Desktop": el segundo mensaje no
+    nombra el problema real ni la acción que lo arregla, y era lo que salía
+    cuando la API resolvía unas carpetas sí y otras no — el caso REAL en Windows,
+    no un montaje.
+    """
+    prohibidas = ws.RaicesProhibidas(
+        entradas=(("Documents", pathlib.PureWindowsPath(r"C:\Users\facha\Documents")),),
+        indeterminadas=("Desktop", "Downloads"),
+    )
+
+    with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+        ws.admitir_root(pathlib.PureWindowsPath(r"C:\Users\facha\Documents\Sky-Claw Work"), prohibidas=prohibidas)
+
+    assert "solapa" in excinfo.value.razon
+    assert "Documents" in excinfo.value.razon
+    assert "no se pudo resolver" not in excinfo.value.razon
+
+    # Y sin solapamiento demostrado, la evidencia que falta SIGUE rechazando:
+    # la precedencia reordena los mensajes, no relaja el fail-closed.
+    with pytest.raises(ws.WorkspaceRechazadoError) as sin_solape:
+        ws.admitir_root(pathlib.PureWindowsPath(r"E:\Trabajo\Sky-Claw"), prohibidas=prohibidas)
+    assert "no se pudo resolver" in sin_solape.value.razon
 
 
 def test_steamapps_entra_por_igualdad_de_componente_no_por_substring(
