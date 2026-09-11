@@ -369,3 +369,27 @@ def test_medievalsharp_fuera_del_bundle() -> None:
     fonts_dir = _GUI_DIR / "assets" / "fonts"
     remanentes = sorted(p.name for p in fonts_dir.iterdir() if p.name.lower().startswith("medievalsharp"))
     assert remanentes == [], f"woff2 de MedievalSharp residuales: {remanentes}"
+
+
+# ── C2 — recetas de botón centralizadas ──────────────────────────────────────
+
+#: Tokens de receta que cuando aparecen en forge_dashboard.py son síntoma de
+#: una receta reintroducida inline (el resto del CSS que los contiene es
+#: declarativo/de estado, no un botón).
+_RECETA_GHOST = "border:1px solid rgba(200,168,106,.35)"
+_RECETA_DANGER = "border:1.5px solid rgba(216,88,78,.5)"
+
+
+def test_botones_del_shell_tienen_receta_en_un_solo_lugar() -> None:
+    """C2: las recetas de botón del shell viven en styles.css (.sc-btn--gold /
+    --ghost / --danger); el Forge las referencia por clase, no inline. Si alguien
+    vuelve a escribir el gradiente oro en forge_dashboard.py, el ancla rompe.
+    El match de la receta es tolerante a whitespace (el CSS con espacios y el
+    inline sin espacios deben reconocerse como la MISMA receta)."""
+    receta_re = r"linear-gradient\(\s*180deg\s*,\s*#f3dca0\s*,\s*#c8a86a\s*58%\s*,\s*#9c7a40\s*\)"
+    assert len(re.findall(receta_re, _STYLES)) == 1, "la receta oro debe existir exactamente una vez (en .sc-btn--gold)"
+    assert ".sc-btn--gold" in _STYLES and ".sc-btn--ghost" in _STYLES and ".sc-btn--danger" in _STYLES
+    # Y ninguna receta inline en el shell:
+    assert not re.search(receta_re, _FORGE), "receta oro reintroducida inline en forge_dashboard.py"
+    assert _RECETA_GHOST not in _FORGE, "receta ghost inline reintroducida"
+    assert _RECETA_DANGER not in _FORGE, "receta danger inline reintroducida"
