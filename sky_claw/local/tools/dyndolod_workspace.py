@@ -633,8 +633,30 @@ def _escribir_json_atomico(destino: pathlib.Path, contenido: dict[str, Any]) -> 
 # ---------------------------------------------------------------------------
 
 
+#: Prefijo de ruta extendida de Windows (``\\\\?\\``) y su variante UNC. `resolve()`
+#: puede devolverlos —rutas largas, ciertos volúmenes— y la API de Known Folders
+#: NO los usa, así que la misma carpeta llega deletreada de dos formas.
+_PREFIJO_EXTENDIDO: Final[str] = "\\\\?\\"
+_PREFIJO_EXTENDIDO_UNC: Final[str] = "\\\\?\\UNC\\"
+
+
+def _ancla_sin_prefijo_extendido(ancla: str) -> str:
+    """``\\\\?\\C:\\`` → ``C:\\`` y ``\\\\?\\UNC\\srv\\share\\`` → ``\\\\srv\\share\\``.
+
+    El prefijo es una anotación PARA EL KERNEL (saltear el parseo de rutas y el
+    límite MAX_PATH), no parte de la identidad del directorio: ``\\\\?\\C:\\x`` y
+    ``C:\\x`` son el MISMO path. Sólo se normaliza el ancla porque es el único
+    componente donde el prefijo aparece.
+    """
+    if ancla.upper().startswith(_PREFIJO_EXTENDIDO_UNC):
+        return "\\\\" + ancla[len(_PREFIJO_EXTENDIDO_UNC) :]
+    if ancla.startswith(_PREFIJO_EXTENDIDO):
+        return ancla[len(_PREFIJO_EXTENDIDO) :]
+    return ancla
+
+
 def _partes_normalizadas(path: pathlib.PurePath) -> tuple[str, ...]:
-    """Partes comparables de una ruta, insensibles a mayúsculas.
+    """Partes comparables de una ruta, insensibles a mayúsculas y al prefijo extendido.
 
     Se comparan PARTES, no substrings del string completo: eso es lo que hace
     que `E:\\Mis Documentos de Trabajo` no sea `Documents` y que
@@ -642,8 +664,18 @@ def _partes_normalizadas(path: pathlib.PurePath) -> tuple[str, ...]:
     conservador — en un filesystem case-sensitive rechaza también el vecino que
     sólo difiere en mayúsculas, que es fail-closed y no fail-open, y el producto
     corre sobre Windows, donde esos dos nombres son el MISMO directorio.
+
+    El prefijo extendido se normaliza por la razón CONTRARIA, y por eso no es
+    cosmético: acá el deletreo de más produce un fail-OPEN. `resolve()` puede
+    devolver ``\\\\?\\C:\\Users\\x\\Documents\\...`` mientras la API de Known Folders
+    devuelve ``C:\\Users\\x\\Documents``; con las anclas distintas, el solapamiento
+    NO se detecta y se admite un root que había que rechazar. La comparación
+    tiene que ver el mismo directorio escrito de las dos maneras.
     """
-    return tuple(parte.casefold() for parte in path.parts)
+    partes = path.parts
+    if partes:
+        partes = (_ancla_sin_prefijo_extendido(partes[0]), *partes[1:])
+    return tuple(parte.casefold() for parte in partes)
 
 
 def _solapan(uno: pathlib.PurePath, otro: pathlib.PurePath) -> bool:

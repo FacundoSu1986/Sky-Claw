@@ -569,6 +569,96 @@ def test_el_solapamiento_demostrado_se_nombra_antes_que_la_evidencia_que_falta(
     assert "no se pudo resolver" in sin_solape.value.razon
 
 
+@pytest.mark.parametrize(
+    ("etiqueta", "candidato", "prohibida"),
+    [
+        (
+            "el candidato viene con prefijo (lo que devuelve resolve())",
+            r"\\?\C:\Users\facha\Documents\Sky-Claw Work",
+            r"C:\Users\facha\Documents",
+        ),
+        (
+            "la prohibida viene con prefijo",
+            r"C:\Users\facha\Documents\Sky-Claw Work",
+            r"\\?\C:\Users\facha\Documents",
+        ),
+        (
+            "la variante UNC del prefijo",
+            r"\\?\UNC\servidor\share\work",
+            r"\\servidor\share",
+        ),
+    ],
+)
+def test_el_prefijo_extendido_de_windows_no_esconde_un_solapamiento(
+    etiqueta: str, candidato: str, prohibida: str
+) -> None:
+    """``\\\\?\\C:\\x`` y ``C:\\x`` son el MISMO directorio: tienen que solapar.
+
+    Es el único deletreo de más de esta comparación que produce un fail-OPEN, no
+    un fail-closed: `Path.resolve()` puede devolver la forma con prefijo —rutas
+    largas, ciertos volúmenes— mientras la API de Known Folders devuelve la
+    forma plana. Con las anclas distintas (`\\\\?\\C:\\` vs `C:\\`) el solapamiento
+    no se detectaba y un root dentro de `Documents` quedaba ADMITIDO.
+
+    Se ejerce con `PureWindowsPath` literales, sin `resolve()`: así el contrato
+    se verifica igual en Linux y en Windows, en vez de depender de conseguir un
+    path largo real en el runner.
+    """
+    assert ws._solapan(pathlib.PureWindowsPath(candidato), pathlib.PureWindowsPath(prohibida)), etiqueta
+
+
+def test_normalizar_el_prefijo_no_hace_solapar_rutas_distintas() -> None:
+    """La normalización quita una anotación del kernel, no afloja la comparación."""
+    assert not ws._solapan(
+        pathlib.PureWindowsPath(r"\\?\C:\Trabajo\Sky-Claw"),
+        pathlib.PureWindowsPath(r"C:\Users\facha\Documents"),
+    )
+    # Y el vecino de nombre parecido sigue sin serlo, con prefijo o sin él.
+    assert not ws._solapan(
+        pathlib.PureWindowsPath(r"\\?\E:\Mis Documentos de Trabajo"),
+        pathlib.PureWindowsPath(r"C:\Users\facha\Documents"),
+    )
+
+
+def test_admitir_rechaza_cuando_la_canonicalizacion_agrega_el_prefijo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    r"""El hilo completo, por donde el agujero existe de verdad.
+
+    El usuario NO escribe el prefijo: escribe `C:\Users\facha\Documents\...`.
+    Un `\\?\...` tipeado a mano lo frena antes el chequeo sintáctico de UNC —un
+    falso positivo fail-CLOSED, inofensivo—, así que ése no es el escenario. El
+    prefijo lo introduce `resolve()` DENTRO de `admitir_root`, y recién ahí la
+    comparación contra la Known Folder plana fallaba y admitía el root.
+
+    Se sustituye `_canonicalizar` por lo que Windows puede devolver: es la forma
+    honesta de montar el escenario desde Linux, en vez de fingir que el usuario
+    tipeó algo que no tipea.
+    """
+    monkeypatch.setattr(
+        known_folders,
+        "_resolver_por_api",
+        _resolver_todas_las_known_folders("Documents", r"C:\Users\facha\Documents"),
+    )
+    prefijado = pathlib.PureWindowsPath(r"\\?\C:\Users\facha\Documents\Sky-Claw Work")
+    monkeypatch.setattr(ws, "_canonicalizar", lambda ruta: prefijado if "Sky-Claw Work" in str(ruta) else ruta)
+    prohibidas = ws.RaicesProhibidas.desde_entorno(
+        game=tmp_path / "game",
+        mo2_install=None,
+        mo2_instance_data_root=None,
+        mo2_mods_path=None,
+        dyndolod_exe=None,
+        texgen_exe=None,
+        temp_dir=tmp_path / "temp",
+    )
+
+    with pytest.raises(ws.WorkspaceRechazadoError) as excinfo:
+        ws.admitir_root(pathlib.PureWindowsPath(r"C:\Users\facha\Documents\Sky-Claw Work"), prohibidas=prohibidas)
+
+    assert excinfo.value.motivo is ws.MotivoDeRechazo.INVALIDO
+    assert "Documents" in excinfo.value.razon, "el prefijo que agregó resolve() escondió el solapamiento"
+
+
 def test_steamapps_entra_por_igualdad_de_componente_no_por_substring(
     tmp_path: pathlib.Path,
 ) -> None:
