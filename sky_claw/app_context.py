@@ -791,6 +791,27 @@ class AppContext:
             # motivo y la acción que el operador tiene que tomar.
             logger.warning("external_work_root rechazado: %s", exc)
             return None
+        except Exception:
+            # El docstring de arriba promete que un problema de ESTA etapa no
+            # tumba Sky-Claw, y hasta acá sólo lo cumplía para el rechazo
+            # esperable: un `OSError` del registro durable, un fallo de la DB de
+            # coordinación o un `PermissionError` al canonicalizar se propagaban
+            # y mataban el arranque completo. Lo marcó el revisor adversarial y
+            # es exacto — una promesa en prosa que el código no sostenía.
+            #
+            # Esto NO relaja el fail-closed: el veredicto sigue siendo "no se usa
+            # ese root" (se devuelve `None` = NO CONFIGURADO), que es lo que
+            # protege los datos. Lo que cambia es que una etapa rota deja de
+            # tumbar el producto entero. Con `exc_info` porque, a diferencia del
+            # rechazo de admisión, esto SÍ es un incidente inesperado y el stack
+            # es la evidencia. Mismo patrón best-effort que los otros bloques de
+            # arranque de este archivo (recovery de rollback, precache huérfano).
+            logger.warning(
+                "Resolución del external_work_root falló de forma inesperada; DynDOLOD "
+                "administrado queda NO CONFIGURADO este arranque (no bloquea el resto).",
+                exc_info=True,
+            )
+            return None
 
     async def _rollback_startup(self) -> None:
         try:

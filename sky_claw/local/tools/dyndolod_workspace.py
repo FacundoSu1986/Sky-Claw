@@ -492,6 +492,11 @@ def _releer_binding_del_ganador(root: pathlib.Path) -> BindingDocument | None:
       bucle indefinido esperando a un proceso que quizás murió a mitad de
       escribir.
     """
+    # `time.sleep` y no `asyncio.sleep` porque esta función es SÍNCRONA y sólo se
+    # alcanza desde un worker thread (`resolver_workspace` la cruza con
+    # `asyncio.to_thread`) o desde un caller sync. Dormir acá no bloquea el event
+    # loop; hacerlo en el loop sí lo haría, y por eso el ancla de AST exige el
+    # `to_thread` en el único camino async que llega hasta acá.
     limite = time.monotonic() + _ESPERA_MAXIMA_DEL_GANADOR_SEGUNDOS
     while True:
         try:
@@ -1131,6 +1136,13 @@ def exigir_veredicto(
         # genérico "metadata inválida" obligaría al operador a abrir el JSON
         # para descubrir lo que el código ya sabía.
         leer_binding(root)
+        # NO es código muerto (lo señaló el revisor adversarial, y vale aclararlo
+        # acá en vez de en el PR): entre el `evaluar_estado` de arriba y esta
+        # relectura hay un TOCTOU real — otro proceso pudo arreglar o borrar la
+        # metadata en el ínterin, y entonces `leer_binding` ya no levanta. El
+        # veredicto de ESTE arranque sigue siendo E, así que se rechaza igual:
+        # cambiar de opinión a mitad de la función sería decidir sobre un disco
+        # que ya no es el que se clasificó.
         raise _rechazo_de_schema(root, "metadata de propiedad no interpretable")
 
     entrada = registro.entrada(recursos.clave())
@@ -1233,7 +1245,11 @@ class Stage9Coordination:
     RECURSO_DEL_WORKSPACE: Final[str] = "dyndolod-workspace"
 
     #: TTL corto para la resolución de propiedad: es una operación de arranque de
-    #: milisegundos, no una generación de LODs.
+    #: milisegundos, no una generación de LODs. Corto NO significa frágil: el
+    #: heartbeat de `SnapshotTransactionLock` lo renueva mientras el bloque siga
+    #: adentro, así que una resolución lenta (filesystem de red, antivirus) no
+    #: pierde la exclusión — y si la lease se pierde igual, la salida levanta en
+    #: vez de reportar un éxito que no se puede sostener.
     TTL_DEL_WORKSPACE: Final[float] = 30.0
 
     def __init__(
@@ -1309,21 +1325,48 @@ class Stage9Coordination:
             yield sostenido
 
     @contextlib.asynccontextmanager
-    async def sostener_workspace(self, *, agent_id: str) -> AsyncIterator[None]:
+    async def sostener_workspace(self, *, agent_id: str) -> AsyncIterator[SnapshotTransactionLock]:
         """Serializa la resolución de propiedad del workspace entre procesos.
 
         Cubre el check + publish del binding y la mutación del registro de root
         activo como una unidad: sin esto, dos arranques simultáneos podrían leer
         ambos "no hay root activo" y registrar cada uno el suyo.
 
+        **Por qué usa el MISMO `SnapshotTransactionLock` que el ritual y no un
+        `acquire_lock`/`release_lock` crudo.** La primera versión sí era cruda, y
+        el revisor adversarial marcó lo que eso implicaba: un TTL fijo sin
+        heartbeat: si la resolución tardaba más que el TTL —filesystem de red,
+        antivirus escaneando el root, un árbol viejo enorme— la lease expiraba en
+        silencio y otro proceso podía entrar, justo en la ventana donde se
+        publica el binding y se reescribe el registro de root activo. La
+        exclusión que P0.2 promete dejaba de ser demostrable sin que nada
+        fallara. Reusando el mismo primitivo que `sostener_ritual` llegan gratis
+        la renovación por heartbeat y `assert_owned`, que es lo que el contrato
+        pide: exclusión demostrable, no exclusión con fecha de vencimiento.
+
+        Yields el lock sostenido para que el caller pueda llamar `assert_owned()`
+        justo antes de cada escritura crítica y estrechar a ~0 la ventana entre
+        una lease perdida y su detección.
+
         Raises:
             WorkspaceRechazadoError: motivo ``OCUPADO`` si otro proceso está
                 resolviendo el workspace ahora mismo. Es un rechazo honesto y
                 reintentable, no una espera indefinida en el arranque.
+            LockLeaseLostError: la lease se perdió durante la resolución. Es
+                fail-closed: no se afirma una propiedad que ya no se puede
+                garantizar.
         """
         await self.initialize()
+        sostenido = SnapshotTransactionLock(
+            lock_manager=self._lock_manager,
+            snapshot_manager=self._snapshot_manager,
+            resource_id=self.RECURSO_DEL_WORKSPACE,
+            agent_id=agent_id,
+            target_files=[],
+            ttl=self.TTL_DEL_WORKSPACE,
+        )
         try:
-            await self._lock_manager.acquire_lock(self.RECURSO_DEL_WORKSPACE, agent_id, ttl=self.TTL_DEL_WORKSPACE)
+            await sostenido.__aenter__()
         except LockAcquisitionError as exc:
             raise WorkspaceRechazadoError(
                 motivo=MotivoDeRechazo.OCUPADO,
@@ -1331,9 +1374,12 @@ class Stage9Coordination:
                 accion_requerida="reintentar; si persiste, verificar que no quedó una instancia colgada",
             ) from exc
         try:
-            yield
-        finally:
-            await self._lock_manager.release_lock(self.RECURSO_DEL_WORKSPACE, agent_id)
+            yield sostenido
+        except BaseException as exc:
+            await sostenido.__aexit__(type(exc), exc, exc.__traceback__)
+            raise
+        else:
+            await sostenido.__aexit__(None, None, None)
 
 
 def construir_coordinacion_de_etapa9(
@@ -1480,7 +1526,8 @@ async def _validar_transicion(
             motivo=MotivoDeRechazo.OCUPADO,
         )
 
-    inspeccion = inspector(viejo)
+    # `os.walk` sobre el root viejo puede recorrer GB de generaciones: fuera del loop.
+    inspeccion = await asyncio.to_thread(inspector, viejo)
     if not inspeccion.inspeccionable:
         raise _rechazar(
             f"no se puede inspeccionar el root viejo {viejo}: {inspeccion.detalle}",
@@ -1544,12 +1591,20 @@ async def resolver_workspace(
         )
         return None
 
-    admitido = admitir_root(preferencia, prohibidas=prohibidas)
+    # TODO el I/O de disco de esta función sale del event loop (§2.1 de
+    # `.github/coding_conventions.md`: disco vía `asyncio.to_thread`). Las
+    # funciones de abajo son SÍNCRONAS a propósito —así se testean y así las usa
+    # cualquier caller no-async— y este orquestador es el único punto que las
+    # cruza al mundo async, así que el offload vive acá, una vez por llamada.
+    # `tests/test_dyndolod_workspace.py::test_ninguna_funcion_async_hace_io_de_disco_en_el_loop`
+    # enumera esta familia por AST: una llamada bloqueante nueva sin `to_thread`
+    # rompe el ancla antes de llegar a producción.
+    admitido = await asyncio.to_thread(admitir_root, preferencia, prohibidas=prohibidas)
     root = pathlib.Path(admitido)
     clave = recursos.clave()
 
-    async with coordinacion.sostener_workspace(agent_id=agent_id):
-        entrada = registro.entrada(clave)
+    async with coordinacion.sostener_workspace(agent_id=agent_id) as sostenido:
+        entrada = await asyncio.to_thread(registro.entrada, clave)
         if entrada is not None:
             pendiente = entrada.transicion_pendiente
             # El root a dejar es el `desde` del marcador cuando una transición
@@ -1569,22 +1624,36 @@ async def resolver_workspace(
                 # Recién con la transición VALIDADA se registra la intención y se
                 # repunta el activo — en una sola escritura atómica, y siempre
                 # antes de publicar o usar el root nuevo.
-                registro.registrar_transicion(clave=clave, hacia=root, motivo="cambio de preferencia")
+                # Antes de CADA escritura crítica se reconfirma la propiedad de
+                # la lease contra la DB: entre la adquisición y este punto corrió
+                # I/O de disco de duración no acotada (inspección del root viejo),
+                # así que "lo tenía cuando entré" no es evidencia de "lo tengo
+                # ahora". Si se perdió, levanta y no se escribe nada.
+                await sostenido.assert_owned()
+                await asyncio.to_thread(
+                    registro.registrar_transicion, clave=clave, hacia=root, motivo="cambio de preferencia"
+                )
                 logger.info(
                     "Transición de external_work_root validada y registrada.",
                     extra={"pipeline_stage": _ETAPA, "desde": str(viejo), "hacia": str(root)},
                 )
 
-        estado = exigir_veredicto(root, recursos=recursos, registro=registro)
+        estado = await asyncio.to_thread(exigir_veredicto, root, recursos=recursos, registro=registro)
         if estado is EstadoDelRoot.C_BINDING_COMPATIBLE:
-            documento = leer_binding(root)
-            if documento is None:  # pragma: no cover - el veredicto C lo garantiza
+            # Se estrecha en una variable aparte para que el tipo DECLARADO de
+            # `documento` sea `BindingDocument` y no `BindingDocument | None`:
+            # con el offload a `to_thread` la primera asignación pasó a ser la
+            # opcional, y el strict del módulo (que es opt-in, no heredado)
+            # marcaba los dos usos de abajo.
+            leido = await asyncio.to_thread(leer_binding, root)
+            if leido is None:  # pragma: no cover - el veredicto C lo garantiza
                 raise _rechazo_de_schema(root, "el binding desapareció tras el veredicto")
-            recien_inicializado = False
+            documento, recien_inicializado = leido, False
         else:
-            documento, recien_inicializado = publicar_binding(root, recursos)
+            documento, recien_inicializado = await asyncio.to_thread(publicar_binding, root, recursos)
 
-        registro.registrar_activa(clave=clave, root=root, binding_id=documento.binding_id)
+        await sostenido.assert_owned()
+        await asyncio.to_thread(registro.registrar_activa, clave=clave, root=root, binding_id=documento.binding_id)
         return WorkspaceResuelto(
             root=root,
             binding=documento,

@@ -17,6 +17,7 @@ no ataja al tercero.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -1720,3 +1721,224 @@ def test_el_health_cli_arranca_sin_external_work_root(tmp_path: pathlib.Path, mo
 
     assert args.mode == "vfs-health"
     assert Config(config_path).external_work_root == ""
+
+
+# ---------------------------------------------------------------------------
+# El event loop no se bloquea (§2.1 de `.github/coding_conventions.md`)
+# ---------------------------------------------------------------------------
+
+#: Helpers SÍNCRONOS del módulo que hacen I/O de disco (leer, escribir, recorrer,
+#: `fsync`, `resolve`) o duermen. Cualquier llamada a uno de estos desde una
+#: función `async` del módulo tiene que ir por `asyncio.to_thread`.
+#:
+#: Se enumera en vez de muestrear a propósito: el revisor adversarial encontró
+#: DOS de estas ocho en el PR original, y arreglar sólo las dos nombradas es
+#: exactamente el defecto dominante de este repo. El ancla falla con la novena.
+HELPERS_BLOQUEANTES: frozenset[str] = frozenset(
+    {
+        "admitir_root",
+        "leer_binding",
+        "publicar_binding",
+        "reescribir_binding_propio",
+        "evaluar_estado",
+        "exigir_veredicto",
+        "validar_destino_administrado",
+        "inspeccionar_root_para_transicion",
+        "entrada",
+        "leer",
+        "buscar_por_binding_id",
+        "registrar_activa",
+        "registrar_transicion",
+    }
+)
+
+
+def test_ninguna_funcion_async_hace_io_de_disco_en_el_loop() -> None:
+    """Ancla de clase: I/O de disco desde `async` sólo vía `asyncio.to_thread`.
+
+    `.github/coding_conventions.md` §2.1 lo dice sin matices —"No bloquear el
+    event loop: I/O bloqueante (subprocesos, disco...) vía `asyncio.to_thread`"
+    y "Prohibido `time.sleep()` en código async"— pero ninguna herramienta del
+    repo lo verifica: ni ruff ni mypy ven esta clase. Por eso el PR original la
+    violó en ocho lugares con todo en verde, y por eso la regla necesita este
+    gate y no otro párrafo.
+    """
+    import ast
+
+    ruta = pathlib.Path(ws.__file__)
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
+
+    ofensores: list[str] = []
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.AsyncFunctionDef):
+            continue
+        # Las llamadas que YA van envueltas: `asyncio.to_thread(helper, ...)`
+        # pasa el helper como ARGUMENTO, no como `func`, así que basta mirar
+        # quién está en posición de llamada.
+        for sub in ast.walk(nodo):
+            if not isinstance(sub, ast.Call):
+                continue
+            func = sub.func
+            nombre = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
+            if nombre in HELPERS_BLOQUEANTES:
+                ofensores.append(f"{nodo.name} → {nombre}()")
+            if (
+                nombre == "sleep"
+                and isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "time"
+            ):
+                ofensores.append(f"{nodo.name} → time.sleep()")
+
+    assert not ofensores, (
+        f"I/O de disco (o time.sleep) en el event loop; envolver con asyncio.to_thread: {sorted(ofensores)}"
+    )
+
+
+def test_el_detector_de_bloqueo_reconoce_las_dos_formas() -> None:
+    """El ancla de arriba no sirve si su detector es ciego: se prueba con casos.
+
+    Sin esto, un detector roto reportaría cero ofensores para siempre y la
+    regla volvería a ser prosa — que es el modo de falla que el propio
+    `AGENTS.md` describe.
+    """
+    import ast
+
+    def _ofensores(fuente: str) -> list[str]:
+        arbol = ast.parse(fuente)
+        hallados: list[str] = []
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.AsyncFunctionDef):
+                continue
+            for sub in ast.walk(nodo):
+                if not isinstance(sub, ast.Call):
+                    continue
+                func = sub.func
+                nombre = (
+                    func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
+                )
+                if nombre in HELPERS_BLOQUEANTES:
+                    hallados.append(nombre)
+                if (
+                    nombre == "sleep"
+                    and isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "time"
+                ):
+                    hallados.append("time.sleep")
+        return hallados
+
+    desnudo = "async def f():\n    leer_binding(root)\n"
+    envuelto = "async def f():\n    await asyncio.to_thread(leer_binding, root)\n"
+    durmiendo = "import time\nasync def f():\n    time.sleep(1)\n"
+    dormido_bien = "import asyncio\nasync def f():\n    await asyncio.sleep(1)\n"
+    sincrono = "def f():\n    leer_binding(root)\n"
+
+    assert _ofensores(desnudo) == ["leer_binding"]
+    assert _ofensores(envuelto) == []
+    assert _ofensores(durmiendo) == ["time.sleep"]
+    assert _ofensores(dormido_bien) == []
+    assert _ofensores(sincrono) == [], "una función sync puede bloquear: no es su problema"
+
+
+async def test_resolver_workspace_no_congela_el_event_loop(tmp_path: pathlib.Path) -> None:
+    """La prueba de comportamiento del ancla anterior: el loop sigue latiendo.
+
+    Un inspector deliberadamente lento (el caso real: recorrer GB de
+    generaciones viejas) corre mientras un ticker cuenta en el mismo loop. Si la
+    inspección ocurriera en el loop, el ticker no avanzaría ni una vez.
+    """
+    import asyncio
+
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    viejo = tmp_path / "Work Viejo"
+    nuevo = tmp_path / "Work Nuevo"
+
+    def _inspector_lento(root: pathlib.Path) -> ws.InspeccionDeRootViejo:
+        import time as _time
+
+        _time.sleep(0.4)
+        return ws.inspeccionar_root_para_transicion(root)
+
+    latidos = 0
+
+    async def _ticker() -> None:
+        nonlocal latidos
+        while True:
+            await asyncio.sleep(0.01)
+            latidos += 1
+
+    try:
+        await ws.resolver_workspace(
+            preferencia=str(viejo),
+            recursos=recursos,
+            prohibidas=_prohibidas(tmp_path),
+            registro=registro,
+            coordinacion=coordinacion,
+        )
+
+        tarea = asyncio.create_task(_ticker())
+        try:
+            await ws.resolver_workspace(
+                preferencia=str(nuevo),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+                inspector=_inspector_lento,
+            )
+        finally:
+            tarea.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await tarea
+
+        # Con el inspector de 0.4 s fuera del loop, el ticker de 10 ms tuvo que
+        # latir muchas veces. Si corriera EN el loop, quedaría cerca de cero.
+        assert latidos >= 10, f"el event loop quedó bloqueado durante la resolución ({latidos} latidos)"
+    finally:
+        await coordinacion.close()
+
+
+async def test_perder_la_lease_del_workspace_aborta_antes_de_escribir(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Fail-closed de la coordinación de arranque: sin lease no se registra nada.
+
+    La versión original tomaba el lock con `acquire_lock` crudo y TTL fijo, sin
+    heartbeat: si la resolución tardaba más que el TTL, la lease expiraba en
+    silencio y otro proceso podía entrar justo mientras se publica el binding y
+    se reescribe el registro. Ahora se reconfirma la propiedad ANTES de cada
+    escritura crítica, así que perderla aborta en vez de escribir con una
+    exclusión que ya no existe.
+    """
+    from sky_claw.app.db.locks import LockLeaseLostError
+
+    recursos = _instancia(tmp_path)
+    registro = _registro(tmp_path)
+    coordinacion = _coordinacion(tmp_path)
+    root = tmp_path / "Sky-Claw Work"
+
+    try:
+        await coordinacion.initialize()
+
+        # Otro dueño se lleva el lock del workspace ANTES de que arranque la
+        # resolución: es la forma determinista de reproducir "la lease ya no es
+        # tuya", sin competir con el heartbeat ni depender de timings.
+        await coordinacion.lock_manager.acquire_lock(coordinacion.RECURSO_DEL_WORKSPACE, "intruso", ttl=120.0)
+
+        with pytest.raises((LockLeaseLostError, ws.WorkspaceRechazadoError)):
+            await ws.resolver_workspace(
+                preferencia=str(root),
+                recursos=recursos,
+                prohibidas=_prohibidas(tmp_path),
+                registro=registro,
+                coordinacion=coordinacion,
+            )
+
+        # Y NO quedó registro de root activo escrito bajo una lease ajena.
+        assert registro.entrada(recursos.clave()) is None
+    finally:
+        await coordinacion.lock_manager.force_release(coordinacion.RECURSO_DEL_WORKSPACE)
+        await coordinacion.close()
