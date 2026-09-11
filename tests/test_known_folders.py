@@ -128,6 +128,49 @@ def test_no_deriva_del_perfil_del_usuario(monkeypatch: pytest.MonkeyPatch) -> No
     assert known_folders.resolver_known_folder("Documents") == pathlib.PureWindowsPath(r"D:\Users\facha\Docs")
 
 
+def test_en_windows_una_carpeta_sin_respuesta_queda_indeterminada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "No hay carpetas" y "no contestaron" son veredictos distintos.
+
+    En Windows la carpeta EXISTE: que la API no conteste no significa que este
+    root no sea `Documents`, significa que no lo podemos saber. Reportarlo como
+    conjunto vacío era indistinguible de Linux, y admitía justo el root que
+    había que rechazar.
+    """
+    monkeypatch.setattr(known_folders, "plataforma_resuelve_known_folders", lambda: True)
+    solo_desktop = {known_folders.IDENTIFICADORES["Desktop"]: r"C:\Users\facha\Desktop"}
+    monkeypatch.setattr(known_folders, "_resolver_por_api", solo_desktop.get)
+
+    inspeccion = known_folders.inspeccionar_known_folders_prohibidas()
+
+    assert [nombre for nombre, _ in inspeccion.rutas] == ["Desktop"]
+    assert inspeccion.indeterminadas == ("Documents", "Downloads")
+
+
+def test_fuera_de_windows_no_hay_indeterminadas(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sin Known Folders no falta evidencia: no existe la carpeta a comparar.
+
+    La contención en esas plataformas la dan las otras reglas de admisión, y
+    marcar las tres como indeterminadas volvería IMPOSIBLE configurar un
+    `external_work_root` en Linux — fail-closed convertido en fail-siempre.
+    """
+    monkeypatch.setattr(known_folders, "plataforma_resuelve_known_folders", lambda: False)
+    monkeypatch.setattr(known_folders, "_resolver_por_api", lambda guid: None)
+
+    inspeccion = known_folders.inspeccionar_known_folders_prohibidas()
+
+    assert inspeccion.rutas == ()
+    assert inspeccion.indeterminadas == ()
+
+
+def test_la_plataforma_se_decide_por_sys_platform_y_no_por_la_respuesta() -> None:
+    """El seam de plataforma no se infiere de que la API haya contestado."""
+    import sys
+
+    assert known_folders.plataforma_resuelve_known_folders() is (sys.platform == "win32")
+
+
 def test_ancla_de_fuente_sin_userprofile_ni_substrings() -> None:
     """Ancla por código: las dos formas prohibidas por el ADR no pueden reaparecer.
 
@@ -145,9 +188,61 @@ def test_ancla_de_fuente_sin_userprofile_ni_substrings() -> None:
     assert "USERPROFILE" not in cuerpo
     assert "expanduser" not in cuerpo
     assert "Path.home" not in cuerpo
-    # Ningún nombre de carpeta se usa como literal comparable dentro del cuerpo
-    # salvo en la tabla de identificadores (que mapea nombre → GUID).
-    assert cuerpo.count('"OneDrive"') == 0
+
+
+def test_ancla_de_fuente_sin_comparacion_por_nombre_de_carpeta() -> None:
+    """Ancla el PATRÓN prohibido, no el literal que se nos ocurrió hoy.
+
+    `assert '"OneDrive"' not in fuente` sólo ataja la palabra que ya conocíamos:
+    `"Documentos" in str(ruta)`, `ruta.name == "Desktop"` o
+    `"onedrive" in ruta.as_posix().casefold()` son el MISMO error —identidad por
+    nombre— y pasaban limpios. Se prohíbe la forma: ninguna comparación
+    (`in`/`==`) del módulo puede tener un literal de texto de un lado.
+
+    La tabla `IDENTIFICADORES` y la tupla `KNOWN_FOLDERS_PROHIBIDOS` quedan
+    fuera: ahí los nombres son CLAVES de un mapa a GUID, no un criterio de
+    identidad de rutas.
+    """
+    import ast
+
+    arbol = ast.parse(MODULO.read_text(encoding="utf-8"), filename=str(MODULO))
+    tablas = {
+        nodo
+        for nodo in arbol.body
+        if isinstance(nodo, ast.AnnAssign)
+        and isinstance(nodo.target, ast.Name)
+        and nodo.target.id in {"IDENTIFICADORES", "KNOWN_FOLDERS_PROHIBIDOS"}
+    }
+    excluidos = {id(n) for tabla in tablas for n in ast.walk(tabla)}
+
+    def _es_deteccion_de_plataforma(nodo: ast.Compare) -> bool:
+        """`sys.platform == "win32"` compara la PLATAFORMA, no una ruta.
+
+        Es la única comparación contra texto legítima del módulo, y se exime por
+        lo que compara —un atributo concreto de `sys`— y no por el literal del
+        otro lado, que es lo que volvería a abrir la puerta.
+        """
+        return any(
+            isinstance(o, ast.Attribute)
+            and o.attr == "platform"
+            and isinstance(o.value, ast.Name)
+            and o.value.id == "sys"
+            for o in (nodo.left, *nodo.comparators)
+        )
+
+    ofensores: list[str] = []
+    for nodo in ast.walk(arbol):
+        if id(nodo) in excluidos or not isinstance(nodo, ast.Compare):
+            continue
+        if not any(isinstance(op, (ast.In, ast.NotIn, ast.Eq, ast.NotEq)) for op in nodo.ops):
+            continue
+        if _es_deteccion_de_plataforma(nodo):
+            continue
+        operandos = [nodo.left, *nodo.comparators]
+        if any(isinstance(o, ast.Constant) and isinstance(o.value, str) for o in operandos):
+            ofensores.append(ast.unparse(nodo))
+
+    assert not ofensores, f"identidad por nombre de carpeta reintroducida: {ofensores}"
 
 
 def test_en_esta_plataforma_la_api_no_inventa_rutas() -> None:

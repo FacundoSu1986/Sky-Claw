@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import dataclasses
 import enum
 import hashlib
@@ -68,6 +69,7 @@ import json
 import logging
 import os
 import pathlib
+import sys
 import tempfile
 import time
 import uuid
@@ -642,9 +644,17 @@ class RaicesProhibidas:
     Cada entrada es ``(etiqueta, ruta)``; la etiqueta es lo que el operador lee
     en el rechazo, así que nombra el rol (`mo2_mods`, `texgen_install`) y no la
     ruta.
+
+    ``indeterminadas`` lleva las prohibiciones que este sistema **no pudo
+    resolver** (hoy: Known Folders en un Windows donde la API no contestó). Van
+    en el conjunto y no en un log porque un conjunto de prohibiciones incompleto
+    admite exactamente los roots que debía rechazar, sin que nada falle: la única
+    forma de que esa ausencia tenga consecuencia es que viaje junto al dato y la
+    admisión la mire.
     """
 
     entradas: tuple[tuple[str, pathlib.PurePath], ...]
+    indeterminadas: tuple[str, ...] = ()
 
     @classmethod
     def desde_entorno(
@@ -666,6 +676,11 @@ class RaicesProhibidas:
         de Known Folders (`Documents`, `Desktop`, `Downloads` por identificador,
         con su ruta efectiva vigente); pasar una secuencia explícita es para
         tests y para callers que ya la resolvieron.
+
+        Cuando se consulta la API, lo que ella **no** pudo contestar en Windows
+        viaja como `indeterminadas` y hace que :func:`admitir_root` falle
+        cerrado. Pasar la secuencia explícita afirma que el caller ya resolvió el
+        conjunto, así que no hay indeterminadas que arrastrar.
         """
         entradas: list[tuple[str, pathlib.PurePath]] = []
 
@@ -689,15 +704,17 @@ class RaicesProhibidas:
             _agregar("texgen_install", pathlib.Path(texgen_exe).parent)
         _agregar("temp", temp_dir if temp_dir is not None else pathlib.Path(tempfile.gettempdir()))
 
-        carpetas = (
-            known_folders.known_folders_prohibidos()
-            if known_folders_prohibidos is None
-            else tuple(known_folders_prohibidos)
-        )
+        if known_folders_prohibidos is None:
+            inspeccion = known_folders.inspeccionar_known_folders_prohibidas()
+            carpetas: tuple[tuple[str, pathlib.PurePath], ...] = inspeccion.rutas
+            indeterminadas = inspeccion.indeterminadas
+        else:
+            carpetas = tuple(known_folders_prohibidos)
+            indeterminadas = ()
         for nombre, ruta in carpetas:
             entradas.append((nombre, ruta))
 
-        return cls(entradas=tuple(entradas))
+        return cls(entradas=tuple(entradas), indeterminadas=indeterminadas)
 
     def solapadas_con(self, candidato: pathlib.PurePath) -> tuple[str, ...]:
         """TODAS las etiquetas que solapan, no la primera.
@@ -723,12 +740,78 @@ def _biblioteca_steam_de(game: pathlib.PurePath) -> pathlib.PurePath | None:
     return None
 
 
+#: ``GetDriveType`` de Windows. Sólo se nombran los dos valores que deciden algo
+#: acá; el resto (``DRIVE_FIXED``, ``DRIVE_REMOVABLE``, ``DRIVE_CDROM``…) no
+#: necesita nombre porque no cambia el veredicto.
+_DRIVE_UNKNOWN: Final[int] = 0
+_DRIVE_REMOTE: Final[int] = 4
+
+
+def _hay_unidades_mapeadas() -> bool:
+    """¿Existe siquiera el concepto de unidad mapeada en esta plataforma?
+
+    Seam aparte del que consulta el tipo, por la misma razón que en
+    `known_folders`: sin separarlos, "acá no hay unidades" y "no pude preguntar"
+    colapsan en el mismo ``None``, y el fail-closed sobre el segundo volvería
+    imposible configurar un root en Linux.
+    """
+    return sys.platform == "win32"
+
+
+def _tipo_de_unidad(raiz: str) -> int | None:
+    """``GetDriveTypeW`` para *raiz* (``"Z:\\"``), o ``None`` fuera de Windows.
+
+    Único punto que toca el sistema operativo; los tests lo sustituyen para
+    ejercer el contrato tipo-de-unidad → veredicto sin correr sobre Windows ni
+    montar un share SMB real.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        return int(ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(raiz)))
+    except (AttributeError, OSError) as exc:  # pragma: no cover - depende de la plataforma
+        logger.debug("GetDriveTypeW(%s) no disponible: %s", raiz, exc)
+        return None
+
+
+def _unidad_de_red(canonico: pathlib.PurePath) -> str | None:
+    """Razón por la que *canonico* NO vive en un volumen local, o ``None``.
+
+    **Por qué el chequeo sintáctico de UNC no alcanza.** ``\\\\servidor\\share``
+    se rechaza mirando el string, pero el MISMO share montado como ``Z:\\`` es
+    sintácticamente indistinguible de un disco local — y es la forma en que la
+    gente lo usa de verdad. El ADR prohíbe "UNC/red", no "rutas que empiezan con
+    dos backslashes": la propiedad es la del volumen, así que se le pregunta al
+    sistema por el tipo de unidad en vez de adivinarlo del texto.
+
+    Fail-closed sobre lo indeterminado: en Windows, un ``DRIVE_UNKNOWN`` o una
+    API que no se pudo llamar significan "no sé si esto es local", y admitir un
+    root cuyo volumen no se pudo clasificar es exactamente el falso negativo que
+    este chequeo existe para no tener. Fuera de Windows no hay unidades mapeadas
+    y no se inventa un veredicto.
+    """
+    if not _hay_unidades_mapeadas():
+        return None
+    ancla_de_volumen = pathlib.PureWindowsPath(canonico).anchor
+    if not ancla_de_volumen:  # pragma: no cover - `admitir_root` ya exigió absoluta
+        return None
+    tipo = _tipo_de_unidad(ancla_de_volumen)
+    if tipo == _DRIVE_REMOTE:
+        return f"la unidad {ancla_de_volumen} es un recurso de red mapeado"
+    if tipo is None or tipo == _DRIVE_UNKNOWN:
+        return f"no se pudo determinar si la unidad {ancla_de_volumen} es local"
+    return None
+
+
 def admitir_root(candidato: pathlib.PurePath | str, *, prohibidas: RaicesProhibidas) -> pathlib.PurePath:
     """Valida el candidato como `external_work_root` y devuelve su forma canónica.
 
     Propiedades exigidas (ADR 0011 §2.7), todas fail-closed:
 
-    * absoluta, no UNC/red, no raíz de volumen;
+    * absoluta, no UNC/red —ni sintáctica ni por unidad mapeada—, no raíz de
+      volumen;
+    * el conjunto de raíces prohibidas tiene que estar COMPLETO: una prohibición
+      que no se pudo resolver (`prohibidas.indeterminadas`) rechaza, no se ignora;
     * sin solapamiento en NINGUNA dirección con juego, Data, biblioteca Steam,
       instalación y datos de MO2, profiles, mods, overwrite, instalaciones de
       DynDOLOD/TexGen, TEMP y las Known Folders prohibidas;
@@ -772,6 +855,33 @@ def admitir_root(candidato: pathlib.PurePath | str, *, prohibidas: RaicesProhibi
             root=canonico,
             razon="la raíz de un volumen no puede ser el external_work_root",
             accion_requerida="elegir un subdirectorio dedicado dentro del volumen",
+        )
+
+    de_red = _unidad_de_red(canonico)
+    if de_red is not None:
+        raise WorkspaceRechazadoError(
+            motivo=MotivoDeRechazo.INVALIDO,
+            root=canonico,
+            razon=f"las rutas UNC/de red no están soportadas en esta entrega: {de_red}",
+            accion_requerida="elegir un directorio en un volumen LOCAL (no una unidad mapeada a un share)",
+        )
+
+    # Fail-closed sobre el conjunto de prohibiciones INCOMPLETO. No se admite
+    # contra evidencia parcial: si la API de Known Folders no contestó, este
+    # root podría SER `Documents` y el solapamiento de abajo diría que no.
+    if prohibidas.indeterminadas:
+        raise WorkspaceRechazadoError(
+            motivo=MotivoDeRechazo.INVALIDO,
+            root=canonico,
+            razon=(
+                "no se pudo resolver la ubicación de "
+                + ", ".join(prohibidas.indeterminadas)
+                + "; el conjunto de raíces prohibidas está incompleto"
+            ),
+            accion_requerida=(
+                "reintentar; si persiste, verificar que el shell de Windows responde "
+                "(las carpetas de usuario se resuelven por la API de Known Folders)"
+            ),
         )
 
     solapadas = prohibidas.solapadas_con(canonico)
@@ -822,6 +932,18 @@ def validar_destino_administrado(root: pathlib.Path, destino: pathlib.PurePath) 
                 razon=f"el destino {destino} no cuelga del external_work_root admitido",
                 accion_requerida="usar únicamente destinos derivados del root administrado",
             ) from exc
+
+    if not relativo.parts:
+        # `destino == root` da `PurePath(".")`, con `parts` vacío: el bucle de
+        # abajo no corría y la función devolvía el propio root como "destino
+        # administrado válido". Un caller de PR-2 podría entonces mover o borrar
+        # la carpeta que contiene el binding junto con todos los subroots.
+        raise WorkspaceRechazadoError(
+            motivo=MotivoDeRechazo.INVALIDO,
+            root=root_canonico,
+            razon="el propio external_work_root no es un destino administrado",
+            accion_requerida="usar un subdirectorio derivado, nunca la raíz que contiene el binding",
+        )
 
     parcial = root_canonico
     for parte in relativo.parts:
@@ -928,7 +1050,16 @@ class RegistroDeRootActivo:
                 razon=f"registro de roots activos ilegible ({exc})",
                 accion_requerida=f"inspeccionar {self._path} a mano",
             ) from exc
-        if not isinstance(datos, dict) or datos.get("schema_version") != SCHEMA_VERSION:
+        version = datos.get("schema_version") if isinstance(datos, dict) else None
+        # `bool` es subclase de `int` y `True == 1`: sin el guard explícito, un
+        # `"schema_version": true` pasaba como v1. El parser del binding ya lo
+        # evitaba y este NO — el hermano sin arreglar, encontrado en review.
+        if (
+            not isinstance(datos, dict)
+            or not isinstance(version, int)
+            or isinstance(version, bool)
+            or version != SCHEMA_VERSION
+        ):
             raise WorkspaceRechazadoError(
                 motivo=MotivoDeRechazo.CORRUPTO,
                 razon="registro de roots activos con schema desconocido",
@@ -949,20 +1080,37 @@ class RegistroDeRootActivo:
                     razon=f"entrada de registro inválida para {clave}",
                     accion_requerida=f"inspeccionar {self._path} a mano",
                 )
-            pendiente = valor.get("transicion_pendiente")
+            # La forma anidada se valida EXACTO, no con defaults tolerantes: un
+            # marcador sin `desde` hacía que `resolver_workspace` tomara
+            # `entrada.root` como root viejo, se saltara `_validar_transicion` y
+            # pudiera limpiar el marcador al registrar el activo — o sea, olvidar
+            # el root viejo, que es justo lo que §25 prohíbe. Un `desde` no
+            # textual terminaba en un `TypeError` crudo de `pathlib.Path`.
+            pendiente_crudo = valor.get("transicion_pendiente")
+            pendiente: TransicionPendiente | None = None
+            if pendiente_crudo is not None:
+                if (
+                    not isinstance(pendiente_crudo, dict)
+                    or set(pendiente_crudo) != {"desde", "hacia", "motivo"}
+                    or not isinstance(pendiente_crudo["hacia"], str)
+                    or not isinstance(pendiente_crudo["motivo"], str)
+                    or not isinstance(pendiente_crudo["desde"], (str, type(None)))
+                ):
+                    raise WorkspaceRechazadoError(
+                        motivo=MotivoDeRechazo.CORRUPTO,
+                        razon=f"transición pendiente malformada para {clave}",
+                        accion_requerida=f"inspeccionar {self._path} a mano",
+                    )
+                pendiente = TransicionPendiente(
+                    desde=pendiente_crudo["desde"],
+                    hacia=pendiente_crudo["hacia"],
+                    motivo=pendiente_crudo["motivo"],
+                )
             resultado[clave] = EntradaDeRegistro(
                 clave=clave,
                 root=valor["root"],
                 binding_id=str(valor.get("binding_id", "")),
-                transicion_pendiente=(
-                    TransicionPendiente(
-                        desde=pendiente.get("desde"),
-                        hacia=str(pendiente.get("hacia", "")),
-                        motivo=str(pendiente.get("motivo", "")),
-                    )
-                    if isinstance(pendiente, dict)
-                    else None
-                ),
+                transicion_pendiente=pendiente,
             )
         return resultado
 
@@ -1039,7 +1187,18 @@ class RegistroDeRootActivo:
             root=str(hacia),
             binding_id=actual.binding_id if actual is not None else "",
             transicion_pendiente=TransicionPendiente(
-                desde=actual.root if actual is not None else None,
+                # Si YA hay una transición pendiente, su `desde` es el ÚNICO
+                # registro durable del root original y se conserva. Pisarlo con
+                # `actual.root` —que en ese punto ya apunta al root nuevo— borra
+                # la referencia al original: un segundo crash antes de
+                # `registrar_activa` haría que el arranque siguiente ni siquiera
+                # inspeccione la raíz que puede tener los backups. Lo encontró el
+                # revisor adversarial siguiendo la recuperación repetida.
+                desde=(
+                    actual.transicion_pendiente.desde
+                    if actual is not None and actual.transicion_pendiente is not None
+                    else (actual.root if actual is not None else None)
+                ),
                 hacia=str(hacia),
                 motivo=motivo,
             ),
@@ -1263,8 +1422,25 @@ class Stage9Coordination:
         self._inicializado = False
         self._guardia = asyncio.Lock()
 
-    @property
-    def lock_manager(self) -> DistributedLockManager:
+    async def manager_del_ritual(self) -> DistributedLockManager:
+        """El lock manager de etapa 9, **garantizado abierto**.
+
+        Es `async` a propósito, y es el ÚNICO acceso: un `DistributedLockManager`
+        sin `initialize()` no consulta nada, levanta `LockError` en el primer uso
+        — y ese primer uso es el guard de reconciliación del arranque, cuyo
+        boundary best-effort se come la excepción. El resultado observable era
+        que el recovery de U-08 quedaba desactivado en silencio para TODOS los
+        productores (DynDOLOD, Pandora, BodySlide, sandbox), en cada arranque con
+        `external_work_root` sin configurar — o sea, en el default.
+
+        Que la apertura sea perezosa era correcto (los composition roots
+        síncronos no pueden `await`); lo que estaba mal era prometer esa pereza y
+        después entregar el manager crudo por una property síncrona, que no tiene
+        dónde cumplirla. Con el acceso async no hay forma de sostener el
+        manager sin haberlo abierto: la promesa la cumple el mecanismo, no el
+        recuerdo del caller.
+        """
+        await self.initialize()
         return self._lock_manager
 
     async def initialize(self) -> None:
@@ -1483,7 +1659,8 @@ class WorkspaceResuelto:
 _AGENTE_DEL_RESOLVER: Final[str] = "dyndolod-workspace-resolver"
 
 
-async def _validar_transicion(
+@contextlib.asynccontextmanager
+async def _transicion_validada(
     viejo: pathlib.Path,
     *,
     nuevo: pathlib.Path,
@@ -1491,8 +1668,25 @@ async def _validar_transicion(
     coordinacion: Stage9Coordination,
     inspector: Callable[[pathlib.Path], InspeccionDeRootViejo],
     sonda_de_transaccion_pendiente: Callable[[], Awaitable[bool]] | None,
-) -> None:
-    """Fail-closed de la transición (§25). No devuelve nada: o pasa, o levanta.
+) -> AsyncIterator[SnapshotTransactionLock]:
+    """Fail-closed de la transición (§25), con el ritual SOSTENIDO mientras dura.
+
+    **Por qué es un context manager y no una función que valida y vuelve.** La
+    primera versión miraba `get_lock_info` y devolvía: entre esa foto y el
+    `registrar_transicion` del caller corría la inspección del root viejo, que
+    recorre GB de generaciones y no tiene cota de tiempo. Una etapa 9 que
+    arrancaba en otro proceso dentro de esa ventana encontraba el registro
+    repuntado a la raíz nueva con su corrida en vuelo sobre la vieja —
+    exactamente el TOCTOU que el guard decía cerrar. Ahora el ritual se ADQUIERE
+    y se sostiene: la validación y la activación son una unidad, y el ritual
+    concurrente no puede empezar en el medio porque el lock está tomado.
+
+    El orden es el congelado en :data:`ORDEN_DE_ADQUISICION` —``dyndolod-workspace``
+    (ya sostenido por el caller) y recién después ``dyndolod-pipeline``—, así que
+    no hay ciclo con el servicio, que toma el ritual sin sostener el workspace.
+
+    Yields el lock del ritual para que el caller pueda ``assert_owned()`` justo
+    antes de la escritura durable.
 
     Se niega a activar otra raíz —y sobre todo a OLVIDAR la vieja— mientras el
     root viejo tenga backups, una transacción PENDING, un ritual vivo o un
@@ -1518,40 +1712,62 @@ async def _validar_transicion(
             ),
         )
 
-    await coordinacion.initialize()
-    info = await coordinacion.lock_manager.get_lock_info(Stage9Coordination.RECURSO_DEL_RITUAL)
+    manager = await coordinacion.manager_del_ritual()
+    # Fast-path sólo para el DIAGNÓSTICO y para no pagar el backoff cuando ya se
+    # ve un dueño: la exclusión real la da la adquisición de abajo, no esta foto.
+    info = await manager.get_lock_info(Stage9Coordination.RECURSO_DEL_RITUAL)
     if info is not None and not info.is_expired:
         raise _rechazar(
             f"hay un ritual de etapa 9 en curso ({info.agent_id}); no se cambia de raíz en vuelo",
             motivo=MotivoDeRechazo.OCUPADO,
         )
 
-    # `os.walk` sobre el root viejo puede recorrer GB de generaciones: fuera del loop.
-    inspeccion = await asyncio.to_thread(inspector, viejo)
-    if not inspeccion.inspeccionable:
-        raise _rechazar(
-            f"no se puede inspeccionar el root viejo {viejo}: {inspeccion.detalle}",
-            motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
-        )
-    if inspeccion.backups:
-        raise _rechazar(
-            f"el root viejo {viejo} conserva {len(inspeccion.backups)} backup(s) de move-aside sin reconciliar",
-            motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
-        )
-
-    if sonda_de_transaccion_pendiente is not None:
+    async with contextlib.AsyncExitStack() as pila:
         try:
-            pendiente = await sonda_de_transaccion_pendiente()
-        except Exception as exc:  # noqa: BLE001 - boundary: no poder mirar es no poder afirmar
+            ritual = await pila.enter_async_context(
+                coordinacion.sostener_ritual(
+                    agent_id=_AGENTE_DEL_RESOLVER,
+                    ttl=Stage9Coordination.TTL_DEL_WORKSPACE,
+                    metadata={"motivo": "transicion-de-external-work-root", "hacia": str(nuevo)},
+                )
+            )
+        except LockAcquisitionError as exc:
+            dueño = await manager.get_lock_info(Stage9Coordination.RECURSO_DEL_RITUAL)
             raise _rechazar(
-                f"no se pudo verificar si hay transacciones pendientes del root viejo ({exc})",
-                motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
+                "hay un ritual de etapa 9 en curso "
+                f"({dueño.agent_id if dueño is not None else 'otro proceso'}); "
+                "no se cambia de raíz en vuelo",
+                motivo=MotivoDeRechazo.OCUPADO,
             ) from exc
-        if pendiente:
+
+        # `os.walk` sobre el root viejo puede recorrer GB de generaciones: fuera del loop.
+        inspeccion = await asyncio.to_thread(inspector, viejo)
+        if not inspeccion.inspeccionable:
             raise _rechazar(
-                f"el root viejo {viejo} tiene una transacción PENDING sin resolver",
+                f"no se puede inspeccionar el root viejo {viejo}: {inspeccion.detalle}",
                 motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
             )
+        if inspeccion.backups:
+            raise _rechazar(
+                f"el root viejo {viejo} conserva {len(inspeccion.backups)} backup(s) de move-aside sin reconciliar",
+                motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
+            )
+
+        if sonda_de_transaccion_pendiente is not None:
+            try:
+                pendiente = await sonda_de_transaccion_pendiente()
+            except Exception as exc:  # noqa: BLE001 - boundary: no poder mirar es no poder afirmar
+                raise _rechazar(
+                    f"no se pudo verificar si hay transacciones pendientes del root viejo ({exc})",
+                    motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
+                ) from exc
+            if pendiente:
+                raise _rechazar(
+                    f"el root viejo {viejo} tiene una transacción PENDING sin resolver",
+                    motivo=MotivoDeRechazo.TRANSICION_REQUERIDA,
+                )
+
+        yield ritual
 
 
 async def resolver_workspace(
@@ -1583,6 +1799,17 @@ async def resolver_workspace(
             seguro (ruta inadmisible, root ajeno o no vacío, metadata corrupta,
             transición insegura, coordinación ocupada).
     """
+    if preferencia is not None and not isinstance(preferencia, str):
+        # Un TOML editado a mano puede traer `external_work_root = 3`. Sin esta
+        # guarda el `.strip()` de abajo levantaba `AttributeError` — una traza
+        # que no nombra ni el campo ni la acción, y que el boundary del arranque
+        # reporta como "falla inesperada" en vez de como lo que es: config
+        # inválida, con un rechazo que el operador puede leer y corregir.
+        raise WorkspaceRechazadoError(
+            motivo=MotivoDeRechazo.INVALIDO,
+            razon=f"external_work_root debe ser una cadena y es {type(preferencia).__name__}",
+            accion_requerida="configurar external_work_root con una ruta absoluta local entre comillas",
+        )
     if preferencia is None or not preferencia.strip():
         logger.info(
             "DynDOLOD administrado NO CONFIGURADO: external_work_root ausente. "
@@ -1613,30 +1840,35 @@ async def resolver_workspace(
             # haría que una transición interrumpida se diera por terminada.
             viejo = pathlib.Path(pendiente.desde) if pendiente and pendiente.desde else pathlib.Path(entrada.root)
             if viejo != root:
-                await _validar_transicion(
+                async with _transicion_validada(
                     viejo,
                     nuevo=root,
                     recursos=recursos,
                     coordinacion=coordinacion,
                     inspector=inspector,
                     sonda_de_transaccion_pendiente=sonda_de_transaccion_pendiente,
-                )
-                # Recién con la transición VALIDADA se registra la intención y se
-                # repunta el activo — en una sola escritura atómica, y siempre
-                # antes de publicar o usar el root nuevo.
-                # Antes de CADA escritura crítica se reconfirma la propiedad de
-                # la lease contra la DB: entre la adquisición y este punto corrió
-                # I/O de disco de duración no acotada (inspección del root viejo),
-                # así que "lo tenía cuando entré" no es evidencia de "lo tengo
-                # ahora". Si se perdió, levanta y no se escribe nada.
-                await sostenido.assert_owned()
-                await asyncio.to_thread(
-                    registro.registrar_transicion, clave=clave, hacia=root, motivo="cambio de preferencia"
-                )
-                logger.info(
-                    "Transición de external_work_root validada y registrada.",
-                    extra={"pipeline_stage": _ETAPA, "desde": str(viejo), "hacia": str(root)},
-                )
+                ) as ritual:
+                    # Recién con la transición VALIDADA —y con el ritual todavía
+                    # SOSTENIDO— se registra la intención y se repunta el activo:
+                    # en una sola escritura atómica, y siempre antes de publicar
+                    # o usar el root nuevo.
+                    # Antes de CADA escritura crítica se reconfirma la propiedad de
+                    # las DOS leases contra la DB: entre la adquisición y este punto
+                    # corrió I/O de disco de duración no acotada (inspección del root
+                    # viejo), así que "las tenía cuando entré" no es evidencia de
+                    # "las tengo ahora". Si alguna se perdió, levanta y no se
+                    # escribe nada. Se fencean las dos porque protegen cosas
+                    # distintas: el workspace excluye a otro resolver, el ritual
+                    # excluye a una etapa 9 arrancando sobre el root viejo.
+                    await sostenido.assert_owned()
+                    await ritual.assert_owned()
+                    await asyncio.to_thread(
+                        registro.registrar_transicion, clave=clave, hacia=root, motivo="cambio de preferencia"
+                    )
+                    logger.info(
+                        "Transición de external_work_root validada y registrada.",
+                        extra={"pipeline_stage": _ETAPA, "desde": str(viejo), "hacia": str(root)},
+                    )
 
         estado = await asyncio.to_thread(exigir_veredicto, root, recursos=recursos, registro=registro)
         if estado is EstadoDelRoot.C_BINDING_COMPATIBLE:

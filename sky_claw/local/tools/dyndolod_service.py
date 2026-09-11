@@ -1177,8 +1177,17 @@ class DynDOLODPipelineService:
         # desde directorios distintos abren dos bases y no se excluyen.
         try:
             async with contextlib.AsyncExitStack() as tx_stack:
+                # Ligado a variable —igual que `tx_lock`— porque el lock que se
+                # tira es un lock que no defiende nada: sostiene una lease REAL,
+                # con heartbeat y `lease_lost`, y es la ÚNICA que excluye a otra
+                # instancia lanzada desde otro `cwd`. Si esa lease se pierde, el
+                # veto de rollback y los fences de abajo tienen que verlo: son
+                # los mismos hazards que `tx_lock` ya cubre, sobre la lease que
+                # cubre MÁS. Descartarla dejaba media exclusión — el defecto
+                # hermano de este repo, con las dos mitades en la misma función.
+                ritual_de_etapa9: SnapshotTransactionLock | None = None
                 if self._stage9_coordination is not None:
-                    await tx_stack.enter_async_context(
+                    ritual_de_etapa9 = await tx_stack.enter_async_context(
                         self._stage9_coordination.sostener_ritual(
                             agent_id="dyndolod-pipeline-service",
                             metadata={"preset": preset, "run_texgen": run_texgen},
@@ -1195,6 +1204,30 @@ class DynDOLODPipelineService:
                     metadata={"preset": preset, "run_texgen": run_texgen},
                 )
                 await tx_stack.enter_async_context(tx_lock)
+
+                def _conserva_las_leases() -> bool:
+                    """¿Siguen vivas TODAS las leases que sostienen esta corrida?
+
+                    Enunciado sobre el conjunto y no sobre `tx_lock`: cualquier
+                    lease perdida significa que otro dueño puede estar mutando
+                    los mismos outputs, y restaurar el move-aside encima borraría
+                    su salida. Un lock nuevo que se sume a la corrida se suma acá
+                    o no protege nada.
+                    """
+                    return not tx_lock.lease_lost and (ritual_de_etapa9 is None or not ritual_de_etapa9.lease_lost)
+
+                async def _fencear_ownership() -> None:
+                    """Reconfirma contra la DB la propiedad de TODAS las leases.
+
+                    Mismo argumento que el veto: fencear sólo `tx_lock` deja
+                    firmando provenance a un proceso que ya perdió la exclusión
+                    cross-process, que es la que impide que otra instancia esté
+                    regenerando el mismo artifact mientras se lo lee.
+                    """
+                    await tx_lock.assert_owned()
+                    if ritual_de_etapa9 is not None:
+                        await ritual_de_etapa9.assert_owned()
+
                 # Comenzar transacción en journal DENTRO del lock.
                 tx_id = await self._journal.begin_transaction(
                     description=f"DynDOLOD pipeline (preset={preset}, texgen={run_texgen})",
@@ -1252,7 +1285,7 @@ class DynDOLODPipelineService:
                 # sin el veto restaurarían igual, borrando la salida del nuevo dueño
                 # (review Codex #399 sobre el hermano Pandora — mismo agujero acá).
                 for output_dir in rollback_dirs:
-                    dr = DirectoryRollback(output_dir, should_rollback=lambda: not tx_lock.lease_lost)
+                    dr = DirectoryRollback(output_dir, should_rollback=_conserva_las_leases)
                     dir_rollbacks.append(dr)
                     await tx_stack.enter_async_context(dr)
 
@@ -1365,7 +1398,7 @@ class DynDOLODPipelineService:
                             # lease_lost flippee jamás (hazard documentado en
                             # locks.py). assert_owned() compara el token
                             # acquired_at contra la DB fresca.
-                            await tx_lock.assert_owned()
+                            await _fencear_ownership()
                             digest_final = await asyncio.to_thread(digest_arbol, mod_textures_cert)
                             # FENCING #2 (post-read, pre-durable-write): el
                             # digest corre en worker thread y puede tardar; el
@@ -1375,7 +1408,7 @@ class DynDOLODPipelineService:
                             # handoff cuyo expected_digest describe bytes ajenos
                             # (provenance falsa). Lo más cerca posible del
                             # boundary durable.
-                            await tx_lock.assert_owned()
+                            await _fencear_ownership()
                             game_key, mods_root_key, data_key = self._keys_de_identidad(runner)
                             registro = DeploymentHandoff(
                                 handoff_id=0,

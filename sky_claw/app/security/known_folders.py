@@ -33,11 +33,23 @@ dice devolviendo ``None`` — no sintetiza un equivalente POSIX, que sería el
 ``%USERPROFILE%`` prohibido con otro nombre. La contención en esas plataformas
 la aportan las otras reglas de admisión (solapamiento con game/MO2/TEMP, drive
 root, UNC), no una adivinanza de este módulo.
+
+**"No hay" y "no contesta" NO son lo mismo, y la diferencia decide un veredicto.**
+En Linux la carpeta no existe: no hay nada contra qué comparar y la admisión se
+sostiene con sus otras reglas. En Windows la carpeta SÍ existe y la API no
+contestó (shell32 ausente, HRESULT de error, política que bloquea la llamada):
+ahí un conjunto vacío significa "no puedo saber si este root ES ``Documents``",
+y admitirlo sería justo el falso negativo que el módulo existe para no tener.
+Por eso :func:`inspeccionar_known_folders_prohibidas` reporta las dos cosas por
+separado —las resueltas y las **indeterminadas**— y quien admite falla cerrado
+sobre las segundas. La primitiva no decide el veredicto; se niega a que el
+caller confunda ausencia de carpetas con ausencia de respuesta.
 """
 
 from __future__ import annotations
 
 import ctypes
+import dataclasses
 import logging
 import pathlib
 import sys
@@ -154,16 +166,61 @@ def resolver_known_folder(nombre: str) -> pathlib.PureWindowsPath | None:
     return pathlib.PureWindowsPath(crudo)
 
 
-def known_folders_prohibidos() -> tuple[tuple[str, pathlib.PureWindowsPath], ...]:
-    """Las carpetas prohibidas v1 que ESTE sistema reporta, con su ruta vigente.
+def plataforma_resuelve_known_folders() -> bool:
+    """¿Existe siquiera el concepto de Known Folder en esta plataforma?
 
-    Enumera :data:`KNOWN_FOLDERS_PROHIBIDOS` completo —no una muestra— y omite
-    las que la API no resuelve. El orden es el del conjunto congelado, para que
-    el diagnóstico sea reproducible.
+    Es el seam que separa "no hay carpetas" de "hay carpetas y no contestaron".
+    Se aísla en una función —y no se consulta ``sys.platform`` en cada sitio—
+    para que el caller que falla cerrado pueda ejercer los dos mundos sin
+    inventar un Windows falso.
     """
-    encontradas: list[tuple[str, pathlib.PureWindowsPath]] = []
+    return sys.platform == "win32"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ResolucionDeKnownFolders:
+    """Lo que este sistema pudo y NO pudo decir de las carpetas prohibidas.
+
+    ``indeterminadas`` no es una lista de errores para loguear: es la evidencia
+    que le falta al caller para poder admitir un root. Vacía en las plataformas
+    sin Known Folders (no falta nada: no existen) y vacía en un Windows que
+    contestó las tres.
+    """
+
+    rutas: tuple[tuple[str, pathlib.PureWindowsPath], ...]
+    indeterminadas: tuple[str, ...]
+
+
+def inspeccionar_known_folders_prohibidas() -> ResolucionDeKnownFolders:
+    """Enumera el conjunto cerrado v1 separando resueltas de indeterminadas.
+
+    Recorre :data:`KNOWN_FOLDERS_PROHIBIDOS` completo —no una muestra— en el
+    orden congelado, para que el diagnóstico sea reproducible.
+    """
+    hay_carpetas = plataforma_resuelve_known_folders()
+    resueltas: list[tuple[str, pathlib.PureWindowsPath]] = []
+    sin_respuesta: list[str] = []
     for nombre in KNOWN_FOLDERS_PROHIBIDOS:
         ruta = resolver_known_folder(nombre)
         if ruta is not None:
-            encontradas.append((nombre, ruta))
-    return tuple(encontradas)
+            resueltas.append((nombre, ruta))
+        elif hay_carpetas:
+            # Windows y sin respuesta: la carpeta existe y no sabemos dónde.
+            logger.warning(
+                "Known Folder '%s' no pudo resolverse en esta plataforma Windows; "
+                "la admisión del external_work_root no puede descartarla.",
+                nombre,
+            )
+            sin_respuesta.append(nombre)
+    return ResolucionDeKnownFolders(rutas=tuple(resueltas), indeterminadas=tuple(sin_respuesta))
+
+
+def known_folders_prohibidos() -> tuple[tuple[str, pathlib.PureWindowsPath], ...]:
+    """Sólo las carpetas prohibidas que ESTE sistema resolvió, con su ruta vigente.
+
+    Atajo de :func:`inspeccionar_known_folders_prohibidas` para callers que ya
+    saben que no hay indeterminadas (o que no admiten nada con el resultado).
+    Quien decide un veredicto debe usar la inspección completa: este atajo, por
+    construcción, no puede distinguir "no hay carpetas" de "no contestaron".
+    """
+    return inspeccionar_known_folders_prohibidas().rutas

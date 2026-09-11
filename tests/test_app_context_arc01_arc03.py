@@ -683,7 +683,15 @@ class TestAppContextPartialFullAcquisition:
         ctx._resolve_config_path = MagicMock()
         ctx._migrate_legacy_json = MagicMock()
         ctx.lifecycle.initialize = AsyncMock()
-        ctx.lifecycle.close = AsyncMock()
+        # El cierre del lifecycle se espía, NO se anula: desde P0 (ADR 0011) el
+        # arranque abre una conexión REAL —la DB de coordinación de etapa 9, que
+        # el guard de reconciliación consulta— y esa conexión la posee el
+        # lifecycle, no su lock manager. Con un `AsyncMock()` puro, el
+        # `shutdown_all()` nunca corría y el worker thread de aiosqlite quedaba
+        # vivo al final de la sesión (el guard de lifecycle de `conftest` lo
+        # detecta y sale con código 3). El spy conserva lo que el test verifica
+        # —que el cierre se invoque— sin fingir que cerró.
+        ctx.lifecycle.close = AsyncMock(side_effect=ctx.lifecycle.close)
         ctx.network.initialize = AsyncMock()
         ctx.network.close = AsyncMock()
         ctx.network.gateway = MagicMock()

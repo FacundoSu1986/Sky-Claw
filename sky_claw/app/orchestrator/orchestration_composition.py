@@ -101,6 +101,12 @@ class OrchestrationComposition:
     # Máquina de estados de tools (conservada para introspección)
     tool_state_machine: ToolStateMachine
 
+    # P0 de ADR 0011: la coordinación de etapa 9 que quedó cableada al grafo —la
+    # inyectada, o la de respaldo que este builder construyó. Se devuelve porque
+    # abre una conexión SQLite sobre la DB durable: sin exponerla, la de respaldo
+    # quedaba viva y sin dueño, imposible de cerrar por quien arma el grafo.
+    stage9_coordination: Stage9Coordination
+
 
 def build_orchestration_composition(
     *,
@@ -321,6 +327,7 @@ def build_orchestration_composition(
     # 7. Composición
     # ------------------------------------------------------------------
     return OrchestrationComposition(
+        stage9_coordination=stage9_coordination,
         synthesis_service=synthesis_service,
         dyndolod_service=dyndolod_service,
         xedit_service=xedit_service,

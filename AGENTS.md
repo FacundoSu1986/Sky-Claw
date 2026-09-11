@@ -172,8 +172,8 @@ escritura rechazada queda pendiente para reintento. Ancla:
 `sky_claw/local/tools/dyndolod_workspace.py` contesta **una sola vez** las cuatro
 preguntas del work root externo —admisión, binding, estado y coordinación— porque
 repartirlas garantizaba el defecto de arriba: cada superficie que resolviera
-"¿puedo usar este root?" por su cuenta contestaría distinto. Tres propiedades del
-mecanismo, cada una con su receta:
+"¿puedo usar este root?" por su cuenta contestaría distinto. Cuatro propiedades
+del mecanismo, cada una con su receta:
 
 - *la creación del binding es single-winner sólo si la primitiva es
   no-reemplazante*: `os.open` con `O_CREAT | O_EXCL`, nunca `os.replace` (que
@@ -187,6 +187,21 @@ mecanismo, cada una con su receta:
   `test_dos_procesos_con_cwd_distinto_no_entran_al_mismo_ritual` y
   `test_el_reconciliador_rutea_el_ritual_de_etapa9_a_la_base_durable` — el
   servicio y el recovery son hermanos y los dos se verifican.
+- *un lock sólo excluye si está ABIERTO y si TODAS las leases de la corrida
+  participan*. Las dos mitades de la misma clase, y las dos aparecieron acá: la
+  coordinación abría su DB de forma perezosa y entregaba el manager crudo por una
+  property SÍNCRONA, que no tiene dónde cumplir esa promesa — el recovery del
+  arranque recibía un manager cerrado y su `LockError` abortaba el barrido
+  ENTERO, invisible dentro de un boundary best-effort; y el servicio entraba al
+  lock cross-process pero descartaba el objeto, así que el veto de rollback y los
+  fences de provenance miraban sólo la otra lease. Recetas: el acceso al manager
+  es `async` (`Stage9Coordination.manager_del_ritual`) y no hay accesor síncrono,
+  así que no se puede sostener sin haberlo abierto; y el veto/los fences se
+  verifican por AST contra un conjunto de leases congelado por igualdad literal.
+  Anclas: `test_el_barrido_de_arranque_corre_con_una_coordinacion_recien_construida`
+  (reproduce el `LockError` real),
+  `test_la_coordinacion_no_expone_el_manager_por_una_property_sincrona` y
+  `test_todas_las_leases_de_la_corrida_participan_del_veto_y_de_los_fences`.
 - *P0 CAPABILITY != PR-2 ACTIVATION*: P0 configura, valida y coordina, pero el
   `-o:` productivo sigue siendo `<game>/Sky-Claw/DynDOLOD`. Anclas:
   `test_p0_no_cambia_el_output_productivo_del_runner` (sobre el argv REAL) y

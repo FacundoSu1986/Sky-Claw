@@ -267,7 +267,13 @@ una segunda base ni un catálogo entre instalaciones.
 
 Como propiedad (no como algoritmo congelado):
 
-- absoluta; filesystem local; no root de volumen; no UNC/network en PR-2;
+- absoluta; filesystem local; no root de volumen; no UNC/network en PR-2. La
+  propiedad es la del VOLUMEN, no la de la sintaxis: `\\\\servidor\\share` y el
+  mismo share montado como `Z:\\` son el mismo recurso de red, y el segundo es
+  indistinguible de un disco local mirando el texto. **P0 lo resuelve**
+  preguntándole al sistema el tipo de unidad (`GetDriveType`), con seam para
+  tests; un volumen que no se puede clasificar se rechaza (fail-closed), y fuera
+  de Windows no existen unidades mapeadas y no se inventa un veredicto;
 - puede vivir en otro volumen local (si admite rename y locks — precondición del
   move-aside por `DirectoryRollback`);
 - **no solapa en NINGUNA dirección** con: game; Data; SteamApps; MO2 install; MO2
@@ -292,7 +298,12 @@ Como propiedad (no como algoritmo congelado):
   **P0 la construyó** en `sky_claw/app/security/known_folders.py`
   (`SHGetKnownFolderPath` por GUID, conjunto cerrado v1, seam para tests), con un
   ancla de fuente que impide que reaparezcan `%USERPROFILE%` o la búsqueda por
-  substring;
+  substring. La ausencia de respuesta **no** se confunde con la ausencia de
+  carpeta: en Windows, una Known Folder que la API no resuelve viaja como
+  `indeterminada` hasta la admisión, que rechaza el root porque el conjunto de
+  prohibiciones está incompleto (podría SER `Documents` y el solapamiento diría
+  que no). Fuera de Windows no hay Known Folders, no falta evidencia, y la
+  contención la aportan las otras reglas de esta lista;
 - no se amplía `PathValidator` autorizando toda una unidad o ancestro amplio: se
   autoriza **sólo el root admitido + destinos derivados** (la familia y los
   metadatos);

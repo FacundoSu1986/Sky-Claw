@@ -211,7 +211,7 @@ async def reconcile_orphan_rollback_backups(
         await _bajo_el_lock_del_ritual(
             nombre=productor.nombre,
             resource_id=productor.lock_resource_id,
-            lock_manager=_manager_del_ritual(productor.lock_resource_id, lock_manager, coordinacion_etapa9),
+            lock_manager=await _manager_del_ritual(productor.lock_resource_id, lock_manager, coordinacion_etapa9),
             acc=acc,
             accion=functools.partial(_reconciliar_move_aside, productor.destinos, acc),
         )
@@ -226,12 +226,12 @@ async def reconcile_orphan_rollback_backups(
     return acc.cerrar()
 
 
-def _manager_del_ritual(
+async def _manager_del_ritual(
     resource_id: str,
     por_defecto: DistributedLockManager,
     coordinacion: Stage9Coordination | None,
 ) -> DistributedLockManager:
-    """El lock manager donde vive REALMENTE el lock de ese ritual.
+    """El lock manager donde vive REALMENTE el lock de ese ritual, ya ABIERTO.
 
     Enunciado como propiedad del mecanismo y no como caso especial de DynDOLOD:
     *el guard de un ritual sólo sirve si mira la MISMA base donde ese ritual
@@ -240,9 +240,17 @@ def _manager_del_ritual(
     va por el `resource_id` del productor —no por su nombre— para que un
     productor nuevo que declare `dyndolod-pipeline` quede coordinado por
     construcción.
+
+    Es `async` porque la coordinación abre su DB de forma perezosa y este es su
+    PRIMER uso en el arranque: el camino que la construye —``AppContext``— no
+    resuelve el workspace cuando `external_work_root` está sin configurar, que
+    es el default. Pedir el manager por el accesor async lo abre; tomarlo crudo
+    devolvía uno cerrado, cuyo `LockError` abortaba el barrido completo (todos
+    los productores, no sólo DynDOLOD) dentro de un boundary best-effort que lo
+    hacía invisible.
     """
     if coordinacion is not None and resource_id == Stage9Coordination.RECURSO_DEL_RITUAL:
-        return coordinacion.lock_manager
+        return await coordinacion.manager_del_ritual()
     return por_defecto
 
 

@@ -65,6 +65,10 @@ _CAMPOS_COMPOSITION = [
     "tool_dispatcher",
     "loop_guardrail_middleware",
     "tool_state_machine",
+    # P0 de ADR 0011: la coordinación de etapa 9 que quedó cableada al grafo. Se
+    # devuelve porque abre una conexión SQLite sobre la DB durable y hay que
+    # poder cerrarla; sin exponerla, la de respaldo quedaba viva y sin dueño.
+    "stage9_coordination",
 ]
 
 

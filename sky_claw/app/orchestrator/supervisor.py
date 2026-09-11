@@ -79,6 +79,18 @@ class SupervisorAgent:
         # vía MO2_PATH/auto-detección (split-brain instalación-seleccionada !=
         # instalación-usada). None (standalone/tests) mantiene el legacy.
         mo2_install_dir: pathlib.Path | None = None,
+        # P0 de ADR 0011: coordinación cross-process de etapa 9. Se INYECTA
+        # (``AppContext`` ya construye la suya para el recovery de arranque y la
+        # cierra en su cleanup) para que haya UNA sola por proceso, con dueño y
+        # con cierre. Sin inyectarla, el composition root arma una de respaldo:
+        # sigue excluyendo —es la misma DB durable— pero nadie la cierra, así que
+        # el camino con dueño es éste. El supervisor sólo la pasa: no puede
+        # construirla sin cruzar la frontera de dominio que
+        # `tests/test_supervisor_architecture_boundary.py` custodia.
+        # Sin anotar, igual que `lifecycle`: el tipo vive en `sky_claw.local`, y
+        # nombrarlo acá —aun bajo TYPE_CHECKING— cruzaría la frontera que el
+        # guardrail de arquitectura bloquea por AST sobre el árbol completo.
+        stage9_coordination=None,  # Stage9Coordination | None
     ):
         self.db = DatabaseAgent()
         # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
@@ -203,6 +215,7 @@ class SupervisorAgent:
             plugin_limit_guard=plugin_limit_guard.run,
             scan_asset_conflicts=asset_conflict_scanner.scan,
             scan_asset_conflicts_json=asset_conflict_scanner.scan_json,
+            stage9_coordination=stage9_coordination,
         )
         self._synthesis_service = composition.synthesis_service
         self._dyndolod_service = composition.dyndolod_service
@@ -215,6 +228,10 @@ class SupervisorAgent:
         self._tool_dispatcher = composition.tool_dispatcher
         self._loop_guardrail_middleware = composition.loop_guardrail_middleware
         self._tool_state_machine = composition.tool_state_machine
+        # Se retiene la que quedó cableada —la inyectada o la de respaldo— para
+        # que sea alcanzable desde el dueño del supervisor. Una coordinación que
+        # el grafo usa pero nadie referencia no se puede cerrar.
+        self._stage9_coordination = composition.stage9_coordination
 
         # Fail-closed: sin hitl_guard, las tools destructivas se DENIEGAN.
         if hitl_guard is None:
