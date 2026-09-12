@@ -12,7 +12,7 @@ import keyring
 from nicegui import ui
 
 from .gui_helpers import _load_css
-from .icons import _ICON_DRAGON_EYE, _ICON_ROCKET
+from .icons import _ICON_ROCKET, _icon_dragon_eye
 from .state import get_store
 
 if TYPE_CHECKING:
@@ -108,7 +108,7 @@ class SetupWizardModal:
                                         background:radial-gradient(circle at 50% 38%, #2a1d12, #0c0805);
                                         border:1.5px solid #c8a86a;
                                         box-shadow:0 0 18px rgba(200,168,106,.45), inset 0 0 12px rgba(0,0,0,.7);">
-                                {_ICON_DRAGON_EYE}
+                                {_icon_dragon_eye(iris_id="scIris-wizard")}
                             </div>
                         """)
                         ui.label("ASISTENTE DE CONFIGURACIÓN").classes("sky-wizard-title")

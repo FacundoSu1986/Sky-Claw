@@ -32,11 +32,11 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     resolve_visible_pending_hitl,
 )
 from sky_claw.app.gui.icons import (
-    _ICON_DRAGON_EYE,
     _ICON_LOCK,
     _ICON_SHIELD_CHECK,
     _ICON_SWORDS,
     _ICON_UNLOCK,
+    _icon_dragon_eye,
 )
 from sky_claw.app.gui.state import get_store
 
@@ -446,7 +446,7 @@ def _sidebar(
             '<div style="position:relative; width:46px; height:46px; flex-shrink:0; border-radius:50%; display:flex; align-items:center; justify-content:center;'
             " background:radial-gradient(circle at 50% 38%, #2a1d12, #0c0805); border:1.5px solid #c8a86a;"
             ' box-shadow:0 0 18px rgba(200,168,106,.45), inset 0 0 12px rgba(0,0,0,.7);">'
-            f"{_ICON_DRAGON_EYE}</div>"
+            f"{_icon_dragon_eye(iris_id='scIris-sidebar')}</div>"
             '<div style="min-width:0;">'
             '<div style="font-family:\'Cinzel\',serif; font-weight:800; font-size:19px; letter-spacing:.16em; color:#f1e6cf; line-height:1;">SKY<span style="color:#c8a86a;">·</span>CLAW</div>'
             "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12.5px; color:#9a7f4f; margin-top:3px;\">Forja del Dovahkiin</div>"

@@ -43,9 +43,24 @@ _ICON_UNLOCK = """<svg width="13" height="13" viewBox="0 0 24 24" fill="none" st
 # Marca de la Forja: el ojo del dragón (D4 del roadmap GUI). Un solo recurso
 # compartido por el sidebar del shell y el asistente de primer arranque —
 # ninguna copia divergente.
-_ICON_DRAGON_EYE = """<svg width="30" height="30" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+#
+# Excepción NBREAKABLE: el SVG referencia su gradiente por id
+# (``url(#<iris_id>)`` ↔ ``<radialGradient id="...">``) porque ambos clientes se
+# montan en el MISMO documento (wizard = overlay sobre el dashboard) y dos
+# instancias con el mismo id harían ambiguo el recurso. Por eso la constante es
+# una PLANTILLA y se renderiza vía ``_icon_dragon_eye(iris_id=...)`` con un id
+# determinista por consumidor — nunca UUID, para que los tests sigan siendo
+# deterministas. La propiedad `url(↔id) dentro de la misma instancia` la ancla
+# ``tests/test_gui_theme_contracts.py`` y rompe rojo si alguien pega una copia
+# literal del SVG con el mismo id.
+_ICON_DRAGON_EYE_TEMPLATE = """<svg width="30" height="30" viewBox="0 0 48 48" fill="none" aria-hidden="true">
     <path d="M5 24C13 14 35 14 43 24C35 34 13 34 5 24Z" fill="#0a0705" stroke="#c8a86a" stroke-width="1.5"/>
-    <ellipse cx="24" cy="24" rx="9" ry="9" fill="url(#scIris)"/>
+    <ellipse cx="24" cy="24" rx="9" ry="9" fill="url(#{iris_id})"/>
     <path d="M24 15C26.6 18.2 26.6 29.8 24 33C21.4 29.8 21.4 18.2 24 15Z" fill="#120a06"/>
-    <defs><radialGradient id="scIris" cx="50%" cy="42%" r="60%"><stop offset="0%" stop-color="#ffd071"/><stop offset="55%" stop-color="#d49a36"/><stop offset="100%" stop-color="#7a531f"/></radialGradient></defs>
+    <defs><radialGradient id="{iris_id}" cx="50%" cy="42%" r="60%"><stop offset="0%" stop-color="#ffd071"/><stop offset="55%" stop-color="#d49a36"/><stop offset="100%" stop-color="#7a531f"/></radialGradient></defs>
 </svg>"""
+
+
+def _icon_dragon_eye(*, iris_id: str) -> str:
+    """Renderiza el emblema del ojo con un ``id`` de gradiente único por cliente."""
+    return _ICON_DRAGON_EYE_TEMPLATE.format(iris_id=iris_id)

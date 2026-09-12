@@ -154,7 +154,16 @@ La fuente de verdad debe ser el estado reactivo existente; no duplicar lógica d
 
 ### D4 — Emblema del ojo de dragón en el wizard
 
-Reutilizar el emblema SVG diegético ya disponible en la identidad visual en lugar de un engranaje genérico, si la auditoría de assets confirma que el SVG reutilizable es el mismo recurso y no una copia divergente.
+**Estado:** **RESUELTO** en #579 — el wizard de primer arranque muestra el
+emblema de la marca en el medallón (antes un engranaje genérico). Un solo
+recurso: `_ICON_DRAGON_EYE_TEMPLATE` en `icons.py`, compartido por sidebar y
+wizard. Como el wizard es overlay sobre el dashboard y ambas instancias
+coexisten en el DOM, los ids del gradiente se parametrizan por superficie
+(`_icon_dragon_eye(iris_id="scIris-sidebar" | "scIris-wizard")`) — un id
+duplicado haría ambigua la referencia `url(#)` (revisión adversarial del PR).
+Anclas: censos AST del emblema (`test_emblema_dragon_unico_y_compartido`,
+`test_emblema_ids_unicos_por_instancia`) y censo congelado del registro
+(`test_registro_iconos_congelado_y_sin_muertos`).
 
 ### D6 — Rombo `◆` como glifo de estado
 
