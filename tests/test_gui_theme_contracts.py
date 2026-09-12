@@ -380,6 +380,18 @@ def _fuentes_gui() -> dict[str, str]:
     }
 
 
+#: Única fuente de verdad de test para la familia de consumidores del emblema
+#: D4: ``ruta relativa a app/gui`` → id de gradiente. El censo AST congela que
+#: los call sites reales sean exactamente este mapa (una llamada por archivo), y
+#: el test de instancias renderiza TODAS las entradas de acá — no una lista
+#: paralela que podría divergir. Un consumidor nuevo, o un id reutilizado, entra
+#: a la comprobación de colisiones agregándolo una sola vez a este mapa.
+_CONSUMIDORES_DRAGON_EYE: dict[str, str] = {
+    "views/forge_dashboard.py": "scIris-sidebar",
+    "setup_wizard.py": "scIris-wizard",
+}
+
+
 def test_emblema_dragon_unico_y_compartido() -> None:
     """D4: el ojo del dragón es UNA plantilla (``_ICON_DRAGON_EYE_TEMPLATE`` en
     icons.py) renderizada vía ``_icon_dragon_eye(iris_id=...)`` en los dos lugares
@@ -387,10 +399,11 @@ def test_emblema_dragon_unico_y_compartido() -> None:
 
     Verificación por introspección AST, no por texto (revisiones #579):
     los imports huérfanos no cuentan — se enumeran las LLAMADAS reales a la
-    fábrica y sus ids congelados. Como el wizard es overlay sobre el dashboard,
-    ambas instancias coexisten en el mismo DOM; los ids de gradiente deben ser
-    únicos por instancia, y la relación url(#id)↔id se prueba renderizando las
-    dos instancias (test_emblema_ids_unicos_por_instancia).
+    fábrica y sus ids congelados contra ``_CONSUMIDORES_DRAGON_EYE``, la MISMA
+    fuente que renderiza ``test_emblema_ids_unicos_por_instancia``. Como el
+    wizard es overlay sobre el dashboard, ambas instancias coexisten en el mismo
+    DOM; los ids de gradiente deben ser únicos, y la relación url(#id)↔id se
+    prueba renderizando TODOS los consumidores declarados, no una muestra fija.
     """
     fuentes = _fuentes_gui()
     path_ojo = "M5 24C13 14 35 14 43 24C35 34 13 34 5 24Z"
@@ -408,10 +421,9 @@ def test_emblema_dragon_unico_y_compartido() -> None:
                 for kw in node.keywords:
                     if kw.arg == "iris_id" and isinstance(kw.value, ast.Constant):
                         llamadas.setdefault(rel, []).append(kw.value.value)
-    esperado = {
-        "views/forge_dashboard.py": ["scIris-sidebar"],
-        "setup_wizard.py": ["scIris-wizard"],
-    }
+    # Listas de un elemento, no strings: dos llamadas en el mismo archivo también
+    # rompen el contrato (una sola instancia del emblema por superficie).
+    esperado = {rel: [iris_id] for rel, iris_id in _CONSUMIDORES_DRAGON_EYE.items()}
     assert llamadas == esperado, f"consumidores/ids del emblema cambiaron: {llamadas}"
 
 
@@ -420,34 +432,37 @@ def test_emblema_ids_unicos_por_instancia() -> None:
     dashboard, así que dos instancias del emblema conviven en el mismo DOM y un
     ``id="scIris"`` compartido haría ambigua la referencia ``url(#scIris)``.
 
-    La prueba es sobre las instancias RENDERIZADAS y congela el contrato D4 por
-    IGUALDAD EXACTA (no ``assert ids`` ni pertenencia, que pasaban en falso
-    verde): cada instancia define exactamente su id de gradiente y tiene
-    exactamente una referencia ``url(#...)`` que apunta a esa definición, y los
-    ids de instancias distintas son disjuntos. Un SVG que perdiera a la vez sus
-    ``id="..."`` y sus ``url(#...)`` (p. ej. el gradiente reemplazado por un
-    color plano) dejaba los dos conjuntos vacíos y el test anterior pasaba sin
-    probar nada.
-
-    Los ids congelados acá son los MISMOS que enumera por AST
-    ``test_emblema_dragon_unico_y_compartido`` en los dos call sites reales;
-    si aparece un tercer consumidor, ese ancla rompe primero.
+    Renderiza TODAS las instancias declaradas en ``_CONSUMIDORES_DRAGON_EYE``
+    —la misma fuente que congela el censo AST, no una lista paralela: un
+    consumidor nuevo entra a esta comprobación con una sola edición— y congela
+    el contrato D4 por IGUALDAD EXACTA DE LISTAS, no de sets: cada instancia
+    tiene exactamente una definición ``id="..."`` y exactamente una referencia
+    ``url(#...)`` (dos ocurrencias idénticas que un set colapsaría también
+    incumplen el «exactamente una»), y los ids de instancias distintas son
+    disjuntos. Un SVG que perdiera a la vez sus ``id="..."`` y sus ``url(#...)``
+    (p. ej. el gradiente reemplazado por un color plano) dejaba los dos conjuntos
+    vacíos y el test original pasaba sin probar nada.
     """
     from sky_claw.app.gui.icons import _icon_dragon_eye
 
-    esperado = {"sidebar": "scIris-sidebar", "wizard": "scIris-wizard"}
-    ids: dict[str, set[str]] = {}
-    refs: dict[str, set[str]] = {}
-    for nombre, iris_id in esperado.items():
+    ids_por_consumidor: dict[str, set[str]] = {}
+    for consumidor, iris_id in _CONSUMIDORES_DRAGON_EYE.items():
         svg = _icon_dragon_eye(iris_id=iris_id)
-        ids[nombre] = set(re.findall(r'id="([^"]+)"', svg))
-        refs[nombre] = set(re.findall(r"url\(#([^)]+)\)", svg))
-        assert ids[nombre] == {iris_id}, f"{nombre}: definición de gradiente inesperada: {sorted(ids[nombre])}"
-        assert refs[nombre] == {iris_id}, f"{nombre}: referencias url(#...) inesperadas: {sorted(refs[nombre])}"
-        assert refs[nombre] <= ids[nombre], f"{nombre}: url(#{iris_id}) sin definición en la misma instancia"
-    assert ids["sidebar"].isdisjoint(ids["wizard"]), (
-        f"ids SVG compartidos entre instancias: {ids['sidebar'] & ids['wizard']}"
-    )
+        ids_lista = re.findall(r'id="([^"]+)"', svg)
+        refs_lista = re.findall(r"url\(#([^)]+)\)", svg)
+        # Listas antes que sets: la cantidad importa, un set colapsaría la
+        # definición o la referencia duplicada.
+        assert ids_lista == [iris_id], f"{consumidor}: definiciones de id inesperadas: {ids_lista}"
+        assert refs_lista == [iris_id], f"{consumidor}: referencias url(#...) inesperadas: {refs_lista}"
+        assert set(refs_lista) <= set(ids_lista), f"{consumidor}: url(#{iris_id}) sin definición en la misma instancia"
+        ids_por_consumidor[consumidor] = set(ids_lista)
+
+    # Disjunción PAR A PAR sobre toda la familia renderizada: un tercer
+    # consumidor que reutilice un id cae acá sin tocar este test.
+    consumidores = list(ids_por_consumidor.items())
+    for i, (nombre_a, ids_a) in enumerate(consumidores):
+        for nombre_b, ids_b in consumidores[i + 1 :]:
+            assert ids_a.isdisjoint(ids_b), f"ids SVG compartidos entre {nombre_a} y {nombre_b}: {ids_a & ids_b}"
 
 
 #: Registro vivo de iconos, congelado por igualdad literal (censo por AST sobre
