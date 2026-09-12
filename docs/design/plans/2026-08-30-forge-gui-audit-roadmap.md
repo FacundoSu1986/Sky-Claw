@@ -144,7 +144,7 @@ Estas tareas son mejoras de producto, no defectos técnicos demostrados. Mantene
 
 ### D3 — Integridad reactiva del hero
 
-**Estado:** **RESUELTO** en #580 — la barra de integridad ya no es dorada fija:
+**Estado:** **RESUELTO** en #581 — la barra de integridad ya no es dorada fija:
 tres variantes CSS (`.sc-bar--estable` oro / `.sc-bar--vigilante` brasa /
 `.sc-bar--disputa` carmesí) mapeadas desde `_ESTADO_FORJA`
 (`forge_dashboard.py`) según el conteo de conflictos real. El sello ◆ también
