@@ -3686,3 +3686,115 @@ def test_el_wiring_productivo_del_workspace_es_una_cadena_completa() -> None:
             f"{archivo}: {llamada} debe pasar {kwarg}={valor!r} para que el root productivo "
             f"salga del workspace; encontré {encontrado!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# P2.3 — recovery de arranque de los roots externos desde el registro durable
+# ---------------------------------------------------------------------------
+
+
+def test_el_recovery_lee_el_root_activo_del_registro_durable(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2.3: la fuente es el registro de P0.2, no la preferencia ni el snapshot.
+
+    El barrido corre ANTES de resolver el workspace (orden §25), así que el
+    helper de AppContext no puede depender del `WorkspaceResuelto`. Se ancla que
+    lee la entrada de la clave de recursos de ESTA instancia lógica.
+    """
+    from types import SimpleNamespace
+
+    from sky_claw.app_context import AppContext
+    from sky_claw.local.tools import dyndolod_workspace as wsm
+
+    game = tmp_path / "game"
+    game.mkdir()
+    mo2_root = tmp_path / "mo2"
+    (mo2_root / "mods").mkdir(parents=True)
+    recursos = wsm.ResourceBinding.desde_paths(
+        game_path=game,
+        mo2_instance_data_root=mo2_root,
+        mo2_mods_path=mo2_root / "mods",
+    )
+    registro = wsm.RegistroDeRootActivo(tmp_path / "estado" / "active_roots.json")
+    root_activo = tmp_path / "Work B"
+    registro.registrar_activa(clave=recursos.clave(), root=root_activo, binding_id="binding-b")
+    monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
+
+    mo2 = SimpleNamespace(data_root=mo2_root, mods_dir=mo2_root / "mods")
+    assert AppContext._roots_externos_para_recovery(game=game, mo2=mo2) == (root_activo,)
+
+
+def test_el_recovery_incluye_el_desde_de_una_transicion_pendiente(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Editar la preferencia no puede perder los backups del root anterior.
+
+    La transición pendiente conserva el `desde` como ÚNICO registro durable del
+    root viejo (puede tener backups sin reconciliar). El helper devuelve ambos:
+    el activo nuevo y el viejo.
+    """
+    from types import SimpleNamespace
+
+    from sky_claw.app_context import AppContext
+    from sky_claw.local.tools import dyndolod_workspace as wsm
+
+    game = tmp_path / "game"
+    game.mkdir()
+    mo2_root = tmp_path / "mo2"
+    (mo2_root / "mods").mkdir(parents=True)
+    recursos = wsm.ResourceBinding.desde_paths(
+        game_path=game,
+        mo2_instance_data_root=mo2_root,
+        mo2_mods_path=mo2_root / "mods",
+    )
+    registro = wsm.RegistroDeRootActivo(tmp_path / "estado" / "active_roots.json")
+    viejo = tmp_path / "Work A"
+    nuevo = tmp_path / "Work B"
+    registro.registrar_activa(clave=recursos.clave(), root=viejo, binding_id="binding-a")
+    registro.registrar_transicion(clave=recursos.clave(), hacia=nuevo, motivo="cambio de preferencia")
+    monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
+
+    mo2 = SimpleNamespace(data_root=mo2_root, mods_dir=mo2_root / "mods")
+    assert AppContext._roots_externos_para_recovery(game=game, mo2=mo2) == (nuevo, viejo)
+
+
+def test_el_recovery_sin_registro_no_inventa_raices(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from sky_claw.app_context import AppContext
+    from sky_claw.local.tools import dyndolod_workspace as wsm
+
+    game = tmp_path / "game"
+    game.mkdir()
+    mo2_root = tmp_path / "mo2"
+    (mo2_root / "mods").mkdir(parents=True)
+    registro = wsm.RegistroDeRootActivo(tmp_path / "estado" / "active_roots.json")
+    monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
+
+    mo2 = SimpleNamespace(data_root=mo2_root, mods_dir=mo2_root / "mods")
+    assert AppContext._roots_externos_para_recovery(game=game, mo2=mo2) == ()
+
+
+def test_el_arranque_pasa_los_roots_externos_al_reconciliador() -> None:
+    """Ancla AST del wiring P2.3: sin el kwarg, los ACTIVE_TARGET externos no se barren."""
+    import ast as _ast
+
+    import sky_claw.app_context as app_context_mod
+
+    arbol = _ast.parse(pathlib.Path(app_context_mod.__file__).read_text(encoding="utf-8"))
+    llamada = next(
+        nodo
+        for nodo in _ast.walk(arbol)
+        if isinstance(nodo, _ast.Call)
+        and isinstance(nodo.func, _ast.Name)
+        and nodo.func.id == "construir_productores_de_move_aside"
+    )
+    assert any(kw.arg == "external_work_roots" for kw in llamada.keywords), (
+        "el reconcile de arranque no recibe los roots externos: sus backups quedarían huérfanos"
+    )

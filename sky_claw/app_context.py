@@ -867,6 +867,57 @@ class AppContext:
         if ownership is not None:
             await ownership.liberar()
 
+    @staticmethod
+    def _roots_externos_para_recovery(*, game, mo2) -> tuple[pathlib.Path, ...]:
+        """Roots externos REGISTRADOS (activo + transición pendiente) para el barrido.
+
+        El reconciliador de U-08 corre ANTES de resolver el `WorkspaceResuelto`
+        (el orden de §25 exige que el barrido termine antes de la transición), así
+        que la fuente de las raíces es el **registro durable** de P0.2, no el
+        snapshot del arranque. Se incluyen el root activo y el `desde` de una
+        transición pendiente: los backups del root que se está dejando tampoco
+        pueden quedar huérfanos, y editar la preferencia en el TOML no borra la
+        referencia.
+
+        Best-effort acotado, como el resto del hook: un registro ilegible devuelve
+        `()` con warning — el barrido pierde esas raíces, pero un problema de una
+        etapa no tumba el arranque. Un registro AUSENTE es el caso normal de una
+        instalación que nunca inicializó el root externo: `()` sin incidente.
+        """
+        from sky_claw.local.tools.dyndolod_workspace import (
+            ResourceBinding,
+            WorkspaceRechazadoError,
+            registro_de_roots_activos,
+        )
+
+        if not isinstance(game, pathlib.Path) or mo2 is None:
+            return ()
+        data_root = getattr(mo2, "data_root", None)
+        mods_dir = getattr(mo2, "mods_dir", None)
+        if not isinstance(data_root, pathlib.Path) or not isinstance(mods_dir, pathlib.Path):
+            return ()
+        try:
+            clave = ResourceBinding.desde_paths(
+                game_path=game,
+                mo2_instance_data_root=data_root,
+                mo2_mods_path=mods_dir,
+            ).clave()
+            entrada = registro_de_roots_activos().entrada(clave)
+        except (WorkspaceRechazadoError, OSError):
+            logger.warning(
+                "No se pudo leer el registro de roots activos para el barrido de backups externos; "
+                "esas raíces quedan sin reconciliar este arranque (no bloquea).",
+                exc_info=True,
+            )
+            return ()
+        if entrada is None:
+            return ()
+        raices = [pathlib.Path(entrada.root)]
+        pendiente = entrada.transicion_pendiente
+        if pendiente is not None and pendiente.desde:
+            raices.append(pathlib.Path(pendiente.desde))
+        return tuple(raices)
+
     async def _rollback_startup(self) -> None:
         try:
             await self._close_cleanup_generation(
@@ -1601,6 +1652,12 @@ class AppContext:
                             mo2_root=mo2.install_root,
                             mods_dir=mo2.mods_dir,
                             game=configured_game,
+                            # P2.3: los ACTIVE_TARGET externos salen del registro
+                            # durable (el workspace todavía no está resuelto).
+                            external_work_roots=self._roots_externos_para_recovery(
+                                game=configured_game,
+                                mo2=mo2,
+                            ),
                         ),
                         sandbox_root=mo2.data_root / ".skyclaw_sandbox",
                         lock_manager=lock_manager,

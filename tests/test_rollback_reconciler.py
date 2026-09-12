@@ -26,11 +26,14 @@ from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.output_targets import (
     BODYSLIDE_MESHES_RESOURCE_ID,
     bodyslide_output_root,
+    derivar_layout_de_dyndolod,
     dyndolod_legacy_recovery_target,
     pandora_output_target,
 )
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
 from sky_claw.local.tools.rollback_reconciler import (
+    PRODUCTOR_DYNDOLOD,
+    PRODUCTOR_LEGACY,
     PRODUCTORES_CABLEADOS,
     VENTANA_DE_GRACIA_SEGUNDOS,
     ProductorDeMoveAside,
@@ -38,7 +41,7 @@ from sky_claw.local.tools.rollback_reconciler import (
     construir_productores_de_move_aside,
     reconcile_orphan_rollback_backups,
 )
-from tests._symlink_guard import symlink_guard
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -738,27 +741,34 @@ def test_un_backup_real_si_se_lista(tmp_path: pathlib.Path) -> None:
     assert _listar_backups_move_aside([raiz / "Pandora_Output"]) == [real]
 
 
-def test_el_staging_de_texgen_esta_declarado_como_destino_reconciliable(tmp_path: pathlib.Path) -> None:
-    """El destino EXACTO del staging de TexGen, no sólo el módulo que lo mueve.
+def test_el_staging_de_texgen_legacy_esta_declarado_como_recovery_only(tmp_path: pathlib.Path) -> None:
+    """El destino EXACTO del staging legacy, en su productor RECOVERY-ONLY (P2.3).
 
     El ancla de familia de más arriba se afirma sobre MÓDULOS, y
     ``dyndolod_service.py`` ya figuraba en ella: agregarle un
     ``DirectoryRollback`` sobre un destino nuevo no la pone roja. Ese es
     justamente el riesgo que su propio comentario nombra —"un **destino exacto**
     nuevo"— y el que este test cubre: tras una muerte dura, un
-    ``textures.rollback-<nonce>`` bajo la raíz administrada es la ÚNICA copia del
+    ``textures.rollback-<nonce>`` bajo la raíz legacy es la ÚNICA copia del
     staging previo, y si el reconciliador no mira ahí queda huérfano para siempre.
+    P2.3 lo separa en su propio productor con el MISMO lock: el barrido histórico
+    restaura, nunca adopta ni migra, y la familia mutante no lo declara.
     """
+    from sky_claw.local.tools.rollback_reconciler import PRODUCTOR_LEGACY
+
     mo2 = tmp_path / "mo2"
     game = tmp_path / "game"
 
     productores = construir_productores_de_move_aside(mo2_root=mo2, game=game)
 
-    dyndolod = next(p for p in productores if p.nombre == "dyndolod")
+    legacy = next(p for p in productores if p.nombre == PRODUCTOR_LEGACY)
     raiz = dyndolod_legacy_recovery_target(game=game)
     assert raiz is not None
-    assert raiz / DynDOLODRunner.TEXGEN_OUTPUT_NAME in dyndolod.destinos
-    assert dyndolod.lock_resource_id == "dyndolod-pipeline"
+    assert legacy.destinos == (raiz / DynDOLODRunner.TEXGEN_OUTPUT_NAME,)
+    assert legacy.lock_resource_id == "dyndolod-pipeline"
+    # El productor mutante NO declara el legacy.
+    dyndolod = next(p for p in productores if p.nombre == "dyndolod")
+    assert (raiz / DynDOLODRunner.TEXGEN_OUTPUT_NAME) not in dyndolod.destinos
 
 
 def test_construir_productores_con_mods_dir_separado_ignora_trampas(tmp_path: pathlib.Path) -> None:
@@ -813,3 +823,450 @@ async def test_reconcile_sandbox_con_data_root_separado_descarta_clon(
     )
     assert not clon.exists()
     assert resultado.descartados == (clon,)
+
+
+# =============================================================================
+# P2.3 — recovery de arranque de los ACTIVE_TARGET externos
+#
+# Una muerte dura entre el move-aside del root exclusivo y su restauración deja
+# `<family>/<Tool>.rollback-<nonce>`. Hasta P2.3 ese residuo no se barría: la
+# única copia del staging previo quedaba huérfana. Los tests de acá ejercen el
+# boundary real (`reconcile_orphan_rollback_backups`) contra los dos roots y
+# afirman disco: restaurar sólo con el target ausente, preservar la ambigüedad
+# cuando hay destino, y nunca tocar el árbol externo.
+# =============================================================================
+
+
+def _productor_dyndolod_externo(external: pathlib.Path) -> ProductorDeMoveAside:
+    """Productor real de los ACTIVE_TARGET externos, tal cual lo arma el arranque."""
+    productores = construir_productores_de_move_aside(external_work_roots=(external,))
+    return next(p for p in productores if p.nombre == PRODUCTOR_DYNDOLOD)
+
+
+def _backup_del_root(root: pathlib.Path, *, contenido: bytes = b"BYTES-PREVIOS") -> pathlib.Path:
+    """Backup tal cual lo deja ``DirectoryRollback.__aenter__`` (rename O(1))."""
+    backup = root.with_name(f"{root.name}.rollback-1753700000000000000")
+    backup.mkdir(parents=True)
+    (backup / "payload.dds").write_bytes(contenido)
+    return backup
+
+
+def test_los_targets_activos_y_el_legacy_estan_separados_por_rol(tmp_path: pathlib.Path) -> None:
+    """T-PR2-14 (P2.3): igualdad literal de la familia de targets por rol.
+
+    Los ACTIVE_TARGET —dos mods + dos roots crudos externos— son los únicos
+    destinos mutables de los productores nuevos; el LEGACY_RECOVERY_ONLY_TARGET
+    vive en su propio productor. Un target nuevo rompe acá hasta que se decida
+    su rol.
+    """
+    mo2 = tmp_path / "mo2"
+    game = tmp_path / "game"
+    external = tmp_path / "Work Root"
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
+
+    productores = construir_productores_de_move_aside(
+        mo2_root=mo2,
+        game=game,
+        external_work_roots=(external,),
+    )
+    por_nombre = {p.nombre: set(p.destinos) for p in productores}
+
+    assert por_nombre[PRODUCTOR_DYNDOLOD] == {
+        mo2 / "mods" / DynDOLODRunner.DYNDOLLOD_MOD_NAME,
+        mo2 / "mods" / DynDOLODRunner.TEXGEN_MOD_NAME,
+        layout.texgen_root,
+        layout.dyndolod_root,
+    }
+    legacy = dyndolod_legacy_recovery_target(game=game)
+    assert legacy is not None
+    assert por_nombre[PRODUCTOR_LEGACY] == {legacy / DynDOLODRunner.TEXGEN_OUTPUT_NAME}
+    assert set(por_nombre) == {PRODUCTOR_DYNDOLOD, PRODUCTOR_LEGACY, "pandora", "bodyslide"}
+
+
+@pytest.mark.parametrize("herramienta", ["TexGen", "DynDOLOD"])
+async def test_crash_tras_move_aside_del_root_externo_restaura(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    herramienta: str,
+) -> None:
+    """T-PR2-06: muerte dura ENTRE el move-aside y el mkdir → RESTORE byte-exacto."""
+    external = tmp_path / "Work Root"
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
+    root = layout.texgen_root if herramienta == "TexGen" else layout.dyndolod_root
+    backup = _backup_del_root(root)
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_productor_dyndolod_externo(external)],
+        sandbox_root=None,
+        lock_manager=lock_manager,
+    )
+
+    assert root.is_dir()
+    assert (root / "payload.dds").read_bytes() == b"BYTES-PREVIOS"
+    assert not backup.exists()
+    assert resultado.restaurados == (root,)
+
+
+@pytest.mark.parametrize("herramienta", ["TexGen", "DynDOLOD"])
+async def test_crash_tras_mkdir_del_root_externo_preserva_ambos(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    herramienta: str,
+) -> None:
+    """T-PR2-06: crash DESPUÉS del born-empty (target vacío) → PRESERVE BOTH.
+
+    El filesystem no prueba si ese root vacío es de una corrida nueva
+    interrumpida o del estado final de un commit: restaurar encima o borrar el
+    backup destruiría trabajo en una de las dos hipótesis.
+    """
+    external = tmp_path / "Work Root"
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
+    root = layout.texgen_root if herramienta == "TexGen" else layout.dyndolod_root
+    backup = _backup_del_root(root)
+    root.mkdir()
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_productor_dyndolod_externo(external)],
+        sandbox_root=None,
+        lock_manager=lock_manager,
+    )
+
+    assert root.is_dir() and not any(root.iterdir())
+    assert backup.exists() and (backup / "payload.dds").read_bytes() == b"BYTES-PREVIOS"
+    assert resultado.preservados == (backup,)
+    assert resultado.restaurados == ()
+
+
+@pytest.mark.parametrize("herramienta", ["TexGen", "DynDOLOD"])
+async def test_crash_tras_copia_parcial_del_root_externo_preserva_ambos(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    herramienta: str,
+) -> None:
+    """T-PR2-06: la herramienta alcanzó a escribir salida incompleta → ambigüedad."""
+    external = tmp_path / "Work Root"
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
+    root = layout.texgen_root if herramienta == "TexGen" else layout.dyndolod_root
+    backup = _backup_del_root(root)
+    root.mkdir()
+    (root / "parcial.dds").write_bytes(b"A-MEDIAS")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_productor_dyndolod_externo(external)],
+        sandbox_root=None,
+        lock_manager=lock_manager,
+    )
+
+    assert (root / "parcial.dds").read_bytes() == b"A-MEDIAS"
+    assert backup.exists()
+    assert resultado.preservados == (backup,)
+
+
+@pytest.mark.parametrize("mod_name", [DynDOLODRunner.DYNDOLLOD_MOD_NAME, DynDOLODRunner.TEXGEN_MOD_NAME])
+async def test_crash_del_mod_empaquetado_sigue_cubierto(
+    lock_manager: DistributedLockManager,
+    mods: pathlib.Path,
+    sandbox: pathlib.Path,
+    mod_name: str,
+) -> None:
+    """Hermano en el mismo productor: los dos mods siguen declarados y se restauran."""
+    backup = _backup_move_aside(mods, mod_name, contenido="texturas previas")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_productor_dyndolod_externo_desde_mods(mods)],
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+
+    destino = mods / mod_name
+    assert (destino / "DynDOLOD.esp").read_text(encoding="utf-8") == "texturas previas"
+    assert not backup.exists()
+    assert resultado.restaurados == (destino,)
+
+
+def _productor_dyndolod_externo_desde_mods(mods: pathlib.Path) -> ProductorDeMoveAside:
+    productores = construir_productores_de_move_aside(mods_dir=mods)
+    return next(p for p in productores if p.nombre == PRODUCTOR_DYNDOLOD)
+
+
+# =============================================================================
+# T-PR2-23 — familia completa A–H del recovery LEGACY (ADR 0011 §2.9)
+#
+# El predicado cerrado se ejerce sobre el ÚNICO LEGACY_RECOVERY_ONLY_TARGET,
+# `<game>/Sky-Claw/DynDOLOD/textures`, vía `reconcile_orphan_rollback_backups`
+# real y afirmando disco. El barrido histórico RESTAURA un backup válido; nunca
+# adopta, migra, borra ni usa el legacy como staging productivo.
+# =============================================================================
+
+
+def _entorno_legacy(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, ProductorDeMoveAside]:
+    """``(game, target, productor_legacy)`` con el productor real del arranque."""
+    game = tmp_path / "game"
+    game.mkdir()
+    productores = construir_productores_de_move_aside(game=game)
+    legacy = next(p for p in productores if p.nombre == PRODUCTOR_LEGACY)
+    target = dyndolod_legacy_recovery_target(game=game)
+    assert target is not None
+    return game, target / DynDOLODRunner.TEXGEN_OUTPUT_NAME, legacy
+
+
+async def test_tpr223_a_backup_legacy_valido_con_target_ausente_restaura(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Caso A: el backup es el último estado bueno y se devuelve con rename O(1)."""
+    _game, target, legacy = _entorno_legacy(tmp_path)
+    backup = target.with_name(f"{target.name}.rollback-1753700000000000000")
+    backup.mkdir(parents=True)
+    (backup / "lod.dds").write_bytes(b"GENERACION-PREVIA")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+
+    assert target.is_dir()
+    assert (target / "lod.dds").read_bytes() == b"GENERACION-PREVIA"
+    assert not backup.exists()
+    assert resultado.restaurados == (target,)
+
+
+async def test_tpr223_b_backup_legacy_valido_con_target_presente_preserva_ambos(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Caso B: estado ambiguo — no se sobrescribe ni se borra ninguno."""
+    _game, target, legacy = _entorno_legacy(tmp_path)
+    backup = target.with_name(f"{target.name}.rollback-1753700000000000000")
+    backup.mkdir(parents=True)
+    (backup / "lod.dds").write_bytes(b"PREVIA")
+    target.mkdir(parents=True)
+    (target / "lod.dds").write_bytes(b"NUEVA")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+
+    assert (target / "lod.dds").read_bytes() == b"NUEVA"
+    assert (backup / "lod.dds").read_bytes() == b"PREVIA"
+    assert resultado.preservados == (backup,)
+
+
+async def test_tpr223_c_sibling_no_relacionado_se_ignora(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Caso C: sufijo válido pero basename ≠ ``textures`` → no es de este target."""
+    _game, target, legacy = _entorno_legacy(tmp_path)
+    ajeno = target.with_name("DynDOLOD.rollback-1753700000000000000")
+    ajeno.mkdir(parents=True)
+    (ajeno / "x.dds").write_bytes(b"AJENO")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+
+    assert ajeno.is_dir() and not (target.with_name("DynDOLOD")).exists()
+    assert resultado.restaurados == () and resultado.preservados == ()
+
+
+async def test_tpr223_d_sufijo_invalido_se_ignora(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Caso D: piso ``\\d{12,}`` — nonces cortos o no numéricos no son backups."""
+    _game, target, legacy = _entorno_legacy(tmp_path)
+    corto = target.with_name(f"{target.name}.rollback-123")
+    corto.mkdir(parents=True)
+    no_numerico = target.with_name(f"{target.name}.rollback-abcdefghijkl")
+    no_numerico.mkdir(parents=True)
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+
+    assert corto.is_dir() and no_numerico.is_dir()
+    assert not target.exists()
+    assert resultado.restaurados == () and resultado.preservados == ()
+
+
+@junction_guard
+async def test_tpr223_e_enlace_con_nombre_de_backup_se_ignora(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Caso E: un junction con nombre de backup NUNCA se restaura siguiendo el enlace."""
+    _game, target, legacy = _entorno_legacy(tmp_path)
+    ajeno = tmp_path / "arbol_ajeno"
+    ajeno.mkdir()
+    (ajeno / "importante.dds").write_bytes(b"NO-SOY-BACKUP")
+    enlace = target.with_name(f"{target.name}.rollback-1753700000000000000")
+    enlace.parent.mkdir(parents=True, exist_ok=True)
+    if (motivo := crear_junction(enlace, ajeno)) is not None:
+        pytest.fail(f"no se pudo crear el junction: {motivo}")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+
+    assert enlace.is_dir()  # el junction sigue donde estaba
+    assert not target.exists(), "el enlace no puede convertirse en el target administrado"
+    assert (ajeno / "importante.dds").read_bytes() == b"NO-SOY-BACKUP"
+    assert resultado.restaurados == () and resultado.preservados == ()
+
+
+async def test_tpr223_f_lock_del_productor_vivo_salta_sin_mutar(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Caso F: ritual en curso (aun de otra instancia) ⇒ SKIP sin tocar el backup."""
+    _game, target, legacy = _entorno_legacy(tmp_path)
+    backup = target.with_name(f"{target.name}.rollback-1753700000000000000")
+    backup.mkdir(parents=True)
+    (backup / "lod.dds").write_bytes(b"PREVIA")
+    await lock_manager.acquire_lock("dyndolod-pipeline", "otra-instancia", ttl=60.0)
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+
+    assert backup.is_dir()
+    assert not target.exists()
+    assert PRODUCTOR_LEGACY in resultado.omitidos_por_lock
+    assert resultado.restaurados == ()
+
+
+async def test_tpr223_g_sin_backup_valido_es_no_op(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Caso G: nada que reconciliar ⇒ no-op, ni siquiera crea el target."""
+    _game, target, legacy = _entorno_legacy(tmp_path)
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+
+    assert not target.exists()
+    assert resultado.restaurados == () and resultado.preservados == () and resultado.descartados == ()
+
+
+async def test_tpr223_h_rename_fallido_preserva_el_backup_y_reintenta(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Caso H + idempotencia: si el rename falla, la única copia NO se pierde.
+
+    Primera pasada con el rename roto: el backup queda y el target sigue ausente.
+    Segunda pasada sana: restaura. Tercera: no-op (ya no hay backup).
+    """
+    _game, target, legacy = _entorno_legacy(tmp_path)
+    backup = target.with_name(f"{target.name}.rollback-1753700000000000000")
+    backup.mkdir(parents=True)
+    (backup / "lod.dds").write_bytes(b"UNICA-COPIA")
+
+    rename_real = pathlib.Path.rename
+
+    def _rename_roto(self: pathlib.Path, destino: pathlib.Path) -> pathlib.Path:
+        if self == backup:
+            raise OSError("disco lleno (simulado)")
+        return rename_real(self, destino)
+
+    monkeypatch.setattr(pathlib.Path, "rename", _rename_roto)
+    primera = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+    monkeypatch.undo()
+
+    assert backup.is_dir() and (backup / "lod.dds").read_bytes() == b"UNICA-COPIA"
+    assert not target.exists()
+    assert primera.preservados == (backup,)
+
+    segunda = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+    assert target.is_dir() and (target / "lod.dds").read_bytes() == b"UNICA-COPIA"
+    assert segunda.restaurados == (target,)
+
+    tercera = await reconcile_orphan_rollback_backups(
+        productores=[legacy], sandbox_root=None, lock_manager=lock_manager
+    )
+    assert tercera.restaurados == () and tercera.preservados == () and tercera.descartados == ()
+
+
+def test_ningun_productor_nuevo_declara_el_legacy(tmp_path: pathlib.Path) -> None:
+    """El legacy sólo aparece en su productor recovery-only — nunca en los activos.
+
+    Es la frontera normativa de ADR 0011 §2.9: ninguna corrida nueva usa, mueve,
+    adopta, borra ni pasa el legacy como ``-o:``. Acá se ancla sobre la
+    declaración REAL de los productores cableados.
+    """
+    mo2 = tmp_path / "mo2"
+    game = tmp_path / "game"
+    external = tmp_path / "Work Root"
+
+    productores = construir_productores_de_move_aside(
+        mo2_root=mo2,
+        mods_dir=mo2 / "mods",
+        game=game,
+        external_work_roots=(external,),
+    )
+    legacy = dyndolod_legacy_recovery_target(game=game)
+    assert legacy is not None
+    declarantes = {
+        p.nombre for p in productores if legacy in p.destinos or any(legacy in d.parents for d in p.destinos)
+    }
+    assert declarantes == {PRODUCTOR_LEGACY}
+
+
+async def test_el_barrido_restaura_el_root_viejo_de_una_transicion_pendiente(
+    lock_manager: DistributedLockManager,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Editar la preferencia no pierde los backups del root anterior (P2.3).
+
+    End-to-end: el helper de AppContext lee el registro (activo B + `desde` A),
+    el reconciliador recibe AMBAS raíces y restaura el backup huérfano que quedó
+    en A. Sin incluir el `desde`, esa copia sería irrecuperable desde Sky-Claw.
+    """
+    from types import SimpleNamespace
+
+    from sky_claw.app_context import AppContext
+    from sky_claw.local.tools import dyndolod_workspace as wsm
+
+    game = tmp_path / "game"
+    game.mkdir()
+    mo2_root = tmp_path / "mo2"
+    (mo2_root / "mods").mkdir(parents=True)
+    recursos = wsm.ResourceBinding.desde_paths(
+        game_path=game,
+        mo2_instance_data_root=mo2_root,
+        mo2_mods_path=mo2_root / "mods",
+    )
+    registro = wsm.RegistroDeRootActivo(tmp_path / "estado" / "active_roots.json")
+    viejo = tmp_path / "Work A"
+    nuevo = tmp_path / "Work B"
+    registro.registrar_activa(clave=recursos.clave(), root=viejo, binding_id="binding-a")
+    registro.registrar_transicion(clave=recursos.clave(), hacia=nuevo, motivo="cambio de preferencia")
+    monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
+
+    layout_viejo = derivar_layout_de_dyndolod(external_work_root=viejo)
+    backup = layout_viejo.texgen_root.with_name("TexGen.rollback-1753700000000000000")
+    backup.mkdir(parents=True)
+    (backup / "lod.dds").write_bytes(b"PREVIO-EN-A")
+
+    mo2 = SimpleNamespace(data_root=mo2_root, mods_dir=mo2_root / "mods")
+    roots = AppContext._roots_externos_para_recovery(game=game, mo2=mo2)
+    assert roots == (nuevo, viejo)
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=construir_productores_de_move_aside(external_work_roots=roots),
+        sandbox_root=None,
+        lock_manager=lock_manager,
+    )
+
+    assert layout_viejo.texgen_root.is_dir()
+    assert (layout_viejo.texgen_root / "lod.dds").read_bytes() == b"PREVIO-EN-A"
+    assert not backup.exists()
+    assert resultado.restaurados == (layout_viejo.texgen_root,)
