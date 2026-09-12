@@ -1,9 +1,14 @@
 """Sky-Claw GUI — Registro de iconos SVG.
 
-Convención: cada constante es un SVG inline completo, listo para meter dentro de
-``ui.html(f'... {_ICON_X} ...')``. Los del shell Forge heredan el color con
-``stroke="currentColor"`` (el wrapper decide); los de marca (ojo de dragón)
-llevan sus colores horneados.
+Convención: las constantes ``_ICON_*`` son SVG inline completos, listos para
+meter dentro de ``ui.html(f'... {_ICON_X} ...')``. Los del shell Forge heredan
+el color con ``stroke="currentColor"`` (el wrapper decide); los de marca (ojo de
+dragón) llevan sus colores horneados.
+
+Exceptuadas de esa convención, las constantes ``*_TEMPLATE`` contienen
+marcadores de formato y NO se emiten directo: se renderizan pasando por su
+fábrica, que sustituye los marcadores y devuelve el SVG final
+(``_ICON_DRAGON_EYE_TEMPLATE`` → ``_icon_dragon_eye(iris_id=...)``).
 
 El registro legacy del wizard (~12 constantes: layers/mod/pending/conflict/
 storage/chat/settings/search/server/chart/anvil/cart) se eliminó: ninguna
@@ -44,7 +49,7 @@ _ICON_UNLOCK = """<svg width="13" height="13" viewBox="0 0 24 24" fill="none" st
 # compartido por el sidebar del shell y el asistente de primer arranque —
 # ninguna copia divergente.
 #
-# Excepción NBREAKABLE: el SVG referencia su gradiente por id
+# Invariante obligatoria: el SVG referencia su gradiente por id
 # (``url(#<iris_id>)`` ↔ ``<radialGradient id="...">``) porque ambos clientes se
 # montan en el MISMO documento (wizard = overlay sobre el dashboard) y dos
 # instancias con el mismo id harían ambiguo el recurso. Por eso la constante es
