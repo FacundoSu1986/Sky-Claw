@@ -38,6 +38,16 @@ _WIZARD_LORE: tuple[str, ...] = (
 )
 
 
+def _lore_markup(frase: str) -> str:
+    """Markup de la cita de lore (función de módulo: el ancla la invoca sin
+    levantar la sala NiceGUI)."""
+    return (
+        '<div id="sky-wizard-lore" style="text-align:center; margin-top:18px;'
+        " font-family:'EB Garamond',serif; font-style:italic; font-size:13px;"
+        f' color:#b6ab90; transition:opacity .45s ease;">{frase}</div>'
+    )
+
+
 def validate_credentials(
     provider: str,
     api_key: str,
@@ -293,7 +303,7 @@ class SetupWizardModal:
                 # Lore rotatorio (D2): cita al pie del modal, estilo pantalla de
                 # carga de primer inicio. Sin CSS keyframes: solo cambio de texto,
                 # compatible con la política de movimiento reducido.
-                self._lore_el = ui.html(self._lore_markup(next(self._lore_iter)))
+                self._lore_el = ui.html(_lore_markup(next(self._lore_iter)))
 
         # UI timer: rota la frase cada ~6s mientras el wizard vive.
         self._lore_timer = ui.timer(6.0, self._rotate_lore)
@@ -315,14 +325,6 @@ class SetupWizardModal:
             });
         """)
 
-    def _lore_markup(self, frase: str) -> str:
-        """Marca HTML de la cita (compartida por render inicial y rotación)."""
-        return (
-            '<div id="sky-wizard-lore" style="text-align:center; margin-top:18px;'
-            " font-family:'EB Garamond',serif; font-style:italic; font-size:13px;"
-            f' color:#b6ab90; transition:opacity .45s ease;">{frase}</div>'
-        )
-
     def _rotate_lore(self) -> None:
         """Rota la cita de lore; si el modal ya cerró, apaga el timer.
 
@@ -332,7 +334,7 @@ class SetupWizardModal:
         if self._lore_el is None:
             return
         try:
-            self._lore_el.content = self._lore_markup(next(self._lore_iter))
+            self._lore_el.content = _lore_markup(next(self._lore_iter))
         except RuntimeError:
             if self._lore_timer is not None:
                 self._lore_timer.deactivate()

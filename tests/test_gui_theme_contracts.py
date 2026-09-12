@@ -1121,3 +1121,41 @@ def test_receta_sc_btn_centralizada_con_estado_disabled() -> None:
 
     activo = _declaraciones((_regla_css(".sc-btn:disabled:active"),))
     assert activo.get("transform") == "none", ":active no debe hundir un botón que no responde"
+
+
+# ── D2 — lore rotatorio del wizard ───────────────────────────────────────────
+
+#: Las cinco frases del lore, congeladas como un todo (igualdad literal,
+#: patrón del repo). Un cambio silencioso de UNA rompe el ancla. Textos
+#: originales, cero material de Bethesda.
+_LORE_D2 = (
+    "No todos los descansos son derrotas: a veces el dragón duerme para que la forja aguante.",
+    "Un orden de carga bien atado vale más que diez mods brillantes mal pertrechados.",
+    "LOOT ordena, xEdit confiesa, DynDOLOD revela: cada herramienta a su ritual.",
+    "Que cada cambio tenga prueba y cada prueba tenga nombre — eso separa la forja del fuego.",
+    "El viento de la garganta no borra las runas, si alguien las grabó de verdad.",
+)
+
+
+def test_lore_d2_del_wizard_inventario_y_mecanica() -> None:
+    """D2: el wizard de primer arranque trae una cita al pie que rota
+    automáticamente (estilo pantalla de carga). El ancla congela (i) el inventario
+    literal, (ii) el ciclo, (iii) el marcador de destino y (iv) el apagado del
+    timer cuando el modal cerró (sin seguir corriendo en un DOM muerto)."""
+    from sky_claw.app.gui.setup_wizard import _WIZARD_LORE, _lore_markup
+
+    # (i) Las 5 frases, exactamente como se escribieron y en ese orden.
+    assert tuple(_WIZARD_LORE) == _LORE_D2
+
+    # (ii) Marcado del destino — si el id cambia, el ciclo JS deja de apuntarlo.
+    markup = _lore_markup("test")  # pantalla de carga: una frase ya visible
+    assert 'id="sky-wizard-lore"' in markup, "falta el id del marcador de lore"
+    assert "'EB Garamond'" in markup and "font-style:italic" in markup, "la cita no está en la tipografía narrativa"
+
+    # (iii+iv) Ciclo y timer con apagado — por texto no por drops: si el ciclo
+    # desaparece, el lore queda fijo y eso rompe su contrato.
+    src_wizard = (_GUI_DIR / "setup_wizard.py").read_text(encoding="utf-8")
+    assert "itertools.cycle(_WIZARD_LORE)" in src_wizard, "falta el ciclo de lore en el wizard"
+    assert "ui.timer(6.0, self._rotate_lore)" in src_wizard, "falta el timer que rota la cita"
+    assert "self._lore_timer.deactivate()" in src_wizard, "el timer siguió corriendo tras cerrar el modal"
+    assert "RuntimeError" in src_wizard, "el handler no desactiva aguantando el DOM borrado"
