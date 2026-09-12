@@ -305,9 +305,9 @@ class SetupWizardModal:
                 # compatible con la política de movimiento reducido.
                 self._lore_el = ui.html(_lore_markup(next(self._lore_iter)))
 
-        # UI timer: rota la frase cada ~6s mientras el wizard vive.
-        # immediate=False: con el default (True) la primera cita se saltaría
-        # al instante en vez de durar su intervalo (Codex review en #584).
+        # Temporizador de UI: rota la frase cada ~6s mientras el wizard vive.
+        # immediate=False: con el valor por defecto (True) la primera cita se saltaría
+        # al instante en vez de durar su intervalo (revisión de Codex en #584).
         self._lore_timer = ui.timer(6.0, self._rotate_lore, immediate=False)
 
         # Attach localStorage autosave handlers
@@ -444,11 +444,11 @@ class SetupWizardModal:
             # (gate refresh, dashboard, etc.) reacts in the same session.
             get_store().set("first_run", False)
 
-            # Remove overlay from DOM — pero el timer de lore fue creado como
-            # héroe del page (fuera de overlay element), así que NO muere con
+            # Eliminar overlay del DOM — pero el temporizador de lore fue creado como
+            # elemento de la página (fuera de overlay_el), así que NO muere con
             # él y hay que desactivarlo explícitamente acá. La guarda por
-            # is_deleted de _rotate_lore sigue como segunda línea (si algun
-            # handler raro deja el modal borrado sin pasar por acá).
+            # is_deleted de _rotate_lore sigue como segunda línea (si algún
+            # manejador deja el modal borrado sin pasar por acá).
             if self._overlay_el:
                 self._overlay_el.delete()
             if self._lore_timer is not None:
