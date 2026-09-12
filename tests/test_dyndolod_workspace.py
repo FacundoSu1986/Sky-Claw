@@ -2024,40 +2024,46 @@ async def test_cambiar_la_preferencia_no_hace_hot_reload(tmp_path: pathlib.Path)
 # ---------------------------------------------------------------------------
 
 
-def test_p0_no_cambia_el_output_productivo_del_runner(tmp_path: pathlib.Path) -> None:
-    """`P0 CAPABILITY != PR-2 ACTIVATION`, verificado sobre el argv REAL.
+def test_p21_activa_el_layout_externo_en_el_runner(tmp_path: pathlib.Path) -> None:
+    """P2.1 SÍ cambia el `-o:`: cada herramienta recibe su subroot externo.
 
-    Si un cambio de P0 hiciera que el `-o:` del runner apunte al work root
-    externo, sería SCOPE VIOLATION: PR-2 reabre el gate de lanzamiento T5 al
-    tocar esos subroots, y este PR no lo reabre. Se mide el argv que el runner
-    construye, no un comentario que diga que no cambió.
+    Antes de PR-2, P0 sólo entregaba CAPACIDAD y el `-o:` seguía colgando del
+    juego (`<game>/Sky-Claw/DynDOLOD`). P2.1 activa el layout derivado del
+    `external_work_root`: se mide sobre el argv REAL del runner, y el root legacy
+    del juego NO aparece en ningún `-o:`.
     """
     from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
-    from sky_claw.local.tools.output_targets import (
-        DYNDOLOD_OUTPUT_ROOT,
-        SKY_CLAW_MANAGED_DIR,
-        dyndolod_output_target,
-    )
+    from sky_claw.local.tools.output_targets import HerramientaDynDOLOD, derivar_layout_de_dyndolod
 
     game = tmp_path / "Skyrim Special Edition"
     (game / "Data").mkdir(parents=True)
     exe = tmp_path / "tools" / "DynDOLOD" / "DynDOLODx64.exe"
     exe.parent.mkdir(parents=True)
     exe.write_bytes(b"")
+    external = tmp_path / "Sky-Claw Work Root"
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
 
-    # La derivación productiva sigue colgando del juego, no del work root.
-    esperado = game.resolve() / SKY_CLAW_MANAGED_DIR / DYNDOLOD_OUTPUT_ROOT
-    assert dyndolod_output_target(game=game) == esperado
-
-    config = DynDOLODConfig(dyndolod_exe=exe, game_path=game, mo2_path=None, mo2_mods_path=None)
-    assert config.output_root == esperado
+    config = DynDOLODConfig(
+        dyndolod_exe=exe,
+        game_path=game,
+        mo2_path=None,
+        mo2_mods_path=None,
+        external_work_root=external,
+    )
+    assert config.output_layout == layout
 
     runner = DynDOLODRunner(config)
-    argv = runner._build_xedit_args(None)
-    salidas = [arg for arg in argv if arg.startswith("-o:")]
-    assert len(salidas) == 1
-    assert str(esperado) in salidas[0]
-    assert "Sky-Claw Work" not in salidas[0]
+    o_texgen = [
+        a for a in runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.TEXGEN) if a.startswith("-o:")
+    ]
+    o_dyndolod = [
+        a for a in runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD) if a.startswith("-o:")
+    ]
+    assert len(o_texgen) == 1 and len(o_dyndolod) == 1
+    assert str(layout.texgen_root) in o_texgen[0]
+    assert str(layout.dyndolod_root) in o_dyndolod[0]
+    legacy = game.resolve() / "Sky-Claw" / "DynDOLOD"
+    assert str(legacy) not in o_texgen[0] and str(legacy) not in o_dyndolod[0]
 
 
 def test_ni_output_targets_ni_el_runner_conocen_el_workspace() -> None:
@@ -2089,10 +2095,10 @@ def test_p0_no_toca_el_root_legacy(tmp_path: pathlib.Path) -> None:
     no crea `DirectoryRollback` sobre él. Lo único que P0 hace con un root viejo
     es LEERLO para negarse a abandonarlo con backups pendientes.
     """
-    from sky_claw.local.tools.output_targets import dyndolod_output_target
+    from sky_claw.local.tools.output_targets import dyndolod_legacy_recovery_target
 
     game = tmp_path / "game"
-    legacy = dyndolod_output_target(game=game)
+    legacy = dyndolod_legacy_recovery_target(game=game)
     (legacy / "textures").mkdir(parents=True)
     (legacy / "textures" / "lod.dds").write_bytes(b"generacion anterior")
     antes = sorted(p.relative_to(legacy).as_posix() for p in legacy.rglob("*"))
@@ -2108,10 +2114,11 @@ def test_p0_no_toca_el_root_legacy(tmp_path: pathlib.Path) -> None:
 
 #: Sitios de PRODUCCIÓN que construyen `DynDOLODPipelineService`. Igualdad
 #: literal, como `RITUAL_TOOL_MAP`: un constructor nuevo rompe el ancla hasta
-#: que se decida si participa de la coordinación de etapa 9. Sin esto, el
-#: default `stage9_coordination=None` sería exactamente el defecto dominante de
-#: este repo —un camino coordinado y su gemelo no— en su forma más silenciosa,
-#: porque no falla nada: simplemente no hay exclusión.
+#: que se decida si participa de la coordinación de etapa 9 y del ownership del
+#: workspace. Sin esto, los defaults `stage9_coordination=None`/`workspace=None`
+#: serían exactamente el defecto dominante de este repo —un camino coordinado y
+#: su gemelo no— en su forma más silenciosa, porque no falla nada: simplemente
+#: no hay exclusión ni root con ownership.
 CONSTRUCTORES_DEL_SERVICIO_DYNDOLOD: frozenset[str] = frozenset(
     {
         "sky_claw/app/orchestrator/orchestration_composition.py",
@@ -2121,7 +2128,7 @@ CONSTRUCTORES_DEL_SERVICIO_DYNDOLOD: frozenset[str] = frozenset(
 
 
 def test_censo_de_constructores_del_servicio_dyndolod() -> None:
-    """Todo constructor de producción pasa `stage9_coordination=`, sin excepciones."""
+    """Todo constructor de producción pasa `stage9_coordination=` y `workspace=`, sin excepciones."""
     import ast
 
     raiz = pathlib.Path(ws.__file__).resolve().parents[3]
@@ -2147,12 +2154,15 @@ def test_censo_de_constructores_del_servicio_dyndolod() -> None:
         for nodo in ast.walk(arbol):
             if isinstance(nodo, ast.Call) and _nombre_construido(nodo.func) == "DynDOLODPipelineService":
                 clave = archivo.relative_to(raiz).as_posix()
-                pasa = any(kw.arg == "stage9_coordination" for kw in nodo.keywords)
+                pasa = all(
+                    any(kw.arg == requerido for kw in nodo.keywords)
+                    for requerido in ("stage9_coordination", "workspace")
+                )
                 encontrados[clave] = encontrados.get(clave, True) and pasa
 
     assert set(encontrados) == CONSTRUCTORES_DEL_SERVICIO_DYNDOLOD
-    sin_coordinacion = sorted(k for k, v in encontrados.items() if not v)
-    assert not sin_coordinacion, f"construyen el servicio sin coordinar: {sin_coordinacion}"
+    sin_wiring = sorted(k for k, v in encontrados.items() if not v)
+    assert not sin_wiring, f"construyen el servicio sin coordinación/ownership: {sin_wiring}"
 
 
 def _funcion_con_el_veto_de_leases() -> tuple[object, str]:
@@ -2171,12 +2181,23 @@ def _funcion_con_el_veto_de_leases() -> tuple[object, str]:
     raise AssertionError("no se encontró la función que define `_conserva_las_leases`")
 
 
-#: Las leases que sostienen una corrida de etapa 9. Igualdad literal: una tercera
-#: que se sume al `AsyncExitStack` rompe el ancla hasta que se decida si participa
-#: del veto y de los fences. Es el defecto dominante del repo en su forma exacta —
-#: un lock cableado y su hermano no—, y acá los dos hermanos viven en la MISMA
-#: función, que es donde el repo ya lo cometió (#373).
-LEASES_DE_LA_CORRIDA_DE_ETAPA9: frozenset[str] = frozenset({"tx_lock", "ritual_de_etapa9"})
+#: Las leases que sostienen una corrida de etapa 9, como pares
+#: ``(nombre consultado en el veto, nombre fenceado)``. Igualdad literal: una
+#: tercera lease que se sume al `AsyncExitStack` rompe el ancla hasta que se
+#: decida si participa del veto y de los fences. Es el defecto dominante del repo
+#: en su forma exacta —un lock cableado y su hermano no—, y acá los dos hermanos
+#: viven en la MISMA función, que es donde el repo ya lo cometió (#373).
+#:
+#: P2.2 agregó la lease del workspace: el veto la consulta por
+#: ``lease_de_workspace.lease_lost`` y el fence por ``workspace.assert_owned()``
+#: (el handle envuelto falla también si el snapshot no conserva ownership).
+LEASES_DE_LA_CORRIDA_DE_ETAPA9: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("tx_lock", "tx_lock"),
+        ("ritual_de_etapa9", "ritual_de_etapa9"),
+        ("lease_de_workspace", "workspace"),
+    }
+)
 
 
 def test_todas_las_leases_de_la_corrida_participan_del_veto_y_de_los_fences() -> None:
@@ -2187,7 +2208,8 @@ def test_todas_las_leases_de_la_corrida_participan_del_veto_y_de_los_fences() ->
     `cwd`. Descartarla dejaba el veto de `DirectoryRollback` mirando sólo el lock
     del `locks.db` relativo al cwd: con la lease cross-process perdida, el
     rollback restauraba encima de la salida del nuevo dueño. El fence de
-    provenance tenía el mismo agujero.
+    provenance tenía el mismo agujero. P2.2 sumó la lease de ownership del
+    workspace, que excluye cross-process del root EXCLUSIVO.
     """
     import ast as _ast
 
@@ -2207,10 +2229,10 @@ def test_todas_las_leases_de_la_corrida_participan_del_veto_y_de_los_fences() ->
         and isinstance(nodo.func.value, _ast.Name)
     }
 
-    assert con_lease_lost == LEASES_DE_LA_CORRIDA_DE_ETAPA9, (
+    assert con_lease_lost == {nombre_veto for nombre_veto, _ in LEASES_DE_LA_CORRIDA_DE_ETAPA9}, (
         f"el veto de rollback no mira todas las leases: {sorted(con_lease_lost)}"
     )
-    assert con_assert_owned == LEASES_DE_LA_CORRIDA_DE_ETAPA9, (
+    assert con_assert_owned == {nombre_fence for _, nombre_fence in LEASES_DE_LA_CORRIDA_DE_ETAPA9}, (
         f"los fences de ownership no miran todas las leases: {sorted(con_assert_owned)}"
     )
 
@@ -3572,3 +3594,213 @@ def test_dos_procesos_muerte_dura_expira_y_permite_reacquisicion(tmp_path: pathl
     recursos = _instancia(tmp_path)
     registro = ws.registro_de_roots_activos(estado)
     assert registro.entrada(recursos.clave()).root == str(root_b.resolve())
+
+
+def test_dos_procesos_el_rechazo_por_ownership_no_inicia_move_aside_ni_spawn(
+    tmp_path: pathlib.Path,
+) -> None:
+    """P2.2 §19: con A dueño vivo, B (mismo binding) no toca ni un byte de staging.
+
+    DOS PROCESOS reales ya demostraron el rechazo ``busy`` (P2.0). Lo que agrega
+    P2.2 es la consecuencia sobre el filesystem del writer: el rechazo ocurre
+    antes de que B pueda siquiera obtener un `WorkspaceResuelto`, así que no hay
+    layout de herramienta, ni backup de move-aside, ni artefacto suyo. El único
+    contenido posible en cada root es su binding.
+    """
+    estado = tmp_path / "estado"
+    root_a = tmp_path / "Work A"
+    root_b = tmp_path / "Work B"
+    holder, retador = _correr_ownership_vivo(
+        tmp_path, estado=estado, root_a=root_a, root_b=root_b, ttl=60.0, crash=False
+    )
+
+    assert holder["ok"] is True
+    assert retador["fase1"] == {"entro": False, "motivo": "busy"}
+
+    for root in (root_a, root_b):
+        assert not (root / "DynDOLOD").exists(), f"B inició el layout de herramienta en {root}"
+        assert not list(root.rglob("*.rollback-*")), f"hay move-aside sin ownership en {root}"
+        assert sorted(p.name for p in root.iterdir()) == [".sky-claw-binding.json"]
+
+
+def test_el_wiring_productivo_del_workspace_es_una_cadena_completa() -> None:
+    """P2.2: AppContext → SupervisorAgent → composición → service, sin eslabón ausente.
+
+    Se ancla por AST porque el default ``workspace=None`` es legítimo para tests
+    y dobles: un eslabón olvidado no falla — el pipeline productivo corre NO
+    CONFIGURADO (fail-closed) o, peor, un test/rig lo corre sin fence. La cadena
+    se enumera entera para que intercalar un salto sin el kwarg rompa acá.
+    """
+    import ast as _ast
+
+    raiz = pathlib.Path(ws.__file__).resolve().parents[3] / "sky_claw"
+
+    def _llamada(archivo: str, nombre: str) -> _ast.Call:
+        arbol = _ast.parse((raiz / archivo).read_text(encoding="utf-8"))
+        for nodo in _ast.walk(arbol):
+            if not isinstance(nodo, _ast.Call):
+                continue
+            func = nodo.func
+            ident = func.id if isinstance(func, _ast.Name) else getattr(func, "attr", None)
+            if ident == nombre:
+                return nodo
+        raise AssertionError(f"no se encontró la llamada a {nombre} en {archivo}")
+
+    def _kwarg(llamada: _ast.Call, nombre: str) -> str | None:
+        for kw in llamada.keywords:
+            if kw.arg == nombre:
+                return _ast.unparse(kw.value)
+        return None
+
+    cadena = [
+        ("app/gui/_bootloader.py", "SupervisorAgent", "dyndolod_workspace", "ctx.dyndolod_workspace"),
+        (
+            "app/orchestrator/supervisor.py",
+            "build_orchestration_composition",
+            "dyndolod_workspace",
+            "dyndolod_workspace",
+        ),
+        (
+            "app/orchestrator/orchestration_composition.py",
+            "DynDOLODPipelineService",
+            "workspace",
+            "dyndolod_workspace",
+        ),
+        (
+            "app/orchestrator/orchestration_composition.py",
+            "build_preview_chain_service_provider",
+            "workspace",
+            "dyndolod_workspace",
+        ),
+        (
+            "app/orchestrator/preview/chain_preview_service.py",
+            "DynDOLODPipelineService",
+            "workspace",
+            "workspace",
+        ),
+        ("app/orchestrator/dispatcher_dependencies.py", "ChainPreviewService", "workspace", "workspace"),
+    ]
+    for archivo, llamada, kwarg, valor in cadena:
+        encontrado = _kwarg(_llamada(archivo, llamada), kwarg)
+        assert encontrado == valor, (
+            f"{archivo}: {llamada} debe pasar {kwarg}={valor!r} para que el root productivo "
+            f"salga del workspace; encontré {encontrado!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P2.3 — recovery de arranque de los roots externos desde el registro durable
+# ---------------------------------------------------------------------------
+
+
+def test_el_recovery_lee_el_root_activo_del_registro_durable(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2.3: la fuente es el registro de P0.2, no la preferencia ni el snapshot.
+
+    El barrido corre ANTES de resolver el workspace (orden §25), así que el
+    helper de AppContext no puede depender del `WorkspaceResuelto`. Se ancla que
+    lee la entrada de la clave de recursos de ESTA instancia lógica.
+
+    P2.3 fenced: el pathname del registro NO basta — el root debe demostrar su
+    binding propio en disco para ser devuelto.
+    """
+    from types import SimpleNamespace
+
+    from sky_claw.app_context import AppContext
+    from sky_claw.local.tools import dyndolod_workspace as wsm
+
+    game = tmp_path / "game"
+    game.mkdir()
+    mo2_root = tmp_path / "mo2"
+    (mo2_root / "mods").mkdir(parents=True)
+    recursos = wsm.ResourceBinding.desde_paths(
+        game_path=game,
+        mo2_instance_data_root=mo2_root,
+        mo2_mods_path=mo2_root / "mods",
+    )
+    registro = wsm.RegistroDeRootActivo(tmp_path / "estado" / "active_roots.json")
+    root_activo = tmp_path / "Work B"
+    registro.registrar_activa(clave=recursos.clave(), root=root_activo, binding_id="binding-b")
+    _escribir_binding(root_activo, _documento_valido(recursos, binding_id="binding-b"))
+    monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
+
+    mo2 = SimpleNamespace(data_root=mo2_root, mods_dir=mo2_root / "mods")
+    assert AppContext._roots_externos_para_recovery(game=game, mo2=mo2) == (root_activo,)
+
+
+def test_el_recovery_incluye_el_desde_de_una_transicion_pendiente(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Editar la preferencia no puede perder los backups del root anterior.
+
+    La transición pendiente conserva el `desde` como ÚNICO registro durable del
+    root viejo (puede tener backups sin reconciliar). El helper devuelve ambos:
+    el activo nuevo y el viejo — cada uno con su propio binding válido demostrado.
+    """
+    from types import SimpleNamespace
+
+    from sky_claw.app_context import AppContext
+    from sky_claw.local.tools import dyndolod_workspace as wsm
+
+    game = tmp_path / "game"
+    game.mkdir()
+    mo2_root = tmp_path / "mo2"
+    (mo2_root / "mods").mkdir(parents=True)
+    recursos = wsm.ResourceBinding.desde_paths(
+        game_path=game,
+        mo2_instance_data_root=mo2_root,
+        mo2_mods_path=mo2_root / "mods",
+    )
+    registro = wsm.RegistroDeRootActivo(tmp_path / "estado" / "active_roots.json")
+    viejo = tmp_path / "Work A"
+    nuevo = tmp_path / "Work B"
+    registro.registrar_activa(clave=recursos.clave(), root=viejo, binding_id="binding-a")
+    registro.registrar_transicion(clave=recursos.clave(), hacia=nuevo, motivo="cambio de preferencia")
+    _escribir_binding(viejo, _documento_valido(recursos, binding_id="binding-a"))
+    _escribir_binding(nuevo, _documento_valido(recursos, binding_id="binding-b"))
+    monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
+
+    mo2 = SimpleNamespace(data_root=mo2_root, mods_dir=mo2_root / "mods")
+    assert AppContext._roots_externos_para_recovery(game=game, mo2=mo2) == (nuevo, viejo)
+
+
+def test_el_recovery_sin_registro_no_inventa_raices(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from sky_claw.app_context import AppContext
+    from sky_claw.local.tools import dyndolod_workspace as wsm
+
+    game = tmp_path / "game"
+    game.mkdir()
+    mo2_root = tmp_path / "mo2"
+    (mo2_root / "mods").mkdir(parents=True)
+    registro = wsm.RegistroDeRootActivo(tmp_path / "estado" / "active_roots.json")
+    monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
+
+    mo2 = SimpleNamespace(data_root=mo2_root, mods_dir=mo2_root / "mods")
+    assert AppContext._roots_externos_para_recovery(game=game, mo2=mo2) == ()
+
+
+def test_el_arranque_pasa_los_roots_externos_al_reconciliador() -> None:
+    """Ancla AST del wiring P2.3: sin el kwarg, los ACTIVE_TARGET externos no se barren."""
+    import ast as _ast
+
+    import sky_claw.app_context as app_context_mod
+
+    arbol = _ast.parse(pathlib.Path(app_context_mod.__file__).read_text(encoding="utf-8"))
+    llamada = next(
+        nodo
+        for nodo in _ast.walk(arbol)
+        if isinstance(nodo, _ast.Call)
+        and isinstance(nodo.func, _ast.Name)
+        and nodo.func.id == "construir_productores_de_move_aside"
+    )
+    assert any(kw.arg == "external_work_roots" for kw in llamada.keywords), (
+        "el reconcile de arranque no recibe los roots externos: sus backups quedarían huérfanos"
+    )

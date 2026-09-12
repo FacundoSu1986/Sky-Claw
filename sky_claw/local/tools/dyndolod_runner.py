@@ -23,17 +23,22 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple
 
 from sky_claw.app.security.links import (
+    exigir_contencion_fisica,
     iter_archivos_propios,
     link_kind_or_raise_with_retry,
     rmtree_link_aware,
 )
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
-from sky_claw.local.tools.output_targets import dyndolod_output_target
+from sky_claw.local.tools.output_targets import (
+    DynDOLODOutputLayout,
+    HerramientaDynDOLOD,
+    derivar_layout_de_dyndolod,
+)
 
 # Import directo del MÓDULO y no del paquete `validators`: el gate sólo depende de
 # `app.security.links`, así que no reintroduce el ciclo que obliga a
@@ -151,6 +156,15 @@ _GAME_MODES_ADMINISTRADOS = frozenset(
 #: líder) y sin ``:``: el game mode es un switch suelto.
 _GAME_MODE_SUELTO = re.compile(r"^\s*[-/]([A-Za-z0-9]+)\s*$")
 
+#: Herramienta dueña de cada spawn del runner. El nombre de la herramienta es la
+#: identidad con la que ``run_texgen``/``run_dyndolod`` invocan
+#: ``_execute_process``; mapearlo acá UNA vez evita que el guard de contención
+#: física del ``-o:`` dependa de una lista de call sites.
+_HERRAMIENTA_POR_TOOL: dict[str, HerramientaDynDOLOD] = {
+    "TexGen": HerramientaDynDOLOD.TEXGEN,
+    "DynDOLOD": HerramientaDynDOLOD.DYNDOLOD,
+}
+
 # Firma de un candidato sin artefacto. Distinto de ``None`` (= no se pudo
 # sondear) a propósito: colapsar los dos casos hace fail-open el gate de
 # frescura, porque "no lo pude mirar antes" pasa a leerse como "no había nada".
@@ -188,6 +202,28 @@ def _digest_de_stream(fh: Any, limite: int | None = None) -> tuple[int, str]:
         leidos += len(chunk)
         acumulador.update(chunk)
     return leidos, acumulador.hexdigest()
+
+
+def _bytes_del_arbol(raiz: pathlib.Path) -> int:
+    """Bytes de los archivos REALES bajo ``raiz``, sin atravesar enlaces.
+
+    Usa ``iter_archivos_propios`` (no ``rglob``): un junction de Windows no
+    frena a ``rglob`` y contaría bytes de un árbol ajeno como presupuesto de
+    copia. La misma política con la que después se borra/copia.
+    """
+    return sum(identidad.st_size for _, identidad in iter_archivos_propios(raiz))
+
+
+def _espacio_libre_en(destino: pathlib.Path) -> int:
+    """Espacio libre del volumen que contiene ``destino``, que puede no existir.
+
+    ``shutil.disk_usage`` exige una ruta existente; el ancestro existente más
+    cercano pertenece al mismo volumen que el destino que se va a crear.
+    """
+    probe = destino
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
 
 
 # =============================================================================
@@ -423,9 +459,24 @@ class DynDOLODConfig:
             default por registro.
         plugins_file: Ruta a ``plugins.txt``. Idem: sin default derivado; si es
             ``None`` el switch ``-p:`` no se emite.
-        output_root: Raíz administrada única donde la herramienta crea sus
-            carpeta de salida (default: ``dyndolod_output_target(game_path)``,
-            ver ``output_targets.py``).
+        external_work_root: Raíz de trabajo EXTERNA admitida (P0 de ADR 0011) de
+            la que se derivan los subroots exclusivos de cada herramienta. Es el
+            ÚNICO origen del ``-o:`` productivo: sin él, DynDOLOD administrado
+            queda NO CONFIGURADO y los lanzadores fallan cerrado antes de
+            spawnear — no hay fallback a ``<game>/Sky-Claw/DynDOLOD``.
+        output_layout: Derivación pura (``family_root``/``texgen_root``/
+            ``dyndolod_root``) de ``external_work_root``. Campo derivado en
+            ``__post_init__``, no un parámetro del constructor: la derivación
+            existe una sola vez, en ``output_targets``.
+        fence_ownership: Fence P2.2 que el runner consume justo ANTES de cada
+            boundary que muta o spawnea: ``create_subprocess_exec`` (spawn de la
+            herramienta) y la copia de ``_package_output_as_mod`` (packaging).
+            Es un callable async sin argumentos — el servicio lo cablea a
+            ``WorkspaceResuelto.assert_owned()``, que levanta fail-closed si la
+            lease de ownership vivo se perdió durante la corrida. ``None``
+            significa "runner directo": herramienta de test/rig que NO es el
+            boundary productivo administrado (el pipeline de producción siempre
+            lo recibe del servicio, que lo deriva del workspace).
         temp_dir: Carpeta temporal (default: ``tempfile.gettempdir()``).
         game_mode: Modo del juego (``"sse"``/``"tes5vr"``). Decisión ÚNICA y
             tipada; si es ``None`` se infiere una vez en ``__post_init__`` por el
@@ -452,7 +503,9 @@ class DynDOLODConfig:
     data_dir: pathlib.Path | None = None
     ini_dir: pathlib.Path | None = None
     plugins_file: pathlib.Path | None = None
-    output_root: pathlib.Path | None = None
+    external_work_root: pathlib.Path | None = None
+    output_layout: DynDOLODOutputLayout | None = field(default=None, init=False)
+    fence_ownership: Callable[[], Awaitable[None]] | None = None
     temp_dir: pathlib.Path | None = None
     game_mode: Literal["sse", "tes5vr"] | None = None
     timeout_seconds: int = 14400  # 4 horas por defecto
@@ -462,11 +515,15 @@ class DynDOLODConfig:
     def __post_init__(self) -> None:
         """Resuelve defaults derivables y valida que los paths requeridos existan.
 
-        ``data_dir``/``output_root``/``temp_dir`` tienen default DERIVADO (no
-        pueden ser ``default_factory``: dependen de ``game_path``). ``ini_dir`` y
-        ``plugins_file`` NO se derivan a ciegas: la auto-resolución de la
-        herramienta es frágil — en el rig (Documentos redirigida a OneDrive) una
-        corrida sin ``-m:`` explícito muere con ``Fatal: Could not find ini``
+        ``data_dir``/``temp_dir`` tienen default DERIVADO (no pueden ser
+        ``default_factory``: dependen de ``game_path``). ``output_layout`` se
+        deriva UNA vez de ``external_work_root`` con la función pura de
+        ``output_targets`` — nunca del juego, nunca del TOML, nunca de env. Sin
+        ``external_work_root`` queda ``None``: eso es "DynDOLOD administrado NO
+        CONFIGURADO", no una licencia para inventar un destino legacy.
+        ``ini_dir`` y ``plugins_file`` NO se derivan a ciegas: la auto-resolución
+        de la herramienta es frágil — en el rig (Documentos redirigida a OneDrive)
+        una corrida sin ``-m:`` explícito muere con ``Fatal: Could not find ini``
         (spike 2026-08-05 con TexGen 2.98). Se pasan explícitos cuando el
         operador los configura; si faltan, el switch se omite y el preflight del
         servicio lo advierte.
@@ -474,8 +531,10 @@ class DynDOLODConfig:
         object.__setattr__(self, "data_dir", self.data_dir if self.data_dir is not None else self.game_path / "Data")
         object.__setattr__(
             self,
-            "output_root",
-            self.output_root if self.output_root is not None else dyndolod_output_target(game=self.game_path),
+            "output_layout",
+            derivar_layout_de_dyndolod(external_work_root=self.external_work_root)
+            if self.external_work_root is not None
+            else None,
         )
         object.__setattr__(
             self,
@@ -511,6 +570,23 @@ class DynDOLODConfig:
             raise ValueError(f"Game path does not exist: {self.game_path}")
         if not self.dyndolod_exe.exists():
             raise DynDOLODNotFoundError(self.dyndolod_exe)
+
+    @property
+    def texgen_root(self) -> pathlib.Path | None:
+        """Subroot EXCLUSIVO de TexGen (``-o:`` de ``run_texgen``), o ``None``.
+
+        Atajo tipado sobre ``output_layout``: evita que cada consumidor haga
+        ``output_layout.texgen_root`` con un guard. Nunca es la raíz de familia.
+        """
+        return self.output_layout.texgen_root if self.output_layout is not None else None
+
+    @property
+    def dyndolod_root(self) -> pathlib.Path | None:
+        """Subroot EXCLUSIVO de DynDOLOD (``-o:`` de ``run_dyndolod``), o ``None``.
+
+        Hermano del anterior y mismo contrato: raíz de herramienta, jamás familia.
+        """
+        return self.output_layout.dyndolod_root if self.output_layout is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -682,9 +758,9 @@ class DynDOLODRunner:
     DynDOLOD es una herramienta de generación de LODs que crea objetos distantes
     y texturas optimizadas para mejorar la visualización a larga distancia.
 
-    Patrones de salida esperados:
-    - TexGen: <output_root>/textures/ - Contiene texturas LOD
-    - DynDOLOD: <DynDOLOD_Output>/ - Contiene DynDOLOD.esp y assets
+    Patrones de salida esperados (bajo el ``external_work_root`` admitido):
+    - TexGen: ``DynDOLOD/TexGen/textures/`` - Contiene texturas LOD
+    - DynDOLOD: ``DynDOLOD/DynDOLOD/`` - Contiene DynDOLOD.esp y assets
 
     Usage:
         config = DynDOLODConfig(
@@ -740,6 +816,27 @@ class DynDOLODRunner:
             config.timeout_seconds,
         )
 
+    def _resultado_no_configurado(self, tool_name: str) -> ToolExecutionResult:
+        """Fallo cerrado sin spawn: DynDOLOD administrado NO CONFIGURADO.
+
+        Ocurre cuando el caller no inyectó ``external_work_root``: no hay
+        subroot exclusivo del que derivar el ``-o:``. NO se inventa un destino
+        legacy — el flujo administrado queda honestamente no configurado y el
+        incidente lleva la etapa. Nunca se toca el proceso.
+        """
+        logger.error(
+            f"{tool_name} no está configurado: falta el external_work_root del que derivar su -o:",
+            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+        )
+        return ToolExecutionResult(
+            success=False,
+            tool_name=tool_name,
+            return_code=-1,
+            stdout="",
+            stderr="DynDOLOD managed output not configured (external_work_root missing)",
+            errors=["DynDOLOD administrado no configurado: no hay external_work_root para derivar el -o:"],
+        )
+
     async def run_texgen(self, extra_args: list[str] | None = None) -> ToolExecutionResult:
         """
         Ejecuta TexGen (etapa 9, asistida).
@@ -787,7 +884,10 @@ class DynDOLODRunner:
 
         logger.info("Iniciando TexGen para generación de texturas LOD")
 
-        args = self._build_xedit_args(extra_args)
+        if self._config.output_layout is None:
+            return self._resultado_no_configurado("TexGen")
+
+        args = self._build_xedit_args(extra_args, herramienta=HerramientaDynDOLOD.TEXGEN)
 
         # Firma del staging ANTES de lanzar: la frescura se decide comparando el
         # árbol consigo mismo (mtime contra mtime), no contra el reloj de pared.
@@ -908,7 +1008,10 @@ class DynDOLODRunner:
         """
         logger.info("Iniciando DynDOLOD con preset: %s", preset)
 
-        args = self._build_xedit_args(extra_args)
+        if self._config.output_layout is None:
+            return self._resultado_no_configurado("DynDOLOD")
+
+        args = self._build_xedit_args(extra_args, herramienta=HerramientaDynDOLOD.DYNDOLOD)
 
         # Ver run_texgen: firma previa del staging para el gate de frescura.
         firmas_previas = await asyncio.to_thread(self._firmas_de_salida, "DynDOLOD")
@@ -1038,6 +1141,19 @@ class DynDOLODRunner:
             self._linea_de_comando([str(executable), *args]),
             effective_timeout,
         )
+
+        # P2.2 — FENCE antes del spawn. La lease de ownership vivo del workspace
+        # puede perderse durante una corrida larga (TTL, reclamación por otro
+        # proceso), y un spawn posterior de la MISMA corrida escribiría en un
+        # root que ya no es exclusivo. Fail-closed: sin lease no hay proceso.
+        if self._config.fence_ownership is not None:
+            await self._config.fence_ownership()
+
+        # P2.2 — contención FÍSICA del `-o:` efectivo antes del spawn: aunque la
+        # lease lógica siga viva, un symlink/junction introducido en un ancestro
+        # después del boot haría que la herramienta escriba fuera del workspace
+        # admitido. Orden: ownership → cadena física → proceso.
+        self._exigir_contencion_fisica_del_destino(tool_name)
 
         start_time = time.monotonic()
 
@@ -1231,36 +1347,49 @@ class DynDOLODRunner:
 
         logger.info("Empaquetando mod: %s -> %s", output_path, mod_path)
 
+        # P2.2 — FENCE antes del packaging: copiar es una mutación que lee el
+        # root exclusivo de la herramienta; si la lease de ownership vivo se
+        # perdió, otro proceso puede estar mutando ese root y los bytes leídos no
+        # serían atribuibles a esta corrida. Fail-closed antes de tocar `mods/`.
+        if self._config.fence_ownership is not None:
+            await self._config.fence_ownership()
+
         try:
-            # OWNERSHIP antes que existencia: la raíz administrada es un namespace
-            # COMPARTIDO —las dos herramientas reciben el mismo valor en ``-o:``—
-            # así que sus hijos no se pueden atribuir a una sola. Empaquetarla
-            # entera copiaba ``root/textures`` (el artefacto de TexGen) dentro de
-            # "DynDOLOD Output", y el operador terminaba con las mismas texturas
-            # desplegadas por dos mods distintos (review de #493, hallazgo A).
+            # OWNERSHIP antes que existencia: la FAMILIA ``<external>/DynDOLOD`` es
+            # un namespace que CONTIENE a los dos subroots de herramienta, así que
+            # sus hijos no se pueden atribuir a una sola. Empaquetarla entera
+            # copiaría artefactos de TexGen dentro de "DynDOLOD Output", y el
+            # operador terminaría con el mismo contenido desplegado por dos mods
+            # distintos (review de #493, hallazgo A). P2.1 separó los subroots:
+            # cada herramienta escribe en el suyo, y ESOS sí son unidades propias.
             #
             # Se prohíbe el OWNERSHIP, no la DETECCIÓN: ``_candidatos_de_salida``
-            # sigue reconociendo la raíz para DynDOLOD (interpretación B de
+            # sigue reconociendo el root de cada herramienta (interpretación B de
             # ``-o:``, gateada por ``DynDOLOD.esp``), porque saber DÓNDE escribió
             # la herramienta es una pregunta distinta de a quién pertenece lo que
             # hay ahí. Y no se filtra por nombre: excluir ``textures`` dejaría
-            # pasar cualquier otro hijo ajeno de la raíz —el ``DynDOLOD_Output``
+            # pasar cualquier otro hijo ajeno de la familia —un ``DynDOLOD_Output``
             # de una corrida anterior, un backup de move-aside— con el mismo
-            # resultado. Lo que no es empaquetable es el DIRECTORIO, no una lista
-            # de sus hijos.
+            # resultado. Lo que no es empaquetable es el DIRECTORIO de FAMILIA, no
+            # una lista de sus hijos.
             #
             # Está PRIMERO, antes del chequeo de existencia, porque la respuesta no
             # depende del estado del disco: la raíz compartida no es una unidad
             # empaquetable ni cuando está poblada ni cuando no.
             if self._es_la_raiz_administrada(output_path):
                 raise DynDOLODValidationError(
-                    f"'{output_path}' es la raíz administrada compartida por TexGen y DynDOLOD, "
-                    f"no una salida propia de una herramienta: no se puede empaquetar como "
-                    f"'{mod_name}' sin atribuirle hijos que pueden ser de la otra. La herramienta "
-                    "escribió directo en el namespace compartido en vez de en su subcarpeta de "
+                    f"'{output_path}' es la raíz de FAMILIA (namespace) que contiene a los subroots "
+                    f"exclusivos de TexGen y DynDOLOD, no una salida propia de una herramienta: no se "
+                    f"puede empaquetar como '{mod_name}' sin atribuirle hijos que pueden ser de la otra. "
+                    "La herramienta escribió en el namespace compartido en vez de en su subroot de "
                     "staging; revisá el destino real de la corrida antes de reintentar.",
                     output_path=output_path,
                 )
+
+            # P2.2 — OWNERSHIP de la fuente: el mod sólo copia bytes del subroot de
+            # SU herramienta. Un path fuera (familia, sibling, legacy, exterior) o
+            # un enlace que resuelve afuera es fail-closed.
+            await self._exigir_fuente_del_subroot(output_path, mod_name)
 
             # Verificar que el directorio de salida existe
             if not output_path.exists():
@@ -1312,6 +1441,23 @@ class DynDOLODRunner:
                     # el flag, el borrado falla con PermissionError y el
                     # empaquetado aborta sobre su propia salida vieja.
                     rmtree_link_aware(mod_path, limpiar_readonly=True)
+
+                # P2.2 — ENOSPC ANTES de copiar (spec §11): medir el source y el
+                # espacio libre del destino. Un disco lleno descubierto a mitad de
+                # `copytree` deja un mod parcial; el source raw y los backups
+                # tienen que seguir intactos y el fallo ser explícito. Se mide
+                # DESPUÉS de liberar el mod previo, que es espacio realmente
+                # recuperable. La medición no promete garantía (otro proceso puede
+                # consumir el volumen en paralelo): acota el fallo evidente.
+                necesarios = _bytes_del_arbol(output_path)
+                disponibles = _espacio_libre_en(mod_path.parent)
+                if necesarios > disponibles:
+                    raise DynDOLODValidationError(
+                        f"No hay espacio en el volumen de '{mod_path.parent}' para empaquetar "
+                        f"'{mod_name}': la fuente pesa {necesarios} bytes y hay {disponibles} libres. "
+                        "El staging raw y sus backups quedan intactos; liberá espacio y reintentá.",
+                        output_path=output_path,
+                    )
 
                 mod_path.mkdir(parents=True, exist_ok=True)
 
@@ -1765,7 +1911,7 @@ class DynDOLODRunner:
     # Métodos Auxiliares
     # =========================================================================
 
-    def _build_xedit_args(self, extra_args: list[str] | None) -> list[str]:
+    def _build_xedit_args(self, extra_args: list[str] | None, *, herramienta: HerramientaDynDOLOD) -> list[str]:
         """Construye el argv de TexGen/DynDOLOD contra el contrato verificado.
 
         Fuente: ``dyndolod.info/Help/Command-Line-Argument`` (doc oficial),
@@ -1778,10 +1924,15 @@ class DynDOLODRunner:
 
         Un ÚNICO helper para los dos ejecutables: comparten el parser; que fueran
         dos funciones distintas es exactamente cómo un fix aterriza en uno y no
-        en el otro (el defecto hermano dominante de este repo).
+        en el otro (el defecto hermano dominante de este repo). P2.1 sólo cambia
+        la SELECCIÓN del valor de ``-o:`` según ``herramienta``: cada una recibe
+        su subroot exclusivo del layout, nunca la raíz de familia.
 
         Args:
             extra_args: Argumentos adicionales (API pública existente).
+            herramienta: Dueña del ``-o:``. Enum, no string libre: la única
+                forma de obtener una raíz es ``layout.raiz_de(herramienta)``,
+                que no puede devolver ``family_root``.
 
         Returns:
             Lista de argumentos para create_subprocess_exec.
@@ -1796,9 +1947,12 @@ class DynDOLODRunner:
         # Los cinco -X: de la doc, un elemento de argv por switch: dos puntos,
         # directorios con \ final y SIN comillas (las pone list2cmdline; ver
         # _switch_de_ruta). -o:/-d:/-t: siempre (tienen default derivado);
-        # -m:/-p: solo explícitos.
+        # -m:/-p: solo explícitos. El -o: sale del layout admitido: TexGen y
+        # DynDOLOD reciben subroots HERMANOS y distintos, nunca el compartido.
+        layout = self._config.output_layout
+        raiz_de_salida = layout.raiz_de(herramienta) if layout is not None else None
         switches = (
-            ("o", self._config.output_root, True),
+            ("o", raiz_de_salida, True),
             ("d", self._config.data_dir, True),
             ("m", self._config.ini_dir, True),
             ("p", self._config.plugins_file, False),
@@ -2265,42 +2419,43 @@ class DynDOLODRunner:
         tool no escribe.
 
         TexGen lleva UN solo candidato a propósito (review de #440): el binario
-        escribe ``root/textures`` y aceptar la raíz como fallback dejaría pasar el
-        ``DynDOLOD_Output`` de una corrida previa como si fuera salida de TexGen.
-        DynDOLOD sí puede caer en la raíz (interpretación B de ``-o:``) porque su
-        gate exige ``DynDOLOD.esp``.
+        escribe ``texgen_root/textures`` y aceptar su raíz como fallback dejaría
+        pasar el staging de DynDOLOD de una corrida previa como si fuera salida
+        de TexGen. DynDOLOD sí puede caer en su root exclusivo (interpretación B
+        de ``-o:``) porque su gate exige ``DynDOLOD.esp``; ése es el único
+        fallback y vive bajo el subroot de DynDOLOD, nunca bajo la familia ni el
+        subroot de la hermana.
         """
-        root = self._config.output_root
-        if root is None:
+        layout = self._config.output_layout
+        if layout is None:
             return []
         if tool == "TexGen":
-            return [root / self.TEXGEN_OUTPUT_NAME]
-        return [root / self.DYNDOLLOD_OUTPUT_NAME, root]
+            return [layout.texgen_root / self.TEXGEN_OUTPUT_NAME]
+        return [layout.dyndolod_root / self.DYNDOLLOD_OUTPUT_NAME, layout.dyndolod_root]
 
     def _es_la_raiz_administrada(self, candidato: pathlib.Path) -> bool:
-        """¿``candidato`` ES la raíz administrada compartida (y no una salida propia)?
+        """¿``candidato`` ES la raíz de FAMILIA (namespace, no salida de tool)?
 
-        Vive al lado de :meth:`_candidatos_de_salida` porque es su contracara: ahí
-        se decide dónde puede haber aterrizado una salida, acá cuál de esos lugares
-        pertenece a UNA herramienta. La raíz llega a la lista de candidatos a
-        propósito —DynDOLOD puede escribir directo en ella— y por eso hace falta un
-        predicado aparte en vez de sacarla de la lista.
+        La familia ``<external>/DynDOLOD`` contiene a los dos subroots exclusivos
+        y NO es empaquetable: empaquetarla entera copiaría hijos que pueden
+        pertenecer a cualquiera de las dos herramientas. A diferencia del modelo
+        viejo, los subroots de herramienta SÍ son unidades propias —DynDOLOD
+        puede escribir directo en el suyo— así que este predicado apunta a la
+        FAMILIA, no a los roots de tool.
 
-        Se compara sobre rutas RESUELTAS y no léxicamente: la raíz sale de
-        ``dyndolod_output_target``, que construye sobre ``game.resolve()``, mientras
-        que un ``output_path`` puede llegar con un junction o un ``..`` en el medio;
-        ``Path.__eq__`` es léxico y diría "no son la misma" sobre el mismo
-        directorio. Mismo motivo por el que ``_primer_ancestro_existente`` resuelve
-        su tope antes de comparar.
+        Se compara sobre rutas RESUELTAS y no léxicamente: el layout se construye
+        sobre el ``external_work_root`` admitido, mientras que un ``output_path``
+        puede llegar con un junction o un ``..`` en el medio; ``Path.__eq__`` es
+        léxico y diría "no son la misma" sobre el mismo directorio.
 
         Fail-closed si no se puede resolver: "no pude decidir de quién es" no
         habilita empaquetarlo.
         """
-        raiz = self._config.output_root
-        if raiz is None:
+        layout = self._config.output_layout
+        if layout is None:
             return False
         try:
-            return candidato.resolve() == raiz.resolve()
+            return candidato.resolve() == layout.family_root.resolve()
         except OSError as e:
             logger.warning(
                 "No se pudo resolver '%s' contra la raíz administrada: %s",
@@ -2309,6 +2464,118 @@ class DynDOLODRunner:
                 extra={"operation_type": "dyndolod_resolucion_de_ownership_fallida", "tx_id": _tx_id()},
             )
             return True
+
+    def _raiz_exclusiva_de_la_herramienta(self, mod_name: str) -> pathlib.Path | None:
+        """Subroot exclusivo dueño del mod ``mod_name``, o ``None`` si no es administrado.
+
+        El nombre del mod es la identidad con la que el runner empaqueta; mapearlo
+        acá, UNA vez, evita que el chequeo de pertenencia de la fuente dependa de
+        una lista de call sites que se desactualiza.
+        """
+        layout = self._config.output_layout
+        if layout is None:
+            return None
+        if mod_name == self.TEXGEN_MOD_NAME:
+            return layout.texgen_root
+        if mod_name == self.DYNDOLLOD_MOD_NAME:
+            return layout.dyndolod_root
+        return None
+
+    def _exigir_contencion_fisica_del_destino(self, tool_name: str) -> None:
+        """El ``-o:`` efectivo cuelga FÍSICAMENTE del `external_work_root`.
+
+        Enunciado como propiedad del mecanismo: *el path que se pasa al binario
+        pertenece a la cadena física real del workspace admitido*. La lease
+        lógica de P2.0 sigue apuntando al path registrado aunque un componente
+        intermedio haya sido reemplazado por un junction; este guard es el que ve
+        esa sustitución, porque inspecciona cada componente con ``lstat`` sin
+        seguir enlaces (ver :func:`~sky_claw.app.security.links.exigir_contencion_fisica`).
+
+        Sin layout/external (runner directo de test/rig) no hay workspace
+        admitido contra el cual contrastar: el llamador ya decidió correr fuera
+        del boundary administrado. Una herramienta que no esté en
+        :data:`_HERRAMIENTA_POR_TOOL` es fail-closed: no se puede afirmar la
+        contención de un ``-o:`` que no se sabe construir.
+        """
+        layout = self._config.output_layout
+        externo = self._config.external_work_root
+        # `isinstance` defensivo (mismo idioma que el resto del árbol): los
+        # dobles de test pasan `MagicMock` como config, y una `Path` mockeada no
+        # tiene cadena física que validar.
+        if not isinstance(layout, DynDOLODOutputLayout) or not isinstance(externo, pathlib.Path):
+            return
+        herramienta = _HERRAMIENTA_POR_TOOL.get(tool_name)
+        if herramienta is None:
+            raise DynDOLODValidationError(
+                f"Herramienta desconocida para el guard de contención física del -o:: {tool_name!r}"
+            )
+        exigir_contencion_fisica(externo, layout.raiz_de(herramienta))
+
+    async def _exigir_fuente_del_subroot(self, output_path: pathlib.Path, mod_name: str) -> None:
+        """La fuente del packaging pertenece al subroot EXCLUSIVO de su herramienta.
+
+        P2.1 modeló los subroots exclusivos; P2.2 cierra la propiedad de que el
+        empaquetado copie ÚNICAMENTE bytes de esa superficie. Sin este chequeo, un
+        ``output_path`` arbitrario (la familia, el root hermano, el árbol legacy,
+        cualquier ruta de afuera o un enlace que resuelve afuera) se copiaría como
+        si fuera la salida de la herramienta.
+
+        Tres capas, en orden: contención LÉXICA sobre rutas resueltas, contención
+        FÍSICA componente a componente (``exigir_contencion_fisica``, que detecta
+        un symlink o junction introducido en un ancestro después del boot — el
+        caso que la comparación de ``resolve()`` no ve porque ambas puntas
+        resuelven al mismo árbol externo), y revisión del enlace del leaf.
+
+        ``mod_name`` no administrado (p.ej. el mod con traversal sintético de un
+        test de correlación) no tiene subroot asignable: se deja pasar — el
+        sandbox de ``meta.ini`` es quien custodia ese destino.
+        """
+        raiz = self._raiz_exclusiva_de_la_herramienta(mod_name)
+        if raiz is None:
+            return
+        try:
+            resuelta = output_path.resolve(strict=False)
+            raiz_resuelta = raiz.resolve(strict=False)
+        except OSError as exc:
+            raise DynDOLODValidationError(
+                f"No se pudo resolver la fuente '{output_path}' contra el subroot de la herramienta: {exc}",
+                output_path=output_path,
+            ) from exc
+        if resuelta != raiz_resuelta and raiz_resuelta not in resuelta.parents:
+            raise DynDOLODValidationError(
+                f"La fuente '{output_path}' no cuelga del subroot exclusivo '{raiz}' de la herramienta: "
+                "empaquetarla copiaría bytes de otra superficie (familia, root hermano, raíz legacy o "
+                "fuera del workspace). La salida de cada herramienta sólo puede venir de SU subroot.",
+                output_path=output_path,
+            )
+        externo = self._config.external_work_root
+        if externo is not None:
+            try:
+                await asyncio.to_thread(
+                    exigir_contencion_fisica,
+                    externo,
+                    output_path,
+                    exigir_existencia=True,
+                )
+            except OSError as exc:
+                raise DynDOLODValidationError(
+                    f"La fuente '{output_path}' no pertenece FÍSICAMENTE al workspace admitido "
+                    f"'{externo}': {exc}. Empaquetarla copiaría bytes de un árbol redirigido.",
+                    output_path=output_path,
+                ) from exc
+        try:
+            tipo_de_enlace = await asyncio.to_thread(link_kind_or_raise_with_retry, output_path)
+        except OSError as exc:
+            raise DynDOLODValidationError(
+                f"No se pudo inspeccionar la fuente '{output_path}' antes de empaquetarla: {exc}",
+                output_path=output_path,
+            ) from exc
+        if tipo_de_enlace is not None:
+            raise DynDOLODValidationError(
+                f"La fuente '{output_path}' es un enlace ({tipo_de_enlace}), no un directorio real: "
+                "copiarla seguiría el vínculo fuera de su subroot. Reemplazá el enlace por la salida real.",
+                output_path=output_path,
+            )
 
     def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, tuple[float | int, ...] | None]:
         """Firma de cada candidato ANTES de lanzar, para comparar contra la de después.

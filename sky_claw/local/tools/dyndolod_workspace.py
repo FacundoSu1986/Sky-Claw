@@ -417,6 +417,127 @@ def leer_binding(root: pathlib.Path) -> BindingDocument | None:
     return _parsear_binding(root, crudo)
 
 
+def es_root_valido_para_recovery(root: pathlib.Path, recursos: ResourceBinding) -> bool:
+    """¿Puede *root* tratarse como root administrado para el recovery de arranque?
+
+    P2.3 — el registro durable responde "¿qué roots recuerda esta instalación?"
+    pero un pathname en JSON nunca es autoridad para un ``rename``. Antes de
+    convertir un candidato del ``RegistroDeRootActivo`` en ``external_work_root``
+    de recovery debe demostrarse, contra el binding REAL en disco, que pertenece
+    a la MISMA instancia lógica que este arranque:
+
+    1. path válido (absoluto, no raíz de volumen);
+    2. binding presente (``.sky-claw-binding.json`` existe);
+    3. binding con schema válido (caso E → inválido);
+    4. ``binding.resource_binding == recursos`` actual;
+    5. no es binding ajeno;
+    6. no es metadata corrupta;
+    7. el root puede seguir tratándose como administrado sin atravesar
+       links/reparse prohibidos (``is_link`` + ``validar_destino_administrado``
+       sobre los subroots derivados).
+
+    Fail-safe, nunca fail-open: cualquier fallo devuelve ``False`` con warning
+    y SIN mutar nada — no se adopta, no se repara metadata, no se reescribe el
+    binding, no se borra nada. Función SÍNCRONA que hace I/O de disco: los
+    callers async la cruzan con ``asyncio.to_thread``.
+
+    Args:
+        root: Candidato procedente del registro (``entrada.root`` o
+            ``transicion_pendiente.desde``), ya como ``pathlib.Path``.
+        recursos: ``ResourceBinding`` actual de este arranque, construido con la
+            misma primitiva que el resolver (``ResourceBinding.desde_paths``).
+
+    Returns:
+        ``True`` sólo si las siete propiedades se demuestran a la vez.
+    """
+    # 1. path válido.
+    if not isinstance(root, pathlib.Path):
+        logger.warning(
+            "Recovery externo: candidato no es un Path (%r); se omite sin mutar.",
+            root,
+        )
+        return False
+    if not root.is_absolute():
+        logger.warning(
+            "Recovery externo: el root registrado %s no es absoluto; se omite sin mutar.",
+            root,
+        )
+        return False
+    if len(root.parts) <= 1:
+        logger.warning(
+            "Recovery externo: el root registrado %s es raíz de volumen; se omite sin mutar.",
+            root,
+        )
+        return False
+    # 7 (parte 1): el propio root no puede ser un enlace.
+    try:
+        if is_link(root):
+            logger.warning(
+                "Recovery externo: el root registrado %s es un enlace; se omite sin mutar.",
+                root,
+            )
+            return False
+    except OSError:
+        logger.warning(
+            "Recovery externo: no se pudo inspeccionar si %s es un enlace; se omite sin mutar.",
+            root,
+            exc_info=True,
+        )
+        return False
+    # 2-6: binding presente, válido y del MISMO ResourceBinding.
+    try:
+        documento = leer_binding(root)
+    except WorkspaceRechazadoError as exc:
+        logger.warning(
+            "Recovery externo: el root registrado %s tiene metadata no interpretable (%s); se omite sin mutar.",
+            root,
+            exc,
+        )
+        return False
+    except OSError:
+        logger.warning(
+            "Recovery externo: no se pudo leer el binding de %s; se omite sin mutar.",
+            root,
+            exc_info=True,
+        )
+        return False
+    if documento is None:
+        logger.warning(
+            "Recovery externo: el root registrado %s no tiene binding; se omite sin mutar.",
+            root,
+        )
+        return False
+    if documento.resource_binding != recursos:
+        logger.warning(
+            "Recovery externo: el binding de %s pertenece a otros recursos; se omite sin mutar.",
+            root,
+        )
+        return False
+    # 7 (parte 2): los subroots derivados deben seguir siendo destinos
+    # administrados del root (sin componentes enlazados, sin escape).
+    try:
+        from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
+
+        layout = derivar_layout_de_dyndolod(external_work_root=root)
+        validar_destino_administrado(root, layout.texgen_root)
+        validar_destino_administrado(root, layout.dyndolod_root)
+    except WorkspaceRechazadoError as exc:
+        logger.warning(
+            "Recovery externo: el root %s no pasa la contención administrada (%s); se omite sin mutar.",
+            root,
+            exc,
+        )
+        return False
+    except OSError:
+        logger.warning(
+            "Recovery externo: no se pudo validar la contención de %s; se omite sin mutar.",
+            root,
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 def _crear_binding_exclusivo(root: pathlib.Path, documento: BindingDocument) -> bool:
     """Publica el binding con creación EXCLUSIVA. ``True`` si este proceso ganó.
 

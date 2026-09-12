@@ -106,6 +106,87 @@
 > 8–10 del checklist T5-v2 (**PARCIAL 7/10**), ni la precedencia de presets, ni
 > freshness, ni #528 (draft preservado, no integrado), ni T-PR2-23. **No** es
 > una reverificación integral del resto de la tabla.
+>
+> **Re-baseline parcial 2026-09-11 sobre `main` `c000dc4d` (#578) — P2.1
+> CANDIDATO (rama `feat/dyndolod-pr2-external-staging`, PR-2 DRAFT):** cubre
+> exclusivamente la **derivación y el modelo de outputs externos** de P2.1 en
+> `sky_claw/local/tools/output_targets.py` y `dyndolod_runner.py`. El layout
+> productivo pasa a
+> `external_work_root/DynDOLOD/{TexGen,DynDOLOD}`: TexGen y DynDOLOD reciben
+> ``-o:`` a subroots EXCLUSIVOS y hermanos (nunca la familia, nunca el root del
+> juego), `DynDOLODConfig` deja de derivar de ``game_path`` y toma
+> ``external_work_root`` (ausencia = NO CONFIGURADO, fail-closed antes del spawn),
+> el target legacy `<game>/Sky-Claw/DynDOLOD` queda marcado
+> ``LEGACY_RECOVERY_ONLY`` (`dyndolod_legacy_recovery_target`, consumido sólo por
+> el reconciliador). **REABRE el gate de lanzamiento T5** al cambiar los subroots
+> de ``-o:``: la autorización de T5-v2 (2026-09-10) es sobre el builder/root
+> VIEJO y no certifica el nuevo. **No** cierra PR-2: P2.2 (servicio/transacción/
+> packaging: wiring de producción del `WorkspaceResuelto` al servicio, born-empty,
+> rollback) y P2.3 (recovery/migración de la familia legacy) siguen NO
+> IMPLEMENTADOS; tampoco los criterios 8–10 del checklist T5-v2 (**PARCIAL
+> 7/10**), ni la precedencia de presets, ni freshness, ni #528 (draft preservado,
+> no integrado). **PR-2 NOT READY TO MERGE.** **No** es una reverificación
+> integral del resto de la tabla.
+>
+> **Re-baseline parcial 2026-09-11 sobre `origin/main` `1954aa5d` (#577) — P2.2
+> CANDIDATO (misma rama `feat/dyndolod-pr2-external-staging`, PR-2 DRAFT):**
+> cubre exclusivamente el **servicio, la transacción y el packaging** de P2.2 en
+> `dyndolod_service.py`, `dyndolod_runner.py`, la composición
+> (`orchestration_composition.py`, `dispatcher_dependencies.py`,
+> `chain_preview_service.py`), `supervisor.py` y `_bootloader.py`. El
+> `WorkspaceResuelto` del arranque (root + lease de ownership vivo) se cablea
+> desde `AppContext` hasta `DynDOLODPipelineService` (el censo de constructores
+> exige `workspace=`, y un layout que no derive de `workspace.root` falla
+> cerrado); antes de move-aside, de crear el root vacío, de cada spawn y de cada
+> packaging corre `assert_owned` fail-closed. El born-empty pasa al **root
+> completo** de cada herramienta (`<external>/DynDOLOD/{TexGen,DynDOLOD}`, no
+> `root/textures`), con `run_texgen=False` dejando el root de TexGen byte-exacto;
+> el move-aside deja sus backups como hermanos bajo la familia, nunca sobre la
+> familia, el sibling ni el legacy. El packaging sólo acepta fuentes que
+> resuelven dentro del subroot de su herramienta (familia/sibling/legacy/enlace
+> = fail-closed), conserva `textures/` para TexGen, acepta el root directo de
+> DynDOLOD, mide ENOSPC antes de copiar y no borra el raw ante fallo de copia.
+> `_permission_targets` sondea los subroots derivados del workspace, y el veto de
+> los `DirectoryRollback` suma la lease del workspace. **No** cierra PR-2: P2.3
+> (recovery de arranque de los `ACTIVE_TARGET` externos) sigue NO IMPLEMENTADO y
+> su deuda queda explícita — los backups `<family>/<Tool>.rollback-*` de una
+> muerte dura no se barren todavía —, el rig real sobre el candidato completo
+> (P2.1+P2.2+P2.3) sigue pendiente, el gate de lanzamiento continúa **REOPENED**,
+> el checklist T5-v2 sigue **PARCIAL 7/10**, y #528 sigue abierto y sin tocar.
+> **PR-2 NOT READY TO MERGE.** **No** es una reverificación integral del resto de
+> la tabla.
+>
+> **Nota del blocker P1 de P2.2 (2026-09-12, misma rama/PR):** un
+> symlink o junction introducido en un **ancestro** después del boot podía
+> redirigir una mutación administrada fuera del `WorkspaceResuelto.root` aunque
+> la contención lógica (`resolve().is_relative_to`) diera verde y la lease de
+> P2.0 siguiera viva. Se cerró con una primitiva única
+> (`links.exigir_contencion_fisica`: cadena de componentes por `lstat`, sin
+> seguir enlaces, con revalidación de identidad) cableada en las cuatro
+> fronteras —pre move-aside, pre born-empty, pre spawn y pre packaging— con
+> tests de junction reales (T1–T5) y mutaciones M11/M11b/M11c/M12 en rojo. La
+> clasificación es la del módulo (symlink + `IO_REPARSE_TAG_MOUNT_POINT`), no
+> una detección universal de todos los reparse tags posibles. La
+> deuda de P2.3 (recovery de arranque de los `ACTIVE_TARGET` externos) sigue
+> intacta.
+>
+> **Re-baseline parcial 2026-09-12 — P2.3 CANDIDATO (misma rama
+> `feat/dyndolod-pr2-external-staging`, PR #580 DRAFT):** cubre exclusivamente
+> el **recovery de arranque de los `ACTIVE_TARGET` externos** en
+> `rollback_reconciler.py` y `app_context.py`. El productor `dyndolod` declara
+> los dos mods y los dos roots crudos (`<family>/TexGen`, `<family>/DynDOLOD`);
+> el `LEGACY_RECOVERY_ONLY_TARGET` pasa a su propio productor
+> `dyndolod-legacy-recovery` con el mismo lock del ritual. Las raíces externas
+> se inyectan desde el `RegistroDeRootActivo` (root activo + `desde` de una
+> transición pendiente) porque el barrido corre ANTES de resolver el workspace;
+> editar la preferencia no pierde la referencia a los backups del root anterior.
+> Los crash entre move-aside/mkdir/copia se cubren por target (restaurar con
+> target ausente; preservar la ambigüedad con destino presente) y la familia
+> A–H del recovery legacy se enumera caso por caso contra
+> `reconcile_orphan_rollback_backups`. **No** cierra PR-2: el rig real del
+> candidato completo sigue pendiente, el gate de lanzamiento continúa
+> **REOPENED**, el checklist T5-v2 sigue **PARCIAL 7/10** y #528 sigue intacto.
+> **PR-2 NOT READY TO MERGE.**
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
@@ -174,6 +255,7 @@ confirmarlo contra código y tests.
 | Candidato de salida de TexGen | Cerrado | `DynDOLODRunner.TEXGEN_OUTPUT_NAME = "textures"`; preflight, manifest, frescura y packaging comparten `root/textures`; el mod conserva `textures/` como raíz Data-relative | —; el desvío por `OutputPath=` del preset sigue abierto en la fila anterior (T5) | `test_dyndolod_service.py`, `test_output_targets.py`; rig T5-B Alpha-209: escritura física observada en `<administered_root>/textures` (evidencia aportada para T3, informe fuera del repo) |
 | Fronteras del handoff TexGen → DynDOLOD | Cerrado | Las TRES, fail-closed. El layout físico correcto destapó tres agujeros que el candidato roto contenía por accidente, y los tres se cierran negándose a afirmar lo que no se puede probar. **A — ownership:** la raíz administrada la comparten las dos herramientas, así que empaquetarla entera absorbía `root/textures` dentro de "DynDOLOD Output"; ahora la raíz NO es una unidad empaquetable (la detección sigue reconociéndola: se prohíbe el ownership, no el hallazgo), y la regla es abstracta —*namespace compartido ≠ namespace empaquetable*— no un filtro por el nombre `textures`. **B — propiedad:** el staging de TexGen entra al move-aside del servicio ANTES de lanzar, así que nace vacío y "lo que hay adentro" pasa a ser "lo que esta corrida generó"; la frescura era un predicado ∃ y nunca pudo ser ∀. El destino exacto quedó declarado en `rollback_reconciler` para que su residuo no quede huérfano tras una muerte dura. **C — visibilidad:** empaquetar en `mods/` no demuestra nada sobre lo que DynDOLOD lee, porque corre standalone contra el `-d:<Data>` físico; antes del spawn se exige que TODO el staging esté visible ahí con los mismos bytes (identidad física o sha256, sin muestreo), y si no, DynDOLOD no se lanza | **No se materializa nada automáticamente**: el gate mide y falla cerrado, la materialización sigue siendo del operador — pero desde el fix F1 el corte por visibilidad PRESERVA `mods/TexGen Output` (el resto de la corrida revierte igual), así que lo que hay que desplegar sobrevive y la continuación con `run_texgen=False` lo verifica byte a byte contra el `Data` antes de lanzar DynDOLOD. Antes el rollback borraba justo ese artefacto y el default de la GUI quedaba sin salida. La TX queda PENDIENTE, nunca ROLLED_BACK, y el registro nombra el directorio vivo. `mutation_coverage_complete` sigue en `False` (el dir del exe y el temp quedan fuera del move-aside). Los subroots exclusivos por herramienta —el fix definitivo de A, que elimina la clase en vez de la instancia— siguen ABIERTOS porque cambian el `-o:`; la decisión de lifecycle/ownership del work root externo quedó documentada en [ADR 0011](adr/0011-dyndolod-external-work-root.md); el gate de aceptación de §2.9 que los bloqueaba quedó cerrado por T5-v2 (informe commiteado: `validation/2026-09-10_t5v2_dyndolod_stage9.md`) y **P0 (config/binding/admission/coordination) quedó IMPLEMENTADO el 2026-09-11 y **P2.0 (gate de ownership del root vivo) el 2026-09-11**, así que PR-2 pasa de bloqueado a habilitado-para-comenzar — sigue **NO iniciado**: el `-o:` productivo no cambió | `test_dyndolod_service.py` (T-A + ancla de política, T-B, T-B-rollback ×2, T-C, T-C-positive, T-C-stale), `test_rollback_reconciler.py` (destino exacto), `test_borrado_recursivo.py` (política de medición del gate) |
 | DynDOLOD ya no se lanza tras una etapa TexGen fallida | Cerrado | Antes, un TexGen que fallaba —por proceso, por excepción, sin output atribuible o con su empaquetado roto— dejaba el pipeline en `success=False` pero DynDOLOD arrancaba igual: 30+ min de corrida y un "DynDOLOD Output" recién empaquetado que el rollback del servicio retiraba. El gate del spawn ahora corta ANTES de `run_dyndolod` cuando `run_texgen=True` y la cadena no quedó completa: veredicto TexGen válido → output contractual → packaging exitoso → visibilidad demostrada. `dyndolod_result` queda en `None` (evidencia honesta de que la herramienta no se ejecutó), `needs_deployment` sigue reservado al corte por visibilidad tras packaging exitoso (F1), y `texgen_packaging_attempted` conserva su semántica (el boundary de reemplazo del artifact se cruzó o no). `run_texgen=False` conserva el camino de Resume/sin-TexGen: con "TexGen Output" preservado se re-verifica contra el `Data`; sin él, DynDOLOD corre como antes | **Abiertos, no tocados por este PR:** external per-tool staging (subroots exclusivos; la decisión de lifecycle/ownership está documentada en [ADR 0011](adr/0011-dyndolod-external-work-root.md) y su prerrequisito **P0 quedó implementado el 2026-09-11** —preferencia, binding, admisión y coordinación durable, sin tocar `-o:`— **y su gate de activación P2.0 (ownership vivo del root) el 2026-09-11**, así que P2.1 está habilitado para comenzar y PR-2 sigue **sin implementar**; el gate de aceptación de §2.9 quedó cerrado por T5-v2, informe commiteado en `validation/2026-09-10_t5v2_dyndolod_stage9.md`); preset `OutputPath=` (sección propia arriba); volcado del log real completo contra la taxonomía; freshness cleanup; #528 (UIA output gate, downstream de este trabajo); rigs finales | `test_dyndolod_service.py` (T1–T8 del fail-stop: success=False, excepción, output None, packaging fallido, visibilidad, happy path, `run_texgen=False` con/sin mod preservado, efectos laterales sobre `mods/`, y el corte atravesando `DynDOLODPipelineService.execute` por el camino estándar) |
+| Recovery de arranque de los ACTIVE_TARGET externos (PR-2 P2.3) | Parcial | Antes de PR-2 el residuo move-aside de los roots externos no se barría: una muerte dura entre el move-aside y su restauración dejaba `<family>/<Tool>.rollback-*` huérfano — la única copia del staging previo. P2.3 (candidato, PR #580 DRAFT) declara los dos roots crudos por herramienta como ACTIVE_TARGET del productor `dyndolod`, mantiene el `LEGACY_RECOVERY_ONLY_TARGET` en su propio productor recovery-only con el mismo lock, e inyecta las raíces desde el `RegistroDeRootActivo` (root activo + `desde` de una transición pendiente) porque el barrido corre antes de resolver el workspace. Los casos de crash entre move-aside/mkdir/copia se cubren por target y la familia A–H del legacy se enumera caso por caso. | Revisión/merge del PR-2 (sigue DRAFT) y rig real del candidato completo (la implementación y sus anclas viven en la rama). | `test_rollback_reconciler.py` (T-PR2-06 y T-PR2-23), `test_dyndolod_workspace.py` (helper de registro del arranque) |
 
 <!-- markdownlint-enable MD013 -->
 

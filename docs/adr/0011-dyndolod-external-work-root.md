@@ -9,10 +9,23 @@ coordinación durable de etapa 9 y transición restart-only viven en
 `sky_claw/local/tools/dyndolod_workspace.py` y
 `sky_claw/app/security/known_folders.py`, anclados por
 `tests/test_dyndolod_workspace.py` y `tests/test_known_folders.py`. Eso habilita
-**comenzar** PR-2; **PR-2 sigue NO IMPLEMENTADO** —el `-o:` productivo no
-cambió—, y su implementación reabrirá el gate de lanzamiento al mutar los
-subroots administrados de `-o:`, exigiendo repetir las dos corridas reales antes
-de su merge.
+**comenzar** PR-2. **P2.1 (derivación + per-tool `-o:`) IMPLEMENTADO COMO
+CANDIDATO** en la rama `feat/dyndolod-pr2-external-staging` (PR-2 `DRAFT`, no
+mergeable): los subroots administrados de `-o:` SÍ cambiaron, así que **el gate
+de lanzamiento quedó REABIERTO** y exige repetir las dos corridas reales sobre
+el candidato PR-2 completo antes de su merge. **P2.2 (servicio, transacción y
+packaging) IMPLEMENTADO COMO CANDIDATO** en la misma rama: el `WorkspaceResuelto`
+(productivo) se cablea desde `AppContext` hasta el `DynDOLODPipelineService`
+con su fence de ownership antes de cada mutación y spawn; el born-empty opera
+sobre el root completo de cada herramienta, el packaging sólo copia bytes del
+subroot de su herramienta y la transacción restaura/revierte con las leases
+vivas. **P2.3 (recovery de arranque de los `ACTIVE_TARGET` externos)
+IMPLEMENTADO COMO CANDIDATO** en la misma rama: el barrido de arranque declara
+los dos roots crudos por herramienta junto a los dos mods, separa el
+`LEGACY_RECOVERY_ONLY_TARGET` en su propio productor recovery-only y toma las
+raíces externas del `RegistroDeRootActivo` (activo + `desde` de transición
+pendiente) porque corre antes de resolver el workspace. El rig real del
+candidato completo sigue pendiente y por eso el PR sigue DRAFT.
 **Contexto de origen:** `origin/main` `5e5e9448db0d4015b3bf0dc4c1df10fdc49e226c`
 (post-merge #569), verificado por `fetch` + lectura de código el 2026-09-09.
 **Alcance:** cerrar la decisión arquitectónica de lifecycle, identidad, propiedad y
@@ -314,6 +327,13 @@ Como propiedad (no como algoritmo congelado):
   redirigido.** La implementación reutiliza las primitivas existentes
   (`sky_claw/app/security/links.py`: `is_link`/`link_kind`/`rmtree_link_aware`,
   y `PathValidator.validate` con `strict_symlink`) antes de inventar un subsistema.
+  **P2.2 (candidato) cierra además la ventana temporal:** un symlink o junction
+  introducido en un ANCESTRO después del boot se detecta con
+  `links.exigir_contencion_fisica` (cadena de componentes por `lstat`, sin seguir
+  enlaces, con revalidación de identidad), cableado antes del move-aside, del
+  born-empty, de cada spawn y de cada packaging. La comparación de rutas
+  resueltas no lo ve: con un ancestro redirigido, candidato y tool root resuelven
+  al mismo árbol externo.
 
 ### 2.8 Layout
 

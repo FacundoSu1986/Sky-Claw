@@ -91,6 +91,12 @@ class SupervisorAgent:
         # nombrarlo acá —aun bajo TYPE_CHECKING— cruzaría la frontera que el
         # guardrail de arquitectura bloquea por AST sobre el árbol completo.
         stage9_coordination=None,  # Stage9Coordination | None
+        # P2.2 (ADR 0011): `WorkspaceResuelto` del arranque — root admitido + lease
+        # de ownership vivo. `AppContext` es el dueño de la lease; el supervisor
+        # sólo lo enhebra al composition root para que el pipeline administrado
+        # mute el root correcto y su fence viva. Sin anotar por la misma frontera
+        # de dominio que `stage9_coordination`.
+        dyndolod_workspace=None,  # WorkspaceResuelto | None
     ):
         self.db = DatabaseAgent()
         # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
@@ -216,6 +222,7 @@ class SupervisorAgent:
             scan_asset_conflicts=asset_conflict_scanner.scan,
             scan_asset_conflicts_json=asset_conflict_scanner.scan_json,
             stage9_coordination=stage9_coordination,
+            dyndolod_workspace=dyndolod_workspace,
         )
         self._synthesis_service = composition.synthesis_service
         self._dyndolod_service = composition.dyndolod_service

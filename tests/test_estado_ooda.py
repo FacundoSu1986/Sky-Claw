@@ -89,6 +89,10 @@ _ITEMS = frozenset(
         # DynDOLOD, evitando 30+ min de corrida y un mod efímero que el rollback
         # retiraba.
         "DynDOLOD ya no se lanza tras una etapa TexGen fallida",
+        # P2.3 (PR-2 candidato): el residuo move-aside de los ACTIVE_TARGET
+        # externos se reconcilia al arrancar desde el registro durable, con el
+        # legacy en su propio productor recovery-only.
+        "Recovery de arranque de los ACTIVE_TARGET externos (PR-2 P2.3)",
     }
 )
 
@@ -509,3 +513,17 @@ def test_dyndolod_fail_stop_registrado_en_ooda() -> None:
     assert fila["Estado"] == "Cerrado"
     assert "test_dyndolod_service.py" in fila["Verificado por"]
     assert "fail-stop" in fila["Verificado por"]
+
+
+def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None:
+    """P2.3: la fila del recovery externo cita sus anclas reales y no declara el cierre.
+
+    La implementación es un candidato en una rama DRAFT: el estado honesto es
+    Parcial (rig del candidato completo pendiente), no Cerrado, y la fila tiene
+    que apuntar a los tests que la respaldan.
+    """
+    fila = _tabla()["Recovery de arranque de los ACTIVE_TARGET externos (PR-2 P2.3)"]
+    assert fila["Estado"] == "Parcial"
+    assert "DRAFT" in fila["Qué falta"]
+    assert "test_rollback_reconciler.py" in fila["Verificado por"]
+    assert "test_dyndolod_workspace.py" in fila["Verificado por"]

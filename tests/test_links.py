@@ -647,3 +647,201 @@ def test_todo_decisor_sobre_artefactos_de_rollback_consulta_la_primitiva() -> No
         ruta = paquete.parent / relativa
         assert ruta.is_file(), f"{relativa} ya no existe; actualizá la familia"
         assert importa_la_primitiva(ruta), f"{relativa} no delega en links: {motivo}"
+
+
+class TestContencionFisica:
+    """``exigir_contencion_fisica``: descendencia REAL, sin symlinks ni junctions.
+
+    La contención LÓGICA no alcanza: si un ancestro es reemplazado por un
+    junction después del boot, candidato y raíz resuelven al mismo árbol externo
+    y ``resolve().is_relative_to`` sigue diciendo que sí. Estos tests fijan la
+    propiedad que sí lo ve —cada componente con ``lstat``, sin seguir enlaces—
+    y su contrapositivo con junctions reales de Windows. La clasificación es la
+    del módulo (symlink + ``IO_REPARSE_TAG_MOUNT_POINT``); NO es una detección
+    universal de todos los reparse tags de Windows.
+    """
+
+    def test_acepta_una_cadena_real_y_devuelve_el_path_normalizado(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "Work Root"
+        candidato = raiz / "DynDOLOD" / "TexGen"
+        candidato.mkdir(parents=True)
+
+        devuelto = links.exigir_contencion_fisica(raiz, candidato)
+
+        assert devuelto == candidato
+        assert devuelto.is_dir()
+
+    def test_acepta_un_candidato_que_todavia_no_existe(self, tmp_path: pathlib.Path) -> None:
+        """El born-empty crea el root después: un inexistente no es un enlace."""
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+        (raiz / "DynDOLOD").mkdir()
+
+        devuelto = links.exigir_contencion_fisica(raiz, raiz / "DynDOLOD" / "TexGen")
+
+        assert devuelto == raiz / "DynDOLOD" / "TexGen"
+        assert not devuelto.exists()
+
+    def test_rechaza_un_candidato_inexistente_cuando_se_exige_existencia(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+
+        with pytest.raises(links.ContencionFisicaVioladaError):
+            links.exigir_contencion_fisica(raiz, raiz / "DynDOLOD" / "TexGen", exigir_existencia=True)
+
+    def test_rechaza_un_candidato_fuera_de_la_raiz(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+        afuera = tmp_path / "Outside"
+        afuera.mkdir()
+
+        with pytest.raises(links.ContencionFisicaVioladaError):
+            links.exigir_contencion_fisica(raiz, afuera)
+
+    def test_rechaza_el_prefijo_parcial_de_un_hermano(self, tmp_path: pathlib.Path) -> None:
+        """``Work Root 2`` no es descendiente de ``Work Root`` (comparación por componentes)."""
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+        hermano = tmp_path / "Work Root 2"
+        hermano.mkdir()
+
+        with pytest.raises(links.ContencionFisicaVioladaError):
+            links.exigir_contencion_fisica(raiz, hermano)
+
+    def test_rechaza_el_candidato_igual_a_la_raiz(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+
+        with pytest.raises(links.ContencionFisicaVioladaError):
+            links.exigir_contencion_fisica(raiz, raiz)
+
+        # Con `permitir_raiz` explícito, la raíz misma es una cadena válida.
+        assert links.exigir_contencion_fisica(raiz, raiz, permitir_raiz=True) == raiz
+
+    def test_rechaza_una_raiz_que_no_existe(self, tmp_path: pathlib.Path) -> None:
+        with pytest.raises(links.ContencionFisicaVioladaError):
+            links.exigir_contencion_fisica(tmp_path / "No Existe", tmp_path / "No Existe" / "x")
+
+    def test_rechaza_un_archivo_como_componente(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+        (raiz / "DynDOLOD").write_text("no es directorio", encoding="utf-8")
+
+        with pytest.raises(links.ContencionFisicaVioladaError):
+            links.exigir_contencion_fisica(raiz, raiz / "DynDOLOD" / "TexGen")
+
+    @junction_guard
+    def test_rechaza_un_junction_en_un_ancestro(self, tmp_path: pathlib.Path) -> None:
+        """El caso adversarial: family reemplazado por junction DESPUÉS del boot.
+
+        Un caller que valide contra el TOOL ROOT (el path bajo el junction) ve
+        ``resolve()`` de ambas puntas dentro del MISMO árbol externo y la
+        contención lógica da verde; el guard físico debe fallar.
+        """
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+        afuera = tmp_path / "Outside"
+        (afuera / "TexGen").mkdir(parents=True)
+        (afuera / "TexGen" / "evil.dds").write_bytes(b"EVIL")
+        enlace = raiz / "DynDOLOD"
+        if (motivo := crear_junction(enlace, afuera)) is not None:
+            pytest.fail(f"no se pudo crear el junction: {motivo}")
+
+        candidato = enlace / "TexGen"
+        # La contención LÓGICA contra el tool root no ve nada raro — es
+        # exactamente por eso que hace falta la física.
+        assert candidato.resolve().is_relative_to(enlace.resolve())
+
+        with pytest.raises(links.ContencionFisicaVioladaError, match="junction"):
+            links.exigir_contencion_fisica(raiz, candidato)
+
+        assert (afuera / "TexGen" / "evil.dds").read_bytes() == b"EVIL"
+
+    @junction_guard
+    def test_rechaza_un_junction_en_un_componente_intermedio_profundo(self, tmp_path: pathlib.Path) -> None:
+        """ANY ancestor: el enlace también puede vivir bajo el tool root."""
+        raiz = tmp_path / "Work Root"
+        (raiz / "DynDOLOD").mkdir(parents=True)
+        afuera = tmp_path / "Outside"
+        afuera.mkdir()
+        enlace = raiz / "DynDOLOD" / "TexGen"
+        if (motivo := crear_junction(enlace, afuera)) is not None:
+            pytest.fail(f"no se pudo crear el junction: {motivo}")
+
+        with pytest.raises(links.ContencionFisicaVioladaError, match="junction"):
+            links.exigir_contencion_fisica(raiz, enlace / "textures")
+
+    @symlink_guard
+    def test_rechaza_un_symlink_en_un_ancestro(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+        afuera = tmp_path / "Outside"
+        afuera.mkdir()
+        enlace = raiz / "DynDOLOD"
+        enlace.symlink_to(afuera, target_is_directory=True)
+
+        with pytest.raises(links.ContencionFisicaVioladaError, match="symlink"):
+            links.exigir_contencion_fisica(raiz, enlace / "TexGen")
+
+    def test_rechaza_una_raiz_que_es_enlace(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """La raíz admitida tiene que ser un directorio real, no un symlink ni junction.
+
+        Se simula el tipo (junction) porque el symlink directo lo crea el
+        helper real en Windows sólo con privilegios; la clasificación ya está
+        cubierta arriba con junctions reales.
+        """
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+        real = links.link_kind_and_identity_or_raise
+
+        def _raiz_como_junction(ruta: pathlib.Path):
+            if pathlib.Path(ruta) == raiz:
+                return links.JUNCTION, raiz.lstat()
+            return real(ruta)
+
+        monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _raiz_como_junction)
+
+        with pytest.raises(links.ContencionFisicaVioladaError, match="junction"):
+            links.exigir_contencion_fisica(raiz, raiz / "DynDOLOD")
+
+    def test_revalida_la_identidad_de_cada_componente(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un componente que cambia durante la inspección invalida el veredicto.
+
+        La revalidación compara la identidad capturada contra un ``lstat``
+        fresco: si el inodo cambió (reemplazo), fail-closed. Se simula el
+        reemplazo cambiando el ``st_ino`` que ve la revalidación.
+        """
+        raiz = tmp_path / "Work Root"
+        candidato = raiz / "DynDOLOD" / "TexGen"
+        candidato.mkdir(parents=True)
+        real = links.link_kind_and_identity_or_raise
+        visto_raiz = 0
+
+        def _raiz_con_identidad_distinta(ruta: pathlib.Path):
+            nonlocal visto_raiz
+            tipo, identidad = real(ruta)
+            if pathlib.Path(ruta) == raiz and identidad is not None:
+                visto_raiz += 1
+                if visto_raiz >= 2:  # revalidación
+                    return tipo, SimpleNamespace(
+                        st_mode=identidad.st_mode,
+                        st_dev=identidad.st_dev,
+                        st_ino=identidad.st_ino + 1,
+                        st_reparse_tag=getattr(identidad, "st_reparse_tag", 0),
+                    )
+            return tipo, identidad
+
+        monkeypatch.setattr(links, "link_kind_and_identity_or_raise", _raiz_con_identidad_distinta)
+
+        with pytest.raises(links.ContencionFisicaVioladaError, match="identidad"):
+            links.exigir_contencion_fisica(raiz, candidato)
+
+    def test_rechaza_una_ruta_que_escapa_con_punto_punto(self, tmp_path: pathlib.Path) -> None:
+        """El ``..`` se colapsa léxicamente y el resultado queda fuera: fail-closed."""
+        raiz = tmp_path / "Work Root"
+        raiz.mkdir()
+
+        with pytest.raises(links.ContencionFisicaVioladaError):
+            links.exigir_contencion_fisica(raiz, raiz / "DynDOLOD" / ".." / ".." / "Outside")

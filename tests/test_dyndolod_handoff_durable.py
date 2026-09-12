@@ -116,6 +116,7 @@ def _runner_real(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner
         mo2_mods_path=tmp_path / "MO2" / "mods",
         dyndolod_exe=dyndolod_exe,
         texgen_exe=texgen_exe,
+        external_work_root=tmp_path / "Work Root",
     )
     return config, DynDOLODRunner(config)
 
@@ -869,7 +870,7 @@ async def test_resume_same_session_con_tx_rolled_back_sin_otra_evidencia_sigue_l
     PENDING de arriba). Acá el resume sin otra evidencia vigente sigue legacy."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -877,7 +878,7 @@ async def test_resume_same_session_con_tx_rolled_back_sin_otra_evidencia_sigue_l
     await _sembrar_tx_terminada(journal, mod_texgen=mod_texgen, estado="rolled_back")
 
     svc = _svc(journal, runner=runner)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -894,7 +895,7 @@ async def test_resume_con_tx_committed_sin_handoff_no_es_orphan(tmp_path: pathli
     path NO fabrica INDETERMINATE y el camino legacy queda preservado."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -903,7 +904,7 @@ async def test_resume_con_tx_committed_sin_handoff_no_es_orphan(tmp_path: pathli
     await journal.commit_transaction(tx)  # COMMITTED sin handoff activo
 
     svc = _svc(journal, runner=runner)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -923,14 +924,14 @@ async def test_resume_legacy_autentico_con_mod_vivo_y_sin_evidencia_sigue_legacy
     fail-closed."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
     _mirror_a_data(mod_texgen / "textures", config.data_dir)
 
     svc = _svc(journal, runner=runner)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -1009,7 +1010,7 @@ async def test_rolled_back_historica_no_es_orphan_por_si_sola(
     legacy. La historia no es evidencia vigente."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -1018,7 +1019,7 @@ async def test_rolled_back_historica_no_es_orphan_por_si_sola(
     await _envejecer_tx(journal, tx)
 
     svc = _svc(journal, runner=runner)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -1039,7 +1040,7 @@ async def test_multiples_rolled_back_historicas_no_son_evidencia(
     evidencia actual (ni la primera ni la última candidata)."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -1049,7 +1050,7 @@ async def test_multiples_rolled_back_historicas_no_son_evidencia(
         await _envejecer_tx(journal, tx)
 
     svc = _svc(journal, runner=runner)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -1067,7 +1068,7 @@ async def test_rolled_back_vieja_mas_committed_nueva_no_es_orphan(
     mismo artifact → no hay orphan falso (ninguna es evidencia de interrupción)."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -1078,7 +1079,7 @@ async def test_rolled_back_vieja_mas_committed_nueva_no_es_orphan(
     await journal.commit_transaction(tx_new)
 
     svc = _svc(journal, runner=runner)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -1197,10 +1198,10 @@ async def test_needs_deployment_crea_handoff_durable_que_sobrevive_restart(
     y sobrevive a reabrir el journal desde el mismo archivo."""
     journal, db_path = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     svc = _svc(journal, runner=runner)
 
     with (
@@ -1250,10 +1251,10 @@ async def test_snapshot_false_needs_deployment_crea_handoff_completo_y_payload(
     payload lleva ``texgen_mod_path`` aunque el mod nunca entró al move-aside."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     svc = _svc(journal, runner=runner)
 
     with (
@@ -1286,10 +1287,10 @@ async def test_el_digest_del_handoff_se_calcula_sobre_el_mod_final(
     empaquetado (``mods/TexGen Output/textures``), nunca sobre el staging crudo."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     svc = _svc(journal, runner=runner)
 
     raices: list[pathlib.Path] = []
@@ -1307,7 +1308,7 @@ async def test_el_digest_del_handoff_se_calcula_sobre_el_mod_final(
 
     assert raices, "nunca se calculó identidad durable"
     assert all(r == mod_texgen / "textures" for r in raices)
-    assert config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME not in raices
+    assert config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME not in raices
 
 
 # =============================================================================
@@ -1324,7 +1325,7 @@ async def test_resume_exitoso_sella_fs_antes_del_boundary_db_y_cierra_todo(
     boundary cierra handoff→COMPLETED y TX2→COMMITTED como una sola unidad."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -1337,7 +1338,7 @@ async def test_resume_exitoso_sella_fs_antes_del_boundary_db_y_cierra_todo(
         data=config.data_dir,
     )
     svc = _svc(journal, runner=runner)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
 
     orden: list[str] = []
     import sky_claw.local.tools.dyndolod_service as ds_mod
@@ -1464,9 +1465,9 @@ async def test_sin_handoff_run_texgen_false_es_legacy(tmp_path: pathlib.Path, jo
     conserva el camino legacy verbatim (DynDOLOD arranca)."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     svc = _svc(journal, runner=runner)
 
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
@@ -1542,10 +1543,10 @@ async def test_segundo_texgen_supersede_el_handoff_activo(tmp_path: pathlib.Path
     con la identidad de la NUEVA generación, enlazados por ``superseded_by``."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_mod(mod_texgen, contenido=b"GEN-1")
     _tx1, viejo = await _sembrar_awaiting(
         journal,
@@ -1588,7 +1589,7 @@ async def test_supersede_fallo_clase_a_vuelve_a_awaiting(tmp_path: pathlib.Path,
     SUPERSEDING vuelve a AWAITING y el handoff viejo sigue vigente."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -1624,10 +1625,10 @@ async def test_supersede_fallo_clase_b_restore_exacto_vuelve_a_awaiting(
     byte-exacto → SUPERSEDING vuelve a AWAITING (verificado por digest)."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_mod(mod_texgen)
     _tx1, viejo = await _sembrar_awaiting(
         journal,
@@ -1665,10 +1666,10 @@ async def test_supersede_fallo_clase_c_sin_snapshot_cae_a_indeterminate_y_resume
     artifact puede quedar a medias → INDETERMINATE, y el resume falla cerrado."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_mod(mod_texgen)
     _tx1, viejo = await _sembrar_awaiting(
         journal,
@@ -1779,10 +1780,10 @@ async def test_regen_desde_indeterminate_supersede_en_boundary_de_reemplazo(
     cierra old → SUPERSEDED e INSERTA el nuevo AWAITING autorizado."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_mod(mod_texgen, contenido=b"GEN-1")
     _tx0, viejo = await _sembrar_indeterminado(
         journal,
@@ -1827,10 +1828,10 @@ async def test_regen_desde_indeterminate_exitosa_terminaliza_con_completed(
     ownership activo."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_mod(mod_texgen, contenido=b"GEN-1")
     _tx0, viejo = await _sembrar_indeterminado(
         journal,
@@ -1842,7 +1843,7 @@ async def test_regen_desde_indeterminate_exitosa_terminaliza_con_completed(
     )
     _preparar_data_para_generacion(config.data_dir, marca=b"GEN-2")
     svc = _svc(journal, runner=runner)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
 
     with (
         patch.object(
@@ -1876,7 +1877,7 @@ async def test_regen_desde_indeterminate_falla_y_old_sigue_indeterminate(
     continúa fail-closed."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen, contenido=b"GEN-1")
@@ -1932,10 +1933,10 @@ async def test_la_identidad_nueva_nunca_promociona_el_observed_del_viejo(
     esperada nueva es la del artifact generado (Y), NUNCA X."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_mod(mod_texgen, contenido=b"GEN-1")
     x = digest_arbol(mod_texgen / "textures")
     _tx0, viejo = await _sembrar_indeterminado(
@@ -1977,10 +1978,10 @@ async def test_regen_desde_superseding_reafirma_y_supersede(
     old → SUPERSEDED con el nuevo autorizado."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_mod(mod_texgen, contenido=b"GEN-1")
     _tx1, viejo = await _sembrar_awaiting(
         journal,
@@ -2235,7 +2236,7 @@ async def test_receipt_sobrevive_al_crash_y_bloquea_el_resume(tmp_path: pathlib.
     )
 
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     svc = _svc(j2, runner=runner)
     run_dyndolod = AsyncMock()
@@ -2271,7 +2272,7 @@ async def test_receipt_bloquea_sin_reconciler_de_arranque(tmp_path: pathlib.Path
     assert await _estado_de_receipt(j2, tx) == SweepReceiptState.UNRESOLVED.value
 
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     svc = _svc(j2, runner=runner)
     run_dyndolod = AsyncMock()
@@ -2353,7 +2354,7 @@ async def test_receipt_sobrevive_multiples_reinicios(tmp_path: pathlib.Path) -> 
         "el receipt no sobrevivió los reinicios: la provenance se perdió"
     )
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     svc = _svc(j3, runner=runner)
     run_dyndolod = AsyncMock()
@@ -2407,10 +2408,10 @@ async def test_receipt_viejo_no_intoxica_tras_provenance_autorizada(
     recrea INDETERMINATE desde el receipt viejo: el reemplazo lo dejó resuelto."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     _escribir_mod(mod_texgen, contenido=b"GEN-1")
     tx = await _sembrar_pending_vieja(journal, mod_texgen)
     await journal.sweep_stale_pending(max_age_hours=24.0)
@@ -2436,7 +2437,7 @@ async def test_receipt_viejo_no_intoxica_tras_provenance_autorizada(
 
     # Resume → COMPLETED (la identidad del handoff es la de GEN-2).
     _mirror_a_data(mod_texgen / "textures", config.data_dir)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         resultado_resume = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -2481,7 +2482,7 @@ async def test_oracle_matchea_manifest_no_resuelto_con_mo2_via_symlink(
     await _sembrar_tx_terminada(journal, mod_texgen=alias / DynDOLODRunner.TEXGEN_MOD_NAME, estado="pending")
 
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     svc = _svc(journal, runner=runner)
     run_dyndolod = AsyncMock()
@@ -2520,7 +2521,7 @@ async def test_oracle_matchea_manifest_no_resuelto_con_junction(
     await _sembrar_tx_terminada(journal, mod_texgen=alias / DynDOLODRunner.TEXGEN_MOD_NAME, estado="pending")
 
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     svc = _svc(journal, runner=runner)
     run_dyndolod = AsyncMock()
@@ -2603,7 +2604,7 @@ async def test_receipt_sigue_unresolved_con_raiz_inaccesible_y_bloquea_al_volver
     receipt NO se cierra; al volver el disco, el resume bloquea (NOT CALLED)."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -2650,7 +2651,7 @@ async def test_receipt_sigue_unresolved_con_oserror_en_la_probe(
     resume bloquea."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -2749,7 +2750,7 @@ async def test_junction_colgante_es_unknown_y_no_cierra_el_receipt(
         pytest.skip(f"no se pudo crear el junction: {creado.stderr!r}")
 
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen_alias = alias / DynDOLODRunner.TEXGEN_MOD_NAME
     tx = await _sembrar_pending_vieja(journal, mod_texgen_alias)
@@ -3008,7 +3009,7 @@ async def test_resume_bloqueado_con_evidencia_y_artifact_inaccesible(
     distinto del test 0007 que restaura antes)."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -3041,7 +3042,7 @@ async def test_resume_bloqueado_con_permission_error_en_la_probe(
     _ResumeBloqueado con la MISMA razón estable, DynDOLOD NOT CALLED."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -3076,7 +3077,7 @@ async def test_resume_bloqueado_con_oserror_generico_en_la_probe(
     incertidumbre de filesystem jamás se convierte en legacy)."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -3111,7 +3112,7 @@ async def test_absencia_legitima_sigue_permitiendo_legacy(
     permanente."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     config.mo2_mods_path.mkdir(parents=True, exist_ok=True)  # root accesible; mod ausente
@@ -3120,7 +3121,7 @@ async def test_absencia_legitima_sigue_permitiendo_legacy(
     await journal.sweep_stale_pending(max_age_hours=24.0)
 
     svc = _svc(journal, runner=runner)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     run_dyndolod = _dyndolod_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -3140,7 +3141,7 @@ async def test_sin_receipt_y_root_inaccesible_el_legacy_no_se_bloquea(
     block", no "todo UNKNOWN → block"."""
     journal, _ = journal_tmp
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod_texgen)
@@ -3152,7 +3153,7 @@ async def test_sin_receipt_y_root_inaccesible_el_legacy_no_se_bloquea(
     root_mo2.rename(raiz_oculta)
     try:
         svc = _svc(journal, runner=runner)
-        dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+        dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
         run_dyndolod = _dyndolod_ok(dyndolod_staging)
         with patch.object(runner, "run_dyndolod", run_dyndolod):
             result = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -3223,7 +3224,7 @@ async def test_multi_restart_con_unknown_en_el_medio_preserva_el_receipt(
     mod_texgen = tmp_path / "MO2" / "mods" / "TexGen Output"
     _escribir_mod(mod_texgen)
     config, runner = _runner_real(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
 
     j1 = OperationJournal(db_path)
