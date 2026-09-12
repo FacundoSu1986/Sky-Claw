@@ -1166,7 +1166,23 @@ def test_lore_d2_del_wizard_inventario_y_mecanica() -> None:
     assert "self._lore_el.is_deleted" in src_wizard, (
         "falta la guarda por estado del elemento (NiceGUI 3.12 no lanza RuntimeError)"
     )
-    assert "self._lore_timer.deactivate()" in src_wizard, "el timer debe desactivarse explícitamente"
+    arbol_wizard = ast.parse(src_wizard)
+    desactivadores_timer = {
+        fn.name
+        for fn in ast.walk(arbol_wizard)
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "deactivate"
+            and isinstance(n.func.value, ast.Attribute)
+            and n.func.value.attr == "_lore_timer"
+            for n in ast.walk(fn)
+        )
+    }
+    assert {"_validate_and_save", "_rotate_lore"} <= desactivadores_timer, (
+        f"el timer de lore debe desactivarse tanto en el callback fail-safe como explícitamente al cerrar: {desactivadores_timer}"
+    )
 
 
 def test_lore_d2_timer_se_apaga_si_el_elemento_llego_borrado() -> None:
@@ -1198,15 +1214,46 @@ def test_lore_d2_timer_se_apaga_si_el_elemento_llego_borrado() -> None:
 
 
 def test_lore_d2_timer_arranca_desfasado_y_rota_en_vida() -> None:
-    """Complemento del contrato: con un elemento VIVO el callback rota una cita
-    distinta (salta al siguiente índice del ciclo) cada vez que el timer lo dispara;
-    y el timer se crea con immediate=False (Codex fastidió el salto inicial con
-    NiceGUI 3.12 default)."""
-    from sky_claw.app.gui.setup_wizard import _WIZARD_LORE
+    """Complemento del contrato: con un elemento VIVO el callback _rotate_lore()
+    de producción rota una cita distinta (salta al siguiente índice del ciclo)
+    cada vez que el timer lo dispara, actualiza content con el markup correcto
+    y mantiene el timer activo sin ejecutar cleanup."""
+    import itertools
 
-    # El arranque desfasado ya va en la ancla arriba. Aquí un smoke puro:
-    iter1 = __import__("itertools").cycle(_WIZARD_LORE)
-    frase1 = next(iter1)
-    frase2 = next(iter1)
-    assert frase1 != frase2, "el ciclo no rota"
-    assert frase1 in _WIZARD_LORE and frase2 in _WIZARD_LORE, "frase fuera del inventario"
+    from sky_claw.app.gui import setup_wizard as wizard_mod
+    from sky_claw.app.gui.setup_wizard import _WIZARD_LORE, _lore_markup
+
+    class FakeElementoVivo:
+        is_deleted: bool = False
+        content: str = ""
+
+    class FakeTimer:
+        active: bool = True
+
+        def deactivate(self) -> None:
+            self.active = False
+
+    wiz = object.__new__(wizard_mod.SetupWizardModal)
+    wiz._lore_iter = itertools.cycle(_WIZARD_LORE)
+    primera_frase = next(wiz._lore_iter)
+    segunda_frase = _WIZARD_LORE[1]
+    wiz._lore_el = FakeElementoVivo()
+    wiz._lore_el.content = _lore_markup(primera_frase)
+    timer = FakeTimer()
+    wiz._lore_timer = timer
+
+    # Ejecuta el método DE PRODUCCIÓN
+    wiz._rotate_lore()
+
+    # 1. el contenido cambia a la siguiente frase
+    assert segunda_frase in wiz._lore_el.content
+    assert primera_frase != segunda_frase
+    # 2. el markup contiene la frase correcta
+    assert wiz._lore_el.content == _lore_markup(segunda_frase)
+    # 3. el timer permanece activo mientras el elemento está vivo
+    assert timer.active is True
+    # 4. _lore_timer NO queda None
+    assert wiz._lore_timer is not None
+    assert wiz._lore_timer is timer
+    # 5. la ruta no ejecuta la lógica de cleanup
+    assert wiz._lore_el.is_deleted is False

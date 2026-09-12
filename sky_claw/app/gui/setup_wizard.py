@@ -335,7 +335,7 @@ class SetupWizardModal:
         silencioso (``update()`` retorna temprano), NO lanza
         ``RuntimeError`` — un `try/except` era código defensivo muerto.
         Por eso el vida-muerte del timer se decide por ``is_deleted``.
-        Pattern: fuente de verdad única = estado del elemento.
+        Patrón: fuente de verdad única = estado del elemento.
         """
         if self._lore_el is None or self._lore_el.is_deleted:
             if self._lore_timer is not None:
