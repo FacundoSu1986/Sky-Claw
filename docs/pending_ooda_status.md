@@ -155,6 +155,18 @@
 > el checklist T5-v2 sigue **PARCIAL 7/10**, y #528 sigue abierto y sin tocar.
 > **PR-2 NOT READY TO MERGE.** **No** es una reverificación integral del resto de
 > la tabla.
+>
+> **Nota del blocker P1 de P2.2 (2026-09-12, misma rama/PR):** un
+> symlink/junction/reparse introducido en un **ancestro** después del boot podía
+> redirigir una mutación administrada fuera del `WorkspaceResuelto.root` aunque
+> la contención lógica (`resolve().is_relative_to`) diera verde y la lease de
+> P2.0 siguiera viva. Se cerró con una primitiva única
+> (`links.exigir_contencion_fisica`: cadena de componentes por `lstat`, sin
+> seguir enlaces, con revalidación de identidad) cableada en las cuatro
+> fronteras —pre move-aside, pre born-empty, pre spawn y pre packaging— con
+> tests de junction reales (T1–T5) y mutaciones M11/M11b/M11c/M12 en rojo. La
+> deuda de P2.3 (recovery de arranque de los `ACTIVE_TARGET` externos) sigue
+> intacta.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de

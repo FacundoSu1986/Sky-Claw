@@ -192,6 +192,14 @@ admitido mediante un componente redirigido.
 La implementación reutiliza las primitivas existentes
 (`sky_claw/app/security/links.py` — `is_link`/`link_kind`/`rmtree_link_aware` — y
 `PathValidator.validate` con `strict_symlink`) antes de inventar un subsistema.
+**P2.2 cierra la ventana de un reparse introducido DESPUÉS del boot** con
+`links.exigir_contencion_fisica`: recorre la cadena de componentes de
+`external_work_root` al destino con `lstat` (sin seguir enlaces), exige que cada
+componente existente sea un directorio real y revalida su identidad antes de
+devolver; se cablea antes del move-aside, antes de crear el root vacío, antes de
+cada spawn y antes de cada packaging. La comparación de rutas resueltas no
+alcanza: con un ancestro redirigido, candidato y tool root resuelven al mismo
+árbol externo y la relación lógica sigue siendo verdadera.
 El mecanismo de Known Folders **no existía** en el árbol: P0 lo construyó en
 `sky_claw/app/security/known_folders.py` con el conjunto congelado de la ADR §2.7
 y su test parametrizado (cada Known Folder contractual, incluida una ruta
