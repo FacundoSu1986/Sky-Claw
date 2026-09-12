@@ -436,7 +436,7 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
   creación del root vacío, spawn y packaging. La lease del workspace integra el
   veto de rollback y los fences; una lease perdida detiene toda mutación
   posterior y veta el restore.
-- [x] **Blocker P1 (reparse en ancestros) cerrado:** `links.exigir_contencion_fisica`
+- [x] **Blocker P1 (symlink/junction en ancestros) cerrado:** `links.exigir_contencion_fisica`
   valida la cadena física completa —cada componente por `lstat`, sin seguir
   enlaces, con revalidación de identidad— antes del move-aside, antes de crear
   el root vacío, antes de cada spawn y antes de cada packaging. Un

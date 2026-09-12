@@ -650,13 +650,15 @@ def test_todo_decisor_sobre_artefactos_de_rollback_consulta_la_primitiva() -> No
 
 
 class TestContencionFisica:
-    """``exigir_contencion_fisica``: descendencia REAL, sin reparse intermedios.
+    """``exigir_contencion_fisica``: descendencia REAL, sin symlinks ni junctions.
 
     La contención LÓGICA no alcanza: si un ancestro es reemplazado por un
     junction después del boot, candidato y raíz resuelven al mismo árbol externo
     y ``resolve().is_relative_to`` sigue diciendo que sí. Estos tests fijan la
     propiedad que sí lo ve —cada componente con ``lstat``, sin seguir enlaces—
-    y su contrapositivo con junctions reales de Windows.
+    y su contrapositivo con junctions reales de Windows. La clasificación es la
+    del módulo (symlink + ``IO_REPARSE_TAG_MOUNT_POINT``); NO es una detección
+    universal de todos los reparse tags de Windows.
     """
 
     def test_acepta_una_cadena_real_y_devuelve_el_path_normalizado(self, tmp_path: pathlib.Path) -> None:
@@ -782,7 +784,7 @@ class TestContencionFisica:
             links.exigir_contencion_fisica(raiz, enlace / "TexGen")
 
     def test_rechaza_una_raiz_que_es_enlace(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """La raíz admitida tiene que ser un directorio real, no un reparse point.
+        """La raíz admitida tiene que ser un directorio real, no un symlink ni junction.
 
         Se simula el tipo (junction) porque el symlink directo lo crea el
         helper real en Windows sólo con privilegios; la clasificación ya está

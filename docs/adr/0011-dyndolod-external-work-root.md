@@ -324,8 +324,8 @@ Como propiedad (no como algoritmo congelado):
   redirigido.** La implementación reutiliza las primitivas existentes
   (`sky_claw/app/security/links.py`: `is_link`/`link_kind`/`rmtree_link_aware`,
   y `PathValidator.validate` con `strict_symlink`) antes de inventar un subsistema.
-  **P2.2 (candidato) cierra además la ventana temporal:** un reparse introducido
-  en un ANCESTRO después del boot se detecta con
+  **P2.2 (candidato) cierra además la ventana temporal:** un symlink o junction
+  introducido en un ANCESTRO después del boot se detecta con
   `links.exigir_contencion_fisica` (cadena de componentes por `lstat`, sin seguir
   enlaces, con revalidación de identidad), cableado antes del move-aside, del
   born-empty, de cada spawn y de cada packaging. La comparación de rutas

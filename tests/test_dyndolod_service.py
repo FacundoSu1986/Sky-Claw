@@ -6620,10 +6620,10 @@ def test_el_service_no_declara_el_legacy_como_fuente_ni_target() -> None:
 
 
 # =============================================================================
-# P2.2 — blocker P1: reparse introducido en un ANCESTRO después del boot
+# P2.2 — blocker P1: symlink/junction introducido en un ANCESTRO tras el boot
 #
 # El ownership lógico de P2.0 sigue siendo válido (el registro apunta al path
-# original), pero un symlink/junction/reparse en un componente intermedio hace
+# original), pero un symlink o junction en un componente intermedio hace
 # que TODA mutación administrada —rename, mkdir, spawn, copia— aterrice fuera
 # del workspace admitido. La contención lógica no lo ve: candidato y raíz
 # resuelven al mismo árbol externo. Estos tests ejercitan el boundary REAL con
@@ -6759,7 +6759,7 @@ async def test_t4_packaging_aborta_con_junction_compartido(tmp_path: pathlib.Pat
 
     Con ``<root>/DynDOLOD`` → junction, ``source.resolve()`` y
     ``tool_root.resolve()`` apuntan ambos al árbol externo y la contención lógica
-    pasa; el guard físico es el que detecta el reparse y evita copiar
+    pasa; el guard físico es el que detecta el junction y evita copiar
     ``outside/TexGen/textures`` como si fuera salida propia.
     """
     config, runner = _runner_texgen(tmp_path)

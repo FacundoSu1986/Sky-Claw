@@ -308,10 +308,10 @@ def exigir_contencion_fisica(
     permitir_raiz: bool = False,
     exigir_existencia: bool = False,
 ) -> pathlib.Path:
-    """Exige que *candidato* cuelgue FÍSICAMENTE de *raiz*, sin reparse intermedios.
+    """Exige que *candidato* cuelgue FÍSICAMENTE de *raiz*, sin symlinks ni junctions intermedios.
 
     **Qué problema cierra.** Los guards que sólo miran el path final (o que
-    comparan rutas resueltas) no ven un symlink/junction/reparse introducido en
+    comparan rutas resueltas) no ven un symlink o junction introducido en
     un ANCESTRO después de que el workspace quedó resuelto: con
     ``E:\\Work\\DynDOLOD`` reemplazado por un junction a ``D:\\Outside``, tanto
     ``E:\\Work\\DynDOLOD\\TexGen`` como su raíz resuelven al mismo árbol externo y
@@ -321,10 +321,20 @@ def exigir_contencion_fisica(
     **Cómo lo decide.** Recorre la cadena de componentes desde *raiz* hasta
     *candidato* y hace ``lstat`` de cada uno —nunca ``stat``/``resolve``, que
     seguirían el enlace—: la raíz y todo ancestro existente deben ser
-    directorios REALES, sin reparse tag ni symlink. Después de recorrer,
-    revalida la identidad (``st_dev``/``st_ino``/modo/reparse tag) de cada
-    componente capturado, en orden inverso, para acotar la ventana de un
+    directorios REALES, sin symlink ni reparse tag de junction. Después de
+    recorrer, revalida la identidad (``st_dev``/``st_ino``/modo/reparse tag) de
+    cada componente capturado, en orden inverso, para acotar la ventana de un
     reemplazo durante la propia inspección.
+
+    **Alcance de la clasificación.** Lo que esta primitiva rechaza es lo que
+    clasifica :func:`link_kind_and_identity_or_raise`: symlinks y junctions
+    (``IO_REPARSE_TAG_MOUNT_POINT``). Eso cubre los mecanismos de redirección de
+    directorios que el contrato de ADR 0011 §2.7 nombra. **No** es una detección
+    universal de todos los reparse tags posibles de Windows: un tag distinto
+    (p. ej. ``IO_REPARSE_TAG_CLOUD`` de OneDrive Files On-Demand) NO se clasifica
+    como junction — ver
+    ``tests/test_links.py::test_reparse_tag_no_mount_point_no_es_un_junction``—
+    y la contención no promete reconocerlo como enlace.
 
     **Componentes inexistentes.** Un componente que no existe no puede ser un
     enlace; si la cadena se corta (primer run, root todavía no creado) el
@@ -337,7 +347,7 @@ def exigir_contencion_fisica(
 
     **Fail-closed.** *candidato* fuera de *raiz*, *candidato* igual a *raiz* sin
     ``permitir_raiz``, un componente que no se puede inspeccionar, que no es
-    directorio, que es symlink/junction/reparse, o cuya identidad cambia durante
+    directorio, que es symlink o junction, o cuya identidad cambia durante
     la inspección, terminan todos en :class:`ContencionFisicaVioladaError`.
     No sigue ningún enlace para decidir ownership.
 
@@ -373,9 +383,10 @@ def exigir_contencion_fisica(
                 raise ContencionFisicaVioladaError(
                     f"El componente '{actual}' de la cadena física no existe o no se pudo inspeccionar"
                 )
-            # Un componente inexistente no puede ser un reparse point, y nada que
-            # cuelgue de él existe todavía: se valida lo existente y el caller
-            # revalida después de crear (born-empty) o antes de mutar de nuevo.
+            # Un componente inexistente no puede ser un symlink ni un junction, y
+            # nada que cuelgue de él existe todavía: se valida lo existente y el
+            # caller revalida después de crear (born-empty) o antes de mutar de
+            # nuevo.
             break
         if tipo_de_enlace is not None:
             raise ContencionFisicaVioladaError(

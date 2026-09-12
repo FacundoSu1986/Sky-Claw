@@ -157,7 +157,7 @@
 > la tabla.
 >
 > **Nota del blocker P1 de P2.2 (2026-09-12, misma rama/PR):** un
-> symlink/junction/reparse introducido en un **ancestro** después del boot podía
+> symlink o junction introducido en un **ancestro** después del boot podía
 > redirigir una mutación administrada fuera del `WorkspaceResuelto.root` aunque
 > la contención lógica (`resolve().is_relative_to`) diera verde y la lease de
 > P2.0 siguiera viva. Se cerró con una primitiva única
@@ -165,6 +165,8 @@
 > seguir enlaces, con revalidación de identidad) cableada en las cuatro
 > fronteras —pre move-aside, pre born-empty, pre spawn y pre packaging— con
 > tests de junction reales (T1–T5) y mutaciones M11/M11b/M11c/M12 en rojo. La
+> clasificación es la del módulo (symlink + `IO_REPARSE_TAG_MOUNT_POINT`), no
+> una detección universal de todos los reparse tags posibles. La
 > deuda de P2.3 (recovery de arranque de los `ACTIVE_TARGET` externos) sigue
 > intacta.
 

@@ -332,7 +332,7 @@ class DynDOLODPipelineService:
 
         **Dos propiedades distintas, en orden.** Primero el ownership lógico
         (P2.0); después la contención física de los roots de herramienta bajo
-        `workspace.root`, que detecta un symlink/junction/reparse introducido en
+        `workspace.root`, que detecta un symlink o junction introducido en
         un ANCESTRO después del boot — el caso que la lease lógica no puede ver
         porque el registro sigue apuntando a un path que ahora redirige afuera.
         Ambas fallan cerrado y ninguna sustituye a la otra.

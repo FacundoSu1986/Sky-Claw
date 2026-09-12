@@ -2522,9 +2522,9 @@ class DynDOLODRunner:
 
         Tres capas, en orden: contención LÉXICA sobre rutas resueltas, contención
         FÍSICA componente a componente (``exigir_contencion_fisica``, que detecta
-        un reparse introducido en un ancestro después del boot — el caso que la
-        comparación de ``resolve()`` no ve porque ambas puntas resuelven al mismo
-        árbol externo), y revisión del enlace del leaf.
+        un symlink o junction introducido en un ancestro después del boot — el
+        caso que la comparación de ``resolve()`` no ve porque ambas puntas
+        resuelven al mismo árbol externo), y revisión del enlace del leaf.
 
         ``mod_name`` no administrado (p.ej. el mod con traversal sintético de un
         test de correlación) no tiene subroot asignable: se deja pasar — el
