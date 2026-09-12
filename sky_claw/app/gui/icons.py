@@ -1,42 +1,18 @@
-"""
-Sky-Claw GUI Icons — Component Registry v1.0
-Contains all SVG icon definitions for the NiceGUI interface.
+"""Sky-Claw GUI — Registro de iconos SVG.
+
+Convención: cada constante es un SVG inline completo, listo para meter dentro de
+``ui.html(f'... {_ICON_X} ...')``. Los del shell Forge heredan el color con
+``stroke="currentColor"`` (el wrapper decide); los de marca (ojo de dragón)
+llevan sus colores horneados.
+
+El registro legacy del wizard (~12 constantes: layers/mod/pending/conflict/
+storage/chat/settings/search/server/chart/anvil/cart) se eliminó: ninguna
+tenía consumidores fuera de este archivo, y un registro de iconos con
+constantes muertas invita a la duplicación divergente. Si uno vuelve a hacer
+falta, el historial de git lo restaura.
 """
 
 from __future__ import annotations
-
-_ICON_LAYERS = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-    <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
-</svg>"""
-
-_ICON_MOD = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C8A84E" stroke-width="2">
-    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-</svg>"""
-
-_ICON_PENDING = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#eab308" stroke-width="2">
-    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-</svg>"""
-
-_ICON_CONFLICT = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2">
-    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
-    <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-</svg>"""
-
-_ICON_STORAGE = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C8A84E" stroke-width="2">
-    <rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/>
-</svg>"""
-
-_ICON_CHAT = """<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-</svg>"""
-
-_ICON_SETTINGS = """<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-</svg>"""
-
-_ICON_SEARCH = """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
-</svg>"""
 
 _ICON_ROCKET = """<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
     <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/>
@@ -44,27 +20,7 @@ _ICON_ROCKET = """<svg width="20" height="20" viewBox="0 0 24 24" fill="none" st
     <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
 </svg>"""
 
-_ICON_SERVER = """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
-    <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
-</svg>"""
-
-_ICON_CHART = """<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-    <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
-    <line x1="6" y1="20" x2="6" y2="14"/>
-</svg>"""
-
-_ICON_ANVIL = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C8A84E" stroke-width="2">
-    <path d="M7 20h10"/><path d="M10 20v-4"/><path d="M14 20v-4"/>
-    <path d="M5 16h14l-2-4H7l-2 4z"/><path d="M8 12V8c0-2 2-4 4-4s4 2 4 4v4"/>
-</svg>"""
-
-_ICON_CART = """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C8A84E" stroke-width="2">
-    <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
-    <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
-</svg>"""
-
-# Iconos de la shell Forge ("Forja del Dovahkiin"). Reemplazan a los emojis del
+# Iconos del shell Forge ("Forja del Dovahkiin"). Reemplazan a los emojis del
 # shell (escudo del modal HITL, espadas de disputas, candado del Modo local):
 # los emojis se renderizan con la pila de color del SO y rompen la ilusión
 # diegética; todos heredan el color vía ``currentColor`` — el wrapper decide.
@@ -83,3 +39,28 @@ _ICON_LOCK = """<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stro
 _ICON_UNLOCK = """<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
 </svg>"""
+
+# Marca de la Forja: el ojo del dragón (D4 del roadmap GUI). Un solo recurso
+# compartido por el sidebar del shell y el asistente de primer arranque —
+# ninguna copia divergente.
+#
+# Excepción NBREAKABLE: el SVG referencia su gradiente por id
+# (``url(#<iris_id>)`` ↔ ``<radialGradient id="...">``) porque ambos clientes se
+# montan en el MISMO documento (wizard = overlay sobre el dashboard) y dos
+# instancias con el mismo id harían ambiguo el recurso. Por eso la constante es
+# una PLANTILLA y se renderiza vía ``_icon_dragon_eye(iris_id=...)`` con un id
+# determinista por consumidor — nunca UUID, para que los tests sigan siendo
+# deterministas. La propiedad `url(↔id) dentro de la misma instancia` la ancla
+# ``tests/test_gui_theme_contracts.py`` y rompe rojo si alguien pega una copia
+# literal del SVG con el mismo id.
+_ICON_DRAGON_EYE_TEMPLATE = """<svg width="30" height="30" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+    <path d="M5 24C13 14 35 14 43 24C35 34 13 34 5 24Z" fill="#0a0705" stroke="#c8a86a" stroke-width="1.5"/>
+    <ellipse cx="24" cy="24" rx="9" ry="9" fill="url(#{iris_id})"/>
+    <path d="M24 15C26.6 18.2 26.6 29.8 24 33C21.4 29.8 21.4 18.2 24 15Z" fill="#120a06"/>
+    <defs><radialGradient id="{iris_id}" cx="50%" cy="42%" r="60%"><stop offset="0%" stop-color="#ffd071"/><stop offset="55%" stop-color="#d49a36"/><stop offset="100%" stop-color="#7a531f"/></radialGradient></defs>
+</svg>"""
+
+
+def _icon_dragon_eye(*, iris_id: str) -> str:
+    """Renderiza el emblema del ojo con un ``id`` de gradiente único por cliente."""
+    return _ICON_DRAGON_EYE_TEMPLATE.format(iris_id=iris_id)

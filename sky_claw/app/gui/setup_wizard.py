@@ -12,7 +12,7 @@ import keyring
 from nicegui import ui
 
 from .gui_helpers import _load_css
-from .icons import _ICON_ROCKET, _ICON_SETTINGS
+from .icons import _ICON_ROCKET, _icon_dragon_eye
 from .state import get_store
 
 if TYPE_CHECKING:
@@ -99,11 +99,16 @@ class SetupWizardModal:
                 # Header
                 with ui.row().classes("items-center justify-between w-full mb-4"):
                     with ui.row().classes("items-center gap-3"):
+                        # El emblema del ojo de dragón (mismo recurso que el
+                        # sidebar del shell) en el medallón de la marca — antes
+                        # era un engranaje genérico que no decía nada.
                         ui.html(f"""
-                            <div style="width:36px;height:36px;border-radius:8px;display:flex;
-                                        align-items:center;justify-content:center;
-                                        background:linear-gradient(135deg, #C8A84E, #8B7332);">
-                                {_ICON_SETTINGS}
+                            <div style="width:46px;height:46px;border-radius:50%;display:flex;
+                                        align-items:center;justify-content:center;flex-shrink:0;
+                                        background:radial-gradient(circle at 50% 38%, #2a1d12, #0c0805);
+                                        border:1.5px solid #c8a86a;
+                                        box-shadow:0 0 18px rgba(200,168,106,.45), inset 0 0 12px rgba(0,0,0,.7);">
+                                {_icon_dragon_eye(iris_id="scIris-wizard")}
                             </div>
                         """)
                         ui.label("ASISTENTE DE CONFIGURACIÓN").classes("sky-wizard-title")

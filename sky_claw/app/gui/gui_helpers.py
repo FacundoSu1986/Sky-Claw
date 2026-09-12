@@ -43,10 +43,11 @@ def _load_css() -> None:
     # empaquetada y nunca aplicada — A3 del roadmap GUI.)
     ui.add_head_html('<link rel="stylesheet" href="/assets/fonts/fonts.css">')
 
-    # Define playSkyrimSound up front: stat/feature cards and CTA buttons call it
-    # on hover/click, and without it every interaction threw ReferenceError in the
-    # console. Silent no-op by default (no sfx asset bundled yet) but kept as a
-    # single seam so a real cue can be wired later without touching the views.
+    # Seam global de sonido: los botones CTA lo invocan en click
+    # (`playSkyrimSound('click')` en views/components/buttons.py); sin él cada
+    # interacción lanzaba ReferenceError en consola. No-op silencioso por defecto
+    # (no hay sfx empaquetado todavía — D5 del roadmap) pero único seam, así
+    # cablear una cue real más adelante no toca las vistas.
     ui.add_body_html("<script>window.playSkyrimSound = window.playSkyrimSound || function (_type) {};</script>")
 
     if CSS_PATH.exists():

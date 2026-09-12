@@ -372,6 +372,119 @@ def test_medievalsharp_fuera_del_bundle() -> None:
     assert remanentes == [], f"woff2 de MedievalSharp residuales: {remanentes}"
 
 
+def _fuentes_gui() -> dict[str, str]:
+    """Mapa ``ruta relativa a app/gui`` → fuente, para los censos por AST."""
+    return {
+        str(p.relative_to(_GUI_DIR)).replace("\\", "/"): p.read_text(encoding="utf-8")
+        for p in sorted(_GUI_DIR.rglob("*.py"))
+    }
+
+
+def test_emblema_dragon_unico_y_compartido() -> None:
+    """D4: el ojo del dragón es UNA plantilla (``_ICON_DRAGON_EYE_TEMPLATE`` en
+    icons.py) renderizada vía ``_icon_dragon_eye(iris_id=...)`` en los dos lugares
+    donde aparece la marca: el sidebar del shell y la cabecera del wizard.
+
+    Verificación por introspección AST, no por texto (revisiones #579):
+    los imports huérfanos no cuentan — se enumeran las LLAMADAS reales a la
+    fábrica y sus ids congelados. Como el wizard es overlay sobre el dashboard,
+    ambas instancias coexisten en el mismo DOM; los ids de gradiente deben ser
+    únicos por instancia, y la relación url(#id)↔id se prueba renderizando las
+    dos instancias (test_emblema_ids_unicos_por_instancia).
+    """
+    fuentes = _fuentes_gui()
+    path_ojo = "M5 24C13 14 35 14 43 24C35 34 13 34 5 24Z"
+
+    # (1) El path del emblema vive exactamente una vez en TODO el árbol gui —
+    # una copia pegada en cualquier otro archivo rompe el censo.
+    total = sum(src.count(path_ojo) for src in fuentes.values())
+    assert total == 1, f"copias del path del emblema fuera del registro: {total}"
+
+    # (2) Consumidores REALES de la fábrica: llamadas con sus ids congelados.
+    llamadas: dict[str, list[str]] = {}
+    for rel, src in fuentes.items():
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_icon_dragon_eye":
+                for kw in node.keywords:
+                    if kw.arg == "iris_id" and isinstance(kw.value, ast.Constant):
+                        llamadas.setdefault(rel, []).append(kw.value.value)
+    esperado = {
+        "views/forge_dashboard.py": ["scIris-sidebar"],
+        "setup_wizard.py": ["scIris-wizard"],
+    }
+    assert llamadas == esperado, f"consumidores/ids del emblema cambiaron: {llamadas}"
+
+
+def test_emblema_ids_unicos_por_instancia() -> None:
+    """RED→verde (revisión adversarial #579, P1): el wizard es overlay sobre el
+    dashboard, así que dos instancias del emblema conviven en el mismo DOM y un
+    ``id="scIris"`` compartido haría ambigua la referencia ``url(#scIris)``.
+
+    La prueba es sobre las instancias RENDERIZADAS y verifica dos propiedades:
+    (a) los ids de las dos instancias son distintos entre sí;
+    (b) dentro de cada instancia, todo ``url(#X)`` apunta a un ``id="X"``
+    definido EN ESA MISMA instancia.
+    """
+    from sky_claw.app.gui.icons import _icon_dragon_eye
+
+    sidebar = _icon_dragon_eye(iris_id="scIris-sidebar")
+    wizard = _icon_dragon_eye(iris_id="scIris-wizard")
+
+    def ids_de(svg: str) -> set[str]:
+        return set(re.findall(r'id="([^"]+)"', svg))
+
+    def refs_de(svg: str) -> list[str]:
+        return re.findall(r"url\(#([^)]+)\)", svg)
+
+    ids_sidebar, ids_wizard = ids_de(sidebar), ids_de(wizard)
+    assert ids_sidebar & ids_wizard == set(), f"ids SVG compartidos entre instancias: {ids_sidebar & ids_wizard}"
+    for nombre, svg in (("sidebar", sidebar), ("wizard", wizard)):
+        for ref in refs_de(svg):
+            assert ref in ids_de(svg), f"{nombre}: url(#{ref}) sin definición en la misma instancia"
+
+
+#: Registro vivo de iconos, congelado por igualdad literal (censo por AST sobre
+#: los Assign de nivel superior de icons.py). La purga de las 12 constantes
+#: legacy del wizard no estaba anclada: reintroducirlas sin consumidor pasaba en
+#: verde (revisión Codex #579).
+_REGISTRO_ICONOS_VIVO = frozenset(
+    {
+        "_ICON_ROCKET",
+        "_ICON_SHIELD_CHECK",
+        "_ICON_SWORDS",
+        "_ICON_LOCK",
+        "_ICON_UNLOCK",
+        "_ICON_DRAGON_EYE_TEMPLATE",
+    }
+)
+
+
+def test_registro_iconos_congelado_y_sin_muertos() -> None:
+    """icons.py define EXACTAMENTE el registro vivo. Cada constante definida se
+    puede consumir de dos maneras: desde un archivo distinto (rocket y los cuatro
+    del shell) o desde la fábrica del propio archivo (la plantilla del emblema la
+    carga ``_icon_dragon_eye``). Por eso se cuentan las cargas en TODO el árbol,
+    icons.py incluido; una constante sin ninguna carga sigue fallando."""
+    fuentes = _fuentes_gui()
+    tree_icons = ast.parse(fuentes["icons.py"])
+    definidos = {
+        node.targets[0].id
+        for node in tree_icons.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id.startswith("_ICON_")
+    }
+    assert definidos == set(_REGISTRO_ICONOS_VIVO), f"registro de iconos cambió: {sorted(definidos)}"
+
+    cargas: dict[str, int] = {}
+    for src in fuentes.values():
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Name) and node.id in definidos and isinstance(node.ctx, ast.Load):
+                cargas[node.id] = cargas.get(node.id, 0) + 1
+    sin_consumidor = sorted(definidos - set(cargas))
+    assert not sin_consumidor, f"iconos definidos sin consumidor: {sin_consumidor}"
+
+
 # ── C2 — recetas de botón centralizadas ──────────────────────────────────────
 
 #: Variantes semánticas válidas de la familia ``.sc-btn`` (sección 6b de styles.css).
