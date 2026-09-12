@@ -306,7 +306,9 @@ class SetupWizardModal:
                 self._lore_el = ui.html(_lore_markup(next(self._lore_iter)))
 
         # UI timer: rota la frase cada ~6s mientras el wizard vive.
-        self._lore_timer = ui.timer(6.0, self._rotate_lore)
+        # immediate=False: con el default (True) la primera cita se saltaría
+        # al instante en vez de durar su intervalo (Codex review en #584).
+        self._lore_timer = ui.timer(6.0, self._rotate_lore, immediate=False)
 
         # Attach localStorage autosave handlers
         for field_name, input_el in self._draft_fields.items():
@@ -326,18 +328,21 @@ class SetupWizardModal:
         """)
 
     def _rotate_lore(self) -> None:
-        """Rota la cita de lore; si el modal ya cerró, apaga el timer.
+        """Rota la cita de lore; cuando el modal ya cerró, apaga el timer.
 
-        (NiceGUI levanta RuntimeError al tocar un elemento borrado del DOM — el
-        wizard se cierra tras completarse y el timer no debe seguir corriendo.)
+        Contrato explícito contra NiceGUI 3.12: cuando el overlay se borra,
+        ``element.content = ...`` sobre un elemento marcado es un NO-OP
+        silencioso (``update()`` retorna temprano), NO lanza
+        ``RuntimeError`` — un `try/except` era código defensivo muerto.
+        Por eso el vida-muerte del timer se decide por ``is_deleted``.
+        Pattern: fuente de verdad única = estado del elemento.
         """
-        if self._lore_el is None:
-            return
-        try:
-            self._lore_el.content = _lore_markup(next(self._lore_iter))
-        except RuntimeError:
+        if self._lore_el is None or self._lore_el.is_deleted:
             if self._lore_timer is not None:
                 self._lore_timer.deactivate()
+                self._lore_timer = None
+            return
+        self._lore_el.content = _lore_markup(next(self._lore_iter))
 
     def _go_step2(self) -> None:
         self._step = 2
@@ -439,9 +444,16 @@ class SetupWizardModal:
             # (gate refresh, dashboard, etc.) reacts in the same session.
             get_store().set("first_run", False)
 
-            # Remove overlay from DOM
+            # Remove overlay from DOM — pero el timer de lore fue creado como
+            # héroe del page (fuera de overlay element), así que NO muere con
+            # él y hay que desactivarlo explícitamente acá. La guarda por
+            # is_deleted de _rotate_lore sigue como segunda línea (si algun
+            # handler raro deja el modal borrado sin pasar por acá).
             if self._overlay_el:
                 self._overlay_el.delete()
+            if self._lore_timer is not None:
+                self._lore_timer.deactivate()
+                self._lore_timer = None
 
             await self._on_complete()
 

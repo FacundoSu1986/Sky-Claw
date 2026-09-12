@@ -1140,8 +1140,12 @@ _LORE_D2 = (
 def test_lore_d2_del_wizard_inventario_y_mecanica() -> None:
     """D2: el wizard de primer arranque trae una cita al pie que rota
     automáticamente (estilo pantalla de carga). El ancla congela (i) el inventario
-    literal, (ii) el ciclo, (iii) el marcador de destino y (iv) el apagado del
-    timer cuando el modal cerró (sin seguir corriendo en un DOM muerto)."""
+    literal, (ii) el ciclo, (iii) el marcador de destino, (iv) el apagado del
+    timer cuando el modal cerró (sin seguir corriendo sobre un DOM muerto),
+    (v) el arranque desfasado (``immediate=False`` — la NiceGUI pinned tiene
+    immediate=True por defecto y saltaba la primera cita) y (vi) la guarda no
+    por excepción sino por estado del elemento (NiceGUI 3.12 no lanza en
+    ``content=`` sobre un borrado; un ``except RuntimeError`` sería código muerto)."""
     from sky_claw.app.gui.setup_wizard import _WIZARD_LORE, _lore_markup
 
     # (i) Las 5 frases, exactamente como se escribieron y en ese orden.
@@ -1152,10 +1156,57 @@ def test_lore_d2_del_wizard_inventario_y_mecanica() -> None:
     assert 'id="sky-wizard-lore"' in markup, "falta el id del marcador de lore"
     assert "'EB Garamond'" in markup and "font-style:italic" in markup, "la cita no está en la tipografía narrativa"
 
-    # (iii+iv) Ciclo y timer con apagado — por texto no por drops: si el ciclo
-    # desaparece, el lore queda fijo y eso rompe su contrato.
+    # (iii+iv+v+vi) Ciclo y timer con arranque diferido + dos líneas de defensa:
+    # un chequeo de estado antes de mutar + un apagado explícito al cerrar.
     src_wizard = (_GUI_DIR / "setup_wizard.py").read_text(encoding="utf-8")
     assert "itertools.cycle(_WIZARD_LORE)" in src_wizard, "falta el ciclo de lore en el wizard"
-    assert "ui.timer(6.0, self._rotate_lore)" in src_wizard, "falta el timer que rota la cita"
-    assert "self._lore_timer.deactivate()" in src_wizard, "el timer siguió corriendo tras cerrar el modal"
-    assert "RuntimeError" in src_wizard, "el handler no desactiva aguantando el DOM borrado"
+    assert "ui.timer(6.0, self._rotate_lore, immediate=False)" in src_wizard, (
+        "falta el timer de rotación con inicio diferido"
+    )
+    assert "self._lore_el.is_deleted" in src_wizard, (
+        "falta la guarda por estado del elemento (NiceGUI 3.12 no lanza RuntimeError)"
+    )
+    assert "self._lore_timer.deactivate()" in src_wizard, "el timer debe desactivarse explícitamente"
+
+
+def test_lore_d2_timer_se_apaga_si_el_elemento_llego_borrado() -> None:
+    """Comportamiento RED-proof (los reviewers señalaron que la ancla por texto
+    no reproduce el lifecycle): levanto el modal sin build() y con un elemento
+    marcado borrado — como pasa cuando el overlay se cierra — y el callback
+    DEBE apagar su timer sin mutar el elemento, no colgarlo en sesión."""
+    from sky_claw.app.gui import setup_wizard as wizard_mod
+
+    class FakeElementoBorrado:
+        is_deleted: bool = True
+        content: str | None = None
+
+    class FakeTimer:
+        active: bool = True
+
+        def deactivate(self) -> None:
+            self.active = False
+
+    wiz = object.__new__(wizard_mod.SetupWizardModal)
+    wiz._lore_el = FakeElementoBorrado()
+    wiz._lore_timer = FakeTimer()
+    wiz._lore_iter = __import__("itertools").cycle(wizard_mod._WIZARD_LORE)
+
+    wiz._rotate_lore()
+
+    assert wiz._lore_timer is None, "el timer debe desactivarse y limpiarse"
+    assert wiz._lore_el.content is None, "el elemento borrado no debe mutarse"
+
+
+def test_lore_d2_timer_arranca_desfasado_y_rota_en_vida() -> None:
+    """Complemento del contrato: con un elemento VIVO el callback rota una cita
+    distinta (salta al siguiente índice del ciclo) cada vez que el timer lo dispara;
+    y el timer se crea con immediate=False (Codex fastidió el salto inicial con
+    NiceGUI 3.12 default)."""
+    from sky_claw.app.gui.setup_wizard import _WIZARD_LORE
+
+    # El arranque desfasado ya va en la ancla arriba. Aquí un smoke puro:
+    iter1 = __import__("itertools").cycle(_WIZARD_LORE)
+    frase1 = next(iter1)
+    frase2 = next(iter1)
+    assert frase1 != frase2, "el ciclo no rota"
+    assert frase1 in _WIZARD_LORE and frase2 in _WIZARD_LORE, "frase fuera del inventario"
