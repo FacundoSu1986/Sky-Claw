@@ -380,6 +380,110 @@ def _fuentes_gui() -> dict[str, str]:
     }
 
 
+#: Nombre de la fábrica y del módulo que la define: el censo los resuelve
+#: también por alias (import renombrado, llamada por atributo, alias por asignación).
+_FABRICA_DRAGON_EYE = "_icon_dragon_eye"
+_MODULO_ICONOS = "sky_claw.app.gui.icons"
+
+
+def _raiz_de(expr: ast.expr) -> ast.expr:
+    """Desciende la cadena ``a.b.c`` hasta el ``Name`` raíz."""
+    while isinstance(expr, ast.Attribute):
+        expr = expr.value
+    return expr
+
+
+def _referencias_a_la_fabrica(arbol: ast.Module) -> tuple[set[str], set[str]]:
+    """Nombres locales que pueden llamar a la fábrica, con sus alias resueltos.
+
+    Devuelve ``(directos, modulos)``: ``directos`` son locales ligados a la
+    FUNCIÓN (``from ...icons import _icon_dragon_eye [as X]``) y ``modulos`` los
+    ligados al MÓDULO ``icons`` (``import ...icons [as X]`` / ``from ... import
+    icons``) para las llamadas por atributo (``X._icon_dragon_eye(...)``). Las
+    asignaciones simples (``f = _icon_dragon_eye``) se propagan a punto fijo:
+    un consumidor no puede esquivar el censo renombrando la fábrica — la misma
+    trampa de alias de los barridos AST por nombre exacto.
+    """
+    directos: set[str] = set()
+    modulos: set[str] = set()
+    asignaciones: list[tuple[str, ast.expr]] = []
+
+    for node in ast.walk(arbol):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == _FABRICA_DRAGON_EYE:
+                    directos.add(alias.asname or alias.name)
+                elif alias.name == "icons":
+                    modulos.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _MODULO_ICONOS:
+                    modulos.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            asignaciones.append((node.targets[0].id, node.value))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
+            asignaciones.append((node.target, node.value))
+
+    cambio = True
+    while cambio:
+        cambio = False
+        for destino, valor in asignaciones:
+            if destino in directos or destino in modulos:
+                continue
+            raiz = _raiz_de(valor) if isinstance(valor, ast.Attribute) else None
+            es_directo = (isinstance(valor, ast.Name) and valor.id in directos) or (
+                isinstance(valor, ast.Attribute)
+                and valor.attr == _FABRICA_DRAGON_EYE
+                and isinstance(raiz, ast.Name)
+                and raiz.id in modulos
+            )
+            if es_directo:
+                directos.add(destino)
+                cambio = True
+            elif isinstance(valor, ast.Name) and valor.id in modulos:
+                modulos.add(destino)
+                cambio = True
+    return directos, modulos
+
+
+def _llamadas_a_la_fabrica(src: str) -> list[str]:
+    """Ids ``iris_id`` de TODAS las llamadas a la fábrica del emblema.
+
+    Reconoce nombre directo, alias de import, llamada por atributo al módulo
+    (``icons._icon_dragon_eye``) y alias por asignación. Una llamada sin
+    ``iris_id`` o con un valor no literal también se lista (centinela) para que
+    el censo falle en vez de ignorarla.
+    """
+    arbol = ast.parse(src)
+    directos, modulos = _referencias_a_la_fabrica(arbol)
+    ids: list[str] = []
+    for node in ast.walk(arbol):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            es_fabrica = func.id in directos
+        elif isinstance(func, ast.Attribute) and func.attr == _FABRICA_DRAGON_EYE:
+            raiz = _raiz_de(func.value)
+            es_fabrica = isinstance(raiz, ast.Name) and raiz.id in modulos
+        else:
+            es_fabrica = False
+        if not es_fabrica:
+            continue
+        encontro_iris = False
+        for kw in node.keywords:
+            if kw.arg != "iris_id":
+                continue
+            encontro_iris = True
+            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                ids.append(kw.value.value)
+            else:
+                ids.append("<iris_id no constante>")
+        if not encontro_iris:
+            ids.append("<sin iris_id>")
+    return ids
+
+
 #: Única fuente de verdad de test para la familia de consumidores del emblema
 #: D4: ``ruta relativa a app/gui`` → id de gradiente. El censo AST congela que
 #: los call sites reales sean exactamente este mapa (una llamada por archivo), y
@@ -397,10 +501,11 @@ def test_emblema_dragon_unico_y_compartido() -> None:
     icons.py) renderizada vía ``_icon_dragon_eye(iris_id=...)`` en los dos lugares
     donde aparece la marca: el sidebar del shell y la cabecera del wizard.
 
-    Verificación por introspección AST, no por texto (revisiones #579):
-    los imports huérfanos no cuentan — se enumeran las LLAMADAS reales a la
-    fábrica y sus ids congelados contra ``_CONSUMIDORES_DRAGON_EYE``, la MISMA
-    fuente que renderiza ``test_emblema_ids_unicos_por_instancia``. Como el
+    Verificación por introspección AST, no por texto (revisiones #579): los
+    imports huérfanos no cuentan — se enumeran las LLAMADAS reales a la fábrica
+    en CUALQUIER forma (nombre, alias de import, atributo, alias por asignación)
+    y sus ids congelados contra ``_CONSUMIDORES_DRAGON_EYE``, la MISMA fuente
+    que renderiza ``test_emblema_ids_unicos_por_instancia``. Como el
     wizard es overlay sobre el dashboard, ambas instancias coexisten en el mismo
     DOM; los ids de gradiente deben ser únicos, y la relación url(#id)↔id se
     prueba renderizando TODOS los consumidores declarados, no una muestra fija.
@@ -414,13 +519,13 @@ def test_emblema_dragon_unico_y_compartido() -> None:
     assert total == 1, f"copias del path del emblema fuera del registro: {total}"
 
     # (2) Consumidores REALES de la fábrica: llamadas con sus ids congelados.
+    # El matcher resuelve alias de import y llamadas por atributo (CodeRabbit
+    # #582): ninguna forma sintáctica de llamar a la fábrica queda fuera del censo.
     llamadas: dict[str, list[str]] = {}
     for rel, src in fuentes.items():
-        for node in ast.walk(ast.parse(src)):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_icon_dragon_eye":
-                for kw in node.keywords:
-                    if kw.arg == "iris_id" and isinstance(kw.value, ast.Constant):
-                        llamadas.setdefault(rel, []).append(kw.value.value)
+        ids_del_archivo = _llamadas_a_la_fabrica(src)
+        if ids_del_archivo:
+            llamadas[rel] = ids_del_archivo
     # Listas de un elemento, no strings: dos llamadas en el mismo archivo también
     # rompen el contrato (una sola instancia del emblema por superficie).
     esperado = {rel: [iris_id] for rel, iris_id in _CONSUMIDORES_DRAGON_EYE.items()}
