@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import logging
 import secrets
@@ -23,6 +24,18 @@ logger = logging.getLogger(__name__)
 
 #: Proveedores LLM aceptados (fuente única para wizard y panel de Ajustes).
 VALID_PROVIDERS = {"anthropic", "deepseek", "openai", "ollama"}
+
+#: Frases de la forja (D2): lore rotatorio al pie del wizard de primer arranque,
+#: inspirado en las pantallas de carga de Skyrim. TEXTOS ORIGINALES — ninguno es
+#: cita del juego (licencia Bethesda). Congeladas por igualdad literal en
+#: tests/test_gui_theme_contracts.py: quien cambie la lista la cambia con conciencia.
+_WIZARD_LORE: tuple[str, ...] = (
+    "No todos los descansos son derrotas: a veces el dragón duerme para que la forja aguante.",
+    "Un orden de carga bien atado vale más que diez mods brillantes mal pertrechados.",
+    "LOOT ordena, xEdit confiesa, DynDOLOD revela: cada herramienta a su ritual.",
+    "Que cada cambio tenga prueba y cada prueba tenga nombre — eso separa la forja del fuego.",
+    "El viento de la garganta no borra las runas, si alguien las grabó de verdad.",
+)
 
 
 def validate_credentials(
@@ -84,6 +97,10 @@ class SetupWizardModal:
         self._telegram_token_input: ui.input | None = None
         # Draft fields (non-sensitive) for localStorage
         self._draft_fields: dict[str, ui.input] = {}
+        # Lore rotatorio (D2) — ciclo por la frase al pie del wizard.
+        self._lore_iter = itertools.cycle(_WIZARD_LORE)
+        self._lore_el: ui.html | None = None
+        self._lore_timer: ui.timer | None = None
 
     def build(self) -> None:
         """Renderiza el overlay fijo sobre el dashboard."""
@@ -273,6 +290,14 @@ class SetupWizardModal:
                         ui.html(f'<span style="margin-right:8px;">{_ICON_ROCKET}</span>')
                         ui.label("Inicializar Sistema")
 
+                # Lore rotatorio (D2): cita al pie del modal, estilo pantalla de
+                # carga de primer inicio. Sin CSS keyframes: solo cambio de texto,
+                # compatible con la política de movimiento reducido.
+                self._lore_el = ui.html(self._lore_markup(next(self._lore_iter)))
+
+        # UI timer: rota la frase cada ~6s mientras el wizard vive.
+        self._lore_timer = ui.timer(6.0, self._rotate_lore)
+
         # Attach localStorage autosave handlers
         for field_name, input_el in self._draft_fields.items():
             input_el.on(
@@ -289,6 +314,28 @@ class SetupWizardModal:
                 e.stopPropagation();
             });
         """)
+
+    def _lore_markup(self, frase: str) -> str:
+        """Marca HTML de la cita (compartida por render inicial y rotación)."""
+        return (
+            '<div id="sky-wizard-lore" style="text-align:center; margin-top:18px;'
+            " font-family:'EB Garamond',serif; font-style:italic; font-size:13px;"
+            f' color:#b6ab90; transition:opacity .45s ease;">{frase}</div>'
+        )
+
+    def _rotate_lore(self) -> None:
+        """Rota la cita de lore; si el modal ya cerró, apaga el timer.
+
+        (NiceGUI levanta RuntimeError al tocar un elemento borrado del DOM — el
+        wizard se cierra tras completarse y el timer no debe seguir corriendo.)
+        """
+        if self._lore_el is None:
+            return
+        try:
+            self._lore_el.content = self._lore_markup(next(self._lore_iter))
+        except RuntimeError:
+            if self._lore_timer is not None:
+                self._lore_timer.deactivate()
 
     def _go_step2(self) -> None:
         self._step = 2
