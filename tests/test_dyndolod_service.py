@@ -49,6 +49,7 @@ from sky_claw.local.validators.preflight import (
     PreflightStatus,
 )
 from sky_claw.logging_config import correlacion_de_transaccion, pipeline_tx_id_var
+from tests._symlink_guard import crear_junction, junction_guard
 
 
 def _mock_config(tmp_path: pathlib.Path) -> MagicMock:
@@ -6047,6 +6048,9 @@ def _servicio_con_workspace(
     assert layout is not None
     root = runner._config.external_work_root
     assert root is not None
+    # La raíz admitida EXISTE por contrato P0 (el binding se publicó ahí); el
+    # guard de contención física la exige para poder validar la cadena.
+    root.mkdir(parents=True, exist_ok=True)
     service._runner = runner  # type: ignore[attr-defined]
     # Sin ownership explícito, una lease fake VIVA: los tests que no ejercen el
     # fence no deben fallar por "sin lease".
@@ -6056,6 +6060,21 @@ def _servicio_con_workspace(
     # contrato o los fences de spawn/packaging no existirían en el test.
     object.__setattr__(runner._config, "fence_ownership", service._fence_del_workspace)
     return root
+
+
+def _reemplazar_por_junction(enlace: pathlib.Path, destino: pathlib.Path) -> None:
+    """Reemplaza ``enlace`` (dir real o ausente) por un junction a ``destino``.
+
+    Modela el ataque de la review P1: el binding se resolvió sobre un directorio
+    real y, DESPUÉS del boot, ese componente pasa a redirigir a otro árbol.
+    """
+    from sky_claw.app.security import links as _links
+
+    if _links.path_present(enlace):
+        _links.rmtree_link_aware(enlace)
+    enlace.parent.mkdir(parents=True, exist_ok=True)
+    if (motivo := crear_junction(enlace, destino)) is not None:
+        pytest.fail(f"no se pudo crear el junction: {motivo}")
 
 
 def _backup_con_archivo(layout, prefijo: str, relativo: str) -> bytes | None:
@@ -6598,3 +6617,203 @@ def test_el_service_no_declara_el_legacy_como_fuente_ni_target() -> None:
     assert importados_de_output_targets == {"derivar_layout_de_dyndolod"}
     nombres = {nodo.id for nodo in ast.walk(arbol) if isinstance(nodo, ast.Name)}
     assert "dyndolod_legacy_recovery_target" not in nombres
+
+
+# =============================================================================
+# P2.2 — blocker P1: reparse introducido en un ANCESTRO después del boot
+#
+# El ownership lógico de P2.0 sigue siendo válido (el registro apunta al path
+# original), pero un symlink/junction/reparse en un componente intermedio hace
+# que TODA mutación administrada —rename, mkdir, spawn, copia— aterrice fuera
+# del workspace admitido. La contención lógica no lo ve: candidato y raíz
+# resuelven al mismo árbol externo. Estos tests ejercitan el boundary REAL con
+# junctions de Windows y afirman el filesystem, no el helper aislado.
+# =============================================================================
+
+
+@junction_guard
+@pytest.mark.asyncio
+async def test_t1_family_junction_despues_del_boot_aborta_antes_del_move_aside(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """T1: ``<root>/DynDOLOD`` reemplazado por junction → NO rename, NO spawn.
+
+    Sin el guard físico, el ``DirectoryRollback`` renombraría el junction (o su
+    contenido externo) y el backup podría quedar fuera del workspace. El aborto
+    ocurre antes de la primera mutación y el árbol externo queda byte-exacto.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None and config.data_dir is not None
+    config.data_dir.mkdir()
+    layout = config.output_layout
+    root = _servicio_con_workspace(service, runner)
+
+    outside = tmp_path / "Outside"
+    _escribir_salida(outside / "TexGen", "evil.dds", b"EVIL")
+    (outside / "DynDOLOD").mkdir()
+    _reemplazar_por_junction(layout.family_root, outside)
+
+    fake = _EjecucionFalsaPorTool({})
+    with patch.object(runner, "_execute_process", fake):
+        result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["success"] is False
+    assert fake.tools == [], "se lanzó un proceso con la cadena física redirigida"
+    assert not list(root.rglob("*.rollback-*")), "el move-aside dejó un backup por la cadena redirigida"
+    assert not list(outside.rglob("*.rollback-*"))
+    assert (outside / "TexGen" / "evil.dds").read_bytes() == b"EVIL"
+    assert not (config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME).exists()
+    assert not (config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME).exists()
+
+
+@junction_guard
+@pytest.mark.asyncio
+async def test_el_fence_de_la_corrida_valida_la_cadena_fisica_antes_de_mutar(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El fence pre-move-aside corre ownership Y cadena física (blocker P1).
+
+    Es el boundary semántico "antes de la primera mutación": aunque
+    ``_preparar_root_vacio`` también revalide, este guard es el que evita que el
+    ``DirectoryRollback`` llegue a renombrar un tool root redirigido por un
+    junction. Se ejerce directo sobre el fence para que su ausencia no quede
+    tapada por la segunda red.
+    """
+    from sky_claw.app.security import links as _links
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    layout = config.output_layout
+    _servicio_con_workspace(service, runner)
+    outside = tmp_path / "Outside"
+    outside.mkdir()
+    _reemplazar_por_junction(layout.family_root, outside)
+
+    with pytest.raises(_links.ContencionFisicaVioladaError, match="junction"):
+        await service._fence_de_roots_de_la_corrida([layout.texgen_root, layout.dyndolod_root])
+
+
+@junction_guard
+def test_t2_born_empty_no_toca_el_arbol_externo_con_junction_en_ancestro(tmp_path: pathlib.Path) -> None:
+    """T2: ``_preparar_root_vacio`` revalida la cadena y no crea ni toca afuera.
+
+    El guard corre DENTRO del worker thread, en la misma unidad que el ``mkdir``:
+    con ``<root>/DynDOLOD`` apuntando a otro árbol, no se crea ``outside/TexGen``
+    ni ``outside/DynDOLOD`` y el residuo externo queda intacto.
+    """
+    from sky_claw.app.security import links as _links
+    from sky_claw.local.tools.dyndolod_service import _preparar_root_vacio
+
+    external = tmp_path / "Work Root"
+    external.mkdir()
+    outside = tmp_path / "Outside"
+    _escribir_salida(outside / "TexGen", "residuo.dds", b"RESIDUO")
+    _reemplazar_por_junction(external / "DynDOLOD", outside)
+
+    with pytest.raises(_links.ContencionFisicaVioladaError):
+        _preparar_root_vacio(external / "DynDOLOD" / "TexGen", workspace_root=external)
+
+    assert (outside / "TexGen" / "residuo.dds").read_bytes() == b"RESIDUO"
+    assert not (outside / "DynDOLOD").exists()
+    assert not (outside / "TexGen" / "textures").exists()
+
+
+@junction_guard
+@pytest.mark.asyncio
+async def test_t3_spawn_aborta_con_junction_en_ancestro(tmp_path: pathlib.Path) -> None:
+    """T3: ownership lógico no alcanza; el spawn exige cadena física real.
+
+    ``run_texgen`` captura el fallo como corrida fallida (contrato del lanzador)
+    y ``create_subprocess_exec`` no se invoca: spawn count = 0.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    external = config.external_work_root
+    assert external is not None
+    external.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "Outside"
+    (outside / "TexGen").mkdir(parents=True)
+    _reemplazar_por_junction(config.output_layout.family_root, outside)
+
+    # Proceso falso que termina de inmediato: si el guard NO abortara, el spawn
+    # ocurriría y el assert de abajo tiene que poder verlo sin colgar el test.
+    proc = MagicMock()
+    proc.stdout = _EOFStream()
+    proc.stderr = _EOFStream()
+    proc.returncode = 0
+    proc.wait = AsyncMock(return_value=0)
+    spawn = AsyncMock(return_value=proc)
+    with patch.object(sky_claw.local.tools.dyndolod_runner.asyncio, "create_subprocess_exec", spawn):
+        result = await runner.run_texgen()
+
+    assert result.success is False
+    spawn.assert_not_awaited(), "se lanzó la herramienta con el ancestro redirigido"
+
+
+@junction_guard
+@pytest.mark.asyncio
+async def test_t4_packaging_aborta_con_junction_compartido(tmp_path: pathlib.Path) -> None:
+    """T4: la fuente no pertenece FÍSICAMENTE al workspace aunque ``resolve`` diga que sí.
+
+    Con ``<root>/DynDOLOD`` → junction, ``source.resolve()`` y
+    ``tool_root.resolve()`` apuntan ambos al árbol externo y la contención lógica
+    pasa; el guard físico es el que detecta el reparse y evita copiar
+    ``outside/TexGen/textures`` como si fuera salida propia.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None
+    layout = config.output_layout
+    outside = tmp_path / "Outside"
+    _escribir_salida(outside / "TexGen" / "textures", "evil.dds", b"EVIL")
+    external = config.external_work_root
+    assert external is not None
+    external.mkdir(parents=True, exist_ok=True)
+    _reemplazar_por_junction(layout.family_root, outside)
+
+    fuente = layout.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    # La contención lógica da verde: por eso el guard físico es necesario.
+    assert fuente.resolve().is_relative_to(layout.texgen_root.resolve())
+
+    with pytest.raises(DynDOLODValidationError, match="F.SICAMENTE|redirigido"):
+        await runner._package_output_as_mod(
+            fuente,
+            DynDOLODRunner.TEXGEN_MOD_NAME,
+            preservar_directorio_raiz=True,
+        )
+
+    assert not (config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME).exists()
+    assert (outside / "TexGen" / "textures" / "evil.dds").read_bytes() == b"EVIL"
+
+
+@junction_guard
+@pytest.mark.asyncio
+async def test_t5_junction_en_componente_intermedio_bajo_el_family(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """T5: ANY ancestor — el enlace puede estar en el tool root, no sólo en family.
+
+    ``<root>/DynDOLOD`` real y ``<root>/DynDOLOD/TexGen`` junction a otro árbol:
+    el pipeline aborta antes de mutar y el árbol externo queda intacto.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None and config.data_dir is not None
+    config.data_dir.mkdir()
+    layout = config.output_layout
+    root = _servicio_con_workspace(service, runner)
+
+    outside = tmp_path / "Outside"
+    _escribir_salida(outside / "textures", "evil.dds", b"EVIL")
+    _reemplazar_por_junction(layout.texgen_root, outside)
+
+    fake = _EjecucionFalsaPorTool({})
+    with patch.object(runner, "_execute_process", fake):
+        result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["success"] is False
+    assert fake.tools == []
+    assert not list(root.rglob("*.rollback-*"))
+    assert not list(outside.rglob("*.rollback-*"))
+    assert (outside / "textures" / "evil.dds").read_bytes() == b"EVIL"

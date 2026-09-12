@@ -38,7 +38,7 @@ from sky_claw.app.db.locks import (
     SnapshotTransactionLock,
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
-from sky_claw.app.security.links import link_kind_or_raise
+from sky_claw.app.security.links import exigir_contencion_fisica, link_kind_or_raise
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_runner import (
@@ -140,7 +140,7 @@ class _ResumeBloqueado:
     detail: str
 
 
-def _preparar_root_vacio(root: pathlib.Path) -> None:
+def _preparar_root_vacio(root: pathlib.Path, *, workspace_root: pathlib.Path | None = None) -> None:
     """Crea ``root`` si no existe y exige que quede VACÍO por construcción.
 
     P2.2 — precondición del spawn (spec §10): después del move-aside del root
@@ -153,7 +153,16 @@ def _preparar_root_vacio(root: pathlib.Path) -> None:
     bloqueo transitorio, y el move-aside de `DirectoryRollback` ya lo habría
     rechazado en su propio `__aenter__` — esto cierra la ventana en la que el
     enlace aparece DESPUÉS del move-aside.
+
+    **Contención física DENTRO de la mutación (P2.2, review P1).** Con
+    ``workspace_root``, la cadena física completa se revalida acá —no sólo el
+    ``link_kind`` del leaf—: un ancestro reemplazado por un junction después del
+    boot haría que el ``mkdir`` cree el root FUERA del workspace. El guard corre
+    en el mismo worker thread que el ``mkdir``, sin ceder el event loop entre
+    verificación y mutación.
     """
+    if workspace_root is not None:
+        exigir_contencion_fisica(workspace_root, root)
     tipo_de_enlace = link_kind_or_raise(root)
     if tipo_de_enlace is not None:
         raise DynDOLODExecutionError(
@@ -313,7 +322,7 @@ class DynDOLODPipelineService:
         return self._runner
 
     async def _fence_del_workspace(self) -> None:
-        """Fence P2.2: reconfirma la lease de ownership vivo antes de mutar.
+        """Fence P2.2: ownership vivo + contención FÍSICA antes de mutar o spawnear.
 
         Se cablea al runner (`DynDOLODConfig.fence_ownership`) y se invoca en el
         propio `execute` antes de cada frontera de mutación del root exclusivo:
@@ -321,11 +330,36 @@ class DynDOLODPipelineService:
         si la lease se perdió durante una corrida larga, `assert_owned()` levanta
         `LockLeaseLostError` y NO se ejecuta la mutación siguiente.
 
+        **Dos propiedades distintas, en orden.** Primero el ownership lógico
+        (P2.0); después la contención física de los roots de herramienta bajo
+        `workspace.root`, que detecta un symlink/junction/reparse introducido en
+        un ANCESTRO después del boot — el caso que la lease lógica no puede ver
+        porque el registro sigue apuntando a un path que ahora redirige afuera.
+        Ambas fallan cerrado y ninguna sustituye a la otra.
+
         No crea ownership ni locks: reutiliza el `OwnershipDeWorkspaceVivo` de
         P2.0 que viaja en el `WorkspaceResuelto`.
         """
-        if self._workspace is not None:
-            await self._workspace.assert_owned()
+        if self._workspace is None:
+            return
+        await self._workspace.assert_owned()
+        layout = derivar_layout_de_dyndolod(external_work_root=self._workspace.root)
+        for herramienta_root in (layout.texgen_root, layout.dyndolod_root):
+            await asyncio.to_thread(exigir_contencion_fisica, self._workspace.root, herramienta_root)
+
+    async def _fence_de_roots_de_la_corrida(self, roots: list[pathlib.Path]) -> None:
+        """Fence de ownership + contención física de los roots que se van a mutar.
+
+        Hermano de `_fence_del_workspace` para el `execute`, que conoce los roots
+        exactos de ESTA corrida (con `run_texgen=False` el de TexGen no participa
+        y no se valida: el guard del callback sí valida ambos porque no conoce el
+        flag). El orden —ownership y después cadena física— es el mismo.
+        """
+        if self._workspace is None:
+            return
+        await self._workspace.assert_owned()
+        for root in roots:
+            await asyncio.to_thread(exigir_contencion_fisica, self._workspace.root, root)
 
     def _layout_del_runner_coincide(self, runner: DynDOLODRunner) -> bool:
         """¿El layout del runner es EXACTAMENTE el derivado del workspace?
@@ -1415,10 +1449,12 @@ class DynDOLODPipelineService:
                 # sin el veto restaurarían igual, borrando la salida del nuevo dueño
                 # (review Codex #399 sobre el hermano Pandora — mismo agujero acá).
                 #
-                # P2.2 — FENCE de ownership ANTES del move-aside: la primera
-                # mutación del root exclusivo no puede empezar con la lease del
-                # workspace perdida (el registro pudo transicionar a otro root).
-                await self._fence_del_workspace()
+                # P2.2 — FENCE de ownership + contención física ANTES del
+                # move-aside: la primera mutación del root exclusivo no puede
+                # empezar con la lease del workspace perdida (el registro pudo
+                # transicionar a otro root) ni con un ancestro reemplazado por un
+                # junction después del boot (el rename aterrizaría afuera).
+                await self._fence_de_roots_de_la_corrida(roots_de_herramienta)
                 for output_dir in rollback_dirs:
                     dr = DirectoryRollback(output_dir, should_rollback=_conserva_las_leases)
                     dir_rollbacks.append(dr)
@@ -1428,11 +1464,17 @@ class DynDOLODPipelineService:
                 # root de herramienta se recrea y se verifica VACÍO antes del
                 # spawn de su binario. Si cualquiera falla (enlace, no-dir,
                 # residuo inesperado) NO se lanza: el unwind del tx_stack
-                # restaura los backups y la TX queda PENDING.
+                # restaura los backups y la TX queda PENDING. El guard físico se
+                # revalida acá porque el move-aside acaba de cambiar el árbol.
                 if roots_de_herramienta:
-                    await self._fence_del_workspace()
+                    await self._fence_de_roots_de_la_corrida(roots_de_herramienta)
+                    workspace_root = self._workspace.root if self._workspace is not None else None
                     for herramienta_root in roots_de_herramienta:
-                        await asyncio.to_thread(_preparar_root_vacio, herramienta_root)
+                        await asyncio.to_thread(
+                            _preparar_root_vacio,
+                            herramienta_root,
+                            workspace_root=workspace_root,
+                        )
 
                 # Ejecutar pipeline.
                 #

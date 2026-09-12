@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple
 
 from sky_claw.app.security.links import (
+    exigir_contencion_fisica,
     iter_archivos_propios,
     link_kind_or_raise_with_retry,
     rmtree_link_aware,
@@ -154,6 +155,15 @@ _GAME_MODES_ADMINISTRADOS = frozenset(
 #: Mismo prefijo tolerante que ``_SWITCH_ADMINISTRADO`` (``-``/``/``, whitespace
 #: líder) y sin ``:``: el game mode es un switch suelto.
 _GAME_MODE_SUELTO = re.compile(r"^\s*[-/]([A-Za-z0-9]+)\s*$")
+
+#: Herramienta dueña de cada spawn del runner. El nombre de la herramienta es la
+#: identidad con la que ``run_texgen``/``run_dyndolod`` invocan
+#: ``_execute_process``; mapearlo acá UNA vez evita que el guard de contención
+#: física del ``-o:`` dependa de una lista de call sites.
+_HERRAMIENTA_POR_TOOL: dict[str, HerramientaDynDOLOD] = {
+    "TexGen": HerramientaDynDOLOD.TEXGEN,
+    "DynDOLOD": HerramientaDynDOLOD.DYNDOLOD,
+}
 
 # Firma de un candidato sin artefacto. Distinto de ``None`` (= no se pudo
 # sondear) a propósito: colapsar los dos casos hace fail-open el gate de
@@ -1138,6 +1148,12 @@ class DynDOLODRunner:
         # root que ya no es exclusivo. Fail-closed: sin lease no hay proceso.
         if self._config.fence_ownership is not None:
             await self._config.fence_ownership()
+
+        # P2.2 — contención FÍSICA del `-o:` efectivo antes del spawn: aunque la
+        # lease lógica siga viva, un symlink/junction introducido en un ancestro
+        # después del boot haría que la herramienta escriba fuera del workspace
+        # admitido. Orden: ownership → cadena física → proceso.
+        self._exigir_contencion_fisica_del_destino(tool_name)
 
         start_time = time.monotonic()
 
@@ -2465,6 +2481,36 @@ class DynDOLODRunner:
             return layout.dyndolod_root
         return None
 
+    def _exigir_contencion_fisica_del_destino(self, tool_name: str) -> None:
+        """El ``-o:`` efectivo cuelga FÍSICAMENTE del `external_work_root`.
+
+        Enunciado como propiedad del mecanismo: *el path que se pasa al binario
+        pertenece a la cadena física real del workspace admitido*. La lease
+        lógica de P2.0 sigue apuntando al path registrado aunque un componente
+        intermedio haya sido reemplazado por un junction; este guard es el que ve
+        esa sustitución, porque inspecciona cada componente con ``lstat`` sin
+        seguir enlaces (ver :func:`~sky_claw.app.security.links.exigir_contencion_fisica`).
+
+        Sin layout/external (runner directo de test/rig) no hay workspace
+        admitido contra el cual contrastar: el llamador ya decidió correr fuera
+        del boundary administrado. Una herramienta que no esté en
+        :data:`_HERRAMIENTA_POR_TOOL` es fail-closed: no se puede afirmar la
+        contención de un ``-o:`` que no se sabe construir.
+        """
+        layout = self._config.output_layout
+        externo = self._config.external_work_root
+        # `isinstance` defensivo (mismo idioma que el resto del árbol): los
+        # dobles de test pasan `MagicMock` como config, y una `Path` mockeada no
+        # tiene cadena física que validar.
+        if not isinstance(layout, DynDOLODOutputLayout) or not isinstance(externo, pathlib.Path):
+            return
+        herramienta = _HERRAMIENTA_POR_TOOL.get(tool_name)
+        if herramienta is None:
+            raise DynDOLODValidationError(
+                f"Herramienta desconocida para el guard de contención física del -o:: {tool_name!r}"
+            )
+        exigir_contencion_fisica(externo, layout.raiz_de(herramienta))
+
     async def _exigir_fuente_del_subroot(self, output_path: pathlib.Path, mod_name: str) -> None:
         """La fuente del packaging pertenece al subroot EXCLUSIVO de su herramienta.
 
@@ -2474,13 +2520,11 @@ class DynDOLODRunner:
         cualquier ruta de afuera o un enlace que resuelve afuera) se copiaría como
         si fuera la salida de la herramienta.
 
-        Se compara sobre rutas RESUELTAS y no léxicamente: un junction o un ``..``
-        intermedio harían pasar por adentro algo que resuelve afuera
-        (``Path.__eq__`` es léxico).
-
-        La revisión del enlace va DESPUÉS de la contención a propósito: una fuente
-        enlazada que apunta dentro del subroot igual se rechaza (copiarla seguiría
-        el vínculo), y una que apunta afuera ya cayó en la contención.
+        Tres capas, en orden: contención LÉXICA sobre rutas resueltas, contención
+        FÍSICA componente a componente (``exigir_contencion_fisica``, que detecta
+        un reparse introducido en un ancestro después del boot — el caso que la
+        comparación de ``resolve()`` no ve porque ambas puntas resuelven al mismo
+        árbol externo), y revisión del enlace del leaf.
 
         ``mod_name`` no administrado (p.ej. el mod con traversal sintético de un
         test de correlación) no tiene subroot asignable: se deja pasar — el
@@ -2504,6 +2548,21 @@ class DynDOLODRunner:
                 "fuera del workspace). La salida de cada herramienta sólo puede venir de SU subroot.",
                 output_path=output_path,
             )
+        externo = self._config.external_work_root
+        if externo is not None:
+            try:
+                await asyncio.to_thread(
+                    exigir_contencion_fisica,
+                    externo,
+                    output_path,
+                    exigir_existencia=True,
+                )
+            except OSError as exc:
+                raise DynDOLODValidationError(
+                    f"La fuente '{output_path}' no pertenece FÍSICAMENTE al workspace admitido "
+                    f"'{externo}': {exc}. Empaquetarla copiaría bytes de un árbol redirigido.",
+                    output_path=output_path,
+                ) from exc
         try:
             tipo_de_enlace = await asyncio.to_thread(link_kind_or_raise_with_retry, output_path)
         except OSError as exc:

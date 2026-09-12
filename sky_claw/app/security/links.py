@@ -269,6 +269,132 @@ def same_file_identity(antes: os.stat_result, despues: os.stat_result | None) ->
     )
 
 
+class ContencionFisicaVioladaError(OSError):
+    """El candidato no es un descendiente FÍSICO real de la raíz administrada.
+
+    La contención LÓGICA (``resolve().is_relative_to``) no alcanza: si un
+    componente intermedio fue reemplazado por un junction/symlink después de
+    resolver el workspace, el candidato y su raíz pueden resolver AMBOS al mismo
+    árbol externo y la relación sigue siendo verdadera aunque la mutación
+    aterrice fuera del workspace. Esta excepción representa el veredicto de
+    :func:`exigir_contencion_fisica`, que inspecciona cada componente con
+    ``lstat`` sin seguir enlaces.
+
+    Hereda de ``OSError`` para que los callers que ya tratan fallos de
+    inspección de filesystem como fail-closed la cubran naturalmente, sin
+    confundirla con un fallo de dominio.
+    """
+
+
+def _componentes_absolutos(ruta: pathlib.Path) -> tuple[str, ...]:
+    """Componentes de *ruta* colapsando ``.``/``..`` SOLO léxicamente.
+
+    ``os.path.abspath`` no toca el filesystem: no resuelve enlaces ni consulta
+    la existencia. Un ``..`` que sobreviva al colapso (ruta relativa al volumen)
+    se rechaza fail-closed: aceptarlo obligaría a decidir su significado
+    atravesando componentes, que es exactamente lo que esta primitiva prohíbe.
+    """
+    absoluta = pathlib.Path(os.path.abspath(os.fspath(ruta)))
+    partes = absoluta.parts
+    if ".." in partes:
+        raise ContencionFisicaVioladaError(f"La ruta no se puede normalizar sin ambigüedad: {ruta}")
+    return partes
+
+
+def exigir_contencion_fisica(
+    raiz: pathlib.Path,
+    candidato: pathlib.Path,
+    *,
+    permitir_raiz: bool = False,
+    exigir_existencia: bool = False,
+) -> pathlib.Path:
+    """Exige que *candidato* cuelgue FÍSICAMENTE de *raiz*, sin reparse intermedios.
+
+    **Qué problema cierra.** Los guards que sólo miran el path final (o que
+    comparan rutas resueltas) no ven un symlink/junction/reparse introducido en
+    un ANCESTRO después de que el workspace quedó resuelto: con
+    ``E:\\Work\\DynDOLOD`` reemplazado por un junction a ``D:\\Outside``, tanto
+    ``E:\\Work\\DynDOLOD\\TexGen`` como su raíz resuelven al mismo árbol externo y
+    la relación lógica sigue siendo verdadera. La mutación administrada
+    aterrizaría fuera del ``external_work_root`` admitido.
+
+    **Cómo lo decide.** Recorre la cadena de componentes desde *raiz* hasta
+    *candidato* y hace ``lstat`` de cada uno —nunca ``stat``/``resolve``, que
+    seguirían el enlace—: la raíz y todo ancestro existente deben ser
+    directorios REALES, sin reparse tag ni symlink. Después de recorrer,
+    revalida la identidad (``st_dev``/``st_ino``/modo/reparse tag) de cada
+    componente capturado, en orden inverso, para acotar la ventana de un
+    reemplazo durante la propia inspección.
+
+    **Componentes inexistentes.** Un componente que no existe no puede ser un
+    enlace; si la cadena se corta (primer run, root todavía no creado) el
+    recorrido se detiene ahí y valida los ancestros existentes. Con
+    ``exigir_existencia=True`` cualquier componente ausente es un fallo; es el
+    modo del packaging, donde copiar una fuente que desapareció no es un caso
+    normal. La ventana entre este guard y el ``mkdir``/``rename``/``copytree``
+    queda del lado del caller: se llama lo más cerca posible de la mutación y,
+    cuando aplica, la identidad final se vuelve a verificar después.
+
+    **Fail-closed.** *candidato* fuera de *raiz*, *candidato* igual a *raiz* sin
+    ``permitir_raiz``, un componente que no se puede inspeccionar, que no es
+    directorio, que es symlink/junction/reparse, o cuya identidad cambia durante
+    la inspección, terminan todos en :class:`ContencionFisicaVioladaError`.
+    No sigue ningún enlace para decidir ownership.
+
+    Devuelve el path absoluto normalizado (léxicamente) del candidato, para que
+    el caller mute exactamente el path que se validó.
+    """
+    partes_raiz = _componentes_absolutos(raiz)
+    partes_cand = _componentes_absolutos(candidato)
+    if os.path.normcase(partes_raiz[0]) != os.path.normcase(partes_cand[0]):
+        raise ContencionFisicaVioladaError(f"'{candidato}' está en otro volumen que la raíz administrada '{raiz}'")
+    if len(partes_cand) < len(partes_raiz):
+        raise ContencionFisicaVioladaError(f"'{candidato}' está fuera de la raíz administrada '{raiz}'")
+    prefijo = tuple(os.path.normcase(parte) for parte in partes_cand[: len(partes_raiz)])
+    if prefijo != tuple(os.path.normcase(parte) for parte in partes_raiz):
+        raise ContencionFisicaVioladaError(f"'{candidato}' está fuera de la raíz administrada '{raiz}'")
+    if len(partes_cand) == len(partes_raiz):
+        if not permitir_raiz:
+            raise ContencionFisicaVioladaError(
+                f"'{candidato}' ES la raíz administrada: esta mutación exige un descendiente real"
+            )
+        return pathlib.Path(*partes_cand)
+
+    capturadas: list[tuple[pathlib.Path, os.stat_result]] = []
+    actual = pathlib.Path(*partes_cand[: len(partes_raiz)])
+    for indice in range(len(partes_raiz), len(partes_cand) + 1):
+        if indice > len(partes_raiz):
+            actual = actual / partes_cand[indice - 1]
+        tipo_de_enlace, identidad = link_kind_and_identity_or_raise(actual)
+        if identidad is None:
+            # La RAÍZ administrada existe por contrato (P0 publicó el binding
+            # ahí): si no está, no hay cadena física que demostrar.
+            if indice == len(partes_raiz) or exigir_existencia:
+                raise ContencionFisicaVioladaError(
+                    f"El componente '{actual}' de la cadena física no existe o no se pudo inspeccionar"
+                )
+            # Un componente inexistente no puede ser un reparse point, y nada que
+            # cuelgue de él existe todavía: se valida lo existente y el caller
+            # revalida después de crear (born-empty) o antes de mutar de nuevo.
+            break
+        if tipo_de_enlace is not None:
+            raise ContencionFisicaVioladaError(
+                f"El componente '{actual}' de la cadena física es un {tipo_de_enlace}: "
+                f"la mutación administrada no puede atravesarlo"
+            )
+        if not stat.S_ISDIR(identidad.st_mode):
+            raise ContencionFisicaVioladaError(f"El componente '{actual}' de la cadena física no es un directorio")
+        capturadas.append((actual, identidad))
+
+    for ruta, identidad_capturada in reversed(capturadas):
+        _, identidad_actual = link_kind_and_identity_or_raise(ruta)
+        if not same_file_identity(identidad_capturada, identidad_actual):
+            raise ContencionFisicaVioladaError(
+                f"La identidad de '{ruta}' cambió durante la inspección de la cadena física"
+            )
+    return pathlib.Path(*partes_cand)
+
+
 def same_direntry_identity(
     capturada: os.stat_result,
     inode_capturado: int,
