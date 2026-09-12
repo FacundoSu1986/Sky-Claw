@@ -19,10 +19,13 @@ packaging) IMPLEMENTADO COMO CANDIDATO** en la misma rama: el `WorkspaceResuelto
 con su fence de ownership antes de cada mutación y spawn; el born-empty opera
 sobre el root completo de cada herramienta, el packaging sólo copia bytes del
 subroot de su herramienta y la transacción restaura/revierte con las leases
-vivas. **P2.3 (recovery/migración) sigue NO IMPLEMENTADO**: los backups de
-move-aside de una muerte dura sobre los `ACTIVE_TARGET` externos
-(`<family>/<Tool>.rollback-*`) todavía no se barren en el arranque — deuda
-explícita de P2.3 — y por eso el PR sigue DRAFT.
+vivas. **P2.3 (recovery de arranque de los `ACTIVE_TARGET` externos)
+IMPLEMENTADO COMO CANDIDATO** en la misma rama: el barrido de arranque declara
+los dos roots crudos por herramienta junto a los dos mods, separa el
+`LEGACY_RECOVERY_ONLY_TARGET` en su propio productor recovery-only y toma las
+raíces externas del `RegistroDeRootActivo` (activo + `desde` de transición
+pendiente) porque corre antes de resolver el workspace. El rig real del
+candidato completo sigue pendiente y por eso el PR sigue DRAFT.
 **Contexto de origen:** `origin/main` `5e5e9448db0d4015b3bf0dc4c1df10fdc49e226c`
 (post-merge #569), verificado por `fetch` + lectura de código el 2026-09-09.
 **Alcance:** cerrar la decisión arquitectónica de lifecycle, identidad, propiedad y

@@ -9,8 +9,11 @@
 > (rama `feat/dyndolod-pr2-external-staging`, 2026-09-11 — PR-2 `DRAFT`,
 > **NOT READY TO MERGE**); **P2.2 (servicio/transacción/packaging) IMPLEMENTADO
 > COMO CANDIDATO** en la misma rama (wiring del `WorkspaceResuelto`, fences,
-> born-empty por root completo, packaging disjunto); **P2.3
-> (recovery/migración) NO IMPLEMENTADO**. **Gate de lanzamiento: REOPENED por
+> born-empty por root completo, packaging disjunto); **P2.3 (recovery de
+> arranque de los `ACTIVE_TARGET` externos) IMPLEMENTADO COMO CANDIDATO** en la
+> misma rama (roles activo/legacy separados, raíces desde el registro durable,
+> crash entre move-aside/mkdir/copia y familia A–H legacy anclados).
+> **Gate de lanzamiento: REOPENED por
 > P2.1** — T5-v2 (2026-09-10) quedó PASS sobre el builder/root VIEJO
 > ([informe commiteado](../../validation/2026-09-10_t5v2_dyndolod_stage9.md)) y
 > **no** certifica el nuevo `-o:`: hace falta repetir las dos corridas reales
@@ -444,11 +447,11 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
   redirigir una mutación fuera del workspace aunque `resolve()` de ambas puntas
   coincida. Tests T1–T5 con junctions reales de Windows; mutaciones
   M11/M11b/M11c/M12 en rojo.
-- [ ] **Deuda explícita de P2.3:** el barrido de arranque todavía no reconcilia
-  los backups de move-aside de los `ACTIVE_TARGET` externos
-  (`<family>/<Tool>.rollback-*`). Una muerte dura entre el move-aside y el
-  rollback deja ese residuo para recovery manual; P2.3 lo incorpora al
-  reconciliador. El PR sigue DRAFT y NO se declara crash-recovery completo.
+- [x] **Deuda saldada por P2.3 (candidato):** el barrido de arranque ahora
+  reconcilia los backups de move-aside de los `ACTIVE_TARGET` externos
+  (`<family>/<Tool>.rollback-*`) desde el registro durable, con el legacy
+  separado en su productor recovery-only. El PR sigue DRAFT y el rig real del
+  candidato completo es el paso siguiente.
 
 ### P2.3 Recovery, migración y documentos
 
@@ -456,13 +459,13 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
 **Tests:** `test_rollback_reconciler.py`, `test_startup_recovery_order.py`,
 `test_orphan_evidence_producer_contract.py`, `test_dir_rollback.py`.
 
-- [ ] Rojo: igualdad exacta de dos roots crudos + dos mods, con la familia de
+- [x] Rojo: igualdad exacta de dos roots crudos + dos mods, con la familia de
   targets separada por rol: los `ACTIVE_TARGET` (subroots del
   `external_work_root`) como únicos destinos mutables de los productores
   nuevos, y el `LEGACY_RECOVERY_ONLY_TARGET`
   (`<game>/Sky-Claw/DynDOLOD/textures`) sólo en la superficie de recovery;
   detectar productores nuevos por introspección/AST.
-- [ ] Recuperación legacy separada de la familia mutante, congelando el
+- [x] Recuperación legacy separada de la familia mutante, congelando el
   **predicado cerrado de ADR §2.9 / spec §8** (el que `rollback_reconciler` ya
   aplica a un destino move-aside), no un happy-path suelto. `T-PR2-23` enumera la
   familia completa sobre el único `LEGACY_RECOVERY_ONLY_TARGET`
@@ -488,15 +491,15 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
   histórico, pero ninguna corrida nueva usa, mueve ni adopta el legacy** — ni
   migrarlo, borrarlo, adoptarlo como staging, pasarlo como `-o:` ni crear
   `DirectoryRollback` nuevos sobre él.
-- [ ] Inyectar raíces desde el mismo layout/registro que el service. No mover
+- [x] Inyectar raíces desde el mismo layout/registro que el service. No mover
   ni borrar la familia histórica completa: el root legacy
   `<game>/Sky-Claw/DynDOLOD` queda intacto salvo la restauración conservadora
   de recovery descrita arriba.
-- [ ] Probar crash tras cada move-aside, tras mkdir y tras copia parcial; cubrir
+- [x] Probar crash tras cada move-aside, tras mkdir y tras copia parcial; cubrir
   todos los targets y conservar ambigüedad cuando existen backup y destino.
-- [ ] Verde: startup no consume evidencia antes del handoff; edición de config
+- [x] Verde: startup no consume evidencia antes del handoff; edición de config
   no hace perder referencias a backups viejos.
-- [ ] Actualizar `sky_claw/local/AGENTS.md` §2.9, filas precisas de
+- [x] Actualizar `sky_claw/local/AGENTS.md` §2.9, filas precisas de
   `docs/pending_ooda_status.md`, T3 del roadmap y anclas `test_estado_ooda.py`
   en el mismo PR. Mantener rig/preset/ZIP pendientes donde corresponda.
 
