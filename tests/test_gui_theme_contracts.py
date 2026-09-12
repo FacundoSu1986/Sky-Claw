@@ -422,7 +422,7 @@ def _referencias_a_la_fabrica(arbol: ast.Module) -> tuple[set[str], set[str]]:
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             asignaciones.append((node.targets[0].id, node.value))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:
-            asignaciones.append((node.target, node.value))
+            asignaciones.append((node.target.id, node.value))
 
     cambio = True
     while cambio:
@@ -482,6 +482,57 @@ def _llamadas_a_la_fabrica(src: str) -> list[str]:
         if not encontro_iris:
             ids.append("<sin iris_id>")
     return ids
+
+
+#: Formas sintácticas por las que un consumidor puede llamar a la fábrica, con
+#: la salida esperada del censo. Cada forma sin resolver es un consumidor que
+#: queda fuera de ``_CONSUMIDORES_DRAGON_EYE`` y, por lo tanto, de la
+#: comprobación de colisiones: import aliaseado, atributo de módulo, alias
+#: normal, alias anotado y las llamadas que el censo no puede congelar
+#: (``iris_id`` no constante o ausente) viajan como centinelas fail-closed.
+_CASOS_DEL_CENSO_DE_LLAMADAS: dict[str, tuple[str, list[str]]] = {
+    "nombre_directo": (
+        'from sky_claw.app.gui.icons import _icon_dragon_eye\n_icon_dragon_eye(iris_id="scX")\n',
+        ["scX"],
+    ),
+    "import_aliaseado": (
+        'from sky_claw.app.gui.icons import _icon_dragon_eye as eye\neye(iris_id="scX")\n',
+        ["scX"],
+    ),
+    "atributo_de_modulo": (
+        'from sky_claw.app.gui import icons as ic\nic._icon_dragon_eye(iris_id="scX")\n',
+        ["scX"],
+    ),
+    "alias_por_asignacion": (
+        'from sky_claw.app.gui.icons import _icon_dragon_eye\neye = _icon_dragon_eye\neye(iris_id="scX")\n',
+        ["scX"],
+    ),
+    "alias_anotado": (
+        "from sky_claw.app.gui.icons import _icon_dragon_eye\n"
+        'eye: Callable[..., str] = _icon_dragon_eye\neye(iris_id="scX")\n',
+        ["scX"],
+    ),
+    "iris_id_no_constante": (
+        'from sky_claw.app.gui.icons import _icon_dragon_eye\nnombre = "scX"\n_icon_dragon_eye(iris_id=nombre)\n',
+        ["<iris_id no constante>"],
+    ),
+    "sin_iris_id": (
+        "from sky_claw.app.gui.icons import _icon_dragon_eye\n_icon_dragon_eye()\n",
+        ["<sin iris_id>"],
+    ),
+}
+
+
+def test_censo_del_emblema_reconoce_todas_las_formas_de_llamada() -> None:
+    """Enumera la familia sintáctica que el censo del emblema debe resolver.
+
+    El defecto de fondo era de enumeración: cada forma no contemplada dejaba a
+    un consumidor fuera del inventario (y de la comprobación de colisiones). Si
+    el helper deja de resolver una de estas formas, este test rompe — no se
+    agrega un caso suelto por cada hermana que aparezca.
+    """
+    for forma, (src, esperado) in _CASOS_DEL_CENSO_DE_LLAMADAS.items():
+        assert _llamadas_a_la_fabrica(src) == esperado, f"forma no reconocida por el censo: {forma}"
 
 
 #: Única fuente de verdad de test para la familia de consumidores del emblema
