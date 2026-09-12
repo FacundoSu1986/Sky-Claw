@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import functools
 import logging
 import os
@@ -77,6 +78,30 @@ logger = logging.getLogger("sky_claw")
 
 _T = TypeVar("_T")
 _CleanupCallback = Callable[[], Awaitable[None]]
+
+
+class DecisionDeRecovery(enum.Enum):
+    """Veredicto tipado de la autoridad temporal de recovery externo (P2.3).
+
+    Existe para que el estado "sin autoridad" sea irrepresentable como
+    "permitido": sólo ``AUTHORIZED`` puede incluir al ``PRODUCTOR_DYNDOLOD``
+    (roots crudos + los dos mods empaquetados). Cualquier otro estado elimina
+    esa familia sin mutar nada — ocupado o sin autoridad, el efecto sobre
+    DynDOLOD es el mismo (no mutar), y sólo cambia el log.
+
+    - ``AUTHORIZED``: se demostró ownership temporal vivo + binding propio de
+      cada root incluido. El caller conserva el handle durante el reconcile.
+    - ``SKIP_OCCUPIED``: otra instancia conserva el ownership vivo (o el
+      workspace está ocupado). Skip best-effort con warning, no fatal.
+    - ``SKIP_NO_AUTHORITY``: no se pudo demostrar autoridad por una razón
+      distinta de ocupación (sin coordinación, ``ResourceBinding`` no
+      construible, error de I/O, excepción inesperada). También es skip
+      fail-closed: sin autoridad demostrada la familia nueva no se muta.
+    """
+
+    AUTHORIZED = "authorized"
+    SKIP_OCCUPIED = "skip_occupied"
+    SKIP_NO_AUTHORITY = "skip_no_authority"
 
 
 SYSTEM_PROMPT = (
@@ -948,7 +973,7 @@ class AppContext:
 
     async def _autoridad_temporal_para_recovery_externo(
         self, *, game, mo2
-    ) -> tuple[Any | None, tuple[pathlib.Path, ...], bool]:
+    ) -> tuple[Any | None, tuple[pathlib.Path, ...], DecisionDeRecovery]:
         """Autoridad TEMPORAL de recovery para los ACTIVE_TARGET externos (P2.3).
 
         Secuencia conceptual fenced (orden congelado ``workspace → ownership →
@@ -975,23 +1000,23 @@ class AppContext:
         normal adquiere después.
 
         Returns:
-            ``(ownership, roots_validados, omitido_por_ownership)`` donde
-            ``ownership`` es el handle vivo que el caller debe conservar durante
-            el ``reconcile_orphan_rollback_backups`` y liberar después (``None``
-            si no se adquirió), ``roots_validados`` los externos con binding
-            propio demostrado, y ``omitido_por_ownership`` es ``True`` sólo
-            cuando otra instancia conserva el ownership vivo (o el workspace está
-            ocupado): el caller debe entonces OMITIR la familia ``dyndolod``
-            completa (mods empaquetados incluidos) sin ``rename``/``mkdir``/
-            ``rmtree``/``restore`` y con warning de "recovery omitido por
-            ownership vivo". No es error fatal de startup.
+            ``(ownership, roots_validados, decision)`` donde ``ownership`` es el
+            handle vivo que el caller debe conservar durante el
+            ``reconcile_orphan_rollback_backups`` y liberar después (``None`` si
+            no se adquirió), ``roots_validados`` los externos con binding propio
+            demostrado, y ``decision`` el veredicto tipado. Sólo
+            ``DecisionDeRecovery.AUTHORIZED`` puede incluir a la familia
+            ``dyndolod`` (roots crudos + los dos mods empaquetados); cualquier
+            otro estado la elimina sin ``rename``/``mkdir``/``rmtree``/
+            ``restore``. No es error fatal de startup.
 
-        Fail-safe (nunca fail-open): ocupado → skip external recovery con
-        warning y startup que continúa; registro ausente → ``(ownership, (),
-        False)`` si se adquirió (los mods siguen fenced por el ownership) o
-        ``(None, (), False)`` si ni siquiera hay ``ResourceBinding``; registro
-        corrupto → no external recovery + warning pero se conserva el ownership
-        para fencar los mods si se adquirió.
+        Fail-safe (nunca fail-open): ocupado → ``SKIP_OCCUPIED`` con warning y
+        startup que continúa; sin coordinación / ``ResourceBinding`` no
+        construible / error de I/O → ``SKIP_NO_AUTHORITY`` (también elimina la
+        familia nueva); registro ausente con ownership adquirido →
+        ``(ownership, (), AUTHORIZED)`` (los mods siguen fenced por el
+        ownership); registro corrupto con ownership adquirido → no external
+        recovery + warning pero se conserva el ownership para fencar los mods.
         """
         from sky_claw.local.tools.dyndolod_workspace import (
             MotivoDeRechazo,
@@ -1000,11 +1025,11 @@ class AppContext:
         )
 
         if not isinstance(game, pathlib.Path) or mo2 is None:
-            return None, (), False
+            return None, (), DecisionDeRecovery.SKIP_NO_AUTHORITY
         data_root = getattr(mo2, "data_root", None)
         mods_dir = getattr(mo2, "mods_dir", None)
         if not isinstance(data_root, pathlib.Path) or not isinstance(mods_dir, pathlib.Path):
-            return None, (), False
+            return None, (), DecisionDeRecovery.SKIP_NO_AUTHORITY
         try:
             recursos = ResourceBinding.desde_paths(
                 game_path=game,
@@ -1014,18 +1039,18 @@ class AppContext:
         except OSError:
             logger.warning(
                 "No se pudo construir el ResourceBinding para el recovery externo; "
-                "esas raíces quedan sin reconciliar este arranque (no bloquea).",
+                "la familia DynDOLOD nueva queda sin reconciliar este arranque (no bloquea).",
                 exc_info=True,
             )
-            return None, (), False
+            return None, (), DecisionDeRecovery.SKIP_NO_AUTHORITY
 
         coordinacion = self.stage9_coordination
         if coordinacion is None:
             logger.warning(
                 "Sin coordinación de etapa 9 no hay autoridad temporal: "
-                "recovery externo omitido este arranque (no bloquea)."
+                "la familia DynDOLOD nueva queda sin reconciliar este arranque (no bloquea)."
             )
-            return None, (), False
+            return None, (), DecisionDeRecovery.SKIP_NO_AUTHORITY
 
         # Orden workspace → ownership: el workspace serializa resolvers, el
         # ownership excluye a otra instancia viva. Nunca pipeline antes que
@@ -1042,7 +1067,7 @@ class AppContext:
                             "no se restaura ningún ACTIVE_TARGET ni mod asociado este arranque.",
                             recursos.clave(),
                         )
-                        return None, (), True
+                        return None, (), DecisionDeRecovery.SKIP_OCCUPIED
                     raise
                 # Todavía dentro del workspace: la lectura del registro y la
                 # adquisición forman una unidad frente a otros resolvers.
@@ -1056,7 +1081,7 @@ class AppContext:
                     roots = ()
                 # El workspace se libera al salir del `async with`; el ownership
                 # TEMPORAL sobrevive y el caller lo libera tras el reconcile.
-                return ownership, roots, False
+                return ownership, roots, DecisionDeRecovery.AUTHORIZED
         except WorkspaceRechazadoError as exc:
             if exc.motivo is MotivoDeRechazo.OCUPADO:
                 # Otro proceso está resolviendo el workspace ahora mismo: sin
@@ -1065,18 +1090,20 @@ class AppContext:
                     "Recovery externo de DynDOLOD omitido: otro proceso está resolviendo "
                     "el workspace (dyndolod-workspace ocupado); no se muta este arranque."
                 )
-                return None, (), True
+                return None, (), DecisionDeRecovery.SKIP_OCCUPIED
             logger.warning(
-                "No se pudo adquirir autoridad temporal para el recovery externo; se omite sin mutar (no bloquea).",
+                "No se pudo adquirir autoridad temporal para el recovery externo; "
+                "la familia DynDOLOD nueva queda sin reconciliar (no bloquea).",
                 exc_info=True,
             )
-            return None, (), False
+            return None, (), DecisionDeRecovery.SKIP_NO_AUTHORITY
         except OSError:
             logger.warning(
-                "No se pudo adquirir autoridad temporal para el recovery externo; se omite sin mutar (no bloquea).",
+                "No se pudo adquirir autoridad temporal para el recovery externo; "
+                "la familia DynDOLOD nueva queda sin reconciliar (no bloquea).",
                 exc_info=True,
             )
-            return None, (), False
+            return None, (), DecisionDeRecovery.SKIP_NO_AUTHORITY
 
     async def _rollback_startup(self) -> None:
         try:
@@ -1801,16 +1828,20 @@ class AppContext:
                     reconcile_orphan_rollback_backups,
                 )
 
-                # P2.3 fenced — el startup recovery NO muta ACTIVE_TARGET externos
-                # sin demostrar autoridad temporal P2.0. Orden congelado:
+                # P2.3 fenced — el startup recovery NO muta la familia DynDOLOD
+                # nueva sin demostrar autoridad temporal P2.0. Orden congelado:
                 # dyndolod-workspace → dyndolod-ownership → dyndolod-pipeline.
                 # `_autoridad_temporal_para_recovery_externo` adquiere workspace +
                 # ownership temporal y valida cada root contra su binding real;
                 # el reconciliador adquiere DESPUÉS el pipeline. Nunca al revés.
+                # Sólo AUTHORIZED incluye a PRODUCTOR_DYNDOLOD; SKIP_OCCUPIED y
+                # SKIP_NO_AUTHORITY la eliminan (fail-closed: ownership None =>
+                # no se ejecuta la familia nueva).
                 ownership_temporal = None
-                omitido_por_ownership = False
+                decision_recovery = DecisionDeRecovery.SKIP_NO_AUTHORITY
+                external_roots_validados: tuple[pathlib.Path, ...] = ()
                 try:
-                    ownership_temporal, external_roots_validados, omitido_por_ownership = await self._await_startup(
+                    ownership_temporal, external_roots_validados, decision_recovery = await self._await_startup(
                         self._autoridad_temporal_para_recovery_externo(
                             game=configured_game,
                             mo2=mo2,
@@ -1819,12 +1850,12 @@ class AppContext:
                 except Exception:
                     logger.warning(
                         "Autoridad temporal para el recovery externo falló; "
-                        "se omite sin mutar (no bloquea el arranque).",
+                        "la familia DynDOLOD nueva queda sin reconciliar (no bloquea el arranque).",
                         exc_info=True,
                     )
                     ownership_temporal = None
                     external_roots_validados = ()
-                    omitido_por_ownership = False
+                    decision_recovery = DecisionDeRecovery.SKIP_NO_AUTHORITY
 
                 try:
                     productores_base = construir_productores_de_move_aside(
@@ -1837,16 +1868,22 @@ class AppContext:
                         # llega acá.
                         external_work_roots=external_roots_validados,
                     )
-                    if omitido_por_ownership:
-                        # Otra instancia conserva el ownership vivo de este
-                        # ResourceBinding: NO se ejecuta la familia DynDOLOD nueva
-                        # (ni roots crudos ni los dos mods empaquetados). El legacy
-                        # recovery-only, Pandora, BodySlide y sandbox siguen.
+                    if decision_recovery is not DecisionDeRecovery.AUTHORIZED or ownership_temporal is None:
+                        # Sin autoridad demostrada no se ejecuta la familia
+                        # DynDOLOD nueva (ni roots crudos ni los dos mods
+                        # empaquetados). El legacy recovery-only, Pandora,
+                        # BodySlide y sandbox siguen con su política propia.
                         productores = [p for p in productores_base if p.nombre != PRODUCTOR_DYNDOLOD]
-                        logger.warning(
-                            "Recovery externo de DynDOLOD omitido por ownership vivo "
-                            "(familia dyndolod salteada sin mutar; no bloquea el arranque)."
-                        )
+                        if decision_recovery is DecisionDeRecovery.SKIP_OCCUPIED:
+                            logger.warning(
+                                "Recovery externo de DynDOLOD omitido por ownership vivo "
+                                "(familia dyndolod salteada sin mutar; no bloquea el arranque)."
+                            )
+                        else:
+                            logger.warning(
+                                "Recovery de la familia DynDOLOD nueva omitido sin autoridad "
+                                "demostrada (familia dyndolod salteada sin mutar; no bloquea el arranque)."
+                            )
                     else:
                         productores = productores_base
                     await self._await_startup(

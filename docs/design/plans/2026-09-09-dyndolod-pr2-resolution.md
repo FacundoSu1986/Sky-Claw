@@ -504,11 +504,14 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
   `dyndolod-workspace` → ownership temporal `dyndolod-ownership-<clave>` → leer
   `RegistroDeRootActivo` → validar cada root (`entrada.root`,
   `transicion_pendiente.desde`) contra su `.sky-claw-binding.json` real →
-  `dyndolod-pipeline` → `reconcile_orphan_rollback_backups` → liberar. Ocupado →
-  skip familia `dyndolod` completa (mods incluidos) con warning, sin `rename` /
-  `mkdir` / `rmtree` / `restore`. Binding ajeno/corrupto/ausente → skip ese root
-  sin mutar. Orden `workspace → ownership → pipeline` congelado por ancla. PR #580
-  sigue DRAFT, NOT READY TO MERGE; launch gate REOPENED; real rig pending.
+  `dyndolod-pipeline` → `reconcile_orphan_rollback_backups` → liberar. Veredicto
+  tipado `AUTHORIZED / SKIP_OCCUPIED / SKIP_NO_AUTHORITY`: sólo `AUTHORIZED` con
+  handle vivo incluye a la familia `dyndolod`; ocupado o sin autoridad (sin
+  coordinación, `ResourceBinding` no construible, I/O) la eliminan completa
+  (mods incluidos) con warning, sin `rename` / `mkdir` / `rmtree` / `restore`
+  (`ownership None ⇒ no dyndolod`). Binding ajeno/corrupto/ausente → skip ese
+  root sin mutar. Orden `workspace → ownership → pipeline` congelado por ancla.
+  PR #580 sigue DRAFT, NOT READY TO MERGE; launch gate REOPENED; real rig pending.
 - [x] Actualizar `sky_claw/local/AGENTS.md` §2.9, filas precisas de
   `docs/pending_ooda_status.md`, T3 del roadmap y anclas `test_estado_ooda.py`
   en el mismo PR. Mantener rig/preset/ZIP pendientes donde corresponda.

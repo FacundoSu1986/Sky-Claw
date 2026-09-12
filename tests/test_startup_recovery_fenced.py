@@ -43,6 +43,7 @@ from types import SimpleNamespace
 import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app_context import DecisionDeRecovery
 from sky_claw.local.tools import dyndolod_workspace as wsm
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
@@ -194,8 +195,10 @@ async def test_owner_vivo_bloquea_recovery_con_pipeline_libre(
             # B inicia startup recovery con OTRA coordinación (otro proceso).
             app_b = AppContext(SimpleNamespace(db_path=tmp_path / "app_b.db"))
             app_b.stage9_coordination = coord_b
-            ownership_b, roots_b, omitido = await app_b._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
-            assert omitido is True, "con owner vivo ajeno el recovery debe reportarse omitido"
+            ownership_b, roots_b, decision = await app_b._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+            assert decision is DecisionDeRecovery.SKIP_OCCUPIED, (
+                "con owner vivo ajeno el recovery debe reportarse omitido"
+            )
             assert ownership_b is None
             assert roots_b == ()
 
@@ -266,8 +269,8 @@ async def test_holder_muerto_no_wedgea_recovery(
 
         await asyncio.sleep(0.7)  # la lease del muerto expira: nadie renovó.
 
-        ownership_b, roots_b, omitido = await app_b._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
-        assert omitido is False
+        ownership_b, roots_b, decision = await app_b._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        assert decision is DecisionDeRecovery.AUTHORIZED
         assert ownership_b is not None
         assert roots_b == (external,)
         try:
@@ -318,8 +321,8 @@ async def test_binding_valido_restaura_con_autoridad_temporal(
 
         app = AppContext(SimpleNamespace(db_path=tmp_path / "app.db"))
         app.stage9_coordination = coord
-        ownership, roots, omitido = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
-        assert omitido is False
+        ownership, roots, decision = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        assert decision is DecisionDeRecovery.AUTHORIZED
         assert ownership is not None
         assert roots == (external,)
         try:
@@ -373,9 +376,9 @@ async def test_binding_ajeno_no_restaura(
     try:
         app = AppContext(SimpleNamespace(db_path=tmp_path / "app.db"))
         app.stage9_coordination = coord
-        ownership, roots, omitido = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        ownership, roots, decision = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
         # Sin live owner, la autoridad se adquiere, pero el root ajeno se filtra.
-        assert omitido is False
+        assert decision is DecisionDeRecovery.AUTHORIZED
         assert roots == ()
         renames: list[tuple[pathlib.Path, pathlib.Path]] = []
         real_rename = pathlib.Path.rename
@@ -455,7 +458,8 @@ async def test_binding_corrupto_o_ausente_no_muta(
     try:
         app = AppContext(SimpleNamespace(db_path=tmp_path / "app.db"))
         app.stage9_coordination = coord
-        ownership, roots, _ = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        ownership, roots, decision = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        assert decision is DecisionDeRecovery.AUTHORIZED
         assert roots == ()
         try:
             resultado = await reconcile_orphan_rollback_backups(
@@ -512,8 +516,8 @@ async def test_transicion_pendiente_ambos_validos_restauran(
     try:
         app = AppContext(SimpleNamespace(db_path=tmp_path / "app.db"))
         app.stage9_coordination = coord
-        ownership, roots, omitido = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
-        assert omitido is False
+        ownership, roots, decision = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        assert decision is DecisionDeRecovery.AUTHORIZED
         assert set(roots) == {nuevo, viejo}
         try:
             resultado = await reconcile_orphan_rollback_backups(
@@ -564,7 +568,8 @@ async def test_transicion_pendiente_solo_el_valido_restaura(
     try:
         app = AppContext(SimpleNamespace(db_path=tmp_path / "app.db"))
         app.stage9_coordination = coord
-        ownership, roots, _ = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        ownership, roots, decision = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        assert decision is DecisionDeRecovery.AUTHORIZED
         assert roots == (viejo,)
         try:
             resultado = await reconcile_orphan_rollback_backups(
@@ -629,7 +634,8 @@ async def test_root_registrado_fuera_del_arbol_no_se_toca(
     try:
         app = AppContext(SimpleNamespace(db_path=tmp_path / "app.db"))
         app.stage9_coordination = coord
-        ownership, roots, _ = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        ownership, roots, decision = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+        assert decision is DecisionDeRecovery.AUTHORIZED
         assert roots == ()
         try:
             resultado = await reconcile_orphan_rollback_backups(
@@ -648,6 +654,105 @@ async def test_root_registrado_fuera_del_arbol_no_se_toca(
         assert resultado.restaurados == ()
     finally:
         await coord.close()
+
+
+# ---------------------------------------------------------------------------
+# P1 hermano — sin autoridad (fallo no-OCUPADO) los mods tampoco se mutan
+# ---------------------------------------------------------------------------
+
+
+async def test_sin_autoridad_no_se_ejecuta_la_familia_dyndolod(
+    tmp_path: pathlib.Path, lock_manager: DistributedLockManager
+) -> None:
+    """Fail-closed P1: `stage9_coordination=None` + backup de mod + target ausente.
+
+    Sin coordinación no hay autoridad temporal demostrable. La familia DynDOLOD
+    nueva (incluidos `TexGen Output` / `DynDOLOD Output`) no debe ejecutarse:
+    backup byte-exacto, target ausente, nada restaurado. Legacy/Pandora/BodySlide
+    conservan su política independiente (acá sólo se afirma que dyndolod no corre).
+    """
+    from sky_claw.app_context import AppContext
+
+    game, mo2 = _game_mo2(tmp_path)
+    mods_backup = _sembrar_backup_mod(mo2.mods_dir, DynDOLODRunner.TEXGEN_MOD_NAME, "MOD-PREVIO")
+    mods_target = mo2.mods_dir / DynDOLODRunner.TEXGEN_MOD_NAME
+    assert not mods_target.exists()
+
+    app = AppContext(SimpleNamespace(db_path=tmp_path / "app.db"))
+    app.stage9_coordination = None
+    ownership, roots, decision = await app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+
+    assert decision is DecisionDeRecovery.SKIP_NO_AUTHORITY
+    assert ownership is None
+    assert roots == ()
+
+    # Misma regla de producción: sólo AUTHORIZED con handle vivo incluye dyndolod.
+    productores_base = construir_productores_de_move_aside(
+        mo2_root=mo2.data_root,
+        mods_dir=mo2.mods_dir,
+        game=game,
+        external_work_roots=roots,
+    )
+    assert any(p.nombre == PRODUCTOR_DYNDOLOD for p in productores_base)
+    if decision is not DecisionDeRecovery.AUTHORIZED or ownership is None:
+        productores = [p for p in productores_base if p.nombre != PRODUCTOR_DYNDOLOD]
+    else:  # pragma: no cover - sin autoridad este camino no se toma
+        productores = productores_base
+    assert all(p.nombre != PRODUCTOR_DYNDOLOD for p in productores)
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=productores,
+        sandbox_root=None,
+        lock_manager=lock_manager,
+        coordinacion_etapa9=None,
+    )
+
+    assert not mods_target.exists()
+    assert mods_backup.is_dir()
+    assert (mods_backup / "DynDOLOD.esp").read_text(encoding="utf-8") == "MOD-PREVIO"
+    assert resultado.restaurados == ()
+
+
+@pytest.mark.parametrize("motivo", ["sin-coordinacion", "game-no-path"])
+async def test_sin_autoridad_por_otras_causas_tampoco_ejecuta_dyndolod(
+    tmp_path: pathlib.Path, lock_manager: DistributedLockManager, motivo: str
+) -> None:
+    """Variantes del mismo fail-closed: sin `ResourceBinding` construible tampoco hay authority."""
+    from sky_claw.app_context import AppContext
+
+    game, mo2 = _game_mo2(tmp_path)
+    mods_backup = _sembrar_backup_mod(mo2.mods_dir, DynDOLODRunner.DYNDOLLOD_MOD_NAME, "MOD-PREVIO")
+    mods_target = mo2.mods_dir / DynDOLODRunner.DYNDOLLOD_MOD_NAME
+
+    app = AppContext(SimpleNamespace(db_path=tmp_path / "app.db"))
+    if motivo == "sin-coordinacion":
+        app.stage9_coordination = None
+        game_arg: object = game
+        mo2_arg: object = mo2
+    else:
+        app.stage9_coordination = _coordinacion(tmp_path)
+        try:
+            game_arg = "no-es-un-path"
+            mo2_arg = mo2
+            ownership, roots, decision = await app._autoridad_temporal_para_recovery_externo(
+                game=game_arg,
+                mo2=mo2_arg,  # type: ignore[arg-type]
+            )
+            assert decision is DecisionDeRecovery.SKIP_NO_AUTHORITY
+            assert ownership is None
+            assert roots == ()
+        finally:
+            assert app.stage9_coordination is not None
+            await app.stage9_coordination.close()
+        assert not mods_target.exists()
+        assert mods_backup.is_dir()
+        return
+
+    ownership, roots, decision = await app._autoridad_temporal_para_recovery_externo(game=game_arg, mo2=mo2_arg)
+    assert decision is DecisionDeRecovery.SKIP_NO_AUTHORITY
+    assert ownership is None
+    assert not mods_target.exists()
+    assert mods_backup.is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -687,8 +792,8 @@ async def test_legacy_sigue_aunque_dyndolod_se_omita_por_ownership(
 
             app_b = AppContext(SimpleNamespace(db_path=tmp_path / "app_b.db"))
             app_b.stage9_coordination = coord_b
-            _, roots_b, omitido = await app_b._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
-            assert omitido is True
+            _, roots_b, decision = await app_b._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2)
+            assert decision is DecisionDeRecovery.SKIP_OCCUPIED
             productores_base = construir_productores_de_move_aside(
                 mo2_root=mo2.data_root, mods_dir=mo2.mods_dir, game=game, external_work_roots=roots_b
             )
