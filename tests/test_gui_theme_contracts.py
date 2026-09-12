@@ -668,7 +668,22 @@ def test_registro_iconos_congelado_y_sin_muertos() -> None:
 #: Barra de integridad del hero: una variante CSS por estado del forja, y el
 #: mapeo estado→variante vive en forge_dashboard.py. Antes era dorado a fuego
 #: fijo (misa placa para "sin conflictos" y "en disputa", es decir mentía).
-_ESTADOS_ESPERADOS = {"ESTABLE": "estable", "VIGILANTE": "vigilante", "EN DISPUTA": "disputa"}
+#:
+#: Se congelan las DOS mitades de la tupla —color del sello Y variante de barra—
+#: a propósito: el bug que D3 arregló de paso fue el COLOR (VIGILANTE pintaba el
+#: verde de ESTABLE), y un contrato que sólo enumerara la variante lo dejaba
+#: volver sin romper nada.
+_ESTADOS_ESPERADOS = {
+    "ESTABLE": ("#7fc08c", "estable"),
+    "VIGILANTE": ("#e0a13c", "vigilante"),
+    "EN DISPUTA": ("#e88a82", "disputa"),
+}
+
+#: Umbrales del estado enumerados sobre el conteo de conflictos, con AMBAS
+#: fronteras (4 = último VIGILANTE, 5 = primer EN DISPUTA). Se verifican sobre el
+#: HTML que el hero realmente emite, no sobre el mapeo: un inventario del dict no
+#: distingue "la barra reacciona" de "la barra quedó fija o sin clase".
+_UMBRALES_ESPERADOS = ((0, "ESTABLE"), (1, "VIGILANTE"), (4, "VIGILANTE"), (5, "EN DISPUTA"), (30, "EN DISPUTA"))
 
 
 def test_integridad_del_hero_reactiva_por_estado() -> None:
@@ -681,12 +696,60 @@ def test_integridad_del_hero_reactiva_por_estado() -> None:
     from sky_claw.app.gui.views.forge_dashboard import _ESTADO_FORJA
 
     assert set(_ESTADO_FORJA) == set(_ESTADOS_ESPERADOS), f"estado del forja cambió: {sorted(_ESTADO_FORJA)}"
-    for estado, slug in _ESTADOS_ESPERADOS.items():
-        _, variant = _ESTADO_FORJA[estado]
-        assert variant == slug, f"{estado} mapeado a variante {variant} (esperada {slug})"
+    for estado, (color, slug) in _ESTADOS_ESPERADOS.items():
+        assert _ESTADO_FORJA[estado] == (color, slug), (
+            f"{estado} mapeado a {_ESTADO_FORJA[estado]} (esperado {(color, slug)})"
+        )
         assert f".sc-bar--{slug}" in _STYLES, f"styles.css sin receta .sc-bar--{slug}"
     # El gradiente dorado NO puede estar inline en el hero:
     assert "linear-gradient(90deg,#8a6c38,#ecd9a8)" not in _FORGE, "gradiente dorado reintroducido inline en el hero"
+
+
+def test_integridad_del_hero_pinta_el_estado_en_el_html_renderizado() -> None:
+    """D3: el panel RENDERIZADO deriva del conteo de conflictos.
+
+    Enumerar el mapeo no alcanza — es la diferencia entre "las recetas existen" y
+    "la barra es señal". Sobre el HTML real de :func:`_integridad_html` esto ataja
+    las tres regresiones que el inventario dejaba pasar: fijar el estado, borrar la
+    clase dinámica ``sc-bar--{variante}`` (que deja la barra SIN fondo, porque D3
+    se llevó el gradiente inline) y devolver el color de sello de otro estado.
+    """
+    from sky_claw.app.gui.views.forge_dashboard import _integridad_html
+
+    for conflicts, estado in _UMBRALES_ESPERADOS:
+        color, variante = _ESTADOS_ESPERADOS[estado]
+        html = _integridad_html(conflicts)
+        assert f"sc-bar--{variante}" in html, f"{conflicts} conflictos: la barra no lleva sc-bar--{variante}"
+        assert f"color:{color};" in html, f"{conflicts} conflictos: el sello no pinta {color} ({estado})"
+        assert f"◆ {estado}" in html, f"{conflicts} conflictos: el sello no dice {estado}"
+        ajenas = {slug for _, slug in _ESTADOS_ESPERADOS.values()} - {variante}
+        for otra in sorted(ajenas):
+            assert f"sc-bar--{otra}" not in html, f"{conflicts} conflictos: se coló la variante ajena {otra}"
+
+
+def test_el_hero_consume_el_seam_de_integridad() -> None:
+    """D3: el panel del hero se emite por el seam puro, no por un f-string suelto.
+
+    Sin esto el seam podría quedar verde y muerto mientras ``_hero`` sigue
+    construyendo su propia barra: el test de arriba pasaría y la GUI no reaccionaría.
+    """
+    consumidores: set[str] = set()
+    for nodo in ast.walk(ast.parse(_FORGE)):
+        if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "html"):
+            continue
+        for argumento in nodo.args:
+            if isinstance(argumento, ast.Call) and isinstance(argumento.func, ast.Name):
+                consumidores.add(argumento.func.id)
+    assert "_integridad_html" in consumidores, "ningún ui.html(...) del módulo consume _integridad_html"
+
+    # La clase sólo puede nacer en el seam: si reaparece en otra función, hay una
+    # segunda barra que este contrato no cubre (el hermano del que avisa AGENTS.md).
+    fuera_del_seam = [
+        nodo.name
+        for nodo in ast.walk(ast.parse(_FORGE))
+        if isinstance(nodo, ast.FunctionDef) and nodo.name != "_integridad_html" and "sc-bar--" in ast.unparse(nodo)
+    ]
+    assert not fuera_del_seam, f"sc-bar-- construido fuera del seam de integridad: {fuera_del_seam}"
 
 
 # ── C2 — recetas de botón centralizadas ──────────────────────────────────────

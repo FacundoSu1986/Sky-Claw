@@ -152,6 +152,18 @@ gana color por estado (VIGILANTE deja de compartir el verde de ESTABLE:
 brasa/carmesí). El texto/cifra permanecen como señal accesible, el color jamás
 es la única pista. Ancla: `test_integridad_del_hero_reactiva_por_estado`.
 
+**Seguimiento (revisión de #581).** El ancla original *inventariaba* el mapeo —
+qué estados existen, qué variante le toca a cada uno, qué recetas CSS hay — pero
+no tocaba el HTML que el hero emite. Tres regresiones pasaban verdes y se
+verificaron por mutación: fijar `estado` a un literal, borrar la clase dinámica
+`sc-bar--{variante}` (que deja la barra **sin fondo**, porque D3 se llevó el
+gradiente inline) y devolver el color de sello de otro estado — justo el bug que
+D3 arregló de paso. El panel pasa a emitirse por un seam puro
+(`_integridad_html`, como `_vitals_html`/`_hud_html`) y el contrato se verifica
+sobre el HTML real, enumerando los umbrales con ambas fronteras (4/5). Anclas:
+`test_integridad_del_hero_pinta_el_estado_en_el_html_renderizado` y
+`test_el_hero_consume_el_seam_de_integridad`.
+
 ### D4 — Emblema del ojo de dragón en el wizard
 
 **Estado:** **RESUELTO** en #579 — el wizard de primer arranque muestra el
