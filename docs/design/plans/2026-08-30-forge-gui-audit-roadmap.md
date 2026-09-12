@@ -144,13 +144,13 @@ Estas tareas son mejoras de producto, no defectos técnicos demostrados. Mantene
 
 ### D3 — Integridad reactiva del hero
 
-La barra de integridad debe usar el estado real como señal visual, por ejemplo:
-
-- oro: estable;
-- brasa: vigilancia/estado degradado no terminal;
-- carmesí: disputa/error.
-
-La fuente de verdad debe ser el estado reactivo existente; no duplicar lógica de diagnóstico dentro de la vista. Color nunca debe ser la única señal: conservar texto/glifo/estado accesible.
+**Estado:** **RESUELTO** en #580 — la barra de integridad ya no es dorada fija:
+tres variantes CSS (`.sc-bar--estable` oro / `.sc-bar--vigilante` brasa /
+`.sc-bar--disputa` carmesí) mapeadas desde `_ESTADO_FORJA`
+(`forge_dashboard.py`) según el conteo de conflictos real. El sello ◆ también
+gana color por estado (VIGILANTE deja de compartir el verde de ESTABLE:
+brasa/carmesí). El texto/cifra permanecen como señal accesible, el color jamás
+es la única pista. Ancla: `test_integridad_del_hero_reactiva_por_estado`.
 
 ### D4 — Emblema del ojo de dragón en el wizard
 
