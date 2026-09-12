@@ -963,10 +963,21 @@ def _header(
 
 
 # ── HERO ───────────────────────────────────────────────────────────────────────
+
+#: Estado de la forja → (color del sello, variante de la barra). D3: la barra
+#: ya no es dorada a fuego fijo — habla del estado. Fija también el color del
+#: sello por estado (previamente VIGILANTE compartía el verde de ESTABLE).
+_ESTADO_FORJA: dict[str, tuple[str, str]] = {
+    "ESTABLE": ("#7fc08c", "estable"),
+    "VIGILANTE": ("#e0a13c", "vigilante"),
+    "EN DISPUTA": (RED_SOFT, "disputa"),
+}
+
+
 def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
     integrity = max(60, 100 - conflicts * 5)
     estado = "ESTABLE" if conflicts == 0 else ("VIGILANTE" if conflicts < 5 else "EN DISPUTA")
-    estado_color = "#7fc08c" if conflicts < 5 else RED_SOFT
+    estado_color, bar_variant = _ESTADO_FORJA[estado]
     sec = (
         "position:relative; overflow:hidden; border-radius:5px; min-height:354px; display:flex; align-items:flex-end;"
         "padding:38px 40px; margin-bottom:26px; border:1px solid rgba(200,168,106,.3);"
@@ -1016,7 +1027,7 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
                     "<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.16em; color:#b6ab90;\">ESTADO DE LA FORJA</span>"
                     f"<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.1em; color:{estado_color};\">◆ {_e(estado)}</span></div>"
                     '<div style="height:7px; border-radius:4px; background:rgba(255,255,255,.07); overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,.6);">'
-                    f'<div class="sc-deco" style="height:100%; width:{integrity}%; border-radius:4px; background:linear-gradient(90deg,#8a6c38,#ecd9a8); box-shadow:0 0 10px rgba(200,168,106,.45); background-size:200% 100%; animation:scShimmer 3.5s linear infinite;"></div></div>'
+                    f'<div class="sc-deco sc-bar--{bar_variant}" style="height:100%; width:{integrity}%; border-radius:4px; background-size:200% 100%; animation:scShimmer 3.5s linear infinite;"></div></div>'
                     f"<div style=\"display:flex; justify-content:space-between; margin-top:7px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#8a8270;\"><span>Integridad {integrity}%</span><span>{_e(conflicts)} conflictos</span></div></div>"
                 )
                 prepare = _cb(callbacks, "on_cta_primary")

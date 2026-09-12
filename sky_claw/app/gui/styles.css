@@ -263,6 +263,23 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     border: 1.5px solid rgba(216, 88, 78, 0.5);
 }
 
+/* ── Barra de integridad del hero (D3 — reactiva al estado de la forja) ──
+   Sólo el color y el glow viven acá (variantes por estado); el shell fija la
+   geometría y conserva inline el shimmer, ya enumerado como animación inline
+   con marcador .sc-deco para reduced-motion. */
+.sc-bar--estable {
+    background: linear-gradient(90deg, #8a6c38, #ecd9a8);
+    box-shadow: 0 0 10px rgba(200, 168, 106, 0.45);
+}
+.sc-bar--vigilante {
+    background: linear-gradient(90deg, #96602c, #e0a13c);
+    box-shadow: 0 0 10px rgba(224, 161, 60, 0.5);
+}
+.sc-bar--disputa {
+    background: linear-gradient(90deg, #6e2420, #d8584e);
+    box-shadow: 0 0 10px rgba(216, 88, 78, 0.55);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════════
     7. EL MOTOR INVISIBLE — RITUALES DE LA FORJA
     ═══════════════════════════════════════════════════════════════════════════════════ */
