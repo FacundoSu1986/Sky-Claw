@@ -485,6 +485,32 @@ def test_registro_iconos_congelado_y_sin_muertos() -> None:
     assert not sin_consumidor, f"iconos definidos sin consumidor: {sin_consumidor}"
 
 
+# ── D3 — integridad del hero reactiva al estado ──────────────────────────────
+
+#: Barra de integridad del hero: una variante CSS por estado del forja, y el
+#: mapeo estado→variante vive en forge_dashboard.py. Antes era dorado a fuego
+#: fijo (misa placa para "sin conflictos" y "en disputa", es decir mentía).
+_ESTADOS_ESPERADOS = {"ESTABLE": "estable", "VIGILANTE": "vigilante", "EN DISPUTA": "disputa"}
+
+
+def test_integridad_del_hero_reactiva_por_estado() -> None:
+    """D3: la barra del hero NO es siempre dorada — mapea el estado.
+
+    (a) los tres estados congelados existen y el mapeo está definido en el
+    módulo; (b) cada variante ``.sc-bar--<slug>`` existe en styles.css; (c) el
+    gradiente dorado ya no aparece inline en el hero — si alguien lo
+    reintroduce, el ancla rompe."""
+    from sky_claw.app.gui.views.forge_dashboard import _ESTADO_FORJA
+
+    assert set(_ESTADO_FORJA) == set(_ESTADOS_ESPERADOS), f"estado del forja cambió: {sorted(_ESTADO_FORJA)}"
+    for estado, slug in _ESTADOS_ESPERADOS.items():
+        _, variant = _ESTADO_FORJA[estado]
+        assert variant == slug, f"{estado} mapeado a variante {variant} (esperada {slug})"
+        assert f".sc-bar--{slug}" in _STYLES, f"styles.css sin receta .sc-bar--{slug}"
+    # El gradiente dorado NO puede estar inline en el hero:
+    assert "linear-gradient(90deg,#8a6c38,#ecd9a8)" not in _FORGE, "gradiente dorado reintroducido inline en el hero"
+
+
 # ── C2 — recetas de botón centralizadas ──────────────────────────────────────
 
 #: Variantes semánticas válidas de la familia ``.sc-btn`` (sección 6b de styles.css).
