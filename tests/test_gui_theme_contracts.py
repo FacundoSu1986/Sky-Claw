@@ -733,14 +733,44 @@ def test_el_hero_consume_el_seam_de_integridad() -> None:
     Sin esto el seam podría quedar verde y muerto mientras ``_hero`` sigue
     construyendo su propia barra: el test de arriba pasaría y la GUI no reaccionaría.
     """
-    consumidores: set[str] = set()
-    for nodo in ast.walk(ast.parse(_FORGE)):
-        if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "html"):
-            continue
-        for argumento in nodo.args:
-            if isinstance(argumento, ast.Call) and isinstance(argumento.func, ast.Name):
-                consumidores.add(argumento.func.id)
-    assert "_integridad_html" in consumidores, "ningún ui.html(...) del módulo consume _integridad_html"
+    consumidores_de_integridad: set[str] = set()
+
+    class _Buscador(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._pila: list[str] = []
+
+        def _con_pila(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            self._pila.append(node.name)
+            self.generic_visit(node)
+            self._pila.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._con_pila(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._con_pila(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "html"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "ui"
+            ):
+                argumentos = list(node.args) + [kw.value for kw in node.keywords]
+                for arg in argumentos:
+                    if (
+                        isinstance(arg, ast.Call)
+                        and isinstance(arg.func, ast.Name)
+                        and arg.func.id == "_integridad_html"
+                    ):
+                        consumidores_de_integridad.add(self._pila[-1] if self._pila else "<módulo>")
+            self.generic_visit(node)
+
+    _Buscador().visit(ast.parse(_FORGE))
+    assert consumidores_de_integridad == {"_hero"}, (
+        f"Consumidores de ui.html(_integridad_html(...)) inesperados: {consumidores_de_integridad} (esperado {{'_hero'}})"
+    )
 
     # La clase sólo puede nacer en el seam: si reaparece en otra función, hay una
     # segunda barra que este contrato no cubre (el hermano del que avisa AGENTS.md).

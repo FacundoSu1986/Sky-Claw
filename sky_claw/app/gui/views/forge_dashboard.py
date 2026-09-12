@@ -988,11 +988,12 @@ def _estado_de_forja(conflicts: int) -> tuple[str, str, str]:
 def _integridad_html(conflicts: int) -> str:
     """Panel «ESTADO DE LA FORJA» del hero: sello, barra reactiva y cifras (D3).
 
-    Pure seam (no ``ui.*`` calls, fully testable), igual que :func:`_vitals_html`
-    y :func:`_hud_html`. La barra NO trae fondo inline —su color entero vive en
-    ``.sc-bar--<variante>`` de styles.css—, así que la clase dinámica es la única
-    cosa que la hace visible: emitir el panel desde acá deja que el ancla lo
-    verifique sobre el HTML real en vez de inventariar el mapeo.
+    Seam puro (sin llamadas a ``ui.*``, completamente testeable de forma aislada),
+    igual que :func:`_vitals_html` y :func:`_hud_html`. La barra NO trae fondo
+    inline —su color entero vive en ``.sc-bar--<variante>`` de styles.css—, así que
+    la clase dinámica es la responsable de su visualización: emitir el panel desde
+    acá deja que el ancla lo verifique sobre el HTML real en vez de inventariar
+    el mapeo.
     """
     integrity = max(60, 100 - conflicts * 5)
     estado, estado_color, bar_variant = _estado_de_forja(conflicts)
