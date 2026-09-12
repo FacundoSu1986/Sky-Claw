@@ -3702,6 +3702,9 @@ def test_el_recovery_lee_el_root_activo_del_registro_durable(
     El barrido corre ANTES de resolver el workspace (orden §25), así que el
     helper de AppContext no puede depender del `WorkspaceResuelto`. Se ancla que
     lee la entrada de la clave de recursos de ESTA instancia lógica.
+
+    P2.3 fenced: el pathname del registro NO basta — el root debe demostrar su
+    binding propio en disco para ser devuelto.
     """
     from types import SimpleNamespace
 
@@ -3720,6 +3723,7 @@ def test_el_recovery_lee_el_root_activo_del_registro_durable(
     registro = wsm.RegistroDeRootActivo(tmp_path / "estado" / "active_roots.json")
     root_activo = tmp_path / "Work B"
     registro.registrar_activa(clave=recursos.clave(), root=root_activo, binding_id="binding-b")
+    _escribir_binding(root_activo, _documento_valido(recursos, binding_id="binding-b"))
     monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
 
     mo2 = SimpleNamespace(data_root=mo2_root, mods_dir=mo2_root / "mods")
@@ -3734,7 +3738,7 @@ def test_el_recovery_incluye_el_desde_de_una_transicion_pendiente(
 
     La transición pendiente conserva el `desde` como ÚNICO registro durable del
     root viejo (puede tener backups sin reconciliar). El helper devuelve ambos:
-    el activo nuevo y el viejo.
+    el activo nuevo y el viejo — cada uno con su propio binding válido demostrado.
     """
     from types import SimpleNamespace
 
@@ -3755,6 +3759,8 @@ def test_el_recovery_incluye_el_desde_de_una_transicion_pendiente(
     nuevo = tmp_path / "Work B"
     registro.registrar_activa(clave=recursos.clave(), root=viejo, binding_id="binding-a")
     registro.registrar_transicion(clave=recursos.clave(), hacia=nuevo, motivo="cambio de preferencia")
+    _escribir_binding(viejo, _documento_valido(recursos, binding_id="binding-a"))
+    _escribir_binding(nuevo, _documento_valido(recursos, binding_id="binding-b"))
     monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
 
     mo2 = SimpleNamespace(data_root=mo2_root, mods_dir=mo2_root / "mods")

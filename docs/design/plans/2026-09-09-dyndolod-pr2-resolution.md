@@ -499,6 +499,16 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
   todos los targets y conservar ambigüedad cuando existen backup y destino.
 - [x] Verde: startup no consume evidencia antes del handoff; edición de config
   no hace perder referencias a backups viejos.
+- [x] Fenced P1 (startup recovery de ACTIVE_TARGET externos): el recovery NO muta
+  sin demostrar autoridad temporal P2.0 — `ResourceBinding` actual →
+  `dyndolod-workspace` → ownership temporal `dyndolod-ownership-<clave>` → leer
+  `RegistroDeRootActivo` → validar cada root (`entrada.root`,
+  `transicion_pendiente.desde`) contra su `.sky-claw-binding.json` real →
+  `dyndolod-pipeline` → `reconcile_orphan_rollback_backups` → liberar. Ocupado →
+  skip familia `dyndolod` completa (mods incluidos) con warning, sin `rename` /
+  `mkdir` / `rmtree` / `restore`. Binding ajeno/corrupto/ausente → skip ese root
+  sin mutar. Orden `workspace → ownership → pipeline` congelado por ancla. PR #580
+  sigue DRAFT, NOT READY TO MERGE; launch gate REOPENED; real rig pending.
 - [x] Actualizar `sky_claw/local/AGENTS.md` §2.9, filas precisas de
   `docs/pending_ooda_status.md`, T3 del roadmap y anclas `test_estado_ooda.py`
   en el mismo PR. Mantener rig/preset/ZIP pendientes donde corresponda.

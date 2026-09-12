@@ -1249,6 +1249,25 @@ async def test_el_barrido_restaura_el_root_viejo_de_una_transicion_pendiente(
     nuevo = tmp_path / "Work B"
     registro.registrar_activa(clave=recursos.clave(), root=viejo, binding_id="binding-a")
     registro.registrar_transicion(clave=recursos.clave(), hacia=nuevo, motivo="cambio de preferencia")
+    # P2.3 fenced: cada root debe demostrar su binding propio para ser recuperable.
+    import json as _json
+
+    for _root, _bid in ((viejo, "binding-a"), (nuevo, "binding-b")):
+        _root.mkdir(parents=True, exist_ok=True)
+        (_root / wsm.ARCHIVO_DE_BINDING).write_text(
+            _json.dumps(
+                {
+                    "schema_version": wsm.SCHEMA_VERSION,
+                    "binding_id": _bid,
+                    "resource_binding": {
+                        "game_path": recursos.game_path,
+                        "mo2_instance_data_root": recursos.mo2_instance_data_root,
+                        "mo2_mods_path": recursos.mo2_mods_path,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
     monkeypatch.setattr(wsm, "registro_de_roots_activos", lambda: registro)
 
     layout_viejo = derivar_layout_de_dyndolod(external_work_root=viejo)
