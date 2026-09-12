@@ -510,7 +510,11 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
   coordinación, `ResourceBinding` no construible, I/O) la eliminan completa
   (mods incluidos) con warning, sin `rename` / `mkdir` / `rmtree` / `restore`
   (`ownership None ⇒ no dyndolod`). Binding ajeno/corrupto/ausente → skip ese
-  root sin mutar. Orden `workspace → ownership → pipeline` congelado por ancla.
+  root sin mutar. Transferencia de responsabilidad del handle: un
+  `except BaseException` interno libera la lease si la autoridad falla o es
+  cancelada entre la adquisición y la entrega al caller (sin él, el heartbeat
+  renovaba un ownership fantasma y el próximo resolver/startup quedaba
+  OCUPADO). Orden `workspace → ownership → pipeline` congelado por ancla.
   PR #580 sigue DRAFT, NOT READY TO MERGE; launch gate REOPENED; real rig pending.
 - [x] Actualizar `sky_claw/local/AGENTS.md` §2.9, filas precisas de
   `docs/pending_ooda_status.md`, T3 del roadmap y anclas `test_estado_ooda.py`

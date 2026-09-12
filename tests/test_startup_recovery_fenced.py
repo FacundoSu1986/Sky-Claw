@@ -296,6 +296,82 @@ async def test_holder_muerto_no_wedgea_recovery(
 
 
 # ---------------------------------------------------------------------------
+# P1 — cancelación entre adquisición y transferencia: la lease NO se filtra
+# ---------------------------------------------------------------------------
+
+
+async def test_cancelacion_durante_la_validacion_libera_el_ownership_temporal(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding P1: cancelar tras adquirir el ownership y antes del `return`.
+
+    ``CancelledError`` es ``BaseException`` y no lo absorben los handlers de
+    ``OSError``/``WorkspaceRechazadoError``. Sin transferencia/limpieza interna,
+    el handle nunca llegaba al caller (su `finally` veía ``None``) y el
+    heartbeat del ``SnapshotTransactionLock`` seguía renovando la lease sin
+    dueño: el próximo resolver o startup de esta instancia lógica quedaba
+    OCUPADO indefinidamente por un ownership fantasma.
+
+    Secuencia: adquirir ownership temporal → bloquear la validación en el
+    ``to_thread`` → cancelar → verificar que la lease quedó libre → una segunda
+    adquisición REAL para el mismo ``ResourceBinding`` sucede.
+    """
+    import threading
+    import time
+
+    from sky_claw.app_context import AppContext
+
+    game, mo2 = _game_mo2(tmp_path)
+    recursos = wsm.ResourceBinding.desde_paths(
+        game_path=game, mo2_instance_data_root=mo2.data_root, mo2_mods_path=mo2.mods_dir
+    )
+    coord = _coordinacion(tmp_path)
+    rid = wsm.Stage9Coordination.resource_id_de_ownership(recursos.clave())
+    validacion_bloqueada = threading.Event()
+    continuar_validacion = threading.Event()
+
+    def _roots_bloqueado(*, game, mo2):  # noqa: ARG001 - firma del helper real
+        validacion_bloqueada.set()
+        continuar_validacion.wait(timeout=30)
+        return ()
+
+    monkeypatch.setattr(AppContext, "_roots_externos_para_recovery", staticmethod(_roots_bloqueado))
+
+    try:
+        app = AppContext(SimpleNamespace(db_path=tmp_path / "app.db"))
+        app.stage9_coordination = coord
+        tarea = asyncio.create_task(app._autoridad_temporal_para_recovery_externo(game=game, mo2=mo2))
+
+        manager = await coord.manager_del_ritual()
+        limite = time.monotonic() + 10.0
+        while not validacion_bloqueada.is_set() and time.monotonic() < limite:
+            await asyncio.sleep(0.01)
+        assert validacion_bloqueada.is_set(), "la validación de roots nunca arrancó"
+        # El ownership YA está adquirido (la validación corre después).
+        info = await manager.get_lock_info(rid)
+        assert info is not None and not info.is_expired
+
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        continuar_validacion.set()  # deja terminar el hilo bloqueado del to_thread
+
+        # 1) La lease quedó liberada por el cleanup interno de la función.
+        assert await manager.get_lock_info(rid) is None, (
+            "la cancelación filtró el ownership temporal: su heartbeat seguiría renovándolo"
+        )
+        # 2) Una segunda adquisición real para el MISMO ResourceBinding sucede.
+        segundo = await coord.adquirir_ownership_vivo(recursos=recursos)
+        try:
+            await segundo.assert_owned()
+        finally:
+            await segundo.liberar()
+    finally:
+        continuar_validacion.set()
+        await coord.close()
+
+
+# ---------------------------------------------------------------------------
 # §17 — binding válido: el happy path sigue restaurando
 # ---------------------------------------------------------------------------
 

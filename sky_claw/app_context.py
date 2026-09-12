@@ -1017,6 +1017,18 @@ class AppContext:
         ``(ownership, (), AUTHORIZED)`` (los mods siguen fenced por el
         ownership); registro corrupto con ownership adquirido → no external
         recovery + warning pero se conserva el ownership para fencar los mods.
+
+        **Transferencia de responsabilidad del handle (finding P1).** Hasta el
+        ``return`` el dueño del ``OwnershipDeWorkspaceVivo`` es ESTA función;
+        después lo es el caller. Un ``except BaseException`` —no ``Exception``:
+        ``CancelledError`` es ``BaseException`` y no lo absorben los handlers de
+        ``OSError``/``WorkspaceRechazadoError``— libera la lease si algo falla
+        entre la adquisición y la entrega (incluido un ``__aexit__`` del lock
+        corto levantando). Sin esa limpieza, un cancel dejaba el handle
+        inalcanzable pero su heartbeat seguía renovando la lease
+        INDEFINIDAMENTE: el próximo resolver o startup de esta instancia lógica
+        quedaba OCUPADO por un ownership fantasma. Mismo patrón que
+        ``resolver_workspace`` (§21).
         """
         from sky_claw.local.tools.dyndolod_workspace import (
             MotivoDeRechazo,
@@ -1055,6 +1067,11 @@ class AppContext:
         # Orden workspace → ownership: el workspace serializa resolvers, el
         # ownership excluye a otra instancia viva. Nunca pipeline antes que
         # ownership (inversión/deadlock).
+        #
+        # `ownership` se declara acá para que el cleanup de abajo lo vea: la
+        # ventana entre la adquisición y el `return` es de ESTA función, no del
+        # caller (finding P1 de cancelación).
+        ownership: Any | None = None
         try:
             async with coordinacion.sostener_workspace(agent_id="dyndolod-recovery-startup"):
                 try:
@@ -1081,8 +1098,11 @@ class AppContext:
                     roots = ()
                 # El workspace se libera al salir del `async with`; el ownership
                 # TEMPORAL sobrevive y el caller lo libera tras el reconcile.
+                # A partir del `return` el dueño del handle es el caller.
                 return ownership, roots, DecisionDeRecovery.AUTHORIZED
         except WorkspaceRechazadoError as exc:
+            if ownership is not None:
+                await ownership.liberar()
             if exc.motivo is MotivoDeRechazo.OCUPADO:
                 # Otro proceso está resolviendo el workspace ahora mismo: sin
                 # exclusión demostrada no se muta la familia nueva.
@@ -1098,12 +1118,20 @@ class AppContext:
             )
             return None, (), DecisionDeRecovery.SKIP_NO_AUTHORITY
         except OSError:
+            if ownership is not None:
+                await ownership.liberar()
             logger.warning(
                 "No se pudo adquirir autoridad temporal para el recovery externo; "
                 "la familia DynDOLOD nueva queda sin reconciliar (no bloquea).",
                 exc_info=True,
             )
             return None, (), DecisionDeRecovery.SKIP_NO_AUTHORITY
+        except BaseException:
+            # Incluye `asyncio.CancelledError`: sin esta limpieza el handle no
+            # llegaba al caller y su heartbeat renovaba la lease sin dueño.
+            if ownership is not None:
+                await ownership.liberar()
+            raise
 
     async def _rollback_startup(self) -> None:
         try:
