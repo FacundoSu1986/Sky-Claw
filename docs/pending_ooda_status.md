@@ -127,6 +127,34 @@
 > 7/10**), ni la precedencia de presets, ni freshness, ni #528 (draft preservado,
 > no integrado). **PR-2 NOT READY TO MERGE.** **No** es una reverificación
 > integral del resto de la tabla.
+>
+> **Re-baseline parcial 2026-09-11 sobre `origin/main` `1954aa5d` (#577) — P2.2
+> CANDIDATO (misma rama `feat/dyndolod-pr2-external-staging`, PR-2 DRAFT):**
+> cubre exclusivamente el **servicio, la transacción y el packaging** de P2.2 en
+> `dyndolod_service.py`, `dyndolod_runner.py`, la composición
+> (`orchestration_composition.py`, `dispatcher_dependencies.py`,
+> `chain_preview_service.py`), `supervisor.py` y `_bootloader.py`. El
+> `WorkspaceResuelto` del arranque (root + lease de ownership vivo) se cablea
+> desde `AppContext` hasta `DynDOLODPipelineService` (el censo de constructores
+> exige `workspace=`, y un layout que no derive de `workspace.root` falla
+> cerrado); antes de move-aside, de crear el root vacío, de cada spawn y de cada
+> packaging corre `assert_owned` fail-closed. El born-empty pasa al **root
+> completo** de cada herramienta (`<external>/DynDOLOD/{TexGen,DynDOLOD}`, no
+> `root/textures`), con `run_texgen=False` dejando el root de TexGen byte-exacto;
+> el move-aside deja sus backups como hermanos bajo la familia, nunca sobre la
+> familia, el sibling ni el legacy. El packaging sólo acepta fuentes que
+> resuelven dentro del subroot de su herramienta (familia/sibling/legacy/enlace
+> = fail-closed), conserva `textures/` para TexGen, acepta el root directo de
+> DynDOLOD, mide ENOSPC antes de copiar y no borra el raw ante fallo de copia.
+> `_permission_targets` sondea los subroots derivados del workspace, y el veto de
+> los `DirectoryRollback` suma la lease del workspace. **No** cierra PR-2: P2.3
+> (recovery de arranque de los `ACTIVE_TARGET` externos) sigue NO IMPLEMENTADO y
+> su deuda queda explícita — los backups `<family>/<Tool>.rollback-*` de una
+> muerte dura no se barren todavía —, el rig real sobre el candidato completo
+> (P2.1+P2.2+P2.3) sigue pendiente, el gate de lanzamiento continúa **REOPENED**,
+> el checklist T5-v2 sigue **PARCIAL 7/10**, y #528 sigue abierto y sin tocar.
+> **PR-2 NOT READY TO MERGE.** **No** es una reverificación integral del resto de
+> la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de

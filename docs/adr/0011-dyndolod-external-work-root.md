@@ -13,8 +13,16 @@ coordinación durable de etapa 9 y transición restart-only viven en
 CANDIDATO** en la rama `feat/dyndolod-pr2-external-staging` (PR-2 `DRAFT`, no
 mergeable): los subroots administrados de `-o:` SÍ cambiaron, así que **el gate
 de lanzamiento quedó REABIERTO** y exige repetir las dos corridas reales sobre
-el candidato PR-2 completo antes de su merge. **P2.2 y P2.3 siguen NO
-IMPLEMENTADOS.**
+el candidato PR-2 completo antes de su merge. **P2.2 (servicio, transacción y
+packaging) IMPLEMENTADO COMO CANDIDATO** en la misma rama: el `WorkspaceResuelto`
+(productivo) se cablea desde `AppContext` hasta el `DynDOLODPipelineService`
+con su fence de ownership antes de cada mutación y spawn; el born-empty opera
+sobre el root completo de cada herramienta, el packaging sólo copia bytes del
+subroot de su herramienta y la transacción restaura/revierte con las leases
+vivas. **P2.3 (recovery/migración) sigue NO IMPLEMENTADO**: los backups de
+move-aside de una muerte dura sobre los `ACTIVE_TARGET` externos
+(`<family>/<Tool>.rollback-*`) todavía no se barren en el arranque — deuda
+explícita de P2.3 — y por eso el PR sigue DRAFT.
 **Contexto de origen:** `origin/main` `5e5e9448db0d4015b3bf0dc4c1df10fdc49e226c`
 (post-merge #569), verificado por `fetch` + lectura de código el 2026-09-09.
 **Alcance:** cerrar la decisión arquitectónica de lifecycle, identidad, propiedad y

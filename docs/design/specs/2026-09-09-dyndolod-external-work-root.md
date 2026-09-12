@@ -6,8 +6,13 @@
 > `sky_claw/local/tools/dyndolod_workspace.py`,
 > `sky_claw/app/security/known_folders.py`); **P2.1 (derivación + per-tool
 > `-o:`) IMPLEMENTADO COMO CANDIDATO** (rama `feat/dyndolod-pr2-external-staging`,
-> PR-2 `DRAFT`): los subroots de §7 ya llegan al `-o:`. **P2.2 y P2.3 siguen NO
-> IMPLEMENTADOS.** El gate de lanzamiento inicial quedó cerrado por T5-v2
+> PR-2 `DRAFT`): los subroots de §7 ya llegan al `-o:`. **P2.2 (servicio,
+> transacción y packaging) IMPLEMENTADO COMO CANDIDATO** en la misma rama: el
+> `WorkspaceResuelto` productivo llega al servicio con su fence, el born-empty
+> cubre el root completo por herramienta y el packaging es disjunto. **P2.3
+> (recovery/migración) sigue NO IMPLEMENTADO**: el barrido de arranque de los
+> backups `<family>/<Tool>.rollback-*` es su deuda explícita. El gate de
+> lanzamiento inicial quedó cerrado por T5-v2
 > (2026-09-10 — [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md):
 > T5-V2 LAUNCH GATE: PASS; T5-V2 FULL CHECKLIST: PARTIAL 7/10) **sobre el builder
 > viejo**; P2.1 lo **REABRE** al mutar los subroots de salida usados por `-o:`.

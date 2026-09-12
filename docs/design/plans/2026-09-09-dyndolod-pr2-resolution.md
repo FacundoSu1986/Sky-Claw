@@ -7,8 +7,10 @@
 > (rama `feat/dyndolod-workspace-lifetime-ownership`, 2026-09-11 — §5 abajo);
 > **P2.1 (derivación y modelo de outputs externos) IMPLEMENTADO COMO CANDIDATO**
 > (rama `feat/dyndolod-pr2-external-staging`, 2026-09-11 — PR-2 `DRAFT`,
-> **NOT READY TO MERGE**); **P2.2 (servicio/transacción/packaging) y P2.3
-> (recovery/migración) NO IMPLEMENTADOS**. **Gate de lanzamiento: REOPENED por
+> **NOT READY TO MERGE**); **P2.2 (servicio/transacción/packaging) IMPLEMENTADO
+> COMO CANDIDATO** en la misma rama (wiring del `WorkspaceResuelto`, fences,
+> born-empty por root completo, packaging disjunto); **P2.3
+> (recovery/migración) NO IMPLEMENTADO**. **Gate de lanzamiento: REOPENED por
 > P2.1** — T5-v2 (2026-09-10) quedó PASS sobre el builder/root VIEJO
 > ([informe commiteado](../../validation/2026-09-10_t5v2_dyndolod_stage9.md)) y
 > **no** certifica el nuevo `-o:`: hace falta repetir las dos corridas reales
@@ -412,22 +414,33 @@ contrato necesita inyección. **Tests:** `test_dyndolod_service.py`,
 `test_dyndolod_handoff_durable.py`, `test_active_indeterminate_evidence.py`,
 `test_carrera_intercalada_post_release.py`.
 
-- [ ] Escribir rojo T-PR2-04…05,07…13. Casos por tool y `create_snapshot`
+- [x] Escribir rojo T-PR2-04…05,07…13. Casos por tool y `create_snapshot`
   True/False; `run_texgen=False` conserva staging TexGen sin tocarlo.
-- [ ] Reemplazar rollback crudo `root/textures` por roots completos activos.
+- [x] Reemplazar rollback crudo `root/textures` por roots completos activos.
   Tras entrar en DirectoryRollback, crear y comprobar vacío antes de spawn.
   Mantener backups hasta que cierre la transacción, incluido fallo de DynDOLOD.
-- [ ] Usar la misma configuración congelada en permisos, spawn, candidatos,
+- [x] Usar la misma configuración congelada en permisos, spawn, candidatos,
   manifest, packaging y recovery. El permiso sube solo hasta la frontera
   admitida (root + derivados; jamás la unidad o un ancestro amplio).
-- [ ] Preservar prefix `textures`, permitir root directo exclusivo DynDOLOD,
+- [x] Preservar prefix `textures`, permitir root directo exclusivo DynDOLOD,
   rechazar familia/hermana/escape. Adaptar firmas a candidatos nuevos sin borrar
   freshness ni taxonomía. Medir tamaño antes de copia y manejar ENOSPC.
-- [ ] Mutaciones link-aware: reutilizar `sky_claw/app/security/links.py`
+- [x] Mutaciones link-aware: reutilizar `sky_claw/app/security/links.py`
   (`rmtree_link_aware`) y revalidar identidad al mutar; ninguna mutación
   administrada resuelve fuera del root admitido por un componente redirigido.
-- [ ] Verde: cuatro prerrequisitos #567, flags, F1, ambos resumes, cancelación,
+- [x] Verde: cuatro prerrequisitos #567, flags, F1, ambos resumes, cancelación,
   copia fallida entre unidades y ausencia de contaminación.
+- [x] Wiring de producción del `WorkspaceResuelto`: `AppContext` →
+  `SupervisorAgent` → composición → `DynDOLODPipelineService`, con el censo de
+  constructores exigiendo `workspace=` y `assert_owned` antes de move-aside,
+  creación del root vacío, spawn y packaging. La lease del workspace integra el
+  veto de rollback y los fences; una lease perdida detiene toda mutación
+  posterior y veta el restore.
+- [ ] **Deuda explícita de P2.3:** el barrido de arranque todavía no reconcilia
+  los backups de move-aside de los `ACTIVE_TARGET` externos
+  (`<family>/<Tool>.rollback-*`). Una muerte dura entre el move-aside y el
+  rollback deja ese residuo para recovery manual; P2.3 lo incorpora al
+  reconciliador. El PR sigue DRAFT y NO se declara crash-recovery completo.
 
 ### P2.3 Recovery, migración y documentos
 
