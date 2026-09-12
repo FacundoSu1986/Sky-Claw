@@ -974,10 +974,41 @@ _ESTADO_FORJA: dict[str, tuple[str, str]] = {
 }
 
 
-def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
-    integrity = max(60, 100 - conflicts * 5)
+def _estado_de_forja(conflicts: int) -> tuple[str, str, str]:
+    """Deriva ``(estado, color del sello, variante de barra)`` del conteo de conflictos.
+
+    Los umbrales viven acá y no dentro del f-string del hero para que un test
+    pueda enumerarlos: la barra sólo es señal si su color SALE del dato.
+    """
     estado = "ESTABLE" if conflicts == 0 else ("VIGILANTE" if conflicts < 5 else "EN DISPUTA")
-    estado_color, bar_variant = _ESTADO_FORJA[estado]
+    color, variante = _ESTADO_FORJA[estado]
+    return estado, color, variante
+
+
+def _integridad_html(conflicts: int) -> str:
+    """Panel «ESTADO DE LA FORJA» del hero: sello, barra reactiva y cifras (D3).
+
+    Seam puro (sin llamadas a ``ui.*``, completamente testeable de forma aislada),
+    igual que :func:`_vitals_html` y :func:`_hud_html`. La barra NO trae fondo
+    inline —su color entero vive en ``.sc-bar--<variante>`` de styles.css—, así que
+    la clase dinámica es la responsable de su visualización: emitir el panel desde
+    acá deja que el ancla lo verifique sobre el HTML real en vez de inventariar
+    el mapeo.
+    """
+    integrity = max(60, 100 - conflicts * 5)
+    estado, estado_color, bar_variant = _estado_de_forja(conflicts)
+    return (
+        '<div style="flex:1; min-width:240px; padding:13px 16px; background:rgba(8,11,15,.6); border:1px solid rgba(200,168,106,.28); border-radius:4px; backdrop-filter:blur(4px);">'
+        '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">'
+        "<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.16em; color:#b6ab90;\">ESTADO DE LA FORJA</span>"
+        f"<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.1em; color:{estado_color};\">◆ {_e(estado)}</span></div>"
+        '<div style="height:7px; border-radius:4px; background:rgba(255,255,255,.07); overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,.6);">'
+        f'<div class="sc-deco sc-bar--{bar_variant}" style="height:100%; width:{integrity}%; border-radius:4px; background-size:200% 100%; animation:scShimmer 3.5s linear infinite;"></div></div>'
+        f"<div style=\"display:flex; justify-content:space-between; margin-top:7px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#8a8270;\"><span>Integridad {integrity}%</span><span>{_e(conflicts)} conflictos</span></div></div>"
+    )
+
+
+def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
     sec = (
         "position:relative; overflow:hidden; border-radius:5px; min-height:354px; display:flex; align-items:flex-end;"
         "padding:38px 40px; margin-bottom:26px; border:1px solid rgba(200,168,106,.3);"
@@ -1021,15 +1052,7 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
                 f'<p style="margin:16px 0 26px; max-width:520px; font-family:\'EB Garamond\',serif; font-size:17px; line-height:1.55; color:#d8cfba;">Tu forja está despierta. <span style="color:#ecd9a8; font-weight:600;">{_e(active)} mods</span> montan guardia sobre Tamriel y el orden de carga aguarda tu palabra.</p>'
             )
             with ui.element("div").style("display:flex; flex-wrap:wrap; align-items:center; gap:18px;"):
-                ui.html(
-                    '<div style="flex:1; min-width:240px; padding:13px 16px; background:rgba(8,11,15,.6); border:1px solid rgba(200,168,106,.28); border-radius:4px; backdrop-filter:blur(4px);">'
-                    '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">'
-                    "<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.16em; color:#b6ab90;\">ESTADO DE LA FORJA</span>"
-                    f"<span style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.1em; color:{estado_color};\">◆ {_e(estado)}</span></div>"
-                    '<div style="height:7px; border-radius:4px; background:rgba(255,255,255,.07); overflow:hidden; box-shadow:inset 0 1px 2px rgba(0,0,0,.6);">'
-                    f'<div class="sc-deco sc-bar--{bar_variant}" style="height:100%; width:{integrity}%; border-radius:4px; background-size:200% 100%; animation:scShimmer 3.5s linear infinite;"></div></div>'
-                    f"<div style=\"display:flex; justify-content:space-between; margin-top:7px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#8a8270;\"><span>Integridad {integrity}%</span><span>{_e(conflicts)} conflictos</span></div></div>"
-                )
+                ui.html(_integridad_html(conflicts))
                 prepare = _cb(callbacks, "on_cta_primary")
                 btn = (
                     ui.element("button")
