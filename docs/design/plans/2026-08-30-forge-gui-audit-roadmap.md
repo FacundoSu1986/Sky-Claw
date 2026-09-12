@@ -183,9 +183,12 @@ Aplicar el rombo textual como vocabulario visual coherente en badges de disputas
 
 ### D2 — Lore en el wizard
 
-Agregar una cita/lore rotatorio inspirado en las pantallas de carga de Skyrim durante el primer arranque.
-
-Requisitos:
+**Estado:** **RESUELTO** en #584 — cita rotatoria al pie del wizard de primer
+arranque (`_WIZARD_LORE`, 5 frases originales inventariadas en el módulo), con
+ciclo `itertools` + `ui.timer(6s)`, guarda por estado `is_deleted` en el
+callback más apagado explícito del timer al cerrar el modal. Cero red, cero bloqueo.
+Ancla: `test_lore_d2_del_wizard_inventario_y_mecanica`. Copy original, nada de texto
+de Bethesda.
 
 - contenido local y determinista, sin red;
 - no bloquear ni ralentizar el wizard;

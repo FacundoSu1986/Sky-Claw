@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
 import logging
 import secrets
@@ -23,6 +24,28 @@ logger = logging.getLogger(__name__)
 
 #: Proveedores LLM aceptados (fuente única para wizard y panel de Ajustes).
 VALID_PROVIDERS = {"anthropic", "deepseek", "openai", "ollama"}
+
+#: Frases de la forja (D2): lore rotatorio al pie del wizard de primer arranque,
+#: inspirado en las pantallas de carga de Skyrim. TEXTOS ORIGINALES — ninguno es
+#: cita del juego (licencia Bethesda). Congeladas por igualdad literal en
+#: tests/test_gui_theme_contracts.py: quien cambie la lista la cambia con conciencia.
+_WIZARD_LORE: tuple[str, ...] = (
+    "No todos los descansos son derrotas: a veces el dragón duerme para que la forja aguante.",
+    "Un orden de carga bien atado vale más que diez mods brillantes mal pertrechados.",
+    "LOOT ordena, xEdit confiesa, DynDOLOD revela: cada herramienta a su ritual.",
+    "Que cada cambio tenga prueba y cada prueba tenga nombre — eso separa la forja del fuego.",
+    "El viento de la garganta no borra las runas, si alguien las grabó de verdad.",
+)
+
+
+def _lore_markup(frase: str) -> str:
+    """Markup de la cita de lore (función de módulo: el ancla la invoca sin
+    levantar la sala NiceGUI)."""
+    return (
+        '<div id="sky-wizard-lore" style="text-align:center; margin-top:18px;'
+        " font-family:'EB Garamond',serif; font-style:italic; font-size:13px;"
+        f' color:#b6ab90; transition:opacity .45s ease;">{frase}</div>'
+    )
 
 
 def validate_credentials(
@@ -84,6 +107,10 @@ class SetupWizardModal:
         self._telegram_token_input: ui.input | None = None
         # Draft fields (non-sensitive) for localStorage
         self._draft_fields: dict[str, ui.input] = {}
+        # Lore rotatorio (D2) — ciclo por la frase al pie del wizard.
+        self._lore_iter = itertools.cycle(_WIZARD_LORE)
+        self._lore_el: ui.html | None = None
+        self._lore_timer: ui.timer | None = None
 
     def build(self) -> None:
         """Renderiza el overlay fijo sobre el dashboard."""
@@ -273,6 +300,16 @@ class SetupWizardModal:
                         ui.html(f'<span style="margin-right:8px;">{_ICON_ROCKET}</span>')
                         ui.label("Inicializar Sistema")
 
+                # Lore rotatorio (D2): cita al pie del modal, estilo pantalla de
+                # carga de primer inicio. Sin CSS keyframes: solo cambio de texto,
+                # compatible con la política de movimiento reducido.
+                self._lore_el = ui.html(_lore_markup(next(self._lore_iter)))
+
+        # Temporizador de UI: rota la frase cada ~6s mientras el wizard vive.
+        # immediate=False: con el valor por defecto (True) la primera cita se saltaría
+        # al instante en vez de durar su intervalo (revisión de Codex en #584).
+        self._lore_timer = ui.timer(6.0, self._rotate_lore, immediate=False)
+
         # Attach localStorage autosave handlers
         for field_name, input_el in self._draft_fields.items():
             input_el.on(
@@ -289,6 +326,23 @@ class SetupWizardModal:
                 e.stopPropagation();
             });
         """)
+
+    def _rotate_lore(self) -> None:
+        """Rota la cita de lore; cuando el modal ya cerró, apaga el timer.
+
+        Contrato explícito contra NiceGUI 3.12: cuando el overlay se borra,
+        ``element.content = ...`` sobre un elemento marcado es un NO-OP
+        silencioso (``update()`` retorna temprano), NO lanza
+        ``RuntimeError`` — un `try/except` era código defensivo muerto.
+        Por eso el vida-muerte del timer se decide por ``is_deleted``.
+        Patrón: fuente de verdad única = estado del elemento.
+        """
+        if self._lore_el is None or self._lore_el.is_deleted:
+            if self._lore_timer is not None:
+                self._lore_timer.deactivate()
+                self._lore_timer = None
+            return
+        self._lore_el.content = _lore_markup(next(self._lore_iter))
 
     def _go_step2(self) -> None:
         self._step = 2
@@ -390,9 +444,16 @@ class SetupWizardModal:
             # (gate refresh, dashboard, etc.) reacts in the same session.
             get_store().set("first_run", False)
 
-            # Remove overlay from DOM
+            # Eliminar overlay del DOM — pero el temporizador de lore fue creado como
+            # elemento de la página (fuera de overlay_el), así que NO muere con
+            # él y hay que desactivarlo explícitamente acá. La guarda por
+            # is_deleted de _rotate_lore sigue como segunda línea (si algún
+            # manejador deja el modal borrado sin pasar por acá).
             if self._overlay_el:
                 self._overlay_el.delete()
+            if self._lore_timer is not None:
+                self._lore_timer.deactivate()
+                self._lore_timer = None
 
             await self._on_complete()
 
