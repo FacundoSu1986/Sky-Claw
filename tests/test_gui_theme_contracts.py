@@ -420,27 +420,34 @@ def test_emblema_ids_unicos_por_instancia() -> None:
     dashboard, así que dos instancias del emblema conviven en el mismo DOM y un
     ``id="scIris"`` compartido haría ambigua la referencia ``url(#scIris)``.
 
-    La prueba es sobre las instancias RENDERIZADAS y verifica dos propiedades:
-    (a) los ids de las dos instancias son distintos entre sí;
-    (b) dentro de cada instancia, todo ``url(#X)`` apunta a un ``id="X"``
-    definido EN ESA MISMA instancia.
+    La prueba es sobre las instancias RENDERIZADAS y congela el contrato D4 por
+    IGUALDAD EXACTA (no ``assert ids`` ni pertenencia, que pasaban en falso
+    verde): cada instancia define exactamente su id de gradiente y tiene
+    exactamente una referencia ``url(#...)`` que apunta a esa definición, y los
+    ids de instancias distintas son disjuntos. Un SVG que perdiera a la vez sus
+    ``id="..."`` y sus ``url(#...)`` (p. ej. el gradiente reemplazado por un
+    color plano) dejaba los dos conjuntos vacíos y el test anterior pasaba sin
+    probar nada.
+
+    Los ids congelados acá son los MISMOS que enumera por AST
+    ``test_emblema_dragon_unico_y_compartido`` en los dos call sites reales;
+    si aparece un tercer consumidor, ese ancla rompe primero.
     """
     from sky_claw.app.gui.icons import _icon_dragon_eye
 
-    sidebar = _icon_dragon_eye(iris_id="scIris-sidebar")
-    wizard = _icon_dragon_eye(iris_id="scIris-wizard")
-
-    def ids_de(svg: str) -> set[str]:
-        return set(re.findall(r'id="([^"]+)"', svg))
-
-    def refs_de(svg: str) -> list[str]:
-        return re.findall(r"url\(#([^)]+)\)", svg)
-
-    ids_sidebar, ids_wizard = ids_de(sidebar), ids_de(wizard)
-    assert ids_sidebar & ids_wizard == set(), f"ids SVG compartidos entre instancias: {ids_sidebar & ids_wizard}"
-    for nombre, svg in (("sidebar", sidebar), ("wizard", wizard)):
-        for ref in refs_de(svg):
-            assert ref in ids_de(svg), f"{nombre}: url(#{ref}) sin definición en la misma instancia"
+    esperado = {"sidebar": "scIris-sidebar", "wizard": "scIris-wizard"}
+    ids: dict[str, set[str]] = {}
+    refs: dict[str, set[str]] = {}
+    for nombre, iris_id in esperado.items():
+        svg = _icon_dragon_eye(iris_id=iris_id)
+        ids[nombre] = set(re.findall(r'id="([^"]+)"', svg))
+        refs[nombre] = set(re.findall(r"url\(#([^)]+)\)", svg))
+        assert ids[nombre] == {iris_id}, f"{nombre}: definición de gradiente inesperada: {sorted(ids[nombre])}"
+        assert refs[nombre] == {iris_id}, f"{nombre}: referencias url(#...) inesperadas: {sorted(refs[nombre])}"
+        assert refs[nombre] <= ids[nombre], f"{nombre}: url(#{iris_id}) sin definición en la misma instancia"
+    assert ids["sidebar"].isdisjoint(ids["wizard"]), (
+        f"ids SVG compartidos entre instancias: {ids['sidebar'] & ids['wizard']}"
+    )
 
 
 #: Registro vivo de iconos, congelado por igualdad literal (censo por AST sobre
