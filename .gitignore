@@ -127,12 +127,6 @@ repomix-output.*
 # Codex agent config (autogenerado, local)
 .codex/
 
-# OpenCode agent config (CLI global instalada fuera del repo; esto cubre
-# archivos locales que la CLI pudiera generar dentro del proyecto)
-.opencode/
-opencode.json
-opencode.jsonc
-
 # Agent metadata inside source tree
 sky_claw/.kilocode/
 sky_claw/.llm-chat-history/
@@ -159,9 +153,3 @@ AUDIT_PANEL_REPORT.md
 /.pytest-*/
 /pytest_tmp*/
 /test_tools_dir/
-
-# Salidas locales del pipeline de modding (generadas por tools, no versionar)
-/dyndolod/
-
-# WorkBuddy AI agent config (local)
-/.workbuddy-ai/
