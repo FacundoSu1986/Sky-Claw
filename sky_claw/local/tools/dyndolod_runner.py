@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple
 
@@ -192,6 +192,28 @@ def _digest_de_stream(fh: Any, limite: int | None = None) -> tuple[int, str]:
         leidos += len(chunk)
         acumulador.update(chunk)
     return leidos, acumulador.hexdigest()
+
+
+def _bytes_del_arbol(raiz: pathlib.Path) -> int:
+    """Bytes de los archivos REALES bajo ``raiz``, sin atravesar enlaces.
+
+    Usa ``iter_archivos_propios`` (no ``rglob``): un junction de Windows no
+    frena a ``rglob`` y contaría bytes de un árbol ajeno como presupuesto de
+    copia. La misma política con la que después se borra/copia.
+    """
+    return sum(identidad.st_size for _, identidad in iter_archivos_propios(raiz))
+
+
+def _espacio_libre_en(destino: pathlib.Path) -> int:
+    """Espacio libre del volumen que contiene ``destino``, que puede no existir.
+
+    ``shutil.disk_usage`` exige una ruta existente; el ancestro existente más
+    cercano pertenece al mismo volumen que el destino que se va a crear.
+    """
+    probe = destino
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
 
 
 # =============================================================================
@@ -436,6 +458,15 @@ class DynDOLODConfig:
             ``dyndolod_root``) de ``external_work_root``. Campo derivado en
             ``__post_init__``, no un parámetro del constructor: la derivación
             existe una sola vez, en ``output_targets``.
+        fence_ownership: Fence P2.2 que el runner consume justo ANTES de cada
+            boundary que muta o spawnea: ``create_subprocess_exec`` (spawn de la
+            herramienta) y la copia de ``_package_output_as_mod`` (packaging).
+            Es un callable async sin argumentos — el servicio lo cablea a
+            ``WorkspaceResuelto.assert_owned()``, que levanta fail-closed si la
+            lease de ownership vivo se perdió durante la corrida. ``None``
+            significa "runner directo": herramienta de test/rig que NO es el
+            boundary productivo administrado (el pipeline de producción siempre
+            lo recibe del servicio, que lo deriva del workspace).
         temp_dir: Carpeta temporal (default: ``tempfile.gettempdir()``).
         game_mode: Modo del juego (``"sse"``/``"tes5vr"``). Decisión ÚNICA y
             tipada; si es ``None`` se infiere una vez en ``__post_init__`` por el
@@ -464,6 +495,7 @@ class DynDOLODConfig:
     plugins_file: pathlib.Path | None = None
     external_work_root: pathlib.Path | None = None
     output_layout: DynDOLODOutputLayout | None = field(default=None, init=False)
+    fence_ownership: Callable[[], Awaitable[None]] | None = None
     temp_dir: pathlib.Path | None = None
     game_mode: Literal["sse", "tes5vr"] | None = None
     timeout_seconds: int = 14400  # 4 horas por defecto
@@ -1100,6 +1132,13 @@ class DynDOLODRunner:
             effective_timeout,
         )
 
+        # P2.2 — FENCE antes del spawn. La lease de ownership vivo del workspace
+        # puede perderse durante una corrida larga (TTL, reclamación por otro
+        # proceso), y un spawn posterior de la MISMA corrida escribiría en un
+        # root que ya no es exclusivo. Fail-closed: sin lease no hay proceso.
+        if self._config.fence_ownership is not None:
+            await self._config.fence_ownership()
+
         start_time = time.monotonic()
 
         try:
@@ -1292,6 +1331,13 @@ class DynDOLODRunner:
 
         logger.info("Empaquetando mod: %s -> %s", output_path, mod_path)
 
+        # P2.2 — FENCE antes del packaging: copiar es una mutación que lee el
+        # root exclusivo de la herramienta; si la lease de ownership vivo se
+        # perdió, otro proceso puede estar mutando ese root y los bytes leídos no
+        # serían atribuibles a esta corrida. Fail-closed antes de tocar `mods/`.
+        if self._config.fence_ownership is not None:
+            await self._config.fence_ownership()
+
         try:
             # OWNERSHIP antes que existencia: la FAMILIA ``<external>/DynDOLOD`` es
             # un namespace que CONTIENE a los dos subroots de herramienta, así que
@@ -1323,6 +1369,11 @@ class DynDOLODRunner:
                     "staging; revisá el destino real de la corrida antes de reintentar.",
                     output_path=output_path,
                 )
+
+            # P2.2 — OWNERSHIP de la fuente: el mod sólo copia bytes del subroot de
+            # SU herramienta. Un path fuera (familia, sibling, legacy, exterior) o
+            # un enlace que resuelve afuera es fail-closed.
+            await self._exigir_fuente_del_subroot(output_path, mod_name)
 
             # Verificar que el directorio de salida existe
             if not output_path.exists():
@@ -1374,6 +1425,23 @@ class DynDOLODRunner:
                     # el flag, el borrado falla con PermissionError y el
                     # empaquetado aborta sobre su propia salida vieja.
                     rmtree_link_aware(mod_path, limpiar_readonly=True)
+
+                # P2.2 — ENOSPC ANTES de copiar (spec §11): medir el source y el
+                # espacio libre del destino. Un disco lleno descubierto a mitad de
+                # `copytree` deja un mod parcial; el source raw y los backups
+                # tienen que seguir intactos y el fallo ser explícito. Se mide
+                # DESPUÉS de liberar el mod previo, que es espacio realmente
+                # recuperable. La medición no promete garantía (otro proceso puede
+                # consumir el volumen en paralelo): acota el fallo evidente.
+                necesarios = _bytes_del_arbol(output_path)
+                disponibles = _espacio_libre_en(mod_path.parent)
+                if necesarios > disponibles:
+                    raise DynDOLODValidationError(
+                        f"No hay espacio en el volumen de '{mod_path.parent}' para empaquetar "
+                        f"'{mod_name}': la fuente pesa {necesarios} bytes y hay {disponibles} libres. "
+                        "El staging raw y sus backups quedan intactos; liberá espacio y reintentá.",
+                        output_path=output_path,
+                    )
 
                 mod_path.mkdir(parents=True, exist_ok=True)
 
@@ -2380,6 +2448,75 @@ class DynDOLODRunner:
                 extra={"operation_type": "dyndolod_resolucion_de_ownership_fallida", "tx_id": _tx_id()},
             )
             return True
+
+    def _raiz_exclusiva_de_la_herramienta(self, mod_name: str) -> pathlib.Path | None:
+        """Subroot exclusivo dueño del mod ``mod_name``, o ``None`` si no es administrado.
+
+        El nombre del mod es la identidad con la que el runner empaqueta; mapearlo
+        acá, UNA vez, evita que el chequeo de pertenencia de la fuente dependa de
+        una lista de call sites que se desactualiza.
+        """
+        layout = self._config.output_layout
+        if layout is None:
+            return None
+        if mod_name == self.TEXGEN_MOD_NAME:
+            return layout.texgen_root
+        if mod_name == self.DYNDOLLOD_MOD_NAME:
+            return layout.dyndolod_root
+        return None
+
+    async def _exigir_fuente_del_subroot(self, output_path: pathlib.Path, mod_name: str) -> None:
+        """La fuente del packaging pertenece al subroot EXCLUSIVO de su herramienta.
+
+        P2.1 modeló los subroots exclusivos; P2.2 cierra la propiedad de que el
+        empaquetado copie ÚNICAMENTE bytes de esa superficie. Sin este chequeo, un
+        ``output_path`` arbitrario (la familia, el root hermano, el árbol legacy,
+        cualquier ruta de afuera o un enlace que resuelve afuera) se copiaría como
+        si fuera la salida de la herramienta.
+
+        Se compara sobre rutas RESUELTAS y no léxicamente: un junction o un ``..``
+        intermedio harían pasar por adentro algo que resuelve afuera
+        (``Path.__eq__`` es léxico).
+
+        La revisión del enlace va DESPUÉS de la contención a propósito: una fuente
+        enlazada que apunta dentro del subroot igual se rechaza (copiarla seguiría
+        el vínculo), y una que apunta afuera ya cayó en la contención.
+
+        ``mod_name`` no administrado (p.ej. el mod con traversal sintético de un
+        test de correlación) no tiene subroot asignable: se deja pasar — el
+        sandbox de ``meta.ini`` es quien custodia ese destino.
+        """
+        raiz = self._raiz_exclusiva_de_la_herramienta(mod_name)
+        if raiz is None:
+            return
+        try:
+            resuelta = output_path.resolve(strict=False)
+            raiz_resuelta = raiz.resolve(strict=False)
+        except OSError as exc:
+            raise DynDOLODValidationError(
+                f"No se pudo resolver la fuente '{output_path}' contra el subroot de la herramienta: {exc}",
+                output_path=output_path,
+            ) from exc
+        if resuelta != raiz_resuelta and raiz_resuelta not in resuelta.parents:
+            raise DynDOLODValidationError(
+                f"La fuente '{output_path}' no cuelga del subroot exclusivo '{raiz}' de la herramienta: "
+                "empaquetarla copiaría bytes de otra superficie (familia, root hermano, raíz legacy o "
+                "fuera del workspace). La salida de cada herramienta sólo puede venir de SU subroot.",
+                output_path=output_path,
+            )
+        try:
+            tipo_de_enlace = await asyncio.to_thread(link_kind_or_raise_with_retry, output_path)
+        except OSError as exc:
+            raise DynDOLODValidationError(
+                f"No se pudo inspeccionar la fuente '{output_path}' antes de empaquetarla: {exc}",
+                output_path=output_path,
+            ) from exc
+        if tipo_de_enlace is not None:
+            raise DynDOLODValidationError(
+                f"La fuente '{output_path}' es un enlace ({tipo_de_enlace}), no un directorio real: "
+                "copiarla seguiría el vínculo fuera de su subroot. Reemplazá el enlace por la salida real.",
+                output_path=output_path,
+            )
 
     def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, tuple[float | int, ...] | None]:
         """Firma de cada candidato ANTES de lanzar, para comparar contra la de después.

@@ -1341,7 +1341,7 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/tools/loot_service.py": (493,),
         "sky_claw/local/validators/vfs_health.py": (141,),
         "sky_claw/local/validators/preflight_sensors.py": (193,),
-        "sky_claw/app/orchestrator/preview/chain_preview_service.py": (336,),
+        "sky_claw/app/orchestrator/preview/chain_preview_service.py": (339,),
         # AppContext: fallback legacy en bootstrap de MO2Controller (1124).
         # Handoff reconciliation usa mo2.mods_dir directamente (Issue #557).
         "sky_claw/app_context.py": (1124,),

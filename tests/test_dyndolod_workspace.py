@@ -2114,10 +2114,11 @@ def test_p0_no_toca_el_root_legacy(tmp_path: pathlib.Path) -> None:
 
 #: Sitios de PRODUCCIÓN que construyen `DynDOLODPipelineService`. Igualdad
 #: literal, como `RITUAL_TOOL_MAP`: un constructor nuevo rompe el ancla hasta
-#: que se decida si participa de la coordinación de etapa 9. Sin esto, el
-#: default `stage9_coordination=None` sería exactamente el defecto dominante de
-#: este repo —un camino coordinado y su gemelo no— en su forma más silenciosa,
-#: porque no falla nada: simplemente no hay exclusión.
+#: que se decida si participa de la coordinación de etapa 9 y del ownership del
+#: workspace. Sin esto, los defaults `stage9_coordination=None`/`workspace=None`
+#: serían exactamente el defecto dominante de este repo —un camino coordinado y
+#: su gemelo no— en su forma más silenciosa, porque no falla nada: simplemente
+#: no hay exclusión ni root con ownership.
 CONSTRUCTORES_DEL_SERVICIO_DYNDOLOD: frozenset[str] = frozenset(
     {
         "sky_claw/app/orchestrator/orchestration_composition.py",
@@ -2127,7 +2128,7 @@ CONSTRUCTORES_DEL_SERVICIO_DYNDOLOD: frozenset[str] = frozenset(
 
 
 def test_censo_de_constructores_del_servicio_dyndolod() -> None:
-    """Todo constructor de producción pasa `stage9_coordination=`, sin excepciones."""
+    """Todo constructor de producción pasa `stage9_coordination=` y `workspace=`, sin excepciones."""
     import ast
 
     raiz = pathlib.Path(ws.__file__).resolve().parents[3]
@@ -2153,12 +2154,15 @@ def test_censo_de_constructores_del_servicio_dyndolod() -> None:
         for nodo in ast.walk(arbol):
             if isinstance(nodo, ast.Call) and _nombre_construido(nodo.func) == "DynDOLODPipelineService":
                 clave = archivo.relative_to(raiz).as_posix()
-                pasa = any(kw.arg == "stage9_coordination" for kw in nodo.keywords)
+                pasa = all(
+                    any(kw.arg == requerido for kw in nodo.keywords)
+                    for requerido in ("stage9_coordination", "workspace")
+                )
                 encontrados[clave] = encontrados.get(clave, True) and pasa
 
     assert set(encontrados) == CONSTRUCTORES_DEL_SERVICIO_DYNDOLOD
-    sin_coordinacion = sorted(k for k, v in encontrados.items() if not v)
-    assert not sin_coordinacion, f"construyen el servicio sin coordinar: {sin_coordinacion}"
+    sin_wiring = sorted(k for k, v in encontrados.items() if not v)
+    assert not sin_wiring, f"construyen el servicio sin coordinación/ownership: {sin_wiring}"
 
 
 def _funcion_con_el_veto_de_leases() -> tuple[object, str]:
@@ -2177,12 +2181,23 @@ def _funcion_con_el_veto_de_leases() -> tuple[object, str]:
     raise AssertionError("no se encontró la función que define `_conserva_las_leases`")
 
 
-#: Las leases que sostienen una corrida de etapa 9. Igualdad literal: una tercera
-#: que se sume al `AsyncExitStack` rompe el ancla hasta que se decida si participa
-#: del veto y de los fences. Es el defecto dominante del repo en su forma exacta —
-#: un lock cableado y su hermano no—, y acá los dos hermanos viven en la MISMA
-#: función, que es donde el repo ya lo cometió (#373).
-LEASES_DE_LA_CORRIDA_DE_ETAPA9: frozenset[str] = frozenset({"tx_lock", "ritual_de_etapa9"})
+#: Las leases que sostienen una corrida de etapa 9, como pares
+#: ``(nombre consultado en el veto, nombre fenceado)``. Igualdad literal: una
+#: tercera lease que se sume al `AsyncExitStack` rompe el ancla hasta que se
+#: decida si participa del veto y de los fences. Es el defecto dominante del repo
+#: en su forma exacta —un lock cableado y su hermano no—, y acá los dos hermanos
+#: viven en la MISMA función, que es donde el repo ya lo cometió (#373).
+#:
+#: P2.2 agregó la lease del workspace: el veto la consulta por
+#: ``lease_de_workspace.lease_lost`` y el fence por ``workspace.assert_owned()``
+#: (el handle envuelto falla también si el snapshot no conserva ownership).
+LEASES_DE_LA_CORRIDA_DE_ETAPA9: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("tx_lock", "tx_lock"),
+        ("ritual_de_etapa9", "ritual_de_etapa9"),
+        ("lease_de_workspace", "workspace"),
+    }
+)
 
 
 def test_todas_las_leases_de_la_corrida_participan_del_veto_y_de_los_fences() -> None:
@@ -2193,7 +2208,8 @@ def test_todas_las_leases_de_la_corrida_participan_del_veto_y_de_los_fences() ->
     `cwd`. Descartarla dejaba el veto de `DirectoryRollback` mirando sólo el lock
     del `locks.db` relativo al cwd: con la lease cross-process perdida, el
     rollback restauraba encima de la salida del nuevo dueño. El fence de
-    provenance tenía el mismo agujero.
+    provenance tenía el mismo agujero. P2.2 sumó la lease de ownership del
+    workspace, que excluye cross-process del root EXCLUSIVO.
     """
     import ast as _ast
 
@@ -2213,10 +2229,10 @@ def test_todas_las_leases_de_la_corrida_participan_del_veto_y_de_los_fences() ->
         and isinstance(nodo.func.value, _ast.Name)
     }
 
-    assert con_lease_lost == LEASES_DE_LA_CORRIDA_DE_ETAPA9, (
+    assert con_lease_lost == {nombre_veto for nombre_veto, _ in LEASES_DE_LA_CORRIDA_DE_ETAPA9}, (
         f"el veto de rollback no mira todas las leases: {sorted(con_lease_lost)}"
     )
-    assert con_assert_owned == LEASES_DE_LA_CORRIDA_DE_ETAPA9, (
+    assert con_assert_owned == {nombre_fence for _, nombre_fence in LEASES_DE_LA_CORRIDA_DE_ETAPA9}, (
         f"los fences de ownership no miran todas las leases: {sorted(con_assert_owned)}"
     )
 
@@ -3578,3 +3594,95 @@ def test_dos_procesos_muerte_dura_expira_y_permite_reacquisicion(tmp_path: pathl
     recursos = _instancia(tmp_path)
     registro = ws.registro_de_roots_activos(estado)
     assert registro.entrada(recursos.clave()).root == str(root_b.resolve())
+
+
+def test_dos_procesos_el_rechazo_por_ownership_no_inicia_move_aside_ni_spawn(
+    tmp_path: pathlib.Path,
+) -> None:
+    """P2.2 §19: con A dueño vivo, B (mismo binding) no toca ni un byte de staging.
+
+    DOS PROCESOS reales ya demostraron el rechazo ``busy`` (P2.0). Lo que agrega
+    P2.2 es la consecuencia sobre el filesystem del writer: el rechazo ocurre
+    antes de que B pueda siquiera obtener un `WorkspaceResuelto`, así que no hay
+    layout de herramienta, ni backup de move-aside, ni artefacto suyo. El único
+    contenido posible en cada root es su binding.
+    """
+    estado = tmp_path / "estado"
+    root_a = tmp_path / "Work A"
+    root_b = tmp_path / "Work B"
+    holder, retador = _correr_ownership_vivo(
+        tmp_path, estado=estado, root_a=root_a, root_b=root_b, ttl=60.0, crash=False
+    )
+
+    assert holder["ok"] is True
+    assert retador["fase1"] == {"entro": False, "motivo": "busy"}
+
+    for root in (root_a, root_b):
+        assert not (root / "DynDOLOD").exists(), f"B inició el layout de herramienta en {root}"
+        assert not list(root.rglob("*.rollback-*")), f"hay move-aside sin ownership en {root}"
+        assert sorted(p.name for p in root.iterdir()) == [".sky-claw-binding.json"]
+
+
+def test_el_wiring_productivo_del_workspace_es_una_cadena_completa() -> None:
+    """P2.2: AppContext → SupervisorAgent → composición → service, sin eslabón ausente.
+
+    Se ancla por AST porque el default ``workspace=None`` es legítimo para tests
+    y dobles: un eslabón olvidado no falla — el pipeline productivo corre NO
+    CONFIGURADO (fail-closed) o, peor, un test/rig lo corre sin fence. La cadena
+    se enumera entera para que intercalar un salto sin el kwarg rompa acá.
+    """
+    import ast as _ast
+
+    raiz = pathlib.Path(ws.__file__).resolve().parents[3] / "sky_claw"
+
+    def _llamada(archivo: str, nombre: str) -> _ast.Call:
+        arbol = _ast.parse((raiz / archivo).read_text(encoding="utf-8"))
+        for nodo in _ast.walk(arbol):
+            if not isinstance(nodo, _ast.Call):
+                continue
+            func = nodo.func
+            ident = func.id if isinstance(func, _ast.Name) else getattr(func, "attr", None)
+            if ident == nombre:
+                return nodo
+        raise AssertionError(f"no se encontró la llamada a {nombre} en {archivo}")
+
+    def _kwarg(llamada: _ast.Call, nombre: str) -> str | None:
+        for kw in llamada.keywords:
+            if kw.arg == nombre:
+                return _ast.unparse(kw.value)
+        return None
+
+    cadena = [
+        ("app/gui/_bootloader.py", "SupervisorAgent", "dyndolod_workspace", "ctx.dyndolod_workspace"),
+        (
+            "app/orchestrator/supervisor.py",
+            "build_orchestration_composition",
+            "dyndolod_workspace",
+            "dyndolod_workspace",
+        ),
+        (
+            "app/orchestrator/orchestration_composition.py",
+            "DynDOLODPipelineService",
+            "workspace",
+            "dyndolod_workspace",
+        ),
+        (
+            "app/orchestrator/orchestration_composition.py",
+            "build_preview_chain_service_provider",
+            "workspace",
+            "dyndolod_workspace",
+        ),
+        (
+            "app/orchestrator/preview/chain_preview_service.py",
+            "DynDOLODPipelineService",
+            "workspace",
+            "workspace",
+        ),
+        ("app/orchestrator/dispatcher_dependencies.py", "ChainPreviewService", "workspace", "workspace"),
+    ]
+    for archivo, llamada, kwarg, valor in cadena:
+        encontrado = _kwarg(_llamada(archivo, llamada), kwarg)
+        assert encontrado == valor, (
+            f"{archivo}: {llamada} debe pasar {kwarg}={valor!r} para que el root productivo "
+            f"salga del workspace; encontré {encontrado!r}"
+        )

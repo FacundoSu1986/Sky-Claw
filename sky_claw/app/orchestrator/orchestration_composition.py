@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from sky_claw.app.security.path_validator import PathValidator
     from sky_claw.local.ai.patch_advisor_llm import LLMCallable
     from sky_claw.local.assets import AssetConflictReport
-    from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
+    from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination, WorkspaceResuelto
     from sky_claw.local.tools.grass_cache_service import GrassRuntimeDeps
     from sky_claw.local.tools.loot_service import LootRunnerProtocol
 
@@ -139,6 +139,11 @@ def build_orchestration_composition(
     # puede construirla sin cruzar la frontera de dominio que
     # `tests/test_supervisor_architecture_boundary.py` custodia.
     stage9_coordination: Stage9Coordination | None = None,
+    # P2.2 (ADR 0011): `WorkspaceResuelto` del arranque — root admitido + lease
+    # de ownership vivo. Se inyecta desde `AppContext` (dueño de la lease) y es
+    # la ÚNICA fuente del `-o:` productivo del pipeline administrado. `None`
+    # (tests/standalone) deja el runner NO CONFIGURADO, sin fallback legacy.
+    dyndolod_workspace: WorkspaceResuelto | None = None,
 ) -> OrchestrationComposition:
     """Construye el grafo completo de servicios, providers, middleware y dispatcher.
 
@@ -178,6 +183,8 @@ def build_orchestration_composition(
 
     # D2 (PR #493): mo2_profile es la identidad esperada del dueño del
     # handoff durable de DynDOLOD.
+    # P2.2: el workspace del arranque aporta el root productivo y el fence de
+    # ownership vivo; no se reconstruye ni se re-resuelve acá.
     dyndolod_service = DynDOLODPipelineService(
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
@@ -186,6 +193,7 @@ def build_orchestration_composition(
         event_bus=event_bus,
         mo2_profile=profile_name,
         stage9_coordination=stage9_coordination,
+        workspace=dyndolod_workspace,
     )
 
     xedit_service = XEditPipelineService(
@@ -286,6 +294,11 @@ def build_orchestration_composition(
         journal=journal,
         event_bus=event_bus,
         stage9_coordination=stage9_coordination,
+        # P2.2: el preview es plan-only (nunca corre `execute` sin dry_run), pero
+        # se le pasa el mismo workspace para que una ruta futura que mute no
+        # nazca sin ownership — el mismo criterio que ya se aplicó con la
+        # coordinación.
+        workspace=dyndolod_workspace,
     )
 
     # ------------------------------------------------------------------

@@ -28,6 +28,12 @@ import pytest
 
 from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.tools.dyndolod_workspace import (
+    BindingDocument,
+    EstadoDelRoot,
+    ResourceBinding,
+    WorkspaceResuelto,
+)
 from sky_claw.local.tools.output_targets import (
     HerramientaDynDOLOD,
     bashed_patch_target,
@@ -369,6 +375,24 @@ def test_consumidores_del_root_legacy_no_son_productivos() -> None:
     assert importadores == {"sky_claw/local/tools/rollback_reconciler.py"}
 
 
+def _workspace_fake(root: pathlib.Path) -> WorkspaceResuelto:
+    """Workspace mínimo: el preflight sólo consume `workspace.root`."""
+    return WorkspaceResuelto(
+        root=root,
+        binding=BindingDocument(
+            schema_version=1,
+            binding_id="binding-de-test",
+            resource_binding=ResourceBinding(
+                game_path=str(root / "game"),
+                mo2_instance_data_root=str(root / "mo2-data"),
+                mo2_mods_path=str(root / "mo2-data" / "mods"),
+            ),
+        ),
+        estado=EstadoDelRoot.C_BINDING_COMPATIBLE,
+        recien_inicializado=False,
+    )
+
+
 def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -395,7 +419,7 @@ def test_dyndolod_preflight_sondea_los_mismos_candidatos_que_el_runner(
         journal=MagicMock(),
         path_resolver=resolver,
         event_bus=MagicMock(),
-        external_work_root=external,
+        workspace=_workspace_fake(external),
     )
     runner, layout = _runner_dyndolod(tmp_path, external_work_root=external)
 

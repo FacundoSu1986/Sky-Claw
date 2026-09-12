@@ -38,6 +38,7 @@ from sky_claw.app.db.locks import (
     SnapshotTransactionLock,
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_runner import (
@@ -47,7 +48,11 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODRunner,
     DynDOLODTimeoutError,
 )
-from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
+from sky_claw.local.tools.dyndolod_workspace import (
+    OwnershipDeWorkspaceVivo,
+    Stage9Coordination,
+    WorkspaceResuelto,
+)
 from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
 from sky_claw.logging_config import correlacion_de_transaccion
 
@@ -135,6 +140,38 @@ class _ResumeBloqueado:
     detail: str
 
 
+def _preparar_root_vacio(root: pathlib.Path) -> None:
+    """Crea ``root`` si no existe y exige que quede VACÍO por construcción.
+
+    P2.2 — precondición del spawn (spec §10): después del move-aside del root
+    completo de la herramienta, el root se recrea vacío y se verifica antes de
+    lanzar. "Vacío" no se supone ni se mide por freshness: se comprueba en disco
+    que el directorio existe y no tiene ninguna entrada.
+
+    Corre en un worker thread (I/O de disco). Un root enlazado (symlink/junction)
+    se rechaza fail-closed: `link_kind_or_raise` lanza en vez de tragarse un
+    bloqueo transitorio, y el move-aside de `DirectoryRollback` ya lo habría
+    rechazado en su propio `__aenter__` — esto cierra la ventana en la que el
+    enlace aparece DESPUÉS del move-aside.
+    """
+    tipo_de_enlace = link_kind_or_raise(root)
+    if tipo_de_enlace is not None:
+        raise DynDOLODExecutionError(
+            f"El root de staging '{root}' es un enlace ({tipo_de_enlace}) y no un directorio real: "
+            "no puede recibir la salida exclusiva de esta corrida."
+        )
+    if not root.exists():
+        root.mkdir(parents=True, exist_ok=True)
+    elif not root.is_dir():
+        raise DynDOLODExecutionError(f"El root de staging '{root}' existe pero no es un directorio.")
+    if any(root.iterdir()):
+        entradas = sorted(hijo.name for hijo in root.iterdir())
+        raise DynDOLODExecutionError(
+            f"El root de staging '{root}' no está vacío tras el move-aside ({entradas[:5]}): "
+            "la herramienta escribiría sobre residuo de otra corrida. No se lanza."
+        )
+
+
 class DynDOLODPipelineService:
     """Servicio transaccional para el pipeline DynDOLOD (TexGen + DynDOLOD).
 
@@ -153,7 +190,20 @@ class DynDOLODPipelineService:
         stage9_coordination: Coordinación cross-process de etapa 9 (P0 de
             ADR 0011). Se adquiere ANTES del lock transaccional y se suelta
             DESPUÉS de que rollback y recovery terminaron de mutar.
+        workspace: `WorkspaceResuelto` del arranque (P0/P2.0 de ADR 0011) del que
+            sale el `external_work_root` productivo y su lease de ownership vivo
+            (fence P2.2). ``None`` = runner directo / doble de test — el pipeline
+            administrado de producción siempre lo recibe por el composition root,
+            y el censo de constructores
+            (`tests/test_dyndolod_workspace.py::test_censo_de_constructores_del_servicio_dyndolod`)
+            lo exige. El path productivo sale de ``workspace.root``: no hay
+            segunda fuente ni fallback al root legacy.
     """
+
+    #: Default a nivel de CLASE para dobles construidos con ``__new__`` (tests de
+    #: contrato): el atributo existe aunque `__init__` no haya corrido. Mismo
+    #: idioma que el `getattr(self, "_mo2_profile", None)` del gate de perfil.
+    _workspace: WorkspaceResuelto | None = None
 
     def __init__(
         self,
@@ -166,7 +216,7 @@ class DynDOLODPipelineService:
         preflight: PreflightService | None = None,
         mo2_profile: str | None = None,
         stage9_coordination: Stage9Coordination | None = None,
-        external_work_root: pathlib.Path | None = None,
+        workspace: WorkspaceResuelto | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -180,12 +230,12 @@ class DynDOLODPipelineService:
         # un handoff resumible sin dueño).
         self._mo2_profile = mo2_profile
 
-        # P2.1 (ADR 0011): raíz de trabajo externa admitida, de la que se derivan
-        # los subroots exclusivos de cada herramienta. `None` es "NO CONFIGURADO":
-        # el runner falla cerrado antes de spawnear en vez de inventar un destino
-        # legacy. El wiring de PRODUCCIÓN desde `AppContext.dyndolod_workspace` es
-        # P2.2 (servicio/transacción); P2.1 sólo modela y conecta el `-o:`.
-        self._external_work_root = external_work_root
+        # P2.2 (ADR 0011): ÚNICA fuente de verdad del root productivo y del
+        # derecho a mutarlo. El `external_work_root` de `DynDOLODConfig` se deriva
+        # de `workspace.root` en `_ensure_runner`, y el fence de ownership viaja
+        # con el snapshot (P2.0). No se guarda un `external_work_root` paralelo:
+        # dos fuentes divergirían en el próximo refactor.
+        self._workspace = workspace
 
         # P0.2 (ADR 0011): coordinación cross-process de etapa 9 sobre estado
         # durable por usuario. `None` conserva EXACTAMENTE el comportamiento
@@ -244,7 +294,14 @@ class DynDOLODPipelineService:
             mo2_mods_path=mo2_mods_path,
             dyndolod_exe=dyndolod_exe,
             texgen_exe=texgen_exe,
-            external_work_root=self._external_work_root,
+            # P2.2: el root productivo sale del `WorkspaceResuelto` inyectado —
+            # única fuente. Sin workspace, el runner queda NO CONFIGURADO y falla
+            # cerrado antes de spawnear (no hay fallback legacy).
+            external_work_root=self._workspace.root if self._workspace is not None else None,
+            # P2.2: fence de ownership vivo antes de cada spawn/packaging. Con
+            # workspace (`None` sólo en runner directo de test/rig), el runner no
+            # puede mutar fuera del contrato de P2.0.
+            fence_ownership=self._fence_del_workspace if self._workspace is not None else None,
         )
 
         self._runner = DynDOLODRunner(config)
@@ -254,6 +311,40 @@ class DynDOLODPipelineService:
             dyndolod_exe,
         )
         return self._runner
+
+    async def _fence_del_workspace(self) -> None:
+        """Fence P2.2: reconfirma la lease de ownership vivo antes de mutar.
+
+        Se cablea al runner (`DynDOLODConfig.fence_ownership`) y se invoca en el
+        propio `execute` antes de cada frontera de mutación del root exclusivo:
+        move-aside, creación del root vacío, spawn y packaging. Es fail-closed:
+        si la lease se perdió durante una corrida larga, `assert_owned()` levanta
+        `LockLeaseLostError` y NO se ejecuta la mutación siguiente.
+
+        No crea ownership ni locks: reutiliza el `OwnershipDeWorkspaceVivo` de
+        P2.0 que viaja en el `WorkspaceResuelto`.
+        """
+        if self._workspace is not None:
+            await self._workspace.assert_owned()
+
+    def _layout_del_runner_coincide(self, runner: DynDOLODRunner) -> bool:
+        """¿El layout del runner es EXACTAMENTE el derivado del workspace?
+
+        Enunciado como propiedad del mecanismo: *con workspace inyectado, el root
+        productivo sale sólo de `workspace.root`*. Un runner con layout ausente o
+        distinto (construido por un side channel con otra raíz) escribiría el
+        `-o:` fuera del root con ownership y el fence protegería un directorio
+        que no es el que se muta. Fail-closed.
+
+        Sin workspace (runner directo de test/rig) no hay nada que contrastar:
+        el llamador ya decidió correr fuera del boundary administrado.
+        """
+        if self._workspace is None:
+            return True
+        layout = runner._config.output_layout
+        if layout is None:
+            return False
+        return layout == derivar_layout_de_dyndolod(external_work_root=self._workspace.root)
 
     def _ensure_preflight(self) -> PreflightService | None:
         """Construye perezosamente el preflight de DynDOLOD (T-16c·3).
@@ -375,19 +466,20 @@ class DynDOLODPipelineService:
         if isinstance(mods, pathlib.Path):
             candidates += [mods, mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME, mods / DynDOLODRunner.TEXGEN_MOD_NAME]
 
-        # P2.1: el staging crudo cuelga de los subroots EXCLUSIVOS derivados del
-        # external_work_root admitido, no del root legacy del juego. Sin la
-        # preferencia configurada no hay staging que sondear (NO CONFIGURADO); la
-        # raíz admitida sí se sondea —existe— para probar que los subroots se
-        # pueden CREAR en el primer run.
+        # P2.2: el staging crudo cuelga de los subroots EXCLUSIVOS derivados del
+        # `WorkspaceResuelto` inyectado (`workspace.root`), no del root legacy del
+        # juego. Sin workspace no hay staging que sondear (NO CONFIGURADO /
+        # runner directo); la raíz admitida sí se sondea —existe— para probar que
+        # los subroots se pueden CREAR en el primer run.
+        external_work_root = self._workspace.root if self._workspace is not None else None
         layout = (
-            derivar_layout_de_dyndolod(external_work_root=self._external_work_root)
-            if self._external_work_root is not None
+            derivar_layout_de_dyndolod(external_work_root=external_work_root)
+            if external_work_root is not None
             else None
         )
-        if layout is not None:
+        if layout is not None and external_work_root is not None:
             candidates += [
-                self._external_work_root,
+                external_work_root,
                 layout.family_root,
                 layout.texgen_root,
                 layout.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME,
@@ -870,6 +962,13 @@ class DynDOLODPipelineService:
         # regla deja de tener un caso especial que documentar y verificar aparte.
         tx_id: int | None = None
 
+        # P2.2: `workspace` y su lease viven en scope de TODO `execute` porque el
+        # veto de los DirectoryRollback y los fences los consultan desde closures
+        # definidos más abajo. Se toman del atributo UNA vez: el snapshot del
+        # arranque es inmutable y no debe releerse a mitad de corrida (§28).
+        workspace = self._workspace
+        lease_de_workspace: OwnershipDeWorkspaceVivo | None = workspace.ownership if workspace is not None else None
+
         # Preflight brutal ANTES de tocar nada (T-16c·3): un semáforo ROJO (p. ej.
         # el dir de salida sin permisos) cancela el run de 30+ min / GBs sin adquirir
         # el lock, abrir transacción, ni publicar el evento de inicio. Amarillo/verde
@@ -958,6 +1057,39 @@ class DynDOLODPipelineService:
                     "success": False,
                     "message": str(exc),
                     "errors": [str(exc)],
+                    "duration_seconds": duration,
+                },
+                preflight_report,
+            )
+
+        # P2.2 — coherencia workspace ↔ runner. Con un `WorkspaceResuelto`
+        # inyectado, el ÚNICO layout admisible es el derivado de `workspace.root`:
+        # un runner construido con otra raíz escribiría su `-o:` fuera del root
+        # con ownership. El check cierra el side channel de `svc._runner = ...`
+        # (test/rig) sin workspace o con layout divergente.
+        if workspace is not None and not self._layout_del_runner_coincide(runner):
+            msg = (
+                f"El layout de salida del runner no coincide con el workspace inyectado "
+                f"({workspace.root}): el root productivo sólo puede salir de workspace.root."
+            )
+            duration = time.monotonic() - start_time
+            logger.error("DynDOLOD (stage 9): %s", msg, extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id})
+            await self._publish_completed(
+                preset=preset,
+                run_texgen=run_texgen,
+                success=False,
+                texgen_success=False,
+                dyndolod_success=False,
+                errors=(msg,),
+                duration_seconds=duration,
+                rolled_back=False,
+            )
+            return _attach_preflight(
+                {
+                    "success": False,
+                    "reason": "WorkspaceDivergente",
+                    "message": msg,
+                    "errors": [msg],
                     "duration_seconds": duration,
                 },
                 preflight_report,
@@ -1079,8 +1211,8 @@ class DynDOLODPipelineService:
             if run_texgen:
                 rollback_dirs.append(mods_path / runner.TEXGEN_MOD_NAME)
 
-        # B (review de #493): el staging CRUDO de TexGen también entra al
-        # move-aside, y esta línea es lo que hace que el árbol pertenezca a ESTA
+        # B (review de #493): el staging CRUDO de cada herramienta también entra
+        # al move-aside, y esta línea es lo que hace que el árbol pertenezca a ESTA
         # corrida en vez de sólo haber cambiado durante ella.
         #
         # El gate de frescura del runner es un predicado ∃ —"algo se escribió"—
@@ -1090,27 +1222,35 @@ class DynDOLODPipelineService:
         # lanzar lo vuelve vacío por construcción, y a partir de ahí "lo que hay
         # adentro" y "lo que esta corrida generó" son el mismo conjunto.
         #
+        # **P2.2: se aparta el root COMPLETO de la herramienta, no su
+        # subdirectorio de artefacto.** Con `-o:` exclusivo por herramienta, TODO
+        # lo que hay bajo ese root pertenece a la corrida anterior de esa
+        # herramienta; el move-aside del root entero es lo que hace born-empty al
+        # ACTIVE TARGET (spec §10) y subsume el `root/textures` del modelo viejo.
+        # El DynDOLOD root entra SIEMPRE (born-empty antes de su spawn, también
+        # con `run_texgen=False`); el TexGen root sólo cuando la etapa corre, para
+        # que `run_texgen=False` lo deje byte-exacto. La familia nunca se mueve.
+        #
         # **No cuelga de ``create_snapshot``, y la asimetría es deliberada.** Los
-        # otros dos destinos son comodidad de rollback: el operador puede
-        # renunciar a ellos. Éste no protege nada — establece la precondición de
-        # que el staging sea de la corrida, que es una propiedad del resultado y
-        # no una preferencia. Un `create_snapshot=False` que reintrodujera el
-        # árbol heredado devolvería el mismo mod contaminado por otra puerta.
+        # otros destinos son comodidad de rollback: el operador puede renunciar a
+        # ellos. Éste no protege nada — establece la precondición de que el
+        # staging sea de la corrida, que es una propiedad del resultado y no una
+        # preferencia. Un `create_snapshot=False` que reintrodujera el árbol
+        # heredado devolvería el mismo mod contaminado por otra puerta.
         #
-        # A-min es su precondición y el orden importa: el backup de move-aside
-        # queda de HERMANO del staging, o sea colgando de la raíz administrada,
-        # que es exactamente el directorio que el fallback de DynDOLOD podía
-        # empaquetar entero. Con la raíz ya declarada no empaquetable, ese residuo
-        # es inerte. Su barrido tras una muerte dura lo declara
-        # ``rollback_reconciler.construir_productores_de_move_aside``.
-        #
-        # P2.1: el staging crudo de cada herramienta cuelga de SU subroot
-        # exclusivo (hermanos, derivados del external_work_root), no de una raíz
-        # compartida. El move-aside sigue siendo el mismo mecanismo; sólo cambia
-        # la raíz sobre la que opera.
+        # El backup de move-aside queda de HERMANO del root, colgando de la
+        # familia (namespace ya declarado no empaquetable), así que su residuo es
+        # inerte para el packaging. Su barrido tras una muerte dura lo declara
+        # ``rollback_reconciler.construir_productores_de_move_aside`` (P2.3
+        # extiende el recovery de arranque a los roots externos; el PR sigue
+        # DRAFT).
         layout = runner._config.output_layout
-        if run_texgen and layout is not None:
-            rollback_dirs.append(layout.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME)
+        roots_de_herramienta: list[pathlib.Path] = []
+        if layout is not None:
+            if run_texgen:
+                roots_de_herramienta.append(layout.texgen_root)
+            roots_de_herramienta.append(layout.dyndolod_root)
+            rollback_dirs.extend(roots_de_herramienta)
 
         # T-26: los paths que el ritual reescribe (independiente del snapshot) —
         # el files_touched del ActionManifest. Incluye los mods de salida
@@ -1190,9 +1330,15 @@ class DynDOLODPipelineService:
                     lease perdida significa que otro dueño puede estar mutando
                     los mismos outputs, y restaurar el move-aside encima borraría
                     su salida. Un lock nuevo que se sume a la corrida se suma acá
-                    o no protege nada.
+                    o no protege nada. La lease de ownership vivo (P2.0) es la
+                    que excluye cross-process del root EXCLUSIVO: si se pierde,
+                    este proceso tampoco tiene derecho a restaurarlo.
                     """
-                    return not tx_lock.lease_lost and (ritual_de_etapa9 is None or not ritual_de_etapa9.lease_lost)
+                    return (
+                        not tx_lock.lease_lost
+                        and (ritual_de_etapa9 is None or not ritual_de_etapa9.lease_lost)
+                        and (lease_de_workspace is None or not lease_de_workspace.lease_lost)
+                    )
 
                 async def _fencear_ownership() -> None:
                     """Reconfirma contra la DB la propiedad de TODAS las leases.
@@ -1200,11 +1346,17 @@ class DynDOLODPipelineService:
                     Mismo argumento que el veto: fencear sólo `tx_lock` deja
                     firmando provenance a un proceso que ya perdió la exclusión
                     cross-process, que es la que impide que otra instancia esté
-                    regenerando el mismo artifact mientras se lo lee.
+                    regenerando el mismo artifact mientras se lo lee. La lease del
+                    workspace se fencea por `WorkspaceResuelto.assert_owned()`
+                    (falla si el snapshot no conserva ownership, no sólo si la
+                    lease expiró), que es la misma puerta que usan spawn y
+                    packaging.
                     """
                     await tx_lock.assert_owned()
                     if ritual_de_etapa9 is not None:
                         await ritual_de_etapa9.assert_owned()
+                    if workspace is not None:
+                        await workspace.assert_owned()
 
                 # Comenzar transacción en journal DENTRO del lock.
                 tx_id = await self._journal.begin_transaction(
@@ -1262,10 +1414,25 @@ class DynDOLODPipelineService:
                 # dueño concurrente, pero los DirectoryRollback salen ANTES que él y
                 # sin el veto restaurarían igual, borrando la salida del nuevo dueño
                 # (review Codex #399 sobre el hermano Pandora — mismo agujero acá).
+                #
+                # P2.2 — FENCE de ownership ANTES del move-aside: la primera
+                # mutación del root exclusivo no puede empezar con la lease del
+                # workspace perdida (el registro pudo transicionar a otro root).
+                await self._fence_del_workspace()
                 for output_dir in rollback_dirs:
                     dr = DirectoryRollback(output_dir, should_rollback=_conserva_las_leases)
                     dir_rollbacks.append(dr)
                     await tx_stack.enter_async_context(dr)
+
+                # P2.2 — BORN-EMPTY por herramienta: tras el move-aside, cada
+                # root de herramienta se recrea y se verifica VACÍO antes del
+                # spawn de su binario. Si cualquiera falla (enlace, no-dir,
+                # residuo inesperado) NO se lanza: el unwind del tx_stack
+                # restaura los backups y la TX queda PENDING.
+                if roots_de_herramienta:
+                    await self._fence_del_workspace()
+                    for herramienta_root in roots_de_herramienta:
+                        await asyncio.to_thread(_preparar_root_vacio, herramienta_root)
 
                 # Ejecutar pipeline.
                 #
