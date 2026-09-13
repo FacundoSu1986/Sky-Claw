@@ -218,25 +218,32 @@ Enunciado como propiedad del mecanismo:
 > [plan de resolución de PR-2](2026-09-09-dyndolod-pr2-resolution.md).
 
 La evidencia física T5-B con TexGen Alpha-209 fijó el nivel exacto: el argv recibe
-`<raíz administrada>` mediante `-o:` y TexGen escribe en
-**`<raíz administrada>/textures`**. No existe una raíz intermedia `TexGen/` ni un
-staging físico `TexGen_Output/`. DynDOLOD conserva su contrato independiente
+la raíz administrada mediante `-o:` y TexGen escribe en su hijo directo
+`textures/` —hoy, **`texgen_root/textures`**, cuya ruta completa es
+`external_work_root/DynDOLOD/TexGen/textures`—. No existe un nivel adicional
+dentro del subroot (`texgen_root/TexGen/textures`) ni un staging físico
+`TexGen_Output/`. DynDOLOD conserva su contrato independiente
 (`DynDOLOD_Output` y el fallback acotado que exige `DynDOLOD.esp`).
 
 T3 alinea todas las superficies con una sola constante física: candidato del
-runner, preflight y manifest apuntan a `root/textures`. El
-`ToolExecutionResult.output_path` exitoso entrega esa ruta exacta al empaquetado;
-al copiarla a `mods/TexGen Output`, el pipeline preserva el directorio
-Data-relative y produce `mods/TexGen Output/textures/...`, no
+runner, preflight y manifest apuntan a **`texgen_root/textures`** (ruta completa
+`external_work_root/DynDOLOD/TexGen/textures`). El `family_root`
+(`external_work_root/DynDOLOD`) **no es output ni unidad empaquetable**: es el
+namespace que contiene a los dos subroots de herramienta, y TexGen escribe
+directamente en `texgen_root/textures`, sin ningún nivel intermedio dentro de su
+subroot. El `ToolExecutionResult.output_path` exitoso entrega esa ruta exacta al
+empaquetado; al copiarla a `mods/TexGen Output`, el pipeline preserva el
+directorio Data-relative y produce `mods/TexGen Output/textures/...`, no
 `mods/TexGen Output/...` sin el prefijo.
 
 **Corregir el nivel destapó tres agujeros que el candidato roto contenía por
 accidente, y los tres se cierran en el mismo trabajo, fail-closed:**
 
 - **A — ownership.** La raíz administrada la comparten las dos herramientas, así
-  que el fallback de DynDOLOD a la raíz podía empaquetarla entera y llevarse
-  `root/textures` adentro de "DynDOLOD Output". La raíz deja de ser una unidad
-  empaquetable; la DETECCIÓN no cambia (el gate de `DynDOLOD.esp` sigue igual).
+  que el fallback de DynDOLOD a la raíz podía empaquetarla entera y llevarse el
+  subárbol `textures/` de TexGen adentro de "DynDOLOD Output". La raíz deja de
+  ser una unidad empaquetable; la DETECCIÓN no cambia (el gate de `DynDOLOD.esp`
+  sigue igual).
   La regla es *namespace compartido ≠ namespace empaquetable*, **no** un filtro
   por el nombre `textures`: excluir un nombre dejaría pasar cualquier otro hijo
   ajeno.
@@ -319,8 +326,8 @@ general (hay dos call sites de empaquetado), pero el que puede correr sin el
 de TexGen dejó de ser alcanzable en el camino productivo.
 
 **La contención ahora es real, pero no resuelve T5.** Si un preset desvía las
-escrituras, `root/textures` queda AUSENTE —el move-aside se lo llevó y nada lo
-repuso— y TexGen falla cerrado; eso no determina la precedencia `preset` vs
+escrituras, `texgen_root/textures` queda AUSENTE —el move-aside se lo llevó y
+nada lo repuso— y TexGen falla cerrado; eso no determina la precedencia `preset` vs
 `-o:`, no neutraliza presets rancios y no demuestra el comportamiento de
 DynDOLOD. Relajar el gate de artefacto reabriría ese agujero, por lo que el
 artefacto requerido sigue siendo invariante de T3 (la frescura ya no existe:
