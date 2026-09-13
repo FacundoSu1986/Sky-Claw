@@ -1490,7 +1490,7 @@ def _conflicts_screen(
     with ui.element("div").style("display:flex; align-items:center; gap:16px; margin-bottom:14px;"):
         ui.html(
             "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">DISPUTAS EN LA FORJA</h2>"
-            f'<span style="font-family:\'Spline Sans Mono\',monospace; font-size:12px; color:{RED_SOFT};" aria-hidden="false">◆ {len(conflicts)}</span>'
+            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:12px; color:{RED_SOFT};\">◆ {len(conflicts)}</span>"
             '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span>'
         )
         on_scan = _cb(callbacks, "on_conflict_scan")
@@ -1540,7 +1540,7 @@ def _resolved_section(resolved: list[dict[str, Any]]) -> None:
     with ui.element("div").style("display:flex; align-items:center; gap:16px; margin:26px 0 12px;"):
         ui.html(
             "<h3 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:14px; letter-spacing:.18em; color:#8fae86;\">RESUELTAS</h3>"
-            f'<span style="font-family:\'Spline Sans Mono\',monospace; font-size:11px; color:{GREEN};" aria-hidden="false">◆ {len(resolved)}</span>'
+            f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{GREEN};\">◆ {len(resolved)}</span>"
             '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(95,156,107,.35),transparent);"></span>'
         )
     with ui.element("div").style("display:flex; flex-direction:column; gap:7px;"):
@@ -1750,6 +1750,17 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
 
 _STATUS_COLORS = {"ok": GREEN, "success": GREEN, "registered": GREEN, "failed": RED, "error": RED}
 
+# Etiqueta legible de estado en el registro de la Puerta (D6): el color y el rombo
+# son decoración, la etiqueta es la señal. Cubre los estados del mapa de color;
+# el fallback es el valor crudo del backend (nunca inventado).
+_STATUS_LABELS: dict[str, str] = {
+    "ok": "OK",
+    "success": "OK",
+    "registered": "REGISTRADO",
+    "failed": "FALLÓ",
+    "error": "ERROR",
+}
+
 
 def _downloads_screen(downloads: dict[str, Any], callbacks: dict[str, Callable]) -> None:
     """Pantalla de Descargas: aprobación HITL pendiente + registro de actividad.
@@ -1844,12 +1855,17 @@ def _task_log_row_html(row: dict[str, Any]) -> str:
     )
     # El rombo ◆ reemplaza al dot CSS plano: ya no es una suerte de punto decorativo
     # sino el vocabulario de estado compartido con el hero y los badges de Disputas
-    # (D6). El color lo colorean los estados, pero el glifo por sí solo es texto
-    # válido (no depende de la paleta; código del inventario de glifos congelado).
+    # (D6). POR ACCESIBILIDAD el rombo es decorativo (`aria-hidden="true"`) y la
+    # señal semántica real es el texto a su lado (status visible). El color se
+    # reserva como redundancia (quien ve hueco ya tiene qué es).
+    # Mapa de estado → etiqueta legible: el color solo la matiza.
+    label = _STATUS_LABELS.get(status.lower(), status)
+
     return (
         f'<div style="{line}">'
-        f'<span style="color:{color}; flex-shrink:0; font-size:11px;" aria-hidden="false">◆</span>'
+        f'<span style="color:{color}; flex-shrink:0; font-size:11px;" aria-hidden="true">◆</span>'
         f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{color}; min-width:88px;\">{_e(row.get('action', ''))}</span>"
+        f'<span style="font-family:\'Spline Sans Mono\',monospace; font-size:10.5px; color:{color};" aria-hidden="false">[{_e(label)}]</span>'
         f"<span style=\"flex:1; min-width:0; font-family:'EB Garamond',serif; font-size:13px; color:#d9d2c0;"
         f' overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{_e(subject)}</span>'
         f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#857c69;\">{_e(row.get('created_at', ''))}</span>"

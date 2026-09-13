@@ -1264,23 +1264,33 @@ def test_lore_d2_timer_arranca_desfasado_y_rota_en_vida() -> None:
 
 def test_rombo_d6_como_glifo_de_estado() -> None:
     """D6: el rombo ◆ (no emoji, de bloque permitido) es el vocabulario de estado
-    en los tres sitios del shell que el roadmap señala: badge del hero
-    (◆ ESTADO), header de Disputas/Resueltas (◆ <n>) y cada fila del registro
-    de la Puerta (◆ coloreado por estado, en vez del punto suelto).
+    en los sitios que el roadmap señala. Cada superficie se ancla por separado
+    (una por bloque; el find del hero no absorbe al resto):
 
-    La política de glifos de #522 también prohíbe cualquier codepoint que cambie
-    de presentación emoji — el rombo es U+25C6, ya permitido por la whitelist.
+    - hero: sello `◆ {_e(estado)}`.
+    - badges de Disputas/Resueltas: `◆ {len(...)}` cada uno por expr.
+    - registro de la Puerta: la fila lleva rombo aria-hidden + la etiqueta
+      textual del estado visible. El ciclo recorre TODO el mapa _STATUS_COLORS.
     """
-    from sky_claw.app.gui.views.forge_dashboard import _task_log_row_html
+    from sky_claw.app.gui.views.forge_dashboard import _STATUS_COLORS, _task_log_row_html
 
-    # 1) Hero: el sello usa el glifo delante del estado (❣︎ "◆ ESTABLE").
-    assert "◆ {_e(estado)}" in _FORGE, "el hero perdió el rombo-árma de estado"
+    # (1) Hero: el sello usa el glifo delante del estado.
+    assert "◆ {_e(estado)}" in _FORGE, "el hero perdió el rombo-firma de estado"
 
-    # 2) Disputas: el contador usa el glifo (cuadrado) con aria-visible cortado.
-    assert '">◆ ' in _FORGE, "header de Disputas/Resueltas sin el rombo"
+    # (2) Cada badge enumerado por su expresión exacta, no por muestreo:
+    assert "◆ {len(conflicts)}" in _FORGE, "header de Disputas sin el rombo"
+    assert "◆ {len(resolved)}" in _FORGE, "header de Resueltas sin el rombo"
 
-    # 3) Registro de la Puerta: cada fila lleva ◆ coloreado por estado, no un dot.
-    fila = _task_log_row_html({"action": "install", "mod_name": "X", "status": "ok", "created_at": ""})
-    assert ">◆<" in fila, "el registro de la Puerta no usa el rombo"
-    assert "border-radius:50%; background:" not in fila, "el dot de estado sigue presente junto al rombo"
-    assert 'aria-hidden="false"' in fila, "el glifo no es decorativo (debe leerse)"
+    # (3) Registro de la Puerta: cada estado del mapa → rombo color + etiqueta visible.
+    for estado, color in _STATUS_COLORS.items():
+        fila = _task_log_row_html({"action": "instalar", "mod_name": "X", "status": estado, "created_at": ""})
+        assert ">◆<" in fila, f"falta el rombo en la fila para estado={estado}"
+        assert 'aria-hidden="true"' in fila, "el rombo debe ser decorativo: la etiqueta es la señal"
+        assert "[OK]" in fila or "FALLÓ" in fila or "ERROR" in fila or "REGISTRADO" in fila or estado.upper() in fila, (
+            f"la etiqueta del estado {estado} no esta presente en la fila"
+        )
+        assert color in fila, f"el color del estado {estado} no está en la fila"
+
+    # (4) El punto solo-rombo ya no debería presentar una clase radiales por solo color.
+    fila = _task_log_row_html({"action": "instalar", "mod_name": "X", "status": "ok", "created_at": ""})
+    assert "border-radius:50%; background:" not in fila, "queda dot CSS redundante junto al rombo"
