@@ -105,6 +105,7 @@ def _entorno(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner]:
         mo2_mods_path=tmp_path / "MO2" / "mods",
         dyndolod_exe=exe_dir / "DynDOLODx64.exe",
         texgen_exe=exe_dir / "TexGenx64.exe",
+        external_work_root=tmp_path / "Work Root",
     )
     return config, DynDOLODRunner(config)
 
@@ -165,7 +166,7 @@ class _ProcesoFalso:
 
 
 def _texgen_genera(config: DynDOLODConfig, marca: bytes):  # noqa: ANN202
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
 
     def _escribir() -> None:
         staging.mkdir(parents=True, exist_ok=True)
@@ -325,7 +326,7 @@ async def _regen_exitosa_needs_deployment(
 
 async def _resume_exitoso(journal: OperationJournal, runner: DynDOLODRunner, config: DynDOLODConfig) -> dict:
     _mirror_a_data(config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME / "textures", config.data_dir)
-    dyndolod_staging = config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
+    dyndolod_staging = config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     svc = _svc(journal, runner)
     run_dyndolod = _dyn_ok(dyndolod_staging)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
@@ -338,7 +339,7 @@ async def _lifecycle_completo(tmp_path: pathlib.Path, *, fallos_previos: int = 1
     Deja el journal ABIERTO y devuelve el contexto."""
     db_path = tmp_path / "journal.db"
     config, runner = _entorno(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     clave = clave_de_artifact(mod_texgen)
@@ -405,7 +406,7 @@ async def test_regen_fallida_durante_indeterminate_no_reaparece_tras_reemplazo_e
     )
 
     # §4.9: el segundo resume NO puede fallar por HandoffIndeterminate.
-    run_dyndolod = _dyn_ok(ctx["config"].output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME)
+    run_dyndolod = _dyn_ok(ctx["config"].dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME)
     svc = _svc(journal, runner)
     with patch.object(runner, "run_dyndolod", run_dyndolod):
         res = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
@@ -602,7 +603,7 @@ async def test_regens_fallidas_durante_awaiting_tambien_quedan_absorbidas(tmp_pa
     tmp_awaiting.mkdir()
     db_path = tmp_awaiting / "journal.db"
     config, runner = _entorno(tmp_awaiting)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     clave = clave_de_artifact(mod_texgen)
@@ -673,7 +674,7 @@ async def test_resume_que_completa_el_handoff_tambien_absorbe_la_evidencia(tmp_p
     tmp_resume.mkdir()
     db_path = tmp_resume / "journal.db"
     config, runner = _entorno(tmp_resume)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     clave = clave_de_artifact(mod_texgen)
@@ -828,7 +829,7 @@ async def _sembrar_escenario_para_faults(tmp_path: pathlib.Path) -> dict:
     """AWAITING H1 + TX_FAIL PENDING nombrando el artifact (evidencia a absorber)."""
     db_path = tmp_path / "journal.db"
     config, runner = _entorno(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     clave = clave_de_artifact(mod_texgen)

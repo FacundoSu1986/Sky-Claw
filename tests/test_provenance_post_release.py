@@ -66,6 +66,7 @@ def _entorno(tmp_path: pathlib.Path) -> DynDOLODConfig:
         mo2_mods_path=tmp_path / "MO2" / "mods",
         dyndolod_exe=exe_dir / "DynDOLODx64.exe",
         texgen_exe=exe_dir / "TexGenx64.exe",
+        external_work_root=tmp_path / "Work Root",
     )
     assert config.data_dir is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
@@ -73,7 +74,7 @@ def _entorno(tmp_path: pathlib.Path) -> DynDOLODConfig:
 
 
 def _proceso_texgen(config: DynDOLODConfig, marcadores: tuple[bytes, bytes]):  # noqa: ANN202
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     logs = config.dyndolod_exe.parent / "Logs"
 
     async def _run(*args: object, **kwargs: object) -> tuple[str, str, int, float]:
@@ -498,7 +499,7 @@ async def test_lease_lost_antes_de_certificar_no_firma_nada(
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
-            staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+            staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
             staging.mkdir(parents=True, exist_ok=True)
             (staging / "a.dds").write_bytes(b"GEN-A-MARKER")
             log_path = config.dyndolod_exe.parent / "Logs" / "TexGen_SSE_log.txt"
@@ -622,7 +623,7 @@ async def _corrida_con_fallo_en_ventana(
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
-            staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+            staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
             staging.mkdir(parents=True, exist_ok=True)
             (staging / "a.dds").write_bytes(b"GEN-A-MARKER")
             log_path = config.dyndolod_exe.parent / "Logs" / "TexGen_SSE_log.txt"
@@ -754,7 +755,7 @@ async def test_robo_de_fila_same_agent_id_bloquea_certificacion(
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
-            staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+            staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
             staging.mkdir(parents=True, exist_ok=True)
             (staging / "a.dds").write_bytes(b"GEN-A-MARKER")
             log_path = config.dyndolod_exe.parent / "Logs" / "TexGen_SSE_log.txt"
@@ -942,7 +943,7 @@ async def test_robo_durante_el_digest_es_cortado_por_el_segundo_fencing(
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
-            staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+            staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
             staging.mkdir(parents=True, exist_ok=True)
             (staging / "a.dds").write_bytes(b"GEN-A-MARKER")
             log_path = config.dyndolod_exe.parent / "Logs" / "TexGen_SSE_log.txt"
@@ -1074,7 +1075,7 @@ async def test_regeneracion_desde_indeterminate_certifica_y_supersede_bajo_lease
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
-            staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+            staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
             staging.mkdir(parents=True, exist_ok=True)
             (staging / "a.dds").write_bytes(b"GEN-A-MARKER")
             log_path = config.dyndolod_exe.parent / "Logs" / "TexGen_SSE_log.txt"

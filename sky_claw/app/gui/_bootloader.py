@@ -561,6 +561,11 @@ def run_nicegui(
             # dueño (el cleanup de AppContext), en vez de quedar una conexión
             # SQLite viva por cada supervisor construido.
             stage9_coordination=ctx.stage9_coordination,
+            # P2.2 (ADR 0011): el `WorkspaceResuelto` del arranque viaja con su
+            # lease de ownership vivo. `AppContext` la libera en su shutdown; el
+            # supervisor sólo enhebra el snapshot para que el pipeline administrado
+            # mute el root admitido con su fence.
+            dyndolod_workspace=ctx.dyndolod_workspace,
             loot_runner=ctx.vfs_loot_runner,
             # La GUI es el path productivo: nunca degrada a un subprocess LOOT
             # standalone si el bridge/broker no quedo disponible.

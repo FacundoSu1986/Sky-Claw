@@ -1,0 +1,46 @@
+package=TexGen Output
+destination=G:\Modding\MO2\SkyrimSE\mods\TexGen Output
+existe=True archivos=1363 bytes=138457903
+muestra:
+  meta.ini
+  textures\DynDOLOD\lod\TexGen_SSE.ini
+  textures\DynDOLOD\lod\defaultdiffuse.dds
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow01_trunk.txt
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow01_trunk_1.dds
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow01_trunk_1_n.dds
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow01_trunk_2.dds
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow01_trunk_2_n.dds
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow_trunk.txt
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow_trunk_1.dds
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow_trunk_1_n.dds
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow_trunk_2.dds
+  textures\DynDOLOD\lod\trees\dlc1treepineshortheavysnow_trunk_2_n.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow01_trunk.txt
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow01_trunk_1.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow01_trunk_1_n.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow01_trunk_2.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow01_trunk_2_n.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow03_trunk.txt
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow03_trunk_1.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow03_trunk_1_n.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow03_trunk_2.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow03_trunk_2_n.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow05_trunk.txt
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow05_trunk_1.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow05_trunk_1_n.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow05_trunk_2.dds
+  textures\DynDOLOD\lod\trees\dlc1treewinteraspensnow05_trunk_2_n.dds
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow01_trunk.txt
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow01_trunk_1.dds
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow01_trunk_1_n.dds
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow01_trunk_2.dds
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow01_trunk_2_n.dds
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow_trunk.txt
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow_trunk_1.dds
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow_trunk_1_n.dds
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow_trunk_2.dds
+  textures\DynDOLOD\lod\trees\dlc2treepineshortheavysnow_trunk_2_n.dds
+  textures\DynDOLOD\lod\trees\reachclifftree01_trunk.txt
+  textures\DynDOLOD\lod\trees\reachclifftree01_trunk_1.dds
+plugins: []
+raices data-relative: ['meta.ini', 'textures']

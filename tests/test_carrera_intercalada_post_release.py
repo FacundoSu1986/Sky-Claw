@@ -63,6 +63,7 @@ def _entorno(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, pathlib.Path]:
         mo2_mods_path=tmp_path / "MO2" / "mods",
         dyndolod_exe=exe_dir / "DynDOLODx64.exe",
         texgen_exe=exe_dir / "TexGenx64.exe",
+        external_work_root=tmp_path / "Work Root",
     )
     assert config.data_dir is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
@@ -70,7 +71,7 @@ def _entorno(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, pathlib.Path]:
 
 
 def _proceso_texgen_ok(config: DynDOLODConfig):  # noqa: ANN202
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
     logs = config.dyndolod_exe.parent / "Logs"
 
     async def _run(*args: object, **kwargs: object) -> tuple[str, str, int, float]:

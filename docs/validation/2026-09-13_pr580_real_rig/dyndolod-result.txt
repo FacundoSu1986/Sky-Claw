@@ -1,0 +1,12 @@
+duration_seconds=455.5
+success=True
+needs_deployment=False
+rolled_back=None
+message=
+errors=[]
+texgen_mod_path=None
+dyndolod_mod_path=G:\Modding\MO2\SkyrimSE\mods\DynDOLOD Output
+status=None
+reason=None
+assisted=True
+preflight={"status": "yellow", "blocks_mutations": false, "checks": [{"name": "vfs", "status": "green", "summary": "Sin symlinks/junctions en rutas críticas.", "details": []}, {"name": "overwrite", "status": "yellow", "summary": "141 archivo(s) residual(es) en el overwrite (70 plugin(s)).", "details": ["ccafdsse001-dwesanctuary.esm", "ccasvsse001-almsivi.esm", "ccbgssse002-exoticarrows.esl", "ccbgssse003-zombies.esl", "ccbgssse004-ruinsedge.esl", "ccbgssse005-goldbrand.esl", "ccbgssse006-stendarshammer.esl", "ccbgssse007-chrysamere.esl", "ccbgssse008-wraithguard.esl", "ccbgssse010-petdwarvenarmoredmudcrab.esl", "… y 131 más", "Mové los residuos a un mod (clic derecho sobre Overwrite → 'Create Mod' en MO2) o limpialos antes del Ritual: así el diff de la próxima herramienta es atribuible."]}, {"name": "write_permissions", "status": "green", "summary": "Escritura verificada en 8 ruta(s).", "details": []}, {"name": "vfs_visibility", "status": "green", "summary": "El perfil no habilita plugins de mods.", "details": []}]}

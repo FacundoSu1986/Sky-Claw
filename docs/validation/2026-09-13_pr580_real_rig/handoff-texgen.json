@@ -1,0 +1,12 @@
+{
+  "handoff": {
+    "handoff_id": 1,
+    "state": "awaiting_deployment",
+    "expected_profile": "SkyClaw-PR2-Rig",
+    "expected_digest": "b6ecf0213ad4c9a2257118ea5bfcda88381a8b65a2fed7499668d444dc7de82b",
+    "expected_files": 1362,
+    "expected_bytes": 138457806
+  },
+  "texgen_result": null,
+  "needs_deployment": true
+}

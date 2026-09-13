@@ -4,13 +4,19 @@
 > (Aceptada). **P0 IMPLEMENTADO** (preferencia, binding v1, admisión, A–H,
 > single-winner cross-process, coordinación durable y transición restart-only:
 > `sky_claw/local/tools/dyndolod_workspace.py`,
-> `sky_claw/app/security/known_folders.py`); **PR-2 NO IMPLEMENTADO** — los
-> subroots de §7 no llegan al `-o:` todavía. El gate de lanzamiento inicial previo a PR-2
-> (`sky_claw/local/AGENTS.md` §2.9) quedó cerrado por T5-v2 (2026-09-10 —
-> [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md):
-> T5-V2 LAUNCH GATE: PASS; T5-V2 FULL CHECKLIST: PARTIAL 7/10). P0 es el único
-> prerrequisito para comenzar PR-2; la implementación de PR-2 reabrirá el gate
-> de lanzamiento al mutar los subroots de salida usados por `-o:`.
+> `sky_claw/app/security/known_folders.py`); **P2.1 (derivación + per-tool
+> `-o:`) IMPLEMENTADO COMO CANDIDATO** (rama `feat/dyndolod-pr2-external-staging`,
+> PR-2 `DRAFT`): los subroots de §7 ya llegan al `-o:`. **P2.2 (servicio,
+> transacción y packaging) IMPLEMENTADO COMO CANDIDATO** en la misma rama: el
+> `WorkspaceResuelto` productivo llega al servicio con su fence, el born-empty
+> cubre el root completo por herramienta y el packaging es disjunto. **P2.3
+> (recovery/migración) IMPLEMENTADO COMO CANDIDATO** en la misma rama: el
+> barrido de arranque reconcilia los backups de los `ACTIVE_TARGET` externos
+> desde el registro durable, con el legacy en su productor recovery-only. El gate de
+> lanzamiento inicial quedó cerrado por T5-v2
+> (2026-09-10 — [`docs/validation/2026-09-10_t5v2_dyndolod_stage9.md`](../../validation/2026-09-10_t5v2_dyndolod_stage9.md):
+> T5-V2 LAUNCH GATE: PASS; T5-V2 FULL CHECKLIST: PARTIAL 7/10) **sobre el builder
+> viejo**; P2.1 lo **REABRE** al mutar los subroots de salida usados por `-o:`.
 > **Baseline:** `origin/main` `5e5e9448db0d4015b3bf0dc4c1df10fdc49e226c`,
 > verificado el 2026-09-09 mediante fetch y lectura de código.
 > **Alcance:** lifecycle, identidad, propiedad, admisión y fronteras de PR-2.
@@ -187,6 +193,16 @@ admitido mediante un componente redirigido.
 La implementación reutiliza las primitivas existentes
 (`sky_claw/app/security/links.py` — `is_link`/`link_kind`/`rmtree_link_aware` — y
 `PathValidator.validate` con `strict_symlink`) antes de inventar un subsistema.
+**P2.2 cierra la ventana de un symlink o junction introducido DESPUÉS del boot** con
+`links.exigir_contencion_fisica`: recorre la cadena de componentes de
+`external_work_root` al destino con `lstat` (sin seguir enlaces), exige que cada
+componente existente sea un directorio real y revalida su identidad antes de
+devolver; se cablea antes del move-aside, antes de crear el root vacío, antes de
+cada spawn y antes de cada packaging. La comparación de rutas resueltas no
+alcanza: con un ancestro redirigido, candidato y tool root resuelven al mismo
+árbol externo y la relación lógica sigue siendo verdadera. La clasificación es la
+del módulo (symlink + `IO_REPARSE_TAG_MOUNT_POINT`); no promete enumerar todos
+los reparse tags posibles de Windows.
 El mecanismo de Known Folders **no existía** en el árbol: P0 lo construyó en
 `sky_claw/app/security/known_folders.py` con el conjunto congelado de la ADR §2.7
 y su test parametrizado (cada Known Folder contractual, incluida una ruta

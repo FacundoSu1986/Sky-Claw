@@ -39,7 +39,7 @@ import pathlib
 import re
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
@@ -48,7 +48,8 @@ from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
 from sky_claw.local.tools.output_targets import (
     BODYSLIDE_MESHES_RESOURCE_ID,
     bodyslide_output_root,
-    dyndolod_output_target,
+    derivar_layout_de_dyndolod,
+    dyndolod_legacy_recovery_target,
     pandora_output_target,
 )
 from sky_claw.local.tools.pandora_service import BEHAVIOR_GRAPHS_RESOURCE_ID
@@ -109,7 +110,16 @@ LOCK_DEL_SANDBOX = "Synthesis.esp"
 #: (:func:`construir_productores_de_move_aside`). El ancla de
 #: ``tests/test_rollback_reconciler.py`` exige que todo módulo que use
 #: ``DirectoryRollback`` esté mapeado a uno de estos.
-PRODUCTORES_CABLEADOS: frozenset[str] = frozenset({"dyndolod", "pandora", "bodyslide"})
+#:
+#: ``dyndolod`` agrupa los **ACTIVE_TARGET** de las corridas nuevas (los dos mods
+#: empaquetados y los dos roots crudos del ``external_work_root``);
+#: ``dyndolod-legacy-recovery`` es la superficie **recovery-only** del
+#: ``LEGACY_RECOVERY_ONLY_TARGET`` (ADR 0011 §2.9). Se separan por rol a
+#: propósito: un productor nuevo nunca declara el legacy como destino propio, y
+#: el barrido histórico no puede confundirse con la familia mutante.
+PRODUCTOR_DYNDOLOD: Final[str] = "dyndolod"
+PRODUCTOR_LEGACY: Final[str] = "dyndolod-legacy-recovery"
+PRODUCTORES_CABLEADOS: frozenset[str] = frozenset({PRODUCTOR_DYNDOLOD, PRODUCTOR_LEGACY, "pandora", "bodyslide"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +269,7 @@ def construir_productores_de_move_aside(
     mo2_root: pathlib.Path | None = None,
     mods_dir: pathlib.Path | None = None,
     game: pathlib.Path | None = None,
+    external_work_roots: Sequence[pathlib.Path] = (),
 ) -> list[ProductorDeMoveAside]:
     """Los productores reales, con destinos exactos — fuente única del cableado.
 
@@ -267,38 +278,62 @@ def construir_productores_de_move_aside(
     lugar. ``PRODUCTORES_CABLEADOS`` enumera los nombres que esta función puede
     devolver; el ancla exige que todo usuario de ``DirectoryRollback`` mapee a uno.
 
+    **Roles separados (P2.3).** Los ``ACTIVE_TARGET`` de las corridas nuevas —los
+    dos mods empaquetados y los dos roots crudos por herramienta— van al productor
+    ``dyndolod``; el ``LEGACY_RECOVERY_ONLY_TARGET`` va al productor
+    ``dyndolod-legacy-recovery``. Un productor nuevo jamás declara el legacy como
+    destino propio, y el barrido histórico queda con su propia identidad aunque
+    comparta el lock del ritual (``dyndolod-pipeline``).
+
+    **Los roots externos no salen del workspace resuelto, sino del registro
+    durable**: el barrido de arranque corre ANTES de resolver el workspace (el
+    orden de §25 lo exige), así que ``external_work_roots`` llega del
+    ``RegistroDeRootActivo`` — root activo más el ``desde`` de una transición
+    pendiente—. Cambiar la preferencia no puede hacer perder la referencia a los
+    backups del root anterior.
+
     Un productor cuyos destinos no resuelven se omite —no se inventa una ruta— y
     el resto barre igual.
     """
     productores: list[ProductorDeMoveAside] = []
-    # DynDOLOD/TexGen mueven aparte TRES destinos, y no todos cuelgan de la misma
-    # raíz: los dos mods de salida empaquetados viven bajo `<mo2>/mods` (o mods_dir
-    # explícito en topología dividida), y el staging crudo de TexGen bajo la raíz
-    # administrada del juego. Las constantes son las mismas que consume
-    # `dyndolod_service` al construir sus `DirectoryRollback`; declarar el padre
-    # daría autoridad sobre otros directorios con un sufijo de rollback válido.
-    destinos_dyndolod: list[pathlib.Path] = []
+    # DynDOLOD/TexGen mueven aparte sus destinos ACTIVOS: los dos mods de salida
+    # empaquetados (bajo `<mo2>/mods` o el mods_dir explícito en topología
+    # dividida) y los dos roots crudos exclusivos derivados del
+    # `external_work_root` (P2.1). Barrer el padre daría autoridad sobre siblings
+    # ajenos con la misma forma `*.rollback-<nonce>`.
+    activos_dyndolod: list[pathlib.Path] = []
     mods = mods_dir if mods_dir is not None else (mo2_root / "mods" if mo2_root is not None else None)
     if mods is not None:
-        destinos_dyndolod += [
+        activos_dyndolod += [
             mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME,
             mods / DynDOLODRunner.TEXGEN_MOD_NAME,
         ]
-    # El staging crudo entró al move-aside con el fix B del review de #493, y sin
-    # declararlo acá su residuo quedaría fuera del barrido: tras una muerte dura,
-    # el backup del staging bajo la raíz administrada es la ÚNICA copia del árbol
-    # previo. La raíz se deriva de la MISMA función que usa el servicio —igual que
-    # Pandora— para que un cambio del destino administrado no haya que replicarlo
-    # acá (hermano del defecto #388).
-    raiz_administrada = dyndolod_output_target(game=game)
-    if raiz_administrada is not None:
-        destinos_dyndolod.append(raiz_administrada / DynDOLODRunner.TEXGEN_OUTPUT_NAME)
-    if destinos_dyndolod:
+    for external in external_work_roots:
+        layout = derivar_layout_de_dyndolod(external_work_root=external)
+        activos_dyndolod += [layout.texgen_root, layout.dyndolod_root]
+    if activos_dyndolod:
         productores.append(
             ProductorDeMoveAside(
-                nombre="dyndolod",
-                lock_resource_id="dyndolod-pipeline",
-                destinos=tuple(destinos_dyndolod),
+                nombre=PRODUCTOR_DYNDOLOD,
+                lock_resource_id=Stage9Coordination.RECURSO_DEL_RITUAL,
+                destinos=tuple(activos_dyndolod),
+            )
+        )
+
+    # El staging crudo entró al move-aside con el fix B del review de #493. P2.1
+    # retiró ese destino de la ruta PRODUCTIVA (los productores nuevos escriben en
+    # los subroots del external_work_root), así que acá sólo queda como
+    # LEGACY_RECOVERY_ONLY_TARGET: la raíz se deriva de la MISMA función que
+    # nombraba el destino histórico para que el barrido de un backup huérfano siga
+    # restaurando `<game>/Sky-Claw/DynDOLOD/textures`. Productor PROPIO por rol:
+    # el reconciliador histórico restaura, nunca adopta ni migra.
+    raiz_legacy = dyndolod_legacy_recovery_target(game=game)
+    if raiz_legacy is not None:
+        productores.append(
+            ProductorDeMoveAside(
+                nombre=PRODUCTOR_LEGACY,
+                lock_resource_id=Stage9Coordination.RECURSO_DEL_RITUAL,
+                destinos=(raiz_legacy / DynDOLODRunner.TEXGEN_OUTPUT_NAME,),
             )
         )
 

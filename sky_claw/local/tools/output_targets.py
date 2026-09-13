@@ -47,6 +47,8 @@ USVFS?— para el único servicio donde la respuesta no es constante.
 
 from __future__ import annotations
 
+import dataclasses
+import enum
 import pathlib
 from typing import TYPE_CHECKING
 
@@ -88,11 +90,77 @@ BODYSLIDE_MESHES_RESOURCE_ID = "bodyslide-meshes"
 #: colisiona con el de un tercero.
 SKY_CLAW_MANAGED_DIR = "Sky-Claw"
 
-#: Raíz administrada única de Sky-Claw para la salida de DynDOLOD/TexGen. Lleva
-#: el nombre de la FAMILIA, no el de una salida: DynDOLOD crea
-#: ``DynDOLOD_Output`` y TexGen escribe ``textures`` DENTRO del valor de ``-o:``.
-#: Nombrarla con el staging anidaría ``DynDOLOD_Output/DynDOLOD_Output``.
+#: Namespace de la FAMILIA DynDOLOD dentro del ``external_work_root`` admitido.
+#: NO es un destino de herramienta: es el directorio que contiene a los dos
+#: subroots exclusivos (``TexGen`` y ``DynDOLOD``). Nunca se pasa como ``-o:``
+#: —una herramienta recibe su subroot, no la familia— y nunca es unidad
+#: empaquetable: sus hijos pueden pertenecer a herramientas distintas.
 DYNDOLOD_OUTPUT_ROOT = "DynDOLOD"
+
+#: Subroot EXCLUSIVO de TexGen. Recibe ``-o:<external>/DynDOLOD/TexGen``.
+DYNDOLOD_TEXGEN_SUBROOT_NAME = "TexGen"
+
+#: Subroot EXCLUSIVO de DynDOLOD. Recibe ``-o:<external>/DynDOLOD/DynDOLOD``.
+DYNDOLOD_TOOL_SUBROOT_NAME = "DynDOLOD"
+
+
+class HerramientaDynDOLOD(enum.Enum):
+    """Herramienta de la familia DynDOLOD, dueña de UN subroot exclusivo.
+
+    Es el selector tipado con el que el runner pide su raíz de ``-o:``. Existe
+    para que esa selección no dependa de una cadena arbitraria del caller: la
+    única forma de nombrar un subroot es este enum, y ``raiz_de`` no puede
+    devolver la raíz de la familia (ver :meth:`DynDOLODOutputLayout.raiz_de`).
+    """
+
+    TEXGEN = "TexGen"
+    DYNDOLOD = "DynDOLOD"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class DynDOLODOutputLayout:
+    """Derivación determinista del layout de salida bajo un ``external_work_root``.
+
+    Tres paths, un solo origen. ``family_root`` es el namespace que CONTIENE a
+    los dos subroots; ``texgen_root`` y ``dyndolod_root`` son hermanos y son los
+    únicos que pueden viajar como ``-o:``. No hay ``dict[str, Path]`` ni tupla
+    posicional: el nombre de cada campo es su contrato, y ``raiz_de`` sólo puede
+    devolver los subroots de herramienta —nunca la familia—.
+    """
+
+    family_root: pathlib.Path
+    texgen_root: pathlib.Path
+    dyndolod_root: pathlib.Path
+
+    def raiz_de(self, herramienta: HerramientaDynDOLOD) -> pathlib.Path:
+        """Subroot exclusivo de ``herramienta``. Jamás ``family_root``."""
+        if herramienta is HerramientaDynDOLOD.TEXGEN:
+            return self.texgen_root
+        if herramienta is HerramientaDynDOLOD.DYNDOLOD:
+            return self.dyndolod_root
+        # Fail-closed: un valor fuera del enum no tiene subroot asignable.
+        raise ValueError(f"herramienta DynDOLOD desconocida: {herramienta!r}")  # pragma: no cover
+
+
+def derivar_layout_de_dyndolod(*, external_work_root: pathlib.Path) -> DynDOLODOutputLayout:
+    """Deriva el layout de salida del ``external_work_root`` YA admitido.
+
+    Función PURA: no toca el filesystem, no crea directorios, no lee
+    ``Config``/TOML/env, no infiere desde el juego y no tiene fallback al root
+    legacy. Da por sentado que el caller ya resolvió la propiedad del root (P0
+    de ADR 0011); admisión y binding viven en ``dyndolod_workspace``, no acá.
+
+    El string de la familia y los de cada subroot son constantes de este
+    módulo: la derivación existe UNA vez y el runner la consume, en vez de
+    repartir los nombres por runner/servicio/tests.
+    """
+    base = pathlib.Path(external_work_root)
+    family = base / DYNDOLOD_OUTPUT_ROOT
+    return DynDOLODOutputLayout(
+        family_root=family,
+        texgen_root=family / DYNDOLOD_TEXGEN_SUBROOT_NAME,
+        dyndolod_root=family / DYNDOLOD_TOOL_SUBROOT_NAME,
+    )
 
 
 def pandora_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
@@ -201,29 +269,21 @@ def bodyslide_output_target(*, game: pathlib.Path | None, group: str) -> pathlib
     return root / group
 
 
-def dyndolod_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
-    """Raíz administrada única de Sky-Claw para la salida de DynDOLOD/TexGen.
+def dyndolod_legacy_recovery_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
+    """``LEGACY_RECOVERY_ONLY_TARGET``: ``<game>/Sky-Claw/DynDOLOD``.
 
-    Los binarios la reciben vía ``-o:`` (patrón (b): ruta explícita en el comando).
-    DynDOLOD crea ``DynDOLOD_Output`` y TexGen escribe ``textures`` adentro. Que
-    el destino sea único y conocido reemplaza la adivinanza entre tres raíces
-    (MO2, dir del exe, cwd) y habilita el post-check de artefacto (U-06) sobre un
-    target administrado.
+    **Rol inequívoco: recovery, nunca producción.** Un productor nuevo NO usa,
+    mueve, adopta ni pasa este path como ``-o:``. Su único consumidor es el
+    reconciliador de arranque, que necesita derivar el destino histórico
+    ``<game>/Sky-Claw/DynDOLOD/textures`` para restaurar un backup de move-aside
+    huérfano (predicado cerrado de ADR 0011 §2.9). El layout productivo es
+    :func:`derivar_layout_de_dyndolod`.
 
-    El runner resuelve cada contrato por separado: TexGen sólo
-    ``root/textures``; DynDOLOD ``root/DynDOLOD_Output`` y, si escribiera directo,
-    ``root`` como fallback acotado. Acá vive sólo la raíz. ``None`` sin juego,
-    mismo contrato que :func:`pandora_output_target`.
-
-    **Cuelga del namespace** ``Sky-Claw/`` porque el nombre pelado colisiona:
-    ``game/DynDOLOD`` es la carpeta a la que extrae el archivo DynDOLOD
-    Standalone, y un operador con la herramienta instalada ahí recibiría por
-    ``-o:`` su propio directorio de instalación. Hoy el gate de ``DynDOLOD.esp``
-    lo rechaza como salida, pero la raíz se declara ``manifest_target`` del ritual
-    y el plan de rollback move-aside es follow-up declarado: un move-aside sobre
-    una raíz que no es exclusivamente nuestra renombraría la instalación. La
-    exclusividad es la propiedad que ``rollback_reconciler`` usa para descubrir
-    destinos por escaneo — no es un detalle de nombre.
+    El nombre lo dice a propósito: hasta PR-2 esta función era
+    ``dyndolod_output_target`` y el default del runner; llamarla "output target"
+    invitaba a un camino productivo que PR-2 elimina. El árbol legacy queda
+    intacto: no se migra, no se borra, no se adopta y no se le crean
+    ``DirectoryRollback`` nuevos.
     """
     if game is None:
         return None

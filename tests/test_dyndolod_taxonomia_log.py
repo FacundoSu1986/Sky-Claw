@@ -420,8 +420,8 @@ async def test_falta_solo_el_marcador_y_la_corrida_sale_roja(tmp_path: pathlib.P
     se rompió por el otro lado (revisor CodeRabbit, PR #488; medido, no leído).
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / "DynDOLOD_Output"
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / "DynDOLOD_Output"
 
     fake = _EjecucionFalsa(
         return_code=0,
@@ -459,8 +459,8 @@ async def test_la_corrida_cortada_despues_de_lodgen_sale_roja(tmp_path: pathlib.
     habría manifestado.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / "DynDOLOD_Output"
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / "DynDOLOD_Output"
 
     # El log de LODGen lo escribe LA CORRIDA: escrito antes del `patch` queda
     # idéntico entre las dos puntas y el rojo lo da la continuidad —"el log no
@@ -496,8 +496,8 @@ async def test_el_mismo_log_con_marcador_es_exito(tmp_path: pathlib.Path) -> Non
     que decide, y no un efecto lateral del fixture.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / "DynDOLOD_Output"
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / "DynDOLOD_Output"
     fake = _EjecucionFalsa(
         return_code=0,
         al_ejecutar=_corrida_que_completa(
@@ -529,8 +529,8 @@ async def test_el_log_se_recupera_intacto_en_los_dos_encodings(tmp_path: pathlib
     `utf-8` va primero porque es el único autovalidante de los dos.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / "DynDOLOD_Output"
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / "DynDOLOD_Output"
     acentuado = "[00:04:12] Error: Deleted reference en Añocuervo — sección ñ\n"
     log = tmp_path / "DynDOLOD" / "Logs" / "DynDOLOD_SSE_log.txt"
     log.parent.mkdir(parents=True, exist_ok=True)
@@ -570,8 +570,8 @@ async def test_un_byte_que_ningun_codec_acepta_no_se_lleva_puesto_el_veredicto(
             b"\x81".decode(codec)
 
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / "DynDOLOD_Output"
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / "DynDOLOD_Output"
     log = tmp_path / "DynDOLOD" / "Logs" / "DynDOLOD_SSE_log.txt"
     log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -610,8 +610,8 @@ async def test_el_marcador_de_la_corrida_anterior_no_vale_si_el_log_no_cambio(
     de AYER, que sí tiene su marcador.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / "DynDOLOD_Output"
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / "DynDOLOD_Output"
     _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     # `al_ejecutar` NO toca el log a propósito: ésa es la corrida que muere antes.
@@ -638,8 +638,8 @@ async def test_el_marcador_viejo_no_revive_porque_la_corrida_apendee_lineas(
     el marcador se busca sólo en los bytes que esta corrida agregó.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / "DynDOLOD_Output"
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / "DynDOLOD_Output"
     log = _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     def _correr() -> None:
@@ -666,8 +666,8 @@ async def test_la_corrida_que_apendea_su_propio_marcador_sí_es_exito(
     legítimo. Lo único que cambia entre los dos es QUIÉN escribió el marcador.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / "DynDOLOD_Output"
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / "DynDOLOD_Output"
     log = _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
     def _correr() -> None:
@@ -720,8 +720,10 @@ async def test_un_terminal_de_una_sesion_anterior_no_enrojece_esta_corrida(
     terminal heredado no puede tumbar una corrida que no lo emitió.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / (
+    assert config.output_layout is not None
+    raiz_tool = config.texgen_root if tool == "TexGen" else config.dyndolod_root
+    assert raiz_tool is not None
+    staging = raiz_tool / (
         DynDOLODRunner.TEXGEN_OUTPUT_NAME if tool == "TexGen" else DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
     )
 
@@ -758,8 +760,8 @@ async def test_con_frontera_indeterminada_no_se_atribuyen_terminales_historicos(
     los errores de esta corrida.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
-    staging = config.output_root / "DynDOLOD_Output"
+    assert config.output_layout is not None
+    staging = config.dyndolod_root / "DynDOLOD_Output"
     log = _escribir_log(tmp_path, "DynDOLOD", "[00:07:45] Fatal: old failure\n")
 
     def _correr() -> None:
@@ -831,7 +833,9 @@ _PREFIJO_VIEJO = "[00:00:01] Building LOD for Tamriel\n" * 12
 def _staging_de(config: object, tool: str) -> pathlib.Path:
     """Staging administrado de cada herramienta, por nombre y no por posición."""
     nombre = DynDOLODRunner.TEXGEN_OUTPUT_NAME if tool == "TexGen" else DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME
-    return config.output_root / nombre  # type: ignore[attr-defined]
+    raiz = config.texgen_root if tool == "TexGen" else config.dyndolod_root  # type: ignore[attr-defined]
+    assert raiz is not None
+    return raiz / nombre
 
 
 @pytest.mark.asyncio
@@ -856,7 +860,7 @@ async def test_una_reescritura_que_crece_no_se_toma_por_append(
     quién.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
+    assert config.output_layout is not None
     staging = _staging_de(config, tool)
     log = _escribir_log(tmp_path, tool, _PREFIJO_VIEJO)
     tamano_previo = len(_PREFIJO_VIEJO.encode())
@@ -898,7 +902,7 @@ async def test_el_append_real_con_marcador_propio_sigue_siendo_exito(
     reintroduce el falso rojo permanente que este PR vino a cerrar.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
+    assert config.output_layout is not None
     staging = _staging_de(config, tool)
     log = _escribir_log(tmp_path, tool, _PREFIJO_VIEJO)
 
@@ -930,7 +934,7 @@ async def test_un_terminal_de_esta_corrida_en_la_cola_del_append_tumba_la_corrid
     propio marcador de fin: el marcador no puede taparlo.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
+    assert config.output_layout is not None
     staging = _staging_de(config, tool)
     log = _escribir_log(tmp_path, tool, _PREFIJO_VIEJO)
 
@@ -966,7 +970,7 @@ async def test_el_mtime_sin_crecimiento_no_es_evidencia_de_esta_corrida(
     Sin bytes nuevos demostrables no hay evidencia: falla cerrado.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
+    assert config.output_layout is not None
     staging = _staging_de(config, tool)
     log = _escribir_log(tmp_path, tool, _log_completo(tool))
     estado = log.stat()
@@ -998,7 +1002,7 @@ async def test_un_log_mas_chico_que_antes_de_lanzar_falla_cerrado(
     presente, "no pude verificarlo" no puede significar "terminó bien".
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
+    assert config.output_layout is not None
     staging = _staging_de(config, tool)
     log = _escribir_log(tmp_path, tool, _PREFIJO_VIEJO)
     tamano_previo = len(_PREFIJO_VIEJO.encode())
@@ -1041,7 +1045,7 @@ async def test_un_prefijo_mas_corto_que_la_firma_previa_no_se_acepta_como_contin
     recorte se habría hecho sobre una frontera inventada.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
+    assert config.output_layout is not None
     staging = _staging_de(config, "DynDOLOD")
     log = _escribir_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
 
@@ -1098,7 +1102,7 @@ async def test_sin_frontera_el_motivo_no_inventa_un_marcador_que_no_existe(
     log tiene un marcador de completitud cuando no lo tiene.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
+    assert config.output_layout is not None
     staging = _staging_de(config, "DynDOLOD")
     _escribir_log(tmp_path, "DynDOLOD", LOG_SIN_MARCADOR)
 
@@ -1136,7 +1140,7 @@ async def test_sin_crecimiento_el_motivo_no_inventa_un_marcador_que_no_existe(
     este repo.
     """
     config, runner = _runner_texgen(tmp_path)
-    assert config.output_root is not None
+    assert config.output_layout is not None
     staging = _staging_de(config, "DynDOLOD")
     _escribir_log(tmp_path, "DynDOLOD", LOG_SIN_MARCADOR)
 

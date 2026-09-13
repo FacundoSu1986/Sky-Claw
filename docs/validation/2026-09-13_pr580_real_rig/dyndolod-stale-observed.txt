@@ -1,0 +1,9 @@
+﻿# DYNDOLOD STALE OBSERVED - 2026-09-13 08:39:45.869 -03:00
+tool=DynDOLOD
+proc=DynDOLODx64
+window_class=TfrmDynDOLOD (Advanced)
+control_class=TEdit
+stale_value=E:\Sky-Claw T5 Rig\DECOY PR2\DynDOLOD\
+expected_value=E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\DynDOLOD
+source_of_stale=preset DynDOLOD_SSE_Default.ini OutputPath=E:\Sky-Claw T5 Rig\DECOY PR2\DynDOLOD\ (63 bytes, mtime 2026-09-13 07:44:58)
+observacion=El log de arranque de DynDOLOD ya declaro 'Using Output Path: E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\DynDOLOD\' (via -o:); al entrar a Advanced la GUI cargo el preset Default stale en el campo.

@@ -71,6 +71,7 @@ def _entorno(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner]:
         mo2_mods_path=tmp_path / "MO2" / "mods",
         dyndolod_exe=exe_dir / "DynDOLODx64.exe",
         texgen_exe=exe_dir / "TexGenx64.exe",
+        external_work_root=tmp_path / "Work Root",
     )
     return config, DynDOLODRunner(config)
 
@@ -128,7 +129,7 @@ class _ProcesoFalso:
 
 
 def _texgen_genera(config: DynDOLODConfig, marca: bytes):
-    staging = config.output_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
+    staging = config.texgen_root / DynDOLODRunner.TEXGEN_OUTPUT_NAME
 
     def _escribir() -> None:
         staging.mkdir(parents=True, exist_ok=True)
@@ -920,7 +921,7 @@ async def test_p1_end_to_end_segundo_resume_no_bloqueado_por_tx1(tmp_path: pathl
     """§12/§18 acceptance principal: lifecycle completo válido y después el
     segundo resume NO fabrica INDETERMINATE desde la TX1 antigua absorbida."""
     config, runner = _entorno(tmp_path)
-    assert config.data_dir is not None and config.output_root is not None
+    assert config.data_dir is not None and config.output_layout is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
     mod = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
     _escribir_mod(mod, contenido=b"GEN-1")
@@ -942,7 +943,7 @@ async def test_p1_end_to_end_segundo_resume_no_bloqueado_por_tx1(tmp_path: pathl
 
         # Deployment (materializar visibilidad) + Resume exitoso.
         _mirror_a_data(mod / "textures", config.data_dir)
-        with patch.object(runner, "run_dyndolod", _dyn_ok(config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME)):
+        with patch.object(runner, "run_dyndolod", _dyn_ok(config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME)):
             resume = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
         assert resume["success"] is True, resume.get("errors")
 
@@ -954,7 +955,7 @@ async def test_p1_end_to_end_segundo_resume_no_bloqueado_por_tx1(tmp_path: pathl
 
         # Segundo resume: ya NO lo bloquea la TX1 antigua (DynDOLOD puede correr
         # según el resto de gates — aquí: éxito legacy verbatim).
-        dyn2 = _dyn_ok(config.output_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME)
+        dyn2 = _dyn_ok(config.dyndolod_root / DynDOLODRunner.DYNDOLLOD_OUTPUT_NAME)
         with patch.object(runner, "run_dyndolod", dyn2):
             segundo = await svc.execute(preset="Medium", run_texgen=False, create_snapshot=True)
         assert segundo.get("reason") != "HandoffIndeterminate"

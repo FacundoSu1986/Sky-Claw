@@ -1,0 +1,15 @@
+# DISJOINTNESS - 2026-09-13 08:46:49 -03:00
+TexGen Output:    archivos=1363 bytes=138457903
+DynDOLOD Output:  archivos=5106 bytes=719336534
+
+== TexGen Output contiene plugins de DynDOLOD? (debe ser NO) ==
+NO contiene DynDOLOD.esm/esp/Occlusion.esp -> OK
+== TexGen Output raiz data-relative ==
+  meta.ini, textures
+== DynDOLOD Output contiene el raw tree de TexGen por error? (debe ser NO) ==
+NO contiene TexGen_SSE.* -> OK
+== DynDOLOD Output raiz data-relative ==
+  DynDOLOD.esm, DynDOLOD.esp, meshes, meta.ini, Occlusion.esp, textures
+== plugins en cada package ==
+  TexGen:    
+  DynDOLOD:  DynDOLOD.esm, DynDOLOD.esp, Occlusion.esp

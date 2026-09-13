@@ -1,0 +1,623 @@
+﻿TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (ADADC675) starting session 2026-09-13 08:21:44
+
+The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
+If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
+
+Using Skyrim Special Edition Data Path: C:\Modding\DynDOLOD RigTest\_rig_test\data\
+Using Scripts Path: C:\Modding\DynDOLOD RigTest\Edit Scripts\
+Using Temp Path: E:\Sky-Claw T5 Rig\temp\\
+Using Output Path: E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\
+Using ini: C:\Modding\DynDOLOD RigTest\_rig_test\ini\\Skyrim.ini
+Using save path: C:\Modding\DynDOLOD RigTest\_rig_test\ini\Saves\
+Warning: Could not find save path
+Using plugin list: C:\Modding\DynDOLOD RigTest\_rig_test\plugins.txt
+Using settings file: C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\TexGen.ini
+Using language: English
+Using general string encoding: 1252  (ANSI - Latín I)
+Using translatable string encoding: 1252  (ANSI - Latín I)
+Using VMAD string encoding: 65001 (UTF-8)
+Loading active plugin list: C:\Modding\DynDOLOD RigTest\_rig_test\plugins.txt
+[00:00] xEdit Background Loader: starting...
+[00:00] xEdit Background Loader: [Skyrim - Misc.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Shaders.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Interface.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Animations.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Meshes0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Meshes1.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Sounds.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Voices_en0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures1.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures2.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures3.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures4.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures5.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures6.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures7.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures8.bsa] Loading Resources.
+[00:00] xEdit Background Loader: Warning: <Can't find Skyrim - Patch.bsa>
+[00:00] xEdit Background Loader: [Skyrim - Voices_es0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [C:\Modding\DynDOLOD RigTest\_rig_test\data\] Setting Resource Path.
+[00:00] xEdit Background Loader: [Skyrim.esm] File loaded (CRC32:24BB49CD)
+[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "HAZD"
+[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "RGDL"
+[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "CLDC"
+[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "PWAT"
+[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "SCOL"
+[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "SCPT"
+[00:02] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "HAIR"
+[00:02] xEdit Background Loader: loading "SkyrimSE.exe"...
+[00:02] xEdit Background Loader: [SkyrimSE.exe] File loaded (CRC32:DF35062C)
+[00:02] xEdit Background Loader: [Update.esm] File loaded (CRC32:E6BA88BB)
+[00:03] xEdit Background Loader: [Dawnguard.esm] File loaded (CRC32:D399544A)
+[00:03] xEdit Background Loader: [HearthFires.esm] File loaded (CRC32:A1EC149B)
+[00:03] xEdit Background Loader: [Dragonborn.esm] File loaded (CRC32:1120165C)
+[00:03] xEdit Background Loader: [Dragonborn.esm] Warning: File contains empty top level group: GRUP Top "AVIF"
+[00:03] xEdit Background Loader: finished
+Loading configuration files
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_skyrimesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_alpha_skyrimesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_skyrimesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_dawnguardesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_dawnguardesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_dragonbornesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_dragonbornesm.txt
+<Error: File not found C:\Modding\DynDOLOD RigTest\_rig_test\SkyrimSE.exe>
+Program: C:\Modding\DynDOLOD RigTest\TexGenx64.exe, Version: 3.0.0.209, Date: 2026-08-02 18:26:31
+Started by: C:\Users\Facu2\AppData\Local\Programs\Python\Python311\python.exe, Version: 3.11.9150.1013, Date: 2024-04-02 12:43:20
+External: C:\Modding\DynDOLOD RigTest\Edit Scripts\Texconvx64.exe, Version: 1.0.0.0, Date: 2026-05-07 22:00:00
+Gathering base records for billboards
+[00:01] Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_skyrimesm.txt with 28
+[00:01] Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_dawnguardesm.txt with 3
+[00:01] Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_dragonbornesm.txt with 2
+[00:03] Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_skyrimesm.txt with 1152
+[00:03] Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_alpha_skyrimesm.txt with 11
+[00:03] Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_dawnguardesm.txt with 163
+[00:03] Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_dragonbornesm.txt with 90
+[00:03] Creating mini atlas maps
+[00:05] 	Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_skyrimesm.txt with 1152
+[00:05] 	Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_alpha_skyrimesm.txt with 11
+[00:06] 	Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_dawnguardesm.txt with 163
+[00:06] 	Processing C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_dragonbornesm.txt with 90
+[00:06] 	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_re-uv-miniatlas.txt
+[00:06] Preparing work queue
+[00:11] Creating object LOD textures
+[00:11] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\DynDOLOD-temp\textures\dungeons\ships\shipwoodside01green.dds from 1 textures
+[00:11] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\DynDOLOD-temp\textures\architecture\farmhouse\woodpost02.dds from 1 textures
+[00:11] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\DynDOLOD-temp\textures\architecture\farmhouse\roof01snow.dds from 1 textures
+[00:11] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\DynDOLOD-temp\textures\architecture\farmhouse\thatch03snow.dds from 1 textures
+[00:11] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\DynDOLOD-temp\textures\architecture\farmhouse\thatch02snow.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\volcanictundradirt01lod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dwerockdesigns01lod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\soulcairnbones01lod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\riftenroofshingles01lod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\leatherhide01lod.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shrineofboethiahlod.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whlargeloosestonelod.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrtrims01lod.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\swindow03lod.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\tundrarocks01lod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrtemplefloor01lod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dwedeco01lod.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\hay01lod.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\solitude\swindow01_g.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2dweonyxflatsquare02lod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\swoodplanks01lod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\riftenstonedetail01lod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\winterhold\winterholdwindow02_em.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\stockadewood01snowlod.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\largeimperialtentlod.dds from 1 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whruinstonedarklod.dds from 4 textures
+[00:12] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\volcanic_ash_darkcliff_01lod.dds from 4 textures
+[00:13] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\falmerhutlod.dds from 1 textures
+[00:14] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01soulcairndirt01lod.dds from 4 textures
+[00:14] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrtrellisvines01lod.dds from 1 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\highhrothgar\hhwin02noalpha_g.dds from 1 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shipwoodside02lod.dds from 4 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\tundradriftwoodbark01lod.dds from 8 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mountainslab01lod.dds from 9 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01soulcairnrock01lod.dds from 4 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\icefrozen03lod.dds from 4 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\coastbeach01lod.dds from 4 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\icewall01lod.dds from 2 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\icefrozen02lod.dds from 4 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dirtsnowpath01lod.dds from 4 textures
+[00:15] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sintwalltop01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whtrimstone2lod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrstonebase01lod.dds from 2 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\pineforest03lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\volcanictundragravel01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\whiterun\wrwindows01_g.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\minerockwall03lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\treepineforestbarkcomplod.dds from 2 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\stockadeplanks01lod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrskyforge01lod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\imperialfortlod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01soulcairndirt05lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impwall01lod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2lodbasaltside.dds from 2 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstone01lod.dds from 8 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01sctrimlod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\road01snow01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrwoodplanks01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\riften\riftenwindows02_g.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mrktileslates01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\volcanic_ash_01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sstonewall02lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mehrunesstatue01lod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whwoodboards01lod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrfloorboards01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\fieldgrass02lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impdirt01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\coastbeachgrass01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\cratewood02weatheredlod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01soulcairndirt02lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\riverbededgelod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01soulcairnlod.dds from 16 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\frozenmarshice01lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whwoodbaseinterior01lod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sstonewalllod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrslate02lod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01castlefortlod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\castlewallstone03lod.dds from 4 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01icelakesurfacelod.dds from 16 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\riften\riftenwindows02noalpha.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\stonefloor01lod.dds from 1 textures
+[00:16] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\minefloordirt01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\magestatuelod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\swoodfloor01lod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\treepineforestcut01lod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\icefrozen01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shipwindow01lod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrdragontileblack01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dirtcliffs01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mrkthirds01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dwestonefloor02lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\grasssnow01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\frozenmarshdirtslopes01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sintfloor01lod.dds from 2 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrdragontile01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\snow01landscapelod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\smetaldet01lod.dds from 2 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrstonemortar01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dfloor01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\fieldgrass01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstone06lod.dds from 8 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\frozenmarshlichen01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whroughgroundmudlod.dds from 8 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstonewall01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\fallforestgrass01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\skyhavendetails01lod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\cavebaseground01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\imperialforticelod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrwoodbeam02lod.dds from 2 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\road01reach01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrwoodplaster01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impwall05icelod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\snowelfruins\seruinsbronzeinlay01lod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\stonewall02lod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\highhrothgar\hhwin02noalpha.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrroofint01lod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\swoodbeam01lod.dds from 2 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrplasterint01lowlod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\cavebasewall01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\riftenhouseplanks01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\stockadeplanks01snowlod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dryoakpost01lod.dds from 2 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\rottingwood01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shipwood02lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\fxdirtmound01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dwestonefloor04lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impwood01lod.dds from 1 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrcitywall01lod.dds from 4 textures
+[00:17] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\volcanic_ash_tundra_04lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shipwoodfloor03lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstone03lod.dds from 8 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\tundra01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\effects\fxwhitewater01noalpha.dds from 1 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\skyhavenstonedetailslod.dds from 8 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\castlefloorstone03lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\glacierslabreallod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whdirtbricklod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01soulcairndirt03lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\castlewallstone01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\scastlecol01lod.dds from 1 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ash01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\landscape\snow01noalpha.dds from 1 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\castlewallstone05lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impextrubble01lodice.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01frozenlakelod.dds from 16 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\volcanic_ash_03lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\smelter01lod.dds from 1 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstonewall02lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\fallforestrocks01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\treepineforeststumpdirt01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mountainslablod.dds from 9 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\pineforest01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\volcanic_ash_04lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shiprope01lod.dds from 1 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\fallforestdirt01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrfieldgrass01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstonefloor03lod.dds from 8 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\skyhavenstoneflat01lod.dds from 16 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\seruinsmarble01_4x4lod.dds from 16 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sstonebase01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sdetails01lod.dds from 1 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\road01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\riftenstonewall02lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\reachmossyrocks01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\snow02lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impextwall01icelod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shipwoodside03lod.dds from 8 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\darkmatwall02lod.dds from 8 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shrineofazuralod.dds from 1 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mrkcolm01lod.dds from 1 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\pineforest02lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\riftenbrickinset01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstonestairs01lod.dds from 2 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shipwoodfloor01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whstoneflat2lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\road01fallforest01lod.dds from 4 textures
+[00:18] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrwoodfloorint01lod.dds from 2 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dirt02lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\castlerubblepile01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrstonebase02lod.dds from 2 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\treepineforestbarkcompashlod.dds from 2 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\riverbottomlod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impextwall01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\statueofauriellod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\castlewallstone04lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrwoodlattice01lod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstonefloor01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstonestairs02lod.dds from 2 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\statueofmeridia01lod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\cratewood01weatheredlod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shiproof01lod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\reachdirt01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\minewood01lod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\nordictempleext_lod.dds from 10 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\reachgrass01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sfloorhouse01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2road01ash01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whtrimstone1lod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sstonestep01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\skyhavenremanface03lod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrdragoncarvings01lod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrroofslate01lod.dds from 16 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\strims01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrwoodbeamint01lod.dds from 2 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\skyhaventempleextlod.dds from 10 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\farmhouse\farmwindowinterior01_m.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sstonefloor01lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\statuedibellalod.dds from 1 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shiplod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\cavebaseground02lod.dds from 4 textures
+[00:19] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sovbasestone01lod.dds from 4 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\enderal\lod\shipkatariahlod.dds from 3 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sovngardeterrainlod.dds from 14 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\statuetalos01lod.dds from 1 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\beehivelod.dds from 1 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\statuestone01lod.dds from 4 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\fallforestleaves01lod.dds from 4 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mrkstoneblocks03lod.dds from 4 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\smallnordtentlod.dds from 1 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sstuccowallint01lod.dds from 1 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mineralpoolterracelod.dds from 4 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\smallimperialtentlod.dds from 1 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrdirtbaselod.dds from 4 textures
+[00:20] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wholdcrackedbrick2lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sstonewall03lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impwall06lod.dds from 1 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\reachmoss01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\roaddetails01.dds from 2 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\coastoceanfloor01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impfloormuddy01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whroughgroundlod.dds from 8 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\landscape\glacierslabnoalpha.dds from 1 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\caverocks01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\rivermudlod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sgrass01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\roof01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\cavebasewall05lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstone02lod.dds from 2 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\volcanictundraminerals01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\rubblepilelod.dds from 8 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ratwaywall01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sintcoloumn01lod.dds from 1 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\strims02lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\platedrooflod.dds from 64 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\seruinswall01_1x2lod.dds from 2 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impwall05lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\frozenmarshgrass01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrwoodbeam01lod.dds from 2 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\stockadewood01lod.dds from 1 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\rocks01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\solitude\swindow03noalpha.dds from 1 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\largenordtent01lod.dds from 1 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\fxwatertile01reallod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01scstairslod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\shipwoodside01lod.dds from 4 textures
+[00:21] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\cavebasewall03lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\bookwall01lod.dds from 1 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\snowrocks01lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrplasterint01lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\volcanictundrarocks01lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\darkmatwall01lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ssteps01lod.dds from 2 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\farmhouselod01snow.dds from 9 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\volcanictundradirt02lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\farmhouselod01.dds from 9 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\volcanic_ash_tundra_02lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wovenfence01lod.dds from 3 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\skyhavenroof01lod.dds from 32 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\riftenlogdetails01.dds from 2 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mrkwood02lod.dds from 2 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dirt01lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\volcanic_ash_rocks_01lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\volcanic_ash_tundra_01lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\lightmattwall02lod.dds from 8 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\snow01lod.dds from 4 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\skyhavenfloor01lod.dds from 1 textures
+[00:22] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2_bookwalllod01.dds from 1 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dirtpath01lod.dds from 4 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mrkmetala01lod.dds from 4 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\castlekitlod.dds from 4 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whoutwalllod.dds from 4 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sdragontile01lod.dds from 4 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrstoneblocks01lod.dds from 4 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\solitude\swindow03_g.dds from 1 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\architecture\windhelm\whwindowmapsglow_g.dds from 1 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\impextrubble01lod.dds from 4 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\farmwindowinterior01lod.dds from 1 textures
+[00:23] 	Creating E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2dweonyxflatsquare01lod.dds from 4 textures
+[00:23] Removing temporary files
+[00:23] Creating textures
+[00:23] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01dawnguardcastle02lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc01\lod\dlc01dawnguardcastle02lod.nif
+[00:23] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01icesnow.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc01\lod\dlc01icesnow.nif
+[00:23] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01icewalllod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc01\lod\dlc01icewalllod.nif
+[00:23] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01dawnguardcastle01lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc01\lod\dlc01dawnguardcastle01lod.nif
+[00:23] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01seruinslod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc01\lod\dlc01seruinslod01.nif
+[00:23] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01seruinslod02.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc01\lod\dlc01seruinslod02.nif
+[00:23] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01seruinslod03.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc01\lod\dlc01seruinslod03.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\dlc01_castleextlod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc01\lod\dlc01_castleextlod01.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc01\lod\seruinswindowslod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc01\lod\seruinswindowslod.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2dwewall01lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2dwewall01lod.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2dweruins01_lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2dweruins01_lod.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2mushroomtrees01lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2mushroomtrees01lod.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2dweruins02_lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2dweruins02_lod.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2ravenrock01lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2ravenrock01lod.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2redoran01lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2redoran01lod.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2ravenrock02lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2ravenrock02lod.nif
+[00:24] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2telmithryn01lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2telmithryn01lod.nif
+[00:25] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2telmithryn02lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2telmithryn02lod.nif
+[00:25] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\bridge01lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\bridge01lod.nif
+[00:25] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dlc02\lod\dlc2thirskmeadhall01lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\dlc02\lod\dlc2thirskmeadhall01lod.nif
+[00:25] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\bridge02lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\bridge02lod.nif
+[00:25] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dweobservatoryexteriordomelod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\dweobservatoryexteriordomelod.nif
+[00:25] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dweruins01_lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\dweruins01_lod.nif
+[00:25] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dweruins02_lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\dweruins02_lod.nif
+[00:25] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\dwewall01lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\dwewall01lod.nif
+[00:25] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\icefloessolid02lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\icefloessolid02lod.nif
+[00:26] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\hhbuildingslod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\hhbuildingslod01.nif
+[00:26] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\hhbuildingslod02.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\hhbuildingslod02.nif
+[00:26] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mrkbuildingslod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\mrkbuildingslod01.nif
+[00:26] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mtntrimslablod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\mtntrimslablod.nif
+[00:26] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedmossstone08lod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\ridgedmossstone08lod.nif
+[00:26] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\ridgedstone08patternlod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\ridgedstone08patternlod.nif
+[00:27] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mrkbuildingslod02.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\mrkbuildingslod02.nif
+[00:27] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\rtbuildingslod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\rtbuildingslod01.nif
+[00:27] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\rtbuildingslod02.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\rtbuildingslod02.nif
+[00:28] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\rtwallslod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\rtwallslod01.nif
+[00:28] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sbardscollegetowerlod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\sbardscollegetowerlod.nif
+[00:28] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sbardscollegetowerlod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\sbardscollegetowerlod01.nif
+[00:28] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\mrkbuildingslod03.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\mrkbuildingslod03.nif
+[00:29] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sbridgelod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\sbridgelod.nif
+[00:29] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\slod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\slod01.nif
+[00:29] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\slod02.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\slod02.nif
+[00:30] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\slod04.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\slod04.nif
+[00:30] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\slod03.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\slod03.nif
+[00:30] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whfrontgatelod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\whfrontgatelod.nif
+[00:30] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\sovngardelod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\sovngardelod.nif
+[00:30] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whmaingatelod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\whmaingatelod.nif
+[00:31] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\stockadewood01mixlod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\stockadewood01mixlod.nif
+[00:31] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\stonewall01mixlod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\stonewall01mixlod.nif
+[00:31] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\whwallwulfharthlod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\whwallwulfharthlod.nif
+[00:34] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\winterholdlod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\winterholdlod01.nif
+[00:34] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\winterholdlod02.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\winterholdlod02.nif
+[00:36] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\windhelmlod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\windhelmlod.nif
+[00:36] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrbuildingslod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\wrbuildingslod01.nif
+[00:36] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrcastlelod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\wrcastlelod01.nif
+[00:36] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrterrainlod.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\wrterrainlod.nif
+[00:36] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrbuildingslod02.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\wrbuildingslod02.nif
+[00:37] 	Creating texture E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\lod\wrwallslod01.dds with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\objects\lod\wrwallslod01.nif
+[00:37] Creating billboards
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\dlc1treepineshortheavysnow01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\dlc1treepineshortheavysnow01_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\dlc1treewinteraspensnow01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\dlc1treewinteraspensnow01_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\dlc1treepineshortheavysnow_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\dlc1treepineshortheavysnow_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\dlc1treewinteraspensnow03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\dlc1treewinteraspensnow03_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\dlc2treepineshortheavysnow01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\dlc2treepineshortheavysnow01_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\dlc1treewinteraspensnow05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\dlc1treewinteraspensnow05_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\dlc2treepineshortheavysnow_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\dlc2treepineshortheavysnow_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\reachclifftree01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\reachclifftree01_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\reachtree01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\reachtree01_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\reachclifftree02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\reachclifftree02_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\reachclifftree01_08b35d64_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\reachclifftree01_08b35d64_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\reachclifftree02_e03f1517_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\reachclifftree02_e03f1517_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\reachtree01_4307f8c7_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\reachtree01_4307f8c7_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\reachtree02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\reachtree02_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treeaspen01_3c90228c_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treeaspen01_3c90228c_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\reachtree02_173eb5c7_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\reachtree02_173eb5c7_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treeaspen02_43069563_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treeaspen02_43069563_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treeaspen03_c17245c1_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treeaspen03_c17245c1_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treeaspen06_b5c48894_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treeaspen06_b5c48894_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treeaspen05_1272f839_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treeaspen05_1272f839_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforest01_38f280b7_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforest01_38f280b7_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforest04_52e1db2c_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforest04_52e1db2c_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforest05_c36dc7d1_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforest05_c36dc7d1_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforest02_19f48223_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforest02_19f48223_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforest03_ce10d850_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforest03_ce10d850_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdead01_6712ea87_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdead01_6712ea87_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdead03_811c414f_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdead03_811c414f_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdead02_a192b271_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdead02_a192b271_trunk.nif
+[00:37] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdead04_edf2aab8_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdead04_edf2aab8_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnow02_ba22f1dd_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnow02_ba22f1dd_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdead05_7a6b5bd2_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdead05_7a6b5bd2_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnow03_1a0f63f1_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnow03_1a0f63f1_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnow01_2191815d_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnow01_2191815d_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnow04_4e2bbc6a_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnow04_4e2bbc6a_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnow05_6b024096_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnow05_6b024096_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnowl01_adb4fc2c_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnowl01_adb4fc2c_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnowl02_a5b75eea_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnowl02_a5b75eea_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnowl03_b63ea20d_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnowl03_b63ea20d_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnowl05_44247e92_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnowl05_44247e92_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestdeadsnowl04_24404158_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestdeadsnowl04_24404158_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnow01_f7f3b949_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnow01_f7f3b949_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnow04_ca15bb0f_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnow04_ca15bb0f_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnow02_987f76f5_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnow02_987f76f5_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnow03_db63ae25_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnow03_db63ae25_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnow05_4bdb6490_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnow05_4bdb6490_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnowl03_ee667532_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnowl03_ee667532_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnowl01_4060bf47_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnowl01_4060bf47_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnowl04_11f1330c_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnowl04_11f1330c_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnowl02_08e98a3b_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnowl02_08e98a3b_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\sbt\treepineforestsnowl05_17d2f810_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\sbt\treepineforestsnowl05_17d2f810_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treeaspen02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treeaspen02_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treeaspen01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treeaspen01_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treeaspen03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treeaspen03_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforest01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforest01_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treeaspen05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treeaspen05_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforest02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforest02_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treeaspen06_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treeaspen06_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforest03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforest03_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforest05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforest05_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforest04_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforest04_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestash01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestash01_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestash02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestash02_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestash03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestash03_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestashl03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestashl03_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestash04_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestash04_trunk.nif
+[00:38] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestash05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestash05_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestashl04_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestashl04_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestashl05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestashl05_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestashl01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestashl01_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestashl02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestashl02_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdead01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdead01_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdead02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdead02_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadashl01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadashl01_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdead03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdead03_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadashl02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadashl02_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdead04_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdead04_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadashl03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadashl03_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdead05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdead05_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadashl04_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadashl04_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnow04_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnow04_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadashl05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadashl05_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnow05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnow05_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnow01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnow01_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnowl01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnowl01_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnow02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnow02_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnowl02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnowl02_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnow03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnow03_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnowl03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnowl03_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnow02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnow02_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnowl04_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnowl04_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnow03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnow03_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestdeadsnowl05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestdeadsnowl05_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnow04_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnow04_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnow01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnow01_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnow05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnow05_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnowl05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnowl05_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnowl01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnowl01_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnowl02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnowl02_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treereachtree01magic_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treereachtree01magic_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnowl03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnowl03_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\tundradriftwood01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\tundradriftwood01_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\treepineforestsnowl04_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\treepineforestsnowl04_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\winteraspen01_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\winteraspen01_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\winteraspen02_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\winteraspen02_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\winteraspen03_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\winteraspen03_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\winteraspen05_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\winteraspen05_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\dyndolod\lod\trees\winteraspen06_trunk with C:\Modding\DynDOLOD RigTest\Edit Scripts\dyndolod\render\skyrim\billboards\dyndolod\lod\trees\winteraspen06_trunk.nif
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestashl05_00017f71 with Meshes\dlc02\landscape\trees\treepineforestashl05.nif Dragonborn.esm DLC2TreePineForestAshL05 [TREE:04017F71]
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestdeadashl05_00017f62 with Meshes\dlc02\landscape\trees\treepineforestdeadashl05.nif Dragonborn.esm DLC2TreePineForestDeadAshL05 [TREE:04017F62]
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treeaspen03_0006c9d4 with Meshes\landscape\trees\treeaspen03.nif Skyrim.esm TreeAspen03 [TREE:0006C9D4]
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnowl03_000ef59e with Meshes\landscape\trees\treepineforestdeadsnowl03.nif Skyrim.esm TreePineForestSnowL03Dead [TREE:000EF59E]
+[00:39] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\tundradriftwood01_000b8f53 with Meshes\landscape\trees\tundradriftwood01.nif Skyrim.esm TreeTundraDriftWoodTree01 [TREE:000B8F53]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treeaspen06_0007614a with Meshes\landscape\trees\treeaspen06.nif Skyrim.esm TreeAspen06 [TREE:0007614A]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnowl05_000ef59c with Meshes\landscape\trees\treepineforestdeadsnowl05.nif Skyrim.esm TreePineForestSnowL05Dead [TREE:000EF59C]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\reachclifftree02_000b8a77 with Meshes\landscape\trees\reachclifftree02.nif Skyrim.esm TreeReachCliffTree02 [TREE:000B8A77]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnow02_000ef5a4 with Meshes\landscape\trees\treepineforestdeadsnow02.nif Skyrim.esm TreePineForestSnow02Dead [TREE:000EF5A4]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdead04_000b927d with Meshes\landscape\trees\treepineforestdead04.nif Skyrim.esm TreePineForest04Dead [TREE:000B927D]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforest02_00018a02 with Meshes\landscape\trees\treepineforest02.nif Skyrim.esm TreePineForest02 [TREE:00018A02]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnow03_000ef5a3 with Meshes\landscape\trees\treepineforestdeadsnow03.nif Skyrim.esm TreePineForestSnow03Dead [TREE:000EF5A3]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\winteraspen05_00003acc with Meshes\dlc01\landscape\trees\winteraspen05.nif Dawnguard.esm TreeWinterAspen05 [TREE:02003ACC]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforest04_0004fbb0 with Meshes\landscape\trees\treepineforest04.nif Skyrim.esm TreePineForest04 [TREE:0004FBB0]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\wrtempletreesapling01_000461d7 with Meshes\landscape\trees\wrtempletreesapling01.nif Skyrim.esm TreeWRTempleSapling01 [TREE:000461D7]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\winteraspen02_00003ac9 with Meshes\dlc01\landscape\trees\winteraspen02.nif Dawnguard.esm TreeWinterAspen02 [TREE:02003AC9]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestash03_00017f74 with Meshes\dlc02\landscape\trees\treepineforestash03.nif Dragonborn.esm DLC2TreePineForestAsh03 [TREE:04017F74]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdead03_000b927c with Meshes\landscape\trees\treepineforestdead03.nif Skyrim.esm TreePineForest03Dead [TREE:000B927C]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdead02_000b927b with Meshes\landscape\trees\treepineforestdead02.nif Skyrim.esm TreePineForest02Dead [TREE:000B927B]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treeaspen01_0006a9e6 with Meshes\landscape\trees\treeaspen01.nif Skyrim.esm TreeAspen01 [TREE:0006A9E6]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\reachclifftree01_000b8a76 with Meshes\landscape\trees\reachclifftree01.nif Skyrim.esm TreeReachCliffTree01 [TREE:000B8A76]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforest01_0001306d with Meshes\landscape\trees\treepineforest01.nif Skyrim.esm TreePineForest01 [TREE:0001306D]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\soulcairntree01_l1_00004332 with Meshes\dlc01\landscape\plants\soulcairntree01_l1.nif Dawnguard.esm TreeSoulCairnTree01 "Withered Tree" [TREE:02004332]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestash04_00017f75 with Meshes\dlc02\landscape\trees\treepineforestash04.nif Dragonborn.esm DLC2TreePineForestAsh04 [TREE:04017F75]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\dlc1treepineshortheavysnow01_0000b55f with Meshes\dlc01\landscape\trees\dlc1treepineshortheavysnow01.nif Dawnguard.esm DLC1TreePineForestSnowHeavy02 [TREE:0200B55F]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\winteraspen01_00003ac5 with Meshes\dlc01\landscape\trees\winteraspen01.nif Dawnguard.esm TreeWinterAspen01 [TREE:02003AC5]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\winteraspen03_00003aca with Meshes\dlc01\landscape\trees\winteraspen03.nif Dawnguard.esm TreeWinterAspen03 [TREE:02003ACA]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnowl03_0005d2d9 with Meshes\landscape\trees\treepineforestsnowl03.nif Skyrim.esm TreePineForestSnowL03 [TREE:0005D2D9]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnowl01_000ef5a0 with Meshes\landscape\trees\treepineforestdeadsnowl01.nif Skyrim.esm TreePineForestSnowL01Dead [TREE:000EF5A0]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treereachtree01magic_000f64bf with Meshes\landscape\trees\treereachtree01magic.nif Skyrim.esm TreeReachTree01Magic [TREE:000F64BF]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treeaspen05_0007614b with Meshes\landscape\trees\treeaspen05.nif Skyrim.esm TreeAspen05 [TREE:0007614B]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforest03_0004b016 with Meshes\landscape\trees\treepineforest03.nif Skyrim.esm TreePineForest03 [TREE:0004B016]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\reachtree01_0006b1b8 with Meshes\landscape\trees\reachtree01.nif Skyrim.esm TreeReachTree01Snow [TREE:0006B1B8]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestash02_00017f73 with Meshes\dlc02\landscape\trees\treepineforestash02.nif Dragonborn.esm DLC2TreePineForestAsh02 [TREE:04017F73]
+[00:40] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestash05_00017f76 with Meshes\dlc02\landscape\trees\treepineforestash05.nif Dragonborn.esm DLC2TreePineForestAsh05 [TREE:04017F76]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\wrtempletree01_00023611 with Meshes\landscape\trees\wrtempletree01.nif Skyrim.esm TreeWRTemple01 [TREE:00023611]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestdeadashl04_00017f60 with Meshes\dlc02\landscape\trees\treepineforestdeadashl04.nif Dragonborn.esm DLC2TreePineForestDeadAshL04 [TREE:04017F60]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\dlc2treepineshortheavysnow_0003383d with Meshes\dlc02\landscape\trees\dlc2treepineshortheavysnow.nif Dragonborn.esm DLC2TreePineShortHeavySnow [STAT:0403383D]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnowl04_000ef59d with Meshes\landscape\trees\treepineforestdeadsnowl04.nif Skyrim.esm TreePineForestSnowL04Dead [TREE:000EF59D]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnow05_000ef5a1 with Meshes\landscape\trees\treepineforestdeadsnow05.nif Skyrim.esm TreePineForestSnow05Dead [TREE:000EF5A1]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\dlc1treewinteraspensnow05_0000ce12 with Meshes\dlc01\landscape\trees\dlc1treewinteraspensnow05.nif Dawnguard.esm DLC1TreeWinterAspenSnow05 [STAT:0200CE12]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnow03_0005c070 with Meshes\landscape\trees\treepineforestsnow03.nif Skyrim.esm TreePineForestSnow03 [TREE:0005C070]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\dlc1treewinteraspensnow03_0000ce11 with Meshes\dlc01\landscape\trees\dlc1treewinteraspensnow03.nif Dawnguard.esm DLC1TreeWinterAspenSnow03 [STAT:0200CE11]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnowl02_000ef59f with Meshes\landscape\trees\treepineforestdeadsnowl02.nif Skyrim.esm TreePineForestSnowL02Dead [TREE:000EF59F]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\soulcairntree03_l1_00004334 with Meshes\dlc01\landscape\plants\soulcairntree03_l1.nif Dawnguard.esm TreeSoulCairnTree03 "Withered Tree" [TREE:02004334]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnowl01_0005d2db with Meshes\landscape\trees\treepineforestsnowl01.nif Skyrim.esm TreePineForestSnowL01 [TREE:0005D2DB]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\reachtree01_000b8a73 with Meshes\landscape\trees\reachtree01.nif Skyrim.esm TreeReachTree01 [TREE:000B8A73]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\dlc2treepineshortheavysnow01_0003383c with Meshes\dlc02\landscape\trees\dlc2treepineshortheavysnow01.nif Dragonborn.esm DLC2TreePineShortHeavySnow01 [STAT:0403383C]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treeaspen02_0006c9d5 with Meshes\landscape\trees\treeaspen02.nif Skyrim.esm TreeAspen02 [TREE:0006C9D5]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\soulcairntreegroup01_l1_0000ddb5 with Meshes\dlc01\landscape\plants\soulcairntreegroup01_l1.nif Dawnguard.esm TreeSoulCairnTreeGroup "Withered Trees" [TREE:0200DDB5]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\winteraspen06_00003acf with Meshes\dlc01\landscape\trees\winteraspen06.nif Dawnguard.esm TreeWinterAspen06 [TREE:02003ACF]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnowl05_0005d2d7 with Meshes\landscape\trees\treepineforestsnowl05.nif Skyrim.esm TreePineForestSnowL05 [TREE:0005D2D7]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnowl04_0005d2d8 with Meshes\landscape\trees\treepineforestsnowl04.nif Skyrim.esm TreePineForestSnowL04 [TREE:0005D2D8]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestdeadashl02_00017f5b with Meshes\dlc02\landscape\trees\treepineforestdeadashl02.nif Dragonborn.esm DLC2TreePineForestDeadAshL02 [TREE:04017F5B]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\reachtree02_000b8a74 with Meshes\landscape\trees\reachtree02.nif Skyrim.esm TreeReachTree02 [TREE:000B8A74]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnow04_0005c06f with Meshes\landscape\trees\treepineforestsnow04.nif Skyrim.esm TreePineForestSnow04 [TREE:0005C06F]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnow04_000ef5a2 with Meshes\landscape\trees\treepineforestdeadsnow04.nif Skyrim.esm TreePineForestSnow04Dead [TREE:000EF5A2]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestdeadashl03_00017f5c with Meshes\dlc02\landscape\trees\treepineforestdeadashl03.nif Dragonborn.esm DLC2TreePineForestDeadAshL03 [TREE:04017F5C]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\soulcairntree02_l1_00004333 with Meshes\dlc01\landscape\plants\soulcairntree02_l1.nif Dawnguard.esm TreeSoulCairnTree02 "Withered Tree" [TREE:02004333]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdead05_000b927e with Meshes\landscape\trees\treepineforestdead05.nif Skyrim.esm TreePineForest05Dead [TREE:000B927E]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnow01_0005c072 with Meshes\landscape\trees\treepineforestsnow01.nif Skyrim.esm TreePineForestSnow01 [TREE:0005C072]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnowl02_0005d2da with Meshes\landscape\trees\treepineforestsnowl02.nif Skyrim.esm TreePineForestSnowL02 [TREE:0005D2DA]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestashl03_00017f6f with Meshes\dlc02\landscape\trees\treepineforestashl03.nif Dragonborn.esm DLC2TreePineForestAshL03 [TREE:04017F6F]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\reachtree01_00109716 with Meshes\landscape\trees\reachtree01.nif Skyrim.esm TreeReachTree01Winterhold [TREE:00109716]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforest05_00051126 with Meshes\landscape\trees\treepineforest05.nif Skyrim.esm TreePineForest05 [TREE:00051126]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdeadsnow01_000ef5a5 with Meshes\landscape\trees\treepineforestdeadsnow01.nif Skyrim.esm TreePineForestSnow01Dead [TREE:000EF5A5]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestashl04_00017f70 with Meshes\dlc02\landscape\trees\treepineforestashl04.nif Dragonborn.esm DLC2TreePineForestAshL04 [TREE:04017F70]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestashl01_00017f6e with Meshes\dlc02\landscape\trees\treepineforestashl01.nif Dragonborn.esm DLC2TreePineForestAshL01 [TREE:04017F6E]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestdeadashl01_00017f5a with Meshes\dlc02\landscape\trees\treepineforestdeadashl01.nif Dragonborn.esm DLC2TreePineForestDeadAshL01 [TREE:04017F5A]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnow02_0005c071 with Meshes\landscape\trees\treepineforestsnow02.nif Skyrim.esm TreePineForestSnow02 [TREE:0005C071]
+[00:41] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\dlc1treewinteraspensnow01_0000ce13 with Meshes\dlc01\landscape\trees\dlc1treewinteraspensnow01.nif Dawnguard.esm DLC1TreeWinterAspenSnow01 [STAT:0200CE13]
+[00:42] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestash01_00017f72 with Meshes\dlc02\landscape\trees\treepineforestash01.nif Dragonborn.esm DLC2TreePineForestAsh01 [TREE:04017F72]
+[00:42] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dawnguard.esm\dlc1treepineshortheavysnow_00009670 with Meshes\dlc01\landscape\trees\dlc1treepineshortheavysnow.nif Dawnguard.esm DLC1TreePineForestSnowHeavy01 [TREE:02009670]
+[00:42] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestdead01_000b927a with Meshes\landscape\trees\treepineforestdead01.nif Skyrim.esm TreePineForest01Dead [TREE:000B927A]
+[00:42] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\treepineforestsnow05_0005c06e with Meshes\landscape\trees\treepineforestsnow05.nif Skyrim.esm TreePineForestSnow05 [TREE:0005C06E]
+[00:42] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\skyrim.esm\wrtempletree02_000461c9 with Meshes\landscape\trees\wrtempletree02.nif Skyrim.esm TreeWRTemple02 [TREE:000461C9]
+[00:42] 	Creating billboard E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen\textures\terrain\lodgen\dragonborn.esm\treepineforestashl02_00017f6d with Meshes\dlc02\landscape\trees\treepineforestashl02.nif Dragonborn.esm DLC2TreePineForestAshL02 [TREE:04017F6D]
+[00:42] Waiting for Texconv to convert 324 textures
+[00:47] TexGen completed successfully
+[00:47] Exit TexGen, zip and exit, check log or restart? The zip option will only pack the relevant files into the zip file and permanently delete everything in the dedicated output folder E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen!
+

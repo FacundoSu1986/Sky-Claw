@@ -24,7 +24,7 @@
 | T5 — validación de argv en rig | **CERRADO** (solo gate de lanzamiento; checklist T5-v2 queda PARCIAL 7/10) | T5-v2 2026-09-10 — `../../validation/2026-09-10_t5v2_dyndolod_stage9.md` | Criterios 8–10 del checklist → rig de ownership post-PR-2 |
 | Preset desvía `OutputPath` | **ABIERTO** (nuevo) | registrado en #463 | Precedencia y mecanismo |
 | T2 — clasificación del log | **PENDIENTE — próximo** | — | Todo; superficie intacta |
-| T3 — staging y salida | **PENDIENTE — rebase** | — | Rediseño con el preset como restricción |
+| T3 — staging y salida | **CANDIDATO — PR-2** (DRAFT, NOT READY TO MERGE) | PR #580: P2.1 per-tool `-o:`, P2.2 servicio/born-empty/packaging, P2.3 recovery de arranque | Rig real del candidato completo (P2.1+P2.2+P2.3) y criterios 8–10 del checklist; launch gate REOPENED |
 | T7 — preflight de modales | **PENDIENTE** | — | Después de T5-v2 |
 | T8 — preset / UI Automation | **PENDIENTE** | — | Después de T7 |
 
@@ -202,6 +202,17 @@ Enunciado como propiedad del mecanismo:
 > su marcador de completitud y su artefacto.**
 
 ## T3-v2 — staging y salida (contrato corregido)
+
+> **Estado 2026-09-12 — CANDIDATO PR-2 (PR #580, DRAFT):** el contrato de esta
+> sección se implementó sobre el layout de ADR 0011, no sobre `<raíz>/textures`
+> compartida: subroots exclusivos `external_work_root/DynDOLOD/{TexGen,DynDOLOD}`
+> por herramienta (P2.1), born-empty del root completo con ownership vivo y
+> packaging disjunto (P2.2), y recovery de arranque de los `ACTIVE_TARGET`
+> externos desde el registro durable, con el legacy separado como
+> recovery-only (P2.3). Los tres agujeros A/B/C quedan cubiertos por esa
+> arquitectura; el gate de lanzamiento sigue **REOPENED** y el rig real del
+> candidato completo es el paso siguiente. Detalle normativo: ADR 0011, su spec
+> y el [plan de resolución de PR-2](2026-09-09-dyndolod-pr2-resolution.md).
 
 La evidencia física T5-B con TexGen Alpha-209 fijó el nivel exacto: el argv recibe
 `<raíz administrada>` mediante `-o:` y TexGen escribe en

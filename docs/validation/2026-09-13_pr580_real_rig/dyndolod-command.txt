@@ -1,0 +1,11 @@
+tool=DynDOLOD
+exe=C:\Modding\DynDOLOD RigTest\DynDOLODx64.exe
+argv=["-sse", "-o:E:\\Sky-Claw T5 Rig\\PR2 Work\\DynDOLOD\\DynDOLOD\\", "-d:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\data\\", "-m:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\ini\\", "-p:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\plugins.txt", "-t:E:\\Sky-Claw T5 Rig\\temp\\"]
+command_line="C:\Modding\DynDOLOD RigTest\DynDOLODx64.exe" -sse "-o:E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\DynDOLOD\\" "-d:C:\Modding\DynDOLOD RigTest\_rig_test\data\\" "-m:C:\Modding\DynDOLOD RigTest\_rig_test\ini\\" "-p:C:\Modding\DynDOLOD RigTest\_rig_test\plugins.txt" "-t:E:\Sky-Claw T5 Rig\temp\\"
+cwd=E:\Sky-Claw T5 Rig\evidence\PR580-ea3f28fb\2026-09-13_081146-REAL-RIG
+data_dir=C:\Modding\DynDOLOD RigTest\_rig_test\data
+ini_dir=C:\Modding\DynDOLOD RigTest\_rig_test\ini
+plugins_file=C:\Modding\DynDOLOD RigTest\_rig_test\plugins.txt
+temp_dir=E:\Sky-Claw T5 Rig\temp
+external_work_root=E:\Sky-Claw T5 Rig\PR2 Work
+timeout_seconds=2700

@@ -1,0 +1,6 @@
+﻿# MATERIALIZATION AFTER (intervencion asistida, handoff T5#10) - 2026-09-13 08:38:11.292 -03:00
+dest=C:\Modding\DynDOLOD RigTest\_rig_test\data\textures
+dest_files_after=1570 dest_bytes_after=191311602
+gate_validado_con=sky_claw.local.validators.texgen_visibility.verificar_visibilidad_de_texgen(staging='G:\Modding\MO2\SkyrimSE\mods\TexGen Output\textures', data_dir='C:\Modding\DynDOLOD RigTest\_rig_test\data')
+gate_resultado=VISIBILIDAD_OK (1362 archivos identicos byte a byte)
+extras_dejados_intactos=93 (NO se borro nada de Data; el gate solo exige generado ⊆ visible)
