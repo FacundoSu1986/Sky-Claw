@@ -1257,3 +1257,58 @@ def test_lore_d2_timer_arranca_desfasado_y_rota_en_vida() -> None:
     assert wiz._lore_timer is timer
     # 5. la ruta no ejecuta la lógica de cleanup
     assert wiz._lore_el.is_deleted is False
+
+
+# ── D6 — rombo ◆ como glifo de estado ─────────────────────────────────────────
+
+
+def test_rombo_d6_como_glifo_de_estado() -> None:
+    """D6: el rombo ◆ (no emoji, de bloque permitido) es el vocabulario de estado
+    en los sitios que el roadmap señala. Cada superficie se ancla por separado
+    (una por bloque; el find del hero no absorbe al resto):
+
+    - hero: sello `◆ {_e(estado)}`.
+    - badges de Disputas/Resueltas: `◆ {len(...)}` cada uno por expr.
+    - registro de la Puerta: la fila lleva rombo aria-hidden + la etiqueta
+      textual del estado visible. El ciclo recorre TODO el mapa _STATUS_COLORS
+      y congela la correspondencia exacta con _STATUS_LABELS.
+    """
+    from sky_claw.app.gui.views.forge_dashboard import (
+        _STATUS_COLORS,
+        _STATUS_LABELS,
+        _task_log_row_html,
+    )
+
+    # (1) Hero: el sello usa el glifo delante del estado.
+    assert "◆ {_e(estado)}" in _FORGE, "el hero perdió el rombo-firma de estado"
+
+    # (2) Cada badge enumerado por su expresión exacta, no por muestreo:
+    assert "◆ {len(conflicts)}" in _FORGE, "header de Disputas sin el rombo"
+    assert "◆ {len(resolved)}" in _FORGE, "header de Resueltas sin el rombo"
+
+    # (3) Congelar contrato exacto de etiquetas de estado
+    etiquetas_esperadas = {
+        "ok": "OK",
+        "success": "OK",
+        "registered": "REGISTRADO",
+        "failed": "FALLÓ",
+        "error": "ERROR",
+    }
+    assert etiquetas_esperadas == _STATUS_LABELS, "El mapa _STATUS_LABELS diverge del inventario canónico"
+    assert set(etiquetas_esperadas) == set(_STATUS_COLORS), (
+        "_STATUS_COLORS y _STATUS_LABELS deben cubrir exactamente los mismos estados"
+    )
+
+    # (4) Registro de la Puerta: cada estado del mapa → rombo color + etiqueta visible exacta.
+    for estado, color in _STATUS_COLORS.items():
+        fila = _task_log_row_html({"action": "instalar", "mod_name": "X", "status": estado, "created_at": ""})
+        assert ">◆<" in fila, f"falta el rombo en la fila para estado={estado}"
+        assert 'aria-hidden="true"' in fila, "el rombo debe ser decorativo: la etiqueta es la señal"
+        assert f"[{etiquetas_esperadas[estado]}]" in fila, (
+            f"la etiqueta exacta [{etiquetas_esperadas[estado]}] para el estado {estado} no está presente en la fila"
+        )
+        assert color in fila, f"el color del estado {estado} no está en la fila"
+
+    # (5) El punto solo-rombo ya no debería presentar una clase radial por solo color.
+    fila = _task_log_row_html({"action": "instalar", "mod_name": "X", "status": "ok", "created_at": ""})
+    assert "border-radius:50%; background:" not in fila, "queda dot CSS redundante junto al rombo"

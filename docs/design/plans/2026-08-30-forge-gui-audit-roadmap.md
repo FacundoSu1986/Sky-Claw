@@ -179,7 +179,13 @@ Anclas: censos AST del emblema (`test_emblema_dragon_unico_y_compartido`,
 
 ### D6 — Rombo `◆` como glifo de estado
 
-Aplicar el rombo textual como vocabulario visual coherente en badges de disputas y registro de la Puerta. Mantener la política de glifos del #522: evitar codepoints con presentación emoji por defecto y no depender del glifo/color como única señal semántica.
+**Estado:** **RESUELTO** en #587 — el rombo deja de aparecer solo en el hero
+(◆ ESTADO) y pasa a ser el glifo de estado canónico en los badges de la
+cabecera de Disputas (◆ N, rojo) y Resueltas (◆ N, verde) y en el registro de
+la Puerta de Descargas (cada fila reemplaza su dot CSS por ◆ con el color del
+estado). Mismo codepoint que ya permitía la whitelist (#522): no es emoji de
+presentación por defecto, y el glifo nunca viaja solo (texto al lado).
+Ancla: `test_rombo_d6_como_glifo_de_estado`.
 
 ### D2 — Lore en el wizard
 
