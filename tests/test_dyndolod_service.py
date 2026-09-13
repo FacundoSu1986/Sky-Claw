@@ -2522,53 +2522,143 @@ async def test_t8_ownership_perdido_antes_del_packaging_no_copia_bytes(tmp_path:
     assert not (config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME).exists()
 
 
+#: Los dos subroots del layout con el selector que `_exigir_root_born_empty`
+#: debe usar por `tool_name`. Parametrizar la FAMILIA (y no muestrear DynDOLOD)
+#: es el contrato del ancla: cubrir una sola herramienta dejaba a la otra sin
+#: prueba del boundary que PR-3 endureció.
+_ROOTS_POR_HERRAMIENTA = [
+    pytest.param("TexGen", lambda config: config.texgen_root, id="TexGen"),
+    pytest.param("DynDOLOD", lambda config: config.dyndolod_root, id="DynDOLOD"),
+]
+
+
+def _proceso_falso() -> MagicMock:
+    """Proceso falso con streams EOF y salida 0, para los DR del runner directo.
+
+    Configurado también en los casos que esperan bloqueo: si una mutación de la
+    selección de root dejara pasar el spawn, `_execute_process` completa y el
+    `pytest.raises` falla rápido con "DID NOT RAISE" en vez de colgarse drenando
+    un mock sin configurar.
+    """
+    proc = MagicMock()
+    proc.stdout = _EOFStream()
+    proc.stderr = _EOFStream()
+    proc.returncode = 0
+    proc.wait = AsyncMock(return_value=0)
+    return proc
+
+
 @pytest.mark.asyncio
-async def test_dr1_root_con_residuo_no_spawnea_en_el_runner_directo(tmp_path: pathlib.Path) -> None:
-    """DR1 — el runner directo también exige born-empty justo antes del spawn.
+@pytest.mark.parametrize(("tool_name", "selector_de_root"), _ROOTS_POR_HERRAMIENTA)
+async def test_dr1_root_con_residuo_no_spawnea_en_el_runner_directo(
+    tmp_path: pathlib.Path,
+    tool_name: str,
+    selector_de_root: Callable[[DynDOLODConfig], pathlib.Path | None],
+) -> None:
+    """DR1 — cada herramienta bloquea con residuo en SU propio subroot.
 
     En el camino productivo la precondición la garantiza el servicio; el runner
-    directo (rig, tests) no tenía ningún guard equivalente, así que un artefacto
+    directo (rig, tests) no tenía guard equivalente, así que un artefacto
     presente podía ser residuo de otra corrida y el veredicto de PR-3 lo habría
-    tratado como de hoy. Fail-closed: con residuo, no hay proceso.
+    tratado como de hoy. Fail-closed: con residuo, no hay spawn — y el residuo
+    queda intacto.
     """
     from sky_claw.local.tools import dyndolod_runner as ddl
 
     config, runner = _runner_texgen(tmp_path)
-    assert config.dyndolod_root is not None
-    residuo = config.dyndolod_root / "DynDOLOD.esp"
-    _escribir_salida(config.dyndolod_root, "DynDOLOD.esp", b"corrida anterior")
-    spawn = AsyncMock()
+    root = selector_de_root(config)
+    assert root is not None
+    residuo = root / "residuo_de_otra_corrida.bin"
+    _escribir_salida(root, residuo.name, b"corrida anterior")
+    spawn = AsyncMock(return_value=_proceso_falso())
 
     with (
         patch.object(ddl.asyncio, "create_subprocess_exec", spawn),
         pytest.raises(DynDOLODExecutionError, match="no está vacío"),
     ):
-        await runner._execute_process(config.dyndolod_exe, [], "DynDOLOD")
+        await runner._execute_process(config.dyndolod_exe, [], tool_name)
 
     spawn.assert_not_awaited(), "se lanzó el proceso con residuo en el root"
     assert residuo.read_bytes() == b"corrida anterior"
 
 
 @pytest.mark.asyncio
-async def test_dr2_root_born_empty_spawnea_en_el_runner_directo(tmp_path: pathlib.Path) -> None:
-    """DR2 — contracara de DR1: root existente y vacío habilita el spawn."""
+@pytest.mark.parametrize(("tool_name", "selector_de_root"), _ROOTS_POR_HERRAMIENTA)
+@pytest.mark.parametrize("estado_del_root", ["vacio", "ausente"])
+async def test_dr2_root_born_empty_spawnea_en_el_runner_directo(
+    tmp_path: pathlib.Path,
+    tool_name: str,
+    selector_de_root: Callable[[DynDOLODConfig], pathlib.Path | None],
+    estado_del_root: str,
+) -> None:
+    """DR2 — contracara de DR1: root vacío o ausente habilita el spawn.
+
+    Las dos formas que el contrato admite: el servicio crea el root vacío antes
+    del spawn, y en el runner directo un root todavía ausente tampoco tiene
+    residuo que contaminar. Parametrizado sobre las dos herramientas.
+    """
     from sky_claw.local.tools import dyndolod_runner as ddl
 
     config, runner = _runner_texgen(tmp_path)
-    assert config.dyndolod_root is not None
-    config.dyndolod_root.mkdir(parents=True, exist_ok=True)
-    proc = MagicMock()
-    proc.stdout = _EOFStream()
-    proc.stderr = _EOFStream()
-    proc.returncode = 0
-    proc.wait = AsyncMock(return_value=0)
-    spawn = AsyncMock(return_value=proc)
+    root = selector_de_root(config)
+    assert root is not None
+    # La raíz administrada existe por contrato P0 (el binding se publicó ahí):
+    # el guard de contención física la exige para validar la cadena.
+    assert config.external_work_root is not None
+    config.external_work_root.mkdir(parents=True, exist_ok=True)
+    if estado_del_root == "vacio":
+        root.mkdir(parents=True, exist_ok=True)
+    else:
+        assert not root.exists(), "el montaje del test debía dejar el root ausente"
+    spawn = AsyncMock(return_value=_proceso_falso())
 
     with patch.object(ddl.asyncio, "create_subprocess_exec", spawn):
-        stdout, stderr, return_code, _duracion = await runner._execute_process(config.dyndolod_exe, [], "DynDOLOD")
+        stdout, stderr, return_code, _duracion = await runner._execute_process(config.dyndolod_exe, [], tool_name)
 
     spawn.assert_awaited_once()
     assert (stdout, stderr, return_code) == ("", "", 0)
+
+
+#: Herramienta + su subroot + el subroot del sibling. La aislación se prueba en
+#: las DOS direcciones: el residuo del hermano no puede bloquear ni ser ignorado
+#: por el guard de la herramienta que corre.
+_ROOT_Y_SIBLING = [
+    pytest.param("TexGen", lambda config: config.texgen_root, lambda config: config.dyndolod_root, id="TexGen"),
+    pytest.param("DynDOLOD", lambda config: config.dyndolod_root, lambda config: config.texgen_root, id="DynDOLOD"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tool_name", "selector_de_root", "selector_del_sibling"), _ROOT_Y_SIBLING)
+async def test_dr3_el_residuo_del_sibling_no_bloquea_el_spawn(
+    tmp_path: pathlib.Path,
+    tool_name: str,
+    selector_de_root: Callable[[DynDOLODConfig], pathlib.Path | None],
+    selector_del_sibling: Callable[[DynDOLODConfig], pathlib.Path | None],
+) -> None:
+    """DR3 — `tool_name` selecciona SOLO el subroot propio.
+
+    El root de la herramienta que corre está vacío y el del hermano tiene
+    residuo: el spawn debe proceder. T9 cubre la aislación del ARTEFACTO en el
+    post-check (mismo recurso, boundary distinto); acá se prueba el boundary
+    inmediatamente previo al spawn.
+    """
+    from sky_claw.local.tools import dyndolod_runner as ddl
+
+    config, runner = _runner_texgen(tmp_path)
+    root = selector_de_root(config)
+    sibling = selector_del_sibling(config)
+    assert root is not None and sibling is not None
+    root.mkdir(parents=True, exist_ok=True)
+    _escribir_salida(sibling, "residuo_del_sibling.bin", b"ajeno")
+    spawn = AsyncMock(return_value=_proceso_falso())
+
+    with patch.object(ddl.asyncio, "create_subprocess_exec", spawn):
+        _stdout, _stderr, return_code, _duracion = await runner._execute_process(config.dyndolod_exe, [], tool_name)
+
+    spawn.assert_awaited_once()
+    assert return_code == 0
+    assert (sibling / "residuo_del_sibling.bin").read_bytes() == b"ajeno"
 
 
 @pytest.mark.asyncio
