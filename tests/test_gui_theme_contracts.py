@@ -1257,3 +1257,30 @@ def test_lore_d2_timer_arranca_desfasado_y_rota_en_vida() -> None:
     assert wiz._lore_timer is timer
     # 5. la ruta no ejecuta la lógica de cleanup
     assert wiz._lore_el.is_deleted is False
+
+
+# ── D6 — rombo ◆ como glifo de estado ─────────────────────────────────────────
+
+
+def test_rombo_d6_como_glifo_de_estado() -> None:
+    """D6: el rombo ◆ (no emoji, de bloque permitido) es el vocabulario de estado
+    en los tres sitios del shell que el roadmap señala: badge del hero
+    (◆ ESTADO), header de Disputas/Resueltas (◆ <n>) y cada fila del registro
+    de la Puerta (◆ coloreado por estado, en vez del punto suelto).
+
+    La política de glifos de #522 también prohíbe cualquier codepoint que cambie
+    de presentación emoji — el rombo es U+25C6, ya permitido por la whitelist.
+    """
+    from sky_claw.app.gui.views.forge_dashboard import _task_log_row_html
+
+    # 1) Hero: el sello usa el glifo delante del estado (❣︎ "◆ ESTABLE").
+    assert "◆ {_e(estado)}" in _FORGE, "el hero perdió el rombo-árma de estado"
+
+    # 2) Disputas: el contador usa el glifo (cuadrado) con aria-visible cortado.
+    assert '">◆ ' in _FORGE, "header de Disputas/Resueltas sin el rombo"
+
+    # 3) Registro de la Puerta: cada fila lleva ◆ coloreado por estado, no un dot.
+    fila = _task_log_row_html({"action": "install", "mod_name": "X", "status": "ok", "created_at": ""})
+    assert ">◆<" in fila, "el registro de la Puerta no usa el rombo"
+    assert "border-radius:50%; background:" not in fila, "el dot de estado sigue presente junto al rombo"
+    assert 'aria-hidden="false"' in fila, "el glifo no es decorativo (debe leerse)"
