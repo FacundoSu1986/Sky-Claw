@@ -218,15 +218,17 @@ def inyectar_runner(servicio: DynDOLODPipelineService, workspace) -> DynDOLODRun
 
 async def limpiar(ctx: dict) -> None:
     workspace = ctx["workspace"]
-    if workspace is not None and workspace.ownership is not None:
-        await workspace.ownership.liberar()
-    with contextlib.suppress(Exception):
-        await ctx["bus"].stop()
-    with contextlib.suppress(Exception):
-        await ctx["lock_manager"].close()
-    with contextlib.suppress(Exception):
-        await ctx["journal"].close()
-    await ctx["coordinacion"].close()
+    try:
+        if workspace is not None and workspace.ownership is not None:
+            await workspace.ownership.liberar()
+    finally:
+        with contextlib.suppress(Exception):
+            await ctx["bus"].stop()
+        with contextlib.suppress(Exception):
+            await ctx["lock_manager"].close()
+        with contextlib.suppress(Exception):
+            await ctx["journal"].close()
+        await ctx["coordinacion"].close()
 
 
 async def fase_precheck() -> int:
