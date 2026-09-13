@@ -12,6 +12,7 @@ Uso: python run_phase.py <precheck|A|B> <session-dir>
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import pathlib
@@ -183,7 +184,14 @@ async def preparar(svc_kwargs: dict) -> tuple[DynDOLODPipelineService, object]:
         workspace=workspace,
         **svc_kwargs,
     )
-    return servicio, {"coordinacion": coordinacion, "journal": journal, "bus": bus, "workspace": workspace, "runner": None}
+    return servicio, {
+        "coordinacion": coordinacion,
+        "journal": journal,
+        "bus": bus,
+        "workspace": workspace,
+        "runner": None,
+        "lock_manager": lock_manager,
+    }
 
 
 def inyectar_runner(servicio: DynDOLODPipelineService, workspace) -> DynDOLODRunner:
@@ -212,14 +220,12 @@ async def limpiar(ctx: dict) -> None:
     workspace = ctx["workspace"]
     if workspace is not None and workspace.ownership is not None:
         await workspace.ownership.liberar()
-    try:
-        await ctx["journal"].close()
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         await ctx["bus"].stop()
-    except Exception:
-        pass
+    with contextlib.suppress(Exception):
+        await ctx["lock_manager"].close()
+    with contextlib.suppress(Exception):
+        await ctx["journal"].close()
     await ctx["coordinacion"].close()
 
 
@@ -254,91 +260,92 @@ async def fase_precheck() -> int:
 
 async def fase_run(run_texgen: bool) -> int:
     servicio, ctx = await preparar({})
-    runner = inyectar_runner(servicio, ctx["workspace"])
-    herramienta = HerramientaDynDOLOD.TEXGEN if run_texgen else HerramientaDynDOLOD.DYNDOLOD
-    argv = runner._build_xedit_args(None, herramienta=herramienta)
-    linea = runner._linea_de_comando([str(TEXGEN_EXE if run_texgen else DYNDLOD_EXE), *argv])
-    exe = TEXGEN_EXE if run_texgen else DYNDLOD_EXE
-    prefijo = "texgen" if run_texgen else "dyndolod"
-    escribir(
-        f"{prefijo}-command.txt",
-        [
-            f"tool={'TexGen' if run_texgen else 'DynDOLOD'}",
-            f"exe={exe}",
-            f"argv={json.dumps(argv, ensure_ascii=False)}",
-            f"command_line={linea}",
-            f"cwd={pathlib.Path.cwd()}",
-            f"data_dir={RIG_DATA}",
-            f"ini_dir={RIG_INI}",
-            f"plugins_file={RIG_PLUGINS}",
-            f"temp_dir={RIG_TEMP}",
-            f"external_work_root={ctx['workspace'].root}",
-            "timeout_seconds=2700",
-        ],
-    )
-    layout = runner._config.output_layout
-    raiz = layout.texgen_root if run_texgen else layout.dyndolod_root
-    escribir(f"{prefijo}-tree-before.txt", tree_lines(raiz))
-    escribir("mo2-mods-before.txt" if run_texgen else "mo2-mods-phaseB-before.txt", estado_mo2_mods())
-
-    inicio = asyncio.get_event_loop().time()
     try:
-        resultado = await servicio.execute(preset="Medium", run_texgen=run_texgen, create_snapshot=True)
-    except BaseException as exc:  # noqa: BLE001 - harness de evidencia
+        runner = inyectar_runner(servicio, ctx["workspace"])
+        herramienta = HerramientaDynDOLOD.TEXGEN if run_texgen else HerramientaDynDOLOD.DYNDOLOD
+        argv = runner._build_xedit_args(None, herramienta=herramienta)
+        linea = runner._linea_de_comando([str(TEXGEN_EXE if run_texgen else DYNDLOD_EXE), *argv])
+        exe = TEXGEN_EXE if run_texgen else DYNDLOD_EXE
+        prefijo = "texgen" if run_texgen else "dyndolod"
+        escribir(
+            f"{prefijo}-command.txt",
+            [
+                f"tool={'TexGen' if run_texgen else 'DynDOLOD'}",
+                f"exe={exe}",
+                f"argv={json.dumps(argv, ensure_ascii=False)}",
+                f"command_line={linea}",
+                f"cwd={pathlib.Path.cwd()}",
+                f"data_dir={RIG_DATA}",
+                f"ini_dir={RIG_INI}",
+                f"plugins_file={RIG_PLUGINS}",
+                f"temp_dir={RIG_TEMP}",
+                f"external_work_root={ctx['workspace'].root}",
+                "timeout_seconds=2700",
+            ],
+        )
+        layout = runner._config.output_layout
+        raiz = layout.texgen_root if run_texgen else layout.dyndolod_root
+        escribir(f"{prefijo}-tree-before.txt", tree_lines(raiz))
+        escribir("mo2-mods-before.txt" if run_texgen else "mo2-mods-phaseB-before.txt", estado_mo2_mods())
+
+        inicio = asyncio.get_event_loop().time()
+        try:
+            resultado = await servicio.execute(preset="Medium", run_texgen=run_texgen, create_snapshot=True)
+        except BaseException as exc:  # noqa: BLE001 - harness de evidencia
+            duracion = asyncio.get_event_loop().time() - inicio
+            escribir_json(
+                f"{prefijo}-exception.json",
+                {"type": type(exc).__name__, "message": str(exc), "traceback": traceback.format_exc(), "duration": duracion},
+            )
+            log(f"EXCEPCION en execute: {type(exc).__name__}: {exc}")
+            return 3
         duracion = asyncio.get_event_loop().time() - inicio
-        escribir_json(
-            f"{prefijo}-exception.json",
-            {"type": type(exc).__name__, "message": str(exc), "traceback": traceback.format_exc(), "duration": duracion},
-        )
-        log(f"EXCEPCION en execute: {type(exc).__name__}: {exc}")
-        await limpiar(ctx)
-        return 3
-    duracion = asyncio.get_event_loop().time() - inicio
 
-    escribir_json(f"{prefijo}-result.json", resultado)
-    resumen = [
-        f"duration_seconds={duracion:.1f}",
-        f"success={resultado.get('success')}",
-        f"needs_deployment={resultado.get('needs_deployment')}",
-        f"rolled_back={resultado.get('rolled_back')}",
-        f"message={resultado.get('message')}",
-        f"errors={resultado.get('errors')}",
-        f"texgen_mod_path={resultado.get('texgen_mod_path')}",
-        f"dyndolod_mod_path={resultado.get('dyndolod_mod_path')}",
-        f"status={resultado.get('status')}",
-        f"reason={resultado.get('reason')}",
-        f"assisted={resultado.get('assisted')}",
-        "preflight=" + json.dumps(resultado.get("preflight"), ensure_ascii=False, default=str),
-    ]
-    escribir(f"{prefijo}-result.txt", resumen)
+        escribir_json(f"{prefijo}-result.json", resultado)
+        resumen = [
+            f"duration_seconds={duracion:.1f}",
+            f"success={resultado.get('success')}",
+            f"needs_deployment={resultado.get('needs_deployment')}",
+            f"rolled_back={resultado.get('rolled_back')}",
+            f"message={resultado.get('message')}",
+            f"errors={resultado.get('errors')}",
+            f"texgen_mod_path={resultado.get('texgen_mod_path')}",
+            f"dyndolod_mod_path={resultado.get('dyndolod_mod_path')}",
+            f"status={resultado.get('status')}",
+            f"reason={resultado.get('reason')}",
+            f"assisted={resultado.get('assisted')}",
+            "preflight=" + json.dumps(resultado.get("preflight"), ensure_ascii=False, default=str),
+        ]
+        escribir(f"{prefijo}-result.txt", resumen)
 
-    escribir(f"{prefijo}-tree-after.txt", tree_lines(raiz))
-    escribir("mo2-mods-after.txt" if not run_texgen else "mo2-mods-phaseA-after.txt", estado_mo2_mods())
-    escribir_packaging("TexGen Output" if run_texgen else "DynDOLOD Output", str(MO2_MODS), f"packaging-{'texgen' if run_texgen else 'dyndolod'}.txt")
+        escribir(f"{prefijo}-tree-after.txt", tree_lines(raiz))
+        escribir("mo2-mods-after.txt" if not run_texgen else "mo2-mods-phaseA-after.txt", estado_mo2_mods())
+        escribir_packaging("TexGen Output" if run_texgen else "DynDOLOD Output", str(MO2_MODS), f"packaging-{'texgen' if run_texgen else 'dyndolod'}.txt")
 
-    if run_texgen:
-        from sky_claw.app.db.handoffs import clave_de_artifact
+        if run_texgen:
+            from sky_claw.app.db.handoffs import clave_de_artifact
 
-        entrada = await ctx["journal"].consultar_handoff_activo(clave_de_artifact(MO2_MODS / "TexGen Output"))
-        escribir_json(
-            "handoff-texgen.json",
-            {
-                "handoff": None if entrada is None else {
-                    "handoff_id": entrada.handoff_id,
-                    "state": entrada.state.value,
-                    "expected_profile": entrada.expected_profile,
-                    "expected_digest": entrada.expected_digest,
-                    "expected_files": entrada.expected_files,
-                    "expected_bytes": entrada.expected_bytes,
+            entrada = await ctx["journal"].consultar_handoff_activo(clave_de_artifact(MO2_MODS / "TexGen Output"))
+            escribir_json(
+                "handoff-texgen.json",
+                {
+                    "handoff": None if entrada is None else {
+                        "handoff_id": entrada.handoff_id,
+                        "state": entrada.state.value,
+                        "expected_profile": entrada.expected_profile,
+                        "expected_digest": entrada.expected_digest,
+                        "expected_files": entrada.expected_files,
+                        "expected_bytes": entrada.expected_bytes,
+                    },
+                    "texgen_result": resultado.get("texgen_result"),
+                    "needs_deployment": resultado.get("needs_deployment"),
                 },
-                "texgen_result": resultado.get("texgen_result"),
-                "needs_deployment": resultado.get("needs_deployment"),
-            },
-        )
-        log(f"handoff: {entrada.state.value if entrada else None}")
-    log(f"phase {'A' if run_texgen else 'B'} result: success={resultado.get('success')} needs_deployment={resultado.get('needs_deployment')}")
-    await limpiar(ctx)
-    return 0
+            )
+            log(f"handoff: {entrada.state.value if entrada else None}")
+        log(f"phase {'A' if run_texgen else 'B'} result: success={resultado.get('success')} needs_deployment={resultado.get('needs_deployment')}")
+        return 0
+    finally:
+        await limpiar(ctx)
 
 
 async def main() -> int:

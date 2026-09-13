@@ -3,7 +3,7 @@
 - **PR:** #580 (DRAFT) — `feat/dyndolod-pr2-external-staging`
 - **tested code HEAD:** `ea3f28fbff064a2917690d3851d9a311a388da77`
 - **base (origin/main):** `5313cf2b05b6b4f03d3483c9d8e6b50a3d2e5177`
-- **documentation SHA:** _(pendiente; el commit documental posterior NO es el SHA ejecutado)_
+- **documentation SHA (harness ejecutado):** `51f334674fcc55c785e700fd6879bcd6dd578af6` (ver NOTA POST-REVIEW)
 - **Fecha:** 2026-09-13 (aprox. 08:11–08:47 −03:00)
 - **Worktree:** `C:\Worktrees\Sky-Claw-pr2` (limpio antes y después; **no se modificó código**)
 - **Perfil MO2:** `SkyClaw-PR2-Rig` (selected_profile verificado)
@@ -92,10 +92,33 @@ Sin archivos directos en el family root (namespace). Sin residuo `*.rollback-*`.
   `os._exit` tras `main()`. Motivo medido con `faulthandler`: el cierre del harness deja vivo un hilo worker de
   `aiosqlite` (no-daemon) que bloquea `threading._shutdown`; `asyncio.run(main())` SÍ retorna y no queda ninguna lease
   (etapa 9 y pipeline en 0 filas). No es un defecto del código producto.
+  El follow-up post-review cerró el `DistributedLockManager` que aquel cierre dejaba abierto
+  (ver NOTA POST-REVIEW); `os._exit` se conserva en el wrapper como boundary defensivo.
 - La materialización TexGen→Data del rig **es un paso de operador** exigido por el contrato; se ejecutó tras
   aprobación explícita y NO se usó para ocultar el gate: el gate cortó primero y luego verificó byte a byte.
 - `LODGenx64Win7.exe` ausente en el rig (no usado).
-- SHA documental aún inexistente al momento de esta corrida.
+- SHA documental aún inexistente al momento de esta corrida; el commit que preserva el harness
+  ejecutado es `51f334674fcc55c785e700fd6879bcd6dd578af6` (ver NOTA POST-REVIEW).
+
+## POST-REVIEW HARNESS NOTE
+
+- El real rig y sus resultados fueron producidos con la versión del harness
+  preservada en el commit `51f334674fcc55c785e700fd6879bcd6dd578af6`.
+- La revisión posterior detectó dos defectos de teardown/lifecycle exclusivos
+  del harness de evidencia (no del código producto):
+  1. `DistributedLockManager` no cerrado explícitamente (conexión `aiosqlite`
+     propia retenida).
+  2. `limpiar(ctx)` no garantizado mediante `finally` para todo lo ocurrido
+     después de `preparar()`.
+- El follow-up corrige únicamente el teardown del harness: el `lock_manager`
+  queda en el `ctx` de `preparar()` y se cierra en `limpiar()`, y la secuencia
+  posterior a `preparar()` (inyección del runner, argv, evidencia de comando,
+  tree-before, `execute`, evidencia de excepción/resultado/packaging/handoff)
+  queda bajo un único `try/finally` que ejecuta `await limpiar(ctx)` una sola
+  vez.
+- No modifica código productivo, argv, output roots, packaging, handoff,
+  filesystem observado ni resultados del rig.
+- No se requiere repetir TexGen/DynDOLOD por estos fixes de teardown.
 
 ## Divergencia de protocolo registrada (transparencia)
 El protocolo indicaba "NO copiar archivos manualmente a Data para maquillar el handoff". El contrato REAL de
