@@ -1151,8 +1151,15 @@ class DynDOLODRunner:
         # P2.2 — contención FÍSICA del `-o:` efectivo antes del spawn: aunque la
         # lease lógica siga viva, un symlink/junction introducido en un ancestro
         # después del boot haría que la herramienta escriba fuera del workspace
-        # admitido. Orden: ownership → cadena física → proceso.
+        # admitido. Orden: ownership → cadena física → born-empty → proceso.
         self._exigir_contencion_fisica_del_destino(tool_name)
+
+        # PR-3 — precondición born-empty INMEDIATAMENTE antes del spawn. En el
+        # camino productivo la garantiza el servicio (move-aside + verificación);
+        # el runner directo (rig, tests) no tenía ningún guard equivalente y el
+        # artefacto presente podía ser residuo de otra corrida. I/O de disco: al
+        # hilo, como el resto de las sondas.
+        await asyncio.to_thread(self._exigir_root_born_empty, tool_name)
 
         start_time = time.monotonic()
 
@@ -2508,6 +2515,47 @@ class DynDOLODRunner:
                 f"Herramienta desconocida para el guard de contención física del -o:: {tool_name!r}"
             )
         exigir_contencion_fisica(externo, layout.raiz_de(herramienta))
+
+    def _exigir_root_born_empty(self, tool_name: str) -> None:
+        """El root del tool no contiene residuo justo antes del spawn (PR-3).
+
+        La atribución física del artefacto —lo que reemplazó al gate de frescura
+        retirado— descansa en que el root exclusivo nazca vacío. El servicio lo
+        garantiza con el move-aside + `_preparar_root_vacio`; el runner también se
+        usa directo (rig, tests), y ahí nadie más lo verifica. Este guard corre
+        INMEDIATAMENTE antes de ``create_subprocess_exec``: si hay residuo de otra
+        corrida, la herramienta escribiría sobre un árbol ajeno y su salida no
+        sería atribuible. Fail-closed: no se lanza.
+
+        Root AUSENTE pasa: no hay residuo que contaminar y la herramienta crea su
+        root (en el camino productivo el servicio ya lo creó vacío). Sin layout
+        (runner sin workspace administrado) también pasa: no hay subroot del cual
+        afirmar la precondición, y los lanzadores ya fallaron cerrado antes por
+        NO CONFIGURADO. Una herramienta fuera de :data:`_HERRAMIENTA_POR_TOOL` es
+        fail-closed, igual que en el guard de contención física.
+        """
+        layout = self._config.output_layout
+        # `isinstance` defensivo (mismo idioma que el resto del archivo): los
+        # dobles de test pasan `MagicMock` como config.
+        if not isinstance(layout, DynDOLODOutputLayout):
+            return
+        herramienta = _HERRAMIENTA_POR_TOOL.get(tool_name)
+        if herramienta is None:
+            raise DynDOLODValidationError(f"Herramienta desconocida para el guard born-empty del root: {tool_name!r}")
+        root = layout.raiz_de(herramienta)
+        if not root.exists():
+            return
+        if not root.is_dir():
+            raise DynDOLODExecutionError(
+                f"El root de staging '{root}' existe pero no es un directorio: no se lanza {tool_name}."
+            )
+        if any(root.iterdir()):
+            entradas = sorted(hijo.name for hijo in root.iterdir())[:5]
+            raise DynDOLODExecutionError(
+                f"El root de staging '{root}' no está vacío antes del spawn de {tool_name} ({entradas}): "
+                "la herramienta escribiría sobre residuo de otra corrida y su salida no sería atribuible. "
+                "No se lanza."
+            )
 
     async def _exigir_fuente_del_subroot(self, output_path: pathlib.Path, mod_name: str) -> None:
         """La fuente del packaging pertenece al subroot EXCLUSIVO de su herramienta.

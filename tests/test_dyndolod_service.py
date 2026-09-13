@@ -2492,6 +2492,9 @@ async def test_t7_root_no_born_empty_impide_el_spawn(
 
     assert result["success"] is False
     assert fake.tools == [], "se lanzó una herramienta con el root no vacío"
+    # El bloqueo provino del tool root residual, no de otra causa: el motivo lo
+    # redacta `_preparar_root_vacio` con el root y sus entradas.
+    assert any("no está vacío" in e for e in result.get("errors", [])), result.get("errors")
     assert residuo.read_bytes() == b"RESIDUO"
     assert not (config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME).exists()
 
@@ -2517,6 +2520,55 @@ async def test_t8_ownership_perdido_antes_del_packaging_no_copia_bytes(tmp_path:
 
     assert ownership.fences == 1
     assert not (config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_dr1_root_con_residuo_no_spawnea_en_el_runner_directo(tmp_path: pathlib.Path) -> None:
+    """DR1 — el runner directo también exige born-empty justo antes del spawn.
+
+    En el camino productivo la precondición la garantiza el servicio; el runner
+    directo (rig, tests) no tenía ningún guard equivalente, así que un artefacto
+    presente podía ser residuo de otra corrida y el veredicto de PR-3 lo habría
+    tratado como de hoy. Fail-closed: con residuo, no hay proceso.
+    """
+    from sky_claw.local.tools import dyndolod_runner as ddl
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.dyndolod_root is not None
+    residuo = config.dyndolod_root / "DynDOLOD.esp"
+    _escribir_salida(config.dyndolod_root, "DynDOLOD.esp", b"corrida anterior")
+    spawn = AsyncMock()
+
+    with (
+        patch.object(ddl.asyncio, "create_subprocess_exec", spawn),
+        pytest.raises(DynDOLODExecutionError, match="no está vacío"),
+    ):
+        await runner._execute_process(config.dyndolod_exe, [], "DynDOLOD")
+
+    spawn.assert_not_awaited(), "se lanzó el proceso con residuo en el root"
+    assert residuo.read_bytes() == b"corrida anterior"
+
+
+@pytest.mark.asyncio
+async def test_dr2_root_born_empty_spawnea_en_el_runner_directo(tmp_path: pathlib.Path) -> None:
+    """DR2 — contracara de DR1: root existente y vacío habilita el spawn."""
+    from sky_claw.local.tools import dyndolod_runner as ddl
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.dyndolod_root is not None
+    config.dyndolod_root.mkdir(parents=True, exist_ok=True)
+    proc = MagicMock()
+    proc.stdout = _EOFStream()
+    proc.stderr = _EOFStream()
+    proc.returncode = 0
+    proc.wait = AsyncMock(return_value=0)
+    spawn = AsyncMock(return_value=proc)
+
+    with patch.object(ddl.asyncio, "create_subprocess_exec", spawn):
+        stdout, stderr, return_code, _duracion = await runner._execute_process(config.dyndolod_exe, [], "DynDOLOD")
+
+    spawn.assert_awaited_once()
+    assert (stdout, stderr, return_code) == ("", "", 0)
 
 
 @pytest.mark.asyncio
