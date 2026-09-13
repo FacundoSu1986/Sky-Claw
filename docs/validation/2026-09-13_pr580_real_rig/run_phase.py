@@ -12,7 +12,6 @@ Uso: python run_phase.py <precheck|A|B> <session-dir>
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import pathlib
@@ -217,18 +216,38 @@ def inyectar_runner(servicio: DynDOLODPipelineService, workspace) -> DynDOLODRun
 
 
 async def limpiar(ctx: dict) -> None:
+    """Teardown por etapa: cada cierre se intenta aunque el anterior falle.
+
+    `contextlib.suppress(Exception)` no atrapa `asyncio.CancelledError` — y
+    `CoreEventBus._observe_task()` puede re-lanzarlo tras completar el cleanup
+    del bus. Por eso cada paso corre en su propio boundary, las `BaseException`
+    se acumulan y recién cuando TODOS los cierres se intentaron se repropaga:
+    primero la cancelación (no se traga), y si no hubo, la primera excepción o
+    un grupo con las restantes.
+    """
+    errores: list[BaseException] = []
+
+    async def intentar(cierre) -> None:  # noqa: ANN001
+        try:
+            await cierre()
+        except BaseException as exc:  # noqa: BLE001 - teardown: acumula y repropaga
+            errores.append(exc)
+
     workspace = ctx["workspace"]
-    try:
-        if workspace is not None and workspace.ownership is not None:
-            await workspace.ownership.liberar()
-    finally:
-        with contextlib.suppress(Exception):
-            await ctx["bus"].stop()
-        with contextlib.suppress(Exception):
-            await ctx["lock_manager"].close()
-        with contextlib.suppress(Exception):
-            await ctx["journal"].close()
-        await ctx["coordinacion"].close()
+    if workspace is not None and workspace.ownership is not None:
+        await intentar(workspace.ownership.liberar)
+    await intentar(ctx["bus"].stop)
+    await intentar(ctx["lock_manager"].close)
+    await intentar(ctx["journal"].close)
+    await intentar(ctx["coordinacion"].close)
+
+    if errores:
+        for exc in errores:
+            if isinstance(exc, asyncio.CancelledError):
+                raise exc
+        if len(errores) == 1:
+            raise errores[0]
+        raise BaseExceptionGroup("limpiar: cierres del harness fallidos", errores)
 
 
 async def fase_precheck() -> int:

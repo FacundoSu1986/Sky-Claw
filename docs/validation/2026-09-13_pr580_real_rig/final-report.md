@@ -110,15 +110,19 @@ Sin archivos directos en el family root (namespace). Sin residuo `*.rollback-*`.
      propia retenida).
   2. `limpiar(ctx)` no garantizado mediante `finally` para todo lo ocurrido
      después de `preparar()`.
-  3. Una cancelación durante `workspace.ownership.liberar()` podía saltear los
-     cierres posteriores de `limpiar()`.
+  3. Una cancelación en cualquiera de los `await` de `limpiar()` (p. ej.
+     `bus.stop()`, que re-lanza `asyncio.CancelledError`) podía saltear los
+     cierres posteriores, porque `suppress(Exception)` no atrapa
+     `CancelledError`.
 - El follow-up corrige únicamente el teardown del harness: el `lock_manager`
   queda en el `ctx` de `preparar()` y se cierra en `limpiar()`, la secuencia
   posterior a `preparar()` (inyección del runner, argv, evidencia de comando,
   tree-before, `execute`, evidencia de excepción/resultado/packaging/handoff)
   queda bajo un único `try/finally` que ejecuta `await limpiar(ctx)` una sola
-  vez, y la liberación del ownership corre en un `try/finally` propio para que
-  los cierres ocurran aunque esa liberación se interrumpa.
+  vez, y cada etapa del teardown (ownership, bus, lock manager, journal,
+  coordinación) se intenta de forma independiente: los fallos y cancelaciones
+  se acumulan y se repropagan recién cuando todas corrieron (la cancelación
+  nunca se traga).
 - No modifica código productivo, argv, output roots, packaging, handoff,
   filesystem observado ni resultados del rig.
 - No se requiere repetir TexGen/DynDOLOD por estos fixes de teardown.
