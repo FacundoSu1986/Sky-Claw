@@ -25,7 +25,7 @@ ninguno le puso nombre.**
 | 3 | `sky_claw/app/db/journal_contracts.py:45` | *"Una operación COMPLETED pelada NO alcanza — el ActionManifest pre-sort también queda COMPLETED aunque el sort falle"* |
 | 4 | `sky_claw/app/db/journal_contracts.py:37` | `TEARDOWN_INCOMPLETE_KIND`: *"marcar la TX entera como revertida mentiría sobre un cache que sí existe"* |
 | 5 | `sky_claw/local/mo2/vfs_contracts.py:21` | `ALLOWED_ROLLBACK_STATES`: cinco estados, no dos |
-| 6 | `sky_claw/local/tools/dyndolod_runner.py:1319-1328` | Tres resultados distintos (mtime / `_SIN_ARTEFACTO` / `None`), con el motivo: *"Colapsar los dos últimos en un mismo centinela era fail-OPEN"* |
+| 6 | `sky_claw/local/tools/dyndolod_runner.py` (`_firma_del_log`) | Tres resultados distintos (firma real / `_SIN_LOG` = log ausente / `None` = no se pudo sondear), con el motivo: *"Colapsar los dos últimos en un mismo centinela era fail-OPEN"*. El ejemplo pre-PR-3 (`_SIG`/`_SIN_ARTEFACTO`/`None`) quedó histórico: PR-3 retiró la firma del artefacto y su sentinel se refactorizó como `_SIN_LOG` |
 | 7 | `tests/test_estado_ooda.py:21` | `_ESTADOS = {"Cerrado", "Parcial", "Abierto", "Bloqueado (rig humano)"}` |
 
 Los siete expresan la misma propiedad —**dato ausente y dato negativo no son lo mismo**— y ninguno
@@ -53,8 +53,8 @@ La auditoría también verificó que la infraestructura necesaria **ya existe** 
   (`sky_claw/local/discovery/environment.py:76`) con edición, versión del juego y versión por
   herramienta.
 - **Verificadores deterministas.** `SnapshotManager.restore(verify_checksum=True)`,
-  `PostRunValidator`, `rollback_reconciler`, los parsers de xEdit, el resolver FOMOD y el gate de
-  frescura de DynDOLOD.
+  `PostRunValidator`, `rollback_reconciler`, los parsers de xEdit, el resolver FOMOD y la
+  atribución del log por corrida de DynDOLOD (`_firma_del_log`).
 - **Evidencia de proceso con integridad.** `subprocess_error_extra`
   (`sky_claw/logging_config.py:372`) emite `stderr_sha256` sobre los bytes **completos**,
   `stderr_size` y `stderr_truncated`.

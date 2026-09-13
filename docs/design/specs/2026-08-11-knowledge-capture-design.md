@@ -86,7 +86,8 @@ Deterministas y ya existentes: `SnapshotManager.restore(verify_checksum=True)`, 
 checksum esperado de un sidecar `.meta.json` y lo recalcula sobre el archivo restaurado;
 `rollback_reconciler`, con el invariante *"un backup solo se descarta cuando el filesystem prueba
 que ya no es la única copia de algo"*; los parsers de xEdit; el resolver FOMOD; la attestation de
-perfil del broker VFS; y el gate de frescura de DynDOLOD.
+perfil del broker VFS; y el post-check de DynDOLOD (artefacto requerido + atribución del log por
+corrida; el gate de frescura pre-PR-3 ya no existe).
 
 `PostRunValidator` (`sky_claw/local/validators/post_run.py`) es el mecanismo previsto para decidir
 efecto, y está cableado en **un** ritual de nueve.
