@@ -350,7 +350,11 @@ tool_root previo
 → commit / rollback
 ```
 
-No se retira freshness todavía (PR-3, posterior al rig de ownership).
+**PR-3 (2026-09-13): retirada la comparación pre/post de firma del artefacto;
+la atribución del log por corrida permanece** (el log no vive dentro del root
+born-empty). El veredicto sigue exigiendo artefacto requerido presente en el
+subroot exclusivo, completitud de ESTA corrida y ausencia de terminales de ESTA
+corrida.
 
 ## 11. Transacción, recuperación y espacio
 

@@ -601,6 +601,15 @@ PR-3 solo puede retirar mecanismos de freshness cuando haya evidencia de que la
 propiedad que protegían queda cubierta en todas las ramas. Mientras falte el rig
 completo post-PR2, el checklist T5-v2 completo permanece parcial (7/10).
 
+**Estado PR-3 (2026-09-13): IMPLEMENTADO** en la rama
+`refactor/dyndolod-remove-output-freshness`. El merge de #580 y el rig real
+post-PR-2 (T5-v2 10/10,
+[`docs/validation/2026-09-13_pr580_real_rig/final-report.md`](../../validation/2026-09-13_pr580_real_rig/final-report.md))
+cerraron la condición: se retiró SOLO la comparación pre/post de firma del
+artefacto —redundante por born-empty + exclusividad por herramienta + fence de
+ownership— y la atribución del log por corrida se conserva. No se reabre el gate
+de lanzamiento: no cambian argv, `-o:`, spawn, layout, packaging ni handoff.
+
 **Definición de cierre de PR-2:** contrato admitido y persistente, P0 verificado,
 gate inicial con ambas tools, implementación revisada, tests apropiados verdes,
 rig posterior PASS, OODA/SOP sincronizados y residuos legacy inventariados.

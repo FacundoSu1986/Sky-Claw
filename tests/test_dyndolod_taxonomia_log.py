@@ -406,7 +406,7 @@ def test_el_marcador_de_una_herramienta_no_vale_para_la_otra() -> None:
 
 @pytest.mark.asyncio
 async def test_falta_solo_el_marcador_y_la_corrida_sale_roja(tmp_path: pathlib.Path) -> None:
-    """`rc == 0`, artefacto fresco, log sin terminales, y SOLO falta el marcador.
+    """`rc == 0`, artefacto presente, log sin terminales, y SOLO falta el marcador.
 
     Es el único caso que hace fallar al conjunto `AND completo` de forma
     independiente. El fixture del cierre mid-run no sirve para esto: trae una
@@ -449,8 +449,8 @@ async def test_la_corrida_cortada_despues_de_lodgen_sale_roja(tmp_path: pathlib.
 
     Escenario que los dos revisores señalaron por separado (PR #488): el proceso
     se cierra justo después de que LODGen termina el primer worldspace. Queda
-    `rc == 0`, artefacto fresco —`DynDOLOD.esp` puede haberse persistido antes, y
-    el SOP deja esa persistencia temprana explícitamente sin verificar— y ni una
+    `rc == 0`, artefacto presente —`DynDOLOD.esp` puede haberse persistido antes,
+    y el SOP deja esa persistencia temprana explícitamente sin verificar— y ni una
     línea terminal. Con `generated object LOD for` en los marcadores, los cuatro
     conjuntos daban verde sobre una generación a medias.
 
@@ -604,10 +604,10 @@ async def test_el_marcador_de_la_corrida_anterior_no_vale_si_el_log_no_cambio(
 ) -> None:
     """Log viejo CON marcador + corrida que sólo toca la salida → rojo.
 
-    Es el falso verde P1: la corrida de hoy escribe el artefacto —así que el gate
-    de frescura pasa— y muere antes de tocar el log. Los otros tres conjuntos
-    (`rc == 0`, artefacto fresco, sin terminales) quedan satisfechos sobre el log
-    de AYER, que sí tiene su marcador.
+    Es el falso verde P1: la corrida de hoy escribe el artefacto —el subroot nace
+    vacío, así que el gate de artefacto pasa— y muere antes de tocar el log. Los
+    otros conjuntos (`rc == 0`, artefacto presente, sin terminales) quedan
+    satisfechos sobre el log de AYER, que sí tiene su marcador.
     """
     config, runner = _runner_texgen(tmp_path)
     assert config.output_layout is not None
@@ -730,7 +730,7 @@ async def test_un_terminal_de_una_sesion_anterior_no_enrojece_esta_corrida(
     # Arrange: la sesión N dejó su terminal en el log acumulado.
     log = _escribir_log(tmp_path, tool, "[00:07:45] Fatal: madExcept caught an access violation\n")
 
-    # Act: la sesión N+1 es una corrida buena: rc 0, artefacto fresco y su propio
+    # Act: la sesión N+1 es una corrida buena: rc 0, artefacto presente y su propio
     # marcador apendeado DURANTE la corrida.
     def _correr() -> None:
         _escribir_salida(staging, artefacto)
@@ -852,7 +852,7 @@ async def test_una_reescritura_que_crece_no_se_toma_por_append(
     Su firma es indistinguible de la de un append, así que recortar
     ``bytes[:previo]`` descarta bytes de ESTA corrida. Entre los descartados hay
     un `Fatal:` de HOY, y el marcador de fin queda en la cola: `rc == 0`,
-    artefacto fresco y completitud satisfecha sobre una corrida que abortó.
+    artefacto presente y completitud satisfecha sobre una corrida que abortó.
 
     La propiedad: **un terminal ACTUAL no puede quedar fuera de la evidencia
     porque se supuso un append que nadie demostró.** Si el prefijo no se puede
@@ -962,9 +962,9 @@ async def test_el_mtime_sin_crecimiento_no_es_evidencia_de_esta_corrida(
 ) -> None:
     """CASO E — un `mtime` nuevo sobre el mismo tamaño no es evidencia de nada.
 
-    El log de AYER trae su marcador. La corrida de hoy toca la salida —así que el
-    gate de frescura del artefacto pasa— y al log sólo le cambia el `mtime` sin
-    escribirle un byte. Tomar eso por "lo truncó y lo reescribió" hereda el
+    El log de AYER trae su marcador. La corrida de hoy escribe su salida —el
+    subroot nace vacío, así que el gate de artefacto pasa— y al log sólo le cambia
+    el `mtime` sin escribirle un byte. Tomar eso por "lo truncó y lo reescribió" hereda el
     marcador viejo y da verde sobre una corrida que no declaró haber terminado.
 
     Sin bytes nuevos demostrables no hay evidencia: falla cerrado.
@@ -1185,8 +1185,8 @@ def test_todo_lanzador_que_pide_veredicto_firma_el_log_antes_de_lanzar() -> None
     assert set(lanzadores) == {"run_texgen", "run_dyndolod"}
 
     for nombre, llamada in lanzadores.items():
-        # to_thread(self._post_check, tool, firmas_previas, firma_previa_del_log)
-        assert len(llamada.args) == 4, f"{nombre} no le pasa la firma previa del log al post-check"
+        # to_thread(self._post_check, tool, firma_previa_del_log)
+        assert len(llamada.args) == 3, f"{nombre} no le pasa la firma previa del log al post-check"
         miembro = next(
             m for m in cls.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name == nombre
         )

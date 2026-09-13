@@ -165,11 +165,12 @@ _HERRAMIENTA_POR_TOOL: dict[str, HerramientaDynDOLOD] = {
     "DynDOLOD": HerramientaDynDOLOD.DYNDOLOD,
 }
 
-# Firma de un candidato sin artefacto. Distinto de ``None`` (= no se pudo
-# sondear) a propósito: colapsar los dos casos hace fail-open el gate de
-# frescura, porque "no lo pude mirar antes" pasa a leerse como "no había nada".
+# Firma de un log AUSENTE. Distinto de ``None`` (= no se pudo sondear) a
+# propósito: colapsar los dos casos hace fail-open la atribución del log, porque
+# "no lo pude mirar antes" pasa a leerse como "no había nada" y una firma previa
+# indeterminada habilitaría a tratar todo el archivo como de esta corrida.
 # Tupla vacía: ninguna firma real lo es.
-_SIN_ARTEFACTO: tuple[float | int, ...] = ()
+_SIN_LOG: tuple[float | int, ...] = ()
 
 #: Cuánto se lee por vuelta al firmar el log. El log de DynDOLOD llega a decenas
 #: de MB: se firma por chunks para no traerlo entero a memoria sólo para hashearlo.
@@ -271,7 +272,7 @@ MARCADORES_DE_COMPLETITUD: dict[str, tuple[str, ...]] = {
 #: línea. No es ceremonia: la categoría del DLL es `DynDOLOD.DLL … not found`, y
 #: exentar por el substring suelto `"DynDOLOD.DLL"` declaraba no-fatal a
 #: `Critical: DynDOLOD.DLL is corrupt` — un terminal disfrazado de ruido, que con
-#: artefacto fresco y marcador daba verde. Exentar de más es la dirección que
+#: artefacto presente y marcador daba verde. Exentar de más es la dirección que
 #: produce falsos VERDES, así que cada exención dice su categoría completa.
 NO_FATALES_DEL_DOMINIO: tuple[tuple[str, ...], ...] = (
     ("Deleted reference",),
@@ -603,13 +604,13 @@ class _PostCheck:
     artefacto: bool
     errors: list[str]
     warnings: list[str]
-    #: ¿La herramienta declaró en su log que TERMINÓ? El gate de frescura prueba
-    #: que el artefacto cambió, no que la corrida haya llegado al final: una GUI
-    #: cerrada a mitad deja el árbol tocado y el trabajo incompleto.
+    #: ¿La herramienta declaró en su log que TERMINÓ? El gate de artefacto prueba
+    #: que la salida requerida existe, no que la corrida haya llegado al final:
+    #: una GUI cerrada a mitad deja el árbol tocado y el trabajo incompleto.
     completo: bool = False
     #: Lo que aborta la corrida, ya separado del ruido de dominio. Es ESTO lo que
     #: gatea el veredicto, no `errors` — que además lleva los diagnósticos que el
-    #: post-check redacta para el operador (artefacto rancio, staging no sondeable).
+    #: post-check redacta para el operador (log ausente, staging no sondeable).
     terminales: list[str] = field(default_factory=list)
 
 
@@ -889,11 +890,10 @@ class DynDOLODRunner:
 
         args = self._build_xedit_args(extra_args, herramienta=HerramientaDynDOLOD.TEXGEN)
 
-        # Firma del staging ANTES de lanzar: la frescura se decide comparando el
-        # árbol consigo mismo (mtime contra mtime), no contra el reloj de pared.
-        firmas_previas = await asyncio.to_thread(self._firmas_de_salida, "TexGen")
-        # El log también se firma ANTES: el marcador de completitud sólo vale si
-        # lo escribió ESTA corrida (ver `_firma_del_log`).
+        # El log se firma ANTES de lanzar: el marcador de completitud sólo vale si
+        # lo escribió ESTA corrida (ver `_firma_del_log`). El artefacto no lleva
+        # firma previa desde PR-3: el subroot exclusivo nace vacío por contrato del
+        # servicio, así que su contenido ya es de esta corrida.
         firma_log_previa = await asyncio.to_thread(self._firma_del_log, "TexGen")
 
         try:
@@ -921,11 +921,12 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        post = await asyncio.to_thread(self._post_check, "TexGen", firmas_previas, firma_log_previa)
+        post = await asyncio.to_thread(self._post_check, "TexGen", firma_log_previa)
         errors, warnings, output_path = post.errors, post.warnings, post.output_path
         # Cuatro conjuntos, y ninguno es redundante: el exit code no alcanza en una
-        # app GUI, el artefacto fresco prueba que ALGO se escribió en esta corrida,
-        # el marcador prueba que la herramienta LLEGÓ AL FINAL, y la ausencia de
+        # app GUI, el artefacto prueba que la salida requerida existe en su subroot
+        # exclusivo (born-empty por el servicio, así que es de esta corrida), el
+        # marcador prueba que la herramienta LLEGÓ AL FINAL, y la ausencia de
         # terminales prueba que no abortó. Gatear por `not errors` —lo anterior—
         # rechazaba todo éxito real: el rig midió 121 líneas `Error:` en una corrida
         # buena. Ver `clasificar_log`. Idéntica a la de `run_dyndolod` a propósito.
@@ -1013,10 +1014,8 @@ class DynDOLODRunner:
 
         args = self._build_xedit_args(extra_args, herramienta=HerramientaDynDOLOD.DYNDOLOD)
 
-        # Ver run_texgen: firma previa del staging para el gate de frescura.
-        firmas_previas = await asyncio.to_thread(self._firmas_de_salida, "DynDOLOD")
-        # El log también se firma ANTES: el marcador de completitud sólo vale si
-        # lo escribió ESTA corrida (ver `_firma_del_log`).
+        # Ver run_texgen: el log se firma antes de lanzar; el artefacto no, porque
+        # el born-empty del subroot exclusivo da la atribución física.
         firma_log_previa = await asyncio.to_thread(self._firma_del_log, "DynDOLOD")
 
         try:
@@ -1044,7 +1043,7 @@ class DynDOLODRunner:
                 errors=[str(e)],
             )
 
-        post = await asyncio.to_thread(self._post_check, "DynDOLOD", firmas_previas, firma_log_previa)
+        post = await asyncio.to_thread(self._post_check, "DynDOLOD", firma_log_previa)
         errors, warnings, output_path = post.errors, post.warnings, post.output_path
         # Ver `run_texgen`: misma fórmula, palabra por palabra. Que las dos sean
         # literalmente iguales es el punto — los marcadores de completitud SÍ
@@ -1266,7 +1265,7 @@ class DynDOLODRunner:
                 # ya está decidido; esto reporta que la CAPTURA quedó parcial y el
                 # propio mensaje dice que se continúa. Etiquetarlo sumaría un
                 # fallo de etapa 9 por cada corrida que salió con 0 y artefacto
-                # fresco pero dejó un nieto con el pipe heredado.
+                # presente pero dejó un nieto con el pipe heredado.
                 logger.warning(
                     "%s: los drains no cerraron en %.1fs tras la salida del proceso "
                     "(posible nieto con pipe heredado); se continúa con output parcial.",
@@ -2183,35 +2182,34 @@ class DynDOLODRunner:
 
         Sin esto el conjunto de completitud es falsificable con estado viejo, y de
         la peor manera: una corrida anterior exitosa deja su log CON el marcador;
-        la corrida de hoy toca la salida —así que el gate de frescura del artefacto
-        pasa— y muere antes de reescribir o flushear el log. Los cuatro conjuntos
-        quedan satisfechos (`rc == 0`, artefacto fresco, marcador presente, sin
-        terminales) sobre una generación a medias, y el pipeline la empaqueta.
-        Hallazgo P1 del revisor Codex en el PR #488.
+        la corrida de hoy escribe su salida —el subroot nace vacío, así que el
+        artefacto presente es legítimamente de hoy— y muere antes de reescribir o
+        flushear el log. Los conjuntos quedan satisfechos (`rc == 0`, artefacto
+        presente, marcador presente, sin terminales) sobre una generación a medias,
+        y el pipeline la empaqueta. Hallazgo P1 del revisor Codex en el PR #488.
 
-        **Por qué NO es ``mtime + tamaño``, que es la forma de**
-        :meth:`_firma_de_veredicto`: para el artefacto alcanza con detectar que
-        CAMBIÓ, y `mtime + tamaño` lo detecta. Acá hace falta algo más fuerte —hay
-        que poder recortar el prefijo viejo para quedarse con lo que escribió esta
-        corrida—, y `mtime + tamaño` **no distingue un append de una reescritura
-        que termina más grande**: las dos crecen. Recortar sobre esa suposición
-        deja afuera bytes de la corrida actual, y si entre ellos hay un `Fatal:`
-        el veredicto sale verde sobre una corrida que abortó. El digest del
-        contenido previo convierte "supongo que apendeó" en algo demostrable:
-        después de la corrida se re-firma el prefijo y se compara.
+        **Por qué NO es ``mtime + tamaño``**: acá hace falta algo más fuerte que
+        detectar que el archivo CAMBIÓ —hay que poder recortar el prefijo viejo
+        para quedarse con lo que escribió esta corrida—, y `mtime + tamaño`
+        **no distingue un append de una reescritura que termina más grande**: las
+        dos crecen. Recortar sobre esa suposición deja afuera bytes de la corrida
+        actual, y si entre ellos hay un `Fatal:` el veredicto sale verde sobre una
+        corrida que abortó. El digest del contenido previo convierte "supongo que
+        apendeó" en algo demostrable: después de la corrida se re-firma el prefijo
+        y se compara.
 
         El tamaño sale de contar lo que se firmó, no de un ``stat`` aparte: así la
         firma y su tamaño no pueden descalzarse si el archivo cambia en el medio.
         ``None`` sigue reservado a "no se pudo sondear" — distinto de
-        :data:`_SIN_ARTEFACTO`, que acá significa "no había log". Colapsarlos haría
-        fail-OPEN igual que en el artefacto.
+        :data:`_SIN_LOG`, que acá significa "no había log". Colapsarlos haría
+        fail-OPEN.
         """
         log = self._ruta_del_log(tool)
         try:
             with log.open("rb") as fh:
                 tamano, digest = _digest_de_stream(fh)
         except FileNotFoundError:
-            return _SIN_ARTEFACTO
+            return _SIN_LOG
         except OSError as e:
             logger.warning(
                 "No se pudo firmar el log de %s (%s): %s",
@@ -2337,7 +2335,7 @@ class DynDOLODRunner:
                 "verificar qué escribió.",
                 "",
             )
-        if firma_actual == _SIN_ARTEFACTO:
+        if firma_actual == _SIN_LOG:
             return (
                 False,
                 f"El log de {tool} desapareció entre que se leyó y que se verificó: no se reporta "
@@ -2345,7 +2343,7 @@ class DynDOLODRunner:
                 "",
             )
 
-        if firma_previa_del_log == _SIN_ARTEFACTO:
+        if firma_previa_del_log == _SIN_LOG:
             # No había log antes: todo el archivo es de esta corrida y no hay
             # frontera que demostrar.
             de_esta_corrida = texto
@@ -2577,125 +2575,16 @@ class DynDOLODRunner:
                 output_path=output_path,
             )
 
-    def _firmas_de_salida(self, tool: str) -> dict[pathlib.Path, tuple[float | int, ...] | None]:
-        """Firma de cada candidato ANTES de lanzar, para comparar contra la de después.
-
-        La frescura se decide comparando **mtime contra mtime**, no mtime contra
-        el reloj de pared. Un umbral temporal necesita una holgura por la
-        granularidad del filesystem (FAT32 redondea a 2 s) y esa holgura es
-        exactamente una ventana por la que un staging previo pasa por fresco
-        (review CodeRabbit, PR #441). Comparando el artefacto consigo mismo no
-        hace falta holgura alguna: los dos valores salen del mismo reloj y del
-        mismo filesystem.
-        """
-        return {candidato: self._firma_de_veredicto(tool, candidato) for candidato in self._candidatos_de_salida(tool)}
-
-    @staticmethod
-    def _firma_de_veredicto(tool: str, directorio: pathlib.Path) -> tuple[float | int, ...] | None:
-        """Firma del artefacto que DECIDE el veredicto: mtime **y tamaño**.
-
-        Tres resultados distintos, y la distinción es el gate: el mtime si se
-        pudo leer, :data:`_SIN_ARTEFACTO` si no hay artefacto, y ``None`` si
-        **no se pudo sondear**. Colapsar los dos últimos en un mismo centinela
-        era fail-OPEN: si la firma previa fallaba por un error transitorio
-        (permisos, antivirus, volumen de red) sobre un artefacto que SÍ existía,
-        el post-check leía el ``.esp`` rancio, lo veía distinto del centinela y
-        lo daba por fresco — el falso verde entero, reconstituido por un
-        ``except`` (review adversarial, PR #441).
-
-        **Del artefacto, no del árbol.** Firmar el árbol entero deja pasar una
-        corrida abortada: DynDOLOD recrea directorios y sobrescribe LODs
-        parcialmente, el operador cierra la GUI antes de que se regenere el
-        plugin, el proceso sale con 0 y sin línea de error — y el árbol "cambió",
-        así que un ``DynDOLOD.esp`` de la corrida ANTERIOR pasaba por veredicto
-        fresco y se empaquetaba un árbol a medio generar (review adversarial,
-        PR #441). El gate exige ``DynDOLOD.esp``, así que es ESE archivo el que
-        tiene que ser de esta corrida.
-
-        **Va el tamaño además del mtime** porque el mtime solo no basta para ver
-        un cambio: el reloj de archivos de Windows avanza de a ~15 ms, así que una
-        reescritura dentro del mismo tick que la firma previa deja el mtime
-        idéntico y el gate rechaza una corrida real (se cayó así en CI, Windows
-        py3.12). En una corrida de verdad —30+ min— el mtime sí cambia, pero un
-        gate que depende de que dos escrituras caigan en ticks distintos es un
-        falso rojo esperando el rig equivocado.
-
-        TexGen no tiene artefacto con nombre propio (su salida son texturas): se
-        firma el árbol agregado (cantidad de archivos, mtime máximo, bytes
-        totales), recorrido SIN atravesar enlaces. Que sean archivos y no
-        directorios importa — recrear una carpeta no es haber generado texturas.
-
-        **Premisa NO VERIFICADA contra el binario** (review adversarial #441): que
-        el ``.esp`` haya cambiado equivale a "corrida completa" solo si DynDOLOD
-        persiste el plugin AL FINAL. Si lo escribiera en una fase temprana, una
-        corrida que el operador cierra después de ese punto —exit 0, sin log
-        flusheado— pasaría el gate con el árbol a medio generar. Nadie confirmó el
-        orden de escritura real; queda declarado acá en vez de asumido en silencio.
-        Cerrarlo pide una marca de completitud, y la única disponible es el log —
-        que puede faltar por diseño (ver ``_leer_log``), así que exigirlo
-        convertiría en rojas corridas legítimas. Se decide con el rig, no acá.
-        Limitación conocida y no cerrada: sin marcador de completitud, una corrida
-        de TexGen abortada que alcanzó a escribir algunas texturas sigue contando
-        como fresca. El log es la única evidencia de completitud disponible y
-        puede faltar.
-        """
-        if tool != "TexGen":
-            try:
-                st = (directorio / "DynDOLOD.esp").stat()
-            except FileNotFoundError:
-                return _SIN_ARTEFACTO
-            except OSError as e:
-                # SONDA, no veredicto: devuelve None y el post-check lo trata
-                # fail-closed, convirtiéndolo en un error que `run_dyndolod`
-                # reporta CON etapa. Acá etiquetar duplicaría ese incidente.
-                logger.warning(
-                    "No se pudo sondear el artefacto de %s: %s",
-                    directorio,
-                    e,
-                    extra={"operation_type": "dyndolod_sondeo_de_artefacto_fallido", "tx_id": _tx_id()},
-                )
-                return None
-            return (st.st_mtime, st.st_size)
-
-        archivos = 0
-        ultimo_mtime = -1.0
-        bytes_totales = 0
-        try:
-            # `iter_archivos_propios` y no `rglob`: `rglob` frena en un symlink pero
-            # NO en un junction de Windows, así que entraría a un árbol ajeno y
-            # contaría sus archivos como salida de TexGen. La contraparte que borra
-            # acá es `DirectoryRollback` (link-aware), y medir con una política y
-            # borrar con otra es cómo la cuenta y el efecto divergen — mismo motivo
-            # por el que `bodyslide_runner` mide link-aware. Fail-closed: un hijo
-            # ilegible levanta OSError y lo captura el `except` de abajo.
-            for _, identidad in iter_archivos_propios(directorio):
-                archivos += 1
-                ultimo_mtime = max(ultimo_mtime, identidad.st_mtime)
-                bytes_totales += identidad.st_size
-        except OSError as e:
-            # Misma sonda que arriba para la firma agregada del árbol de TexGen.
-            logger.warning(
-                "No se pudo firmar el staging %s: %s",
-                directorio,
-                e,
-                extra={"operation_type": "dyndolod_firma_de_staging_fallida", "tx_id": _tx_id()},
-            )
-            return None
-        if archivos == 0:
-            return _SIN_ARTEFACTO
-        return (archivos, ultimo_mtime, bytes_totales)
-
     def _post_check(
         self,
         tool: str,
-        firmas_previas: dict[pathlib.Path, tuple[float | int, ...] | None],
         firma_previa_del_log: tuple[int | str, ...] | None = None,
     ) -> _PostCheck:
-        """Veredicto de la corrida: log + artefacto + frescura. TODO el I/O, acá.
+        """Veredicto de la corrida: log + artefacto. TODO el I/O, acá.
 
         **Es una función síncrona a propósito, y sus llamadores la envuelven en
-        un único ``asyncio.to_thread``.** El post-check toca disco tres veces
-        (leer el log, resolver el staging, recorrerlo) y el log de DynDOLOD llega
+        un único ``asyncio.to_thread``.** El post-check toca disco dos veces
+        (leer el log, resolver y validar el staging) y el log de DynDOLOD llega
         a decenas de MB en sesiones largas: hacerlo en el hilo del event loop
         congela la UI de NiceGUI y retrasa el bus de eventos (P2 de
         ``coding_conventions.md``). Una sola frontera para toda la fase, no un
@@ -2703,16 +2592,23 @@ class DynDOLODRunner:
         usa en ``_package_output_as_mod``.
 
         Evalúa TODOS los candidatos y se queda con el primero que tiene artefacto
-        válido **y** fresco. Elegir el path primero y validarlo después descartaba
-        una corrida buena cuando los dos candidatos coexisten: con un
-        ``DynDOLOD_Output`` viejo en disco y el ``DynDOLOD.esp`` nuevo escrito
-        directo en la raíz, la resolución se quedaba con el viejo y el veredicto
-        salía rojo sobre una salida real (review CodeRabbit, PR #441).
+        válido. Elegir el path primero y validarlo después descartaba una corrida
+        buena cuando los dos candidatos coexisten; hoy el subroot nace vacío por
+        contrato del servicio, así que los candidatos sólo pueden contener salida
+        de ESTA corrida.
+
+        **PR-3: la firma pre/post del artefacto ya no existe.** El predicado
+        "algo cambió" era un ∃ que nacía de que el staging no se limpiaba entre
+        corridas; el move-aside del root completo + la verificación de 0 entradas
+        antes del spawn lo vuelven redundante: "lo que hay adentro" y "lo que esta
+        corrida generó" son el mismo conjunto. La atribución del LOG sigue viva
+        porque el log NO vive dentro del root born-empty (ver
+        :meth:`_validar_completitud_de_la_corrida`).
 
         Args:
             tool: ``"TexGen"`` o ``"DynDOLOD"``.
-            firmas_previas: salida de :meth:`_firmas_de_salida` tomada ANTES de
-                lanzar el proceso.
+            firma_previa_del_log: firma de continuidad del log tomada ANTES de
+                lanzar el proceso (ver :meth:`_firma_del_log`).
 
         Returns:
             :class:`_PostCheck` con el staging elegido, el veredicto de artefacto
@@ -2720,8 +2616,8 @@ class DynDOLODRunner:
         """
         texto = self._leer_log(tool)
         if texto is None:
-            # Sin log no hay marcador de completitud, y el gate de frescura solo
-            # prueba que el artefacto CAMBIÓ, no que la corrida haya terminado.
+            # Sin log no hay marcador de completitud, y el gate de artefacto solo
+            # prueba que la salida existe, no que la corrida haya terminado.
             # Fail-closed: "no pude verificar que terminó" no es "terminó bien".
             terminales: list[str] = []
             warnings: list[str] = []
@@ -2734,8 +2630,9 @@ class DynDOLODRunner:
             terminales, warnings, marcador_en_el_archivo = self._parse_log(texto, tool)
 
             # El marcador tiene que ser de ESTA corrida, no de la anterior. Un log
-            # viejo con marcador + una corrida que tocó la salida y murió antes de
-            # reescribirlo satisface los cuatro conjuntos sobre trabajo a medias.
+            # viejo con marcador + una corrida que escribió su salida y murió antes
+            # de reescribirlo satisface los conjuntos (rc, artefacto presente,
+            # marcador, sin terminales) sobre trabajo a medias.
             completo, motivo, de_esta_corrida = self._validar_completitud_de_la_corrida(
                 tool, texto, marcador_en_el_archivo, firma_previa_del_log
             )
@@ -2771,29 +2668,8 @@ class DynDOLODRunner:
                 terminales=terminales,
             )
 
-        hubo_artefacto_rancio = False
-        no_verificable = False
         for candidato in candidatos:
-            if not self._tiene_artefacto(tool, candidato):
-                continue
-            # Frescura: el artefacto tiene que ser de ESTA corrida. Sin esto, un
-            # staging que dejó la corrida anterior satisface el gate igual, y una
-            # app GUI que el operador cerró a mitad sale con código 0 sin escribir
-            # nada ni dejar línea de error — el falso verde se reconstituye entero.
-            previa = firmas_previas.get(candidato)
-            actual = self._firma_de_veredicto(tool, candidato)
-            if previa is None or actual is None:
-                # No se pudo sondear alguna de las dos puntas: no se puede AFIRMAR
-                # que el artefacto sea de esta corrida. Fail-closed — dar por
-                # fresco lo no verificable es cómo vuelve el falso verde.
-                no_verificable = True
-                continue
-            # Desigualdad, no incremento: el criterio real es "el artefacto cambió",
-            # y el mtime no siempre crece. Un snapshot restaurado, una copia con
-            # timestamps preservados (`copy2`, extracción de un archivo) o un reloj
-            # corrido dejan un .esp con fecha adelantada que una corrida real nunca
-            # superaría — falso ROJO sobre una salida buena (review CodeRabbit #441).
-            if actual != previa:
+            if self._tiene_artefacto(tool, candidato):
                 return _PostCheck(
                     output_path=candidato,
                     artefacto=True,
@@ -2802,18 +2678,6 @@ class DynDOLODRunner:
                     completo=completo,
                     terminales=terminales,
                 )
-            hubo_artefacto_rancio = True
-
-        if no_verificable:
-            errors.append(
-                f"No se pudo verificar si el artefacto de {tool} es de esta corrida "
-                "(el staging no se pudo sondear). No se reporta éxito sobre un estado indeterminado."
-            )
-        elif hubo_artefacto_rancio:
-            errors.append(
-                f"El artefacto de {tool} no se regeneró durante la corrida: "
-                "es la salida de una corrida anterior, no de ésta."
-            )
 
         # Ninguno pasó: se reporta el candidato primario para que el operador
         # sepa dónde se buscó.
@@ -3029,10 +2893,10 @@ class DynDOLODRunner:
     def _find_dyndolod_output(self) -> pathlib.Path | None:
         """Staging de DynDOLOD: determinista bajo la raíz administrada (``-o:``).
 
-        Resolución por PATH, sin mirar frescura — la usa quien solo necesita saber
-        dónde miraría el post-check. El veredicto real lo da :meth:`_post_check`,
-        que evalúa todos los candidatos y elige el que tiene artefacto válido y
-        fresco: acá el primero no vacío alcanza.
+        Resolución por PATH, sin validar el artefacto — la usa quien solo necesita
+        saber dónde miraría el post-check. El veredicto real lo da
+        :meth:`_post_check`, que evalúa todos los candidatos y elige el que tiene
+        artefacto válido: acá el primero no vacío alcanza.
         """
         candidatos = self._candidatos_de_salida("DynDOLOD")
         if not candidatos:
