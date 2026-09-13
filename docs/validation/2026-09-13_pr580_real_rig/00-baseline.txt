@@ -1,0 +1,38 @@
+# 00-BASELINE REAL-RIG PR-580 - 2026-09-13 08:12:01 -03:00
+
+== GIT (worktree) ==
+worktree=C:\Worktrees\Sky-Claw-pr2
+branch=feat/dyndolod-pr2-external-staging
+head=ea3f28fbff064a2917690d3851d9a311a388da77
+origin_main=5313cf2b05b6b4f03d3483c9d8e6b50a3d2e5177
+status_short:
+log_1=ea3f28fb fix(dyndolod): transfer recovery ownership handle on cancel
+
+== BINDING ==
+path=E:\Sky-Claw T5 Rig\PR2 Work\.sky-claw-binding.json existe=True
+sha256=C8361EBE1E7AFDF1773BDB1A3F7310A56855A8FA06C22A7695DA926A5363ACD9
+contenido={
+  "binding_id": "d9caaf53-2124-4165-8b7e-72e32237cf94",
+  "resource_binding": {
+    "game_path": "G:\\Modding\\Skyrim_Runtime_1.6.1170",
+    "mo2_instance_data_root": "G:\\Modding\\MO2\\SkyrimSE",
+    "mo2_mods_path": "G:\\Modding\\MO2\\SkyrimSE\\mods"
+  },
+  "schema_version": 1
+}
+
+== WORK ROOT ==
+root=E:\Sky-Claw T5 Rig\PR2 Work existe=True
+
+== PROCESOS LOD/TOOLS (debe estar vacio) ==
+(ninguno)
+
+== ROLLBACK RESIDUE en work root ==
+(ninguno)
+
+== LEGACY (recovery-only) ==
+path=G:\Modding\Skyrim_Runtime_1.6.1170\Sky-Claw\DynDOLOD existe=False
+
+== MO2 mods TexGen/DynDOLOD Output ==
+TexGen Output existe=False
+DynDOLOD Output existe=False

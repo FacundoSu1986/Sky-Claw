@@ -1,0 +1,6 @@
+﻿# MATERIALIZATION BEFORE (intervencion asistida, handoff T5#10) - 2026-09-13 08:37:46.684 -03:00
+source=G:\Modding\MO2\SkyrimSE\mods\TexGen Output\textures
+source_files=1362 source_bytes=138457806
+dest=C:\Modding\DynDOLOD RigTest\_rig_test\data\textures
+dest_files_before=1230 dest_bytes_before=144596348
+method=robocopy /E /IS (sobrescribe y agrega; NO borra extras de Data)

@@ -1,0 +1,10 @@
+﻿# TEXGEN STALE OBSERVED - 2026-09-13 08:22:05.238 -03:00
+tool=TexGen
+proc=TexGenx64
+window_class=TfrmMain
+window_title=TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE)
+control_class=TEdit
+stale_value=E:\Sky-Claw T5 Rig\DECOY PR2\TexGen\
+expected_value=E:\Sky-Claw T5 Rig\PR2 Work\DynDOLOD\TexGen
+source_of_stale=preset DynDOLOD_SSE_TexGen.ini OutputPath=E:\Sky-Claw T5 Rig\DECOY PR2\TexGen\ (sha256 1CC7BF51A1861C122ACE88B16D3F233698B00A3A45AD89839409E424E9C3D7C4)
+note=GUI muestra el preset stale; el log de arranque ya declara el -o: administrado (ver texgen-logpath-line.txt)

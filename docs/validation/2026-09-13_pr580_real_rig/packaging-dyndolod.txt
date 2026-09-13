@@ -1,0 +1,46 @@
+package=DynDOLOD Output
+destination=G:\Modding\MO2\SkyrimSE\mods\DynDOLOD Output
+existe=True archivos=5106 bytes=719336534
+muestra:
+  DynDOLOD.esm
+  DynDOLOD.esp
+  Occlusion.esp
+  meshes\Terrain\Blackreach\Objects\Blackreach.16.-23.-9.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.16.-7.-9.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.4.-19.-9.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.4.-3.-1.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.4.-3.-5.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.4.-3.3.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.4.1.-1.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.4.1.-5.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.4.1.3.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.4.5.-1.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.4.5.3.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.8.-23.-9.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.8.-7.-1.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.8.-7.-9.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.8.1.-1.bto
+  meshes\Terrain\Blackreach\Objects\Blackreach.8.1.-9.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.16.-16.-13.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.16.-16.3.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.16.0.-13.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.16.0.3.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-12.-1.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-12.-5.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-12.-9.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-12.3.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-12.7.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-4.-1.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-4.-5.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-4.-9.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-4.11.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-4.3.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-4.7.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-8.-1.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-8.-5.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-8.-9.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-8.3.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.-8.7.bto
+  meshes\Terrain\DLC01FalmerValley\Objects\DLC01FalmerValley.4.0.-1.bto
+plugins: ['DynDOLOD.esm', 'DynDOLOD.esp', 'Occlusion.esp']
+raices data-relative: ['DynDOLOD.esm', 'DynDOLOD.esp', 'Occlusion.esp', 'meshes', 'meta.ini', 'textures']
