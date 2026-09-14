@@ -31,6 +31,7 @@ from sky_claw.app.orchestrator.dispatcher_dependencies import (
     build_synthesis_service_factory,
     build_wrye_bash_pipeline,
 )
+from sky_claw.app.orchestrator.dyndolod_readiness_hitl import ConfirmadorHITL
 from sky_claw.app.orchestrator.tool_dispatcher import (
     OrchestrationToolDispatcher,
     build_orchestration_dispatcher,
@@ -42,6 +43,9 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     LoopGuardrailMiddleware,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
+from sky_claw.local.tools.dyndolod_uia_preflight import LocalizadorPsutil
+from sky_claw.local.tools.dyndolod_uia_windows import construir_observador_windows
 from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
 from sky_claw.local.tools.grass_cache_service import GrassCacheService
 from sky_claw.local.tools.loot_service import LootSortingService
@@ -181,6 +185,20 @@ def build_orchestration_composition(
         pipeline_config_path=synthesis_pipeline_config_path,
     )
 
+    # T5-v2: capacidad del protocolo de readiness (gate UIA read-only sobre el
+    # Output de la GUI + confirmación humana mid-run). Se arma UNA vez acá, en el
+    # composition root, y se inyecta explícitamente al servicio → runner: un
+    # default silencioso en el runner dejaría la etapa 9 sin gate en producción,
+    # y el censo de constructores del runner existe para que eso no pase
+    # inadvertido. `construir_observador_windows` NO toca COM al construirse (el
+    # `comtypes` es perezoso dentro de su `__init__`), así que armar la capacidad
+    # en el CI de Linux es seguro; sin canal humano el confirmador falla cerrado.
+    dyndolod_readiness = CapacidadDeReadinessUIA(
+        fabrica_observador=construir_observador_windows,
+        localizador=LocalizadorPsutil(),
+        confirmador=ConfirmadorHITL(hitl_guard=hitl_guard),
+    )
+
     # D2 (PR #493): mo2_profile es la identidad esperada del dueño del
     # handoff durable de DynDOLOD.
     # P2.2: el workspace del arranque aporta el root productivo y el fence de
@@ -194,6 +212,7 @@ def build_orchestration_composition(
         mo2_profile=profile_name,
         stage9_coordination=stage9_coordination,
         workspace=dyndolod_workspace,
+        readiness=dyndolod_readiness,
     )
 
     xedit_service = XEditPipelineService(
