@@ -3867,6 +3867,23 @@ _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
             "veredicto de la corrida — que lo dan el exit code, el artefacto y el log."
         ),
     },
+    "dyndolod_aviso_operador_incompleto": {
+        "metodo": "_informar_operador",
+        "motivo": (
+            "El aviso POST-final-MATCH ('podés dar Start') no llegó al operador dentro de su "
+            "cota. La corrida ya pasó los DOS gates UIA y la instrucción contractual completa "
+            "viajó en el texto de la confirmación que el operador leyó para aprobar, así que "
+            "esto no falla la etapa: es un canal de cortesía. Mismo criterio que "
+            "dyndolod_drenaje_incompleto."
+        ),
+    },
+    "dyndolod_aviso_operador_fallido": {
+        "metodo": "_informar_operador",
+        "motivo": (
+            "El canal de aviso lanzó una excepción. Best-effort por el mismo motivo que el "
+            "timeout de arriba: el veredicto de la corrida no depende de que el aviso llegue."
+        ),
+    },
     "dyndolod_runner_pipeline_failed": {
         "metodo": "run_full_pipeline",
         "motivo": (

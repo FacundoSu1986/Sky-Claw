@@ -113,7 +113,7 @@ RAZONES_TRANSITORIAS_DE_INICIO: frozenset[RazonPreflight] = frozenset(
 )
 
 
-def _resultado_sin_backend(
+def resultado_sin_backend(
     solicitud: SolicitudPreflightUIA,
     exc: ObservacionUIAError,
 ) -> ResultadoPreflightUIA:
@@ -125,6 +125,12 @@ def _resultado_sin_backend(
     el preflight habría respondido si el primer ``ventanas_de_proceso`` fallara
     — ``UNKNOWN`` con ``UIA_NO_DISPONIBLE`` — en vez de una excepción que el
     runner tendría que adivinar.
+
+    Es público desde T5-v2.1 porque el runner lo reusa para el corte por
+    GRACIA EXTERNA (un COM colgado más allá del deadline del gate): el
+    veredicto honesto ahí también es "el sensor no respondió", y duplicar el
+    constructor en el runner volvería a abrir la divergencia
+    ``(estado, razón)`` que este helper existe para cerrar.
     """
     return ResultadoPreflightUIA(
         estado=EstadoPreflight.UNKNOWN,
@@ -192,7 +198,7 @@ def ejecutar_gate_sincrono(
     try:
         observador = fabrica_observador()
     except ObservacionUIAError as exc:
-        return _resultado_sin_backend(solicitud, exc)
+        return resultado_sin_backend(solicitud, exc)
 
     limite = reloj() + timeout_segundos
     razon_anterior: RazonPreflight | None = None
@@ -358,6 +364,54 @@ class ConfirmadorNoDisponible:
 #: GUI de DynDOLOD abierta para siempre. Cubre un preset normal sin reutilizar
 #: el deadline de 4 h de la corrida.
 DEFAULT_READINESS_TIMEOUT_SEGUNDOS = 600.0
+
+#: Margen que el CALLER agrega por fuera del deadline del gate antes de declarar
+#: que el hilo de observación se colgó. El gate respeta su propio deadline entre
+#: observaciones, pero una sola llamada COM puede bloquearse sin retorno: sin
+#: esta cota, "acotado" dejaría de ser verdad por una llamada del sistema.
+#: Agotada la gracia, el veredicto honesto es ``UIA_NO_DISPONIBLE`` — el sensor
+#: no respondió — y el proceso se termina igual.
+GRACIA_EXTERNA_DEL_GATE_SEGUNDOS = 15.0
+
+#: Cadencia de la vigilia que corre EN PARALELO a la confirmación humana, para
+#: cortar en cuanto el proceso muere en vez de esperar el deadline entero.
+INTERVALO_VIGILIA_SEGUNDOS = 0.5
+
+
+@dataclass(frozen=True)
+class CapacidadDeReadinessUIA:
+    """Todo lo que un consumidor necesita para correr el protocolo de readiness.
+
+    Es el paquete INYECTABLE que separa "la capa pura sabe decidir" de "el
+    runtime tiene un backend". Agrupa los cuatro colaboradores del protocolo
+    —sensor, localizador, canal humano y relojes— en un objeto con default de
+    producción, para que cablearlo sea UNA decisión en el composition root y no
+    cuatro parámetros sueltos que un call site nuevo puede olvidar.
+
+    **La ausencia de esta capacidad NO es una autorización.** Un consumidor sin
+    capacidad no corre el protocolo (es el modo directo de tests/rig), y esa
+    ausencia está enumerada por un censo que exige el wiring en TODO constructor
+    productivo: el default silencioso es exactamente lo que el censo existe para
+    prohibir, no lo que la capacidad habilita.
+
+    Los colaboradores son Protocolos, no clases concretas: el backend Windows
+    real (``construir_observador_windows``) entra por ``fabrica_observador`` y
+    los tests inyectan dobles sin tocar el runner.
+    """
+
+    fabrica_observador: Callable[[], ObservadorUIA]
+    localizador: LocalizadorDeProcesos
+    confirmador: ConfirmadorDeConfiguracion
+    reloj: Callable[[], float] = time.monotonic
+    dormir: Callable[[float], None] = time.sleep
+    gate_timeout_segundos: float = GATE_UIA_TIMEOUT_SEGUNDOS
+    gate_intervalo_segundos: float = GATE_UIA_INTERVALO_SEGUNDOS
+    gate_final_timeout_segundos: float = GATE_UIA_TIMEOUT_SEGUNDOS
+    gate_final_intervalo_segundos: float = GATE_UIA_INTERVALO_SEGUNDOS
+    readiness_timeout_segundos: float = DEFAULT_READINESS_TIMEOUT_SEGUNDOS
+    gracia_externa_segundos: float = GRACIA_EXTERNA_DEL_GATE_SEGUNDOS
+    intervalo_vigilia_segundos: float = INTERVALO_VIGILIA_SEGUNDOS
+
 
 #: El FINAL gate (post-confirmación humana) no puede tolerar las razones
 #: transitorias del initial: una vez el operador declaró "configuración

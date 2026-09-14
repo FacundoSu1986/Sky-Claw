@@ -34,6 +34,24 @@ from sky_claw.app.security.links import (
     rmtree_link_aware,
 )
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
+from sky_claw.local.tools.dyndolod_uia_gate import (
+    RAZONES_TRANSITORIAS_DE_INICIO,
+    RAZONES_TRANSITORIAS_FINAL,
+    CapacidadDeReadinessUIA,
+    OperatorConfigurationReadyRequest,
+    ResolucionProtocoloReadiness,
+    ResultadoConfirmacion,
+    ejecutar_gate_sincrono,
+    resultado_sin_backend,
+)
+from sky_claw.local.tools.dyndolod_uia_preflight import (
+    EstadoPreflight,
+    ObservacionUIAError,
+    RazonPreflight,
+    ResultadoPreflightUIA,
+    SolicitudPreflightUIA,
+    selector_de_output,
+)
 from sky_claw.local.tools.output_targets import (
     DynDOLODOutputLayout,
     HerramientaDynDOLOD,
@@ -437,6 +455,58 @@ class DynDOLODValidationError(DynDOLODExecutionError):
         self.output_path = output_path
 
 
+class DynDOLODPreflightUIAError(DynDOLODExecutionError):
+    """El gate UIA de Output no llegó a MATCH: la corrida se corta ANTES de Start.
+
+    Es ``DynDOLODExecutionError`` a propósito: los lanzadores ya re-lanzan esa
+    familia sin envolverla (``except DynDOLODExecutionError: raise``), así que el
+    veredicto llega tipado hasta el servicio y ``_post_check`` NUNCA corre como
+    si la herramienta hubiera terminado. Lleva el ``ResultadoPreflightUIA``
+    entero: el veredicto, la razón y la evidencia quedan diagnosticables sin
+    volver al rig.
+    """
+
+    def __init__(self, resultado: ResultadoPreflightUIA) -> None:
+        super().__init__(
+            message=(
+                f"preflight UIA de Output bloqueó a {resultado.tool}: "
+                f"{resultado.estado.value} ({resultado.razon.value}) — {resultado.detalle} "
+                f"[esperado={resultado.valor_esperado!r} observado={resultado.valor_observado!r} "
+                f"pid={resultado.pid}]"
+            ),
+            return_code=None,
+            stderr=None,
+        )
+        self.resultado = resultado
+
+
+class DynDOLODReadinessProtocolError(DynDOLODExecutionError):
+    """El protocolo de readiness cortó la corrida (deny, timeout, canal, muerte).
+
+    Lleva la ``ResolucionProtocoloReadiness`` como enum, no como prosa: quien
+    reporte el incidente puede distinguir "el operador dijo no" de "el canal no
+    existía" sin parsear un mensaje.
+    """
+
+    def __init__(
+        self,
+        razon: ResolucionProtocoloReadiness,
+        *,
+        tool_name: str,
+        pid: int,
+        valor_esperado: str,
+    ) -> None:
+        super().__init__(
+            message=(
+                f"protocolo de readiness de {tool_name} cortó la corrida: {razon.value} "
+                f"[pid={pid} esperado={valor_esperado!r}]"
+            ),
+            return_code=None,
+            stderr=None,
+        )
+        self.razon = razon
+
+
 # =============================================================================
 # DATA CLASSES
 # =============================================================================
@@ -802,19 +872,26 @@ class DynDOLODRunner:
     TEXGEN_MOD_NAME = "TexGen Output"
     DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
 
-    def __init__(self, config: DynDOLODConfig) -> None:
+    def __init__(self, config: DynDOLODConfig, *, readiness: CapacidadDeReadinessUIA | None = None) -> None:
         """
         Inicializa el runner de DynDOLOD.
 
         Args:
             config: Configuración con paths y timeouts.
+            readiness: Capacidad del protocolo UIA + HITL (T5-v2). ``None`` es el
+                modo directo (tests, rig): NO corre el protocolo. No es una
+                autorización implícita — el post-check (artefacto, log, born-empty)
+                sigue siendo la autoridad de la corrida, y un censo exige que
+                TODO constructor productivo pase la capacidad.
         """
         self._config = config
+        self._readiness = readiness
         logger.info(
-            "DynDOLODRunner inicializado: dyndolod_exe=%s, texgen_exe=%s, timeout=%ds",
+            "DynDOLODRunner inicializado: dyndolod_exe=%s, texgen_exe=%s, timeout=%ds, readiness_uia=%s",
             config.dyndolod_exe,
             config.texgen_exe or "N/A",
             config.timeout_seconds,
+            "cableada" if readiness is not None else "ausente",
         )
 
     def _resultado_no_configurado(self, tool_name: str) -> ToolExecutionResult:
@@ -1216,6 +1293,12 @@ class DynDOLODRunner:
         heartbeat = asyncio.create_task(_heartbeat_watcher())
 
         try:
+            # T5-v2: los drains y el heartbeat YA están vivos. El protocolo de
+            # readiness espera a un humano con la GUI escribiendo su log a stderr;
+            # esperarlo ANTES de crear los drains haría backpressure sobre el
+            # proceso. Va DENTRO del try para que todo veredicto no-MATCH se
+            # limpie con las mismas ramas que un fallo del proceso.
+            await self._protocolo_de_readiness(tool_name=tool_name, executable=executable, proc=proc)
             await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
         except asyncio.CancelledError:
             # Un shutdown externo debe matar el árbol antes de propagar la
@@ -1226,6 +1309,22 @@ class DynDOLODRunner:
             drain_out.cancel()
             drain_err.cancel()
             await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
+            close_job(job)
+            raise
+        except DynDOLODExecutionError:
+            # Rechazo pre-generación del protocolo de readiness (UIA no-MATCH,
+            # deny/timeout/canal, proceso muerto durante la espera): mismo cleanup
+            # que un fallo del proceso, pero el veredicto TIPADO se re-lanza tal
+            # cual — envolverlo en "Unexpected error" borraría la razón del corte.
+            # `_post_check` nunca corre: la excepción sale de `_execute_process`
+            # antes de que los lanzadores lleguen a él, así que no se empaqueta ni
+            # se avanza al tool siguiente.
+            await kill_and_reap(proc)
+            heartbeat.cancel()
+            drain_out.cancel()
+            drain_err.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(heartbeat, drain_out, drain_err, return_exceptions=True)
             close_job(job)
             raise
         except TimeoutError:
@@ -1320,6 +1419,263 @@ class DynDOLODRunner:
             proc.returncode if proc.returncode is not None else -1,
             duration,
         )
+
+    # =========================================================================
+    # T5-v2 — protocolo de readiness: UIA read-only + confirmación humana
+    # =========================================================================
+
+    def _expected_output_de(self, tool_name: str) -> pathlib.Path:
+        """El subroot EXCLUSIVO que la GUI debe mostrar para ``tool_name``.
+
+        Una sola autoridad: el layout derivado de ``external_work_root`` — la
+        MISMA fuente que :meth:`_build_xedit_args` serializa en ``-o:`` vía
+        ``layout.raiz_de(herramienta)``. NUNCA ``family_root`` (no es output, no
+        se empaqueta), ni el game tree, ni el target legacy de recovery: comparar
+        contra algo distinto del ``-o:`` efectivo certificaría una GUI que
+        escribe donde no se la administró.
+        """
+        try:
+            herramienta = _HERRAMIENTA_POR_TOOL[tool_name]
+        except KeyError:
+            raise DynDOLODValidationError(
+                f"herramienta desconocida para el gate UIA de Output: {tool_name!r}"
+            ) from None
+        layout = self._config.output_layout
+        if layout is None:
+            raise DynDOLODValidationError(f"{tool_name}: no hay layout administrado del que derivar el Output esperado")
+        return layout.raiz_de(herramienta)
+
+    def _solicitud_de_preflight(self, tool_name: str, executable: pathlib.Path, pid: int) -> SolicitudPreflightUIA:
+        """Arma la solicitud del gate con el expected del layout y el selector medido.
+
+        El selector sale de ``selector_de_output`` (una sola tabla medida), no de
+        un ``if tool_name == ...`` local: dos mapeos divergentes entre TexGen y
+        DynDOLOD es exactamente la clase de defecto que este repo mide.
+        """
+        return SolicitudPreflightUIA(
+            tool=tool_name,
+            ejecutable_esperado=str(executable),
+            salida_administrada_esperada=str(self._expected_output_de(tool_name)),
+            criterios_del_control=selector_de_output(tool_name),
+            pid=pid,
+        )
+
+    async def _gate_uia_output(
+        self,
+        *,
+        tool_name: str,
+        executable: pathlib.Path,
+        proc: asyncio.subprocess.Process,
+        razones_transitorias: frozenset[RazonPreflight],
+        timeout_segundos: float,
+        intervalo_segundos: float,
+    ) -> ResultadoPreflightUIA:
+        """Corre el gate UIA hasta veredicto concluyente; sólo MATCH deja seguir.
+
+        La observación es SÍNCRONA y de apartamento COM, así que se manda ENTERA a
+        ``asyncio.to_thread``: la fábrica construye el observador DENTRO de ese
+        hilo (donde queda atado el STA) y el ``finally`` del gate lo libera ahí
+        mismo en todo camino — incluida la cancelación externa, donde el hilo
+        termina por su propio deadline y libera antes de morir.
+
+        La cota EXTERNA (``timeout + intervalo + gracia``) es defensa en
+        profundidad: el gate respeta su deadline ENTRE observaciones, pero una
+        sola llamada COM puede bloquearse sin retorno, y dejar un hilo de pool
+        huérfano sin cota es lo que esta cota existe para impedir.
+        """
+        capacidad = self._readiness
+        assert capacidad is not None
+        solicitud = self._solicitud_de_preflight(tool_name, executable, proc.pid)
+        try:
+            resultado = await asyncio.wait_for(
+                asyncio.to_thread(
+                    ejecutar_gate_sincrono,
+                    solicitud,
+                    fabrica_observador=capacidad.fabrica_observador,
+                    localizador=capacidad.localizador,
+                    timeout_segundos=timeout_segundos,
+                    intervalo_segundos=intervalo_segundos,
+                    reloj=capacidad.reloj,
+                    dormir=capacidad.dormir,
+                    proceso_vivo=lambda: proc.returncode is None,
+                    razones_transitorias=razones_transitorias,
+                ),
+                timeout=timeout_segundos + intervalo_segundos + capacidad.gracia_externa_segundos,
+            )
+        except TimeoutError as exc:
+            raise DynDOLODPreflightUIAError(
+                resultado_sin_backend(
+                    solicitud,
+                    ObservacionUIAError(
+                        "el gate UIA de Output excedió su gracia externa (posible llamada COM colgada)"
+                    ),
+                )
+            ) from exc
+        if resultado.estado is not EstadoPreflight.MATCH:
+            raise DynDOLODPreflightUIAError(resultado)
+        return resultado
+
+    async def _protocolo_de_readiness(
+        self,
+        *,
+        tool_name: str,
+        executable: pathlib.Path,
+        proc: asyncio.subprocess.Process,
+    ) -> None:
+        """Initial gate → confirmación humana → final gate, sobre la MISMA instancia.
+
+        Corre DESPUÉS del spawn y con los drains ya vivos (ver ``_execute_process``):
+        esperar acá sin drenar los pipes haría backpressure sobre una app GUI que
+        escribe su log a stderr.
+
+        Read-only de punta a punta: "Start habilitado" significa que Sky-Claw
+        terminó sus gates y deja al operador continuar a mano en la herramienta ya
+        abierta. Acá NO se pulsa Start, ni se habilita un botón, ni se escribe el
+        preset, ni se inyecta input.
+        """
+        capacidad = self._readiness
+        if capacidad is None:
+            return
+
+        await self._gate_uia_output(
+            tool_name=tool_name,
+            executable=executable,
+            proc=proc,
+            razones_transitorias=RAZONES_TRANSITORIAS_DE_INICIO,
+            timeout_segundos=capacidad.gate_timeout_segundos,
+            intervalo_segundos=capacidad.gate_intervalo_segundos,
+        )
+
+        valor_esperado = str(self._expected_output_de(tool_name))
+        confirmacion = await self._confirmar_configuracion(
+            tool_name=tool_name,
+            executable=executable,
+            proc=proc,
+        )
+        if confirmacion is None:
+            raise DynDOLODReadinessProtocolError(
+                ResolucionProtocoloReadiness.PROCESO_TERMINO,
+                tool_name=tool_name,
+                pid=proc.pid,
+                valor_esperado=valor_esperado,
+            )
+        if confirmacion is not ResultadoConfirmacion.APROBADA:
+            raise DynDOLODReadinessProtocolError(
+                ResolucionProtocoloReadiness(confirmacion.value),
+                tool_name=tool_name,
+                pid=proc.pid,
+                valor_esperado=valor_esperado,
+            )
+
+        # Entre el MATCH inicial y este punto el operador eligió preset y
+        # worldspaces, y el campo Output de ambas GUIs es EDITABLE: el veredicto
+        # del initial gate ya no certifica este instante. Se re-observa — nunca se
+        # reusa el resultado anterior.
+        await self._gate_uia_output(
+            tool_name=tool_name,
+            executable=executable,
+            proc=proc,
+            razones_transitorias=RAZONES_TRANSITORIAS_FINAL,
+            timeout_segundos=capacidad.gate_final_timeout_segundos,
+            intervalo_segundos=capacidad.gate_final_intervalo_segundos,
+        )
+        await self._informar_operador(
+            tool_name=tool_name,
+            mensaje="Output verificado contra la raíz administrada: podés continuar con Start.",
+        )
+
+    async def _confirmar_configuracion(
+        self,
+        *,
+        tool_name: str,
+        executable: pathlib.Path,
+        proc: asyncio.subprocess.Process,
+    ) -> ResultadoConfirmacion | None:
+        """Espera la confirmación humana, en carrera con la muerte del proceso.
+
+        ``None`` = el proceso murió durante la espera. No es una decisión del
+        humano ni del canal, así que viaja SEPARADO de ``ResultadoConfirmacion``:
+        ese enum jamás debe mentir con un valor que el operador no eligió.
+        """
+        capacidad = self._readiness
+        assert capacidad is not None
+        solicitud = OperatorConfigurationReadyRequest(
+            tool_name=tool_name,
+            pid=proc.pid,
+            executable=executable,
+            expected_output=self._expected_output_de(tool_name),
+            timeout_seconds=capacidad.readiness_timeout_segundos,
+        )
+        confirmacion = asyncio.ensure_future(self._confirmar_acotado(solicitud))
+        vigilia = asyncio.ensure_future(self._vigilar_proceso(proc))
+        try:
+            listas, _ = await asyncio.wait({confirmacion, vigilia}, return_when=asyncio.FIRST_COMPLETED)
+            if vigilia in listas:
+                # Muerte del proceso: esperar el deadline entero sólo dilataría el
+                # rojo, y una ronda más de UIA no resucita al binario.
+                return None
+            return confirmacion.result()
+        finally:
+            # Sin tasks huérfanas: la que siga viva se cancela y se espera. El
+            # `finally` de `request_approval` limpia su pendiente y dispara
+            # `on_cancel`, así que la UI no queda accionable.
+            for tarea in (confirmacion, vigilia):
+                if not tarea.done():
+                    tarea.cancel()
+            await asyncio.gather(confirmacion, vigilia, return_exceptions=True)
+
+    async def _confirmar_acotado(self, solicitud: OperatorConfigurationReadyRequest) -> ResultadoConfirmacion:
+        """Acota el callable del canal humano y aplasta sus fallos a fail-closed."""
+        capacidad = self._readiness
+        assert capacidad is not None
+        try:
+            return await asyncio.wait_for(
+                capacidad.confirmador.confirmar(solicitud),
+                timeout=solicitud.timeout_seconds + capacidad.gracia_externa_segundos,
+            )
+        except TimeoutError:
+            return ResultadoConfirmacion.TIMEOUT
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- canal humano: cualquier fallo es "no disponible", nunca "seguir"
+            logger.warning(
+                "el confirmador de readiness falló; se corta fail-closed",
+                exc_info=True,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            )
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+
+    async def _vigilar_proceso(self, proc: asyncio.subprocess.Process) -> None:
+        """Devuelve en cuanto el proceso muere, para cortar sin esperar el deadline."""
+        capacidad = self._readiness
+        assert capacidad is not None
+        while proc.returncode is None:
+            await asyncio.sleep(capacidad.intervalo_vigilia_segundos)
+
+    async def _informar_operador(self, *, tool_name: str, mensaje: str) -> None:
+        """Aviso post-final-MATCH. Best-effort: nunca gatea una corrida ya verificada."""
+        capacidad = self._readiness
+        assert capacidad is not None
+        try:
+            await asyncio.wait_for(
+                capacidad.confirmador.informar(tool=tool_name, mensaje=mensaje),
+                timeout=capacidad.gracia_externa_segundos,
+            )
+        except TimeoutError:
+            logger.warning(
+                "el aviso al operador de %s excedió su cota",
+                tool_name,
+                extra={"operation_type": "dyndolod_aviso_operador_incompleto", "tx_id": _tx_id()},
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- aviso best-effort, nunca gatea
+            logger.warning(
+                "no se pudo avisar al operador sobre %s",
+                tool_name,
+                exc_info=True,
+                extra={"operation_type": "dyndolod_aviso_operador_fallido", "tx_id": _tx_id()},
+            )
 
     async def _package_output_as_mod(
         self,
