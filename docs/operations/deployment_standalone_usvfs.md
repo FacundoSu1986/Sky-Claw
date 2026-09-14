@@ -169,7 +169,7 @@ trabajo.
 | **Pandora** | `<juego resuelto>/Pandora_Output` — ruta absoluta explícita mediante `--output` |
 | **BodySlide** | `<juego>/<output_path>` — el `-o` es **relativo** al `cwd`, que es el juego |
 | **Synthesis** | Ruta explícita (caso (b)): el `overwrite` de MO2 si existe, si no `<mo2>/mods/Synthesis Output` |
-| **DynDOLOD / TexGen** | Raíz explícita `<juego>/Sky-Claw/DynDOLOD` mediante `-o:`; DynDOLOD usa `DynDOLOD_Output` (o el root con `DynDOLOD.esp`) y TexGen usa `textures`; los mods empaquetados van a `<mo2>/mods/`. La raíz es COMPARTIDA por las dos herramientas, así que **nunca se empaqueta entera**: si DynDOLOD escribe directo en ella, la etapa falla cerrada en vez de atribuirle hijos que pueden ser de TexGen |
+| **DynDOLOD / TexGen** | Subroots EXCLUSIVOS por herramienta bajo el `external_work_root` (`<external>/DynDOLOD/TexGen` y `<external>/DynDOLOD/DynDOLOD`) mediante `-o:`; DynDOLOD usa `DynDOLOD_Output` (o su root con `DynDOLOD.esp`) y TexGen usa `textures`; los mods empaquetados van a `<mo2>/mods/`. Cada subroot pertenece a una sola herramienta y la familia nunca se empaqueta entera: el born-empty + ownership dan la atribución física |
 | **LOOT** | No produce artefacto nuevo: reordena el `plugins.txt` / `loadorder.txt` del perfil |
 | **xEdit (QuickAutoClean)** | Reescribe el plugin **in-place**, sobre su propia ruta de entrada |
 
@@ -187,14 +187,16 @@ El destino de salida define qué se puede deshacer cuando un ritual falla:
 
 - **DynDOLOD / TexGen** — los destinos son directorios propios, y se protegen con
   un move-aside que se restaura ante fallo: los dos mods empaquetados bajo
-  `<mo2>/mods` y —desde el fix B del review de #493— el **staging crudo de
-  TexGen** (`<raíz administrada>/textures`). Ese último no se aparta para poder
-  revertirlo: se aparta para que nazca **vacío**, y así lo que quede adentro
-  después sea exactamente lo que esta corrida generó. Sin eso, un archivo de una
-  corrida anterior sobrevivía en el árbol y terminaba dentro del mod, porque el
-  gate de frescura sólo prueba que *algo* cambió. La cobertura del move-aside
-  sigue siendo **parcial** a propósito: el directorio del ejecutable (donde el
-  binario escribe su log y su INI) y el temporal quedan afuera.
+  `<mo2>/mods` y —desde PR-2— el **root completo de cada herramienta** bajo el
+  `external_work_root` (`<external>/DynDOLOD/{TexGen,DynDOLOD}`). Ese root no se
+  aparta para poder revertirlo: se aparta para que nazca **vacío** (born-empty),
+  y así lo que quede adentro después sea exactamente lo que esta corrida generó.
+  Sin eso, un archivo de una corrida anterior sobrevivía en el árbol y terminaba
+  dentro del mod: el antiguo gate de frescura sólo probaba que *algo* cambió,
+  nunca que TODO el árbol fuera de esta corrida, y PR-3 lo retiró al volverse
+  redundante con el born-empty. La cobertura del move-aside sigue siendo
+  **parcial** a propósito: el directorio del ejecutable (donde el binario escribe
+  su log y su INI) y el temporal quedan afuera.
 - **Wrye Bash** — el destino es **un archivo** con nombre canónico, así que se
   puede snapshotear antes de correr y restaurar si el run falla.
   *Estado: implementado en el PR #395; hasta que ese PR esté mergeado, tratá a

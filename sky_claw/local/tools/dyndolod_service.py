@@ -483,9 +483,9 @@ class DynDOLODPipelineService:
           depende de leer. ``DynDOLODRunner._leer_log`` busca el veredicto de la
           corrida en ``exe.parent/Logs/{Tool}_{modo}_log.txt``, y los binarios
           persisten su INI junto al exe. Con el tool en un árbol de solo lectura
-          (Program Files), omitirlo dejaba el preflight en verde y el post-check
-          sin log: degradaba a artefacto-solo, que es exactamente el camino del
-          falso verde que el gate de frescura persigue. Se sondea el dir del exe
+        (Program Files), omitirlo dejaba el preflight en verde y el post-check
+        sin log: degradaba a artefacto-solo, el camino del falso verde que hoy
+        contienen el gate de artefacto y la completitud del log. Se sondea el dir del exe
           y su ``Logs/`` — el segundo puede no existir todavía en el primer run.
 
         ``WritePermissionsChecker`` sondea solo los dirs existentes, así que
@@ -1249,12 +1249,14 @@ class DynDOLODPipelineService:
         # al move-aside, y esta línea es lo que hace que el árbol pertenezca a ESTA
         # corrida en vez de sólo haber cambiado durante ella.
         #
-        # El gate de frescura del runner es un predicado ∃ —"algo se escribió"—
-        # y nunca pudo ser ∀: con un ``old.dds`` de la corrida anterior y un
-        # ``new.dds`` de ésta, la firma agregada del árbol cambia igual, el gate
-        # pasa, y el empaquetado copia los DOS al mod. Apartar el staging antes de
-        # lanzar lo vuelve vacío por construcción, y a partir de ahí "lo que hay
-        # adentro" y "lo que esta corrida generó" son el mismo conjunto.
+        # El ANTIGUO gate de frescura del runner era un predicado ∃ —"algo se
+        # escribió"— y nunca pudo ser ∀: con un ``old.dds`` de la corrida anterior
+        # y un ``new.dds`` de ésta, la firma agregada del árbol cambiaba igual, el
+        # gate pasaba, y el empaquetado copiaba los DOS al mod. PR-2 sustituyó esa
+        # atribución con el born-empty del root completo —apartar el staging antes
+        # de lanzar lo vuelve vacío por construcción— y PR-3 retiró la comparación
+        # pre/post, ya redundante: "lo que hay adentro" y "lo que esta corrida
+        # generó" son el mismo conjunto.
         #
         # **P2.2: se aparta el root COMPLETO de la herramienta, no su
         # subdirectorio de artefacto.** Con `-o:` exclusivo por herramienta, TODO
@@ -1276,8 +1278,8 @@ class DynDOLODPipelineService:
         # familia (namespace ya declarado no empaquetable), así que su residuo es
         # inerte para el packaging. Su barrido tras una muerte dura lo declara
         # ``rollback_reconciler.construir_productores_de_move_aside`` (P2.3
-        # extiende el recovery de arranque a los roots externos; el PR sigue
-        # DRAFT).
+        # extiende el recovery de arranque a los roots externos; mergeado en
+        # #580, squash `1801a1ba`).
         layout = runner._config.output_layout
         roots_de_herramienta: list[pathlib.Path] = []
         if layout is not None:

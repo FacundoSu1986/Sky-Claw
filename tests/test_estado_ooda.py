@@ -516,14 +516,16 @@ def test_dyndolod_fail_stop_registrado_en_ooda() -> None:
 
 
 def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None:
-    """P2.3: la fila del recovery externo cita sus anclas reales y no declara el cierre.
+    """P2.3: la fila del recovery externo cita sus anclas reales y su cierre.
 
-    La implementación es un candidato en una rama DRAFT: el estado honesto es
-    Parcial (rig del candidato completo pendiente), no Cerrado, y la fila tiene
-    que apuntar a los tests que la respaldan.
+    La implementación dejó de ser un candidato: #580 mergeó por squash
+    (`1801a1ba`) y el rig post-PR-2 cerró T5-v2 10/10. El estado honesto es
+    Cerrado, sin "DRAFT" en la fila, y la fila tiene que seguir apuntando a los
+    tests que la respaldan.
     """
     fila = _tabla()["Recovery de arranque de los ACTIVE_TARGET externos (PR-2 P2.3)"]
-    assert fila["Estado"] == "Parcial"
-    assert "DRAFT" in fila["Qué falta"]
+    assert fila["Estado"] == "Cerrado"
+    assert "DRAFT" not in fila["Qué falta"]
+    assert "1801a1ba" in fila["Cerrado en"]
     assert "test_rollback_reconciler.py" in fila["Verificado por"]
     assert "test_dyndolod_workspace.py" in fila["Verificado por"]

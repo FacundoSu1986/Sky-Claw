@@ -203,37 +203,47 @@ Enunciado como propiedad del mecanismo:
 
 ## T3-v2 — staging y salida (contrato corregido)
 
-> **Estado 2026-09-12 — CANDIDATO PR-2 (PR #580, DRAFT):** el contrato de esta
+> **Estado 2026-09-13 — MERGED (#580, squash `1801a1ba`):** el contrato de esta
 > sección se implementó sobre el layout de ADR 0011, no sobre `<raíz>/textures`
 > compartida: subroots exclusivos `external_work_root/DynDOLOD/{TexGen,DynDOLOD}`
 > por herramienta (P2.1), born-empty del root completo con ownership vivo y
 > packaging disjunto (P2.2), y recovery de arranque de los `ACTIVE_TARGET`
 > externos desde el registro durable, con el legacy separado como
 > recovery-only (P2.3). Los tres agujeros A/B/C quedan cubiertos por esa
-> arquitectura; el gate de lanzamiento sigue **REOPENED** y el rig real del
-> candidato completo es el paso siguiente. Detalle normativo: ADR 0011, su spec
-> y el [plan de resolución de PR-2](2026-09-09-dyndolod-pr2-resolution.md).
+> arquitectura; el gate de lanzamiento quedó **CLOSED — PASS** con el rig real
+> post-PR-2 (T5-v2 **10/10**,
+> [`../../validation/2026-09-13_pr580_real_rig/final-report.md`](../../validation/2026-09-13_pr580_real_rig/final-report.md)),
+> y PR-3 retiró la comparación pre/post de firma del artefacto (born-empty la
+> volvió redundante). Detalle normativo: ADR 0011, su spec y el
+> [plan de resolución de PR-2](2026-09-09-dyndolod-pr2-resolution.md).
 
 La evidencia física T5-B con TexGen Alpha-209 fijó el nivel exacto: el argv recibe
-`<raíz administrada>` mediante `-o:` y TexGen escribe en
-**`<raíz administrada>/textures`**. No existe una raíz intermedia `TexGen/` ni un
-staging físico `TexGen_Output/`. DynDOLOD conserva su contrato independiente
+la raíz administrada mediante `-o:` y TexGen escribe en su hijo directo
+`textures/` —hoy, **`texgen_root/textures`**, cuya ruta completa es
+`external_work_root/DynDOLOD/TexGen/textures`—. No existe un nivel adicional
+dentro del subroot (`texgen_root/TexGen/textures`) ni un staging físico
+`TexGen_Output/`. DynDOLOD conserva su contrato independiente
 (`DynDOLOD_Output` y el fallback acotado que exige `DynDOLOD.esp`).
 
 T3 alinea todas las superficies con una sola constante física: candidato del
-runner, firma pre/post, preflight y manifest apuntan a `root/textures`. El
-`ToolExecutionResult.output_path` exitoso entrega esa ruta exacta al empaquetado;
-al copiarla a `mods/TexGen Output`, el pipeline preserva el directorio
-Data-relative y produce `mods/TexGen Output/textures/...`, no
+runner, preflight y manifest apuntan a **`texgen_root/textures`** (ruta completa
+`external_work_root/DynDOLOD/TexGen/textures`). El `family_root`
+(`external_work_root/DynDOLOD`) **no es output ni unidad empaquetable**: es el
+namespace que contiene a los dos subroots de herramienta, y TexGen escribe
+directamente en `texgen_root/textures`, sin ningún nivel intermedio dentro de su
+subroot. El `ToolExecutionResult.output_path` exitoso entrega esa ruta exacta al
+empaquetado; al copiarla a `mods/TexGen Output`, el pipeline preserva el
+directorio Data-relative y produce `mods/TexGen Output/textures/...`, no
 `mods/TexGen Output/...` sin el prefijo.
 
 **Corregir el nivel destapó tres agujeros que el candidato roto contenía por
 accidente, y los tres se cierran en el mismo trabajo, fail-closed:**
 
 - **A — ownership.** La raíz administrada la comparten las dos herramientas, así
-  que el fallback de DynDOLOD a la raíz podía empaquetarla entera y llevarse
-  `root/textures` adentro de "DynDOLOD Output". La raíz deja de ser una unidad
-  empaquetable; la DETECCIÓN no cambia (el gate de `DynDOLOD.esp` sigue igual).
+  que el fallback de DynDOLOD a la raíz podía empaquetarla entera y llevarse el
+  subárbol `textures/` de TexGen adentro de "DynDOLOD Output". La raíz deja de
+  ser una unidad empaquetable; la DETECCIÓN no cambia (el gate de `DynDOLOD.esp`
+  sigue igual).
   La regla es *namespace compartido ≠ namespace empaquetable*, **no** un filtro
   por el nombre `textures`: excluir un nombre dejaría pasar cualquier otro hijo
   ajeno.
@@ -281,11 +291,16 @@ Lo que T3 no cambia:
 campo Output desde ahí, no desde el argv: las escrituras reales van al path del
 preset con exit 0, y **el log sigue ecoando el `Using Output Path:` del argv**.
 
-**El gate de frescura es lo que hoy contiene ese defecto** — verificado contra el
+**Antes de PR-3, el gate de frescura contenía ese defecto** — verificado contra el
 código por Codex en #463 y registrado en
 [`../../pending_ooda_status.md`](../../pending_ooda_status.md) (sección del
-preset): si las escrituras van a otro lado, la firma del candidato administrado no
-cambia y el post-check marca artefacto rancio → `success=False`. La corrida falla
+preset): si las escrituras iban a otro lado, la firma del candidato administrado
+no cambiaba y el post-check marcaba artefacto rancio → `success=False`.
+
+**El mecanismo vigente es otro:** con el born-empty del root completo (PR-2) y
+la comparación pre/post retirada (PR-3), si el preset desvía las escrituras el
+candidato administrado **no contiene el artefacto requerido**
+(`_tiene_artefacto == False`) → `success=False`. La corrida sigue fallando
 cerrada, no en silencio.
 
 **Pero la contención es más chica de lo que suena, y hay que decir cuánto.** El
@@ -303,21 +318,22 @@ rollback del servicio de afuera, no del gate.
 `run_texgen=True`, DynDOLOD solo se lanza cuando la etapa TexGen de la corrida
 quedó completa —veredicto válido → output atribuible → packaging exitoso →
 visibilidad demostrada en el `Data`—. El preset que desvía las escrituras hace
-fallar a TexGen por artefacto rancio, su packaging no corre, y el pipeline
-corta ANTES del spawn: no hay corrida de DynDOLOD ni mod que el rollback deba
-retirar. La afirmación de que "`_package_output_as_mod` nunca corre" —que este
+fallar a TexGen porque el candidato administrado no contiene el artefacto
+requerido, su packaging no corre, y el pipeline corta ANTES del spawn: no hay
+corrida de DynDOLOD ni mod que el rollback deba retirar. La afirmación de que "`_package_output_as_mod` nunca corre" —que este
 documento arrastraba del registro de #463— sigue siendo falsa como enunciado
 general (hay dos call sites de empaquetado), pero el que puede correr sin el
 de TexGen dejó de ser alcanzable en el camino productivo.
 
 **La contención ahora es real, pero no resuelve T5.** Si un preset desvía las
-escrituras, `root/textures` queda AUSENTE —el move-aside se lo llevó y nada lo
-repuso— y TexGen falla cerrado; eso no determina la precedencia `preset` vs
+escrituras, `texgen_root/textures` queda AUSENTE —el move-aside se lo llevó y
+nada lo repuso— y TexGen falla cerrado; eso no determina la precedencia `preset` vs
 `-o:`, no neutraliza presets rancios y no demuestra el comportamiento de
-DynDOLOD. Relajar artefacto o frescura reabriría ese agujero, por lo que ambos
-gates siguen siendo invariantes de T3. **Y el síntoma cambió de forma con el
-move-aside** (staging ausente en vez de rancio): el mensaje del veredicto tiene
-que distinguirlos o el operador depura el lugar equivocado.
+DynDOLOD. Relajar el gate de artefacto reabriría ese agujero, por lo que el
+artefacto requerido sigue siendo invariante de T3 (la frescura ya no existe:
+PR-3 la retiró y el born-empty del root la sustituyó). **Y el síntoma cambió de
+forma con el move-aside** (staging ausente en vez de rancio): el diagnóstico
+tiene que distinguirlos o el operador depura el lugar equivocado.
 
 Se conserva de v1, sin cambios: el alcance de Gap B (Zip & Exit reporta
 `exito_no_empaquetable`, aceptar el `.zip` como artefacto queda fuera), y el
@@ -334,15 +350,15 @@ visibilidad; si falla, el trabajo es investigar el perfil de MO2, no parchear T3
 >   ejercitados con corrección asistida del campo Output, cero desvío al decoy,
 >   restauración verificada, cierre regular `Exit TexGen` / `Save and Exit` sin
 >   interferencia).
-> - **T5-V2 FULL CHECKLIST: PARCIAL (7/10).** Criterios 8–10 (ZIP, dos mods
->   disjuntos, visibilidad billboards) NO se ejercitaron: corresponden al rig de
->   servicio completo posterior a PR-2. No se afirma T5-v2 FULL PASS mientras
->   haya criterios obligatorios sin ejecutar.
-> - **Lifecycle ante PR-2:** P0 es el único prerrequisito para COMENZAR PR-2.
->   PR-2, al cambiar los subroots administrados usados por `-o:`, REABRE el gate
->   de lanzamiento. PR-2 no puede mergearse sin repetir las dos corridas de rig
->   reales (TexGen + DynDOLOD) sobre el candidato PR-2. No se puede presentar la
->   evidencia del builder viejo como autorización permanente para el builder nuevo.
+> - **T5-V2 FULL CHECKLIST: PASS (10/10) — 2026-09-13.** Criterios 8–10 (ZIP,
+>   dos mods disjuntos, visibilidad billboards) se ejercitaron en el rig de
+>   servicio completo posterior a PR-2; informe commiteado:
+>   [`../../validation/2026-09-13_pr580_real_rig/final-report.md`](../../validation/2026-09-13_pr580_real_rig/final-report.md).
+> - **Lifecycle ante PR-2 (HISTÓRICO, resuelto):** PR-2 reabrió el gate al
+>   cambiar los subroots administrados usados por `-o:`; las dos corridas de rig
+>   reales (TexGen + DynDOLOD) se repitieron sobre el candidato completo y #580
+>   mergeó por squash (`1801a1ba`) con el gate **CLOSED — PASS**. PR-3 no reabre
+>   el gate: no cambia argv, `-o:`, spawn, layout, packaging ni handoff.
 
 v1 aceptaba *"el log declara `Using Output Path:` igual a la raíz administrada"*.
 **Ese criterio ya no sirve**: el rig probó que el encabezado ecoa el argv mientras

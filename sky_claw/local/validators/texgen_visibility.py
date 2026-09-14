@@ -80,8 +80,9 @@ def verificar_visibilidad_de_texgen(
 
     **"Existe" no alcanza, y "mismo tamaño" tampoco.** El despliegue rancio de una
     corrida anterior tiene el nombre correcto y con frecuencia el tamaño correcto:
-    es el mismo error del gate de frescura —confundir "hay algo" con "es esto"—
-    una capa más arriba.
+    es la misma clase de error que el antiguo gate de frescura trataba de
+    distinguir —presencia no equivale a identidad/atribución— una capa más
+    arriba.
 
     La dirección de la afirmación es ``generado ⊆ visible``: se exige que TODO lo
     que esta corrida generó esté en ``Data`` con los mismos bytes, y NO que

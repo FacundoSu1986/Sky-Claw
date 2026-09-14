@@ -457,7 +457,12 @@ tool_root previo
 → commit / rollback
 ```
 
-No se retira freshness todavía: pertenece a PR-3, posterior al rig de ownership.
+**PR-3 (2026-09-13): retirada la comparación pre/post de firma del artefacto;
+la atribución del log por corrida permanece.** Con el root completo born-empty,
+la exclusividad por herramienta y el fence de ownership, "lo que hay adentro del
+root" y "lo que esta corrida generó" son el mismo conjunto, así que el predicado
+∃ ("algo cambió") era redundante. El log NO vive en el root movible y sigue
+firmándose antes de lanzar para delimitar qué bytes son de ESTA corrida.
 
 ### 2.11 Contratos que no cambian
 
