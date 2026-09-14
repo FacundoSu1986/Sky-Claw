@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 
 HITL_OBSERVER_TIMEOUT_SECONDS = 2.0
 
+#: Categoría de la confirmación MID-RUN de configuración de DynDOLOD/TexGen
+#: (T5-v2). Semánticamente NO es "permito ejecutar una tool": es "terminé de
+#: configurar a mano esta GUI y su Output está listo para la verificación final".
+#:
+#: Por eso NO se reutiliza ``"tool_execution"``: esa categoría se auto-aprueba en
+#: Modo local (``make_gui_hitl_notify``), y auto-aprobar ésta haría que el
+#: operador nunca confirme lo que la categoría significa — el gate final
+#: verificaría una configuración que nadie declaró terminada. Mismo trato que
+#: ``download`` (egress) y ``sandbox_promotion`` (post-run): siempre manual.
+CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA = "dyndolod_configuracion_lista"
+
 
 class Decision(enum.Enum):
     """Operator decision for a pending HITL prompt."""
@@ -127,6 +138,7 @@ class HITLGuard:
         url: str | None = None,
         detail: str = "",
         category: str = "scope",
+        timeout: float | None = None,
     ) -> Decision:
         """Pausa la ejecución y espera la autorización del operador.
 
@@ -137,9 +149,18 @@ class HITLGuard:
         si no llega respuesta durante el timeout se devuelve ``Decision.TIMEOUT``
         y nunca cuenta como aprobación. Un ``notify_fn`` fallido también produce
         ``Decision.TIMEOUT`` sin crear una entrega ficticia.
+
+        *timeout* es un override ESTRICTAMENTE por solicitud (T5-v2): el timeout
+        global del guard no cambia y ``None`` conserva exactamente el
+        comportamiento previo. Existe porque una espera mid-run —el operador
+        configurando a mano la GUI de DynDOLOD/TexGen— tiene una escala distinta
+        de la de un prompt de scope, y alargar el global alargaría TODOS los
+        prompts del proceso. Sigue siendo fail-secure: agotado el plazo se
+        commitea ``TIMEOUT``, nunca una aprobación.
         """
         if request_id is None:
             request_id = str(uuid.uuid4())
+        effective_timeout = float(timeout) if timeout is not None else self._timeout
         req = HITLRequest(
             request_id=request_id,
             reason=reason,
@@ -166,7 +187,7 @@ class HITLGuard:
             logger.info("HITL: awaiting operator decision for %s", request_id)
 
             try:
-                await asyncio.wait_for(req._event.wait(), timeout=self._timeout)
+                await asyncio.wait_for(req._event.wait(), timeout=effective_timeout)
             except TimeoutError:
                 # F6: commitear el timeout bajo el lock (primer escritor gana). Si
                 # un respond se coló en la ventana de la race y ya resolvió la

@@ -20,6 +20,7 @@ import pathlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.app.security.hitl import CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA
 from sky_claw.config import GUI_MAX_PENDING_HITL
 from sky_claw.local.tools.tool_result import normalize_tool_result
 from sky_claw.local.tools_installer import InstallVerification
@@ -685,11 +686,18 @@ def make_gui_hitl_notify(
     promover el diff de un sandbox al perfil real — revisar ese diff es el
     propósito del sandbox, así que «Modo local» no la salta.
 
+    For ``category == CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA`` (T5-v2) the modal
+    is parked and **never** auto-approved: es la confirmación MID-RUN de que el
+    operador terminó de configurar la GUI de TexGen/DynDOLOD, y su respuesta
+    habilita el gate final sobre esa misma instancia. Reutilizar
+    ``tool_execution`` —que sí se auto-aprueba— la convertiría en un trámite
+    vacío.
+
     Every other category falls through to ``delegate`` (the original Telegram
     closure), so scope approvals keep their existing behaviour.
 
-    P1-7: las tres categorías que parkean modal se scopean al cliente que lanzó
-    el Ritual (``tab_id_getter``). Sin él, la aprobación de una operación
+    P1-7: las categorías que parkean modal se scopean al cliente que lanzó el
+    Ritual (``tab_id_getter``). Sin él, la aprobación de una operación
     destructiva era accionable desde CUALQUIER sesión abierta. Una solicitud sin
     cliente lanzador (agente LLM, Telegram, backend) conserva la clave global:
     no tiene dueño al que scoparla, y descartarla la dejaría colgada hasta su
@@ -720,6 +728,27 @@ def make_gui_hitl_notify(
         if category == "sandbox_promotion":
             # Promoción post-run del sandbox (T-27b·2): siempre modal, nunca
             # auto-aprobada — el operador decide sobre el diff real.
+            set_pending(
+                stamp_hitl_owner(
+                    {
+                        "request_id": req.request_id,
+                        "reason": getattr(req, "reason", ""),
+                        "detail": getattr(req, "detail", ""),
+                        "category": category,
+                    },
+                    tab_id,
+                )
+            )
+            _gui_pending_request_id.set(req.request_id)
+            return
+        if category == CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA:
+            # T5-v2: confirmación MID-RUN de la configuración de TexGen/DynDOLOD.
+            # Siempre modal y **nunca** auto-aprobada por «Modo local»: lo que el
+            # operador declara no es "permito ejecutar una tool" (eso ya lo hizo el
+            # middleware, pre-run, con `tool_execution`) sino "terminé de
+            # configurar la GUI y su Output está listo para el gate final". El
+            # texto contractual que viaja en `reason` es lo que hace honesta esa
+            # declaración; auto-aprobarla la vaciaría.
             set_pending(
                 stamp_hitl_owner(
                     {

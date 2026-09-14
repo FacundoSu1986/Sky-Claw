@@ -1333,7 +1333,10 @@ class TestAnclaConstructoresManualesDeMods:
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.
         "sky_claw/local/discovery/scanner.py": (467, 787),
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1039,),
+        # T5-v2: la rama de la categoría `dyndolod_configuracion_lista` en
+        # `make_gui_hitl_notify` corre esta línea +29 (1039 → 1068). Es el mismo
+        # constructor de siempre: el sitio no cambió de concepto.
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1068,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
