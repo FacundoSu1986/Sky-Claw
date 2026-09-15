@@ -46,7 +46,7 @@ from sky_claw.app.db.journal import OperationJournal
 from sky_claw.app.db.locks import DistributedLockManager, LockInfo
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 from sky_claw.local.tools.artifact_digest import digest_arbol
-from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner, ToolExecutionResult
+from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner, ReadinessMode, ToolExecutionResult
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 
 
@@ -154,7 +154,7 @@ def _servicio(
         event_bus=bus,
         mo2_profile="Perfil-A",
     )
-    runner = DynDOLODRunner(config)
+    runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
     svc._runner = runner  # type: ignore[attr-defined]
     # Ambas corridas comparten el MISMO config frozen: las claves físicas del
     # artifact son idénticas por construcción, que es justo la condición de

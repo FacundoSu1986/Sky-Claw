@@ -47,6 +47,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODPipelineResult,
     DynDOLODRunner,
     DynDOLODTimeoutError,
+    ReadinessMode,
 )
 from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
 from sky_claw.local.tools.dyndolod_workspace import (
@@ -325,7 +326,17 @@ class DynDOLODPipelineService:
             fence_ownership=self._fence_del_workspace if self._workspace is not None else None,
         )
 
-        self._runner = DynDOLODRunner(config, readiness=self._readiness)
+        # T5-v2.1: la ausencia de capacidad ya no es un default silencioso del
+        # runner (el constructor no acepta None). Acá se traduce `None` —el modo
+        # de los dobles de test y del preview dry-run, que NO ejecutan gates— al
+        # opt-out EXPLÍCITO. El censo de wiring exige que todo constructor
+        # productivo del runner pase la capacidad: este camino no es el de
+        # producción, y `DISABLED_FOR_TEST` no puede aparecer en `sky_claw/**`
+        # (lo ancla `test_el_censo_prohibe_el_opt_out_en_produccion`).
+        self._runner = DynDOLODRunner(
+            config,
+            readiness=self._readiness if self._readiness is not None else ReadinessMode.DISABLED_FOR_TEST,
+        )
         logger.info(
             "DynDOLODRunner inicializado: game=%s, dyndolod=%s",
             game_path,

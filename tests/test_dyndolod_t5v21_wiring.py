@@ -15,9 +15,16 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import sys
 
 import pytest
 
+from sky_claw.local.tools.dyndolod_uia_ejecutor import (
+    FLAG_HELPER_UIA,
+    EjecutorGateEnProceso,
+    EjecutorGatePorHelper,
+    comando_del_helper,
+)
 from sky_claw.local.tools.dyndolod_uia_gate import ConfirmadorDeConfiguracion
 from sky_claw.local.tools.dyndolod_uia_preflight import (
     LocalizadorDeProcesos,
@@ -31,12 +38,26 @@ RAIZ = pathlib.Path(__file__).resolve().parents[1]
 #: ``dyndolod_runner`` no cuenta: es texto, no un ``ast.Call``.
 CONSTRUCTORES_DEL_RUNNER: frozenset[str] = frozenset({"sky_claw/local/tools/dyndolod_service.py"})
 
+#: Sitios que construyen el SERVICIO. El preview es plan-only y declara el
+#: opt-out explícito; el composition root cablea la capacidad productiva. El
+#: censo exige ``readiness=`` en los dos: un ``None`` silencioso en un servicio
+#: nuevo no puede dejar la etapa 9 sin gate.
+CONSTRUCTORES_DEL_SERVICIO: frozenset[str] = frozenset(
+    {
+        "sky_claw/app/orchestrator/orchestration_composition.py",
+        "sky_claw/app/orchestrator/preview/chain_preview_service.py",
+    }
+)
+
 #: Archivos que participan del wiring de T5-v2.1.
 COMPOSITION = RAIZ / "sky_claw" / "app" / "orchestrator" / "orchestration_composition.py"
 ADAPTER = RAIZ / "sky_claw" / "app" / "orchestrator" / "dyndolod_readiness_hitl.py"
 SERVICE = RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_service.py"
 RUNNER = RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_runner.py"
 GATE = RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_uia_gate.py"
+EJECUTOR = RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_uia_ejecutor.py"
+HELPER = RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_uia_helper.py"
+MAIN = RAIZ / "sky_claw" / "__main__.py"
 
 
 def _arbol(archivo: pathlib.Path) -> ast.Module:
@@ -82,6 +103,54 @@ def test_censo_de_constructores_del_runner() -> None:
     assert not sin_wiring, f"construyen el runner sin la capacidad de readiness: {sin_wiring}"
 
 
+def test_censo_de_constructores_del_servicio_exige_readiness() -> None:
+    """Ningún servicio productivo puede quedar con el ``None`` silencioso.
+
+    El runner ya no acepta ``None``; el servicio lo traduce a
+    ``DISABLED_FOR_TEST`` cuando un doble de test no pasa nada. Para que esa
+    traducción no sea el default de producción, TODO constructor del servicio en
+    ``sky_claw/**`` declara el modo: la capacidad (composition root) o el opt-out
+    (preview plan-only). Un servicio nuevo sin ``readiness=`` rompe acá.
+    """
+    encontrados: dict[str, bool] = {}
+    for archivo in sorted((RAIZ / "sky_claw").rglob("*.py")):
+        llamadas = _llamadas(_arbol(archivo), "DynDOLODPipelineService")
+        if not llamadas:
+            continue
+        clave = archivo.relative_to(RAIZ).as_posix()
+        encontrados[clave] = all("readiness" in _kwargs(llamada) for llamada in llamadas)
+
+    assert set(encontrados) == CONSTRUCTORES_DEL_SERVICIO, (
+        f"constructores del servicio inesperados: {sorted(set(encontrados) ^ CONSTRUCTORES_DEL_SERVICIO)}"
+    )
+    sin_eleccion = sorted(clave for clave, elige in encontrados.items() if not elige)
+    assert not sin_eleccion, f"construyen el servicio sin elegir el modo de readiness: {sin_eleccion}"
+
+
+def _valor_del_kwarg(llamada: ast.Call, nombre: str) -> ast.AST | None:
+    return next((kw.value for kw in llamada.keywords if kw.arg == nombre), None)
+
+
+def _menciona(nodo: ast.AST, nombre: str) -> bool:
+    return nombre in {getattr(hijo, "id", None) for hijo in ast.walk(nodo)} or nombre in {
+        getattr(hijo, "attr", None) for hijo in ast.walk(nodo)
+    }
+
+
+def test_el_composition_root_no_usa_el_opt_out() -> None:
+    """La ejecución productiva cablea la CAPACIDAD; el opt-out es de tests/preview."""
+    arbol = _arbol(COMPOSITION)
+    for llamada in _llamadas(arbol, "DynDOLODRunner") + _llamadas(arbol, "DynDOLODPipelineService"):
+        valor = _valor_del_kwarg(llamada, "readiness")
+        assert valor is not None
+        assert not _menciona(valor, "DISABLED_FOR_TEST"), (
+            "el composition root no puede declarar el opt-out: la etapa 9 de producción corre con gate"
+        )
+        assert not (isinstance(valor, ast.Constant) and valor.value is None), (
+            "el composition root no puede pasar None: eso reabre el default silencioso"
+        )
+
+
 def test_el_servicio_inyecta_la_capacidad_en_el_runner() -> None:
     arbol = _arbol(SERVICE)
     llamadas = _llamadas(arbol, "DynDOLODRunner")
@@ -106,19 +175,19 @@ def test_el_servicio_recibe_la_capacidad_y_la_guarda() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_el_composition_root_arma_la_capacidad_con_el_backend_real() -> None:
+def test_el_composition_root_arma_la_capacidad_con_el_ejecutor_descartable() -> None:
     arbol = _arbol(COMPOSITION)
     llamadas = _llamadas(arbol, "CapacidadDeReadinessUIA")
     assert len(llamadas) == 1, "la capacidad debe armarse UNA vez en el composition root"
     assert _kwargs(llamadas[0]) == {
-        "fabrica_observador",
-        "localizador",
+        "ejecutor",
         "confirmador",
-    }, "la capacidad se arma con sus tres colaboradores explícitos"
+    }, "la capacidad se arma con el ejecutor y el canal humano explícitos"
 
     fuente = COMPOSITION.read_text(encoding="utf-8")
-    assert "fabrica_observador=construir_observador_windows" in fuente
-    assert "localizador=LocalizadorPsutil()" in fuente
+    assert "ejecutor=EjecutorGatePorHelper()" in fuente, (
+        "el ejecutor productivo es el helper descartable: la observación COM no puede correr en un hilo del padre"
+    )
     assert "confirmador=ConfirmadorHITL(hitl_guard=hitl_guard)" in fuente
 
 
@@ -138,18 +207,90 @@ def test_los_colaboradores_de_produccion_satisfacen_los_puertos() -> None:
     ``ObservadorUIAWindows`` no se puede INSTANCIAR fuera de Windows (COM), pero
     su clase debe declarar los tres métodos de lectura del protocolo.
     """
+    from sky_claw.app.orchestrator.dyndolod_readiness_hitl import ConfirmadorHITL  # noqa: PLC0415
+    from sky_claw.local.tools.dyndolod_uia_gate import EjecutorDeGateUIA  # noqa: PLC0415
+
     assert isinstance(LocalizadorPsutil(), LocalizadorDeProcesos)
     assert callable(construir_observador_windows)
     for nombre in ("ventanas_de_proceso", "controles_de_ventana", "leer_valor"):
         assert callable(getattr(ObservadorUIAWindows, nombre)), f"el backend no implementa {nombre}"
     assert not hasattr(ObservadorUIAWindows, "liberar") or callable(ObservadorUIAWindows.liberar)
 
-    from sky_claw.app.orchestrator.dyndolod_readiness_hitl import ConfirmadorHITL  # noqa: PLC0415
+    # El ejecutor productivo implementa el puerto del gate (firma async con la
+    # política y los dos plazos), y el de tests existe para el mismo contrato.
+    assert callable(EjecutorGatePorHelper.ejecutar)
+    assert callable(EjecutorGateEnProceso.ejecutar)
+    assert "ejecutar" in EjecutorDeGateUIA.__annotations__ or hasattr(EjecutorDeGateUIA, "ejecutar")
 
     confirmador = ConfirmadorHITL(hitl_guard=None)
     for nombre in ("confirmar", "informar"):
         assert callable(getattr(confirmador, nombre)), f"el adapter no implementa {nombre}"
     assert "confirmar" in ConfirmadorDeConfiguracion.__annotations__ or hasattr(ConfirmadorDeConfiguracion, "confirmar")
+
+
+# ---------------------------------------------------------------------------
+# El helper descartable: backend real, canal por archivos y modo congelado
+# ---------------------------------------------------------------------------
+
+
+def test_el_helper_productivo_usa_el_backend_real() -> None:
+    """El worker corre el MISMO backend que midió el rig, no una copia de test."""
+    arbol = _arbol(HELPER)
+    mencionados = {getattr(nodo, "id", None) for nodo in ast.walk(arbol) if isinstance(nodo, ast.Name)} | {
+        nodo.attr for nodo in ast.walk(arbol) if isinstance(nodo, ast.Attribute)
+    }
+    assert "construir_observador_windows" in mencionados, "el helper no usa el backend COM real"
+    llamadas = {
+        nodo.func.id for nodo in ast.walk(arbol) if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)
+    }
+    assert "ejecutar_gate_sincrono" in llamadas, "el helper no corre el gate acotado"
+
+
+def test_el_comando_del_helper_cubre_el_modo_congelado(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La fuente usa ``-m``; el ejecutable congelado se re-invoca con el flag.
+
+    Un binario PyInstaller no puede correr ``-m``, así que el helper del producto
+    que se distribuye ES el propio exe con ``FLAG_HELPER_UIA``. Las dos ramas se
+    prueban: la que corre hoy el rig y la que corre el release.
+    """
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    fuente = comando_del_helper()
+    assert fuente[0] == sys.executable
+    assert fuente[1] == "-m"
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    congelado = comando_del_helper()
+    assert congelado == (sys.executable, FLAG_HELPER_UIA)
+
+
+def test_el_main_despacha_el_helper_antes_de_importar_la_app() -> None:
+    """El despacho del worker en ``__main__`` no arrastra NiceGUI/Web.
+
+    El helper congelado ES ``SkyClawApp.exe --skyclaw-uia-helper``: si el flag no
+    se despacha antes de los imports de la app, el worker abre la GUI. El ancla
+    compara líneas: el ``if`` del flag tiene que preceder al primer import de
+    ``sky_claw.app``.
+    """
+    fuente = MAIN.read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
+    linea_flag = next(
+        (
+            nodo.lineno
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.If) and _menciona(nodo.test, "FLAG_HELPER_UIA")
+        ),
+        None,
+    )
+    assert linea_flag is not None, "el flag del worker UIA dejó de despacharse en __main__"
+    linea_app = min(
+        (
+            nodo.lineno
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.ImportFrom) and nodo.module is not None and nodo.module.startswith("sky_claw.app")
+        ),
+        default=10**9,
+    )
+    assert linea_flag < linea_app, "el worker UIA se despacha después de importar la app (abriría la GUI)"
 
 
 def test_el_puerto_del_observador_sigue_congelado_en_tres_metodos() -> None:

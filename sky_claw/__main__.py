@@ -25,6 +25,20 @@ from sky_claw.compat import setup_python_compat
 
 setup_python_compat()
 
+# T5-v2.1: modo worker del ejecutable congelado. El gate UIA productivo corre en
+# un proceso descartable (una llamada COM que nunca retorna no se puede matar
+# desde un hilo), y en modo congelado el helper ES este ejecutable re-invocado
+# con un flag. El despacho va ACÁ, antes de importar la app: el worker no debe
+# arrastrar NiceGUI/Web ni abrir la GUI. La constante vive en el ejecutor y se
+# importa cita por cita: mover el flag sin este despacho rompería el helper en
+# silencio, así que un test lo ancla.
+from sky_claw.local.tools.dyndolod_uia_ejecutor import FLAG_HELPER_UIA  # noqa: E402
+
+if len(sys.argv) >= 3 and sys.argv[1] == FLAG_HELPER_UIA:
+    from sky_claw.local.tools.dyndolod_uia_helper import main as _main_helper_uia  # noqa: PLC0415
+
+    raise SystemExit(_main_helper_uia(sys.argv[2:]))
+
 from sky_claw.app.modes.cli_mode import _run_cli, _run_oneshot  # noqa: E402
 from sky_claw.app.modes.security_mode import _run_security  # noqa: E402
 from sky_claw.app.modes.telegram_mode import _run_telegram  # noqa: E402

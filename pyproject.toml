@@ -305,6 +305,8 @@ module = [
     "sky_claw.local.tools.dyndolod_uia_preflight",  # T5A: preflight UIA read-only, nace estricto
     "sky_claw.local.tools.dyndolod_uia_windows",  # T5-v2: backend COM real, nace estricto
     "sky_claw.local.tools.dyndolod_uia_gate",  # T5-v2: gate del preflight, nace estricto
+    "sky_claw.local.tools.dyndolod_uia_ejecutor",  # T5-v2.1: helper descartable, nace estricto
+    "sky_claw.local.tools.dyndolod_uia_helper",  # T5-v2.1: worker del helper, nace estricto
     "sky_claw.local.fomod.*",  # T-12: instalador FOMOD anotado a strict (parser/resolver/models/installer)
     "sky_claw.local.loot.*",  # T-12: cliente LOOT a strict (cli/masterlist/parser/version)
     # Primitiva de detección de enlaces: módulo nuevo, nace estricto. El opt-in es

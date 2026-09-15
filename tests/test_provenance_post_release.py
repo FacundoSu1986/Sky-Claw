@@ -44,7 +44,7 @@ from sky_claw.app.db.journal import OperationJournal
 from sky_claw.app.db.locks import DistributedLockManager, LockInfo
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 from sky_claw.local.tools.artifact_digest import digest_arbol
-from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner, ToolExecutionResult
+from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner, ReadinessMode, ToolExecutionResult
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 
 CONTENIDO_A = (b"GEN-A-MARKER", b"GEN-A-SUB")
@@ -308,7 +308,7 @@ async def test_needs_deployment_no_puede_firmar_bytes_de_la_siguiente_corrida(
                 event_bus=bus,
                 mo2_profile="Perfil-A",
             )
-            runner = DynDOLODRunner(config)
+            runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
             svc._runner = runner  # type: ignore[attr-defined]
             svc._runner._execute_process = _proceso_texgen(config, marcadores)  # type: ignore[attr-defined]
 
@@ -495,7 +495,7 @@ async def test_lease_lost_antes_de_certificar_no_firma_nada(
             event_bus=AsyncMock(spec=CoreEventBus),
             mo2_profile="Perfil-A",
         )
-        runner = DynDOLODRunner(config)
+        runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
@@ -619,7 +619,7 @@ async def _corrida_con_fallo_en_ventana(
             event_bus=AsyncMock(spec=CoreEventBus),
             mo2_profile="Perfil-A",
         )
-        runner = DynDOLODRunner(config)
+        runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
@@ -751,7 +751,7 @@ async def test_robo_de_fila_same_agent_id_bloquea_certificacion(
             event_bus=AsyncMock(spec=CoreEventBus),
             mo2_profile="Perfil-A",
         )
-        runner = DynDOLODRunner(config)
+        runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
@@ -939,7 +939,7 @@ async def test_robo_durante_el_digest_es_cortado_por_el_segundo_fencing(
             event_bus=AsyncMock(spec=CoreEventBus),
             mo2_profile="Perfil-A",
         )
-        runner = DynDOLODRunner(config)
+        runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:
@@ -1071,7 +1071,7 @@ async def test_regeneracion_desde_indeterminate_certifica_y_supersede_bajo_lease
             event_bus=AsyncMock(spec=CoreEventBus),
             mo2_profile="Perfil-A",
         )
-        runner = DynDOLODRunner(config)
+        runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
         svc._runner = runner  # type: ignore[attr-defined]
 
         async def _proceso(*a: object, **k: object) -> tuple[str, str, int, float]:

@@ -2032,7 +2032,7 @@ def test_p21_activa_el_layout_externo_en_el_runner(tmp_path: pathlib.Path) -> No
     `external_work_root`: se mide sobre el argv REAL del runner, y el root legacy
     del juego NO aparece en ningún `-o:`.
     """
-    from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner, ReadinessMode
     from sky_claw.local.tools.output_targets import HerramientaDynDOLOD, derivar_layout_de_dyndolod
 
     game = tmp_path / "Skyrim Special Edition"
@@ -2052,7 +2052,7 @@ def test_p21_activa_el_layout_externo_en_el_runner(tmp_path: pathlib.Path) -> No
     )
     assert config.output_layout == layout
 
-    runner = DynDOLODRunner(config)
+    runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
     o_texgen = [
         a for a in runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.TEXGEN) if a.startswith("-o:")
     ]

@@ -199,6 +199,13 @@ hiddenimports = [
     "comtypes.client",
     "comtypes.gen.UIAutomationClient",
     "sky_claw.local.tools.dyndolod_uia_windows",
+    # T5-v2.1: el worker del gate corre como PROCESO aparte (`--skyclaw-uia-helper`
+    # re-invoca este mismo exe). El import del helper es perezoso y condicional en
+    # `__main__`, así que se declara explícito para que el bundle CONGELADO lo
+    # contenga: sin esto, el helper del release moriría con ImportError y toda la
+    # etapa 9 del exe quedaría fail-closed.
+    "sky_claw.local.tools.dyndolod_uia_ejecutor",
+    "sky_claw.local.tools.dyndolod_uia_helper",
 ]
 
 a = Analysis(

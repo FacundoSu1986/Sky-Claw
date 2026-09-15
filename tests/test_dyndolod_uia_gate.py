@@ -45,13 +45,17 @@ from sky_claw.local.tools.dyndolod_uia_gate import (
     OperatorConfigurationReadyRequest,
     ResolucionProtocoloReadiness,
     ResultadoConfirmacion,
+    VeredictoInitial,
+    clasificar_initial,
     ejecutar_gate_sincrono,
+    resultado_proceso_muerto,
 )
 from sky_claw.local.tools.dyndolod_uia_preflight import (
     ControlObservado,
     EstadoPreflight,
     ProcesoObservado,
     RazonPreflight,
+    ResultadoPreflightUIA,
     SolicitudPreflightUIA,
     UIANoDisponibleError,
     VentanaObservada,
@@ -553,3 +557,65 @@ def test_la_solicitud_de_readiness_es_inmutable():
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         solicitud.pid = 9999  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# T5-v2.1 — la policy del INITIAL, enumerada sobre TODAS las razones
+# ---------------------------------------------------------------------------
+
+
+def _resultado_con(estado: EstadoPreflight, razon: RazonPreflight) -> ResultadoPreflightUIA:
+    return ResultadoPreflightUIA(
+        estado=estado,
+        razon=razon,
+        tool="TexGen",
+        detalle="prueba de policy",
+        valor_esperado=TEXGEN_ROOT,
+    )
+
+
+#: La clasificación entera, por igualdad literal: la ÚNICA excepción configurable
+#: es el par concluyente del pipeline (MISMATCH/OUTPUT_DIFIERE). Todo lo demás es
+#: BLOCKED, incluidas todas las razones de UNKNOWN y cualquier combinación que
+#: ningún camino del pipeline emite. Si una razón nueva cae en la caja verde sin
+#: pasar por acá, este ancla se rompe a propósito.
+CLASIFICACION_INITIAL_CONGELADA: dict[tuple[EstadoPreflight, RazonPreflight], VeredictoInitial] = {
+    (EstadoPreflight.MATCH, RazonPreflight.OUTPUT_COINCIDE): VeredictoInitial.MATCH,
+    (EstadoPreflight.MISMATCH, RazonPreflight.OUTPUT_DIFIERE): VeredictoInitial.CONFIGURABLE_MISMATCH,
+}
+
+
+def test_la_clasificacion_initial_enumera_todas_las_razones():
+    """Enumeración, no muestreo: cada razón cae en la caja declarada o en BLOCKED.
+
+    El eje que este test cubre —y que un caso escrito a mano no cubriría— es que
+    una razón NUEVA no puede quedar verde por olvido: la caja segura es el
+    default, y sólo los dos pares concluyentes tienen una entrada explícita.
+    """
+    for estado in EstadoPreflight:
+        for razon in RazonPreflight:
+            esperado = CLASIFICACION_INITIAL_CONGELADA.get((estado, razon), VeredictoInitial.BLOCKED)
+            obtenido = clasificar_initial(_resultado_con(estado, razon))
+            assert obtenido is esperado, f"({estado.value}, {razon.value}) clasificó {obtenido} y no {esperado}"
+
+
+def test_el_mismatch_inicial_solo_es_configurable_con_su_razon_concluyente():
+    """No hay atajos: el estado solo no habilita la corrección humana."""
+    assert (
+        clasificar_initial(_resultado_con(EstadoPreflight.MISMATCH, RazonPreflight.OUTPUT_COINCIDE))
+        is VeredictoInitial.BLOCKED
+    )
+    assert (
+        clasificar_initial(_resultado_con(EstadoPreflight.MATCH, RazonPreflight.OUTPUT_DIFIERE))
+        is VeredictoInitial.BLOCKED
+    )
+
+
+def test_el_resultado_de_proceso_muerto_es_unknown_y_bloquea():
+    """La muerte detectada por el padre es evidencia honesta, no un veredicto mudo."""
+    solicitud = _solicitud("TexGen", TEXGEN_ROOT, pid=4242)
+    resultado = resultado_proceso_muerto(solicitud)
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.PROCESO_NO_ENCONTRADO
+    assert resultado.pid == 4242
+    assert clasificar_initial(resultado) is VeredictoInitial.BLOCKED

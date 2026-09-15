@@ -29,7 +29,9 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODPreflightUIAError,
     DynDOLODReadinessProtocolError,
     DynDOLODRunner,
+    ReadinessMode,
 )
+from sky_claw.local.tools.dyndolod_uia_ejecutor import EjecutorGateEnProceso
 from sky_claw.local.tools.dyndolod_uia_gate import (
     CapacidadDeReadinessUIA,
     ResolucionProtocoloReadiness,
@@ -125,6 +127,8 @@ class GuionUIA:
         self.rondas = 0
         self.liberaciones = 0
         self.ventanas = 1
+        #: Cuántos controles devuelve el árbol. 2 = selector ambiguo.
+        self.controles = 1
 
     def fabricar(self):
         return _ObservadorDeGuion(self)
@@ -137,17 +141,21 @@ class _ObservadorDeGuion:
     def ventanas_de_proceso(self, pid):
         if self._guion.ventanas == 0:
             return ()
-        return (VentanaObservada(pid=pid, titulo="TexGen 3.00", class_name="TMainForm", handle="w1"),)
+        return tuple(
+            VentanaObservada(pid=pid, titulo=f"TexGen 3.00 {n}", class_name="TMainForm", handle=f"w{n}")
+            for n in range(self._guion.ventanas)
+        )
 
     def controles_de_ventana(self, ventana):
-        return (
+        return tuple(
             ControlObservado(
                 pid=ventana.pid,
                 automation_id="",
                 nombre="",
                 tipo_de_control="Edit",
                 class_name="TEdit",
-            ),
+            )
+            for _ in range(self._guion.controles)
         )
 
     def leer_valor(self, control):
@@ -206,11 +214,18 @@ class FabricaQueFalla:
 
 
 def _capacidad(guion: GuionUIA | None, confirmador, **overrides) -> CapacidadDeReadinessUIA:
-    base = {
-        "fabrica_observador": guion.fabricar if guion is not None else lambda: None,
+    """Capacidad con el ejecutor EN PROCESO (observadores falsos, cooperativos).
+
+    El ejecutor productivo (helper descartable) tiene su propia suite
+    (``test_dyndolod_uia_ejecutor.py``); acá lo que se prueba es el lifecycle del
+    protocolo, que es el mismo para los dos ejecutores.
+    """
+    fabrica = overrides.pop("fabrica_observador", guion.fabricar if guion is not None else lambda: None)
+    ejecutor = EjecutorGateEnProceso(
+        fabrica_observador=fabrica,
         # Los DOS binarios, cada uno con su pid: el resolver filtra por pid y la
         # revalidación anti-reciclado vuelve a encontrar al mismo proceso.
-        "localizador": LocalizadorFalso(
+        localizador=LocalizadorFalso(
             [
                 ProcesoObservado(pid=PID_POR_TOOL["TexGen"], nombre_ejecutable="TexGenx64.exe", ruta_ejecutable=None),
                 ProcesoObservado(
@@ -218,6 +233,10 @@ def _capacidad(guion: GuionUIA | None, confirmador, **overrides) -> CapacidadDeR
                 ),
             ]
         ),
+        gracia_externa_segundos=2.0,
+    )
+    base = {
+        "ejecutor": ejecutor,
         "confirmador": confirmador,
         "gate_timeout_segundos": 1.0,
         "gate_intervalo_segundos": 0.01,
@@ -231,7 +250,7 @@ def _capacidad(guion: GuionUIA | None, confirmador, **overrides) -> CapacidadDeR
     return CapacidadDeReadinessUIA(**base)
 
 
-def _runner(tmp_path, capacidad: CapacidadDeReadinessUIA | None):
+def _runner(tmp_path, capacidad: CapacidadDeReadinessUIA | ReadinessMode):
     layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
     config = MagicMock()
     config.timeout_seconds = 3600
@@ -262,13 +281,13 @@ async def _correr(runner, proc: ProcesoFalso, *, tool: str = "TexGen"):
     ("tool", "herramienta"), [("TexGen", HerramientaDynDOLOD.TEXGEN), ("DynDOLOD", HerramientaDynDOLOD.DYNDOLOD)]
 )
 def test_w1_w2_el_expected_es_el_subroot_exclusivo_de_cada_herramienta(tmp_path, tool, herramienta):
-    runner, layout = _runner(tmp_path, None)
+    runner, layout = _runner(tmp_path, ReadinessMode.DISABLED_FOR_TEST)
     assert runner._expected_output_de(tool) == layout.raiz_de(herramienta)  # noqa: SLF001
 
 
 def test_w3_family_root_nunca_es_el_expected(tmp_path):
     """El family_root no es output: jamás puede ser lo que el gate exige ver."""
-    runner, layout = _runner(tmp_path, None)
+    runner, layout = _runner(tmp_path, ReadinessMode.DISABLED_FOR_TEST)
     for tool in BINARIOS:
         assert runner._expected_output_de(tool) != layout.family_root  # noqa: SLF001
 
@@ -282,7 +301,7 @@ def test_w4_el_expected_coincide_con_el_root_del_argv_o(tmp_path, tool, herramie
     Se comparan CANONICALIZADOS con el mismo canonicalizador que usa el gate, así
     que la igualdad no depende del ``\\`` final que agrega ``_switch_de_ruta``.
     """
-    runner, _layout = _runner(tmp_path, None)
+    runner, _layout = _runner(tmp_path, ReadinessMode.DISABLED_FOR_TEST)
     args = runner._build_xedit_args([], herramienta=herramienta)  # noqa: SLF001
     switch = next(a for a in args if a.startswith("-o:"))
     assert canonicalizar_ruta_windows(switch[3:]) == canonicalizar_ruta_windows(
@@ -291,7 +310,7 @@ def test_w4_el_expected_coincide_con_el_root_del_argv_o(tmp_path, tool, herramie
 
 
 def test_w16_tool_desconocida_es_fail_closed(tmp_path):
-    runner, _layout = _runner(tmp_path, None)
+    runner, _layout = _runner(tmp_path, ReadinessMode.DISABLED_FOR_TEST)
     with pytest.raises(ddl.DynDOLODValidationError):
         runner._expected_output_de("LOOT")  # noqa: SLF001
 
@@ -371,18 +390,32 @@ async def test_w6_initial_match_convoca_al_confirmador(tmp_path, tool, herramien
     assert confirmador.ultima_solicitud.pid == proc.pid
 
 
-async def test_w7_initial_mismatch_no_convoca_al_confirmador_y_mata(tmp_path):
-    guion = GuionUIA([str(tmp_path / "DynDOLOD")])  # family_root: divergente
+async def test_w7_initial_mismatch_canonicalizable_convoca_al_confirmador(tmp_path):
+    """W7 REFUTADO POR EL RIG REAL (2026-09-10) — el MISMATCH inicial es CONFIGURABLE.
+
+    La versión anterior de este test exigía que un MISMATCH inicial matara el
+    proceso sin llamar al confirmador. El rig real refutó esa expectativa: TexGen
+    arranca mostrando el Output del preset rancio, y el único que puede
+    corregirlo es el operador. Bloquear ahí hacía imposible el flujo documentado
+    "el operador corrige Output y después confirma". Lo que este test ancla
+    ahora: un MISMATCH concluyente (proceso e identidad probados, ventana y
+    control únicos, valor legible y canonicalizable) llega al HITL con el valor
+    observado; la autorización de Start sigue siendo del final gate.
+    """
+    stale = tmp_path / "Stale TexGen"
+    guion = GuionUIA([str(stale)])
     proc = ProcesoFalso()
-    confirmador = ConfirmadorFalso()
+    confirmador = ConfirmadorFalso(resultado=ResultadoConfirmacion.DENEGADA)
     runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
 
-    with pytest.raises(DynDOLODPreflightUIAError):
+    with pytest.raises(DynDOLODReadinessProtocolError) as excinfo:
         await _correr(runner, proc)
 
-    assert confirmador.llamadas == 0, "un MISMATCH definitivo no debe llegar al operador"
-    assert proc.kill_llamado, "el proceso debe morir: no se deja la GUI abierta"
-    assert guion.rondas == 1, "un MISMATCH es concluyente: no se reintenta"
+    assert excinfo.value.razon is ResolucionProtocoloReadiness.DENEGADA
+    assert confirmador.llamadas == 1, "un MISMATCH configurable DEBE llegar al operador"
+    assert confirmador.ultima_solicitud.observed_output == str(stale)
+    assert proc.kill_llamado, "un deny mata el proceso: no se deja la GUI abierta"
+    assert guion.rondas == 1, "el MISMATCH es concluyente: no se reintenta, se convoca"
 
 
 async def test_w8_initial_unavailable_no_continua(tmp_path):
@@ -565,18 +598,166 @@ async def test_w15_cancelacion_mata_limpia_y_propaga(tmp_path, punto):
 
 
 # ---------------------------------------------------------------------------
-# Modo directo
+# A1-A11 — la familia del encargo de Fase 3 (initial readiness ≠ autorización)
+# ---------------------------------------------------------------------------
+#
+# A9-A11 viven en ``tests/test_hitl.py`` (son el texto del prompt del adapter);
+# el resto acá, porque son lifecycle del runner.
+
+
+async def test_a1_initial_mismatch_canonicalizable_invoca_el_hitl(tmp_path):
+    """A1: el MISMATCH válido entra a la fase de corrección humana (no mata)."""
+    stale = tmp_path / "Stale TexGen"
+    guion = GuionUIA([str(stale)])
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFalso(resultado=ResultadoConfirmacion.DENEGADA)
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
+
+    with pytest.raises(DynDOLODReadinessProtocolError):
+        await _correr(runner, proc)
+
+    assert confirmador.llamadas == 1, "el initial CONFIGURABLE_MISMATCH debe llegar al operador"
+    assert confirmador.ultima_solicitud.observed_output == str(stale)
+
+
+async def test_a2_initial_mismatch_mas_deny_mata_el_proceso(tmp_path):
+    """A2: MISMATCH inicial configurable + DENY del operador → proceso muerto."""
+    guion = GuionUIA([str(tmp_path / "Stale TexGen")])
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFalso(resultado=ResultadoConfirmacion.DENEGADA)
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
+
+    with pytest.raises(DynDOLODReadinessProtocolError) as excinfo:
+        await _correr(runner, proc)
+
+    assert excinfo.value.razon is ResolucionProtocoloReadiness.DENEGADA
+    assert proc.kill_llamado
+    assert confirmador.informes == [], "no se anuncia 'Start habilitado' tras un deny"
+
+
+async def test_a3_initial_mismatch_approve_y_final_match_continua(tmp_path):
+    """A3: la corrección humana funciona: MISMATCH inicial → approve → MATCH final."""
+    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    guion = GuionUIA([str(tmp_path / "Stale TexGen"), str(layout.texgen_root)])
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFalso()
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
+
+    _stdout, _stderr, returncode, _dur = await _correr(runner, proc)
+
+    assert returncode == 0
+    assert confirmador.llamadas == 1
+    assert guion.rondas == 2, "el final gate RE-OBSERVA; no reusa el MISMATCH inicial"
+    assert confirmador.informes and confirmador.informes[0][0] == "TexGen"
+
+
+async def test_a4_initial_mismatch_approve_y_final_mismatch_fail_closed(tmp_path):
+    """A4: la excepción del initial NO se hereda al final: MISMATCH final corta."""
+    guion = GuionUIA([str(tmp_path / "Stale A"), str(tmp_path / "Stale B")])
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFalso()
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
+
+    with pytest.raises(DynDOLODPreflightUIAError) as excinfo:
+        await _correr(runner, proc)
+
+    assert excinfo.value.resultado.razon.value == "OUTPUT_DIFIERE"
+    assert guion.rondas == 2
+    assert proc.kill_llamado
+    assert confirmador.informes == [], "no se anuncia 'Start habilitado' sobre un veredicto rojo"
+
+
+async def test_a5_initial_match_igual_invoca_el_hitl(tmp_path):
+    """A5: MATCH inicial también convoca: falta elegir preset/worldspaces."""
+    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    guion = GuionUIA([str(layout.texgen_root)])
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFalso(resultado=ResultadoConfirmacion.DENEGADA)
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
+
+    with pytest.raises(DynDOLODReadinessProtocolError):
+        await _correr(runner, proc)
+
+    assert confirmador.llamadas == 1
+    assert confirmador.ultima_solicitud.observed_output is not None
+
+
+async def test_a6_uia_unavailable_no_invoca_el_hitl(tmp_path):
+    """A6: sin sensor no hay configuración humana posible: fail-closed directo."""
+    from sky_claw.local.tools.dyndolod_uia_preflight import UIANoDisponibleError
+
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFalso()
+    capacidad = _capacidad(None, confirmador, fabrica_observador=FabricaQueFalla(UIANoDisponibleError("sin COM")))
+    runner, _layout = _runner(tmp_path, capacidad)
+
+    with pytest.raises(DynDOLODPreflightUIAError):
+        await _correr(runner, proc)
+
+    assert confirmador.llamadas == 0
+    assert proc.kill_llamado
+
+
+async def test_a7_ventana_ambigua_no_invoca_el_hitl(tmp_path):
+    """A7: dos ventanas top-level = no se sabe cuál es: no hay corrección humana."""
+    guion = GuionUIA([str(tmp_path / "Stale")])
+    guion.ventanas = 2
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFalso()
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
+
+    with pytest.raises(DynDOLODPreflightUIAError) as excinfo:
+        await _correr(runner, proc)
+
+    assert excinfo.value.resultado.razon.value == "VENTANA_AMBIGUA"
+    assert confirmador.llamadas == 0
+    assert guion.rondas == 0, "la ambigüedad corta antes de leer el control"
+
+
+async def test_a8_control_ambiguo_no_invoca_el_hitl(tmp_path):
+    """A8: dos controles que matchean el selector = la lectura no es inequívoca."""
+    guion = GuionUIA([str(tmp_path / "Stale")])
+    guion.controles = 2
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFalso()
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
+
+    with pytest.raises(DynDOLODPreflightUIAError) as excinfo:
+        await _correr(runner, proc)
+
+    assert excinfo.value.resultado.razon.value == "CONTROL_AMBIGUO"
+    assert confirmador.llamadas == 0
+    assert guion.rondas == 0, "el control ambiguo corta antes de leer el valor"
+
+
+# ---------------------------------------------------------------------------
+# Modo directo — opt-out EXPLÍCITO
 # ---------------------------------------------------------------------------
 
 
-async def test_sin_capacidad_el_protocolo_no_corre(tmp_path):
-    """``readiness=None`` es el modo directo (tests/rig): no hay gate ni HITL."""
+async def test_el_opt_out_explicito_no_corre_el_protocolo(tmp_path):
+    """``ReadinessMode.DISABLED_FOR_TEST`` es el único modo directo: no hay gate."""
     guion = GuionUIA([str(tmp_path)])
     proc = ProcesoFalso()
     proc.terminar(0)
-    runner, _layout = _runner(tmp_path, None)
+    runner, _layout = _runner(tmp_path, ReadinessMode.DISABLED_FOR_TEST)
 
     _stdout, _stderr, returncode, _dur = await _correr(runner, proc)
 
     assert returncode == 0
     assert guion.rondas == 0
+
+
+def test_readiness_none_ya_no_es_un_modo_valido(tmp_path):
+    """El default silencioso quedó prohibido también en runtime (no sólo por tipo)."""
+    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    config = MagicMock()
+    config.timeout_seconds = 3600
+    config.heartbeat_interval = 60
+    config.fence_ownership = None
+    config.output_layout = layout
+    config.texgen_exe = pathlib.Path("TexGenx64.exe")
+    config.dyndolod_exe = pathlib.Path("DynDOLODx64.exe")
+
+    with pytest.raises(ValueError, match="readiness es obligatorio"):
+        DynDOLODRunner(config, readiness=None)  # type: ignore[arg-type]

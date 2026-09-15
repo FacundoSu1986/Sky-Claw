@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
+from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner, ReadinessMode
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.dyndolod_workspace import (
     BindingDocument,
@@ -207,7 +207,7 @@ def _runner_dyndolod(
         dyndolod_exe=exe,
         external_work_root=external_work_root,
     )
-    return DynDOLODRunner(config), config.output_layout
+    return DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST), config.output_layout
 
 
 def test_dyndolod_salida_determinista_bajo_los_subroots(tmp_path: pathlib.Path) -> None:
@@ -260,7 +260,7 @@ def test_dyndolod_sin_work_root_no_tiene_layout_ni_fallback_legacy(tmp_path: pat
 
     assert config.output_layout is None
     assert not hasattr(config, "output_root")
-    runner = DynDOLODRunner(config)
+    runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
     assert runner._candidatos_de_salida("TexGen") == []
     assert runner._candidatos_de_salida("DynDOLOD") == []
 

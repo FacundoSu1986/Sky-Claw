@@ -840,6 +840,7 @@ def _solicitud_de_readiness(tool: str = "TexGen", timeout: float = 5.0):
         executable=pathlib.Path("C:/Modding/DynDOLOD/TexGenx64.exe"),
         expected_output=pathlib.Path("E:/Modding/ExternalWork/DynDOLOD/TexGen"),
         timeout_seconds=timeout,
+        observed_output=r"E:\Sky-Claw T5 Rig\Stale TexGen",
     )
 
 
@@ -983,6 +984,53 @@ class TestConfirmadorHITLDeReadiness:
             await _confirmador(None).confirmar(_solicitud_de_readiness())  # type: ignore[arg-type]
             is ResultadoConfirmacion.CANAL_NO_DISPONIBLE
         )
+
+
+class TestPromptDeReadiness:
+    """A9-A11 — el prompt le dice al operador QUÉ corregir, y no lo contrario.
+
+    El rig real (2026-09-10) midió que TexGen arranca con el Output del preset
+    rancio precargado y que la corrección la hace el operador a mano. El texto
+    del HITL es el contrato de esa corrección: cita el Output observado, el
+    esperado (la misma raíz del ``-o:``) y ordena corregir el campo antes de
+    aprobar. La versión anterior —"dejá el campo Output como está"— hacía
+    imposible el flujo documentado y quedó refutada.
+    """
+
+    @staticmethod
+    async def _reason_de_la_solicitud() -> str:
+        visto: list[HITLRequest] = []
+        guard: HITLGuard
+
+        async def _auto_approve(req: HITLRequest) -> None:
+            visto.append(req)
+            await guard.respond(req.request_id, True)
+
+        guard = HITLGuard(notify_fn=_auto_approve, timeout=5)
+        await _confirmador(guard).confirmar(_solicitud_de_readiness())
+        assert len(visto) == 1
+        return visto[0].reason
+
+    @pytest.mark.asyncio
+    async def test_a9_el_reason_incluye_el_expected_output(self) -> None:
+        reason = await self._reason_de_la_solicitud()
+        assert str(_solicitud_de_readiness().expected_output) in reason
+
+    @pytest.mark.asyncio
+    async def test_a10_el_reason_no_pide_dejar_el_output_como_esta(self) -> None:
+        reason = await self._reason_de_la_solicitud()
+        assert "dejá el campo Output como está" not in reason
+
+    @pytest.mark.asyncio
+    async def test_a11_el_observed_output_aparece_en_el_prompt(self) -> None:
+        solicitud = _solicitud_de_readiness()
+        reason = await self._reason_de_la_solicitud()
+        assert solicitud.observed_output is not None
+        assert solicitud.observed_output in reason, "el operador tiene que saber QUÉ corregir"
+        # Requisito 3 del encargo: tool, pid, observado y esperado en el prompt.
+        assert solicitud.tool_name in reason
+        assert f"pid={solicitud.pid}" in reason
+        assert str(solicitud.expected_output) in reason
 
 
 class TestAprobacionStale:

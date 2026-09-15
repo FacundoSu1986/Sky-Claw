@@ -88,7 +88,17 @@ class ConfirmadorHITL:
         self,
         solicitud: OperatorConfigurationReadyRequest,
     ) -> ResultadoConfirmacion:
-        """Bloquea hasta que el operador decide (o el canal falla)."""
+        """Bloquea hasta que el operador decide (o el canal falla).
+
+        El texto del prompt es el CONTRATO de la corrección humana: cita el
+        Output observado, el esperado (la misma raíz del ``-o:``) y la
+        instrucción explícita de corregir el campo ANTES de aprobar. La versión
+        anterior decía "dejá el campo Output como está", y el rig real la
+        refutó: TexGen arranca con el preset rancio precargado, así que el
+        operador tiene que poder corregirlo — y el final gate verifica que lo
+        haya hecho. La GUI sigue siendo read-only para Sky-Claw: la corrección la
+        hace el humano, no este adapter.
+        """
         if self._guard is None:
             logger.warning(
                 "readiness de %s sin canal HITL cableado: se corta fail-closed",
@@ -96,6 +106,8 @@ class ConfirmadorHITL:
             )
             return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
 
+        observado = solicitud.observed_output or "(no disponible)"
+        esperado = str(solicitud.expected_output)
         # Literal y no una constante del módulo: el ancla de productores de
         # `tests/test_hitl.py` exige que el prefijo sea un `ast.Constant` — es la
         # propiedad que garantiza que la identidad del intento no se derive de
@@ -105,11 +117,13 @@ class ConfirmadorHITL:
             decision = await self._guard.request_approval(
                 request_id=request_id,
                 reason=(
-                    f"{solicitud.tool_name} pide confirmación de configuración: elegí el preset y los "
-                    "worldspaces en la GUI, dejá el campo Output como está y avisá cuando esté listo."
+                    f"{solicitud.tool_name} (pid={solicitud.pid}) pide confirmación de configuración. "
+                    f"Output observado: {observado}. Output esperado: {esperado}. "
+                    f"Antes de aprobar, corregí el campo Output para que sea exactamente: {esperado}. "
+                    "Después elegí el preset y los worldspaces en la GUI y aprobá sólo cuando la configuración esté lista."
                 ),
                 detail=(
-                    f"pid={solicitud.pid} output_administrado={solicitud.expected_output} "
+                    f"pid={solicitud.pid} output_observado={observado} output_administrado={esperado} "
                     f"timeout={solicitud.timeout_seconds:.0f}s"
                 ),
                 category=CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA,

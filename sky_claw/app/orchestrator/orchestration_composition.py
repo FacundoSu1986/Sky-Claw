@@ -43,9 +43,8 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     LoopGuardrailMiddleware,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+from sky_claw.local.tools.dyndolod_uia_ejecutor import EjecutorGatePorHelper
 from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
-from sky_claw.local.tools.dyndolod_uia_preflight import LocalizadorPsutil
-from sky_claw.local.tools.dyndolod_uia_windows import construir_observador_windows
 from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
 from sky_claw.local.tools.grass_cache_service import GrassCacheService
 from sky_claw.local.tools.loot_service import LootSortingService
@@ -185,17 +184,19 @@ def build_orchestration_composition(
         pipeline_config_path=synthesis_pipeline_config_path,
     )
 
-    # T5-v2: capacidad del protocolo de readiness (gate UIA read-only sobre el
+    # T5-v2.1: capacidad del protocolo de readiness (gate UIA read-only sobre el
     # Output de la GUI + confirmación humana mid-run). Se arma UNA vez acá, en el
-    # composition root, y se inyecta explícitamente al servicio → runner: un
-    # default silencioso en el runner dejaría la etapa 9 sin gate en producción,
-    # y el censo de constructores del runner existe para que eso no pase
-    # inadvertido. `construir_observador_windows` NO toca COM al construirse (el
-    # `comtypes` es perezoso dentro de su `__init__`), así que armar la capacidad
-    # en el CI de Linux es seguro; sin canal humano el confirmador falla cerrado.
+    # composition root, y se inyecta explícitamente al servicio → runner: el
+    # runner ya no acepta un default silencioso, y el censo de constructores
+    # existe para que un call site nuevo no pueda salir sin gate.
+    #
+    # El EJECUTOR es el helper descartable: la observación COM corre en un
+    # proceso que el padre puede matar y reapear cuando una llamada se cuelga.
+    # `ejecutar_gate_sincrono` en un hilo del padre NO cancela el hilo
+    # subyacente, y esa era la cota falsa que T5-v2.1 cierra. Armar la capacidad
+    # no toca COM ni spawnea nada: el helper nace por observación.
     dyndolod_readiness = CapacidadDeReadinessUIA(
-        fabrica_observador=construir_observador_windows,
-        localizador=LocalizadorPsutil(),
+        ejecutor=EjecutorGatePorHelper(),
         confirmador=ConfirmadorHITL(hitl_guard=hitl_guard),
     )
 
