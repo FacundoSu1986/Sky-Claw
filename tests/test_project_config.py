@@ -352,3 +352,35 @@ def test_la_lectura_de_version_llega_al_parser_y_no_a_la_rama_de_importerror(
         "read_skyrim_version no llegó al parser de PE: cayó en el except ImportError, "
         "que es exactamente el estado en el que el gate de ensure_skse bloquea todo"
     )
+
+
+def test_comtypes_es_dependencia_win32_declarada_y_resuelta() -> None:
+    """El backend UIA real existe en los manifests, no sólo en un import perezoso.
+
+    Espejo del ancla de ``pefile`` con una diferencia deliberada: ``comtypes``
+    es Windows-only, así que NO se afirma importabilidad acá (en el CI de
+    Ubuntu no está instalado por el marker). Lo que sí se ancla en las tres
+    capas: declarado en ``[project.dependencies]`` con marker ``win32`` (no en
+    ``[dev]``, que no se instala en producción), resuelto en ``uv.lock`` (o un
+    ``uv sync`` en Windows lo deja afuera del rig) y pineado con hashes en
+    ``requirements.lock``.
+
+    Sin esto, un ``pyproject`` que declara y un lock que no resuelve dan un rig
+    Windows donde ``construir_observador_windows`` falla cerrado SIEMPRE — un
+    gate que nunca puede dar MATCH.
+    """
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    dependencias = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    comtypes = [d for d in dependencias if d.name == "comtypes"]
+    assert len(comtypes) == 1, "comtypes tiene que ser dependencia de runtime, no de [dev]"
+    assert comtypes[0].marker is not None and "win32" in str(comtypes[0].marker), (
+        f"comtypes sin marker win32 rompería el CI de Ubuntu: {comtypes[0]}"
+    )
+
+    uv_lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    assert 'name = "comtypes"' in uv_lock, "comtypes declarado pero sin resolver en uv.lock"
+
+    requirements_lock = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
+    assert re.search(r"(?m)^comtypes==", requirements_lock), "comtypes declarado pero sin pineado en requirements.lock"

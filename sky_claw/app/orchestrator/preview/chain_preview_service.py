@@ -31,6 +31,7 @@ from sky_claw.app.orchestrator.preview.manifest import (
     PreviewManifest,
     StageChangeSet,
 )
+from sky_claw.local.tools.dyndolod_runner import ReadinessMode
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination, WorkspaceResuelto
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
@@ -129,6 +130,11 @@ class ChainPreviewService:
         # alguna vez muta, en vez de dejar acá el hermano sin cablear que este
         # repo comete una y otra vez. El censo de constructores lo exige por
         # igualdad literal.
+        # T5-v2.1: el preview declara el opt-out EXPLÍCITO — su único uso es
+        # ``dry_run=True`` (plan-only), donde no hay spawn ni gate que correr. El
+        # modo directo dejó de ser un ``None`` silencioso: el runner exige elegir
+        # entre la capacidad y esta constante, y el censo de wiring exige que
+        # todo constructor de servicio en ``sky_claw/**`` pase ``readiness=``.
         self._dyndolod_service = DynDOLODPipelineService(
             lock_manager=lock_manager,
             snapshot_manager=snapshot_manager,
@@ -137,6 +143,7 @@ class ChainPreviewService:
             event_bus=event_bus,
             stage9_coordination=stage9_coordination,
             workspace=workspace,
+            readiness=ReadinessMode.DISABLED_FOR_TEST,
         )
 
     # ------------------------------------------------------------------

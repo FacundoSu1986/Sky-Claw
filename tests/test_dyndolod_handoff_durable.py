@@ -44,6 +44,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODConfig,
     DynDOLODRunner,
     DynDOLODValidationError,
+    ReadinessMode,
     ToolExecutionResult,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
@@ -118,7 +119,7 @@ def _runner_real(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner
         texgen_exe=texgen_exe,
         external_work_root=tmp_path / "Work Root",
     )
-    return config, DynDOLODRunner(config)
+    return config, DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
 
 
 def _svc(

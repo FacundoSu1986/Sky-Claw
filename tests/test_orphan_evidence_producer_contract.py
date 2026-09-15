@@ -74,7 +74,7 @@ from sky_claw.app.db.journal import OperationJournal
 from sky_claw.app.db.locks import DistributedLockManager, LockInfo
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 from sky_claw.local.tools._dir_rollback import DirectoryRollback
-from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
+from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner, ReadinessMode
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 
 _RAIZ_SKY_CLAW = pathlib.Path(__file__).resolve().parent.parent / "sky_claw"
@@ -426,7 +426,7 @@ def _entorno(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner]:
     # data_dir tiene default derivado y el preflight falla rápido si no existe.
     assert config.data_dir is not None
     config.data_dir.mkdir(parents=True, exist_ok=True)
-    return config, DynDOLODRunner(config)
+    return config, DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
 
 
 class _ProcesoFalsoTexgen:
