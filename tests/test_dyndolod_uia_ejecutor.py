@@ -236,6 +236,46 @@ async def test_el_helper_inexistente_falla_cerrado(tmp_path: pathlib.Path) -> No
     assert resultado.razon is RazonPreflight.UIA_NO_DISPONIBLE
 
 
+async def test_el_canal_que_no_se_puede_crear_falla_cerrado(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding Qodo: el setup del canal no puede romper al runner con OSError.
+
+    `mkdtemp` (o el `write_text` del pedido) puede fallar por permisos o disco
+    lleno. El contrato del puerto exige sintetizar el fail-closed del sensor, no
+    propagar el error del andamiaje.
+    """
+    ejecutor = EjecutorGatePorHelper()
+
+    def _mkdtemp_roto(*args: object, **kwargs: object) -> str:
+        raise OSError("disco lleno (simulado)")
+
+    monkeypatch.setattr(ejecutor_mod.tempfile, "mkdtemp", _mkdtemp_roto)
+    resultado = await ejecutor.ejecutar(
+        _solicitud_de_ejemplo(), politica=PoliticaDeReintento.INICIO, timeout_segundos=1.0, intervalo_segundos=0.05
+    )
+
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.UIA_NO_DISPONIBLE
+    assert "directorio del canal" in resultado.detalle
+
+
+async def test_el_pedido_que_no_se_puede_escribir_falla_cerrado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mismo contrato si lo que falla es la escritura del pedido, no `mkdtemp`."""
+
+    def _mkdtemp_a_padre_inexistente(*args: object, **kwargs: object) -> str:
+        # Devuelve un path cuyo padre no existe: `write_text` levanta FileNotFoundError.
+        return str(tmp_path / "no-existe" / "canal")
+
+    monkeypatch.setattr(ejecutor_mod.tempfile, "mkdtemp", _mkdtemp_a_padre_inexistente)
+    resultado = await EjecutorGatePorHelper().ejecutar(
+        _solicitud_de_ejemplo(), politica=PoliticaDeReintento.INICIO, timeout_segundos=1.0, intervalo_segundos=0.05
+    )
+
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert "pedido del helper" in resultado.detalle
+
+
 # ---------------------------------------------------------------------------
 # Hard-hang: el helper BLOQUEADO INDEFINIDAMENTE
 # ---------------------------------------------------------------------------

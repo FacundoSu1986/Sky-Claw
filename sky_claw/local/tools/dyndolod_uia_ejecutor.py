@@ -143,23 +143,33 @@ class EjecutorGatePorHelper:
         timeout_segundos: float,
         intervalo_segundos: float,
     ) -> ResultadoPreflightUIA:
-        directorio = pathlib.Path(tempfile.mkdtemp(prefix="skyclaw-uia-helper-"))
+        # El setup del canal también respeta el contrato del puerto: un fallo de
+        # `mkdtemp`/`write_text` (permisos, disco lleno) se sintetiza como
+        # fail-closed y NUNCA escapa como OSError — el ejecutor no puede romper
+        # al runner por un problema del andamiaje.
+        try:
+            directorio = pathlib.Path(tempfile.mkdtemp(prefix="skyclaw-uia-helper-"))
+        except OSError as exc:
+            return _sin_respuesta(solicitud, f"no se pudo crear el directorio del canal UIA: {exc}")
         proceso: asyncio.subprocess.Process | None = None
         job: int | None = None
         completado = False
         try:
             # El pedido entero viaja por archivo: solicitud + política + plazos.
-            (directorio / NOMBRE_DEL_PEDIDO).write_text(
-                pedido_a_json(
-                    PedidoDeGate(
-                        solicitud=solicitud,
-                        politica=politica,
-                        timeout_segundos=timeout_segundos,
-                        intervalo_segundos=intervalo_segundos,
-                    )
-                ),
-                encoding="utf-8",
-            )
+            try:
+                (directorio / NOMBRE_DEL_PEDIDO).write_text(
+                    pedido_a_json(
+                        PedidoDeGate(
+                            solicitud=solicitud,
+                            politica=politica,
+                            timeout_segundos=timeout_segundos,
+                            intervalo_segundos=intervalo_segundos,
+                        )
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                return _sin_respuesta(solicitud, f"no se pudo escribir el pedido del helper UIA: {exc}")
 
             kwargs: dict[str, Any] = {}
             if sys.platform == "win32":
