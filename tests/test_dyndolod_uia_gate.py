@@ -38,9 +38,11 @@ import pytest
 from sky_claw.local.tools.dyndolod_uia_gate import (
     DEFAULT_READINESS_TIMEOUT_SEGUNDOS,
     GATE_UIA_INTERVALO_SEGUNDOS,
+    GATE_UIA_TIMEOUT_FINAL_SEGUNDOS,
     GATE_UIA_TIMEOUT_SEGUNDOS,
     RAZONES_TRANSITORIAS_DE_INICIO,
     RAZONES_TRANSITORIAS_FINAL,
+    CapacidadDeReadinessUIA,
     ConfirmadorNoDisponible,
     OperatorConfigurationReadyRequest,
     ResolucionProtocoloReadiness,
@@ -490,8 +492,19 @@ def test_las_razones_transitorias_del_final_son_solo_valor_no_leible():
 
 def test_las_cotas_del_gate_estan_congeladas():
     assert GATE_UIA_TIMEOUT_SEGUNDOS == 300.0
+    assert GATE_UIA_TIMEOUT_FINAL_SEGUNDOS == 30.0
     assert GATE_UIA_INTERVALO_SEGUNDOS == 1.0
     assert DEFAULT_READINESS_TIMEOUT_SEGUNDOS == 600.0
+    # Propiedad de la política, no sólo el número: tras la confirmación humana
+    # el deadline es CORTO (la GUI ya está idle y la única razón transitoria es
+    # un redraw); regalarle el presupuesto del inicial dilataría el fail-closed.
+    assert GATE_UIA_TIMEOUT_FINAL_SEGUNDOS < GATE_UIA_TIMEOUT_SEGUNDOS
+
+
+def test_la_capacidad_usa_el_deadline_final_corto_por_defecto():
+    capacidad = CapacidadDeReadinessUIA(ejecutor=object(), confirmador=object())  # type: ignore[arg-type]
+    assert capacidad.gate_final_timeout_segundos == GATE_UIA_TIMEOUT_FINAL_SEGUNDOS
+    assert capacidad.gate_timeout_segundos == GATE_UIA_TIMEOUT_SEGUNDOS
 
 
 def test_al_progreso_solo_se_invoca_cuando_cambia_la_razon():

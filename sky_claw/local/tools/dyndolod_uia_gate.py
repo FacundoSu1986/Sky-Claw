@@ -101,6 +101,15 @@ GATE_UIA_TIMEOUT_SEGUNDOS = 300.0
 #: COM cross-process.
 GATE_UIA_INTERVALO_SEGUNDOS = 1.0
 
+#: Deadline del FINAL gate (posterior a la confirmación humana). **Corto a
+#: propósito**, y distinto del inicial: el operador ya declaró "configuración
+#: lista" y la GUI está idle, así que lo único que puede quedar pendiente es que
+#: un ``TEdit`` redibujado al aplicar el preset vuelva a exponer texto
+#: (``VALOR_NO_LEIBLE`` es la ÚNICA razón transitoria final). Regalar los 300 s
+#: del inicial a un cuelgue del sensor posterior a la aprobación sólo dilata el
+#: fail-closed; 30 s cubren de sobra un redraw.
+GATE_UIA_TIMEOUT_FINAL_SEGUNDOS = 30.0
+
 #: Razones que PUEDEN desaparecer solas durante el arranque de la GUI. Ver el
 #: docstring del módulo para la evidencia de cada una. Congelado por igualdad
 #: literal en ``tests/test_dyndolod_uia_gate.py``.
@@ -539,7 +548,7 @@ class CapacidadDeReadinessUIA:
     confirmador: ConfirmadorDeConfiguracion
     gate_timeout_segundos: float = GATE_UIA_TIMEOUT_SEGUNDOS
     gate_intervalo_segundos: float = GATE_UIA_INTERVALO_SEGUNDOS
-    gate_final_timeout_segundos: float = GATE_UIA_TIMEOUT_SEGUNDOS
+    gate_final_timeout_segundos: float = GATE_UIA_TIMEOUT_FINAL_SEGUNDOS
     gate_final_intervalo_segundos: float = GATE_UIA_INTERVALO_SEGUNDOS
     readiness_timeout_segundos: float = DEFAULT_READINESS_TIMEOUT_SEGUNDOS
     gracia_externa_segundos: float = GRACIA_EXTERNA_DEL_GATE_SEGUNDOS

@@ -59,6 +59,12 @@ que conduce el **runner real** con la `CapacidadDeReadinessUIA` productiva:
 - sin Start: al llegar el aviso final se cancela la corrida y el runner mata el
   proceso; se verifica `procesos_residuales == []` y presets intactos.
 
+Nota sobre los plazos: el default del FINAL gate es corto
+(`GATE_UIA_TIMEOUT_FINAL_SEGUNDOS = 30 s`, distinto del inicial de 300 s) porque
+después de la aprobación la GUI está idle y la única razón transitoria es un
+redraw. El harness fijó 60 s y el final real resolvió en ~1 s, así que ese
+margen no es load-bearing para la evidencia.
+
 Nota de honestidad del rig: la primera corrida de DynDOLOD usó el default de
 `data_dir` (game tree) por un olvido del harness y el binario mostró el modal
 "DynDOLOD Resources SE version information not found"; el harness se corrigió
