@@ -39,7 +39,6 @@ seguía vivo.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import pathlib
 import sys
@@ -216,9 +215,19 @@ class EjecutorGatePorHelper:
                 # El directorio del canal es PROPIO (lo creó `mkdtemp`), pero se
                 # borra con la primitiva link-aware como todo el paquete: un
                 # junction plantado dentro a mitad de la observación no debe
-                # llevarse su destino. Best-effort: el veredicto ya está decidido.
-                with contextlib.suppress(OSError):
+                # llevarse su destino. El fallo de limpieza no puede pisar el
+                # veredicto ya decidido, pero TAMPOCO se esconde: se loguea —un
+                # directorio que no se pudo borrar (lock de AV, permisos) es
+                # operativo y acumula datos de la corrida en disco.
+                try:
                     rmtree_link_aware(directorio)
+                except OSError as exc:
+                    logger.warning(
+                        "no se pudo borrar el directorio del canal UIA %s: %s",
+                        directorio,
+                        exc,
+                        extra={"operation_type": "dyndolod_uia_canal_sin_limpiar"},
+                    )
 
 
 class EjecutorGateEnProceso:

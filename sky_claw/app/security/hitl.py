@@ -180,10 +180,25 @@ class HITLGuard:
         de la de un prompt de scope, y alargar el global alargaría TODOS los
         prompts del proceso. Sigue siendo fail-secure: agotado el plazo se
         commitea ``TIMEOUT``, nunca una aprobación.
+
+        Un *timeout* EXPLÍCITO no positivo se RECHAZA acá: ``asyncio.wait_for``
+        con un plazo no positivo corta de inmediato, así que un cero por error de
+        configuración del caller convertiría cada prompt en un ``TIMEOUT``
+        instantáneo y el fail-closed taparía el bug en vez de exponerlo. El
+        ``timeout`` GLOBAL del constructor no se toca: su ``0`` es un modo
+        "corta ya" con semántica establecida (los tests lo usan) y no es parte de
+        este override.
         """
         if request_id is None:
             request_id = str(uuid.uuid4())
-        effective_timeout = float(timeout) if timeout is not None else self._timeout
+        if timeout is not None:
+            effective_timeout = float(timeout)
+            if effective_timeout <= 0:
+                # Bug de configuración/caller, no del operador: se lanza ANTES
+                # de registrar el pendiente para no dejar una entrada colgada.
+                raise ValueError(f"HITL timeout debe ser > 0; llegó {effective_timeout}")
+        else:
+            effective_timeout = self._timeout
         req = HITLRequest(
             request_id=request_id,
             reason=reason,

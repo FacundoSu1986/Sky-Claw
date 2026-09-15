@@ -179,13 +179,22 @@ def _termina_al_confirmar(proc: ProcesoFalso):
 class ConfirmadorFalso:
     """Confirmador guionado. ``bloqueante`` modela un operador que no responde."""
 
-    def __init__(self, resultado=ResultadoConfirmacion.APROBADA, *, al_confirmar=None, bloqueante=False) -> None:
+    def __init__(
+        self,
+        resultado=ResultadoConfirmacion.APROBADA,
+        *,
+        al_confirmar=None,
+        bloqueante=False,
+        informar_bloqueante=False,
+    ) -> None:
         self.resultado = resultado
         self.llamadas = 0
         self.ultima_solicitud = None
         self.informes: list[tuple[str, str]] = []
         self._al_confirmar = al_confirmar
         self._bloqueante = bloqueante
+        #: Un aviso que nunca retorna: el runner lo acota con su gracia externa.
+        self._informar_bloqueante = informar_bloqueante
 
     async def confirmar(self, solicitud):
         self.llamadas += 1
@@ -198,6 +207,8 @@ class ConfirmadorFalso:
 
     async def informar(self, *, tool: str, mensaje: str) -> None:
         self.informes.append((tool, mensaje))
+        if self._informar_bloqueante:
+            await asyncio.Event().wait()
 
 
 class FabricaQueFalla:
@@ -556,6 +567,54 @@ async def test_w14b_proceso_que_muere_durante_el_initial_gate_corta_temprano(tmp
         await _correr(runner, proc)
     await tarea
     assert confirmador.llamadas == 0
+
+
+async def test_el_aviso_al_operador_que_se_cuelga_no_mata_la_corrida_verificada(tmp_path):
+    """Finding Qodo refutado con conducta: un aviso colgado no tumba el run.
+
+    El runner acota ``informar`` con ``asyncio.wait_for``; ese timeout convierte
+    la cancelación del aviso en ``TimeoutError``, que ``_informar_operador`` ya
+    atrapa y loguea. Los dos gates ya pasaron: la corrida sigue y el proceso NO
+    se mata. (Absorber ``CancelledError`` dentro del guard, como pedía el
+    finding, rompería la semántica de cancelación externa del run.)
+    """
+    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    guion = GuionUIA([str(layout.texgen_root)])
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFalso(informar_bloqueante=True)
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador, gracia_externa_segundos=0.2))
+
+    _stdout, _stderr, returncode, _dur = await _correr(runner, proc)
+
+    assert returncode == 0, "el aviso colgado no puede tumbar una corrida verificada"
+    assert not proc.kill_llamado, "el proceso no se mata por un aviso best-effort"
+    assert confirmador.informes and confirmador.informes[0][0] == "TexGen"
+
+
+async def test_w14c_confirmador_rapido_que_mata_el_proceso_igual_falla_cerrado(tmp_path):
+    """La race 'confirmación rápida vs muerte' corta fail-closed por ALGUNO de los dos caminos.
+
+    Si gana la vigilia, el protocolo corta con ``PROCESO_TERMINO``; si gana la
+    confirmación rápida, el final gate ve la instancia muerta y corta igual. En
+    los dos casos el proceso se mata y el veredicto es tipado — no hay camino en
+    el que la corrida continúe sobre un binario inexistente.
+    """
+    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    # El final gate nunca va a leer un MATCH: la observación no puede concluir
+    # antes de que la vigilia vea la muerte.
+    guion = GuionUIA([str(layout.texgen_root), None])
+    proc = ProcesoFalso()
+
+    async def _muere_al_confirmar(_solicitud):
+        proc.terminar(1)
+
+    confirmador = ConfirmadorFalso(al_confirmar=_muere_al_confirmar)
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
+
+    with pytest.raises((DynDOLODReadinessProtocolError, DynDOLODPreflightUIAError)):
+        await _correr(runner, proc)
+
+    assert proc.kill_llamado
 
 
 # ---------------------------------------------------------------------------

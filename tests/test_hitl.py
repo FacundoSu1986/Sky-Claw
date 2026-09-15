@@ -977,6 +977,21 @@ class TestConfirmadorHITLDeReadiness:
         assert await guard.request_approval(request_id="sin-override") is Decision.TIMEOUT
 
     @pytest.mark.asyncio
+    async def test_h6c_un_timeout_no_positivo_es_bug_del_caller(self) -> None:
+        """Finding Qodo: un 0/negativo cortaría al instante y disfrazaría el bug.
+
+        ``asyncio.wait_for`` con plazo no positivo devuelve de inmediato, así que
+        el fail-closed convertiría cada prompt en un ``TIMEOUT`` instantáneo. Se
+        rechaza ANTES de registrar el pendiente: la entrada no queda colgada.
+        """
+        guard = HITLGuard(timeout=5)
+        with pytest.raises(ValueError, match="timeout debe ser > 0"):
+            await guard.request_approval(request_id="cero", timeout=0)
+        with pytest.raises(ValueError, match="timeout debe ser > 0"):
+            await guard.request_approval(request_id="negativo", timeout=-1)
+        assert guard._pending == {}  # noqa: SLF001 -- sin pendiente fantasma
+
+    @pytest.mark.asyncio
     async def test_h6b_sin_canal_cableado_es_canal_no_disponible(self) -> None:
         from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion  # noqa: PLC0415
 
