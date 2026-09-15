@@ -985,10 +985,24 @@ class TestConfirmadorHITLDeReadiness:
         rechaza ANTES de registrar el pendiente: la entrada no queda colgada.
         """
         guard = HITLGuard(timeout=5)
-        with pytest.raises(ValueError, match="timeout debe ser > 0"):
+        with pytest.raises(ValueError, match="timeout debe ser finito y > 0"):
             await guard.request_approval(request_id="cero", timeout=0)
-        with pytest.raises(ValueError, match="timeout debe ser > 0"):
+        with pytest.raises(ValueError, match="timeout debe ser finito y > 0"):
             await guard.request_approval(request_id="negativo", timeout=-1)
+        assert guard._pending == {}  # noqa: SLF001 -- sin pendiente fantasma
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("valor", [float("nan"), float("inf"), float("-inf")])
+    async def test_h6d_un_timeout_no_finito_es_bug_del_caller(self, valor: float) -> None:
+        """Finding CodeRabbit: nan/inf pasan la comparación ``<= 0`` y no son plazos.
+
+        ``nan`` haría un ``TIMEOUT`` casi inmediato; ``inf`` dejaría la espera sin
+        límite. Ninguno es una espera humana válida: se rechazan igual que el
+        cero, antes de registrar el pendiente.
+        """
+        guard = HITLGuard(timeout=5)
+        with pytest.raises(ValueError, match="timeout debe ser finito y > 0"):
+            await guard.request_approval(request_id="no-finito", timeout=valor)
         assert guard._pending == {}  # noqa: SLF001 -- sin pendiente fantasma
 
     @pytest.mark.asyncio

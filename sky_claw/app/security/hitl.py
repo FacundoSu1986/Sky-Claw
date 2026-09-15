@@ -12,6 +12,7 @@ import asyncio
 import enum
 import fnmatch
 import logging
+import math
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -181,22 +182,22 @@ class HITLGuard:
         prompts del proceso. Sigue siendo fail-secure: agotado el plazo se
         commitea ``TIMEOUT``, nunca una aprobación.
 
-        Un *timeout* EXPLÍCITO no positivo se RECHAZA acá: ``asyncio.wait_for``
-        con un plazo no positivo corta de inmediato, así que un cero por error de
-        configuración del caller convertiría cada prompt en un ``TIMEOUT``
-        instantáneo y el fail-closed taparía el bug en vez de exponerlo. El
-        ``timeout`` GLOBAL del constructor no se toca: su ``0`` es un modo
-        "corta ya" con semántica establecida (los tests lo usan) y no es parte de
-        este override.
+        Un *timeout* EXPLÍCITO no finito o no positivo se RECHAZA acá:
+        ``asyncio.wait_for`` con un plazo no positivo corta de inmediato (cero por
+        error de configuración = cada prompt en ``TIMEOUT`` instantáneo) y un
+        ``nan``/``inf`` pasa una comparación ``<= 0`` y deja la espera en un
+        comportamiento indefinido o sin límite. El ``timeout`` GLOBAL del
+        constructor no se toca: su ``0`` es un modo "corta ya" con semántica
+        establecida (los tests lo usan) y no es parte de este override.
         """
         if request_id is None:
             request_id = str(uuid.uuid4())
         if timeout is not None:
             effective_timeout = float(timeout)
-            if effective_timeout <= 0:
+            if not math.isfinite(effective_timeout) or effective_timeout <= 0:
                 # Bug de configuración/caller, no del operador: se lanza ANTES
                 # de registrar el pendiente para no dejar una entrada colgada.
-                raise ValueError(f"HITL timeout debe ser > 0; llegó {effective_timeout}")
+                raise ValueError(f"HITL timeout debe ser finito y > 0; llegó {effective_timeout}")
         else:
             effective_timeout = self._timeout
         req = HITLRequest(
