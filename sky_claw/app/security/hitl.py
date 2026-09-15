@@ -106,6 +106,7 @@ class HITLGuard:
         on_terminal: Callable[[HITLRequest, Decision], Awaitable[None]] | None = None,
         on_cancel: Callable[[HITLRequest], Awaitable[None]] | None = None,
         observer_timeout: float = HITL_OBSERVER_TIMEOUT_SECONDS,
+        notice_fn: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._notify = notify_fn
         self._timeout = timeout
@@ -115,8 +116,30 @@ class HITLGuard:
         self._on_terminal = on_terminal
         self._on_cancel = on_cancel
         self._observer_timeout = float(observer_timeout)
+        #: Superficie de AVISOS informativos (no decisiones): el reader que ya
+        #: presenta los prompts puede recibir mensajes de una línea sin crear un
+        #: pendiente. Se asigna en el wiring (`_bootloader` para la GUI; Telegram
+        #: puede dejarlo en None) y `notify_operator` lo trata como best-effort.
+        self.notice_fn = notice_fn
         self._pending: dict[str, HITLRequest] = {}
         self._lock = asyncio.Lock()
+
+    async def notify_operator(self, mensaje: str) -> None:
+        """Entrega un aviso informativo por la superficie del guard, si hay una.
+
+        **No es una decisión**: no crea pendiente, no espera respuesta y no
+        participa del ciclo request/respond. Best-effort declarado: un fallo de
+        la superficie se loguea y NUNCA se propaga — un aviso no puede gatear ni
+        tumbar la corrida que lo emite.
+        """
+        if self.notice_fn is None:
+            return
+        try:
+            await self.notice_fn(mensaje)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- aviso informativo, nunca gatea
+            logger.warning("HITL: notice_fn failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Detection

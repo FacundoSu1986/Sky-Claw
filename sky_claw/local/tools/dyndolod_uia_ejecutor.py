@@ -28,7 +28,7 @@ cooperativo no se cuelga, una llamada COM real sí. Su docstring lo dice y el
 censo de wiring exige el helper en TODO constructor productivo.
 
 **Protocolo del helper.** El payload viaja por ARCHIVOS dentro de un directorio
-temporal (``solicitud.json`` in, ``resultado.json`` out) y no por
+temporal (``pedido.json`` in, ``resultado.json`` out) y no por
 stdin/stdout: el ejecutable congelado de Windows es una app de subsistema GUI
 (``console=False``) donde ``sys.stdout`` puede no existir, y un contrato que
 sólo funciona desde la fuente no sirve para el producto que se distribuye. El

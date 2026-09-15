@@ -206,6 +206,13 @@ class MontajeCOM:
     """Instala los falsos en ``sys.modules`` y construye el adaptador REAL."""
 
     def __init__(self, monkeypatch, ventanas=(), error_en_getmodule=None):
+        # El adaptador es Windows-only POR CONTRATO (chequea `sys.platform`
+        # antes de importar el binding), así que el montaje declara la
+        # plataforma que la lógica bajo prueba exige: sin esto, en POSIX el
+        # constructor real corta con UIANoDisponibleError antes de usar los
+        # `comtypes` falsos y los tests del adaptador no corren. El
+        # monkeypatch lo revierte al terminar el test.
+        monkeypatch.setattr(sys, "platform", "win32")
         self.modulo = _modulo_uia_falso()
         self.raiz = RaizFalsa(ventanas)
         self.cliente = ClienteCOMFalso(self.modulo, self.raiz, error_en_getmodule)

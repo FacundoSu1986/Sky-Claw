@@ -146,16 +146,27 @@ class ConfirmadorHITL:
         return self._traducir(decision)
 
     async def informar(self, *, tool: str, mensaje: str) -> None:
-        """Aviso best-effort POST-final-MATCH ("Output verificado, podés dar Start").
+        """Aviso POST-final-MATCH ("Output verificado, podés dar Start").
 
-        Best-effort SOLO porque la instrucción contractual completa ya viajó en el
-        texto de la confirmación que el operador leyó para aprobar. Un fallo acá
-        no puede cortar una corrida que ya pasó los dos gates.
+        Orden de entrega: el ``on_informar`` explícito si el wiring lo dio; si
+        no, la superficie de avisos del GUARD (``HITLGuard.notify_operator``),
+        que en la GUI escribe el panel de feedback del ritual — el operador que
+        aprobó el modal ve el "podés continuar con Start" en la misma interfaz.
+        Sin ninguna de las dos superficies queda el log, que es el fallback
+        honesto, no una entrega fingida.
+
+        Best-effort en todos los casos: la instrucción contractual completa ya
+        viajó en el texto de la confirmación que el operador leyó para aprobar,
+        así que un fallo acá no puede cortar una corrida que ya pasó los dos
+        gates.
         """
-        if self._on_informar is None:
-            logger.info("readiness de %s: %s", tool, mensaje)
+        if self._on_informar is not None:
+            try:
+                await self._on_informar(tool, mensaje)
+            except Exception:  # noqa: BLE001 -- aviso best-effort, nunca gatea
+                logger.warning("no se pudo informar al operador sobre %s", tool, exc_info=True)
             return
-        try:
-            await self._on_informar(tool, mensaje)
-        except Exception:  # noqa: BLE001 -- aviso best-effort, nunca gatea
-            logger.warning("no se pudo informar al operador sobre %s", tool, exc_info=True)
+        if self._guard is not None:
+            await self._guard.notify_operator(mensaje)
+            return
+        logger.info("readiness de %s: %s", tool, mensaje)

@@ -76,6 +76,7 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     the fail-closed auto-deny when nobody answers.
     """
     from sky_claw.app.gui.controllers.ritual_runner import (
+        STORE_KEY_RITUAL_FEEDBACK,
         compose_gui_hitl_lifecycle,
         enqueue_pending_hitl,
         make_gui_hitl_notify,
@@ -111,6 +112,18 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
         delegate=original_notify,
     )
     guard._sky_claw_gui_hitl_bridge_installed = True
+
+    async def _aviso_de_operador(mensaje: str) -> None:
+        """Superficie de AVISOS del guard: panel de feedback del ritual.
+
+        T5-v2.1: el aviso post-final-MATCH del readiness ("podés continuar con
+        Start") llega acá; sin esta superficie, el modelo que aprobó el modal no
+        recibía señal alguna de que la verificación final terminó. No crea
+        pendientes ni botones: es texto para el panel.
+        """
+        store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": mensaje, "type": "positive"})
+
+    guard.notice_fn = _aviso_de_operador
 
 
 def _build_environment_scanner(ctx: AppContext):

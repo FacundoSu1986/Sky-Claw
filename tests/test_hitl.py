@@ -1033,6 +1033,85 @@ class TestPromptDeReadiness:
         assert str(solicitud.expected_output) in reason
 
 
+class TestAvisoDeReadiness:
+    """T5-v2.1 — el aviso post-final-MATCH llega a una superficie real.
+
+    El finding de review: en producción `ConfirmadorHITL` se construía sin
+    `on_informar`, así que "podés continuar con Start" quedaba en un log y el
+    operador que aprobó el modal no recibía señal. La entrega ahora usa la
+    superficie de avisos del guard (`HITLGuard.notify_operator`), cableada por
+    la GUI al panel de feedback del ritual. Sigue siendo best-effort: una
+    superficie caída no puede tumbar una corrida ya verificada.
+    """
+
+    @pytest.mark.asyncio
+    async def test_el_aviso_llega_al_notice_fn_del_guard_sin_on_informar(self) -> None:
+        recibidos: list[str] = []
+
+        async def _notice(mensaje: str) -> None:
+            recibidos.append(mensaje)
+
+        guard = HITLGuard(timeout=5, notice_fn=_notice)
+        await _confirmador(guard).informar(tool="TexGen", mensaje="podés continuar con Start")
+        assert recibidos == ["podés continuar con Start"]
+
+    @pytest.mark.asyncio
+    async def test_el_on_informar_explicito_gana_sobre_el_notice_del_guard(self) -> None:
+        recibidos_guard: list[str] = []
+        recibidos_explicitos: list[tuple[str, str]] = []
+
+        async def _notice(mensaje: str) -> None:
+            recibidos_guard.append(mensaje)
+
+        async def _explicito(tool: str, mensaje: str) -> None:
+            recibidos_explicitos.append((tool, mensaje))
+
+        guard = HITLGuard(timeout=5, notice_fn=_notice)
+        from sky_claw.app.orchestrator.dyndolod_readiness_hitl import ConfirmadorHITL  # noqa: PLC0415
+
+        await ConfirmadorHITL(hitl_guard=guard, on_informar=_explicito).informar(tool="TexGen", mensaje="listo")
+        assert recibidos_explicitos == [("TexGen", "listo")]
+        assert recibidos_guard == []
+
+    @pytest.mark.asyncio
+    async def test_un_notice_fn_roto_no_propaga_ni_gatea(self) -> None:
+        async def _roto(_mensaje: str) -> None:
+            raise RuntimeError("sin superficie")
+
+        guard = HITLGuard(timeout=5, notice_fn=_roto)
+        await _confirmador(guard).informar(tool="TexGen", mensaje="listo")  # no lanza
+
+    @pytest.mark.asyncio
+    async def test_el_bootloader_gui_cablea_el_aviso_al_feedback_del_ritual(self) -> None:
+        from sky_claw.app.gui._bootloader import _install_gui_hitl_bridge  # noqa: PLC0415
+        from sky_claw.app.gui.controllers.ritual_runner import STORE_KEY_RITUAL_FEEDBACK  # noqa: PLC0415
+
+        class _StoreFalso:
+            def __init__(self) -> None:
+                self.escrituras: dict[object, object] = {}
+
+            def set(self, clave, valor) -> None:
+                self.escrituras[clave] = valor
+
+            def get(self, clave):
+                return self.escrituras.get(clave)
+
+        class _CtxFalso:
+            def __init__(self, guard: HITLGuard) -> None:
+                self.hitl = guard
+
+        guard = HITLGuard(timeout=5)
+        store = _StoreFalso()
+        _install_gui_hitl_bridge(_CtxFalso(guard), store)  # type: ignore[arg-type]
+
+        assert guard.notice_fn is not None, "la GUI no cableó la superficie de avisos"
+        await guard.notify_operator("Output verificado: podés continuar con Start.")
+        assert store.escrituras[STORE_KEY_RITUAL_FEEDBACK] == {
+            "text": "Output verificado: podés continuar con Start.",
+            "type": "positive",
+        }
+
+
 class TestAprobacionStale:
     """H7/H8 — una aprobación vieja no resuelve una request nueva."""
 
