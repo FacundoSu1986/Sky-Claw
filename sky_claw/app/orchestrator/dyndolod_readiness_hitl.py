@@ -120,7 +120,10 @@ class ConfirmadorHITL:
                     f"{solicitud.tool_name} (pid={solicitud.pid}) pide confirmación de configuración. "
                     f"Output observado: {observado}. Output esperado: {esperado}. "
                     f"Antes de aprobar, corregí el campo Output para que sea exactamente: {esperado}. "
-                    "Después elegí el preset y los worldspaces en la GUI y aprobá sólo cuando la configuración esté lista."
+                    "Después elegí el preset y los worldspaces en la GUI y aprobá sólo cuando la configuración esté lista. "
+                    "Tras aprobar, no pulses Start: Sky-Claw re-verifica el Output por UIA y recién "
+                    'cuando confirme te llega el aviso "Output verificado… podés continuar con Start". '
+                    "Ese aviso es el momento de pulsar Start, no antes."
                 ),
                 detail=(
                     f"pid={solicitud.pid} output_observado={observado} output_administrado={esperado} "

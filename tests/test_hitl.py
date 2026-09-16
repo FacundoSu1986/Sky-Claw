@@ -1061,6 +1061,41 @@ class TestPromptDeReadiness:
         assert f"pid={solicitud.pid}" in reason
         assert str(solicitud.expected_output) in reason
 
+    @staticmethod
+    async def _reason_para(tool: str) -> str:
+        visto: list[HITLRequest] = []
+        guard: HITLGuard
+
+        async def _auto_approve(req: HITLRequest) -> None:
+            visto.append(req)
+            await guard.respond(req.request_id, True)
+
+        guard = HITLGuard(notify_fn=_auto_approve, timeout=5)
+        await _confirmador(guard).confirmar(_solicitud_de_readiness(tool=tool))
+        assert len(visto) == 1
+        return visto[0].reason
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool", ["TexGen", "DynDOLOD"])
+    async def test_a12_el_reason_prohibe_pulsar_start_hasta_la_verificacion_final(self, tool: str) -> None:
+        """A12: el prompt declara el protocolo entero, no sólo la corrección.
+
+        El contrato débil del gate (``dyndolod_uia_gate``) es que el operador NO
+        interactúe con Start durante el gate y que Sky-Claw no continúe hasta
+        MATCH. El prompt es la única superficie que el operador lee antes de
+        aprobar, así que la instrucción "no pulses Start todavía" tiene que
+        viajar acá — aprobar habilita el FINAL gate, no el botón Start. El
+        aviso "podés continuar con Start" llega recién después del MATCH final.
+        Un solo adapter sirve a las dos herramientas: el contrato es el mismo.
+        """
+        reason = await self._reason_para(tool)
+        assert "no pulses start" in reason.lower(), (
+            f"el prompt de {tool} no prohíbe pulsar Start tras aprobar: {reason!r}"
+        )
+        assert "podés continuar con Start" in reason, (
+            f"el prompt de {tool} no anuncia el aviso post-final-MATCH como momento de Start: {reason!r}"
+        )
+
 
 class TestAvisoDeReadiness:
     """T5-v2.1 — el aviso post-final-MATCH llega a una superficie real.
