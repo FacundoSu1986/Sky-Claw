@@ -1290,6 +1290,14 @@ class DynDOLODRunner:
                 stderr=str(e),
             ) from e
 
+        # Un solo presupuesto whole-process desde que el subprocess YA existe.
+        # El readiness (gates + HITL + aviso) consume este mismo deadline;
+        # ``proc.wait()`` recibe únicamente el resto. No se reinicia el reloj.
+        deadline = time.monotonic() + float(effective_timeout)
+
+        def remaining_budget() -> float:
+            return max(0.0, deadline - time.monotonic())
+
         # U-07/U-02: meter el proceso (y sus descendientes) en un Job Object
         # kill-on-close. Cerrarlo (close_job, en TODA salida) aniquila cualquier
         # nieto que sobreviva —incluso reparentado tras la salida del padre—, el
@@ -1331,8 +1339,20 @@ class DynDOLODRunner:
             # esperarlo ANTES de crear los drains haría backpressure sobre el
             # proceso. Va DENTRO del try para que todo veredicto no-MATCH se
             # limpie con las mismas ramas que un fallo del proceso.
-            await self._protocolo_de_readiness(tool_name=tool_name, executable=executable, proc=proc)
-            await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
+            # El deadline global es cota superior de las cotas internas del
+            # protocolo (gate / HITL / aviso): si el resto es menor, gana el
+            # presupuesto whole-process y el veredicto es DynDOLODTimeoutError.
+            presupuesto = remaining_budget()
+            if presupuesto <= 0:
+                raise TimeoutError()
+            await asyncio.wait_for(
+                self._protocolo_de_readiness(tool_name=tool_name, executable=executable, proc=proc),
+                timeout=presupuesto,
+            )
+            presupuesto = remaining_budget()
+            if presupuesto <= 0:
+                raise TimeoutError()
+            await asyncio.wait_for(proc.wait(), timeout=presupuesto)
         except asyncio.CancelledError:
             # Un shutdown externo debe matar el árbol antes de propagar la
             # cancelación: de otro modo DynDOLOD/TexGen continúa escribiendo

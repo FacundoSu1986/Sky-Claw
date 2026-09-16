@@ -29,6 +29,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODPreflightUIAError,
     DynDOLODReadinessProtocolError,
     DynDOLODRunner,
+    DynDOLODTimeoutError,
     ReadinessMode,
 )
 from sky_claw.local.tools.dyndolod_uia_ejecutor import EjecutorGateEnProceso
@@ -103,6 +104,28 @@ class ProcesoFalso:
         self.esperas += 1
         if self.returncode is None:
             self.terminar(0)
+        return self.returncode if self.returncode is not None else 0
+
+
+class ProcesoQueNoTermina(ProcesoFalso):
+    """Vivo hasta ``kill()``/``terminar()``: modela ``proc.wait()`` bloqueado.
+
+    El doble feliz termina al primer ``wait()``; acá el presupuesto global se
+    prueba contra un proceso que seguiría generando si el runner le regalara
+    un timeout fresco después del readiness.
+    """
+
+    def __init__(self, *, tool: str = "TexGen") -> None:
+        super().__init__(tool=tool)
+        self._salida = asyncio.Event()
+
+    def terminar(self, codigo: int = 0) -> None:
+        self.returncode = codigo
+        self._salida.set()
+
+    async def wait(self) -> int:
+        self.esperas += 1
+        await self._salida.wait()
         return self.returncode if self.returncode is not None else 0
 
 
@@ -274,13 +297,24 @@ def _runner(tmp_path, capacidad: CapacidadDeReadinessUIA | ReadinessMode):
     return DynDOLODRunner(config, readiness=capacidad), layout
 
 
-async def _correr(runner, proc: ProcesoFalso, *, tool: str = "TexGen"):
+async def _correr(runner, proc: ProcesoFalso, *, tool: str = "TexGen", timeout: int | None = None):
     with mock.patch.object(ddl.asyncio, "create_subprocess_exec", mock.AsyncMock(return_value=proc)):
         return await runner._execute_process(  # noqa: SLF001 -- el seam bajo prueba ES privado
             executable=pathlib.Path(BINARIOS[tool]),
             args=["-sse"],
             tool_name=tool,
+            timeout=timeout,
         )
+
+
+async def _timeout_otorgado_a_proc_wait(proc: ProcesoFalso, orig, aw, timeout=None, **kwargs):
+    """Envuelve ``wait_for`` y captura el timeout SOLO cuando arranca ``proc.wait()``."""
+    esperas_antes = proc.esperas
+    try:
+        return await orig(aw, timeout=timeout, **kwargs)
+    finally:
+        if proc.esperas > esperas_antes:
+            proc.timeouts_de_wait.append(timeout)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -820,3 +854,135 @@ def test_readiness_none_ya_no_es_un_modo_valido(tmp_path):
 
     with pytest.raises(ValueError, match="readiness es obligatorio"):
         DynDOLODRunner(config, readiness=None)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Presupuesto whole-process: el reloj nace en el spawn y cubre el readiness
+# ---------------------------------------------------------------------------
+#
+# El contrato de ``timeout_seconds`` es un único presupuesto desde que el
+# subprocess ya existe. El bug validado era: readiness corre sin cota global y
+# ``proc.wait()`` recibe un ``effective_timeout`` fresco.
+
+
+def _layout_windows(tmp_path):
+    """Raíz con sintaxis Win32: el gate rechaza POSIX (``ESPERADO_NO_CANONICALIZABLE``)."""
+    return derivar_layout_de_dyndolod(external_work_root=pathlib.Path(r"C:\SkyClawWork") / tmp_path.name)
+
+
+def _correr_con_layout_windows(tmp_path, capacidad):
+    runner, _posix = _runner(tmp_path, capacidad)
+    layout = _layout_windows(tmp_path)
+    runner._config.output_layout = layout  # noqa: SLF001
+    return runner, layout
+
+
+@pytest.mark.parametrize("tool", ["TexGen", "DynDOLOD"])
+async def test_el_readiness_que_agota_el_presupuesto_es_timeout_global(tmp_path, tool):
+    """Caso A: el HITL que se cuelga no recibe un timeout de proceso nuevo.
+
+    Si el presupuesto global no cubriera el readiness, el confirmador bloqueante
+    caducaría por su cota INTERNA y el veredicto sería de protocolo — no
+    ``DynDOLODTimeoutError``. El proceso no puede quedar vivo.
+    """
+    herramienta = HerramientaDynDOLOD.TEXGEN if tool == "TexGen" else HerramientaDynDOLOD.DYNDOLOD
+    layout = _layout_windows(tmp_path)
+    guion = GuionUIA([str(layout.raiz_de(herramienta))])
+    proc = ProcesoQueNoTermina(tool=tool)
+    confirmador = ConfirmadorFalso(bloqueante=True)
+    runner, _layout = _correr_con_layout_windows(
+        tmp_path,
+        _capacidad(
+            guion,
+            confirmador,
+            readiness_timeout_segundos=5.0,
+            gracia_externa_segundos=0.05,
+            gate_timeout_segundos=5.0,
+            gate_final_timeout_segundos=5.0,
+        ),
+    )
+
+    with pytest.raises(DynDOLODTimeoutError) as excinfo:
+        await _correr(runner, proc, tool=tool, timeout=1)
+
+    assert excinfo.value.timeout_seconds == 1
+    assert excinfo.value.tool_name == tool
+    assert proc.kill_llamado, "el timeout global debe matar el árbol"
+    assert proc.returncode is not None, "el proceso no puede quedar vivo"
+    assert confirmador.llamadas == 1, "el HITL arrancó: el timeout no fue un gate inicial"
+
+
+@pytest.mark.parametrize("tool", ["TexGen", "DynDOLOD"])
+async def test_proc_wait_recibe_solo_el_presupuesto_restante(tmp_path, tool, monkeypatch):
+    """Caso B: readiness consume parte del presupuesto; ``proc.wait`` no se reinicia.
+
+    El HITL espera 0.4 s reales. El timeout configurado es 1 s. ``proc.wait()``
+    tiene que recibir el resto (< 1 s), no un presupuesto fresco de 1 s.
+    No se parchea ``time.monotonic``: asyncio también lo usa para ``wait_for``.
+    """
+    herramienta = HerramientaDynDOLOD.TEXGEN if tool == "TexGen" else HerramientaDynDOLOD.DYNDOLOD
+    layout = _layout_windows(tmp_path)
+    guion = GuionUIA([str(layout.raiz_de(herramienta))])
+    proc = ProcesoQueNoTermina(tool=tool)
+    proc.timeouts_de_wait = []
+
+    async def _consumir_presupuesto(_solicitud) -> None:
+        await asyncio.sleep(0.4)
+
+    confirmador = ConfirmadorFalso(al_confirmar=_consumir_presupuesto)
+    runner, _layout = _correr_con_layout_windows(tmp_path, _capacidad(guion, confirmador))
+
+    orig = ddl.asyncio.wait_for
+
+    async def _espiar(aw, timeout=None, **kwargs):
+        return await _timeout_otorgado_a_proc_wait(proc, orig, aw, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(ddl.asyncio, "wait_for", _espiar)
+
+    with pytest.raises(DynDOLODTimeoutError) as excinfo:
+        await _correr(runner, proc, tool=tool, timeout=1)
+
+    assert excinfo.value.timeout_seconds == 1, "el error reporta el presupuesto original, no el resto"
+    assert proc.timeouts_de_wait, "proc.wait debió arrancar con el resto del presupuesto"
+    restante = proc.timeouts_de_wait[0]
+    assert restante is not None
+    assert restante < 1.0, "un timeout fresco de 1 s significa que el readiness no consumió presupuesto"
+    assert restante > 0.0
+    assert proc.kill_llamado
+
+
+@pytest.mark.parametrize("tool", ["TexGen", "DynDOLOD"])
+async def test_readiness_rapido_y_wait_dentro_del_resto_es_exito(tmp_path, tool):
+    """Caso C: gates + HITL cortos y ``proc.wait`` que termina dentro del resto."""
+    herramienta = HerramientaDynDOLOD.TEXGEN if tool == "TexGen" else HerramientaDynDOLOD.DYNDOLOD
+    layout = _layout_windows(tmp_path)
+    expected = str(layout.raiz_de(herramienta))
+    guion = GuionUIA([expected])
+    proc = ProcesoFalso(tool=tool)
+    confirmador = ConfirmadorFalso()
+    runner, _layout = _correr_con_layout_windows(tmp_path, _capacidad(guion, confirmador))
+
+    _stdout, _stderr, returncode, _dur = await _correr(runner, proc, tool=tool, timeout=5)
+
+    assert returncode == 0
+    assert confirmador.llamadas == 1
+    assert guion.rondas == 2
+    assert not proc.kill_llamado
+    assert confirmador.informes and confirmador.informes[0][0] == tool
+
+
+async def test_cancelacion_durante_readiness_no_se_reporta_como_timeout(tmp_path):
+    """Caso E: una cancelación externa sigue siendo ``CancelledError``, no timeout."""
+    layout = _layout_windows(tmp_path)
+    guion = GuionUIA([str(layout.texgen_root)])
+    proc = ProcesoQueNoTermina()
+    confirmador = ConfirmadorFalso(bloqueante=True)
+    runner, _layout = _correr_con_layout_windows(tmp_path, _capacidad(guion, confirmador))
+
+    tarea = asyncio.create_task(_correr(runner, proc, timeout=30))
+    await asyncio.sleep(0.05)
+    tarea.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+
+    assert proc.kill_llamado, "la cancelación debe matar el árbol antes de propagar"
