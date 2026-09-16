@@ -215,7 +215,7 @@ class DynDOLODPipelineService:
     #: contrato): el atributo existe aunque `__init__` no haya corrido. Mismo
     #: idioma que el `getattr(self, "_mo2_profile", None)` del gate de perfil.
     _workspace: WorkspaceResuelto | None = None
-    _readiness: CapacidadDeReadinessUIA | None = None
+    _readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None
 
     def __init__(
         self,
@@ -229,7 +229,7 @@ class DynDOLODPipelineService:
         mo2_profile: str | None = None,
         stage9_coordination: Stage9Coordination | None = None,
         workspace: WorkspaceResuelto | None = None,
-        readiness: CapacidadDeReadinessUIA | None = None,
+        readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -329,10 +329,16 @@ class DynDOLODPipelineService:
         # T5-v2.1: la ausencia de capacidad ya no es un default silencioso del
         # runner (el constructor no acepta None). Acá se traduce `None` —el modo
         # de los dobles de test y del preview dry-run, que NO ejecutan gates— al
-        # opt-out EXPLÍCITO. El censo de wiring exige que todo constructor
-        # productivo del runner pase la capacidad: este camino no es el de
-        # producción, y `DISABLED_FOR_TEST` no puede aparecer en `sky_claw/**`
-        # (lo ancla `test_el_censo_prohibe_el_opt_out_en_produccion`).
+        # opt-out EXPLÍCITO. Contrato del opt-out:
+        #   * `DISABLED_FOR_TEST` NO puede usarse en una ruta productiva que
+        #     spawnee TexGen/DynDOLOD;
+        #   * el preview plan-only (`dry_run=True`) lo declara explícitamente y
+        #     retorna antes de cualquier spawn/gate;
+        #   * la producción real recibe una `CapacidadDeReadinessUIA` desde el
+        #     composition root;
+        #   * el censo de wiring (`tests/test_dyndolod_t5v21_wiring.py`) protege
+        #     esos caminos productivos —el composition root no puede pasar el
+        #     opt-out— para que ningún spawn productivo quede sin gate.
         self._runner = DynDOLODRunner(
             config,
             readiness=self._readiness if self._readiness is not None else ReadinessMode.DISABLED_FOR_TEST,

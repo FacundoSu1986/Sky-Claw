@@ -2,9 +2,25 @@
 
 **La pregunta que responde, entera.** *"El control Output que ESTA instancia
 recién lanzada muestra por UIA, ¿coincide con la salida administrada que
-Sky-Claw le pasó por ``-o:``?"* Si la respuesta no es ``MATCH``, Sky-Claw no
-considera la instancia lista y el runner termina el proceso — el pipeline no
-continúa sobre una observación divergente o inconclusa.
+Sky-Claw le pasó por ``-o:``?"* La observación pura devuelve ``MATCH`` /
+``MISMATCH`` / ``UNKNOWN``; el protocolo de readiness (T5-v2.1) la clasifica en
+dos paradas distintas —initial y final— y NUNCA continúa el pipeline sobre una
+observación divergente o inconclusa sin pasar por ellas.
+
+**Initial gate (readiness, no autorización).** :func:`clasificar_initial` decide
+si la GUI está lista para que un humano la configure:
+
+* ``MATCH`` + ``OUTPUT_COINCIDE`` → ``INITIAL_MATCH`` → HITL (el campo Output es
+  editable y todavía falta elegir preset/worldspaces).
+* ``MISMATCH`` + ``OUTPUT_DIFIERE`` con identidad, ventana, control y valor
+  válidos → ``INITIAL_CONFIGURABLE_MISMATCH`` → HITL para la corrección humana
+  (el rig real midió un preset rancio precargado). NO autoriza Start.
+* ``UNKNOWN``, ambigüedad, identidad no demostrable o sensor no disponible →
+  ``INITIAL_BLOCKED`` → fail-closed (el humano no lo resuelve desde esta GUI).
+
+**Final gate (autorización).** Tras la confirmación humana se RE-OBSERVA desde
+cero: sólo ``EstadoPreflight.MATCH`` deja continuar; ``MISMATCH`` o ``UNKNOWN``
+fallan CERRADO y el runner termina el proceso.
 
 **Contrato DÉBIL, y dicho así adrede (F2, requisito del dueño del rig).** La
 garantía es contractual: *Sky-Claw no continúa hasta ``MATCH`` y el operador
@@ -23,10 +39,23 @@ artefactos, que es independiente y posterior).
 MATCH / MISMATCH / UNKNOWN vive entera en el preflight (T5A) y este módulo sólo
 le agrega dos cosas que el preflight declaradamente no tiene: un **deadline
 monotónico** y la **clasificación de razones transitorias de arranque**. No
-conoce COM, ni procesos, ni asyncio — el runner lo ejecuta dentro de un
-``asyncio.to_thread`` (las llamadas UIA son bloqueantes y de apartamento) y la
-cancelación viaja como ``CancelledError`` en el await de afuera, con el proceso
-aún bajo el Job Object del runner.
+conoce COM, ni procesos.
+
+**Cómo se ejecuta la observación (T5-v2.1).** El seam es
+:class:`EjecutorDeGateUIA`, con dos implementaciones que NO son intercambiables
+por comodidad:
+
+* PRODUCCIÓN — ``EjecutorGatePorHelper``: la observación corre en un **proceso
+  descartable** con el COM aislado adentro; el deadline del padre es DURO
+  (``kill``/reap del helper), así que una llamada COM que nunca retorna no puede
+  colgar al runner. Es el que cablea el composition root.
+* TESTS/RIG — ``EjecutorGateEnProceso``: corre el gate en ``asyncio.to_thread``
+  y sólo es honesto con **observadores cooperativos** (``to_thread`` no cancela
+  el hilo subyacente; una llamada COM real colgada lo bloquearía). El censo de
+  wiring exige el helper en todo constructor productivo.
+
+La cancelación externa viaja como ``CancelledError`` en el await de afuera; en
+producción esa cancelación mata y reapea el helper antes de propagar.
 
 **Por qué reintentar ALGO y no todo.** Una GUI tarda entre milisegundos y lo
 que el operador tarde con un modal en aparecer *lista*; cortar a la primera
