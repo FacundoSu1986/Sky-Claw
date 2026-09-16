@@ -111,6 +111,7 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
     ResultadoPreflightUIA,
     SolicitudPreflightUIA,
     observar_output,
+    par_estado_razon_valido,
 )
 
 #: Cota del "GUI lista" del gate. **No** es el timeout de 4 h de la etapa — eso
@@ -749,7 +750,10 @@ def resultado_desde_json(texto: str) -> ResultadoPreflightUIA:
     Los valores de ``EstadoPreflight`` y ``RazonPreflight`` se reconstruyen por
     membresía de enum: una razón que este binario no conoce (versión cruzada)
     es un contrato roto, no un UNKNOWN silencioso — el veredicto que llegó no
-    se puede interpretar, así que no hay veredicto.
+    se puede interpretar, así que no hay veredicto. Y la membresía no alcanza:
+    el PAR también se valida contra ``par_estado_razon_valido`` (la autoridad
+    estado ↔ razón que el pipeline usa para emitir), porque un ``MATCH`` con
+    ``OUTPUT_DIFIERE`` deserializaría como autorización del FINAL gate.
     """
     try:
         crudo = json.loads(texto)
@@ -763,6 +767,16 @@ def resultado_desde_json(texto: str) -> ResultadoPreflightUIA:
         razon = RazonPreflight(_texto_requerido(datos, "razon"))
     except ValueError as exc:
         raise ContratoDeHelperError(f"estado/razón fuera del contrato: {exc}") from exc
+    # La membresía de cada enum no basta: el PAR tiene que ser uno que el
+    # pipeline pueda emitir. Un ``MATCH`` + ``OUTPUT_DIFIERE`` deserializa como
+    # ``MATCH`` y el FINAL gate autoriza por ``estado is MATCH`` — aceptarlo acá
+    # es convertir datos corruptos del canal en una corrida que sigue. La única
+    # autoridad es ``par_estado_razon_valido`` (misma tabla que el pipeline usa
+    # para EMITIR): el par imposible se rechaza en la frontera y el padre lo
+    # traduce a ``UNKNOWN``/``UIA_NO_DISPONIBLE`` por el camino fail-closed que
+    # ya existe para toda respuesta ilegible.
+    if not par_estado_razon_valido(estado, razon):
+        raise ContratoDeHelperError(f"par estado/razón inconsistente: {estado.value} + {razon.value}")
     evidencia_cruda = datos.get("evidencia")
     if not isinstance(evidencia_cruda, list) or not all(isinstance(linea, str) for linea in evidencia_cruda):
         raise ContratoDeHelperError("'evidencia' debe ser una lista de strings")

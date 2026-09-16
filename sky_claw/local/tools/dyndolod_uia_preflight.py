@@ -192,6 +192,31 @@ RAZONES_DE_UNKNOWN: frozenset[RazonPreflight] = frozenset(RazonPreflight) - {
     RazonPreflight.OUTPUT_DIFIERE,
 }
 
+#: La ÚNICA autoridad del contrato estado ↔ razón: qué pares puede portar un
+#: ``ResultadoPreflightUIA`` sin mentir. Se deriva de las dos cajas concluyentes
+#: (``MATCH`` sólo con ``OUTPUT_COINCIDE``, ``MISMATCH`` sólo con
+#: ``OUTPUT_DIFIERE``) más :data:`RAZONES_DE_UNKNOWN` para ``UNKNOWN``. Existe
+#: para que serializer, deserializer, policy y tests no mantengan cuatro listas
+#: divergentes: la frontera IPC del helper (``dyndolod_uia_gate``) la consulta
+#: y rechaza cualquier par que no figure acá — el par semánticamente corrupto
+#: ``MATCH`` + ``OUTPUT_DIFIERE`` jamás puede convertirse en autorización del
+#: FINAL gate. Congelado por igualdad literal en los tests.
+RAZONES_VALIDAS_POR_ESTADO: dict[EstadoPreflight, frozenset[RazonPreflight]] = {
+    EstadoPreflight.MATCH: frozenset({RazonPreflight.OUTPUT_COINCIDE}),
+    EstadoPreflight.MISMATCH: frozenset({RazonPreflight.OUTPUT_DIFIERE}),
+    EstadoPreflight.UNKNOWN: RAZONES_DE_UNKNOWN,
+}
+
+
+def par_estado_razon_valido(estado: EstadoPreflight, razon: RazonPreflight) -> bool:
+    """¿Puede un resultado de ``estado`` portar ``razon`` sin romper el contrato?
+
+    Fail-closed sobre el ESTADO: un ``estado`` que no esté en la autoridad (un
+    enum crecido sin declarar su tabla) no tiene ninguna razón válida, así que
+    el par se rechaza en vez de quedar verde por omisión.
+    """
+    return razon in RAZONES_VALIDAS_POR_ESTADO.get(estado, frozenset())
+
 
 class ObservacionUIAError(Exception):
     """Cualquier fallo de OBSERVACIÓN: error COM, elemento *stale*, sensor roto.

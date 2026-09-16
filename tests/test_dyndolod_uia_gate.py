@@ -44,15 +44,20 @@ from sky_claw.local.tools.dyndolod_uia_gate import (
     RAZONES_TRANSITORIAS_FINAL,
     CapacidadDeReadinessUIA,
     ConfirmadorNoDisponible,
+    ContratoDeHelperError,
     OperatorConfigurationReadyRequest,
     ResolucionProtocoloReadiness,
     ResultadoConfirmacion,
     VeredictoInitial,
     clasificar_initial,
     ejecutar_gate_sincrono,
+    resultado_a_json,
+    resultado_desde_json,
     resultado_proceso_muerto,
 )
 from sky_claw.local.tools.dyndolod_uia_preflight import (
+    RAZONES_DE_UNKNOWN,
+    RAZONES_VALIDAS_POR_ESTADO,
     ControlObservado,
     EstadoPreflight,
     ProcesoObservado,
@@ -632,3 +637,108 @@ def test_el_resultado_de_proceso_muerto_es_unknown_y_bloquea():
     assert resultado.razon is RazonPreflight.PROCESO_NO_ENCONTRADO
     assert resultado.pid == 4242
     assert clasificar_initial(resultado) is VeredictoInitial.BLOCKED
+
+
+# ---------------------------------------------------------------------------
+# T5-v2.1 — contrato serializable del helper: el par (estado, razón) se valida
+# ---------------------------------------------------------------------------
+#
+# El FINAL gate autoriza por ``resultado_final.estado is MATCH``. Si el canal
+# IPC aceptara un par semánticamente corrupto —``{"estado": "MATCH", "razon":
+# "OUTPUT_DIFIERE"}``— ese par se convertiría en autorización sin pasar por
+# ``clasificar_initial``. La frontera helper → padre es fail-closed: el par
+# imposible se rechaza AL DESERIALIZAR (``ContratoDeHelperError`` → el padre lo
+# traduce a ``UNKNOWN``/``UIA_NO_DISPONIBLE``), y la única autoridad de qué
+# pares son posibles es ``RAZONES_VALIDAS_POR_ESTADO``.
+
+
+def _json_de_resultado(estado: EstadoPreflight, razon: RazonPreflight) -> str:
+    import json  # noqa: PLC0415
+
+    return json.dumps(
+        {
+            "estado": estado.value,
+            "razon": razon.value,
+            "tool": "TexGen",
+            "detalle": "prueba de contrato",
+            "valor_esperado": TEXGEN_ROOT,
+            "evidencia": ["línea de evidencia"],
+        }
+    )
+
+
+#: Los pares IMPOSIBLES, enumerados y no muestreados: el producto entero de
+#: estados × razones menos los válidos. Incluye explícitamente los casos del
+#: finding F3 (#590) —``MATCH``+``OUTPUT_DIFIERE``, ``MISMATCH``+``OUTPUT_COINCIDE``,
+#: ``UNKNOWN``+razón concluyente, y cada estado concluyente con cada razón de
+#: ``UNKNOWN``— sin que el test dependa de cuántas razones existan hoy.
+PARES_IMPOSIBLES: list[tuple[EstadoPreflight, RazonPreflight]] = (
+    [
+        (EstadoPreflight.MATCH, RazonPreflight.OUTPUT_DIFIERE),
+        (EstadoPreflight.MISMATCH, RazonPreflight.OUTPUT_COINCIDE),
+        (EstadoPreflight.UNKNOWN, RazonPreflight.OUTPUT_COINCIDE),
+        (EstadoPreflight.UNKNOWN, RazonPreflight.OUTPUT_DIFIERE),
+    ]
+    + [(EstadoPreflight.MATCH, razon) for razon in RAZONES_DE_UNKNOWN]
+    + [(EstadoPreflight.MISMATCH, razon) for razon in RAZONES_DE_UNKNOWN]
+)
+
+
+@pytest.mark.parametrize(("estado", "razon"), PARES_IMPOSIBLES, ids=lambda valor: valor.value)
+def test_el_deserializador_rechaza_pares_estado_razon_imposibles(estado, razon):
+    """Un par que ningún camino del pipeline emite no es un veredicto: LANZA.
+
+    Aceptarlo reabriría el camino medido en #590: ``MATCH`` + ``OUTPUT_DIFIERE``
+    deserializa como un ``MATCH`` que el FINAL gate autoriza. El rechazo ocurre
+    acá, en la frontera IPC, y el padre lo traduce a ``UIA_NO_DISPONIBLE`` por
+    el camino fail-closed que ya existe — no se inventa una vía de éxito.
+    """
+    with pytest.raises(ContratoDeHelperError, match="inconsistente"):
+        resultado_desde_json(_json_de_resultado(estado, razon))
+
+
+#: Los pares VÁLIDOS, derivados del mismo contrato: ``MATCH`` sólo con su razón
+#: concluyente, ``MISMATCH`` con la suya, y ``UNKNOWN`` con cada razón legítima
+#: de ``UNKNOWN``.
+PARES_VALIDOS: list[tuple[EstadoPreflight, RazonPreflight]] = [
+    (EstadoPreflight.MATCH, RazonPreflight.OUTPUT_COINCIDE),
+    (EstadoPreflight.MISMATCH, RazonPreflight.OUTPUT_DIFIERE),
+] + [(EstadoPreflight.UNKNOWN, razon) for razon in RAZONES_DE_UNKNOWN]
+
+
+@pytest.mark.parametrize(("estado", "razon"), PARES_VALIDOS, ids=lambda valor: valor.value)
+def test_el_deserializador_conserva_los_pares_validos_del_contrato(estado, razon):
+    resultado = resultado_desde_json(_json_de_resultado(estado, razon))
+    assert resultado.estado is estado
+    assert resultado.razon is razon
+
+
+def test_el_serializador_round_trip_preserva_todo_par_valido():
+    """``resultado_a_json`` → ``resultado_desde_json``: mismo veredicto, sin pérdida."""
+    for estado, razon in PARES_VALIDOS:
+        original = ResultadoPreflightUIA(
+            estado=estado,
+            razon=razon,
+            tool="TexGen",
+            detalle="d",
+            valor_esperado=TEXGEN_ROOT,
+            evidencia=("e1", "e2"),
+        )
+        reconstruido = resultado_desde_json(resultado_a_json(original))
+        assert reconstruido.estado is estado
+        assert reconstruido.razon is razon
+        assert reconstruido.evidencia == ("e1", "e2")
+
+
+def test_la_autoridad_del_par_estado_razon_esta_congelada():
+    """Igualdad literal: una sola tabla, y la emisión y el rechazo la comparten.
+
+    Si alguien agrega una razón concluyente nueva o un estado nuevo sin declarar
+    su caja, este ancla se rompe a propósito en vez de dejar que serializer,
+    deserializer, policy y tests mantengan cuatro listas divergentes.
+    """
+    assert {
+        EstadoPreflight.MATCH: frozenset({RazonPreflight.OUTPUT_COINCIDE}),
+        EstadoPreflight.MISMATCH: frozenset({RazonPreflight.OUTPUT_DIFIERE}),
+        EstadoPreflight.UNKNOWN: RAZONES_DE_UNKNOWN,
+    } == RAZONES_VALIDAS_POR_ESTADO
