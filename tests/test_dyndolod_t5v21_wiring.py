@@ -3,8 +3,10 @@
 El modo directo del runner (``readiness=None``) NO corre el protocolo. Eso es
 correcto para tests/rig y peligroso en producción, así que la garantía no es un
 default sino un CENSO: se enumeran todos los sitios que construyen el runner en
-``sky_claw/**`` y se exige que cada uno cablee la capacidad. Un sitio nuevo —o
-uno que la olvide— rompe el test en vez de salir a producción sin gate.
+``sky_claw/**`` **y en ``docs/validation/**``** (harnesses de rig comprometidos,
+callers ejecutables reales — F2 de #590) y se exige que cada uno cablee el modo
+de readiness. Un sitio nuevo —o uno que la olvide— rompe el test en vez de
+salir a producción sin gate.
 
 Es el mismo instrumento que el repo ya usa para el servicio
 (``tests/test_dyndolod_workspace.py::test_censo_de_constructores_del_servicio_dyndolod``):
@@ -34,9 +36,26 @@ from sky_claw.local.tools.dyndolod_uia_windows import ObservadorUIAWindows, cons
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 
-#: ÚNICO sitio productivo que construye el runner. El ejemplo del docstring de
-#: ``dyndolod_runner`` no cuenta: es texto, no un ``ast.Call``.
-CONSTRUCTORES_DEL_RUNNER: frozenset[str] = frozenset({"sky_claw/local/tools/dyndolod_service.py"})
+#: Sitios que construyen el runner. ``dyndolod_service.py`` es el productivo; el
+#: harness del rig real PR-580 está COMPROMETIDO en ``docs/validation`` y es un
+#: caller ejecutable de verdad — F2 (#590) midió que dejarlo fuera del censo
+#: permitió que quedara roto (``DynDOLODRunner(cfg)`` sin ``readiness=``,
+#: ``TypeError`` al correrlo) durante rondas enteras. El ejemplo del docstring
+#: de ``dyndolod_runner`` no cuenta: es texto, no un ``ast.Call``.
+CONSTRUCTORES_DEL_RUNNER: frozenset[str] = frozenset(
+    {
+        "sky_claw/local/tools/dyndolod_service.py",
+        "docs/validation/2026-09-13_pr580_real_rig/run_phase.py",
+    }
+)
+
+#: Árboles de fuentes Python EJECUTABLES comprometidos que el censo enumera.
+#: ``docs/validation`` entra por F2 (#590): un harness de rig es código que se
+#: corre contra la máquina real, no documentación narrativa — el censo no hace
+#: grep sobre prosa, parsea ASTs de archivos ``.py`` y exige ``readiness=`` en
+#: cada ``ast.Call`` a ``DynDOLODRunner``. ``tests/`` queda afuera a propósito:
+#: sus constructores son dobles de prueba, no callers comprometidos.
+CENSO_DE_CARPETAS_DEL_RUNNER: tuple[str, ...] = ("sky_claw", "docs/validation")
 
 #: Sitios que construyen el SERVICIO. El preview es plan-only y declara el
 #: opt-out explícito; el composition root cablea la capacidad productiva. El
@@ -86,15 +105,23 @@ def _kwargs(llamada: ast.Call) -> set[str]:
 
 
 def test_censo_de_constructores_del_runner() -> None:
-    """Todo constructor productivo del runner pasa ``readiness=``, sin excepciones."""
+    """Todo constructor comprometido del runner pasa ``readiness=``, sin excepciones.
+
+    Enumeración, no muestreo: se parsea por AST cada ``.py`` de los árboles
+    comprometidos (:data:`CENSO_DE_CARPETAS_DEL_RUNNER`) y toda llamada a
+    ``DynDOLODRunner`` que aparezca tiene que llevar el kwarg explícito. Un
+    harness de rig nuevo (o uno viejo sin migrar, como el del PR-580) rompe el
+    test en vez de quedar roto en silencio hasta la próxima corrida real.
+    """
     encontrados: dict[str, bool] = {}
-    for archivo in sorted((RAIZ / "sky_claw").rglob("*.py")):
-        arbol = _arbol(archivo)
-        llamadas = _llamadas(arbol, "DynDOLODRunner")
-        if not llamadas:
-            continue
-        clave = archivo.relative_to(RAIZ).as_posix()
-        encontrados[clave] = all("readiness" in _kwargs(llamada) for llamada in llamadas)
+    for carpeta in CENSO_DE_CARPETAS_DEL_RUNNER:
+        for archivo in sorted((RAIZ / carpeta).rglob("*.py")):
+            arbol = _arbol(archivo)
+            llamadas = _llamadas(arbol, "DynDOLODRunner")
+            if not llamadas:
+                continue
+            clave = archivo.relative_to(RAIZ).as_posix()
+            encontrados[clave] = all("readiness" in _kwargs(llamada) for llamada in llamadas)
 
     assert set(encontrados) == CONSTRUCTORES_DEL_RUNNER, (
         f"constructores del runner inesperados: {sorted(set(encontrados) ^ CONSTRUCTORES_DEL_RUNNER)}"

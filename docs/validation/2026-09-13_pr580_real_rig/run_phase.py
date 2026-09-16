@@ -54,6 +54,7 @@ from sky_claw.local.tools.dyndolod_runner import (  # noqa: E402
     DynDOLODConfig,
     DynDOLODRunner,
     HerramientaDynDOLOD,
+    ReadinessMode,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService  # noqa: E402
 
@@ -208,7 +209,7 @@ def inyectar_runner(servicio: DynDOLODPipelineService, workspace) -> DynDOLODRun
         temp_dir=RIG_TEMP,
         timeout_seconds=2700,
     )
-    runner = DynDOLODRunner(cfg)
+    runner = DynDOLODRunner(cfg, readiness=ReadinessMode.DISABLED_FOR_TEST)
     servicio._runner = runner
     if not servicio._layout_del_runner_coincide(runner):
         raise SystemExit("ABORT: layout del runner no coincide con workspace")
