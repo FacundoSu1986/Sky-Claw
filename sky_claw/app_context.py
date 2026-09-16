@@ -1543,10 +1543,28 @@ class AppContext:
                         terminal_decision,
                     )
 
+            async def _hitl_aviso(mensaje: str) -> None:
+                # Superficie de AVISOS del guard (T5-v2.1): el aviso
+                # post-final-MATCH del readiness de DynDOLOD/TexGen ("podés
+                # continuar con Start") viaja por el MISMO chat de Telegram que
+                # recibió el prompt HITL. Separación contractual con
+                # ``_hitl_notify``: notify_fn recibe un HITLRequest (una
+                # decisión, con pendiente y botones); notice_fn recibe un str
+                # informativo — NO se fabrica un HITLRequest para un aviso.
+                # Best-effort: ``HITLGuard.notify_operator`` absorbe el fallo,
+                # así que un Telegram caído no puede convertir un MATCH ya
+                # verificado en fallo del pipeline.
+                active_sender = self.sender if full_published else sender
+                if active_sender is None or operator_chat_id is None:
+                    logger.info("HITL: sin canal de operador; aviso informativo no entregado")
+                    return
+                await active_sender.send(operator_chat_id, mensaje)
+
             hitl = HITLGuard(
                 notify_fn=_hitl_notify,
                 on_terminal=_hitl_terminal,
                 on_cancel=_hitl_cancel,
+                notice_fn=_hitl_aviso,
             )
             self._push_startup_cleanup(self.telegram_hitl_registry.clear)
 

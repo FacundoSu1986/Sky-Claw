@@ -1140,6 +1140,51 @@ class TestAvisoDeReadiness:
             "type": "positive",
         }
 
+    @pytest.mark.asyncio
+    async def test_el_bootloader_gui_compone_sobre_el_aviso_de_telegram(self) -> None:
+        """El puente GUI no puede PISAR el notice_fn de Telegram de AppContext.
+
+        AppContext cablea ``notice_fn`` con el sender de Telegram para que el
+        aviso post-final-MATCH llegue al chat que recibió el prompt HITL. Si el
+        bootloader reemplazara la superficie en vez de componerla, en modo GUI
+        el operador de Telegram deja de recibirla — el defecto "hermano sin
+        fix" (clase #1 del repo): arreglar un camino y dejar el gemelo intacto.
+        """
+        from sky_claw.app.gui._bootloader import _install_gui_hitl_bridge  # noqa: PLC0415
+        from sky_claw.app.gui.controllers.ritual_runner import STORE_KEY_RITUAL_FEEDBACK  # noqa: PLC0415
+
+        class _StoreFalso:
+            def __init__(self) -> None:
+                self.escrituras: dict[object, object] = {}
+
+            def set(self, clave, valor) -> None:
+                self.escrituras[clave] = valor
+
+            def get(self, clave):
+                return self.escrituras.get(clave)
+
+        class _CtxFalso:
+            def __init__(self, guard: HITLGuard) -> None:
+                self.hitl = guard
+
+        mensaje = "Output verificado contra la raíz administrada: podés continuar con Start."
+        telegram_recibidos: list[str] = []
+
+        async def _notice_telegram(texto: str) -> None:
+            telegram_recibidos.append(texto)
+
+        guard = HITLGuard(timeout=5, notice_fn=_notice_telegram)
+        store = _StoreFalso()
+        _install_gui_hitl_bridge(_CtxFalso(guard), store)  # type: ignore[arg-type]
+
+        assert guard.notice_fn is not None
+        await guard.notify_operator(mensaje)
+
+        # La GUI escribe el panel...
+        assert store.escrituras[STORE_KEY_RITUAL_FEEDBACK]["text"] == mensaje
+        # ...y Telegram (la superficie previa de AppContext) sigue entregando.
+        assert telegram_recibidos == [mensaje]
+
 
 class TestAprobacionStale:
     """H7/H8 — una aprobación vieja no resuelve una request nueva."""

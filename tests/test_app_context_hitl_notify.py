@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import hashlib
 from contextlib import ExitStack
@@ -246,3 +247,84 @@ async def test_decision_externa_durante_send_preserva_presentacion_terminal(
     sender.edit_message.assert_awaited_once_with(123, 77, expected_text, reply_markup=None)
     assert await ctx.telegram_hitl_registry.resolve_token(token) is None
     assert await ctx.telegram_hitl_registry.get(request_id) is None
+
+
+# ---------------------------------------------------------------------------
+# T5-v2.1 — aviso informativo post-final-MATCH del readiness por Telegram
+# ---------------------------------------------------------------------------
+
+_MENSAJE_AVISO = "Output verificado contra la raíz administrada: podés continuar con Start."
+
+
+@pytest.mark.asyncio
+async def test_el_aviso_post_final_match_llega_al_chat_del_operador(tmp_path: Path) -> None:
+    """Wiring productivo: notice_fn de AppContext entrega el aviso por Telegram.
+
+    El operador que recibe el prompt HITL de readiness debe recibir también el
+    aviso informativo posterior al FINAL MATCH. La superficie es notice_fn(str):
+    no se fabrica un HITLRequest para un aviso.
+    """
+    ctx, hitl, sender, _sent = await _build_productive_hitl(tmp_path)
+    sender.send = AsyncMock(return_value=TelegramMessage(chat_id=123, message_id=88))
+
+    await hitl.notify_operator(_MENSAJE_AVISO)
+
+    assert sender.send.await_count == 1
+    llamada = sender.send.await_args
+    assert llamada.args[0] == 123
+    assert llamada.args[1] == _MENSAJE_AVISO
+    # Aviso informativo: sin teclado de decisión y sin tocar el registry HITL.
+    assert llamada.kwargs.get("reply_markup") is None
+    assert len(ctx.telegram_hitl_registry) == 0
+
+
+@pytest.mark.asyncio
+async def test_fallo_de_telegram_en_el_aviso_no_gatea(tmp_path: Path) -> None:
+    """Best-effort: un Telegram caído no convierte un MATCH verificado en fallo."""
+    ctx, hitl, sender, _sent = await _build_productive_hitl(tmp_path)
+    sender.send = AsyncMock(side_effect=RuntimeError("Telegram is down"))
+
+    # No debe lanzar: la corrida ya pasó los dos gates.
+    await hitl.notify_operator(_MENSAJE_AVISO)
+
+
+@pytest.mark.asyncio
+async def test_prompt_aprobado_y_luego_aviso_al_mismo_chat(tmp_path: Path) -> None:
+    """Demo del flujo completo: prompt Telegram → APPROVED → aviso informativo Telegram."""
+    ctx, hitl, sender, sent = await _build_productive_hitl(tmp_path)
+
+    pendiente = asyncio.create_task(hitl.request_approval(request_id="request-readiness", reason="readiness DynDOLOD"))
+    await asyncio.wait_for(sent.wait(), timeout=1)
+    prompt = sender.send.await_args
+    assert prompt.args[0] == 123
+    assert "Se requiere aprobación HITL" in prompt.args[1]
+    assert "reply_markup" in prompt.kwargs  # el prompt viaja con botones de decisión
+
+    assert await hitl.respond("request-readiness", True) is True
+    assert await pendiente is Decision.APPROVED
+
+    await hitl.notify_operator(_MENSAJE_AVISO)
+    assert sender.send.await_count == 2
+    aviso = sender.send.call_args_list[1]
+    assert aviso.args[0] == 123, "el aviso va al MISMO operador que aprobó el prompt"
+    assert aviso.args[1] == _MENSAJE_AVISO
+    assert aviso.kwargs.get("reply_markup") is None, "el aviso no crea botones ni pendiente"
+
+
+def test_la_construccion_productiva_del_guard_cablea_notice_fn() -> None:
+    """Ancla AST: el HITLGuard productivo de AppContext lleva notice_fn.
+
+    Sin este ancla, un refactor que borre el wiring silencia el aviso
+    post-final-MATCH para el operador de Telegram sin que ningún test lo vea —
+    el defecto "hermano sin fix" de la clase dominante del repo.
+    """
+    fuente = (Path(__file__).resolve().parents[1] / "sky_claw" / "app_context.py").read_text(encoding="utf-8")
+    construcciones = [
+        nodo
+        for nodo in ast.walk(ast.parse(fuente))
+        if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "HITLGuard"
+    ]
+    assert construcciones, "app_context.py ya no construye el HITLGuard productivo"
+    for nodo in construcciones:
+        kwargs = {kw.arg for kw in nodo.keywords if kw.arg is not None}
+        assert "notice_fn" in kwargs, "el guard productivo quedó sin superficie de avisos de Telegram"

@@ -117,15 +117,25 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     )
     guard._sky_claw_gui_hitl_bridge_installed = True
 
+    # T5-v2.1: AppContext ya cablea ``notice_fn`` con el sender de Telegram para
+    # que el aviso post-final-MATCH del readiness llegue al chat que recibió el
+    # prompt HITL. El puente GUI COMPONE sobre esa superficie (panel + delegate):
+    # reemplazarla dejaría a Telegram sin el aviso en modo GUI — el defecto
+    # "hermano sin fix" que el AGENTS.md de este repo documenta como clase #1.
+    previous_notice = guard.notice_fn
+
     async def _aviso_de_operador(mensaje: str) -> None:
         """Superficie de AVISOS del guard: panel de feedback del ritual.
 
         T5-v2.1: el aviso post-final-MATCH del readiness ("podés continuar con
         Start") llega acá; sin esta superficie, el modelo que aprobó el modal no
         recibía señal alguna de que la verificación final terminó. No crea
-        pendientes ni botones: es texto para el panel.
+        pendientes ni botones: es texto para el panel, y el aviso previo
+        (Telegram, cableado por AppContext) sigue entregándose por delegación.
         """
         store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": mensaje, "type": "positive"})
+        if previous_notice is not None:
+            await previous_notice(mensaje)
 
     guard.notice_fn = _aviso_de_operador
 
