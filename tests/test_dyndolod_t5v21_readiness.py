@@ -58,6 +58,10 @@ PID_POR_TOOL = {"TexGen": 4242, "DynDOLOD": 5151}
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 MODULO_RUNNER = RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_runner.py"
+#: Raíz Win32 sintética: estos tests cubren lifecycle, no filesystem real.
+#: El gate exige semántica Windows (`canonicalizar_ruta_windows`) y `tmp_path`
+#: POSIX haría fallar el contrato productivo en hosts Linux.
+RAIZ_WINDOWS_SINTETICA = pathlib.Path(r"E:\Sky-Claw T5 Rig")
 
 
 # ---------------------------------------------------------------------------
@@ -284,8 +288,13 @@ def _capacidad(guion: GuionUIA | None, confirmador, **overrides) -> CapacidadDeR
     return CapacidadDeReadinessUIA(**base)
 
 
+def _layout_windows(tmp_path=None):
+    """Raíz con sintaxis Win32: el gate rechaza POSIX (`ESPERADO_NO_CANONICALIZABLE`)."""
+    return derivar_layout_de_dyndolod(external_work_root=RAIZ_WINDOWS_SINTETICA)
+
+
 def _runner(tmp_path, capacidad: CapacidadDeReadinessUIA | ReadinessMode):
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows(tmp_path)
     config = MagicMock()
     config.timeout_seconds = 3600
     config.heartbeat_interval = 60
@@ -421,7 +430,7 @@ def test_w5_los_drains_se_crean_antes_de_esperar_el_gate():
 )
 async def test_w6_initial_match_convoca_al_confirmador(tmp_path, tool, herramienta):
     """W6/W16: el camino feliz es idéntico para las dos herramientas hermanas."""
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     guion = GuionUIA([str(layout.raiz_de(herramienta))])
     proc = ProcesoFalso(tool=tool)
     confirmador = ConfirmadorFalso()
@@ -447,7 +456,7 @@ async def test_w7_initial_mismatch_canonicalizable_convoca_al_confirmador(tmp_pa
     control únicos, valor legible y canonicalizable) llega al HITL con el valor
     observado; la autorización de Start sigue siendo del final gate.
     """
-    stale = tmp_path / "Stale TexGen"
+    stale = RAIZ_WINDOWS_SINTETICA / "Stale TexGen"
     guion = GuionUIA([str(stale)])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso(resultado=ResultadoConfirmacion.DENEGADA)
@@ -489,7 +498,7 @@ async def test_w8_initial_unavailable_no_continua(tmp_path):
     [ResultadoConfirmacion.DENEGADA, ResultadoConfirmacion.TIMEOUT, ResultadoConfirmacion.CANAL_NO_DISPONIBLE],
 )
 async def test_w9_w10_un_rechazo_mata_el_proceso_y_no_corre_el_final(tmp_path, resultado):
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     guion = GuionUIA([str(layout.texgen_root)])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso(resultado)
@@ -505,7 +514,7 @@ async def test_w9_w10_un_rechazo_mata_el_proceso_y_no_corre_el_final(tmp_path, r
 
 
 async def test_w11_tras_aprobar_el_final_gate_vuelve_a_observar(tmp_path):
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     guion = GuionUIA([str(layout.texgen_root)])  # siempre correcto
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso()
@@ -521,7 +530,7 @@ async def test_w11_tras_aprobar_el_final_gate_vuelve_a_observar(tmp_path):
 
 async def test_w12_initial_match_con_output_cambiado_despues_del_hitl_es_fail_closed(tmp_path):
     """La race que justifica el final gate: el operador edita el Output y aprueba."""
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     guion = GuionUIA([str(layout.texgen_root), str(layout.family_root)])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso()
@@ -543,7 +552,7 @@ async def test_w12_initial_match_con_output_cambiado_despues_del_hitl_es_fail_cl
 
 async def test_w13_stale_ilegible_luego_expected_llega_al_hitl(tmp_path):
     """El TEdit puede no exponer texto al nacer; el gate espera y cierra en MATCH."""
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     guion = GuionUIA([None, None, str(layout.texgen_root)])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso()
@@ -562,7 +571,7 @@ async def test_w13_stale_ilegible_luego_expected_llega_al_hitl(tmp_path):
 
 async def test_w14_proceso_que_muere_durante_la_espera_corta_temprano(tmp_path):
     """No se espera el deadline de readiness: la instancia ya no existe."""
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     guion = GuionUIA([str(layout.texgen_root)])
 
     async def _muere_al_confirmar(_solicitud):
@@ -612,7 +621,7 @@ async def test_el_aviso_al_operador_que_se_cuelga_no_mata_la_corrida_verificada(
     se mata. (Absorber ``CancelledError`` dentro del guard, como pedía el
     finding, rompería la semántica de cancelación externa del run.)
     """
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     guion = GuionUIA([str(layout.texgen_root)])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso(informar_bloqueante=True)
@@ -633,7 +642,7 @@ async def test_w14c_confirmador_rapido_que_mata_el_proceso_igual_falla_cerrado(t
     los dos casos el proceso se mata y el veredicto es tipado — no hay camino en
     el que la corrida continúe sobre un binario inexistente.
     """
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     # El final gate nunca va a leer un MATCH: la observación no puede concluir
     # antes de que la vigilia vea la muerte.
     guion = GuionUIA([str(layout.texgen_root), None])
@@ -658,7 +667,7 @@ async def test_w14c_confirmador_rapido_que_mata_el_proceso_igual_falla_cerrado(t
 
 @pytest.mark.parametrize("punto", ["initial", "hitl", "final"])
 async def test_w15_cancelacion_mata_limpia_y_propaga(tmp_path, punto):
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     if punto == "initial":
         guion = GuionUIA([None])
         guion.ventanas = 0  # el initial gate queda esperando
@@ -700,7 +709,7 @@ async def test_w15_cancelacion_mata_limpia_y_propaga(tmp_path, punto):
 
 async def test_a1_initial_mismatch_canonicalizable_invoca_el_hitl(tmp_path):
     """A1: el MISMATCH válido entra a la fase de corrección humana (no mata)."""
-    stale = tmp_path / "Stale TexGen"
+    stale = RAIZ_WINDOWS_SINTETICA / "Stale TexGen"
     guion = GuionUIA([str(stale)])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso(resultado=ResultadoConfirmacion.DENEGADA)
@@ -715,7 +724,7 @@ async def test_a1_initial_mismatch_canonicalizable_invoca_el_hitl(tmp_path):
 
 async def test_a2_initial_mismatch_mas_deny_mata_el_proceso(tmp_path):
     """A2: MISMATCH inicial configurable + DENY del operador → proceso muerto."""
-    guion = GuionUIA([str(tmp_path / "Stale TexGen")])
+    guion = GuionUIA([str(RAIZ_WINDOWS_SINTETICA / "Stale TexGen")])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso(resultado=ResultadoConfirmacion.DENEGADA)
     runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
@@ -730,8 +739,8 @@ async def test_a2_initial_mismatch_mas_deny_mata_el_proceso(tmp_path):
 
 async def test_a3_initial_mismatch_approve_y_final_match_continua(tmp_path):
     """A3: la corrección humana funciona: MISMATCH inicial → approve → MATCH final."""
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
-    guion = GuionUIA([str(tmp_path / "Stale TexGen"), str(layout.texgen_root)])
+    layout = _layout_windows()
+    guion = GuionUIA([str(RAIZ_WINDOWS_SINTETICA / "Stale TexGen"), str(layout.texgen_root)])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso()
     runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
@@ -746,7 +755,7 @@ async def test_a3_initial_mismatch_approve_y_final_match_continua(tmp_path):
 
 async def test_a4_initial_mismatch_approve_y_final_mismatch_fail_closed(tmp_path):
     """A4: la excepción del initial NO se hereda al final: MISMATCH final corta."""
-    guion = GuionUIA([str(tmp_path / "Stale A"), str(tmp_path / "Stale B")])
+    guion = GuionUIA([str(RAIZ_WINDOWS_SINTETICA / "Stale A"), str(RAIZ_WINDOWS_SINTETICA / "Stale B")])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso()
     runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
@@ -762,7 +771,7 @@ async def test_a4_initial_mismatch_approve_y_final_mismatch_fail_closed(tmp_path
 
 async def test_a5_initial_match_igual_invoca_el_hitl(tmp_path):
     """A5: MATCH inicial también convoca: falta elegir preset/worldspaces."""
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     guion = GuionUIA([str(layout.texgen_root)])
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso(resultado=ResultadoConfirmacion.DENEGADA)
@@ -793,7 +802,7 @@ async def test_a6_uia_unavailable_no_invoca_el_hitl(tmp_path):
 
 async def test_a7_ventana_ambigua_no_invoca_el_hitl(tmp_path):
     """A7: dos ventanas top-level = no se sabe cuál es: no hay corrección humana."""
-    guion = GuionUIA([str(tmp_path / "Stale")])
+    guion = GuionUIA([str(RAIZ_WINDOWS_SINTETICA / "Stale")])
     guion.ventanas = 2
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso()
@@ -809,7 +818,7 @@ async def test_a7_ventana_ambigua_no_invoca_el_hitl(tmp_path):
 
 async def test_a8_control_ambiguo_no_invoca_el_hitl(tmp_path):
     """A8: dos controles que matchean el selector = la lectura no es inequívoca."""
-    guion = GuionUIA([str(tmp_path / "Stale")])
+    guion = GuionUIA([str(RAIZ_WINDOWS_SINTETICA / "Stale")])
     guion.controles = 2
     proc = ProcesoFalso()
     confirmador = ConfirmadorFalso()
@@ -843,7 +852,7 @@ async def test_el_opt_out_explicito_no_corre_el_protocolo(tmp_path):
 
 def test_readiness_none_ya_no_es_un_modo_valido(tmp_path):
     """El default silencioso quedó prohibido también en runtime (no sólo por tipo)."""
-    layout = derivar_layout_de_dyndolod(external_work_root=tmp_path)
+    layout = _layout_windows()
     config = MagicMock()
     config.timeout_seconds = 3600
     config.heartbeat_interval = 60
@@ -863,11 +872,6 @@ def test_readiness_none_ya_no_es_un_modo_valido(tmp_path):
 # El contrato de ``timeout_seconds`` es un único presupuesto desde que el
 # subprocess ya existe. El bug validado era: readiness corre sin cota global y
 # ``proc.wait()`` recibe un ``effective_timeout`` fresco.
-
-
-def _layout_windows(tmp_path):
-    """Raíz con sintaxis Win32: el gate rechaza POSIX (``ESPERADO_NO_CANONICALIZABLE``)."""
-    return derivar_layout_de_dyndolod(external_work_root=pathlib.Path(r"C:\SkyClawWork") / tmp_path.name)
 
 
 def _correr_con_layout_windows(tmp_path, capacidad):
@@ -986,3 +990,83 @@ async def test_cancelacion_durante_readiness_no_se_reporta_como_timeout(tmp_path
         await tarea
 
     assert proc.kill_llamado, "la cancelación debe matar el árbol antes de propagar"
+
+
+# ---------------------------------------------------------------------------
+# Plazos no finitos y confirmador fuera de contrato
+# ---------------------------------------------------------------------------
+
+
+_PLAZOS_INVALIDOS = (0, -1, float("nan"), float("inf"), float("-inf"))
+_CAMPOS_DE_PLAZO = (
+    "gate_timeout_segundos",
+    "gate_intervalo_segundos",
+    "gate_final_timeout_segundos",
+    "gate_final_intervalo_segundos",
+    "readiness_timeout_segundos",
+    "gracia_externa_segundos",
+    "intervalo_vigilia_segundos",
+)
+
+
+@pytest.mark.parametrize("campo", _CAMPOS_DE_PLAZO)
+@pytest.mark.parametrize("valor", _PLAZOS_INVALIDOS)
+def test_la_capacidad_rechaza_plazos_no_finitos(tmp_path, campo, valor):
+    """NaN/inf/0/-1 son bug del caller: no se disfrazan de timeout de GUI."""
+    confirmador = ConfirmadorFalso()
+    with pytest.raises(ValueError, match=campo):
+        _capacidad(GuionUIA([str(RAIZ_WINDOWS_SINTETICA)]), confirmador, **{campo: valor})
+
+
+def test_la_capacidad_acepta_un_plazo_finito_positivo(tmp_path):
+    capacidad = _capacidad(GuionUIA([str(RAIZ_WINDOWS_SINTETICA)]), ConfirmadorFalso(), gate_timeout_segundos=0.5)
+    assert capacidad.gate_timeout_segundos == 0.5
+
+
+class ConfirmadorFueraDeContrato:
+    def __init__(self, valor):
+        self.valor = valor
+        self.llamadas = 0
+
+    async def confirmar(self, solicitud):
+        self.llamadas += 1
+        return self.valor
+
+    async def informar(self, *, tool: str, mensaje: str) -> None:
+        return None
+
+
+class ConfirmadorQueCancela:
+    async def confirmar(self, solicitud):
+        raise asyncio.CancelledError()
+
+    async def informar(self, *, tool: str, mensaje: str) -> None:
+        return None
+
+
+@pytest.mark.parametrize("valor", [None, True, "aprobada", object()])
+async def test_un_confirmador_invalido_es_canal_no_disponible(tmp_path, valor):
+    """None/True/str/object no pueden leerse como APROBADA ni como proceso muerto."""
+    layout = _layout_windows()
+    guion = GuionUIA([str(layout.texgen_root)])
+    proc = ProcesoFalso()
+    confirmador = ConfirmadorFueraDeContrato(valor)
+    runner, _layout = _runner(tmp_path, _capacidad(guion, confirmador))
+
+    with pytest.raises(DynDOLODReadinessProtocolError) as excinfo:
+        await _correr(runner, proc)
+
+    assert excinfo.value.razon is ResolucionProtocoloReadiness.CANAL_NO_DISPONIBLE
+    assert proc.kill_llamado
+    assert confirmador.llamadas == 1
+    assert guion.rondas == 1
+
+
+async def test_cancelled_error_del_confirmador_se_propaga(tmp_path):
+    layout = _layout_windows()
+    guion = GuionUIA([str(layout.texgen_root)])
+    proc = ProcesoFalso()
+    runner, _layout = _runner(tmp_path, _capacidad(guion, ConfirmadorQueCancela()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await _correr(runner, proc)
