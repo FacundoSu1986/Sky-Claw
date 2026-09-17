@@ -94,6 +94,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import math
 import pathlib
 import time
 from collections.abc import Callable
@@ -260,6 +261,24 @@ def resultado_sin_backend(
     )
 
 
+def exigir_plazo_positivo_finito(
+    valor: object,
+    nombre: str,
+    *,
+    error: type[Exception] = ValueError,
+) -> float:
+    """Rechaza 0, negativos, bool, NaN e infinitos en fronteras de deadline.
+
+    ``bool`` es subclase de ``int`` y no es un presupuesto de tiempo.
+    """
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        raise error(f"{nombre} tiene que ser un número finito > 0; llegó {type(valor).__name__}")
+    numero = float(valor)
+    if not math.isfinite(numero) or numero <= 0:
+        raise error(f"{nombre} tiene que ser un número finito > 0; llegó {valor!r}")
+    return numero
+
+
 def ejecutar_gate_sincrono(
     solicitud: SolicitudPreflightUIA,
     *,
@@ -303,15 +322,12 @@ def ejecutar_gate_sincrono(
     seam y no una bifurcación del loop: el poll/deadline/cleanup son el mismo
     mecanismo para los dos.
     """
-    if timeout_segundos <= 0 or intervalo_segundos <= 0:
-        # Error de programación/configuración, no del rig: el gate no puede
-        # decidir con un presupuesto de tiempo negativo. Se lanza (no se
-        # traduce a UNKNOWN) porque un cero acá es un bug del caller, y un
-        # UNKNOWN lo disfrazaría de "la GUI no respondió".
-        raise ValueError(
-            f"timeout_segundos e intervalo_segundos tienen que ser > 0; "
-            f"llegaron {timeout_segundos=} {intervalo_segundos=}"
-        )
+    # Error de programación/configuración, no del rig: el gate no puede
+    # decidir con un presupuesto no finito. Se lanza (no se traduce a
+    # UNKNOWN) porque un NaN/inf/cero acá es un bug del caller, y un
+    # UNKNOWN lo disfrazaría de "la GUI no respondió".
+    exigir_plazo_positivo_finito(timeout_segundos, "timeout_segundos")
+    exigir_plazo_positivo_finito(intervalo_segundos, "intervalo_segundos")
 
     try:
         observador = fabrica_observador()
@@ -584,6 +600,43 @@ class CapacidadDeReadinessUIA:
     gracia_externa_segundos: float = GRACIA_EXTERNA_DEL_GATE_SEGUNDOS
     intervalo_vigilia_segundos: float = INTERVALO_VIGILIA_SEGUNDOS
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "gate_timeout_segundos",
+            exigir_plazo_positivo_finito(self.gate_timeout_segundos, "gate_timeout_segundos"),
+        )
+        object.__setattr__(
+            self,
+            "gate_intervalo_segundos",
+            exigir_plazo_positivo_finito(self.gate_intervalo_segundos, "gate_intervalo_segundos"),
+        )
+        object.__setattr__(
+            self,
+            "gate_final_timeout_segundos",
+            exigir_plazo_positivo_finito(self.gate_final_timeout_segundos, "gate_final_timeout_segundos"),
+        )
+        object.__setattr__(
+            self,
+            "gate_final_intervalo_segundos",
+            exigir_plazo_positivo_finito(self.gate_final_intervalo_segundos, "gate_final_intervalo_segundos"),
+        )
+        object.__setattr__(
+            self,
+            "readiness_timeout_segundos",
+            exigir_plazo_positivo_finito(self.readiness_timeout_segundos, "readiness_timeout_segundos"),
+        )
+        object.__setattr__(
+            self,
+            "gracia_externa_segundos",
+            exigir_plazo_positivo_finito(self.gracia_externa_segundos, "gracia_externa_segundos"),
+        )
+        object.__setattr__(
+            self,
+            "intervalo_vigilia_segundos",
+            exigir_plazo_positivo_finito(self.intervalo_vigilia_segundos, "intervalo_vigilia_segundos"),
+        )
+
 
 #: El FINAL gate (post-confirmación humana) no puede tolerar las razones
 #: transitorias del initial: una vez el operador declaró "configuración
@@ -667,7 +720,7 @@ def _decimal(datos: dict[str, object], clave: str) -> float:
     valor = datos.get(clave)
     if isinstance(valor, bool) or not isinstance(valor, (int, float)):
         raise ContratoDeHelperError(f"{clave!r} debe ser numérico; llegó {type(valor).__name__}")
-    return float(valor)
+    return exigir_plazo_positivo_finito(valor, clave, error=ContratoDeHelperError)
 
 
 def _diccionario_requerido(datos: dict[str, object], clave: str) -> dict[str, object]:
@@ -818,6 +871,18 @@ class PedidoDeGate:
     politica: PoliticaDeReintento
     timeout_segundos: float
     intervalo_segundos: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "timeout_segundos",
+            exigir_plazo_positivo_finito(self.timeout_segundos, "timeout_segundos"),
+        )
+        object.__setattr__(
+            self,
+            "intervalo_segundos",
+            exigir_plazo_positivo_finito(self.intervalo_segundos, "intervalo_segundos"),
+        )
 
 
 def pedido_a_json(pedido: PedidoDeGate) -> str:

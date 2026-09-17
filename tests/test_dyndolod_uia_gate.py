@@ -46,11 +46,14 @@ from sky_claw.local.tools.dyndolod_uia_gate import (
     ConfirmadorNoDisponible,
     ContratoDeHelperError,
     OperatorConfigurationReadyRequest,
+    PedidoDeGate,
+    PoliticaDeReintento,
     ResolucionProtocoloReadiness,
     ResultadoConfirmacion,
     VeredictoInitial,
     clasificar_initial,
     ejecutar_gate_sincrono,
+    pedido_desde_json,
     resultado_a_json,
     resultado_desde_json,
     resultado_proceso_muerto,
@@ -327,6 +330,55 @@ def test_u9b_timeout_invalido_es_bug_del_caller_no_unknown():
     with pytest.raises(ValueError):
         _ejecutar(
             _solicitud("TexGen", TEXGEN_ROOT), [], ObservadorGuionado(_ventana(), _control(), [None]), intervalo=-1
+        )
+
+
+@pytest.mark.parametrize("valor", [0, -1, float("nan"), float("inf"), float("-inf")])
+def test_u9c_plazos_no_finitos_son_bug_del_caller(valor):
+    observador = ObservadorGuionado(_ventana(), _control(), [None])
+    with pytest.raises(ValueError):
+        _ejecutar(_solicitud("TexGen", TEXGEN_ROOT), [], observador, timeout=valor)
+    with pytest.raises(ValueError):
+        _ejecutar(_solicitud("TexGen", TEXGEN_ROOT), [], observador, intervalo=valor)
+
+
+@pytest.mark.parametrize("valor", [0, -1, float("nan"), float("inf"), float("-inf")])
+def test_u9d_el_pedido_ipc_rechaza_plazos_no_finitos(valor):
+    with pytest.raises(ValueError):
+        PedidoDeGate(
+            solicitud=_solicitud("TexGen", TEXGEN_ROOT),
+            politica=PoliticaDeReintento.INICIO,
+            timeout_segundos=valor,
+            intervalo_segundos=0.25,
+        )
+    with pytest.raises(ValueError):
+        PedidoDeGate(
+            solicitud=_solicitud("TexGen", TEXGEN_ROOT),
+            politica=PoliticaDeReintento.INICIO,
+            timeout_segundos=1.0,
+            intervalo_segundos=valor,
+        )
+
+
+def test_u9e_el_pedido_ipc_acepta_un_plazo_finito_positivo():
+    pedido = PedidoDeGate(
+        solicitud=_solicitud("TexGen", TEXGEN_ROOT),
+        politica=PoliticaDeReintento.INICIO,
+        timeout_segundos=12.5,
+        intervalo_segundos=0.25,
+    )
+    assert pedido.timeout_segundos == 12.5
+    assert pedido.intervalo_segundos == 0.25
+
+
+def test_u9f_el_deserializador_del_pedido_rechaza_nan_textual_via_decimal():
+    """El JSON estándar no trae NaN; un 0/negativo en el cable también es contrato."""
+    with pytest.raises(ContratoDeHelperError):
+        pedido_desde_json(
+            '{"solicitud": {"tool": "TexGen", "ejecutable_esperado": "C:\\\\x.exe",'
+            ' "salida_administrada_esperada": "E:\\\\out", "pid": 1,'
+            ' "criterios_del_control": {"tipo_de_control": "Edit", "class_name": "TEdit"}},'
+            ' "politica": "inicio", "timeout_segundos": 0, "intervalo_segundos": 0.1}'
         )
 
 
