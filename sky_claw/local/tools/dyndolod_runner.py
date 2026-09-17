@@ -829,11 +829,13 @@ class ReadinessMode(enum.Enum):
     dos — capacidad o este opt-out — para que ningún call site pueda quedar sin
     gate "porque no pasó nada".
 
-    ``DISABLED_FOR_TEST`` es el opt-out para tests y rigs que ejercitan el runner
-    directo: NO corre el protocolo, y el post-check de artefactos/log sigue
-    siendo la autoridad de la corrida. Está prohibido en ``sky_claw/**`` por el
-    censo de wiring (``tests/test_dyndolod_t5v21_wiring.py``): un camino
-    productivo que lo pase rompe el test en vez de salir sin gate.
+    ``DISABLED_FOR_TEST`` es el opt-out para tests, rigs y el preview
+    estrictamente plan-only. NO corre el protocolo, y el post-check de
+    artefactos/log sigue siendo la autoridad de la corrida. Está prohibido en
+    caminos productivos capaces de spawnear TexGen/DynDOLOD. El censo de wiring
+    (``tests/test_dyndolod_t5v21_wiring.py``) ancla la excepción explícita del
+    preview a ``execute(..., dry_run=True)``: un camino de spawn que lo pase
+    rompe el test en vez de salir sin gate.
     """
 
     DISABLED_FOR_TEST = "disabled_for_test"
@@ -1726,7 +1728,7 @@ class DynDOLODRunner:
         """Acota el callable del canal humano y aplasta sus fallos a fail-closed."""
         capacidad = self._capacidad_de_readiness()
         try:
-            return await asyncio.wait_for(
+            resultado = await asyncio.wait_for(
                 capacidad.confirmador.confirmar(solicitud),
                 timeout=solicitud.timeout_seconds + capacidad.gracia_externa_segundos,
             )
@@ -1741,6 +1743,17 @@ class DynDOLODRunner:
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
             )
             return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        if not isinstance(resultado, ResultadoConfirmacion):
+            logger.warning(
+                "el confirmador de readiness devolvió un valor fuera de contrato; se corta fail-closed",
+                extra={
+                    "pipeline_stage": _ETAPA_DYNDOLOD,
+                    "tx_id": _tx_id(),
+                    "tipo": type(resultado).__name__,
+                },
+            )
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        return resultado
 
     async def _vigilar_proceso(self, proc: asyncio.subprocess.Process) -> None:
         """Devuelve en cuanto el proceso muere, para cortar sin esperar el deadline."""
