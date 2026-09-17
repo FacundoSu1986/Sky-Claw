@@ -1096,10 +1096,9 @@ async def test_h3_fallo_dentro_del_boundary_de_reapertura_no_publica_el_path(
     b: dict[str, object] = {}
 
     with pytest.raises(RuntimeError) as exc_info:
-        async with gestor.recover_connection(ruta_db, conn) as reabrir:
-            async with reabrir() as fresca:
-                b["conn"] = fresca
-                raise fallo
+        async with gestor.recover_connection(ruta_db, conn) as reabrir, reabrir() as fresca:
+            b["conn"] = fresca
+            raise fallo
 
     assert exc_info.value is fallo
     assert gestor._connections.get(clave) is b["conn"], "el lifecycle soltó el ownership de la conexión nueva"
