@@ -64,6 +64,7 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
     RAZONES_VALIDAS_POR_ESTADO,
     ControlObservado,
     EstadoPreflight,
+    EvidenciaControlObservado,
     ProcesoObservado,
     RazonPreflight,
     ResultadoPreflightUIA,
@@ -725,9 +726,34 @@ def _valores_de_evidencia_coherente(estado: EstadoPreflight) -> dict[str, object
     }
 
 
+def _control_observado_de_contrato() -> EvidenciaControlObservado:
+    """Descriptor del control que un veredicto concluyente debe transportar."""
+    return EvidenciaControlObservado(
+        pid=4242,
+        automation_id="",
+        nombre="",
+        tipo_de_control="Edit",
+        class_name="TEdit",
+    )
+
+
+def _control_observado_json() -> dict[str, object]:
+    """El mismo descriptor, tal como viaja serializado por el canal."""
+    return {
+        "pid": 4242,
+        "automation_id": "",
+        "nombre": "",
+        "tipo_de_control": "Edit",
+        "class_name": "TEdit",
+    }
+
+
 def _json_de_resultado(estado: EstadoPreflight, razon: RazonPreflight) -> str:
     import json  # noqa: PLC0415
 
+    # Un veredicto concluyente sin descriptor de control es contrato roto desde
+    # el selector binding (#590): el payload de prueba lo incluye.
+    control = {} if estado is EstadoPreflight.UNKNOWN else {"control_observado": _control_observado_json()}
     return json.dumps(
         {
             "estado": estado.value,
@@ -736,6 +762,7 @@ def _json_de_resultado(estado: EstadoPreflight, razon: RazonPreflight) -> str:
             "detalle": "prueba de contrato",
             "valor_esperado": TEXGEN_ROOT,
             "evidencia": ["línea de evidencia"],
+            **control,
             **_valores_de_evidencia_coherente(estado),
         }
     )
@@ -790,12 +817,14 @@ def test_el_deserializador_conserva_los_pares_validos_del_contrato(estado, razon
 def test_el_serializador_round_trip_preserva_todo_par_valido():
     """``resultado_a_json`` → ``resultado_desde_json``: mismo veredicto, sin pérdida."""
     for estado, razon in PARES_VALIDOS:
+        control = None if estado is EstadoPreflight.UNKNOWN else _control_observado_de_contrato()
         original = ResultadoPreflightUIA(
             estado=estado,
             razon=razon,
             tool="TexGen",
             detalle="d",
             valor_esperado=TEXGEN_ROOT,
+            control_observado=control,
             evidencia=("e1", "e2"),
             **_valores_de_evidencia_coherente(estado),
         )
@@ -803,6 +832,7 @@ def test_el_serializador_round_trip_preserva_todo_par_valido():
         assert reconstruido.estado is estado
         assert reconstruido.razon is razon
         assert reconstruido.evidencia == ("e1", "e2")
+        assert reconstruido.control_observado == control
 
 
 def test_la_autoridad_del_par_estado_razon_esta_congelada():
@@ -869,6 +899,7 @@ def _json_de_evidencia(
             "valor_esperado": esperado,
             "pid": 4242,
             "ventana": "TexGen 3.00",
+            "control_observado": _control_observado_json(),
             "valor_observado": observado,
             "valor_observado_canonico": observado_canonico,
             "valor_esperado_canonico": esperado_canonico,

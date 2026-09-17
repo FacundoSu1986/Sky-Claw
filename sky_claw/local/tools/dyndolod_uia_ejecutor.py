@@ -124,6 +124,40 @@ def _salida_esperada_coincide(solicitud: SolicitudPreflightUIA, valor_esperado: 
     return esperado is not None and eco is not None and esperado == eco
 
 
+def _control_satisface_la_solicitud(solicitud: SolicitudPreflightUIA, resultado: ResultadoPreflightUIA) -> bool:
+    """El control OBSERVADO satisface el selector que pidió la solicitud.
+
+    **Por qué no alcanza con tool + pid + ``valor_esperado``.** Un helper
+    regresionado puede resolver con un selector rancio OTRO control que por
+    casualidad contenga la ruta administrada: el valor observado coincide, el
+    tool y el pid son correctos, y sin este chequeo el ``MATCH`` autorizaba el
+    Start sin probar que el control leído fuera el campo Output pedido.
+
+    Se reusa :meth:`CriteriosDeControl.coincide` —la MISMA semántica con la que
+    el pipeline eligió el control— sobre el descriptor que viaja en el
+    resultado, y no un eco de la solicitud: el eco sólo probaría intención.
+
+    Un selector vacío no satisface nada: ``coincide`` es un AND sobre los
+    criterios con evidencia, y con cero criterios devolvería ``True`` para
+    cualquier control. El pipeline productivo nunca emite un selector vacío
+    (``SELECTOR_SIN_CRITERIOS``), pero la frontera no depende de eso.
+    """
+    control = resultado.control_observado
+    if control is None:
+        return False
+    criterios = solicitud.criterios_del_control
+    if criterios.esta_vacio():
+        return False
+    if not criterios.coincide(control.como_control_observado()):
+        return False
+    # El control tiene que pertenecer al proceso que la respuesta declara
+    # observado, y al que la solicitud ató si lo ató. Sin esto, un descriptor
+    # de selector correcto pero de OTRO proceso pasaría el filtro anterior.
+    if solicitud.pid is not None and control.pid != solicitud.pid:
+        return False
+    return resultado.pid is None or control.pid == resultado.pid
+
+
 def _respuesta_pertenece_a_la_solicitud(solicitud: SolicitudPreflightUIA, resultado: ResultadoPreflightUIA) -> bool:
     """La respuesta internamente válida es de ESTA solicitud, no de otra.
 
@@ -132,6 +166,12 @@ def _respuesta_pertenece_a_la_solicitud(solicitud: SolicitudPreflightUIA, result
     mismo. Un ``UNKNOWN`` temprano puede no haber observado pid; si no lo
     declara, no se imputa identidad ajena. Si el UNKNOWN sí declara pid y
     no coincide, sí es de otra solicitud.
+
+    Un veredicto CONCLUYENTE exige además que el control observado satisfaga
+    ``solicitud.criterios_del_control`` (:func:`_control_satisface_la_solicitud`):
+    sin eso, un selector rancio del helper podía leer otro control y su
+    ``MATCH`` autorizaba el Start. Un UNKNOWN no lo exige: su contrato es no
+    concluir y puede cortar antes de resolver control.
     """
     if resultado.tool != solicitud.tool:
         return False
@@ -141,6 +181,10 @@ def _respuesta_pertenece_a_la_solicitud(solicitud: SolicitudPreflightUIA, result
                 return False
         elif resultado.pid is not None and resultado.pid != solicitud.pid:
             return False
+    if resultado.estado in {EstadoPreflight.MATCH, EstadoPreflight.MISMATCH} and not _control_satisface_la_solicitud(
+        solicitud, resultado
+    ):
+        return False
     return _salida_esperada_coincide(solicitud, resultado.valor_esperado)
 
 
@@ -256,7 +300,8 @@ class EjecutorGatePorHelper:
                     solicitud,
                     "la respuesta del helper UIA no corresponde a la solicitud enviada "
                     f"(tool={resultado.tool!r} pid={resultado.pid} "
-                    f"valor_esperado={resultado.valor_esperado!r})",
+                    f"valor_esperado={resultado.valor_esperado!r} "
+                    f"control={resultado.control_observado!r})",
                 )
             return resultado
         finally:

@@ -104,6 +104,7 @@ from typing import Protocol
 from sky_claw.local.tools.dyndolod_uia_preflight import (
     CriteriosDeControl,
     EstadoPreflight,
+    EvidenciaControlObservado,
     LocalizadorDeProcesos,
     ObservacionUIAError,
     ObservadorLiberable,
@@ -679,6 +680,13 @@ RAZONES_TRANSITORIAS_POR_POLITICA: dict[PoliticaDeReintento, frozenset[RazonPref
 # :class:`ContratoDeHelperError` (ValueError), que el padre traduce a
 # ``UIA_NO_DISPONIBLE``. Una respuesta ilegible no puede convertirse en un
 # veredicto verde por accidente.
+#
+# Desde el finding PRRT_kwDOR1JjU86jgggG (#590) la respuesta de un veredicto
+# concluyente transporta además el descriptor del CONTROL que el helper
+# resolvió (``EvidenciaControlObservado``), y su ausencia o mala estructura es
+# contrato roto: un ``MATCH`` sin prueba de qué control se leyó no autoriza.
+# El binding de ese descriptor contra la solicitud vive en el padre
+# (``dyndolod_uia_ejecutor._respuesta_pertenece_a_la_solicitud``), no acá.
 
 #: Nombres de los dos archivos del canal padre ↔ helper. Viven acá —en el
 #: contrato— y no en cada punta: el padre los escribe y el helper los lee, y dos
@@ -700,13 +708,20 @@ def evidencia_de_resultado_coherente(resultado: ResultadoPreflightUIA) -> bool:
     internamente "consistente" —tool, pid y ``valor_esperado`` correctos— cuyo
     ``valor_observado`` nombraba OTRA salida, o que no traía evidencia
     observada, y la corrida seguía como autorizada. Esta es la autoridad ÚNICA
-    de esa coherencia; el contrato por estado es:
+    de esa coherencia, el contrato por estado es:
 
     * ``MATCH`` — ``valor_observado`` y ``valor_esperado`` canonicalizables y
       iguales entre sí;
     * ``MISMATCH`` — los mismos dos canonicalizables, divergentes;
     * ``UNKNOWN`` — sin exigencia: su contrato es no concluir, y los cortes
       tempranos del pipeline no llegan a observar valor.
+
+    **Y el control del que salió el valor.** Un veredicto CONCLUYENTE exige
+    además ``control_observado`` con un pid legible: el valor coherente no
+    prueba que se haya leído el control pedido. La re-verificación del control
+    contra ``solicitud.criterios_del_control`` es del PADRE
+    (``dyndolod_uia_ejecutor``), que es quien tiene la solicitud; acá se exige
+    la estructura interna, no el binding — misma división que ya tiene F1.
 
     **Se recomputa desde los valores CRUDOS** con
     :func:`canonicalizar_ruta_windows`, y los canónicos DECLARADOS tienen que
@@ -725,6 +740,9 @@ def evidencia_de_resultado_coherente(resultado: ResultadoPreflightUIA) -> bool:
     if resultado.estado is EstadoPreflight.UNKNOWN:
         return True
     if resultado.estado not in {EstadoPreflight.MATCH, EstadoPreflight.MISMATCH}:
+        return False
+    control = resultado.control_observado
+    if control is None or not control.pid_legible():
         return False
     observado = canonicalizar_ruta_windows(resultado.valor_observado)
     esperado = canonicalizar_ruta_windows(resultado.valor_esperado)
@@ -765,6 +783,14 @@ def _entero_opcional(datos: dict[str, object], clave: str) -> int | None:
     return valor
 
 
+def _entero_requerido(datos: dict[str, object], clave: str) -> int:
+    """Entero presente y no-bool, o LANZA: la ausencia no es un valor por defecto."""
+    valor = datos.get(clave)
+    if isinstance(valor, bool) or not isinstance(valor, int):
+        raise ContratoDeHelperError(f"{clave!r} debe ser un entero; llegó {type(valor).__name__}")
+    return valor
+
+
 def _decimal(datos: dict[str, object], clave: str) -> float:
     valor = datos.get(clave)
     if isinstance(valor, bool) or not isinstance(valor, (int, float)):
@@ -786,6 +812,57 @@ def _criterios_a_diccionario(criterios: CriteriosDeControl) -> dict[str, object]
         "tipo_de_control": criterios.tipo_de_control,
         "class_name": criterios.class_name,
     }
+
+
+#: Campos EXACTOS del descriptor serializable del control observado. El schema
+#: es cerrado a propósito (mismo criterio que el binding del work root externo):
+#: un campo de más no se interpreta en silencio — se rechaza como contrato roto.
+#: Congelado por igualdad literal en los tests.
+CAMPOS_DEL_CONTROL_OBSERVADO: tuple[str, ...] = (
+    "pid",
+    "automation_id",
+    "nombre",
+    "tipo_de_control",
+    "class_name",
+)
+
+
+def _control_a_diccionario(control: EvidenciaControlObservado) -> dict[str, object]:
+    return {
+        "pid": control.pid,
+        "automation_id": control.automation_id,
+        "nombre": control.nombre,
+        "tipo_de_control": control.tipo_de_control,
+        "class_name": control.class_name,
+    }
+
+
+def _control_desde_diccionario(valor: object) -> EvidenciaControlObservado:
+    """Descriptor completo y bien tipado, o LANZA (fail-closed).
+
+    Un objeto parcial no es identidad: si falta un campo no se completa con un
+    default vacío —el default sería exactamente el que un criterio podría estar
+    comparando— y un campo de más es un schema desconocido. El pid además tiene
+    que ser LEGIBLE: un descriptor que no identifica proceso no prueba que el
+    valor saliera del proceso observado.
+    """
+    if not isinstance(valor, dict):
+        raise ContratoDeHelperError(f"'control_observado' debe ser un objeto; llegó {type(valor).__name__}")
+    datos = {str(clave): dato for clave, dato in valor.items()}
+    if set(datos) != set(CAMPOS_DEL_CONTROL_OBSERVADO):
+        raise ContratoDeHelperError(
+            f"'control_observado' debe traer exactamente {sorted(CAMPOS_DEL_CONTROL_OBSERVADO)}; llegó {sorted(datos)}"
+        )
+    control = EvidenciaControlObservado(
+        pid=_entero_requerido(datos, "pid"),
+        automation_id=_texto_requerido(datos, "automation_id"),
+        nombre=_texto_requerido(datos, "nombre"),
+        tipo_de_control=_texto_requerido(datos, "tipo_de_control"),
+        class_name=_texto_requerido(datos, "class_name"),
+    )
+    if not control.pid_legible():
+        raise ContratoDeHelperError(f"el pid {control.pid} del control observado no identifica un proceso")
+    return control
 
 
 def solicitud_a_json(solicitud: SolicitudPreflightUIA) -> str:
@@ -827,7 +904,12 @@ def solicitud_desde_json(texto: str) -> SolicitudPreflightUIA:
 
 
 def resultado_a_json(resultado: ResultadoPreflightUIA) -> str:
-    """Serializa el veredicto del helper con TODA su evidencia."""
+    """Serializa el veredicto del helper con TODA su evidencia.
+
+    ``control_observado`` viaja como descriptor explícito y no como eco de la
+    solicitud: el padre tiene que poder compararlo contra
+    ``criterios_del_control`` y detectar que el helper resolvió OTRO control.
+    """
     return json.dumps(
         {
             "estado": resultado.estado.value,
@@ -837,6 +919,9 @@ def resultado_a_json(resultado: ResultadoPreflightUIA) -> str:
             "valor_esperado": resultado.valor_esperado,
             "pid": resultado.pid,
             "ventana": resultado.ventana,
+            "control_observado": (
+                _control_a_diccionario(resultado.control_observado) if resultado.control_observado is not None else None
+            ),
             "valor_observado": resultado.valor_observado,
             "valor_observado_canonico": resultado.valor_observado_canonico,
             "valor_esperado_canonico": resultado.valor_esperado_canonico,
@@ -859,7 +944,12 @@ def resultado_desde_json(texto: str) -> ResultadoPreflightUIA:
     tampoco alcanza: un veredicto CONCLUYENTE exige además que su evidencia
     observada lo sostenga (:func:`evidencia_de_resultado_coherente`), así que un
     ``MATCH`` con ``valor_observado`` stale, ausente o no canonicalizable es
-    contrato roto y no autorización.
+    contrato roto y no autorización. Y un ``control_observado`` presente tiene
+    que ser un descriptor COMPLETO y bien tipado (schema cerrado, pid legible):
+    un objeto parcial no se completa con defaults —el default sería justo el
+    valor que un criterio podría estar comparando—. El binding de ese
+    descriptor contra ``criterios_del_control`` no vive acá: lo hace el padre
+    (``dyndolod_uia_ejecutor``), que es quien tiene la solicitud.
     """
     try:
         crudo = json.loads(texto)
@@ -886,6 +976,8 @@ def resultado_desde_json(texto: str) -> ResultadoPreflightUIA:
     evidencia_cruda = datos.get("evidencia")
     if not isinstance(evidencia_cruda, list) or not all(isinstance(linea, str) for linea in evidencia_cruda):
         raise ContratoDeHelperError("'evidencia' debe ser una lista de strings")
+    control_crudo = datos.get("control_observado")
+    control_observado = None if control_crudo is None else _control_desde_diccionario(control_crudo)
     resultado = ResultadoPreflightUIA(
         estado=estado,
         razon=razon,
@@ -894,6 +986,7 @@ def resultado_desde_json(texto: str) -> ResultadoPreflightUIA:
         valor_esperado=_texto_requerido(datos, "valor_esperado"),
         pid=_entero_opcional(datos, "pid"),
         ventana=_texto_opcional(datos, "ventana"),
+        control_observado=control_observado,
         valor_observado=_texto_opcional(datos, "valor_observado"),
         valor_observado_canonico=_texto_opcional(datos, "valor_observado_canonico"),
         valor_esperado_canonico=_texto_opcional(datos, "valor_esperado_canonico"),
@@ -901,14 +994,15 @@ def resultado_desde_json(texto: str) -> ResultadoPreflightUIA:
     )
     # La membresía y el par no alcanzan: el FINAL gate autoriza por
     # ``estado is MATCH``, así que un veredicto concluyente cuya evidencia
-    # observada no lo sostenga es contrato roto, no autorización. Se rechaza
-    # acá y el padre lo traduce a ``UNKNOWN``/``UIA_NO_DISPONIBLE`` por el
-    # camino fail-closed que ya existe.
+    # observada —valor O control— no lo sostenga es contrato roto, no
+    # autorización. Se rechaza acá y el padre lo traduce a
+    # ``UNKNOWN``/``UIA_NO_DISPONIBLE`` por el camino fail-closed que ya existe.
     if not evidencia_de_resultado_coherente(resultado):
         raise ContratoDeHelperError(
             "evidencia inconsistente para un veredicto concluyente: "
             f"estado={estado.value} razon={razon.value} "
-            f"observado={resultado.valor_observado!r} esperado={resultado.valor_esperado!r}"
+            f"observado={resultado.valor_observado!r} esperado={resultado.valor_esperado!r} "
+            f"control={resultado.control_observado!r}"
         )
     return resultado
 

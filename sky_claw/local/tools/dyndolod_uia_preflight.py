@@ -311,6 +311,65 @@ class ControlObservado:
 
 
 @dataclass(frozen=True)
+class EvidenciaControlObservado:
+    """Identidad SERIALIZABLE del control del que salió el valor observado.
+
+    **Qué problema cierra.** El veredicto concluyente viajaba ligado al tool, al
+    pid y al ``valor_esperado``, pero no al CONTROL observado: un helper
+    regresionado podía resolver con un selector rancio otro control que por
+    casualidad contuviera la ruta administrada, y su ``MATCH`` —internamente
+    coherente— autorizaba el Start del FINAL gate sin que nadie pudiera probar
+    que el control leído era el campo Output solicitado. Esta estructura es esa
+    prueba: viaja en el resultado y el padre la re-valida contra
+    :meth:`CriteriosDeControl.coincide` antes de aceptar un veredicto
+    concluyente.
+
+    **Por qué no es** :class:`ControlObservado` **a secas.** ``handle`` es una
+    referencia COM del proceso que observó: no sobrevive a la serialización (ni
+    debe hacerlo) y arrastrarla hasta el padre sería llevar un puntero del
+    helper a un proceso que ya terminó. Acá viajan sólo los cuatro campos
+    comparables más el pid, que es lo que el matching necesita.
+    """
+
+    pid: int
+    automation_id: str
+    nombre: str
+    tipo_de_control: str
+    class_name: str
+
+    @classmethod
+    def desde_control(cls, control: ControlObservado) -> EvidenciaControlObservado:
+        """El descriptor serializable de un control resuelto, sin su handle."""
+        return cls(
+            pid=control.pid,
+            automation_id=control.automation_id,
+            nombre=control.nombre,
+            tipo_de_control=control.tipo_de_control,
+            class_name=control.class_name,
+        )
+
+    def pid_legible(self) -> bool:
+        """¿El pid identifica a un proceso? Misma frontera que :func:`_pid_es_legible`.
+
+        Delega y no reimplementa: el umbral "pid legible" vive en un solo lugar
+        y este descriptor no puede reintroducir la comparación contra un literal
+        que el ancla de ``test_ningun_guard_compara_un_pid_contra_un_literal...``
+        prohíbe fuera del predicado.
+        """
+        return _pid_es_legible(self.pid)
+
+    def como_control_observado(self) -> ControlObservado:
+        """Vista comparable: una sola semántica de matching, :meth:`CriteriosDeControl.coincide`."""
+        return ControlObservado(
+            pid=self.pid,
+            automation_id=self.automation_id,
+            nombre=self.nombre,
+            tipo_de_control=self.tipo_de_control,
+            class_name=self.class_name,
+        )
+
+
+@dataclass(frozen=True)
 class CriteriosDeControl:
     """Cómo se reconoce el control de *Output*, provisto por el llamador.
 
@@ -445,7 +504,14 @@ class SolicitudPreflightUIA:
 
 @dataclass(frozen=True)
 class ResultadoPreflightUIA:
-    """Veredicto + evidencia suficiente para diagnosticar sin volver al rig."""
+    """Veredicto + evidencia suficiente para diagnosticar sin volver al rig.
+
+    ``control_observado`` es la identidad del control que el pipeline resolvió,
+    en su forma serializable. Viaja en todo veredicto que llegó a resolver
+    control (no sólo en los concluyentes), y un veredicto CONCLUYENTE sin ella
+    es contrato roto para la frontera del helper: ver
+    :func:`dyndolod_uia_gate.evidencia_de_resultado_coherente`.
+    """
 
     estado: EstadoPreflight
     razon: RazonPreflight
@@ -454,6 +520,7 @@ class ResultadoPreflightUIA:
     valor_esperado: str
     pid: int | None = None
     ventana: str | None = None
+    control_observado: EvidenciaControlObservado | None = None
     valor_observado: str | None = None
     valor_observado_canonico: str | None = None
     valor_esperado_canonico: str | None = None
@@ -864,6 +931,7 @@ def _resultado(
     *,
     pid: int | None = None,
     ventana: str | None = None,
+    control_observado: EvidenciaControlObservado | None = None,
     valor_observado: str | None = None,
     valor_observado_canonico: str | None = None,
     valor_esperado_canonico: str | None = None,
@@ -883,6 +951,7 @@ def _resultado(
         valor_esperado=solicitud.salida_administrada_esperada,
         pid=pid,
         ventana=ventana,
+        control_observado=control_observado,
         valor_observado=valor_observado,
         valor_observado_canonico=valor_observado_canonico,
         valor_esperado_canonico=valor_esperado_canonico,
@@ -1363,6 +1432,11 @@ def observar_output(
         "ventana": ventana.titulo,
         "valor_esperado_canonico": esperado_canonico,
         "evidencia": evidencia,
+        # La identidad del control RESUELTO —no la intención de la solicitud—
+        # es la que viaja: la construye el pipeline desde el control que ganó
+        # ``_resolver_control``, así que el padre puede re-verificar contra el
+        # selector pedido sin confiar en el eco de lo que él mismo mandó.
+        "control_observado": EvidenciaControlObservado.desde_control(control),
     }
 
     if observado is None:

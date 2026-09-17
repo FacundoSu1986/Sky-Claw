@@ -44,6 +44,13 @@ _MATCH = {
     "valor_esperado": r"E:\Sky-Claw T5 Rig\TexGen Output",
     "pid": 1234,
     "ventana": "v",
+    "control_observado": {
+        "pid": 1234,
+        "automation_id": "",
+        "nombre": "",
+        "tipo_de_control": "Edit",
+        "class_name": "TEdit",
+    },
     "valor_observado": r"E:\Sky-Claw T5 Rig\TexGen Output",
     "valor_observado_canonico": r"e:\sky-claw t5 rig\texgen output",
     "valor_esperado_canonico": r"e:\sky-claw t5 rig\texgen output",

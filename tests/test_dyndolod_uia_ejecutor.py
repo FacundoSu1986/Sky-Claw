@@ -40,12 +40,23 @@ from sky_claw.local.tools.dyndolod_uia_gate import (
 from sky_claw.local.tools.dyndolod_uia_preflight import (
     CriteriosDeControl,
     EstadoPreflight,
+    EvidenciaControlObservado,
     RazonPreflight,
     SolicitudPreflightUIA,
 )
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 MODULO_HELPER = "sky_claw.local.tools.dyndolod_uia_helper"
+
+
+def _control_de_ejemplo() -> EvidenciaControlObservado:
+    return EvidenciaControlObservado(
+        pid=4242,
+        automation_id="",
+        nombre="",
+        tipo_de_control="Edit",
+        class_name="TEdit",
+    )
 
 
 def _resultado_de_ejemplo() -> ResultadoPreflightUIA:
@@ -57,6 +68,7 @@ def _resultado_de_ejemplo() -> ResultadoPreflightUIA:
         valor_esperado=r"E:\Sky-Claw T5 Rig\TexGen Output",
         pid=4242,
         ventana="TexGen 3.00",
+        control_observado=_control_de_ejemplo(),
         valor_observado=r"E:\Sky-Claw T5 Rig\Stale TexGen",
         valor_observado_canonico=r"e:\sky-claw t5 rig\stale texgen",
         valor_esperado_canonico=r"e:\sky-claw t5 rig\texgen output",
@@ -179,6 +191,10 @@ async def test_el_helper_falso_que_devuelve_match_se_parsea(tmp_path: pathlib.Pa
             "valor_esperado": esperado,
             "pid": solicitud["pid"],
             "ventana": "v",
+            "control_observado": {
+                "pid": solicitud["pid"], "automation_id": "", "nombre": "",
+                "tipo_de_control": "Edit", "class_name": "TEdit",
+            },
             "valor_observado": esperado,
             "valor_observado_canonico": esperado.lower(),
             "valor_esperado_canonico": esperado.lower(),
@@ -202,7 +218,9 @@ async def test_el_helper_con_match_de_evidencia_stale_falla_cerrado(tmp_path: pa
     El FINAL gate autoriza por ``estado is MATCH``, así que un helper corrupto o
     regresionado no puede poder inyectar un ``MATCH`` con ``valor_observado``
     inconsistente: el canal lo rechaza como contrato roto y el padre lo degrada
-    a ``UNKNOWN``/``UIA_NO_DISPONIBLE`` por el camino fail-closed existente.
+    a ``UNKNOWN``/``UIA_NO_DISPONIBLE`` por el camino fail-closed existente. El
+    control observado va presente para que lo que falle sea la evidencia de
+    VALOR y no la de control (selector binding, #590).
     """
     script = _escribir_script(
         tmp_path,
@@ -219,6 +237,10 @@ async def test_el_helper_con_match_de_evidencia_stale_falla_cerrado(tmp_path: pa
             "valor_esperado": solicitud["salida_administrada_esperada"],
             "pid": solicitud["pid"],
             "ventana": "v",
+            "control_observado": {
+                "pid": solicitud["pid"], "automation_id": "", "nombre": "",
+                "tipo_de_control": "Edit", "class_name": "TEdit",
+            },
             "valor_observado": "E:\\\\Old",
             "valor_observado_canonico": "e:\\\\old",
             "valor_esperado_canonico": solicitud["salida_administrada_esperada"].lower(),
