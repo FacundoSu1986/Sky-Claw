@@ -133,7 +133,7 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
         pendientes ni botones: es texto para el panel, y el aviso previo
         (Telegram, cableado por AppContext) sigue entregándose por delegación.
         """
-        store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": mensaje, "type": "positive"})
+        store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": mensaje, "type": "info"})
         if previous_notice is not None:
             await previous_notice(mensaje)
 

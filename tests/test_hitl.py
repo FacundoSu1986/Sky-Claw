@@ -1172,7 +1172,7 @@ class TestAvisoDeReadiness:
         await guard.notify_operator("Output verificado: podés continuar con Start.")
         assert store.escrituras[STORE_KEY_RITUAL_FEEDBACK] == {
             "text": "Output verificado: podés continuar con Start.",
-            "type": "positive",
+            "type": "info",
         }
 
     @pytest.mark.asyncio
