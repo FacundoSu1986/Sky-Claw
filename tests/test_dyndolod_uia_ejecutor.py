@@ -118,10 +118,10 @@ def test_el_contrato_rechaza_respuestas_incompletas_o_desconocidas(texto: str) -
 async def test_el_helper_real_responde_el_fail_closed_del_backend(tmp_path: pathlib.Path) -> None:
     """El worker arranca, lee el pedido, corre el gate y escribe un JSON parseable.
 
-    Con una tool fuera de ``TOOLS_OBSERVABLES`` el pipeline corta en la
-    validación (TOOL_DESCONOCIDA) antes de tocar COM, así que el test vale en
-    cualquier plataforma sin mentir sobre lo que ejercita: el canal padre↔helper
-    y el ciclo de vida del worker. El backend COM real tiene su rig.
+    En Windows una tool fuera de ``TOOLS_OBSERVABLES`` puede cortar en
+    ``TOOL_DESCONOCIDA`` antes de tocar COM. En POSIX la fábrica del backend
+    Windows suele fallar primero: el veredicto válido es
+    ``UNKNOWN`` / ``UIA_NO_DISPONIBLE``. Ambos son fail-closed.
     """
     pedido = PedidoDeGate(
         solicitud=_solicitud_de_ejemplo(tool="LOOT"),
@@ -144,7 +144,10 @@ async def test_el_helper_real_responde_el_fail_closed_del_backend(tmp_path: path
     assert proceso.returncode == 0, stderr.decode(errors="replace")
     resultado = resultado_desde_json((tmp_path / "resultado.json").read_text(encoding="utf-8"))
     assert resultado.estado is EstadoPreflight.UNKNOWN
-    assert resultado.razon is RazonPreflight.TOOL_DESCONOCIDA
+    if sys.platform == "win32":
+        assert resultado.razon is RazonPreflight.TOOL_DESCONOCIDA
+    else:
+        assert resultado.razon is RazonPreflight.UIA_NO_DISPONIBLE
 
 
 # ---------------------------------------------------------------------------
@@ -166,11 +169,20 @@ async def test_el_helper_falso_que_devuelve_match_se_parsea(tmp_path: pathlib.Pa
         """
         import json, pathlib, sys
         base = pathlib.Path(sys.argv[1])
+        pedido = json.loads((base / "pedido.json").read_text(encoding="utf-8"))
+        solicitud = pedido["solicitud"]
+        esperado = solicitud["salida_administrada_esperada"]
         resultado = {
-            "estado": "MATCH", "razon": "OUTPUT_COINCIDE", "tool": "TexGen",
-            "detalle": "ok", "valor_esperado": "E:/out", "pid": 1, "ventana": "v",
-            "valor_observado": "E:/out", "valor_observado_canonico": "e:/out",
-            "valor_esperado_canonico": "e:/out", "evidencia": [],
+            "estado": "MATCH", "razon": "OUTPUT_COINCIDE",
+            "tool": solicitud["tool"],
+            "detalle": "ok",
+            "valor_esperado": esperado,
+            "pid": solicitud["pid"],
+            "ventana": "v",
+            "valor_observado": esperado,
+            "valor_observado_canonico": esperado.lower(),
+            "valor_esperado_canonico": esperado.lower(),
+            "evidencia": [],
         }
         (base / "resultado.json").write_text(json.dumps(resultado), encoding="utf-8")
         """,
@@ -222,6 +234,28 @@ async def test_el_helper_que_responde_basura_falla_cerrado(tmp_path: pathlib.Pat
     )
 
     assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert "ilegible" in resultado.detalle
+
+
+async def test_el_helper_con_utf8_invalido_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """Bytes no UTF-8 en resultado.json no escapan como UnicodeDecodeError."""
+    script = _escribir_script(
+        tmp_path,
+        "helper_utf8.py",
+        """
+        import pathlib, sys
+        base = pathlib.Path(sys.argv[1])
+        (base / "resultado.json").write_bytes(b'{"estado": "MATCH"\\xff}')
+        """,
+    )
+    ejecutor = EjecutorGatePorHelper(comando=(sys.executable, str(script)))
+
+    resultado = await ejecutor.ejecutar(
+        _solicitud_de_ejemplo(), politica=PoliticaDeReintento.INICIO, timeout_segundos=5.0, intervalo_segundos=0.05
+    )
+
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.UIA_NO_DISPONIBLE
     assert "ilegible" in resultado.detalle
 
 
