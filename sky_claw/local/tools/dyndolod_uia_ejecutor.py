@@ -249,7 +249,7 @@ class EjecutorGatePorHelper:
 
             try:
                 resultado = resultado_desde_json((directorio / NOMBRE_DEL_RESULTADO).read_text(encoding="utf-8"))
-            except (OSError, ContratoDeHelperError) as exc:
+            except (OSError, UnicodeDecodeError, ContratoDeHelperError) as exc:
                 return _sin_respuesta(solicitud, f"respuesta ilegible del helper UIA: {exc}")
             if not _respuesta_pertenece_a_la_solicitud(solicitud, resultado):
                 return _sin_respuesta(
