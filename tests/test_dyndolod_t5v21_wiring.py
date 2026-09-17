@@ -27,7 +27,6 @@ from sky_claw.local.tools.dyndolod_uia_ejecutor import (
     EjecutorGatePorHelper,
     comando_del_helper,
 )
-from sky_claw.local.tools.dyndolod_uia_gate import ConfirmadorDeConfiguracion
 from sky_claw.local.tools.dyndolod_uia_preflight import (
     LocalizadorDeProcesos,
     LocalizadorPsutil,
@@ -163,7 +162,9 @@ def test_el_servicio_inyecta_la_capacidad_en_el_runner() -> None:
 
 def test_el_servicio_recibe_la_capacidad_y_la_guarda() -> None:
     arbol = _arbol(SERVICE)
-    servicio = next(nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.ClassDef) and nodo.name == "DynDOLODPipelineService")
+    servicio = next(
+        nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.ClassDef) and nodo.name == "DynDOLODPipelineService"
+    )
     init = next(hijo for hijo in servicio.body if isinstance(hijo, ast.FunctionDef) and hijo.name == "__init__")
     argumentos = [arg.arg for arg in init.args.kwonlyargs]
     assert "readiness" in argumentos
@@ -193,7 +194,7 @@ def test_el_composition_root_inyecta_la_capacidad_en_el_servicio() -> None:
 
 def test_los_colaboradores_de_produccion_satisfacen_los_puertos() -> None:
     from sky_claw.app.orchestrator.dyndolod_readiness_hitl import ConfirmadorHITL
-    from sky_claw.local.tools.dyndolod_uia_gate import EjecutorDeGateUIA
+
     assert isinstance(LocalizadorPsutil(), LocalizadorDeProcesos)
     assert callable(construir_observador_windows)
     for nombre in ("ventanas_de_proceso", "controles_de_ventana", "leer_valor"):
@@ -211,7 +212,9 @@ def test_el_helper_productivo_usa_el_backend_real() -> None:
         nodo.attr for nodo in ast.walk(arbol) if isinstance(nodo, ast.Attribute)
     }
     assert "construir_observador_windows" in mencionados
-    llamadas = {nodo.func.id for nodo in ast.walk(arbol) if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)}
+    llamadas = {
+        nodo.func.id for nodo in ast.walk(arbol) if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)
+    }
     assert "ejecutar_gate_sincrono" in llamadas
 
 
@@ -227,9 +230,23 @@ def test_el_comando_del_helper_cubre_el_modo_congelado(monkeypatch: pytest.Monke
 def test_el_main_despacha_el_helper_antes_de_importar_la_app() -> None:
     fuente = MAIN.read_text(encoding="utf-8")
     arbol = ast.parse(fuente)
-    linea_flag = next((nodo.lineno for nodo in ast.walk(arbol) if isinstance(nodo, ast.If) and _menciona(nodo.test, "FLAG_HELPER_UIA")), None)
+    linea_flag = next(
+        (
+            nodo.lineno
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.If) and _menciona(nodo.test, "FLAG_HELPER_UIA")
+        ),
+        None,
+    )
     assert linea_flag is not None
-    linea_app = min((nodo.lineno for nodo in ast.walk(arbol) if isinstance(nodo, ast.ImportFrom) and nodo.module is not None and nodo.module.startswith("sky_claw.app")), default=10**9)
+    linea_app = min(
+        (
+            nodo.lineno
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.ImportFrom) and nodo.module is not None and nodo.module.startswith("sky_claw.app")
+        ),
+        default=10**9,
+    )
     assert linea_flag < linea_app
 
 
@@ -280,7 +297,9 @@ def test_el_runner_no_recupera_el_output_root_legacy() -> None:
 
 def test_el_expected_del_gate_sale_del_layout_por_herramienta() -> None:
     arbol = _arbol(RUNNER)
-    metodo = next(nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef) and nodo.name == "_expected_output_de")
+    metodo = next(
+        nodo for nodo in ast.walk(arbol) if isinstance(nodo, ast.FunctionDef) and nodo.name == "_expected_output_de"
+    )
     atributos = {nodo.attr for nodo in ast.walk(metodo) if isinstance(nodo, ast.Attribute)}
     assert "raiz_de" in atributos
     assert "family_root" not in atributos
