@@ -53,6 +53,7 @@ from sky_claw.local.tools.dyndolod_uia_gate import (
     VeredictoInitial,
     clasificar_initial,
     ejecutar_gate_sincrono,
+    evidencia_de_resultado_coherente,
     pedido_desde_json,
     resultado_a_json,
     resultado_desde_json,
@@ -69,6 +70,7 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
     SolicitudPreflightUIA,
     UIANoDisponibleError,
     VentanaObservada,
+    canonicalizar_ruta_windows,
     selector_de_output,
 )
 
@@ -704,6 +706,25 @@ def test_el_resultado_de_proceso_muerto_es_unknown_y_bloquea():
 # pares son posibles es ``RAZONES_VALIDAS_POR_ESTADO``.
 
 
+def _valores_de_evidencia_coherente(estado: EstadoPreflight) -> dict[str, object]:
+    """La evidencia que el veredicto de ``estado`` exige para ser concluyente.
+
+    ``MATCH`` recibe la ruta esperada; ``MISMATCH``, una divergente; ``UNKNOWN``
+    no exige evidencia y no recibe ninguna — su contrato es no concluir. Ver la
+    sección P2 (#590) al final.
+    """
+    if estado is EstadoPreflight.UNKNOWN:
+        return {}
+    observado = (
+        "E:/Modding/ExternalWork/DynDOLOD/TexGen (rancio)" if estado is EstadoPreflight.MISMATCH else TEXGEN_ROOT
+    )
+    return {
+        "valor_observado": observado,
+        "valor_observado_canonico": canonicalizar_ruta_windows(observado),
+        "valor_esperado_canonico": canonicalizar_ruta_windows(TEXGEN_ROOT),
+    }
+
+
 def _json_de_resultado(estado: EstadoPreflight, razon: RazonPreflight) -> str:
     import json  # noqa: PLC0415
 
@@ -715,6 +736,7 @@ def _json_de_resultado(estado: EstadoPreflight, razon: RazonPreflight) -> str:
             "detalle": "prueba de contrato",
             "valor_esperado": TEXGEN_ROOT,
             "evidencia": ["línea de evidencia"],
+            **_valores_de_evidencia_coherente(estado),
         }
     )
 
@@ -775,6 +797,7 @@ def test_el_serializador_round_trip_preserva_todo_par_valido():
             detalle="d",
             valor_esperado=TEXGEN_ROOT,
             evidencia=("e1", "e2"),
+            **_valores_de_evidencia_coherente(estado),
         )
         reconstruido = resultado_desde_json(resultado_a_json(original))
         assert reconstruido.estado is estado
@@ -794,3 +817,206 @@ def test_la_autoridad_del_par_estado_razon_esta_congelada():
         EstadoPreflight.MISMATCH: frozenset({RazonPreflight.OUTPUT_DIFIERE}),
         EstadoPreflight.UNKNOWN: RAZONES_DE_UNKNOWN,
     } == RAZONES_VALIDAS_POR_ESTADO
+
+
+# ---------------------------------------------------------------------------
+# P2 (#590) — un veredicto concluyente sólo sobrevive si su evidencia lo sostiene
+# ---------------------------------------------------------------------------
+#
+# La frontera IPC validaba el par (estado, razón), el tool, el pid y el
+# ``valor_esperado``, pero no que la evidencia OBSERVADA del helper sostuviera
+# el veredicto. Como el FINAL gate autoriza por ``estado is EstadoPreflight.MATCH``,
+# un helper corrupto o regresionado podía devolver un ``MATCH`` internamente
+# "consistente" cuyo ``valor_observado`` nombraba OTRA salida —o sin evidencia
+# observada— y el Start quedaba autorizado.
+#
+# Política, por estado, porque el contrato de cada caja es distinto:
+#
+# * ``MATCH`` / ``OUTPUT_COINCIDE`` — exige ``valor_observado`` y
+#   ``valor_esperado`` canonicalizables que coincidan entre sí.
+# * ``MISMATCH`` / ``OUTPUT_DIFIERE`` — la misma exigencia, con las dos rutas
+#   divergentes.
+# * ``UNKNOWN`` — no exige evidencia concluyente: su contrato es no concluir, y
+#   sus cortes tempranos no llegan a observar valor.
+#
+# La coherencia se recomputa desde los valores CRUDOS con
+# ``canonicalizar_ruta_windows``: los canónicos declarados por el helper tienen
+# que ser exactamente los recomputados, porque ``valor_esperado_canonico``
+# viene del helper y no es autoridad por sí solo. El incumplimiento es
+# ``ContratoDeHelperError`` y el padre lo degrada a ``UNKNOWN`` /
+# ``UIA_NO_DISPONIBLE`` por el camino fail-closed que ya existe — no se agrega
+# una vía nueva de éxito.
+
+
+def _json_de_evidencia(
+    estado: EstadoPreflight,
+    razon: RazonPreflight,
+    *,
+    observado: str | None,
+    observado_canonico: str | None,
+    esperado_canonico: str | None,
+    esperado: str = TEXGEN_ROOT,
+) -> str:
+    """Payload del helper con la evidencia EXACTA que pide cada caso."""
+    import json  # noqa: PLC0415
+
+    return json.dumps(
+        {
+            "estado": estado.value,
+            "razon": razon.value,
+            "tool": "TexGen",
+            "detalle": "prueba de evidencia",
+            "valor_esperado": esperado,
+            "pid": 4242,
+            "ventana": "TexGen 3.00",
+            "valor_observado": observado,
+            "valor_observado_canonico": observado_canonico,
+            "valor_esperado_canonico": esperado_canonico,
+            "evidencia": ["línea de evidencia"],
+        }
+    )
+
+
+def test_un_match_con_observed_stale_no_sobrevive_la_frontera():
+    """Caso A: la evidencia observada nombra OTRA salida que la esperada."""
+    texto = _json_de_evidencia(
+        EstadoPreflight.MATCH,
+        RazonPreflight.OUTPUT_COINCIDE,
+        observado=r"E:\Old",
+        observado_canonico=r"e:\old",
+        esperado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+    )
+    with pytest.raises(ContratoDeHelperError, match="evidencia"):
+        resultado_desde_json(texto)
+
+
+def test_un_match_sin_evidencia_observada_no_sobrevive_la_frontera():
+    """Caso B: sin valor observado no hay MATCH que autorice."""
+    texto = _json_de_evidencia(
+        EstadoPreflight.MATCH,
+        RazonPreflight.OUTPUT_COINCIDE,
+        observado=None,
+        observado_canonico=None,
+        esperado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+    )
+    with pytest.raises(ContratoDeHelperError, match="evidencia"):
+        resultado_desde_json(texto)
+
+
+def test_un_match_legitimo_sigue_siendo_match():
+    """Caso C: evidencia observada coherente con la salida esperada."""
+    texto = _json_de_evidencia(
+        EstadoPreflight.MATCH,
+        RazonPreflight.OUTPUT_COINCIDE,
+        observado=TEXGEN_ROOT,
+        observado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+        esperado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+    )
+    resultado = resultado_desde_json(texto)
+    assert resultado.estado is EstadoPreflight.MATCH
+    assert resultado.razon is RazonPreflight.OUTPUT_COINCIDE
+
+
+def test_un_match_con_otra_escritura_de_la_misma_ruta_win32_sigue_siendo_match():
+    """Caso D: ``e:/.../TexGen/`` y ``E:\\...\\TexGen`` son la misma ruta."""
+    observado = "e:/Modding/ExternalWork/DynDOLOD/TexGen/"
+    assert canonicalizar_ruta_windows(observado) == canonicalizar_ruta_windows(TEXGEN_ROOT)
+    texto = _json_de_evidencia(
+        EstadoPreflight.MATCH,
+        RazonPreflight.OUTPUT_COINCIDE,
+        observado=observado,
+        observado_canonico=canonicalizar_ruta_windows(observado),
+        esperado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+    )
+    resultado = resultado_desde_json(texto)
+    assert resultado.estado is EstadoPreflight.MATCH
+
+
+def test_un_mismatch_honesto_sigue_siendo_mismatch():
+    """Caso E: la evidencia divergente sostiene el MISMATCH concluyente."""
+    observado = r"E:\Old"
+    texto = _json_de_evidencia(
+        EstadoPreflight.MISMATCH,
+        RazonPreflight.OUTPUT_DIFIERE,
+        observado=observado,
+        observado_canonico=canonicalizar_ruta_windows(observado),
+        esperado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+    )
+    resultado = resultado_desde_json(texto)
+    assert resultado.estado is EstadoPreflight.MISMATCH
+    assert resultado.razon is RazonPreflight.OUTPUT_DIFIERE
+
+
+def test_un_mismatch_sin_evidencia_observada_no_sobrevive_la_frontera():
+    """El hermano del caso B: tampoco un MISMATCH concluye sin evidencia."""
+    texto = _json_de_evidencia(
+        EstadoPreflight.MISMATCH,
+        RazonPreflight.OUTPUT_DIFIERE,
+        observado=None,
+        observado_canonico=None,
+        esperado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+    )
+    with pytest.raises(ContratoDeHelperError, match="evidencia"):
+        resultado_desde_json(texto)
+
+
+def test_un_mismatch_con_evidencia_de_coincidencia_no_sobrevive_la_frontera():
+    """El espejo del caso A: un MISMATCH con rutas que coinciden es incoherente."""
+    texto = _json_de_evidencia(
+        EstadoPreflight.MISMATCH,
+        RazonPreflight.OUTPUT_DIFIERE,
+        observado=TEXGEN_ROOT,
+        observado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+        esperado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+    )
+    with pytest.raises(ContratoDeHelperError, match="evidencia"):
+        resultado_desde_json(texto)
+
+
+def test_un_match_con_canonico_observado_declarado_no_recomputado_no_sobrevive():
+    """El canónico declarado que contradice al valor crudo es contrato roto."""
+    texto = _json_de_evidencia(
+        EstadoPreflight.MATCH,
+        RazonPreflight.OUTPUT_COINCIDE,
+        observado=TEXGEN_ROOT,
+        observado_canonico=r"e:\otra",
+        esperado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+    )
+    with pytest.raises(ContratoDeHelperError, match="evidencia"):
+        resultado_desde_json(texto)
+
+
+def test_un_match_con_canonico_esperado_declarado_no_recomputado_no_sobrevive():
+    """Hermano del anterior, del lado del esperado: no confiar en el canónico ajeno."""
+    texto = _json_de_evidencia(
+        EstadoPreflight.MATCH,
+        RazonPreflight.OUTPUT_COINCIDE,
+        observado=TEXGEN_ROOT,
+        observado_canonico=canonicalizar_ruta_windows(TEXGEN_ROOT),
+        esperado_canonico=r"e:\otra",
+    )
+    with pytest.raises(ContratoDeHelperError, match="evidencia"):
+        resultado_desde_json(texto)
+
+
+def test_la_exencion_de_evidencia_es_solo_de_unknown():
+    """Enumeración: la exención es de ``UNKNOWN``, no de un caso suelto.
+
+    El eje que un caso escrito a mano no cubre: todo estado concluyente —
+    presente o FUTURO, porque la función es fail-closed ante un estado sin regla
+    declarada— exige evidencia, y ``UNKNOWN`` es la única caja eximida.
+    """
+    for estado in EstadoPreflight:
+        resultado = ResultadoPreflightUIA(
+            estado=estado,
+            razon=RazonPreflight.OUTPUT_COINCIDE,
+            tool="TexGen",
+            detalle="prueba de evidencia",
+            valor_esperado=TEXGEN_ROOT,
+        )
+        if estado is EstadoPreflight.UNKNOWN:
+            assert evidencia_de_resultado_coherente(resultado)
+        else:
+            assert not evidencia_de_resultado_coherente(resultado), (
+                f"{estado.value} sobreviviría sin evidencia observada"
+            )

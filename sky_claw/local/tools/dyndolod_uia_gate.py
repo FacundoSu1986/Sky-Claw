@@ -111,6 +111,7 @@ from sky_claw.local.tools.dyndolod_uia_preflight import (
     RazonPreflight,
     ResultadoPreflightUIA,
     SolicitudPreflightUIA,
+    canonicalizar_ruta_windows,
     observar_output,
     par_estado_razon_valido,
 )
@@ -690,6 +691,54 @@ class ContratoDeHelperError(ValueError):
     """La solicitud o la respuesta del helper no respeta el contrato serializable."""
 
 
+def evidencia_de_resultado_coherente(resultado: ResultadoPreflightUIA) -> bool:
+    """¿La evidencia del resultado sostiene su veredicto?
+
+    **Por qué existe.** El par ``(estado, razón)`` legal no alcanza en la
+    frontera IPC: el FINAL gate autoriza por ``estado is EstadoPreflight.MATCH``,
+    así que un helper corrupto o regresionado podía devolver un ``MATCH``
+    internamente "consistente" —tool, pid y ``valor_esperado`` correctos— cuyo
+    ``valor_observado`` nombraba OTRA salida, o que no traía evidencia
+    observada, y la corrida seguía como autorizada. Esta es la autoridad ÚNICA
+    de esa coherencia; el contrato por estado es:
+
+    * ``MATCH`` — ``valor_observado`` y ``valor_esperado`` canonicalizables y
+      iguales entre sí;
+    * ``MISMATCH`` — los mismos dos canonicalizables, divergentes;
+    * ``UNKNOWN`` — sin exigencia: su contrato es no concluir, y los cortes
+      tempranos del pipeline no llegan a observar valor.
+
+    **Se recomputa desde los valores CRUDOS** con
+    :func:`canonicalizar_ruta_windows`, y los canónicos DECLARADOS tienen que
+    ser exactamente los recomputados: ``valor_esperado_canonico`` viaja en la
+    respuesta del helper y no es autoridad por sí solo — confiar en él dejaba
+    pasar un ``MATCH`` cuyo ``valor_observado`` crudo apuntaba a otra ruta. No
+    se inventa una normalización nueva: la comparación es la misma que usa el
+    pipeline para EMITIR el veredicto, así que toda escritura Win32 equivalente
+    (``e:/Good/`` vs ``E:\\Good``) sigue coincidiendo.
+
+    Fail-closed sobre el ESTADO, igual que :func:`par_estado_razon_valido`: un
+    estado fuera de la política —un enum crecido sin declarar su regla de
+    evidencia— no tiene evidencia que lo sostenga y se rechaza, en vez de quedar
+    verde por omisión.
+    """
+    if resultado.estado is EstadoPreflight.UNKNOWN:
+        return True
+    if resultado.estado not in {EstadoPreflight.MATCH, EstadoPreflight.MISMATCH}:
+        return False
+    observado = canonicalizar_ruta_windows(resultado.valor_observado)
+    esperado = canonicalizar_ruta_windows(resultado.valor_esperado)
+    if observado is None or esperado is None:
+        return False
+    if resultado.valor_observado_canonico != observado:
+        return False
+    if resultado.valor_esperado_canonico != esperado:
+        return False
+    if resultado.estado is EstadoPreflight.MATCH:
+        return observado == esperado
+    return observado != esperado
+
+
 def _texto_requerido(datos: dict[str, object], clave: str) -> str:
     valor = datos.get(clave)
     if not isinstance(valor, str):
@@ -806,7 +855,11 @@ def resultado_desde_json(texto: str) -> ResultadoPreflightUIA:
     se puede interpretar, así que no hay veredicto. Y la membresía no alcanza:
     el PAR también se valida contra ``par_estado_razon_valido`` (la autoridad
     estado ↔ razón que el pipeline usa para emitir), porque un ``MATCH`` con
-    ``OUTPUT_DIFIERE`` deserializaría como autorización del FINAL gate.
+    ``OUTPUT_DIFIERE`` deserializaría como autorización del FINAL gate. Y el par
+    tampoco alcanza: un veredicto CONCLUYENTE exige además que su evidencia
+    observada lo sostenga (:func:`evidencia_de_resultado_coherente`), así que un
+    ``MATCH`` con ``valor_observado`` stale, ausente o no canonicalizable es
+    contrato roto y no autorización.
     """
     try:
         crudo = json.loads(texto)
@@ -833,7 +886,7 @@ def resultado_desde_json(texto: str) -> ResultadoPreflightUIA:
     evidencia_cruda = datos.get("evidencia")
     if not isinstance(evidencia_cruda, list) or not all(isinstance(linea, str) for linea in evidencia_cruda):
         raise ContratoDeHelperError("'evidencia' debe ser una lista de strings")
-    return ResultadoPreflightUIA(
+    resultado = ResultadoPreflightUIA(
         estado=estado,
         razon=razon,
         tool=_texto_requerido(datos, "tool"),
@@ -846,6 +899,18 @@ def resultado_desde_json(texto: str) -> ResultadoPreflightUIA:
         valor_esperado_canonico=_texto_opcional(datos, "valor_esperado_canonico"),
         evidencia=tuple(str(linea) for linea in evidencia_cruda),
     )
+    # La membresía y el par no alcanzan: el FINAL gate autoriza por
+    # ``estado is MATCH``, así que un veredicto concluyente cuya evidencia
+    # observada no lo sostenga es contrato roto, no autorización. Se rechaza
+    # acá y el padre lo traduce a ``UNKNOWN``/``UIA_NO_DISPONIBLE`` por el
+    # camino fail-closed que ya existe.
+    if not evidencia_de_resultado_coherente(resultado):
+        raise ContratoDeHelperError(
+            "evidencia inconsistente para un veredicto concluyente: "
+            f"estado={estado.value} razon={razon.value} "
+            f"observado={resultado.valor_observado!r} esperado={resultado.valor_esperado!r}"
+        )
+    return resultado
 
 
 def politica_desde_nombre(nombre: str) -> PoliticaDeReintento:

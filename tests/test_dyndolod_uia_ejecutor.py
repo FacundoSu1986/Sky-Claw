@@ -196,6 +196,48 @@ async def test_el_helper_falso_que_devuelve_match_se_parsea(tmp_path: pathlib.Pa
     assert resultado.estado is EstadoPreflight.MATCH
 
 
+async def test_el_helper_con_match_de_evidencia_stale_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    """P2 (#590): un MATCH cuya evidencia observada nombra otra salida no autoriza.
+
+    El FINAL gate autoriza por ``estado is MATCH``, así que un helper corrupto o
+    regresionado no puede poder inyectar un ``MATCH`` con ``valor_observado``
+    inconsistente: el canal lo rechaza como contrato roto y el padre lo degrada
+    a ``UNKNOWN``/``UIA_NO_DISPONIBLE`` por el camino fail-closed existente.
+    """
+    script = _escribir_script(
+        tmp_path,
+        "helper_match_stale.py",
+        """
+        import json, pathlib, sys
+        base = pathlib.Path(sys.argv[1])
+        pedido = json.loads((base / "pedido.json").read_text(encoding="utf-8"))
+        solicitud = pedido["solicitud"]
+        resultado = {
+            "estado": "MATCH", "razon": "OUTPUT_COINCIDE",
+            "tool": solicitud["tool"],
+            "detalle": "ok",
+            "valor_esperado": solicitud["salida_administrada_esperada"],
+            "pid": solicitud["pid"],
+            "ventana": "v",
+            "valor_observado": "E:\\\\Old",
+            "valor_observado_canonico": "e:\\\\old",
+            "valor_esperado_canonico": solicitud["salida_administrada_esperada"].lower(),
+            "evidencia": [],
+        }
+        (base / "resultado.json").write_text(json.dumps(resultado), encoding="utf-8")
+        """,
+    )
+    ejecutor = EjecutorGatePorHelper(comando=(sys.executable, str(script)))
+
+    resultado = await ejecutor.ejecutar(
+        _solicitud_de_ejemplo(), politica=PoliticaDeReintento.INICIO, timeout_segundos=5.0, intervalo_segundos=0.05
+    )
+
+    assert resultado.estado is EstadoPreflight.UNKNOWN
+    assert resultado.razon is RazonPreflight.UIA_NO_DISPONIBLE
+    assert "ilegible" in resultado.detalle
+
+
 async def test_el_helper_que_sale_con_codigo_no_cero_falla_cerrado(tmp_path: pathlib.Path) -> None:
     script = _escribir_script(
         tmp_path,
