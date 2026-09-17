@@ -109,6 +109,11 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     "sky_claw/local/mo2/vfs.py": "link-aware",
     "sky_claw/local/runtime_vault/clone.py": "link-aware",
     "sky_claw/local/tools/_dir_rollback.py": "link-aware",
+    # T5-v2.1: borra su PROPIO directorio temporal de canal (lo creó `mkdtemp`).
+    # Entra igual por la primitiva: un junction plantado ahí a mitad de la
+    # observación no debe llevarse su destino. Que el árbol sea propio no
+    # habilita una excepción a la regla "shutil.rmtree no existe en el paquete".
+    "sky_claw/local/tools/dyndolod_uia_ejecutor.py": "link-aware",
     "sky_claw/local/tools/dyndolod_runner.py": "link-aware",
     "sky_claw/local/tools/rollback_reconciler.py": "link-aware",
     "sky_claw/local/tools/vramr_service.py": "link-aware",
@@ -422,6 +427,7 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     "sky_claw/local/mo2/bridge_installer.py": "no-requiere",
     "sky_claw/local/mo2/vfs.py": "requiere",
     "sky_claw/local/runtime_vault/clone.py": "requiere",
+    "sky_claw/local/tools/dyndolod_uia_ejecutor.py": "no-requiere",
     "sky_claw/local/tools/dyndolod_runner.py": "requiere",
     "sky_claw/local/tools/rollback_reconciler.py": "requiere",
     "sky_claw/local/tools/vramr_service.py": "requiere",
@@ -437,6 +443,15 @@ MOTIVO_DE_NO_REQUIERE: dict[str, str] = {
         "que otorga Control Total al owner y nunca toca "
         "FILE_ATTRIBUTE_READONLY. No hay modo por el que el borrado, hecho por "
         "el mismo proceso, se tope con un archivo read-only."
+    ),
+    # T5-v2.1: el directorio del canal del helper lo crea `mkdtemp` y sólo lleva
+    # archivos JSON que escribe este mismo proceso (pedido y resultado). No hay
+    # modo externo ni archive de por medio que haya marcado FILE_ATTRIBUTE_
+    # READONLY; el `suppress(OSError)` del `finally` es la red del caso raro.
+    "sky_claw/local/tools/dyndolod_uia_ejecutor.py": (
+        "el temp lo crea mkdtemp y sólo contiene el pedido/resultado JSON "
+        "escritos por el mismo proceso: ninguna herramienta externa lo marca "
+        "read-only."
     ),
 }
 

@@ -54,6 +54,7 @@ from sky_claw.local.tools.artifact_digest import digest_arbol
 from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODConfig,
     DynDOLODRunner,
+    ReadinessMode,
     ToolExecutionResult,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
@@ -107,7 +108,7 @@ def _entorno(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunner]:
         texgen_exe=exe_dir / "TexGenx64.exe",
         external_work_root=tmp_path / "Work Root",
     )
-    return config, DynDOLODRunner(config)
+    return config, DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
 
 
 def _svc(journal: object, runner: DynDOLODRunner, *, perfil: str | None = "Perfil-A") -> DynDOLODPipelineService:

@@ -81,7 +81,7 @@ from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunn
 # test) porque `@parametrize` se evalúa en tiempo de colección: es lo que hace que
 # la enumeración de los switches administrados SALGA del código en vez de ser una
 # tercera lista escrita a mano que puede desalinearse en silencio.
-from sky_claw.local.tools.dyndolod_runner import _GAME_MODES_ADMINISTRADOS, _LETRAS_ADMINISTRADAS
+from sky_claw.local.tools.dyndolod_runner import _GAME_MODES_ADMINISTRADOS, _LETRAS_ADMINISTRADAS, ReadinessMode
 from sky_claw.local.tools.output_targets import HerramientaDynDOLOD
 from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 from sky_claw.local.tools.wrye_bash_runner import (
@@ -165,6 +165,12 @@ LANZADORES_ESPERADOS = {
     "sky_claw/app/security/file_permissions.py": 7,
     "sky_claw/local/mo2/vfs_worker.py": 1,
     "sky_claw/local/tools/_process.py": 3,
+    # T5-v2.1: el ejecutor del gate UIA lanza el HELPER de observación (mismo
+    # intérprete, módulo propio) para poder matar y reapear una llamada COM
+    # colgada. Es infraestructura, no un CLI de terceros: su argv es
+    # [python, -m, sky_claw.local.tools.dyndolod_uia_helper, <dir>], sin flags
+    # de ninguna herramienta de modding que verificar.
+    "sky_claw/local/tools/dyndolod_uia_ejecutor.py": 1,
     # `subprocess.run(["7z", ...])` para listar/extraer archives descargados
     # (xEdit/Pandora) con sandbox de zip-slip — utilidad de archivado, no el
     # CLI propio de ninguna herramienta de modding. Aterrizó en `main` (#418)
@@ -667,7 +673,7 @@ async def test_dyndolod_construye_el_vector_verificado(tmp_path: pathlib.Path) -
         external_work_root=output_root,
         temp_dir=temp_dir,
     )
-    runner = DynDOLODRunner(config)
+    runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
 
     esperado_comun = [
         "-sse",
@@ -722,7 +728,8 @@ async def test_dyndolod_config_default_omite_m_y_p(tmp_path: pathlib.Path) -> No
             mo2_mods_path=tmp_path / "MO2" / "mods",
             dyndolod_exe=dyndolod_exe,
             external_work_root=tmp_path / "salida",
-        )
+        ),
+        readiness=ReadinessMode.DISABLED_FOR_TEST,
     )
 
     argv = runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)
@@ -860,7 +867,8 @@ def _runner_con_raiz(tmp_path: pathlib.Path, carpeta: str, *, sin_espacios: bool
             plugins_file=plugins_file,
             external_work_root=raiz / "salida",
             temp_dir=raiz / "temp",
-        )
+        ),
+        readiness=ReadinessMode.DISABLED_FOR_TEST,
     )
 
     return runner, dyndolod_exe
@@ -1070,7 +1078,8 @@ async def test_dyndolod_extra_args_con_comillas_es_rechazado(tmp_path: pathlib.P
             dyndolod_exe=dyndolod_exe,
             texgen_exe=texgen_exe,
             external_work_root=tmp_path / "salida",
-        )
+        ),
+        readiness=ReadinessMode.DISABLED_FOR_TEST,
     )
 
     with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
@@ -1486,7 +1495,8 @@ async def test_dyndolod_modo_vr_se_fija_por_config_no_por_ruta(tmp_path: pathlib
                 mo2_mods_path=tmp_path / "MO2" / "mods",
                 dyndolod_exe=exe,
                 game_mode=game_mode,
-            )
+            ),
+            readiness=ReadinessMode.DISABLED_FOR_TEST,
         )
 
     # SSE explícito aunque el path contenga "VR": la ruta NO decide.

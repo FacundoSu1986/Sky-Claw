@@ -1333,7 +1333,10 @@ class TestAnclaConstructoresManualesDeMods:
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.
         "sky_claw/local/discovery/scanner.py": (467, 787),
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1039,),
+        # T5-v2: la rama de la categoría `dyndolod_configuracion_lista` en
+        # `make_gui_hitl_notify` corre esta línea +29 (1039 → 1068). Es el mismo
+        # constructor de siempre: el sitio no cambió de concepto.
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1068,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
@@ -1341,14 +1344,17 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/tools/loot_service.py": (493,),
         "sky_claw/local/validators/vfs_health.py": (141,),
         "sky_claw/local/validators/preflight_sensors.py": (193,),
-        "sky_claw/app/orchestrator/preview/chain_preview_service.py": (339,),
+        # T5-v2.1: el wiring del readiness movió la línea (339 → 346). Es el
+        # mismo constructor de siempre; el sitio no cambió de concepto.
+        "sky_claw/app/orchestrator/preview/chain_preview_service.py": (346,),
         # AppContext: fallback legacy en bootstrap de MO2Controller (1124).
         # Handoff reconciliation usa mo2.mods_dir directamente (Issue #557).
         # P2.3 fenced mueve la línea (autoridad temporal + veredicto tipado +
         # cleanup de cancelación).
         "sky_claw/app_context.py": (1390,),
-        # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None (257).
-        "sky_claw/__main__.py": (257,),
+        # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None.
+        # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA.
+        "sky_claw/__main__.py": (271,),
         "sky_claw/local/tools/rollback_reconciler.py": (305,),
         "sky_claw/local/tools/output_targets.py": (225,),
         # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.

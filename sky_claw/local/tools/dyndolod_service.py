@@ -47,7 +47,9 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODPipelineResult,
     DynDOLODRunner,
     DynDOLODTimeoutError,
+    ReadinessMode,
 )
+from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
 from sky_claw.local.tools.dyndolod_workspace import (
     OwnershipDeWorkspaceVivo,
     Stage9Coordination,
@@ -213,6 +215,7 @@ class DynDOLODPipelineService:
     #: contrato): el atributo existe aunque `__init__` no haya corrido. Mismo
     #: idioma que el `getattr(self, "_mo2_profile", None)` del gate de perfil.
     _workspace: WorkspaceResuelto | None = None
+    _readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None
 
     def __init__(
         self,
@@ -226,6 +229,7 @@ class DynDOLODPipelineService:
         mo2_profile: str | None = None,
         stage9_coordination: Stage9Coordination | None = None,
         workspace: WorkspaceResuelto | None = None,
+        readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -254,6 +258,15 @@ class DynDOLODPipelineService:
         # exige que TODO sitio de construcción de producción la pase: un default
         # permisivo sin censo sería la forma más silenciosa del defecto hermano.
         self._stage9_coordination = stage9_coordination
+
+        # T5-v2: capacidad del protocolo de readiness (gate UIA read-only +
+        # confirmación humana mid-run). Es pass-through puro hacia el runner: el
+        # servicio NO ejecuta gates ni conoce HITL — el boundary correcto sigue
+        # siendo el runner, después del spawn y con los drains vivos. `None` es el
+        # modo de los dobles de test; el censo
+        # (`tests/test_dyndolod_t5v21_wiring.py::test_censo_de_constructores_del_runner`)
+        # exige que TODO constructor productivo del runner la cablee.
+        self._readiness = readiness
 
         # Lazy init — runner requiere env vars que pueden no existir aún.
         self._runner: DynDOLODRunner | None = None
@@ -313,7 +326,23 @@ class DynDOLODPipelineService:
             fence_ownership=self._fence_del_workspace if self._workspace is not None else None,
         )
 
-        self._runner = DynDOLODRunner(config)
+        # T5-v2.1: la ausencia de capacidad ya no es un default silencioso del
+        # runner (el constructor no acepta None). Acá se traduce `None` —el modo
+        # de los dobles de test y del preview dry-run, que NO ejecutan gates— al
+        # opt-out EXPLÍCITO. Contrato del opt-out:
+        #   * `DISABLED_FOR_TEST` NO puede usarse en una ruta productiva que
+        #     spawnee TexGen/DynDOLOD;
+        #   * el preview plan-only (`dry_run=True`) lo declara explícitamente y
+        #     retorna antes de cualquier spawn/gate;
+        #   * la producción real recibe una `CapacidadDeReadinessUIA` desde el
+        #     composition root;
+        #   * el censo de wiring (`tests/test_dyndolod_t5v21_wiring.py`) protege
+        #     esos caminos productivos —el composition root no puede pasar el
+        #     opt-out— para que ningún spawn productivo quede sin gate.
+        self._runner = DynDOLODRunner(
+            config,
+            readiness=self._readiness if self._readiness is not None else ReadinessMode.DISABLED_FOR_TEST,
+        )
         logger.info(
             "DynDOLODRunner inicializado: game=%s, dyndolod=%s",
             game_path,

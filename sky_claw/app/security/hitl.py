@@ -12,6 +12,7 @@ import asyncio
 import enum
 import fnmatch
 import logging
+import math
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -25,6 +26,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HITL_OBSERVER_TIMEOUT_SECONDS = 2.0
+
+#: Categoría de la confirmación MID-RUN de configuración de DynDOLOD/TexGen
+#: (T5-v2). Semánticamente NO es "permito ejecutar una tool": es "terminé de
+#: configurar a mano esta GUI y su Output está listo para la verificación final".
+#:
+#: Por eso NO se reutiliza ``"tool_execution"``: esa categoría se auto-aprueba en
+#: Modo local (``make_gui_hitl_notify``), y auto-aprobar ésta haría que el
+#: operador nunca confirme lo que la categoría significa — el gate final
+#: verificaría una configuración que nadie declaró terminada. Mismo trato que
+#: ``download`` (egress) y ``sandbox_promotion`` (post-run): siempre manual.
+CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA = "dyndolod_configuracion_lista"
 
 
 class Decision(enum.Enum):
@@ -95,6 +107,7 @@ class HITLGuard:
         on_terminal: Callable[[HITLRequest, Decision], Awaitable[None]] | None = None,
         on_cancel: Callable[[HITLRequest], Awaitable[None]] | None = None,
         observer_timeout: float = HITL_OBSERVER_TIMEOUT_SECONDS,
+        notice_fn: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._notify = notify_fn
         self._timeout = timeout
@@ -104,8 +117,30 @@ class HITLGuard:
         self._on_terminal = on_terminal
         self._on_cancel = on_cancel
         self._observer_timeout = float(observer_timeout)
+        #: Superficie de AVISOS informativos (no decisiones): el reader que ya
+        #: presenta los prompts puede recibir mensajes de una línea sin crear un
+        #: pendiente. Se asigna en el wiring (`_bootloader` para la GUI; Telegram
+        #: puede dejarlo en None) y `notify_operator` lo trata como best-effort.
+        self.notice_fn = notice_fn
         self._pending: dict[str, HITLRequest] = {}
         self._lock = asyncio.Lock()
+
+    async def notify_operator(self, mensaje: str) -> None:
+        """Entrega un aviso informativo por la superficie del guard, si hay una.
+
+        **No es una decisión**: no crea pendiente, no espera respuesta y no
+        participa del ciclo request/respond. Best-effort declarado: un fallo de
+        la superficie se loguea y NUNCA se propaga — un aviso no puede gatear ni
+        tumbar la corrida que lo emite.
+        """
+        if self.notice_fn is None:
+            return
+        try:
+            await self.notice_fn(mensaje)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- aviso informativo, nunca gatea
+            logger.warning("HITL: notice_fn failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Detection
@@ -127,6 +162,7 @@ class HITLGuard:
         url: str | None = None,
         detail: str = "",
         category: str = "scope",
+        timeout: float | None = None,
     ) -> Decision:
         """Pausa la ejecución y espera la autorización del operador.
 
@@ -137,9 +173,33 @@ class HITLGuard:
         si no llega respuesta durante el timeout se devuelve ``Decision.TIMEOUT``
         y nunca cuenta como aprobación. Un ``notify_fn`` fallido también produce
         ``Decision.TIMEOUT`` sin crear una entrega ficticia.
+
+        *timeout* es un override ESTRICTAMENTE por solicitud (T5-v2): el timeout
+        global del guard no cambia y ``None`` conserva exactamente el
+        comportamiento previo. Existe porque una espera mid-run —el operador
+        configurando a mano la GUI de DynDOLOD/TexGen— tiene una escala distinta
+        de la de un prompt de scope, y alargar el global alargaría TODOS los
+        prompts del proceso. Sigue siendo fail-secure: agotado el plazo se
+        commitea ``TIMEOUT``, nunca una aprobación.
+
+        Un *timeout* EXPLÍCITO no finito o no positivo se RECHAZA acá:
+        ``asyncio.wait_for`` con un plazo no positivo corta de inmediato (cero por
+        error de configuración = cada prompt en ``TIMEOUT`` instantáneo) y un
+        ``nan``/``inf`` pasa una comparación ``<= 0`` y deja la espera en un
+        comportamiento indefinido o sin límite. El ``timeout`` GLOBAL del
+        constructor no se toca: su ``0`` es un modo "corta ya" con semántica
+        establecida (los tests lo usan) y no es parte de este override.
         """
         if request_id is None:
             request_id = str(uuid.uuid4())
+        if timeout is not None:
+            effective_timeout = float(timeout)
+            if not math.isfinite(effective_timeout) or effective_timeout <= 0:
+                # Bug de configuración/caller, no del operador: se lanza ANTES
+                # de registrar el pendiente para no dejar una entrada colgada.
+                raise ValueError(f"HITL timeout debe ser finito y > 0; llegó {effective_timeout}")
+        else:
+            effective_timeout = self._timeout
         req = HITLRequest(
             request_id=request_id,
             reason=reason,
@@ -166,7 +226,7 @@ class HITLGuard:
             logger.info("HITL: awaiting operator decision for %s", request_id)
 
             try:
-                await asyncio.wait_for(req._event.wait(), timeout=self._timeout)
+                await asyncio.wait_for(req._event.wait(), timeout=effective_timeout)
             except TimeoutError:
                 # F6: commitear el timeout bajo el lock (primer escritor gana). Si
                 # un respond se coló en la ventana de la race y ya resolvió la

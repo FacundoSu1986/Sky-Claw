@@ -63,7 +63,7 @@ def _make_telemetry_store_bridge(store: ReactiveStore):
 
 
 def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
-    """Route ``tool_execution`` + ``download`` + ``sandbox_promotion`` HITL approvals to the GUI.
+    """Route ``tool_execution`` + ``download`` + ``sandbox_promotion`` + ``dyndolod_configuracion_lista`` HITL approvals to the GUI.
 
     Composes over the AppContext's existing notify closure: ``tool_execution``
     prompts are handled by the GUI — auto-approved when the "Modo local" toggle is
@@ -71,11 +71,16 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
     ``download`` prompts (the "Instalar" button — Follow-up C) are also parked in the
     modal but are **never** auto-approved (network egress is always confirmed by
     hand); ídem ``sandbox_promotion`` (T-27b·2: el diff post-run de un sandbox se
-    revisa siempre — auto-promover lo vaciaría de sentido). Every other category
-    still flows to the original (Telegram) closure, and the guard's timeout keeps
-    the fail-closed auto-deny when nobody answers.
+    revisa siempre — auto-promover lo vaciaría de sentido). ``dyndolod_configuracion_lista``
+    (T5-v2.1) es la confirmación MANUAL mid-run de que el operador terminó de
+    configurar la GUI de TexGen/DynDOLOD: se estaciona en el modal igual que las
+    demás categorías manuales y **nunca** se auto-aprueba por «Modo local»
+    (auto-aprobarla vaciaría la declaración que el gate final verifica). Every
+    other category still flows to the original (Telegram) closure, and the guard's
+    timeout keeps the fail-closed auto-deny when nobody answers.
     """
     from sky_claw.app.gui.controllers.ritual_runner import (
+        STORE_KEY_RITUAL_FEEDBACK,
         compose_gui_hitl_lifecycle,
         enqueue_pending_hitl,
         make_gui_hitl_notify,
@@ -111,6 +116,28 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
         delegate=original_notify,
     )
     guard._sky_claw_gui_hitl_bridge_installed = True
+
+    # T5-v2.1: AppContext ya cablea ``notice_fn`` con el sender de Telegram para
+    # que el aviso post-final-MATCH del readiness llegue al chat que recibió el
+    # prompt HITL. El puente GUI COMPONE sobre esa superficie (panel + delegate):
+    # reemplazarla dejaría a Telegram sin el aviso en modo GUI — el defecto
+    # "hermano sin fix" que el AGENTS.md de este repo documenta como clase #1.
+    previous_notice = guard.notice_fn
+
+    async def _aviso_de_operador(mensaje: str) -> None:
+        """Superficie de AVISOS del guard: panel de feedback del ritual.
+
+        T5-v2.1: el aviso post-final-MATCH del readiness ("podés continuar con
+        Start") llega acá; sin esta superficie, el modelo que aprobó el modal no
+        recibía señal alguna de que la verificación final terminó. No crea
+        pendientes ni botones: es texto para el panel, y el aviso previo
+        (Telegram, cableado por AppContext) sigue entregándose por delegación.
+        """
+        store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": mensaje, "type": "info"})
+        if previous_notice is not None:
+            await previous_notice(mensaje)
+
+    guard.notice_fn = _aviso_de_operador
 
 
 def _build_environment_scanner(ctx: AppContext):

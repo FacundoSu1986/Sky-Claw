@@ -194,6 +194,7 @@ class TestHitlProducerRequestIds:
     _EXPECTED_PRODUCERS = {
         "sky_claw/app/agent/tools/nexus_tools.py": {"download_mod": 1},
         "sky_claw/app/agent/tools/system_tools.py": {"install_mod_from_archive": 1},
+        "sky_claw/app/orchestrator/dyndolod_readiness_hitl.py": {"confirmar": 1},
         "sky_claw/app/orchestrator/preview/approval_gate.py": {"preview_then_execute": 1},
         "sky_claw/app/orchestrator/sandbox_promotion.py": {"_request_decision": 1},
         "sky_claw/app/orchestrator/sync_engine.py": {"_check_and_update_mod": 2},
@@ -212,6 +213,7 @@ class TestHitlProducerRequestIds:
     _EXPECTED_PREFIXES = {
         ("sky_claw/app/agent/tools/nexus_tools.py", "download_mod"): "nexus-download",
         ("sky_claw/app/agent/tools/system_tools.py", "install_mod_from_archive"): "mod-install",
+        ("sky_claw/app/orchestrator/dyndolod_readiness_hitl.py", "confirmar"): "dyndolod-readiness",
         ("sky_claw/app/orchestrator/sync_engine.py", "_check_and_update_mod"): "mod-update",
         ("sky_claw/local/tools_installer.py", "ensure_loot"): "loot-install",
         ("sky_claw/local/tools_installer.py", "ensure_xedit"): "xedit-install",
@@ -820,3 +822,437 @@ class TestHITLFailSecure:
         # Verify the enum value exists (not deleted)
         assert hasattr(Decision, "TIMEOUT")
         assert Decision.TIMEOUT.value == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# T5-v2 — familia H1-H8: categoría de readiness, timeout por request y
+# aprobación stale. El productor real es
+# ``sky_claw.app.orchestrator.dyndolod_readiness_hitl.ConfirmadorHITL``.
+# ---------------------------------------------------------------------------
+
+
+def _solicitud_de_readiness(tool: str = "TexGen", timeout: float = 5.0):
+    from sky_claw.local.tools.dyndolod_uia_gate import OperatorConfigurationReadyRequest  # noqa: PLC0415
+
+    return OperatorConfigurationReadyRequest(
+        tool_name=tool,
+        pid=4242,
+        executable=pathlib.Path("C:/Modding/DynDOLOD/TexGenx64.exe"),
+        expected_output=pathlib.Path("E:/Modding/ExternalWork/DynDOLOD/TexGen"),
+        timeout_seconds=timeout,
+        observed_output=r"E:\Sky-Claw T5 Rig\Stale TexGen",
+    )
+
+
+def _confirmador(guard: HITLGuard):
+    from sky_claw.app.orchestrator.dyndolod_readiness_hitl import ConfirmadorHITL  # noqa: PLC0415
+
+    return ConfirmadorHITL(hitl_guard=guard)
+
+
+class TestCategoriaDeReadiness:
+    """H1/H2 — la categoría existe y nunca se auto-aprueba en Modo local."""
+
+    def test_h1_la_categoria_existe_y_no_es_tool_execution(self) -> None:
+        from sky_claw.app.security.hitl import CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA  # noqa: PLC0415
+
+        assert CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA == "dyndolod_configuracion_lista"
+        assert CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA != "tool_execution"
+
+    @pytest.mark.asyncio
+    async def test_h2_el_modo_local_no_la_auto_aprueba(self) -> None:
+        from sky_claw.app.gui.controllers.ritual_runner import make_gui_hitl_notify  # noqa: PLC0415
+        from sky_claw.app.security.hitl import CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA  # noqa: PLC0415
+
+        aprobaciones: list[tuple[str, bool]] = []
+        parkeados: list[dict] = []
+
+        async def _respond(request_id: str, approved: bool) -> None:
+            aprobaciones.append((request_id, approved))
+
+        notify = make_gui_hitl_notify(
+            respond=_respond,
+            set_pending=parkeados.append,
+            auto_approve_getter=lambda: True,  # «Modo local» ENCENDIDO
+            tab_id_getter=lambda: "tab-1",
+            delegate=None,
+        )
+        await notify(
+            HITLRequest(
+                request_id="dyndolod-readiness-abc",
+                reason="configuración lista",
+                detail="pid=1",
+                category=CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA,
+            )
+        )
+        assert aprobaciones == [], "Modo local auto-aprobó una confirmación mid-run"
+        assert len(parkeados) == 1
+        assert parkeados[0]["category"] == CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA
+
+    @pytest.mark.asyncio
+    async def test_h2b_tool_execution_si_se_autoaprueba_para_contrastar(self) -> None:
+        """Control positivo: la categoría vecina SÍ se auto-aprueba en Modo local.
+
+        Sin este contraste, el test de arriba pasaría también si el wrapper
+        ignorara el auto-approve para TODAS las categorías (que no es el caso).
+        """
+        from sky_claw.app.gui.controllers.ritual_runner import make_gui_hitl_notify  # noqa: PLC0415
+
+        aprobaciones: list[tuple[str, bool]] = []
+
+        async def _respond(request_id: str, approved: bool) -> None:
+            aprobaciones.append((request_id, approved))
+
+        notify = make_gui_hitl_notify(
+            respond=_respond,
+            set_pending=lambda payload: None,
+            auto_approve_getter=lambda: True,
+            tab_id_getter=lambda: "tab-1",
+            delegate=None,
+        )
+        await notify(HITLRequest(request_id="tool-generate_lods-abc", reason="r", category="tool_execution"))
+        assert aprobaciones == [("tool-generate_lods-abc", True)]
+
+
+class TestConfirmadorHITLDeReadiness:
+    """H3-H6 — traducción, categoría efectiva y timeout por request."""
+
+    @pytest.mark.asyncio
+    async def test_h3_approve_se_traduce_a_aprobada(self) -> None:
+        from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion  # noqa: PLC0415
+
+        visto: list[HITLRequest] = []
+        guard: HITLGuard
+
+        async def _auto_approve(req: HITLRequest) -> None:
+            visto.append(req)
+            await guard.respond(req.request_id, True)
+
+        guard = HITLGuard(notify_fn=_auto_approve, timeout=5)
+        resultado = await _confirmador(guard).confirmar(_solicitud_de_readiness())
+
+        assert resultado is ResultadoConfirmacion.APROBADA
+        assert len(visto) == 1
+        from sky_claw.app.security.hitl import CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA  # noqa: PLC0415
+
+        assert visto[0].category == CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA
+        assert visto[0].request_id.startswith("dyndolod-readiness-")
+
+    @pytest.mark.asyncio
+    async def test_h4_deny_se_traduce_a_denegada(self) -> None:
+        from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion  # noqa: PLC0415
+
+        guard: HITLGuard
+
+        async def _deny(req: HITLRequest) -> None:
+            await guard.respond(req.request_id, False)
+
+        guard = HITLGuard(notify_fn=_deny, timeout=5)
+        assert await _confirmador(guard).confirmar(_solicitud_de_readiness()) is ResultadoConfirmacion.DENEGADA
+
+    @pytest.mark.asyncio
+    async def test_h5_el_timeout_de_la_solicitud_manda_sobre_el_global(self) -> None:
+        """El plazo de la solicitud se respeta aunque el global sea enorme."""
+        from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion  # noqa: PLC0415
+
+        async def _stall(req: HITLRequest) -> None:
+            return None  # nunca responde
+
+        guard = HITLGuard(notify_fn=_stall, timeout=3600)
+        inicio = asyncio.get_running_loop().time()
+        resultado = await _confirmador(guard).confirmar(_solicitud_de_readiness(timeout=0.05))
+        transcurrido = asyncio.get_running_loop().time() - inicio
+
+        assert resultado is ResultadoConfirmacion.TIMEOUT
+        assert transcurrido < 30, "el override por solicitud no se aplicó (esperó el global)"
+
+    @pytest.mark.asyncio
+    async def test_h6_sin_timeout_explicito_el_guard_conserva_su_global(self) -> None:
+        """H6: el default sigue siendo ``self._timeout`` — sin cambios de conducta."""
+
+        async def _stall(req: HITLRequest) -> None:
+            return None
+
+        guard = HITLGuard(notify_fn=_stall, timeout=0.05)
+        assert await guard.request_approval(request_id="sin-override") is Decision.TIMEOUT
+
+    @pytest.mark.asyncio
+    async def test_h6c_un_timeout_no_positivo_es_bug_del_caller(self) -> None:
+        """Finding Qodo: un 0/negativo cortaría al instante y disfrazaría el bug.
+
+        ``asyncio.wait_for`` con plazo no positivo devuelve de inmediato, así que
+        el fail-closed convertiría cada prompt en un ``TIMEOUT`` instantáneo. Se
+        rechaza ANTES de registrar el pendiente: la entrada no queda colgada.
+        """
+        guard = HITLGuard(timeout=5)
+        with pytest.raises(ValueError, match="timeout debe ser finito y > 0"):
+            await guard.request_approval(request_id="cero", timeout=0)
+        with pytest.raises(ValueError, match="timeout debe ser finito y > 0"):
+            await guard.request_approval(request_id="negativo", timeout=-1)
+        assert guard._pending == {}  # noqa: SLF001 -- sin pendiente fantasma
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("valor", [float("nan"), float("inf"), float("-inf")])
+    async def test_h6d_un_timeout_no_finito_es_bug_del_caller(self, valor: float) -> None:
+        """Finding CodeRabbit: nan/inf pasan la comparación ``<= 0`` y no son plazos.
+
+        ``nan`` haría un ``TIMEOUT`` casi inmediato; ``inf`` dejaría la espera sin
+        límite. Ninguno es una espera humana válida: se rechazan igual que el
+        cero, antes de registrar el pendiente.
+        """
+        guard = HITLGuard(timeout=5)
+        with pytest.raises(ValueError, match="timeout debe ser finito y > 0"):
+            await guard.request_approval(request_id="no-finito", timeout=valor)
+        assert guard._pending == {}  # noqa: SLF001 -- sin pendiente fantasma
+
+    @pytest.mark.asyncio
+    async def test_h6b_sin_canal_cableado_es_canal_no_disponible(self) -> None:
+        from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion  # noqa: PLC0415
+
+        assert (
+            await _confirmador(None).confirmar(_solicitud_de_readiness())  # type: ignore[arg-type]
+            is ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        )
+
+
+class TestPromptDeReadiness:
+    """A9-A11 — el prompt le dice al operador QUÉ corregir, y no lo contrario.
+
+    El rig real (2026-09-10) midió que TexGen arranca con el Output del preset
+    rancio precargado y que la corrección la hace el operador a mano. El texto
+    del HITL es el contrato de esa corrección: cita el Output observado, el
+    esperado (la misma raíz del ``-o:``) y ordena corregir el campo antes de
+    aprobar. La versión anterior —"dejá el campo Output como está"— hacía
+    imposible el flujo documentado y quedó refutada.
+    """
+
+    @staticmethod
+    async def _reason_de_la_solicitud() -> str:
+        visto: list[HITLRequest] = []
+        guard: HITLGuard
+
+        async def _auto_approve(req: HITLRequest) -> None:
+            visto.append(req)
+            await guard.respond(req.request_id, True)
+
+        guard = HITLGuard(notify_fn=_auto_approve, timeout=5)
+        await _confirmador(guard).confirmar(_solicitud_de_readiness())
+        assert len(visto) == 1
+        return visto[0].reason
+
+    @pytest.mark.asyncio
+    async def test_a9_el_reason_incluye_el_expected_output(self) -> None:
+        reason = await self._reason_de_la_solicitud()
+        assert str(_solicitud_de_readiness().expected_output) in reason
+
+    @pytest.mark.asyncio
+    async def test_a10_el_reason_no_pide_dejar_el_output_como_esta(self) -> None:
+        reason = await self._reason_de_la_solicitud()
+        assert "dejá el campo Output como está" not in reason
+
+    @pytest.mark.asyncio
+    async def test_a11_el_observed_output_aparece_en_el_prompt(self) -> None:
+        solicitud = _solicitud_de_readiness()
+        reason = await self._reason_de_la_solicitud()
+        assert solicitud.observed_output is not None
+        assert solicitud.observed_output in reason, "el operador tiene que saber QUÉ corregir"
+        # Requisito 3 del encargo: tool, pid, observado y esperado en el prompt.
+        assert solicitud.tool_name in reason
+        assert f"pid={solicitud.pid}" in reason
+        assert str(solicitud.expected_output) in reason
+
+    @staticmethod
+    async def _reason_para(tool: str) -> str:
+        visto: list[HITLRequest] = []
+        guard: HITLGuard
+
+        async def _auto_approve(req: HITLRequest) -> None:
+            visto.append(req)
+            await guard.respond(req.request_id, True)
+
+        guard = HITLGuard(notify_fn=_auto_approve, timeout=5)
+        await _confirmador(guard).confirmar(_solicitud_de_readiness(tool=tool))
+        assert len(visto) == 1
+        return visto[0].reason
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool", ["TexGen", "DynDOLOD"])
+    async def test_a12_el_reason_prohibe_pulsar_start_hasta_la_verificacion_final(self, tool: str) -> None:
+        """A12: el prompt declara el protocolo entero, no sólo la corrección.
+
+        El contrato débil del gate (``dyndolod_uia_gate``) es que el operador NO
+        interactúe con Start durante el gate y que Sky-Claw no continúe hasta
+        MATCH. El prompt es la única superficie que el operador lee antes de
+        aprobar, así que la instrucción "no pulses Start todavía" tiene que
+        viajar acá — aprobar habilita el FINAL gate, no el botón Start. El
+        aviso "podés continuar con Start" llega recién después del MATCH final.
+        Un solo adapter sirve a las dos herramientas: el contrato es el mismo.
+        """
+        reason = await self._reason_para(tool)
+        assert "no pulses start" in reason.lower(), (
+            f"el prompt de {tool} no prohíbe pulsar Start tras aprobar: {reason!r}"
+        )
+        assert "podés continuar con Start" in reason, (
+            f"el prompt de {tool} no anuncia el aviso post-final-MATCH como momento de Start: {reason!r}"
+        )
+
+
+class TestAvisoDeReadiness:
+    """T5-v2.1 — el aviso post-final-MATCH llega a una superficie real.
+
+    El finding de review: en producción `ConfirmadorHITL` se construía sin
+    `on_informar`, así que "podés continuar con Start" quedaba en un log y el
+    operador que aprobó el modal no recibía señal. La entrega ahora usa la
+    superficie de avisos del guard (`HITLGuard.notify_operator`), cableada por
+    la GUI al panel de feedback del ritual. Sigue siendo best-effort: una
+    superficie caída no puede tumbar una corrida ya verificada.
+    """
+
+    @pytest.mark.asyncio
+    async def test_el_aviso_llega_al_notice_fn_del_guard_sin_on_informar(self) -> None:
+        recibidos: list[str] = []
+
+        async def _notice(mensaje: str) -> None:
+            recibidos.append(mensaje)
+
+        guard = HITLGuard(timeout=5, notice_fn=_notice)
+        await _confirmador(guard).informar(tool="TexGen", mensaje="podés continuar con Start")
+        assert recibidos == ["podés continuar con Start"]
+
+    @pytest.mark.asyncio
+    async def test_el_on_informar_explicito_gana_sobre_el_notice_del_guard(self) -> None:
+        recibidos_guard: list[str] = []
+        recibidos_explicitos: list[tuple[str, str]] = []
+
+        async def _notice(mensaje: str) -> None:
+            recibidos_guard.append(mensaje)
+
+        async def _explicito(tool: str, mensaje: str) -> None:
+            recibidos_explicitos.append((tool, mensaje))
+
+        guard = HITLGuard(timeout=5, notice_fn=_notice)
+        from sky_claw.app.orchestrator.dyndolod_readiness_hitl import ConfirmadorHITL  # noqa: PLC0415
+
+        await ConfirmadorHITL(hitl_guard=guard, on_informar=_explicito).informar(tool="TexGen", mensaje="listo")
+        assert recibidos_explicitos == [("TexGen", "listo")]
+        assert recibidos_guard == []
+
+    @pytest.mark.asyncio
+    async def test_un_notice_fn_roto_no_propaga_ni_gatea(self) -> None:
+        async def _roto(_mensaje: str) -> None:
+            raise RuntimeError("sin superficie")
+
+        guard = HITLGuard(timeout=5, notice_fn=_roto)
+        await _confirmador(guard).informar(tool="TexGen", mensaje="listo")  # no lanza
+
+    @pytest.mark.asyncio
+    async def test_el_bootloader_gui_cablea_el_aviso_al_feedback_del_ritual(self) -> None:
+        from sky_claw.app.gui._bootloader import _install_gui_hitl_bridge  # noqa: PLC0415
+        from sky_claw.app.gui.controllers.ritual_runner import STORE_KEY_RITUAL_FEEDBACK  # noqa: PLC0415
+
+        class _StoreFalso:
+            def __init__(self) -> None:
+                self.escrituras: dict[object, object] = {}
+
+            def set(self, clave, valor) -> None:
+                self.escrituras[clave] = valor
+
+            def get(self, clave):
+                return self.escrituras.get(clave)
+
+        class _CtxFalso:
+            def __init__(self, guard: HITLGuard) -> None:
+                self.hitl = guard
+
+        guard = HITLGuard(timeout=5)
+        store = _StoreFalso()
+        _install_gui_hitl_bridge(_CtxFalso(guard), store)  # type: ignore[arg-type]
+
+        assert guard.notice_fn is not None, "la GUI no cableó la superficie de avisos"
+        await guard.notify_operator("Output verificado: podés continuar con Start.")
+        assert store.escrituras[STORE_KEY_RITUAL_FEEDBACK] == {
+            "text": "Output verificado: podés continuar con Start.",
+            "type": "info",
+        }
+
+    @pytest.mark.asyncio
+    async def test_el_bootloader_gui_compone_sobre_el_aviso_de_telegram(self) -> None:
+        """El puente GUI no puede PISAR el notice_fn de Telegram de AppContext.
+
+        AppContext cablea ``notice_fn`` con el sender de Telegram para que el
+        aviso post-final-MATCH llegue al chat que recibió el prompt HITL. Si el
+        bootloader reemplazara la superficie en vez de componerla, en modo GUI
+        el operador de Telegram deja de recibirla — el defecto "hermano sin
+        fix" (clase #1 del repo): arreglar un camino y dejar el gemelo intacto.
+        """
+        from sky_claw.app.gui._bootloader import _install_gui_hitl_bridge  # noqa: PLC0415
+        from sky_claw.app.gui.controllers.ritual_runner import STORE_KEY_RITUAL_FEEDBACK  # noqa: PLC0415
+
+        class _StoreFalso:
+            def __init__(self) -> None:
+                self.escrituras: dict[object, object] = {}
+
+            def set(self, clave, valor) -> None:
+                self.escrituras[clave] = valor
+
+            def get(self, clave):
+                return self.escrituras.get(clave)
+
+        class _CtxFalso:
+            def __init__(self, guard: HITLGuard) -> None:
+                self.hitl = guard
+
+        mensaje = "Output verificado contra la raíz administrada: podés continuar con Start."
+        telegram_recibidos: list[str] = []
+
+        async def _notice_telegram(texto: str) -> None:
+            telegram_recibidos.append(texto)
+
+        guard = HITLGuard(timeout=5, notice_fn=_notice_telegram)
+        store = _StoreFalso()
+        _install_gui_hitl_bridge(_CtxFalso(guard), store)  # type: ignore[arg-type]
+
+        assert guard.notice_fn is not None
+        await guard.notify_operator(mensaje)
+
+        # La GUI escribe el panel...
+        assert store.escrituras[STORE_KEY_RITUAL_FEEDBACK]["text"] == mensaje
+        # ...y Telegram (la superficie previa de AppContext) sigue entregando.
+        assert telegram_recibidos == [mensaje]
+
+
+class TestAprobacionStale:
+    """H7/H8 — una aprobación vieja no resuelve una request nueva."""
+
+    @pytest.mark.asyncio
+    async def test_h7_una_aprobacion_de_otra_corrida_no_satisface_la_nueva(self) -> None:
+        guard = HITLGuard(timeout=5)  # sin notify: espera la respuesta del operador
+        tarea = asyncio.create_task(guard.request_approval(request_id="corrida-nueva", reason="r"))
+        for _ in range(200):
+            if "corrida-nueva" in guard._pending:  # noqa: SLF001 -- la ventana se prueba por estado
+                break
+            await asyncio.sleep(0)
+        else:  # pragma: no cover -- la request nunca se registró
+            pytest.fail("la request nueva no se registró como pendiente")
+
+        # Un clic sobre el modal de la corrida ANTERIOR no debe resolver ésta.
+        assert await guard.respond("corrida-anterior", approved=True) is False
+        assert "corrida-nueva" in guard._pending  # noqa: SLF001
+        assert await guard.respond("corrida-nueva", approved=True) is True
+        assert await tarea is Decision.APPROVED
+
+    @pytest.mark.asyncio
+    async def test_h8_la_cancelacion_de_la_espera_se_preserva(self) -> None:
+        guard = HITLGuard(timeout=3600)
+        tarea = asyncio.create_task(guard.request_approval(request_id="cancelable", reason="r"))
+        for _ in range(200):
+            if "cancelable" in guard._pending:  # noqa: SLF001
+                break
+            await asyncio.sleep(0)
+        else:  # pragma: no cover
+            pytest.fail("la request no se registró como pendiente")
+
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        assert "cancelable" not in guard._pending  # noqa: SLF001

@@ -38,6 +38,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODRunner,
     DynDOLODTimeoutError,
     DynDOLODValidationError,
+    ReadinessMode,
     ToolExecutionResult,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
@@ -1169,7 +1170,7 @@ class TestExecuteProcessDrainGrace:
 
         config = MagicMock(timeout_seconds=3600, heartbeat_interval=60)
         config.fence_ownership = None  # P2.2: runner directo, sin fence
-        runner = ddl.DynDOLODRunner(config)
+        runner = ddl.DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
         cwd = pathlib.Path.cwd()
 
         with patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)) as create_process:
@@ -1190,7 +1191,7 @@ class TestExecuteProcessDrainGrace:
         config.timeout_seconds = 3600
         config.heartbeat_interval = 60
         config.fence_ownership = None  # P2.2: runner directo, sin fence
-        runner = ddl.DynDOLODRunner(config)
+        runner = ddl.DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
 
         with (
             patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)),
@@ -1225,7 +1226,7 @@ class TestExecuteProcessDrainGrace:
         config.timeout_seconds = 3600
         config.heartbeat_interval = 60
         config.fence_ownership = None  # P2.2: runner directo, sin fence
-        runner = ddl.DynDOLODRunner(config)
+        runner = ddl.DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
 
         assign_spy = MagicMock(return_value=4242)
         close_spy = MagicMock()
@@ -1296,7 +1297,7 @@ class TestExecuteProcessCancellation:
         proc.kill = MagicMock(side_effect=_kill)
         config = MagicMock(timeout_seconds=3600, heartbeat_interval=60)
         config.fence_ownership = None  # P2.2: runner directo, sin fence
-        runner = ddl.DynDOLODRunner(config)
+        runner = ddl.DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
 
         with patch.object(ddl.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc)):
             task = asyncio.create_task(runner._execute_process(pathlib.Path("DynDOLODx64.exe"), [], "DynDOLOD"))
@@ -1789,7 +1790,7 @@ async def test_dyndolod_informe_falla_no_rompe_run(
 
 def _runner_para_validacion() -> DynDOLODRunner:
     """Runner con config falsa: ``validate_dyndolod_output`` solo mira el path."""
-    return DynDOLODRunner(MagicMock())
+    return DynDOLODRunner(MagicMock(), readiness=ReadinessMode.DISABLED_FOR_TEST)
 
 
 @pytest.mark.asyncio
@@ -1928,7 +1929,7 @@ def _runner_texgen(tmp_path: pathlib.Path) -> tuple[DynDOLODConfig, DynDOLODRunn
         texgen_exe=texgen_exe,
         external_work_root=tmp_path / "Work Root",
     )
-    return config, DynDOLODRunner(config)
+    return config, DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
 
 
 def _escribir_log(tmp_path: pathlib.Path, tool: str, contenido: str) -> pathlib.Path:
@@ -3867,6 +3868,23 @@ _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
             "veredicto de la corrida — que lo dan el exit code, el artefacto y el log."
         ),
     },
+    "dyndolod_aviso_operador_incompleto": {
+        "metodo": "_informar_operador",
+        "motivo": (
+            "El aviso POST-final-MATCH ('podés dar Start') no llegó al operador dentro de su "
+            "cota. La corrida ya pasó los DOS gates UIA y la instrucción contractual completa "
+            "viajó en el texto de la confirmación que el operador leyó para aprobar, así que "
+            "esto no falla la etapa: es un canal de cortesía. Mismo criterio que "
+            "dyndolod_drenaje_incompleto."
+        ),
+    },
+    "dyndolod_aviso_operador_fallido": {
+        "metodo": "_informar_operador",
+        "motivo": (
+            "El canal de aviso lanzó una excepción. Best-effort por el mismo motivo que el "
+            "timeout de arriba: el veredicto de la corrida no depende de que el aviso llegue."
+        ),
+    },
     "dyndolod_runner_pipeline_failed": {
         "metodo": "run_full_pipeline",
         "motivo": (
@@ -4576,7 +4594,7 @@ async def test_texgen_sin_configurar_emite_un_registro_de_etapa_9(
     el mismo método. Hace falta correr el camino.
     """
     config, _ = _runner_texgen(tmp_path)
-    runner = DynDOLODRunner(dataclasses.replace(config, texgen_exe=None))
+    runner = DynDOLODRunner(dataclasses.replace(config, texgen_exe=None), readiness=ReadinessMode.DISABLED_FOR_TEST)
 
     with caplog.at_level(logging.WARNING), correlacion_de_transaccion(7):
         result = await runner.run_texgen()
