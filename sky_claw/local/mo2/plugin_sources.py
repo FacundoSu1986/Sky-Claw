@@ -19,6 +19,10 @@ Traduce el entorno en el **snapshot** que necesitan los sensores de masters
 * ``ordered_plugins`` — el orden conocido del perfil (``loadorder.txt``, o el
   orden de líneas de ``plugins.txt`` si aquel no existe). Estar listado ahí no
   implica estar habilitado.
+* ``activation_source_status`` — si la fuente de activación existía y se pudo
+  leer (``absent``/``ok``/``unreadable``). Una fuente esperada pero ilegible
+  deja el estado de activación DESCONOCIDO: los oficiales instalados no pueden
+  volver el snapshot "configurado" (fail-closed).
 * ``effective_enabled_plugins`` — la unión semántica de
   ``explicit_enabled_plugins`` + ``implicit_official_masters``, deduplicada
   case-insensitive y ordenada de forma determinista. Es el universo sobre el
@@ -40,10 +44,20 @@ from __future__ import annotations
 import logging
 import pathlib
 from dataclasses import dataclass
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["OFFICIAL_MASTERS", "PluginSources", "resolve_plugin_sources"]
+__all__ = ["OFFICIAL_MASTERS", "ActivationSourceStatus", "PluginSources", "resolve_plugin_sources"]
+
+#: Estado de la fuente de activación del perfil (``plugins.txt``; en el
+#: fallback histórico, ``loadorder.txt``):
+#:
+#: * ``absent`` — no existía ningún archivo de activación.
+#: * ``ok`` — existía y se leyó completo.
+#: * ``unreadable`` — existía pero la lectura falló: el estado de activación es
+#:   DESCONOCIDO y los sensores no deben afirmar nada sobre ese universo.
+ActivationSourceStatus = Literal["absent", "ok", "unreadable"]
 
 #: Masters oficiales de Skyrim SE/AE que el motor carga implícitamente cuando
 #: el archivo está presente en la ``Data`` del juego. NO incluye Creation Club
@@ -71,12 +85,18 @@ class PluginSources:
             del juego que el motor carga sin que ``plugins.txt`` los marque.
         ordered_plugins: Orden conocido del perfil (``loadorder.txt``); vacío
             sin archivos de load order. Orden no es habilitación.
+        activation_source_status: ``"ok"`` si la fuente de activación se leyó,
+            ``"absent"`` si no existía, ``"unreadable"`` si existía pero la
+            lectura falló. Con ``"unreadable"`` el estado de activación es
+            desconocido y los sensores no se cablean (fail-closed). El default
+            ``"ok"`` es para snapshots construidos a mano con datos conocidos.
     """
 
     plugin_dirs: tuple[pathlib.Path, ...]
     explicit_enabled_plugins: tuple[str, ...]
     implicit_official_masters: tuple[str, ...] = ()
     ordered_plugins: tuple[str, ...] = ()
+    activation_source_status: ActivationSourceStatus = "ok"
 
     @property
     def effective_enabled_plugins(self) -> tuple[str, ...]:
@@ -146,15 +166,25 @@ def resolve_plugin_sources(
 
     Returns:
         :class:`PluginSources` (tuplas vacías ante fuentes ausentes/ilegibles).
+        Un ``plugins_file`` (o el ``order_file`` del fallback) existente pero
+        ilegible se refleja en ``activation_source_status="unreadable"``; el
+        snapshot no debe tratarse como configuración válida.
     """
     plugin_dirs = _resolve_plugin_dirs(game_data_dir, mo2_mods_dir, mo2_overwrite_dir)
-    explicit = _parse_activation(plugins_file) if plugins_file is not None else _parse_activation(order_file)
+    activation = _parse_activation(plugins_file if plugins_file is not None else order_file)
+    if activation is None:
+        activation_source_status: ActivationSourceStatus = "unreadable"
+        explicit: tuple[str, ...] = ()
+    else:
+        explicit = activation
+        activation_source_status = "ok" if plugins_file is not None else "absent"
     ordered = _parse_order(order_file) if order_file is not None else _parse_order(plugins_file)
     return PluginSources(
         plugin_dirs=plugin_dirs,
         explicit_enabled_plugins=explicit,
         implicit_official_masters=_implicit_official_masters(game_data_dir),
         ordered_plugins=ordered,
+        activation_source_status=activation_source_status,
     )
 
 
@@ -230,8 +260,12 @@ def _is_dir(path: pathlib.Path | None) -> bool:
         return False
 
 
-def _read_entries(path: pathlib.Path | None) -> tuple[str, ...]:
-    """Líneas útiles del archivo (sin vacías ni comentarios); vacío si ilegible."""
+def _read_entries(path: pathlib.Path | None) -> tuple[str, ...] | None:
+    """Líneas útiles del archivo (sin vacías ni comentarios).
+
+    ``None`` cuando el archivo existe pero no se pudo leer (OSError): es un
+    dato distinto de "vacío" y quien decide no puede colapsarlos.
+    """
     if path is None:
         return ()
     try:
@@ -241,21 +275,26 @@ def _read_entries(path: pathlib.Path | None) -> tuple[str, ...]:
         text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as exc:
         logger.debug("No se pudo leer el load order %s: %s", path, exc)
-        return ()
+        return None
 
     entries = [line.strip() for line in text.splitlines()]
     return tuple(line for line in entries if line and not line.startswith("#"))
 
 
-def _parse_activation(path: pathlib.Path | None) -> tuple[str, ...]:
+def _parse_activation(path: pathlib.Path | None) -> tuple[str, ...] | None:
     """Plugins habilitados explícitamente según ``plugins.txt``/``loadorder.txt``.
 
     En ``plugins.txt`` moderno solo las líneas con ``*`` están activas; si
     ninguna lo trae (formato viejo donde listar == activar), se caen a
     considerarlas todas. Para ``loadorder.txt`` (o cualquier otro nombre),
     listar == activar es el fallback histórico.
+
+    ``None`` propaga que la fuente existe pero no pudo leerse (activación
+    desconocida); ``()`` es un archivo legible sin entradas.
     """
     entries = _read_entries(path)
+    if entries is None:
+        return None
     if not entries:
         return ()
     if path is not None and path.name.lower() == "plugins.txt":
@@ -266,5 +305,12 @@ def _parse_activation(path: pathlib.Path | None) -> tuple[str, ...]:
 
 
 def _parse_order(path: pathlib.Path | None) -> tuple[str, ...]:
-    """Orden del perfil: todas las líneas, sin ``*`` y en el orden del archivo."""
-    return tuple(line.lstrip("*").strip() for line in _read_entries(path))
+    """Orden del perfil: todas las líneas, sin ``*`` y en el orden del archivo.
+
+    Un archivo ilegible degrada a orden vacío (el estado de activación ya lo
+    señaliza ``activation_source_status``).
+    """
+    entries = _read_entries(path)
+    if entries is None:
+        return ()
+    return tuple(line.lstrip("*").strip() for line in entries)

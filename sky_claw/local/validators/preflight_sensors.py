@@ -25,8 +25,11 @@ importan perezosamente dentro de cada builder.
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -109,6 +112,12 @@ def build_modlist_sensors(
     from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
 
     initial = sources_resolver()
+    if initial.activation_source_status == "unreadable":
+        # Fuente de activación esperada pero ilegible → activación DESCONOCIDA.
+        # Los oficiales implícitos no pueden volver el snapshot "configurado":
+        # sin saber qué mods están activos no se afirma masters ni límites.
+        logger.warning("plugins.txt del perfil ilegible: sensores de masters/límites no cableados (fail-closed).")
+        return None, None
     if not initial.plugin_dirs or not initial.effective_enabled_plugins:
         return None, None
 
@@ -140,6 +149,10 @@ def build_master_order_sensor(
     from sky_claw.local.validators.master_order import MasterOrderChecker
 
     initial = sources_resolver()
+    if initial.activation_source_status == "unreadable":
+        # Mismo criterio que masters/límites: activación desconocida → sin orden.
+        logger.warning("plugins.txt del perfil ilegible: sensor de orden no cableado (fail-closed).")
+        return None
     if not initial.plugin_dirs or not initial.effective_enabled_plugins:
         return None
 
@@ -169,7 +182,7 @@ def build_mo2_profile_sources_resolver(
     global/stale que ``LoadOrderFileResolver`` prioriza en su unión (review
     Codex #306). Valida el nombre del perfil contra path traversal
     (``assert_safe_component``). La existencia de cada archivo se re-comprueba
-    por llamada (freshness): un ``loadorder.txt`` que aparece después de
+    por llamada (vigencia): un ``loadorder.txt`` que aparece después de
     construir el preflight cacheado entra al snapshot en la corrida siguiente.
     Devuelve ``None`` si el perfil no es resoluble o no hay ningún archivo de
     load order → el caller reporta "no configurado", no miente verde (lección
@@ -207,7 +220,7 @@ def build_mo2_profile_sources_resolver(
     mo2_overwrite_dir = mo2 / "overwrite"
 
     def _resolve() -> PluginSources:
-        # La EXISTENCIA se re-comprueba por llamada (freshness): un
+        # La EXISTENCIA se re-comprueba por llamada (vigencia): un
         # ``loadorder.txt`` que aparece después de construir el preflight
         # cacheado debe entrar al snapshot en la corrida siguiente.
         return resolve_plugin_sources(
@@ -255,24 +268,34 @@ def build_vfs_visibility_sensor(
 
     ``sources_resolver`` es el mismo closure que alimenta a
     ``build_modlist_sensors``: se reusa para no volver a parsear el load order
-    del perfil. Sin ``game`` o sin resolver → ``None`` → "no configurado", nunca
-    un verde inventado (lección #250).
+    del perfil. Sin ``game``, sin resolver o con la fuente de activación
+    ilegible → ``None`` → "no configurado", nunca un verde inventado (lección
+    #250): sin estado de activación conocido no hay universo de mods que medir.
 
-    Re-resuelve en cada run (freshness, patrón #252): el ``PreflightService`` se
-    cachea, pero el perfil activo y el contenido de ``Data`` pueden cambiar
-    entre Rituales.
+    Re-resuelve en cada run (actualización por corrida, patrón #252): el
+    ``PreflightService`` se cachea, pero el perfil activo y el contenido de
+    ``Data`` pueden cambiar entre Rituales.
     """
     if not isinstance(game, pathlib.Path) or sources_resolver is None:
         return None
-    from sky_claw.local.validators.vfs_visibility import VfsVisibilityChecker
+    from sky_claw.local.validators.vfs_visibility import VfsVisibilityChecker, VisibilityScan
 
     data_dir = game / "Data"
     resolver = sources_resolver
+    if resolver().activation_source_status == "unreadable":
+        logger.warning("plugins.txt del perfil ilegible: sensor de visibilidad no cableado (fail-closed).")
+        return None
 
     def _visibility() -> VisibilityScan:
+        sources = resolver()
+        if sources.activation_source_status == "unreadable":
+            # La fuente pudo volverse ilegible después de construir el sensor:
+            # sin activación conocida el scan se declara no configurado en vez
+            # de medir visibilidad sobre los oficiales (fail-closed, #250).
+            return VisibilityScan(configured=False, mod_plugins=(), visible=())
         return VfsVisibilityChecker(
             game_data_dir=data_dir,
-            enabled_plugins=resolver().effective_enabled_plugins,
+            enabled_plugins=sources.effective_enabled_plugins,
         ).check()
 
     return _visibility

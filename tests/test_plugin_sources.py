@@ -70,7 +70,7 @@ def test_plugin_dirs_incluye_mods_y_data(tmp_path: pathlib.Path) -> None:
 def test_plugin_dirs_sin_fuentes_es_vacio(tmp_path: pathlib.Path) -> None:
     sources = resolve_plugin_sources(game_data_dir=None, mo2_mods_dir=None)
 
-    assert sources == PluginSources(plugin_dirs=(), explicit_enabled_plugins=())
+    assert sources == PluginSources(plugin_dirs=(), explicit_enabled_plugins=(), activation_source_status="absent")
 
 
 def test_mods_dir_inexistente_no_explota(tmp_path: pathlib.Path) -> None:
@@ -303,3 +303,80 @@ def test_efectivo_excluye_deshabilitados_reales(tmp_path: pathlib.Path) -> None:
     sources = resolve_plugin_sources(game_data_dir=data, mo2_mods_dir=None, plugins_file=plugins, order_file=orden)
 
     assert sources.effective_enabled_plugins == ("Skyrim.esm", "Habilitado.esp")
+
+
+# ---------------------------------------------------------------------------
+# activation_source_status — no colapsar "no existe", "leído" e "ilegible"
+# ---------------------------------------------------------------------------
+
+
+def test_estado_ok_con_plugins_legible(tmp_path: pathlib.Path) -> None:
+    plugins = tmp_path / "plugins.txt"
+    plugins.write_text("*A.esp\n", encoding="utf-8")
+
+    sources = resolve_plugin_sources(game_data_dir=None, mo2_mods_dir=None, plugins_file=plugins)
+
+    assert sources.activation_source_status == "ok"
+    assert sources.explicit_enabled_plugins == ("A.esp",)
+
+
+def test_estado_absent_sin_plugins_pero_con_loadorder(tmp_path: pathlib.Path) -> None:
+    """Sin ``plugins.txt`` el fallback histórico no es un estado de error."""
+    orden = tmp_path / "loadorder.txt"
+    orden.write_text("A.esp\n", encoding="utf-8")
+
+    sources = resolve_plugin_sources(game_data_dir=None, mo2_mods_dir=None, order_file=orden)
+
+    assert sources.activation_source_status == "absent"
+    assert sources.explicit_enabled_plugins == ("A.esp",)
+
+
+def test_estado_absent_sin_archivos(tmp_path: pathlib.Path) -> None:
+    sources = resolve_plugin_sources(game_data_dir=None, mo2_mods_dir=None)
+
+    assert sources.activation_source_status == "absent"
+    assert sources.explicit_enabled_plugins == ()
+
+
+def test_estado_unreadable_no_se_confunde_con_vacio(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """``plugins.txt`` ilegible ≠ ``plugins.txt`` vacío: el estado lo distingue y
+    los oficiales instalados no lo enmascaran."""
+    data = _data_con_oficiales(tmp_path, ("Skyrim.esm",))
+    plugins = tmp_path / "plugins.txt"
+    plugins.write_text("*A.esp\n", encoding="utf-8")
+    original = pathlib.Path.read_text
+
+    def _falla(self: pathlib.Path, *args, **kwargs):
+        if self == plugins:
+            raise OSError("permiso denegado")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", _falla)
+
+    sources = resolve_plugin_sources(game_data_dir=data, mo2_mods_dir=None, plugins_file=plugins)
+
+    assert sources.activation_source_status == "unreadable"
+    assert sources.explicit_enabled_plugins == ()
+    # El universal efectivo puede tener oficiales; es el estado el que impide
+    # tratarlo como configuración válida.
+    assert sources.effective_enabled_plugins == ("Skyrim.esm",)
+
+
+def test_estado_unreadable_sin_plugins_con_loadorder_ilegible(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """También el fallback: un ``loadorder.txt`` ilegible deja la activación
+    desconocida en vez de aparentar "no hay nada activo"."""
+    orden = tmp_path / "loadorder.txt"
+    orden.write_text("A.esp\n", encoding="utf-8")
+    original = pathlib.Path.read_text
+
+    def _falla(self: pathlib.Path, *args, **kwargs):
+        if self == orden:
+            raise OSError("permiso denegado")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", _falla)
+
+    sources = resolve_plugin_sources(game_data_dir=None, mo2_mods_dir=None, order_file=orden)
+
+    assert sources.activation_source_status == "unreadable"
+    assert sources.explicit_enabled_plugins == ()

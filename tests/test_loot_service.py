@@ -792,7 +792,7 @@ def test_read_plugin_order_ignora_comentarios_bom_y_marca_de_activo(tmp_path: pa
 
 
 def test_sources_resolver_relee_los_archivos_por_llamada(tmp_path: pathlib.Path) -> None:
-    """Freshness (review PR #595): `_build_sources_resolver` re-selecciona
+    """Vigencia (review PR #595): `_build_sources_resolver` re-selecciona
     plugins.txt/loadorder.txt en cada resolución, no al construir el preflight
     cacheado: el loadorder.txt que aparece después entra al snapshot."""
     perfil = tmp_path / "profiles" / "Default"

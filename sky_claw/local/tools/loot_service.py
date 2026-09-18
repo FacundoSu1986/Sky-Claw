@@ -499,7 +499,7 @@ class LootSortingService:
         # que los masters oficiales implícitos se leyeran como deshabilitados
         # (#585). Usar solo loadorder.txt también daría falsos rojos por
         # plugins inactivos (review #252). La selección se rehace por llamada
-        # (freshness): archivos que aparecen/desaparecen tras construir el
+        # (vigencia): archivos que aparecen/desaparecen tras construir el
         # preflight cacheado se reflejan en la corrida siguiente.
         def _resolve():
             load_order_files = list(self._ensure_load_order_resolver().resolve().files)

@@ -24,6 +24,7 @@ from sky_claw.local.validators.preflight_sensors import (
     build_master_order_sensor,
     build_mo2_profile_sources_resolver,
     build_modlist_sensors,
+    build_vfs_visibility_sensor,
 )
 
 #: Flags del record TES4 (mismos valores que `plugin_header`).
@@ -335,3 +336,105 @@ def test_oficial_solo_en_un_mod_no_se_vuelve_implicito(tmp_path: pathlib.Path) -
     assert [(i.plugin, i.master, i.kind, i.severity) for i in issues] == [
         ("Parche.esp", "Skyrim.esm", "disabled", "critical")
     ]
+
+
+# ---------------------------------------------------------------------------
+# F1 — fuente de activación ilegible: estado DESCONOCIDO, no GREEN inventado
+# ---------------------------------------------------------------------------
+
+
+def test_f1_plugins_ilegible_no_cablea_sensores(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """``plugins.txt`` existe pero su lectura falla con ``OSError``.
+
+    Aunque ``Data`` tenga los cinco oficiales (y por lo tanto
+    ``effective_enabled_plugins`` no esté vacío), no sabemos qué plugins del
+    perfil están activos: los cuatro sensores del modlist deben declararse no
+    cableados en vez de afirmar masters/limits/orden/visibilidad sobre un
+    universo incompleto."""
+    game, mo2 = _perfil_mo2(
+        tmp_path,
+        plugins_txt="*Mod.esp\n",
+        loadorder_txt="Skyrim.esm\nMod.esp\n",
+        mods={"Mod": {"Mod.esp": ["Skyrim.esm"]}},
+    )
+    plugins = mo2 / "profiles" / "Default" / "plugins.txt"
+    original = pathlib.Path.read_text
+
+    def _falla(self: pathlib.Path, *args, **kwargs):
+        if self == plugins:
+            raise OSError("permiso denegado")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", _falla)
+    resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
+    assert resolver is not None
+
+    masters, limits = build_modlist_sensors(resolver)
+    order = build_master_order_sensor(resolver)
+    visibility = build_vfs_visibility_sensor(game=game, sources_resolver=resolver)
+
+    assert masters is None
+    assert limits is None
+    assert order is None
+    assert visibility is None
+    assert resolver().activation_source_status == "unreadable"
+
+
+# ---------------------------------------------------------------------------
+# F2 — legible y sin activos ≠ ilegible: estado conocido y deliberado
+# ---------------------------------------------------------------------------
+
+
+def test_f2_plugins_legible_sin_activos_es_estado_conocido(tmp_path: pathlib.Path) -> None:
+    """Un ``plugins.txt`` legible sin plugins activos es un estado CONOCIDO:
+    los oficiales implícitos son el universo efectivo y los sensores corren
+    normalmente. No se confunde con la fuente ilegible (F1)."""
+    game, mo2 = _perfil_mo2(
+        tmp_path,
+        plugins_txt="# sin plugins activos\n",
+        loadorder_txt=None,
+        mods={},
+    )
+    resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
+    assert resolver is not None
+    sources = resolver()
+
+    assert sources.activation_source_status == "ok"
+    assert sources.explicit_enabled_plugins == ()
+    assert sources.effective_enabled_plugins == _OFICIALES
+
+    masters, limits = build_modlist_sensors(resolver)
+    order = build_master_order_sensor(resolver)
+    assert masters is not None and limits is not None and order is not None
+    assert masters() == []
+    assert limits().full_count == len(_OFICIALES)
+    assert order() == []
+
+
+# ---------------------------------------------------------------------------
+# F3 — fallback histórico: sin plugins.txt, loadorder.txt legible manda
+# ---------------------------------------------------------------------------
+
+
+def test_f3_sin_plugins_txt_el_loadorder_legible_mantiene_el_fallback(tmp_path: pathlib.Path) -> None:
+    """El contrato histórico ("listar == activar" en ``loadorder.txt``) se
+    preserva cuando ``plugins.txt`` no existe; el estado es ``absent``, no
+    ``unreadable``."""
+    game, mo2 = _perfil_mo2(
+        tmp_path,
+        plugins_txt=None,
+        loadorder_txt="Skyrim.esm\nA.esp\n",
+        mods={"ModA": {"A.esp": []}},
+    )
+    resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
+    assert resolver is not None
+    sources = resolver()
+
+    assert sources.activation_source_status == "absent"
+    assert sources.explicit_enabled_plugins == ("Skyrim.esm", "A.esp")
+    assert sources.effective_enabled_plugins[: len(_OFICIALES)] == _OFICIALES
+    assert "A.esp" in sources.effective_enabled_plugins
+
+    masters, limits = build_modlist_sensors(resolver)
+    assert masters is not None and limits is not None
+    assert masters() == []

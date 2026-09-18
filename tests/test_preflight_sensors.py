@@ -176,7 +176,7 @@ class TestBuildMo2ProfileSourcesResolver:
         assert resolver().explicit_enabled_plugins == ("A.esp",)
 
     def test_loadorder_que_aparece_despues_se_ve_sin_reconstruir(self, tmp_path):
-        """Freshness (review PR #595): la existencia se re-comprueba por llamada,
+        """Vigencia (review PR #595): la existencia se re-comprueba por llamada,
         no se captura al construir el preflight cacheado."""
         game, mo2 = self._fixture(tmp_path)
         resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
