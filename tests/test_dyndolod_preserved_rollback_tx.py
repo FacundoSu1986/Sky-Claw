@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 import time
@@ -33,7 +34,7 @@ def service() -> DynDOLODPipelineService:
     `pytest tests/test_dyndolod_service.py tests/test_dyndolod_preserved_rollback_tx.py`),
     sus fixtures no quedan registradas como plugin y los cuatro tests fallan con
     `fixture 'service' not found`. Un fixture local es determinista en cualquier
-    orden sin registrar otro módulo de tests como plugin ni ampliar el blast radius
+    orden sin registrar otro módulo de tests como plugin ni ampliar el alcance
     a un conftest compartido. Importar las fixtures tampoco sirve: el linter (F811)
     trata el parámetro `service` de cada test como redefinición del símbolo
     importado. Si el constructor de `DynDOLODPipelineService` cambia, F-02 —que
@@ -213,6 +214,57 @@ async def test_certificacion_fallida_no_reporta_preservacion_como_rollback_incom
     assert result["rolled_back"] is False
     assert "needs_deployment" not in result
     assert (mod_texgen / "textures" / "a.dds").read_bytes() == b"CURRENT!"
+    service._journal.mark_transaction_rolled_back.assert_not_awaited()
+    service._journal.commit_transaction.assert_not_awaited()
+    mensajes = [r.getMessage() for r in caplog.records]
+    assert any("PENDIENTE con una mutación PRESERVADA a propósito" in msg for msg in mensajes)
+    assert not any("rollback INCOMPLETO" in msg for msg in mensajes)
+
+
+@pytest.mark.asyncio
+async def test_cancelacion_durante_preserve_no_reporta_rollback_incompleto(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#592.1 (ventana de cancelación): sellar + cancelar no es rollback incompleto.
+
+    `commit()` SELLA el protector de forma síncrona (antes de su primer await), así
+    que si una `CancelledError` llega DURANTE el discard best-effort, el move-aside
+    ya quedó preservado. Sin el fix, el `return` de `_preservar_mod_de_texgen` se
+    pierde, `preservado_para_deployment` queda `None` y el cierre transaccional
+    clasifica la mutación viva como "rollback INCOMPLETO". El artifact sigue en
+    disco a propósito: la TX queda PENDIENTE y la `CancelledError` debe propagarse
+    intacta.
+    """
+    _config, runner, staging, mod_texgen = _pipeline_con_texgen_current(tmp_path, service)
+
+    from sky_claw.local.tools import _dir_rollback
+
+    commit_real = _dir_rollback.DirectoryRollback.commit
+
+    async def _commit_que_se_cancela(self: _dir_rollback.DirectoryRollback) -> None:
+        # Reproduce la ventana real: el protector se SELLA de forma síncrona
+        # (deshabilita el restore ⇒ el move-aside sobrevive al unwind) y luego se
+        # propaga `CancelledError`, como haría `_commit_directory_rollbacks` si el
+        # caller fuese cancelado durante `_esperar_hasta_terminal`.
+        if self.target == mod_texgen:
+            self._seal_for_commit()
+            raise asyncio.CancelledError
+        await commit_real(self)
+
+    with (
+        caplog.at_level(logging.WARNING, logger="SkyClaw.DynDOLODPipelineService"),
+        patch.object(_dir_rollback.DirectoryRollback, "commit", _commit_que_se_cancela),
+        patch.object(runner, "_execute_process", _texgen_que_genera_current(tmp_path, staging)),
+        patch.object(runner, "run_dyndolod", AsyncMock()),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    # El artifact preservado sigue vivo pese a la cancelación.
+    assert (mod_texgen / "textures" / "a.dds").read_bytes() == b"CURRENT!"
+    # TX no marcada como rolled back: hay una mutación viva a propósito.
     service._journal.mark_transaction_rolled_back.assert_not_awaited()
     service._journal.commit_transaction.assert_not_awaited()
     mensajes = [r.getMessage() for r in caplog.records]

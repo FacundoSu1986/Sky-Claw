@@ -3375,6 +3375,14 @@ def test_la_familia_de_handlers_de_execute_esta_congelada() -> None:
         "LockAcquisitionError",
         "_ActionManifestError",
         "_CertificacionPreservadaError",
+        # Handler EXTERNO del pipeline: cleanup mínimo + `_cerrar_tx_tras_rollback`.
+        "asyncio.CancelledError",
+        # #592.1 (ventana de cancelación): handler INTERNO alrededor de la
+        # preservación. `commit()` sella el protector de forma síncrona, así que una
+        # cancelación DURANTE su discard best-effort deja el move-aside preservado
+        # pero pierde el `return` de `_preservar_mod_de_texgen`. Recupera el path y
+        # re-lanza la CancelledError intacta para que el cierre lo clasifique como
+        # PRESERVADA/PENDIENTE y no como "rollback INCOMPLETO".
         "asyncio.CancelledError",
     ]
 

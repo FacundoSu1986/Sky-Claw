@@ -883,13 +883,18 @@ class DynDOLODPipelineService:
         """
         for rollback in dir_rollbacks:
             if rollback.target == objetivo:
-                await rollback.commit()
+                # El log va ANTES del `commit()` cancelable (mismo criterio que los
+                # handlers de `execute`): `commit()` sella el protector de forma
+                # síncrona, así que en cuanto se invoca sobre un protector del lote
+                # la preservación ya es un hecho. Loguear antes hace que la señal
+                # sobreviva una CancelledError DURANTE el discard best-effort.
                 logger.warning(
                     "DynDOLOD (stage 9): se PRESERVA '%s' pese al fallo — es la salida de TexGen "
                     "que el operador tiene que materializar en el Data para poder continuar.",
                     objetivo,
                     extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                 )
+                await rollback.commit()
                 return objetivo
         return None
 
@@ -1605,11 +1610,27 @@ class DynDOLODPipelineService:
                         # mod nunca entró al lote). Los cierres transaccionales
                         # posteriores lo leen para no contar el move-aside
                         # deliberado como rollback no resuelto.
-                        preservado_para_deployment = await self._preservar_mod_de_texgen(
-                            dir_rollbacks,
-                            mods_path / runner.TEXGEN_MOD_NAME,
-                            tx_id=tx_id,
-                        )
+                        objetivo_preservacion = mods_path / runner.TEXGEN_MOD_NAME
+                        try:
+                            preservado_para_deployment = await self._preservar_mod_de_texgen(
+                                dir_rollbacks,
+                                objetivo_preservacion,
+                                tx_id=tx_id,
+                            )
+                        except asyncio.CancelledError:
+                            # #592.1 (ventana de cancelación): `commit()` SELLA el
+                            # protector de forma síncrona —antes de su primer await
+                            # en `_commit_directory_rollbacks`—, así que el move-aside
+                            # ya quedó preservado. `_preservar_mod_de_texgen` tiene un
+                            # ÚNICO await (ese `commit()`, alcanzado sólo tras matchear
+                            # el protector en el lote), de modo que una CancelledError
+                            # propagada desde el método implica preservación consumada;
+                            # su `return` se perdió por la cancelación. Registrar el
+                            # path para que el cierre transaccional lo clasifique como
+                            # PRESERVADA/PENDIENTE y no como "rollback INCOMPLETO"; la
+                            # cancelación sigue propagándose intacta al handler.
+                            preservado_para_deployment = objetivo_preservacion
+                            raise
                         needs_deployment = True
                     if result.needs_deployment and run_texgen:
                         # POST_RELEASE_ARTIFACT_PROVENANCE_RACE (PR #503): la
