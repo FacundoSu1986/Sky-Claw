@@ -56,6 +56,10 @@ dependencies = [
     # Transitive (via nicegui); floor at >=5.16.2 to fix CVE-2026-48804
     # (5.16.1 flagged by pip-audit, same advisory wave as python-engineio).
     "python-socketio>=5.16.2",
+    # Dependencia transitiva (vía starlette/httpx/watchfiles); piso
+    # >=4.14.2,<5 para corregir CVE-2026-63374 y CVE-2026-64847 (4.13.0
+    # reportada por pip-audit).
+    "anyio>=4.14.2,<5",
     # T5-v2: backend real de UI Automation puro-Python/COM para el rig Windows.
     # MIT. NO se carga en CIs Linux (import perezoso en
     # ``dyndolod_uia_windows.construir_observador_windows``); esto es

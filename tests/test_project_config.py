@@ -384,3 +384,40 @@ def test_comtypes_es_dependencia_win32_declarada_y_resuelta() -> None:
 
     requirements_lock = (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8")
     assert re.search(r"(?m)^comtypes==", requirements_lock), "comtypes declarado pero sin pineado en requirements.lock"
+
+
+def test_anyio_piso_de_seguridad_declarado_y_bloqueado() -> None:
+    """AnyIO debe mantener el piso seguro >=4.14.2 ante CVE-2026-63374 y CVE-2026-64847.
+
+    Previene regresiones donde una actualización o resolución accidental baje
+    anyio a 4.13.0 u otra versión vulnerable en pyproject.toml, requirements.lock
+    o uv.lock.
+    """
+    from packaging.version import Version
+
+    piso_minimo = Version("4.14.2")
+
+    # 1. pyproject.toml
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    runtime_deps = [Requirement(d) for d in pyproject["project"]["dependencies"]]
+    candidatos = [d for d in runtime_deps if d.name == "anyio"]
+    assert len(candidatos) == 1, f"se esperaba exactamente un anyio en runtime, hay {candidatos}"
+    req = candidatos[0]
+    assert not req.specifier.contains("4.13.0", prereleases=True), "anyio permite la versión vulnerable 4.13.0"
+    assert req.specifier.contains("4.14.2", prereleases=True), "anyio debe permitir la versión segura 4.14.2"
+
+    # 2. requirements.lock
+    req_match = re.search(r"(?m)^anyio==([^\s\\]+)", (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8"))
+    assert req_match is not None, "anyio no encontrado en requirements.lock"
+    version_req = Version(req_match.group(1))
+    assert version_req >= piso_minimo, f"requirements.lock tiene anyio {version_req} < {piso_minimo}"
+
+    # 3. uv.lock
+    with (REPO_ROOT / "uv.lock").open("rb") as file:
+        uv_data = tomllib.load(file)
+    paquetes_anyio = [p for p in uv_data.get("package", []) if p.get("name") == "anyio"]
+    assert len(paquetes_anyio) == 1, f"se esperaba 1 paquete anyio en uv.lock, hay {len(paquetes_anyio)}"
+    version_uv = Version(paquetes_anyio[0]["version"])
+    assert version_uv >= piso_minimo, f"uv.lock tiene anyio {version_uv} < {piso_minimo}"
