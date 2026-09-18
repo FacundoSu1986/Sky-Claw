@@ -295,3 +295,18 @@ def test_a10_sin_loadorder_los_oficiales_van_primero(tmp_path: pathlib.Path) -> 
     assert sources.effective_enabled_plugins[-1] == "Mod.esm"
     _masters, _limits, order = _sensores(game, mo2)
     assert order() == []
+
+
+# ---------------------------------------------------------------------------
+# Política: una sola definición de "master oficial" entre sensores
+# ---------------------------------------------------------------------------
+
+
+def test_los_oficiales_implicitos_y_los_vanilla_del_sensor_vfs_coinciden() -> None:
+    """``OFFICIAL_MASTERS`` (implícitos) y ``_VANILLA_MASTERS`` (contenido base
+    excluido del scan de visibilidad) describen el mismo conjunto: si alguien
+    amplía una lista, la otra es una decisión explícita, no un drift silencioso."""
+    from sky_claw.local.mo2.plugin_sources import OFFICIAL_MASTERS
+    from sky_claw.local.validators.vfs_visibility import _VANILLA_MASTERS
+
+    assert {nombre.casefold() for nombre in OFFICIAL_MASTERS} == set(_VANILLA_MASTERS)
