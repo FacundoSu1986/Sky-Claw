@@ -70,7 +70,7 @@ class TestPostRunValidator:
         _tes4(plugins_dir / "Legacy.esp", form_version=43)
 
         def _sources() -> PluginSources:
-            return PluginSources(plugin_dirs=(plugins_dir,), enabled_plugins=("Porteado.esp", "Legacy.esp"))
+            return PluginSources(plugin_dirs=(plugins_dir,), explicit_enabled_plugins=("Porteado.esp", "Legacy.esp"))
 
         reporte = await PostRunValidator(preflight=_preflight_verde(), plugin_sources=_sources).run()
 
@@ -90,7 +90,7 @@ class TestPostRunValidator:
         (plugins_dir / "Roto.esp").write_bytes(b"NO-TES4")
 
         def _sources() -> PluginSources:
-            return PluginSources(plugin_dirs=(plugins_dir,), enabled_plugins=("Roto.esp",))
+            return PluginSources(plugin_dirs=(plugins_dir,), explicit_enabled_plugins=("Roto.esp",))
 
         reporte = await PostRunValidator(preflight=_preflight_verde(), plugin_sources=_sources).run()
 
@@ -110,7 +110,7 @@ class TestPostRunValidator:
         _tes4(plugins_dir / "Legacy.esp", form_version=43)
 
         def _sources() -> PluginSources:
-            return PluginSources(plugin_dirs=(plugins_dir,), enabled_plugins=("Legacy.esp",))
+            return PluginSources(plugin_dirs=(plugins_dir,), explicit_enabled_plugins=("Legacy.esp",))
 
         reporte = await PostRunValidator(preflight=_preflight_verde(), plugin_sources=_sources).run()
         data = reporte.to_dict()

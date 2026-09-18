@@ -115,7 +115,7 @@ class PostRunValidator:
         checked = False
         if self._plugin_sources is not None:
             sources = self._plugin_sources()
-            if sources.plugin_dirs and sources.enabled_plugins:
+            if sources.plugin_dirs and sources.effective_enabled_plugins:
                 # Lee headers de plugins en disco: fuera del event loop.
                 issues = await asyncio.to_thread(self._check_headers, sources)
                 checked = True
@@ -143,7 +143,7 @@ class PostRunValidator:
                 logger.debug("No se pudo enumerar %s: %s", directory, exc)
 
         issues: list[HeaderVersionIssue] = []
-        for plugin_name in sources.enabled_plugins:
+        for plugin_name in sources.effective_enabled_plugins:
             path = available.get(plugin_name.casefold())
             if path is None:
                 continue  # ausente en disco: el sensor de masters ya lo reporta

@@ -348,7 +348,6 @@ class ChainPreviewService:
             game_data_dir=game_data_dir,
             mo2_mods_dir=mo2_mods_dir,
             mo2_overwrite_dir=mo2 / "overwrite" if mo2_ok else None,
-            load_order_file=None,
         )
         # Zero-trust (review Copilot #267): validar cada dir contra el sandbox
         # antes de leer headers ahí. Best-effort — una ruta fuera del sandbox

@@ -58,15 +58,15 @@ class TestBuildModlistSensors:
         mod_dir = tmp_path / "mods" / "ModA"
         mod_dir.mkdir(parents=True)
         (mod_dir / "A.esp").write_bytes(b"")
-        return PluginSources(plugin_dirs=(mod_dir,), enabled_plugins=("A.esp",))
+        return PluginSources(plugin_dirs=(mod_dir,), explicit_enabled_plugins=("A.esp",))
 
     def test_fuentes_vacias_devuelve_none_none(self):
-        masters, limits = build_modlist_sensors(lambda: PluginSources(plugin_dirs=(), enabled_plugins=()))
+        masters, limits = build_modlist_sensors(lambda: PluginSources(plugin_dirs=(), explicit_enabled_plugins=()))
         assert masters is None
         assert limits is None
 
     def test_sin_plugins_habilitados_devuelve_none_none(self, tmp_path):
-        sources = PluginSources(plugin_dirs=(tmp_path,), enabled_plugins=())
+        sources = PluginSources(plugin_dirs=(tmp_path,), explicit_enabled_plugins=())
         masters, limits = build_modlist_sensors(lambda: sources)
         assert masters is None
         assert limits is None
@@ -148,17 +148,42 @@ class TestBuildMo2ProfileSourcesResolver:
         assert resolver is not None
         sources = resolver()
         assert isinstance(sources, PluginSources)
-        assert "A.esp" in sources.enabled_plugins  # solo activos con `*`
+        assert "A.esp" in sources.explicit_enabled_plugins  # solo activos con `*`
+
+    def test_perfil_lee_activacion_y_orden_por_separado(self, tmp_path):
+        """``plugins.txt`` (activación) y ``loadorder.txt`` (orden) se combinan:
+        descartar uno de los dos producía el falso RED de #585."""
+        game, mo2 = self._fixture(tmp_path)
+        (game / "Data" / "Skyrim.esm").write_bytes(b"TES4")
+        profile_dir = mo2 / "profiles" / "Default"
+        (profile_dir / "loadorder.txt").write_text("Skyrim.esm\nA.esp\nB.esp\n", encoding="utf-8")
+        resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
+        assert resolver is not None
+        sources = resolver()
+
+        assert sources.explicit_enabled_plugins == ("A.esp",)
+        assert sources.implicit_official_masters == ("Skyrim.esm",)
+        assert sources.ordered_plugins == ("Skyrim.esm", "A.esp", "B.esp")
+        assert sources.effective_enabled_plugins == ("Skyrim.esm", "A.esp")
+
+    def test_perfil_solo_con_loadorder_usa_el_fallback_historico(self, tmp_path):
+        game, mo2 = self._fixture(tmp_path)
+        profile_dir = mo2 / "profiles" / "Default"
+        (profile_dir / "plugins.txt").unlink()
+        (profile_dir / "loadorder.txt").write_text("A.esp\n", encoding="utf-8")
+        resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
+        assert resolver is not None
+        assert resolver().explicit_enabled_plugins == ("A.esp",)
 
     def test_profile_no_str_devuelve_none(self, tmp_path):
         game, mo2 = self._fixture(tmp_path)
         assert build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile=None) is None
 
-    def test_sin_plugins_txt_en_el_perfil_devuelve_none(self, tmp_path):
+    def test_sin_archivos_de_load_order_en_el_perfil_devuelve_none(self, tmp_path):
         game = tmp_path / "Skyrim"
         (game / "Data").mkdir(parents=True)
         mo2 = tmp_path / "MO2"
-        (mo2 / "profiles" / "Default").mkdir(parents=True)  # perfil SIN plugins.txt
+        (mo2 / "profiles" / "Default").mkdir(parents=True)  # perfil SIN plugins.txt ni loadorder.txt
         assert build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default") is None
 
     def test_perfil_inseguro_devuelve_none(self, tmp_path):

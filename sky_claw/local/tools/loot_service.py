@@ -493,21 +493,26 @@ class LootSortingService:
             mo2_mods_dir = raw_mo2 / "mods" if mo2_ok else None
         mo2_overwrite_dir = raw_mo2 / "overwrite" if mo2_ok else None
 
-        # Para el set de HABILITADOS preferimos plugins.txt (activos con `*`)
-        # sobre loadorder.txt (orden completo, incluye deshabilitados) — usar
-        # loadorder.txt daría falsos rojos por plugins inactivos (review #252).
+        # Los dos archivos aportan información distinta: plugins.txt da la
+        # activación explícita (activos con `*`) y loadorder.txt el orden del
+        # perfil. Se pasan por separado; preferir uno y descartar el otro hacía
+        # que los masters oficiales implícitos se leyeran como deshabilitados
+        # (#585). Usar solo loadorder.txt también daría falsos rojos por
+        # plugins inactivos (review #252).
         load_order_files = list(self._ensure_load_order_resolver().resolve().files)
-        load_order_file = next(
-            (f for f in load_order_files if f.name.lower() == "plugins.txt"),
-            _primary_load_order_file(load_order_files),
-        )
+        plugins_file = next((f for f in load_order_files if f.name.lower() == "plugins.txt"), None)
+        order_file = next((f for f in load_order_files if f.name.lower() == "loadorder.txt"), None)
+        if plugins_file is None and order_file is None:
+            # Resolver con nombres inesperados: conserva el fallback histórico.
+            plugins_file = _primary_load_order_file(load_order_files)
 
         def _resolve():
             return resolve_plugin_sources(
                 game_data_dir=game_data_dir,
                 mo2_mods_dir=mo2_mods_dir,
                 mo2_overwrite_dir=mo2_overwrite_dir,
-                load_order_file=load_order_file,
+                plugins_file=plugins_file,
+                order_file=order_file,
             )
 
         return _resolve

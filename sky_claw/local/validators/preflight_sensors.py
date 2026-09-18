@@ -99,21 +99,26 @@ def build_modlist_sensors(
     :func:`build_master_order_sensor` (mismo feed, misma condición de gate) para
     no romper la aridad de esta tupla en los tres servicios que ya la
     desempaquetan.
+
+    Los dos closures razonan sobre ``effective_enabled_plugins`` (explícitos
+    MO2 + oficiales implícitos instalados), no sobre los ``*`` de
+    ``plugins.txt``: un master oficial instalado que el motor carga siempre no
+    es un plugin deshabilitado (fix de #585).
     """
     from sky_claw.local.validators.missing_masters import MissingMastersChecker
     from sky_claw.local.validators.plugin_limits import PluginLimitsChecker
 
     initial = sources_resolver()
-    if not initial.plugin_dirs or not initial.enabled_plugins:
+    if not initial.plugin_dirs or not initial.effective_enabled_plugins:
         return None, None
 
     def _masters() -> list[MasterIssue]:
         sources = sources_resolver()
-        return MissingMastersChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
+        return MissingMastersChecker(plugin_dirs=sources.plugin_dirs).check(sources.effective_enabled_plugins)
 
     def _limits() -> LoadOrderLimits:
         sources = sources_resolver()
-        return PluginLimitsChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
+        return PluginLimitsChecker(plugin_dirs=sources.plugin_dirs).check(sources.effective_enabled_plugins)
 
     return _masters, _limits
 
@@ -127,16 +132,20 @@ def build_master_order_sensor(
     master que carga *después* de su dependiente es CTD, pero afirmarlo sin
     fuentes utilizables sería mentir verde. Se re-resuelve por llamada, igual
     que sus hermanos, para no envejecer entre corridas.
+
+    El checker recibe ``effective_enabled_plugins``, que preserva el orden del
+    perfil e incorpora los oficiales implícitos: la comparación de posiciones
+    se hace sobre ese orden efectivo, no sobre los ``*`` de ``plugins.txt``.
     """
     from sky_claw.local.validators.master_order import MasterOrderChecker
 
     initial = sources_resolver()
-    if not initial.plugin_dirs or not initial.enabled_plugins:
+    if not initial.plugin_dirs or not initial.effective_enabled_plugins:
         return None
 
     def _order() -> list[OrderIssue]:
         sources = sources_resolver()
-        return MasterOrderChecker(plugin_dirs=sources.plugin_dirs).check(sources.enabled_plugins)
+        return MasterOrderChecker(plugin_dirs=sources.plugin_dirs).check(sources.effective_enabled_plugins)
 
     return _order
 
@@ -150,15 +159,18 @@ def build_mo2_profile_sources_resolver(
 ) -> Callable[[], PluginSources] | None:
     """Resolver de fuentes de plugins desde el **perfil MO2 activo** (T-16c·2/3).
 
-    Lee el load order de ``profiles/<perfil>/plugins.txt`` (activos con ``*``) o,
-    en su defecto, ``loadorder.txt`` — NO el ``%LOCALAPPDATA%`` global que
-    reescribe LOOT fuera del VFS. Los rituales que procesan TODO el modlist
-    (Synthesis, DynDOLOD) deben validar el modlist REAL que corre MO2, no un load
-    order global/stale que ``LoadOrderFileResolver`` prioriza en su unión (review
+    Lee ``profiles/<perfil>/plugins.txt`` (activación con ``*``) y
+    ``profiles/<perfil>/loadorder.txt`` (orden) — NO el ``%LOCALAPPDATA%``
+    global que reescribe LOOT fuera del VFS. Los dos archivos aportan
+    información distinta y se pasan por separado al snapshot: ``plugins.txt``
+    solo no alcanza para saber qué carga de verdad (masters oficiales
+    implícitos, #585). Los rituales que procesan TODO el modlist (Synthesis,
+    DynDOLOD) deben validar el modlist REAL que corre MO2, no un load order
+    global/stale que ``LoadOrderFileResolver`` prioriza en su unión (review
     Codex #306). Valida el nombre del perfil contra path traversal
-    (``assert_safe_component``). Devuelve ``None`` si el perfil no es resoluble o
-    no hay archivo de load order → el caller reporta "no configurado", no miente
-    verde (lección #250). El feed de ``build_modlist_sensors``.
+    (``assert_safe_component``). Devuelve ``None`` si el perfil no es resoluble
+    o no hay ningún archivo de load order → el caller reporta "no configurado",
+    no miente verde (lección #250). El feed de ``build_modlist_sensors``.
 
     ``mo2`` es la raíz de DATOS (de ella cuelgan ``profiles/`` y
     ``overwrite/``); ``mods_dir`` es el MODS_DIR declarado
@@ -176,11 +188,11 @@ def build_mo2_profile_sources_resolver(
     except PathViolationError:
         return None
     profile_dir = mo2 / "profiles" / profile
-    load_order_file = next(
-        (profile_dir / name for name in ("plugins.txt", "loadorder.txt") if (profile_dir / name).is_file()),
-        None,
-    )
-    if load_order_file is None:
+    plugins_file = profile_dir / "plugins.txt"
+    order_file = profile_dir / "loadorder.txt"
+    resolved_plugins = plugins_file if plugins_file.is_file() else None
+    resolved_order = order_file if order_file.is_file() else None
+    if resolved_plugins is None and resolved_order is None:
         return None
     game_data_dir = game / "Data"
     from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
@@ -198,7 +210,8 @@ def build_mo2_profile_sources_resolver(
             game_data_dir=game_data_dir,
             mo2_mods_dir=mo2_mods_dir,
             mo2_overwrite_dir=mo2_overwrite_dir,
-            load_order_file=load_order_file,
+            plugins_file=resolved_plugins,
+            order_file=resolved_order,
         )
 
     return _resolve
@@ -255,7 +268,7 @@ def build_vfs_visibility_sensor(
     def _visibility() -> VisibilityScan:
         return VfsVisibilityChecker(
             game_data_dir=data_dir,
-            enabled_plugins=resolver().enabled_plugins,
+            enabled_plugins=resolver().effective_enabled_plugins,
         ).check()
 
     return _visibility

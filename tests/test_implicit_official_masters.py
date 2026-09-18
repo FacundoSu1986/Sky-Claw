@@ -191,3 +191,107 @@ def test_a6b_master_oficial_implicito_primero_no_rompe_el_orden(tmp_path: pathli
     _masters, _limits, order = _sensores(game, mo2)
 
     assert order() == []
+
+
+# ---------------------------------------------------------------------------
+# A7 — límites: el conteo sale del MISMO snapshot efectivo
+# ---------------------------------------------------------------------------
+
+
+def test_a7_limits_cuentan_oficiales_implicitos_y_excluyen_deshabilitados(tmp_path: pathlib.Path) -> None:
+    """Los 5 oficiales consumen slots full reales; un plugin presente pero sin
+    ``*`` no se cuenta como activo."""
+    game, mo2 = _perfil_mo2(
+        tmp_path,
+        plugins_txt="*Activo.esp\n",
+        loadorder_txt="\n".join([*_OFICIALES, "Deshabilitado.esp", "Activo.esp"]) + "\n",
+        mods={
+            "Activo": {"Activo.esp": []},
+            "Deshabilitado": {"Deshabilitado.esp": []},
+        },
+    )
+    _masters, limits, _order = _sensores(game, mo2)
+
+    resultado = limits()
+    assert resultado.full_count == len(_OFICIALES) + 1  # 5 oficiales + Activo.esp
+    assert resultado.light_count == 0
+
+
+# ---------------------------------------------------------------------------
+# A8/A9 — identidad case-insensitive y sin duplicados en el wiring
+# ---------------------------------------------------------------------------
+
+
+def test_a8_master_declarado_con_otra_grafia_no_es_falso_disabled(tmp_path: pathlib.Path) -> None:
+    """``MAST SKYRIM.ESM`` con ``Skyrim.esm`` instalado: misma identidad Windows."""
+    game, mo2 = _perfil_mo2(
+        tmp_path,
+        plugins_txt="*Mod.esp\n",
+        loadorder_txt="Skyrim.esm\nMod.esp\n",
+        mods={"Mod": {"Mod.esp": ["SKYRIM.ESM"]}},
+        oficiales=("Skyrim.esm",),
+    )
+    masters, _limits, _order = _sensores(game, mo2)
+
+    assert masters() == []
+
+
+def test_a8b_oficial_en_disco_con_otra_grafia_entra_al_snapshot(tmp_path: pathlib.Path) -> None:
+    """``SKYRIM.ESM`` en disco se reconoce como el oficial ``Skyrim.esm``."""
+    game, mo2 = _perfil_mo2(
+        tmp_path,
+        plugins_txt="*Mod.esp\n",
+        loadorder_txt=None,
+        mods={"Mod": {"Mod.esp": ["Skyrim.esm"]}},
+        oficiales=("SKYRIM.ESM",),
+    )
+    masters, _limits, _order = _sensores(game, mo2)
+
+    assert masters() == []
+
+
+def test_a9_oficial_explicito_implicito_y_ordenado_no_duplica(tmp_path: pathlib.Path) -> None:
+    """El mismo oficial en ``plugins.txt``, ``loadorder.txt`` y derivación
+    implícita aparece UNA vez en el orden efectivo (sin inversiones espurias)."""
+    game, mo2 = _perfil_mo2(
+        tmp_path,
+        plugins_txt="*skyrim.esm\n*Mod.esm\n",
+        loadorder_txt="Skyrim.esm\nMod.esm\n",
+        mods={"Mod": {"Mod.esm": ["Skyrim.esm"]}},
+    )
+    resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
+    assert resolver is not None
+    sources = resolver()
+    claves = [n.casefold() for n in sources.effective_enabled_plugins]
+    assert claves.count("skyrim.esm") == 1
+    assert len(claves) == len(set(claves))
+    assert "mod.esm" in claves
+    masters, _limits, order = _sensores(game, mo2)
+    assert masters() == []
+    assert order() == []
+
+
+# ---------------------------------------------------------------------------
+# A10 — fallback sin loadorder.txt: determinista y documentado
+# ---------------------------------------------------------------------------
+
+
+def test_a10_sin_loadorder_los_oficiales_van_primero(tmp_path: pathlib.Path) -> None:
+    """Sin ``loadorder.txt`` el orden efectivo es oficiales (canónico) y después
+    la activación; nunca un orden inventado con el oficial detrás de su
+    dependiente."""
+    game, mo2 = _perfil_mo2(
+        tmp_path,
+        plugins_txt="*Mod.esm\n",
+        loadorder_txt=None,
+        mods={"Mod": {"Mod.esm": ["Skyrim.esm"]}},
+    )
+    resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
+    assert resolver is not None
+    sources = resolver()
+
+    assert sources.ordered_plugins == ("Mod.esm",)
+    assert sources.effective_enabled_plugins[: len(_OFICIALES)] == _OFICIALES
+    assert sources.effective_enabled_plugins[-1] == "Mod.esm"
+    _masters, _limits, order = _sensores(game, mo2)
+    assert order() == []
