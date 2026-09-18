@@ -11,9 +11,11 @@ Traduce el entorno en el **snapshot** que necesitan los sensores de masters
   ``plugins.txt``: solo las líneas activas (marca ``*``), con el fallback
   histórico "listar == activar" cuando ninguna línea lleva ``*``.
 * ``implicit_official_masters`` — masters oficiales del juego
-  (:data:`OFFICIAL_MASTERS`) que están **físicamente instalados**: el motor los
+  (:data:`OFFICIAL_MASTERS`) presentes en la ``Data`` del juego: el motor los
   carga siempre y MO2 no los marca en ``plugins.txt``. La disponibilidad
-  física manda: un oficial ausente del disco no se transforma en presente.
+  física manda (y solo ``Data`` es la autoridad): un oficial ausente del disco
+  no se transforma en presente, y una copia dentro de un mod deshabilitado no
+  lo vuelve implícito.
 * ``ordered_plugins`` — el orden conocido del perfil (``loadorder.txt``, o el
   orden de líneas de ``plugins.txt`` si aquel no existe). Estar listado ahí no
   implica estar habilitado.
@@ -44,9 +46,9 @@ logger = logging.getLogger(__name__)
 __all__ = ["OFFICIAL_MASTERS", "PluginSources", "resolve_plugin_sources"]
 
 #: Masters oficiales de Skyrim SE/AE que el motor carga implícitamente cuando
-#: el archivo está instalado. NO incluye Creation Club (``cc*``): su
-#: activación depende de fuentes explícitas y un prefijo no alcanza como
-#: evidencia (política congelada por test).
+#: el archivo está presente en la ``Data`` del juego. NO incluye Creation Club
+#: (``cc*``): su activación depende de fuentes explícitas y un prefijo no
+#: alcanza como evidencia (política congelada por test).
 OFFICIAL_MASTERS: tuple[str, ...] = (
     "Skyrim.esm",
     "Update.esm",
@@ -65,8 +67,8 @@ class PluginSources:
             precedencia del VFS (overwrite → mods → Data).
         explicit_enabled_plugins: Activación explícita de MO2 (``plugins.txt``;
             ``loadorder.txt`` como fallback histórico "listar == activar").
-        implicit_official_masters: Masters oficiales instalados que el motor
-            carga sin que ``plugins.txt`` los marque.
+        implicit_official_masters: Masters oficiales presentes en la ``Data``
+            del juego que el motor carga sin que ``plugins.txt`` los marque.
         ordered_plugins: Orden conocido del perfil (``loadorder.txt``); vacío
             sin archivos de load order. Orden no es habilitación.
     """
@@ -151,7 +153,7 @@ def resolve_plugin_sources(
     return PluginSources(
         plugin_dirs=plugin_dirs,
         explicit_enabled_plugins=explicit,
-        implicit_official_masters=_implicit_official_masters(plugin_dirs),
+        implicit_official_masters=_implicit_official_masters(game_data_dir),
         ordered_plugins=ordered,
     )
 
@@ -184,37 +186,38 @@ def _resolve_plugin_dirs(
     return tuple(dirs)
 
 
-def _implicit_official_masters(plugin_dirs: tuple[pathlib.Path, ...]) -> tuple[str, ...]:
-    """Oficiales de :data:`OFFICIAL_MASTERS` presentes físicamente.
+def _implicit_official_masters(game_data_dir: pathlib.Path | None) -> tuple[str, ...]:
+    """Oficiales de :data:`OFFICIAL_MASTERS` presentes en la ``Data`` del juego.
 
-    La disponibilidad se mide sobre ``plugin_dirs`` con matching
-    case-insensitive (semántica Windows) y se devuelve la grafía canónica, en
-    orden oficial. Primera carpeta que aporta un nombre gana, igual que el
-    first-match de :func:`~sky_claw.local.validators.plugin_header.index_plugin_files`.
+    Solo ``Data`` es la autoridad: el motor carga esos masters desde ahí, no
+    desde ``mods/``. Buscar en todas las carpetas de mods (incluidas las
+    deshabilitadas) convertiría un oficial ausente en un falso activo y además
+    recorrería árboles que el caller todavía no validó (reviews del PR #595).
+    El matching es case-insensitive (semántica Windows) y se devuelve la grafía
+    canónica, en orden oficial.
     """
-    pendientes = {nombre.casefold() for nombre in OFFICIAL_MASTERS}
-    for directory in plugin_dirs:
-        if not pendientes:
-            break
-        try:
-            if not directory.is_dir():
-                continue
-            entries = sorted(directory.iterdir())
-        except OSError as exc:
-            logger.debug("No se pudo inspeccionar %s: %s", directory, exc)
+    if game_data_dir is None:
+        return ()
+    try:
+        if not game_data_dir.is_dir():
+            return ()
+        entries = sorted(game_data_dir.iterdir())
+    except OSError as exc:
+        logger.debug("No se pudo inspeccionar %s: %s", game_data_dir, exc)
+        return ()
+
+    buscados = {nombre.casefold() for nombre in OFFICIAL_MASTERS}
+    presentes: set[str] = set()
+    for entry in entries:
+        clave = entry.name.casefold()
+        if clave not in buscados:
             continue
-        for entry in entries:
-            clave = entry.name.casefold()
-            if clave not in pendientes:
-                continue
-            try:
-                if not entry.is_file():
-                    continue
-            except OSError as exc:
-                logger.debug("No se pudo inspeccionar %s: %s", entry, exc)
-                continue
-            pendientes.discard(clave)
-    return tuple(nombre for nombre in OFFICIAL_MASTERS if nombre.casefold() not in pendientes)
+        try:
+            if entry.is_file():
+                presentes.add(clave)
+        except OSError as exc:
+            logger.debug("No se pudo inspeccionar %s: %s", entry, exc)
+    return tuple(nombre for nombre in OFFICIAL_MASTERS if nombre.casefold() in presentes)
 
 
 def _is_dir(path: pathlib.Path | None) -> bool:

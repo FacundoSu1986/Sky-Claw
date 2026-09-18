@@ -168,9 +168,12 @@ def build_mo2_profile_sources_resolver(
     DynDOLOD) deben validar el modlist REAL que corre MO2, no un load order
     global/stale que ``LoadOrderFileResolver`` prioriza en su unión (review
     Codex #306). Valida el nombre del perfil contra path traversal
-    (``assert_safe_component``). Devuelve ``None`` si el perfil no es resoluble
-    o no hay ningún archivo de load order → el caller reporta "no configurado",
-    no miente verde (lección #250). El feed de ``build_modlist_sensors``.
+    (``assert_safe_component``). La existencia de cada archivo se re-comprueba
+    por llamada (freshness): un ``loadorder.txt`` que aparece después de
+    construir el preflight cacheado entra al snapshot en la corrida siguiente.
+    Devuelve ``None`` si el perfil no es resoluble o no hay ningún archivo de
+    load order → el caller reporta "no configurado", no miente verde (lección
+    #250). El feed de ``build_modlist_sensors``.
 
     ``mo2`` es la raíz de DATOS (de ella cuelgan ``profiles/`` y
     ``overwrite/``); ``mods_dir`` es el MODS_DIR declarado
@@ -190,9 +193,7 @@ def build_mo2_profile_sources_resolver(
     profile_dir = mo2 / "profiles" / profile
     plugins_file = profile_dir / "plugins.txt"
     order_file = profile_dir / "loadorder.txt"
-    resolved_plugins = plugins_file if plugins_file.is_file() else None
-    resolved_order = order_file if order_file.is_file() else None
-    if resolved_plugins is None and resolved_order is None:
+    if not plugins_file.is_file() and not order_file.is_file():
         return None
     game_data_dir = game / "Data"
     from sky_claw.app.core.path_resolver import MODS_DIR_UNAVAILABLE
@@ -206,12 +207,15 @@ def build_mo2_profile_sources_resolver(
     mo2_overwrite_dir = mo2 / "overwrite"
 
     def _resolve() -> PluginSources:
+        # La EXISTENCIA se re-comprueba por llamada (freshness): un
+        # ``loadorder.txt`` que aparece después de construir el preflight
+        # cacheado debe entrar al snapshot en la corrida siguiente.
         return resolve_plugin_sources(
             game_data_dir=game_data_dir,
             mo2_mods_dir=mo2_mods_dir,
             mo2_overwrite_dir=mo2_overwrite_dir,
-            plugins_file=resolved_plugins,
-            order_file=resolved_order,
+            plugins_file=plugins_file if plugins_file.is_file() else None,
+            order_file=order_file if order_file.is_file() else None,
         )
 
     return _resolve

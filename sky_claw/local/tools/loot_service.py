@@ -498,15 +498,16 @@ class LootSortingService:
         # perfil. Se pasan por separado; preferir uno y descartar el otro hacía
         # que los masters oficiales implícitos se leyeran como deshabilitados
         # (#585). Usar solo loadorder.txt también daría falsos rojos por
-        # plugins inactivos (review #252).
-        load_order_files = list(self._ensure_load_order_resolver().resolve().files)
-        plugins_file = next((f for f in load_order_files if f.name.lower() == "plugins.txt"), None)
-        order_file = next((f for f in load_order_files if f.name.lower() == "loadorder.txt"), None)
-        if plugins_file is None and order_file is None:
-            # Resolver con nombres inesperados: conserva el fallback histórico.
-            plugins_file = _primary_load_order_file(load_order_files)
-
+        # plugins inactivos (review #252). La selección se rehace por llamada
+        # (freshness): archivos que aparecen/desaparecen tras construir el
+        # preflight cacheado se reflejan en la corrida siguiente.
         def _resolve():
+            load_order_files = list(self._ensure_load_order_resolver().resolve().files)
+            plugins_file = next((f for f in load_order_files if f.name.lower() == "plugins.txt"), None)
+            order_file = next((f for f in load_order_files if f.name.lower() == "loadorder.txt"), None)
+            if plugins_file is None and order_file is None:
+                # Resolver con nombres inesperados: fallback histórico.
+                plugins_file = _primary_load_order_file(load_order_files)
             return resolve_plugin_sources(
                 game_data_dir=game_data_dir,
                 mo2_mods_dir=mo2_mods_dir,

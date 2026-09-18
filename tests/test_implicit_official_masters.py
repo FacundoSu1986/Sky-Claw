@@ -310,3 +310,28 @@ def test_los_oficiales_implicitos_y_los_vanilla_del_sensor_vfs_coinciden() -> No
     from sky_claw.local.validators.vfs_visibility import _VANILLA_MASTERS
 
     assert {nombre.casefold() for nombre in OFFICIAL_MASTERS} == set(_VANILLA_MASTERS)
+
+
+def test_oficial_solo_en_un_mod_no_se_vuelve_implicito(tmp_path: pathlib.Path) -> None:
+    """La autoridad es ``Data``: una copia dentro de un mod (aunque el mod esté
+    deshabilitado) no convierte a ``Skyrim.esm`` en carga implícita. El
+    dependiente sigue en RED (`disabled`), nunca verde (review PR #595)."""
+    game, mo2 = _perfil_mo2(
+        tmp_path,
+        plugins_txt="*Parche.esp\n",
+        loadorder_txt="Parche.esp\n",
+        mods={
+            "Parche": {"Parche.esp": ["Skyrim.esm"]},
+            "CopiaRara": {"Skyrim.esm": []},
+        },
+        oficiales=(),  # Data SIN el master oficial
+    )
+    resolver = build_mo2_profile_sources_resolver(game=game, mo2=mo2, profile="Default")
+    assert resolver is not None
+    assert resolver().implicit_official_masters == ()
+    masters, _limits, _order = _sensores(game, mo2)
+
+    issues = masters()
+    assert [(i.plugin, i.master, i.kind, i.severity) for i in issues] == [
+        ("Parche.esp", "Skyrim.esm", "disabled", "critical")
+    ]
