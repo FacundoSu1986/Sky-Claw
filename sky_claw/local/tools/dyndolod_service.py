@@ -930,11 +930,16 @@ class DynDOLODPipelineService:
         if tx_id is None:
             return rolled_back
         if preservado_para_deployment is not None:
-            # La TX queda PENDIENTE y `rolled_back` en False, que es la verdad: hay
-            # una mutación viva en disco. El registro la NOMBRA para que el journal
-            # y el filesystem cuenten la misma historia — sin esto, la TX pendiente
-            # parecía un rollback a medio hacer y no un handoff esperando al
-            # operador.
+            # #592.1: la TX queda PENDIENTE y `rolled_back` en False, que es la
+            # verdad: hay una mutación viva en disco confirmada a propósito. El
+            # retorno es un `False` LITERAL, no `rolled_back`: aunque el resto de
+            # protectores haya cerrado bien y la cobertura esté completa
+            # (`rolled_back=True`), una preservación deliberada y viva NO autoriza
+            # marcar la TX como ROLLED_BACK — hacerlo dejaría journal y filesystem
+            # contando historias distintas y disolvería el handoff que espera al
+            # operador. Por eso tampoco cae en `mark_transaction_rolled_back`. El
+            # registro la NOMBRA para que la TX pendiente se lea como handoff
+            # esperando deployment y no como un rollback a medio hacer.
             logger.warning(
                 "DynDOLOD (stage 9): TX %d queda PENDIENTE con una mutación PRESERVADA a propósito "
                 "tras %s: '%s' contiene la salida de TexGen de esta corrida y espera que el operador "
@@ -944,7 +949,7 @@ class DynDOLODPipelineService:
                 preservado_para_deployment,
                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
             )
-            return rolled_back
+            return False
         if not rolled_back:
             if mutation_started and not mutation_coverage_complete and rollbacks_resueltos:
                 logger.warning(
@@ -1073,6 +1078,14 @@ class DynDOLODPipelineService:
         # `mutation_started`: el handler no puede depender de que una variable
         # asignada dentro del `try` haya llegado a existir.
         needs_deployment = False
+        # #592.1: autoridad del path preservado — es el RETORNO real de
+        # `_preservar_mod_de_texgen`, nunca una heurística de filesystem ("si existe
+        # la carpeta ⇒ fue preservada"). Vive acá afuera por el mismo motivo que
+        # `needs_deployment`: los handlers de dominio, cancelación y Exception lo
+        # leen y no pueden depender de que una asignación dentro del `try` haya
+        # llegado a existir. Una mutación preservada y viva mantiene la TX PENDIENTE
+        # (`rolled_back=False`), no ROLLED_BACK.
+        preservado_para_deployment: pathlib.Path | None = None
         # D2 (PR #493): estado durable del handoff leído por las ramas de éxito y
         # de fallo; asignado dentro del `try`, declarado acá por el mismo motivo
         # que `needs_deployment`.
@@ -1586,7 +1599,13 @@ class DynDOLODPipelineService:
                     # sobrevive solo; el bucle no encuentra nada y no hay caso
                     # especial que escribir.
                     if result.needs_deployment:
-                        await self._preservar_mod_de_texgen(
+                        # #592.1: conservar el path que confirma la mutación viva.
+                        # El retorno es la ÚNICA autoridad de que esta corrida
+                        # preservó algo (None con `create_snapshot=False`, donde el
+                        # mod nunca entró al lote). Los cierres transaccionales
+                        # posteriores lo leen para no contar el move-aside
+                        # deliberado como rollback no resuelto.
+                        preservado_para_deployment = await self._preservar_mod_de_texgen(
                             dir_rollbacks,
                             mods_path / runner.TEXGEN_MOD_NAME,
                             tx_id=tx_id,
@@ -1997,6 +2016,7 @@ class DynDOLODPipelineService:
                 mutation_started=mutation_started,
                 mutation_coverage_complete=mutation_coverage_complete,
                 contexto="error de dominio",
+                preservado_para_deployment=preservado_para_deployment,
             )
             # D2: un supersede en curso que NO terminó en needs_deployment
             # resuelve su matriz de fallos A/B/C contra la identidad durable.
@@ -2077,6 +2097,7 @@ class DynDOLODPipelineService:
                 mutation_started=mutation_started,
                 mutation_coverage_complete=mutation_coverage_complete,
                 contexto="cancelación",
+                preservado_para_deployment=preservado_para_deployment,
             )
             raise
 
@@ -2100,6 +2121,7 @@ class DynDOLODPipelineService:
                 mutation_started=mutation_started,
                 mutation_coverage_complete=mutation_coverage_complete,
                 contexto="error inesperado",
+                preservado_para_deployment=preservado_para_deployment,
             )
             duration = time.monotonic() - start_time
 
