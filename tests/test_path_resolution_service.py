@@ -1344,9 +1344,9 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/tools/loot_service.py": (493,),
         "sky_claw/local/validators/vfs_health.py": (141,),
         # #585: el resolver del perfil pasó a leer plugins.txt + loadorder.txt
-        # por separado y a fallar cerrado si la activación es ilegible; la
-        # línea se movió (193 → 221). Mismo constructor.
-        "sky_claw/local/validators/preflight_sensors.py": (221,),
+        # por separado y a fallar cerrado si la activación es ilegible; el
+        # formateo posterior movió la línea (193 → 219). Mismo constructor.
+        "sky_claw/local/validators/preflight_sensors.py": (219,),
         # T5-v2.1: el wiring del readiness movió la línea (339 → 346). Es el
         # mismo constructor de siempre; el sitio no cambió de concepto.
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": (346,),
