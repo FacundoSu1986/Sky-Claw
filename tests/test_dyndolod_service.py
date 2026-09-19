@@ -7078,6 +7078,7 @@ def test_ensure_runner_rechaza_profile_junction_fuera_de_la_instancia(
     with pytest.raises(DynDOLODExecutionError, match="escapa la raíz de datos"):
         svc._ensure_runner()
 
+
 @pytest.mark.asyncio
 async def test_ensure_runner_usa_el_perfil_de_la_sesion_y_no_otro(
     monkeypatch: pytest.MonkeyPatch,

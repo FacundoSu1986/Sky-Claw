@@ -1314,9 +1314,7 @@ class PathResolutionService:
         try:
             resuelta = ruta.resolve(strict=False)
         except (OSError, RuntimeError) as exc:
-            raise RuntimeError(
-                f"DYNDLOD_INI_DIR ({ruta}) no se pudo canonicalizar de forma segura."
-            ) from exc
+            raise RuntimeError(f"DYNDLOD_INI_DIR ({ruta}) no se pudo canonicalizar de forma segura.") from exc
         if resuelta.parent == resuelta:
             raise RuntimeError(f"DYNDLOD_INI_DIR ({resuelta}) apunta a una raíz de volumen, no a la carpeta de INIs.")
         if not resuelta.is_dir():

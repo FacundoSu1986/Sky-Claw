@@ -1822,8 +1822,7 @@ def test_todo_constructor_de_dyndolod_config_cablea_m_y_p() -> None:
                 continue
             clave = archivo.relative_to(RAIZ).as_posix()
             encontrados[clave] = [
-                {"ini_dir", "plugins_file"} <= {kw.arg for kw in llamada.keywords}
-                for llamada in llamadas
+                {"ini_dir", "plugins_file"} <= {kw.arg for kw in llamada.keywords} for llamada in llamadas
             ]
 
     assert set(encontrados) == CONSTRUCTORES_DE_DYNDOLOD_CONFIG, (
