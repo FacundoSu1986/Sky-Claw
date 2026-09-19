@@ -14,7 +14,7 @@ root (no pulsa Start), sólo recibe el argv. Lanza TexGen/DynDOLOD Alpha-209,
 espera el eco del binario y cierra únicamente el proceso descendiente de ESTE
 rig con ``WM_CLOSE``; el timeout del runner queda como último fail-safe.
 
-Uso: python rig_cli_prereqs.py <repo> <session-dir> [timeout-s]
+Uso: python rig_cli_prereqs.py <repo> <session-dir> [timeout-s] [texgen|dyndolod]
 """
 
 from __future__ import annotations
@@ -82,14 +82,19 @@ def log(msg: str) -> None:
 
 
 def _redactar_evidencia(texto: str) -> str:
-    """Redacta sólo el home local en artefactos; la validación usa valores raw."""
-    candidatos = {str(pathlib.Path.home())}
+    """Redacta el home local, también cuando está escapado dentro de JSON."""
+    homes = {str(pathlib.Path.home())}
     userprofile = os.environ.get("USERPROFILE", "").strip()
     if userprofile:
-        candidatos.add(userprofile)
+        homes.add(userprofile)
+    candidatos: set[str] = set()
+    for home in homes:
+        if not home:
+            continue
+        candidatos.add(home)
+        candidatos.add(json.dumps(home, ensure_ascii=False)[1:-1])
     for candidato in sorted(candidatos, key=len, reverse=True):
-        if candidato:
-            texto = texto.replace(candidato, "%USERPROFILE%")
+        texto = texto.replace(candidato, "%USERPROFILE%")
     return texto
 
 
