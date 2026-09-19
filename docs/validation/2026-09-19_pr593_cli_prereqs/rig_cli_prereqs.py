@@ -10,8 +10,9 @@ No es código productivo. Boundary que ejercita:
 
 El workspace se resuelve con la maquinaria real (`resolver_workspace`,
 ownership vivo) porque el fence P2.2 corre antes del spawn; el rig NO muta el
-root (no pulsa Start), sólo recibe el argv. Lanza TexGen Alpha-209, espera el
-eco del binario en su log y deja que el timeout acotado mate el árbol.
+root (no pulsa Start), sólo recibe el argv. Lanza TexGen/DynDOLOD Alpha-209,
+espera el eco del binario y cierra únicamente el proceso descendiente de ESTE
+rig con ``WM_CLOSE``; el timeout del runner queda como último fail-safe.
 
 Uso: python rig_cli_prereqs.py <repo> <session-dir> [timeout-s]
 """
@@ -80,8 +81,21 @@ def log(msg: str) -> None:
     print(f"[rig593] {msg}", flush=True)
 
 
+def _redactar_evidencia(texto: str) -> str:
+    """Redacta sólo el home local en artefactos; la validación usa valores raw."""
+    candidatos = {str(pathlib.Path.home())}
+    userprofile = os.environ.get("USERPROFILE", "").strip()
+    if userprofile:
+        candidatos.add(userprofile)
+    for candidato in sorted(candidatos, key=len, reverse=True):
+        if candidato:
+            texto = texto.replace(candidato, "%USERPROFILE%")
+    return texto
+
+
 def escribir(nombre: str, lineas: list[str]) -> None:
-    (SESSION / nombre).write_text("\n".join(lineas) + "\n", encoding="utf-8")
+    contenido = _redactar_evidencia("\n".join(lineas) + "\n")
+    (SESSION / nombre).write_text(contenido, encoding="utf-8")
 
 
 def firma_de_log() -> tuple[int, int, str]:
@@ -238,17 +252,35 @@ async def main() -> int:
             "log_lineas_antes": n_lineas_antes,
         }
 
-        async def _cerrar_ventana_al_terminar() -> dict[str, object]:
-            """Cierra el asistente con ``WM_CLOSE`` a los N s (sin UIA, sin Start)."""
-            await asyncio.sleep(_ESPERA_ANTES_DE_CERRAR_S)
-            import psutil
+        import psutil
 
-            pid: int | None = None
-            for proceso in psutil.process_iter(["pid", "name"]):
-                if (proceso.info.get("name") or "").casefold() == NOMBRE_PROCESO:
-                    pid = int(proceso.info["pid"])
-            if pid is None:
-                return {"cerrado": False, "motivo": "proceso no encontrado"}
+        proceso_rig = psutil.Process(os.getpid())
+        hijos_previos = {proceso.pid for proceso in proceso_rig.children(recursive=True)}
+        exe_esperado = os.path.normcase(os.path.normpath(str(EXE.resolve())))
+
+        async def _cerrar_ventana_al_terminar() -> dict[str, object]:
+            """Cierra sólo el descendiente creado por ESTE rig (sin UIA, sin Start)."""
+            await asyncio.sleep(_ESPERA_ANTES_DE_CERRAR_S)
+
+            candidatos: list[int] = []
+            for proceso in proceso_rig.children(recursive=True):
+                if proceso.pid in hijos_previos:
+                    continue
+                try:
+                    nombre = proceso.name().casefold()
+                    exe_real = os.path.normcase(os.path.normpath(proceso.exe()))
+                except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                    continue
+                if nombre == NOMBRE_PROCESO and exe_real == exe_esperado:
+                    candidatos.append(proceso.pid)
+
+            if len(candidatos) != 1:
+                return {
+                    "cerrado": False,
+                    "motivo": f"se esperaba 1 descendiente {NOMBRE_PROCESO}, encontrados={candidatos}",
+                    "candidatos": candidatos,
+                }
+            pid = candidatos[0]
             ventanas = cerrar_ventana_del_pid(pid)
             return {"cerrado": ventanas > 0, "pid": pid, "ventanas": ventanas}
 
@@ -284,15 +316,62 @@ async def main() -> int:
             "Using ini:",
             "Using plugin list:",
             "Loading active plugin list",
+            "Using Temp Path:",
             "Using Output Path:",
         )
         eco_nuevo: dict[str, str | None] = {clave: eco(nuevas, clave) for clave in claves}
         resultado["eco"] = eco_nuevo
         resultado["lineas_nuevas"] = len(nuevas)
+
+        def _valor_de_switch(prefijo: str) -> str:
+            coincidencias = [arg[len(prefijo) :] for arg in argv if arg.startswith(prefijo)]
+            if len(coincidencias) != 1:
+                raise RuntimeError(f"argv no contiene exactamente un {prefijo}: {argv!r}")
+            return coincidencias[0]
+
+        esperado_d = _valor_de_switch("-d:")
+        esperado_m = _valor_de_switch("-m:")
+        esperado_p = _valor_de_switch("-p:")
+        esperado_t = _valor_de_switch("-t:")
+        esperado_o = _valor_de_switch("-o:")
+        ecos_esperados = {
+            "Using Skyrim Special Edition Data Path": f"Using Skyrim Special Edition Data Path: {esperado_d}",
+            "Using ini:": f"Using ini: {esperado_m}\\Skyrim.ini",
+            "Using plugin list:": f"Using plugin list: {esperado_p}",
+            "Loading active plugin list": f"Loading active plugin list: {esperado_p}",
+            "Using Temp Path:": f"Using Temp Path: {esperado_t}",
+            "Using Output Path:": f"Using Output Path: {esperado_o}",
+        }
+        errores: list[str] = []
+        for clave, esperado in ecos_esperados.items():
+            observado = eco_nuevo.get(clave)
+            if observado != esperado:
+                errores.append(f"{clave}: esperado={esperado!r} observado={observado!r}")
+
+        sesion = eco_nuevo.get("starting session")
+        prefijo_sesion = (
+            "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) ("
+            if es_dyndolod
+            else "TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) ("
+        )
+        if not isinstance(sesion, str) or not sesion.startswith(prefijo_sesion) or " starting session " not in sesion:
+            errores.append(f"starting session inesperada: {sesion!r}")
+
+        if resultado.get("rc") != 0:
+            errores.append(f"rc inesperado: {resultado.get('rc')!r}")
+        cierre = resultado.get("cierre")
+        if not isinstance(cierre, dict) or cierre.get("cerrado") is not True:
+            errores.append(f"el rig no cerró su propio proceso con WM_CLOSE: {cierre!r}")
+
+        resultado["validacion"] = {"ok": not errores, "errores": errores}
         escribir(f"02-eco-{PREFIJO}.txt", [f"{clave} :: {valor}" for clave, valor in eco_nuevo.items()])
         escribir(f"03-log-nuevo-{PREFIJO}.txt", nuevas[:80])
         escribir(f"04-resultado-{PREFIJO}.json", [json.dumps(resultado, ensure_ascii=False, indent=2, default=str)])
         log("eco: " + json.dumps(eco_nuevo, ensure_ascii=False))
+        if errores:
+            for error in errores:
+                log(f"FAIL: {error}")
+            return 1
         return 0
     finally:
         try:
