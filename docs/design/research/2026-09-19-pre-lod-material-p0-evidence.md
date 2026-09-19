@@ -325,13 +325,36 @@ Límite de 254 masters: PG lo resuelve **internamente** partiendo en `PG_<N>.esp
 (`PGMutagen.cs:1284`); cada split suma `PGPatcher.esp` como master. El ancla de límite de
 plugins de Sky-Claw debe contemplar este patrón (no es un plugin único).
 
+### 8.5 Política conservadora Sky-Claw: output PG stale vs etapas 5–7 (B10)
+
+**SKY-CLAW CONSERVATIVE POLICY** — no es un requisito upstream demostrado; upstream no se
+pronuncia sobre esta interacción (B10 sigue abierto, §19). Se adopta por integridad del
+load order:
+
+```
+si cualquier Stage 5 (LOOT), 6 (Wrye Bash) o 7 (Synthesis) se vuelve a ejecutar
+después de una corrida de PGPatcher:
+
+    PG output -> STALE
+
+    antes:    deshabilitar el output PG previo cuando corresponda
+    después:  re-ejecutar PGPatcher -> reconcile/sort post-PG -> recién entonces LOD
+```
+
+Motivo: Bash/Synthesis pueden consumir records PG de una corrida previa, y regenerar esos
+plugins invalida los masters de `PG_<N>.esp`. Hasta que R-PG-7 cierre B10, esta secuencia
+conservadora es la única segura.
+
 ---
 
 ## 9. B8 — Versionado del contrato de PGPatcher
 
 **Pregunta:** ¿se puede soportar 1.2.x y 2.1.x con el mismo contrato de adapter?
 
-**Respuesta: SÍ, con capacidades por versión (no con comportamiento fijo).**
+**Respuesta: SÍ para los contratos conocidos y verificados; NO se asume compatibilidad de
+versiones futuras.** El adapter se construye con capacidades por versión, y una versión
+nueva solo se habilita cuando su contrato fue registrado y verificado (política de
+*known contracts*, no de rango abierto).
 
 Contrato propuesto (conceptual, **no implementar**): `ToolContractFingerprint`
 
@@ -341,15 +364,20 @@ ToolContractFingerprint
   flavor                "pgpatcher" | "pgtools"
   reported_version      de PE product version o del log ("Welcome to PGPatcher version {}!")
   exe_sha256            hash del exe detectado
-  contract_min_version  mínima soportada por el adapter (fail-closed si menor)
-  capabilities          set derivado de la versión:
-                          AUTOSTART              >= 0.5.0
-                          VFS_CHECK_IGNORE       >= 1.1.0
-                          CONSOLE                >= 0.9.9
-                          EXCLUDE_FACEGENS       >= 1.2.0
-                          ESM_MODE_CLI           >= 1.3.0   (--esm-all/--no-esm)
-                          UPDATE_OUTPUT          >= 2.0.0   (--autostart-update + cache)
-                          PBR_JSON_SCHEMA_V2     >= 2.0.0   (BREAKING: campos PBR)
+  known_contracts       {1.2.0, 1.3.0, 2.0.0, 2.1.0, 2.1.1} — fingerprints verificados en P0.
+                        NO es un rango abierto: cada entrada tiene su artifact_matrix y flags
+  capabilities          por contrato conocido (capacidad introducida en cada versión):
+                          AUTOSTART              introducido en 0.5.0
+                          VFS_CHECK_IGNORE       introducido en 1.1.0
+                          CONSOLE                introducido en 0.9.9
+                          EXCLUDE_FACEGENS       introducido en 1.2.0
+                          ESM_MODE_CLI           introducido en 1.3.0 (--esm-all/--no-esm)
+                          UPDATE_OUTPUT          introducido en 2.0.0 (--autostart-update + cache)
+                          PBR_JSON_SCHEMA_V2     introducido en 2.0.0 (BREAKING: campos PBR)
+  unknown_policy        versión/fingerprint desconocido -> fail closed: no se ejecuta
+                        (VERSION_UNSUPPORTED) hasta registrar y verificar su contrato.
+                        Versión ilegible -> VERSION_UNKNOWN degradado, sin asumir flags;
+                        forzar un contrato no registrado exige CONFIGURATION_REQUIRED explícito
   config_schema         {settings.json, modrules.json, ignored_messages.json}
   ownership_policy      EXCLUSIVE_DIR (estable 1.2.0–2.1.1)
   artifact_matrix       por versión (¿incluye cache? ¿zip?)
@@ -357,17 +385,20 @@ ToolContractFingerprint
 
 Reglas:
 
-1. El adapter **no** asume flags: consulta capacidades y **falla cerrado**
-   (`VERSION_UNSUPPORTED`) si la versión es menor a la mínima o ilegible.
+1. El adapter **no** asume flags ni compatibilidad: consulta el fingerprint reconocido y
+   **falla cerrado** ante una versión/fingerprint no registrado (ver `unknown_policy`).
 2. El fingerprint entra en la evidencia de corrida (§16) y en la invalidación: actualizar
    la herramienta cambia el fingerprint y **prohíbe reutilizar corridas previas**.
-3. Rango sugerido para el primer adapter: **≥1.2.0 <3.0.0**, con `UPDATE_OUTPUT` opcional.
+3. **Semántica de soporte: contratos conocidos, no rango abierto.** Hoy los fingerprints
+   verificados son {1.2.0, 1.3.0, 2.0.0, 2.1.0, 2.1.1}. Una versión futura (2.2.x, 3.x, …)
+   **no** hereda el contrato por comparación SemVer: `ToolContractFingerprint` existe
+   precisamente para que una versión nueva no pase automáticamente por un contrato viejo.
    El default de Sky-Claw debe ser `--autostart` (regenerar desde cero) para no depender
    del cache; `--autostart-update` solo si una corrida incremental se justifica explícitamente.
 
 Ejemplos VERSION_DEPENDENT que el adapter debe manejar: control ESM (config `pluginesmify`
-en 1.2.x vs `--esm-all`/`--no-esm` en ≥1.3.0); presencia de `PGPatcher_UpdateCache.bin`
-(≥2.0.0); semántica de `--autostart` (regenerar vs "sin input").
+en 1.2.x vs `--esm-all`/`--no-esm` desde 1.3.0); presencia de `PGPatcher_UpdateCache.bin`
+(desde 2.0.0); semántica de `--autostart` (regenerar vs "sin input").
 
 ---
 
@@ -405,7 +436,7 @@ VramrOrderingPolicy(version_tuple)
 
 **¿Cambió entre versiones?** No dentro del rango 1.2.x–2.1.x: el check es idéntico en
 1.2.0 y 2.1.1. El corte histórico es 0.9.8 (introducción del critical). Fuera de ese rango
-no se investigó y no importa: el adapter soporta ≥1.2.0.
+no se investigó y no importa: el adapter solo habilita contratos/fingerprints reconocidos (§9).
 
 **Default propuesto Sky-Claw (no congelado):** `POLICY_B` (PGPatcher primero, VRAMr último)
 porque requiere un solo toggle de estado y VRAMr optimiza el resultado final; `POLICY_A`
@@ -637,7 +668,7 @@ Revisión adversarial de los componentes que convergen en las investigaciones Ar
 | `ManagedOutput` | **ACCEPT** | Identidad, exclusividad, namespace, manifest, rollback | Mover/borrar outputs de otras tools | Se apoya en `output_targets.py` + `DirectoryRollback` existentes |
 | `RunEvidence` | **ACCEPT** | RunIdentity + success contract + hashes + logs + attestation | Interpretar logs internos de la tool | El orquestador solo compara hechos declarados, no parsea semántica profunda |
 | `Mo2StateTransaction` | **ACCEPT** | Transacción por entradas con CAS + cuarentena + journal | Snapshot completo/restore ciego; `delete_mod_files` | v3 §6.3; agregar `RECOVERY_REQUIRED` y prioridad (§12) |
-| `RegisteredVfsToolJob` (handler genérico en el worker) | **ACCEPT** | Correr una tool allowlisted como hijo del worker, con atestación | Cambiar el bridge; aceptar exe arbitrario | Dos sitios a anclar: `ALLOWED_VFS_TOOL_IDS` y `_default_handlers()` (hoy 2 entradas: `health`, `loot_sort`) |
+| `RegisteredVfsToolJob` (handler genérico en el worker) | **ACCEPT** (diseño; implementación en **Operational HOLD**, §20) | Correr una tool allowlisted como hijo del worker, con atestación | Cambiar el bridge; aceptar exe arbitrario | Dos sitios a anclar: `ALLOWED_VFS_TOOL_IDS` y `_default_handlers()` (hoy 2 entradas: `health`, `loot_sort`) |
 | Post-PG **plugin reconcile** (nuevo) | **ACCEPT como fase** | Sort/asegurar `PG_X.esp` al final (salvo DynDOLOD), con LOOT si está disponible o placement dirigido | Re-sortear todo el load order sin necesidad; asumir que LOOT cubre `PGPatcher.esp` | Motivado por §8.3; vive en el servicio/orquestador, no en el adapter |
 | `ToolContractFingerprint` | **ACCEPT** | Capacidades por versión + invalidación | Duplicar la detección de versión (P3) | §9 |
 
@@ -686,10 +717,10 @@ existe para fijar el framework con el caso mejor evidenciado.
 | B5-ParallaxR / B5-BENDr / B5-VRAMr | Abiertos | **REAL_RIG_REQUIRED** (evidencia contradictoria) | §6.2 | R-RS-1 (canary probe) |
 | B6-T | Cerrado (v3 §2.2) | Sin cambios | v3 §2.2 | — |
 | B6-L — permiso de invocación directa R-suite | Abierto | **Sigue abierto**; permisos documentados; VRAMr exige consentimiento escrito | §7 | Pedido formal al autor; default MANUAL_ONLY |
-| B7 — lifecycle de plugins PG | Abierto, bloqueaba P1 | **CERRADO en su núcleo**: artefactos, cuándo se omiten, LOOT masterlist real, requisito "PG antes de TexGen/DynDOLOD" | §8 | P1 puede congelar el grafo con la fase post-PG de reconcile; rig R-PG-4 para `PGPatcher.esp` |
-| B8 — matriz de contrato 1.2.x↔2.x | Nuevo | **CERRADO como enfoque**: capacidades por versión + fingerprint; rango ≥1.2.0 | §9 | Implementar `ToolContractFingerprint` en P3/P9 |
+| B7 — lifecycle de plugins PG | Abierto, bloqueaba P1 | **PARTIAL / CORE CLOSED**: establecido — artefactos y cuándo se omiten; masterlist LOOT para `PG_<N>`/`ParallaxGen`; PG antes de TexGen/DynDOLOD; necesidad de reconcile post-PG; no asumir placement de `PGPatcher.esp`. **No cerrado globalmente: B10 sigue abierto** (output PG stale vs etapas 5–7) | §8, §8.5 | P1 puede congelar el grafo con la fase post-PG de reconcile y la política conservadora §8.5; rig R-PG-4 y R-PG-7 |
+| B8 — matriz de contrato 1.2.x↔2.x | Nuevo | **CERRADO como enfoque**: capacidades por versión + fingerprint; contratos conocidos {1.2.0…2.1.1}, **sin rango abierto** | §9 | Implementar `ToolContractFingerprint` en P3/P9; versiones futuras fail-closed hasta registrar y verificar su contrato |
 | B9 — ordering VRAMr↔PG por versión | Nuevo | **CERRADO**: ambas policies soportadas; gate en PG≥0.9.8 | §10 | P1 fija el default (POLICY_B propuesto) |
-| **B10 — output PG stale vs etapas 5–7** | Nuevo (descubierto en P0) | **ABIERTO**: correr Bash/Synthesis con un output PG stale habilitado puede consumir records PG; regenerar Bash invalida los masters de `PG_<N>.esp`; upstream no se pronuncia | §8.4 C/D/E | Definir política de invalidación (deshabilitar PG output antes de 5–7 o marcar stale y exigir re-run) y testear en rig |
+| **B10 — output PG stale vs etapas 5–7** | Nuevo (descubierto en P0) | **ABIERTO / REAL_RIG_REQUIRED hasta R-PG-7**: correr Bash/Synthesis con un output PG stale habilitado puede consumir records PG; regenerar Bash invalida los masters de `PG_<N>.esp`; upstream no se pronuncia | §8.4 C/D/E, §8.5 | P1 fija la política conservadora §8.5 (deshabilitar PG output antes de 5–7 o marcar stale y exigir re-run); rig R-PG-7 |
 
 ---
 
@@ -697,12 +728,12 @@ existe para fijar el framework con el caso mejor evidenciado.
 
 | Ítem | Veredicto | Condición |
 |---|---|---|
-| P1 — contrato de lifecycle y capability (docs + tests) | **GO** | Incluir la fase post-PG de reconcile y los campos de contrato por versión en el diseño del grafo |
+| P1 — contrato de lifecycle y capability (docs + tests) | **GO** | Incluir la fase post-PG de reconcile, la política conservadora Stage 5–7 (§8.5) y los campos de contrato por versión en el diseño del grafo |
 | PGPatcher adapter | **GO** | Tras P1/P5/P7; con `ToolContractFingerprint` y preflight de 5 condiciones (v3 P9) |
 | VRAMr adapter | **NO-GO** | Hasta cerrar B3 y B6-L; P8 (hardening del servicio) sigue GO salvo (g) |
 | ParallaxR | **NO-GO** | B6-L |
 | BENDr | **NO-GO** | B6-L (y PR-A compartido) |
-| VFS handler genérico (P5) | **GO** | Independiente del primer corte; sirve a las 4 tools |
+| P5 — `RegisteredVfsToolJob` / handler genérico | **Architectural GO · Operational HOLD** | Diseño aceptado; implementación en HOLD hasta revalidar lanes concurrentes: estado de #597, #528, trabajo relacionado con #586/broker/VFS y write-set de `main` (§22). Independiente del primer corte; sirve a las 4 tools |
 
 ---
 
@@ -729,18 +760,24 @@ Regla: cada condición se verifica **por herramienta por separado** (v3 §9.4).
 
 1. **PR P0 (esta rama):** evidencia P0 + plan v3 restaurado. Cero código. ← actual
 2. **P1 — contrato de lifecycle** (docs + tests declarativos): incluye fase post-PG de
-   reconcile, `pipeline_capability`, nodos con `implemented=False` en diferidos, y los
-   campos de contrato por versión en el diseño. Sin adapters.
-3. **P2 — `ToolReadiness` + registry** (con `supported_versions`/`contract_capabilities`).
+   reconcile, la política conservadora Stage 5–7 → PG STALE (§8.5), `pipeline_capability`,
+   nodos con `implemented=False` en diferidos, y los campos de contrato por versión en el
+   diseño. Sin adapters.
+3. **P2 — `ToolReadiness` + registry** (con `known_contracts`/`contract_capabilities`).
 4. **P3 — detección de versión** (necesaria para `ToolContractFingerprint`).
 5. **P4 — instalación TOOL atómica + instalador PGPatcher** (`AUTO_GITHUB`).
-6. **P5 — handler USVFS genérico** (allowlist + handlers, ancla de igualdad).
+6. **P5 — handler USVFS genérico** (allowlist + handlers, ancla de igualdad). **Operational
+   HOLD**: el diseño está aceptado (GO arquitectónico), pero antes de implementarlo deben
+   revalidarse #597, #528, el trabajo de broker/VFS (#586) y el write-set vigente de `main`.
 7. **P6 — `Mo2ModStateTransaction`** (con `RECOVERY_REQUIRED` y prioridad).
 8. **P7 — contrato de adapters** (`_contract.py`, 7 condiciones).
 9. **P8 — endurecimiento VRAMr** (tandas 1/2 salvo (g)); puede ir en paralelo desde ya.
 10. **P9 — PGPatcher adapter** (primer adapter; `--autostart`, ownership, fingerprint).
 11. **P10 — VRAMr adapter**: bloqueado hasta B3/B6-L.
 12. **P11 — orquestador + reconcile post-PG**; **P12 — superficies**; **P13 — rig**.
+
+Secuencia de autorización: P0 → P1 (contrato puro) → revalidación de lanes concurrentes →
+P5 (solo cuando su write-set esté libre).
 
 Cada PR: pequeño, reversible, con tests y sin refactors cosméticos.
 
