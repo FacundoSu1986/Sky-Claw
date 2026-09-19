@@ -405,8 +405,7 @@ def test_anyio_piso_de_seguridad_declarado_y_bloqueado() -> None:
     candidatos = [d for d in runtime_deps if d.name == "anyio"]
     assert len(candidatos) == 1, f"se esperaba exactamente un anyio en runtime, hay {candidatos}"
     req = candidatos[0]
-    assert not req.specifier.contains("4.13.0", prereleases=True), "anyio permite la versión vulnerable 4.13.0"
-    assert req.specifier.contains("4.14.2", prereleases=True), "anyio debe permitir la versión segura 4.14.2"
+    assert req.specifier == SpecifierSet(">=4.14.2,<5"), f"rango de anyio inesperado: {req.specifier}"
 
     # 2. requirements.lock
     req_match = re.search(r"(?m)^anyio==([^\s\\]+)", (REPO_ROOT / "requirements.lock").read_text(encoding="utf-8"))
