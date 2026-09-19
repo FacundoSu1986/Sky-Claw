@@ -133,7 +133,18 @@ _LETRAS_ADMINISTRADAS = "odmpt"
 #: que sí honre pisa la raíz administrada, que es exactamente lo que esta regla
 #: existe para impedir. Fail-closed sobre la duda, como el resto de
 #: ``_extra_args_admisibles``.
-_SWITCH_ADMINISTRADO = re.compile(rf"^\s*[-/][{_LETRAS_ADMINISTRADAS}]:", re.IGNORECASE)
+#:
+#: **La forma PELADA (``-o``, ``/D``, sin ``:``) también se rechaza.** La primera
+#: versión exigía los dos puntos, así que un ``-o`` suelto —o ``-o C:\\otra`` en
+#: UN solo elemento— pasaba derecho al argv. Que xEdit no la documente como
+#: correcta no alcanza para dejarla pasar: si el parser la honra, es una SEGUNDA
+#: fuente para la misma ruta (mismas premisas de staging/post-check/rollback que
+#: la forma con ``:``), y si no la honra, rechazarla no le cuesta nada a ningún
+#: caller legítimo. El delimitador es ``:``, whitespace o fin del elemento —
+#: **no cualquier carácter**, para no bloquear switches ajenos que comparten la
+#: primera letra: ``-debug`` y ``-other`` siguen permitidos (su segunda letra no
+#: es delimitador), y por eso el ancla los enumera como casos que DEBEN pasar.
+_SWITCH_ADMINISTRADO = re.compile(rf"^\s*[-/][{_LETRAS_ADMINISTRADAS}](?::|\s|$)", re.IGNORECASE)
 
 #: Game modes de xEdit, sin el prefijo. También los administra ``DynDOLODConfig``
 #: (campo tipado ``game_mode``, decisión única en ``__post_init__``), así que
@@ -522,13 +533,22 @@ class DynDOLODConfig:
         dyndolod_exe: Ruta al ejecutable de DynDOLOD.
         texgen_exe: Ruta al ejecutable de TexGen (opcional).
         data_dir: Carpeta Data del juego (default: ``game_path/Data``).
-        ini_dir: Carpeta de los INI del juego (``My Games/Skyrim Special
+        ini_dir: Carpeta de los INIs del juego (``My Games/Skyrim Special
             Edition``). Sin default derivado: la carpeta Documentos del rig está
             redirigida a OneDrive, así que derivarla a ciegas es frágil. Si es
             ``None`` el switch ``-m:`` no se emite y la herramienta resuelve su
-            default por registro.
-        plugins_file: Ruta a ``plugins.txt``. Idem: sin default derivado; si es
-            ``None`` el switch ``-p:`` no se emite.
+            default por registro. La autoridad productiva es la declaración
+            EXPLÍCITA del operador (``DYNDLOD_INI_DIR``, resuelta por
+            ``PathResolutionService.get_dyndolod_ini_dir``): el doc oficial de
+            DynDOLOD prohíbe apuntar a carpetas de perfiles de MO2 (*"Do not link
+            to files or folders in mod manager profiles"*), así que la carpeta
+            del perfil activo NO es una fuente admisible aunque exista.
+        plugins_file: Ruta a ``plugins.txt``. Idem: sin default derivado. El
+            camino productivo la cablea desde el **perfil MO2 activo**
+            (``<raíz de datos>/profiles/<perfil>/plugins.txt``, la misma
+            autoridad que usa el preflight); si no hay instancia MO2 resoluble
+            queda ``None`` (modo standalone/direct) y si la instancia existe pero
+            el archivo falta, la corrida falla cerrado antes del spawn.
         external_work_root: Raíz de trabajo EXTERNA admitida (P0 de ADR 0011) de
             la que se derivan los subroots exclusivos de cada herramienta. Es el
             ÚNICO origen del ``-o:`` productivo: sin él, DynDOLOD administrado
@@ -554,7 +574,11 @@ class DynDOLODConfig:
             consumidores (argv y nombre del log) leen el campo, nunca la
             heurística — que vivía duplicada y, buscando ``"VR"`` como substring
             de la ruta entera, volcaba a ``-tes5vr`` cualquier SSE colgado de un
-            directorio con esas letras (``CVR``, ``VRamDisk``).
+            directorio con esas letras (``CVR``, ``VRamDisk``). Un valor
+            explícito fuera del contrato (``None | "sse" | "tes5vr"``) lanza
+            ``DynDOLODValidationError`` en ``__post_init__``: la propiedad es
+            "``DynDOLODConfig`` nunca existe con un ``game_mode`` inválido", así
+            que el argv y la resolución del log comparten la misma autoridad.
         timeout_seconds: Timeout en segundos para la ejecución (default: 4 horas).
             En modo asistido el reloj del proceso cubre la ventana de interacción
             humana (el humano elige preset/worldspaces en la GUI); el default de
@@ -636,6 +660,28 @@ class DynDOLODConfig:
             tokens = set(re.split(r"[^a-z0-9]+", self.game_path.name.casefold()))
             es_vr = bool(tokens & {"vr", "skyrimvr"})
             object.__setattr__(self, "game_mode", "tes5vr" if es_vr else "sse")
+        elif self.game_mode not in ("sse", "tes5vr"):
+            # Runtime, no ``Literal``: el valor entra desde payload/config y los
+            # type hints no validan en runtime. Antes, CUALQUIER valor distinto de
+            # ``"tes5vr"`` se leía como ``"sse"`` en los dos consumidores (argv y
+            # ``_modo()``), así que ``game_mode="banana"`` producía una corrida
+            # SSE plausible y silenciosa — ni excepción ni pista en el argv.
+            #
+            # La frontera es ``__post_init__`` y no ``_build_xedit_args`` porque
+            # ``_modo()`` también consume el campo para elegir el log: validar en
+            # el builder dejaba que la resolución del log siguiera creyendo un
+            # modo que el argv ya no emitía. La propiedad que se sostiene es
+            # "``DynDOLODConfig`` nunca existe con un ``game_mode`` inválido".
+            #
+            # NO se normaliza a propósito: aceptar ``"SSE"`` o ``"tes5vr "``
+            # convierte el contrato (``None | "sse" | "tes5vr"``) en una familia
+            # de grafías toleradas y el modo del argv deja de estar demostrado.
+            raise DynDOLODValidationError(
+                "game_mode inválido: el contrato runtime es None | 'sse' | 'tes5vr' "
+                f"(sin normalizar case ni whitespace). Recibido: {self.game_mode!r}. "
+                "Un valor fuera del contrato no puede degradar a -sse en silencio: el "
+                "modo cambia el juego entero, no sólo una ruta."
+            )
         if not self.game_path.exists():
             raise ValueError(f"Game path does not exist: {self.game_path}")
         if not self.dyndolod_exe.exists():
@@ -2471,12 +2517,17 @@ class DynDOLODRunner:
            ``Can not create path C:\\C:\\...`` sin pasar por el helper.
         3. **Ningún elemento puede redefinir un switch administrado**
            (``-o:``/``-d:``/``-m:``/``-p:``/``-t:``, case-insensitive, y también en
-           sus formas ``/o:`` y con whitespace líder — ver ``_SWITCH_ADMINISTRADO``).
-           Esos cinco tienen dueño: :class:`DynDOLODConfig`. Que el payload los
-           re-suministre crea dos fuentes de verdad y rompe las premisas del
-           staging, del post-check y del rollback — y el parser de xEdit no
-           documenta cuál gana si el switch aparece dos veces, así que el resultado
-           sería indeterminado además de ambiguo.
+           sus formas ``/o:``, con whitespace líder y **peladas**: ``-o``,
+           ``/D``, ``-t`` — ver ``_SWITCH_ADMINISTRADO``). Esos cinco tienen
+           dueño: :class:`DynDOLODConfig`. Que el payload los re-suministre crea
+           dos fuentes de verdad y rompe las premisas del staging, del post-check
+           y del rollback — y el parser de xEdit no documenta cuál gana si el
+           switch aparece dos veces, así que el resultado sería indeterminado
+           además de ambiguo. La forma pelada entra por la misma razón: si el
+           parser la honra, es la misma segunda fuente; si no, rechazarla no le
+           cuesta nada a ningún caller legítimo. El delimitador es ``:``,
+           whitespace o fin del elemento, así que los switches ajenos que
+           comparten letra inicial (``-debug``, ``-other``) siguen permitidos.
 
         4. **Ningún elemento puede introducir un segundo game mode**
            (``-sse``/``-tes5``/``-tes5vr``/… — ver ``_GAME_MODES_ADMINISTRADOS``).

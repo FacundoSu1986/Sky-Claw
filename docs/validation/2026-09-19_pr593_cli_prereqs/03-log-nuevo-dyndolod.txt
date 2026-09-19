@@ -1,0 +1,22 @@
+﻿DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-19 08:24:17
+
+The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
+If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
+
+Using Skyrim Special Edition Data Path: G:\Modding\Skyrim_Runtime_1.6.1170\Data\
+Using Scripts Path: C:\Modding\DynDOLOD RigTest\Edit Scripts\
+Using Cache Path: C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: C:\Users\Facu2\AppData\Local\Temp\
+Using Output Path: E:\Sky-Claw T5 Rig\evidence\PR593-cli-prereqs\2026-09-19_bounded\PR593 Work\DynDOLOD\DynDOLOD\
+Using ini: C:\Modding\DynDOLOD RigTest\_rig_test\ini\\Skyrim.ini
+Using save path: C:\Modding\DynDOLOD RigTest\_rig_test\ini\Saves\
+Warning: Could not find save path
+Using Creation Club Content list: G:\Modding\Skyrim_Runtime_1.6.1170\Skyrim.ccc
+Using plugin list: G:\Modding\MO2\SkyrimSE\profiles\SkyClaw-PR2-Rig\plugins.txt
+Using settings file: C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using language: English
+Using general string encoding: 1252  (ANSI - Latï¿½n I)
+Using translatable string encoding: 1252  (ANSI - Latï¿½n I)
+Using VMAD string encoding: 65001 (UTF-8)
