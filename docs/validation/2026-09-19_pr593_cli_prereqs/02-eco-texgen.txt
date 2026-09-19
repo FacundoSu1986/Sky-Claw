@@ -1,0 +1,6 @@
+starting session :: TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (ADADC675) starting session 2026-09-19 08:23:15
+Using Skyrim Special Edition Data Path :: Using Skyrim Special Edition Data Path: G:\Modding\Skyrim_Runtime_1.6.1170\Data\
+Using ini: :: Using ini: C:\Modding\DynDOLOD RigTest\_rig_test\ini\\Skyrim.ini
+Using plugin list: :: Using plugin list: G:\Modding\MO2\SkyrimSE\profiles\SkyClaw-PR2-Rig\plugins.txt
+Loading active plugin list :: Loading active plugin list: G:\Modding\MO2\SkyrimSE\profiles\SkyClaw-PR2-Rig\plugins.txt
+Using Output Path: :: Using Output Path: E:\Sky-Claw T5 Rig\evidence\PR593-cli-prereqs\2026-09-19_bounded\PR593 Work\DynDOLOD\TexGen\
