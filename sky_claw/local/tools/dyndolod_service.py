@@ -39,6 +39,7 @@ from sky_claw.app.db.locks import (
 )
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.app.security.links import exigir_contencion_fisica, link_kind_or_raise
+from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_runner import (
@@ -284,12 +285,21 @@ class DynDOLODPipelineService:
         - ``SKYRIM_PATH``: Ruta al directorio de Skyrim SE/AE
         - ``MO2_PATH``: Ruta al directorio de MO2
         - ``MO2_MODS_PATH``: Ruta a la carpeta mods de MO2
+        - ``DYNDLOD_INI_DIR``: Carpeta de INIs del juego para ``-m:`` (opcional,
+          declaración explícita; ver ``get_dyndolod_ini_dir``)
+
+        Las fuentes de ``-m:``/``-p:`` se resuelven en esta única frontera (#593):
+        ``-p:`` del perfil MO2 activo (misma autoridad que el preflight) y
+        ``-m:`` de la declaración explícita del operador. Perfil inseguro,
+        metadata de instancia corrupta o INI declarada inválida fallan cerrado
+        ANTES de que exista runner — y por lo tanto antes de cualquier spawn.
 
         Returns:
             DynDOLODRunner inicializado.
 
         Raises:
-            DynDOLODExecutionError: Si faltan variables de entorno requeridas.
+            DynDOLODExecutionError: Si faltan variables de entorno requeridas o
+                la identidad del perfil / la fuente de INIs no es utilizable.
         """
         if self._runner is not None:
             return self._runner
@@ -310,6 +320,21 @@ class DynDOLODPipelineService:
         if not dyndolod_exe.exists():
             raise DynDOLODExecutionError(f"DynDOLOD executable not found: {dyndolod_exe}")
 
+        # #593 (prerrequisitos CLI): el runner sabía emitir -m:/-p: desde
+        # siempre, pero esta construcción no pasaba `ini_dir`/`plugins_file`, así
+        # que el argv productivo los omitía aunque las fuentes existieran. Se
+        # resuelven ACÁ —la única frontera que construye la config productiva—
+        # para que la decisión no pueda quedar librada a la omisión:
+        #   * `-p:` sale del PERFIL MO2 ACTIVO (`get_mo2_instance_data_root_estricto`
+        #     + `get_active_profile()`, la misma autoridad que el preflight de
+        #     #595), con el nombre validado como componente seguro (C2 de #593);
+        #   * `-m:` sale de la declaración EXPLÍCITA del operador
+        #     (`DYNDLOD_INI_DIR`). No se deriva: el doc oficial de DynDOLOD
+        #     prohíbe perfiles de MO2 y `Documents\My Games` sería una heurística
+        #     de nombre (ver `PathResolutionService.get_dyndolod_ini_dir`).
+        plugins_file = self._plugins_txt_del_perfil_activo()
+        ini_dir = self._ini_dir_declarado()
+
         config = DynDOLODConfig(
             game_path=game_path,
             mo2_path=mo2_path,
@@ -324,6 +349,8 @@ class DynDOLODPipelineService:
             # workspace (`None` sólo en runner directo de test/rig), el runner no
             # puede mutar fuera del contrato de P2.0.
             fence_ownership=self._fence_del_workspace if self._workspace is not None else None,
+            ini_dir=ini_dir,
+            plugins_file=plugins_file,
         )
 
         # T5-v2.1: la ausencia de capacidad ya no es un default silencioso del
@@ -349,6 +376,77 @@ class DynDOLODPipelineService:
             dyndolod_exe,
         )
         return self._runner
+
+    def _plugins_txt_del_perfil_activo(self) -> pathlib.Path | None:
+        """``plugins.txt`` del perfil MO2 activo, o ``None`` en modo standalone.
+
+        Separación EXPLÍCITA de significados (C3 de #593), sin colapsarlos en
+        ``None``:
+
+        * **Instancia MO2 resoluble** → la fuente es
+          ``<raíz de datos>/profiles/<perfil activo>/plugins.txt``. Si el
+          archivo no existe, la corrida NO cae al registro/default global: el
+          path queda declarado en la config y ``_primera_ruta_de_config_faltante``
+          corta antes del lock y del spawn. El pipeline afirma operar sobre un
+          perfil MO2 determinado; spawnear con otro load order lo convertiría en
+          una mentira.
+        * **Sin instancia** (rig directo/standalone) → ``None``: no hay perfil
+          que afirmar y no se inventa un ``-p:``.
+
+        El perfil sale de ``get_active_profile()`` —la MISMA autoridad que
+        resuelve el perfil para LOOT, el preflight de #595 y el handoff
+        durable— y se valida como componente único de ruta
+        (``assert_safe_component``, patrón del repo): un ``..\\otro`` no puede
+        convertir ``-p:`` en una lectura fuera del perfil admitido.
+
+        Usa el accessor **estricto** del resolver: una metadata de instancia
+        corrupta lanza en vez de degradar a "sin raíz de datos". El best-effort
+        es correcto para un sensor de preflight que sólo omite un scan, no para
+        la identidad con la que el binario va a leer el load order.
+
+        Raises:
+            DynDOLODExecutionError: si la metadata de la instancia es inválida o
+                el perfil activo no es un componente de ruta seguro.
+        """
+        try:
+            raiz_datos = self._path_resolver.get_mo2_instance_data_root_estricto()
+        except RuntimeError as exc:
+            raise DynDOLODExecutionError(
+                f"No se puede afirmar la identidad del perfil MO2 activo para construir -p:: {exc}"
+            ) from exc
+        if not isinstance(raiz_datos, pathlib.Path):
+            logger.info("DynDOLOD en modo standalone/direct (sin instancia MO2 resoluble): no se emite -p:.")
+            return None
+        try:
+            perfil = assert_safe_component(self._path_resolver.get_active_profile(), field="profile")
+        except PathViolationError as exc:
+            raise DynDOLODExecutionError(
+                f"El perfil MO2 activo no es un componente de ruta seguro para -p:: {exc}"
+            ) from exc
+        candidato = raiz_datos / "profiles" / perfil / "plugins.txt"
+        logger.info("DynDOLOD -p: plugins.txt del perfil activo '%s': %s", perfil, candidato)
+        return candidato
+
+    def _ini_dir_declarado(self) -> pathlib.Path | None:
+        """Carpeta de INIs declarada EXPLÍCITAMENTE para ``-m:``, o ``None``.
+
+        No hay derivación: el doc oficial de DynDOLOD prohíbe apuntar a carpetas
+        de perfiles de MO2 (*"Do not link to files or folders in mod manager
+        profiles"*) y ``Documents\\My Games\\…`` sería una heurística de nombre
+        (edición Steam/GOG/VR + Documentos redirigido). La autoridad es
+        ``DYNDLOD_INI_DIR``, resuelta y validada por el resolver.
+
+        Un valor declarado pero inválido lanza en el resolver; acá se re-lanza
+        como error de dominio para que ``execute`` lo reporte ANTES de tocar
+        nada, en vez de que un ``RuntimeError`` sin manejar escape del pipeline.
+        """
+        try:
+            ini_dir = self._path_resolver.get_dyndolod_ini_dir()
+        except RuntimeError as exc:
+            raise DynDOLODExecutionError(f"No se puede iniciar DynDOLODRunner: {exc}") from exc
+        # Defensa contra dobles sin el método (MagicMock devuelve un mock, no un
+        # Path): se trata como "no declarado", igual que los accessors de paths.
+        return ini_dir if isinstance(ini_dir, pathlib.Path) else None
 
     async def _fence_del_workspace(self) -> None:
         """Fence P2.2: ownership vivo + contención FÍSICA antes de mutar o spawnear.
