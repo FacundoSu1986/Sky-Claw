@@ -45,7 +45,6 @@ from sky_claw.local.runtime_vault.models import RuntimeVaultError
 from sky_claw.local.runtime_vault.node_evidence import (
     NativeEvidenceError,
     NativeEvidenceUnsupportedError,
-    NativeHardlinkError,
     NativeNodeEvidence,
     NativeReparsePointError,
     _bottom_up_evidence_sort_key,
@@ -70,7 +69,6 @@ class TestNativeNodeEvidencePure:
         """Verifica que las excepciones deriven de RuntimeVaultError y de NativeEvidenceError."""
         assert issubclass(NativeEvidenceError, RuntimeVaultError)
         assert issubclass(NativeEvidenceUnsupportedError, NativeEvidenceError)
-        assert issubclass(NativeHardlinkError, NativeEvidenceError)
         assert issubclass(NativeReparsePointError, NativeEvidenceError)
         assert issubclass(DuplicateFileIdError, RuntimeVaultError)
 
@@ -353,7 +351,7 @@ class TestNativeNodeEvidenceWindowsReal:
             probe_node_evidence(tree_descartable)
 
     def test_w5_hardlink_externo(self, tree_descartable: pathlib.Path) -> None:
-        """W5 — Hardlink externo: archivo con NumberOfLinks != 1 pero FileId único en el Golden -> NativeHardlinkError."""
+        """W5 — Hardlink externo: archivo con NumberOfLinks != 1 produce DuplicateFileIdError (ADR 0010)."""
         with tempfile.TemporaryDirectory(dir=".") as td_outside:
             outside_dir = pathlib.Path(os.path.abspath(td_outside))
             internal_file = tree_descartable / "internal.dat"
@@ -363,8 +361,8 @@ class TestNativeNodeEvidenceWindowsReal:
             os.link(internal_file, outside_file)
 
             # En el árbol tree_descartable el FileId es único, pero NumberOfLinks == 2
-            # La Fase 3 debe detectar NumberOfLinks != 1 y lanzar NativeHardlinkError
-            with pytest.raises(NativeHardlinkError, match="NumberOfLinks=2.*hardlink externo"):
+            # La Fase 3 debe detectar NumberOfLinks != 1 y lanzar DuplicateFileIdError según ADR 0010
+            with pytest.raises(DuplicateFileIdError, match="NumberOfLinks=2.*hardlink externo"):
                 probe_node_evidence(tree_descartable)
 
     def test_w6_symlink(self, tree_descartable: pathlib.Path) -> None:
@@ -451,7 +449,25 @@ class TestNativeNodeEvidenceWindowsReal:
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        from sky_claw.local.runtime_vault import node_evidence
+
+        kernel32 = node_evidence._kernel32
+        kernel32.SetFilePointer.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LONG,
+            ctypes.POINTER(wintypes.LONG),
+            wintypes.DWORD,
+        ]
+        kernel32.SetFilePointer.restype = wintypes.DWORD
+        kernel32.ReadFile.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        kernel32.ReadFile.restype = wintypes.BOOL
+
         h = kernel32.CreateFileW(
             str(archivo),
             0x80000000 | 0x40000000,  # GENERIC_READ | GENERIC_WRITE
@@ -481,9 +497,9 @@ class TestNativeNodeEvidenceWindowsReal:
 
     def test_w12_binding_por_handle_anti_toctou(self, tree_descartable: pathlib.Path) -> None:
         """W12 — Demuestra que la evidencia del handle pertenece al objeto abierto y no al pathname posterior."""
-        import ctypes
+        from sky_claw.local.runtime_vault import node_evidence
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = node_evidence._kernel32
 
         archivo_a = tree_descartable / "archivo_a.txt"
         archivo_a.write_text("primer objeto original", encoding="utf-8")
@@ -602,9 +618,9 @@ class TestNativeNodeEvidenceWindowsReal:
 
     def test_w14_drift_tipo_con_expected_kind(self, tree_descartable: pathlib.Path) -> None:
         """W14 — expected_kind actúa como gate real: si un archivo es reemplazado por directorio, falla cerrado."""
-        import ctypes
+        from sky_claw.local.runtime_vault import node_evidence
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = node_evidence._kernel32
 
         d = tree_descartable / "directorio_real"
         d.mkdir()
@@ -639,6 +655,68 @@ class TestNativeNodeEvidenceWindowsReal:
         # Probar el junction como root: debe fallar con NativeReparsePointError sin resolver
         with pytest.raises(NativeReparsePointError, match="[Ee]nlace|[Rr]eparse point"):
             probe_node_evidence(junc_root)
+
+    def test_w16_ancestor_directory_replacement_race(self, tree_descartable: pathlib.Path) -> None:
+        """W16 — Demuestra que la contención de directorios (sin FILE_SHARE_DELETE) bloquea
+        la sustitución de un ancestro por un junction durante el recorrido (anti-TOCTOU causal).
+        """
+        from sky_claw.local.runtime_vault import node_evidence
+
+        subdir = tree_descartable / "sub"
+        subdir.mkdir()
+        leaf = subdir / "leaf.txt"
+        leaf.write_text("datos seguros", encoding="utf-8")
+
+        outside_dir = tree_descartable.parent / "outside_target"
+        outside_dir.mkdir(exist_ok=True)
+        try:
+            (outside_dir / "external.txt").write_text("datos fuera del golden", encoding="utf-8")
+
+            # 1. Probar directamente la primitiva: mientras el containment handle está abierto
+            # sin FILE_SHARE_DELETE, intentar renombrar/reemplazar el directorio debe fallar con PermissionError.
+            h_guard = node_evidence._open_containment_handle(subdir)
+            assert h_guard != -1 and h_guard != 0
+            try:
+                sub_temp = tree_descartable / "sub_temp"
+                with pytest.raises(PermissionError):
+                    os.replace(subdir, sub_temp)
+            finally:
+                node_evidence._kernel32.CloseHandle(h_guard)
+
+            # 2. Carrera simulada durante el traversal real:
+            # Interceptar os.scandir justo cuando evalúa subdir para intentar reemplazarlo por un junction
+            # hacia outside_dir. La contención activa debe impedirlo.
+            replacement_attempted = False
+            replacement_blocked = False
+
+            orig_scandir = os.scandir
+
+            def guarded_scandir(path: Any) -> Any:
+                nonlocal replacement_attempted, replacement_blocked
+                p = pathlib.Path(path)
+                if p == subdir:
+                    replacement_attempted = True
+                    # Intentar renombrar subdir para sustituirlo
+                    try:
+                        os.replace(subdir, tree_descartable / "sub_renamed")
+                    except PermissionError:
+                        replacement_blocked = True
+                return orig_scandir(path)
+
+            with patch("os.scandir", side_effect=guarded_scandir):
+                evidencias = probe_node_evidence(tree_descartable)
+
+            assert replacement_attempted, "El gancho debió ejecutarse durante el escaneo de subdir"
+            assert replacement_blocked, "El reemplazo de subdir debió ser bloqueado por el containment handle"
+
+            # 3. S1 nunca observa nodos del target externo
+            rel_paths = {e.backup.relative_path for e in evidencias}
+            assert rel_paths == {".", "sub", "sub/leaf.txt"}
+            assert "external.txt" not in rel_paths
+        finally:
+            import shutil
+
+            shutil.rmtree(outside_dir, ignore_errors=True)
 
     def test_root_inexistente_o_no_directorio_falla_cerrado(self, tree_descartable: pathlib.Path) -> None:
         """Verifica que root inexistente o archivo regular como root falle con NativeEvidenceError."""

@@ -63,7 +63,6 @@ from sky_claw.local.runtime_vault.models import (
 from sky_claw.local.runtime_vault.node_evidence import (
     NativeEvidenceError,
     NativeEvidenceUnsupportedError,
-    NativeHardlinkError,
     NativeNodeEvidence,
     NativeReparsePointError,
     file_id_128_to_int,
@@ -108,7 +107,6 @@ __all__ = [
     "InventoryLinkError",
     "NativeEvidenceError",
     "NativeEvidenceUnsupportedError",
-    "NativeHardlinkError",
     "NativeNodeEvidence",
     "NativeReparsePointError",
     "NodeProtectionObservation",

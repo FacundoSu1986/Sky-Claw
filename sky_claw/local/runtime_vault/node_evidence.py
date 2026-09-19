@@ -16,8 +16,9 @@ para candidate planning en el proceso no elevado:
 - Identidad física real por handle (VolumeSerialNumber, FileId128).
 - Inspección de NumberOfLinks, DeletePending, FileAttributes, ReparseTag.
 - Captura de Security Descriptors binarios self-relative mediante GetSecurityInfo.
-- Detección de hardlinks en fases: Fase 2 (interno -> DuplicateFileIdError) y
-  Fase 3 (externo -> NativeHardlinkError).
+- Contención activa de directorios sin FILE_SHARE_DELETE durante DFS anti-TOCTOU.
+- Detección de hardlinks unificada bajo DuplicateFileIdError (ADR 0010):
+  Fase 2 (interno -> DuplicateFileIdError) y Fase 3 (externo -> DuplicateFileIdError).
 - Detección estricta de reparse points / junctions / symlinks fail-closed.
 - Ordenamiento determinista bottom-up con '.' garantizado como último elemento.
 - Prohibición absoluta de primitivas mutadoras (garantizada por AST guard).
@@ -54,10 +55,6 @@ class NativeEvidenceError(RuntimeVaultError):
 
 class NativeEvidenceUnsupportedError(NativeEvidenceError):
     """Plataforma no soportada o volumen/filesystem incompatible (no NTFS / no persistent ACLs)."""
-
-
-class NativeHardlinkError(NativeEvidenceError):
-    """Violación de la política de hardlinks (p. ej. archivos regulares con NumberOfLinks != 1)."""
 
 
 class NativeReparsePointError(NativeEvidenceError):
@@ -122,6 +119,7 @@ _OWNER_SECURITY_INFORMATION = 0x00000001
 _GROUP_SECURITY_INFORMATION = 0x00000002
 _DACL_SECURITY_INFORMATION = 0x00000004
 
+_FILE_LIST_DIRECTORY = 0x0001
 _FILE_READ_ATTRIBUTES = 0x0080
 _READ_CONTROL = 0x00020000
 _FILE_SHARE_READ = 0x00000001
@@ -238,6 +236,31 @@ if sys.platform == "win32":
 # ============================================================================
 # Helpers Internos Win32
 # ============================================================================
+
+
+def _open_containment_handle(path: pathlib.Path) -> int:
+    """Abre un handle Win32 de contención sobre un directorio sin FILE_SHARE_DELETE.
+
+    SECURITY RULE (DIRECTORY CONTAINMENT):
+    FILE_LIST_DIRECTORY activa las reglas de sharing de NT para datos de directorio.
+    Omitir FILE_SHARE_DELETE impide que cualquier otro proceso o hilo pueda renombrar,
+    mover o eliminar el directorio mientras este handle permanezca abierto. Esto fija
+    el namespace de la rama activa durante el recorrido, neutralizando TOCTOU de
+    sustitución de ancestros por junctions o symlinks.
+    """
+    h = _kernel32.CreateFileW(
+        str(path),
+        _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _READ_CONTROL,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE,  # SIN _FILE_SHARE_DELETE: bloquea rename/replace/delete
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if h == wintypes.HANDLE(-1).value or h == 0:
+        err = ctypes.get_last_error()
+        raise NativeEvidenceError(f"CreateFileW falló al abrir containment handle en '{path}': código {err}")
+    return int(h)
 
 
 def _open_node_handle(path: pathlib.Path) -> int:
@@ -415,11 +438,11 @@ def _probe_open_handle(
         )
     finally:
         # Liberación estricta de asignaciones propias según contrato Win32
-        if owner_str_p:
+        if ctypes.cast(owner_str_p, ctypes.c_void_p).value:
             _kernel32.LocalFree(owner_str_p)
-        if group_str_p:
+        if ctypes.cast(group_str_p, ctypes.c_void_p).value:
             _kernel32.LocalFree(group_str_p)
-        if sd_p:
+        if ctypes.cast(sd_p, ctypes.c_void_p).value:
             _kernel32.LocalFree(sd_p)
 
 
@@ -472,8 +495,8 @@ def probe_node_evidence(
             f"Volumen no compatible para '{root_path}': drive_type={drive_type} (se requiere volumen fijo local)"
         )
 
-    # 3. Apertura del handle de la raíz y verificación del filesystem
-    root_handle = _open_node_handle(root_path)
+    # 3. Apertura del handle de la raíz con contención (sin FILE_SHARE_DELETE) y verificación del filesystem
+    root_handle = _open_containment_handle(root_path)
     try:
         fs_buf = ctypes.create_unicode_buffer(260)
         flags_val = wintypes.DWORD()
@@ -499,58 +522,67 @@ def probe_node_evidence(
             )
 
         root_evidence = _probe_open_handle(root_handle, ".", expected_kind=GoldenProtectionNodeKind.DIR)
+
+        # 4. Recorrido estricto fail-closed con contención de directorios (Walker seguro anti-TOCTOU)
+        # FASE 1: Captura de evidencia de todo el árbol en memoria manteniendo handles de contención
+        collected_nodes: list[NativeNodeEvidence] = [root_evidence]
+        seen_relpaths: set[str] = {"."}
+
+        def _traverse_dir(dir_path: pathlib.Path, dir_evidence: NativeNodeEvidence) -> None:
+            """Recorre un directorio manteniendo handles de contención (sin FILE_SHARE_DELETE) en la rama DFS activa."""
+            try:
+                with os.scandir(dir_path) as entries:
+                    sorted_entries = sorted(entries, key=lambda e: e.name)
+                    for entry in sorted_entries:
+                        child_path = pathlib.Path(entry.path)
+                        rel_path = child_path.relative_to(root_path).as_posix()
+                        if rel_path in seen_relpaths:
+                            raise NativeEvidenceError(f"Ruta relativa duplicada en el árbol: {rel_path}")
+                        seen_relpaths.add(rel_path)
+
+                        # Inspección lstat previa
+                        tipo, c_st = link_kind_and_identity_or_raise(child_path)
+                        if c_st is None:
+                            raise NativeEvidenceError(f"Entrada desapareció durante recorrido: '{rel_path}'")
+                        if tipo is not None:
+                            raise NativeReparsePointError(f"Enlace ({tipo}) detectado en '{rel_path}'")
+
+                        is_dir = stat.S_ISDIR(c_st.st_mode)
+                        expected_k = GoldenProtectionNodeKind.DIR if is_dir else GoldenProtectionNodeKind.FILE
+
+                        if is_dir:
+                            # Abrir containment handle (sin FILE_SHARE_DELETE) antes de evaluar y descender
+                            child_containment_h = _open_containment_handle(child_path)
+                            try:
+                                child_ev = _probe_open_handle(child_containment_h, rel_path, expected_kind=expected_k)
+                                if child_ev.backup.volume_serial_number != root_evidence.backup.volume_serial_number:
+                                    raise NativeEvidenceError(
+                                        f"Discrepancia de volumen en '{rel_path}': "
+                                        f"{child_ev.backup.volume_serial_number} != {root_evidence.backup.volume_serial_number}"
+                                    )
+                                collected_nodes.append(child_ev)
+                                _traverse_dir(child_path, child_ev)
+                            finally:
+                                _kernel32.CloseHandle(child_containment_h)
+                        else:
+                            h = _open_node_handle(child_path)
+                            try:
+                                ev = _probe_open_handle(h, rel_path, expected_kind=expected_k)
+                            finally:
+                                _kernel32.CloseHandle(h)
+
+                            if ev.backup.volume_serial_number != root_evidence.backup.volume_serial_number:
+                                raise NativeEvidenceError(
+                                    f"Discrepancia de volumen en '{rel_path}': "
+                                    f"{ev.backup.volume_serial_number} != {root_evidence.backup.volume_serial_number}"
+                                )
+                            collected_nodes.append(ev)
+            except OSError as exc:
+                raise NativeEvidenceError(f"Error al recorrer '{dir_path}': {exc}") from exc
+
+        _traverse_dir(root_path, root_evidence)
     finally:
         _kernel32.CloseHandle(root_handle)
-
-    # 4. Recorrido estricto fail-closed (Walker seguro)
-    # FASE 1: Captura de evidencia de todo el árbol en memoria
-    collected_nodes: list[NativeNodeEvidence] = [root_evidence]
-    stack: list[pathlib.Path] = [root_path]
-    seen_relpaths: set[str] = {"."}
-
-    while stack:
-        current_dir = stack.pop()
-        try:
-            with os.scandir(current_dir) as entries:
-                sorted_entries = sorted(entries, key=lambda e: e.name)
-                for entry in sorted_entries:
-                    child_path = pathlib.Path(entry.path)
-                    rel_path = child_path.relative_to(root_path).as_posix()
-                    if rel_path in seen_relpaths:
-                        raise NativeEvidenceError(f"Ruta relativa duplicada en el árbol: {rel_path}")
-                    seen_relpaths.add(rel_path)
-
-                    # Inspección lstat previa
-                    tipo, c_st = link_kind_and_identity_or_raise(child_path)
-                    if c_st is None:
-                        raise NativeEvidenceError(f"Entrada desapareció durante recorrido: '{rel_path}'")
-                    if tipo is not None:
-                        raise NativeReparsePointError(f"Enlace ({tipo}) detectado en '{rel_path}'")
-
-                    is_dir = stat.S_ISDIR(c_st.st_mode)
-                    expected_k = GoldenProtectionNodeKind.DIR if is_dir else GoldenProtectionNodeKind.FILE
-
-                    # Apertura del handle nativo
-                    h = _open_node_handle(child_path)
-                    try:
-                        ev = _probe_open_handle(h, rel_path, expected_kind=expected_k)
-                    finally:
-                        _kernel32.CloseHandle(h)
-
-                    # Verificar pertenencia al mismo volumen del root
-                    if ev.backup.volume_serial_number != root_evidence.backup.volume_serial_number:
-                        raise NativeEvidenceError(
-                            f"Discrepancia de volumen en '{rel_path}': "
-                            f"{ev.backup.volume_serial_number} != {root_evidence.backup.volume_serial_number}"
-                        )
-
-                    collected_nodes.append(ev)
-
-                    # Solo si el handle confirmó que es directorio real, descendemos
-                    if ev.backup.node_kind is GoldenProtectionNodeKind.DIR:
-                        stack.append(child_path)
-        except OSError as exc:
-            raise NativeEvidenceError(f"Error al recorrer '{current_dir}': {exc}") from exc
 
     # FASE 2: Detección de hardlinks internos (FileIds duplicados dentro del NodeSet)
     seen_ids: dict[tuple[int, int], str] = {}
@@ -563,17 +595,12 @@ def probe_node_evidence(
             )
         seen_ids[phys_id] = node.backup.relative_path
 
-    # FASE 3: Detección de hardlinks externos en archivos regulares únicos
+    # FASE 3: Detección de hardlinks externos en archivos regulares únicos (ADR 0010)
     for node in collected_nodes:
-        if node.backup.node_kind is GoldenProtectionNodeKind.FILE:
-            if node.number_of_links != 1:
-                raise NativeHardlinkError(
-                    f"Archivo regular '{node.backup.relative_path}' tiene "
-                    f"NumberOfLinks={node.number_of_links} != 1 (hardlink externo detectado)"
-                )
-        elif node.backup.node_kind is GoldenProtectionNodeKind.DIR and node.number_of_links < 1:
-            raise NativeHardlinkError(
-                f"Directorio '{node.backup.relative_path}' tiene NumberOfLinks={node.number_of_links} < 1 inválido"
+        if node.backup.node_kind is GoldenProtectionNodeKind.FILE and node.number_of_links != 1:
+            raise DuplicateFileIdError(
+                f"DuplicateFileIdError: archivo regular '{node.backup.relative_path}' tiene "
+                f"NumberOfLinks={node.number_of_links} != 1 (hardlink externo detectado)"
             )
 
     # FASE 4: Ordenamiento determinista bottom-up con '.' último
@@ -587,7 +614,6 @@ def probe_node_evidence(
 __all__ = [
     "NativeEvidenceError",
     "NativeEvidenceUnsupportedError",
-    "NativeHardlinkError",
     "NativeNodeEvidence",
     "NativeReparsePointError",
     "file_id_128_to_int",
