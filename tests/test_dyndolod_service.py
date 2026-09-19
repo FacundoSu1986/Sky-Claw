@@ -49,7 +49,7 @@ from sky_claw.local.validators.preflight import (
     PreflightStatus,
 )
 from sky_claw.logging_config import correlacion_de_transaccion, pipeline_tx_id_var
-from tests._symlink_guard import crear_junction, junction_guard
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 
 def _mock_config(tmp_path: pathlib.Path) -> MagicMock:
@@ -7034,6 +7034,49 @@ async def test_ensure_runner_cablea_el_plugins_txt_del_perfil_activo(
     layout = derivar_layout_de_dyndolod(external_work_root=external)
     assert o == [f"-o:{layout.dyndolod_root}\\"]
 
+
+@symlink_guard
+def test_ensure_runner_rechaza_plugins_txt_symlink_fuera_de_la_instancia(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """``-p:`` falla cerrado si plugins.txt resuelve fuera de INSTANCE_DATA_ROOT."""
+    game, data_root, exe, plugins_file = _entorno_mo2_cli(tmp_path)
+    externo = tmp_path_factory.mktemp("plugins_fuera_de_instancia") / "plugins.txt"
+    externo.write_text("*Skyrim.esm\n", encoding="utf-8")
+    plugins_file.unlink()
+    plugins_file.symlink_to(externo)
+
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe)
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"))
+
+    with pytest.raises(DynDOLODExecutionError, match="escapa la raíz de datos"):
+        svc._ensure_runner()
+
+
+@junction_guard
+def test_ensure_runner_rechaza_profile_junction_fuera_de_la_instancia(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Windows: un junction en profiles/<perfil> tampoco puede escapar ``-p:``."""
+    import shutil
+
+    game, data_root, exe, plugins_file = _entorno_mo2_cli(tmp_path)
+    perfil_dir = plugins_file.parent
+    shutil.rmtree(perfil_dir)
+    perfil_externo = tmp_path_factory.mktemp("perfil_fuera_de_instancia")
+    (perfil_externo / "plugins.txt").write_text("*Skyrim.esm\n", encoding="utf-8")
+    motivo = crear_junction(perfil_dir, perfil_externo)
+    assert motivo is None, motivo
+
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe)
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"))
+
+    with pytest.raises(DynDOLODExecutionError, match="escapa la raíz de datos"):
+        svc._ensure_runner()
 
 @pytest.mark.asyncio
 async def test_ensure_runner_usa_el_perfil_de_la_sesion_y_no_otro(

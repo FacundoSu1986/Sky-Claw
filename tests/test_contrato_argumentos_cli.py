@@ -1805,7 +1805,7 @@ def test_todo_constructor_de_dyndolod_config_cablea_m_y_p() -> None:
     respuesta honesta en modo standalone/direct (sin instancia MO2 resoluble),
     y lo que el ancla impide es que la decisión se tome por OMISIÓN.
     """
-    encontrados: dict[str, bool] = {}
+    encontrados: dict[str, list[bool]] = {}
     for carpeta in _CARPETAS_DEL_CENSO_DE_CONFIG:
         for archivo in sorted((RAIZ / carpeta).rglob("*.py")):
             arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
@@ -1821,13 +1821,20 @@ def test_todo_constructor_de_dyndolod_config_cablea_m_y_p() -> None:
             if not llamadas:
                 continue
             clave = archivo.relative_to(RAIZ).as_posix()
-            kwargs = {kw.arg for llamada in llamadas for kw in llamada.keywords}
-            encontrados[clave] = {"ini_dir", "plugins_file"} <= kwargs
+            encontrados[clave] = [
+                {"ini_dir", "plugins_file"} <= {kw.arg for kw in llamada.keywords}
+                for llamada in llamadas
+            ]
 
     assert set(encontrados) == CONSTRUCTORES_DE_DYNDOLOD_CONFIG, (
         f"constructores de DynDOLODConfig inesperados: {sorted(set(encontrados) ^ CONSTRUCTORES_DE_DYNDOLOD_CONFIG)}"
     )
-    sin_fuentes = sorted(clave for clave, cablea in encontrados.items() if not cablea)
+    sin_fuentes = sorted(
+        f"{clave}#call-{indice}"
+        for clave, llamadas in encontrados.items()
+        for indice, cablea in enumerate(llamadas, start=1)
+        if not cablea
+    )
     assert not sin_fuentes, (
         f"construyen DynDOLODConfig sin declarar ini_dir/plugins_file: {sin_fuentes}. "
         "El argv productivo quedaría sin -m:/-p: por omisión, que es el hueco de #593."

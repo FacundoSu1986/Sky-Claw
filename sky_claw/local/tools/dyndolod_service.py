@@ -424,8 +424,26 @@ class DynDOLODPipelineService:
                 f"El perfil MO2 activo no es un componente de ruta seguro para -p:: {exc}"
             ) from exc
         candidato = raiz_datos / "profiles" / perfil / "plugins.txt"
-        logger.info("DynDOLOD -p: plugins.txt del perfil activo '%s': %s", perfil, candidato)
-        return candidato
+        # El nombre seguro evita traversal textual, pero el directorio del perfil
+        # o el propio plugins.txt todavía pueden ser symlink/junction. Como este
+        # PR convierte la ruta en input administrado ``-p:``, no puede escapar de
+        # la raíz de datos MO2 que el resolver ya validó.
+        try:
+            raiz_resuelta = raiz_datos.resolve(strict=True)
+            candidato_resuelto = candidato.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise DynDOLODExecutionError(
+                f"No se pudo validar físicamente el plugins.txt del perfil MO2 activo para -p:: {candidato}"
+            ) from exc
+        try:
+            candidato_resuelto.relative_to(raiz_resuelta)
+        except ValueError as exc:
+            raise DynDOLODExecutionError(
+                "El plugins.txt del perfil MO2 activo escapa la raíz de datos de la instancia "
+                f"({raiz_resuelta}): {candidato} -> {candidato_resuelto}"
+            ) from exc
+        logger.info("DynDOLOD -p: plugins.txt del perfil activo '%s': %s", perfil, candidato_resuelto)
+        return candidato_resuelto
 
     def _ini_dir_declarado(self) -> pathlib.Path | None:
         """Carpeta de INIs declarada EXPLÍCITAMENTE para ``-m:``, o ``None``.

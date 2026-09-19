@@ -1308,14 +1308,23 @@ class PathResolutionService:
             )
         # Raíz de volumen (``C:\`` / ``/``): existe y es directorio, pero no es la
         # carpeta de INIs de nada — apuntar -m: ahí es un error de configuración.
-        if ruta.parent == ruta:
-            raise RuntimeError(f"DYNDLOD_INI_DIR ({ruta}) apunta a una raíz de volumen, no a la carpeta de INIs.")
-        if not ruta.is_dir():
+        # Canonicalizar ANTES de vetar raíces: grafías como ``/tmp/..`` o
+        # ``C:\\existing\\..`` (y enlaces que apunten a la raíz) no son
+        # raíces léxicamente, pero sí físicamente.
+        try:
+            resuelta = ruta.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
             raise RuntimeError(
-                f"DYNDLOD_INI_DIR ({ruta}) no existe o no es un directorio: -m: exige la carpeta "
+                f"DYNDLOD_INI_DIR ({ruta}) no se pudo canonicalizar de forma segura."
+            ) from exc
+        if resuelta.parent == resuelta:
+            raise RuntimeError(f"DYNDLOD_INI_DIR ({resuelta}) apunta a una raíz de volumen, no a la carpeta de INIs.")
+        if not resuelta.is_dir():
+            raise RuntimeError(
+                f"DYNDLOD_INI_DIR ({resuelta}) no existe o no es un directorio: -m: exige la carpeta "
                 "de INIs del juego (Skyrim.ini/SkyrimPrefs.ini)."
             )
-        return ruta.resolve()
+        return resuelta
 
     def get_synthesis_exe(self) -> pathlib.Path | None:
         """Resuelve SYNTHESIS_EXE desde entorno validado."""

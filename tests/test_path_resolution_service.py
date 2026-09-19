@@ -424,6 +424,23 @@ class TestGetDyndolodIniDir:
         ):
             self._resolver_con_raiz(tmp_path, tmp_path).get_dyndolod_ini_dir()
 
+    def test_alias_lexico_que_resuelve_a_raiz_de_volumen_falla_cerrado(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Un ``..`` absoluto no puede esquivar el veto si canonicaliza a la raíz."""
+        primer_componente = tmp_path.parts[1]
+        alias = pathlib.Path(tmp_path.anchor) / primer_componente / ".."
+        assert alias.is_absolute()
+        assert alias.parent != alias
+        assert alias.resolve().parent == alias.resolve()
+
+        with (
+            patch.dict(os.environ, {"DYNDLOD_INI_DIR": str(alias)}, clear=True),
+            pytest.raises(RuntimeError, match="raíz de volumen"),
+        ):
+            self._resolver_con_raiz(tmp_path, tmp_path).get_dyndolod_ini_dir()
+
 
 class TestResolverModsDirDeInstanciaMo2:
     """Unit tests de la función pura del contrato PathSettings de MO2.
