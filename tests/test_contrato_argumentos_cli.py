@@ -1127,6 +1127,81 @@ async def test_dyndolod_extra_args_no_puede_redefinir_un_switch_administrado(
         assert not ejecutar.called
 
 
+#: Formas del switch administrado SIN valor (``-o``, ``/O``…) que un caller
+#: podría intentar para re-suministrar una ruta administrada. Se derivan de
+#: ``_LETRAS_ADMINISTRADAS`` en tiempo de colección: un literal acá sería una
+#: tercera copia que puede desalinearse del código sin dar señal. La forma con
+#: espacio (``-o C:\otra``) entra porque es la manera alcanzable de darle un
+#: valor al switch pelado dentro de UN solo elemento de argv.
+_FORMAS_DE_SWITCH_ADMINISTRADO_PELADO: tuple[str, ...] = tuple(
+    f"{prefijo}{letra}{sufijo}"
+    for letra in _LETRAS_ADMINISTRADAS
+    for prefijo in ("-", "/", " -", "\t/")
+    for sufijo in ("", " C:\\otra\\ruta\\")
+)
+
+
+@pytest.mark.parametrize("ofensivo", _FORMAS_DE_SWITCH_ADMINISTRADO_PELADO)
+@pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
+async def test_dyndolod_extra_args_rechaza_el_switch_administrado_pelado(
+    tmp_path: pathlib.Path,
+    lanzador: str,
+    ofensivo: str,
+) -> None:
+    """El switch administrado SIN ``:`` también tiene dueño: ``DynDOLODConfig``.
+
+    La regla de ``_SWITCH_ADMINISTRADO`` exigía los dos puntos, así que un
+    ``-o`` pelado (o ``/O``, o ``-o C:\\otra`` en un solo elemento) pasaba
+    derecho al argv. Aunque xEdit no documenta la forma pelada como correcta,
+    el fail-closed mira la asimetría: rechazarla no le cuesta nada a ningún
+    caller legítimo —la doc usa ``-X:valor`` y nadie emite la otra forma—,
+    mientras que un parser que sí la honre crea una SEGUNDA fuente para la
+    misma ruta y pisa las premisas del staging, el post-check y el rollback.
+
+    Enumera las cinco letras × los cuatro prefijos × con/sin valor × **los dos**
+    lanzadores. Un caso escrito a mano para ``-o`` no ataja a ``/T``.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODValidationError
+
+    runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
+
+    with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
+        with pytest.raises(DynDOLODValidationError, match="administra DynDOLODConfig"):
+            await getattr(runner, lanzador)(extra_args=[ofensivo])
+        assert not ejecutar.called, "el proceso no debe lanzarse con un switch administrado pelado"
+
+
+#: Switches AJENOS al inventario administrado. Los dos últimos existen
+#: justamente para probar el falso positivo: empiezan con una letra administrada
+#: (``-d``e.../``-o``t...) y NO son el switch. La regla no es una allowlist
+#: completa de xEdit: todo lo que no redefina ``-o:/-d:/-m:/-p:/-t:`` ni el game
+#: mode sigue pasando.
+_SWITCHES_AJENOS_LEGITIMOS = ("-B:C:\\backups\\", "-C:C:\\cache\\", "-debug", "-other", "-autoload")
+
+
+@pytest.mark.parametrize("legitimo", _SWITCHES_AJENOS_LEGITIMOS)
+@pytest.mark.parametrize("lanzador", ["run_texgen", "run_dyndolod"])
+async def test_dyndolod_extra_args_permite_switches_ajenos(
+    tmp_path: pathlib.Path,
+    lanzador: str,
+    legitimo: str,
+) -> None:
+    """La otra mitad del contrato: lo que no redefine nada administrado pasa.
+
+    Sin este test, endurecer la regla podría bloquear de más —``-debug`` y
+    ``-other`` comparten prefijo con letras administradas— y romper extensiones
+    legítimas del parser de xEdit. Se verifica sobre el argv real de los dos
+    lanzadores, no sobre la regex.
+    """
+    runner, _ = _runner_con_raiz(tmp_path, "Sky-Claw")
+
+    with patch.object(runner, "_execute_process", AsyncMock(return_value=("", "", 0, 1.0))) as ejecutar:
+        await getattr(runner, lanzador)(extra_args=[legitimo])
+        assert ejecutar.called
+        argv = ejecutar.call_args.kwargs["args"]
+        assert argv[-1] == legitimo
+
+
 @pytest.mark.parametrize("letra", list(_LETRAS_ADMINISTRADAS))
 @pytest.mark.parametrize("prefijo", ["-", "/", " -", "\t-", "  /"])
 async def test_dyndolod_extra_args_rechaza_las_formas_alternativas_del_prefijo(
@@ -1550,6 +1625,98 @@ async def test_dyndolod_modo_vr_se_fija_por_config_no_por_ruta(tmp_path: pathlib
         assert inferido_sse._modo() == "SSE"
 
 
+#: Valores que el contrato runtime de ``game_mode`` NO admite. El ``Literal``
+#: no protege runtime: ``game_mode="banana"`` degradaba a ``-sse`` en
+#: ``_build_xedit_args`` y a ``SSE`` en ``_modo()``, en silencio. ``"SSE"`` está
+#: acá a propósito: el contrato público es ``None | "sse" | "tes5vr"`` y NO se
+#: normaliza — aceptar una grafía "parecida" es la puerta por la que mañana entra
+#: ``"tes5vr "`` o ``"SSE-R"`` y el modo del argv deja de estar demostrado.
+_GAME_MODES_INVALIDOS = ("banana", "", "sse ", " SSE", "SSE", "Tes5Vr", "tes5", "fo4", 0, 1, True, object())
+
+
+@pytest.mark.parametrize("invalido", _GAME_MODES_INVALIDOS, ids=repr)
+def test_dyndolod_game_mode_invalido_falla_en_la_config(
+    tmp_path: pathlib.Path,
+    invalido: object,
+) -> None:
+    """``DynDOLODConfig`` nunca existe con un ``game_mode`` inválido. Fail-closed.
+
+    El valor entra como dato (no como literal tipado): ``DynDOLODConfig`` se
+    construye desde payload/config y los type hints no validan en runtime. Antes
+    de este ancla, un valor arbitrario se leía en dos sitios con la MISMA
+    heurística de fallback —``-tes5vr`` si es exactamente ese string, si no
+    ``-sse``— así que ``banana`` producía una corrida SSE perfectamente
+    plausible: ni excepción, ni log, ni pista en el argv.
+
+    La validación vive en ``__post_init__`` —la única frontera de construcción—
+    porque ``_modo()`` también consume el campo para elegir el log: validar solo
+    dentro de ``_build_xedit_args`` dejaba que la resolución del log siguiera
+    creyendo un modo que el argv ya no emitía.
+
+    Se enumera el conjunto de valores inválidos (strings parecidos, otros game
+    modes de xEdit, no-strings y un no-string truthy): cualquier valor fuera de
+    ``None | "sse" | "tes5vr"`` tiene que lanzar ANTES de que exista un runner,
+    muy antes de cualquier spawn.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODValidationError
+
+    game = tmp_path / "Skyrim Special Edition"
+    game.mkdir()
+    exe_dir = tmp_path / "DynDOLOD"
+    exe_dir.mkdir()
+    exe = exe_dir / "DynDOLODx64.exe"
+    exe.touch()
+
+    with pytest.raises(DynDOLODValidationError, match="game_mode"):
+        DynDOLODConfig(
+            game_path=game,
+            mo2_path=tmp_path / "MO2",
+            mo2_mods_path=tmp_path / "MO2" / "mods",
+            dyndolod_exe=exe,
+            game_mode=invalido,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    ("modo", "switch", "modo_del_log"),
+    [("sse", "-sse", "SSE"), ("tes5vr", "-tes5vr", "TES5VR")],
+)
+def test_dyndolod_game_mode_explicito_valido(
+    tmp_path: pathlib.Path,
+    modo: str,
+    switch: str,
+    modo_del_log: str,
+) -> None:
+    """Los dos valores del contrato explícito se emiten tal cual, sin adivinar.
+
+    ``game_mode="sse"`` sobre un path que PARECE VR sigue produciendo ``-sse``
+    (y viceversa): el campo manda sobre la heurística del nombre, que es la
+    decisión única de ``__post_init__``. Además el log que el post-check busca
+    (``_modo()``) sale del mismo valor — argv y log comparten autoridad.
+    """
+    from sky_claw.local.tools.dyndolod_runner import DynDOLODConfig, DynDOLODRunner
+
+    game = tmp_path / ("Skyrim VR" if modo == "sse" else "Skyrim Special Edition")
+    game.mkdir()
+    exe_dir = tmp_path / "DynDOLOD"
+    exe_dir.mkdir()
+    exe = exe_dir / "DynDOLODx64.exe"
+    exe.touch()
+
+    config = DynDOLODConfig(
+        game_path=game,
+        mo2_path=tmp_path / "MO2",
+        mo2_mods_path=tmp_path / "MO2" / "mods",
+        dyndolod_exe=exe,
+        game_mode=modo,
+    )
+    runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST)
+
+    assert config.game_mode == modo
+    assert runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)[0] == switch
+    assert runner._modo() == modo_del_log
+
+
 async def test_pandora_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:
     """Vector completo contra el README de Pandora, no flags muestreados.
 
@@ -1606,3 +1773,62 @@ async def test_wrye_bash_falla_cerrado_en_vez_de_lanzar_un_comando_invalido(tmp_
 
     spawn_mock.assert_not_called()
     assert "sky_claw/local/tools/wrye_bash_runner.py" not in _lanzadores_por_modulo()
+
+
+#: Sitios que construyen ``DynDOLODConfig`` en producción/rig. Igualdad literal,
+#: como el censo del runner (`test_dyndolod_t5v21_wiring.py`): un constructor
+#: nuevo rompe el ancla hasta que decida si cablea las fuentes de ``-m:``/``-p:``.
+CONSTRUCTORES_DE_DYNDOLOD_CONFIG: frozenset[str] = frozenset(
+    {
+        "sky_claw/local/tools/dyndolod_service.py",
+        "docs/validation/2026-09-13_pr580_real_rig/run_phase.py",
+    }
+)
+
+#: Carpetas censadas: el paquete completo MÁS los harness de rig comprometidos
+#: (callers ejecutables reales, no docs: ``run_phase.py`` se corre en el rig).
+_CARPETAS_DEL_CENSO_DE_CONFIG: tuple[str, ...] = ("sky_claw", "docs/validation")
+
+
+def test_todo_constructor_de_dyndolod_config_cablea_m_y_p() -> None:
+    """Censo: todo ``DynDOLODConfig(...)`` de producción/rig declara las fuentes.
+
+    El hueco de #593 era exactamente este: ``_ensure_runner`` construía la config
+    sin ``plugins_file`` ni ``ini_dir`` —el runner podía emitirlos, pero nadie se
+    los daba— y ningún test lo veía porque todos construían la config a mano.
+    Este ancla enumera los constructores reales (mismo instrumento que el censo
+    del runner en ``test_dyndolod_t5v21_wiring.py``) y exige que cada uno pase
+    ``ini_dir=`` y ``plugins_file=``: un constructor nuevo que las omita deja de
+    ser un descuido invisible y pasa a ser un rojo.
+
+    Exige la PRESENCIA del kwarg, no que el valor sea no-``None``: ``None`` es la
+    respuesta honesta en modo standalone/direct (sin instancia MO2 resoluble),
+    y lo que el ancla impide es que la decisión se tome por OMISIÓN.
+    """
+    encontrados: dict[str, bool] = {}
+    for carpeta in _CARPETAS_DEL_CENSO_DE_CONFIG:
+        for archivo in sorted((RAIZ / carpeta).rglob("*.py")):
+            arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
+            llamadas = [
+                nodo
+                for nodo in ast.walk(arbol)
+                if isinstance(nodo, ast.Call)
+                and (
+                    (isinstance(nodo.func, ast.Name) and nodo.func.id == "DynDOLODConfig")
+                    or (isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "DynDOLODConfig")
+                )
+            ]
+            if not llamadas:
+                continue
+            clave = archivo.relative_to(RAIZ).as_posix()
+            kwargs = {kw.arg for llamada in llamadas for kw in llamada.keywords}
+            encontrados[clave] = {"ini_dir", "plugins_file"} <= kwargs
+
+    assert set(encontrados) == CONSTRUCTORES_DE_DYNDOLOD_CONFIG, (
+        f"constructores de DynDOLODConfig inesperados: {sorted(set(encontrados) ^ CONSTRUCTORES_DE_DYNDOLOD_CONFIG)}"
+    )
+    sin_fuentes = sorted(clave for clave, cablea in encontrados.items() if not cablea)
+    assert not sin_fuentes, (
+        f"construyen DynDOLODConfig sin declarar ini_dir/plugins_file: {sin_fuentes}. "
+        "El argv productivo quedaría sin -m:/-p: por omisión, que es el hueco de #593."
+    )

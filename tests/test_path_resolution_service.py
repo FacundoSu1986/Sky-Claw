@@ -328,6 +328,103 @@ class TestGetActiveProfile:
             assert desde_app_context == desde_resolver, f"divergen con cli={cli!r} entorno={entorno!r}"
 
 
+class TestGetDyndolodIniDir:
+    """``get_dyndolod_ini_dir`` — autoridad EXPLÍCITA de ``-m:`` (prerrequisito de #593).
+
+    Por qué no hay derivación automática: el doc oficial de DynDOLOD prohíbe
+    apuntar ``-m:`` a carpetas de perfiles de MO2 (*"Do not link to files or
+    folders in mod manager profiles"*), y ``Documents\\My Games\\...`` depende de
+    la edición (Steam/GOG/VR) y puede estar redirigido — derivarlo sería una
+    heurística de nombre. La única fuente que este resolver reconoce es la
+    declaración explícita del operador, con validación fail-closed.
+
+    La política de validación es más angosta que el sandbox a propósito: el
+    objetivo legítimo (la carpeta de INIs del juego) vive FUERA de las raíces de
+    modding, no lo escribe Sky-Claw y sólo viaja al argv del binario. Por eso se
+    exige absoluto + existente + directorio, no contención.
+    """
+
+    @staticmethod
+    def _resolver_con_raiz(tmp_path: pathlib.Path, raiz: pathlib.Path) -> PathResolutionService:
+        return PathResolutionService(path_validator=PathValidator(roots=[raiz]))
+
+    def test_sin_declaracion_devuelve_none(self, sandbox_root: pathlib.Path) -> None:
+        """Sin ``DYNDLOD_INI_DIR`` no hay autoridad: el switch no se emite."""
+        with patch.dict(os.environ, {}, clear=True):
+            assert (
+                PathResolutionService(path_validator=PathValidator(roots=[sandbox_root])).get_dyndolod_ini_dir() is None
+            )
+
+    def test_vacio_cuenta_como_ausencia(self, sandbox_root: pathlib.Path) -> None:
+        """``""`` es ausencia, no una ruta inválida (mismo contrato que el perfil)."""
+        with patch.dict(os.environ, {"DYNDLOD_INI_DIR": "  "}, clear=True):
+            assert (
+                PathResolutionService(path_validator=PathValidator(roots=[sandbox_root])).get_dyndolod_ini_dir() is None
+            )
+
+    def test_directorio_absoluto_existente_se_devuelve_resuelto(self, tmp_path: pathlib.Path) -> None:
+        """El caso normal del rig: ``My Games\\Skyrim Special Edition`` con espacios."""
+        ini_dir = tmp_path / "My Games" / "Skyrim Special Edition"
+        ini_dir.mkdir(parents=True)
+        with patch.dict(os.environ, {"DYNDLOD_INI_DIR": str(ini_dir)}, clear=True):
+            resultado = self._resolver_con_raiz(tmp_path, tmp_path).get_dyndolod_ini_dir()
+        assert resultado == ini_dir.resolve()
+
+    def test_acepta_un_directorio_fuera_del_sandbox_de_modding(self, tmp_path: pathlib.Path) -> None:
+        """El objetivo legítimo NO tiene que estar dentro del sandbox de modding.
+
+        ``Documents\\My Games`` no es una raíz de modding ni un destino de
+        escritura de Sky-Claw; el valor es configuración del operador (nunca
+        payload) y sólo viaja al argv del binario, que lo lee. Validarlo con
+        ``validate_env_path`` lo rechazaría en TODOS los rigs reales y el
+        operador no tendría forma de declarar la fuente de ``-m:``.
+        """
+        raiz_de_mods = tmp_path / "solamente-mods"
+        raiz_de_mods.mkdir()
+        ini_dir = tmp_path / "Documents" / "My Games" / "Skyrim Special Edition"
+        ini_dir.mkdir(parents=True)
+        with patch.dict(os.environ, {"DYNDLOD_INI_DIR": str(ini_dir)}, clear=True):
+            resolver = self._resolver_con_raiz(tmp_path, raiz_de_mods)
+            assert resolver.get_dyndolod_ini_dir() == ini_dir.resolve()
+            # Control: la primitiva del sandbox SÍ lo rechaza — la asimetría es deliberada.
+            assert resolver.validate_env_path(str(ini_dir), "DYNDLOD_INI_DIR") is None
+
+    def test_ruta_relativa_falla_cerrado(self, tmp_path: pathlib.Path) -> None:
+        """Relativa = ambigua (se resolvería contra el cwd del proceso): se rechaza."""
+        with (
+            patch.dict(os.environ, {"DYNDLOD_INI_DIR": "My Games\\Skyrim"}, clear=True),
+            pytest.raises(RuntimeError, match="DYNDLOD_INI_DIR"),
+        ):
+            self._resolver_con_raiz(tmp_path, tmp_path).get_dyndolod_ini_dir()
+
+    def test_ruta_inexistente_falla_cerrado(self, tmp_path: pathlib.Path) -> None:
+        """Declarado pero ausente: no se degrada a "no declarado" (sería perder la decisión)."""
+        with (
+            patch.dict(os.environ, {"DYNDLOD_INI_DIR": str(tmp_path / "no-existe")}, clear=True),
+            pytest.raises(RuntimeError, match="DYNDLOD_INI_DIR"),
+        ):
+            self._resolver_con_raiz(tmp_path, tmp_path).get_dyndolod_ini_dir()
+
+    def test_archivo_en_vez_de_directorio_falla_cerrado(self, tmp_path: pathlib.Path) -> None:
+        """``-m:`` es un DIRECTORIO: un archivo no es una fuente admisible."""
+        archivo = tmp_path / "Skyrim.ini"
+        archivo.write_text("[General]\n", encoding="utf-8")
+        with (
+            patch.dict(os.environ, {"DYNDLOD_INI_DIR": str(archivo)}, clear=True),
+            pytest.raises(RuntimeError, match="DYNDLOD_INI_DIR"),
+        ):
+            self._resolver_con_raiz(tmp_path, tmp_path).get_dyndolod_ini_dir()
+
+    @pytest.mark.skipif(os.name != "nt", reason="raíz de volumen de Windows")
+    def test_raiz_de_volumen_falla_cerrado(self, tmp_path: pathlib.Path) -> None:
+        """``C:\\`` existe y es directorio, pero no es la carpeta de INIs de nada."""
+        with (
+            patch.dict(os.environ, {"DYNDLOD_INI_DIR": "C:\\"}, clear=True),
+            pytest.raises(RuntimeError, match="DYNDLOD_INI_DIR"),
+        ):
+            self._resolver_con_raiz(tmp_path, tmp_path).get_dyndolod_ini_dir()
+
+
 class TestResolverModsDirDeInstanciaMo2:
     """Unit tests de la función pura del contrato PathSettings de MO2.
 
@@ -1975,6 +2072,10 @@ class TestAnclaSemanticaDeRaicesMo2:
 
     - app_context: bootstrap de MO2Controller para operaciones mutantes
       (falla cerrado con RuntimeError si la metadata es corrupta o queda fuera del sandbox).
+    - dyndolod_service (runner, #593): identidad del perfil MO2 activo para
+      construir el ``-p:`` productivo (``profiles/<perfil>/plugins.txt``). Falla
+      cerrado con la metadata corrupta: el best-effort leería "sin raíz de datos"
+      y omitiría ``-p:``, que es colapsar "no hay MO2" con "no lo pude resolver".
     - grass_runtime_deps: profiles/ y overwrite/Grass para operaciones mutantes
       (falla cerrado con RuntimeError si la metadata es corrupta).
     - loot_service: data_root para BrokeredLootRunner en lazy _ensure_loot_runner
@@ -2012,6 +2113,7 @@ class TestAnclaSemanticaDeRaicesMo2:
     _INSTANCE_DATA_ESTRICTO: dict[str, int] = {
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/app_context.py": 1,
+        "sky_claw/local/tools/dyndolod_service.py": 1,
         "sky_claw/local/tools/loot_service.py": 1,
     }
 
