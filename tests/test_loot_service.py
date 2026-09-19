@@ -791,6 +791,26 @@ def test_read_plugin_order_ignora_comentarios_bom_y_marca_de_activo(tmp_path: pa
     assert _read_plugin_order(tmp_path / "no-existe.txt") == []
 
 
+def test_sources_resolver_relee_los_archivos_por_llamada(tmp_path: pathlib.Path) -> None:
+    """Vigencia (review PR #595): `_build_sources_resolver` re-selecciona
+    plugins.txt/loadorder.txt en cada resolución, no al construir el preflight
+    cacheado: el loadorder.txt que aparece después entra al snapshot."""
+    perfil = tmp_path / "profiles" / "Default"
+    perfil.mkdir(parents=True)
+    (perfil / "plugins.txt").write_text("*A.esp\n", encoding="utf-8")
+
+    svc = LootSortingService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        load_order_resolver=LoadOrderFileResolver(explicit_dir=perfil),
+    )
+    resolver = svc._build_sources_resolver(raw_mo2=None, mo2_validated=False)
+
+    assert resolver().ordered_plugins == ("A.esp",)  # fallback: orden de plugins.txt
+    (perfil / "loadorder.txt").write_text("A.esp\nB.esp\n", encoding="utf-8")
+    assert resolver().ordered_plugins == ("A.esp", "B.esp")
+
+
 # =============================================================================
 # T-21: validador post-run (cierra el lazo `validate` del pipeline §4.6)
 # =============================================================================

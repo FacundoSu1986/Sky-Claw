@@ -63,7 +63,7 @@ _REMEDIATION = (
 def _es_basename_simple(nombre: str) -> bool:
     """True si *nombre* es un nombre de archivo pelado, sin componentes de ruta.
 
-    ``_parse_enabled`` (``mo2/plugin_sources.py``) devuelve las líneas de
+    ``_read_entries`` (``mo2/plugin_sources.py``) devuelve las líneas de
     ``plugins.txt``/``loadorder.txt`` **sin sanear**: solo les quita el ``*`` y
     los espacios. Un valor con ``..``, separadores o una ruta absoluta se
     concatenaría a ``Data / nombre`` y el probe terminaría inspeccionando un
