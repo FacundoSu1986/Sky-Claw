@@ -35,12 +35,26 @@ Evidencia upstream de la tabla (verificada 2026-09-20):
   Anniversary Edition build 2.3.1 (game version 1.7.104): Nexus", "Current
   Special Edition build 2.0.20 (game version 1.5.97)" y "Current classic
   build 1.7.3", con 7z directos para los dos últimos; ``/download/archive/``
-  confirma los nombres exactos de los artifacts servidos por silverlock.
+  confirma los nombres exactos de los artifacts servidos por silverlock y que
+  la familia 2.2.x se detiene en ``skse64_2_02_06.7z`` (y su variante GOG):
+  los builds 2.2.7/2.2.8 no tienen 7z directo, se distribuyen vía Nexus.
 * ``ianpatt/skse64``, ``skse64_whatsnew.txt`` (master): "2.2.6 — support for
-  1.6.1170", "2.3.0 — support for 1.7.99", "2.3.1 — support for 1.7.104".
-  Nota: el whatsnew ya lista un 2.3.2 (bugfix que no agrega soporte de
-  runtime) pero la página oficial sigue declarando 2.3.1 como el build AE
-  vigente — un bump es una decisión explícita de este archivo, no automática.
+  1.6.1170"; los builds posteriores del mismo runtime no repiten la línea
+  "support for" (convención del changelog) y "2.2.8 — fix regression in old
+  commonlib": 2.2.8 es el build recomendado para quien permanece en
+  1.6.1170, y su archivo de Nexus se describe "Compatible with Skyrim Special
+  Edition 1.6.1170 from Steam". También "2.3.0 — support for 1.7.99" y
+  "2.3.1 — support for 1.7.104". Nota: el whatsnew ya lista un 2.3.2 (bugfix
+  que no agrega soporte de runtime) pero ``skse64_common/skse_version.h``
+  (master) declara ``CURRENT_RELEASE_SKSE_STR "2.3.1"`` y
+  ``CURRENT_RELEASE_RUNTIME`` 1.7.104, la página oficial publica 2.3.1 como
+  build AE vigente y Nexus la distribuye — un bump es una decisión explícita
+  de este archivo, no automática.
+* El pin de un runtime puede diferir del payload de adquisición de
+  ``SKSE_CONFIG`` mientras convivan los dos modelos (1.6.1170: 2.2.8 acá vs
+  ``skse64_2_02_06.7z`` allí): ambos son builds válidos del mismo runtime y
+  el ancla de coherencia compara la identidad del DLL, no el pin. La
+  unificación es del PR que integre el catálogo en ``ensure_skse``.
 * El nombre del DLL sigue la convención upstream verificada en los tres
   artifacts descargables directos; para ``1.7.99`` además está confirmado por
   fuera (las guías de migración a 2.3.0 listan sus archivos:
@@ -97,12 +111,16 @@ SKSE_RELEASES: tuple[SkseRelease, ...] = (
         source=SkseSource.SILVERLOCK,
         artifact_name="skse64_2_00_20.7z",
     ),
+    # 1.6.1170: 2.2.6 introdujo el soporte, pero 2.2.8 es el build recomendado
+    # para permanecer en ese runtime (2.2.7 trajo cambios y 2.2.8 corrige su
+    # regresión de old CommonLib). No existe como 7z de silverlock → NEXUS, y
+    # sin archive directo verificado: artifact_name=None (no se inventa).
     SkseRelease(
         game_version="1.6.1170",
-        skse_version="2.2.6",
+        skse_version="2.2.8",
         dll_name="skse64_1_6_1170.dll",
-        source=SkseSource.SILVERLOCK,
-        artifact_name="skse64_2_02_06.7z",
+        source=SkseSource.NEXUS,
+        artifact_name=None,
     ),
     SkseRelease(
         game_version="1.7.99",

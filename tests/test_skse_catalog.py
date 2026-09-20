@@ -1,7 +1,8 @@
 """Contratos del catálogo puro de releases SKSE (``sky_claw/local/tools/skse_catalog.py``).
 
 La tabla se verificó contra fuentes upstream el 2026-09-20 (ver el docstring
-del módulo): skse.silverlock.org y ``skse64_whatsnew.txt`` de ianpatt/skse64.
+del módulo): skse.silverlock.org, ``skse64_whatsnew.txt`` y
+``skse64_common/skse_version.h`` de ianpatt/skse64.
 """
 
 from __future__ import annotations
@@ -34,10 +35,10 @@ class TestResolucionExacta:
         release = resolve_skse_release("1.6.1170")
 
         assert release is not None
-        assert release.skse_version == "2.2.6"
+        assert release.skse_version == "2.2.8"  # recomendado para quedarse en 1.6.1170
         assert release.dll_name == "skse64_1_6_1170.dll"
-        assert release.source is SkseSource.SILVERLOCK
-        assert release.artifact_name == "skse64_2_02_06.7z"
+        assert release.source is SkseSource.NEXUS
+        assert release.artifact_name is None  # 2.2.8 no está en silverlock; sin URL verificada
 
     def test_resolves_1799_release(self) -> None:
         release = resolve_skse_release("1.7.99")
@@ -134,7 +135,7 @@ class TestInvariantesEstructurales:
         """
         assert [(r.game_version, r.skse_version, r.dll_name, r.source, r.artifact_name) for r in SKSE_RELEASES] == [
             ("1.5.97", "2.0.20", "skse64_1_5_97.dll", SkseSource.SILVERLOCK, "skse64_2_00_20.7z"),
-            ("1.6.1170", "2.2.6", "skse64_1_6_1170.dll", SkseSource.SILVERLOCK, "skse64_2_02_06.7z"),
+            ("1.6.1170", "2.2.8", "skse64_1_6_1170.dll", SkseSource.NEXUS, None),
             ("1.7.99", "2.3.0", "skse64_1_7_99.dll", SkseSource.NEXUS, None),
             ("1.7.104", "2.3.1", "skse64_1_7_104.dll", SkseSource.NEXUS, None),
             ("1.9.32", "1.7.3", "skse_1_9_32.dll", SkseSource.SILVERLOCK, "skse_1_07_03.7z"),
@@ -235,10 +236,15 @@ class TestDescriptorCoherente:
 class TestCoherenciaConElModeloVigente:
     """Ancla transitoria contra ``SKSE_CONFIG`` (tools_installer).
 
-    Mientras convivan los dos modelos, ninguno puede decir algo distinto sobre
-    el mismo runtime: es la clase de defecto «se arregló un hermano y no el
-    otro», acá entre modelo viejo y nuevo. Muere cuando ``ensure_skse`` consuma
-    el catálogo y ``SKSE_CONFIG`` deje de ser la fuente (PR-2).
+    Mientras convivan los dos modelos, ambos deben atribuir el mismo runtime al
+    mismo DLL (la identidad que el scanner usa para decidir si una instalación
+    en disco sirve): es la clase de defecto «se arregló un hermano y no el
+    otro», acá entre modelo viejo y nuevo. El PIN de build puede diferir a
+    propósito — hoy 1.6.1170 resuelve a 2.2.8 (recomendado) mientras el
+    payload de adquisición legacy sigue siendo ``skse64_2_02_06.7z`` — porque
+    ambos son builds válidos del mismo runtime; unificar la adquisición es del
+    PR-2. Muere cuando ``ensure_skse`` consuma el catálogo y ``SKSE_CONFIG``
+    deje de ser la fuente.
     """
 
     def test_todo_runtime_cubierto_por_skse_config_resuelve_al_mismo_dll(self) -> None:
