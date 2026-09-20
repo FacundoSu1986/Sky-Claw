@@ -1,6 +1,6 @@
-"""Primitive nativa de inspección de quiescencia para Runtime Vault (GP2-S2).
+"""Primitive nativa de inspección de quiescencia para Runtime Vault.
 
-SECURITY RULE (QUIESCENCE PROBE CONTRACT - ADR 0010 §4.1 / §4.1.3):
+SECURITY RULE (QUIESCENCE PROBE CONTRACT - ADR 0010 §4.1 / §4.1.3 / §12.2):
 - Detección determinista de writers y file mappings escribibles preexistentes
   mediante un probe handle transitorio con dwShareMode = 0 (exclusivo).
 - Apertura atada a handle con FILE_FLAG_BACKUP_SEMANTICS y FILE_FLAG_OPEN_REPARSE_POINT.
@@ -11,6 +11,10 @@ SECURITY RULE (QUIESCENCE PROBE CONTRACT - ADR 0010 §4.1 / §4.1.3):
 - Cero mutaciones sobre filesystem o ACLs.
 - Fail-closed tipado en entornos no-Windows (QuiescenceUnsupportedError) sin NameError
   ni fallos al importar.
+- FASE NORMATIVA: esta primitiva está reservada para el helper privilegiado de aplicación
+  (ADR 0010 §4.1 / §12.2), donde los derechos write/delete están garantizados bajo elevación.
+  No se invoca durante la planificación no elevada (GP2-S2) para evitar falsos ACCESS_DENIED
+  sobre árboles legítimamente WRITE_PROTECTED.
 """
 
 from __future__ import annotations
@@ -67,6 +71,10 @@ class QuiescenceUnsupportedError(QuiescenceError):
 
 class QuiescenceViolationError(QuiescenceError):
     """Conflicto de concurrencia (ERROR_SHARING_VIOLATION) tras agotar los intentos totales."""
+
+    def __init__(self, message: str, *, blocked_paths: Sequence[str] = ()) -> None:
+        super().__init__(message)
+        self.blocked_paths: tuple[str, ...] = tuple(blocked_paths)
 
 
 # ============================================================================
@@ -163,7 +171,8 @@ def probe_node_quiescence(
                 continue
             raise QuiescenceViolationError(
                 f"Conflicto de quiescencia en '{str_path}': "
-                f"ERROR_SHARING_VIOLATION persistente tras agotar {max_attempts} intentos"
+                f"ERROR_SHARING_VIOLATION persistente tras agotar {max_attempts} intentos",
+                blocked_paths=(str_path,),
             )
 
         raise QuiescenceError(f"CreateFileW falló durante el probe de quiescencia en '{str_path}': código {last_err}")
@@ -181,20 +190,36 @@ def probe_tree_quiescence(
     """Ejecuta el probe de quiescencia sobre cada nodo del árbol secuencialmente.
 
     Cierra cada probe handle inmediatamente al verificar cada nodo.
+    Si múltiples nodos presentan ERROR_SHARING_VIOLATION persistente, acumula
+    todas las rutas bloqueadas y lanza un único QuiescenceViolationError estructurado
+    al finalizar el recorrido del árbol completo.
     """
     root_path = pathlib.Path(os.path.abspath(os.fspath(root)))
+    blocked_nodes: list[str] = []
+
     for node in nodes:
         # Acepta NativeNodeEvidence o NodeSecurityBackup
         backup = getattr(node, "backup", node)
         rel = backup.relative_path
         node_path = root_path if rel in ("", ".") else root_path / rel
-        probe_node_quiescence(
-            node_path,
-            backup.node_kind,
-            max_attempts=max_attempts,
-            base_backoff_seconds=base_backoff_seconds,
-            jitter_fn=jitter_fn,
-            sleeper=sleeper,
+        try:
+            probe_node_quiescence(
+                node_path,
+                backup.node_kind,
+                max_attempts=max_attempts,
+                base_backoff_seconds=base_backoff_seconds,
+                jitter_fn=jitter_fn,
+                sleeper=sleeper,
+            )
+        except QuiescenceViolationError:
+            blocked_nodes.append(rel)
+
+    if blocked_nodes:
+        nodos_str = ", ".join(f"'{p}'" for p in blocked_nodes)
+        raise QuiescenceViolationError(
+            f"Conflicto de quiescencia: {len(blocked_nodes)} nodo(s) con ERROR_SHARING_VIOLATION "
+            f"persistente tras {max_attempts} intentos: {nodos_str}",
+            blocked_paths=tuple(blocked_nodes),
         )
 
 

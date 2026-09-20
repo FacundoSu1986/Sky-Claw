@@ -38,6 +38,7 @@ from sky_claw.local.runtime_vault.quiescence import (
     QuiescenceViolationError,
     default_quiescence_jitter,
     probe_node_quiescence,
+    probe_tree_quiescence,
 )
 
 # ============================================================================
@@ -287,3 +288,70 @@ def test_default_quiescence_jitter_rango() -> None:
     for _ in range(50):
         val = default_quiescence_jitter(base)
         assert 1.0 <= val <= 1.10
+
+
+def test_q12_probe_tree_acumula_todos_los_nodos_bloqueados() -> None:
+    """Q12: probe_tree_quiescence acumula todos los nodos persistentemente bloqueados en un único error estructurado."""
+    from types import SimpleNamespace
+
+    # 3 nodos en el árbol: 2 bloqueados persistentemente y 1 libre
+    nodes = [
+        SimpleNamespace(relative_path="data/sub/file1.txt", node_kind=GoldenProtectionNodeKind.FILE),
+        SimpleNamespace(relative_path="data/sub/file2.txt", node_kind=GoldenProtectionNodeKind.FILE),
+        SimpleNamespace(relative_path="data/clean.txt", node_kind=GoldenProtectionNodeKind.FILE),
+    ]
+
+    attempts_by_path: dict[str, int] = {}
+
+    def mock_probe_node(path: Any, node_kind: Any, **kwargs: Any) -> None:
+        p_str = str(path).replace("\\", "/")
+        attempts_by_path[p_str] = attempts_by_path.get(p_str, 0) + 1
+        if "file1.txt" in p_str:
+            raise QuiescenceViolationError("busy 1", blocked_paths=("data/sub/file1.txt",))
+        if "file2.txt" in p_str:
+            raise QuiescenceViolationError("busy 2", blocked_paths=("data/sub/file2.txt",))
+        # clean.txt no falla
+
+    with (
+        patch("sky_claw.local.runtime_vault.quiescence.probe_node_quiescence", side_effect=mock_probe_node),
+        pytest.raises(QuiescenceViolationError) as exc_info,
+    ):
+        probe_tree_quiescence(
+            "C:/fake_root",
+            nodes,
+            max_attempts=5,
+        )
+
+    err = exc_info.value
+    assert err.blocked_paths == ("data/sub/file1.txt", "data/sub/file2.txt")
+    assert "data/sub/file1.txt" in str(err)
+    assert "data/sub/file2.txt" in str(err)
+    assert "data/clean.txt" not in err.blocked_paths
+    # Verifica que probe_node_quiescence fue llamado para los 3 nodos (no abortó en el primero)
+    assert len(attempts_by_path) == 3
+
+
+def test_q13_probe_tree_error_no_sharing_violation_aborta_inmediato() -> None:
+    """Q13: Un error causal distinto de ERROR_SHARING_VIOLATION (fail-closed) aborta inmediatamente."""
+    from types import SimpleNamespace
+
+    nodes = [
+        SimpleNamespace(relative_path="file1.txt", node_kind=GoldenProtectionNodeKind.FILE),
+        SimpleNamespace(relative_path="file2.txt", node_kind=GoldenProtectionNodeKind.FILE),
+    ]
+
+    probed_paths: list[str] = []
+
+    def mock_probe_node(path: Any, node_kind: Any, **kwargs: Any) -> None:
+        probed_paths.append(str(path))
+        raise QuiescenceError("ERROR_ACCESS_DENIED código 5")
+
+    with (
+        patch("sky_claw.local.runtime_vault.quiescence.probe_node_quiescence", side_effect=mock_probe_node),
+        pytest.raises(QuiescenceError) as exc_info,
+    ):
+        probe_tree_quiescence("C:/fake_root", nodes)
+
+    assert "ERROR_ACCESS_DENIED" in str(exc_info.value)
+    # Abortó de inmediato en el primer nodo sin sondear el segundo
+    assert len(probed_paths) == 1
