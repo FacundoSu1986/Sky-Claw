@@ -19,11 +19,10 @@ from sky_claw.local.tools.skse_catalog import SKSE_RELEASES, SkseRelease, SkseSo
 class TestResolucionExacta:
     """Un runtime conocido resuelve al descriptor correcto, campo por campo."""
 
-    def test_resolves_1597_release(self) -> None:
-        # Act
+    def test_resuelve_release_1597(self) -> None:
+        """1.5.97 → SKSE 2.0.20 desde silverlock, con su 7z directo."""
         release = resolve_skse_release("1.5.97")
 
-        # Assert
         assert release is not None
         assert release.game_version == "1.5.97"
         assert release.skse_version == "2.0.20"
@@ -31,25 +30,28 @@ class TestResolucionExacta:
         assert release.source is SkseSource.SILVERLOCK
         assert release.artifact_name == "skse64_2_00_20.7z"
 
-    def test_resolves_161170_release(self) -> None:
+    def test_resuelve_release_161170(self) -> None:
+        """1.6.1170 → SKSE 2.2.8 (recomendado para ese runtime) desde Nexus."""
         release = resolve_skse_release("1.6.1170")
 
         assert release is not None
-        assert release.skse_version == "2.2.8"  # recomendado para quedarse en 1.6.1170
+        assert release.skse_version == "2.2.8"
         assert release.dll_name == "skse64_1_6_1170.dll"
         assert release.source is SkseSource.NEXUS
         assert release.artifact_name is None  # 2.2.8 no está en silverlock; sin URL verificada
 
-    def test_resolves_1799_release(self) -> None:
+    def test_resuelve_release_1799(self) -> None:
+        """1.7.99 → SKSE 2.3.0 desde Nexus, sin artifact directo verificado."""
         release = resolve_skse_release("1.7.99")
 
         assert release is not None
         assert release.skse_version == "2.3.0"
         assert release.dll_name == "skse64_1_7_99.dll"
         assert release.source is SkseSource.NEXUS
-        assert release.artifact_name is None  # sin URL directa verificada
+        assert release.artifact_name is None
 
-    def test_resolves_17104_release(self) -> None:
+    def test_resuelve_release_17104(self) -> None:
+        """1.7.104 → SKSE 2.3.1 desde Nexus (build que upstream declara vigente)."""
         release = resolve_skse_release("1.7.104")
 
         assert release is not None
@@ -69,8 +71,8 @@ class TestResolucionExacta:
         assert release.artifact_name == "skse_1_07_03.7z"
 
 
-class TestNormalizacionDelRuntime:
-    """El PE puede reportar un cuarto segmento; ambos reportes son el mismo runtime."""
+class TestEntradaAdmisible:
+    """El PE reporta 3 ó 4 segmentos numéricos; cualquier otra forma se rechaza."""
 
     @pytest.mark.parametrize(
         "runtime_pe,game_version",
@@ -82,29 +84,39 @@ class TestNormalizacionDelRuntime:
             ("1.9.32.0", "1.9.32"),
         ],
     )
-    def test_runtime_with_fourth_pe_segment_matches_catalog(self, runtime_pe: str, game_version: str) -> None:
-        # Act
+    def test_runtime_con_cuarto_segmento_de_pe_matchea_catalogo(self, runtime_pe: str, game_version: str) -> None:
+        """``"1.7.104.0"`` (cuarto segmento del PE) y ``"1.7.104"`` son el mismo runtime."""
         release = resolve_skse_release(runtime_pe)
 
-        # Assert: mismo descriptor que con la forma canónica de tres segmentos
         assert release is not None
         assert release.game_version == game_version
         assert release is resolve_skse_release(game_version)
 
-    @pytest.mark.parametrize("entrada", ["", "1.7", "1.6.117", "abc", "1.7.x"])
+    @pytest.mark.parametrize("entrada", ["", "1.7", "1.6.117", "abc", "1.7.x", "1.7.104.0.5", "1.6.1170 "])
     def test_entrada_parcial_o_malformada_no_resuelve(self, entrada: str) -> None:
-        """Sin tres segmentos canónicos no hay igualdad de prefijo posible: ``None``."""
+        """Ni parcial, ni no-numérica, ni de cinco segmentos, ni con espacios: ``None``."""
+        assert resolve_skse_release(entrada) is None
+
+    @pytest.mark.parametrize("entrada", ["1.7.104.beta", "1.6.1170.alfa", "1.5.97.x"])
+    def test_sufijo_no_numerico_del_cuarto_segmento_no_resuelve(self, entrada: str) -> None:
+        """Hallazgo de revisión: la comparación por prefijo dejaba pasar un cuarto
+
+        segmento arbitrario (``"1.7.104.rc1"`` matcheaba ``1.7.104``) porque sólo
+        lee los tres primeros. La versión del PE nunca tiene sufijos, así que
+        cualquier forma no numérica se rechaza ANTES de comparar.
+        """
         assert resolve_skse_release(entrada) is None
 
 
 class TestSinFallback:
     """SKSE está pinneado al runtime: un runtime desconocido nunca recibe otro build."""
 
-    def test_unknown_runtime_has_no_fallback(self) -> None:
+    def test_runtime_desconocido_no_tiene_fallback(self) -> None:
+        """El runtime inmediatamente posterior al último conocido devuelve ``None``."""
         assert resolve_skse_release("1.7.105") is None
 
-    def test_newer_unknown_runtime_does_not_use_previous_release(self) -> None:
-        """El runtime inmediatamente posterior al último conocido NO hereda su SKSE."""
+    def test_un_runtime_mas_nuevo_desconocido_no_hereda_el_release_anterior(self) -> None:
+        """Ningún runtime posterior al último conocido hereda su SKSE."""
         assert resolve_skse_release("1.7.105") is None
         assert resolve_skse_release("1.7.100") is None
 
@@ -116,7 +128,7 @@ class TestSinFallback:
         """
         assert resolve_skse_release("1.6.640") is None
 
-    def test_resolve_no_elige_el_mas_nuevo(self) -> None:
+    def test_resolver_no_elige_el_mas_nuevo(self) -> None:
         """Resolver el runtime más viejo devuelve el build más viejo: no hay «latest»."""
         release = resolve_skse_release("1.5.97")
 
@@ -141,7 +153,8 @@ class TestInvariantesEstructurales:
             ("1.9.32", "1.7.3", "skse_1_9_32.dll", SkseSource.SILVERLOCK, "skse_1_07_03.7z"),
         ]
 
-    def test_catalog_has_unique_game_versions(self) -> None:
+    def test_el_catalogo_no_tiene_game_versions_duplicadas(self) -> None:
+        """Ningún runtime puede tener dos entradas."""
         versions = [r.game_version for r in SKSE_RELEASES]
         assert len(versions) == len(set(versions)), f"game_version duplicadas: {versions}"
 
@@ -173,7 +186,9 @@ class TestInvariantesEstructurales:
 
 
 class TestDescriptorCoherente:
-    def test_descriptor_dll_matches_runtime(self) -> None:
+    """Invariantes por descriptor: DLL, fuente, artifact e inmutabilidad."""
+
+    def test_el_dll_del_descriptor_codifica_su_runtime(self) -> None:
         """El DLL codifica exactamente el runtime del descriptor.
 
         Usa el decodificador del scanner (LA regla vigente): si una fila dijera
@@ -195,7 +210,8 @@ class TestDescriptorCoherente:
             assert release.dll_name.endswith(".dll")
             assert "steam_loader" not in release.dll_name
 
-    def test_release_source_is_explicit(self) -> None:
+    def test_cada_release_declara_su_fuente(self) -> None:
+        """Ningún descriptor puede nacer sin ``source`` explícita."""
         for release in SKSE_RELEASES:
             assert isinstance(release.source, SkseSource), f"{release.game_version} no declara una fuente válida"
 
@@ -211,7 +227,8 @@ class TestDescriptorCoherente:
             else:
                 assert release.artifact_name is None, f"{release.game_version}: artifact sin URL verificada"
 
-    def test_descriptors_are_immutable(self) -> None:
+    def test_los_descriptores_son_inmutables(self) -> None:
+        """Mutar un descriptor levanta ``FrozenInstanceError``."""
         release = resolve_skse_release("1.7.104")
         assert release is not None
 
@@ -227,7 +244,7 @@ class TestDescriptorCoherente:
         assert isinstance(SKSE_RELEASES, tuple)
         assert resolve_skse_release("1.7.104") is resolve_skse_release("1.7.104.0")
 
-    def test_resolve_no_importa_la_edicion(self) -> None:
+    def test_resolver_no_conoce_la_edicion(self) -> None:
         """El descriptor no mezcla edición con runtime: ningún campo es una edición."""
         for field in dataclasses.fields(SkseRelease):
             assert field.name not in {"edition", "edicion"}, f"campo de edición colado: {field.name}"
@@ -248,17 +265,16 @@ class TestCoherenciaConElModeloVigente:
     """
 
     def test_todo_runtime_cubierto_por_skse_config_resuelve_al_mismo_dll(self) -> None:
+        """Todo runtime del modelo viejo resuelve en el catálogo al MISMO DLL."""
         for ed_key, cfg in tools_installer.SKSE_CONFIG.items():
-            # Arrange: la versión que el modelo viejo targetea se deriva del DLL
-            # que instala, con la MISMA regla que usa ensure_skse hoy.
+            # La versión que el modelo viejo targetea se deriva del DLL que
+            # instala, con la MISMA regla que usa ensure_skse hoy.
             dll_vigente = cfg["dll"]
             assert dll_vigente is not None, f"{ed_key} sin dll en SKSE_CONFIG"
             runtime_vigente = skse_dll_game_version(dll_vigente)
 
-            # Act
             release = resolve_skse_release(runtime_vigente)
 
-            # Assert
             assert release is not None, f"el runtime de {ed_key} ({runtime_vigente}) no está en el catálogo"
             assert release.dll_name == dll_vigente, (
                 f"{ed_key}: el catálogo dice {release.dll_name}, SKSE_CONFIG {dll_vigente}"

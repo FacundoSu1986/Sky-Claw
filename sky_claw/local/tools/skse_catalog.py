@@ -25,6 +25,13 @@ Fronteras deliberadas — lo que este módulo NO hace:
 * No detecta el runtime (leer el PE es de ``discovery``) ni decide qué hacer
   con un ``None`` (informar, HITL, abortar): eso es del consumidor — en el PR
   que integre esto, ``ToolsInstaller.ensure_skse``.
+* Sin I/O ni side effects DE ESTE MÓDULO: la regla de comparación vive en
+  ``discovery.scanner`` (una sola fuente, no se duplica). Ojo con una precisión
+  medida con audit hook: ``import sky_claw`` por sí solo ya lee
+  ``config.toml`` y ``security_policy.yaml`` (lo hace el ``__init__`` del
+  paquete raíz, deuda pre-existente de TODO módulo del repo) — el catálogo no
+  AGREGA ninguna lectura propia; ese estado no puede arreglarse desde acá sin
+  reestructurar los ``__init__``, que es deuda de otro PR.
 * No conoce ediciones, stores, GOG ni VR: el repo no soporta VR y retiró GOG
   de ``SKSE_CONFIG`` (anclado en ``tests/test_tools_installer.py``); este
   catálogo no los reintroduce.
@@ -149,10 +156,17 @@ SKSE_RELEASES: tuple[SkseRelease, ...] = (
 def resolve_skse_release(game_version: str) -> SkseRelease | None:
     """Release de SKSE conocido para el runtime *game_version*, o ``None``.
 
-    Usa ``skyrim_version_matches`` — la MISMA regla con la que el scanner
-    decide si un DLL en disco sirve para un ejecutable: igualdad por prefijo
-    de segmentos sobre un ``game_version`` canónico de tres segmentos. Por eso
-    ``"1.7.104"`` y ``"1.7.104.0"`` (PE con cuarto segmento) resuelven al mismo
+    Formato admisible: 3 ó 4 segmentos NUMÉRICOS (``"1.7.104"`` /
+    ``"1.7.104.0"``), que es lo que el recurso PE de ``SkyrimSE.exe`` reporta.
+    Cualquier otra forma se rechaza ANTES de comparar: la semántica de prefijo
+    de ``skyrim_version_matches`` por sí sola dejaría pasar un cuarto segmento
+    arbitrario (``"1.7.104.0rc1"`` matcheaba porque sólo mira los primeros
+    tres), y esa entrada no proviene del PE, así que no resuelve.
+
+    La comparación la sigue haciendo ``skyrim_version_matches`` — la MISMA
+    regla con la que el scanner decide si un DLL en disco sirve para un
+    ejecutable: igualdad por prefijo sobre la clave canónica de tres
+    segmentos. Por eso ``"1.7.104"`` y ``"1.7.104.0"`` resuelven al mismo
     descriptor, sin una segunda implementación de comparación de versiones.
 
     ``None`` es ausencia explícita (convención de ``discovery``), nunca
@@ -160,7 +174,20 @@ def resolve_skse_release(game_version: str) -> SkseRelease | None:
     filas que matchean el mismo runtime), también responde ``None``: ante la
     ambigüedad este contrato dice "no sé", no adivina.
     """
+    if not _es_runtime_admisible(game_version):
+        return None
     matches = [release for release in SKSE_RELEASES if skyrim_version_matches(game_version, release.game_version)]
     if len(matches) != 1:
         return None
     return matches[0]
+
+
+def _es_runtime_admisible(game_version: str) -> bool:
+    """``"1.7.104"`` o ``"1.7.104.0"``: exactamente 3 ó 4 segmentos numéricos.
+
+    Rechaza todo lo demás — más segmentos, sufijos no numéricos, espacios —
+    antes de la comparación por prefijo. No es una segunda regla de
+    compatibilidad: sólo delimita qué strings cuentan como versión de PE.
+    """
+    segmentos = game_version.split(".")
+    return 3 <= len(segmentos) <= 4 and all(s.isdigit() for s in segmentos)
