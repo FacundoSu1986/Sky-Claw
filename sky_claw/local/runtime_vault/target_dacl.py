@@ -117,6 +117,7 @@ DIR_GENERIC_EXECUTE = 0x001200A0
 _ACCESS_ALLOWED_ACE_TYPE = 0x00
 _ACCESS_DENIED_ACE_TYPE = 0x01
 _NO_INHERITANCE_ACE_FLAGS = 0x00
+_SE_DACL_PRESENT = 0x0004
 _SE_DACL_PROTECTED = 0x1000
 
 _SE_FILE_OBJECT = 1
@@ -174,6 +175,12 @@ class TargetAceSpec:
     ace_flags: int
     access_mask: int
     name: str
+
+    def __post_init__(self) -> None:
+        if self.ace_type != _ACCESS_ALLOWED_ACE_TYPE:
+            raise TargetDaclBuildError(
+                f"TargetAceSpec solo admite ace_type=ACCESS_ALLOWED_ACE_TYPE (0x00), observado: 0x{self.ace_type:02x}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,8 +340,8 @@ if sys.platform == "win32":
 
     class _AceHeader(ctypes.Structure):
         _fields_ = [
-            ("AceType", wintypes.BYTE),
-            ("AceFlags", wintypes.BYTE),
+            ("AceType", ctypes.c_ubyte),
+            ("AceFlags", ctypes.c_ubyte),
             ("AceSize", wintypes.WORD),
         ]
 
@@ -581,8 +588,8 @@ def _read_file_id_info_by_handle(handle: int) -> tuple[int, int]:
     return vol_serial, file_id
 
 
-def _read_number_of_links_by_handle(handle: int) -> int:
-    """Obtiene NumberOfLinks desde un HANDLE abierto mediante GetFileInformationByHandleEx."""
+def _read_file_standard_info_by_handle(handle: int) -> tuple[int, bool]:
+    """Obtiene (NumberOfLinks, is_directory) desde un HANDLE abierto mediante GetFileInformationByHandleEx."""
     _ensure_windows()
     std_info = _FileStandardInfo()
     if not _kernel32.GetFileInformationByHandleEx(
@@ -593,7 +600,13 @@ def _read_number_of_links_by_handle(handle: int) -> int:
     ):
         err = ctypes.get_last_error()
         raise TargetDaclError(f"GetFileInformationByHandleEx(FileStandardInfo) falló: código {err}")
-    return int(std_info.NumberOfLinks)
+    return int(std_info.NumberOfLinks), bool(std_info.Directory)
+
+
+def _read_number_of_links_by_handle(handle: int) -> int:
+    """Obtiene NumberOfLinks desde un HANDLE abierto mediante GetFileInformationByHandleEx."""
+    links, _ = _read_file_standard_info_by_handle(handle)
+    return links
 
 
 def _read_reparse_tag_by_handle(handle: int) -> int:
@@ -613,12 +626,16 @@ def _read_reparse_tag_by_handle(handle: int) -> int:
 
 def _extract_sd_components(
     sd_ptr: Any,
-) -> tuple[str, str, bool, list[tuple[str, int, int, int]], bool]:
+) -> tuple[str, str, bool, bool, list[tuple[str, int, int, int]], bool]:
     """Extrae componentes semánticos autoritativos desde un puntero a SECURITY_DESCRIPTOR válido.
 
     Devuelve:
-    (owner_sid, group_sid, dacl_present, ordered_aces, is_dacl_protected)
-    donde ordered_aces es una lista de tuplas (sid_str, ace_type, ace_flags, access_mask).
+    (owner_sid, group_sid, dacl_is_present, dacl_is_null, ordered_aces, is_dacl_protected)
+    donde:
+    - dacl_is_present es True si SE_DACL_PRESENT está activo (DACL no ausente).
+    - dacl_is_null es True si la DACL es NULL (presente pero sin lista de control).
+    - ordered_aces es una lista de tuplas (sid_str, ace_type, ace_flags, access_mask).
+    - is_dacl_protected es True si SE_DACL_PROTECTED (0x1000) está activo.
     """
     _ensure_windows()
     if not _advapi32.IsValidSecurityDescriptor(sd_ptr):
@@ -670,9 +687,11 @@ def _extract_sd_components(
         err = ctypes.get_last_error()
         raise TargetDaclError(f"GetSecurityDescriptorDacl falló: código {err}")
 
+    dacl_is_present = bool(control.value & _SE_DACL_PRESENT) and bool(dacl_present.value)
+    dacl_is_null = bool(dacl_is_present and not dacl_p.value)
+
     aces: list[tuple[str, int, int, int]] = []
-    has_dacl = bool(dacl_present.value and dacl_p.value)
-    if has_dacl:
+    if dacl_is_present and not dacl_is_null:
         acl_info = _AclSizeInformation()
         if not _advapi32.GetAclInformation(dacl_p, ctypes.byref(acl_info), ctypes.sizeof(acl_info), 2):
             err = ctypes.get_last_error()
@@ -712,7 +731,7 @@ def _extract_sd_components(
 
             aces.append((ace_sid, int(header.AceType), int(header.AceFlags), int(mask_val)))
 
-    return owner_sid, group_sid, has_dacl, aces, is_protected
+    return owner_sid, group_sid, dacl_is_present, dacl_is_null, aces, is_protected
 
 
 # ============================================================================
@@ -738,6 +757,11 @@ def build_native_target_dacl(spec: TargetDaclSpec) -> tuple[Any, Any]:
 
     try:
         for ace in spec.aces:
+            if ace.ace_type != _ACCESS_ALLOWED_ACE_TYPE:
+                raise TargetDaclBuildError(
+                    f"Tipo de ACE no soportado por build_native_target_dacl: 0x{ace.ace_type:02x} en ACE '{ace.name}'. "
+                    "Target DACL requiere exclusivamente ACCESS_ALLOWED_ACE_TYPE (0x00)."
+                )
             psid = wintypes.LPVOID()
             if not _advapi32.ConvertStringSidToSidW(ace.sid, ctypes.byref(psid)):
                 err = ctypes.get_last_error()
@@ -823,13 +847,16 @@ def apply_target_dacl_by_handle(
 
     SECURITY RULES (ADR 0010 §12.2 pasos 2 a 5):
     1. Revalida la identidad física (VolumeSerialNumber, FileId).
-    2. Rechaza reparse points (ReparseTag != 0) fail-closed.
-    3. Revalida NumberOfLinks == 1 para archivos regulares (paso 1).
-    4. Lee y revalida el live PRE Security Descriptor contra backup.pre_sd_sha256.
-    5. Construye la Target DACL canónica para backup.node_kind.
-    6. Revalida NumberOfLinks == 1 OTRA VEZ inmediatamente antes de SetSecurityInfo
+    2. Revalida el tipo de nodo vivo (FileStandardInfo.Directory) contra backup.node_kind.
+    3. Rechaza reparse points (ReparseTag != 0) fail-closed.
+    4. Revalida NumberOfLinks == 1 para archivos regulares (paso 1).
+    5. Lee y revalida el live PRE Security Descriptor contra backup.pre_sd_sha256.
+    6. Valida la estructura y componentes del PRE SD autoritativo en backup (fail-closed ante
+       ACEs no soportadas o DACL ausente/NULL) y verifica coherencia de metadata.
+    7. Construye la Target DACL canónica para backup.node_kind.
+    8. Revalida NumberOfLinks == 1 OTRA VEZ inmediatamente antes de SetSecurityInfo
        para cerrar la ventana TOCTOU entre la lectura PRE y la mutación.
-    7. Aplica SetSecurityInfo con DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+    9. Aplica SetSecurityInfo con DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
     """
     _ensure_windows()
 
@@ -842,22 +869,31 @@ def apply_target_dacl_by_handle(
                 f"observado=({vol_serial}, {file_id})"
             )
 
-        # 2. Rechazar reparse points
+        # 2. Revalidar tipo de nodo vivo (Codex P1 #4057722503)
+        links_initial, is_dir = _read_file_standard_info_by_handle(handle)
+        if backup.node_kind is GoldenProtectionNodeKind.FILE and is_dir:
+            raise TargetDaclApplyError(
+                "Tipo de nodo discordante: backup especifica FILE pero el handle apunta a un directorio"
+            )
+        if backup.node_kind is GoldenProtectionNodeKind.DIR and not is_dir:
+            raise TargetDaclApplyError(
+                "Tipo de nodo discordante: backup especifica DIR pero el handle apunta a un archivo"
+            )
+
+        # 3. Rechazar reparse points
         reparse_tag = _read_reparse_tag_by_handle(handle)
         if reparse_tag != 0:
             raise TargetDaclApplyError(
                 f"El nodo es un reparse point / symlink (ReparseTag=0x{reparse_tag:08X}); mutación rehusada fail-closed"
             )
 
-        # 3. Comprobación anti-hardlink inicial (solo archivos)
-        if backup.node_kind is GoldenProtectionNodeKind.FILE:
-            links_initial = _read_number_of_links_by_handle(handle)
-            if links_initial != 1:
-                raise TargetDaclApplyError(
-                    f"Hardlink externo detectado en verificación inicial: NumberOfLinks={links_initial} != 1"
-                )
+        # 4. Comprobación anti-hardlink inicial (solo archivos)
+        if backup.node_kind is GoldenProtectionNodeKind.FILE and links_initial != 1:
+            raise TargetDaclApplyError(
+                f"Hardlink externo detectado en verificación inicial: NumberOfLinks={links_initial} != 1"
+            )
 
-        # 4. Leer y revalidar live PRE SD contra el backup
+        # 5. Leer y revalidar live PRE SD contra el backup
         live_sd_p = wintypes.LPVOID()
         ret_get = _advapi32.GetSecurityInfo(
             handle,
@@ -882,23 +918,92 @@ def apply_target_dacl_by_handle(
                 raise TargetDaclApplyError(
                     f"Drift de live PRE SD antes de mutar: hash esperado={backup.pre_sd_sha256}, observado={live_sha}"
                 )
+
+            # Revalidar componentes semánticos del live PRE SD (rechazar ACEs no soportadas o DACL ausente/NULL)
+            try:
+                (
+                    live_owner,
+                    live_group,
+                    live_dacl_present,
+                    live_dacl_null,
+                    live_aces,
+                    live_protected,
+                ) = _extract_sd_components(live_sd_p)
+            except Exception as exc:
+                raise TargetDaclApplyError(f"Live PRE SD contiene estructura o ACEs no soportadas: {exc}") from exc
+
+            if not live_dacl_present:
+                raise TargetDaclApplyError("Live PRE SD no posee DACL presente")
+            if live_dacl_null:
+                raise TargetDaclApplyError("Live PRE SD posee DACL NULL")
         finally:
             if ctypes.cast(live_sd_p, ctypes.c_void_p).value:
                 _kernel32.LocalFree(live_sd_p)
 
-        # 5. Construir Target DACL
+        # 6. Validar estructura y componentes del PRE SD autoritativo en backup (Codex P1 #4057722506, P2 #4057722516, P2 #4057722508)
+        try:
+            raw_pre_bytes = base64.b64decode(backup.pre_sd_bytes_b64)
+        except Exception as exc:
+            raise TargetDaclApplyError(f"Error al decodificar pre_sd_bytes_b64 en backup: {exc}") from exc
+
+        calc_pre_sha = hashlib.sha256(raw_pre_bytes).hexdigest()
+        if calc_pre_sha != backup.pre_sd_sha256:
+            raise TargetDaclApplyError(
+                f"Fallo de integridad criptográfica en pre_sd_bytes_b64 de backup: hash={calc_pre_sha} != {backup.pre_sd_sha256}"
+            )
+        if len(raw_pre_bytes) < 20:
+            raise TargetDaclApplyError("Buffer PRE en backup menor al tamaño mínimo de SECURITY_DESCRIPTOR")
+
+        sd_pre_buf = ctypes.create_string_buffer(raw_pre_bytes, len(raw_pre_bytes))
+        sd_pre_ptr = ctypes.cast(sd_pre_buf, wintypes.LPVOID)
+        try:
+            (
+                pre_owner,
+                pre_group,
+                pre_dacl_present,
+                pre_dacl_null,
+                pre_aces,
+                pre_protected,
+            ) = _extract_sd_components(sd_pre_ptr)
+        except Exception as exc:
+            raise TargetDaclApplyError(f"PRE SD en backup contiene estructura o ACEs no soportadas: {exc}") from exc
+
+        if not pre_dacl_present:
+            raise TargetDaclApplyError(
+                "PRE SD en backup no posee DACL presente (SE_DACL_PRESENT ausente); mutación rehusada fail-closed"
+            )
+        if pre_dacl_null:
+            raise TargetDaclApplyError(
+                "PRE SD en backup posee DACL NULL (sin control de acceso); mutación rehusada fail-closed"
+            )
+        if pre_owner != backup.owner_sid:
+            raise TargetDaclApplyError(
+                f"Discrepancia en owner PRE de backup: bytes={pre_owner} != metadata={backup.owner_sid}"
+            )
+        if pre_group != backup.group_sid:
+            raise TargetDaclApplyError(
+                f"Discrepancia en group PRE de backup: bytes={pre_group} != metadata={backup.group_sid}"
+            )
+        if pre_protected != backup.pre_dacl_protected_flag:
+            raise TargetDaclApplyError(
+                f"Discrepancia en protection PRE de backup: bytes={pre_protected} != metadata={backup.pre_dacl_protected_flag}"
+            )
+
+        # 7. Construir Target DACL
         spec = build_target_dacl_spec(backup.node_kind)
         acl_buffer, pacl = build_native_target_dacl(spec)
 
-        # 6. Revalidación anti-hardlink INMEDIATA antes de mutar (cierra ventana TOCTOU)
+        # 8. Revalidación anti-hardlink INMEDIATA antes de mutar (cierra ventana TOCTOU)
         if backup.node_kind is GoldenProtectionNodeKind.FILE:
-            links_final = _read_number_of_links_by_handle(handle)
+            links_final, is_dir_final = _read_file_standard_info_by_handle(handle)
+            if is_dir_final:
+                raise TargetDaclApplyError("Tipo de nodo mutó a directorio antes de SetSecurityInfo")
             if links_final != 1:
                 raise TargetDaclApplyError(
                     f"Hardlink externo detectado en revalidación pre-mutación: NumberOfLinks={links_final} != 1"
                 )
 
-        # 7. Aplicar Target DACL
+        # 9. Aplicar Target DACL
         ret = _advapi32.SetSecurityInfo(
             handle,
             _SE_FILE_OBJECT,
@@ -932,14 +1037,68 @@ def verify_target_dacl_by_handle(
     """Verifica causalmente sobre el HANDLE la Target DACL completa aplicada (ADR 0010 §12.2 paso 6).
 
     Comprueba:
-    1. SE_DACL_PROTECTED activado en los bits de control del descriptor.
-    2. Owner SID y Group SID coinciden con los esperados en backup.
-    3. DACL contiene exactamente las 4 ACEs requeridas en orden canónico estricto
+    1. Identidad física (VolumeSerialNumber, FileId) y tipo de nodo vivo coinciden con backup.
+    2. Owner y Group esperados coinciden con los derivados de los bytes PRE autoritativos y metadata.
+    3. SE_DACL_PROTECTED activado en los bits de control del descriptor.
+    4. Owner SID y Group SID coinciden con los esperados en backup.
+    5. DACL contiene exactamente las 4 ACEs requeridas en orden canónico estricto
        (SID, AceType, AceFlags y AccessMask exactos para cada entrada).
-    4. Evaluación real de AccessCheck sobre el descriptor contra el token provisto
+    6. Evaluación real de AccessCheck sobre el descriptor contra el token provisto
        o el token efectivo (con fallback a process token ÚNICAMENTE con ERROR_NO_TOKEN).
     """
     _ensure_windows()
+
+    # 1. Identidad física y tipo de nodo vivo (Codex P1 #4057722513)
+    vol_serial, file_id = _read_file_id_info_by_handle(handle)
+    if vol_serial != backup.volume_serial_number or file_id != backup.file_id:
+        raise TargetDaclVerificationError(
+            f"Drift de identidad física en verificación: esperado=({backup.volume_serial_number}, {backup.file_id}), "
+            f"observado=({vol_serial}, {file_id})"
+        )
+
+    links, is_dir = _read_file_standard_info_by_handle(handle)
+    if backup.node_kind is GoldenProtectionNodeKind.FILE and is_dir:
+        raise TargetDaclVerificationError(
+            "Tipo de nodo discordante en verificación: backup especifica FILE pero el handle apunta a un directorio"
+        )
+    if backup.node_kind is GoldenProtectionNodeKind.DIR and not is_dir:
+        raise TargetDaclVerificationError(
+            "Tipo de nodo discordante en verificación: backup especifica DIR pero el handle apunta a un archivo"
+        )
+
+    # 2. Derivar owner y group desde bytes PRE autoritativos (Codex P2 #4057722516)
+    try:
+        raw_pre_bytes = base64.b64decode(backup.pre_sd_bytes_b64)
+    except Exception as exc:
+        raise TargetDaclVerificationError(f"Error al decodificar pre_sd_bytes_b64 en verificación: {exc}") from exc
+
+    if hashlib.sha256(raw_pre_bytes).hexdigest() != backup.pre_sd_sha256:
+        raise TargetDaclVerificationError(
+            "Fallo de integridad criptográfica en buffer PRE durante verificación de Target DACL"
+        )
+
+    sd_pre_buf = ctypes.create_string_buffer(raw_pre_bytes, len(raw_pre_bytes))
+    sd_pre_ptr = ctypes.cast(sd_pre_buf, wintypes.LPVOID)
+    try:
+        (
+            expected_owner,
+            expected_group,
+            pre_dacl_present,
+            pre_dacl_null,
+            _,
+            _,
+        ) = _extract_sd_components(sd_pre_ptr)
+    except Exception as exc:
+        raise TargetDaclVerificationError(f"Fallo al extraer componentes semánticos autoritativos PRE: {exc}") from exc
+
+    if expected_owner != backup.owner_sid:
+        raise TargetDaclVerificationError(
+            f"Inconsistencia en owner PRE: bytes={expected_owner} != metadata={backup.owner_sid}"
+        )
+    if expected_group != backup.group_sid:
+        raise TargetDaclVerificationError(
+            f"Inconsistencia en group PRE: bytes={expected_group} != metadata={backup.group_sid}"
+        )
 
     sd_p = wintypes.LPVOID()
     owner_p = wintypes.LPVOID()
@@ -962,7 +1121,7 @@ def verify_target_dacl_by_handle(
     token_to_close: Any = None
 
     try:
-        # 1. Comprobar SE_DACL_PROTECTED
+        # 3. Comprobar SE_DACL_PROTECTED
         control = wintypes.WORD()
         rev = wintypes.DWORD()
         if not _advapi32.GetSecurityDescriptorControl(sd_p, ctypes.byref(control), ctypes.byref(rev)):
@@ -973,7 +1132,7 @@ def verify_target_dacl_by_handle(
         if not dacl_protected:
             raise TargetDaclVerificationError("Target DACL no posee el flag SE_DACL_PROTECTED")
 
-        # 2. Validar Owner y Group invariantes
+        # 4. Validar Owner y Group invariantes
         owner_sid_str_p = wintypes.LPWSTR()
         if not _advapi32.ConvertSidToStringSidW(owner_p, ctypes.byref(owner_sid_str_p)):
             err = ctypes.get_last_error()
@@ -981,9 +1140,9 @@ def verify_target_dacl_by_handle(
         post_owner = owner_sid_str_p.value or ""
         _kernel32.LocalFree(owner_sid_str_p)
 
-        if post_owner != backup.owner_sid:
+        if post_owner != expected_owner:
             raise TargetDaclVerificationError(
-                f"Owner post-apply ({post_owner}) no coincide con esperado ({backup.owner_sid})"
+                f"Owner post-apply ({post_owner}) no coincide con esperado ({expected_owner})"
             )
 
         group_sid_str_p = wintypes.LPWSTR()
@@ -993,9 +1152,9 @@ def verify_target_dacl_by_handle(
         post_group = group_sid_str_p.value or ""
         _kernel32.LocalFree(group_sid_str_p)
 
-        if post_group != backup.group_sid:
+        if post_group != expected_group:
             raise TargetDaclVerificationError(
-                f"Group post-apply ({post_group}) no coincide con esperado ({backup.group_sid})"
+                f"Group post-apply ({post_group}) no coincide con esperado ({expected_group})"
             )
 
         # 3. Validar presencia de DACL y conteo exacto de 4 ACEs
@@ -1330,7 +1489,7 @@ def restore_security_descriptor_by_handle(
     _ensure_windows()
 
     try:
-        # 1. Revalidar identidad física
+        # 1. Revalidar identidad física y tipo de nodo
         vol_serial, file_id = _read_file_id_info_by_handle(handle)
         if vol_serial != backup.volume_serial_number:
             raise TargetDaclRestoreError(
@@ -1338,6 +1497,12 @@ def restore_security_descriptor_by_handle(
             )
         if file_id != backup.file_id:
             raise TargetDaclRestoreError(f"Drift de FileId en restore: esperado={backup.file_id}, observado={file_id}")
+
+        links, is_dir = _read_file_standard_info_by_handle(handle)
+        if backup.node_kind is GoldenProtectionNodeKind.FILE and is_dir:
+            raise TargetDaclRestoreError("Tipo de nodo discordante en restore: esperado FILE pero es directorio")
+        if backup.node_kind is GoldenProtectionNodeKind.DIR and not is_dir:
+            raise TargetDaclRestoreError("Tipo de nodo discordante en restore: esperado DIR pero es archivo")
 
         # 2. Revalidar enlace criptográfico de bytes PRE
         try:
@@ -1411,6 +1576,24 @@ def restore_security_descriptor_by_handle(
             err = ctypes.get_last_error()
             raise TargetDaclRestoreError(f"GetSecurityDescriptorDacl falló en buffer PRE: código {err}")
 
+        # Distinguir DACL ausente vs DACL NULL (Codex P2 #4057722508)
+        if not bool(control.value & _SE_DACL_PRESENT) or not present_val.value:
+            raise TargetDaclRestoreError(
+                "Buffer PRE posee DACL ausente (SE_DACL_PRESENT ausente); restore rehusado fail-closed"
+            )
+        if not p_dacl.value:
+            raise TargetDaclRestoreError(
+                "Buffer PRE posee DACL NULL (sin control de acceso); restore rehusado fail-closed"
+            )
+
+        # Validar componentes semánticos y rechazar ACEs no soportadas antes de restaurar
+        try:
+            _extract_sd_components(sd_ptr)
+        except Exception as exc:
+            raise TargetDaclRestoreError(
+                f"Buffer PRE contiene estructura o ACEs no soportadas para restore: {exc}"
+            ) from exc
+
         # 6. Configurar flags de información de seguridad
         sec_info = _OWNER_SECURITY_INFORMATION | _GROUP_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION
         if pre_dacl_protected_from_bytes:
@@ -1425,7 +1608,7 @@ def restore_security_descriptor_by_handle(
             sec_info,
             p_owner,
             p_group,
-            p_dacl if present_val.value else None,
+            p_dacl,
             None,
         )
         if ret != _ERROR_SUCCESS:
@@ -1458,6 +1641,24 @@ def verify_restored_security_descriptor_by_handle(
     _ensure_windows()
 
     try:
+        # 0. Revalidar identidad física y tipo de nodo vivo
+        vol_serial, file_id = _read_file_id_info_by_handle(handle)
+        if vol_serial != backup.volume_serial_number or file_id != backup.file_id:
+            raise TargetDaclVerificationError(
+                f"Drift de identidad física en verificación post-restore: "
+                f"esperado=({backup.volume_serial_number}, {backup.file_id}), observado=({vol_serial}, {file_id})"
+            )
+
+        links, is_dir = _read_file_standard_info_by_handle(handle)
+        if backup.node_kind is GoldenProtectionNodeKind.FILE and is_dir:
+            raise TargetDaclVerificationError(
+                "Tipo de nodo discordante en verificación post-restore: esperado FILE pero es directorio"
+            )
+        if backup.node_kind is GoldenProtectionNodeKind.DIR and not is_dir:
+            raise TargetDaclVerificationError(
+                "Tipo de nodo discordante en verificación post-restore: esperado DIR pero es archivo"
+            )
+
         # 1. Extraer componentes semánticos autoritativos del PRE
         try:
             raw_sd_bytes = base64.b64decode(backup.pre_sd_bytes_b64)
@@ -1474,9 +1675,19 @@ def verify_restored_security_descriptor_by_handle(
         sd_pre_ptr = ctypes.cast(sd_pre_buf, wintypes.LPVOID)
 
         try:
-            pre_owner, pre_group, pre_has_dacl, pre_aces, pre_protected = _extract_sd_components(sd_pre_ptr)
+            (
+                pre_owner,
+                pre_group,
+                pre_dacl_present,
+                pre_dacl_null,
+                pre_aces,
+                pre_protected,
+            ) = _extract_sd_components(sd_pre_ptr)
         except Exception as exc:
             raise TargetDaclVerificationError(f"Fallo al extraer componentes semánticos PRE: {exc}") from exc
+
+        if not pre_dacl_present or pre_dacl_null:
+            raise TargetDaclVerificationError("PRE SD posee DACL ausente o NULL; verificación fallida fail-closed")
 
         # Validar coherencia entre los bytes autoritativos PRE y la metadata del backup
         if pre_protected != backup.pre_dacl_protected_flag:
@@ -1512,7 +1723,14 @@ def verify_restored_security_descriptor_by_handle(
             raise TargetDaclVerificationError(f"GetSecurityInfo falló al verificar restore: código {ret}")
 
         try:
-            post_owner, post_group, post_has_dacl, post_aces, post_protected = _extract_sd_components(sd_post_p)
+            (
+                post_owner,
+                post_group,
+                post_dacl_present,
+                post_dacl_null,
+                post_aces,
+                post_protected,
+            ) = _extract_sd_components(sd_post_p)
 
             # 3. Comparación semántica exhaustiva
             if post_owner != pre_owner:
@@ -1530,9 +1748,14 @@ def verify_restored_security_descriptor_by_handle(
                     f"Estado protegido no coincide tras restore: post={post_protected}, pre={pre_protected}"
                 )
 
-            if post_has_dacl != pre_has_dacl:
+            if post_dacl_present != pre_dacl_present:
                 raise TargetDaclVerificationError(
-                    f"Presencia de DACL post-restore ({post_has_dacl}) no coincide con PRE ({pre_has_dacl})"
+                    f"Presencia de DACL post-restore ({post_dacl_present}) no coincide con PRE ({pre_dacl_present})"
+                )
+
+            if post_dacl_null != pre_dacl_null:
+                raise TargetDaclVerificationError(
+                    f"DACL NULL post-restore ({post_dacl_null}) no coincide con PRE ({pre_dacl_null})"
                 )
 
             if len(post_aces) != len(pre_aces):

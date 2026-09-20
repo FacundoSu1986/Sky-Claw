@@ -54,6 +54,7 @@ from sky_claw.local.runtime_vault.target_dacl import (
     TargetDaclUnsupportedError,
     TargetDaclVerificationError,
     _create_test_restricted_token,
+    _extract_sd_components,
     apply_target_dacl_by_handle,
     build_native_target_dacl,
     build_target_dacl_spec,
@@ -307,13 +308,18 @@ class TestTargetDaclNativeStructuralRoundTrip:
             h_sec = open_node_security_handle(test_file)
             try:
                 # Fijar SE_DACL_PROTECTED en el estado PRE usando el handle abierto
+                # Leer el DACL existente para conservarlo al fijar SE_DACL_PROTECTED
+                dacl_p = wintypes.LPVOID()
+                ret_get = _advapi32.GetSecurityInfo(h_sec, 1, 4, None, None, ctypes.byref(dacl_p), None, None)
+                assert ret_get == 0
+
                 ret_protect = _advapi32.SetSecurityInfo(
                     h_sec,
                     1,  # _SE_FILE_OBJECT
                     4 | 0x80000000,  # _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION
                     None,
                     None,
-                    None,
+                    dacl_p,
                     None,
                 )
                 assert ret_protect == 0
@@ -1155,17 +1161,23 @@ class TestTargetDaclOraclesAndMutations:
         [
             # ACCESS_ALLOWED_CALLBACK_ACE_TYPE (0x09)
             ('O:SYG:SYD:(XA;;FR;;;WD;(@User.Title=="Adversarial"))', "0x09"),
+            # ACCESS_DENIED_CALLBACK_ACE_TYPE (0x0a)
+            ('O:SYG:SYD:(XD;;FR;;;WD;(@User.Title=="Adversarial"))', "0x0a"),
             # ACCESS_ALLOWED_OBJECT_ACE_TYPE (0x05)
             ("O:SYG:SYD:(OA;;CR;11111111-2222-3333-4444-555555555555;;WD)", "0x05"),
+            # ACCESS_DENIED_OBJECT_ACE_TYPE (0x06)
+            ("O:SYG:SYD:(OD;;CR;11111111-2222-3333-4444-555555555555;;WD)", "0x06"),
         ],
     )
     def test_t18_ace_tipo_no_soportado_en_pre_dacl_fail_closed(self, sddl: str, expected_type_hex: str) -> None:
-        """T18: Un descriptor PRE con tipo de ACE no soportado (ej. OBJECT 0x05 o CALLBACK 0x09) falla cerrado."""
+        """T18: Un descriptor PRE con tipo de ACE no soportado (ej. OBJECT 0x05 o CALLBACK 0x09) falla cerrado.
+
+        Verifica que tanto apply_target_dacl_by_handle como verify_restored_security_descriptor_by_handle
+        aborten inmediatamente fail-closed sin interpretar raw_ace + 8 como SID y sin mutar el disco.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             test_file = pathlib.Path(tmpdir) / "t18_unsupported_ace.txt"
             test_file.write_text("data")
-            evidences = probe_node_evidence(tmpdir)
-            pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
 
             # Construir un Security Descriptor nativo válido con el ACE complejo
             p_sd = wintypes.LPVOID()
@@ -1180,28 +1192,258 @@ class TestTargetDaclOraclesAndMutations:
             ok = _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(p_sd), None)
             assert ok != 0
             try:
-                sd_len = _advapi32.GetSecurityDescriptorLength(p_sd)
-                raw = (ctypes.c_char * sd_len).from_address(ctypes.cast(p_sd, ctypes.c_void_p).value)
-                sd_bytes = bytes(raw)
+                # Aplicar la DACL compleja al archivo de prueba para que tanto live como backup la contengan
+                dacl_present = wintypes.BOOL()
+                dacl_p = wintypes.LPVOID()
+                def_val = wintypes.BOOL()
+                assert _advapi32.GetSecurityDescriptorDacl(
+                    p_sd, ctypes.byref(dacl_present), ctypes.byref(dacl_p), ctypes.byref(def_val)
+                )
+                h_pre = open_node_security_handle(test_file)
+                try:
+                    ret_set = _advapi32.SetSecurityInfo(h_pre, 1, 4, None, None, dacl_p, None)
+                    assert ret_set == 0
+                finally:
+                    close_security_handle(h_pre)
 
-                bad_backup = copy.copy(pre)
-                object.__setattr__(bad_backup, "pre_sd_bytes_b64", base64.b64encode(sd_bytes).decode("ascii"))
-                object.__setattr__(bad_backup, "pre_sd_length", len(sd_bytes))
-                object.__setattr__(bad_backup, "pre_sd_sha256", hashlib.sha256(sd_bytes).hexdigest())
+                evidences = probe_node_evidence(tmpdir)
+                pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
 
                 h = open_node_security_handle(test_file)
                 try:
-                    # verify_restored_security_descriptor_by_handle debe fallar cerrado explícitamente
-                    # rechazando el tipo de ACE sin intentar interpretar raw_ace + 8 como SID
+                    # 1. apply_target_dacl_by_handle debe abortar fail-closed antes de mutar (Codex P1 #4057722506)
+                    with (
+                        patch("sky_claw.local.runtime_vault.target_dacl._advapi32.SetSecurityInfo") as mock_set,
+                        pytest.raises(
+                            TargetDaclApplyError,
+                            match=f"Tipo de ACE no soportado en DACL: {expected_type_hex}",
+                        ),
+                    ):
+                        apply_target_dacl_by_handle(h, pre)
+                    mock_set.assert_not_called()
+
+                    # 2. verify_restored_security_descriptor_by_handle debe fallar cerrado explícitamente
                     with pytest.raises(
                         TargetDaclVerificationError,
                         match=f"Tipo de ACE no soportado en DACL: {expected_type_hex}",
                     ):
-                        verify_restored_security_descriptor_by_handle(h, bad_backup)
+                        verify_restored_security_descriptor_by_handle(h, pre)
                 finally:
                     close_security_handle(h)
             finally:
                 _kernel32.LocalFree(p_sd)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    @pytest.mark.parametrize(
+        "unsupported_ace_type",
+        [
+            0x02,  # SYSTEM_AUDIT_ACE_TYPE
+            0x03,  # SYSTEM_ALARM_ACE_TYPE
+            0x04,  # ACCESS_ALLOWED_COMPOUND_ACE_TYPE
+            0x05,  # ACCESS_ALLOWED_OBJECT_ACE_TYPE
+            0x06,  # ACCESS_DENIED_OBJECT_ACE_TYPE
+            0x07,  # SYSTEM_AUDIT_OBJECT_ACE_TYPE
+            0x08,  # SYSTEM_ALARM_OBJECT_ACE_TYPE
+            0x09,  # ACCESS_ALLOWED_CALLBACK_ACE_TYPE
+            0x0A,  # ACCESS_DENIED_CALLBACK_ACE_TYPE
+            0x0B,  # ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE
+            0x0C,  # ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE
+            0x0D,  # SYSTEM_AUDIT_CALLBACK_ACE_TYPE
+            0x0E,  # SYSTEM_ALARM_CALLBACK_ACE_TYPE
+            0x0F,  # SYSTEM_AUDIT_CALLBACK_OBJECT_ACE_TYPE
+            0x10,  # SYSTEM_ALARM_CALLBACK_OBJECT_ACE_TYPE
+            0x11,  # SYSTEM_MANDATORY_LABEL_ACE_TYPE
+            0x12,  # SYSTEM_RESOURCE_ATTRIBUTE_ACE_TYPE
+            0x13,  # SYSTEM_SCOPED_POLICY_ID_ACE_TYPE
+            0x14,  # SYSTEM_PROCESS_TRUST_LABEL_ACE_TYPE
+            0x15,  # SYSTEM_ACCESS_FILTER_ACE_TYPE
+            0xFE,  # Desconocido
+            0xFF,  # Desconocido
+        ],
+    )
+    def test_t18_dominio_completo_tipos_ace_no_soportados_falla_cerrado(self, unsupported_ace_type: int) -> None:
+        """Verifica que _extract_sd_components rechaza fail-closed todo el espectro de tipos de ACE fuera de 0x00 y 0x01."""
+        p_sd = wintypes.LPVOID()
+        ok = _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            "O:SYG:SYD:(A;;FR;;;WD)", 1, ctypes.byref(p_sd), None
+        )
+        assert ok != 0
+        try:
+            present = wintypes.BOOL()
+            p_dacl = wintypes.LPVOID()
+            def_val = wintypes.BOOL()
+            assert _advapi32.GetSecurityDescriptorDacl(
+                p_sd, ctypes.byref(present), ctypes.byref(p_dacl), ctypes.byref(def_val)
+            )
+            p_ace = wintypes.LPVOID()
+            assert _advapi32.GetAce(p_dacl, 0, ctypes.byref(p_ace))
+            # Inyectar AceType no soportado en la memoria nativa del ACE
+            ctypes.cast(p_ace, ctypes.POINTER(ctypes.c_ubyte)).contents.value = unsupported_ace_type
+
+            with pytest.raises(
+                TargetDaclError,
+                match=r"(Tipo de ACE no soportado en DACL|Puntero no contiene un SECURITY_DESCRIPTOR válido)",
+            ):
+                _extract_sd_components(p_sd)
+        finally:
+            _kernel32.LocalFree(p_sd)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_discordancia_node_kind_falla_apply_y_verify(self) -> None:
+        """Discordancia entre node_kind en backup y el tipo de nodo real del handle (archivo vs dir) falla cerrado."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = pathlib.Path(tmpdir) / "node_file.txt"
+            file_path.write_text("data")
+            dir_path = pathlib.Path(tmpdir) / "node_dir"
+            dir_path.mkdir()
+
+            evidences = probe_node_evidence(tmpdir)
+            file_backup = [e.backup for e in evidences if e.backup.relative_path == "node_file.txt"][0]
+            dir_backup = [e.backup for e in evidences if e.backup.relative_path == "node_dir"][0]
+
+            h_file = open_node_security_handle(file_path)
+            h_dir = open_node_security_handle(dir_path)
+            try:
+                # 1. Aplicar backup con DIR sobre handle de FILE
+                mismatched_file_backup = copy.copy(file_backup)
+                object.__setattr__(mismatched_file_backup, "node_kind", GoldenProtectionNodeKind.DIR)
+                with pytest.raises(TargetDaclApplyError, match="Tipo de nodo discordante.*backup especifica DIR"):
+                    apply_target_dacl_by_handle(h_file, mismatched_file_backup)
+
+                # 2. Aplicar backup con FILE sobre handle de DIR
+                mismatched_dir_backup = copy.copy(dir_backup)
+                object.__setattr__(mismatched_dir_backup, "node_kind", GoldenProtectionNodeKind.FILE)
+                with pytest.raises(TargetDaclApplyError, match="Tipo de nodo discordante.*backup especifica FILE"):
+                    apply_target_dacl_by_handle(h_dir, mismatched_dir_backup)
+
+                # 3. verify_target_dacl_by_handle también valida concordancia
+                apply_target_dacl_by_handle(h_file, file_backup)
+                with pytest.raises(TargetDaclVerificationError, match="Tipo de nodo discordante"):
+                    verify_target_dacl_by_handle(h_file, mismatched_file_backup)
+            finally:
+                close_security_handle(h_file)
+                close_security_handle(h_dir)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_verify_target_dacl_rechaza_drift_de_identidad_fisica(self) -> None:
+        """verify_target_dacl_by_handle valida que VolumeSerialNumber y FileId coincidan con el backup."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = pathlib.Path(tmpdir) / "fid_verify.txt"
+            file_path.write_text("data")
+            evidences = probe_node_evidence(tmpdir)
+            pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
+
+            h = open_node_security_handle(file_path)
+            try:
+                apply_target_dacl_by_handle(h, pre)
+
+                # Adulterar volumen
+                bad_vol_backup = copy.copy(pre)
+                object.__setattr__(bad_vol_backup, "volume_serial_number", pre.volume_serial_number + 999)
+                with pytest.raises(TargetDaclVerificationError, match="Drift de identidad física en verificación"):
+                    verify_target_dacl_by_handle(h, bad_vol_backup)
+
+                # Adulterar FileId
+                bad_fid_backup = copy.copy(pre)
+                object.__setattr__(bad_fid_backup, "file_id", pre.file_id + 999)
+                with pytest.raises(TargetDaclVerificationError, match="Drift de identidad física en verificación"):
+                    verify_target_dacl_by_handle(h, bad_fid_backup)
+            finally:
+                close_security_handle(h)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_apply_y_verify_rechazan_discrepancia_de_owner_group_en_metadata_vs_bytes(self) -> None:
+        """apply y verify rechazan fail-closed si backup.owner_sid o group_sid no coincide con los bytes PRE."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = pathlib.Path(tmpdir) / "owner_drift.txt"
+            file_path.write_text("data")
+            evidences = probe_node_evidence(tmpdir)
+            pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
+
+            h = open_node_security_handle(file_path)
+            try:
+                bad_owner_backup = copy.copy(pre)
+                drift_sid = "S-1-5-18" if pre.owner_sid != "S-1-5-18" else "S-1-5-11"
+                object.__setattr__(bad_owner_backup, "owner_sid", drift_sid)
+
+                with (
+                    patch("sky_claw.local.runtime_vault.target_dacl._advapi32.SetSecurityInfo") as mock_set,
+                    pytest.raises(TargetDaclApplyError, match="Discrepancia en owner PRE de backup"),
+                ):
+                    apply_target_dacl_by_handle(h, bad_owner_backup)
+                mock_set.assert_not_called()
+
+                apply_target_dacl_by_handle(h, pre)
+                with pytest.raises(TargetDaclVerificationError, match="Inconsistencia en owner PRE"):
+                    verify_target_dacl_by_handle(h, bad_owner_backup)
+            finally:
+                close_security_handle(h)
+
+    def test_target_ace_spec_y_build_rechazan_tipo_ace_no_allow(self) -> None:
+        """TargetAceSpec.__post_init__ y build_native_target_dacl rechazan cualquier ace_type != 0x00."""
+        with pytest.raises(TargetDaclBuildError, match="solo admite ace_type=ACCESS_ALLOWED_ACE_TYPE"):
+            TargetAceSpec(
+                sid="S-1-5-32-545",
+                ace_type=1,  # ACCESS_DENIED_ACE_TYPE
+                ace_flags=0,
+                access_mask=0x1200A9,
+                name="Deny Test",
+            )
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_restore_rechaza_dacl_ausente_o_null(self) -> None:
+        """restore_security_descriptor_by_handle rechaza fail-closed descriptors PRE con DACL ausente o NULL."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = pathlib.Path(tmpdir) / "dacl_null_test.txt"
+            file_path.write_text("data")
+            evidences = probe_node_evidence(tmpdir)
+            pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
+
+            h = open_node_security_handle(file_path)
+            try:
+                # 1. SD con DACL ausente (SDDL sin D:)
+                p_sd_absent = wintypes.LPVOID()
+                ok = _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    "O:SYG:SY", 1, ctypes.byref(p_sd_absent), None
+                )
+                assert ok != 0
+                try:
+                    sd_len = _advapi32.GetSecurityDescriptorLength(p_sd_absent)
+                    raw = (ctypes.c_char * sd_len).from_address(ctypes.cast(p_sd_absent, ctypes.c_void_p).value)
+                    sd_bytes = bytes(raw)
+
+                    absent_backup = copy.copy(pre)
+                    object.__setattr__(absent_backup, "pre_sd_bytes_b64", base64.b64encode(sd_bytes).decode("ascii"))
+                    object.__setattr__(absent_backup, "pre_sd_length", len(sd_bytes))
+                    object.__setattr__(absent_backup, "pre_sd_sha256", hashlib.sha256(sd_bytes).hexdigest())
+
+                    with pytest.raises(TargetDaclRestoreError, match="Buffer PRE posee DACL ausente"):
+                        restore_security_descriptor_by_handle(h, absent_backup)
+                finally:
+                    _kernel32.LocalFree(p_sd_absent)
+
+                # 2. SD con DACL NULL (SDDL con NO_ACCESS_CONTROL o D: nula)
+                p_sd_null = wintypes.LPVOID()
+                ok = _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    "O:SYG:SYD:NO_ACCESS_CONTROL", 1, ctypes.byref(p_sd_null), None
+                )
+                assert ok != 0
+                try:
+                    sd_len = _advapi32.GetSecurityDescriptorLength(p_sd_null)
+                    raw = (ctypes.c_char * sd_len).from_address(ctypes.cast(p_sd_null, ctypes.c_void_p).value)
+                    sd_bytes = bytes(raw)
+
+                    null_backup = copy.copy(pre)
+                    object.__setattr__(null_backup, "pre_sd_bytes_b64", base64.b64encode(sd_bytes).decode("ascii"))
+                    object.__setattr__(null_backup, "pre_sd_length", len(sd_bytes))
+                    object.__setattr__(null_backup, "pre_sd_sha256", hashlib.sha256(sd_bytes).hexdigest())
+
+                    with pytest.raises(TargetDaclRestoreError, match="Buffer PRE posee DACL (NULL|ausente)"):
+                        restore_security_descriptor_by_handle(h, null_backup)
+                finally:
+                    _kernel32.LocalFree(p_sd_null)
+            finally:
+                close_security_handle(h)
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
     def test_reparse_point_rechazado_fail_closed(self) -> None:
