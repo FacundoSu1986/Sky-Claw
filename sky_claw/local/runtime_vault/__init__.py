@@ -60,6 +60,13 @@ from sky_claw.local.runtime_vault.models import (
     TreeVerificationResult,
     VerificationState,
 )
+from sky_claw.local.runtime_vault.node_evidence import (
+    NativeEvidenceError,
+    NativeEvidenceUnsupportedError,
+    NativeNodeEvidence,
+    file_id_128_to_int,
+    probe_node_evidence,
+)
 from sky_claw.local.runtime_vault.protection import (
     GoldenProtectionEvidence,
     GoldenProtectionInputError,
@@ -97,6 +104,9 @@ __all__ = [
     "GoldenProtectionState",
     "InventoryError",
     "InventoryLinkError",
+    "NativeEvidenceError",
+    "NativeEvidenceUnsupportedError",
+    "NativeNodeEvidence",
     "NodeProtectionObservation",
     "NodeSecurityBackup",
     "PhysicalIndependenceResult",
@@ -115,9 +125,11 @@ __all__ = [
     "classify_protection",
     "create_runtime_clone",
     "destination_lock",
+    "file_id_128_to_int",
     "inspect_golden_protection",
     "inventory_tree",
     "prepare_golden_protection_plan",
+    "probe_node_evidence",
     "seal_golden_protection_plan",
     "tree_digest_from_files",
     "verify_critical_files",

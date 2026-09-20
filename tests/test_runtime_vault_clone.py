@@ -1062,6 +1062,7 @@ class TestRuntimeCloneSuiteCanonico:
             "inventory",
             "locking",
             "models",
+            "node_evidence",
             "protection",
             "verification",
         }
