@@ -42,14 +42,14 @@ from sky_claw.local.tools.dyndolod_runner import (
     ToolExecutionResult,
 )
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
-from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
+from sky_claw.local.tools.output_targets import HerramientaDynDOLOD, derivar_layout_de_dyndolod
 from sky_claw.local.validators.preflight import (
     PreflightCheck,
     PreflightReport,
     PreflightStatus,
 )
 from sky_claw.logging_config import correlacion_de_transaccion, pipeline_tx_id_var
-from tests._symlink_guard import crear_junction, junction_guard
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
 
 
 def _mock_config(tmp_path: pathlib.Path) -> MagicMock:
@@ -6888,3 +6888,380 @@ async def test_t5_junction_en_componente_intermedio_bajo_el_family(
     assert not list(root.rglob("*.rollback-*"))
     assert not list(outside.rglob("*.rollback-*"))
     assert (outside / "textures" / "evil.dds").read_bytes() == b"EVIL"
+
+
+# =============================================================================
+# Prerrequisitos CLI de #593: -m:/-p: en el CAMINO PRODUCTIVO
+# =============================================================================
+#
+# El runner sabía emitir -m:/-p: desde siempre, pero `_ensure_runner` construía
+# `DynDOLODConfig` sin pasar `ini_dir`/`plugins_file`, así que el argv productivo
+# los omitía aunque existieran las fuentes. Los tests construían la config a
+# mano, así que el hueco era invisible. Estos tests entran por donde entra
+# producción: `DynDOLODPipelineService` → `_ensure_runner()` → `DynDOLODConfig`
+# → `_build_xedit_args()`, con un `PathResolutionService` REAL sobre una
+# instancia MO2 sintética (raíz de datos con espacios: la rama del rig real).
+
+
+def _entorno_mo2_cli(
+    tmp_path: pathlib.Path,
+    *,
+    perfil: str = "Default",
+    con_plugins: bool = True,
+) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path]:
+    """Instancia MO2 sintética: ``(game, data_root, exe, plugins_file)``.
+
+    La instancia es "de datos" según el contrato de ``MO2_PATH`` (sin
+    ``ModOrganizer.exe`` y con ``mods/``): la misma evidencia que usa el
+    preflight (#595) para descubrir la raíz de datos, sin fabricar un INI.
+    """
+    game = tmp_path / "Skyrim Special Edition"
+    (game / "Data").mkdir(parents=True, exist_ok=True)
+    data_root = tmp_path / "MO2 Instancia"
+    (data_root / "mods").mkdir(parents=True, exist_ok=True)
+    perfil_dir = data_root / "profiles" / perfil
+    perfil_dir.mkdir(parents=True, exist_ok=True)
+    plugins_file = perfil_dir / "plugins.txt"
+    if con_plugins:
+        plugins_file.write_text("*Skyrim.esm\n*Update.esm\n", encoding="utf-8")
+    exe = tmp_path / "DynDOLOD 209" / "DynDOLODx64.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text("", encoding="utf-8")
+    exe.with_name("TexGenx64.exe").write_text("", encoding="utf-8")
+    return game, data_root, exe, plugins_file
+
+
+def _exportar_entorno_de_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    game: pathlib.Path,
+    data_root: pathlib.Path,
+    exe: pathlib.Path,
+    ini_dir: pathlib.Path | None = None,
+) -> None:
+    monkeypatch.setenv("SKYRIM_PATH", str(game))
+    monkeypatch.setenv("MO2_PATH", str(data_root))
+    # El runner exige `get_mo2_mods_path()` (paso 1: override explícito) antes de
+    # resolver la identidad del perfil; sin esto, una metadata corrupta explota
+    # en el accessor viejo antes de llegar a la frontera que este test mide.
+    monkeypatch.setenv("MO2_MODS_PATH", str(data_root / "mods"))
+    monkeypatch.setenv("DYNDLOD_EXE", str(exe))
+    monkeypatch.setenv("TEXGEN_EXE", str(exe.with_name("TexGenx64.exe")))
+    if ini_dir is not None:
+        monkeypatch.setenv("DYNDLOD_INI_DIR", str(ini_dir))
+
+
+def _resolver_real_de_cli(
+    tmp_path: pathlib.Path,
+    *,
+    perfil: str | None,
+    mo2_install_dir: pathlib.Path | None = None,
+) -> object:
+    """``PathResolutionService`` REAL con sandbox sobre ``tmp_path``.
+
+    Real y no un MagicMock a propósito: el wiring de ``-p:`` tiene que pasar por
+    la autoridad de perfil que ya usan el preflight y el handoff
+    (``get_mo2_instance_data_root`` + ``get_active_profile``), no por un doble
+    que devuelve lo que el test quiere. ``mo2_install_dir`` permite cerrar la
+    auto-detección (una instalación inyectada que no valida se trata como
+    "sin instalación conocida", sin degradar al entorno/auto-detección), que es
+    lo que hace determinista al test de modo standalone en cualquier máquina.
+    """
+    from sky_claw.app.core.path_resolver import PathResolutionService
+    from sky_claw.app.security.path_validator import PathValidator
+
+    return PathResolutionService(
+        path_validator=PathValidator(roots=[tmp_path]),
+        profile_name=perfil,
+        mo2_install_dir=mo2_install_dir,
+    )
+
+
+def _svc_de_cli(
+    *,
+    resolver: object,
+    workspace: object | None = None,
+    mo2_profile: str = "Default",
+) -> DynDOLODPipelineService:
+    return DynDOLODPipelineService(
+        lock_manager=AsyncMock(spec=DistributedLockManager),
+        snapshot_manager=AsyncMock(spec=FileSnapshotManager),
+        journal=AsyncMock(),
+        path_resolver=resolver,  # type: ignore[arg-type]
+        event_bus=AsyncMock(spec=CoreEventBus),
+        mo2_profile=mo2_profile,
+        workspace=workspace,  # type: ignore[arg-type]  # fake duck-typed
+    )
+
+
+def _elemento(argv: list[str], prefijo: str) -> list[str]:
+    return [a for a in argv if a.startswith(prefijo)]
+
+
+@pytest.mark.asyncio
+async def test_ensure_runner_cablea_el_plugins_txt_del_perfil_activo(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """K1/K3/K18: el camino productivo pasa ``-p:`` con el ARCHIVO del perfil.
+
+    ``_ensure_runner`` construía la config sin ``plugins_file``, así que el
+    runner —que sí sabe emitirlo— quedaba mudo en producción. Acá se ejercita
+    el camino completo con la autoridad real de resolución: la raíz de datos de
+    la instancia y el ``get_active_profile()`` de la sesión.
+
+    ``-p:`` apunta a un ARCHIVO (``...\\plugins.txt``, sin ``\\`` final), no al
+    directorio del perfil. Y el ``-o:`` sigue saliendo del layout externo
+    exclusivo: cablear ``-p:`` no cambia la raíz administrada.
+    """
+    game, data_root, exe, plugins_file = _entorno_mo2_cli(tmp_path)
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe)
+    external = tmp_path / "Work Root con espacios"
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"), workspace=_workspace_fake(external))
+
+    runner = svc._ensure_runner()
+
+    esperado = plugins_file.resolve()
+    assert runner._config.plugins_file == esperado
+    argv = runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)
+    p = _elemento(argv, "-p:")
+    assert len(p) == 1, f"exactamente un -p:: {argv}"
+    assert p[0] == f"-p:{esperado}"
+    assert not p[0].endswith("\\"), "-p: es un ARCHIVO: sin backslash final"
+    assert p[0] != f"-p:{esperado.parent}\\", "no debe apuntar al directorio del perfil"
+    # K18: el -o: sigue siendo el subroot exclusivo del layout externo.
+    o = _elemento(argv, "-o:")
+    layout = derivar_layout_de_dyndolod(external_work_root=external)
+    assert o == [f"-o:{layout.dyndolod_root}\\"]
+
+
+@symlink_guard
+def test_ensure_runner_rechaza_plugins_txt_symlink_fuera_de_la_instancia(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """``-p:`` falla cerrado si plugins.txt resuelve fuera de INSTANCE_DATA_ROOT."""
+    game, data_root, exe, plugins_file = _entorno_mo2_cli(tmp_path)
+    externo = tmp_path_factory.mktemp("plugins_fuera_de_instancia") / "plugins.txt"
+    externo.write_text("*Skyrim.esm\n", encoding="utf-8")
+    plugins_file.unlink()
+    plugins_file.symlink_to(externo)
+
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe)
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"))
+
+    with pytest.raises(DynDOLODExecutionError, match="escapa la raíz de datos"):
+        svc._ensure_runner()
+
+
+@junction_guard
+def test_ensure_runner_rechaza_profile_junction_fuera_de_la_instancia(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Windows: un junction en profiles/<perfil> tampoco puede escapar ``-p:``."""
+    import shutil
+
+    game, data_root, exe, plugins_file = _entorno_mo2_cli(tmp_path)
+    perfil_dir = plugins_file.parent
+    shutil.rmtree(perfil_dir)
+    perfil_externo = tmp_path_factory.mktemp("perfil_fuera_de_instancia")
+    (perfil_externo / "plugins.txt").write_text("*Skyrim.esm\n", encoding="utf-8")
+    motivo = crear_junction(perfil_dir, perfil_externo)
+    assert motivo is None, motivo
+
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe)
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"))
+
+    with pytest.raises(DynDOLODExecutionError, match="escapa la raíz de datos"):
+        svc._ensure_runner()
+
+
+@pytest.mark.asyncio
+async def test_ensure_runner_usa_el_perfil_de_la_sesion_y_no_otro(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """C1: el ``plugins.txt`` es el del perfil ACTIVO, nunca el de otro perfil.
+
+    Con dos perfiles en la instancia, un wiring que eligiera "el primero" o el
+    default global afirmaría una identidad que el pipeline no tiene: el perfil
+    de la sesión (``--profile``/``MO2_PROFILE``) es el que MO2 va a usar, y el
+    que el handoff durable registra como dueño. El resolver inyectado manda
+    sobre ``MO2_PROFILE`` (precedencia ya anclada en
+    ``test_perfil_sesion_invariante``), así que este test fija esa misma
+    precedencia en el borde del argv.
+    """
+    game, data_root, exe, plugins_file = _entorno_mo2_cli(tmp_path, perfil="Requiem")
+    _entorno_mo2_cli(tmp_path, perfil="Default")  # segundo perfil, con su propio plugins.txt
+    monkeypatch.setenv("MO2_PROFILE", "Default")
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe)
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Requiem"), mo2_profile="Requiem")
+
+    runner = svc._ensure_runner()
+
+    assert runner._config.plugins_file == plugins_file.resolve()
+
+
+@pytest.mark.asyncio
+async def test_ensure_runner_falla_cerrado_con_perfil_peligroso(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """C2: un nombre de perfil con traversal no puede convertirse en ``-p:``.
+
+    El perfil es el ÚNICO valor que se concatena a ``profiles/<perfil>/`` para
+    formar el archivo que el binario va a leer. Sin la primitiva de componente
+    seguro (``assert_safe_component``, el patrón del repo), un ``..\\otro``
+    produce un ``-p:`` que sale del perfil admitido. Fail-closed: el runner ni
+    se construye.
+    """
+    game, data_root, exe, _ = _entorno_mo2_cli(tmp_path)
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe)
+    monkeypatch.setenv("MO2_PROFILE", "..\\otro")
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil=None))
+
+    with pytest.raises(DynDOLODExecutionError, match="perfil"):
+        svc._ensure_runner()
+
+
+@pytest.mark.asyncio
+async def test_ensure_runner_falla_cerrado_con_metadata_de_instancia_corrupta(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """C3 (separación): metadata corrupta NO se lee como "modo standalone".
+
+    La instancia declaró una ``base_directory`` relativa: el resolver estricto
+    la rechaza. Si ``_ensure_runner`` usara el accessor best-effort, ese caso
+    degradaba a "sin raíz de datos" → ``-p:`` omitido en silencio, que es
+    exactamente mezclar "no hay MO2" con "hay MO2 y no lo pude resolver". Con
+    un perfil que el pipeline afirma usar, la única respuesta honesta es no
+    spawnear.
+    """
+    game, data_root, exe, _ = _entorno_mo2_cli(tmp_path)
+    (data_root / "ModOrganizer.ini").write_text("[Settings]\nbase_directory=relativo/mods\n", encoding="utf-8")
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe)
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"))
+
+    with pytest.raises(DynDOLODExecutionError, match="MO2|instancia"):
+        svc._ensure_runner()
+
+
+@pytest.mark.asyncio
+async def test_ensure_runner_cablea_el_ini_dir_explicito(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """K2/K4/K5: con autoridad explícita de INIs, ``-m:`` sale como DIRECTORIO.
+
+    La única autoridad que este PR reconoce para ``-m:`` es la declaración
+    explícita del operador (``DYNDLOD_INI_DIR``, resuelta y validada por el
+    resolver): el doc oficial de DynDOLOD prohíbe apuntar a perfiles de MO2
+    (*"Do not link to files or folders in mod manager profiles"*) y derivar
+    ``Documents\\My Games`` a ciegas es una heurística de nombre que este PR no
+    inventa. Con la autoridad presente, el switch va con ``\\`` final (es un
+    directorio) y con la ruta CON espacios en UN solo elemento del argv.
+    """
+    game, data_root, exe, _ = _entorno_mo2_cli(tmp_path)
+    ini_dir = tmp_path / "My Games" / "Skyrim Special Edition"
+    ini_dir.mkdir(parents=True)
+    (ini_dir / "Skyrim.ini").write_text("[General]\n", encoding="utf-8")
+    (ini_dir / "SkyrimPrefs.ini").write_text("[Display]\n", encoding="utf-8")
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe, ini_dir=ini_dir)
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"))
+
+    runner = svc._ensure_runner()
+
+    esperado = ini_dir.resolve()
+    assert runner._config.ini_dir == esperado
+    argv = runner._build_xedit_args(None, herramienta=HerramientaDynDOLOD.DYNDOLOD)
+    m = _elemento(argv, "-m:")
+    assert m == [f"-m:{esperado}\\"], f"-m: es un DIRECTORIO con \\ final: {argv}"
+    assert " " in m[0], "la ruta con espacios viaja en UN elemento de argv"
+
+
+@pytest.mark.asyncio
+async def test_ensure_runner_rechaza_ini_dir_declarado_inexistente(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """K2 (mitad fail-closed): declarar un ``DYNDLOD_INI_DIR`` inválido no se ignora.
+
+    Si el valor declarado no es un directorio existente, tratarlo como "no
+    declarado" repetiría el defecto que este PR cierra: una decisión del
+    operador que se pierde sin señal y un ``-m:`` que desaparece del argv.
+    """
+    game, data_root, exe, _ = _entorno_mo2_cli(tmp_path)
+    _exportar_entorno_de_cli(
+        monkeypatch,
+        game=game,
+        data_root=data_root,
+        exe=exe,
+        ini_dir=tmp_path / "My Games" / "no-existe",
+    )
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"))
+
+    with pytest.raises(DynDOLODExecutionError, match="DYNDLOD_INI_DIR"):
+        svc._ensure_runner()
+
+
+def test_la_fuente_de_plugins_separa_standalone_de_instancia_irresoluble() -> None:
+    """C3 (separación): ``None`` es "no hay instancia", nunca "no la pude resolver".
+
+    Los dos casos viven a un ``isinstance`` de distancia y por eso se fijan
+    juntos: sin instancia MO2 (rig directo, resolver doblado) la fuente es
+    ``None`` —no hay perfil que afirmar—; con la instancia declarada pero
+    irresoluble, la frontera levanta ``DynDOLODExecutionError`` en vez de
+    devolver ``None``. Colapsarlos haría que una metadata corrupta se leyera
+    como "modo standalone" y el argv quedara sin ``-p:`` sin señal.
+
+    Nota de alcance: por ``_ensure_runner`` el caso "sin instancia" es
+    inalcanzable hoy —el runner exige ``MO2_PATH``/``MO2_MODS_PATH`` resueltos—,
+    así que se ejercita la frontera directamente; el día que el runner acepte
+    un camino sin MO2, la propiedad ya está fijada acá.
+    """
+    resolver = MagicMock()
+    resolver.get_mo2_instance_data_root_estricto = MagicMock(return_value=None)
+    svc = _svc_de_cli(resolver=resolver)
+    assert svc._plugins_txt_del_perfil_activo() is None
+
+    resolver.get_mo2_instance_data_root_estricto = MagicMock(
+        side_effect=RuntimeError("la instancia MO2 declaró una base_directory relativa")
+    )
+    with pytest.raises(DynDOLODExecutionError, match="MO2"):
+        svc._plugins_txt_del_perfil_activo()
+
+
+@pytest.mark.asyncio
+async def test_execute_no_lanza_sin_plugins_txt_del_perfil(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """C3: perfil conocido + ``plugins.txt`` ausente ⇒ NO se spawnnea.
+
+    No hay fallback al registro/default global cuando el pipeline afirma operar
+    sobre un perfil MO2 determinado: un ``-p:`` que apunte a un archivo
+    inexistente lo haría morir adentro de la GUI (30+ min de timeout), y
+    omitirlo deja que el binario elija otra fuente — las dos formas de terminar
+    afirmando un load order que nadie verificó. El gate corre ANTES del lock y
+    del spawn.
+    """
+    game, data_root, exe, plugins_file = _entorno_mo2_cli(tmp_path, con_plugins=False)
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe)
+    external = tmp_path / "Work Root"
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"), workspace=_workspace_fake(external))
+    svc._preflight = _FakePreflight(_perm_report(PreflightStatus.GREEN, "escritura OK"))  # type: ignore[assignment]
+
+    assert not plugins_file.exists()
+    resultado = await svc.execute(preset="Medium", run_texgen=True)
+
+    assert resultado["success"] is False
+    assert "plugins.txt" in resultado["message"]
+    assert svc._lock_manager.acquire_lock.await_count == 0, "el lock no se toma para un run que no puede spawnear"
+    assert svc._runner is not None
+    assert svc._runner._config.plugins_file == plugins_file.resolve(), (
+        "la fuente declarada es la del perfil activo (y su ausencia es la que bloquea)"
+    )

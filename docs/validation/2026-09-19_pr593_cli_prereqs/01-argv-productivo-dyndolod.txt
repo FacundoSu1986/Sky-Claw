@@ -1,0 +1,10 @@
+tool=dyndolod
+exe=C:\Modding\DynDOLOD RigTest\DynDOLODx64.exe
+argv=["-sse", "-o:E:\\Sky-Claw T5 Rig\\evidence\\PR593-cli-prereqs\\2026-09-20_final\\PR593 Work\\DynDOLOD\\DynDOLOD\\", "-d:G:\\Modding\\Skyrim_Runtime_1.6.1170\\Data\\", "-m:C:\\Modding\\DynDOLOD RigTest\\_rig_test\\ini\\", "-p:G:\\Modding\\MO2\\SkyrimSE\\profiles\\SkyClaw-PR2-Rig\\plugins.txt", "-t:%USERPROFILE%\\AppData\\Local\\Temp\\"]
+command_line="C:\Modding\DynDOLOD RigTest\DynDOLODx64.exe" -sse "-o:E:\Sky-Claw T5 Rig\evidence\PR593-cli-prereqs\2026-09-20_final\PR593 Work\DynDOLOD\DynDOLOD\\" -d:G:\Modding\Skyrim_Runtime_1.6.1170\Data\ "-m:C:\Modding\DynDOLOD RigTest\_rig_test\ini\\" -p:G:\Modding\MO2\SkyrimSE\profiles\SkyClaw-PR2-Rig\plugins.txt -t:%USERPROFILE%\AppData\Local\Temp\
+plugins_file=G:\Modding\MO2\SkyrimSE\profiles\SkyClaw-PR2-Rig\plugins.txt
+ini_dir=C:\Modding\DynDOLOD RigTest\_rig_test\ini
+data_dir=G:\Modding\Skyrim_Runtime_1.6.1170\Data
+external_work_root=E:\Sky-Claw T5 Rig\evidence\PR593-cli-prereqs\2026-09-20_final\PR593 Work
+game_mode=sse
+profile=SkyClaw-PR2-Rig

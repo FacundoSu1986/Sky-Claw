@@ -1,0 +1,29 @@
+{
+  "timeout_s": 150,
+  "log_bytes_antes": 534450,
+  "log_sha256_antes": "702c459def9fe968ca42874e14108eba3946b4b6871c8487e14638a2dd23006b",
+  "log_lineas_antes": 3429,
+  "rc": 0,
+  "duracion_s": 26.6,
+  "stdout": "",
+  "stderr": "",
+  "cierre": {
+    "cerrado": true,
+    "pid": 21444,
+    "enviadas": 3
+  },
+  "eco": {
+    "starting session": "TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (ADADC675) starting session 2026-09-19 21:32:34",
+    "Using Skyrim Special Edition Data Path": "Using Skyrim Special Edition Data Path: G:\\Modding\\Skyrim_Runtime_1.6.1170\\Data\\",
+    "Using ini:": "Using ini: C:\\Modding\\DynDOLOD RigTest\\_rig_test\\ini\\\\Skyrim.ini",
+    "Using plugin list:": "Using plugin list: G:\\Modding\\MO2\\SkyrimSE\\profiles\\SkyClaw-PR2-Rig\\plugins.txt",
+    "Loading active plugin list": "Loading active plugin list: G:\\Modding\\MO2\\SkyrimSE\\profiles\\SkyClaw-PR2-Rig\\plugins.txt",
+    "Using Temp Path:": "Using Temp Path: %USERPROFILE%\\AppData\\Local\\Temp\\",
+    "Using Output Path:": "Using Output Path: E:\\Sky-Claw T5 Rig\\evidence\\PR593-cli-prereqs\\2026-09-20_final\\PR593 Work\\DynDOLOD\\TexGen\\"
+  },
+  "lineas_nuevas": 166,
+  "validacion": {
+    "ok": true,
+    "errores": []
+  }
+}

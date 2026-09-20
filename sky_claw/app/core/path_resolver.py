@@ -1256,6 +1256,74 @@ class PathResolutionService:
         """Resuelve TEXGEN_EXE desde entorno validado."""
         return self.validate_env_path(os.environ.get("TEXGEN_EXE", ""), "TEXGEN_EXE")
 
+    def get_dyndolod_ini_dir(self) -> pathlib.Path | None:
+        """Carpeta de INIs del juego declarada EXPLÍCITAMENTE (``DYNDLOD_INI_DIR``).
+
+        Es la autoridad de ``-m:`` para TexGen/DynDOLOD (prerrequisito de #593).
+        Sin default derivado y sin heurística, por dos razones verificables:
+
+        * **El doc oficial prohíbe perfiles de MO2.** ``dyndolod.info`` documenta
+          ``-m:`` como *"path to INI folder"* con el ejemplo
+          ``Documents\\My Games\\Skyrim Special Edition`` y remata: *"Do not link
+          to files or folders in mod manager profiles"*. ``profiles/<perfil>/``
+          NO es una fuente admisible aunque contenga INIs: la herramienta pide
+          las INIs que el juego usa, no la copia del perfil.
+        * **Derivar ``Documents\\My Games\\…`` es una heurística de nombre.**
+          El nombre de la carpeta depende de la edición (Steam/GOG/VR) y la
+          carpeta Documentos puede estar redirigida; el repo ya tiene la
+          primitiva de IDENTIDAD (``app/security/known_folders``) para quien
+          algún día agregue esa capacidad con su ADR. Acá no se inventa.
+
+        **Política de validación, deliberadamente más angosta que el sandbox de
+        modding.** El objetivo legítimo (la carpeta de INIs del juego) vive fuera
+        de las raíces de ``PathValidator`` y el valor es configuración del
+        operador —nunca payload—, que sólo viaja al argv del binario; Sky-Claw no
+        lee ni escribe ahí (el ``exists()`` de ``_primera_ruta_de_config_faltante``
+        es el único contacto). Por eso se exige **absoluto + existente +
+        directorio (no raíz de volumen)** en vez de contención: usar
+        ``validate_env_path`` lo rechazaría en TODOS los rigs reales y el
+        operador no tendría forma de declarar la fuente de ``-m:``.
+
+        Fail-closed sobre lo declarado: un valor que no cumple lanza
+        ``RuntimeError`` en vez de devolver ``None``. Devolver ``None`` sería
+        colapsar "no declarado" con "declarado y rechazado", y la segunda es una
+        decisión del operador que no puede perderse en silencio (el switch
+        desaparecería del argv sin señal).
+
+        Returns:
+            La carpeta resuelta, o ``None`` si ``DYNDLOD_INI_DIR`` no está
+            declarada (o es sólo whitespace).
+
+        Raises:
+            RuntimeError: si está declarada y no es un directorio absoluto
+                existente que no sea raíz de volumen.
+        """
+        crudo = os.environ.get("DYNDLOD_INI_DIR", "").strip()
+        if not crudo:
+            return None
+        ruta = self._sanitizar_raw(crudo, "DYNDLOD_INI_DIR")
+        if ruta is None or not ruta.is_absolute():
+            raise RuntimeError(
+                f"DYNDLOD_INI_DIR ({crudo!r}) no es una ruta absoluta utilizable: declarala absoluta o no la declares."
+            )
+        # Raíz de volumen (``C:\`` / ``/``): existe y es directorio, pero no es la
+        # carpeta de INIs de nada — apuntar -m: ahí es un error de configuración.
+        # Canonicalizar ANTES de vetar raíces: grafías como ``/tmp/..`` o
+        # ``C:\\existing\\..`` (y enlaces que apunten a la raíz) no son
+        # raíces léxicamente, pero sí físicamente.
+        try:
+            resuelta = ruta.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(f"DYNDLOD_INI_DIR ({ruta}) no se pudo canonicalizar de forma segura.") from exc
+        if resuelta.parent == resuelta:
+            raise RuntimeError(f"DYNDLOD_INI_DIR ({resuelta}) apunta a una raíz de volumen, no a la carpeta de INIs.")
+        if not resuelta.is_dir():
+            raise RuntimeError(
+                f"DYNDLOD_INI_DIR ({resuelta}) no existe o no es un directorio: -m: exige la carpeta "
+                "de INIs del juego (Skyrim.ini/SkyrimPrefs.ini)."
+            )
+        return resuelta
+
     def get_synthesis_exe(self) -> pathlib.Path | None:
         """Resuelve SYNTHESIS_EXE desde entorno validado."""
         return self.validate_env_path(os.environ.get("SYNTHESIS_EXE", ""), "SYNTHESIS_EXE")
