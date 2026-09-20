@@ -22,6 +22,11 @@ from typing import TYPE_CHECKING, Any
 
 from sky_claw.app.security.hitl import CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA
 from sky_claw.config import GUI_MAX_PENDING_HITL
+from sky_claw.local.discovery.registry import (
+    build_ritual_install_env,
+    build_ritual_installer_map,
+    build_ritual_tool_map,
+)
 from sky_claw.local.tools.tool_result import normalize_tool_result
 from sky_claw.local.tools_installer import InstallVerification
 
@@ -568,14 +573,8 @@ STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
 #: ``_ritual_preflight_panel`` lo renderiza con ``create_preflight_panel`` (T-16b).
 STORE_KEY_RITUAL_PREFLIGHT = "ritual_preflight"
 
-# Los 5 Rituales del Panel, cada uno con su estrategia HITL-gated en el dispatcher.
-RITUAL_TOOL_MAP: dict[str, str] = {
-    "loot": "execute_loot_sorting",
-    "wrye_bash": "generate_bashed_patch",
-    "dyndolod": "generate_lods",
-    "pandora": "generate_animations",
-    "xedit": "quick_auto_clean",
-}
+# Los 5 Rituales del Panel, derivados del registry canónico de herramientas externas.
+RITUAL_TOOL_MAP: dict[str, str] = build_ritual_tool_map()
 
 
 def ritual_tool_name(tool_key: str) -> str | None:
@@ -587,22 +586,16 @@ def ritual_tool_name(tool_key: str) -> str | None:
 # Only the GitHub-release-backed tools have an auto-installer; Wrye Bash and DynDOLOD
 # are not on GitHub releases, so they stay out of the map (the card keeps its interim
 # "manual install" notice).
-RITUAL_INSTALLER_MAP: dict[str, str] = {
-    "loot": "ensure_loot",
-    "xedit": "ensure_xedit",
-    "pandora": "ensure_pandora",
-    # SKSE vive acá y NO en la superficie del agente LLM (`setup_tools`): escribe
-    # ejecutables en el directorio del juego, así que la aprobación tiene que ser la
-    # del operador frente a la GUI.
-    # `test_skse_es_gui_only_y_no_lo_alcanza_el_agente_llm` (tests/test_ritual_install.py)
-    # congela el recorte por igualdad literal.
-    "skse": "ensure_skse",
-    # Community Shaders vive en AMBAS superficies (agente LLM y GUI, clase NGIO):
-    # la aprobación de descarga corre por el mismo modal HITL category="download".
-    # `test_ritual_installer_map_congela_las_tools_autoinstalables` congela la
-    # presencia por igualdad literal.
-    "community_shaders": "ensure_community_shaders",
-}
+# SKSE vive acá y NO en la superficie del agente LLM (`setup_tools`): escribe
+# ejecutables en el directorio del juego, así que la aprobación tiene que ser la
+# del operador frente a la GUI.
+# `test_skse_es_gui_only_y_no_lo_alcanza_el_agente_llm` (tests/test_ritual_install.py)
+# congela el recorte por igualdad literal.
+# Community Shaders vive en AMBAS superficies (agente LLM y GUI, clase NGIO):
+# la aprobación de descarga corre por el mismo modal HITL category="download".
+# `test_ritual_installer_map_congela_las_tools_autoinstalables` congela la
+# presencia por igualdad literal.
+RITUAL_INSTALLER_MAP: dict[str, str] = build_ritual_installer_map()
 
 #: Ritual tool key → the resolver env var seeded with the freshly installed exe path,
 #: so a just-installed tool can run without waiting for the next environment scan.
@@ -610,11 +603,7 @@ RITUAL_INSTALLER_MAP: dict[str, str] = {
 #: ``skse`` está deliberadamente ausente y por eso este mapa tiene una clave menos que
 #: ``RITUAL_INSTALLER_MAP``: SKSE no es una tool que Sky-Claw ejecute (es un runtime que
 #: carga el juego), no hay exe que resolver ni var en ``_SNAPSHOT_TOOL_ENV``.
-RITUAL_INSTALL_ENV: dict[str, str] = {
-    "loot": "LOOT_EXE",
-    "xedit": "XEDIT_PATH",
-    "pandora": "PANDORA_EXE",
-}
+RITUAL_INSTALL_ENV: dict[str, str] = build_ritual_install_env()
 
 
 def ritual_installer_name(tool_key: str) -> str | None:

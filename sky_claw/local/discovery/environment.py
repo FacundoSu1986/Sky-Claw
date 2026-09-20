@@ -31,6 +31,64 @@ class HealthStatus(StrEnum):
     CRITICAL = "critical"  # Game not found or fatal misconfiguration
 
 
+class ToolReadiness(StrEnum):
+    """Estado semántico de preparación y disponibilidad para herramientas externas."""
+
+    FOUND = "found"
+    MISSING = "missing"
+    INVALID_PATH = "invalid_path"
+    WRONG_EXECUTABLE = "wrong_executable"
+    STALE_CONFIGURED_PATH = "stale_configured_path"
+    MOVED_INSTALLATION = "moved_installation"
+    VERSION_UNKNOWN = "version_unknown"
+    VERSION_UNSUPPORTED = "version_unsupported"
+
+
+def classify_tool_readiness(
+    *,
+    configured_path: Path | None = None,
+    discovered_path: Path | None = None,
+    expected_names: tuple[str, ...] = (),
+    configured_path_exists: bool | None = None,
+    configured_path_is_file: bool | None = None,
+    version_supported: bool | None = None,
+    version_unknown: bool = False,
+) -> ToolReadiness:
+    """Clasificación pura de readiness sin I/O nuevo.
+
+    Evalúa la evidencia disponible (ruta configurada vs descubierta, existencia,
+    nombres esperados y soporte de versión) y devuelve el estado semántico
+    correspondiente según la máquina de estados de ToolReadiness.
+    """
+    if version_supported is False:
+        return ToolReadiness.VERSION_UNSUPPORTED
+    if version_unknown:
+        return ToolReadiness.VERSION_UNKNOWN
+
+    if configured_path is not None:
+        name = configured_path.name
+        expected_folded = {expected.casefold() for expected in expected_names}
+        is_expected = not expected_names or name.casefold() in expected_folded
+
+        exists = configured_path_exists if configured_path_exists is not None else configured_path.exists()
+        if not exists:
+            if discovered_path is not None:
+                return ToolReadiness.MOVED_INSTALLATION
+            return ToolReadiness.STALE_CONFIGURED_PATH
+
+        is_file = configured_path_is_file if configured_path_is_file is not None else configured_path.is_file()
+        if is_file:
+            if not is_expected:
+                return ToolReadiness.WRONG_EXECUTABLE
+            return ToolReadiness.FOUND
+        return ToolReadiness.INVALID_PATH
+
+    if discovered_path is not None:
+        return ToolReadiness.FOUND
+
+    return ToolReadiness.MISSING
+
+
 @dataclass(frozen=True, slots=True)
 class SkyrimInfo:
     """Detected Skyrim installation."""
@@ -61,6 +119,7 @@ class ToolInfo:
     exe_path: Path  # Full path to the executable
     version: str = ""  # Version if detectable
     friendly_action: str = ""  # What pressing the button does (Spanish)
+    readiness: ToolReadiness = ToolReadiness.FOUND
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +131,7 @@ class MissingTool:
     friendly_description: str  # Spanish, user-facing
     download_url: str  # Official download page
     is_critical: bool = False  # True = blocks "Preparar Juego"
+    readiness: ToolReadiness = ToolReadiness.MISSING
 
 
 @dataclass(slots=True)

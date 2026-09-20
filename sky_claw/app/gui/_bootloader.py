@@ -28,6 +28,10 @@ from sky_claw.config import (
     GUI_EXIT_WATCHDOG_GRACE_SECONDS,
 )
 from sky_claw.local.auto_detect import run_off_loop
+from sky_claw.local.discovery.registry import (
+    build_snapshot_tool_env,
+    build_tool_path_cfg_keys,
+)
 from sky_claw.logging_config import correlation_id_var, install_loop_exception_handler
 
 logger = logging.getLogger("sky_claw")
@@ -163,7 +167,7 @@ def _build_environment_scanner(ctx: AppContext):
     skyrim_path = (getattr(cfg, "skyrim_path", "") or "").strip() or None
     # Map scanner tool keys (scanner.py tool_defs) → configured exe keys. Blank
     # config values are dropped by the scanner, so pass them through untouched.
-    tool_path_cfg_keys = {"loot": "loot_exe", "xedit": "xedit_exe", "pandora": "pandora_exe"}
+    tool_path_cfg_keys = build_tool_path_cfg_keys()
     tool_paths = {key: getattr(cfg, cfg_key, "") for key, cfg_key in tool_path_cfg_keys.items()}
     return EnvironmentScanner(skyrim_path=skyrim_path, tool_paths=tool_paths)
 
@@ -171,13 +175,7 @@ def _build_environment_scanner(ctx: AppContext):
 # Map EnvironmentScanner snapshot fields → the env vars the supervisor's
 # PathResolutionService reads (it is env-only by design). Mirrors the resolver's
 # exact names, including the existing ``DYNDLOD_EXE`` spelling.
-_SNAPSHOT_TOOL_ENV: dict[str, str] = {
-    "loot": "LOOT_EXE",
-    "wrye_bash": "WRYE_BASH_PATH",
-    "dyndolod": "DYNDLOD_EXE",
-    "pandora": "PANDORA_EXE",
-    "xedit": "XEDIT_PATH",
-}
+_SNAPSHOT_TOOL_ENV: dict[str, str] = build_snapshot_tool_env()
 
 
 def _hydrate_tool_env_from_snapshot(snapshot) -> None:
