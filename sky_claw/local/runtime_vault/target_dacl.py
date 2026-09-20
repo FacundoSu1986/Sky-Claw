@@ -1,6 +1,6 @@
 """Constructor de Target DACL y primitivas de aplicación y restauración atadas a HANDLE (GP2-S1b).
 
-Implementa el contrato normativo de ADR 0010 §7 (docs/adr/0010-runtime-vault-golden-protection-apply.md).
+Implementa el contrato normativo de ADR 0010 §7, §9, §10 y §12.2 (docs/adr/0010-runtime-vault-golden-protection-apply.md).
 
 Principios normativos:
 - HANDLE > PATHNAME: toda mutación y restauración opera exclusivamente sobre un HANDLE
@@ -10,8 +10,14 @@ Principios normativos:
 - SIN ACES DENY: seguridad basada en exclusión explícita sin herencia (flags 0x00).
 - OWNER RIGHTS ACE: suprime la concesión implícita de WRITE_DAC al propietario del objeto.
 - SE_DACL_PROTECTED: aislamiento contra propagación de herencia de ancestros.
-- PRESERVE PRE: restauración binaria autoritativa desde NodeSecurityBackup preservando
-  el estado protegido/desprotegido original.
+- PRESERVE PRE & SEMANTIC RESTORE: restauración autoritativa desde NodeSecurityBackup
+  preservando el estado protegido/desprotegido original según los bytes autoritativos
+  y verificación post-restauración semántica exhaustiva (owner, group, DACL ordenada,
+  SE_DACL_PROTECTED), sin exigir igualdad raw de bytes reserializados por el SO.
+- REVALIDACIONES PRE-MUTACIÓN: enlace físico (VolumeSerialNumber, FileId), rechazo
+  de reparse points (ReparseTag != 0), comprobación anti-hardlink (NumberOfLinks == 1
+  para archivos, ejecutada dos veces para cerrar la ventana TOCTOU) y coincidencia
+  del SHA-256 del Security Descriptor vivo con el backup.
 - MEMORY OWNERSHIP: auditoría estricta de asignaciones Win32 (LocalFree para PSIDs y SDs,
   cierre garantizado de handles, sin liberar punteros prestados de Security Descriptors).
 - POSIX SAFETY: import seguro en entornos no-Windows con error explícito en entrypoints nativos.
@@ -94,6 +100,19 @@ DIR_TARGET_MASK_AUTHENTICATED_USERS = 0x001200A9
 # LocalSystem y Administrators: FILE_ALL_ACCESS
 TARGET_MASK_FULL_ACCESS = 0x001F01FF
 
+# Win32 Generic Mapping Constants
+# FILE_GENERIC_READ = STANDARD_RIGHTS_READ | FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA | SYNCHRONIZE
+FILE_GENERIC_READ = 0x00120089
+# FILE_GENERIC_WRITE = STANDARD_RIGHTS_WRITE | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | FILE_APPEND_DATA | SYNCHRONIZE
+FILE_GENERIC_WRITE = 0x00120116
+# FILE_GENERIC_EXECUTE = STANDARD_RIGHTS_EXECUTE | FILE_READ_ATTRIBUTES | FILE_EXECUTE | SYNCHRONIZE
+FILE_GENERIC_EXECUTE = 0x001200A0
+
+# Directory Generic Mappings
+DIR_GENERIC_READ = 0x00120089
+DIR_GENERIC_WRITE = 0x00120116
+DIR_GENERIC_EXECUTE = 0x001200A0
+
 # Win32 Constants
 _ACCESS_ALLOWED_ACE_TYPE = 0x00
 _NO_INHERITANCE_ACE_FLAGS = 0x00
@@ -120,7 +139,9 @@ _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 
 _ACL_REVISION = 2
 
-# GetFileInformationByHandleEx class
+# Clases para GetFileInformationByHandleEx
+_FILE_INFO_BY_HANDLE_CLASS_STANDARD = 1
+_FILE_INFO_BY_HANDLE_CLASS_ATTRIBUTE_TAG = 9
 _FILE_INFO_BY_HANDLE_CLASS_ID = 18
 
 # Token constants
@@ -130,6 +151,12 @@ _TOKEN_DUPLICATE = 0x0002
 _TOKEN_IMPERSONATE = 0x0004
 _SECURITY_IMPERSONATION = 2
 _TOKEN_IMPERSONATION = 2
+
+# Win32 Error Codes
+_ERROR_SUCCESS = 0
+_ERROR_ACCESS_DENIED = 5
+_ERROR_INSUFFICIENT_BUFFER = 122
+_ERROR_NO_TOKEN = 1008
 
 
 # ============================================================================
@@ -150,16 +177,22 @@ class TargetAceSpec:
 
 @dataclass(frozen=True, slots=True)
 class TargetDaclSpec:
-    """Especificación canónica inmutable de la Target DACL completa."""
+    """Especificación de Target DACL para un tipo de nodo (ADR 0010 §7.1 / §7.2)."""
 
     node_kind: GoldenProtectionNodeKind
     aces: tuple[TargetAceSpec, ...]
     control_flags: int
 
+    def __post_init__(self) -> None:
+        if len(self.aces) != 4:
+            raise TargetDaclBuildError(f"TargetDaclSpec requiere exactamente 4 ACEs, recibidas {len(self.aces)}")
+        if not (self.control_flags & _SE_DACL_PROTECTED):
+            raise TargetDaclBuildError("TargetDaclSpec debe incluir el flag SE_DACL_PROTECTED (0x1000)")
+
 
 @dataclass(frozen=True, slots=True)
 class TargetDaclVerificationResult:
-    """Resultado estructurado de la verificación de seguridad sobre un nodo modificado."""
+    """Resultado estructurado de la verificación de Target DACL sobre un handle."""
 
     node_kind: GoldenProtectionNodeKind
     dacl_protected: bool
@@ -170,26 +203,20 @@ class TargetDaclVerificationResult:
 
 
 # ============================================================================
-# Constructor Puro de Especificación (Cross-Platform)
+# Builder Puro de Especificación Target DACL
 # ============================================================================
 
 
 def build_target_dacl_spec(node_kind: GoldenProtectionNodeKind) -> TargetDaclSpec:
-    """Construye la especificación formal pura de la Target DACL según ADR 0010 §7.2.
+    """Construye la especificación canónica inmutable de Target DACL para un tipo de nodo.
 
-    Contrato exacto:
-    - Archivos regulares (file):
-      1. Owner Rights (S-1-3-4): 0x00120089 (FILE_GENERIC_READ)
-      2. Authenticated Users (S-1-5-11): 0x001200A9 (FILE_GENERIC_READ | FILE_GENERIC_EXECUTE)
-      3. LocalSystem (S-1-5-18): 0x001F01FF (FILE_ALL_ACCESS)
-      4. Builtin Administrators (S-1-5-32-544): 0x001F01FF (FILE_ALL_ACCESS)
-    - Directorios (dir):
-      1. Owner Rights (S-1-3-4): 0x001200A9 (FILE_GENERIC_READ | FILE_TRAVERSE)
-      2. Authenticated Users (S-1-5-11): 0x001200A9 (FILE_GENERIC_READ | FILE_TRAVERSE)
-      3. LocalSystem (S-1-5-18): 0x001F01FF (FILE_ALL_ACCESS)
-      4. Builtin Administrators (S-1-5-32-544): 0x001F01FF (FILE_ALL_ACCESS)
-    - Flags en todas las ACEs: 0x00 (sin herencia).
-    - Control de DACL: SE_DACL_PROTECTED (0x1000).
+    Reglas ADR 0010 §7:
+    - Orden canónico estricto de las 4 ACEs:
+      1. Owner Rights (S-1-3-4) -> Concesión restringida al owner (sin WRITE_DAC).
+      2. Authenticated Users (S-1-5-11) -> Concesión de lectura / ejecución.
+      3. LocalSystem (S-1-5-18) -> FILE_ALL_ACCESS.
+      4. Builtin Administrators (S-1-5-32-544) -> FILE_ALL_ACCESS.
+    - SE_DACL_PROTECTED activado en control_flags.
     """
     if node_kind is GoldenProtectionNodeKind.FILE:
         aces = (
@@ -277,6 +304,21 @@ if sys.platform == "win32":
         _fields_ = [
             ("VolumeSerialNumber", ctypes.c_ulonglong),
             ("FileId", _FileId128),
+        ]
+
+    class _FileStandardInfo(ctypes.Structure):
+        _fields_ = [
+            ("AllocationSize", ctypes.c_longlong),
+            ("EndOfFile", ctypes.c_longlong),
+            ("NumberOfLinks", wintypes.DWORD),
+            ("DeletePending", ctypes.c_bool),
+            ("Directory", ctypes.c_bool),
+        ]
+
+    class _FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("ReparseTag", wintypes.DWORD),
         ]
 
     class _AclHeader(ctypes.Structure):
@@ -448,6 +490,9 @@ if sys.platform == "win32":
     ]
     _advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
 
+    _advapi32.IsValidSecurityDescriptor.argtypes = [wintypes.LPVOID]
+    _advapi32.IsValidSecurityDescriptor.restype = wintypes.BOOL
+
     _advapi32.OpenProcessToken.argtypes = [
         wintypes.HANDLE,
         wintypes.DWORD,
@@ -527,12 +572,134 @@ def _read_file_id_info_by_handle(handle: int) -> tuple[int, int]:
         ctypes.sizeof(info_id),
     ):
         err = ctypes.get_last_error()
-        raise TargetDaclError(f"GetFileInformationByHandleEx falló: código {err}")
+        raise TargetDaclError(f"GetFileInformationByHandleEx(FileIdInfo) falló: código {err}")
 
     vol_serial = int(info_id.VolumeSerialNumber)
     raw_fid_bytes = bytes(info_id.FileId.Identifier)
     file_id = int.from_bytes(raw_fid_bytes, byteorder="little", signed=False)
     return vol_serial, file_id
+
+
+def _read_number_of_links_by_handle(handle: int) -> int:
+    """Obtiene NumberOfLinks desde un HANDLE abierto mediante GetFileInformationByHandleEx."""
+    _ensure_windows()
+    std_info = _FileStandardInfo()
+    if not _kernel32.GetFileInformationByHandleEx(
+        handle,
+        _FILE_INFO_BY_HANDLE_CLASS_STANDARD,
+        ctypes.byref(std_info),
+        ctypes.sizeof(std_info),
+    ):
+        err = ctypes.get_last_error()
+        raise TargetDaclError(f"GetFileInformationByHandleEx(FileStandardInfo) falló: código {err}")
+    return int(std_info.NumberOfLinks)
+
+
+def _read_reparse_tag_by_handle(handle: int) -> int:
+    """Obtiene ReparseTag desde un HANDLE abierto mediante GetFileInformationByHandleEx."""
+    _ensure_windows()
+    tag_info = _FileAttributeTagInfo()
+    if not _kernel32.GetFileInformationByHandleEx(
+        handle,
+        _FILE_INFO_BY_HANDLE_CLASS_ATTRIBUTE_TAG,
+        ctypes.byref(tag_info),
+        ctypes.sizeof(tag_info),
+    ):
+        err = ctypes.get_last_error()
+        raise TargetDaclError(f"GetFileInformationByHandleEx(FileAttributeTagInfo) falló: código {err}")
+    return int(tag_info.ReparseTag)
+
+
+def _extract_sd_components(
+    sd_ptr: Any,
+) -> tuple[str, str, bool, list[tuple[str, int, int, int]], bool]:
+    """Extrae componentes semánticos autoritativos desde un puntero a SECURITY_DESCRIPTOR válido.
+
+    Devuelve:
+    (owner_sid, group_sid, dacl_present, ordered_aces, is_dacl_protected)
+    donde ordered_aces es una lista de tuplas (sid_str, ace_type, ace_flags, access_mask).
+    """
+    _ensure_windows()
+    if not _advapi32.IsValidSecurityDescriptor(sd_ptr):
+        raise TargetDaclError("Puntero no contiene un SECURITY_DESCRIPTOR válido")
+
+    control = wintypes.WORD()
+    rev = wintypes.DWORD()
+    if not _advapi32.GetSecurityDescriptorControl(sd_ptr, ctypes.byref(control), ctypes.byref(rev)):
+        err = ctypes.get_last_error()
+        raise TargetDaclError(f"GetSecurityDescriptorControl falló: código {err}")
+    is_protected = bool(control.value & _SE_DACL_PROTECTED)
+
+    owner_p = wintypes.LPVOID()
+    owner_def = wintypes.BOOL()
+    if (
+        not _advapi32.GetSecurityDescriptorOwner(sd_ptr, ctypes.byref(owner_p), ctypes.byref(owner_def))
+        or not owner_p.value
+    ):
+        err = ctypes.get_last_error()
+        raise TargetDaclError(f"GetSecurityDescriptorOwner falló o no hay owner: código {err}")
+    owner_sid_str_p = wintypes.LPWSTR()
+    if not _advapi32.ConvertSidToStringSidW(owner_p, ctypes.byref(owner_sid_str_p)):
+        err = ctypes.get_last_error()
+        raise TargetDaclError(f"ConvertSidToStringSidW falló para owner: código {err}")
+    owner_sid = owner_sid_str_p.value or ""
+    _kernel32.LocalFree(owner_sid_str_p)
+
+    group_p = wintypes.LPVOID()
+    group_def = wintypes.BOOL()
+    if (
+        not _advapi32.GetSecurityDescriptorGroup(sd_ptr, ctypes.byref(group_p), ctypes.byref(group_def))
+        or not group_p.value
+    ):
+        err = ctypes.get_last_error()
+        raise TargetDaclError(f"GetSecurityDescriptorGroup falló o no hay group: código {err}")
+    group_sid_str_p = wintypes.LPWSTR()
+    if not _advapi32.ConvertSidToStringSidW(group_p, ctypes.byref(group_sid_str_p)):
+        err = ctypes.get_last_error()
+        raise TargetDaclError(f"ConvertSidToStringSidW falló para group: código {err}")
+    group_sid = group_sid_str_p.value or ""
+    _kernel32.LocalFree(group_sid_str_p)
+
+    dacl_present = wintypes.BOOL()
+    dacl_defaulted = wintypes.BOOL()
+    dacl_p = wintypes.LPVOID()
+    if not _advapi32.GetSecurityDescriptorDacl(
+        sd_ptr, ctypes.byref(dacl_present), ctypes.byref(dacl_p), ctypes.byref(dacl_defaulted)
+    ):
+        err = ctypes.get_last_error()
+        raise TargetDaclError(f"GetSecurityDescriptorDacl falló: código {err}")
+
+    aces: list[tuple[str, int, int, int]] = []
+    has_dacl = bool(dacl_present.value and dacl_p.value)
+    if has_dacl:
+        acl_info = _AclSizeInformation()
+        if not _advapi32.GetAclInformation(dacl_p, ctypes.byref(acl_info), ctypes.sizeof(acl_info), 2):
+            err = ctypes.get_last_error()
+            raise TargetDaclError(f"GetAclInformation falló: código {err}")
+
+        for i in range(acl_info.AceCount):
+            ace_ptr = wintypes.LPVOID()
+            if not _advapi32.GetAce(dacl_p, i, ctypes.byref(ace_ptr)) or not ace_ptr.value:
+                err = ctypes.get_last_error()
+                raise TargetDaclError(f"GetAce({i}) falló: código {err}")
+
+            header = ctypes.cast(ace_ptr, ctypes.POINTER(_AceHeader)).contents
+            raw_ace = ctypes.cast(ace_ptr, ctypes.c_void_p).value
+            if not raw_ace:
+                continue
+            mask_val = ctypes.cast(raw_ace + 4, ctypes.POINTER(wintypes.DWORD)).contents.value
+            sid_ptr = wintypes.LPVOID(raw_ace + 8)
+
+            sid_str_p = wintypes.LPWSTR()
+            if not _advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_str_p)):
+                err = ctypes.get_last_error()
+                raise TargetDaclError(f"ConvertSidToStringSidW falló para ACE #{i}: código {err}")
+            ace_sid = sid_str_p.value or ""
+            _kernel32.LocalFree(sid_str_p)
+
+            aces.append((ace_sid, int(header.AceType), int(header.AceFlags), int(mask_val)))
+
+    return owner_sid, group_sid, has_dacl, aces, is_protected
 
 
 # ============================================================================
@@ -565,10 +732,6 @@ def build_native_target_dacl(spec: TargetDaclSpec) -> tuple[Any, Any]:
             psids.append(psid)
             total_sid_bytes += _advapi32.GetLengthSid(psid)
 
-        # Cálculo de tamaño del ACL:
-        # sizeof(ACL) + AceCount * (sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD)) + sum(sid_bytes) + padding
-        # sizeof(ACCESS_ALLOWED_ACE) = sizeof(ACE_HEADER) + sizeof(ACCESS_MASK) + sizeof(DWORD SidStart) = 12
-        # Restando sizeof(DWORD) queda 8 bytes fijos por ACE + longitud del SID.
         acl_size = ctypes.sizeof(_AclHeader) + len(spec.aces) * 8 + total_sid_bytes + 64
         acl_buffer = (ctypes.c_ubyte * acl_size)()
         pacl = ctypes.cast(acl_buffer, wintypes.LPVOID)
@@ -641,45 +804,105 @@ def close_security_handle(handle: int) -> None:
 
 def apply_target_dacl_by_handle(
     handle: int,
-    node_kind: GoldenProtectionNodeKind,
-    *,
-    expected_volume_serial: int | None = None,
-    expected_file_id: int | None = None,
+    backup: NodeSecurityBackup,
 ) -> TargetDaclSpec:
     """Aplica la Target DACL sobre el HANDLE Win32 abierto con SE_DACL_PROTECTED.
 
-    SECURITY RULES:
-    - Revalida la identidad física (VolumeSerialNumber, FileId) si fue provista.
-    - Aplica SetSecurityInfo con DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
-    - No muta OWNER, GROUP ni SACL.
+    SECURITY RULES (ADR 0010 §12.2 pasos 2 a 5):
+    1. Revalida la identidad física (VolumeSerialNumber, FileId).
+    2. Rechaza reparse points (ReparseTag != 0) fail-closed.
+    3. Revalida NumberOfLinks == 1 para archivos regulares (paso 1).
+    4. Lee y revalida el live PRE Security Descriptor contra backup.pre_sd_sha256.
+    5. Construye la Target DACL canónica para backup.node_kind.
+    6. Revalida NumberOfLinks == 1 OTRA VEZ inmediatamente antes de SetSecurityInfo
+       para cerrar la ventana TOCTOU entre la lectura PRE y la mutación.
+    7. Aplica SetSecurityInfo con DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
     """
     _ensure_windows()
 
-    if expected_volume_serial is not None or expected_file_id is not None:
+    try:
+        # 1. Identidad física
         vol_serial, file_id = _read_file_id_info_by_handle(handle)
-        if expected_volume_serial is not None and vol_serial != expected_volume_serial:
+        if vol_serial != backup.volume_serial_number or file_id != backup.file_id:
             raise TargetDaclApplyError(
-                f"Drift de volumen detectado: esperado={expected_volume_serial}, observado={vol_serial}"
+                f"Drift de identidad física: esperado=({backup.volume_serial_number}, {backup.file_id}), "
+                f"observado=({vol_serial}, {file_id})"
             )
-        if expected_file_id is not None and file_id != expected_file_id:
-            raise TargetDaclApplyError(f"Drift de FileId detectado: esperado={expected_file_id}, observado={file_id}")
 
-    spec = build_target_dacl_spec(node_kind)
-    acl_buffer, pacl = build_native_target_dacl(spec)
+        # 2. Rechazar reparse points
+        reparse_tag = _read_reparse_tag_by_handle(handle)
+        if reparse_tag != 0:
+            raise TargetDaclApplyError(
+                f"El nodo es un reparse point / symlink (ReparseTag=0x{reparse_tag:08X}); mutación rehusada fail-closed"
+            )
 
-    ret = _advapi32.SetSecurityInfo(
-        handle,
-        _SE_FILE_OBJECT,
-        _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION,
-        None,
-        None,
-        pacl,
-        None,
-    )
-    if ret != 0:
-        raise TargetDaclApplyError(f"SetSecurityInfo falló al aplicar Target DACL: código {ret}")
+        # 3. Comprobación anti-hardlink inicial (solo archivos)
+        if backup.node_kind is GoldenProtectionNodeKind.FILE:
+            links_initial = _read_number_of_links_by_handle(handle)
+            if links_initial != 1:
+                raise TargetDaclApplyError(
+                    f"Hardlink externo detectado en verificación inicial: NumberOfLinks={links_initial} != 1"
+                )
 
-    return spec
+        # 4. Leer y revalidar live PRE SD contra el backup
+        live_sd_p = wintypes.LPVOID()
+        ret_get = _advapi32.GetSecurityInfo(
+            handle,
+            _SE_FILE_OBJECT,
+            _OWNER_SECURITY_INFORMATION | _GROUP_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            None,
+            None,
+            ctypes.byref(live_sd_p),
+        )
+        if ret_get != _ERROR_SUCCESS:
+            raise TargetDaclApplyError(f"GetSecurityInfo falló al leer live PRE SD: código {ret_get}")
+
+        try:
+            live_len = _advapi32.GetSecurityDescriptorLength(live_sd_p)
+            if live_len <= 0:
+                raise TargetDaclApplyError("GetSecurityDescriptorLength devolvió longitud inválida para live PRE SD")
+            live_bytes = ctypes.string_at(live_sd_p, live_len)
+            live_sha = hashlib.sha256(live_bytes).hexdigest()
+            if live_sha != backup.pre_sd_sha256:
+                raise TargetDaclApplyError(
+                    f"Drift de live PRE SD antes de mutar: hash esperado={backup.pre_sd_sha256}, observado={live_sha}"
+                )
+        finally:
+            if ctypes.cast(live_sd_p, ctypes.c_void_p).value:
+                _kernel32.LocalFree(live_sd_p)
+
+        # 5. Construir Target DACL
+        spec = build_target_dacl_spec(backup.node_kind)
+        acl_buffer, pacl = build_native_target_dacl(spec)
+
+        # 6. Revalidación anti-hardlink INMEDIATA antes de mutar (cierra ventana TOCTOU)
+        if backup.node_kind is GoldenProtectionNodeKind.FILE:
+            links_final = _read_number_of_links_by_handle(handle)
+            if links_final != 1:
+                raise TargetDaclApplyError(
+                    f"Hardlink externo detectado en revalidación pre-mutación: NumberOfLinks={links_final} != 1"
+                )
+
+        # 7. Aplicar Target DACL
+        ret = _advapi32.SetSecurityInfo(
+            handle,
+            _SE_FILE_OBJECT,
+            _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            pacl,
+            None,
+        )
+        if ret != _ERROR_SUCCESS:
+            raise TargetDaclApplyError(f"SetSecurityInfo falló al aplicar Target DACL: código {ret}")
+
+        return spec
+    except (TargetDaclApplyError, TargetDaclBuildError):
+        raise
+    except TargetDaclError as exc:
+        raise TargetDaclApplyError(str(exc)) from exc
 
 
 # ============================================================================
@@ -689,17 +912,19 @@ def apply_target_dacl_by_handle(
 
 def verify_target_dacl_by_handle(
     handle: int,
-    node_kind: GoldenProtectionNodeKind,
+    backup: NodeSecurityBackup,
     *,
     token_handle: Any = None,
 ) -> TargetDaclVerificationResult:
-    """Verifica causalmente sobre el HANDLE la Target DACL aplicada.
+    """Verifica causalmente sobre el HANDLE la Target DACL completa aplicada (ADR 0010 §12.2 paso 6).
 
     Comprueba:
     1. SE_DACL_PROTECTED activado en los bits de control del descriptor.
-    2. Presencia estructural de la ACE Owner Rights (S-1-3-4) y ausencia de WRITE_DAC/WRITE_OWNER/FULL_ACCESS.
-    3. Evaluación real de AccessCheck sobre el descriptor contra el token provisto
-       (o token efectivo del thread/proceso si no se provee token explícito).
+    2. Owner SID y Group SID coinciden con los esperados en backup.
+    3. DACL contiene exactamente las 4 ACEs requeridas en orden canónico estricto
+       (SID, AceType, AceFlags y AccessMask exactos para cada entrada).
+    4. Evaluación real de AccessCheck sobre el descriptor contra el token provisto
+       o el token efectivo (con fallback a process token ÚNICAMENTE con ERROR_NO_TOKEN).
     """
     _ensure_windows()
 
@@ -718,7 +943,7 @@ def verify_target_dacl_by_handle(
         None,
         ctypes.byref(sd_p),
     )
-    if ret != 0:
+    if ret != _ERROR_SUCCESS:
         raise TargetDaclVerificationError(f"GetSecurityInfo falló en verificación: código {ret}")
 
     token_to_close: Any = None
@@ -735,7 +960,32 @@ def verify_target_dacl_by_handle(
         if not dacl_protected:
             raise TargetDaclVerificationError("Target DACL no posee el flag SE_DACL_PROTECTED")
 
-        # 2. Inspeccionar entradas DACL: validar Owner Rights S-1-3-4
+        # 2. Validar Owner y Group invariantes
+        owner_sid_str_p = wintypes.LPWSTR()
+        if not _advapi32.ConvertSidToStringSidW(owner_p, ctypes.byref(owner_sid_str_p)):
+            err = ctypes.get_last_error()
+            raise TargetDaclVerificationError(f"ConvertSidToStringSidW falló para post owner: código {err}")
+        post_owner = owner_sid_str_p.value or ""
+        _kernel32.LocalFree(owner_sid_str_p)
+
+        if post_owner != backup.owner_sid:
+            raise TargetDaclVerificationError(
+                f"Owner post-apply ({post_owner}) no coincide con esperado ({backup.owner_sid})"
+            )
+
+        group_sid_str_p = wintypes.LPWSTR()
+        if not _advapi32.ConvertSidToStringSidW(group_p, ctypes.byref(group_sid_str_p)):
+            err = ctypes.get_last_error()
+            raise TargetDaclVerificationError(f"ConvertSidToStringSidW falló para post group: código {err}")
+        post_group = group_sid_str_p.value or ""
+        _kernel32.LocalFree(group_sid_str_p)
+
+        if post_group != backup.group_sid:
+            raise TargetDaclVerificationError(
+                f"Group post-apply ({post_group}) no coincide con esperado ({backup.group_sid})"
+            )
+
+        # 3. Validar presencia de DACL y conteo exacto de 4 ACEs
         dacl_present = wintypes.BOOL()
         dacl_defaulted = wintypes.BOOL()
         dacl_out = wintypes.LPVOID()
@@ -756,33 +1006,61 @@ def verify_target_dacl_by_handle(
             err = ctypes.get_last_error()
             raise TargetDaclVerificationError(f"GetAclInformation falló: código {err}")
 
+        expected_spec = build_target_dacl_spec(backup.node_kind)
+        if acl_info.AceCount != len(expected_spec.aces):
+            raise TargetDaclVerificationError(
+                f"DACL contiene {acl_info.AceCount} ACEs, se requieren exactamente {len(expected_spec.aces)}"
+            )
+
         owner_rights_found = False
         owner_rights_mask = 0
 
-        for i in range(acl_info.AceCount):
+        # Validar cada una de las 4 ACEs en orden canónico exacto
+        for i, expected_ace in enumerate(expected_spec.aces):
             ace_ptr = wintypes.LPVOID()
             if not _advapi32.GetAce(dacl_out, i, ctypes.byref(ace_ptr)) or not ace_ptr.value:
                 err = ctypes.get_last_error()
                 raise TargetDaclVerificationError(f"GetAce({i}) falló: código {err}")
 
             header = ctypes.cast(ace_ptr, ctypes.POINTER(_AceHeader)).contents
-            if header.AceType == _ACCESS_ALLOWED_ACE_TYPE:
-                raw_ace = ctypes.cast(ace_ptr, ctypes.c_void_p).value
-                if raw_ace:
-                    # Offset 4 es el AccessMask (DWORD), Offset 8 es el SidStart
-                    mask_val = ctypes.cast(raw_ace + 4, ctypes.POINTER(wintypes.DWORD)).contents.value
-                    sid_ptr = wintypes.LPVOID(raw_ace + 8)
+            raw_ace = ctypes.cast(ace_ptr, ctypes.c_void_p).value
+            if not raw_ace:
+                raise TargetDaclVerificationError(f"Puntero crudo nulo en ACE #{i + 1}")
 
-                    sid_str_p = wintypes.LPWSTR()
-                    if _advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_str_p)):
-                        sid_str = sid_str_p.value
-                        _kernel32.LocalFree(sid_str_p)
-                        if sid_str == OWNER_RIGHTS_SID:
-                            owner_rights_found = True
-                            owner_rights_mask = mask_val
+            mask_val = ctypes.cast(raw_ace + 4, ctypes.POINTER(wintypes.DWORD)).contents.value
+            sid_ptr = wintypes.LPVOID(raw_ace + 8)
+
+            sid_str_p = wintypes.LPWSTR()
+            if not _advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(sid_str_p)):
+                err = ctypes.get_last_error()
+                raise TargetDaclVerificationError(f"ConvertSidToStringSidW falló en ACE #{i + 1}: código {err}")
+            sid_str = sid_str_p.value or ""
+            _kernel32.LocalFree(sid_str_p)
+
+            # Comparación canónica exacta
+            if sid_str != expected_ace.sid:
+                raise TargetDaclVerificationError(
+                    f"ACE #{i + 1} SID discordante: esperado={expected_ace.sid} ({expected_ace.name}), observado={sid_str}"
+                )
+            if header.AceType != expected_ace.ace_type:
+                raise TargetDaclVerificationError(
+                    f"ACE #{i + 1} AceType discordante: esperado={expected_ace.ace_type}, observado={header.AceType}"
+                )
+            if header.AceFlags != expected_ace.ace_flags:
+                raise TargetDaclVerificationError(
+                    f"ACE #{i + 1} AceFlags discordante: esperado=0x{expected_ace.ace_flags:02X}, observado=0x{header.AceFlags:02X}"
+                )
+            if mask_val != expected_ace.access_mask:
+                raise TargetDaclVerificationError(
+                    f"ACE #{i + 1} AccessMask discordante: esperado=0x{expected_ace.access_mask:08X}, observado=0x{mask_val:08X}"
+                )
+
+            if sid_str == OWNER_RIGHTS_SID:
+                owner_rights_found = True
+                owner_rights_mask = mask_val
 
         if not owner_rights_found:
-            raise TargetDaclVerificationError("ACE para Owner Rights (S-1-3-4) no está presente en la DACL")
+            raise TargetDaclVerificationError("ACE para Owner Rights (S-1-3-4) no encontrada en la DACL")
 
         # Comprobar que Owner Rights no concede derechos peligrosos
         if bool(owner_rights_mask & _WRITE_DAC):
@@ -792,7 +1070,7 @@ def verify_target_dacl_by_handle(
         if owner_rights_mask == TARGET_MASK_FULL_ACCESS:
             raise TargetDaclVerificationError("ACE Owner Rights posee FILE_ALL_ACCESS inadmisible")
 
-        # 3. AccessCheck nativo
+        # 4. AccessCheck nativo
         token_eval = token_handle
         if token_eval is None:
             token_raw = wintypes.HANDLE()
@@ -801,12 +1079,21 @@ def verify_target_dacl_by_handle(
                 _kernel32.GetCurrentThread(), token_query_dup, True, ctypes.byref(token_raw)
             )
             if not res:
-                res = _advapi32.OpenProcessToken(
-                    _kernel32.GetCurrentProcess(), token_query_dup, ctypes.byref(token_raw)
-                )
-                if not res:
-                    err = ctypes.get_last_error()
-                    raise TargetDaclVerificationError(f"OpenProcessToken falló: código {err}")
+                err = ctypes.get_last_error()
+                # Fail-closed estricto: fallback a proceso ÚNICAMENTE si no hay token en el thread (ERROR_NO_TOKEN 1008)
+                if err == _ERROR_NO_TOKEN:
+                    res_proc = _advapi32.OpenProcessToken(
+                        _kernel32.GetCurrentProcess(), token_query_dup, ctypes.byref(token_raw)
+                    )
+                    if not res_proc:
+                        p_err = ctypes.get_last_error()
+                        raise TargetDaclVerificationError(f"OpenProcessToken falló tras ERROR_NO_TOKEN: código {p_err}")
+                else:
+                    raise TargetDaclVerificationError(
+                        f"OpenThreadToken falló con código {err} != ERROR_NO_TOKEN ({_ERROR_NO_TOKEN}); "
+                        "rehusando fallback a proceso"
+                    )
+
             token_imp = wintypes.HANDLE()
             res_dup = _advapi32.DuplicateTokenEx(
                 token_raw,
@@ -824,23 +1111,24 @@ def verify_target_dacl_by_handle(
             token_to_close = token_imp
 
         mapping = _GenericMapping()
-        if node_kind is GoldenProtectionNodeKind.FILE:
-            mapping.GenericRead = FILE_TARGET_MASK_OWNER_RIGHTS
-            mapping.GenericWrite = 0x00120116
-            mapping.GenericExecute = 0x001200A0
+        if backup.node_kind is GoldenProtectionNodeKind.FILE:
+            mapping.GenericRead = FILE_GENERIC_READ
+            mapping.GenericWrite = FILE_GENERIC_WRITE
+            mapping.GenericExecute = FILE_GENERIC_EXECUTE
             mapping.GenericAll = TARGET_MASK_FULL_ACCESS
         else:
-            mapping.GenericRead = FILE_TARGET_MASK_OWNER_RIGHTS
-            mapping.GenericWrite = 0x00120116
-            mapping.GenericExecute = 0x001200A0
+            mapping.GenericRead = DIR_GENERIC_READ
+            mapping.GenericWrite = DIR_GENERIC_WRITE
+            mapping.GenericExecute = DIR_GENERIC_EXECUTE
             mapping.GenericAll = TARGET_MASK_FULL_ACCESS
 
-        priv_set_buf = ctypes.create_string_buffer(1024)
-        priv_set_len = wintypes.DWORD(1024)
+        # Asignación dinámica de PRIVILEGE_SET para AccessCheck (reintentos acotados ante buffer insuficiente)
+        priv_set_len = wintypes.DWORD(256)
+        priv_set_buf = ctypes.create_string_buffer(priv_set_len.value)
         granted_mask = wintypes.DWORD()
         access_status = wintypes.BOOL()
-
         desired_access = 0x02000000  # MAXIMUM_ALLOWED
+
         chk_res = _advapi32.AccessCheck(
             sd_p,
             token_eval,
@@ -853,13 +1141,28 @@ def verify_target_dacl_by_handle(
         )
         if not chk_res:
             err = ctypes.get_last_error()
-            raise TargetDaclVerificationError(f"AccessCheck falló con código Win32 {err}")
+            if err == _ERROR_INSUFFICIENT_BUFFER:
+                priv_set_buf = ctypes.create_string_buffer(priv_set_len.value)
+                chk_res = _advapi32.AccessCheck(
+                    sd_p,
+                    token_eval,
+                    desired_access,
+                    ctypes.byref(mapping),
+                    priv_set_buf,
+                    ctypes.byref(priv_set_len),
+                    ctypes.byref(granted_mask),
+                    ctypes.byref(access_status),
+                )
+                if not chk_res:
+                    err2 = ctypes.get_last_error()
+                    raise TargetDaclVerificationError(f"AccessCheck retry falló: código {err2}")
+            else:
+                raise TargetDaclVerificationError(f"AccessCheck falló con código Win32 {err}")
 
         effective_mask = granted_mask.value if access_status.value != 0 else 0
 
-        # Mapear a derechos reconocidos
         rights: set[GoldenProtectionRight] = set()
-        if node_kind is GoldenProtectionNodeKind.FILE:
+        if backup.node_kind is GoldenProtectionNodeKind.FILE:
             if effective_mask & 0x0001:
                 rights.add(GoldenProtectionRight.READ_DATA)
             if effective_mask & 0x0020:
@@ -890,7 +1193,7 @@ def verify_target_dacl_by_handle(
             rights.add(GoldenProtectionRight.CHANGE_OWNER)
 
         return TargetDaclVerificationResult(
-            node_kind=node_kind,
+            node_kind=backup.node_kind,
             dacl_protected=dacl_protected,
             owner_rights_present=owner_rights_found,
             owner_rights_mask=owner_rights_mask,
@@ -910,7 +1213,7 @@ def verify_target_dacl_by_handle(
 # ============================================================================
 
 
-def create_test_restricted_token() -> tuple[int, int]:
+def _create_test_restricted_token() -> tuple[int, int]:
     """Crea un token restringido Win32 para oráculo de pruebas de acceso no elevado.
 
     TEST ORACLE RULE:
@@ -974,11 +1277,14 @@ def create_test_restricted_token() -> tuple[int, int]:
             _kernel32.CloseHandle(restricted_token)
             raise TargetDaclError(f"DuplicateTokenEx falló: código {err}")
 
-        if restricted_token.value is None or token_imp.value is None:
+        restr_val = restricted_token.value
+        imp_val = token_imp.value
+        if restr_val is None or imp_val is None or restr_val in (0, -1) or imp_val in (0, -1):
             _kernel32.CloseHandle(restricted_token)
-            raise TargetDaclError("Handle de token restringido nulo tras creación")
+            _kernel32.CloseHandle(token_imp)
+            raise TargetDaclError("Handle de token restringido inválido tras creación")
 
-        return int(restricted_token.value), int(token_imp.value)
+        return int(restr_val), int(imp_val)
     finally:
         _kernel32.LocalFree(admin_sid)
         _kernel32.CloseHandle(token_raw)
@@ -992,96 +1298,132 @@ def create_test_restricted_token() -> tuple[int, int]:
 def restore_security_descriptor_by_handle(
     handle: int,
     backup: NodeSecurityBackup,
-    *,
-    expected_volume_serial: int | None = None,
-    expected_file_id: int | None = None,
 ) -> None:
     """Restaura fielmente el Security Descriptor PRE sobre el HANDLE usando NodeSecurityBackup.
 
-    SECURITY RULES:
+    SECURITY RULES (ADR 0010 §12.2 pasos 7 y 8):
     1. Revalida la identidad física del objeto mediante GetFileInformationByHandleEx.
     2. Revalida el enlace criptográfico sha256(decode(pre_sd_bytes_b64)) == pre_sd_sha256.
-    3. Extrae OWNER, GROUP y DACL directamente desde los bytes binarios autoritativos.
-    4. Aplica SetSecurityInfo respetando el flag pre_dacl_protected_flag:
+    3. Valida la estructura binaria del SD (longitud >= 20, IsValidSecurityDescriptor == TRUE).
+    4. Lee SE_DACL_PROTECTED directamente desde los bytes binarios autoritativos y
+       comprueba coherencia estricta con la metadata del backup.
+    5. Extrae OWNER, GROUP y DACL desde los bytes binarios autoritativos.
+    6. Aplica SetSecurityInfo respetando el flag de protección derivado de los bytes:
        - Si PRE era protegido -> PROTECTED_DACL_SECURITY_INFORMATION.
        - Si PRE no era protegido -> UNPROTECTED_DACL_SECURITY_INFORMATION.
-    5. Nunca incluye SACL.
+    7. Nunca incluye SACL.
     """
     _ensure_windows()
 
-    # 1. Revalidar identidad física
-    vol_serial, file_id = _read_file_id_info_by_handle(handle)
-    target_vol = expected_volume_serial if expected_volume_serial is not None else backup.volume_serial_number
-    target_fid = expected_file_id if expected_file_id is not None else backup.file_id
-
-    if vol_serial != target_vol:
-        raise TargetDaclRestoreError(f"Drift de volumen en restore: esperado={target_vol}, observado={vol_serial}")
-    if file_id != target_fid:
-        raise TargetDaclRestoreError(f"Drift de FileId en restore: esperado={target_fid}, observado={file_id}")
-
-    # 2. Revalidar enlace criptográfico de bytes PRE
     try:
-        raw_sd_bytes = base64.b64decode(backup.pre_sd_bytes_b64)
-    except Exception as exc:
-        raise TargetDaclRestoreError(f"Error al decodificar pre_sd_bytes_b64: {exc}") from exc
+        # 1. Revalidar identidad física
+        vol_serial, file_id = _read_file_id_info_by_handle(handle)
+        if vol_serial != backup.volume_serial_number:
+            raise TargetDaclRestoreError(
+                f"Drift de volumen en restore: esperado={backup.volume_serial_number}, observado={vol_serial}"
+            )
+        if file_id != backup.file_id:
+            raise TargetDaclRestoreError(f"Drift de FileId en restore: esperado={backup.file_id}, observado={file_id}")
 
-    calc_sha = hashlib.sha256(raw_sd_bytes).hexdigest()
-    if calc_sha != backup.pre_sd_sha256:
-        raise TargetDaclRestoreError(
-            f"Fallo de integridad criptográfica en restore: hash esperado={backup.pre_sd_sha256}, calculado={calc_sha}"
+        # 2. Revalidar enlace criptográfico de bytes PRE
+        try:
+            raw_sd_bytes = base64.b64decode(backup.pre_sd_bytes_b64)
+        except Exception as exc:
+            raise TargetDaclRestoreError(f"Error al decodificar pre_sd_bytes_b64: {exc}") from exc
+
+        calc_sha = hashlib.sha256(raw_sd_bytes).hexdigest()
+        if calc_sha != backup.pre_sd_sha256:
+            raise TargetDaclRestoreError(
+                f"Fallo de integridad criptográfica en restore: hash esperado={backup.pre_sd_sha256}, calculado={calc_sha}"
+            )
+        if len(raw_sd_bytes) != backup.pre_sd_length:
+            raise TargetDaclRestoreError(
+                f"Fallo de longitud en restore: esperada={backup.pre_sd_length}, observada={len(raw_sd_bytes)}"
+            )
+
+        # 3. Validación estructural antes de cualquier parseo nativo
+        if len(raw_sd_bytes) < 20:
+            raise TargetDaclRestoreError(
+                f"Buffer PRE menor a la longitud mínima estructural de SECURITY_DESCRIPTOR (20 bytes): {len(raw_sd_bytes)}"
+            )
+
+        sd_buf = ctypes.create_string_buffer(raw_sd_bytes, len(raw_sd_bytes))
+        sd_ptr = ctypes.cast(sd_buf, wintypes.LPVOID)
+
+        if not _advapi32.IsValidSecurityDescriptor(sd_ptr):
+            raise TargetDaclRestoreError("IsValidSecurityDescriptor devolvió FALSE para buffer PRE")
+
+        sd_len = _advapi32.GetSecurityDescriptorLength(sd_ptr)
+        if sd_len != backup.pre_sd_length:
+            raise TargetDaclRestoreError(
+                f"GetSecurityDescriptorLength ({sd_len}) no coincide con longitud esperada ({backup.pre_sd_length})"
+            )
+
+        # 4. Derivar protection flag desde los bytes autoritativos y cruzar con metadata
+        control = wintypes.WORD()
+        rev = wintypes.DWORD()
+        if not _advapi32.GetSecurityDescriptorControl(sd_ptr, ctypes.byref(control), ctypes.byref(rev)):
+            err = ctypes.get_last_error()
+            raise TargetDaclRestoreError(f"GetSecurityDescriptorControl falló en buffer PRE: código {err}")
+
+        pre_dacl_protected_from_bytes = bool(control.value & _SE_DACL_PROTECTED)
+        if pre_dacl_protected_from_bytes != backup.pre_dacl_protected_flag:
+            raise TargetDaclRestoreError(
+                "Discrepancia entre pre_dacl_protected_flag en backup y SE_DACL_PROTECTED en bytes de descriptor"
+            )
+        if bool(backup.dacl_control_flags & _SE_DACL_PROTECTED) != pre_dacl_protected_from_bytes:
+            raise TargetDaclRestoreError(
+                "Discrepancia entre dacl_control_flags en backup y SE_DACL_PROTECTED en bytes de descriptor"
+            )
+
+        # 5. Extraer punteros a componentes desde el buffer self-relative
+        p_owner = wintypes.LPVOID()
+        p_group = wintypes.LPVOID()
+        p_dacl = wintypes.LPVOID()
+        def_val = wintypes.BOOL()
+        present_val = wintypes.BOOL()
+
+        if not _advapi32.GetSecurityDescriptorOwner(sd_ptr, ctypes.byref(p_owner), ctypes.byref(def_val)):
+            err = ctypes.get_last_error()
+            raise TargetDaclRestoreError(f"GetSecurityDescriptorOwner falló en buffer PRE: código {err}")
+
+        if not _advapi32.GetSecurityDescriptorGroup(sd_ptr, ctypes.byref(p_group), ctypes.byref(def_val)):
+            err = ctypes.get_last_error()
+            raise TargetDaclRestoreError(f"GetSecurityDescriptorGroup falló en buffer PRE: código {err}")
+
+        if not _advapi32.GetSecurityDescriptorDacl(
+            sd_ptr, ctypes.byref(present_val), ctypes.byref(p_dacl), ctypes.byref(def_val)
+        ):
+            err = ctypes.get_last_error()
+            raise TargetDaclRestoreError(f"GetSecurityDescriptorDacl falló en buffer PRE: código {err}")
+
+        # 6. Configurar flags de información de seguridad
+        sec_info = _OWNER_SECURITY_INFORMATION | _GROUP_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION
+        if pre_dacl_protected_from_bytes:
+            sec_info |= _PROTECTED_DACL_SECURITY_INFORMATION
+        else:
+            sec_info |= _UNPROTECTED_DACL_SECURITY_INFORMATION
+
+        # 7. Aplicar SetSecurityInfo para restauración
+        ret = _advapi32.SetSecurityInfo(
+            handle,
+            _SE_FILE_OBJECT,
+            sec_info,
+            p_owner,
+            p_group,
+            p_dacl if present_val.value else None,
+            None,
         )
-    if len(raw_sd_bytes) != backup.pre_sd_length:
-        raise TargetDaclRestoreError(
-            f"Fallo de longitud en restore: esperada={backup.pre_sd_length}, observada={len(raw_sd_bytes)}"
-        )
-
-    # 3. Extraer punteros a componentes desde el buffer self-relative
-    sd_buf = ctypes.create_string_buffer(raw_sd_bytes, len(raw_sd_bytes))
-    sd_ptr = ctypes.cast(sd_buf, wintypes.LPVOID)
-
-    p_owner = wintypes.LPVOID()
-    p_group = wintypes.LPVOID()
-    p_dacl = wintypes.LPVOID()
-    def_val = wintypes.BOOL()
-    present_val = wintypes.BOOL()
-
-    if not _advapi32.GetSecurityDescriptorOwner(sd_ptr, ctypes.byref(p_owner), ctypes.byref(def_val)):
-        err = ctypes.get_last_error()
-        raise TargetDaclRestoreError(f"GetSecurityDescriptorOwner falló en buffer PRE: código {err}")
-
-    if not _advapi32.GetSecurityDescriptorGroup(sd_ptr, ctypes.byref(p_group), ctypes.byref(def_val)):
-        err = ctypes.get_last_error()
-        raise TargetDaclRestoreError(f"GetSecurityDescriptorGroup falló en buffer PRE: código {err}")
-
-    if not _advapi32.GetSecurityDescriptorDacl(
-        sd_ptr, ctypes.byref(present_val), ctypes.byref(p_dacl), ctypes.byref(def_val)
-    ):
-        err = ctypes.get_last_error()
-        raise TargetDaclRestoreError(f"GetSecurityDescriptorDacl falló en buffer PRE: código {err}")
-
-    # 4. Configurar flags de información de seguridad
-    sec_info = _OWNER_SECURITY_INFORMATION | _GROUP_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION
-    if backup.pre_dacl_protected_flag:
-        sec_info |= _PROTECTED_DACL_SECURITY_INFORMATION
-    else:
-        sec_info |= _UNPROTECTED_DACL_SECURITY_INFORMATION
-
-    # 5. Aplicar SetSecurityInfo para restauración
-    ret = _advapi32.SetSecurityInfo(
-        handle,
-        _SE_FILE_OBJECT,
-        sec_info,
-        p_owner,
-        p_group,
-        p_dacl if present_val.value else None,
-        None,
-    )
-    if ret != 0:
-        raise TargetDaclRestoreError(f"SetSecurityInfo falló al restaurar descriptor PRE: código {ret}")
+        if ret != _ERROR_SUCCESS:
+            raise TargetDaclRestoreError(f"SetSecurityInfo falló al restaurar descriptor PRE: código {ret}")
+    except TargetDaclRestoreError:
+        raise
+    except TargetDaclError as exc:
+        raise TargetDaclRestoreError(str(exc)) from exc
 
 
 # ============================================================================
-# Primitiva: Verificación de Restauración Exacta Atada a HANDLE
+# Primitiva: Verificación Semántica de Restauración Atada a HANDLE
 # ============================================================================
 
 
@@ -1089,64 +1431,111 @@ def verify_restored_security_descriptor_by_handle(
     handle: int,
     backup: NodeSecurityBackup,
 ) -> None:
-    """Verifica que el Security Descriptor restaurado sobre el HANDLE coincide con PRE.
+    """Verifica semánticamente que el Security Descriptor restaurado coincide con PRE.
 
-    Garantía fuerte (ADR 0010 §9.2 / §13):
-    - POST_RESTORE_SD_BYTES == PRE_SD_BYTES
-    - SHA256_POST == SHA256_PRE
-    - Flags de herencia restaurados al estado original.
+    Garantía normativa (ADR 0010 §12.2 línea 771):
+    - owner POST == owner PRE
+    - group POST == group PRE
+    - dacl POST == dacl PRE (comparación semántica exhaustiva de ACEs y orden canónico)
+    - SE_DACL_PROTECTED POST == SE_DACL_PROTECTED PRE
+    - SACL no capturado, no mutado, no comparado.
+    - NO exige POST_RESTORE_SD_BYTES == PRE_SD_BYTES (Windows puede reserializar con layout/padding equivalente).
     """
     _ensure_windows()
 
-    sd_p = wintypes.LPVOID()
-    owner_p = wintypes.LPVOID()
-    group_p = wintypes.LPVOID()
-    dacl_p = wintypes.LPVOID()
-
-    ret = _advapi32.GetSecurityInfo(
-        handle,
-        _SE_FILE_OBJECT,
-        _OWNER_SECURITY_INFORMATION | _GROUP_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION,
-        ctypes.byref(owner_p),
-        ctypes.byref(group_p),
-        ctypes.byref(dacl_p),
-        None,
-        ctypes.byref(sd_p),
-    )
-    if ret != 0:
-        raise TargetDaclVerificationError(f"GetSecurityInfo falló al verificar restore: código {ret}")
-
     try:
-        sd_len = _advapi32.GetSecurityDescriptorLength(sd_p)
-        if sd_len <= 0:
-            raise TargetDaclVerificationError(f"GetSecurityDescriptorLength devolvió longitud inválida {sd_len}")
+        # 1. Extraer componentes semánticos autoritativos del PRE
+        try:
+            raw_sd_bytes = base64.b64decode(backup.pre_sd_bytes_b64)
+        except Exception as exc:
+            raise TargetDaclVerificationError(f"Error al decodificar pre_sd_bytes_b64: {exc}") from exc
 
-        post_bytes = ctypes.string_at(sd_p, sd_len)
-        post_sha = hashlib.sha256(post_bytes).hexdigest()
+        if hashlib.sha256(raw_sd_bytes).hexdigest() != backup.pre_sd_sha256:
+            raise TargetDaclVerificationError("Fallo de integridad criptográfica en buffer PRE durante verificación")
 
-        expected_bytes = base64.b64decode(backup.pre_sd_bytes_b64)
+        if len(raw_sd_bytes) < 20:
+            raise TargetDaclVerificationError("Buffer PRE menor al tamaño mínimo de SECURITY_DESCRIPTOR")
 
-        if post_bytes != expected_bytes:
+        sd_pre_buf = ctypes.create_string_buffer(raw_sd_bytes, len(raw_sd_bytes))
+        sd_pre_ptr = ctypes.cast(sd_pre_buf, wintypes.LPVOID)
+
+        try:
+            pre_owner, pre_group, pre_has_dacl, pre_aces, pre_protected = _extract_sd_components(sd_pre_ptr)
+        except Exception as exc:
+            raise TargetDaclVerificationError(f"Fallo al extraer componentes semánticos PRE: {exc}") from exc
+
+        # Validar coherencia entre los bytes autoritativos PRE y la metadata del backup
+        if pre_protected != backup.pre_dacl_protected_flag:
             raise TargetDaclVerificationError(
-                f"POST_RESTORE_SD_BYTES != PRE_SD_BYTES (len_post={sd_len}, len_pre={backup.pre_sd_length})"
+                f"Inconsistencia en protección DACL PRE: bytes={pre_protected} != metadata={backup.pre_dacl_protected_flag}"
+            )
+        if pre_owner != backup.owner_sid:
+            raise TargetDaclVerificationError(
+                f"Inconsistencia en owner PRE: bytes={pre_owner} != metadata={backup.owner_sid}"
+            )
+        if pre_group != backup.group_sid:
+            raise TargetDaclVerificationError(
+                f"Inconsistencia en group PRE: bytes={pre_group} != metadata={backup.group_sid}"
             )
 
-        if post_sha != backup.pre_sd_sha256:
-            raise TargetDaclVerificationError(
-                f"SHA256 post-restore no coincide con PRE: post={post_sha}, pre={backup.pre_sd_sha256}"
-            )
+        # 2. Leer descriptor vivo post-restauración desde el HANDLE
+        sd_post_p = wintypes.LPVOID()
+        owner_post_p = wintypes.LPVOID()
+        group_post_p = wintypes.LPVOID()
+        dacl_post_p = wintypes.LPVOID()
 
-        control = wintypes.WORD()
-        rev = wintypes.DWORD()
-        if not _advapi32.GetSecurityDescriptorControl(sd_p, ctypes.byref(control), ctypes.byref(rev)):
-            err = ctypes.get_last_error()
-            raise TargetDaclVerificationError(f"GetSecurityDescriptorControl falló en post-restore: código {err}")
+        ret = _advapi32.GetSecurityInfo(
+            handle,
+            _SE_FILE_OBJECT,
+            _OWNER_SECURITY_INFORMATION | _GROUP_SECURITY_INFORMATION | _DACL_SECURITY_INFORMATION,
+            ctypes.byref(owner_post_p),
+            ctypes.byref(group_post_p),
+            ctypes.byref(dacl_post_p),
+            None,
+            ctypes.byref(sd_post_p),
+        )
+        if ret != _ERROR_SUCCESS:
+            raise TargetDaclVerificationError(f"GetSecurityInfo falló al verificar restore: código {ret}")
 
-        post_protected = bool(control.value & _SE_DACL_PROTECTED)
-        if post_protected != backup.pre_dacl_protected_flag:
-            raise TargetDaclVerificationError(
-                f"Estado protegido no coincide tras restore: post={post_protected}, pre={backup.pre_dacl_protected_flag}"
-            )
-    finally:
-        if ctypes.cast(sd_p, ctypes.c_void_p).value:
-            _kernel32.LocalFree(sd_p)
+        try:
+            post_owner, post_group, post_has_dacl, post_aces, post_protected = _extract_sd_components(sd_post_p)
+
+            # 3. Comparación semántica exhaustiva
+            if post_owner != pre_owner:
+                raise TargetDaclVerificationError(
+                    f"Owner post-restore ({post_owner}) no coincide con PRE ({pre_owner})"
+                )
+
+            if post_group != pre_group:
+                raise TargetDaclVerificationError(
+                    f"Group post-restore ({post_group}) no coincide con PRE ({pre_group})"
+                )
+
+            if post_protected != pre_protected:
+                raise TargetDaclVerificationError(
+                    f"Estado protegido no coincide tras restore: post={post_protected}, pre={pre_protected}"
+                )
+
+            if post_has_dacl != pre_has_dacl:
+                raise TargetDaclVerificationError(
+                    f"Presencia de DACL post-restore ({post_has_dacl}) no coincide con PRE ({pre_has_dacl})"
+                )
+
+            if len(post_aces) != len(pre_aces):
+                raise TargetDaclVerificationError(
+                    f"Cantidad de ACEs post-restore ({len(post_aces)}) no coincide con PRE ({len(pre_aces)})"
+                )
+
+            for i, (p_ace, post_ace) in enumerate(zip(pre_aces, post_aces, strict=True)):
+                if post_ace != p_ace:
+                    raise TargetDaclVerificationError(
+                        f"ACE #{i + 1} post-restore discordante con PRE: post={post_ace}, pre={p_ace}"
+                    )
+
+        finally:
+            if ctypes.cast(sd_post_p, ctypes.c_void_p).value:
+                _kernel32.LocalFree(sd_post_p)
+    except TargetDaclVerificationError:
+        raise
+    except TargetDaclError as exc:
+        raise TargetDaclVerificationError(str(exc)) from exc
