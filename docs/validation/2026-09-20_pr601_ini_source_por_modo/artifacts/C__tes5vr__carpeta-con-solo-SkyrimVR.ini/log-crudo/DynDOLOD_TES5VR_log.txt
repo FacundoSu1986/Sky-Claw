@@ -1,0 +1,32 @@
+DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 16:40:20
+
+The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
+If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
+
+Using Skyrim VR Data Path: C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\data\
+Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
+Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\temp\
+Using Output Path: C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\out\
+Using ini: C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\\Skyrim.ini
+Fatal: Could not find ini
+Error: Skyrim.ini can not be found. The INI file is missing from its default location at C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\\Skyrim.ini. Current game mode: Skyrim VR (TES5VR)
+
+DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 16:40:20
+
+The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
+If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
+
+Using Skyrim VR Data Path: C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\data\
+Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
+Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\temp\
+Using Output Path: C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\out\
+Using ini: C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\\Skyrim.ini
+Fatal: Could not find ini
+Error: Skyrim.ini can not be found. The INI file is missing from its default location at C:\Users\Facu2\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\\Skyrim.ini. Current game mode: Skyrim VR (TES5VR)
+

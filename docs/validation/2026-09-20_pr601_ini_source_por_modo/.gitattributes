@@ -1,0 +1,7 @@
+# Evidencia cruda del rig: se guarda BYTE A BYTE.
+#
+# El `transcript.txt` publica el sha256 de cada log copiado, así que la
+# normalización de fin de línea de `core.autocrlf` rompería la verificación del
+# artefacto (los logs del binario son CRLF).
+artifacts/** -text
+log-crudo/** -text
