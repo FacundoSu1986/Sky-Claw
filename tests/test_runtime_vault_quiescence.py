@@ -107,6 +107,7 @@ def test_q6_success_cierra_handle_inmediatamente(tmp_path: pathlib.Path) -> None
     assert not dummy_file.exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Prueba nativa de handle Win32")
 def test_q7_sharing_violation_reintenta_con_limite_y_exito_en_intento_5() -> None:
     """Q7: ERROR_SHARING_VIOLATION reintenta con backoff exponencial y tiene éxito en intento 5 de 5."""
     call_count = 0
@@ -157,6 +158,7 @@ def test_q7_sharing_violation_reintenta_con_limite_y_exito_en_intento_5() -> Non
     mock_close.assert_called_once_with(12345)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Prueba nativa de handle Win32")
 def test_q8_agota_retries_fail_closed_tras_exactamente_5_intentos() -> None:
     """Q8: Agotar exactamente 5 intentos totales dispara QuiescenceViolationError sin 6to intento."""
     call_count = 0
@@ -188,6 +190,7 @@ def test_q8_agota_retries_fail_closed_tras_exactamente_5_intentos() -> None:
     assert "ERROR_SHARING_VIOLATION persistente tras agotar 5 intentos" in str(exc_info.value)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Prueba nativa de handle Win32")
 def test_q9_error_distinto_de_sharing_violation_no_reintenta_silenciosamente() -> None:
     """Q9: Error causal distinto de ERROR_SHARING_VIOLATION falla de inmediato (1 intento, sin retries)."""
     call_count = 0
@@ -223,6 +226,7 @@ def test_q9_error_distinto_de_sharing_violation_no_reintenta_silenciosamente() -
     assert "código 5" in str(exc_info.value)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Prueba nativa de handle Win32")
 def test_q10_todos_los_handles_se_cierran_ante_error_causal() -> None:
     """Q10: Si ocurre un error inesperado tras obtener handle válido, CloseHandle se ejecuta en finally."""
     closed_handles: list[int] = []

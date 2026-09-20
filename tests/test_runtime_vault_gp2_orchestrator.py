@@ -867,20 +867,25 @@ def test_f4_estados_privilegiados_posteriores_no_son_alcanzables_por_s2(mock_cle
         _probe_quiescence_fn=lambda *args, **kwargs: None,
     )
 
-    forbidden_states = {
-        "applying",
-        "verifying_gp1",
-        "verifying_rv2",
-        "verifying_node_set",
-        "archiving_backup",
-        "committed",
-        "rollback_required",
-        "rolling_back",
-        "rolled_back",
-        "rollback_failed",
-        "indeterminate",
+    # Ancla de igualdad: la superficie de desenlaces de S2 es exactamente esta.
+    assert {d.value for d in GP2PlanningDisposition} == {
+        "prepared",
+        "already_hardened",
+        "refuse_to_apply",
+        "refuse_to_plan",
+        "failed",
     }
-    assert result.disposition.value not in forbidden_states
+    # Ancla de igualdad sobre la FSM reutilizada por S2.
+    assert {s.value for s in GoldenProtectionPlanState} == {
+        "preparing",
+        "prepared",
+        "awaiting_elevation",
+        "cancelled",
+        "elevation_rejected",
+    }
+    assert result.disposition is GP2PlanningDisposition.PREPARED
+    assert result.sealed_plan is not None
+    assert result.sealed_plan.plan.state is GoldenProtectionPlanState.PREPARED
 
 
 def test_f5_no_confundir_gp1_success_con_gp2_success(mock_clean_golden_tree: Any) -> None:
