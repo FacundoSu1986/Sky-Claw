@@ -16,7 +16,11 @@ Decisiones congeladas acá:
 - First cut = PGPatcher only (P0 §18). VRAMr/ParallaxR/BENDr quedan declarados
   como BLOCKED con sus blockers (B3 / B6-L); no se implementan en P1a.
 - Política conservadora B10 (P0 §8.5): un rerun de Stage 5/6/7 deja el output
-  de PGPatcher STALE; PG debe re-ejecutarse y preceder al reconcile.
+  de ``PGPATCHER`` STALE y arrastra a ``POST_PG_RECONCILE``. El estado de VRAMr
+  depende de la política de orden PG↔VRAMr y NO se congela acá.
+- PGPatcher ↔ VRAMr: este contrato es NEUTRAL, sin arista de orden. B9/P0
+  soporta POLICY_A (VRAMr -> PGPatcher) y POLICY_B (PGPatcher -> VRAMr); la
+  relación la resuelve el planner (P1b), no P1a.
 - Contratos PGPatcher por versión conocida, sin rango abierto ni herencia
   SemVer (P0 §9 / B8).
 
@@ -40,7 +44,7 @@ from typing import Final
 #: la convergencia de materiales ocurre entre Stage 7/8 y Stage 9 (TexGen -> DynDOLOD).
 PRE_LOD_MATERIALS_CAPABILITY: Final = "pre_lod_materials"
 
-#: Etapas cuyo rerun invalida el output material (política conservadora P0 §8.5).
+#: Etapas cuyo rerun deja STALE el output de PGPATCHER (política conservadora P0 §8.5).
 UPSTREAM_MUTATION_STAGES: Final[frozenset[int]] = frozenset({5, 6, 7})
 
 
@@ -174,7 +178,9 @@ def _build_pipeline() -> Mapping[MaterialStepId, MaterialNodeSpec]:
             optional=True,
             ordered_after=(MaterialStepId.PARALLAXR,),
             blockers=frozenset({MaterialBlocker.B6_L}),
-            produces_capabilities=frozenset({MaterialCapability.MESH_OUTPUT, MaterialCapability.TEXTURE_OUTPUT}),
+            # La evidencia de BENDr es de normal maps/texturas procesadas, no de
+            # meshes: declarar MESH_OUTPUT haría que ManagedOutput los espere.
+            produces_capabilities=frozenset({MaterialCapability.TEXTURE_OUTPUT}),
         ),
         MaterialNodeSpec(
             step_id=MaterialStepId.PGPATCHER,
@@ -195,7 +201,8 @@ def _build_pipeline() -> Mapping[MaterialStepId, MaterialNodeSpec]:
             step_id=MaterialStepId.VRAMR,
             readiness=MaterialReadiness.BLOCKED,
             optional=True,
-            ordered_after=(MaterialStepId.PGPATCHER,),
+            # Sin arista PG↔VRAMr: B9/P0 soporta POLICY_A y POLICY_B; un
+            # ordered_after fijo convertiría una de las dos en inválida.
             blockers=frozenset({MaterialBlocker.B3, MaterialBlocker.B6_L}),
             produces_capabilities=frozenset({MaterialCapability.TEXTURE_OUTPUT}),
         ),
@@ -244,7 +251,9 @@ def resolve_material_order(steps: Iterable[MaterialStepId]) -> tuple[MaterialSte
 
     Valida pasos representables y aristas duras (``requires_present``). Las
     aristas blandas (``ordered_after``) se cumplen por construcción del orden
-    canónico. Levanta :class:`MaterialPlanError` si el plan es inválido.
+    canónico. El orden canónico NO expresa la política PG↔VRAMr (ausente por
+    diseño); el planner de P1b decide POLICY_A o POLICY_B. Levanta
+    :class:`MaterialPlanError` si el plan es inválido.
     """
     plan = frozenset(steps)
     desconocidos = sorted(str(step) for step in plan if step not in MATERIAL_PIPELINE)
@@ -287,8 +296,10 @@ def invalidated_material_steps(rerun_stages: Iterable[int]) -> frozenset[Materia
     """Clausura de invalidación por rerun de etapas upstream (política B10, P0 §8.5).
 
     Un rerun de Stage 5/6/7 deja el output de PGPatcher STALE; la invalidación
-    se propaga hacia adelante: todo nodo que dependa (blanda o duramente) de un
-    nodo invalidado también queda STALE. La recuperación es
+    se propaga hacia adelante por las aristas declaradas: ``POST_PG_RECONCILE``
+    (requiere PGPatcher) también queda STALE. ``VRAMR`` NO se invalida en el
+    contrato: su staleness depende de la política de orden PG↔VRAMr (B9) y la
+    resolverá el planner. La recuperación es
     ``PGPatcher -> POST_PG_RECONCILE -> convergencia`` (usar ``resolve_material_order``).
     """
     stages = frozenset(rerun_stages)

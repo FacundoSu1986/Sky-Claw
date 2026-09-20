@@ -97,6 +97,20 @@ def test_el_reconcile_consume_plugins_de_pgpatcher() -> None:
     assert MaterialCapability.PLUGIN_SORT in spec.produces_capabilities
 
 
+def test_bendr_solo_produce_texturas() -> None:
+    """La evidencia de BENDr es normal maps/texturas procesadas, no meshes."""
+    spec = MATERIAL_PIPELINE[MaterialStepId.BENDR]
+    assert MaterialCapability.TEXTURE_OUTPUT in spec.produces_capabilities
+    assert MaterialCapability.MESH_OUTPUT not in spec.produces_capabilities
+
+
+def test_vramr_no_declara_orden_fijo_con_pgpatcher() -> None:
+    """B9/P0: P1a es neutral; POLICY_A y POLICY_B las resuelve el planner (P1b)."""
+    spec = MATERIAL_PIPELINE[MaterialStepId.VRAMR]
+    assert spec.ordered_after == ()
+    assert spec.requires_present == ()
+
+
 def test_solo_pgpatcher_declara_etapas_invalidadoras() -> None:
     assert MATERIAL_PIPELINE[MaterialStepId.PGPATCHER].invalidated_by_stages == frozenset({5, 6, 7})
     for step in (
@@ -161,7 +175,6 @@ def test_pasos_no_representables_fallan_cerrado() -> None:
     "orden_invalido",
     [
         (MaterialStepId.POST_PG_RECONCILE, MaterialStepId.PGPATCHER),
-        (MaterialStepId.VRAMR, MaterialStepId.PGPATCHER),
         (MaterialStepId.BENDR, MaterialStepId.PARALLAXR),
         (MaterialStepId.PGPATCHER, MaterialStepId.PGPATCHER),
     ],
@@ -177,16 +190,28 @@ def test_ordenes_validos_son_aceptados() -> None:
     validate_material_order((MaterialStepId.PGPATCHER, MaterialStepId.VRAMR, MaterialStepId.POST_PG_RECONCILE))
 
 
+@pytest.mark.parametrize(
+    "orden",
+    [
+        (MaterialStepId.VRAMR, MaterialStepId.PGPATCHER, MaterialStepId.POST_PG_RECONCILE),
+        (MaterialStepId.PGPATCHER, MaterialStepId.VRAMR, MaterialStepId.POST_PG_RECONCILE),
+    ],
+)
+def test_ambas_politicas_de_orden_vramr_pgpatcher_son_validas(orden: tuple[MaterialStepId, ...]) -> None:
+    """B9/P0: POLICY_A (VRAMr -> PGPatcher) y POLICY_B (PGPatcher -> VRAMr)."""
+    validate_material_order(orden)
+
+
 @pytest.mark.parametrize("stage", [5, 6, 7])
 def test_rerun_de_etapas_upstream_invalida_materiales(stage: int) -> None:
-    """Política conservadora B10: 5/6/7 -> PG STALE y propagación aguas abajo."""
-    assert invalidated_material_steps({stage}) == frozenset(
-        {
-            MaterialStepId.PGPATCHER,
-            MaterialStepId.VRAMR,
-            MaterialStepId.POST_PG_RECONCILE,
-        }
-    )
+    """Política conservadora B10: 5/6/7 -> PGPatcher STALE y arrastre al reconcile.
+
+    VRAMr NO se invalida en el contrato: su staleness depende de la política de
+    orden PG↔VRAMr (B9), que P1a no codifica.
+    """
+    invalidados = invalidated_material_steps({stage})
+    assert invalidados == frozenset({MaterialStepId.PGPATCHER, MaterialStepId.POST_PG_RECONCILE})
+    assert MaterialStepId.VRAMR not in invalidados
 
 
 @pytest.mark.parametrize("stage", [1, 2, 3, 4, 8, 9])
@@ -199,7 +224,6 @@ def test_tras_la_invalidacion_pgpatcher_precede_al_reconcile() -> None:
     invalidados = invalidated_material_steps({5})
     reorden = resolve_material_order(invalidados)
     assert reorden.index(MaterialStepId.PGPATCHER) < reorden.index(MaterialStepId.POST_PG_RECONCILE)
-    assert reorden.index(MaterialStepId.PGPATCHER) < reorden.index(MaterialStepId.VRAMR)
 
 
 def test_contratos_pgpatcher_conocidos() -> None:
