@@ -28,6 +28,13 @@ entra en la tabla que valida el código.
 | Artefactos crudos | `artifacts/<escenario>/log-crudo/{DynDOLOD_*_log.txt, DynDOLOD_*_Debug_log.txt}` (copia del log de esa sesión; el sha256 de cada uno está en el transcript) |
 | Corroboración previa | `log-crudo/manual-probe-1304/` — la corrida manual del mismo día (13:04, local) que originó el contrato, antes de este rig |
 
+Las copias crudas se **sanean** antes de copiarse (home del operador →
+`%USERPROFILE%`, mismo criterio que el transcript y que la evidencia de #593),
+porque viajan en el repositorio; el sha256 que publica el transcript es el del
+**artefacto saneado** que se puede verificar contra el archivo commiteado
+(`artifacts/**` y `log-crudo/**` están marcados `-text` en el `.gitattributes` de
+esta carpeta para que `core.autocrlf` no altere los bytes).
+
 El `-d:`, `-o:`, `-t:` y `-p:` de cada escenario son sintéticos (bajo `--work`) y
 se declaran en el transcript; el juego nunca se toca y la corrida se cierra
 después de la etapa en la que el binario resuelve sus rutas.

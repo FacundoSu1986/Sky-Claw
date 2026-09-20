@@ -145,6 +145,18 @@ def _sha256(ruta: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def _sanear_archivo(ruta: pathlib.Path) -> None:
+    """Reemplaza el home del operador en una COPIA que se va a commitear.
+
+    Se opera sobre bytes decodificados sin partir líneas, así que los ``\\r\\n``
+    del log del binario quedan intactos (el artefacto es evidencia byte a byte).
+    """
+    original = ruta.read_bytes().decode("utf-8", errors="replace")
+    saneado = _redactar(original)
+    if saneado != original:
+        ruta.write_bytes(saneado.encode("utf-8"))
+
+
 def _preparar_escenario(work: pathlib.Path, esc: Escenario) -> dict[str, pathlib.Path]:
     """Crea el árbol sintético del escenario y devuelve las rutas de sus insumos."""
     base = work / esc.nombre
@@ -245,7 +257,14 @@ def _cerrar_suave(pid: int) -> int:
 
 
 def _matar_arbol(pid: int) -> None:
-    """Cierre FORZADO, sólo como fallback del cierre suave."""
+    """Cierre FORZADO, sólo como fallback del cierre suave.
+
+    POSIX: el hijo se lanza con ``start_new_session=True``, así que SU grupo de
+    procesos es el suyo y ``killpg`` no puede alcanzar al rig ni al shell que lo
+    lanzó. El ``getpgid(pid) == pid`` es la verificación de esa precondición: si
+    por lo que fuera el hijo no lidera su grupo, se mata SÓLO ese pid (nunca el
+    grupo heredado).
+    """
     if sys.platform == "win32":
         subprocess.run(  # noqa: S603, S607 — taskkill es un builtin de Windows
             ["taskkill", "/F", "/T", "/PID", str(pid)],
@@ -258,7 +277,11 @@ def _matar_arbol(pid: int) -> None:
         import signal  # noqa: PLC0415 — sólo POSIX
 
         with contextlib.suppress(OSError):
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            grupo = os.getpgid(pid)
+            if grupo == pid:
+                os.killpg(grupo, signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGKILL)
 
 
 def _esperar_marca(rutas: tuple[pathlib.Path, ...], marcas: tuple[str, ...], *, timeout: float) -> str:
@@ -312,6 +335,9 @@ def correr_escenario(
         cwd=str(exe.parent),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        # POSIX: sesión propia para que el kill de fallback no alcance al rig
+        # (ver `_matar_arbol`). En Windows el cierre es por WM_CLOSE/taskkill.
+        start_new_session=sys.platform != "win32",
     )
     texto = ""
     cerrado = False
@@ -336,7 +362,9 @@ def correr_escenario(
     # El log normal se vacía al cerrar la sesión: se releen los DOS después del cierre.
     texto = _leer_logs(rutas_log)
     # Copia cruda por escenario: el log del binario se pisa en cada corrida, así que
-    # sin esta copia el artefacto de A/B se perdería al correr C/D.
+    # sin esta copia el artefacto de A/B se perdería al correr C/D. La copia se
+    # SANEA (home → %USERPROFILE%, mismo criterio que el transcript) porque se
+    # commitea: el sha256 que publica el transcript es el del artefacto saneado.
     copias: list[str] = []
     for ruta in rutas_log:
         if ruta.is_file():
@@ -345,6 +373,7 @@ def correr_escenario(
             destino = insumos["base"] / "log-crudo" / ruta.name
             destino.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ruta, destino)
+            _sanear_archivo(destino)
             copias.append(f"{_redactar(str(destino))} (sha256 {_sha256(destino)})")
     lineas = _lineas_relevantes(texto)
     salida.append(f"logs              : {', '.join(_redactar(str(r)) for r in rutas_log)}")

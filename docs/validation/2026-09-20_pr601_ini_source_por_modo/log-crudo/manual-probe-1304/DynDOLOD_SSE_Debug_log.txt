@@ -17,19 +17,19 @@ The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 Using Skyrim Special Edition Data Path: C:\steam\steamapps\content\app_489830\depot_489832\Data\
 Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
 Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
-Using Temp Path: C:\Users\Facu2\AppData\Local\Temp\skyclaw_ini_probe\temp\
-Using Output Path: C:\Users\Facu2\AppData\Local\Temp\skyclaw_ini_probe\out_solo_ini\
-Using ini: C:\Users\Facu2\AppData\Local\Temp\skyclaw_ini_probe\solo_ini\ini\Skyrim.ini
-Using save path: C:\Users\Facu2\AppData\Local\Temp\skyclaw_ini_probe\solo_ini\ini\Saves\
+Using Temp Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\temp\
+Using Output Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\out_solo_ini\
+Using ini: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\solo_ini\ini\Skyrim.ini
+Using save path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\solo_ini\ini\Saves\
 Warning: Could not find save path
 Using Creation Club Content list: C:\steam\steamapps\content\app_489830\depot_489832\Skyrim.ccc
-Using plugin list: C:\Users\Facu2\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
+Using plugin list: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
 Using settings file: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
 Using language: English
-Using general string encoding: 1252  (ANSI - Latín I)
-Using translatable string encoding: 1252  (ANSI - Latín I)
+Using general string encoding: 1252  (ANSI - Latï¿½n I)
+Using translatable string encoding: 1252  (ANSI - Latï¿½n I)
 Using VMAD string encoding: 65001 (UTF-8)
-Loading active plugin list: C:\Users\Facu2\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
+Loading active plugin list: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
 [00:00] [5A04] [BuildResourceList] <Debug: Processing textures\>
 [00:00] [4660] [BuildResourceList] <Debug: Processing merge\>
 [00:00] [4660] [BuildResourceList] <Debug: Processing DynDOLOD\>

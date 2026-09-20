@@ -17,8 +17,8 @@ The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 Using Skyrim VR Data Path: C:\steam\steamapps\content\app_489830\depot_489832\Data\
 Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
 Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
-Using Temp Path: C:\Users\Facu2\AppData\Local\Temp\skyclaw_ini_probe\temp\
-Using Output Path: C:\Users\Facu2\AppData\Local\Temp\skyclaw_ini_probe\out_tes5vr_vr_ini\
+Using Temp Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\temp\
+Using Output Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\out_tes5vr_vr_ini\
 Using ini: C:\steam\steamapps\content\app_489830\depot_489832\\Skyrim.ini
 Fatal: Could not find ini
 [1110853:04:21] [50A8] [TMessageDialog.Dialog] Error: Skyrim.ini can not be found. The INI file is missing from its default location at C:\steam\steamapps\content\app_489830\depot_489832\\Skyrim.ini. Current game mode: Skyrim VR (TES5VR)
