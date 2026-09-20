@@ -282,6 +282,14 @@ def test_posix_quiescence_falla_con_quiescence_unsupported_error() -> None:
     assert "Plataforma no soportada" in str(exc_info.value)
 
 
+def test_posix_probe_tree_vacio_falla_cerrado() -> None:
+    """POSIX: un NodeSet vacío no puede producir un falso éxito sin ejecutar ningún probe."""
+    with patch("sys.platform", "linux"), pytest.raises(QuiescenceUnsupportedError) as exc_info:
+        probe_tree_quiescence("/tmp/dummy", ())
+
+    assert "Plataforma no soportada" in str(exc_info.value)
+
+
 def test_default_quiescence_jitter_rango() -> None:
     """Verifica que el jitter por defecto añade un retraso no negativo y acotado al 10%."""
     base = 1.0
