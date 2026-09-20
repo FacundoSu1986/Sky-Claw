@@ -64,7 +64,6 @@ from sky_claw.local.runtime_vault.node_evidence import (
     NativeEvidenceError,
     NativeEvidenceUnsupportedError,
     NativeNodeEvidence,
-    NativeReparsePointError,
     file_id_128_to_int,
     probe_node_evidence,
 )
@@ -108,7 +107,6 @@ __all__ = [
     "NativeEvidenceError",
     "NativeEvidenceUnsupportedError",
     "NativeNodeEvidence",
-    "NativeReparsePointError",
     "NodeProtectionObservation",
     "NodeSecurityBackup",
     "PhysicalIndependenceResult",

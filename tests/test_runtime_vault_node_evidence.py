@@ -9,9 +9,9 @@ Cubre:
   W2: Security Descriptor real (raw bytes, sha256, SIDs, control flags).
   W3: NumberOfLinks == 1 en archivos regulares recién creados.
   W4: Hardlink interno -> DuplicateFileIdError (Fase 2).
-  W5: Hardlink externo -> NativeHardlinkError (Fase 3).
-  W6: Symlink -> NativeReparsePointError.
-  W7: Junction -> NativeReparsePointError.
+  W5: Hardlink externo -> DuplicateFileIdError (Fase 3, ADR 0010).
+  W6: Symlink -> InventoryLinkError.
+  W7: Junction -> InventoryLinkError.
   W8: Handle de directorio con FILE_FLAG_BACKUP_SEMANTICS.
   W9: Directorio vacío -> 1 nodo con relative_path ".".
   W10: Ordenamiento bottom-up con "." último.
@@ -41,12 +41,11 @@ from sky_claw.local.runtime_vault.golden_protection_plan import (
     GoldenProtectionNodeKind,
     NodeSecurityBackup,
 )
-from sky_claw.local.runtime_vault.models import RuntimeVaultError
+from sky_claw.local.runtime_vault.models import InventoryLinkError, RuntimeVaultError
 from sky_claw.local.runtime_vault.node_evidence import (
     NativeEvidenceError,
     NativeEvidenceUnsupportedError,
     NativeNodeEvidence,
-    NativeReparsePointError,
     _bottom_up_evidence_sort_key,
     _probe_open_handle,
     file_id_128_to_int,
@@ -69,7 +68,7 @@ class TestNativeNodeEvidencePure:
         """Verifica que las excepciones deriven de RuntimeVaultError y de NativeEvidenceError."""
         assert issubclass(NativeEvidenceError, RuntimeVaultError)
         assert issubclass(NativeEvidenceUnsupportedError, NativeEvidenceError)
-        assert issubclass(NativeReparsePointError, NativeEvidenceError)
+        assert issubclass(InventoryLinkError, RuntimeVaultError)
         assert issubclass(DuplicateFileIdError, RuntimeVaultError)
 
     def test_file_id_128_to_int_vectores_congelados(self) -> None:
@@ -366,7 +365,7 @@ class TestNativeNodeEvidenceWindowsReal:
                 probe_node_evidence(tree_descartable)
 
     def test_w6_symlink(self, tree_descartable: pathlib.Path) -> None:
-        """W6 — Symlink real dentro del árbol es detectado y produce NativeReparsePointError."""
+        """W6 — Symlink real dentro del árbol es detectado y produce InventoryLinkError."""
         if not symlink_guard:
             pytest.skip("Crear symlinks requiere privilegios elevados o Developer Mode en Windows")
 
@@ -378,11 +377,11 @@ class TestNativeNodeEvidenceWindowsReal:
         except OSError as exc:
             pytest.skip(f"No se pudo crear symlink: {exc}")
 
-        with pytest.raises(NativeReparsePointError, match="[Ee]nlace|[Rr]eparse point"):
+        with pytest.raises(InventoryLinkError, match="[Ee]nlace|[Rr]eparse point"):
             probe_node_evidence(tree_descartable)
 
     def test_w7_junction(self, tree_descartable: pathlib.Path) -> None:
-        """W7 — Junction real (mklink /J) dentro del árbol produce NativeReparsePointError."""
+        """W7 — Junction real (mklink /J) dentro del árbol produce InventoryLinkError."""
         target_dir = tree_descartable / "target_dir"
         target_dir.mkdir()
         (target_dir / "inside.txt").write_text("hello", encoding="utf-8")
@@ -391,7 +390,7 @@ class TestNativeNodeEvidenceWindowsReal:
         err = crear_junction(junc_dir, target_dir)
         assert err is None, f"Fallo al crear junction con mklink /J: {err}"
 
-        with pytest.raises(NativeReparsePointError, match="[Ee]nlace|[Rr]eparse point"):
+        with pytest.raises(InventoryLinkError, match="[Ee]nlace|[Rr]eparse point"):
             probe_node_evidence(tree_descartable)
 
     def test_w8_directory_handle(self, tree_descartable: pathlib.Path) -> None:
@@ -652,8 +651,8 @@ class TestNativeNodeEvidenceWindowsReal:
         err = crear_junction(junc_root, target_dir)
         assert err is None, f"Fallo al crear junction: {err}"
 
-        # Probar el junction como root: debe fallar con NativeReparsePointError sin resolver
-        with pytest.raises(NativeReparsePointError, match="[Ee]nlace|[Rr]eparse point"):
+        # Probar el junction como root: debe fallar con InventoryLinkError sin resolver
+        with pytest.raises(InventoryLinkError, match="[Ee]nlace|[Rr]eparse point"):
             probe_node_evidence(junc_root)
 
     def test_w16_ancestor_directory_replacement_race(self, tree_descartable: pathlib.Path) -> None:
@@ -667,9 +666,8 @@ class TestNativeNodeEvidenceWindowsReal:
         leaf = subdir / "leaf.txt"
         leaf.write_text("datos seguros", encoding="utf-8")
 
-        outside_dir = tree_descartable.parent / "outside_target"
-        outside_dir.mkdir(exist_ok=True)
-        try:
+        with tempfile.TemporaryDirectory(dir=tree_descartable.parent) as td_outside:
+            outside_dir = pathlib.Path(td_outside)
             (outside_dir / "external.txt").write_text("datos fuera del golden", encoding="utf-8")
 
             # 1. Probar directamente la primitiva: mientras el containment handle está abierto
@@ -713,10 +711,6 @@ class TestNativeNodeEvidenceWindowsReal:
             rel_paths = {e.backup.relative_path for e in evidencias}
             assert rel_paths == {".", "sub", "sub/leaf.txt"}
             assert "external.txt" not in rel_paths
-        finally:
-            import shutil
-
-            shutil.rmtree(outside_dir, ignore_errors=True)
 
     def test_root_inexistente_o_no_directorio_falla_cerrado(self, tree_descartable: pathlib.Path) -> None:
         """Verifica que root inexistente o archivo regular como root falle con NativeEvidenceError."""
