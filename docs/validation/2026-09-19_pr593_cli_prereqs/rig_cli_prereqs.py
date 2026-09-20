@@ -150,12 +150,19 @@ def _ventanas_del_pid(pid: int) -> list[int]:
 
 
 def cerrar_ventana_del_pid(pid: int) -> int:
-    """Manda ``WM_CLOSE`` a las ventanas visibles del PID. Devuelve cuántas."""
+    """Manda ``WM_CLOSE`` a las ventanas visibles del PID. Devuelve cuántos envíos tuvieron éxito.
+
+    ``PostMessageW`` devuelve 0 cuando el mensaje no se pudo encolar (p. ej. la
+    ventana dejó de existir entre la enumeración y el envío): una ventana
+    encontrada NO implica un cierre efectivamente enviado.
+    """
     user32 = ctypes.windll.user32
     ventanas = _ventanas_del_pid(pid)
+    enviadas = 0
     for hwnd in ventanas:
-        user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0)
-    return len(ventanas)
+        if user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0):
+            enviadas += 1
+    return enviadas
 
 
 async def main() -> int:
@@ -286,8 +293,8 @@ async def main() -> int:
                     "candidatos": candidatos,
                 }
             pid = candidatos[0]
-            ventanas = cerrar_ventana_del_pid(pid)
-            return {"cerrado": ventanas > 0, "pid": pid, "ventanas": ventanas}
+            enviadas = cerrar_ventana_del_pid(pid)
+            return {"cerrado": enviadas > 0, "pid": pid, "enviadas": enviadas}
 
         watcher = asyncio.create_task(_cerrar_ventana_al_terminar())
         try:
