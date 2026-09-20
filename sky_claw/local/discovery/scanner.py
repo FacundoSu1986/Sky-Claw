@@ -34,6 +34,11 @@ from sky_claw.local.discovery.environment import (
     SkyrimEdition,
     SkyrimInfo,
     ToolInfo,
+    ToolReadiness,
+)
+from sky_claw.local.discovery.registry import (
+    EXTERNAL_TOOL_REGISTRY,
+    iter_external_tool_specs,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,8 +92,8 @@ def _parse_steam_libraries() -> list[pathlib.Path]:
 # ── Tool Search Paths ─────────────────────────────────────────────────
 
 
-_WRYE_BASH_NAMES = ("Wrye Bash.exe", "Wrye Bash Launcher.exe")
-_DYNDOLOD_NAMES = ("DynDOLOD64.exe", "DynDOLOD.exe", "DynDOLODx64.exe")
+_WRYE_BASH_NAMES = EXTERNAL_TOOL_REGISTRY["wrye_bash"].exe_names
+_DYNDOLOD_NAMES = EXTERNAL_TOOL_REGISTRY["dyndolod"].exe_names
 #: Nombres bajo los que puede venir el ejecutable de Pandora. Público a propósito:
 #: es la ÚNICA fuente de verdad, compartida con ``ToolsInstaller.ensure_pandora``
 #: (``sky_claw/local/tools_installer.py``). Detectar e instalar son dos superficies
@@ -102,10 +107,10 @@ _DYNDOLOD_NAMES = ("DynDOLOD64.exe", "DynDOLOD.exe", "DynDOLODx64.exe")
 #: nombre del release actual — con un `Pandora.exe` viejo conviviendo con el
 #: nuevo (upgrade manual in-place), listar el legacy primero exportaba el binario
 #: viejo por `PANDORA_EXE` y los rituales seguían lanzando ése.
-PANDORA_EXE_NAMES = ("Pandora Behaviour Engine+.exe", "Pandora Engine.exe", "Pandora.exe")
+PANDORA_EXE_NAMES = EXTERNAL_TOOL_REGISTRY["pandora"].exe_names
 _PANDORA_NAMES = PANDORA_EXE_NAMES
-_LOOT_NAMES = ("LOOT.exe", "loot.exe")
-_XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
+_LOOT_NAMES = EXTERNAL_TOOL_REGISTRY["loot"].exe_names
+_XEDIT_NAMES = EXTERNAL_TOOL_REGISTRY["xedit"].exe_names
 # NO agregar `sksevr_loader.exe` acá (se intentó y se revirtió — revisión de #425):
 # a diferencia de _XEDIT_NAMES, donde las tres variantes SON el mismo tool renombrado
 # por upstream entre releases, los loaders de SKSE son binarios DISTINTOS por edición.
@@ -115,7 +120,7 @@ _XEDIT_NAMES = ("SSEEdit.exe", "TES5Edit.exe", "xEdit.exe")
 # chequeo) y sí amplía el riesgo de que una instalación SE/AE se reporte "SKSE
 # encontrado" con un loader de VR que no le sirve. Arreglarlo bien requiere matchear
 # el loader a la edición ya detectada, no ampliar el OR compartido.
-_SKSE_LOADER_NAMES = ("skse64_loader.exe", "skse_loader.exe")
+_SKSE_LOADER_NAMES = EXTERNAL_TOOL_REGISTRY["skse"].exe_names
 #: Loader que le corresponde a cada edición. SE/AE cargan la familia ``skse64_*`` y LE
 #: la familia ``skse_*``: no son intercambiables, así que con la edición ya detectada
 #: se busca el que aplica en vez del OR de ambos.
@@ -377,66 +382,16 @@ class EnvironmentScanner:
             )
 
         # ── 3. Detect Tools ───────────────────────────────────────────
-        tool_defs = [
-            (
-                "skse",
-                _SKSE_LOADER_NAMES,
-                "Extensor del motor (SKSE) - Requiere instalación manual o auto-instalador",
-                "https://skse.silverlock.org/",
-                True,
-            ),
-            (
-                "loot",
-                _LOOT_NAMES,
-                "Ordenar mods automáticamente",
-                "https://github.com/loot/loot/releases",
-                True,
-            ),
-            (
-                "xedit",
-                _XEDIT_NAMES,
-                "Limpiar archivos problemáticos",
-                "https://github.com/TES5Edit/TES5Edit/releases",
-                False,
-            ),
-            (
-                "pandora",
-                _PANDORA_NAMES,
-                "Generar animaciones",
-                "https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus/releases",
-                False,
-            ),
-            (
-                "wrye_bash",
-                _WRYE_BASH_NAMES,
-                "Crear parche de compatibilidad",
-                "https://www.nexusmods.com/skyrimspecialedition/mods/6837",
-                False,
-            ),
-            (
-                "dyndolod",
-                _DYNDOLOD_NAMES,
-                "Optimizar gráficos (LOD)",
-                "https://www.nexusmods.com/skyrimspecialedition/mods/32382",
-                False,
-            ),
-            (
-                "community_shaders",
-                # Exe ficticio con sufijo .exe: NO hay tal binario — la detección
-                # real es por sentinel del mod bajo mo2_root/mods (caso especial
-                # en el loop); `exe_names[0]` solo alimenta el `technical_name`
-                # del MissingTool (el bloque lo deriva con .replace(".exe", "")).
-                ("community_shaders.exe",),
-                "Renderizado moderno (Community Shaders) - Instalable desde el dashboard",
-                "https://www.nexusmods.com/skyrimspecialedition/mods/86492",
-                False,
-            ),
-        ]
-
         mo2_root = mo2_path if mo2_path else None
         search_roots = self._build_search_roots(mo2_root, skyrim_path)
 
-        for key, exe_names, friendly, url, is_critical in tool_defs:
+        for spec in iter_external_tool_specs():
+            key = spec.key
+            exe_names = spec.exe_names
+            friendly = spec.friendly_action
+            url = spec.download_url
+            is_critical = spec.is_critical
+
             if key == "skse":
                 # SKSE no usa el resolver genérico: ver `find_skse_installation`.
                 found = (
@@ -477,6 +432,7 @@ class EnvironmentScanner:
                     name=human_name,
                     exe_path=found,
                     friendly_action=friendly,
+                    readiness=ToolReadiness.FOUND,
                 )
                 if key == "skse" and snap.skse_present_but_unverified():
                     # Presencia sin compatibilidad probada (#491): con la versión
@@ -498,6 +454,7 @@ class EnvironmentScanner:
                         friendly_description=friendly,
                         download_url=url,
                         is_critical=is_critical,
+                        readiness=ToolReadiness.MISSING,
                     )
                 )
                 emoji = "⚠️" if not is_critical else "❌"
