@@ -1063,7 +1063,9 @@ class TestRuntimeCloneSuiteCanonico:
             "locking",
             "models",
             "node_evidence",
+            "planning_orchestrator",
             "protection",
+            "quiescence",
             "target_dacl",
             "verification",
         }
