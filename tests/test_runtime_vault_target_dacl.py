@@ -1118,7 +1118,8 @@ class TestTargetDaclOraclesAndMutations:
 
                 # 1. Adulteramos owner en backup para exigir un owner distinto -> falla
                 drifted_owner_backup = copy.copy(pre)
-                object.__setattr__(drifted_owner_backup, "owner_sid", "S-1-5-32-544")
+                drift_sid = "S-1-5-18" if pre.owner_sid != "S-1-5-18" else "S-1-5-11"
+                object.__setattr__(drifted_owner_backup, "owner_sid", drift_sid)
                 with pytest.raises(TargetDaclVerificationError, match="owner"):
                     verify_restored_security_descriptor_by_handle(h, drifted_owner_backup)
 
