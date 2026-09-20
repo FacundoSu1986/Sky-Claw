@@ -48,9 +48,10 @@ Evidencia upstream de la tabla (verificada 2026-09-20):
 * ``ianpatt/skse64``, ``skse64_whatsnew.txt`` (master): "2.2.6 — support for
   1.6.1170"; los builds posteriores del mismo runtime no repiten la línea
   "support for" (convención del changelog) y "2.2.8 — fix regression in old
-  commonlib": 2.2.8 es el build recomendado para quien permanece en
-  1.6.1170, y su archivo de Nexus se describe "Compatible with Skyrim Special
-  Edition 1.6.1170 from Steam". También "2.3.0 — support for 1.7.99" y
+  commonlib": este catálogo selecciona 2.2.8 para 1.6.1170 (el build más
+  nuevo de esa familia, correctivo de la regresión de 2.2.7), y su archivo de
+  Nexus se describe "Compatible with Skyrim Special Edition 1.6.1170 from
+  Steam". También "2.3.0 — support for 1.7.99" y
   "2.3.1 — support for 1.7.104". Nota: el whatsnew ya lista un 2.3.2 (bugfix
   que no agrega soporte de runtime) pero ``skse64_common/skse_version.h``
   (master) declara ``CURRENT_RELEASE_SKSE_STR "2.3.1"`` y
@@ -118,10 +119,10 @@ SKSE_RELEASES: tuple[SkseRelease, ...] = (
         source=SkseSource.SILVERLOCK,
         artifact_name="skse64_2_00_20.7z",
     ),
-    # 1.6.1170: 2.2.6 introdujo el soporte, pero 2.2.8 es el build recomendado
-    # para permanecer en ese runtime (2.2.7 trajo cambios y 2.2.8 corrige su
-    # regresión de old CommonLib). No existe como 7z de silverlock → NEXUS, y
-    # sin archive directo verificado: artifact_name=None (no se inventa).
+    # 1.6.1170: 2.2.6 introdujo el soporte; este catálogo selecciona 2.2.8, el
+    # build más nuevo de esa familia, que corrige la regresión de old CommonLib
+    # de 2.2.7. No existe como 7z de silverlock → NEXUS, y sin archive directo
+    # verificado: artifact_name=None (no se inventa).
     SkseRelease(
         game_version="1.6.1170",
         skse_version="2.2.8",

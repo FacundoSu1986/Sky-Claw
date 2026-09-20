@@ -31,7 +31,7 @@ class TestResolucionExacta:
         assert release.artifact_name == "skse64_2_00_20.7z"
 
     def test_resuelve_release_161170(self) -> None:
-        """1.6.1170 → SKSE 2.2.8 (recomendado para ese runtime) desde Nexus."""
+        """1.6.1170 → SKSE 2.2.8 (build seleccionado por el catálogo) desde Nexus."""
         release = resolve_skse_release("1.6.1170")
 
         assert release is not None
@@ -257,8 +257,9 @@ class TestCoherenciaConElModeloVigente:
     mismo DLL (la identidad que el scanner usa para decidir si una instalación
     en disco sirve): es la clase de defecto «se arregló un hermano y no el
     otro», acá entre modelo viejo y nuevo. El PIN de build puede diferir a
-    propósito — hoy 1.6.1170 resuelve a 2.2.8 (recomendado) mientras el
-    payload de adquisición legacy sigue siendo ``skse64_2_02_06.7z`` — porque
+    propósito — hoy 1.6.1170 resuelve a 2.2.8 (el build que selecciona este
+    catálogo) mientras el payload de adquisición legacy sigue siendo
+    ``skse64_2_02_06.7z`` — porque
     ambos son builds válidos del mismo runtime; unificar la adquisición es del
     PR-2. Muere cuando ``ensure_skse`` consuma el catálogo y ``SKSE_CONFIG``
     deje de ser la fuente.
