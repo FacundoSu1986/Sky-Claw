@@ -1123,8 +1123,11 @@ class TestTargetDaclOraclesAndMutations:
                 with pytest.raises(TargetDaclVerificationError, match="owner"):
                     verify_restored_security_descriptor_by_handle(h, drifted_owner_backup)
 
-                # 2. Desviación real en disco: volvemos a aplicar Target DACL (DACL alterada respecto a PRE)
-                apply_target_dacl_by_handle(h, pre)
+                # 2. Desviación real en disco: alteramos la DACL en el objeto
+                spec = build_target_dacl_spec(GoldenProtectionNodeKind.FILE)
+                acl_buf, pacl = build_native_target_dacl(spec)
+                ret = _advapi32.SetSecurityInfo(h, 1, 4 | 0x80000000, None, None, pacl, None)
+                assert ret == 0
                 with pytest.raises(TargetDaclVerificationError):
                     verify_restored_security_descriptor_by_handle(h, pre)
             finally:
