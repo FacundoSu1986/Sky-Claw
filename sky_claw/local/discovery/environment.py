@@ -32,7 +32,7 @@ class HealthStatus(StrEnum):
 
 
 class ToolReadiness(StrEnum):
-    """Semantic readiness state for external tools."""
+    """Estado semántico de preparación y disponibilidad para herramientas externas."""
 
     FOUND = "found"
     MISSING = "missing"
@@ -67,18 +67,20 @@ def classify_tool_readiness(
 
     if configured_path is not None:
         name = configured_path.name
-        is_expected = not expected_names or name in expected_names
-        exists = configured_path_exists if configured_path_exists is not None else configured_path.exists()
-        is_file = configured_path_is_file if configured_path_is_file is not None else configured_path.is_file()
+        expected_folded = {expected.casefold() for expected in expected_names}
+        is_expected = not expected_names or name.casefold() in expected_folded
 
-        if exists and is_file:
-            if not is_expected:
-                return ToolReadiness.WRONG_EXECUTABLE
-            return ToolReadiness.FOUND
+        exists = configured_path_exists if configured_path_exists is not None else configured_path.exists()
         if not exists:
             if discovered_path is not None:
                 return ToolReadiness.MOVED_INSTALLATION
             return ToolReadiness.STALE_CONFIGURED_PATH
+
+        is_file = configured_path_is_file if configured_path_is_file is not None else configured_path.is_file()
+        if is_file:
+            if not is_expected:
+                return ToolReadiness.WRONG_EXECUTABLE
+            return ToolReadiness.FOUND
         return ToolReadiness.INVALID_PATH
 
     if discovered_path is not None:

@@ -35,6 +35,7 @@ from sky_claw.local.discovery.environment import (
     SkyrimInfo,
     ToolInfo,
     ToolReadiness,
+    classify_tool_readiness,
 )
 from sky_claw.local.discovery.registry import (
     EXTERNAL_TOOL_REGISTRY,
@@ -403,6 +404,7 @@ class EnvironmentScanner:
                     if skyrim_path is not None
                     else None
                 )
+                readiness = ToolReadiness.FOUND if found else ToolReadiness.MISSING
             elif key == "community_shaders":
                 # Mod de MO2, no un exe: se detecta por el sentinel físico bajo
                 # mods/ — el VFS de MO2 no es visible para el scanner. Importación
@@ -424,15 +426,32 @@ class EnvironmentScanner:
                     mod_dir = mods_target / COMMUNITY_SHADERS_MOD_NAME
                     sentinel = mod_dir / "SKSE" / "Plugins" / "CommunityShaders.dll"
                     found = sentinel if sentinel.is_file() and (mod_dir / "Shaders").is_dir() else None
+                readiness = ToolReadiness.FOUND if found else ToolReadiness.MISSING
             else:
+                configured = self._configured_tool_paths.get(key)
+                configured_exists: bool | None = None
+                configured_is_file: bool | None = None
+                if configured is not None:
+                    configured_exists = configured.exists()
+                    configured_is_file = configured.is_file() if configured_exists else False
+
                 found = self._resolve_tool_path(key, exe_names, search_roots)
+                discovered_alt = found if (configured is None or found != configured) else None
+
+                readiness = classify_tool_readiness(
+                    configured_path=configured,
+                    discovered_path=discovered_alt or (found if configured is None else None),
+                    expected_names=exe_names,
+                    configured_path_exists=configured_exists,
+                    configured_path_is_file=configured_is_file,
+                )
             if found:
                 human_name = key.upper().replace("_", " ")
                 snap.tools[key] = ToolInfo(
                     name=human_name,
                     exe_path=found,
                     friendly_action=friendly,
-                    readiness=ToolReadiness.FOUND,
+                    readiness=readiness,
                 )
                 if key == "skse" and snap.skse_present_but_unverified():
                     # Presencia sin compatibilidad probada (#491): con la versión
@@ -442,6 +461,18 @@ class EnvironmentScanner:
                     snap.health_messages.append(
                         f"⚠️ {human_name} encontrado, pero no se pudo verificar su "
                         "compatibilidad (versión de Skyrim ilegible)"
+                    )
+                elif readiness is ToolReadiness.MOVED_INSTALLATION:
+                    snap.health_messages.append(
+                        f"⚠️ {human_name} encontrado en ubicación detectada, pero la ruta configurada ya no existe"
+                    )
+                elif readiness is ToolReadiness.WRONG_EXECUTABLE:
+                    snap.health_messages.append(
+                        f"⚠️ {human_name} encontrado en ubicación detectada, pero la ruta configurada apunta a un ejecutable incorrecto"
+                    )
+                elif readiness is ToolReadiness.INVALID_PATH:
+                    snap.health_messages.append(
+                        f"⚠️ {human_name} encontrado en ubicación detectada, pero la ruta configurada no es válida"
                     )
                 else:
                     snap.health_messages.append(f"✅ {human_name} encontrado")
@@ -454,11 +485,30 @@ class EnvironmentScanner:
                         friendly_description=friendly,
                         download_url=url,
                         is_critical=is_critical,
-                        readiness=ToolReadiness.MISSING,
+                        readiness=readiness,
                     )
                 )
-                emoji = "⚠️" if not is_critical else "❌"
-                snap.health_messages.append(f"{emoji} {human_name} no encontrado")
+                if readiness is ToolReadiness.STALE_CONFIGURED_PATH:
+                    snap.health_messages.append(
+                        f"❌ {human_name}: la ruta configurada ya no existe y no se encontró una instalación alternativa"
+                        if is_critical
+                        else f"⚠️ {human_name}: la ruta configurada ya no existe y no se encontró una instalación alternativa"
+                    )
+                elif readiness is ToolReadiness.WRONG_EXECUTABLE:
+                    snap.health_messages.append(
+                        f"❌ {human_name}: la ruta configurada apunta a un ejecutable incorrecto y no se encontró la herramienta"
+                        if is_critical
+                        else f"⚠️ {human_name}: la ruta configurada apunta a un ejecutable incorrecto y no se encontró la herramienta"
+                    )
+                elif readiness is ToolReadiness.INVALID_PATH:
+                    snap.health_messages.append(
+                        f"❌ {human_name}: la ruta configurada no es válida y no se encontró la herramienta"
+                        if is_critical
+                        else f"⚠️ {human_name}: la ruta configurada no es válida y no se encontró la herramienta"
+                    )
+                else:
+                    emoji = "⚠️" if not is_critical else "❌"
+                    snap.health_messages.append(f"{emoji} {human_name} no encontrado")
 
         # ── 3b. mteFunctions.pas ──────────────────────────────────────
         # Los scripts Pascal de Sky-Claw declaran `uses mteFunctions`, pero
@@ -600,12 +650,18 @@ class EnvironmentScanner:
     ) -> pathlib.Path | None:
         """Resolve a tool's executable, preferring the user's configured path.
 
-        A configured exe that exists on disk wins; otherwise fall back to the
-        auto-detection scan over ``search_roots`` (and PATH). A configured path
-        that no longer exists is ignored, never claimed as installed.
+        A configured exe that exists on disk and matches an expected executable
+        name wins; otherwise fall back to the auto-detection scan over
+        ``search_roots`` (and PATH). A configured path that no longer exists or
+        points to an unexpected executable is not accepted as the tool's binary.
         """
         configured = self._configured_tool_paths.get(key)
-        if configured is not None and configured.is_file():
+        expected_folded = {name.casefold() for name in exe_names}
+        if (
+            configured is not None
+            and configured.is_file()
+            and (not exe_names or configured.name.casefold() in expected_folded)
+        ):
             return configured
         return self._find_tool(exe_names, search_roots)
 

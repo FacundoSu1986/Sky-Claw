@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -402,6 +402,34 @@ def test_classify_tool_readiness_pura() -> None:
         == ToolReadiness.WRONG_EXECUTABLE
     )
 
+    # 5b. Basename con casing distinto (Loot.exe vs ("LOOT.exe", "loot.exe"))
+    assert (
+        classify_tool_readiness(
+            configured_path=pathlib.Path("C:/Modding/Loot.exe"),
+            expected_names=("LOOT.exe", "loot.exe"),
+            configured_path_exists=True,
+            configured_path_is_file=True,
+        )
+        == ToolReadiness.FOUND
+    )
+
+    # 5c. Sin probes de filesystem cuando exists=False ya es conocido (Finding D / M6)
+    mock_stale = Mock(spec=pathlib.Path)
+    mock_stale.name = "LOOT.exe"
+    mock_stale.is_file.side_effect = AssertionError("classify_tool_readiness invocó is_file() pese a exists=False")
+    mock_stale.exists.side_effect = AssertionError(
+        "classify_tool_readiness invocó exists() pese a configured_path_exists dado"
+    )
+    assert (
+        classify_tool_readiness(
+            configured_path=mock_stale,
+            configured_path_exists=False,
+            configured_path_is_file=None,
+            expected_names=("LOOT.exe",),
+        )
+        == ToolReadiness.STALE_CONFIGURED_PATH
+    )
+
     # 6. Sin configured path, descubierto por scan
     assert (
         classify_tool_readiness(
@@ -504,13 +532,21 @@ async def test_preservacion_deteccion_especial_skse(tmp_path: pathlib.Path) -> N
 
 @pytest.mark.asyncio
 async def test_preservacion_deteccion_especial_community_shaders(tmp_path: pathlib.Path) -> None:
-    """Verifica que Community Shaders no busca un binario ejecutable en disco sino su sentinel de mod MO2."""
+    """Verifica que Community Shaders no busca un binario ejecutable en disco sino su sentinel de mod MO2.
+
+    Hermético para CI: siembra un Skyrim controlado en tmp_path para que el scanner no aborte
+    antes de la fase MO2 en runners limpios sin registro de Windows ni Steam.
+    """
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
     mo2_dir = tmp_path / "MO2"
     mo2_dir.mkdir()
     mods_dir = mo2_dir / "mods"
     mods_dir.mkdir()
 
-    scanner = EnvironmentScanner()
+    scanner = EnvironmentScanner(skyrim_path=skyrim_dir)
     with patch.object(EnvironmentScanner, "_find_mo2", AsyncMock(return_value=mo2_dir)):
         # Sin mod instalado -> reporta missing
         with patch.object(EnvironmentScanner, "_resolve_tool_path") as mock_resolve:
@@ -533,3 +569,238 @@ async def test_preservacion_deteccion_especial_community_shaders(tmp_path: pathl
         assert snap2.has_tool("community_shaders")
         assert snap2.tools["community_shaders"].exe_path == cs_plugins / "CommunityShaders.dll"
         assert snap2.tools["community_shaders"].readiness == ToolReadiness.FOUND
+
+
+# ==============================================================================
+# I. Integración real del clasificador de readiness con EnvironmentScanner
+# ==============================================================================
+
+
+@pytest.mark.asyncio
+async def test_scanner_configured_path_correcta_produce_tool_info_found(tmp_path: pathlib.Path) -> None:
+    """Ruta configurada válida y con nombre esperado produce ToolInfo con FOUND."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    loot_exe = tmp_path / "LOOT" / "LOOT.exe"
+    loot_exe.parent.mkdir()
+    loot_exe.write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(loot_exe)},
+    )
+    snap = await scanner.scan()
+
+    assert snap.has_tool("loot")
+    assert snap.tools["loot"].readiness == ToolReadiness.FOUND
+    assert snap.tools["loot"].exe_path == loot_exe
+    assert any("✅ LOOT encontrado" in m for m in snap.health_messages)
+
+
+@pytest.mark.asyncio
+async def test_scanner_configured_path_casing_distinto_produce_found(tmp_path: pathlib.Path) -> None:
+    """Ruta configurada con casing diferente ('Loot.exe' vs 'LOOT.exe') se acepta case-insensitively como FOUND."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    loot_exe = tmp_path / "LOOT" / "Loot.exe"
+    loot_exe.parent.mkdir()
+    loot_exe.write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(loot_exe)},
+    )
+    snap = await scanner.scan()
+
+    assert snap.has_tool("loot")
+    assert snap.tools["loot"].readiness == ToolReadiness.FOUND
+    assert snap.tools["loot"].exe_path == loot_exe
+
+
+@pytest.mark.asyncio
+async def test_scanner_configured_path_inexistente_sin_alternativa_produce_missing_stale(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Ruta configurada que no existe en disco, sin alternativa, produce MissingTool con STALE_CONFIGURED_PATH."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    stale_path = tmp_path / "inexistente" / "LOOT.exe"
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(stale_path)},
+    )
+
+    with patch.object(EnvironmentScanner, "_find_tool", return_value=None):
+        snap = await scanner.scan()
+
+    assert not snap.has_tool("loot")
+    missing_loot = [m for m in snap.missing if m.technical_name.lower() == "loot"][0]
+    assert missing_loot.readiness == ToolReadiness.STALE_CONFIGURED_PATH
+    assert not any("✅ LOOT" in m for m in snap.health_messages)
+    assert any("la ruta configurada ya no existe" in m for m in snap.health_messages)
+
+
+@pytest.mark.asyncio
+async def test_scanner_configured_path_inexistente_con_autodiscovery_produce_moved_installation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Ruta configurada inexistente pero la herramienta es descubierta en otra ruta produce ToolInfo con MOVED_INSTALLATION."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    stale_path = tmp_path / "inexistente" / "LOOT.exe"
+    discovered_loot = tmp_path / "Discovered" / "LOOT.exe"
+    discovered_loot.parent.mkdir()
+    discovered_loot.write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(stale_path)},
+    )
+
+    with patch.object(EnvironmentScanner, "_find_tool", return_value=discovered_loot):
+        snap = await scanner.scan()
+
+    assert snap.has_tool("loot")
+    assert snap.tools["loot"].readiness == ToolReadiness.MOVED_INSTALLATION
+    assert snap.tools["loot"].exe_path == discovered_loot
+    assert not any("✅ LOOT encontrado" in m for m in snap.health_messages)
+    assert any(
+        "encontrado en ubicación detectada, pero la ruta configurada ya no existe" in m for m in snap.health_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_scanner_configured_path_directorio_produce_invalid_path(tmp_path: pathlib.Path) -> None:
+    """Ruta configurada que apunta a un directorio en vez de un archivo produce MissingTool con INVALID_PATH."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    dir_loot = tmp_path / "un_directorio"
+    dir_loot.mkdir()
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(dir_loot)},
+    )
+
+    with patch.object(EnvironmentScanner, "_find_tool", return_value=None):
+        snap = await scanner.scan()
+
+    assert not snap.has_tool("loot")
+    missing_loot = [m for m in snap.missing if m.technical_name.lower() == "loot"][0]
+    assert missing_loot.readiness == ToolReadiness.INVALID_PATH
+    assert not any("✅ LOOT" in m for m in snap.health_messages)
+
+
+@pytest.mark.asyncio
+async def test_scanner_configured_path_notepad_sin_alternativa_produce_missing_wrong_executable(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Ruta configurada que apunta a un ejecutable ajeno (notepad.exe) produce WRONG_EXECUTABLE y NUNCA se publica en ToolInfo."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    notepad = tmp_path / "notepad.exe"
+    notepad.write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(notepad)},
+    )
+
+    with patch.object(EnvironmentScanner, "_find_tool", return_value=None):
+        snap = await scanner.scan()
+
+    assert not snap.has_tool("loot")
+    missing_loot = [m for m in snap.missing if m.technical_name.lower() == "loot"][0]
+    assert missing_loot.readiness == ToolReadiness.WRONG_EXECUTABLE
+    # El binario ajeno NUNCA debe ser publicado como ToolInfo runnable
+    assert not any(t.exe_path == notepad for t in snap.tools.values())
+    assert any("apunta a un ejecutable incorrecto" in m for m in snap.health_messages)
+
+
+@pytest.mark.asyncio
+async def test_scanner_configured_path_notepad_con_autodiscovery_produce_tool_info_con_real_loot(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Configured path incorrecta con autodiscovery válido usa la ruta real de LOOT y reporta WRONG_EXECUTABLE."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    notepad = tmp_path / "notepad.exe"
+    notepad.write_bytes(b"MZ")
+
+    real_loot = tmp_path / "Discovered" / "LOOT.exe"
+    real_loot.parent.mkdir()
+    real_loot.write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(notepad)},
+    )
+
+    with patch.object(EnvironmentScanner, "_find_tool", return_value=real_loot):
+        snap = await scanner.scan()
+
+    assert snap.has_tool("loot")
+    assert snap.tools["loot"].readiness == ToolReadiness.WRONG_EXECUTABLE
+    assert snap.tools["loot"].exe_path == real_loot
+    assert snap.tools["loot"].exe_path != notepad
+    assert any("apunta a un ejecutable incorrecto" in m for m in snap.health_messages)
+    assert not any("✅ LOOT encontrado" in m for m in snap.health_messages)
+
+
+@pytest.mark.asyncio
+async def test_scanner_sin_configured_path_con_autodiscovery_produce_found(tmp_path: pathlib.Path) -> None:
+    """Sin ruta configurada, cuando autodiscovery encuentra la herramienta se reporta FOUND."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    real_loot = tmp_path / "Discovered" / "LOOT.exe"
+    real_loot.parent.mkdir()
+    real_loot.write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(skyrim_path=skyrim_dir)
+
+    def mock_find(exe_names, roots):
+        if "LOOT.exe" in exe_names:
+            return real_loot
+        return None
+
+    with patch.object(EnvironmentScanner, "_find_tool", side_effect=mock_find):
+        snap = await scanner.scan()
+
+    assert snap.has_tool("loot")
+    assert snap.tools["loot"].readiness == ToolReadiness.FOUND
+    assert snap.tools["loot"].exe_path == real_loot
+    assert any("✅ LOOT encontrado" in m for m in snap.health_messages)
+
+
+@pytest.mark.asyncio
+async def test_scanner_sin_configured_path_ni_discovery_produce_missing(tmp_path: pathlib.Path) -> None:
+    """Sin ruta configurada ni autodiscovery, se reporta MissingTool con MISSING."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(skyrim_path=skyrim_dir)
+
+    with patch.object(EnvironmentScanner, "_find_tool", return_value=None):
+        snap = await scanner.scan()
+
+    assert not snap.has_tool("loot")
+    missing_loot = [m for m in snap.missing if m.technical_name.lower() == "loot"][0]
+    assert missing_loot.readiness == ToolReadiness.MISSING
+    assert any("❌ LOOT no encontrado" in m for m in snap.health_messages)

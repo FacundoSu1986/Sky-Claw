@@ -1,8 +1,8 @@
-"""Canonical declarative registry for external tools.
+"""Registro canónico y declarativo para herramientas externas.
 
-This module is the single source of truth for external tools detected,
-managed, or integrated by Sky-Claw. It provides immutable tool specifications
-and projections used by the scanner, GUI ritual controllers, and bootloader.
+Este módulo es la única fuente de verdad para las herramientas externas detectadas,
+gestionadas o integradas por Sky-Claw. Proporciona especificaciones inmutables y
+proyecciones consumidas por el scanner, los controladores de rituales en la GUI y el bootloader.
 """
 
 from __future__ import annotations
@@ -15,10 +15,11 @@ from typing import Final
 
 @dataclass(frozen=True, slots=True)
 class ExternalToolSpec:
-    """Declarative specification for an external tool.
+    """Especificación declarativa para una herramienta externa.
 
-    Contains only metadata needed to scan for, dispatch, or install the tool,
-    without holding live scanner state, subprocess handles, or runtime results.
+    Contiene únicamente los metadatos necesarios para escanear, despachar o instalar
+    la herramienta, sin retener estado vivo del scanner, manejadores de subprocesos
+    ni resultados de ejecución.
     """
 
     key: str
@@ -34,7 +35,7 @@ class ExternalToolSpec:
 
     @property
     def friendly_description(self) -> str:
-        """User-facing description alias for MissingTool representation."""
+        """Alias descriptivo de cara al usuario para la representación en MissingTool."""
         return self.friendly_action
 
 
@@ -127,19 +128,19 @@ EXTERNAL_TOOL_REGISTRY: Final[Mapping[str, ExternalToolSpec]] = _validate_and_fr
 
 
 def get_tool_spec(key: str) -> ExternalToolSpec | None:
-    """Retrieve an external tool specification by key, or ``None``."""
+    """Obtiene la especificación de una herramienta externa por su clave, o ``None``."""
     return EXTERNAL_TOOL_REGISTRY.get(key)
 
 
 def iter_external_tool_specs() -> tuple[ExternalToolSpec, ...]:
-    """Iterate all declared tool specifications in canonical declaration order."""
+    """Itera todas las especificaciones de herramientas declaradas en orden canónico."""
     return tuple(EXTERNAL_TOOL_REGISTRY.values())
 
 
 def build_tool_defs() -> tuple[tuple[str, tuple[str, ...], str, str, bool], ...]:
-    """Projection matching the legacy ``tool_defs`` structure from ``scanner.py``.
+    """Proyección compatible con la estructura histórica ``tool_defs`` de ``scanner.py``.
 
-    Yields tuples of ``(key, exe_names, friendly_action, download_url, is_critical)``.
+    Produce tuplas de ``(key, exe_names, friendly_action, download_url, is_critical)``.
     """
     return tuple(
         (spec.key, spec.exe_names, spec.friendly_action, spec.download_url, spec.is_critical)
@@ -148,9 +149,9 @@ def build_tool_defs() -> tuple[tuple[str, tuple[str, ...], str, str, bool], ...]
 
 
 def build_ritual_tool_map() -> dict[str, str]:
-    """Projection mapping tool keys to their dispatcher strategy names.
+    """Proyección que asocia claves de herramientas con sus nombres de estrategia dispatcher.
 
-    Derives ``RITUAL_TOOL_MAP`` for ``ritual_runner.py``.
+    Deriva ``RITUAL_TOOL_MAP`` para ``ritual_runner.py``.
     """
     return {
         spec.key: spec.dispatcher_tool_name
@@ -160,9 +161,9 @@ def build_ritual_tool_map() -> dict[str, str]:
 
 
 def build_ritual_installer_map() -> dict[str, str]:
-    """Projection mapping tool keys to their ``ToolsInstaller`` method names.
+    """Proyección que asocia claves de herramientas con métodos de instalación en ``ToolsInstaller``.
 
-    Derives ``RITUAL_INSTALLER_MAP`` for ``ritual_runner.py``.
+    Deriva ``RITUAL_INSTALLER_MAP`` para ``ritual_runner.py``.
     """
     return {
         spec.key: spec.installer_method for spec in EXTERNAL_TOOL_REGISTRY.values() if spec.installer_method is not None
@@ -170,9 +171,9 @@ def build_ritual_installer_map() -> dict[str, str]:
 
 
 def build_ritual_install_env() -> dict[str, str]:
-    """Projection mapping tool keys to their resolver env vars set upon install.
+    """Proyección que asocia claves de herramientas con variables de entorno tras instalación.
 
-    Derives ``RITUAL_INSTALL_ENV`` for ``ritual_runner.py``.
+    Deriva ``RITUAL_INSTALL_ENV`` para ``ritual_runner.py``.
     """
     return {
         spec.key: spec.install_env_var for spec in EXTERNAL_TOOL_REGISTRY.values() if spec.install_env_var is not None
@@ -180,9 +181,9 @@ def build_ritual_install_env() -> dict[str, str]:
 
 
 def build_snapshot_tool_env() -> dict[str, str]:
-    """Projection mapping tool keys to the env vars read by ``PathResolutionService``.
+    """Proyección que asocia claves de herramientas con variables de entorno leídas por ``PathResolutionService``.
 
-    Derives ``_SNAPSHOT_TOOL_ENV`` for ``_bootloader.py``.
+    Deriva ``_SNAPSHOT_TOOL_ENV`` para ``_bootloader.py``.
     """
     return {
         spec.key: spec.snapshot_env_var for spec in EXTERNAL_TOOL_REGISTRY.values() if spec.snapshot_env_var is not None
@@ -190,9 +191,9 @@ def build_snapshot_tool_env() -> dict[str, str]:
 
 
 def build_tool_path_cfg_keys() -> dict[str, str]:
-    """Projection mapping tool keys to their configured path field in ``config.toml``.
+    """Proyección que asocia claves de herramientas con su campo de ruta en ``config.toml``.
 
-    Derives ``tool_path_cfg_keys`` for ``_build_environment_scanner()`` in ``_bootloader.py``.
+    Deriva ``tool_path_cfg_keys`` para ``_build_environment_scanner()`` en ``_bootloader.py``.
     """
     return {spec.key: spec.config_field for spec in EXTERNAL_TOOL_REGISTRY.values() if spec.config_field is not None}
 
