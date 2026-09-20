@@ -338,12 +338,16 @@ class PgPatcherCapability(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class ToolContractFingerprint:
-    """Huella de un contrato de herramienta reconocido.
+class ToolVersionContract:
+    """Contrato de VERSIÓN conocido de una herramienta (no es un fingerprint de artefacto).
 
     ``version`` es clave EXACTA de reconocimiento: no hay comparación SemVer.
     Una versión ausente del registro no hereda compatibilidad de otra; las
     fases posteriores deben fallar cerrado ante ella (``VERSION_UNSUPPORTED``).
+
+    No incluye ``exe_sha256``: la identidad binaria del artefacto la produce la
+    detección de versión/artefacto (P3/P9). P0 solo tiene fingerprint de artefacto
+    verificado para el paquete 1.2.0 (P0 §9) y ese dato NO vive en esta estructura.
     """
 
     tool_key: str
@@ -361,29 +365,29 @@ _BASE_PGPATCHER_CAPABILITIES: Final[frozenset[PgPatcherCapability]] = frozenset(
 )
 
 
-def _pgpatcher_fingerprint(version: str, *extras: PgPatcherCapability) -> ToolContractFingerprint:
-    """Construye la huella de una versión conocida con sus capacidades."""
-    return ToolContractFingerprint(PGPATCHER_TOOL_KEY, version, frozenset({*_BASE_PGPATCHER_CAPABILITIES, *extras}))
+def _pgpatcher_version_contract(version: str, *extras: PgPatcherCapability) -> ToolVersionContract:
+    """Construye el contrato de versión conocido con sus capacidades."""
+    return ToolVersionContract(PGPATCHER_TOOL_KEY, version, frozenset({*_BASE_PGPATCHER_CAPABILITIES, *extras}))
 
 
 #: Versiones de PGPatcher con contrato verificado en P0 (no es un rango abierto).
-PGPATCHER_KNOWN_CONTRACTS: Final[Mapping[str, ToolContractFingerprint]] = MappingProxyType(
+PGPATCHER_KNOWN_CONTRACTS: Final[Mapping[str, ToolVersionContract]] = MappingProxyType(
     {
-        "1.2.0": _pgpatcher_fingerprint("1.2.0"),
-        "1.3.0": _pgpatcher_fingerprint("1.3.0", PgPatcherCapability.ESM_MODE_CLI),
-        "2.0.0": _pgpatcher_fingerprint(
+        "1.2.0": _pgpatcher_version_contract("1.2.0"),
+        "1.3.0": _pgpatcher_version_contract("1.3.0", PgPatcherCapability.ESM_MODE_CLI),
+        "2.0.0": _pgpatcher_version_contract(
             "2.0.0",
             PgPatcherCapability.ESM_MODE_CLI,
             PgPatcherCapability.UPDATE_OUTPUT,
             PgPatcherCapability.PBR_JSON_SCHEMA_V2,
         ),
-        "2.1.0": _pgpatcher_fingerprint(
+        "2.1.0": _pgpatcher_version_contract(
             "2.1.0",
             PgPatcherCapability.ESM_MODE_CLI,
             PgPatcherCapability.UPDATE_OUTPUT,
             PgPatcherCapability.PBR_JSON_SCHEMA_V2,
         ),
-        "2.1.1": _pgpatcher_fingerprint(
+        "2.1.1": _pgpatcher_version_contract(
             "2.1.1",
             PgPatcherCapability.ESM_MODE_CLI,
             PgPatcherCapability.UPDATE_OUTPUT,
@@ -393,7 +397,7 @@ PGPATCHER_KNOWN_CONTRACTS: Final[Mapping[str, ToolContractFingerprint]] = Mappin
 )
 
 
-def resolve_pgpatcher_contract(version: str) -> ToolContractFingerprint | None:
+def resolve_pgpatcher_contract(version: str) -> ToolVersionContract | None:
     """Devuelve el contrato conocido de PGPatcher o ``None``.
 
     Sin herencia por SemVer: ``2.2.0`` o ``3.0.0`` no son compatibles con

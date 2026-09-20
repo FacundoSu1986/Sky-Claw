@@ -20,6 +20,7 @@ from sky_claw.local.tools.material_contract import (
     MaterialReadiness,
     MaterialStepId,
     PgPatcherCapability,
+    ToolVersionContract,
     invalidated_material_steps,
     resolve_material_order,
     resolve_pgpatcher_contract,
@@ -109,6 +110,30 @@ def test_vramr_no_declara_orden_fijo_con_pgpatcher() -> None:
     spec = MATERIAL_PIPELINE[MaterialStepId.VRAMR]
     assert spec.ordered_after == ()
     assert spec.requires_present == ()
+
+
+def test_capabilities_por_nodo_son_exactas() -> None:
+    """Igualdad exhaustiva por nodo: una capability extra o faltante rompe el contrato."""
+    assert {step: spec.requires_capabilities for step, spec in MATERIAL_PIPELINE.items()} == {
+        MaterialStepId.PARALLAXR: frozenset(),
+        MaterialStepId.BENDR: frozenset(),
+        MaterialStepId.PGPATCHER: frozenset({MaterialCapability.VFS_LAUNCH}),
+        MaterialStepId.VRAMR: frozenset(),
+        MaterialStepId.POST_PG_RECONCILE: frozenset({MaterialCapability.PLUGIN_OUTPUT}),
+    }
+    assert {step: spec.produces_capabilities for step, spec in MATERIAL_PIPELINE.items()} == {
+        MaterialStepId.PARALLAXR: frozenset({MaterialCapability.TEXTURE_OUTPUT}),
+        MaterialStepId.BENDR: frozenset({MaterialCapability.TEXTURE_OUTPUT}),
+        MaterialStepId.PGPATCHER: frozenset(
+            {
+                MaterialCapability.MESH_OUTPUT,
+                MaterialCapability.TEXTURE_OUTPUT,
+                MaterialCapability.PLUGIN_OUTPUT,
+            }
+        ),
+        MaterialStepId.VRAMR: frozenset({MaterialCapability.TEXTURE_OUTPUT}),
+        MaterialStepId.POST_PG_RECONCILE: frozenset({MaterialCapability.PLUGIN_SORT}),
+    }
 
 
 def test_solo_pgpatcher_declara_etapas_invalidadoras() -> None:
@@ -252,7 +277,34 @@ def test_capacidades_llegan_por_version_de_contrato() -> None:
     assert PgPatcherCapability.PBR_JSON_SCHEMA_V2 in v2_0.capabilities
 
 
+def test_capabilities_por_contrato_pgpatcher_son_exactas() -> None:
+    """Igualdad exhaustiva de capabilities por versión conocida (incluye 2.1.0 y 2.1.1)."""
+    base = {
+        PgPatcherCapability.AUTOSTART,
+        PgPatcherCapability.VFS_CHECK_IGNORE,
+        PgPatcherCapability.CONSOLE,
+        PgPatcherCapability.EXCLUDE_FACEGENS,
+    }
+    con_esm = {*base, PgPatcherCapability.ESM_MODE_CLI}
+    con_update = {*con_esm, PgPatcherCapability.UPDATE_OUTPUT, PgPatcherCapability.PBR_JSON_SCHEMA_V2}
+    assert {version: contrato.capabilities for version, contrato in PGPATCHER_KNOWN_CONTRACTS.items()} == {
+        "1.2.0": frozenset(base),
+        "1.3.0": frozenset(con_esm),
+        "2.0.0": frozenset(con_update),
+        "2.1.0": frozenset(con_update),
+        "2.1.1": frozenset(con_update),
+    }
+
+
+def test_el_contrato_de_version_no_es_un_fingerprint_de_artefacto() -> None:
+    """P0 §9: el contrato de versión no carga identidad binaria (sin ``exe_sha256``)."""
+    contrato = resolve_pgpatcher_contract("1.2.0")
+    assert contrato is not None
+    assert isinstance(contrato, ToolVersionContract)
+    assert not hasattr(contrato, "exe_sha256")
+
+
 @pytest.mark.parametrize("version", ["2.2.0", "3.0.0", "2.1.1.1", "4.0.0", ""])
 def test_version_no_registrada_no_hereda_compatibilidad(version: str) -> None:
-    """Sin herencia SemVer: un fingerprint ausente es fail-closed en fases posteriores."""
+    """Sin herencia SemVer: un contrato de versión ausente es fail-closed en fases posteriores."""
     assert resolve_pgpatcher_contract(version) is None
