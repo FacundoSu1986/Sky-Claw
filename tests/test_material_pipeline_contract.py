@@ -5,6 +5,8 @@ Tests puros: sin subprocess, sin filesystem, sin MO2/VFS, sin red.
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from sky_claw.local.tools.material_contract import (
@@ -112,6 +114,24 @@ def test_vramr_no_declara_orden_fijo_con_pgpatcher() -> None:
     assert spec.requires_present == ()
 
 
+def test_dependencias_por_nodo_son_exactas() -> None:
+    """Igualdad exhaustiva de aristas por nodo: blanda (``ordered_after``) y dura (``requires_present``)."""
+    assert {step: spec.ordered_after for step, spec in MATERIAL_PIPELINE.items()} == {
+        MaterialStepId.PARALLAXR: (),
+        MaterialStepId.BENDR: (MaterialStepId.PARALLAXR,),
+        MaterialStepId.PGPATCHER: (MaterialStepId.PARALLAXR, MaterialStepId.BENDR),
+        MaterialStepId.VRAMR: (),
+        MaterialStepId.POST_PG_RECONCILE: (MaterialStepId.PGPATCHER, MaterialStepId.VRAMR),
+    }
+    assert {step: spec.requires_present for step, spec in MATERIAL_PIPELINE.items()} == {
+        MaterialStepId.PARALLAXR: (),
+        MaterialStepId.BENDR: (),
+        MaterialStepId.PGPATCHER: (),
+        MaterialStepId.VRAMR: (),
+        MaterialStepId.POST_PG_RECONCILE: (MaterialStepId.PGPATCHER,),
+    }
+
+
 def test_capabilities_por_nodo_son_exactas() -> None:
     """Igualdad exhaustiva por nodo: una capability extra o faltante rompe el contrato."""
     assert {step: spec.requires_capabilities for step, spec in MATERIAL_PIPELINE.items()} == {
@@ -202,6 +222,10 @@ def test_pasos_no_representables_fallan_cerrado() -> None:
         (MaterialStepId.POST_PG_RECONCILE, MaterialStepId.PGPATCHER),
         (MaterialStepId.BENDR, MaterialStepId.PARALLAXR),
         (MaterialStepId.PGPATCHER, MaterialStepId.PGPATCHER),
+        (MaterialStepId.PGPATCHER, MaterialStepId.PARALLAXR),
+        (MaterialStepId.PGPATCHER, MaterialStepId.BENDR),
+        (MaterialStepId.PGPATCHER, MaterialStepId.POST_PG_RECONCILE, MaterialStepId.VRAMR),
+        (MaterialStepId.POST_PG_RECONCILE,),
     ],
 )
 def test_orden_invalido_es_detectado(orden_invalido: tuple[MaterialStepId, ...]) -> None:
@@ -213,6 +237,11 @@ def test_ordenes_validos_son_aceptados() -> None:
     validate_material_order(MATERIAL_STEP_ORDER)
     validate_material_order((MaterialStepId.PARALLAXR, MaterialStepId.PGPATCHER))
     validate_material_order((MaterialStepId.PGPATCHER, MaterialStepId.VRAMR, MaterialStepId.POST_PG_RECONCILE))
+
+
+def test_bendr_no_requiere_presencia_de_parallaxr() -> None:
+    """``ordered_after`` es blanda: BENDr solo exige precedencia si ParallaxR está en el plan."""
+    validate_material_order((MaterialStepId.BENDR,))
 
 
 @pytest.mark.parametrize(
@@ -265,6 +294,12 @@ def test_version_conocida_resuelve_contrato(version: str) -> None:
     assert PgPatcherCapability.AUTOSTART in contrato.capabilities
 
 
+@pytest.mark.parametrize("version", sorted(PGPATCHER_KNOWN_CONTRACTS))
+def test_resolver_devuelve_exactamente_el_contrato_registrado(version: str) -> None:
+    """Igualdad estructural: el resolver no transforma ni agrega capabilities."""
+    assert resolve_pgpatcher_contract(version) == PGPATCHER_KNOWN_CONTRACTS[version]
+
+
 def test_capacidades_llegan_por_version_de_contrato() -> None:
     v1_2 = resolve_pgpatcher_contract("1.2.0")
     v1_3 = resolve_pgpatcher_contract("1.3.0")
@@ -304,7 +339,33 @@ def test_el_contrato_de_version_no_es_un_fingerprint_de_artefacto() -> None:
     assert not hasattr(contrato, "exe_sha256")
 
 
-@pytest.mark.parametrize("version", ["2.2.0", "3.0.0", "2.1.1.1", "4.0.0", ""])
+@pytest.mark.parametrize("version", ["2.1.2", "1.2.1", "2.2.0", "3.0.0", "2.1.1.1", "4.0.0", ""])
 def test_version_no_registrada_no_hereda_compatibilidad(version: str) -> None:
     """Sin herencia SemVer: un contrato de versión ausente es fail-closed en fases posteriores."""
     assert resolve_pgpatcher_contract(version) is None
+
+
+def test_material_node_spec_es_inmutable() -> None:
+    """``frozen=True`` es parte del contrato: un nodo no puede mutarse in-place."""
+    spec = MATERIAL_PIPELINE[MaterialStepId.VRAMR]
+    with pytest.raises(FrozenInstanceError):
+        spec.readiness = MaterialReadiness.FIRST_CUT  # type: ignore[misc]
+
+
+def test_tool_version_contract_es_inmutable() -> None:
+    """El contrato de versión no puede mutarse in-place."""
+    contrato = PGPATCHER_KNOWN_CONTRACTS["1.2.0"]
+    with pytest.raises(FrozenInstanceError):
+        contrato.version = "9.9.9"  # type: ignore[misc]
+
+
+def test_material_pipeline_no_permite_escritura() -> None:
+    """El mapping público es de solo lectura: no admite reasignar entradas."""
+    with pytest.raises(TypeError):
+        MATERIAL_PIPELINE[MaterialStepId.VRAMR] = MATERIAL_PIPELINE[MaterialStepId.PGPATCHER]  # type: ignore[index]
+
+
+def test_pgpatcher_known_contracts_no_permite_escritura() -> None:
+    """El registro de contratos conocidos es de solo lectura."""
+    with pytest.raises(TypeError):
+        PGPATCHER_KNOWN_CONTRACTS["9.9.9"] = PGPATCHER_KNOWN_CONTRACTS["1.2.0"]  # type: ignore[index]
