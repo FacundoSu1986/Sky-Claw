@@ -681,11 +681,24 @@ class DynDOLODPipelineService:
         ``plugins_file`` solo cuando el operador los configuró. Las no declaradas
         las resuelve la herramienta por registro — el chequeo no puede opinar
         sobre lo que no se le dijo.
+
+        #601: con ``-m:`` declarado, la propiedad no es "la carpeta existe" sino
+        "contiene la INI que el binario abre para el game mode" (el archivo sale
+        de la MISMA autoridad que valida ``__post_init__``:
+        ``DynDOLODConfig.ini_primaria_requerida``). Hace falta revalidarla acá
+        —antes del lock y de cualquier spawn— porque el runner se CACHEA: si la
+        INI desaparece entre dos corridas de la misma sesión, la config ya
+        construida seguiría afirmando un ``-m:`` que la herramienta no puede
+        abrir. La carpeta se chequea primero para que el mensaje, cuando lo que
+        falta es el directorio entero, nombre el directorio.
         """
         config = runner._config
         for ruta in (config.data_dir, config.ini_dir, config.plugins_file):
             if ruta is not None and not ruta.exists():
                 return ruta
+        ini_requerida = config.ini_primaria_requerida
+        if ini_requerida is not None and not ini_requerida.is_file():
+            return ini_requerida
         return None
 
     # ------------------------------------------------------------------

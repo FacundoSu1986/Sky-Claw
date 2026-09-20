@@ -24,8 +24,9 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal, NamedTuple
 
 from sky_claw.app.security.links import (
@@ -183,6 +184,67 @@ _GAME_MODES_ADMINISTRADOS = frozenset(
 #: Mismo prefijo tolerante que ``_SWITCH_ADMINISTRADO`` (``-``/``/``, whitespace
 #: líder) y sin ``:``: el game mode es un switch suelto.
 _GAME_MODE_SUELTO = re.compile(r"^\s*[-/]([A-Za-z0-9]+)\s*$")
+
+#: INI primaria que el binario BUSCA dentro de la carpeta declarada en ``-m:``,
+#: por game mode efectivo.
+#:
+#: ``-m:`` no es "una carpeta de INIs cualquiera": es la BASE sobre la que el core
+#: heredado de xEdit compone el archivo que va a leer
+#: (``wbTheGameIniFileName := wbMyGamesTheGamePath + wbGameName + '.ini'``,
+#: ``xEdit/xeInit.pas``). El nombre del archivo NO sale del nombre de la carpeta
+#: ni del game mode que muestra la GUI: sale de ``wbGameName``, que para
+#: ``isMode('SSE')`` (gmSSE) y ``isMode('TES5VR')`` (gmTES5VR) es el MISMO literal
+#: ``'Skyrim'``. ``wbGameName2`` ('Skyrim Special Edition' / 'Skyrim VR') sólo
+#: nombra la carpeta ``Documents\My Games\<...>`` y no entra en el nombre del
+#: archivo. La tabla es explícita y por modo aunque hoy los dos valores coincidan:
+#: el día que un modo (o un core) requiera otro archivo, la decisión se toma acá y
+#: no en un ``if`` escondido, y el modo desconocido falla cerrado en vez de
+#: heredar el de otro.
+#:
+#: Fuentes de la verificación (FASE 1 de #601):
+#:
+#: * **Fuente**: ``xEdit/xeInit.pas``, repo oficial ``TES5Edit/TES5Edit``
+#:   (rama ``dev-4.1.6``, el core que DynDOLOD/TexGen heredan) —
+#:   ``wbTheGameIniFileName := wbMyGamesTheGamePath + wbGameName + '.ini'``;
+#:   ``wbGameName := 'Skyrim'`` en los casos ``TES5VR`` y ``SSE``; y el fallback
+#:   explícito de los modos VR (*"VR games don't create ini file in My Games by
+#:   default, use the one in the game folder"*) que reemplaza la carpeta declarada
+#:   por el directorio del juego cuando ese archivo no existe. La doc oficial
+#:   (``dyndolod.info/Help/Command-Line-Argument``) describe ``-m:`` como *"path to
+#:   INI folder"* sin nombrar archivo, y la página de Skyrim VR declara que TES5VR
+#:   usa los configs con el identificador **SSE**.
+#: * **Comportamiento verificado** (DynDOLOD 3.0 Alpha-209 x64, rig local,
+#:   2026-09-20, con ``-m:`` y ``-d:`` sintéticos): SSE + carpeta con
+#:   ``Skyrim.ini`` → ``Using ini: ...\Skyrim.ini``; TES5VR + la MISMA carpeta →
+#:   ``Using ini: ...\Skyrim.ini``; TES5VR + carpeta con sólo ``SkyrimVR.ini`` →
+#:   NO la usa: busca ``Skyrim.ini``, cae al fallback del directorio del juego y
+#:   muere con ``Fatal: Could not find ini`` / ``Skyrim.ini can not be found …
+#:   Current game mode: Skyrim VR (TES5VR)``. ``SkyrimPrefs.ini`` NO es requisito
+#:   de arranque (una carpeta con SOLO ``Skyrim.ini`` arranca el background loader
+#:   igual), así que no entra en la tabla.
+#:
+#: Congelada por igualdad literal en
+#: ``tests/test_dyndolod_ini_primaria_por_modo.py``: agregar un modo al contrato de
+#: ``DynDOLODConfig`` sin decidir su INI primaria rompe el ancla.
+_INI_PRIMARIA_POR_GAME_MODE: Mapping[str, str] = MappingProxyType(
+    {
+        "sse": "Skyrim.ini",
+        "tes5vr": "Skyrim.ini",
+    }
+)
+
+
+def _nombre_ini_primaria(game_mode: str | None) -> str | None:
+    """Archivo que el binario abre dentro de la carpeta de ``-m:``, o ``None``.
+
+    Único punto de lectura de :data:`_INI_PRIMARIA_POR_GAME_MODE`: lo consumen la
+    validación de :meth:`DynDOLODConfig.__post_init__` (al construir) y
+    :attr:`DynDOLODConfig.ini_primaria_requerida` (la vista con la que el servicio
+    revalida antes de cada corrida). Un modo sin entrada devuelve ``None`` —
+    fail-closed, nunca el archivo de otro modo.
+    """
+    return _INI_PRIMARIA_POR_GAME_MODE.get(game_mode or "")
+
 
 #: Herramienta dueña de cada spawn del runner. El nombre de la herramienta es la
 #: identidad con la que ``run_texgen``/``run_dyndolod`` invocan
@@ -686,6 +748,62 @@ class DynDOLODConfig:
             raise ValueError(f"Game path does not exist: {self.game_path}")
         if not self.dyndolod_exe.exists():
             raise DynDOLODNotFoundError(self.dyndolod_exe)
+        # #601: la carpeta declarada para `-m:` tiene que contener la INI que el
+        # binario REALMENTE va a abrir para el modo efectivo. `is_dir()` —lo único
+        # que valida el resolver del path— no distingue una carpeta vacía (o de
+        # otro juego) de la correcta: el binario busca `<carpeta>\<wbGameName>.ini`
+        # y, si no está, en modo VR cae al directorio del juego —una INI DISTINTA
+        # de la declarada— o muere con `Fatal: Could not find ini`.
+        #
+        # La decisión vive ACÁ y no en `PathResolutionService` a propósito: ese
+        # servicio responde "¿este path es un directorio admisible?" y no conoce
+        # nombres de INI. Ésta es la única frontera donde `ini_dir` (ya
+        # canonicalizado por el resolver) y el `game_mode` EFECTIVO —inferido
+        # arriba cuando vino `None`— convergen, y es la misma frontera que valida
+        # el `game_mode` y la existencia de `game_path`/`dyndolod_exe`. La
+        # propiedad que queda sostenida es la del resto de la clase: la config no
+        # existe si lo declarado no es utilizable, así que el fallo es, por
+        # construcción, ANTERIOR al runner y a cualquier spawn.
+        #
+        # `ini_dir is None` NO se toca: sin declaración no hay `-m:` en el argv y
+        # la herramienta resuelve su default por registro (comportamiento vigente;
+        # #601 valida una declaración explícita incompatible, no obliga a usar
+        # `-m:`).
+        if self.ini_dir is not None:
+            # Un modo sin entrada en la tabla NO hereda el archivo de otro: la
+            # búsqueda devuelve ``None`` y acá se falla cerrado.
+            esperada = _nombre_ini_primaria(self.game_mode)
+            if esperada is None:
+                raise DynDOLODValidationError(
+                    f"No hay INI primaria declarada para el game mode {self.game_mode!r}: la validación "
+                    f"mode-aware de -m: ({self.ini_dir}) no puede inventar el archivo requerido."
+                )
+            candidata = self.ini_dir / esperada
+            if not candidata.is_file():
+                raise DynDOLODValidationError(
+                    f"El directorio declarado para -m: ({self.ini_dir}) no contiene la INI primaria del "
+                    f"game mode {self.game_mode!r}: se esperaba un archivo regular en {candidata}. "
+                    f"Con la carpeta declarada, el binario busca ESA INI (o cae a otra ubicación) y la "
+                    f"corrida muere con 'Fatal: Could not find ini'. Se falla cerrado antes del spawn: "
+                    f"verificá la INI del juego o corregí DYNDLOD_INI_DIR."
+                )
+
+    @property
+    def ini_primaria_requerida(self) -> pathlib.Path | None:
+        """Archivo que el binario abre dentro de ``ini_dir``, o ``None`` sin ``-m:``.
+
+        Vista de SOLO LECTURA de la tabla por modo, para los consumidores que
+        revalidan la misma propiedad después de construir la config: el runner se
+        cachea (``DynDOLODPipelineService._ensure_runner``) y la INI puede
+        desaparecer entre dos corridas de la misma sesión. ``None`` significa "no
+        hay ``-m:``": sin declaración no hay archivo que exigir. Un modo sin
+        entrada en la tabla también da ``None`` — quien lo consuma debe fallar
+        cerrado, no asumir "no requerido".
+        """
+        if self.ini_dir is None:
+            return None
+        nombre = _nombre_ini_primaria(self.game_mode)
+        return None if nombre is None else self.ini_dir / nombre
 
     @property
     def texgen_root(self) -> pathlib.Path | None:
