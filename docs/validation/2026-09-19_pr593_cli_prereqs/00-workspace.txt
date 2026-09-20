@@ -1,4 +1,4 @@
-root=E:\Sky-Claw T5 Rig\evidence\PR593-cli-prereqs\2026-09-19_bounded\PR593 Work
+root=E:\Sky-Claw T5 Rig\evidence\PR593-cli-prereqs\2026-09-20_final\PR593 Work
 estado=C_BINDING_COMPATIBLE
-binding_id=70d36a5b-b440-440a-87f4-2ec4ca25b506
+binding_id=c8e9ff02-8638-45c3-ab8b-3878d368f099
 ownership=True

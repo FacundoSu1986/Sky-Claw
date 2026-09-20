@@ -1,24 +1,29 @@
 {
   "timeout_s": 150,
-  "log_bytes_antes": 2887991,
-  "log_sha256_antes": "f82aa64cac4ceb48e10e33c6c373d5b019363b15394215ac73ebb57b32bcaf64",
-  "log_lineas_antes": 32941,
+  "log_bytes_antes": 2900241,
+  "log_sha256_antes": "aad2a77bc45c591b1f19efb2431c86bdd474fa0d33f1d1fbb0e76023271c0d05",
+  "log_lineas_antes": 33095,
   "rc": 0,
-  "duracion_s": 30.1,
+  "duracion_s": 29.7,
   "stdout": "",
   "stderr": "",
   "cierre": {
     "cerrado": true,
-    "pid": 4584,
-    "ventanas": 3
+    "pid": 11036,
+    "enviadas": 3
   },
   "eco": {
-    "starting session": "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-19 08:24:17",
+    "starting session": "DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-19 21:33:21",
     "Using Skyrim Special Edition Data Path": "Using Skyrim Special Edition Data Path: G:\\Modding\\Skyrim_Runtime_1.6.1170\\Data\\",
     "Using ini:": "Using ini: C:\\Modding\\DynDOLOD RigTest\\_rig_test\\ini\\\\Skyrim.ini",
     "Using plugin list:": "Using plugin list: G:\\Modding\\MO2\\SkyrimSE\\profiles\\SkyClaw-PR2-Rig\\plugins.txt",
     "Loading active plugin list": "Loading active plugin list: G:\\Modding\\MO2\\SkyrimSE\\profiles\\SkyClaw-PR2-Rig\\plugins.txt",
-    "Using Output Path:": "Using Output Path: E:\\Sky-Claw T5 Rig\\evidence\\PR593-cli-prereqs\\2026-09-19_bounded\\PR593 Work\\DynDOLOD\\DynDOLOD\\"
+    "Using Temp Path:": "Using Temp Path: %USERPROFILE%\\AppData\\Local\\Temp\\",
+    "Using Output Path:": "Using Output Path: E:\\Sky-Claw T5 Rig\\evidence\\PR593-cli-prereqs\\2026-09-20_final\\PR593 Work\\DynDOLOD\\DynDOLOD\\"
   },
-  "lineas_nuevas": 154
+  "lineas_nuevas": 154,
+  "validacion": {
+    "ok": true,
+    "errores": []
+  }
 }

@@ -1,22 +1,80 @@
-﻿TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (ADADC675) starting session 2026-08-11 17:00:28
+TexGen 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (ADADC675) starting session 2026-09-19 21:32:34
 
 The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
 If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 
-Using Skyrim Special Edition Data Path: C:\Modding\DynDOLOD RigTest\_rig_test\data\
+Using Skyrim Special Edition Data Path: G:\Modding\Skyrim_Runtime_1.6.1170\Data\
 Using Scripts Path: C:\Modding\DynDOLOD RigTest\Edit Scripts\
-Using Temp Path: C:\Modding\DynDOLOD RigTest\_rig_test\temp\\
-Using Output Path: C:\Modding\DynDOLOD Out Test\_rig_test\output\
+Using Temp Path: %USERPROFILE%\AppData\Local\Temp\
+Using Output Path: E:\Sky-Claw T5 Rig\evidence\PR593-cli-prereqs\2026-09-20_final\PR593 Work\DynDOLOD\TexGen\
 Using ini: C:\Modding\DynDOLOD RigTest\_rig_test\ini\\Skyrim.ini
 Using save path: C:\Modding\DynDOLOD RigTest\_rig_test\ini\Saves\
 Warning: Could not find save path
-Using plugin list: C:\Modding\DynDOLOD RigTest\_rig_test\plugins.txt
+Using Creation Club Content list: G:\Modding\Skyrim_Runtime_1.6.1170\Skyrim.ccc
+Using plugin list: G:\Modding\MO2\SkyrimSE\profiles\SkyClaw-PR2-Rig\plugins.txt
 Using settings file: C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\TexGen.ini
 Using language: English
-Using general string encoding: 1252  (ANSI - Latï¿½n I)
-Using translatable string encoding: 1252  (ANSI - Latï¿½n I)
+Using general string encoding: 1252  (ANSI - Lat�n I)
+Using translatable string encoding: 1252  (ANSI - Lat�n I)
 Using VMAD string encoding: 65001 (UTF-8)
-Loading active plugin list: C:\Modding\DynDOLOD RigTest\_rig_test\plugins.txt
+Loading active plugin list: G:\Modding\MO2\SkyrimSE\profiles\SkyClaw-PR2-Rig\plugins.txt
 [00:00] xEdit Background Loader: starting...
+[00:00] xEdit Background Loader: [Skyrim - Misc.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Shaders.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Interface.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Animations.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Meshes0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Meshes1.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Sounds.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Voices_en0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures1.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures2.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures3.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures4.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures5.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures6.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures7.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures8.bsa] Loading Resources.
+[00:00] xEdit Background Loader: Warning: <Can't find Skyrim - Patch.bsa>
+[00:00] xEdit Background Loader: [Skyrim - Voices_es0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [ccBGSSSE001-Fish.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [ccQDRSSE001-SurvivalMode.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [ccBGSSSE037-Curios.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [ccBGSSSE025-AdvDSGS.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [_ResourcePack.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [G:\Modding\Skyrim_Runtime_1.6.1170\Data\] Setting Resource Path.
+[00:00] xEdit Background Loader: [Skyrim.esm] File loaded (CRC32:24BB49CD)
+[00:03] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "HAZD"
+[00:03] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "RGDL"
+[00:03] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "CLDC"
+[00:03] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "PWAT"
+[00:03] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "SCOL"
+[00:03] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "SCPT"
+[00:03] xEdit Background Loader: [Skyrim.esm] Warning: File contains empty top level group: GRUP Top "HAIR"
+[00:03] xEdit Background Loader: loading "SkyrimSE.exe"...
+[00:03] xEdit Background Loader: [SkyrimSE.exe] File loaded (CRC32:DF35062C)
+[00:03] xEdit Background Loader: [Update.esm] File loaded (CRC32:E6BA88BB)
+[00:03] xEdit Background Loader: [Dawnguard.esm] File loaded (CRC32:D399544A)
+[00:03] xEdit Background Loader: [HearthFires.esm] File loaded (CRC32:A1EC149B)
+[00:03] xEdit Background Loader: [Dragonborn.esm] File loaded (CRC32:1120165C)
+[00:04] xEdit Background Loader: [Dragonborn.esm] Warning: File contains empty top level group: GRUP Top "AVIF"
+[00:04] xEdit Background Loader: [ccBGSSSE001-Fish.esm] File loaded (CRC32:70E3300E)
+[00:04] xEdit Background Loader: [ccQDRSSE001-SurvivalMode.esl] File loaded (CRC32:25BC177E)
+[00:04] xEdit Background Loader: [ccBGSSSE037-Curios.esl] File loaded (CRC32:1BF81A3C)
+[00:04] xEdit Background Loader: [ccBGSSSE025-AdvDSGS.esm] File loaded (CRC32:EBBC9DA9)
+[00:04] xEdit Background Loader: [_ResourcePack.esl] File loaded (CRC32:7898501C)
+[00:04] xEdit Background Loader: finished
+Loading configuration files
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_skyrimesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_alpha_skyrimesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_skyrimesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_dawnguardesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_dawnguardesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_noalpha_dragonbornesm.txt
+	C:\Modding\DynDOLOD RigTest\Edit Scripts\DynDOLOD\Configs\DynDOLOD_SSE_TexGen_copy_dragonbornesm.txt
+Game: G:\Modding\Skyrim_Runtime_1.6.1170\SkyrimSE.exe, Version: 1.6.1170, Date: 2026-08-10 19:02:07
+Program: C:\Modding\DynDOLOD RigTest\TexGenx64.exe, Version: 3.0.0.209, Date: 2026-08-02 18:26:31
+Started by: %USERPROFILE%\AppData\Local\Programs\Python\Python311\python.exe, Version: 3.11.9150.1013, Date: 2024-04-02 12:43:20
