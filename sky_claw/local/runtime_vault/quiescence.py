@@ -194,6 +194,9 @@ def probe_tree_quiescence(
     todas las rutas bloqueadas y lanza un único QuiescenceViolationError estructurado
     al finalizar el recorrido del árbol completo.
     """
+    if sys.platform != "win32":
+        raise QuiescenceUnsupportedError("Plataforma no soportada: quiescence probe requiere Windows")
+
     root_path = pathlib.Path(os.path.abspath(os.fspath(root)))
     blocked_nodes: list[str] = []
 
