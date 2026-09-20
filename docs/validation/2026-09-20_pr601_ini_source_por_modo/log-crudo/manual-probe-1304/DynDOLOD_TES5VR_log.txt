@@ -6,15 +6,15 @@ If a copy of the MPL was not distributed with this file, You can obtain one at h
 The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 
 Using Skyrim VR Data Path: C:\steam\steamapps\content\app_489830\depot_489832\Data\
-Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
-Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
 Using Temp Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\temp\
 Using Output Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\out_tes5vr_sse_ini\
 Using ini: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\Skyrim\ini\Skyrim.ini
 Using save path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\Skyrim\ini\Saves\
 Warning: Could not find save path
 Using plugin list: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
-Using settings file: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
 Using language: English
 Using general string encoding: 1252  (ANSI - Lat�n I)
 Using translatable string encoding: 1252  (ANSI - Lat�n I)
@@ -43,15 +43,15 @@ If a copy of the MPL was not distributed with this file, You can obtain one at h
 The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 
 Using Skyrim VR Data Path: C:\steam\steamapps\content\app_489830\depot_489832\Data\
-Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
-Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
 Using Temp Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\temp\
 Using Output Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\out_tes5vr_sse_ini\
 Using ini: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\Skyrim\ini\Skyrim.ini
 Using save path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\Skyrim\ini\Saves\
 Warning: Could not find save path
 Using plugin list: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
-Using settings file: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
 Using language: English
 Using general string encoding: 1252  (ANSI - Lat�n I)
 Using translatable string encoding: 1252  (ANSI - Lat�n I)
@@ -81,8 +81,8 @@ If a copy of the MPL was not distributed with this file, You can obtain one at h
 The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 
 Using Skyrim VR Data Path: C:\steam\steamapps\content\app_489830\depot_489832\Data\
-Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
-Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
 Using Temp Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\temp\
 Using Output Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\out_tes5vr_vr_ini\
 Using ini: C:\steam\steamapps\content\app_489830\depot_489832\\Skyrim.ini

@@ -1,72 +1,72 @@
-DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:01:16
+DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:26:17
 
 The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
 If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 
-Using Skyrim VR Data Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\
-Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
-Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
-Using Temp Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\temp\
-Using Output Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\out\
-Using ini: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
-Using save path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Saves\
+Using Skyrim VR Data Path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\temp\
+Using Output Path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\out\
+Using ini: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
+Using save path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Saves\
 Warning: Could not find save path
-Using plugin list: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
-Using settings file: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using plugin list: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
 Using language: English
 Using general string encoding: 1252  (ANSI - Lat�n I)
 Using translatable string encoding: 1252  (ANSI - Lat�n I)
 Using VMAD string encoding: 65001 (UTF-8)
-Loading active plugin list: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
-Error loading module information for "%USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm": [Exception] "%USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm" is 0 bytes in size
+Loading active plugin list: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
+Error loading module information for "<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm": [Exception] "<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm" is 0 bytes in size
 
-DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:01:16
+DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:26:17
 
 The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
 If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 
-Using Skyrim VR Data Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\
-Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
-Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
-Using Temp Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\temp\
-Using Output Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\out\
-Using ini: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
-Using save path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Saves\
+Using Skyrim VR Data Path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\temp\
+Using Output Path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\out\
+Using ini: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
+Using save path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Saves\
 Warning: Could not find save path
-Using plugin list: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
-Using settings file: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using plugin list: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
 Using language: English
 Using general string encoding: 1252  (ANSI - Lat�n I)
 Using translatable string encoding: 1252  (ANSI - Lat�n I)
 Using VMAD string encoding: 65001 (UTF-8)
-Loading active plugin list: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
-Error loading module information for "%USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm": [Exception] "%USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm" is 0 bytes in size
+Loading active plugin list: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
+Error loading module information for "<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm": [Exception] "<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm" is 0 bytes in size
 
-DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:01:16
+DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:26:17
 
 The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
 If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 
-Using Skyrim VR Data Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\
-Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
-Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
-Using Temp Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\temp\
-Using Output Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\out\
-Using ini: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
-Using save path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Saves\
+Using Skyrim VR Data Path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\temp\
+Using Output Path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\out\
+Using ini: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
+Using save path: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Saves\
 Warning: Could not find save path
-Using plugin list: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
-Using settings file: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using plugin list: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
 Using language: English
 Using general string encoding: 1252  (ANSI - Lat�n I)
 Using translatable string encoding: 1252  (ANSI - Lat�n I)
 Using VMAD string encoding: 65001 (UTF-8)
-Loading active plugin list: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
-Error loading module information for "%USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm": [Exception] "%USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm" is 0 bytes in size
+Loading active plugin list: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt
+Error loading module information for "<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm": [Exception] "<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\Skyrim.esm" is 0 bytes in size
 

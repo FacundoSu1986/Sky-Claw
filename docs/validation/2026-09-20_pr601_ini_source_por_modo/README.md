@@ -23,15 +23,16 @@ entra en la tabla que valida el código.
 |---|---|
 | Instrumento | `rig_ini_source_probe.py` (esta carpeta): 4 escenarios, cierre suave `WM_CLOSE` para que el binario vuelque su log |
 | Transcript | `transcript.txt` — salida literal del rig; `<RIG_WORK>` es el `--work` efímero de la corrida |
-| Binario | `DynDOLODx64.exe` — DynDOLOD 3.0 Alpha-209 x64 (`starting session 2026-09-20 16:26..16:28`) |
+| Binario | `DynDOLODx64.exe` — DynDOLOD 3.0 Alpha-209 x64 (sesiones del rig: 2026-09-20 17:25:47, 17:26:17, 17:26:47 y 17:27:17, hora local; ver `log-crudo/`) |
 | SHA-256 del binario | `b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0` |
 | Artefactos crudos | `artifacts/<escenario>/log-crudo/{DynDOLOD_*_log.txt, DynDOLOD_*_Debug_log.txt}` (copia del log de esa sesión; el sha256 de cada uno está en el transcript) |
-| Corroboración previa | `log-crudo/manual-probe-1304/` — la corrida manual del mismo día (13:04, local) que originó el contrato, antes de este rig |
+| Corroboración previa | `log-crudo/manual-probe-1304/` — la corrida manual del mismo día (13:04, local) que originó el contrato, antes de este rig; saneada con las MISMAS reglas |
 
 Las copias crudas se **sanean** antes de copiarse (home del operador →
-`%USERPROFILE%`, mismo criterio que el transcript y que la evidencia de #593),
-porque viajan en el repositorio; el sha256 que publica el transcript es el del
-**artefacto saneado** que se puede verificar contra el archivo commiteado
+`%USERPROFILE%`, carpeta del binario → `<TOOL_DIR>`, `--work` → `<RIG_WORK>`, mismo
+criterio que el transcript y que la evidencia de #593), porque viajan en el
+repositorio; el sha256 que publica el transcript es el del **artefacto saneado**
+que se puede verificar contra el archivo commiteado
 (`artifacts/**` y `log-crudo/**` están marcados `-text` en el `.gitattributes` de
 esta carpeta para que `core.autocrlf` no altere los bytes).
 

@@ -1,9 +1,9 @@
 [1110853:04:54] [559C] [DynDOLODInit] <Debug: Start M000000006B1062D7>
 [1110853:04:54] [559C] [DynDOLODInit] <Debug: Start N000000006AAFD9F6>
-[1110853:04:54] [559C] [dynCheckPath] <Debug: Processing E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\>
-[1110853:04:54] [559C] [DynDOLODInit] <Debug: File not found E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\LODGenx64Win12.exe>
-[1110853:04:54] [559C] [DynDOLODInit] <Debug: File not found E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\LODGenx64Win8.exe>
-[1110853:04:54] [559C] [_LoadList] <Debug: Loading E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Configs\DynDOLOD_Summaries.txt>
+[1110853:04:54] [559C] [dynCheckPath] <Debug: Processing <TOOL_DIR>\>
+[1110853:04:54] [559C] [DynDOLODInit] <Debug: File not found <TOOL_DIR>\Edit Scripts\LODGenx64Win12.exe>
+[1110853:04:54] [559C] [DynDOLODInit] <Debug: File not found <TOOL_DIR>\Edit Scripts\LODGenx64Win8.exe>
+[1110853:04:54] [559C] [_LoadList] <Debug: Loading <TOOL_DIR>\Edit Scripts\DynDOLOD\Configs\DynDOLOD_Summaries.txt>
 [1110853:04:54] [559C] [DynDOLODInit] <Debug: Ended>
 DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 13:04:55
 
@@ -15,8 +15,8 @@ The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 [1110853:04:55] [559C] [OldChecks] <Debug: ) starting session 20 -> DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 13:04:12>
 [1110853:04:55] [559C] [OldChecks] <Debug: ) starting session 20 -> DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 13:04:12>
 Using Skyrim Special Edition Data Path: C:\steam\steamapps\content\app_489830\depot_489832\Data\
-Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
-Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
 Using Temp Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\temp\
 Using Output Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\out_solo_ini\
 Using ini: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\solo_ini\ini\Skyrim.ini
@@ -24,7 +24,7 @@ Using save path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\solo_ini\ini
 Warning: Could not find save path
 Using Creation Club Content list: C:\steam\steamapps\content\app_489830\depot_489832\Skyrim.ccc
 Using plugin list: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
-Using settings file: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
 Using language: English
 Using general string encoding: 1252  (ANSI - Lat�n I)
 Using translatable string encoding: 1252  (ANSI - Lat�n I)

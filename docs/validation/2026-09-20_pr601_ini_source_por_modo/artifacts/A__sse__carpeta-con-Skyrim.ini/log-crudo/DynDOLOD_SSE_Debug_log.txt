@@ -1,31 +1,31 @@
-[1110857:00:45] [5F38] [DynDOLODInit] <Debug: Start M000000006B1062D7>
-[1110857:00:45] [5F38] [DynDOLODInit] <Debug: Start N000000006AB0113D>
-[1110857:00:45] [5F38] [dynCheckPath] <Debug: Processing E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\>
-[1110857:00:45] [5F38] [DynDOLODInit] <Debug: File not found E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\LODGenx64Win12.exe>
-[1110857:00:45] [5F38] [DynDOLODInit] <Debug: File not found E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\LODGenx64Win8.exe>
-[1110857:00:45] [5F38] [_LoadList] <Debug: Loading E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Configs\DynDOLOD_Summaries.txt>
-[1110857:00:45] [5F38] [DynDOLODInit] <Debug: Ended>
-DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 17:00:46
+[1110857:25:46] [5F98] [DynDOLODInit] <Debug: Start M000000006B1062D7>
+[1110857:25:46] [5F98] [DynDOLODInit] <Debug: Start N000000006AB0171A>
+[1110857:25:46] [5F98] [dynCheckPath] <Debug: Processing <TOOL_DIR>\>
+[1110857:25:46] [5F98] [DynDOLODInit] <Debug: File not found <TOOL_DIR>\Edit Scripts\LODGenx64Win12.exe>
+[1110857:25:46] [5F98] [DynDOLODInit] <Debug: File not found <TOOL_DIR>\Edit Scripts\LODGenx64Win8.exe>
+[1110857:25:46] [5F98] [_LoadList] <Debug: Loading <TOOL_DIR>\Edit Scripts\DynDOLOD\Configs\DynDOLOD_Summaries.txt>
+[1110857:25:46] [5F98] [DynDOLODInit] <Debug: Ended>
+DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 17:25:47
 
 The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
 If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
 
-Using Skyrim Special Edition Data Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\A__sse__carpeta-con-Skyrim.ini\data\
-Using Scripts Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\
-Using Cache Path: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
-Using Temp Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\A__sse__carpeta-con-Skyrim.ini\temp\
-Using Output Path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\A__sse__carpeta-con-Skyrim.ini\out\
-Using ini: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\A__sse__carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
-Using save path: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\A__sse__carpeta-con-Skyrim.ini\Skyrim\ini\Saves\
+Using Skyrim Special Edition Data Path: <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\data\
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\temp\
+Using Output Path: <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\out\
+Using ini: <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
+Using save path: <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\Skyrim\ini\Saves\
 Warning: Could not find save path
-Using plugin list: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\A__sse__carpeta-con-Skyrim.ini\plugins.txt
-Using settings file: E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using plugin list: <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\plugins.txt
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
 Using language: English
 Using general string encoding: 1252  (ANSI - Lat�n I)
 Using translatable string encoding: 1252  (ANSI - Lat�n I)
 Using VMAD string encoding: 65001 (UTF-8)
-Loading active plugin list: %USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\A__sse__carpeta-con-Skyrim.ini\plugins.txt
-Error loading module information for "%USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\A__sse__carpeta-con-Skyrim.ini\data\Skyrim.esm": [Exception] "%USERPROFILE%\AppData\Local\Temp\kilo\wt-601\docs\validation\2026-09-20_pr601_ini_source_por_modo\artifacts\A__sse__carpeta-con-Skyrim.ini\data\Skyrim.esm" is 0 bytes in size
-[00:00] [5F38] Forced
+Loading active plugin list: <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\plugins.txt
+Error loading module information for "<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\data\Skyrim.esm": [Exception] "<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\data\Skyrim.esm" is 0 bytes in size
+[00:00] [5F98] Forced

@@ -1,66 +1,66 @@
 rig_ini_source_probe.py — evidencia de la fuente de -m: por game mode (#601)
-fecha local        : 2026-09-20 17:00:45
+fecha local        : 2026-09-20 17:25:46
 plataforma         : win32 / Python 3.11.9
-ejecutable         : E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\DynDOLODx64.exe
+ejecutable         : <TOOL_DIR>\DynDOLODx64.exe
 sha256 ejecutable  : b67625eb7815111ba9ac232c626ff88b07bb64ff30ff5183c5a04b5f045c3bd0
 work dir           : <RIG_WORK>
 
 === A__sse__carpeta-con-Skyrim.ini ===
-argv              : E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\DynDOLODx64.exe -sse -o:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\out\ -d:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\data\ -m:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\Skyrim\ini\ -p:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\plugins.txt -t:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\temp\
+argv              : <TOOL_DIR>\DynDOLODx64.exe -sse -o:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\out\ -d:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\data\ -m:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\Skyrim\ini\ -p:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\plugins.txt -t:<RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\temp\
 carpeta -m:       : <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\Skyrim\ini
 archivos en -m:   : Skyrim.ini, SkyrimPrefs.ini
 cierre suave      : 22 WM_CLOSE enviados
-logs              : E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Logs\DynDOLOD_SSE_log.txt, E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Logs\DynDOLOD_SSE_Debug_log.txt
+logs              : <TOOL_DIR>\Logs\DynDOLOD_SSE_log.txt, <TOOL_DIR>\Logs\DynDOLOD_SSE_Debug_log.txt
 copias crudas     :
-  <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\log-crudo\DynDOLOD_SSE_log.txt (sha256 219c15168a20d3e2c4a7b338a47681f579095200f9d671de151dd1dac79e0db5)
-  <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\log-crudo\DynDOLOD_SSE_Debug_log.txt (sha256 d329df8729b3a586287f55666577addbbd7c58034a9960765ab2d346c1f97326)
+  <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\log-crudo\DynDOLOD_SSE_log.txt (sha256 59f893c7a82db0bafae9ac38919f08029876bc0a2e75f3551f83516fb6fb99ce)
+  <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\log-crudo\DynDOLOD_SSE_Debug_log.txt (sha256 389c9cc35b2cdaf06e516621df89ea850c901b2832a4d5b701bcb7de2006687d)
 líneas relevantes :
-  DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 17:00:46
+  DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 17:25:47
   Using ini: <RIG_WORK>\A__sse__carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
 veredicto         : PASS
 
 === B__tes5vr__misma-carpeta-con-Skyrim.ini ===
-argv              : E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\DynDOLODx64.exe -tes5vr -o:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\out\ -d:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\ -m:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\ -p:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt -t:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\temp\
+argv              : <TOOL_DIR>\DynDOLODx64.exe -tes5vr -o:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\out\ -d:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\data\ -m:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\ -p:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\plugins.txt -t:<RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\temp\
 carpeta -m:       : <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini
 archivos en -m:   : Skyrim.ini, SkyrimPrefs.ini
 cierre suave      : 22 WM_CLOSE enviados
-logs              : E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Logs\DynDOLOD_TES5VR_log.txt, E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Logs\DynDOLOD_TES5VR_Debug_log.txt
+logs              : <TOOL_DIR>\Logs\DynDOLOD_TES5VR_log.txt, <TOOL_DIR>\Logs\DynDOLOD_TES5VR_Debug_log.txt
 copias crudas     :
-  <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\log-crudo\DynDOLOD_TES5VR_log.txt (sha256 732f1ed4093d91607ac9d0d9bdd6ba5ed53c76bc614c56a477b2ed5c9abdafd3)
-  <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\log-crudo\DynDOLOD_TES5VR_Debug_log.txt (sha256 3d106dab0e83e077af18901d8f895f6d8b9d787f775db6be48f2b0463bc40b59)
+  <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\log-crudo\DynDOLOD_TES5VR_log.txt (sha256 b6c2413db3abd2bc5e90dfd78b2e067315e4ae88f0f312bf9be33b4e943fb7a3)
+  <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\log-crudo\DynDOLOD_TES5VR_Debug_log.txt (sha256 461a3de2fc2195fcf2b78c3872246aee30ff155ff6515ba8a79a9bcf7738a1c7)
 líneas relevantes :
-  DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:01:16
+  DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:26:17
   Using ini: <RIG_WORK>\B__tes5vr__misma-carpeta-con-Skyrim.ini\Skyrim\ini\Skyrim.ini
 veredicto         : PASS
 
 === C__tes5vr__carpeta-con-solo-SkyrimVR.ini ===
-argv              : E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\DynDOLODx64.exe -tes5vr -o:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\out\ -d:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\data\ -m:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\SkyrimVR\ini\ -p:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\plugins.txt -t:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\temp\
+argv              : <TOOL_DIR>\DynDOLODx64.exe -tes5vr -o:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\out\ -d:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\data\ -m:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\SkyrimVR\ini\ -p:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\plugins.txt -t:<RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\temp\
 carpeta -m:       : <RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\SkyrimVR\ini
 archivos en -m:   : SkyrimVR.ini
 cierre suave      : 19 WM_CLOSE enviados
-logs              : E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Logs\DynDOLOD_TES5VR_log.txt, E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Logs\DynDOLOD_TES5VR_Debug_log.txt
+logs              : <TOOL_DIR>\Logs\DynDOLOD_TES5VR_log.txt, <TOOL_DIR>\Logs\DynDOLOD_TES5VR_Debug_log.txt
 copias crudas     :
-  <RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\log-crudo\DynDOLOD_TES5VR_log.txt (sha256 6303f6cfe354055630915e619dcb24928a6f262e3fe0648069fc241e6f45bc5c)
-  <RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\log-crudo\DynDOLOD_TES5VR_Debug_log.txt (sha256 c5ccb2c0f0196e01a69a1eb7a56128f9b6d0176c3f1a3e5f75517072fb20ce02)
+  <RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\log-crudo\DynDOLOD_TES5VR_log.txt (sha256 a1e69ce1e0052df34cd1f36caae7853488b4bfa6a60fcbab136498c62bace5a7)
+  <RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\log-crudo\DynDOLOD_TES5VR_Debug_log.txt (sha256 6142ab9fabd6ed37b8a46c38099cda19a8fe49a07ed1a1e1a6417a97a8886ce7)
 líneas relevantes :
-  DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:01:45
+  DynDOLOD 3.0 Alpha-209 x64 - Skyrim VR (TES5VR) (561440F0) starting session 2026-09-20 17:26:47
   Using ini: <RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\\Skyrim.ini
   Fatal: Could not find ini
   Error: Skyrim.ini can not be found. The INI file is missing from its default location at <RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\\Skyrim.ini. Current game mode: Skyrim VR (TES5VR)
-  [1110857:01:45] [5F18] [TMessageDialog.Dialog] Error: Skyrim.ini can not be found. The INI file is missing from its default location at <RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\\Skyrim.ini. Current game mode: Skyrim VR (TES5VR)
+  [1110857:26:47] [556C] [TMessageDialog.Dialog] Error: Skyrim.ini can not be found. The INI file is missing from its default location at <RIG_WORK>\C__tes5vr__carpeta-con-solo-SkyrimVR.ini\\Skyrim.ini. Current game mode: Skyrim VR (TES5VR)
 veredicto         : PASS
 
 === D__sse__carpeta-con-solo-Skyrim.ini ===
-argv              : E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\DynDOLODx64.exe -sse -o:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\out\ -d:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\data\ -m:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\solo_ini\ini\ -p:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\plugins.txt -t:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\temp\
+argv              : <TOOL_DIR>\DynDOLODx64.exe -sse -o:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\out\ -d:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\data\ -m:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\solo_ini\ini\ -p:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\plugins.txt -t:<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\temp\
 carpeta -m:       : <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\solo_ini\ini
 archivos en -m:   : Skyrim.ini
 cierre suave      : 22 WM_CLOSE enviados
-logs              : E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Logs\DynDOLOD_SSE_log.txt, E:\Skyclaw_Main_Sync\dyndolod\DynDOLOD\Logs\DynDOLOD_SSE_Debug_log.txt
+logs              : <TOOL_DIR>\Logs\DynDOLOD_SSE_log.txt, <TOOL_DIR>\Logs\DynDOLOD_SSE_Debug_log.txt
 copias crudas     :
-  <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\log-crudo\DynDOLOD_SSE_log.txt (sha256 aebca634bb1aed8819ca073e74f39ce495c64cf789416c695afd65385e0f78fc)
-  <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\log-crudo\DynDOLOD_SSE_Debug_log.txt (sha256 881f95238a49a726cd35a12034778f31013fa0f97862dfb8d5a6efb4024fa733)
+  <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\log-crudo\DynDOLOD_SSE_log.txt (sha256 9e44e182dfff4fb14026a6881a4d352fb06e72bb0f274d15f9742bfe49e277aa)
+  <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\log-crudo\DynDOLOD_SSE_Debug_log.txt (sha256 e98b1b69fa3fc5a155ffd81c869dacf00d7c56ac4debb222f4f1a8606e1d2c8c)
 líneas relevantes :
-  DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 17:02:14
+  DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 17:27:17
   Using ini: <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\solo_ini\ini\Skyrim.ini
 veredicto         : PASS
 

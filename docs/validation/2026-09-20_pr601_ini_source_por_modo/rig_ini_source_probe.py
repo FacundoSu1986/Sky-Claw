@@ -129,11 +129,33 @@ def _normalizar(texto: str) -> str:
     return texto
 
 
-def _redactar(texto: str) -> str:
-    """Reemplaza el home del usuario por ``%USERPROFILE%`` en la evidencia."""
-    candidatos = {str(pathlib.Path.home()), os.environ.get("USERPROFILE", "")}
-    for home in sorted((c for c in candidatos if c), key=len, reverse=True):
-        texto = texto.replace(home, "%USERPROFILE%")
+def _reglas_de_redaccion(exe: pathlib.Path, work: pathlib.Path) -> tuple[tuple[str, str], ...]:
+    """Pares ``(prefijo, marcador)`` que se neutralizan en TODO lo que se commitea.
+
+    Tres reglas, todas de rutas que no aportan al contrato y sí identifican a la
+    máquina del operador:
+
+    * home → ``%USERPROFILE%`` (criterio de la evidencia de #593);
+    * la carpeta del binario → ``<TOOL_DIR>`` (aparece en ``Scripts Path``,
+      ``Cache Path`` y ``settings file``);
+    * el ``--work`` efímero → ``<RIG_WORK>``.
+
+    Se aplican de prefijo más largo a más corto para que el reemplazo del home no
+    parta una ruta que una regla más específica cubre mejor.
+    """
+    candidatos = [
+        (str(pathlib.Path.home()), "%USERPROFILE%"),
+        (os.environ.get("USERPROFILE", "").strip(), "%USERPROFILE%"),
+        (str(exe.parent), "<TOOL_DIR>"),
+        (str(work), "<RIG_WORK>"),
+    ]
+    return tuple(sorted((c for c in candidatos if c[0]), key=lambda c: len(c[0]), reverse=True))
+
+
+def _redactar(texto: str, reglas: tuple[tuple[str, str], ...] = ()) -> str:
+    """Reemplaza los prefijos de las reglas por sus marcadores."""
+    for prefijo, marcador in reglas:
+        texto = texto.replace(prefijo, marcador)
     return texto
 
 
@@ -145,14 +167,14 @@ def _sha256(ruta: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def _sanear_archivo(ruta: pathlib.Path) -> None:
-    """Reemplaza el home del operador en una COPIA que se va a commitear.
+def _sanear_archivo(ruta: pathlib.Path, reglas: tuple[tuple[str, str], ...]) -> None:
+    """Aplica las reglas de redacción a una COPIA que se va a commitear.
 
     Se opera sobre bytes decodificados sin partir líneas, así que los ``\\r\\n``
     del log del binario quedan intactos (el artefacto es evidencia byte a byte).
     """
     original = ruta.read_bytes().decode("utf-8", errors="replace")
-    saneado = _redactar(original)
+    saneado = _redactar(original, reglas)
     if saneado != original:
         ruta.write_bytes(saneado.encode("utf-8"))
 
@@ -314,6 +336,7 @@ def correr_escenario(
     work: pathlib.Path,
     timeout: float,
     gracia: float,
+    reglas: tuple[tuple[str, str], ...],
 ) -> tuple[bool, list[str]]:
     """Ejecuta un escenario y devuelve ``(pasó, líneas del transcript)``."""
     insumos = _preparar_escenario(work, esc)
@@ -324,8 +347,8 @@ def correr_escenario(
     argv = _argv(esc, insumos)
     salida = [
         f"=== {esc.nombre} ===",
-        f"argv              : {_redactar(subprocess.list2cmdline([str(exe), *argv]))}",
-        f"carpeta -m:       : {_redactar(str(insumos['ini_dir']))}",
+        f"argv              : {_redactar(subprocess.list2cmdline([str(exe), *argv]), reglas)}",
+        f"carpeta -m:       : {_redactar(str(insumos['ini_dir']), reglas)}",
         f"archivos en -m:   : {', '.join(esc.archivos_ini)}",
     ]
     if not exe.is_file():
@@ -373,16 +396,16 @@ def correr_escenario(
             destino = insumos["base"] / "log-crudo" / ruta.name
             destino.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ruta, destino)
-            _sanear_archivo(destino)
-            copias.append(f"{_redactar(str(destino))} (sha256 {_sha256(destino)})")
+            _sanear_archivo(destino, reglas)
+            copias.append(f"{_redactar(str(destino), reglas)} (sha256 {_sha256(destino)})")
     lineas = _lineas_relevantes(texto)
-    salida.append(f"logs              : {', '.join(_redactar(str(r)) for r in rutas_log)}")
+    salida.append(f"logs              : {', '.join(_redactar(str(r), reglas) for r in rutas_log)}")
     if copias:
         salida.append("copias crudas     :")
         salida.extend(f"  {copia}" for copia in copias)
     salida.append("líneas relevantes :")
     if lineas:
-        salida.extend(f"  {_redactar(linea)}" for linea in lineas)
+        salida.extend(f"  {_redactar(linea, reglas)}" for linea in lineas)
     else:
         salida.append("  (ninguna)")
 
@@ -426,19 +449,22 @@ def main() -> int:
 
     exe = args.exe.resolve()
     work = args.work.resolve()
+    reglas = _reglas_de_redaccion(exe, work)
     work.mkdir(parents=True, exist_ok=True)
     lineas: list[str] = [
         "rig_ini_source_probe.py — evidencia de la fuente de -m: por game mode (#601)",
         f"fecha local        : {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"plataforma         : {sys.platform} / Python {sys.version.split()[0]}",
-        f"ejecutable         : {_redactar(str(exe))}",
+        f"ejecutable         : {_redactar(str(exe), reglas)}",
         f"sha256 ejecutable  : {_sha256(exe) if exe.is_file() else '<ausente>'}",
-        f"work dir           : {_redactar(str(work))}",
+        f"work dir           : {_redactar(str(work), reglas)}",
         "",
     ]
     resultados: list[tuple[str, bool]] = []
     for esc in ESCENARIOS:
-        paso, bloque = correr_escenario(esc, exe=exe, work=work, timeout=args.timeout, gracia=args.gracia)
+        paso, bloque = correr_escenario(
+            esc, exe=exe, work=work, timeout=args.timeout, gracia=args.gracia, reglas=reglas
+        )
         lineas.extend(bloque)
         lineas.append("")
         resultados.append((esc.nombre, paso))
@@ -448,7 +474,7 @@ def main() -> int:
     transcript = "\n".join(lineas) + "\n"
     # Estabiliza el transcript: el work dir es efímero de cada máquina; los
     # artefactos crudos de cada escenario viajan en `artifacts/` (copia del rig).
-    transcript = transcript.replace(_redactar(str(work)), "<RIG_WORK>")
+    transcript = transcript.replace(_redactar(str(work), reglas), "<RIG_WORK>")
     print(transcript, end="")
     if args.transcript is not None:
         args.transcript.parent.mkdir(parents=True, exist_ok=True)
