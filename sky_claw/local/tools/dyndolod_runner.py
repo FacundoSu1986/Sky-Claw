@@ -233,6 +233,19 @@ _INI_PRIMARIA_POR_GAME_MODE: Mapping[str, str] = MappingProxyType(
     }
 )
 
+
+def _nombre_ini_primaria(game_mode: str | None) -> str | None:
+    """Archivo que el binario abre dentro de la carpeta de ``-m:``, o ``None``.
+
+    Único punto de lectura de :data:`_INI_PRIMARIA_POR_GAME_MODE`: lo consumen la
+    validación de :meth:`DynDOLODConfig.__post_init__` (al construir) y
+    :attr:`DynDOLODConfig.ini_primaria_requerida` (la vista con la que el servicio
+    revalida antes de cada corrida). Un modo sin entrada devuelve ``None`` —
+    fail-closed, nunca el archivo de otro modo.
+    """
+    return _INI_PRIMARIA_POR_GAME_MODE.get(game_mode or "")
+
+
 #: Herramienta dueña de cada spawn del runner. El nombre de la herramienta es la
 #: identidad con la que ``run_texgen``/``run_dyndolod`` invocan
 #: ``_execute_process``; mapearlo acá UNA vez evita que el guard de contención
@@ -757,10 +770,9 @@ class DynDOLODConfig:
         # #601 valida una declaración explícita incompatible, no obliga a usar
         # `-m:`).
         if self.ini_dir is not None:
-            # ``or ""`` es sólo el guard de tipo del campo (que arriba quedó resuelto):
-            # un modo sin entrada en la tabla NO hereda el archivo de otro, falla
-            # cerrado abajo. No normaliza nada.
-            esperada = _INI_PRIMARIA_POR_GAME_MODE.get(self.game_mode or "")
+            # Un modo sin entrada en la tabla NO hereda el archivo de otro: la
+            # búsqueda devuelve ``None`` y acá se falla cerrado.
+            esperada = _nombre_ini_primaria(self.game_mode)
             if esperada is None:
                 raise DynDOLODValidationError(
                     f"No hay INI primaria declarada para el game mode {self.game_mode!r}: la validación "
@@ -775,6 +787,23 @@ class DynDOLODConfig:
                     f"corrida muere con 'Fatal: Could not find ini'. Se falla cerrado antes del spawn: "
                     f"verificá la INI del juego o corregí DYNDLOD_INI_DIR."
                 )
+
+    @property
+    def ini_primaria_requerida(self) -> pathlib.Path | None:
+        """Archivo que el binario abre dentro de ``ini_dir``, o ``None`` sin ``-m:``.
+
+        Vista de SOLO LECTURA de la tabla por modo, para los consumidores que
+        revalidan la misma propiedad después de construir la config: el runner se
+        cachea (``DynDOLODPipelineService._ensure_runner``) y la INI puede
+        desaparecer entre dos corridas de la misma sesión. ``None`` significa "no
+        hay ``-m:``": sin declaración no hay archivo que exigir. Un modo sin
+        entrada en la tabla también da ``None`` — quien lo consuma debe fallar
+        cerrado, no asumir "no requerido".
+        """
+        if self.ini_dir is None:
+            return None
+        nombre = _nombre_ini_primaria(self.game_mode)
+        return None if nombre is None else self.ini_dir / nombre
 
     @property
     def texgen_root(self) -> pathlib.Path | None:

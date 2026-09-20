@@ -7310,6 +7310,53 @@ async def test_execute_no_spawnea_con_ini_dir_incompatible(
     )
 
 
+@pytest.mark.parametrize("modo", ["sse", "tes5vr"])
+@pytest.mark.asyncio
+async def test_execute_revalida_la_ini_en_cada_corrida_con_runner_cacheado(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    modo: str,
+) -> None:
+    """#601 (hallazgo de revisión): el runner se cachea, la INI se revalida por corrida.
+
+    ``_ensure_runner`` devuelve el MISMO runner en la segunda corrida de la sesión,
+    así que la validación de ``DynDOLODConfig.__post_init__`` —que corrió una sola
+    vez— no cubre que la INI desaparezca entre corridas (renombrada, borrada, disco
+    desconectado). Sin esta revalidación, la segunda corrida spawnearía con un
+    ``-m:`` que ya no tiene la INI: exactamente el ``Fatal: Could not find ini``
+    que #601 cierra. El gate por ejecución (antes del lock y de cualquier spawn)
+    usa la MISMA autoridad que la construcción:
+    ``DynDOLODConfig.ini_primaria_requerida``.
+    """
+    nombre_juego = _NOMBRE_DE_JUEGO_POR_MODO_EN_SERVICE[modo]
+    game, data_root, exe, _ = _entorno_mo2_cli(tmp_path, nombre_juego=nombre_juego)
+    ini_dir = tmp_path / "My Games" / nombre_juego
+    ini_dir.mkdir(parents=True)
+    ini = ini_dir / "Skyrim.ini"
+    ini.write_text("[General]\n", encoding="utf-8")
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe, ini_dir=ini_dir)
+    external = tmp_path / "Work Root con espacios"
+    svc = _svc_de_cli(
+        resolver=_resolver_real_de_cli(tmp_path, perfil="Default"),
+        workspace=_workspace_fake(external),
+    )
+
+    # Primera corrida de la sesión: construye y CACHEA el runner (INI presente).
+    assert svc._ensure_runner()._config.ini_dir == ini_dir.resolve()
+
+    # La INI desaparece entre corridas.
+    ini.unlink()
+
+    spawn = AsyncMock()
+    with patch.object(sky_claw.local.tools.dyndolod_runner.asyncio, "create_subprocess_exec", spawn):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is False
+    spawn.assert_not_awaited(), "se lanzó la herramienta con una INI que ya no está"
+    assert "Skyrim.ini" in result["message"], result["message"]
+    assert str(ini.resolve()) in result["message"], result["message"]
+
+
 def test_la_fuente_de_plugins_separa_standalone_de_instancia_irresoluble() -> None:
     """C3 (separación): ``None`` es "no hay instancia", nunca "no la pude resolver".
 

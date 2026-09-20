@@ -155,6 +155,32 @@ def test_la_tabla_cubre_los_game_modes_que_el_runner_puede_emitir() -> None:
 
 
 @pytest.mark.parametrize("modo", ["sse", "tes5vr"])
+def test_la_autoridad_del_archivo_requerido_es_una_sola(
+    tmp_path: pathlib.Path,
+    modo: Literal["sse", "tes5vr"],
+) -> None:
+    """``ini_primaria_requerida`` es la vista que reutiliza el servicio.
+
+    Una sola lectura de la tabla (``_nombre_ini_primaria``) para las DOS
+    superficies que preguntan lo mismo en momentos distintos: la validación al
+    construir (``__post_init__``) y la revalidación antes de cada corrida
+    (``DynDOLODPipelineService._primera_ruta_de_config_faltante``, porque el
+    runner se cachea). Si cada una reimplementara "qué archivo toca", cambiar la
+    tabla dejaría a la otra validando otra cosa — el defecto hermano que este repo
+    mide. ``None`` sin ``-m:`` declarado (no hay archivo que exigir) y el archivo
+    esperado cuando la declaración existe.
+    """
+    game, exe = _arbol_minimo(tmp_path, nombre_juego=_NOMBRE_DE_JUEGO_POR_MODO[modo])
+    ini_dir = _ini_dir_con(tmp_path, nombre="declarada", contenido=("Skyrim.ini",))
+
+    sin_declarar = _config(tmp_path, game=game, exe=exe, modo=modo, ini_dir=None)
+    declarada = _config(tmp_path, game=game, exe=exe, modo=modo, ini_dir=ini_dir)
+
+    assert sin_declarar.ini_primaria_requerida is None
+    assert declarada.ini_primaria_requerida == ini_dir / "Skyrim.ini"
+
+
+@pytest.mark.parametrize("modo", ["sse", "tes5vr"])
 @pytest.mark.parametrize(
     "contenido",
     [
