@@ -17,8 +17,10 @@ Cubre:
 
 from __future__ import annotations
 
+import base64
 import copy
 import ctypes
+import hashlib
 import os
 import pathlib
 import sys
@@ -1103,15 +1105,28 @@ class TestTargetDaclOraclesAndMutations:
                 close_security_handle(h)
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
-    def test_t17_actual_drift_en_restore_falla_verificacion(self) -> None:
+    @pytest.mark.parametrize(
+        "node_kind",
+        [
+            GoldenProtectionNodeKind.FILE,
+            GoldenProtectionNodeKind.DIR,
+        ],
+    )
+    def test_t17_actual_drift_en_restore_falla_verificacion(self, node_kind: GoldenProtectionNodeKind) -> None:
         """T17: Desviación real en componentes (owner, group, DACL, protection) hace fallar la verificación."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = pathlib.Path(tmpdir) / "t17_drift.txt"
-            test_file.write_text("data")
-            evidences = probe_node_evidence(tmpdir)
-            pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
+            if node_kind is GoldenProtectionNodeKind.FILE:
+                target_path = pathlib.Path(tmpdir) / "t17_drift.txt"
+                target_path.write_text("data")
+                evidences = probe_node_evidence(tmpdir)
+                pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
+            else:
+                target_path = pathlib.Path(tmpdir) / "t17_drift_dir"
+                target_path.mkdir()
+                evidences = probe_node_evidence(tmpdir)
+                pre = [e.backup for e in evidences if e.backup.relative_path == "t17_drift_dir"][0]
 
-            h = open_node_security_handle(test_file)
+            h = open_node_security_handle(target_path)
             try:
                 apply_target_dacl_by_handle(h, pre)
                 restore_security_descriptor_by_handle(h, pre)
@@ -1124,7 +1139,7 @@ class TestTargetDaclOraclesAndMutations:
                     verify_restored_security_descriptor_by_handle(h, drifted_owner_backup)
 
                 # 2. Desviación real en disco: alteramos la DACL en el objeto
-                spec = build_target_dacl_spec(GoldenProtectionNodeKind.FILE)
+                spec = build_target_dacl_spec(node_kind)
                 acl_buf, pacl = build_native_target_dacl(spec)
                 ret = _advapi32.SetSecurityInfo(h, 1, 4 | 0x80000000, None, None, pacl, None)
                 assert ret == 0
@@ -1133,6 +1148,60 @@ class TestTargetDaclOraclesAndMutations:
             finally:
                 restore_security_descriptor_by_handle(h, pre)
                 close_security_handle(h)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    @pytest.mark.parametrize(
+        ("sddl", "expected_type_hex"),
+        [
+            # ACCESS_ALLOWED_CALLBACK_ACE_TYPE (0x09)
+            ('O:SYG:SYD:(XA;;FR;;;WD;(@User.Title=="Adversarial"))', "0x09"),
+            # ACCESS_ALLOWED_OBJECT_ACE_TYPE (0x05)
+            ("O:SYG:SYD:(OA;;CR;11111111-2222-3333-4444-555555555555;;WD)", "0x05"),
+        ],
+    )
+    def test_t18_ace_tipo_no_soportado_en_pre_dacl_fail_closed(self, sddl: str, expected_type_hex: str) -> None:
+        """T18: Un descriptor PRE con tipo de ACE no soportado (ej. OBJECT 0x05 o CALLBACK 0x09) falla cerrado."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = pathlib.Path(tmpdir) / "t18_unsupported_ace.txt"
+            test_file.write_text("data")
+            evidences = probe_node_evidence(tmpdir)
+            pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
+
+            # Construir un Security Descriptor nativo válido con el ACE complejo
+            p_sd = wintypes.LPVOID()
+            _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.LPVOID),
+                ctypes.POINTER(wintypes.ULONG),
+            ]
+            _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+
+            ok = _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(p_sd), None)
+            assert ok != 0
+            try:
+                sd_len = _advapi32.GetSecurityDescriptorLength(p_sd)
+                raw = (ctypes.c_char * sd_len).from_address(ctypes.cast(p_sd, ctypes.c_void_p).value)
+                sd_bytes = bytes(raw)
+
+                bad_backup = copy.copy(pre)
+                object.__setattr__(bad_backup, "pre_sd_bytes_b64", base64.b64encode(sd_bytes).decode("ascii"))
+                object.__setattr__(bad_backup, "pre_sd_length", len(sd_bytes))
+                object.__setattr__(bad_backup, "pre_sd_sha256", hashlib.sha256(sd_bytes).hexdigest())
+
+                h = open_node_security_handle(test_file)
+                try:
+                    # verify_restored_security_descriptor_by_handle debe fallar cerrado explícitamente
+                    # rechazando el tipo de ACE sin intentar interpretar raw_ace + 8 como SID
+                    with pytest.raises(
+                        TargetDaclVerificationError,
+                        match=f"Tipo de ACE no soportado en DACL: {expected_type_hex}",
+                    ):
+                        verify_restored_security_descriptor_by_handle(h, bad_backup)
+                finally:
+                    close_security_handle(h)
+            finally:
+                _kernel32.LocalFree(p_sd)
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
     def test_reparse_point_rechazado_fail_closed(self) -> None:

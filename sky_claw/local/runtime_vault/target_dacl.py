@@ -115,6 +115,7 @@ DIR_GENERIC_EXECUTE = 0x001200A0
 
 # Win32 Constants
 _ACCESS_ALLOWED_ACE_TYPE = 0x00
+_ACCESS_DENIED_ACE_TYPE = 0x01
 _NO_INHERITANCE_ACE_FLAGS = 0x00
 _SE_DACL_PROTECTED = 0x1000
 
@@ -687,6 +688,18 @@ def _extract_sd_components(
             raw_ace = ctypes.cast(ace_ptr, ctypes.c_void_p).value
             if not raw_ace:
                 continue
+
+            # Fail-closed ante tipos de ACE cuyo layout no coincide con ACE simple
+            # (Header @ 0, Mask @ +4, SidStart @ +8).
+            # Tipos complejos como OBJECT (0x05, 0x06) o CALLBACK (0x09, 0x0A) tienen Flags, GUIDs
+            # o condiciones intermedias y un offset de SID variable.
+            # Nunca deben interpretarse silenciosamente en raw_ace + 8.
+            if header.AceType not in (_ACCESS_ALLOWED_ACE_TYPE, _ACCESS_DENIED_ACE_TYPE):
+                raise TargetDaclError(
+                    f"Tipo de ACE no soportado en DACL: 0x{header.AceType:02x} en ACE #{i + 1}. "
+                    "Solo se soportan ACCESS_ALLOWED_ACE_TYPE (0x00) y ACCESS_DENIED_ACE_TYPE (0x01) con layout estándar."
+                )
+
             mask_val = ctypes.cast(raw_ace + 4, ctypes.POINTER(wintypes.DWORD)).contents.value
             sid_ptr = wintypes.LPVOID(raw_ace + 8)
 
@@ -1027,6 +1040,11 @@ def verify_target_dacl_by_handle(
             if not raw_ace:
                 raise TargetDaclVerificationError(f"Puntero crudo nulo en ACE #{i + 1}")
 
+            if header.AceType != expected_ace.ace_type:
+                raise TargetDaclVerificationError(
+                    f"ACE #{i + 1} AceType discordante: esperado={expected_ace.ace_type}, observado={header.AceType}"
+                )
+
             mask_val = ctypes.cast(raw_ace + 4, ctypes.POINTER(wintypes.DWORD)).contents.value
             sid_ptr = wintypes.LPVOID(raw_ace + 8)
 
@@ -1041,10 +1059,6 @@ def verify_target_dacl_by_handle(
             if sid_str != expected_ace.sid:
                 raise TargetDaclVerificationError(
                     f"ACE #{i + 1} SID discordante: esperado={expected_ace.sid} ({expected_ace.name}), observado={sid_str}"
-                )
-            if header.AceType != expected_ace.ace_type:
-                raise TargetDaclVerificationError(
-                    f"ACE #{i + 1} AceType discordante: esperado={expected_ace.ace_type}, observado={header.AceType}"
                 )
             if header.AceFlags != expected_ace.ace_flags:
                 raise TargetDaclVerificationError(
