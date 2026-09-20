@@ -475,7 +475,10 @@ def probe_node_evidence(
     root_path = pathlib.Path(abs_path_str)
 
     # 1. Inspección inicial de la entrada raíz
-    tipo_raiz, identidad_raiz = link_kind_and_identity_or_raise(root_path)
+    try:
+        tipo_raiz, identidad_raiz = link_kind_and_identity_or_raise(root_path)
+    except OSError as exc:
+        raise NativeEvidenceError(f"Error al inspeccionar la ruta raíz '{root_path}': {exc}") from exc
     if identidad_raiz is None:
         raise NativeEvidenceError(f"La ruta raíz no existe: '{root_path}'")
     if tipo_raiz is not None:
@@ -552,7 +555,10 @@ def probe_node_evidence(
                 raise NativeEvidenceError(f"Ruta relativa duplicada en el árbol: {rel_path}")
             seen_relpaths.add(rel_path)
 
-            tipo, c_st = link_kind_and_identity_or_raise(child_path)
+            try:
+                tipo, c_st = link_kind_and_identity_or_raise(child_path)
+            except OSError as exc:
+                raise NativeEvidenceError(f"Error al inspeccionar '{rel_path}': {exc}") from exc
             if c_st is None:
                 raise NativeEvidenceError(f"Entrada desapareció durante recorrido: '{rel_path}'")
             if tipo is not None:

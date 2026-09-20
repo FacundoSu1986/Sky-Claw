@@ -596,23 +596,44 @@ class TestNativeNodeEvidenceWindowsReal:
             assert set(handles_abiertos).issubset(set(handles_cerrados))
             assert len(ptrs_liberados) > 0, "LocalFree debe haberse llamado para los Security Descriptors y SIDs"
 
-        # Ruta de fallo: inyectar un error en el segundo nodo para verificar cleanup en excepción
+        # Ruta de fallo: inyectar un error en profundidad para verificar cleanup de múltiples frames DFS activos
         handles_abiertos.clear()
         handles_cerrados.clear()
         ptrs_liberados.clear()
 
-        (tree_descartable / "segundo.txt").write_text("fallará", encoding="utf-8")
+        dir_a = tree_descartable / "dir_a"
+        dir_a.mkdir()
+        dir_b = dir_a / "dir_b"
+        dir_b.mkdir()
+        (dir_b / "leaf.txt").write_text("hoja en rama profunda", encoding="utf-8")
+
+        original_probe = node_evidence._probe_open_handle
+        probe_calls = 0
+
+        def fail_after_nested_frames(*args: Any, **kwargs: Any) -> Any:
+            nonlocal probe_calls
+            probe_calls += 1
+            # Permitir que root (1), dir_a (2) y dir_b (3) abran y apilen sus containment handles en frame_stack;
+            # fallar al evaluar la hoja (4) con múltiples frames activos en la pila DFS.
+            if probe_calls >= 4:
+                raise RuntimeError("boom_en_hoja_profunda")
+            return original_probe(*args, **kwargs)
 
         with (
             patch.object(kernel32, "CreateFileW", side_effect=mock_create_file),
             patch.object(kernel32, "CloseHandle", side_effect=mock_close_handle),
             patch.object(kernel32, "LocalFree", side_effect=mock_local_free),
-            patch("sky_claw.local.runtime_vault.node_evidence._probe_open_handle", side_effect=RuntimeError("boom")),
+            patch(
+                "sky_claw.local.runtime_vault.node_evidence._probe_open_handle", side_effect=fail_after_nested_frames
+            ),
         ):
-            with pytest.raises(RuntimeError, match="boom"):
+            with pytest.raises(RuntimeError, match="boom_en_hoja_profunda"):
                 probe_node_evidence(tree_descartable)
 
-            # Aun con excepción, los handles abiertos deben haberse cerrado
+            # Verificar que efectivamente se abrieron múltiples handles activos (root, a, b, leaf)
+            assert probe_calls >= 4, "Debió alcanzar la profundidad del árbol antes de fallar"
+            assert len(handles_abiertos) >= 3, "Debieron abrirse múltiples containment handles antes del fallo"
+            # Aun con excepción profunda y múltiples frames en stack, todos los handles abiertos deben haberse cerrado
             assert set(handles_abiertos).issubset(set(handles_cerrados))
 
     def test_w14_drift_tipo_con_expected_kind(self, tree_descartable: pathlib.Path) -> None:
@@ -722,6 +743,43 @@ class TestNativeNodeEvidenceWindowsReal:
         archivo.write_text("no es dir", encoding="utf-8")
         with pytest.raises(NativeEvidenceError, match="no es un directorio"):
             probe_node_evidence(archivo)
+
+    def test_oserror_en_inspeccion_de_nodo_convierte_a_native_evidence_error(
+        self, tree_descartable: pathlib.Path
+    ) -> None:
+        """Verifica que cualquier OSError/PermissionError en link_kind_and_identity_or_raise
+        sea capturado y relanzado como NativeEvidenceError (fail-closed) tanto en raíz como en hijos.
+        """
+        import sky_claw.app.security.links
+
+        # 1. Fallo en raíz
+        with (
+            patch(
+                "sky_claw.local.runtime_vault.node_evidence.link_kind_and_identity_or_raise",
+                side_effect=PermissionError("Acceso denegado simulado en raíz"),
+            ),
+            pytest.raises(NativeEvidenceError, match="Error al inspeccionar la ruta raíz"),
+        ):
+            probe_node_evidence(tree_descartable)
+
+        # 2. Fallo en hijo durante recorrido
+        hijo = tree_descartable / "archivo_hijo.txt"
+        hijo.write_text("datos", encoding="utf-8")
+        orig_inspect = sky_claw.app.security.links.link_kind_and_identity_or_raise
+
+        def inspect_con_fallo(p: pathlib.Path) -> Any:
+            if p.name == "archivo_hijo.txt":
+                raise PermissionError("Acceso denegado simulado en hijo")
+            return orig_inspect(p)
+
+        with (
+            patch(
+                "sky_claw.local.runtime_vault.node_evidence.link_kind_and_identity_or_raise",
+                side_effect=inspect_con_fallo,
+            ),
+            pytest.raises(NativeEvidenceError, match="Error al inspeccionar 'archivo_hijo.txt'"),
+        ):
+            probe_node_evidence(tree_descartable)
 
     def test_compatibilidad_con_prepare_golden_protection_plan(self, tree_descartable: pathlib.Path) -> None:
         """Demuestra que la evidencia producida por probe_node_evidence alimenta prepare_golden_protection_plan."""
