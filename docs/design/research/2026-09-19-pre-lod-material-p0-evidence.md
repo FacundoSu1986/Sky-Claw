@@ -156,8 +156,9 @@ Estados: **ESTABLE** (igual en 1.2.0 y 2.1.1) · **VERSION_DEPENDENT** · **NUEV
 **Conclusión de matriz.** El "esqueleto" del contrato (nombres de exe, config, ownership,
 nombres de plugin, checks de preflight, log, exit codes) es estable 1.2.0 → 2.1.1.
 Las diferencias reales son de **superficie CLI** (ESM, update mode) y de **artefactos**
-(cache). Un adapter único *puede* cubrir 1.2.x–2.1.x **solo si** se diseña con capacidades
-por versión, no con comportamiento fijo (→ B8, §9; `ToolContractFingerprint` conceptual).
+(cache). Un adapter único *puede* cubrir las versiones con contrato de versión conocido (§9)
+**solo si** se diseña con capacidades por versión, no con comportamiento fijo
+(→ B8, §9; `ToolContractFingerprint` conceptual). No se declara frontera de soporte por rango.
 
 ---
 
@@ -349,12 +350,14 @@ conservadora es la única segura.
 
 ## 9. B8 — Versionado del contrato de PGPatcher
 
-**Pregunta:** ¿se puede soportar 1.2.x y 2.1.x con el mismo contrato de adapter?
+**Pregunta:** ¿se puede soportar con el mismo contrato de adapter a las cinco versiones con
+contrato conocido (1.2.0, 1.3.0, 2.0.0, 2.1.0, 2.1.1)?
 
-**Respuesta: SÍ para los contratos conocidos y verificados; NO se asume compatibilidad de
-versiones futuras.** El adapter se construye con capacidades por versión, y una versión
-nueva solo se habilita cuando su contrato fue registrado y verificado (política de
-*known contracts*, no de rango abierto).
+**Respuesta: SÍ para los contratos de versión conocidos; NO se asume compatibilidad de
+versiones futuras ni identidad binaria sin fingerprint de artefacto.** El adapter se
+construye con capacidades por versión, y una versión nueva solo se habilita cuando su
+contrato fue registrado y verificado (política de *known version contracts*, no de rango
+abierto).
 
 Contrato propuesto (conceptual, **no implementar**): `ToolContractFingerprint`
 
@@ -363,9 +366,16 @@ ToolContractFingerprint
   tool_key              "pgpatcher"
   flavor                "pgpatcher" | "pgtools"
   reported_version      de PE product version o del log ("Welcome to PGPatcher version {}!")
-  exe_sha256            hash del exe detectado
-  known_contracts       {1.2.0, 1.3.0, 2.0.0, 2.1.0, 2.1.1} — fingerprints verificados en P0.
-                        NO es un rango abierto: cada entrada tiene su artifact_matrix y flags
+  exe_sha256            hash del exe detectado — lo calcula la detección de versión (P3);
+                        P0 NO aporta hashes de exe verificados para todas las versiones
+  known_version_contracts
+                        {1.2.0, 1.3.0, 2.0.0, 2.1.0, 2.1.1} — contrato/versionado verificado
+                        desde source/tags/releases (§3/§4); NO es un rango abierto
+  verified_artifact_fingerprints
+                        {1.2.0: 9981cd966ca512ff2ac6d0006537fa937da74a3ac4e7f6dc973c996a0697436c
+                        (sha256 del zip inspeccionado)} — única identidad binaria verificada en
+                        P0. Las demás versiones conocidas NO tienen fingerprint de artefacto:
+                        no afirmar binary identity; P3/P9 debe validar el artefacto detectado
   capabilities          por contrato conocido (capacidad introducida en cada versión):
                           AUTOSTART              introducido en 0.5.0
                           VFS_CHECK_IGNORE       introducido en 1.1.0
@@ -376,28 +386,31 @@ ToolContractFingerprint
                           PBR_JSON_SCHEMA_V2     introducido en 2.0.0 (BREAKING: campos PBR)
   unknown_policy        versión/fingerprint desconocido -> fail closed: no se ejecuta
                         (VERSION_UNSUPPORTED) hasta registrar y verificar su contrato.
-                        Versión ilegible -> VERSION_UNKNOWN degradado, sin asumir flags;
-                        forzar un contrato no registrado exige CONFIGURATION_REQUIRED explícito
+                        VERSION_UNKNOWN conserva el bloqueo por defecto: no habilita flags
+                        ni corridas; forzar un contrato no registrado exige
+                        CONFIGURATION_REQUIRED explícito del operador
   config_schema         {settings.json, modrules.json, ignored_messages.json}
-  ownership_policy      EXCLUSIVE_DIR (estable 1.2.0–2.1.1)
+  ownership_policy      EXCLUSIVE_DIR (igual en las cinco versiones conocidas)
   artifact_matrix       por versión (¿incluye cache? ¿zip?)
 ```
 
 Reglas:
 
-1. El adapter **no** asume flags ni compatibilidad: consulta el fingerprint reconocido y
-   **falla cerrado** ante una versión/fingerprint no registrado (ver `unknown_policy`).
-2. El fingerprint entra en la evidencia de corrida (§16) y en la invalidación: actualizar
-   la herramienta cambia el fingerprint y **prohíbe reutilizar corridas previas**.
-3. **Semántica de soporte: contratos conocidos, no rango abierto.** Hoy los fingerprints
-   verificados son {1.2.0, 1.3.0, 2.0.0, 2.1.0, 2.1.1}. Una versión futura (2.2.x, 3.x, …)
-   **no** hereda el contrato por comparación SemVer: `ToolContractFingerprint` existe
-   precisamente para que una versión nueva no pase automáticamente por un contrato viejo.
+1. El adapter **no** asume flags ni compatibilidad: consulta el contrato de versión reconocido
+   y **falla cerrado** ante una versión/fingerprint no registrado (ver `unknown_policy`).
+2. El contrato de versión y el fingerprint de artefacto entran en la evidencia de corrida
+   (§16) y en la invalidación: actualizar la herramienta cambia el fingerprint y
+   **prohíbe reutilizar corridas previas**.
+3. **Semántica de soporte: contratos de versión conocidos, no rango abierto.** Hoy los
+   contratos conocidos son {1.2.0, 1.3.0, 2.0.0, 2.1.0, 2.1.1}; el único fingerprint de
+   artefacto verificado es el del paquete 1.2.0 (Apéndice A). Una versión futura (2.2.x,
+   3.x, …) **no** hereda el contrato por comparación SemVer: `ToolContractFingerprint`
+   existe precisamente para que una versión nueva no pase automáticamente por un contrato viejo.
    El default de Sky-Claw debe ser `--autostart` (regenerar desde cero) para no depender
    del cache; `--autostart-update` solo si una corrida incremental se justifica explícitamente.
 
 Ejemplos VERSION_DEPENDENT que el adapter debe manejar: control ESM (config `pluginesmify`
-en 1.2.x vs `--esm-all`/`--no-esm` desde 1.3.0); presencia de `PGPatcher_UpdateCache.bin`
+en 1.2.0 vs `--esm-all`/`--no-esm` desde 1.3.0); presencia de `PGPatcher_UpdateCache.bin`
 (desde 2.0.0); semántica de `--autostart` (regenerar vs "sin input").
 
 ---
@@ -434,9 +447,10 @@ VramrOrderingPolicy(version_tuple)
       pero el winner de texturas cambia -> re-validar success contract de PG
 ```
 
-**¿Cambió entre versiones?** No dentro del rango 1.2.x–2.1.x: el check es idéntico en
-1.2.0 y 2.1.1. El corte histórico es 0.9.8 (introducción del critical). Fuera de ese rango
-no se investigó y no importa: el adapter solo habilita contratos/fingerprints reconocidos (§9).
+**¿Cambió entre versiones?** No entre las cinco versiones con contrato conocido: el check es
+idéntico en 1.2.0 y 2.1.1. El corte histórico es 0.9.8 (introducción del critical). Fuera de
+ese conjunto no se investigó y no importa: el adapter solo habilita contratos de versión
+reconocidos (§9).
 
 **Default propuesto Sky-Claw (no congelado):** `POLICY_B` (PGPatcher primero, VRAMr último)
 porque requiere un solo toggle de estado y VRAMr optimiza el resultado final; `POLICY_A`
@@ -568,13 +582,40 @@ la tool (`install_kind=TOOL` vs `OUTPUT_MOD`, v3 §5.3).
 
 | Output | Dueño | Reglas |
 |---|---|---|
-| `Sky-Claw - PGPatcher Output` | `pgpatcher_output_target` (nuevo) | **Exclusivo**: antes del run debe estar vacío o contener solo artefactos PG (lista §4.2). Nada de sidecars de Sky-Claw dentro. Run metadata fuera. `DirectoryRollback` move-aside aplica porque PG regenera el target completo (v3 §2.6 PG3). |
+| `Sky-Claw - PGPatcher Output` | `pgpatcher_output_target` (nuevo) | **Exclusivo**: antes del run debe estar vacío o contener solo artefactos PG (lista §4.2). Nada de sidecars de Sky-Claw dentro. Run metadata fuera. `DirectoryRollback` move-aside con los guards de ownership de §14.1 (PG regenera el target completo, v3 §2.6 PG3). |
 | `Sky-Claw - VRAMr Output` | `vramr_output_target` | Exclusivo de VRAMr; marker `VRAMrOutput.tmp` (mtime como frescura); `VRAMr.DB` es estado interno → firmar. |
 | ParallaxR Output / BENDr Output [2º corte] | propios | Exclusivos; los BAT originales usan `<Drive>:\ParallaxR` / `<Drive>:\BENDr` (H6) — Sky-Claw debe usar roots bajo su namespace, no esas rutas. |
 | MO2 `Overwrite` | MO2 | Si durante un run aparece output inesperado no declarado → **FAIL/QUARANTINE**, nunca mover en silencio. Registrar para HITL. |
 
 Nada se mezcla en silencio; la identidad del output es parte del `RunEvidence` (§16) y de la
 invalidación downstream.
+
+### 14.1 Guards de `DirectoryRollback` (ownership)
+
+El move-aside de un output exclusivo solo es seguro con los guards de ownership del
+mecanismo existente (`sky_claw/local/tools/_dir_rollback.py`; no requiere código nuevo):
+
+```
+DirectoryRollback(
+    target,
+    should_rollback=lambda: not lock.lease_lost,
+    validate_final_target=<ownership/final-target validator>,
+)
+```
+
+Reglas congeladas:
+
+- **Lease perdido** → **NO restore**; conservar el backup para recovery. El lock externo
+  veta su propio rollback, pero `DirectoryRollback` podía salir antes y restaurar un backup
+  obsoleto sobre la salida de un nuevo dueño; el callback `should_rollback` cierra esa ventana.
+- **Final target inválido o no verificable** → **NO descartar el backup**; conservar
+  target + backup. `validate_final_target` se usa solo para la finalización limpia antes de
+  descartar el backup; no sustituye el veto de lease ni es guard general de la restauración
+  por excepción.
+- `DirectoryRollback` es **mecanismo de preservación/restauración**; **NO decide por sí solo
+  `QUARANTINED`**.
+- `QUARANTINED` / `RECOVERY_REQUIRED` los decide la **state machine/orquestador superior**,
+  con el veto de lease y la validación de target como insumos.
 
 ---
 
@@ -660,7 +701,7 @@ Revisión adversarial de los componentes que convergen en las investigaciones Ar
 
 | Componente | Veredicto | Responsabilidad | No debe poseer | Notas P0 |
 |---|---|---|---|---|
-| `ExternalToolSpec` + registry | **ACCEPT** | Descriptor declarativo por tool (key, exe_names, acquisition, install_kind, requires_usvfs, **contract range/fingerprint**) | Estado runtime mutable, versiones vivas, resultados | Ya validado en v3 §5.2; P0 agrega `supported_versions` + `contract_capabilities` |
+| `ExternalToolSpec` + registry | **ACCEPT** | Descriptor declarativo por tool (key, exe_names, acquisition, install_kind, requires_usvfs, **contract range/fingerprint**) | Estado runtime mutable, versiones vivas, resultados | Ya validado en v3 §5.2; P0 agrega `known_version_contracts` + `contract_capabilities` |
 | `CapabilityGraph` | **MODIFY** | Datos declarativos del grafo pre-LOD (nodos, productores opcionales, convergencia) | Un engine nuevo de grafos; duplicar el DAG en prosa con semántica distinta | Los 9 stages no existen en runtime (v3 §1.1); el grafo de capacidad debe ser una estructura de datos pura testeable, no un motor |
 | `MaterialPlanCompiler` | **DEFER** (colapsar en el servicio) | Resolver el camino aplicable y las políticas por versión (VRAMr order, ESM, outputs ON/OFF) | Conocer CLI, logs, rutas internas de cada tool | Sin variabilidad suficiente hoy: una función pura `plan(steps, state, contracts) -> plan` dentro de `pre_lod_service` alcanza; extraer un componente propio solo cuando existan ≥2 consumidores |
 | Run DAG (secuencia ordenada con precondiciones) | **ACCEPT** | Orden de nodos + precondiciones + invalidación reportada | Reordenar dinámicamente sin especificación; borrar outputs downstream | Debe incluir la fase **post-PG de sort/reconcile** (§8.4 B) |
@@ -718,7 +759,7 @@ existe para fijar el framework con el caso mejor evidenciado.
 | B6-T | Cerrado (v3 §2.2) | Sin cambios | v3 §2.2 | — |
 | B6-L — permiso de invocación directa R-suite | Abierto | **Sigue abierto**; permisos documentados; VRAMr exige consentimiento escrito | §7 | Pedido formal al autor; default MANUAL_ONLY |
 | B7 — lifecycle de plugins PG | Abierto, bloqueaba P1 | **PARTIAL / CORE CLOSED**: establecido — artefactos y cuándo se omiten; masterlist LOOT para `PG_<N>`/`ParallaxGen`; PG antes de TexGen/DynDOLOD; necesidad de reconcile post-PG; no asumir placement de `PGPatcher.esp`. **No cerrado globalmente: B10 sigue abierto** (output PG stale vs etapas 5–7) | §8, §8.5 | P1 puede congelar el grafo con la fase post-PG de reconcile y la política conservadora §8.5; rig R-PG-4 y R-PG-7 |
-| B8 — matriz de contrato 1.2.x↔2.x | Nuevo | **CERRADO como enfoque**: capacidades por versión + fingerprint; contratos conocidos {1.2.0…2.1.1}, **sin rango abierto** | §9 | Implementar `ToolContractFingerprint` en P3/P9; versiones futuras fail-closed hasta registrar y verificar su contrato |
+| B8 — matriz de contrato por versión | Nuevo | **CERRADO como enfoque**: capacidades por versión; contratos de versión conocidos, **sin rango abierto**; fingerprint de artefacto verificado solo para 1.2.0 | §9 | Implementar `ToolContractFingerprint` en P3/P9 (la detección valida el artefacto); versiones futuras fail-closed hasta registrar y verificar su contrato |
 | B9 — ordering VRAMr↔PG por versión | Nuevo | **CERRADO**: ambas policies soportadas; gate en PG≥0.9.8 | §10 | P1 fija el default (POLICY_B propuesto) |
 | **B10 — output PG stale vs etapas 5–7** | Nuevo (descubierto en P0) | **ABIERTO / REAL_RIG_REQUIRED hasta R-PG-7**: correr Bash/Synthesis con un output PG stale habilitado puede consumir records PG; regenerar Bash invalida los masters de `PG_<N>.esp`; upstream no se pronuncia | §8.4 C/D/E, §8.5 | P1 fija la política conservadora §8.5 (deshabilitar PG output antes de 5–7 o marcar stale y exigir re-run); rig R-PG-7 |
 
@@ -763,7 +804,7 @@ Regla: cada condición se verifica **por herramienta por separado** (v3 §9.4).
    reconcile, la política conservadora Stage 5–7 → PG STALE (§8.5), `pipeline_capability`,
    nodos con `implemented=False` en diferidos, y los campos de contrato por versión en el
    diseño. Sin adapters.
-3. **P2 — `ToolReadiness` + registry** (con `known_contracts`/`contract_capabilities`).
+3. **P2 — `ToolReadiness` + registry** (con `known_version_contracts`/`contract_capabilities`).
 4. **P3 — detección de versión** (necesaria para `ToolContractFingerprint`).
 5. **P4 — instalación TOOL atómica + instalador PGPatcher** (`AUTO_GITHUB`).
 6. **P5 — handler USVFS genérico** (allowlist + handlers, ancla de igualdad). **Operational
@@ -839,8 +880,10 @@ provenance del operador (v3 §2) y **no** se declaran re-inspeccionados:
 - VRAMr v16.0310: zip `b36b184170c0c68a8ed1130f335abc9e0ad9edbe15416f656559b755626052a9`,
   `script.bat` `ef085ffdd914d7bf30e3e52ad30d18063ac6e19e0308a1b00686b7a01c809581`,
   `BSA.exe` `cbb582794268484848b6ed71dd3fa14f2f80bd2224def38eab0815bf46c3ddb5` (T1 de la sesión v3).
-- PGPatcher 1.2.0: zip `9981cd966ca512ff2ac6d0006537fa937da74a3ac4e7f6dc973c996a0697436c`,
-  `PGPatcher.exe` `7027f055…`, `pgtools.exe` `cc6493b6…`, `PGLib.dll` `b6ddcca2…`.
+- PGPatcher 1.2.0: zip `9981cd966ca512ff2ac6d0006537fa937da74a3ac4e7f6dc973c996a0697436c`
+  (único hash completo; por eso es el `verified_artifact_fingerprint` de §9),
+  `PGPatcher.exe` `7027f055…`, `pgtools.exe` `cc6493b6…`, `PGLib.dll` `b6ddcca2…`
+  (hashes por archivo: prefijos T2, no re-verificables en P0 → NO cuentan como fingerprint).
 - Auto Parallax 1.0.27: zip `1e67a4df3919c67f94ca94d9545b2a95add708592a240f377173cfd25d9ab2ef` (runtime SKSE, no nodo).
 
 Ningún binario, zip, BAT íntegro ni código GPL extenso se incorporó a este documento ni al
