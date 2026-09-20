@@ -324,6 +324,11 @@ module = [
     # producción sin type-check, y `sky_claw/app/**` además tiene BLE001 exento.
     "sky_claw.app.security.known_folders",
     "sky_claw.local.tools.dyndolod_workspace",
+    # SKSE runtime catalog: módulo nuevo en `sky_claw.local.tools.*`, que está en
+    # la lista `ignore_errors` de arriba — sin este opt-in sale sin type-check.
+    "sky_claw.local.tools.skse_catalog",
+    # P2 Pre-LOD: registro canónico de herramientas externas (nace estricto)
+    "sky_claw.local.discovery.registry",
 ]
 strict = true
 ignore_errors = false

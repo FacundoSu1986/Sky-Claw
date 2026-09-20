@@ -6908,14 +6908,17 @@ def _entorno_mo2_cli(
     *,
     perfil: str = "Default",
     con_plugins: bool = True,
+    nombre_juego: str = "Skyrim Special Edition",
 ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path]:
     """Instancia MO2 sintética: ``(game, data_root, exe, plugins_file)``.
 
     La instancia es "de datos" según el contrato de ``MO2_PATH`` (sin
     ``ModOrganizer.exe`` y con ``mods/``): la misma evidencia que usa el
     preflight (#595) para descubrir la raíz de datos, sin fabricar un INI.
+    ``nombre_juego`` permite el nombre de carpeta real del modo VR (``Skyrim VR``),
+    del que ``DynDOLODConfig`` infiere el game mode cuando no se pasa explícito.
     """
-    game = tmp_path / "Skyrim Special Edition"
+    game = tmp_path / nombre_juego
     (game / "Data").mkdir(parents=True, exist_ok=True)
     data_root = tmp_path / "MO2 Instancia"
     (data_root / "mods").mkdir(parents=True, exist_ok=True)
@@ -7206,6 +7209,152 @@ async def test_ensure_runner_rechaza_ini_dir_declarado_inexistente(
 
     with pytest.raises(DynDOLODExecutionError, match="DYNDLOD_INI_DIR"):
         svc._ensure_runner()
+
+
+#: Nombre de carpeta de juego por modo efectivo. El de VR es el que el binario
+#: reporta (*"Skyrim VR"*) y el que ``DynDOLODConfig`` usa para inferir el modo
+#: cuando ``_ensure_runner`` no lo pasa explícito.
+_NOMBRE_DE_JUEGO_POR_MODO_EN_SERVICE: dict[str, str] = {
+    "sse": "Skyrim Special Edition",
+    "tes5vr": "Skyrim VR",
+}
+
+
+@pytest.mark.parametrize("modo", ["sse", "tes5vr"])
+@pytest.mark.asyncio
+async def test_ensure_runner_falla_cerrado_si_el_ini_dir_no_tiene_la_ini_del_modo(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    modo: str,
+) -> None:
+    """#601: la carpeta declarada tiene que ser la del game mode EFECTIVO (pre-spawn).
+
+    ``get_dyndolod_ini_dir`` sólo prueba "path absoluto existente que es
+    directorio": una carpeta vacía —o con la INI que el modo no abre— satisfacía el
+    prerequisito y la corrida moría DESPUÉS del spawn (rig 2026-09-20: TES5VR +
+    carpeta con sólo ``SkyrimVR.ini`` → ``Fatal: Could not find ini``). La
+    validación mode-aware vive en ``DynDOLODConfig.__post_init__``, así que
+    ``_ensure_runner`` —la única frontera que construye la config productiva—
+    falla antes de que exista el runner. El mensaje lleva los tres datos
+    accionables: modo, carpeta y archivo esperado.
+    """
+    game, data_root, exe, _ = _entorno_mo2_cli(
+        tmp_path,
+        nombre_juego=_NOMBRE_DE_JUEGO_POR_MODO_EN_SERVICE[modo],
+    )
+    ini_dir = tmp_path / "My Games" / _NOMBRE_DE_JUEGO_POR_MODO_EN_SERVICE[modo]
+    ini_dir.mkdir(parents=True)
+    (ini_dir / "SkyrimVR.ini").write_text("[General]\n", encoding="utf-8")
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe, ini_dir=ini_dir)
+    svc = _svc_de_cli(resolver=_resolver_real_de_cli(tmp_path, perfil="Default"))
+
+    with pytest.raises(DynDOLODExecutionError) as excinfo:
+        svc._ensure_runner()
+
+    mensaje = str(excinfo.value)
+    assert modo in mensaje, f"el mensaje tiene que nombrar el game mode efectivo: {mensaje!r}"
+    assert str(ini_dir.resolve()) in mensaje, f"el mensaje tiene que nombrar la carpeta declarada: {mensaje!r}"
+    assert "Skyrim.ini" in mensaje, f"el mensaje tiene que nombrar el archivo esperado: {mensaje!r}"
+
+
+@pytest.mark.parametrize("modo", ["sse", "tes5vr"])
+@pytest.mark.asyncio
+async def test_execute_no_spawnea_con_ini_dir_incompatible(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    modo: str,
+) -> None:
+    """#601: ``execute`` corta con la INI incompatible y NO llama a ``create_subprocess_exec``.
+
+    La aceptación del issue no se conforma con que un auxiliar lance: el camino
+    PRODUCTIVO tiene que fallar antes del spawn. Acá se corre ``execute`` completo
+    —con workspace inyectado, para que el único bloqueo posible sea la INI— y se
+    espía el punto de creación del proceso: ``spawn.assert_not_awaited()``.
+
+    El control del mismo test cierra la vacuidad: con la INI correcta, el mismo
+    entorno sí construye el runner. Es decir, lo único que cambia entre el camino
+    verde y el rojo es el CONTENIDO de la carpeta declarada.
+    """
+    nombre_juego = _NOMBRE_DE_JUEGO_POR_MODO_EN_SERVICE[modo]
+    game, data_root, exe, _ = _entorno_mo2_cli(tmp_path, nombre_juego=nombre_juego)
+    ini_correcta = tmp_path / "My Games" / nombre_juego
+    ini_correcta.mkdir(parents=True)
+    (ini_correcta / "Skyrim.ini").write_text("[General]\n", encoding="utf-8")
+    ini_incompatible = tmp_path / "My Games" / "otra-carpeta"
+    ini_incompatible.mkdir(parents=True)
+    (ini_incompatible / "SkyrimVR.ini").write_text("[General]\n", encoding="utf-8")
+    external = tmp_path / "Work Root con espacios"
+
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe, ini_dir=ini_correcta)
+    control = _svc_de_cli(
+        resolver=_resolver_real_de_cli(tmp_path, perfil="Default"),
+        workspace=_workspace_fake(external),
+    )
+    assert control._ensure_runner()._config.ini_dir == ini_correcta.resolve()
+
+    monkeypatch.setenv("DYNDLOD_INI_DIR", str(ini_incompatible))
+    svc = _svc_de_cli(
+        resolver=_resolver_real_de_cli(tmp_path, perfil="Default"),
+        workspace=_workspace_fake(external),
+    )
+    spawn = AsyncMock()
+    with patch.object(sky_claw.local.tools.dyndolod_runner.asyncio, "create_subprocess_exec", spawn):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is False
+    spawn.assert_not_awaited(), "se intentó lanzar la herramienta con una INI incompatible declarada"
+    assert "Skyrim.ini" in result["message"], result["message"]
+    assert modo in result["message"], result["message"]
+    assert "NO CONFIGURADO" not in result["message"], (
+        f"el corte tiene que ser la INI, no el workspace: {result['message']!r}"
+    )
+
+
+@pytest.mark.parametrize("modo", ["sse", "tes5vr"])
+@pytest.mark.asyncio
+async def test_execute_revalida_la_ini_en_cada_corrida_con_runner_cacheado(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    modo: str,
+) -> None:
+    """#601 (hallazgo de revisión): el runner se cachea, la INI se revalida por corrida.
+
+    ``_ensure_runner`` devuelve el MISMO runner en la segunda corrida de la sesión,
+    así que la validación de ``DynDOLODConfig.__post_init__`` —que corrió una sola
+    vez— no cubre que la INI desaparezca entre corridas (renombrada, borrada, disco
+    desconectado). Sin esta revalidación, la segunda corrida spawnearía con un
+    ``-m:`` que ya no tiene la INI: exactamente el ``Fatal: Could not find ini``
+    que #601 cierra. El gate por ejecución (antes del lock y de cualquier spawn)
+    usa la MISMA autoridad que la construcción:
+    ``DynDOLODConfig.ini_primaria_requerida``.
+    """
+    nombre_juego = _NOMBRE_DE_JUEGO_POR_MODO_EN_SERVICE[modo]
+    game, data_root, exe, _ = _entorno_mo2_cli(tmp_path, nombre_juego=nombre_juego)
+    ini_dir = tmp_path / "My Games" / nombre_juego
+    ini_dir.mkdir(parents=True)
+    ini = ini_dir / "Skyrim.ini"
+    ini.write_text("[General]\n", encoding="utf-8")
+    _exportar_entorno_de_cli(monkeypatch, game=game, data_root=data_root, exe=exe, ini_dir=ini_dir)
+    external = tmp_path / "Work Root con espacios"
+    svc = _svc_de_cli(
+        resolver=_resolver_real_de_cli(tmp_path, perfil="Default"),
+        workspace=_workspace_fake(external),
+    )
+
+    # Primera corrida de la sesión: construye y CACHEA el runner (INI presente).
+    assert svc._ensure_runner()._config.ini_dir == ini_dir.resolve()
+
+    # La INI desaparece entre corridas.
+    ini.unlink()
+
+    spawn = AsyncMock()
+    with patch.object(sky_claw.local.tools.dyndolod_runner.asyncio, "create_subprocess_exec", spawn):
+        result = await svc.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is False
+    spawn.assert_not_awaited(), "se lanzó la herramienta con una INI que ya no está"
+    assert "Skyrim.ini" in result["message"], result["message"]
+    assert str(ini.resolve()) in result["message"], result["message"]
 
 
 def test_la_fuente_de_plugins_separa_standalone_de_instancia_irresoluble() -> None:

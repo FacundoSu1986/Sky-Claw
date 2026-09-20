@@ -1,0 +1,80 @@
+DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 13:04:12
+
+The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
+If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
+
+Using Skyrim Special Edition Data Path: C:\steam\steamapps\content\app_489830\depot_489832\Data\
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\temp\
+Using Output Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\out_sse\
+Using ini: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\Skyrim\ini\Skyrim.ini
+Using save path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\Skyrim\ini\Saves\
+Warning: Could not find save path
+Using Creation Club Content list: C:\steam\steamapps\content\app_489830\depot_489832\Skyrim.ccc
+Using plugin list: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using language: English
+Using general string encoding: 1252  (ANSI - Lat�n I)
+Using translatable string encoding: 1252  (ANSI - Lat�n I)
+Using VMAD string encoding: 65001 (UTF-8)
+Loading active plugin list: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
+[00:00] xEdit Background Loader: starting...
+[00:00] xEdit Background Loader: [Skyrim - Interface.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Shaders.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures1.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures2.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures3.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures4.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures5.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures6.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures7.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures8.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [C:\steam\steamapps\content\app_489830\depot_489832\Data\] Setting Resource Path.
+[00:00] xEdit Background Loader: [Skyrim.esm] File loaded (CRC32:CF32300C)
+[00:01] xEdit Background Loader: [Skyrim.esm] Building string indices failed: Operation aborted
+[00:01] xEdit Background Loader: finished
+
+DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 13:04:55
+
+The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
+If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
+
+Using Skyrim Special Edition Data Path: C:\steam\steamapps\content\app_489830\depot_489832\Data\
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\temp\
+Using Output Path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\out_solo_ini\
+Using ini: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\solo_ini\ini\Skyrim.ini
+Using save path: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\solo_ini\ini\Saves\
+Warning: Could not find save path
+Using Creation Club Content list: C:\steam\steamapps\content\app_489830\depot_489832\Skyrim.ccc
+Using plugin list: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using language: English
+Using general string encoding: 1252  (ANSI - Lat�n I)
+Using translatable string encoding: 1252  (ANSI - Lat�n I)
+Using VMAD string encoding: 65001 (UTF-8)
+Loading active plugin list: %USERPROFILE%\AppData\Local\Temp\skyclaw_ini_probe\plugins.txt
+[00:00] xEdit Background Loader: starting...
+[00:00] xEdit Background Loader: [Skyrim - Interface.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Shaders.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures0.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures1.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures2.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures3.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures4.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures5.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures6.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures7.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [Skyrim - Textures8.bsa] Loading Resources.
+[00:00] xEdit Background Loader: [C:\steam\steamapps\content\app_489830\depot_489832\Data\] Setting Resource Path.
+[00:00] xEdit Background Loader: [Skyrim.esm] File loaded (CRC32:CF32300C)
+[00:01] xEdit Background Loader: [Skyrim.esm] Building string indices failed: Operation aborted
+[00:01] xEdit Background Loader: finished
+

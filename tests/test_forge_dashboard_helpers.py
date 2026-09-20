@@ -40,26 +40,15 @@ from sky_claw.local.discovery.environment import (
 
 
 def _scanner_tool_keys() -> set[str]:
-    """Claves de tool que el scanner publica, leídas del propio `tool_defs`.
+    """Claves de tool que el scanner publica, leídas del registro canónico.
 
-    `_scan_inner` construye `tool_defs` como literal local, así que se extrae del
-    AST en vez de hardcodear la lista: escribirla a mano es lo que dejó este test
-    sin cubrir `skse` durante toda una release.
+    P2 centralizó `tool_defs` en `EXTERNAL_TOOL_REGISTRY`. Este helper consulta
+    la fuente canónica en vez de hardcodear una lista o inspeccionar el AST de
+    un literal local eliminado.
     """
-    import ast
-    import inspect
-    import textwrap
+    from sky_claw.local.discovery.registry import EXTERNAL_TOOL_REGISTRY
 
-    fuente = textwrap.dedent(inspect.getsource(scanner_mod.EnvironmentScanner._scan_inner))
-    arbol = ast.parse(fuente)
-    for nodo in ast.walk(arbol):
-        if isinstance(nodo, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "tool_defs" for t in nodo.targets):
-            return {
-                elt.elts[0].value
-                for elt in nodo.value.elts  # type: ignore[attr-defined]
-                if isinstance(elt, ast.Tuple) and isinstance(elt.elts[0], ast.Constant)
-            }
-    raise AssertionError("No encontré `tool_defs` en EnvironmentScanner._scan_inner")
+    return set(EXTERNAL_TOOL_REGISTRY)
 
 
 # ── Metric formatting ──────────────────────────────────────────────────────────

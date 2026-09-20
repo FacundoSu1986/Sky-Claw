@@ -653,6 +653,10 @@ async def test_dyndolod_construye_el_vector_verificado(tmp_path: pathlib.Path) -
     texgen_exe.touch()
     ini_dir = tmp_path / "My Games" / "Skyrim Special Edition"
     ini_dir.mkdir(parents=True)
+    # #601: una carpeta declarada para -m: sin la INI del game mode ya no es una
+    # config válida (el binario buscaría ESA INI y moriría con "Fatal: Could not
+    # find ini"); el fixture la crea para que este test siga midiendo el argv.
+    (ini_dir / "Skyrim.ini").write_text("[General]\n", encoding="utf-8")
     plugins_file = tmp_path / "Plugins.txt"
     plugins_file.touch()
     output_root = tmp_path / "salida"
@@ -852,6 +856,11 @@ def _runner_con_raiz(tmp_path: pathlib.Path, carpeta: str, *, sin_espacios: bool
     dyndolod_exe.touch()
     ini_dir = raiz / nombre_inis / nombre_juego
     ini_dir.mkdir(parents=True)
+    # #601: la carpeta de -m: declara la INI que el binario abre; sin ella la
+    # config ni se construye (la propiedad la ancla
+    # `tests/test_dyndolod_ini_primaria_por_modo.py`). Acá sólo hace falta que el
+    # fixture sea una declaración válida para poder medir el argv.
+    (ini_dir / "Skyrim.ini").write_text("[General]\n", encoding="utf-8")
     plugins_file = raiz / "plugins.txt"
     plugins_file.touch()
 

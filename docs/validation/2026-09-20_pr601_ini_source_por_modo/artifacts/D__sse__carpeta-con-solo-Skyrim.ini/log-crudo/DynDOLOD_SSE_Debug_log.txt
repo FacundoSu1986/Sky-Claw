@@ -1,0 +1,31 @@
+[1110857:27:16] [6A90] [DynDOLODInit] <Debug: Start M000000006B1062D7>
+[1110857:27:16] [6A90] [DynDOLODInit] <Debug: Start N000000006AB01774>
+[1110857:27:16] [6A90] [dynCheckPath] <Debug: Processing <TOOL_DIR>\>
+[1110857:27:16] [6A90] [DynDOLODInit] <Debug: File not found <TOOL_DIR>\Edit Scripts\LODGenx64Win12.exe>
+[1110857:27:16] [6A90] [DynDOLODInit] <Debug: File not found <TOOL_DIR>\Edit Scripts\LODGenx64Win8.exe>
+[1110857:27:16] [6A90] [_LoadList] <Debug: Loading <TOOL_DIR>\Edit Scripts\DynDOLOD\Configs\DynDOLOD_Summaries.txt>
+[1110857:27:16] [6A90] [DynDOLODInit] <Debug: Ended>
+DynDOLOD 3.0 Alpha-209 x64 - Skyrim Special Edition (SSE) (561440F0) starting session 2026-09-20 17:27:17
+
+The Source Code Form of this program is subject to the terms of the Mozilla Public License, v. 2.0
+If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+The Source Code Form is available at https://github.com/TES5Edit/TES5Edit
+
+Using Skyrim Special Edition Data Path: <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\data\
+Using Scripts Path: <TOOL_DIR>\Edit Scripts\
+Using Cache Path: <TOOL_DIR>\Edit Scripts\DynDOLOD\Cache\DynDOLOD_SSE_
+Using Temp Path: <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\temp\
+Using Output Path: <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\out\
+Using ini: <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\solo_ini\ini\Skyrim.ini
+Using save path: <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\solo_ini\ini\Saves\
+Warning: Could not find save path
+Using plugin list: <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\plugins.txt
+Using settings file: <TOOL_DIR>\Edit Scripts\DynDOLOD\DynDOLOD.ini
+Using language: English
+Using general string encoding: 1252  (ANSI - Lat�n I)
+Using translatable string encoding: 1252  (ANSI - Lat�n I)
+Using VMAD string encoding: 65001 (UTF-8)
+Loading active plugin list: <RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\plugins.txt
+Error loading module information for "<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\data\Skyrim.esm": [Exception] "<RIG_WORK>\D__sse__carpeta-con-solo-Skyrim.ini\data\Skyrim.esm" is 0 bytes in size
+[00:00] [6A90] Forced
