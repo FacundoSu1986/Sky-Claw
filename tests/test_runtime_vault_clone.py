@@ -1064,6 +1064,7 @@ class TestRuntimeCloneSuiteCanonico:
             "models",
             "node_evidence",
             "protection",
+            "target_dacl",
             "verification",
         }
         assert discovered_modules == expected_modules
