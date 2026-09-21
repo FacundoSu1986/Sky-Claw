@@ -97,6 +97,22 @@ class VfsResultValidationError(VfsBrokerError):
     """El resultado no corresponde al job y attestation que autorizó el daemon."""
 
 
+def _recoger_deslenlace_del_driver(driver: asyncio.Task[VfsJobResult]) -> None:
+    """Marca como observada la excepción de un driver que el caller pudo abandonar.
+
+    ``Task.exception()`` no consume ni transforma el desenlace: si el caller
+    llama después ``session.result()``, sigue levantando la misma causa. Sin
+    este ownership, una sesión abandonada deja la task con excepción no
+    recuperada y asyncio reporta "Task exception was never retrieved" al
+    recolectarla — ruido que tapa la causa real del job.
+    """
+    if driver.cancelled():
+        return
+    error = driver.exception()
+    if error is not None:
+        logger.debug("desenlace de sesión todavía no consumido: %s", error, extra={"vfs_error": type(error).__name__})
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _RaicesEfectivas:
     """Raíces resueltas que viajan al manifiesto firmado del worker."""
@@ -475,6 +491,11 @@ class VfsExecutionBroker:
         vivo. Si el job falla antes de crear el tool (manifest, attestation,
         bootstrap del worker, bridge caído), levanta la excepción causal y jamás
         entrega una sesión con PID placeholder.
+
+        **Lock de instancia (ADR 0007).** La sesión retiene ``_instance_lock``
+        durante TODA su vida: un ``submit``/``open_session`` concurrente para la
+        misma instancia espera al terminal (no se libera mientras el tool vive).
+        Lo libera el ``finally`` del driver, que también limpia el tracking.
         """
         self._precondiciones(job, challenge)
         raices = self._raices_efectivas(
@@ -483,6 +504,9 @@ class VfsExecutionBroker:
             mods_dir=mods_dir,
             install_root=install_root,
         )
+        # El lock se adquiere ACÁ y lo libera el finally del driver (o el except
+        # de abajo si ni siquiera llegó a existir): una sesión viva serializa la
+        # instancia tanto como un submit en vuelo.
         await self._instance_lock.acquire()
         driver_creado = False
         try:
@@ -512,6 +536,10 @@ class VfsExecutionBroker:
                 ),
                 name=f"vfs-session-{job.job_id}",
             )
+            # Ownership del desenlace: si el caller abandona la sesión sin
+            # consumir result()/wait()/cancel(), la excepción del driver queda
+            # observada y no ensucia el event loop (la causa sigue disponible).
+            driver.add_done_callback(_recoger_deslenlace_del_driver)
             sesion._vincular_driver(driver)
             self._session_drivers[job.job_id] = driver
             driver_creado = True

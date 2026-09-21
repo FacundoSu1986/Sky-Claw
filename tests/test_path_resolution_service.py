@@ -1442,9 +1442,10 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/mo2/vfs.py": (127,),
         "sky_claw/local/mo2/vfs_attestation.py": (182, 243),
         # VfsExecutionBroker: fallback legacy compartido por submit/open_session
-        # (`_raices_efectivas`, PR-586A lo movió de la línea ~302 a la ~323) y
-        # VfsWorkerManifest: única construcción cuando no se pasa mods_dir.
-        "sky_claw/local/mo2/vfs_broker.py": (323,),
+        # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323 y sus
+        # follow-ups de revisión a la ~339) y VfsWorkerManifest: única
+        # construcción cuando no se pasa mods_dir.
+        "sky_claw/local/mo2/vfs_broker.py": (339,),
         "sky_claw/local/mo2/vfs_manifest.py": (61,),
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.

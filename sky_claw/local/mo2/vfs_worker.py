@@ -52,6 +52,10 @@ _MAX_CAPTURA_EN_BYTES = 64 * 1024
 #: Tras la salida del hijo directo, un nieto puede retener el pipe heredado: el
 #: drenaje espera EOF sólo esta gracia y después se cancela.
 _DRENAJE_GRACIA_SEGUNDOS = 2.0
+#: Sondeo del ``returncode`` para detectar la salida del hijo directo (ver
+#: :func:`_esperar_salida_del_proceso_directo`). Corto: la gracia de drenaje
+#: domina la latencia y el costo es un wakeup cada 100 ms.
+_SONDEO_DE_SALIDA_SEGUNDOS = 0.1
 #: Windows ``CREATE_NO_WINDOW`` — sin consola parpadeante para tools de consola.
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -189,18 +193,6 @@ class _SinkDeEventos:
             await write_authenticated_message(self.writer, event.to_dict(), self.secret)
 
 
-@dataclass(slots=True)
-class _SinkNulo:
-    """Sink para tests/uso directo: valida el job y no toca sockets."""
-
-    job_id: str
-
-    async def emit(self, event: VfsSessionEvent) -> None:
-        if event.job_id != self.job_id:
-            raise VfsSessionEventError(f"el evento apunta a otro job: {event.job_id!r}")
-        logger.debug("evento %s sin sink cableado (job %s)", type(event).__name__, self.job_id)
-
-
 def _failure(
     manifest: VfsWorkerManifest,
     message: str,
@@ -233,8 +225,9 @@ async def execute_worker_manifest(
     """Attesta worker+nieto y solo entonces despacha la herramienta allowlisted.
 
     ``session_handlers`` recibe el sink de eventos (procesos vivos de PR-586A);
-    ``handlers`` conserva la firma histórica de un argumento. Sin sink cableado,
-    un handler de sesión recibe uno nulo que sigue validando el ``job_id``.
+    ``handlers`` conserva la firma histórica de un argumento. Un tool_id presente
+    en ambos mapas es un dispatch ambiguo y falla cerrado; un handler de sesión
+    sin ``event_sink`` cableado también (perdería PID y exit code en silencio).
     """
     try:
         proof = await asyncio.to_thread(
@@ -271,21 +264,38 @@ async def execute_worker_manifest(
         )
     attestation["grandchild_sha256"] = child_sha
 
-    sink: VfsWorkerEventSink = event_sink if event_sink is not None else _SinkNulo(job_id=manifest.job.job_id)
-    handler_sesion = (
-        dict(session_handlers).get(manifest.job.tool_id)
-        if session_handlers is not None
-        else _default_session_handlers().get(manifest.job.tool_id)
-    )
+    tool_id = manifest.job.tool_id
+    seleccionados_sesion = dict(session_handlers) if session_handlers is not None else _default_session_handlers()
+    seleccionados_planos = dict(handlers) if handlers is not None else _default_handlers()
+    if handlers is not None and session_handlers is not None:
+        ambiguos = sorted(set(handlers) & set(session_handlers))
+        if ambiguos:
+            # Ambigüedad = el CALLER declaró el mismo tool_id en los dos mapas;
+            # un override silencioso escondería cuál de los dos corre. Los
+            # defaults no cuentan: el registro de sesión productivo nace vacío y
+            # un handler de sesión explícito sí puede tomar un id allowlisted
+            # (es la única forma de ejercitar la primitive con health/loot_sort).
+            return _failure(
+                manifest,
+                f"dispatch ambiguo para {ambiguos}: está en handlers y en session_handlers",
+                attestation=attestation,
+            )
+    handler_sesion = seleccionados_sesion.get(tool_id)
     if handler_sesion is not None:
-        invocacion = functools.partial(handler_sesion, manifest, sink)
+        if event_sink is None:
+            # Un sink no-op aparentaría éxito con PID y exit_code perdidos.
+            return _failure(
+                manifest,
+                f"handler de sesión {tool_id!r} sin sink de eventos cableado",
+                attestation=attestation,
+            )
+        invocacion = functools.partial(handler_sesion, manifest, event_sink)
     else:
-        selected = dict(handlers) if handlers is not None else _default_handlers()
-        handler = selected.get(manifest.job.tool_id)
+        handler = seleccionados_planos.get(tool_id)
         if handler is None:
             return _failure(
                 manifest,
-                f"handler no disponible para tool_id allowlisted {manifest.job.tool_id!r}",
+                f"handler no disponible para tool_id allowlisted {tool_id!r}",
                 attestation=attestation,
             )
         invocacion = functools.partial(handler, manifest)
@@ -406,7 +416,13 @@ class VfsProcessSpec:
 
 @dataclass(frozen=True, slots=True)
 class VfsProcessOutcome:
-    """Desenlace de :func:`run_brokered_process` (captura de cola acotada)."""
+    """Desenlace de :func:`run_brokered_process` (captura de cola acotada).
+
+    ``*_truncated`` significa **captura incompleta**, por cualquiera de las dos
+    causas: se superó el límite de bytes del buffer, o el drenaje se canceló
+    antes del EOF (gracia agotada por un descendiente que retiene el pipe). Un
+    stream que llegó a EOF dentro del límite queda en ``False``.
+    """
 
     exit_code: int
     stdout: str
@@ -439,20 +455,51 @@ class _CapturaAcotada:
 async def _drenar(stream: asyncio.StreamReader | None, captura: _CapturaAcotada) -> None:
     if stream is None:
         return
-    while True:
-        chunk = await stream.read(4096)
-        if not chunk:
-            return
-        captura.agregar(chunk)
+    try:
+        while True:
+            chunk = await stream.read(4096)
+            if not chunk:
+                return
+            captura.agregar(chunk)
+    except asyncio.CancelledError:
+        # Cancelar el drenaje (gracia agotada o teardown) deja la captura
+        # INCOMPLETA aunque no se haya superado el límite de bytes: el
+        # consumidor tiene que poder distinguirlo de un EOF real.
+        captura.truncada = True
+        raise
 
 
 async def _drenar_con_gracia(drenajes: list[asyncio.Task[None]]) -> None:
+    """Espera EOF de los drenajes; si un descendiente retiene el pipe, los cancela.
+
+    Se invoca recién cuando el hijo directo terminó. Al cancelar, ``_drenar``
+    marca la captura del stream como incompleta: la gracia acota la espera, no
+    la disimula.
+    """
     try:
         await asyncio.wait_for(asyncio.gather(*drenajes), timeout=_DRENAJE_GRACIA_SEGUNDOS)
     except TimeoutError:
         for drenaje in drenajes:
             drenaje.cancel()
         await asyncio.gather(*drenajes, return_exceptions=True)
+
+
+async def _esperar_salida_del_proceso_directo(proc: asyncio.subprocess.Process) -> int:
+    """Espera SÓLO la terminación del hijo directo, sin depender del EOF de pipes.
+
+    ``await proc.wait()`` NO sirve como señal de vida del proceso: en
+    ``asyncio.base_subprocess`` los waiters de ``wait()`` se resuelven en
+    ``_call_connection_lost``, y ``_try_finish`` sólo lo invoca cuando TODOS los
+    pipes quedaron desconectados. Un descendiente que herede stdout estira ese
+    EOF —y con él la espera—, así que un nieto podría mantener "vivo" al job
+    artificialmente. ``proc.returncode``, en cambio, lo setea ``_process_exited``
+    al detectar la terminación real del hijo (child watcher en POSIX, handle del
+    proceso en Windows): se observa ese valor con un sondeo corto sobre API
+    pública, sin tocar internals de asyncio y sin relojes sobre la vida del tool.
+    """
+    while proc.returncode is None:
+        await asyncio.sleep(_SONDEO_DE_SALIDA_SEGUNDOS)
+    return proc.returncode
 
 
 async def _reap_sin_cancelables(proc: asyncio.subprocess.Process) -> None:
@@ -507,7 +554,10 @@ async def run_brokered_process(
     try:
         await event_sink.emit(VfsToolStartedEvent(job_id=event_sink.job_id, tool_pid=proc.pid))
         try:
-            await proc.wait()
+            # Secuencia explícita: drenajes concurrentes → terminación REAL del
+            # hijo directo → recién ahí la gracia del drenaje. El deadline del
+            # job (backstop del broker) sigue siendo el único reloj de vida.
+            await _esperar_salida_del_proceso_directo(proc)
         except asyncio.CancelledError:
             with contextlib.suppress(asyncio.CancelledError):
                 await _reap_sin_cancelables(proc)

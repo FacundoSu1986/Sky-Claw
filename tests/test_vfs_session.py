@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import gc
 import json
 import pathlib
 import sys
@@ -19,6 +20,7 @@ import time
 import psutil
 import pytest
 
+from sky_claw.local.mo2 import vfs_broker as vfs_broker_module
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_broker import (
     VfsBrokerError,
@@ -515,6 +517,52 @@ async def test_apertura_fallida_tras_el_manifiesto_no_deja_artefactos(
         await broker.close()
 
 
+async def test_apertura_fallida_despues_de_registrar_job_limpia_las_seis_superficies(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sonda post-``_registrar_job``: el fallo ocurre con el tracking ya cargado.
+
+    El test hermano falla ANTES de registrar; éste cubre la ventana que señaló
+    la revisión: manifiesto escrito, futuros registrados y suscripción de
+    eventos creada, pero todavía sin driver. Se comparan las seis superficies
+    contra un snapshot de igualdad (no sólo ``not in``: una entrada ajena
+    también sería un leak).
+    """
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = await _broker(tmp_path)
+    bridge = await _BridgeFalso.conectar(broker)
+    try:
+        instantaneas = {
+            "_pending": dict(broker._pending),
+            "_pending_context": dict(broker._pending_context),
+            "_worker_exit": dict(broker._worker_exit),
+            "_termination_tasks": dict(broker._termination_tasks),
+            "_job_event_queues": dict(broker._job_event_queues),
+            "_session_drivers": dict(broker._session_drivers),
+        }
+
+        class _SesionQueExplota:
+            def __init__(self, **_kwargs: object) -> None:
+                raise VfsBrokerError("fallo simulado post-registro")
+
+        monkeypatch.setattr(vfs_broker_module, "VfsProcessSession", _SesionQueExplota)
+
+        with pytest.raises(VfsBrokerError, match="post-registro"):
+            await broker.open_session(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data)
+
+        assert dict(broker._pending) == instantaneas["_pending"]
+        assert dict(broker._pending_context) == instantaneas["_pending_context"]
+        assert dict(broker._worker_exit) == instantaneas["_worker_exit"]
+        assert dict(broker._termination_tasks) == instantaneas["_termination_tasks"]
+        assert dict(broker._job_event_queues) == instantaneas["_job_event_queues"]
+        assert dict(broker._session_drivers) == instantaneas["_session_drivers"]
+        assert not (broker._jobs_dir / f"{job.job_id}.json").exists()
+        assert not broker._instance_lock.locked()
+    finally:
+        await bridge.cerrar()
+        await broker.close()
+
+
 async def test_apertura_fallida_sin_bridge_libera_el_lock(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -554,6 +602,79 @@ async def test_open_session_falla_cerrado_si_el_worker_muere_sin_resultado(tmp_p
             await asyncio.wait_for(apertura, timeout=3)
         assert not broker._instance_lock.locked()
     finally:
+        await bridge.cerrar()
+        await broker.close()
+
+
+# ---------------------------------------------------------------------------
+# Abandono: el desenlace del driver no puede quedar sin recuperar
+# ---------------------------------------------------------------------------
+
+
+async def _esperar_driver_terminado(sesion: VfsProcessSession, *, timeout: float = 3.0) -> None:
+    """Espera que el driver complete sin consumir su desenlace por la API pública."""
+    inicio = time.monotonic()
+    while time.monotonic() - inicio < timeout:
+        driver = sesion._driver
+        if driver is not None and driver.done():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("el driver de la sesión no terminó")
+
+
+async def test_sesion_abandonada_no_deja_la_excepcion_del_driver_sin_recuperar(tmp_path: pathlib.Path) -> None:
+    """Una sesión que el caller abandona no puede ensuciar el event loop.
+
+    El driver termina con la causa (worker caído) y nadie llama a
+    ``result()``/``wait()``/``cancel()``: sin ownership explícito, la task queda
+    con excepción no recuperada y asyncio reporta "Task exception was never
+    retrieved" al recolectarla — ruido que tapa la causa real.
+    """
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = await _broker(tmp_path)
+    bridge = await _BridgeFalso.conectar(broker)
+    worker = None
+    loop = asyncio.get_running_loop()
+    mensajes: list[str] = []
+    anterior = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: mensajes.append(str(ctx.get("message", ""))))
+    try:
+        sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data, pid=1313)
+        await bridge.worker_exit(job.job_id, exit_code=70)
+        await _esperar_driver_terminado(sesion)
+        # Ojo: NO tocar ``sesion.returncode`` acá. Esa property mira el desenlace
+        # del driver (``driver.exception()``) y marcaría la excepción como
+        # recuperada, destruyendo la condición que este test verifica.
+
+        del sesion  # el caller abandona la sesión sin consumir result/wait/cancel
+        gc.collect()
+        await asyncio.sleep(0)
+
+        assert not [m for m in mensajes if "Task exception was never retrieved" in m], mensajes
+    finally:
+        loop.set_exception_handler(anterior)
+        if worker is not None:
+            await worker.cerrar()
+        await bridge.cerrar()
+        await broker.close()
+
+
+async def test_sesion_abandonada_conserva_la_causa_para_result(tmp_path: pathlib.Path) -> None:
+    """El ownership de B1 recupera, no consume: ``result()`` levanta la causa original."""
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = await _broker(tmp_path)
+    bridge = await _BridgeFalso.conectar(broker)
+    worker = None
+    try:
+        sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data, pid=1414)
+        await bridge.worker_exit(job.job_id, exit_code=70)
+        await _esperar_driver_terminado(sesion)
+
+        with pytest.raises(VfsWorkerDisconnectedError):
+            await asyncio.wait_for(sesion.result(), timeout=3)
+    finally:
+        if worker is not None:
+            await worker.cerrar()
         await bridge.cerrar()
         await broker.close()
 
@@ -670,6 +791,53 @@ async def test_timeout_de_la_sesion_cancela_y_resuelve_con_causa(tmp_path: pathl
             await asyncio.wait_for(sesion.result(), timeout=3)
         assert not broker._instance_lock.locked()
     finally:
+        if worker is not None:
+            await worker.cerrar()
+        await bridge.cerrar()
+        await broker.close()
+
+
+async def test_la_sesion_retiene_el_lock_de_instancia_hasta_el_terminal(tmp_path: pathlib.Path) -> None:
+    """ADR 0007: un job mutante por instancia — una sesión viva bloquea a submit.
+
+    El lock no se libera durante la sesión: un submit concurrente (mismo
+    perfil/instancia) espera al terminal y recién entonces su launch sale al
+    bridge. Es una decisión arquitectónica, no un bug.
+    """
+    mo2, data, challenge, job = _entorno(tmp_path)
+    otro_mo2, otro_data, otro_challenge, otro_job = _entorno(tmp_path / "otro")
+    broker = await _broker(tmp_path)
+    bridge = await _BridgeFalso.conectar(broker)
+    worker = None
+    worker_b = None
+    try:
+        sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data, pid=2020)
+        assert broker._instance_lock.locked(), "una sesión viva retiene el lock de instancia"
+
+        envio = asyncio.create_task(
+            broker.submit(otro_job, challenge=otro_challenge, mo2_root=otro_mo2, virtual_data_dir=otro_data)
+        )
+        with pytest.raises(TimeoutError):
+            await bridge.recv(timeout=0.3)
+        assert not envio.done()
+        assert not (broker._jobs_dir / f"{otro_job.job_id}.json").exists(), "el submit ni siquiera escribió manifiesto"
+
+        await worker.exited(0)
+        await worker.resultado(_resultado(job.job_id, challenge))
+        await bridge.worker_exit(job.job_id)
+        await asyncio.wait_for(sesion.result(), timeout=3)
+
+        launch_b = await bridge.recv(timeout=3)
+        assert launch_b["type"] == "launch_worker"
+        assert launch_b["job_id"] == otro_job.job_id
+        worker_b = await _WorkerFalso.conectar(broker, otro_job.job_id)
+        await worker_b.resultado(_resultado(otro_job.job_id, otro_challenge))
+        await bridge.worker_exit(otro_job.job_id)
+        resultado_b = await asyncio.wait_for(envio, timeout=3)
+        assert resultado_b.success is True
+    finally:
+        if worker_b is not None:
+            await worker_b.cerrar()
         if worker is not None:
             await worker.cerrar()
         await bridge.cerrar()
