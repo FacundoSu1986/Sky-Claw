@@ -1477,12 +1477,12 @@ class ToolsInstaller:
         Args:
             install_dir: Directorio raíz del juego Skyrim (donde reside SkyrimSE.exe).
             session: Sesión HTTP activa.
-            edition: Clasificación OPCIONAL del producto; NUNCA selecciona el release
-                de SKSE. La compatibilidad se resuelve exclusivamente desde el runtime
-                exacto del PE (``resolve_skse_release``). Se usa para los mensajes, el
-                veto de ediciones no soportadas (VR/MS Store) y la familia de loader
-                que el scanner espera. Sin runtime legible no hay release que elegir
-                y la operación corta cerrada.
+            edition: Hint LEGACY de clasificación. NO selecciona el release y, cuando
+                hay ejecutable, tampoco la familia: la clasificación real del PE manda
+                (un ``SkyrimVR.exe`` corta por veto de producto, y la idempotencia
+                busca la familia real del ejecutable, no la pedida). Se conserva por
+                compatibilidad de firma; sin runtime legible la operación corta
+                cerrada de todos modos.
 
         Returns:
             :class:`InstallResult` con la ruta al loader de SKSE.
@@ -1502,25 +1502,39 @@ class ToolsInstaller:
             # 1) RUNTIME PRIMERO. Quién nombra la EDICIÓN y quién prueba la VERSIÓN
             # son cosas distintas: la compatibilidad de SKSE es del BUILD exacto del
             # ejecutable, no de la edición — `1.6.1170`, `1.7.99` y `1.7.104` son
-            # todos "AE" y cada uno exige un build distinto. Los dos caminos
-            # —autodetección y edición explícita— llenan `detected_version` y
-            # `hay_ejecutable`; la edición queda para los mensajes y para elegir la
-            # FAMILIA de loader que el scanner espera, nunca para elegir el build.
+            # todos "AE" y cada uno exige un build distinto. Los dos caminos llenan
+            # `detected_version` y `hay_ejecutable`; la edición —SIEMPRE la del
+            # ejecutable real cuando existe— queda para los mensajes, el veto de
+            # producto y la FAMILIA de loader que el scanner espera, nunca para
+            # elegir el build.
             detected_version = ""
             if edition is None:
                 edition, detected_version = await self._detect_skyrim_edition_from_exe(install_dir)
                 # `_detect_skyrim_edition_from_exe` levanta si no encuentra ninguno.
                 hay_ejecutable = True
             else:
-                # Con `edition` explícita no se EXIGE un .exe en disco, pero si lo
-                # hay, su versión manda igual: quién nombró la edición no cambia qué
-                # runtime va a cargar el DLL.
-                hay_ejecutable, detected_version = await self._leer_version_del_ejecutable(install_dir)
+                # El hint del caller NO es autoridad de familia cuando hay un
+                # ejecutable: la clasificación REAL del PE manda. Un `SkyrimVR.exe`
+                # cuya versión "parezca" soportada tiene que cortar por veto (abajo)
+                # en vez de resolver catálogo y bajar SKSE64 al directorio de un VR;
+                # y la idempotencia tiene que buscar la familia REAL — un
+                # `edition=LE` sobre un Skyrim SE con el SKSE correcto ya puesto no
+                # puede "no encontrarlo" y reinstalar encima. Sin ejecutable no hay
+                # runtime, así que el flujo corta cerrado más abajo.
+                exe = self._encontrar_ejecutable(install_dir)
+                hay_ejecutable = exe is not None
+                if exe is not None:
+                    detected_version = await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
+                    edition = await self._leer_pe_tolerando_ilegible(
+                        detect_skyrim_edition, exe, ilegible=SkyrimEdition.UNKNOWN
+                    )
 
             # 2) VETO DE PRODUCTO POR EDICIÓN (VR / MS Store). Es lo único que la
-            # edición sigue decidiendo, y es un "no": `UNKNOWN` no sale de
+            # edición sigue decidiendo, y es un "no": se evalúa sobre la clasificación
+            # REAL del PE — nunca sobre el hint del caller — y `UNKNOWN` no sale de
             # `SkyrimSE.exe`/`Skyrim.exe` (esos nombres resuelven siempre a SE/AE/LE),
-            # así que acá caen `SkyrimVR.exe` y cualquier binario exótico.
+            # así que acá caen `SkyrimVR.exe` y cualquier binario exótico. Sin
+            # ejecutable no aplica: ese camino corta en el paso 3.
             if edition is SkyrimEdition.UNKNOWN:
                 raise ToolInstallError(
                     f"La edición {edition.value} no es compatible con SKSE (MS Store y VR quedan "
@@ -1778,19 +1792,32 @@ class ToolsInstaller:
     async def _leer_version_del_ejecutable(self, game_dir: pathlib.Path) -> tuple[bool, str]:
         """``(¿hay ejecutable de Skyrim?, versión exacta o "")`` sin exigir que exista.
 
-        Hermano de :meth:`_detect_skyrim_edition_from_exe` para el camino en que el
-        caller ya trae la edición: ahí no hace falta deducirla, pero sí hace falta
-        saber si hay un runtime real cuya compatibilidad se pueda probar. Los dos
-        desenlaces que devuelve ``""`` son distintos y por eso se devuelve también el
-        booleano: "no hay Skyrim acá" (sin runtime exacto no se elige release, y el
-        caller corta cerrado) y "hay uno y no pude leerle la versión" (presencia sin
-        verificar o corte accionable).
+        Hermano de :meth:`_detect_skyrim_edition_from_exe` para quien sólo necesita
+        saber si hay un runtime real cuya compatibilidad se pueda probar (la
+        relectura del segundo gate, por ejemplo). Los dos desenlaces que devuelve
+        ``""`` son distintos y por eso se devuelve también el booleano: "no hay
+        Skyrim acá" (sin runtime exacto no se elige release, y el caller corta
+        cerrado) y "hay uno y no pude leerle la versión" (presencia sin verificar o
+        corte accionable).
+        """
+        exe = self._encontrar_ejecutable(game_dir)
+        if exe is None:
+            return False, ""
+        return True, await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
+
+    def _encontrar_ejecutable(self, game_dir: pathlib.Path) -> pathlib.Path | None:
+        """Primer ejecutable de Skyrim presente en *game_dir*, en el orden canónico.
+
+        Un solo lugar para el orden (``_SKYRIM_EXE_NAMES``): antes lo repetían —y
+        podían hacerlo divergir— la autodetección y la lectura de versión. Importa
+        cuando conviven varios (un dir con ``SkyrimSE.exe`` y ``SkyrimVR.exe``):
+        gana el SE, igual que antes.
         """
         for exe_name in _SKYRIM_EXE_NAMES:
             exe = game_dir / exe_name
             if exe.is_file():
-                return True, await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
-        return False, ""
+                return exe
+        return None
 
     async def _leer_pe_tolerando_ilegible(
         self,
@@ -1842,28 +1869,24 @@ class ToolsInstaller:
 
         Devuelve ambos: la compatibilidad de SKSE la decide el runtime EXACTO, así
         que el caller necesita la versión para resolver el release del catálogo. La
-        edición queda para los mensajes, para el veto de producto (VR/MS Store) y
-        para elegir la FAMILIA de loader que el scanner espera.
+        edición queda para los mensajes, para el veto de producto (VR/MS Store/
+        desconocido) y para elegir la FAMILIA de loader que el scanner espera.
         """
-        for exe_name in _SKYRIM_EXE_NAMES:
-            exe = game_dir / exe_name
-            if exe.is_file():
-                # Las dos lecturas van por el mismo traductor que la relectura del
-                # segundo gate: un PE que explota acá tiene que dar el mismo
-                # `ToolInstallError` accionable, no una excepción cruda por venir del
-                # camino de autodetección. Edición ilegible -> UNKNOWN, que el veto de
-                # producto de `ensure_skse` corta con su propio mensaje.
-                edition = await self._leer_pe_tolerando_ilegible(
-                    detect_skyrim_edition, exe, ilegible=SkyrimEdition.UNKNOWN
-                )
-                version = await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
-                return edition, version
-
-        raise ToolInstallError(
-            f"No encontré el ejecutable de Skyrim en {game_dir}: la compatibilidad de SKSE se "
-            "decide por el runtime exacto del ejecutable, así que sin él no hay release que "
-            "elegir. Revisá skyrim_path."
-        )
+        exe = self._encontrar_ejecutable(game_dir)
+        if exe is None:
+            raise ToolInstallError(
+                f"No encontré el ejecutable de Skyrim en {game_dir}: la compatibilidad de SKSE se "
+                "decide por el runtime exacto del ejecutable, así que sin él no hay release que "
+                "elegir. Revisá skyrim_path."
+            )
+        # Las dos lecturas van por el mismo traductor que la relectura del segundo
+        # gate: un PE que explota acá tiene que dar el mismo `ToolInstallError`
+        # accionable, no una excepción cruda por venir del camino de autodetección.
+        # Edición ilegible -> UNKNOWN, que el veto de producto de `ensure_skse` corta
+        # con su propio mensaje.
+        edition = await self._leer_pe_tolerando_ilegible(detect_skyrim_edition, exe, ilegible=SkyrimEdition.UNKNOWN)
+        version = await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
+        return edition, version
 
     async def _cleanup_orphaned_skse_dlls(
         self,

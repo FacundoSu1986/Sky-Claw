@@ -215,6 +215,73 @@ class TestCompatibilidadPorRuntime:
         assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
 
     @pytest.mark.asyncio
+    async def test_skyrim_vr_con_edicion_explicita_corta_antes_de_catalogo_hitl_y_egress(
+        self,
+        installer: ToolsInstaller,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """La familia REAL del ejecutable manda sobre el hint: `edition=SE` no vuelve SE a un VR.
+
+        `SkyrimVR.exe` con una versión PE que *parezca* soportada (1.5.97) no puede
+        resolver catálogo, pedir HITL ni bajar el SKSE64 de Steam al directorio del VR:
+        la clasificación real da UNKNOWN y el veto de producto corta antes de todo.
+        """
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        (install_dir / "SkyrimVR.exe").write_bytes(b"MZ")
+        antes = set(install_dir.iterdir())
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.UNKNOWN)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.5.97")
+
+        hitl, egress = _espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError, match="no es compatible"):
+            await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.SE)
+
+        hitl.assert_not_awaited(), "el veto corta antes del HITL"
+        egress.assert_not_awaited(), "el veto corta antes del egress"
+        assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
+
+    @pytest.mark.asyncio
+    async def test_edicion_explicita_equivocada_no_reinstala_sobre_instalacion_correcta(
+        self,
+        installer: ToolsInstaller,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """La idempotencia usa la familia REAL del PE, no el hint del caller.
+
+        `edition=LE` sobre un directorio SE con el SKSE correcto ya instalado
+        (`skse64_loader.exe` + `skse64_1_5_97.dll`): sin este contrato, la búsqueda de
+        idempotencia miraría `skse_loader.exe` (familia LE), no lo encontraría y
+        reinstalaría encima de una instalación que ya funciona.
+        """
+        install_dir = tmp_path / "skyrim"
+        install_dir.mkdir()
+        (install_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+        (install_dir / "skse64_loader.exe").write_bytes(b"MZ")
+        (install_dir / "skse64_1_5_97.dll").write_bytes(b"MZ")
+        antes = set(install_dir.iterdir())
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.SE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: "1.5.97")
+
+        hitl, egress = _espias_de_frontera(installer)
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        res = await installer.ensure_skse(install_dir, session, edition=SkyrimEdition.LE)
+
+        assert res.already_existed is True
+        assert res.verification is InstallVerification.VERIFIED
+        assert res.exe_path == install_dir / "skse64_loader.exe"
+        hitl.assert_not_awaited(), "una instalación reconocida no pide aprobación"
+        egress.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
+
+    @pytest.mark.asyncio
     async def test_runtime_desconocido_con_instalacion_presente_igual_corta(
         self, installer: ToolsInstaller, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

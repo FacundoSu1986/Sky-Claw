@@ -1324,11 +1324,13 @@ class TestEnsureSkse:
         Ya no se recorre todo el enum: la compatibilidad y la adquisición salen del
         runtime exacto, así que se parametriza el par (edición, runtime) que el
         catálogo manda a silverlock. AE/1.6.1170 corta antes, por adquisición Nexus
-        pendiente, y eso lo cubre su propio test.
+        pendiente, y eso lo cubre su propio test. Cada caso usa el nombre REAL de su
+        familia de ejecutable: con edición explícita la clasificación del PE manda, y
+        un LE sobre `SkyrimSE.exe` no sería un LE.
         """
         install_dir = tmp_path / "skyrim"
         install_dir.mkdir()
-        (install_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+        (install_dir / ("Skyrim.exe" if edition is SkyrimEdition.LE else "SkyrimSE.exe")).write_bytes(b"MZ")
 
         monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: runtime)
 
