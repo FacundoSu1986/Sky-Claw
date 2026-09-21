@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import functools
 import hashlib
 import json
 import logging
@@ -15,14 +16,23 @@ import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias
 
 from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.loot.cli import LOOTConfig, LOOTNotFoundError, LOOTRunner, LOOTTimeoutError
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, verify_vfs_attestation
-from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, JsonValue, VfsJobResult
+from sky_claw.local.mo2.vfs_contracts import (
+    VFS_PROTOCOL_VERSION,
+    JsonValue,
+    VfsJobResult,
+    VfsSessionEvent,
+    VfsSessionEventError,
+    VfsToolExitEvent,
+    VfsToolStartedEvent,
+)
 from sky_claw.local.mo2.vfs_ipc import read_authenticated_message, write_authenticated_message
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest, read_worker_manifest
+from sky_claw.local.tools._process import kill_and_reap
 from sky_claw.logging_config import (
     default_log_dir,
     setup_logging,
@@ -35,6 +45,19 @@ logger = logging.getLogger(__name__)
 _GRANDCHILD_TIMEOUT_SECONDS = 10.0
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 _RESULT_ACK_TIMEOUT_SECONDS = 5.0
+#: Captura por stream de un proceso de sesión: COLA acotada, no buffer completo.
+#: Un tool charlatán no puede inflar el ``VfsJobResult`` (frame IPC de 1 MiB) ni
+#: la memoria del worker; el diagnóstico conserva los últimos bytes.
+_MAX_CAPTURA_EN_BYTES = 64 * 1024
+#: Tras la salida del hijo directo, un nieto puede retener el pipe heredado: el
+#: drenaje espera EOF sólo esta gracia y después se cancela.
+_DRENAJE_GRACIA_SEGUNDOS = 2.0
+#: Sondeo del ``returncode`` para detectar la salida del hijo directo (ver
+#: :func:`_esperar_salida_del_proceso_directo`). Corto: la gracia de drenaje
+#: domina la latencia y el costo es un wakeup cada 100 ms.
+_SONDEO_DE_SALIDA_SEGUNDOS = 0.1
+#: Windows ``CREATE_NO_WINDOW`` — sin consola parpadeante para tools de consola.
+_CREATE_NO_WINDOW = 0x08000000
 
 
 def _worker_log_name(job_id: str) -> str:
@@ -142,6 +165,34 @@ class VfsToolExecution:
 VfsToolHandler: TypeAlias = Callable[[VfsWorkerManifest], Awaitable[VfsToolExecution]]
 
 
+class VfsWorkerEventSink(Protocol):
+    """Canal de eventos mid-job de una sesión, atado al job del worker."""
+
+    @property
+    def job_id(self) -> str: ...
+
+    async def emit(self, event: VfsSessionEvent) -> None: ...
+
+
+VfsSessionToolHandler: TypeAlias = Callable[[VfsWorkerManifest, VfsWorkerEventSink], Awaitable[VfsToolExecution]]
+
+
+@dataclass(slots=True)
+class _SinkDeEventos:
+    """Sink real: serializa eventos por el socket autenticado bajo write lock."""
+
+    job_id: str
+    writer: asyncio.StreamWriter
+    secret: bytes
+    write_lock: asyncio.Lock
+
+    async def emit(self, event: VfsSessionEvent) -> None:
+        if event.job_id != self.job_id:
+            raise VfsSessionEventError(f"el evento apunta a otro job: {event.job_id!r}")
+        async with self.write_lock:
+            await write_authenticated_message(self.writer, event.to_dict(), self.secret)
+
+
 def _failure(
     manifest: VfsWorkerManifest,
     message: str,
@@ -167,9 +218,17 @@ async def execute_worker_manifest(
     manifest: VfsWorkerManifest,
     *,
     handlers: Mapping[str, VfsToolHandler] | None = None,
+    session_handlers: Mapping[str, VfsSessionToolHandler] | None = None,
     grandchild_probe: GrandchildProbe | None = None,
+    event_sink: VfsWorkerEventSink | None = None,
 ) -> VfsJobResult:
-    """Attesta worker+nieto y solo entonces despacha la herramienta allowlisted."""
+    """Attesta worker+nieto y solo entonces despacha la herramienta allowlisted.
+
+    ``session_handlers`` recibe el sink de eventos (procesos vivos de PR-586A);
+    ``handlers`` conserva la firma histórica de un argumento. Un tool_id presente
+    en ambos mapas es un dispatch ambiguo y falla cerrado; un handler de sesión
+    sin ``event_sink`` cableado también (perdería PID y exit code en silencio).
+    """
     try:
         proof = await asyncio.to_thread(
             verify_vfs_attestation,
@@ -205,16 +264,43 @@ async def execute_worker_manifest(
         )
     attestation["grandchild_sha256"] = child_sha
 
-    selected = dict(handlers) if handlers is not None else _default_handlers()
-    handler = selected.get(manifest.job.tool_id)
-    if handler is None:
-        return _failure(
-            manifest,
-            f"handler no disponible para tool_id allowlisted {manifest.job.tool_id!r}",
-            attestation=attestation,
-        )
+    tool_id = manifest.job.tool_id
+    seleccionados_sesion = dict(session_handlers) if session_handlers is not None else _default_session_handlers()
+    seleccionados_planos = dict(handlers) if handlers is not None else _default_handlers()
+    if handlers is not None and session_handlers is not None:
+        ambiguos = sorted(set(handlers) & set(session_handlers))
+        if ambiguos:
+            # Ambigüedad = el CALLER declaró el mismo tool_id en los dos mapas;
+            # un override silencioso escondería cuál de los dos corre. Los
+            # defaults no cuentan: el registro de sesión productivo nace vacío y
+            # un handler de sesión explícito sí puede tomar un id allowlisted
+            # (es la única forma de ejercitar la primitive con health/loot_sort).
+            return _failure(
+                manifest,
+                f"dispatch ambiguo para {ambiguos}: está en handlers y en session_handlers",
+                attestation=attestation,
+            )
+    handler_sesion = seleccionados_sesion.get(tool_id)
+    if handler_sesion is not None:
+        if event_sink is None:
+            # Un sink no-op aparentaría éxito con PID y exit_code perdidos.
+            return _failure(
+                manifest,
+                f"handler de sesión {tool_id!r} sin sink de eventos cableado",
+                attestation=attestation,
+            )
+        invocacion = functools.partial(handler_sesion, manifest, event_sink)
+    else:
+        handler = seleccionados_planos.get(tool_id)
+        if handler is None:
+            return _failure(
+                manifest,
+                f"handler no disponible para tool_id allowlisted {tool_id!r}",
+                attestation=attestation,
+            )
+        invocacion = functools.partial(handler, manifest)
     try:
-        execution = await handler(manifest)
+        execution = await invocacion()
     except (LOOTNotFoundError, LOOTTimeoutError, OSError, ValueError, RuntimeError) as exc:
         return _failure(
             manifest,
@@ -308,8 +394,227 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     )
 
 
+# ---------------------------------------------------------------------------
+# Primitive de proceso vivo de una sesión (PR-586A)
+# ---------------------------------------------------------------------------
+#
+# El worker posee el spawn bajo USVFS; el daemon posee la decisión. Esta
+# primitive es lo único que hace falta del lado del worker para sostener esa
+# asimetría: publica el PID con el proceso vivo, acota la captura, garantiza el
+# reap y NO agrega un reloj propio (el deadline es el timeout del job y la
+# cancelación llega por el canal autenticado del worker).
+
+
+@dataclass(frozen=True, slots=True)
+class VfsProcessSpec:
+    """Proceso a lanzar dentro del worker hookeado por USVFS."""
+
+    executable: pathlib.Path
+    arguments: tuple[str, ...] = ()
+    cwd: pathlib.Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VfsProcessOutcome:
+    """Desenlace de :func:`run_brokered_process` (captura de cola acotada).
+
+    ``*_truncated`` significa **captura incompleta**, por cualquiera de las dos
+    causas: se superó el límite de bytes del buffer, o el drenaje se canceló
+    antes del EOF (gracia agotada por un descendiente que retiene el pipe). Un
+    stream que llegó a EOF dentro del límite queda en ``False``.
+    """
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_seconds: float
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
+
+class _CapturaAcotada:
+    """Buffer de cola con tope: conserva los ÚLTIMOS bytes (diagnóstico)."""
+
+    __slots__ = ("_buffer", "_limite", "truncada")
+
+    def __init__(self, limite: int) -> None:
+        self._buffer = bytearray()
+        self._limite = limite
+        self.truncada = False
+
+    def agregar(self, chunk: bytes) -> None:
+        self._buffer.extend(chunk)
+        if len(self._buffer) > self._limite:
+            self.truncada = True
+            del self._buffer[: len(self._buffer) - self._limite]
+
+    def texto(self) -> str:
+        return bytes(self._buffer).decode("utf-8", errors="replace")
+
+
+async def _drenar(stream: asyncio.StreamReader | None, captura: _CapturaAcotada) -> None:
+    if stream is None:
+        return
+    try:
+        while True:
+            chunk = await stream.read(4096)
+            if not chunk:
+                return
+            captura.agregar(chunk)
+    except asyncio.CancelledError:
+        # Cancelar el drenaje (gracia agotada o teardown) deja la captura
+        # INCOMPLETA aunque no se haya superado el límite de bytes: el
+        # consumidor tiene que poder distinguirlo de un EOF real.
+        captura.truncada = True
+        raise
+
+
+async def _drenar_con_gracia(drenajes: list[asyncio.Task[None]]) -> None:
+    """Espera EOF de los drenajes; si un descendiente retiene el pipe, los cancela.
+
+    Se invoca recién cuando el hijo directo terminó. Al cancelar, ``_drenar``
+    marca la captura del stream como incompleta: la gracia acota la espera, no
+    la disimula.
+    """
+    try:
+        await asyncio.wait_for(asyncio.gather(*drenajes), timeout=_DRENAJE_GRACIA_SEGUNDOS)
+    except TimeoutError:
+        for drenaje in drenajes:
+            drenaje.cancel()
+        await asyncio.gather(*drenajes, return_exceptions=True)
+
+
+async def _esperar_salida_del_proceso_directo(proc: asyncio.subprocess.Process) -> int:
+    """Espera SÓLO la terminación del hijo directo, sin depender del EOF de pipes.
+
+    ``await proc.wait()`` NO sirve como señal de vida del proceso: en
+    ``asyncio.base_subprocess`` los waiters de ``wait()`` se resuelven en
+    ``_call_connection_lost``, y ``_try_finish`` sólo lo invoca cuando TODOS los
+    pipes quedaron desconectados. Un descendiente que herede stdout estira ese
+    EOF —y con él la espera—, así que un nieto podría mantener "vivo" al job
+    artificialmente. ``proc.returncode``, en cambio, lo setea ``_process_exited``
+    al detectar la terminación real del hijo (child watcher en POSIX, handle del
+    proceso en Windows): se observa ese valor con un sondeo corto sobre API
+    pública, sin tocar internals de asyncio y sin relojes sobre la vida del tool.
+    """
+    while proc.returncode is None:
+        await asyncio.sleep(_SONDEO_DE_SALIDA_SEGUNDOS)
+    return proc.returncode
+
+
+def _liberar_pipes_del_hijo(proc: asyncio.subprocess.Process) -> None:
+    """Cierra el transporte del subproceso para liberar pipes retenidos.
+
+    ``asyncio.subprocess.Process`` no expone API pública para cerrar sus pipes:
+    el dueño de los handles es el transporte, y si un descendiente retiene la
+    punta de escritura, ``_try_finish`` nunca lo cierra solo (es el mismo motivo
+    por el que ``wait()`` esperaba el EOF). ``BaseSubprocessTransport.close()`` es
+    idempotente, no bloquea y sólo mata al hijo si TODAVÍA vive — acá ya terminó.
+    El acceso es defensivo porque ``_transport`` no es parte del contrato público.
+    """
+    transporte = getattr(proc, "_transport", None)
+    cerrar = getattr(transporte, "close", None)
+    if callable(cerrar):
+        cerrar()
+
+
+async def _reap_sin_cancelables(proc: asyncio.subprocess.Process) -> None:
+    """``kill_and_reap`` blindado: completa el teardown aunque al caller lo cancelen."""
+    limpieza = asyncio.ensure_future(kill_and_reap(proc))
+    cancelada = False
+    while not limpieza.done():
+        try:
+            await asyncio.shield(limpieza)
+        except asyncio.CancelledError:
+            cancelada = True
+    if cancelada:
+        raise asyncio.CancelledError
+
+
+async def run_brokered_process(
+    spec: VfsProcessSpec,
+    *,
+    event_sink: VfsWorkerEventSink,
+    limite_captura_bytes: int = _MAX_CAPTURA_EN_BYTES,
+) -> VfsProcessOutcome:
+    """Lanza y espera un proceso bajo la USVFS del worker, publicando su PID.
+
+    ``tool_started`` se emite con el proceso YA vivo y ``tool_exit`` con su
+    código real. En cancelación del handler (el broker manda ``cancel``), el
+    proceso se mata y se reapea antes de propagar; el Job Object del bridge
+    sigue siendo el backstop duro del árbol completo.
+    """
+    if not spec.executable.is_absolute():
+        raise ValueError("el ejecutable de la sesión debe ser una ruta absoluta")
+    if limite_captura_bytes <= 0:
+        raise ValueError("limite_captura_bytes debe ser positivo")
+
+    kwargs: dict[str, Any] = {
+        "stdin": asyncio.subprocess.DEVNULL,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+    }
+    if spec.cwd is not None:
+        kwargs["cwd"] = str(spec.cwd)
+    if sys.platform == "win32":
+        kwargs["creationflags"] = _CREATE_NO_WINDOW
+
+    inicio = time.monotonic()
+    proc = await asyncio.create_subprocess_exec(str(spec.executable), *spec.arguments, **kwargs)
+    captura_out = _CapturaAcotada(limite_captura_bytes)
+    captura_err = _CapturaAcotada(limite_captura_bytes)
+    drenajes = [
+        asyncio.create_task(_drenar(proc.stdout, captura_out)),
+        asyncio.create_task(_drenar(proc.stderr, captura_err)),
+    ]
+    try:
+        await event_sink.emit(VfsToolStartedEvent(job_id=event_sink.job_id, tool_pid=proc.pid))
+        try:
+            # Secuencia explícita: drenajes concurrentes → terminación REAL del
+            # hijo directo → recién ahí la gracia del drenaje. El deadline del
+            # job (backstop del broker) sigue siendo el único reloj de vida.
+            await _esperar_salida_del_proceso_directo(proc)
+        except asyncio.CancelledError:
+            with contextlib.suppress(asyncio.CancelledError):
+                await _reap_sin_cancelables(proc)
+            raise
+        await _drenar_con_gracia(drenajes)
+        exit_code = proc.returncode if proc.returncode is not None else -1
+        await event_sink.emit(VfsToolExitEvent(job_id=event_sink.job_id, exit_code=exit_code))
+        return VfsProcessOutcome(
+            exit_code=exit_code,
+            stdout=captura_out.texto(),
+            stderr=captura_err.texto(),
+            duration_seconds=time.monotonic() - inicio,
+            stdout_truncated=captura_out.truncada,
+            stderr_truncated=captura_err.truncada,
+        )
+    finally:
+        for drenaje in drenajes:
+            if not drenaje.done():
+                drenaje.cancel()
+        await asyncio.gather(*drenajes, return_exceptions=True)
+        if proc.returncode is None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await _reap_sin_cancelables(proc)
+        # Si el drenaje se canceló por gracia (o por teardown), el transporte
+        # puede quedar abierto con la punta retenida por un descendiente: se
+        # libera explícitamente en vez de esperar al GC con un ResourceWarning.
+        _liberar_pipes_del_hijo(proc)
+
+
 def _default_handlers() -> dict[str, VfsToolHandler]:
     return {"health": _health_handler, "loot_sort": _loot_handler}
+
+
+def _default_session_handlers() -> dict[str, VfsSessionToolHandler]:
+    """Handlers de sesión productivos: VACÍO en PR-586A (ningún ritual migra).
+
+    Cuando un ritual migre entra acá Y en ``ALLOWED_VFS_TOOL_IDS``: el ancla
+    ``test_pr_586a_no_registra_tool_ids_de_sesion_productivos`` rompe a
+    propósito y obliga a decidir qué tool_ids entran.
+    """
+    return {}
 
 
 def _grandchild_command(path: pathlib.Path, expected_sha256: str) -> list[str]:
@@ -387,6 +692,7 @@ async def run_worker_session(
     descriptor_path: pathlib.Path,
     expected_job_id: str,
     handlers: Mapping[str, VfsToolHandler] | None = None,
+    session_handlers: Mapping[str, VfsSessionToolHandler] | None = None,
     grandchild_probe: GrandchildProbe | None = None,
 ) -> VfsJobResult | None:
     """Ejecuta el worker y reporta al daemon; ``None`` significa cancelación."""
@@ -421,11 +727,22 @@ async def run_worker_session(
         if ack.get("protocol_version") != VFS_PROTOCOL_VERSION or ack.get("type") != "hello_ack":
             raise VfsWorkerBootstrapError("el broker rechazó el hello del worker")
 
+        # Los eventos mid-job y el job_result comparten el socket: el write lock
+        # serializa ambos emisores (hoy secuenciales, mañana no necesariamente).
+        write_lock = asyncio.Lock()
+        sink = _SinkDeEventos(
+            job_id=manifest.job.job_id,
+            writer=writer,
+            secret=descriptor.secret,
+            write_lock=write_lock,
+        )
         execution_task = asyncio.create_task(
             execute_worker_manifest(
                 manifest,
                 handlers=handlers,
+                session_handlers=session_handlers,
                 grandchild_probe=grandchild_probe,
+                event_sink=sink,
             )
         )
         cancel_task = asyncio.create_task(
@@ -455,15 +772,16 @@ async def run_worker_session(
         with contextlib.suppress(asyncio.CancelledError):
             await cancel_task
         result = execution_task.result()
-        await write_authenticated_message(
-            writer,
-            {
-                "protocol_version": VFS_PROTOCOL_VERSION,
-                "type": "job_result",
-                "result": result.to_dict(),
-            },
-            descriptor.secret,
-        )
+        async with write_lock:
+            await write_authenticated_message(
+                writer,
+                {
+                    "protocol_version": VFS_PROTOCOL_VERSION,
+                    "type": "job_result",
+                    "result": result.to_dict(),
+                },
+                descriptor.secret,
+            )
         result_ack = await asyncio.wait_for(
             read_authenticated_message(reader, descriptor.secret),
             timeout=_RESULT_ACK_TIMEOUT_SECONDS,
