@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import logging
+import os
 import pathlib
 import sys
 from collections.abc import Sequence
@@ -28,6 +30,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from sky_claw.local.runtime_vault.models import RuntimeVaultError
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Jerarquía de Excepciones
@@ -1541,6 +1545,9 @@ def _bootstrap_initial_trusted_registry(tgr_file: pathlib.Path) -> None:
                 f"CreateFileW falló al crear '{tgr_path_str}' con Security Descriptor canónico: código {err}"
             )
 
+    # Solo llegamos aquí si este invocation ganó exitosamente CREATE_NEW
+    # (es el dueño único y legítimo de la creación de este archivo)
+    success = False
     try:
         # 3. Escribir contenido canónico inicial y sincronizar a disco
         bytes_written = wintypes.DWORD(0)
@@ -1562,18 +1569,36 @@ def _bootstrap_initial_trusted_registry(tgr_file: pathlib.Path) -> None:
         if not _kernel32.FlushFileBuffers(h):
             err = ctypes.get_last_error()
             raise TrustedNamespaceError(f"FlushFileBuffers falló en '{tgr_path_str}': código {err}")
-    finally:
-        _safe_close_handle(h)
 
-    # 4. Verificación post-creación atada a handle
-    verify_secured_file_by_handle(tgr_file)
-    with open(tgr_file, "rb") as f:
-        read_bytes = f.read()
-    loaded_reg = deserialize_trusted_golden_registry(read_bytes)
-    if loaded_reg != empty_reg:
-        raise TrustedNamespaceError(
-            f"El registro inicial verificado en '{tgr_path_str}' no coincide con el registro canónico vacío esperado"
-        )
+        _safe_close_handle(h)
+        h = 0
+
+        # 4. Verificación post-creación atada a handle
+        verify_secured_file_by_handle(tgr_file)
+        with open(tgr_file, "rb") as f:
+            read_bytes = f.read()
+        loaded_reg = deserialize_trusted_golden_registry(read_bytes)
+        if loaded_reg != empty_reg:
+            raise TrustedNamespaceError(
+                f"El registro inicial verificado en '{tgr_path_str}' no coincide con el registro canónico vacío esperado"
+            )
+
+        success = True
+    finally:
+        if h != 0:
+            _safe_close_handle(h)
+        if not success:
+            # Solo eliminamos el archivo si esta invocación ganó CREATE_NEW y la inicialización falló
+            try:
+                os.unlink(tgr_path_str)
+            except FileNotFoundError:
+                pass
+            except OSError as clean_err:
+                logger.warning(
+                    "Fallo al eliminar archivo parcial residual '%s' tras abortar inicialización: %s",
+                    tgr_path_str,
+                    clean_err,
+                )
 
 
 # Import tardío de TrustedGoldenRegistry, serialize y deserialize

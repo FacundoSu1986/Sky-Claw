@@ -20,6 +20,7 @@ Verifica el contrato normativo de ADR 0010 §11.3 y atiende los 10 blockers de l
 
 import ast
 import inspect
+import os
 import pathlib
 import subprocess
 import sys
@@ -539,16 +540,60 @@ class TestNamespaceBootstrapWindows:
         with pytest.raises(PreexistingTrustedRegistryError, match="preexistente"):
             _bootstrap_trusted_namespace_at(root_test)
 
-    def test_ns_06_race_precheck_bypassed_create_new_rejects_and_preserves_planted_bytes(
+    def test_ns_tgr_create_new_failure_cleans_up_and_allows_retry(
         self, tmp_path: pathlib.Path, mock_elevated_provisioning: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """P1: Si el pre-check es sorteado por carrera, CreateFileW(CREATE_NEW) falla cerrado y no sobreescribe."""
+        """P1: Si WriteFile o Flush falla tras CREATE_NEW exitoso, el archivo parcial se elimina y permite reintento."""
+        root_test = tmp_path / "ProgramDataSynthetic" / "Sky-Claw"
+        rv_dir = root_test / "runtime_vault"
+        root_test.parent.mkdir(parents=True, exist_ok=True)
+        tgr_file = rv_dir / "trusted_goldens.json"
+
+        # 1. Simular fallo transitorio en WriteFile en la primera corrida
+        real_write = _kernel32.WriteFile
+        fail_write = True
+
+        def simulated_write(h_file: Any, lp_buf: Any, n_bytes: int, lp_bytes_written: Any, lp_overlapped: Any) -> bool:
+            if fail_write:
+                _kernel32.SetLastError(112)  # ERROR_DISK_FULL
+                return False
+            return bool(real_write(h_file, lp_buf, n_bytes, lp_bytes_written, lp_overlapped))
+
+        monkeypatch.setattr(_kernel32, "WriteFile", simulated_write)
+
+        # Primer intento debe fallar con TrustedNamespaceError
+        with pytest.raises(TrustedNamespaceError, match="WriteFile falló"):
+            _bootstrap_trusted_namespace_at(root_test)
+
+        # Causal assertion: El archivo parcial residual DEBE ser eliminado tras fallo de inicialización
+        assert not tgr_file.exists(), "El archivo parcial residual debe ser eliminado tras fallo de inicialización"
+
+        # 2. Reintento sin fallo transitorio: debe tener éxito
+        fail_write = False
+        res = _bootstrap_trusted_namespace_at(root_test)
+        assert res.success is True
+        assert tgr_file.exists()
+        assert tgr_file.stat().st_size > 0
+
+    def test_ns_tgr_create_new_preexisting_never_unlinks_and_preserves_foreign_bytes(
+        self, tmp_path: pathlib.Path, mock_elevated_provisioning: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1: Si CreateFileW devuelve ERROR_FILE_EXISTS, NUNCA se hace unlink y los bytes ajenos quedan intactos."""
         root_test = tmp_path / "ProgramDataSynthetic" / "Sky-Claw"
         rv_dir = root_test / "runtime_vault"
         rv_dir.mkdir(parents=True)
         planted_tgr = rv_dir / "trusted_goldens.json"
-        attacker_bytes = b'{"attacker": "controlled", "corrupted": true}'
-        planted_tgr.write_bytes(attacker_bytes)
+        foreign_bytes = b'{"alien": "payload", "preexisting": 12345}'
+        planted_tgr.write_bytes(foreign_bytes)
+
+        unlinked_paths: list[str] = []
+        real_unlink = os.unlink
+
+        def tracking_unlink(path: str | os.PathLike[str]) -> None:
+            unlinked_paths.append(str(path))
+            real_unlink(path)
+
+        monkeypatch.setattr(os, "unlink", tracking_unlink)
 
         # Simular carrera donde el pre-check devolvió False pero el archivo ya existe al llamar a CreateFileW(CREATE_NEW)
         orig_check = _check_object_exists_no_reparse
@@ -566,8 +611,10 @@ class TestNamespaceBootstrapWindows:
         with pytest.raises(PreexistingTrustedRegistryError, match="Colisión de creación con CREATE_NEW|preexistente"):
             _bootstrap_trusted_namespace_at(root_test)
 
-        # Los bytes plantados deben quedar 100% intactos (no sobreescritos por replace ni truncados)
-        assert planted_tgr.read_bytes() == attacker_bytes
+        # Causal assertions: NUNCA hacer unlink sobre un archivo preexistente ajeno
+        assert str(planted_tgr) not in unlinked_paths, "VIOLACIÓN: Se intentó hacer unlink de un archivo ajeno"
+        assert planted_tgr.exists()
+        assert planted_tgr.read_bytes() == foreign_bytes
 
     def test_ns_case_b_uses_single_handle_no_reopen_for_mutation(
         self, tmp_path: pathlib.Path, mock_elevated_provisioning: None, monkeypatch: pytest.MonkeyPatch
