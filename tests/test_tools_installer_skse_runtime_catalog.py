@@ -170,7 +170,12 @@ class TestCompatibilidadPorRuntime:
         assert release.skse_version in mensaje, "el mensaje nombra el build que el catálogo pide"
         assert "Nexus" in mensaje, "dice por qué no se puede adquirir todavía"
         assert "/beta/" not in mensaje, "no ofrece la URL legacy de otro build como fallback"
-        assert mensaje.count("https://skse.silverlock.org/") == 1, "el mensaje tiene que ser accionable"
+        assert mensaje.count("https://skse.silverlock.org/") == 0, (
+            "el build de Nexus no vive en silverlock: mandar ahí sería un enlace engañoso"
+        )
+        assert mensaje.count("https://www.nexusmods.com/skyrimspecialedition/mods/30379") == 1, (
+            "el mensaje tiene que mandar a donde está el build (Nexus Mods 30379)"
+        )
         hitl.assert_not_awaited(), "no se pide aprobación para una adquisición que no existe"
         egress.assert_not_awaited(), "cero egress antes de saber que la adquisición existe"
         assert set(install_dir.iterdir()) == antes, "cero mutaciones del directorio del juego"
@@ -419,6 +424,24 @@ class TestAdquisicionDirectaPorIdentidad:
 
         with pytest.raises(ToolInstallError, match="adquisición directa única"):
             _adquisicion_directa_para(huerfano)
+
+    def test_silverlock_sin_artifact_name_falla_cerrado(self) -> None:
+        """SILVERLOCK exige `artifact_name`: la identidad es DLL + archive, nunca sólo DLL.
+
+        Sin este corte, un release con `artifact_name=None` desactivaba la comparación
+        del archive y podía matchear por nombre de DLL un payload viejo de la misma
+        familia — exactamente el 2.2.6 de 1.6.1170 que este PR no debe reintroducir.
+        """
+        sin_artifact = SkseRelease(
+            game_version="1.6.1170",
+            skse_version="2.2.8",
+            dll_name="skse64_1_6_1170.dll",
+            source=SkseSource.SILVERLOCK,
+            artifact_name=None,
+        )
+
+        with pytest.raises(ToolInstallError, match="artifact_name"):
+            _adquisicion_directa_para(sin_artifact)
 
     def test_artifact_incoherente_falla_cerrado(self) -> None:
         """Mismo DLL pero archive distinto: la identidad no coincide y no se adivina."""

@@ -384,29 +384,40 @@ def _adquisicion_directa_para(release: SkseRelease) -> dict[str, str | None]:
     Este es el ÚNICO punto que consulta ``SKSE_CONFIG`` para instalar: la
     compatibilidad ya la decidió el catálogo (runtime → release), y acá sólo se
     resuelve de dónde bajar ese build. La selección es por IDENTIDAD, no por
-    edición: el payload tiene que declarar el MISMO ``dll`` que el release y, si
-    el release declara ``artifact_name``, servir ese mismo archive. Si no hay
+    edición: el payload tiene que declarar el MISMO ``dll`` que el release Y servir
+    el MISMO archive. ``artifact_name`` es OBLIGATORIO para un release de
+    silverlock: sin él la identidad quedaría en "sólo DLL" y podría matchear un
+    build viejo de la misma familia (p. ej. el 2.2.6 de 1.6.1170). Si no hay
     EXACTAMENTE una coincidencia, no se adivina: se corta antes del HITL, del
     egress y de cualquier escritura.
 
     Los releases de NEXUS no tienen URL estática verificada (``artifact_name``
     es None en el catálogo): su adquisición es de PR-3, así que acá cortan con un
-    mensaje accionable en vez de caer a un payload viejo de silverlock.
+    mensaje accionable —incluido el enlace a Nexus Mods 30379, que es donde vive
+    su build— en vez de caer a un payload viejo de silverlock.
     """
     if release.source is not SkseSource.SILVERLOCK:
         raise ToolInstallError(
             f"Sky-Claw reconoce que Skyrim {release.game_version} requiere SKSE "
-            f"{release.skse_version}, pero la adquisición desde Nexus todavía no está "
-            "habilitada por este installer. No se descargó ni se modificó nada. "
-            "Mientras tanto, el build se puede instalar a mano desde "
-            "https://skse.silverlock.org/."
+            f"{release.skse_version}, pero la adquisición automática desde Nexus todavía no "
+            "está habilitada por este installer.\n\n"
+            "Instalá manualmente el build correspondiente a tu runtime desde Nexus Mods — "
+            "Skyrim Script Extender (SKSE64), mod 30379:\n"
+            "https://www.nexusmods.com/skyrimspecialedition/mods/30379\n\n"
+            "No se descargó ni se modificó nada."
+        )
+
+    if not release.artifact_name:
+        raise ToolInstallError(
+            f"Release SILVERLOCK sin artifact_name verificado (SKSE {release.skse_version}, "
+            f"runtime {release.game_version}): la identidad del payload exige dll + archive, "
+            "así que no se selecciona por nombre de DLL. No se descargó ni se modificó nada."
         )
 
     candidatos = [
         cfg
         for cfg in SKSE_CONFIG.values()
-        if cfg.get("dll") == release.dll_name
-        and (release.artifact_name is None or (cfg.get("url") or "").rsplit("/", 1)[-1] == release.artifact_name)
+        if cfg.get("dll") == release.dll_name and (cfg.get("url") or "").rsplit("/", 1)[-1] == release.artifact_name
     ]
     if len(candidatos) != 1:
         raise ToolInstallError(
@@ -1466,14 +1477,19 @@ class ToolsInstaller:
         Args:
             install_dir: Directorio raíz del juego Skyrim (donde reside SkyrimSE.exe).
             session: Sesión HTTP activa.
-            edition: Override opcional de la edición de Skyrim. Si es None, se deriva
-                de la versión del PE del ejecutable del juego.
+            edition: Clasificación OPCIONAL del producto; NUNCA selecciona el release
+                de SKSE. La compatibilidad se resuelve exclusivamente desde el runtime
+                exacto del PE (``resolve_skse_release``). Se usa para los mensajes, el
+                veto de ediciones no soportadas (VR/MS Store) y la familia de loader
+                que el scanner espera. Sin runtime legible no hay release que elegir
+                y la operación corta cerrada.
 
         Returns:
-            :class:`InstallResult` con la ruta a ``skse64_loader.exe``.
+            :class:`InstallResult` con la ruta al loader de SKSE.
 
         Raises:
-            ToolInstallError: Si la instalación falla o la edición no está soportada (ej. MS Store).
+            ToolInstallError: Si la instalación falla, el runtime no tiene release
+                conocido o la adquisición del release no está habilitada.
         """
         self._validator.validate(install_dir)
         # Lock cross-process keyed por game_dir (8º mutador de T-31). Cubre el
