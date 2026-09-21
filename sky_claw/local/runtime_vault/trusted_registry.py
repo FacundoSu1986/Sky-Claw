@@ -472,7 +472,7 @@ def load_trusted_golden_registry(path: pathlib.Path | str) -> TrustedGoldenRegis
     return deserialize_trusted_golden_registry(raw_bytes)
 
 
-def write_trusted_registry_atomically(
+def _write_trusted_registry_atomically_at(
     registry: TrustedGoldenRegistry,
     target_path: pathlib.Path | str,
 ) -> None:
@@ -494,7 +494,7 @@ def write_trusted_registry_atomically(
     dest = pathlib.Path(target_path)
     if sys.platform != "win32":
         raise TrustedRegistryUnsupportedError(
-            "write_trusted_registry_atomically solo está soportado en Windows con garantías Win32 de seguridad"
+            "_write_trusted_registry_atomically_at solo está soportado en Windows con garantías Win32 de seguridad"
         )
 
     import ctypes
@@ -618,5 +618,4 @@ __all__ = [
     "load_trusted_golden_registry",
     "serialize_trusted_golden_registry",
     "verify_trusted_golden_binding",
-    "write_trusted_registry_atomically",
 ]

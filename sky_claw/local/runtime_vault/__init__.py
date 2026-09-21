@@ -162,7 +162,6 @@ from sky_claw.local.runtime_vault.trusted_registry import (
     load_trusted_golden_registry,
     serialize_trusted_golden_registry,
     verify_trusted_golden_binding,
-    write_trusted_registry_atomically,
 )
 from sky_claw.local.runtime_vault.verification import (
     tree_digest_from_files,
@@ -300,5 +299,4 @@ __all__ = [
     "verify_target_dacl_by_handle",
     "verify_tree",
     "verify_trusted_golden_binding",
-    "write_trusted_registry_atomically",
 ]

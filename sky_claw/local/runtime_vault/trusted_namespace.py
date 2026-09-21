@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
-import os
 import pathlib
 import sys
 from collections.abc import Sequence
@@ -142,6 +141,9 @@ _FILE_INFO_BY_HANDLE_CLASS_ATTRIBUTE_TAG = 9
 _ACL_REVISION = 2
 _SECURITY_DESCRIPTOR_REVISION = 1
 
+_FOLDERID_PROGRAMDATA = "{62AB5D82-FDC1-4DC3-A9DD-070D1D495D97}"
+_KF_FLAG_DEFAULT = 0x00000000
+
 
 # ============================================================================
 # Declaraciones Win32 Ctypes (Windows Only)
@@ -149,6 +151,14 @@ _SECURITY_DESCRIPTOR_REVISION = 1
 
 if sys.platform == "win32":
     from ctypes import wintypes
+
+    class _GUID(ctypes.Structure):
+        _fields_ = (
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        )
 
     class _SecurityAttributes(ctypes.Structure):
         _fields_ = [
@@ -197,6 +207,8 @@ if sys.platform == "win32":
 
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    _ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    _shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 
     _kernel32.CreateFileW.argtypes = [
         wintypes.LPCWSTR,
@@ -1155,8 +1167,21 @@ def _provision_or_normalize_directory(
     _ensure_windows()
     dir_str = str(dir_path)
 
-    # Asegurar que el padre existe
-    dir_path.parent.mkdir(parents=True, exist_ok=True)
+    # El padre DEBE existir previamente, validado por el orden ancestors-first.
+    # Nunca crear ancestros implícitamente con pathlib.mkdir(parents=True).
+    parent_str = str(dir_path.parent)
+    h_parent = _open_handle_no_reparse(
+        parent_str,
+        desired_access=_READ_CONTROL | _FILE_READ_ATTRIBUTES,
+        creation_disposition=_OPEN_EXISTING,
+    )
+    if _is_invalid_handle(h_parent):
+        parent_err = ctypes.get_last_error()
+        raise AncestorProvisioningError(
+            f"El directorio padre '{parent_str}' no existe o no es accesible (código Win32 {parent_err}). "
+            "El provisioning exige orden ancestors-first; nunca se crean ancestros implícitamente."
+        )
+    _safe_close_handle(h_parent)
 
     # 1. Comprobar si ya existe abriendo sin seguir reparse
     h = _open_handle_no_reparse(
@@ -1312,14 +1337,51 @@ def _provision_or_normalize_directory(
 # ============================================================================
 
 
+def _resolve_programdata_known_folder() -> pathlib.Path:
+    """Resuelve la ruta autoritativa de ProgramData usando SHGetKnownFolderPath Win32.
+
+    NO confía en os.environ['PROGRAMDATA'] ni en %ALLUSERSPROFILE%: el environment block
+    del proceso no es autoridad para seleccionar el trust root privilegiado.
+
+    Usa FOLDERID_ProgramData = {62AB5D82-FDC1-4DC3-A9DD-070D1D495D97} y libera
+    correctamente el buffer retornado con CoTaskMemFree.
+
+    Raises:
+        TrustedNamespaceUnsupportedError: En plataformas no Windows.
+        TrustedNamespaceError: Si SHGetKnownFolderPath falla.
+    """
+    _ensure_windows()
+
+    rfid = _GUID()
+    hr = _ole32.CLSIDFromString(ctypes.c_wchar_p(_FOLDERID_PROGRAMDATA), ctypes.byref(rfid))
+    if hr != 0:
+        raise TrustedNamespaceError(
+            f"CLSIDFromString falló al parsear FOLDERID_ProgramData: HRESULT=0x{hr & 0xFFFFFFFF:08X}"
+        )
+
+    puntero = ctypes.c_wchar_p()
+    hr = _shell32.SHGetKnownFolderPath(ctypes.byref(rfid), _KF_FLAG_DEFAULT, None, ctypes.byref(puntero))
+    if hr != 0 or not puntero.value:
+        raise TrustedNamespaceError(
+            f"SHGetKnownFolderPath(FOLDERID_ProgramData) falló: HRESULT=0x{hr & 0xFFFFFFFF:08X}"
+        )
+    try:
+        result = pathlib.Path(puntero.value)
+    finally:
+        _ole32.CoTaskMemFree(puntero)
+
+    return result
+
+
 def bootstrap_trusted_namespace() -> TrustedNamespaceResult:
     """Aprovisiona o normaliza el namespace confiable completo bajo ProgramData (ADR 0010 §11.3).
 
-    API pública canónica de 0 argumentos: deriva fijamente la ruta desde %ProgramData%\\Sky-Claw.
+    API pública canónica de 0 argumentos: resuelve el trust root desde
+    SHGetKnownFolderPath(FOLDERID_ProgramData), NO desde variables de entorno.
     """
     _ensure_windows()
-    program_data = os.environ.get("PROGRAMDATA", "C:/ProgramData")
-    root_path = pathlib.Path(program_data) / "Sky-Claw"
+    program_data = _resolve_programdata_known_folder()
+    root_path = program_data / "Sky-Claw"
     return _bootstrap_trusted_namespace_at(root_path)
 
 
@@ -1379,7 +1441,7 @@ def _bootstrap_trusted_namespace_at(
 
     # Caso A: Creación inicial vacía canónica desde su nacimiento
     empty_reg = TrustedGoldenRegistry(entries=(), schema_version="1.0")
-    write_trusted_registry_atomically(empty_reg, tgr_file)
+    _write_trusted_registry_atomically_at(empty_reg, tgr_file)
 
     return TrustedNamespaceResult(
         success=True,
@@ -1388,10 +1450,10 @@ def _bootstrap_trusted_namespace_at(
     )
 
 
-# Import tardío de TrustedGoldenRegistry y write_trusted_registry_atomically
+# Import tardío de TrustedGoldenRegistry y _write_trusted_registry_atomically_at
 from sky_claw.local.runtime_vault.trusted_registry import (  # noqa: E402
     TrustedGoldenRegistry,
-    write_trusted_registry_atomically,
+    _write_trusted_registry_atomically_at,
 )
 
 __all__ = [

@@ -49,6 +49,7 @@ from sky_claw.local.runtime_vault.trusted_namespace import (
     TrustedNamespaceUnsupportedError,
     _bootstrap_trusted_namespace_at,
     _build_canonical_security_descriptor,
+    _resolve_programdata_known_folder,
     apply_canonical_tgr_file_security,
     bootstrap_trusted_namespace,
     build_namespace_dacl_spec,
@@ -267,8 +268,34 @@ class TestNamespacePureSpecs:
         assert len(fn.args.kwonlyargs) == 0
         assert fn.args.kwarg is None
 
-    def test_bootstrap_trusted_namespace_hardcodes_programdata(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """P1: bootstrap_trusted_namespace deriva fijamente %ProgramData%\\Sky-Claw."""
+    @pytest.mark.skipif(sys.platform != "win32", reason="Resolver nativo solo en Windows")
+    def test_resolve_programdata_known_folder_ignores_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """P1: _resolve_programdata_known_folder NO usa os.environ['PROGRAMDATA'].
+
+        Monkeypatch PROGRAMDATA a una ruta controlada por el atacante;
+        _resolve_programdata_known_folder debe retornar la ruta autoritativa
+        de SHGetKnownFolderPath, NO la del environment block.
+        """
+        attacker_path = "D:\\attacker-controlled"
+        monkeypatch.setenv("PROGRAMDATA", attacker_path)
+
+        result = _resolve_programdata_known_folder()
+        assert str(result) != attacker_path, (
+            f"_resolve_programdata_known_folder retornó la variable de entorno envenenada '{attacker_path}'"
+        )
+        # SHGetKnownFolderPath en cualquier Windows real retorna una ruta que contiene 'ProgramData'
+        assert "ProgramData" in str(result), f"La ruta autoritativa no contiene 'ProgramData': '{result}'"
+
+    def test_resolve_programdata_known_folder_posix_fails(self) -> None:
+        """P1: _resolve_programdata_known_folder falla con TrustedNamespaceUnsupportedError en POSIX."""
+        with patch("sky_claw.local.runtime_vault.trusted_namespace.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with pytest.raises(TrustedNamespaceUnsupportedError):
+                _resolve_programdata_known_folder()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Resolver nativo solo en Windows")
+    def test_bootstrap_trusted_namespace_uses_known_folder_not_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """P1: bootstrap_trusted_namespace resuelve ProgramData por SHGetKnownFolderPath, no por os.environ."""
         calls: list[pathlib.Path] = []
 
         def spy_bootstrap(path: Any) -> TrustedNamespaceResult:
@@ -279,12 +306,32 @@ class TestNamespacePureSpecs:
             "sky_claw.local.runtime_vault.trusted_namespace._bootstrap_trusted_namespace_at",
             spy_bootstrap,
         )
-        monkeypatch.setenv("PROGRAMDATA", "C:/TestProgramData")
+        attacker_path = "D:\\attacker-controlled"
+        monkeypatch.setenv("PROGRAMDATA", attacker_path)
 
         res = bootstrap_trusted_namespace()
         assert res.success is True
         assert len(calls) == 1
-        assert calls[0] == pathlib.Path("C:/TestProgramData/Sky-Claw")
+        # No debe contener la ruta del atacante
+        assert attacker_path not in str(calls[0]), f"bootstrap usó la ruta envenenada del env: '{calls[0]}'"
+        # Debe terminar en Sky-Claw
+        assert calls[0].name == "Sky-Claw"
+
+    def test_runtime_vault_public_api_no_tgr_writer_with_pathname(self) -> None:
+        """P1 / Anchor: La API pública de runtime_vault no exporta ningún TGR writer que reciba pathname."""
+        import sky_claw.local.runtime_vault as rv_mod
+
+        public_names = set(rv_mod.__all__)
+        forbidden_writer_patterns = {
+            "write_trusted_registry_atomically",
+            "_write_trusted_registry_atomically_at",
+            "write_trusted_goldens",
+            "write_tgr",
+        }
+        exported_writers = public_names & forbidden_writer_patterns
+        assert exported_writers == set(), (
+            f"VIOLACIÓN: La API pública exporta TGR writers con pathname: {exported_writers}"
+        )
 
 
 # ============================================================================
@@ -337,6 +384,7 @@ class TestNamespaceBootstrapWindows:
     def test_ns_unelevated_without_privilege_fails_closed(self, tmp_path: pathlib.Path) -> None:
         """Blockers 1 & 2: Verifica que en entorno no elevado la creación falle cerrado con error 1307 (sin fallback)."""
         root_test = tmp_path / "ProgramDataSynthetic" / "Sky-Claw"
+        root_test.parent.mkdir(parents=True, exist_ok=True)
         with pytest.raises(AncestorProvisioningError) as exc_info:
             _bootstrap_trusted_namespace_at(root_test)
         assert "1307" in str(exc_info.value) or "1314" in str(exc_info.value)
@@ -346,6 +394,7 @@ class TestNamespaceBootstrapWindows:
     ) -> None:
         """NS-01: Bootstrap correcto sobre namespace inexistente (Caso A, orden de ancestros completo)."""
         root_test = tmp_path / "ProgramDataSynthetic" / "Sky-Claw"
+        root_test.parent.mkdir(parents=True, exist_ok=True)
 
         result = _bootstrap_trusted_namespace_at(root_test)
 
@@ -466,6 +515,24 @@ class TestNamespaceBootstrapWindows:
             _bootstrap_trusted_namespace_at(root_test)
 
         assert not (root_test / "runtime_vault").exists()
+
+    def test_provision_missing_parent_fails_closed(self, tmp_path: pathlib.Path) -> None:
+        """P2: _provision_or_normalize_directory con padre inexistente falla cerrado sin crear ancestros.
+
+        Verifica que NO se usa pathlib.mkdir(parents=True). Si el padre no fue
+        previamente validado por el orden ancestors-first, el provisioning falla cerrado.
+        """
+        from sky_claw.local.runtime_vault.trusted_namespace import _provision_or_normalize_directory
+
+        # Ruta con padre inexistente: el padre NO existe
+        deep_child = tmp_path / "nonexistent_parent" / "child_dir"
+
+        with pytest.raises(AncestorProvisioningError, match="ancestors-first"):
+            _provision_or_normalize_directory(deep_child, "child_dir")
+
+        # Verificar que NO se crearon ancestros implícitamente
+        assert not (tmp_path / "nonexistent_parent").exists()
+        assert not deep_child.exists()
 
 
 # ============================================================================

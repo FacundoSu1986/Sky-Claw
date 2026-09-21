@@ -43,11 +43,11 @@ from sky_claw.local.runtime_vault.trusted_registry import (
     TrustedRegistrySchemaError,
     TrustedRegistryUnsupportedError,
     _write_test_registry_portable_atomic,
+    _write_trusted_registry_atomically_at,
     deserialize_trusted_golden_registry,
     load_trusted_golden_registry,
     serialize_trusted_golden_registry,
     verify_trusted_golden_binding,
-    write_trusted_registry_atomically,
 )
 
 
@@ -484,7 +484,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
         entry = _crear_entry_valida(canonical_root="C:/Games/Skyrim")
         reg = TrustedGoldenRegistry(entries=(entry,), schema_version="1.0")
 
-        write_trusted_registry_atomically(reg, target_file)
+        _write_trusted_registry_atomically_at(reg, target_file)
 
         raw_leido = target_file.read_bytes()
         assert raw_leido == serialize_trusted_golden_registry(reg)
@@ -506,7 +506,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
             original_replace(src, dst)
 
         with patch("sky_claw.local.runtime_vault.trusted_registry.os.replace", side_effect=track_replace):
-            write_trusted_registry_atomically(reg, target_file)
+            _write_trusted_registry_atomically_at(reg, target_file)
 
         assert len(created_temps) == 1
         temp_creado = created_temps[0]
@@ -518,7 +518,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
         target_file = tmp_path / "trusted_goldens.json"
         entry_inicial = _crear_entry_valida(canonical_root="C:/Games/Skyrim_Inicial")
         reg_inicial = TrustedGoldenRegistry(entries=(entry_inicial,), schema_version="1.0")
-        write_trusted_registry_atomically(reg_inicial, target_file)
+        _write_trusted_registry_atomically_at(reg_inicial, target_file)
         bytes_iniciales = target_file.read_bytes()
 
         entry_nueva = _crear_entry_valida(canonical_root="C:/Games/Skyrim_Nueva")
@@ -529,7 +529,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
             patch("os.replace", side_effect=OSError("Disk write error")),
             pytest.raises(OSError, match="Disk write error"),
         ):
-            write_trusted_registry_atomically(reg_nuevo, target_file)
+            _write_trusted_registry_atomically_at(reg_nuevo, target_file)
 
         # El archivo original no fue tocado
         assert target_file.read_bytes() == bytes_iniciales
@@ -547,7 +547,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
             patch.object(pathlib.Path, "read_bytes", return_value=b"corrupted bytes post replace"),
             pytest.raises(TrustedRegistryError, match="Revalidación post-reemplazo falló"),
         ):
-            write_trusted_registry_atomically(reg, target_file)
+            _write_trusted_registry_atomically_at(reg, target_file)
 
     def test_write_trusted_registry_atomically_posix_fails_closed(self, tmp_path: pathlib.Path) -> None:
         """P1: En plataformas no Windows, write_trusted_registry_atomically falla cerrado sin tocar el disco."""
@@ -557,7 +557,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
             patch("sys.platform", "linux"),
             pytest.raises(TrustedRegistryUnsupportedError, match="solo está soportado en Windows"),
         ):
-            write_trusted_registry_atomically(reg, target_file)
+            _write_trusted_registry_atomically_at(reg, target_file)
 
         assert not target_file.exists()
         assert len(list(tmp_path.iterdir())) == 0
@@ -593,6 +593,7 @@ class TestTgrAstIsolation:
 
         forbidden_write_symbols = {
             "write_trusted_registry_atomically",
+            "_write_trusted_registry_atomically_at",
             "write_trusted_goldens",
             "register_trusted_golden",
             "refresh_trusted_golden",
