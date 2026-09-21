@@ -18,8 +18,8 @@ Verifica el contrato normativo de ADR 0010 §11.3 y atiende los 10 blockers de l
 - Blocker 10: Seguridad de memoria (sin dangling p_dacl tras LocalFree; booleans de SD verificados).
 """
 
-from __future__ import annotations
-
+import ast
+import inspect
 import pathlib
 import subprocess
 import sys
@@ -36,7 +36,10 @@ from sky_claw.local.runtime_vault.trusted_namespace import (
     CANONICAL_NAMESPACE_PRIMARY_GROUP,
     LOCAL_SYSTEM_SID,
     PERMITTED_NAMESPACE_OWNERS,
+    STAGING_MULTI_USER_EFFECTIVE_ISOLATION,
     AncestorProvisioningError,
+    CanonicalSecurityDescriptorContext,
+    NamespaceAceSpec,
     NamespaceObjectNotDirectoryError,
     NamespaceOwnerNotPermittedError,
     NamespaceReparsePointError,
@@ -44,9 +47,13 @@ from sky_claw.local.runtime_vault.trusted_namespace import (
     TrustedNamespaceError,
     TrustedNamespaceResult,
     TrustedNamespaceUnsupportedError,
+    _bootstrap_trusted_namespace_at,
+    _build_canonical_security_descriptor,
     apply_canonical_tgr_file_security,
     bootstrap_trusted_namespace,
     build_namespace_dacl_spec,
+    inspect_namespace_object,
+    verify_secured_file_by_handle,
 )
 
 if sys.platform == "win32":
@@ -80,7 +87,7 @@ if sys.platform == "win32":
         _WRITE_DAC,
         _WRITE_OWNER,
         _advapi32,
-        _build_native_acl,
+        _build_native_acl_with_psids,
         _check_object_exists_no_reparse,
         _kernel32,
     )
@@ -133,6 +140,15 @@ if sys.platform == "win32":
         ctypes.POINTER(wintypes.BOOL),
     ]
     _advapi32.AccessCheck.restype = wintypes.BOOL
+
+    _advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _advapi32.GetTokenInformation.restype = wintypes.BOOL
 
 
 # ============================================================================
@@ -224,6 +240,52 @@ class TestNamespacePureSpecs:
             assert au.access_mask == 0x001200A9
             assert au.ace_flags == 0x00
 
+    def test_staging_multi_user_isolation_constant_declared(self) -> None:
+        """P2: Constante explícita que declara el nivel de aislamiento verificado en staging."""
+        assert STAGING_MULTI_USER_EFFECTIVE_ISOLATION == "PARTIAL"
+
+    def test_bootstrap_trusted_namespace_signature_zero_arguments(self) -> None:
+        """P1: La API pública bootstrap_trusted_namespace toma exactamente 0 argumentos."""
+        sig = inspect.signature(bootstrap_trusted_namespace)
+        assert len(sig.parameters) == 0, (
+            f"bootstrap_trusted_namespace debe aceptar 0 argumentos, tiene {sig.parameters}"
+        )
+
+        # Verificación por AST
+        import sky_claw.local.runtime_vault.trusted_namespace as ns_mod
+
+        src_file = pathlib.Path(ns_mod.__file__)
+        tree = ast.parse(src_file.read_text(encoding="utf-8"), filename=str(src_file))
+        fn_nodes = [
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "bootstrap_trusted_namespace"
+        ]
+        assert len(fn_nodes) == 1
+        fn = fn_nodes[0]
+        assert len(fn.args.posonlyargs) == 0
+        assert len(fn.args.args) == 0
+        assert fn.args.vararg is None
+        assert len(fn.args.kwonlyargs) == 0
+        assert fn.args.kwarg is None
+
+    def test_bootstrap_trusted_namespace_hardcodes_programdata(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """P1: bootstrap_trusted_namespace deriva fijamente %ProgramData%\\Sky-Claw."""
+        calls: list[pathlib.Path] = []
+
+        def spy_bootstrap(path: Any) -> TrustedNamespaceResult:
+            calls.append(pathlib.Path(path))
+            return TrustedNamespaceResult(success=True, root_path=pathlib.Path(path))
+
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._bootstrap_trusted_namespace_at",
+            spy_bootstrap,
+        )
+        monkeypatch.setenv("PROGRAMDATA", "C:/TestProgramData")
+
+        res = bootstrap_trusted_namespace()
+        assert res.success is True
+        assert len(calls) == 1
+        assert calls[0] == pathlib.Path("C:/TestProgramData/Sky-Claw")
+
 
 # ============================================================================
 # NS-01 a NS-07: Bootstrap, Anti-Squatting y Ancestros (Windows)
@@ -276,7 +338,7 @@ class TestNamespaceBootstrapWindows:
         """Blockers 1 & 2: Verifica que en entorno no elevado la creación falle cerrado con error 1307 (sin fallback)."""
         root_test = tmp_path / "ProgramDataSynthetic" / "Sky-Claw"
         with pytest.raises(AncestorProvisioningError) as exc_info:
-            bootstrap_trusted_namespace(root_dir=root_test)
+            _bootstrap_trusted_namespace_at(root_test)
         assert "1307" in str(exc_info.value) or "1314" in str(exc_info.value)
 
     def test_ns_01_bootstrap_namespace_ausente_caso_a(
@@ -285,7 +347,7 @@ class TestNamespaceBootstrapWindows:
         """NS-01: Bootstrap correcto sobre namespace inexistente (Caso A, orden de ancestros completo)."""
         root_test = tmp_path / "ProgramDataSynthetic" / "Sky-Claw"
 
-        result = bootstrap_trusted_namespace(root_dir=root_test)
+        result = _bootstrap_trusted_namespace_at(root_test)
 
         assert isinstance(result, TrustedNamespaceResult)
         assert result.success is True
@@ -313,7 +375,7 @@ class TestNamespaceBootstrapWindows:
             "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
             return_value=(BUILTIN_ADMINISTRATORS_SID, CANONICAL_NAMESPACE_PRIMARY_GROUP, True),
         ):
-            result = bootstrap_trusted_namespace(root_dir=root_test)
+            result = _bootstrap_trusted_namespace_at(root_test)
             assert result.success is True
 
             # Verificar que SetSecurityInfo fue invocado con OWNER_SECURITY_INFORMATION
@@ -341,7 +403,7 @@ class TestNamespaceBootstrapWindows:
             ),
             pytest.raises(NamespaceOwnerNotPermittedError, match="no pertenece a"),
         ):
-            bootstrap_trusted_namespace(root_dir=root_test)
+            _bootstrap_trusted_namespace_at(root_test)
 
     def test_ns_04_reparse_point_preexistente_falla_cerrado(
         self, tmp_path: pathlib.Path, mock_elevated_provisioning: None
@@ -358,7 +420,7 @@ class TestNamespaceBootstrapWindows:
             ),
             pytest.raises(NamespaceReparsePointError, match="reparse point"),
         ):
-            bootstrap_trusted_namespace(root_dir=root_test)
+            _bootstrap_trusted_namespace_at(root_test)
 
     def test_ns_05_archivo_donde_se_esperaba_directorio_falla_cerrado(
         self, tmp_path: pathlib.Path, mock_elevated_provisioning: None
@@ -369,7 +431,7 @@ class TestNamespaceBootstrapWindows:
         root_test.write_text("archivo malicioso")
 
         with pytest.raises(NamespaceObjectNotDirectoryError, match="no es un directorio"):
-            bootstrap_trusted_namespace(root_dir=root_test)
+            _bootstrap_trusted_namespace_at(root_test)
 
     def test_ns_06_gp2_t50_variante_b_preexisting_tgr_always_fails_closed(
         self, tmp_path: pathlib.Path, mock_elevated_provisioning: None
@@ -388,7 +450,7 @@ class TestNamespaceBootstrapWindows:
             ),
             pytest.raises(PreexistingTrustedRegistryError, match="preexistente"),
         ):
-            bootstrap_trusted_namespace(root_dir=root_test)
+            _bootstrap_trusted_namespace_at(root_test)
 
     def test_ns_07_fallo_en_ancestro_no_crea_descendientes(self, tmp_path: pathlib.Path) -> None:
         """NS-07: Fallo en ancestro detiene el provisioning; ningún descendiente es creado ni confiado."""
@@ -401,7 +463,7 @@ class TestNamespaceBootstrapWindows:
             ),
             pytest.raises(AncestorProvisioningError, match="Simulated ancestor failure"),
         ):
-            bootstrap_trusted_namespace(root_dir=root_test)
+            _bootstrap_trusted_namespace_at(root_test)
 
         assert not (root_test / "runtime_vault").exists()
 
@@ -497,6 +559,130 @@ class TestNamespaceCausalSecurityWindows:
         with pytest.raises(TrustedNamespaceError, match="código Win32 1307"):
             apply_canonical_tgr_file_security(test_file)
 
+    def test_inspect_namespace_object_broken_reparse_point_fails_closed(self, tmp_path: pathlib.Path) -> None:
+        """P2: inspect_namespace_object sobre un reparse point roto falla cerrado con NamespaceReparsePointError (sin Path.exists)."""
+        target_dir = tmp_path / "real_target_insp"
+        target_dir.mkdir()
+        junction_dir = tmp_path / "broken_junction_insp"
+
+        res = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(junction_dir), str(target_dir)],
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode != 0:
+            pytest.skip("mklink /J no soportado o falló en este entorno")
+
+        try:
+            target_dir.rmdir()
+            # Broken junction: inspect_namespace_object debe detectar reparse roto y fallar con NamespaceReparsePointError
+            with pytest.raises(NamespaceReparsePointError, match="reparse point"):
+                inspect_namespace_object(junction_dir)
+        finally:
+            subprocess.run(["cmd", "/c", "rmdir", str(junction_dir)], capture_output=True)
+
+    def test_inspect_namespace_object_nonexistent_fails_closed(self, tmp_path: pathlib.Path) -> None:
+        """P2: inspect_namespace_object sobre un objeto que no existe falla cerrado con TrustedNamespaceError."""
+        nonexistent = tmp_path / "does_not_exist.txt"
+        with pytest.raises(TrustedNamespaceError, match="no existe"):
+            inspect_namespace_object(nonexistent)
+
+    def test_verify_secured_file_by_handle_exact_dacl_mutants(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1: verify_secured_file_by_handle verifica estructuralmente la DACL y rechaza mutantes."""
+        test_file = tmp_path / "tgr_verify_test.json"
+        test_file.write_text("{}")
+
+        # Configurar lectura de owner/group canónico y DACL protegida
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
+            lambda h: (LOCAL_SYSTEM_SID, CANONICAL_NAMESPACE_PRIMARY_GROUP, True),
+        )
+
+        # 1. Caso Canónico: 3 ACEs exactas -> pasa
+        canonical_aces = [
+            (0x00, 0x00, 0x001F01FF, BUILTIN_ADMINISTRATORS_SID),
+            (0x00, 0x00, 0x001F01FF, LOCAL_SYSTEM_SID),
+            (0x00, 0x00, 0x00120089, AUTHENTICATED_USERS_SID),
+        ]
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_dacl_aces",
+            lambda h: canonical_aces,
+        )
+        verify_secured_file_by_handle(test_file)
+
+        # 2. Mutant A: AU con FILE_ALL_ACCESS (0x001F01FF) -> falla
+        mutant_a = [
+            (0x00, 0x00, 0x001F01FF, BUILTIN_ADMINISTRATORS_SID),
+            (0x00, 0x00, 0x001F01FF, LOCAL_SYSTEM_SID),
+            (0x00, 0x00, 0x001F01FF, AUTHENTICATED_USERS_SID),
+        ]
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_dacl_aces",
+            lambda h: mutant_a,
+        )
+        with pytest.raises(TrustedNamespaceError, match="AccessMask no canónico"):
+            verify_secured_file_by_handle(test_file)
+
+        # 3. Mutant B: ACE extra para atacante -> falla conteo de ACEs
+        mutant_b = [
+            (0x00, 0x00, 0x001F01FF, BUILTIN_ADMINISTRATORS_SID),
+            (0x00, 0x00, 0x001F01FF, LOCAL_SYSTEM_SID),
+            (0x00, 0x00, 0x00120089, AUTHENTICATED_USERS_SID),
+            (0x00, 0x00, 0x00120089, "S-1-5-21-9999-9999-9999-666"),
+        ]
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_dacl_aces",
+            lambda h: mutant_b,
+        )
+        with pytest.raises(TrustedNamespaceError, match="Conteo de ACEs en DACL.*no es canónico"):
+            verify_secured_file_by_handle(test_file)
+
+        # 4. Mutant C: DACL sin flag SE_DACL_PROTECTED -> falla
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
+            lambda h: (LOCAL_SYSTEM_SID, CANONICAL_NAMESPACE_PRIMARY_GROUP, False),
+        )
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_dacl_aces",
+            lambda h: canonical_aces,
+        )
+        with pytest.raises(TrustedNamespaceError, match="SE_DACL_PROTECTED"):
+            verify_secured_file_by_handle(test_file)
+
+        # Restaurar flag de protección
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
+            lambda h: (LOCAL_SYSTEM_SID, CANONICAL_NAMESPACE_PRIMARY_GROUP, True),
+        )
+
+        # 5. Mutant D: ACE con AceType != 0 (ej. ACCESS_DENIED = 0x01) -> falla
+        mutant_d = [
+            (0x00, 0x00, 0x001F01FF, BUILTIN_ADMINISTRATORS_SID),
+            (0x00, 0x00, 0x001F01FF, LOCAL_SYSTEM_SID),
+            (0x01, 0x00, 0x00120089, AUTHENTICATED_USERS_SID),
+        ]
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_dacl_aces",
+            lambda h: mutant_d,
+        )
+        with pytest.raises(TrustedNamespaceError, match="Tipo de ACE inválido"):
+            verify_secured_file_by_handle(test_file)
+
+        # 6. Mutant E: ACE con AceFlags no nulos en archivo (ej. 0x01) -> falla
+        mutant_e = [
+            (0x00, 0x00, 0x001F01FF, BUILTIN_ADMINISTRATORS_SID),
+            (0x00, 0x00, 0x001F01FF, LOCAL_SYSTEM_SID),
+            (0x00, 0x01, 0x00120089, AUTHENTICATED_USERS_SID),
+        ]
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_dacl_aces",
+            lambda h: mutant_e,
+        )
+        with pytest.raises(TrustedNamespaceError, match="AceFlags no nulos"):
+            verify_secured_file_by_handle(test_file)
+
 
 # ============================================================================
 # NS-08 a NS-15: Verificación de Derechos Efectivos con AccessCheck (Blocker 8)
@@ -561,28 +747,6 @@ class TestNamespaceEffectiveAccessCheckWindows:
         finally:
             _kernel32.CloseHandle(h_token)
 
-    def _build_test_sd(self, object_name: str) -> tuple[Any, Any]:
-        """Helper para construir un Security Descriptor canónico y mantener vivo su buffer."""
-        spec = build_namespace_dacl_spec(object_name)
-        acl_buf, pacl = _build_native_acl(spec.aces)
-
-        p_owner = wintypes.LPVOID()
-        p_group = wintypes.LPVOID()
-        _advapi32.ConvertStringSidToSidW(CANONICAL_NAMESPACE_OWNER, ctypes.byref(p_owner))
-        _advapi32.ConvertStringSidToSidW(CANONICAL_NAMESPACE_PRIMARY_GROUP, ctypes.byref(p_group))
-
-        sd_buf = (ctypes.c_ubyte * 256)()
-        p_sd = ctypes.cast(sd_buf, wintypes.LPVOID)
-        assert _advapi32.InitializeSecurityDescriptor(p_sd, _SECURITY_DESCRIPTOR_REVISION)
-        assert _advapi32.SetSecurityDescriptorOwner(p_sd, p_owner, False)
-        assert _advapi32.SetSecurityDescriptorGroup(p_sd, p_group, False)
-        assert _advapi32.SetSecurityDescriptorDacl(p_sd, True, pacl, False)
-        assert _advapi32.SetSecurityDescriptorControl(p_sd, _SE_DACL_PROTECTED, _SE_DACL_PROTECTED)
-
-        _kernel32.LocalFree(p_owner)
-        _kernel32.LocalFree(p_group)
-        return (sd_buf, acl_buf), p_sd
-
     def _check_access(self, p_sd: Any, restricted_token: int, desired_access: int) -> bool:
         """Ejecuta AccessCheck real del kernel."""
         g_mapping = _GenericMapping(0x00120089, 0x00120116, 0x001200A0, 0x001F01FF)
@@ -602,55 +766,65 @@ class TestNamespaceEffectiveAccessCheckWindows:
         )
         return bool(ok and status.value)
 
+    def test_canonical_sd_context_lifetime_and_no_uaf(self, restricted_token: int) -> None:
+        """P2: CanonicalSecurityDescriptorContext mantiene vivos SD, ACL y SIDs durante AccessCheck sin UAF."""
+        with _build_canonical_security_descriptor("runtime_vault") as sd_ctx:
+            assert sd_ctx.p_sd.value != 0
+            assert len(sd_ctx.psids) >= 4  # Owner, Group y al menos 2 ACE SIDs
+            # Durante el contexto, AccessCheck se ejecuta con memoria 100% válida
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_GENERIC_READ) is True
+
+        # Al salir del contexto, los SIDs han sido liberados de forma segura
+        assert len(sd_ctx.psids) == 0
+
     def test_ns_08_runtime_vault_access_check(self, restricted_token: int) -> None:
         """NS-08: AccessCheck en runtime_vault/ permite lectura/traverse y deniega add_file, add_subdir, delete_child."""
-        _, p_sd = self._build_test_sd("runtime_vault")
-        assert self._check_access(p_sd, restricted_token, _FILE_GENERIC_READ | _FILE_TRAVERSE) is True
-        assert self._check_access(p_sd, restricted_token, _FILE_ADD_FILE) is False
-        assert self._check_access(p_sd, restricted_token, _FILE_ADD_SUBDIRECTORY) is False
-        assert self._check_access(p_sd, restricted_token, _FILE_DELETE_CHILD) is False
-        assert self._check_access(p_sd, restricted_token, _DELETE) is False
+        with _build_canonical_security_descriptor("runtime_vault") as sd_ctx:
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_GENERIC_READ | _FILE_TRAVERSE) is True
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_ADD_FILE) is False
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_ADD_SUBDIRECTORY) is False
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_DELETE_CHILD) is False
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _DELETE) is False
 
     def test_ns_09_to_11_tgr_file_access_check(self, restricted_token: int) -> None:
         """NS-09 a NS-11: AccessCheck en trusted_goldens.json permite lectura y deniega write, delete, WRITE_DAC, WRITE_OWNER."""
-        _, p_sd = self._build_test_sd("trusted_goldens.json")
-        assert self._check_access(p_sd, restricted_token, _FILE_GENERIC_READ) is True
-        assert self._check_access(p_sd, restricted_token, _FILE_WRITE_DATA) is False
-        assert self._check_access(p_sd, restricted_token, _FILE_APPEND_DATA) is False
-        assert self._check_access(p_sd, restricted_token, _DELETE) is False
-        assert self._check_access(p_sd, restricted_token, _WRITE_DAC) is False
-        assert self._check_access(p_sd, restricted_token, _WRITE_OWNER) is False
+        with _build_canonical_security_descriptor("trusted_goldens.json") as sd_ctx:
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_GENERIC_READ) is True
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_WRITE_DATA) is False
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_APPEND_DATA) is False
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _DELETE) is False
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _WRITE_DAC) is False
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _WRITE_OWNER) is False
 
     def test_ns_12_and_13_operations_and_golden_backups_access_check(self, restricted_token: int) -> None:
         """NS-12 y NS-13: AccessCheck en operations/ y golden_backups/ deniega creación a usuarios restringidos."""
         for name in ("operations", "golden_backups"):
-            _, p_sd = self._build_test_sd(name)
-            assert self._check_access(p_sd, restricted_token, _FILE_GENERIC_READ) is True
-            assert self._check_access(p_sd, restricted_token, _FILE_ADD_FILE) is False
-            assert self._check_access(p_sd, restricted_token, _FILE_ADD_SUBDIRECTORY) is False
-            assert self._check_access(p_sd, restricted_token, _FILE_DELETE_CHILD) is False
+            with _build_canonical_security_descriptor(name) as sd_ctx:
+                assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_GENERIC_READ) is True
+                assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_ADD_FILE) is False
+                assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_ADD_SUBDIRECTORY) is False
+                assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_DELETE_CHILD) is False
 
     def test_ns_14_locks_container_isolation_access_check(self, restricted_token: int) -> None:
         """NS-14: locks/ tiene ACE contenedor únicamente; un archivo *.lock dentro no tiene ACE para AU."""
-        _, p_sd_dir = self._build_test_sd("locks")
-        # En el directorio, el usuario restringido puede listar y traverse
-        assert self._check_access(p_sd_dir, restricted_token, 0x0001 | 0x0020) is True
+        with _build_canonical_security_descriptor("locks") as sd_ctx_dir:
+            # En el directorio, el usuario restringido puede listar y traverse
+            assert self._check_access(sd_ctx_dir.p_sd, restricted_token, 0x0001 | 0x0020) is True
 
         # En un archivo .lock (que no hereda la ACE de AU porque flags=0x00), AU no tiene lectura
-        # Simulamos la DACL de un archivo en locks/ (solo Admins y SYSTEM con FILE_ALL_ACCESS)
-        spec_lock = [
-            (BUILTIN_ADMINISTRATORS_SID, _FILE_ALL_ACCESS),
-            (LOCAL_SYSTEM_SID, _FILE_ALL_ACCESS),
+        # Creamos SD para el archivo mediante CanonicalSecurityDescriptorContext
+        lock_aces = [
+            NamespaceAceSpec(sid=BUILTIN_ADMINISTRATORS_SID, access_mask=_FILE_ALL_ACCESS, ace_flags=0),
+            NamespaceAceSpec(sid=LOCAL_SYSTEM_SID, access_mask=_FILE_ALL_ACCESS, ace_flags=0),
         ]
-        # Creamos SD para el archivo
-        from sky_claw.local.runtime_vault.trusted_namespace import NamespaceAceSpec
-
-        lock_aces = [NamespaceAceSpec(sid=s, access_mask=m, ace_flags=0) for s, m in spec_lock]
-        acl_buf, pacl = _build_native_acl(lock_aces)
+        acl_buf, pacl, ace_psids = _build_native_acl_with_psids(lock_aces)
+        psids: list[Any] = list(ace_psids)
         p_owner = wintypes.LPVOID()
         p_group = wintypes.LPVOID()
         _advapi32.ConvertStringSidToSidW(CANONICAL_NAMESPACE_OWNER, ctypes.byref(p_owner))
         _advapi32.ConvertStringSidToSidW(CANONICAL_NAMESPACE_PRIMARY_GROUP, ctypes.byref(p_group))
+        psids.extend([p_owner, p_group])
+
         sd_buf = (ctypes.c_ubyte * 256)()
         p_sd_file = ctypes.cast(sd_buf, wintypes.LPVOID)
         assert _advapi32.InitializeSecurityDescriptor(p_sd_file, _SECURITY_DESCRIPTOR_REVISION)
@@ -659,20 +833,133 @@ class TestNamespaceEffectiveAccessCheckWindows:
         assert _advapi32.SetSecurityDescriptorDacl(p_sd_file, True, pacl, False)
         assert _advapi32.SetSecurityDescriptorControl(p_sd_file, _SE_DACL_PROTECTED, _SE_DACL_PROTECTED)
 
-        # AU no puede leer el archivo de lock
-        assert self._check_access(p_sd_file, restricted_token, _FILE_READ_DATA) is False
-        _kernel32.LocalFree(p_owner)
-        _kernel32.LocalFree(p_group)
+        with CanonicalSecurityDescriptorContext(sd_buf, acl_buf, psids, p_sd_file):
+            # AU no puede leer el archivo de lock
+            assert self._check_access(p_sd_file, restricted_token, _FILE_READ_DATA) is False
 
     def test_ns_15_staging_contract_and_creator_owner_access_check(self, restricted_token: int) -> None:
         """NS-15: staging/ padre permite crear subdirectorios <op_id>; deniega crear archivos planos."""
-        _, p_sd_staging = self._build_test_sd("staging")
-        # En el directorio staging/ padre:
-        assert self._check_access(p_sd_staging, restricted_token, 0x0001) is True  # FILE_LIST_DIRECTORY
-        assert self._check_access(p_sd_staging, restricted_token, 0x0020) is True  # FILE_TRAVERSE
-        assert self._check_access(p_sd_staging, restricted_token, 0x0004) is True  # FILE_ADD_SUBDIRECTORY
-        assert self._check_access(p_sd_staging, restricted_token, _FILE_ADD_FILE) is False
-        assert self._check_access(p_sd_staging, restricted_token, _FILE_DELETE_CHILD) is False
+        with _build_canonical_security_descriptor("staging") as sd_ctx:
+            # En el directorio staging/ padre:
+            assert self._check_access(sd_ctx.p_sd, restricted_token, 0x0001) is True  # FILE_LIST_DIRECTORY
+            assert self._check_access(sd_ctx.p_sd, restricted_token, 0x0020) is True  # FILE_TRAVERSE
+            assert self._check_access(sd_ctx.p_sd, restricted_token, 0x0004) is True  # FILE_ADD_SUBDIRECTORY
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_ADD_FILE) is False
+            assert self._check_access(sd_ctx.p_sd, restricted_token, _FILE_DELETE_CHILD) is False
+
+    def test_ns_16_staging_multi_user_causal_oracle(self) -> None:
+        """P2 / Staging Multi-User: Oráculo causal de AccessCheck.
+
+        Verifica que:
+        - Creator A (token creador con User A SID) tiene permisos completos para escribir y borrar su subdirectorio <op_id>.
+        - Principal B (token restringido / Authenticated User no creador) tiene denegado el acceso de escritura y borrado en el subdirectorio de A.
+        """
+        h_proc = _kernel32.GetCurrentProcess()
+        h_tok = wintypes.HANDLE()
+        if not _advapi32.OpenProcessToken(h_proc, 0x0002 | 0x0008, ctypes.byref(h_tok)):
+            pytest.skip("No se pudo abrir token de proceso para AccessCheck")
+
+        try:
+            buf_len = wintypes.DWORD(0)
+            _advapi32.GetTokenInformation(h_tok, 1, None, 0, ctypes.byref(buf_len))
+            buf = (ctypes.c_ubyte * buf_len.value)()
+            if not _advapi32.GetTokenInformation(
+                h_tok, 1, ctypes.cast(buf, wintypes.LPVOID), buf_len.value, ctypes.byref(buf_len)
+            ):
+                pytest.skip("GetTokenInformation falló")
+            user_info = ctypes.cast(buf, ctypes.POINTER(_SidAndAttributes)).contents
+            user_str = wintypes.LPWSTR()
+            if not _advapi32.ConvertSidToStringSidW(user_info.Sid, ctypes.byref(user_str)):
+                pytest.skip("ConvertSidToStringSidW falló")
+            creator_a_sid = user_str.value or ""
+            _kernel32.LocalFree(user_str)
+
+            # Token de impersonación para Creator A (restringido para remover Admin y verificar que el acceso es por la ACE de Creator)
+            psid_admin = wintypes.LPVOID()
+            _advapi32.ConvertStringSidToSidW(BUILTIN_ADMINISTRATORS_SID, ctypes.byref(psid_admin))
+            try:
+                sids_to_disable = (_SidAndAttributes * 1)()
+                sids_to_disable[0].Sid = psid_admin
+                sids_to_disable[0].Attributes = 0
+                h_creator_restricted = wintypes.HANDLE()
+                if not _advapi32.CreateRestrictedToken(
+                    h_tok, 1, 1, sids_to_disable, 0, None, 0, None, ctypes.byref(h_creator_restricted)
+                ):
+                    pytest.skip("CreateRestrictedToken falló")
+
+                try:
+                    h_creator_imp = wintypes.HANDLE()
+                    if not _advapi32.DuplicateTokenEx(
+                        h_creator_restricted, 0x00020000 | 0x0008 | 0x0004, None, 2, 2, ctypes.byref(h_creator_imp)
+                    ):
+                        pytest.skip("DuplicateTokenEx falló")
+
+                    try:
+                        # 1. SD de la carpeta de Creator A:
+                        aces_a = [
+                            NamespaceAceSpec(BUILTIN_ADMINISTRATORS_SID, _FILE_ALL_ACCESS, 0x00, "Admins"),
+                            NamespaceAceSpec(LOCAL_SYSTEM_SID, _FILE_ALL_ACCESS, 0x00, "SYSTEM"),
+                            NamespaceAceSpec(creator_a_sid, 0x001301FF, 0x00, "Creator A"),
+                            NamespaceAceSpec(AUTHENTICATED_USERS_SID, 0x00120089, 0x00, "AU"),
+                        ]
+                        acl_buf_a, pacl_a, psids_a = _build_native_acl_with_psids(aces_a)
+                        p_owner_a = wintypes.LPVOID()
+                        p_group_a = wintypes.LPVOID()
+                        _advapi32.ConvertStringSidToSidW(creator_a_sid, ctypes.byref(p_owner_a))
+                        _advapi32.ConvertStringSidToSidW(BUILTIN_ADMINISTRATORS_SID, ctypes.byref(p_group_a))
+                        all_psids_a = list(psids_a) + [p_owner_a, p_group_a]
+                        sd_buf_a = (ctypes.c_ubyte * 512)()
+                        p_sd_a = ctypes.cast(sd_buf_a, wintypes.LPVOID)
+                        assert _advapi32.InitializeSecurityDescriptor(p_sd_a, 1)
+                        assert _advapi32.SetSecurityDescriptorOwner(p_sd_a, p_owner_a, False)
+                        assert _advapi32.SetSecurityDescriptorGroup(p_sd_a, p_group_a, False)
+                        assert _advapi32.SetSecurityDescriptorDacl(p_sd_a, True, pacl_a, False)
+                        assert _advapi32.SetSecurityDescriptorControl(p_sd_a, 0x1000, 0x1000)
+
+                        with CanonicalSecurityDescriptorContext(sd_buf_a, acl_buf_a, all_psids_a, p_sd_a):
+                            # Creator A sobre su propia carpeta:
+                            assert self._check_access(p_sd_a, int(h_creator_imp.value), _FILE_WRITE_DATA) is True
+                            assert self._check_access(p_sd_a, int(h_creator_imp.value), _DELETE) is True
+                            assert self._check_access(p_sd_a, int(h_creator_imp.value), _FILE_DELETE_CHILD) is True
+                            assert self._check_access(p_sd_a, int(h_creator_imp.value), _FILE_GENERIC_READ) is True
+
+                        # 2. SD de la carpeta de otro usuario (Other User):
+                        other_user_sid = "S-1-5-21-9999-9999-9999-1001"
+                        aces_other = [
+                            NamespaceAceSpec(BUILTIN_ADMINISTRATORS_SID, _FILE_ALL_ACCESS, 0x00, "Admins"),
+                            NamespaceAceSpec(LOCAL_SYSTEM_SID, _FILE_ALL_ACCESS, 0x00, "SYSTEM"),
+                            NamespaceAceSpec(other_user_sid, 0x001301FF, 0x00, "Other Creator"),
+                            NamespaceAceSpec(AUTHENTICATED_USERS_SID, 0x00120089, 0x00, "AU"),
+                        ]
+                        acl_buf_oth, pacl_oth, psids_oth = _build_native_acl_with_psids(aces_other)
+                        p_owner_oth = wintypes.LPVOID()
+                        p_group_oth = wintypes.LPVOID()
+                        _advapi32.ConvertStringSidToSidW(other_user_sid, ctypes.byref(p_owner_oth))
+                        _advapi32.ConvertStringSidToSidW(BUILTIN_ADMINISTRATORS_SID, ctypes.byref(p_group_oth))
+                        all_psids_oth = list(psids_oth) + [p_owner_oth, p_group_oth]
+                        sd_buf_oth = (ctypes.c_ubyte * 512)()
+                        p_sd_oth = ctypes.cast(sd_buf_oth, wintypes.LPVOID)
+                        assert _advapi32.InitializeSecurityDescriptor(p_sd_oth, 1)
+                        assert _advapi32.SetSecurityDescriptorOwner(p_sd_oth, p_owner_oth, False)
+                        assert _advapi32.SetSecurityDescriptorGroup(p_sd_oth, p_group_oth, False)
+                        assert _advapi32.SetSecurityDescriptorDacl(p_sd_oth, True, pacl_oth, False)
+                        assert _advapi32.SetSecurityDescriptorControl(p_sd_oth, 0x1000, 0x1000)
+
+                        with CanonicalSecurityDescriptorContext(sd_buf_oth, acl_buf_oth, all_psids_oth, p_sd_oth):
+                            # El usuario actuando como Principal B sobre la carpeta ajena:
+                            assert self._check_access(p_sd_oth, int(h_creator_imp.value), _FILE_GENERIC_READ) is True
+                            assert self._check_access(p_sd_oth, int(h_creator_imp.value), _FILE_WRITE_DATA) is False
+                            assert self._check_access(p_sd_oth, int(h_creator_imp.value), _DELETE) is False
+                            assert self._check_access(p_sd_oth, int(h_creator_imp.value), _FILE_DELETE_CHILD) is False
+
+                    finally:
+                        _kernel32.CloseHandle(h_creator_imp)
+                finally:
+                    _kernel32.CloseHandle(h_creator_restricted)
+            finally:
+                _kernel32.LocalFree(psid_admin)
+        finally:
+            _kernel32.CloseHandle(h_tok)
 
 
 # ============================================================================

@@ -75,6 +75,7 @@ CREATOR_OWNER_SID = "S-1-3-0"
 CANONICAL_NAMESPACE_OWNER = LOCAL_SYSTEM_SID
 CANONICAL_NAMESPACE_PRIMARY_GROUP = BUILTIN_ADMINISTRATORS_SID
 PERMITTED_NAMESPACE_OWNERS = frozenset({LOCAL_SYSTEM_SID, BUILTIN_ADMINISTRATORS_SID})
+STAGING_MULTI_USER_EFFECTIVE_ISOLATION = "PARTIAL"
 
 # Win32 Constants
 _ACCESS_ALLOWED_ACE_TYPE = 0x00
@@ -180,6 +181,20 @@ if sys.platform == "win32":
             ("Sbz2", wintypes.WORD),
         ]
 
+    class _AceHeader(ctypes.Structure):
+        _fields_ = [
+            ("AceType", wintypes.BYTE),
+            ("AceFlags", wintypes.BYTE),
+            ("AceSize", wintypes.WORD),
+        ]
+
+    class _AccessAllowedAce(ctypes.Structure):
+        _fields_ = [
+            ("Header", _AceHeader),
+            ("Mask", wintypes.DWORD),
+            ("SidStart", wintypes.DWORD),
+        ]
+
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 
@@ -259,6 +274,13 @@ if sys.platform == "win32":
         wintypes.LPVOID,
     ]
     _advapi32.AddAccessAllowedAceEx.restype = wintypes.BOOL
+
+    _advapi32.GetAce.argtypes = [
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    _advapi32.GetAce.restype = wintypes.BOOL
 
     _advapi32.InitializeSecurityDescriptor.argtypes = [
         wintypes.LPVOID,
@@ -765,6 +787,50 @@ def _read_live_owner_group_dacl(handle: int) -> tuple[str, str, bool]:
         _safe_local_free(p_sd)
 
 
+def _read_live_dacl_aces(handle: int) -> list[tuple[int, int, int, str]]:
+    """Lee las ACEs canónicas (AceType, AceFlags, Mask, SidString) desde la DACL de un handle."""
+    _ensure_windows()
+    p_sd = wintypes.LPVOID()
+    p_dacl = wintypes.LPVOID()
+    res = _advapi32.GetSecurityInfo(
+        handle,
+        _SE_FILE_OBJECT,
+        _DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        ctypes.byref(p_dacl),
+        None,
+        ctypes.byref(p_sd),
+    )
+    if res != 0 or not p_sd.value:
+        raise TrustedNamespaceError(f"GetSecurityInfo(DACL) falló: código Win32 {res}")
+
+    try:
+        if not p_dacl.value:
+            raise TrustedNamespaceError("DACL es nula (NULL DACL no permitida)")
+        acl_hdr = _AclHeader.from_address(p_dacl.value)
+        aces: list[tuple[int, int, int, str]] = []
+        for i in range(acl_hdr.AceCount):
+            p_ace = wintypes.LPVOID()
+            if not _advapi32.GetAce(p_dacl, i, ctypes.byref(p_ace)):
+                err = ctypes.get_last_error()
+                raise TrustedNamespaceError(f"GetAce({i}) falló: código Win32 {err}")
+            if not p_ace.value:
+                raise TrustedNamespaceError(f"GetAce({i}) retornó puntero nulo")
+            ace_ptr = ctypes.cast(p_ace, ctypes.POINTER(_AccessAllowedAce)).contents
+            sid_p = wintypes.LPVOID(p_ace.value + 8)
+            str_p = wintypes.LPWSTR()
+            if not _advapi32.ConvertSidToStringSidW(sid_p, ctypes.byref(str_p)):
+                err = ctypes.get_last_error()
+                raise TrustedNamespaceError(f"ConvertSidToStringSidW falló para ACE {i}: código Win32 {err}")
+            sid_str = str_p.value or ""
+            _safe_local_free(str_p)
+            aces.append((int(ace_ptr.Header.AceType), int(ace_ptr.Header.AceFlags), int(ace_ptr.Mask), sid_str))
+        return aces
+    finally:
+        _safe_local_free(p_sd)
+
+
 def _check_object_exists_no_reparse(path: pathlib.Path | str) -> bool:
     """Comprueba si un objeto existe sin seguir reparse points / junctions / symlinks.
 
@@ -867,7 +933,17 @@ def verify_secured_file_by_handle(path: pathlib.Path | str) -> None:
     2. No es un reparse point (ReparseTag == 0 y sin FILE_ATTRIBUTE_REPARSE_POINT).
     3. Owner es LOCAL SYSTEM (S-1-5-18).
     4. Group es BUILTIN\\Administrators (S-1-5-32-544).
-    5. DACL es protegida (SE_DACL_PROTECTED).
+    5. Control Flags incluye SE_DACL_PROTECTED.
+    6. Verificación estructural exacta de la DACL contra build_namespace_dacl_spec("trusted_goldens.json"):
+       - Exactamente 3 ACEs (len == 3).
+       - Tipo exacto ACCESS_ALLOWED (0x00) en todas las ACEs.
+       - AceFlags == 0x00 en todas las ACEs para archivos planos.
+       - SIDs canónicos exactos: Administrators, SYSTEM, Authenticated Users.
+       - AccessMasks canónicos exactos:
+         - Administrators: 0x001F01FF (FILE_ALL_ACCESS)
+         - SYSTEM: 0x001F01FF (FILE_ALL_ACCESS)
+         - Authenticated Users: 0x00120089 (FILE_GENERIC_READ)
+       - Prohibido cualquier ACE adicional no canónico (incluso si otorga menos permisos).
     Cualquier discrepancia lanza TrustedNamespaceError (Fail-Closed).
     """
     _ensure_windows()
@@ -904,6 +980,44 @@ def verify_secured_file_by_handle(path: pathlib.Path | str) -> None:
             )
         if not is_protected:
             raise TrustedNamespaceError(f"DACL en '{target_str}' no tiene flag SE_DACL_PROTECTED activo")
+
+        # 6. Verificación estructural exacta de la DACL
+        spec = build_namespace_dacl_spec("trusted_goldens.json")
+        live_aces = _read_live_dacl_aces(h)
+
+        if len(live_aces) != len(spec.aces):
+            raise TrustedNamespaceError(
+                f"Conteo de ACEs en DACL de '{target_str}' no es canónico: esperado={len(spec.aces)}, observado={len(live_aces)}"
+            )
+
+        observed_aces_by_sid: dict[str, tuple[int, int]] = {}
+        for ace_type, ace_flags, ace_mask, ace_sid in live_aces:
+            if ace_type != _ACCESS_ALLOWED_ACE_TYPE:
+                raise TrustedNamespaceError(
+                    f"Tipo de ACE inválido en '{target_str}' para SID {ace_sid}: tipo=0x{ace_type:02X} (esperado ACCESS_ALLOWED 0x00)"
+                )
+            if ace_flags != 0:
+                raise TrustedNamespaceError(
+                    f"AceFlags no nulos en archivo '{target_str}' para SID {ace_sid}: flags=0x{ace_flags:02X} (esperado 0x00)"
+                )
+            if ace_sid in observed_aces_by_sid:
+                raise TrustedNamespaceError(f"ACE duplicada en DACL de '{target_str}' para SID {ace_sid}")
+            observed_aces_by_sid[ace_sid] = (ace_mask, ace_flags)
+
+        expected_aces_by_sid = {ace.sid: (ace.access_mask, ace.ace_flags) for ace in spec.aces}
+        if set(observed_aces_by_sid.keys()) != set(expected_aces_by_sid.keys()):
+            extra = set(observed_aces_by_sid.keys()) - set(expected_aces_by_sid.keys())
+            missing = set(expected_aces_by_sid.keys()) - set(observed_aces_by_sid.keys())
+            raise TrustedNamespaceError(
+                f"SIDs en DACL de '{target_str}' no coinciden con especificación canónica: extra={extra}, missing={missing}"
+            )
+
+        for sid, (exp_mask, _) in expected_aces_by_sid.items():
+            obs_mask, _ = observed_aces_by_sid[sid]
+            if obs_mask != exp_mask:
+                raise TrustedNamespaceError(
+                    f"AccessMask no canónico en '{target_str}' para SID {sid}: esperado=0x{exp_mask:08X}, observado=0x{obs_mask:08X}"
+                )
     finally:
         _safe_close_handle(h)
 
@@ -912,21 +1026,57 @@ def inspect_namespace_object(path: pathlib.Path | str) -> NamespaceObjectInfo:
     """Inspecciona atado a handle el tipo, reparse, owner y DACL de un objeto del namespace."""
     _ensure_windows()
     target = pathlib.Path(path)
-    if not target.exists():
-        raise TrustedNamespaceError(f"El objeto no existe: '{target}'")
+    target_str = str(target)
 
     h = _open_handle_no_reparse(
-        str(target),
+        target_str,
         desired_access=_READ_CONTROL | _FILE_READ_ATTRIBUTES,
         creation_disposition=_OPEN_EXISTING,
     )
     if _is_invalid_handle(h):
-        err = ctypes.get_last_error()
-        raise TrustedNamespaceError(f"CreateFileW falló al abrir '{target}': código {err}")
+        last_err = ctypes.get_last_error()
+        if last_err in (2, 3):  # ERROR_FILE_NOT_FOUND (2), ERROR_PATH_NOT_FOUND (3)
+            # Comprobar si el path o un componente es un reparse point roto
+            attrs = _kernel32.GetFileAttributesW(target_str)
+            if attrs != _INVALID_FILE_ATTRIBUTES and (attrs & _FILE_ATTRIBUTE_REPARSE_POINT):
+                raise NamespaceReparsePointError(
+                    f"Se detectó un reparse point / symlink roto en '{target_str}': atributos 0x{attrs:08X}"
+                )
+            curr = target.parent
+            while curr != curr.parent:
+                p_attrs = _kernel32.GetFileAttributesW(str(curr))
+                if p_attrs != _INVALID_FILE_ATTRIBUTES and (p_attrs & _FILE_ATTRIBUTE_REPARSE_POINT):
+                    raise NamespaceReparsePointError(
+                        f"Se detectó un componente ancestro reparse point roto en '{curr}': atributos 0x{p_attrs:08X}"
+                    )
+                curr = curr.parent
+
+            raise TrustedNamespaceError(f"El objeto no existe: '{target}'")
+        raise TrustedNamespaceError(f"CreateFileW falló al abrir '{target}': código {last_err}")
 
     try:
         is_dir = _read_handle_is_directory(h)
-        reparse_tag, _ = _read_handle_reparse_and_attributes(h)
+        reparse_tag, file_attrs = _read_handle_reparse_and_attributes(h)
+        if reparse_tag != 0 or (file_attrs & _FILE_ATTRIBUTE_REPARSE_POINT):
+            # Comprobar si el reparse point está roto (destino no resoluble)
+            h_target = _kernel32.CreateFileW(
+                target_str,
+                _READ_CONTROL | _FILE_READ_ATTRIBUTES,
+                _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+                None,
+                _OPEN_EXISTING,
+                _FILE_FLAG_BACKUP_SEMANTICS,
+                None,
+            )
+            if _is_invalid_handle(h_target):
+                target_err = ctypes.get_last_error()
+                if target_err in (2, 3):  # ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+                    raise NamespaceReparsePointError(
+                        f"Se detectó un reparse point / symlink roto en '{target_str}': destino no existe (Win32 {target_err})"
+                    )
+            else:
+                _safe_close_handle(h_target)
+
         owner_sid, group_sid, is_protected = _read_live_owner_group_dacl(h)
         return NamespaceObjectInfo(
             path=target,
@@ -1162,28 +1312,27 @@ def _provision_or_normalize_directory(
 # ============================================================================
 
 
-def bootstrap_trusted_namespace(
-    root_dir: pathlib.Path | str | None = None,
-) -> TrustedNamespaceResult:
+def bootstrap_trusted_namespace() -> TrustedNamespaceResult:
     """Aprovisiona o normaliza el namespace confiable completo bajo ProgramData (ADR 0010 §11.3).
 
-    Orden estricto de ancestros:
-    1. Sky-Claw/
-    2. runtime_vault/
-    3. subdirectorios: operations/, locks/, golden_backups/, staging/
-    4. trusted_goldens.json (excepción dura: SIEMPRE fail-closed si ya existía).
+    API pública canónica de 0 argumentos: deriva fijamente la ruta desde %ProgramData%\\Sky-Claw.
     """
     _ensure_windows()
+    program_data = os.environ.get("PROGRAMDATA", "C:/ProgramData")
+    root_path = pathlib.Path(program_data) / "Sky-Claw"
+    return _bootstrap_trusted_namespace_at(root_path)
 
-    if root_dir is None:
-        program_data = os.environ.get("PROGRAMDATA", "C:/ProgramData")
-        root_path = pathlib.Path(program_data) / "Sky-Claw"
-    else:
-        root_path = pathlib.Path(root_dir)
+
+def _bootstrap_trusted_namespace_at(
+    root_path: pathlib.Path | str,
+) -> TrustedNamespaceResult:
+    """Helper privado para aprovisionar o normalizar un namespace en una ruta específica (para tests aislados)."""
+    _ensure_windows()
+    target_root = pathlib.Path(root_path)
 
     # 1. Ancestro 1: Sky-Claw/
     try:
-        _provision_or_normalize_directory(root_path, "Sky-Claw", is_root=True)
+        _provision_or_normalize_directory(target_root, "Sky-Claw", is_root=True)
     except (
         NamespaceOwnerNotPermittedError,
         NamespaceReparsePointError,
@@ -1193,10 +1342,10 @@ def bootstrap_trusted_namespace(
     ):
         raise
     except Exception as exc:
-        raise AncestorProvisioningError(f"Fallo en ancestro raíz '{root_path}': {exc}") from exc
+        raise AncestorProvisioningError(f"Fallo en ancestro raíz '{target_root}': {exc}") from exc
 
     # 2. Ancestro 2: runtime_vault/
-    rv_dir = root_path / "runtime_vault"
+    rv_dir = target_root / "runtime_vault"
     try:
         _provision_or_normalize_directory(rv_dir, "runtime_vault")
     except (
@@ -1235,7 +1384,7 @@ def bootstrap_trusted_namespace(
     return TrustedNamespaceResult(
         success=True,
         message="",
-        root_path=root_path,
+        root_path=target_root,
     )
 
 
@@ -1262,6 +1411,7 @@ __all__ = [
     "NamespaceReparsePointError",
     "PERMITTED_NAMESPACE_OWNERS",
     "PreexistingTrustedRegistryError",
+    "STAGING_MULTI_USER_EFFECTIVE_ISOLATION",
     "TrustedNamespaceError",
     "TrustedNamespaceResult",
     "TrustedNamespaceUnsupportedError",

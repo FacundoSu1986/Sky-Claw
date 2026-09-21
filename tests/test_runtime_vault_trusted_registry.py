@@ -41,6 +41,8 @@ from sky_claw.local.runtime_vault.trusted_registry import (
     TrustedRegistryError,
     TrustedRegistryParseError,
     TrustedRegistrySchemaError,
+    TrustedRegistryUnsupportedError,
+    _write_test_registry_portable_atomic,
     deserialize_trusted_golden_registry,
     load_trusted_golden_registry,
     serialize_trusted_golden_registry,
@@ -546,6 +548,30 @@ class TestTrustedGoldenRegistryAtomicStorage:
             pytest.raises(TrustedRegistryError, match="Revalidación post-reemplazo falló"),
         ):
             write_trusted_registry_atomically(reg, target_file)
+
+    def test_write_trusted_registry_atomically_posix_fails_closed(self, tmp_path: pathlib.Path) -> None:
+        """P1: En plataformas no Windows, write_trusted_registry_atomically falla cerrado sin tocar el disco."""
+        target_file = tmp_path / "trusted_goldens.json"
+        reg = TrustedGoldenRegistry(entries=(), schema_version="1.0")
+        with (
+            patch("sys.platform", "linux"),
+            pytest.raises(TrustedRegistryUnsupportedError, match="solo está soportado en Windows"),
+        ):
+            write_trusted_registry_atomically(reg, target_file)
+
+        assert not target_file.exists()
+        assert len(list(tmp_path.iterdir())) == 0
+
+    def test_write_test_registry_portable_atomic_helper(self, tmp_path: pathlib.Path) -> None:
+        """P1: _write_test_registry_portable_atomic permite escribir registros de test sin afirmar autoridad productiva."""
+        target_file = tmp_path / "test_goldens.json"
+        entry = _crear_entry_valida(canonical_root="C:/Games/Skyrim")
+        reg = TrustedGoldenRegistry(entries=(entry,), schema_version="1.0")
+
+        _write_test_registry_portable_atomic(reg, target_file)
+        assert target_file.exists()
+        cargado = load_trusted_golden_registry(target_file)
+        assert cargado == reg
 
 
 # ============================================================================
