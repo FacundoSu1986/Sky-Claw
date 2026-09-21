@@ -9,8 +9,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Final
+
+
+class VersionProbeKind(StrEnum):
+    """Mecanismo declarativo de inspección de versión para una herramienta externa."""
+
+    NONE = "none"
+    LOOT_CLI = "loot_cli"
+    PE_PRODUCT_VERSION = "pe_product_version"
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +41,7 @@ class ExternalToolSpec:
     install_env_var: str | None = None
     snapshot_env_var: str | None = None
     config_field: str | None = None
+    version_probe_kind: VersionProbeKind = VersionProbeKind.NONE
 
     @property
     def friendly_description(self) -> str:
@@ -59,6 +69,7 @@ _RAW_SPECS: tuple[ExternalToolSpec, ...] = (
         install_env_var="LOOT_EXE",
         snapshot_env_var="LOOT_EXE",
         config_field="loot_exe",
+        version_probe_kind=VersionProbeKind.LOOT_CLI,
     ),
     ExternalToolSpec(
         key="xedit",
@@ -71,6 +82,7 @@ _RAW_SPECS: tuple[ExternalToolSpec, ...] = (
         install_env_var="XEDIT_PATH",
         snapshot_env_var="XEDIT_PATH",
         config_field="xedit_exe",
+        version_probe_kind=VersionProbeKind.PE_PRODUCT_VERSION,
     ),
     ExternalToolSpec(
         key="pandora",
@@ -201,6 +213,7 @@ def build_tool_path_cfg_keys() -> dict[str, str]:
 __all__ = [
     "EXTERNAL_TOOL_REGISTRY",
     "ExternalToolSpec",
+    "VersionProbeKind",
     "build_ritual_install_env",
     "build_ritual_installer_map",
     "build_ritual_tool_map",

@@ -39,6 +39,7 @@ from sky_claw.local.discovery.environment import (
 )
 from sky_claw.local.discovery.registry import (
     EXTERNAL_TOOL_REGISTRY,
+    VersionProbeKind,
     iter_external_tool_specs,
 )
 
@@ -234,6 +235,56 @@ def _read_pe_product_version(exe_path: pathlib.Path) -> str | None:
     except (OSError, ValueError, pefile.PEFormatError):
         return None
     return version
+
+
+async def detect_tool_version(
+    key: str,
+    exe_path: pathlib.Path,
+    *,
+    probe_kind: VersionProbeKind | str = VersionProbeKind.NONE,
+) -> str | None:
+    """Detecta la versión de una herramienta externa según su probe_kind declarativo.
+
+    Devuelve la versión formateada como string si se pudo detectar con éxito,
+    o None si la versión no es legible, no está soportado el probe o el comando falla.
+    Falla cerrado sin lanzar excepciones ordinarias (preservando asyncio.CancelledError).
+    """
+    if probe_kind == VersionProbeKind.LOOT_CLI:
+        try:
+            from sky_claw.local.loot.version import detect_loot_version
+
+            parsed = await detect_loot_version(exe_path)
+            if parsed is not None:
+                return f"{parsed[0]}.{parsed[1]}.{parsed[2]}"
+            return None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Error detectando versión de LOOT (%s): %s", exe_path, exc)
+            return None
+
+    if probe_kind == VersionProbeKind.PE_PRODUCT_VERSION:
+        try:
+            raw_ver = _read_pe_product_version(exe_path)
+            if raw_ver:
+                return raw_ver.strip()
+            return None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Error leyendo ProductVersion PE para %s (%s): %s", key, exe_path, exc)
+            return None
+
+    return None
+
+
+def check_tool_version_supported(key: str, version: str) -> bool | None:
+    """Verifica si la versión detectada de una herramienta está soportada por política explícita.
+
+    Devuelve True si está soportada, False si una política explícita la declara no soportada,
+    o None si no existe ninguna política explícita de incompatibilidad para la herramienta.
+    """
+    return None
 
 
 def _detect_skyrim_version(exe_path: pathlib.Path) -> tuple[str, SkyrimEdition]:
@@ -446,10 +497,23 @@ class EnvironmentScanner:
                     configured_path_is_file=configured_is_file,
                 )
             if found:
+                tool_version = ""
+                if spec.version_probe_kind != VersionProbeKind.NONE:
+                    ver = await detect_tool_version(
+                        key,
+                        found,
+                        probe_kind=spec.version_probe_kind,
+                    )
+                    if ver:
+                        tool_version = ver
+                        if check_tool_version_supported(key, ver) is False and readiness == ToolReadiness.FOUND:
+                            readiness = ToolReadiness.VERSION_UNSUPPORTED
+
                 human_name = key.upper().replace("_", " ")
                 snap.tools[key] = ToolInfo(
                     name=human_name,
                     exe_path=found,
+                    version=tool_version,
                     friendly_action=friendly,
                     readiness=readiness,
                 )
@@ -474,8 +538,17 @@ class EnvironmentScanner:
                     snap.health_messages.append(
                         f"⚠️ {human_name} encontrado en ubicación detectada, pero la ruta configurada no es válida"
                     )
+                elif readiness is ToolReadiness.VERSION_UNKNOWN:
+                    snap.health_messages.append(f"⚠️ {human_name} encontrado; versión no determinada")
+                elif readiness is ToolReadiness.VERSION_UNSUPPORTED:
+                    snap.health_messages.append(
+                        f"⚠️ {human_name} encontrado (v{tool_version}), pero la versión no está soportada"
+                    )
                 else:
-                    snap.health_messages.append(f"✅ {human_name} encontrado")
+                    msg = f"✅ {human_name} encontrado"
+                    if tool_version:
+                        msg += f" (v{tool_version})"
+                    snap.health_messages.append(msg)
             else:
                 human_name = key.upper().replace("_", " ")
                 snap.missing.append(

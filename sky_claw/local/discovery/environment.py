@@ -60,11 +60,6 @@ def classify_tool_readiness(
     nombres esperados y soporte de versión) y devuelve el estado semántico
     correspondiente según la máquina de estados de ToolReadiness.
     """
-    if version_supported is False:
-        return ToolReadiness.VERSION_UNSUPPORTED
-    if version_unknown:
-        return ToolReadiness.VERSION_UNKNOWN
-
     if configured_path is not None:
         name = configured_path.name
         expected_folded = {expected.casefold() for expected in expected_names}
@@ -80,10 +75,18 @@ def classify_tool_readiness(
         if is_file:
             if not is_expected:
                 return ToolReadiness.WRONG_EXECUTABLE
+            if version_supported is False:
+                return ToolReadiness.VERSION_UNSUPPORTED
+            if version_unknown:
+                return ToolReadiness.VERSION_UNKNOWN
             return ToolReadiness.FOUND
         return ToolReadiness.INVALID_PATH
 
     if discovered_path is not None:
+        if version_supported is False:
+            return ToolReadiness.VERSION_UNSUPPORTED
+        if version_unknown:
+            return ToolReadiness.VERSION_UNKNOWN
         return ToolReadiness.FOUND
 
     return ToolReadiness.MISSING
