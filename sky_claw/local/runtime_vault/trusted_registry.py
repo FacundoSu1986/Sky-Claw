@@ -200,7 +200,7 @@ class TrustedGoldenEntry:
 
         if not isinstance(self.tree_digest, TreeDigest):
             raise TrustedRegistrySchemaError("tree_digest debe ser una instancia de TreeDigest")
-        _validate_sha256_hex(self.tree_digest.digest)
+        norm_digest = _validate_sha256_hex(self.tree_digest.digest)
         if (
             isinstance(self.tree_digest.files, bool)
             or not isinstance(self.tree_digest.files, int)
@@ -213,6 +213,16 @@ class TrustedGoldenEntry:
             or self.tree_digest.bytes < 0
         ):
             raise TrustedRegistrySchemaError("tree_digest.bytes debe ser un entero no negativo")
+
+        object.__setattr__(
+            self,
+            "tree_digest",
+            TreeDigest(
+                digest=norm_digest,
+                files=self.tree_digest.files,
+                bytes=self.tree_digest.bytes,
+            ),
+        )
 
         if not isinstance(self.policy_version, str) or not self.policy_version.strip():
             raise TrustedRegistrySchemaError("policy_version debe ser un string no vacío")
@@ -439,8 +449,12 @@ def verify_trusted_golden_binding(
             f"registrado={matching_entry.root_file_id}, observado={root_file_id}"
         )
 
-    # 3. tree_digest
-    if matching_entry.tree_digest != tree_digest:
+    # 3. tree_digest (comparación canónica normalizada en minúsculas)
+    if (
+        matching_entry.tree_digest.digest.lower() != tree_digest.digest.lower()
+        or matching_entry.tree_digest.files != tree_digest.files
+        or matching_entry.tree_digest.bytes != tree_digest.bytes
+    ):
         raise TrustedGoldenMismatchError(
             f"tree_digest mismatch para '{normalized_root}': "
             f"registrado={matching_entry.tree_digest}, observado={tree_digest}"

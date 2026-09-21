@@ -411,7 +411,7 @@ def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
     - runtime_vault/, operations/, golden_backups/: AU = 0x001200A9 (FILE_GENERIC_READ | FILE_TRAVERSE).
     - locks/: AU = 0x001200A9 (directorio únicamente, flags 0x00, sin herencia a archivos *.lock).
     - staging/ (padre): AU = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_ADD_SUBDIRECTORY (0x00000025).
-      CREATOR OWNER heredable: 0x001701BF (OI|CI|IO).
+      CREATOR OWNER heredable: 0x001301FF (OI|CI|IO).
       AU heredable a operaciones ajenas: FILE_GENERIC_READ (0x00120089, OI|CI|IO).
     - trusted_goldens.json: AU = FILE_GENERIC_READ (0x00120089).
     """
@@ -464,7 +464,7 @@ def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
         # staging/ (padre sin <op_id>):
         # Admins y SYSTEM: FILE_ALL_ACCESS heredable a contenedores y objetos (0x03)
         # Authenticated Users en staging/: FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_ADD_SUBDIRECTORY (0x00000025), flags 0x00
-        # CREATOR OWNER heredable (0x0B = OI|CI|IO): FILE_GENERIC_READ | WRITE | EXECUTE | DELETE | FILE_DELETE_CHILD (0x001701BF)
+        # CREATOR OWNER heredable (0x0B = OI|CI|IO): FILE_GENERIC_READ | WRITE | EXECUTE | DELETE | FILE_DELETE_CHILD (0x001301FF)
         # Authenticated Users heredable (0x0B = OI|CI|IO): FILE_GENERIC_READ (0x00120089)
         aces = [
             NamespaceAceSpec(
@@ -493,7 +493,7 @@ def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
                 | _DELETE
                 | _FILE_DELETE_CHILD
                 | _READ_CONTROL
-                | _SYNCHRONIZE,  # 0x001701BF
+                | _SYNCHRONIZE,  # 0x001301FF
                 _CONTAINER_INHERIT_ACE | _OBJECT_INHERIT_ACE | _INHERIT_ONLY_ACE,  # 0x0B
                 "CREATOR OWNER (Teardown & Full Operation Access)",
             ),
@@ -1034,6 +1034,58 @@ def verify_secured_file_by_handle(path: pathlib.Path | str) -> None:
         _safe_close_handle(h)
 
 
+def _verify_canonical_directory_security_on_handle(
+    handle: int,
+    object_name: str,
+    dir_str: str,
+) -> None:
+    """Verifica sobre el mismo handle que el directorio normalizado cumpla el contrato canónico.
+
+    Verificaciones atadas al handle:
+    1. Owner es LOCAL SYSTEM (S-1-5-18).
+    2. Group es BUILTIN\\Administrators (S-1-5-32-544).
+    3. SE_DACL_PROTECTED activo.
+    4. Estructura exacta de la DACL contra build_namespace_dacl_spec(object_name):
+       - Exacto número de ACEs.
+       - Tipo exacto ACCESS_ALLOWED para cada ACE.
+       - Coincidencia exacta de (sid, access_mask, ace_flags).
+    Cualquier discrepancia lanza TrustedNamespaceError (Fail-Closed).
+    """
+    _ensure_windows()
+    owner_sid, group_sid, is_protected = _read_live_owner_group_dacl(handle)
+    if owner_sid != CANONICAL_NAMESPACE_OWNER:
+        raise TrustedNamespaceError(
+            f"Post-normalización: Owner no canónico en '{dir_str}': esperado={CANONICAL_NAMESPACE_OWNER}, observado={owner_sid}"
+        )
+    if group_sid != CANONICAL_NAMESPACE_PRIMARY_GROUP:
+        raise TrustedNamespaceError(
+            f"Post-normalización: Group no canónico en '{dir_str}': esperado={CANONICAL_NAMESPACE_PRIMARY_GROUP}, observado={group_sid}"
+        )
+    if not is_protected:
+        raise TrustedNamespaceError(f"Post-normalización: DACL en '{dir_str}' no tiene flag SE_DACL_PROTECTED activo")
+
+    spec = build_namespace_dacl_spec(object_name)
+    live_aces = _read_live_dacl_aces(handle)
+    if len(live_aces) != len(spec.aces):
+        raise TrustedNamespaceError(
+            f"Post-normalización: Conteo de ACEs en '{dir_str}' no coincide: esperado={len(spec.aces)}, observado={len(live_aces)}"
+        )
+
+    for ace_type, _ace_flags, _ace_mask, ace_sid in live_aces:
+        if ace_type != _ACCESS_ALLOWED_ACE_TYPE:
+            raise TrustedNamespaceError(
+                f"Post-normalización: Tipo de ACE inválido en '{dir_str}' para SID {ace_sid}: tipo=0x{ace_type:02X}"
+            )
+
+    expected_tuples = [(ace.sid, ace.access_mask, ace.ace_flags) for ace in spec.aces]
+    observed_tuples = [(ace_sid, ace_mask, ace_flags) for _, ace_flags, ace_mask, ace_sid in live_aces]
+    if sorted(observed_tuples) != sorted(expected_tuples):
+        raise TrustedNamespaceError(
+            f"Post-normalización: DACL en '{dir_str}' no coincide con la especificación canónica: "
+            f"esperado={expected_tuples}, observado={observed_tuples}"
+        )
+
+
 def inspect_namespace_object(path: pathlib.Path | str) -> NamespaceObjectInfo:
     """Inspecciona atado a handle el tipo, reparse, owner y DACL de un objeto del namespace."""
     _ensure_windows()
@@ -1184,9 +1236,11 @@ def _provision_or_normalize_directory(
     _safe_close_handle(h_parent)
 
     # 1. Comprobar si ya existe abriendo sin seguir reparse
+    # Caso B requiere derechos de inspección, mutación y verificación en un único handle:
+    # READ_CONTROL | WRITE_DAC | WRITE_OWNER | FILE_READ_ATTRIBUTES
     h = _open_handle_no_reparse(
         dir_str,
-        desired_access=_READ_CONTROL | _FILE_READ_ATTRIBUTES,
+        desired_access=_READ_CONTROL | _WRITE_DAC | _WRITE_OWNER | _FILE_READ_ATTRIBUTES,
         creation_disposition=_OPEN_EXISTING,
     )
     last_err = ctypes.get_last_error()
@@ -1252,6 +1306,9 @@ def _provision_or_normalize_directory(
             finally:
                 _safe_local_free(p_canon_owner)
                 _safe_local_free(p_canon_group)
+
+            # Verificación post-creación en el mismo handle h_new
+            _verify_canonical_directory_security_on_handle(h_new, object_name, dir_str)
         finally:
             _safe_close_handle(h_new)
 
@@ -1279,7 +1336,7 @@ def _provision_or_normalize_directory(
                 f"Propietario no permitido en '{dir_str}': owner={live_owner} no pertenece a {PERMITTED_NAMESPACE_OWNERS}"
             )
 
-        # (6) Normalizar de forma privilegiada: OWNER + GROUP + DACL al estado canónico
+        # (6) Normalizar de forma privilegiada: OWNER + GROUP + DACL al estado canónico usando h directamente
         # Normaliza owner estrictamente a CANONICAL_NAMESPACE_OWNER (SYSTEM) y group a CANONICAL_NAMESPACE_PRIMARY_GROUP (Administrators)
         p_canon_owner = wintypes.LPVOID()
         p_canon_group = wintypes.LPVOID()
@@ -1293,41 +1350,30 @@ def _provision_or_normalize_directory(
             spec = build_namespace_dacl_spec(object_name)
             _, pacl, ace_psids = _build_native_acl_with_psids(spec.aces)
             try:
-                # Abrir handle con WRITE_DAC y WRITE_OWNER para SetSecurityInfo
-                h_mutate = _open_handle_no_reparse(
-                    dir_str,
-                    desired_access=_READ_CONTROL | _WRITE_DAC | _WRITE_OWNER | _FILE_READ_ATTRIBUTES,
-                    creation_disposition=_OPEN_EXISTING,
+                # Mutar usando ESE MISMO HANDLE h sin reabrir por pathname (TOCTOU mitigation)
+                res = _advapi32.SetSecurityInfo(
+                    h,
+                    _SE_FILE_OBJECT,
+                    _OWNER_SECURITY_INFORMATION
+                    | _GROUP_SECURITY_INFORMATION
+                    | _DACL_SECURITY_INFORMATION
+                    | _PROTECTED_DACL_SECURITY_INFORMATION,
+                    p_canon_owner,
+                    p_canon_group,
+                    pacl,
+                    None,
                 )
-                if _is_invalid_handle(h_mutate):
-                    err = ctypes.get_last_error()
-                    raise TrustedNamespaceError(f"CreateFileW para normalizar '{dir_str}' falló: código {err}")
-
-                try:
-                    res = _advapi32.SetSecurityInfo(
-                        h_mutate,
-                        _SE_FILE_OBJECT,
-                        _OWNER_SECURITY_INFORMATION
-                        | _GROUP_SECURITY_INFORMATION
-                        | _DACL_SECURITY_INFORMATION
-                        | _PROTECTED_DACL_SECURITY_INFORMATION,
-                        p_canon_owner,
-                        p_canon_group,
-                        pacl,
-                        None,
-                    )
-                    if res != 0:
-                        raise TrustedNamespaceError(
-                            f"SetSecurityInfo falló al normalizar '{dir_str}': código Win32 {res}"
-                        )
-                finally:
-                    _safe_close_handle(h_mutate)
+                if res != 0:
+                    raise TrustedNamespaceError(f"SetSecurityInfo falló al normalizar '{dir_str}': código Win32 {res}")
             finally:
                 for psid in ace_psids:
                     _safe_local_free(psid)
         finally:
             _safe_local_free(p_canon_owner)
             _safe_local_free(p_canon_group)
+
+        # (7) Verificación post-normalización usando ESE MISMO HANDLE h
+        _verify_canonical_directory_security_on_handle(h, object_name, dir_str)
     finally:
         _safe_close_handle(h)
 
@@ -1431,17 +1477,9 @@ def _bootstrap_trusted_namespace_at(
     for obj_name, subdir_path in subdirs:
         _provision_or_normalize_directory(subdir_path, obj_name)
 
-    # 4. Archivo trust root: trusted_goldens.json
+    # 4. Archivo trust root: trusted_goldens.json (creación single-winner con CREATE_NEW)
     tgr_file = rv_dir / "trusted_goldens.json"
-    if _check_object_exists_no_reparse(tgr_file):
-        # Excepción dura: Preexistente -> SIEMPRE FAIL CLOSED (Caso B.7)
-        raise PreexistingTrustedRegistryError(
-            f"trusted_goldens.json preexistente en '{tgr_file}'. El bootstrap inicial rechaza registries no creados por él."
-        )
-
-    # Caso A: Creación inicial vacía canónica desde su nacimiento
-    empty_reg = TrustedGoldenRegistry(entries=(), schema_version="1.0")
-    _write_trusted_registry_atomically_at(empty_reg, tgr_file)
+    _bootstrap_initial_trusted_registry(tgr_file)
 
     return TrustedNamespaceResult(
         success=True,
@@ -1450,10 +1488,99 @@ def _bootstrap_trusted_namespace_at(
     )
 
 
-# Import tardío de TrustedGoldenRegistry y _write_trusted_registry_atomically_at
+def _bootstrap_initial_trusted_registry(tgr_file: pathlib.Path) -> None:
+    """Crea e inicializa el archivo trusted_goldens.json directamente con semántica single-winner (CREATE_NEW).
+
+    Garantiza que la creación inicial sea no-reemplazante (anti-carrera / anti-squatting):
+    1. Si _check_object_exists_no_reparse detecta que ya existe -> PreexistingTrustedRegistryError.
+    2. Crea directamente la ruta final con CreateFileW(CREATE_NEW) y SECURITY_ATTRIBUTES canónico desde el nacimiento.
+    3. Si CreateFileW falla con ERROR_FILE_EXISTS (80) o ERROR_ALREADY_EXISTS (183) -> PreexistingTrustedRegistryError.
+    4. Escribe el contenido canónico inicial de un registro vacío mediante WriteFile y FlushFileBuffers.
+    5. Cierra el handle de forma segura.
+    6. Reabre y verifica con verify_secured_file_by_handle y comprueba deserialización canónica.
+    """
+    _ensure_windows()
+    tgr_path_str = str(tgr_file)
+
+    # 1. Pre-check de existencia sin seguir reparse
+    if _check_object_exists_no_reparse(tgr_path_str):
+        raise PreexistingTrustedRegistryError(
+            f"trusted_goldens.json preexistente en '{tgr_path_str}'. El bootstrap inicial rechaza registries no creados por él."
+        )
+
+    # Serializar el registro vacío canónico
+    empty_reg = TrustedGoldenRegistry(entries=())
+    canonical_bytes = serialize_trusted_golden_registry(empty_reg)
+
+    # 2. Creación atómica single-winner con CREATE_NEW en la ruta final
+    with _build_canonical_security_descriptor("trusted_goldens.json") as sd_ctx:
+        sa = _SecurityAttributes()
+        sa.nLength = ctypes.sizeof(sa)
+        sa.lpSecurityDescriptor = sd_ctx.p_sd
+        sa.bInheritHandle = False
+
+        desired_access = (
+            _GENERIC_READ | _GENERIC_WRITE | _READ_CONTROL | _WRITE_DAC | _WRITE_OWNER | _FILE_READ_ATTRIBUTES
+        )
+        h = _kernel32.CreateFileW(
+            tgr_path_str,
+            desired_access,
+            0,  # Acceso exclusivo durante creación e inicialización
+            ctypes.byref(sa),
+            _CREATE_NEW,
+            _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+        if _is_invalid_handle(h):
+            err = ctypes.get_last_error()
+            if err in (80, 183):  # ERROR_FILE_EXISTS (80), ERROR_ALREADY_EXISTS (183)
+                raise PreexistingTrustedRegistryError(
+                    f"Colisión de creación con CREATE_NEW en '{tgr_path_str}': código Win32 {err}"
+                )
+            raise TrustedNamespaceError(
+                f"CreateFileW falló al crear '{tgr_path_str}' con Security Descriptor canónico: código {err}"
+            )
+
+    try:
+        # 3. Escribir contenido canónico inicial y sincronizar a disco
+        bytes_written = wintypes.DWORD(0)
+        buf = (ctypes.c_char * len(canonical_bytes)).from_buffer_copy(canonical_bytes)
+        if not _kernel32.WriteFile(
+            h,
+            buf,
+            len(canonical_bytes),
+            ctypes.byref(bytes_written),
+            None,
+        ):
+            err = ctypes.get_last_error()
+            raise TrustedNamespaceError(f"WriteFile falló en '{tgr_path_str}': código {err}")
+        if bytes_written.value != len(canonical_bytes):
+            raise TrustedNamespaceError(
+                f"Escritura incompleta en '{tgr_path_str}': escrito={bytes_written.value}, esperado={len(canonical_bytes)}"
+            )
+
+        if not _kernel32.FlushFileBuffers(h):
+            err = ctypes.get_last_error()
+            raise TrustedNamespaceError(f"FlushFileBuffers falló en '{tgr_path_str}': código {err}")
+    finally:
+        _safe_close_handle(h)
+
+    # 4. Verificación post-creación atada a handle
+    verify_secured_file_by_handle(tgr_file)
+    with open(tgr_file, "rb") as f:
+        read_bytes = f.read()
+    loaded_reg = deserialize_trusted_golden_registry(read_bytes)
+    if loaded_reg != empty_reg:
+        raise TrustedNamespaceError(
+            f"El registro inicial verificado en '{tgr_path_str}' no coincide con el registro canónico vacío esperado"
+        )
+
+
+# Import tardío de TrustedGoldenRegistry, serialize y deserialize
 from sky_claw.local.runtime_vault.trusted_registry import (  # noqa: E402
     TrustedGoldenRegistry,
-    _write_trusted_registry_atomically_at,
+    deserialize_trusted_golden_registry,
+    serialize_trusted_golden_registry,
 )
 
 __all__ = [
@@ -1477,6 +1604,8 @@ __all__ = [
     "TrustedNamespaceError",
     "TrustedNamespaceResult",
     "TrustedNamespaceUnsupportedError",
+    "_bootstrap_initial_trusted_registry",
+    "_verify_canonical_directory_security_on_handle",
     "apply_canonical_tgr_file_security",
     "bootstrap_trusted_namespace",
     "build_namespace_dacl_spec",

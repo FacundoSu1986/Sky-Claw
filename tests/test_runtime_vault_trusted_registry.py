@@ -366,6 +366,51 @@ class TestTrustedGoldenRegistryPure:
                 registry, entry.canonical_root, entry.volume_serial_number, entry.root_file_id, td_bytes_diff
             )
 
+    def test_canonical_sha256_tree_digest_normalization(self) -> None:
+        """P1: SHA-256 en mayúsculas se normaliza a minúsculas, produce mismos bytes y hace binding MATCH."""
+        digest_upper = "A" * 64
+        digest_lower = "a" * 64
+
+        entry_upper = _crear_entry_valida(
+            canonical_root="C:/Games/Skyrim",
+            tree_digest=_crear_tree_digest_valido(digest=digest_upper),
+        )
+        entry_lower = _crear_entry_valida(
+            canonical_root="C:/Games/Skyrim",
+            tree_digest=_crear_tree_digest_valido(digest=digest_lower),
+        )
+
+        # 1. Mismo TrustedGoldenEntry normalizado internamente a minúsculas
+        assert entry_upper.tree_digest.digest == digest_lower
+        assert entry_lower.tree_digest.digest == digest_lower
+        assert entry_upper == entry_lower
+
+        # 2. Misma serialización determinista
+        reg_upper = TrustedGoldenRegistry(entries=(entry_upper,))
+        reg_lower = TrustedGoldenRegistry(entries=(entry_lower,))
+        bytes_upper = serialize_trusted_golden_registry(reg_upper)
+        bytes_lower = serialize_trusted_golden_registry(reg_lower)
+        assert bytes_upper == bytes_lower
+
+        # 3. verify_trusted_golden_binding MATCH tanto con query mayúscula como minúscula
+        matched_from_upper_query = verify_trusted_golden_binding(
+            reg_lower,
+            "C:/Games/Skyrim",
+            entry_lower.volume_serial_number,
+            entry_lower.root_file_id,
+            TreeDigest(digest=digest_upper, files=10, bytes=5000),
+        )
+        assert matched_from_upper_query == entry_lower
+
+        matched_from_lower_query = verify_trusted_golden_binding(
+            reg_upper,
+            "C:/Games/Skyrim",
+            entry_upper.volume_serial_number,
+            entry_upper.root_file_id,
+            TreeDigest(digest=digest_lower, files=10, bytes=5000),
+        )
+        assert matched_from_lower_query == entry_upper
+
     def test_tgr_11_schema_version_desconocido_fail_closed(self) -> None:
         """TGR-11: schema_version != '1.0' es rechazado fail-closed."""
         for bad_ver in ["0.9", "2.0", "custom-v1", ""]:
@@ -477,6 +522,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
             real_create_secured_file_from_birth(target_file)
         assert "1307" in str(exc_info.value) or "1314" in str(exc_info.value)
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Primitiva de almacenamiento atómico Win32")
     def test_tgr_12_atomic_replace_preserva_bytes_canonicos(self, tmp_path: pathlib.Path) -> None:
         """TGR-12: write_trusted_registry_atomically escribe exactamente los bytes canónicos."""
         target_file = tmp_path / "trusted_goldens.json"
@@ -492,6 +538,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
         reg_cargado = load_trusted_golden_registry(target_file)
         assert reg_cargado == reg
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Primitiva de almacenamiento atómico Win32")
     def test_tgr_13_temp_nunca_se_crea_fuera_del_directorio_protegido(self, tmp_path: pathlib.Path) -> None:
         """TGR-13: El archivo temporal se crea exclusivamente dentro del mismo directorio que target."""
         target_file = tmp_path / "trusted_goldens.json"
@@ -512,6 +559,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
         assert temp_creado.parent.resolve() == target_file.parent.resolve()
         assert temp_creado.name.startswith(".tmp_")
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Primitiva de almacenamiento atómico Win32")
     def test_tgr_14_fallo_antes_de_replace_conserva_registry_anterior(self, tmp_path: pathlib.Path) -> None:
         """TGR-14: Si ocurre un fallo antes de replace, el archivo previo permanece 100% intacto."""
         target_file = tmp_path / "trusted_goldens.json"
@@ -536,6 +584,7 @@ class TestTrustedGoldenRegistryAtomicStorage:
         temporales = list(tmp_path.glob(".tmp_*"))
         assert len(temporales) == 0
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Primitiva de almacenamiento atómico Win32")
     def test_tgr_15_fallo_post_write_revalida_digest_y_no_produce_estado_parcial(self, tmp_path: pathlib.Path) -> None:
         """TGR-15: Si el archivo reemplazado queda con digest inconsistente, falla cerrado."""
         target_file = tmp_path / "trusted_goldens.json"

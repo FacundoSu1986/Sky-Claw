@@ -369,6 +369,31 @@ class TestNamespaceBootstrapWindows:
             _simulated_open_handle,
         )
 
+        real_create_file = _kernel32.CreateFileW
+
+        def _simulated_create_file(
+            lp_file_name: Any,
+            dw_desired_access: int,
+            dw_share_mode: int,
+            lp_security_attributes: Any,
+            dw_creation_disposition: int,
+            dw_flags_and_attributes: int,
+            h_template_file: Any,
+        ) -> int:
+            access = dw_desired_access & ~_WRITE_OWNER
+            return int(
+                real_create_file(
+                    lp_file_name,
+                    access,
+                    dw_share_mode,
+                    None,
+                    dw_creation_disposition,
+                    dw_flags_and_attributes,
+                    h_template_file,
+                )
+            )
+
+        monkeypatch.setattr(_kernel32, "CreateFileW", _simulated_create_file)
         monkeypatch.setattr(_advapi32, "SetSecurityInfo", lambda *args: 0)
         monkeypatch.setattr(
             "sky_claw.local.runtime_vault.trusted_namespace.create_secured_file_from_birth",
@@ -379,6 +404,25 @@ class TestNamespaceBootstrapWindows:
         monkeypatch.setattr(
             "sky_claw.local.runtime_vault.trusted_namespace.verify_secured_file_by_handle",
             lambda path: None,
+        )
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._verify_canonical_directory_security_on_handle",
+            lambda *args, **kwargs: None,
+        )
+
+        from sky_claw.local.runtime_vault.trusted_namespace import _read_live_owner_group_dacl
+
+        real_read_owner = _read_live_owner_group_dacl
+
+        def _simulated_read_owner(handle: int) -> tuple[str, str, bool]:
+            owner, group, is_protected = real_read_owner(handle)
+            if owner not in PERMITTED_NAMESPACE_OWNERS:
+                owner = BUILTIN_ADMINISTRATORS_SID
+            return owner, group, is_protected
+
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
+            _simulated_read_owner,
         )
 
     def test_ns_unelevated_without_privilege_fails_closed(self, tmp_path: pathlib.Path) -> None:
@@ -492,14 +536,76 @@ class TestNamespaceBootstrapWindows:
         planted_tgr = rv_dir / "trusted_goldens.json"
         planted_tgr.write_text('{"entries":[],"schema_version":"1.0"}')
 
-        with (
-            patch(
-                "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
-                return_value=(LOCAL_SYSTEM_SID, CANONICAL_NAMESPACE_PRIMARY_GROUP, True),
-            ),
-            pytest.raises(PreexistingTrustedRegistryError, match="preexistente"),
-        ):
+        with pytest.raises(PreexistingTrustedRegistryError, match="preexistente"):
             _bootstrap_trusted_namespace_at(root_test)
+
+    def test_ns_06_race_precheck_bypassed_create_new_rejects_and_preserves_planted_bytes(
+        self, tmp_path: pathlib.Path, mock_elevated_provisioning: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1: Si el pre-check es sorteado por carrera, CreateFileW(CREATE_NEW) falla cerrado y no sobreescribe."""
+        root_test = tmp_path / "ProgramDataSynthetic" / "Sky-Claw"
+        rv_dir = root_test / "runtime_vault"
+        rv_dir.mkdir(parents=True)
+        planted_tgr = rv_dir / "trusted_goldens.json"
+        attacker_bytes = b'{"attacker": "controlled", "corrupted": true}'
+        planted_tgr.write_bytes(attacker_bytes)
+
+        # Simular carrera donde el pre-check devolvió False pero el archivo ya existe al llamar a CreateFileW(CREATE_NEW)
+        orig_check = _check_object_exists_no_reparse
+
+        def bypass_check_for_tgr(path: Any) -> bool:
+            if "trusted_goldens.json" in str(path):
+                return False
+            return orig_check(path)
+
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._check_object_exists_no_reparse",
+            bypass_check_for_tgr,
+        )
+
+        with pytest.raises(PreexistingTrustedRegistryError, match="Colisión de creación con CREATE_NEW|preexistente"):
+            _bootstrap_trusted_namespace_at(root_test)
+
+        # Los bytes plantados deben quedar 100% intactos (no sobreescritos por replace ni truncados)
+        assert planted_tgr.read_bytes() == attacker_bytes
+
+    def test_ns_case_b_uses_single_handle_no_reopen_for_mutation(
+        self, tmp_path: pathlib.Path, mock_elevated_provisioning: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1 / Causal Mutation Anchor: Caso B abre un único handle para inspeccionar, mutar y verificar; nunca reabre por pathname."""
+        from sky_claw.local.runtime_vault.trusted_namespace import (
+            _open_handle_no_reparse,
+            _provision_or_normalize_directory,
+        )
+
+        root_test = tmp_path / "ProgramDataSynthetic" / "Sky-Claw"
+        rv_dir = root_test / "runtime_vault"
+        rv_dir.mkdir(parents=True)
+
+        opened_paths: list[str] = []
+        real_open = _open_handle_no_reparse
+
+        def tracking_open_handle(path: Any, desired_access: int = 0, **kwargs: Any) -> int:
+            p_str = str(path)
+            opened_paths.append(p_str)
+            return real_open(path, desired_access=desired_access & ~_WRITE_OWNER, **kwargs)
+
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace._open_handle_no_reparse",
+            tracking_open_handle,
+        )
+
+        with patch(
+            "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
+            return_value=(BUILTIN_ADMINISTRATORS_SID, CANONICAL_NAMESPACE_PRIMARY_GROUP, True),
+        ):
+            _provision_or_normalize_directory(rv_dir, "runtime_vault")
+
+        # Verificar aperturas de rv_dir: exactamente 1 handle (inspección + mutación + verificación)
+        rv_opens = [p for p in opened_paths if p == str(rv_dir)]
+        assert len(rv_opens) == 1, (
+            f"VIOLACIÓN TOCTOU: Caso B abrió '{rv_dir}' {len(rv_opens)} veces (esperado exactamente 1 handle único)"
+        )
 
     def test_ns_07_fallo_en_ancestro_no_crea_descendientes(self, tmp_path: pathlib.Path) -> None:
         """NS-07: Fallo en ancestro detiene el provisioning; ningún descendiente es creado ni confiado."""
@@ -533,6 +639,63 @@ class TestNamespaceBootstrapWindows:
         # Verificar que NO se crearon ancestros implícitamente
         assert not (tmp_path / "nonexistent_parent").exists()
         assert not deep_child.exists()
+
+    def test_verify_canonical_directory_security_on_handle_detects_non_system_owner(self) -> None:
+        """P1: _verify_canonical_directory_security_on_handle rechaza si el owner post-normalización no es SYSTEM."""
+        from sky_claw.local.runtime_vault.trusted_namespace import (
+            TrustedNamespaceError,
+            _verify_canonical_directory_security_on_handle,
+        )
+
+        fake_handle = 12345
+        with (
+            patch(
+                "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
+                return_value=(BUILTIN_ADMINISTRATORS_SID, CANONICAL_NAMESPACE_PRIMARY_GROUP, True),
+            ),
+            pytest.raises(TrustedNamespaceError, match="Owner no canónico"),
+        ):
+            _verify_canonical_directory_security_on_handle(fake_handle, "runtime_vault", "C:/dummy")
+
+    def test_verify_canonical_directory_security_on_handle_detects_unprotected_dacl(self) -> None:
+        """P1: _verify_canonical_directory_security_on_handle rechaza si SE_DACL_PROTECTED no está activo."""
+        from sky_claw.local.runtime_vault.trusted_namespace import (
+            TrustedNamespaceError,
+            _verify_canonical_directory_security_on_handle,
+        )
+
+        fake_handle = 12345
+        with (
+            patch(
+                "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
+                return_value=(CANONICAL_NAMESPACE_OWNER, CANONICAL_NAMESPACE_PRIMARY_GROUP, False),
+            ),
+            pytest.raises(TrustedNamespaceError, match="SE_DACL_PROTECTED"),
+        ):
+            _verify_canonical_directory_security_on_handle(fake_handle, "runtime_vault", "C:/dummy")
+
+    def test_verify_canonical_directory_security_on_handle_detects_dacl_ace_mismatch(self) -> None:
+        """P1: _verify_canonical_directory_security_on_handle rechaza si las ACEs no coinciden con la especificación."""
+        from sky_claw.local.runtime_vault.trusted_namespace import (
+            TrustedNamespaceError,
+            _verify_canonical_directory_security_on_handle,
+        )
+
+        fake_handle = 12345
+        # ACEs incorrectas (faltan ACEs requeridas)
+        corrupted_aces = [(0, 0, 0x001F01FF, BUILTIN_ADMINISTRATORS_SID)]
+        with (
+            patch(
+                "sky_claw.local.runtime_vault.trusted_namespace._read_live_owner_group_dacl",
+                return_value=(CANONICAL_NAMESPACE_OWNER, CANONICAL_NAMESPACE_PRIMARY_GROUP, True),
+            ),
+            patch(
+                "sky_claw.local.runtime_vault.trusted_namespace._read_live_dacl_aces",
+                return_value=corrupted_aces,
+            ),
+            pytest.raises(TrustedNamespaceError, match="Conteo de ACEs"),
+        ):
+            _verify_canonical_directory_security_on_handle(fake_handle, "runtime_vault", "C:/dummy")
 
 
 # ============================================================================
