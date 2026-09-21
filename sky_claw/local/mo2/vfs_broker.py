@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -26,6 +28,9 @@ from sky_claw.local.mo2.vfs_contracts import (
     VFS_PROTOCOL_VERSION,
     VfsJob,
     VfsJobResult,
+    VfsProtocolError,
+    VfsSessionEvent,
+    parse_worker_event,
 )
 from sky_claw.local.mo2.vfs_ipc import (
     VfsFrameError,
@@ -33,6 +38,7 @@ from sky_claw.local.mo2.vfs_ipc import (
     write_authenticated_message,
 )
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest, write_worker_manifest
+from sky_claw.local.mo2.vfs_session import VfsProcessSession
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,10 @@ _BRIDGE_LOSS_FENCE_GRACE_SECONDS = 30.0
 # La cola de eventos de lifecycle no tiene consumidor obligatorio; se acota para
 # que no crezca sin límite durante la vida del daemon (drop-oldest).
 _MAX_BUFFERED_EVENTS = 256
+# Cola por job de una sesión: el worker sólo emite dos eventos por corrida, así
+# que un tope chico alcanza; si se llena, es un worker desbocado y se falla
+# cerrado (nada de drop silencioso en el camino que alimenta al daemon).
+_MAX_EVENTOS_DE_SESION = 64
 
 
 async def _cancel_and_join(task: asyncio.Future[Any]) -> None:
@@ -85,6 +95,15 @@ class VfsWorkerDisconnectedError(VfsBrokerError):
 
 class VfsResultValidationError(VfsBrokerError):
     """El resultado no corresponde al job y attestation que autorizó el daemon."""
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _RaicesEfectivas:
+    """Raíces resueltas que viajan al manifiesto firmado del worker."""
+
+    data_root: pathlib.Path
+    mods_dir: pathlib.Path
+    install_root: pathlib.Path
 
 
 class VfsExecutionBroker:
@@ -130,6 +149,11 @@ class VfsExecutionBroker:
         self._pending_context: dict[str, tuple[VfsJob, VfsAttestationChallenge]] = {}
         self._worker_exit: dict[str, asyncio.Future[int | None]] = {}
         self._termination_tasks: dict[str, asyncio.Task[None]] = {}
+        # Routing de eventos mid-job por job: una sesión se suscribe ANTES de
+        # enviar launch_worker, así que un tool_started jamás puede caer en una
+        # ventana sin suscriptor ni despertar a la sesión de otro job.
+        self._job_event_queues: dict[str, asyncio.Queue[VfsSessionEvent]] = {}
+        self._session_drivers: dict[str, asyncio.Task[VfsJobResult]] = {}
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_MAX_BUFFERED_EVENTS)
         self._closing = False
         self._owns_instance_file_lock = False
@@ -276,6 +300,114 @@ class VfsExecutionBroker:
         except TimeoutError as exc:
             raise VfsBrokerError("MO2 bridge no se conectó al broker") from exc
 
+    def _precondiciones(self, job: VfsJob, challenge: VfsAttestationChallenge) -> None:
+        """Validaciones comunes de ``submit``/``open_session`` (una sola copia)."""
+        if self._server is None:
+            raise VfsBrokerError("el broker no está iniciado")
+        if job.instance_id != self._instance_id:
+            raise VfsBrokerError("el job apunta a otra instancia MO2")
+        if job.profile != challenge.profile or job.expected_fingerprint != challenge.profile_fingerprint:
+            raise VfsBrokerError("job y attestation no comparten perfil/fingerprint")
+
+    @staticmethod
+    def _raices_efectivas(
+        *,
+        mo2_root: pathlib.Path | None,
+        data_root: pathlib.Path | None,
+        mods_dir: pathlib.Path | None,
+        install_root: pathlib.Path | None,
+    ) -> _RaicesEfectivas:
+        effective_data = data_root or mo2_root
+        if effective_data is None:
+            raise VfsBrokerError("se requiere data_root o mo2_root")
+        effective_mods = mods_dir or (effective_data / "mods")
+        effective_install = install_root or mo2_root or effective_data
+        return _RaicesEfectivas(
+            data_root=effective_data.resolve(),
+            mods_dir=effective_mods.resolve(),
+            install_root=effective_install.resolve(),
+        )
+
+    async def _escribir_manifiesto(
+        self,
+        job: VfsJob,
+        challenge: VfsAttestationChallenge,
+        raices: _RaicesEfectivas,
+        virtual_data_dir: pathlib.Path,
+    ) -> pathlib.Path:
+        manifest_path = self._jobs_dir / f"{job.job_id}.json"
+        manifest = VfsWorkerManifest(
+            protocol_version=VFS_MANIFEST_PROTOCOL_VERSION,
+            job=job,
+            challenge=challenge,
+            data_root=raices.data_root,
+            mods_dir=raices.mods_dir,
+            install_root=raices.install_root,
+            virtual_data_dir=virtual_data_dir.resolve(),
+            descriptor_path=self._descriptor_path,
+        )
+        await asyncio.to_thread(
+            write_worker_manifest,
+            manifest_path,
+            manifest,
+            secret=self._secret,
+            hardener=self._hardener,
+        )
+        return manifest_path
+
+    def _registrar_job(
+        self,
+        job: VfsJob,
+        challenge: VfsAttestationChallenge,
+    ) -> tuple[asyncio.Future[VfsJobResult], asyncio.Future[int | None]]:
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[VfsJobResult] = loop.create_future()
+        exit_future: asyncio.Future[int | None] = loop.create_future()
+        self._pending[job.job_id] = result_future
+        self._pending_context[job.job_id] = (job, challenge)
+        self._worker_exit[job.job_id] = exit_future
+        return result_future, exit_future
+
+    async def _limpiar_registro(
+        self,
+        job_id: str,
+        manifest_path: pathlib.Path,
+        result_future: asyncio.Future[VfsJobResult],
+        session: VfsProcessSession | None = None,
+    ) -> None:
+        """Limpieza idempotente del job: mapas, suscripción, futuro y manifiesto.
+
+        El futuro se marca como recuperado cuando ya tiene excepción: nadie más lo
+        va a esperar y ``asyncio`` sólo avisa por futures con excepción nunca
+        recuperada (ruido de crash sin causa accionable).
+        """
+        self._pending.pop(job_id, None)
+        self._pending_context.pop(job_id, None)
+        self._worker_exit.pop(job_id, None)
+        self._termination_tasks.pop(job_id, None)
+        if session is not None:
+            await session._detener_recolector()
+            self._job_event_queues.pop(job_id, None)
+            self._session_drivers.pop(job_id, None)
+        if not result_future.done():
+            result_future.cancel()
+        else:
+            with contextlib.suppress(BaseException):
+                result_future.exception()
+        await asyncio.to_thread(manifest_path.unlink, missing_ok=True)
+
+    def _mensaje_de_launch(
+        self, job: VfsJob, manifest_path: pathlib.Path, overwrite_mod: str | None
+    ) -> dict[str, object]:
+        return {
+            "protocol_version": VFS_PROTOCOL_VERSION,
+            "type": "launch_worker",
+            "job_id": job.job_id,
+            "profile": job.profile,
+            "manifest_path": str(manifest_path),
+            "overwrite_mod": overwrite_mod,
+        }
+
     async def submit(
         self,
         job: VfsJob,
@@ -289,56 +421,20 @@ class VfsExecutionBroker:
         overwrite_mod: str | None = None,
     ) -> VfsJobResult:
         """Serializa, lanza y espera un único job para esta instancia."""
-        if self._server is None:
-            raise VfsBrokerError("el broker no está iniciado")
-        if job.instance_id != self._instance_id:
-            raise VfsBrokerError("el job apunta a otra instancia MO2")
-        if job.profile != challenge.profile or job.expected_fingerprint != challenge.profile_fingerprint:
-            raise VfsBrokerError("job y attestation no comparten perfil/fingerprint")
-
-        effective_data = data_root or mo2_root
-        if effective_data is None:
-            raise VfsBrokerError("se requiere data_root o mo2_root")
-        effective_mods = mods_dir or (effective_data / "mods")
-        effective_install = install_root or mo2_root or effective_data
+        self._precondiciones(job, challenge)
+        raices = self._raices_efectivas(
+            mo2_root=mo2_root,
+            data_root=data_root,
+            mods_dir=mods_dir,
+            install_root=install_root,
+        )
 
         async with self._instance_lock:
             await self.wait_until_ready()
-            manifest_path = self._jobs_dir / f"{job.job_id}.json"
-            manifest = VfsWorkerManifest(
-                protocol_version=VFS_MANIFEST_PROTOCOL_VERSION,
-                job=job,
-                challenge=challenge,
-                data_root=effective_data.resolve(),
-                mods_dir=effective_mods.resolve(),
-                install_root=effective_install.resolve(),
-                virtual_data_dir=virtual_data_dir.resolve(),
-                descriptor_path=self._descriptor_path,
-            )
-            await asyncio.to_thread(
-                write_worker_manifest,
-                manifest_path,
-                manifest,
-                secret=self._secret,
-                hardener=self._hardener,
-            )
-            loop = asyncio.get_running_loop()
-            result_future: asyncio.Future[VfsJobResult] = loop.create_future()
-            exit_future: asyncio.Future[int | None] = loop.create_future()
-            self._pending[job.job_id] = result_future
-            self._pending_context[job.job_id] = (job, challenge)
-            self._worker_exit[job.job_id] = exit_future
+            manifest_path = await self._escribir_manifiesto(job, challenge, raices, virtual_data_dir)
+            result_future, exit_future = self._registrar_job(job, challenge)
             try:
-                await self._send_bridge(
-                    {
-                        "protocol_version": VFS_PROTOCOL_VERSION,
-                        "type": "launch_worker",
-                        "job_id": job.job_id,
-                        "profile": job.profile,
-                        "manifest_path": str(manifest_path),
-                        "overwrite_mod": overwrite_mod,
-                    }
-                )
+                await self._send_bridge(self._mensaje_de_launch(job, manifest_path, overwrite_mod))
                 try:
                     return await self._await_job_completion(
                         result_future,
@@ -357,13 +453,131 @@ class VfsExecutionBroker:
                     await self._await_worker_exit(exit_future)
                     raise
             finally:
-                self._pending.pop(job.job_id, None)
-                self._pending_context.pop(job.job_id, None)
-                self._worker_exit.pop(job.job_id, None)
-                self._termination_tasks.pop(job.job_id, None)
-                if not result_future.done():
-                    result_future.cancel()
-                await asyncio.to_thread(manifest_path.unlink, missing_ok=True)
+                await self._limpiar_registro(job.job_id, manifest_path, result_future)
+
+    async def open_session(
+        self,
+        job: VfsJob,
+        *,
+        challenge: VfsAttestationChallenge,
+        mo2_root: pathlib.Path | None = None,
+        data_root: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | None = None,
+        install_root: pathlib.Path | None = None,
+        virtual_data_dir: pathlib.Path,
+        overwrite_mod: str | None = None,
+    ) -> VfsProcessSession:
+        """Lanza el job y retorna con un ``tool_started`` válido ya observado.
+
+        Comparte con ``submit`` la serialización por instancia, el manifiesto
+        firmado, la validación del resultado y el fence ``worker_exit``; la
+        diferencia es que NO espera el desenlace: devuelve un handle del proceso
+        vivo. Si el job falla antes de crear el tool (manifest, attestation,
+        bootstrap del worker, bridge caído), levanta la excepción causal y jamás
+        entrega una sesión con PID placeholder.
+        """
+        self._precondiciones(job, challenge)
+        raices = self._raices_efectivas(
+            mo2_root=mo2_root,
+            data_root=data_root,
+            mods_dir=mods_dir,
+            install_root=install_root,
+        )
+        await self._instance_lock.acquire()
+        driver_creado = False
+        try:
+            await self.wait_until_ready()
+            manifest_path = await self._escribir_manifiesto(job, challenge, raices, virtual_data_dir)
+            result_future, exit_future = self._registrar_job(job, challenge)
+            # La suscripción existe ANTES de que el launch pueda crear un worker:
+            # no hay ventana en la que un tool_started se pierda por llegar antes
+            # que el suscriptor.
+            cola: asyncio.Queue[VfsSessionEvent] = asyncio.Queue(maxsize=_MAX_EVENTOS_DE_SESION)
+            self._job_event_queues[job.job_id] = cola
+            sesion = VfsProcessSession(
+                job_id=job.job_id,
+                result_future=result_future,
+                event_queue=cola,
+                cancelar=functools.partial(self._cancelar_job_de_sesion, job.job_id),
+            )
+            sesion._iniciar_recolector()
+            driver = asyncio.create_task(
+                self._conducir_sesion(
+                    sesion,
+                    mensaje_launch=self._mensaje_de_launch(job, manifest_path, overwrite_mod),
+                    result_future=result_future,
+                    exit_future=exit_future,
+                    manifest_path=manifest_path,
+                    timeout=job.timeout_seconds,
+                ),
+                name=f"vfs-session-{job.job_id}",
+            )
+            sesion._vincular_driver(driver)
+            self._session_drivers[job.job_id] = driver
+            driver_creado = True
+            try:
+                await sesion._esperar_tool_started()
+            except BaseException:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await sesion._fence_de_teardown()
+                raise
+            return sesion
+        except BaseException:
+            # Sin driver (fallo antes de crearlo) el lock no tiene dueño que lo
+            # libere; con driver, su finally es el único responsable.
+            if not driver_creado:
+                self._instance_lock.release()
+            raise
+
+    async def _conducir_sesion(
+        self,
+        sesion: VfsProcessSession,
+        *,
+        mensaje_launch: Mapping[str, object],
+        result_future: asyncio.Future[VfsJobResult],
+        exit_future: asyncio.Future[int | None],
+        manifest_path: pathlib.Path,
+        timeout: float,
+    ) -> VfsJobResult:
+        """Task dueña del desenlace de una sesión (espeja el lifecycle de submit)."""
+        try:
+            lanzado = False
+            try:
+                await self._send_bridge(mensaje_launch)
+                lanzado = True
+                return await self._await_job_completion(result_future, exit_future, timeout=timeout)
+            except TimeoutError as exc:
+                await self._send_cancel(sesion.job_id)
+                raise VfsJobTimeoutError(f"job {sesion.job_id} excedió {timeout:g}s") from exc
+            except asyncio.CancelledError:
+                await self._send_cancel(sesion.job_id)
+                raise
+            except Exception:
+                # Con el launch emitido, un resultado inválido o un fallo de
+                # lifecycle tampoco habilita rollback mientras el árbol siga
+                # ejecutándose. Sin launch no hay worker que esperar.
+                if lanzado:
+                    await self._await_worker_exit(exit_future)
+                raise
+        finally:
+            try:
+                await self._limpiar_registro(sesion.job_id, manifest_path, result_future, sesion)
+            finally:
+                self._instance_lock.release()
+
+    async def _cancelar_job_de_sesion(self, job_id: str) -> None:
+        """Cancelación pedida por una sesión: idempotente y tolerante a terminal.
+
+        ``_send_cancel`` sólo falla si el job ya no está en tracking; para una
+        sesión eso significa "ya terminó", no un error de cancelación.
+        """
+        if job_id not in self._worker_exit:
+            return
+        try:
+            await self._send_cancel(job_id)
+        except VfsBrokerError:
+            if job_id in self._worker_exit:
+                raise
 
     async def _send_cancel(self, job_id: str) -> None:
         termination = self._termination_tasks.get(job_id)
@@ -677,7 +891,11 @@ class VfsExecutionBroker:
         if message_type == "event":
             if message.get("job_id") != expected_job_id:
                 raise VfsBrokerError("evento del worker atribuido a otro job")
-            self._emit_event(message)
+            try:
+                evento = parse_worker_event(message)
+            except VfsProtocolError as exc:
+                raise VfsBrokerError(f"evento de sesión inválido del worker: {exc}") from exc
+            self._publicar_evento_de_sesion(evento)
             return False
         if message_type != "job_result":
             raise VfsBrokerError(f"tipo de mensaje del worker no permitido: {message_type!r}")
@@ -742,6 +960,21 @@ class VfsExecutionBroker:
         with contextlib.suppress(asyncio.QueueFull):
             self._events.put_nowait(dict(message))
 
+    def _publicar_evento_de_sesion(self, evento: VfsSessionEvent) -> None:
+        """Enruta un evento mid-job a la cola de SU job (nunca a la de otro).
+
+        Sin sesión registrada, un evento de sesión es una violación de protocolo
+        y no ruido: aceptarlo alimentaría una cola que nadie lee y escondería a
+        un worker emitiendo fuera de contrato.
+        """
+        cola = self._job_event_queues.get(evento.job_id)
+        if cola is None:
+            raise VfsBrokerError(f"evento de sesión para un job sin sesión registrada: {evento.job_id}")
+        try:
+            cola.put_nowait(evento)
+        except asyncio.QueueFull as exc:
+            raise VfsBrokerError(f"la sesión {evento.job_id} desbordó su cola de eventos") from exc
+
     async def next_event(self) -> dict[str, Any]:
         """Devuelve el siguiente evento de lifecycle reportado por el bridge."""
         return await self._events.get()
@@ -804,6 +1037,27 @@ class VfsExecutionBroker:
         self._client_tasks.clear()
         self._bridge_ready.clear()
         self._fail_pending(VfsBridgeDisconnectedError("broker cerrado"))
+        # El cierre no puede dejar sesiones en vuelo: al fallar los pendientes
+        # los drivers despiertan y su finally limpia y libera el lock de
+        # instancia. Se los espera para que "close() terminó" implique teardown.
+        session_drivers = tuple(
+            driver for driver in self._session_drivers.values() if driver is not current and not driver.done()
+        )
+        for driver in session_drivers:
+            while not driver.done():
+                try:
+                    await asyncio.shield(driver)
+                except asyncio.CancelledError:
+                    # La cancelación externa se propaga al final de close(); no
+                    # puede abandonar el teardown de una sesión a medio camino.
+                    continue
+                except BaseException:
+                    # Desenlace de la sesión: lo lee result(), no close().
+                    pass
+            if not driver.cancelled():
+                driver.exception()  # recuperada
+        self._job_event_queues.clear()
+        self._session_drivers.clear()
         try:
             await asyncio.to_thread(self._descriptor_path.unlink, missing_ok=True)
         finally:

@@ -6,20 +6,32 @@ import asyncio
 import base64
 import json
 import pathlib
+import sys
 import time
 
+import psutil
 import pytest
 
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker
-from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob
+from sky_claw.local.mo2.vfs_contracts import (
+    ALLOWED_VFS_TOOL_IDS,
+    VFS_PROTOCOL_VERSION,
+    VfsJob,
+    VfsToolExitEvent,
+    VfsToolStartedEvent,
+)
 from sky_claw.local.mo2.vfs_ipc import read_authenticated_message, write_authenticated_message
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
 from sky_claw.local.mo2.vfs_worker import (
+    VfsProcessSpec,
     VfsToolExecution,
     VfsWorkerBootstrapError,
+    _default_handlers,
+    _default_session_handlers,
     execute_worker_manifest,
     load_broker_descriptor,
+    run_brokered_process,
     run_worker_session,
 )
 
@@ -225,3 +237,154 @@ async def test_worker_reporta_resultado_por_su_canal_autenticado(tmp_path: pathl
 
 async def _return_sha(sha256: str) -> str:
     return sha256
+
+
+# ---------------------------------------------------------------------------
+# Primitive de sesión de proceso (PR-586A)
+# ---------------------------------------------------------------------------
+
+
+class _SinkGrabador:
+    """Sink de eventos de test: registra y prueba liveness del PID al emitir."""
+
+    def __init__(self, job_id: str = "job-1") -> None:
+        self._job_id = job_id
+        self.eventos: list[object] = []
+        self.started = asyncio.Event()
+        self.pid_vivo_al_emitir: bool | None = None
+
+    @property
+    def job_id(self) -> str:
+        return self._job_id
+
+    async def emit(self, evento: object) -> None:
+        if isinstance(evento, VfsToolStartedEvent):
+            self.pid_vivo_al_emitir = psutil.pid_exists(evento.tool_pid)
+            self.started.set()
+        self.eventos.append(evento)
+
+
+def _esperar_pid_muerto(pid: int, *, timeout: float = 5.0) -> None:
+    inicio = time.monotonic()
+    while time.monotonic() - inicio < timeout:
+        if not psutil.pid_exists(pid):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"el pid {pid} sobrevivió al cancel (proceso huérfano)")
+
+
+async def test_proceso_brokered_emite_started_con_pid_vivo_y_exit_con_codigo() -> None:
+    sink = _SinkGrabador()
+    spec = VfsProcessSpec(
+        executable=pathlib.Path(sys.executable),
+        arguments=("-c", "print('hola')"),
+    )
+
+    resultado = await run_brokered_process(spec, event_sink=sink)
+
+    assert [type(evento) for evento in sink.eventos] == [VfsToolStartedEvent, VfsToolExitEvent]
+    started = sink.eventos[0]
+    salida = sink.eventos[1]
+    assert isinstance(started, VfsToolStartedEvent)
+    assert isinstance(salida, VfsToolExitEvent)
+    assert started.tool_pid > 0
+    assert sink.pid_vivo_al_emitir is True, "tool_started debe emitirse con el proceso todavía vivo"
+    assert salida.exit_code == resultado.exit_code == 0
+    assert resultado.stdout.strip() == "hola"
+    assert resultado.stdout_truncated is False
+    assert resultado.stderr_truncated is False
+
+
+async def test_proceso_brokered_acota_la_captura_por_la_cola() -> None:
+    sink = _SinkGrabador()
+    programa = "import sys; sys.stdout.write('x' * 5000 + 'TAIL'); sys.stderr.write('y' * 5000)"
+    spec = VfsProcessSpec(executable=pathlib.Path(sys.executable), arguments=("-c", programa))
+
+    resultado = await run_brokered_process(spec, event_sink=sink, limite_captura_bytes=1024)
+
+    assert len(resultado.stdout) == 1024
+    assert resultado.stdout.endswith("TAIL")
+    assert resultado.stdout_truncated is True
+    assert len(resultado.stderr) == 1024
+    assert resultado.stderr_truncated is True
+
+
+async def test_proceso_brokered_cancelado_mata_y_recolecta_el_proceso() -> None:
+    sink = _SinkGrabador()
+    spec = VfsProcessSpec(
+        executable=pathlib.Path(sys.executable),
+        arguments=("-c", "import time; time.sleep(60)"),
+    )
+    tarea = asyncio.create_task(run_brokered_process(spec, event_sink=sink))
+    try:
+        await asyncio.wait_for(sink.started.wait(), timeout=5)
+        pid = sink.eventos[0].tool_pid  # type: ignore[union-attr]
+        assert psutil.pid_exists(pid)
+
+        tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+        _esperar_pid_muerto(pid)
+    finally:
+        if not tarea.done():
+            tarea.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+
+
+async def test_proceso_brokered_exige_ejecutable_absoluto() -> None:
+    spec = VfsProcessSpec(executable=pathlib.Path("python"), arguments=("-c", "pass"))
+
+    with pytest.raises(ValueError, match="absoluta"):
+        await run_brokered_process(spec, event_sink=_SinkGrabador())
+
+
+async def test_dispatch_de_handler_de_sesion_recibe_el_sink(tmp_path: pathlib.Path) -> None:
+    manifest, _canary = _manifest(tmp_path, virtual=True)
+    sink = _SinkGrabador(manifest.job.job_id)
+    visto: list[object] = []
+
+    async def handler_sesion(_manifest: VfsWorkerManifest, event_sink: object) -> VfsToolExecution:
+        visto.append(event_sink)
+        return VfsToolExecution.ok()
+
+    resultado = await execute_worker_manifest(
+        manifest,
+        session_handlers={"health": handler_sesion},  # type: ignore[dict-item]
+        grandchild_probe=lambda _path, sha, _timeout: _return_sha(sha),
+        event_sink=sink,
+    )
+
+    assert resultado.success is True
+    assert visto == [sink]
+
+
+async def test_handler_de_sesion_sin_sink_inyectado_no_recibe_none(tmp_path: pathlib.Path) -> None:
+    """Sin sink cableado el handler recibe un sink no-op: nunca ``None``."""
+    manifest, _canary = _manifest(tmp_path, virtual=True)
+    visto: list[object] = []
+
+    async def handler_sesion(_manifest: VfsWorkerManifest, event_sink: object) -> VfsToolExecution:
+        visto.append(event_sink)
+        await event_sink.emit(VfsToolExitEvent(job_id=_manifest.job.job_id, exit_code=0))  # type: ignore[attr-defined]
+        return VfsToolExecution.ok()
+
+    resultado = await execute_worker_manifest(
+        manifest,
+        session_handlers={"health": handler_sesion},  # type: ignore[dict-item]
+        grandchild_probe=lambda _path, sha, _timeout: _return_sha(sha),
+    )
+
+    assert resultado.success is True
+    assert visto and visto[0] is not None
+
+
+def test_pr_586a_no_registra_tool_ids_de_sesion_productivos() -> None:
+    """Ancla del alcance: la primitive no migra ningún ritual.
+
+    El día que 586B agregue handlers de sesión productivos, este test se rompe
+    a propósito y obliga a decidir qué tool_ids entran a la allowlist.
+    """
+    assert _default_session_handlers() == {}
+    assert set(_default_handlers()) == ALLOWED_VFS_TOOL_IDS

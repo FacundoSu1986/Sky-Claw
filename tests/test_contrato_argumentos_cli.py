@@ -163,7 +163,12 @@ LANZADORES_ESPERADOS = {
     "sky_claw/app/agent/executor.py": 1,
     "sky_claw/app/core/vfs_orchestrator.py": 1,
     "sky_claw/app/security/file_permissions.py": 7,
-    "sky_claw/local/mo2/vfs_worker.py": 1,
+    # PR-586A: `run_grandchild_probe` (probe nieto de la attestation) + la
+    # primitive de sesión `run_brokered_process`, que spawnea el proceso que un
+    # handler ALLOWLISTED declara en el payload firmado (no flags propios de
+    # ninguna herramienta acá: el argv lo construye el daemon y este módulo solo
+    # lo ejecuta). Infra, no lanzador de terceros.
+    "sky_claw/local/mo2/vfs_worker.py": 2,
     "sky_claw/local/tools/_process.py": 3,
     # T5-v2.1: el ejecutor del gate UIA lanza el HELPER de observación (mismo
     # intérprete, módulo propio) para poder matar y reapear una llamada COM

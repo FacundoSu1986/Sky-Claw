@@ -13,10 +13,15 @@ from sky_claw.local.mo2.vfs_attestation import (
     verify_vfs_attestation,
 )
 from sky_claw.local.mo2.vfs_contracts import (
+    ALLOWED_VFS_SESSION_EVENTS,
     VFS_PROTOCOL_VERSION,
     VfsJob,
     VfsJobResult,
     VfsProtocolError,
+    VfsSessionEventError,
+    VfsToolExitEvent,
+    VfsToolStartedEvent,
+    parse_worker_event,
 )
 
 
@@ -213,3 +218,117 @@ def test_attestation_falla_cerrado_sin_canary_elegible(tmp_path: pathlib.Path) -
             profile="Default",
             physical_data_dir=physical_data,
         )
+
+
+# ---------------------------------------------------------------------------
+# Eventos mid-job de sesión (PR-586A)
+# ---------------------------------------------------------------------------
+
+
+def _evento_started(**campos: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "protocol_version": VFS_PROTOCOL_VERSION,
+        "type": "event",
+        "event": "tool_started",
+        "job_id": "job-1",
+        "tool_pid": 4242,
+    }
+    base.update(campos)
+    return base
+
+
+def _evento_exit(**campos: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "protocol_version": VFS_PROTOCOL_VERSION,
+        "type": "event",
+        "event": "tool_exit",
+        "job_id": "job-1",
+        "exit_code": 0,
+    }
+    base.update(campos)
+    return base
+
+
+def test_evento_tool_started_roundtrip_canonico() -> None:
+    evento = VfsToolStartedEvent(job_id="job-1", tool_pid=4242)
+
+    assert evento.to_dict() == _evento_started()
+    assert parse_worker_event(evento.to_dict()) == evento
+
+
+def test_evento_tool_exit_roundtrip_canonico() -> None:
+    evento = VfsToolExitEvent(job_id="job-1", exit_code=7)
+
+    assert evento.to_dict() == _evento_exit(exit_code=7)
+    assert parse_worker_event(evento.to_dict()) == evento
+
+
+def test_eventos_de_sesion_permitidos_congelados() -> None:
+    """Ancla de enumeración: agregar un evento de sesión exige decisión explícita.
+
+    Sin esto, un ``magic_execute`` nuevo entraría a la allowlist sin romper nada,
+    que es exactamente la superficie que el allowlist de tool_ids existe para
+    cerrar (ADR 0007).
+    """
+    assert frozenset({"tool_started", "tool_exit"}) == ALLOWED_VFS_SESSION_EVENTS
+
+
+@pytest.mark.parametrize("exit_code", [-(2**31), -15, -1, 0, 1, 255, 2**32 - 1])
+def test_exit_code_admite_el_rango_de_windows_y_posix(exit_code: int) -> None:
+    """Windows entrega DWORD sin signo; POSIX entrega ``-señal``."""
+    parseado = parse_worker_event(_evento_exit(exit_code=exit_code))
+
+    assert isinstance(parseado, VfsToolExitEvent)
+    assert parseado.exit_code == exit_code
+
+
+@pytest.mark.parametrize(
+    "crudo",
+    [
+        pytest.param(_evento_started(tool_pid=0), id="pid-cero"),
+        pytest.param(_evento_started(tool_pid=-3), id="pid-negativo"),
+        pytest.param(_evento_started(tool_pid=True), id="pid-bool"),
+        pytest.param(_evento_started(tool_pid=False), id="pid-bool-false"),
+        pytest.param(_evento_started(tool_pid=1.5), id="pid-float"),
+        pytest.param(_evento_started(tool_pid="12"), id="pid-string"),
+        pytest.param(_evento_started(tool_pid=None), id="pid-nulo"),
+        pytest.param(_evento_started(tool_pid=2**32), id="pid-fuera-de-rango"),
+        pytest.param(_evento_started(extra="no"), id="campo-inesperado"),
+        pytest.param(_evento_started(job_id="../fuera"), id="job-id-traversal"),
+        pytest.param(_evento_started(job_id=""), id="job-id-vacio"),
+        pytest.param(_evento_exit(exit_code=True), id="exit-bool"),
+        pytest.param(_evento_exit(exit_code="0"), id="exit-string"),
+        pytest.param(_evento_exit(exit_code=1.5), id="exit-float"),
+        pytest.param(_evento_exit(exit_code=None), id="exit-nulo"),
+        pytest.param(_evento_exit(exit_code=2**32), id="exit-fuera-de-rango"),
+        pytest.param(_evento_exit(extra="no"), id="exit-campo-inesperado"),
+        pytest.param(
+            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "event", "event": "tool_started", "job_id": "job-1"},
+            id="started-sin-pid",
+        ),
+        pytest.param(
+            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "event", "event": "tool_exit", "job_id": "job-1"},
+            id="exit-sin-codigo",
+        ),
+        pytest.param(
+            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "event", "event": "magic_execute", "job_id": "job-1"},
+            id="evento-desconocido",
+        ),
+        pytest.param(_evento_started(type="job_result"), id="tipo-incorrecto"),
+        pytest.param(_evento_started(protocol_version=VFS_PROTOCOL_VERSION + 1), id="version-incompatible"),
+        pytest.param(_evento_started(protocol_version=True), id="version-bool"),
+        pytest.param([], id="no-es-objeto"),
+    ],
+)
+def test_evento_de_sesion_malformado_falla_cerrado(crudo: object) -> None:
+    with pytest.raises(VfsSessionEventError):
+        parse_worker_event(crudo)
+
+
+def test_evento_de_sesion_malformado_expone_la_causa_como_protocolo() -> None:
+    """``VfsSessionEventError`` es un ``VfsProtocolError``: los call sites que ya
+    capturan la familia amplia siguen funcionando."""
+    assert issubclass(VfsSessionEventError, VfsProtocolError)
+
+    with pytest.raises(VfsProtocolError):
+        parse_worker_event(_evento_started(tool_pid=True))
