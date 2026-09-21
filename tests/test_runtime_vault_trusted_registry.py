@@ -26,6 +26,7 @@ import ast
 import json
 import os
 import pathlib
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -371,13 +372,37 @@ class TestTrustedGoldenRegistryPure:
             with pytest.raises(TrustedRegistrySchemaError, match="schema_version"):
                 deserialize_trusted_golden_registry(payload)
 
-    def test_registered_by_identidad_estable_no_localizada(self) -> None:
-        """Verifica que registered_by requiera identidad estable (SID o ASCII canonical) y rechace whitespace o localized names."""
-        with pytest.raises(TrustedRegistrySchemaError, match="registered_by"):
-            _crear_entry_valida(registered_by="")
+    def test_registered_by_identidad_estable_sid_canonico(self) -> None:
+        """Verifica que registered_by exija un SID canónico de Windows (^S-1-\\d+(?:-\\d+)+$) y rechace nombres no estables."""
+        # SIDs canónicos válidos
+        for valid_sid in [
+            "S-1-5-18",  # LocalSystem
+            "S-1-5-32-544",  # Administrators
+            "S-1-5-21-123456789-987654321-11223344-1001",
+            "S-1-1-0",  # Everyone
+        ]:
+            entry = _crear_entry_valida(registered_by=valid_sid)
+            assert entry.registered_by == valid_sid
 
-        with pytest.raises(TrustedRegistrySchemaError, match="registered_by"):
-            _crear_entry_valida(registered_by="   ")
+        # Nombres localizados, strings arbitrarios o no-SIDs deben fallar cerrado
+        for invalid_name in [
+            "",
+            "   ",
+            "Administrator",
+            "Administrador",
+            "SYSTEM",
+            "NT AUTHORITY\\SYSTEM",
+            "operator",
+            "root",
+            "S-2-5-18",  # No empieza con S-1-
+            "S-1-",
+            "S-1-abc",
+            "S-1-5-32-XYZ",
+            123,
+            None,
+        ]:
+            with pytest.raises(TrustedRegistrySchemaError, match="registered_by"):
+                _crear_entry_valida(registered_by=invalid_name)  # type: ignore[arg-type]
 
     def test_registered_at_utc_estricto(self) -> None:
         """Verifica que registered_at exija formato ISO 8601 UTC determinista con 'Z'."""
@@ -397,6 +422,59 @@ class TestTrustedGoldenRegistryPure:
 
 class TestTrustedGoldenRegistryAtomicStorage:
     """Tests del reemplazo atómico de TGR sobre disco."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_simulated_elevated_storage(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Simula elevación en Windows para que la creación desde su nacimiento y verificación por handle funcionen en runner no elevado."""
+        if sys.platform == "win32":
+            from sky_claw.local.runtime_vault.trusted_namespace import (
+                _CREATE_NEW,
+                _FILE_ATTRIBUTE_NORMAL,
+                _GENERIC_READ,
+                _GENERIC_WRITE,
+                _kernel32,
+            )
+
+            def _simulated_birth(path: pathlib.Path | str, object_name: str = "trusted_goldens.json") -> int:
+                h = _kernel32.CreateFileW(
+                    str(path),
+                    _GENERIC_READ | _GENERIC_WRITE,
+                    0,
+                    None,
+                    _CREATE_NEW,
+                    _FILE_ATTRIBUTE_NORMAL,
+                    None,
+                )
+                return int(h)
+
+            monkeypatch.setattr(
+                "sky_claw.local.runtime_vault.trusted_namespace.create_secured_file_from_birth",
+                _simulated_birth,
+            )
+            monkeypatch.setattr(
+                "sky_claw.local.runtime_vault.trusted_namespace.verify_secured_file_by_handle",
+                lambda p: None,
+            )
+
+    def test_tgr_unelevated_without_privilege_fails_closed(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verifica causalmente que sin privilegios de elevación para SYSTEM owner, create_secured_file_from_birth falle cerrado (1307)."""
+        if sys.platform != "win32":
+            pytest.skip("Solo Windows")
+        monkeypatch.undo()
+        from sky_claw.local.runtime_vault.trusted_namespace import (
+            TrustedNamespaceError,
+        )
+        from sky_claw.local.runtime_vault.trusted_namespace import (
+            create_secured_file_from_birth as real_create_secured_file_from_birth,
+        )
+
+        target_file = tmp_path / "real_birth_test.json"
+        # Usar la función real sin monkeypatch
+        with pytest.raises(TrustedNamespaceError) as exc_info:
+            real_create_secured_file_from_birth(target_file)
+        assert "1307" in str(exc_info.value) or "1314" in str(exc_info.value)
 
     def test_tgr_12_atomic_replace_preserva_bytes_canonicos(self, tmp_path: pathlib.Path) -> None:
         """TGR-12: write_trusted_registry_atomically escribe exactamente los bytes canónicos."""

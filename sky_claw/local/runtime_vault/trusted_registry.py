@@ -21,7 +21,9 @@ import json
 import ntpath
 import os
 import pathlib
+import re
 import string
+import sys
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -136,6 +138,21 @@ def _validate_sha256_hex(digest: str) -> str:
     return clean_digest
 
 
+_CANONICAL_SID_REGEX = re.compile(r"^S-1-\d+(?:-\d+)+$")
+
+
+def _validate_canonical_sid(sid: Any) -> str:
+    """Valida que registered_by sea un String SID canónico de Windows (ej. 'S-1-5-18')."""
+    if not isinstance(sid, str):
+        raise TrustedRegistrySchemaError("registered_by debe ser un string con formato SID canónico")
+    clean_sid = sid.strip()
+    if not _CANONICAL_SID_REGEX.match(clean_sid):
+        raise TrustedRegistrySchemaError(
+            f"registered_by '{sid}' no es un SID canónico válido (debe tener formato 'S-1-...' y componentes numéricos)"
+        )
+    return clean_sid
+
+
 # ============================================================================
 # Modelos Inmutables del TGR
 # ============================================================================
@@ -151,7 +168,7 @@ class TrustedGoldenEntry:
     - root_file_id: uint128 nativo de FILE_ID_128 (admite 0).
     - tree_digest: TreeDigest completo (digest, files, bytes) de la última RV-2 aprobada.
     - policy_version: versión de la política (ej. 'gp2-v1').
-    - registered_by: identidad de registro estable (String SID o ASCII canónico).
+    - registered_by: identidad de registro estable (String SID canónico S-1-...).
     - registered_at: timestamp ISO 8601 UTC con 'Z'.
     """
 
@@ -200,8 +217,8 @@ class TrustedGoldenEntry:
         if not isinstance(self.policy_version, str) or not self.policy_version.strip():
             raise TrustedRegistrySchemaError("policy_version debe ser un string no vacío")
 
-        if not isinstance(self.registered_by, str) or not self.registered_by.strip():
-            raise TrustedRegistrySchemaError("registered_by debe ser una identidad estable no vacía")
+        norm_reg_by = _validate_canonical_sid(self.registered_by)
+        object.__setattr__(self, "registered_by", norm_reg_by)
 
         norm_ts = _validate_iso8601_utc(self.registered_at)
         object.__setattr__(self, "registered_at", norm_ts)
@@ -440,8 +457,14 @@ def verify_trusted_golden_binding(
 def load_trusted_golden_registry(path: pathlib.Path | str) -> TrustedGoldenRegistry:
     """Carga y valida el TGR desde un archivo en disco (Fail-Closed)."""
     file_path = pathlib.Path(path)
-    if not file_path.exists():
-        raise TrustedGoldenNotFoundError(f"Archivo de TGR no existe: '{file_path}'")
+    if sys.platform == "win32":
+        from sky_claw.local.runtime_vault.trusted_namespace import _check_object_exists_no_reparse
+
+        if not _check_object_exists_no_reparse(file_path):
+            raise TrustedGoldenNotFoundError(f"Archivo de TGR no existe: '{file_path}'")
+    else:
+        if not file_path.exists():
+            raise TrustedGoldenNotFoundError(f"Archivo de TGR no existe: '{file_path}'")
     try:
         raw_bytes = file_path.read_bytes()
     except OSError as exc:
@@ -458,43 +481,115 @@ def write_trusted_registry_atomically(
     Garantías:
     - Serializa bytes canónicos deterministas.
     - Crea archivo temporal en el MISMO directorio protegido que el destino.
-    - Sincroniza datos a disco con flush y fsync.
+    - En Windows: El archivo temporal nace con SECURITY_DESCRIPTOR canónico completo
+      (SYSTEM owner, Administrators group, canonical protected TGR DACL) vía CreateFileW(lpSecurityAttributes)
+      antes de contener ningún dato.
+    - Escribe mediante WriteFile nativo y sincroniza buffers con FlushFileBuffers.
+    - Verifica el temporal por handle antes de reemplazar.
     - Reemplaza atómicamente con os.replace.
-    - Reabre el archivo final y revalida digest binario y esquema antes de retornar.
+    - Reabre el archivo final por handle y revalida: sin reparse points, owner SYSTEM,
+      group Administrators, DACL canónica protegida, coincidencia binaria de bytes y validez del esquema.
     - Limpia el temporal ante cualquier fallo antes de replace sin alterar el archivo previo.
-    - Limitación honesta Win32: FlushFileBuffers asegura el archivo; NTFS no provee directory fsync.
     """
-    dest = pathlib.Path(target_path).resolve()
+    dest = pathlib.Path(target_path)
     parent = dest.parent
-    if not parent.exists():
-        raise TrustedRegistryError(f"El directorio padre para TGR no existe: '{parent}'")
 
-    canonical_bytes = serialize_trusted_golden_registry(registry)
-    temp_path = parent / f".tmp_{uuid.uuid4().hex}.trusted_goldens.json"
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
 
-    try:
-        with open(temp_path, "wb") as f:
-            f.write(canonical_bytes)
-            f.flush()
-            os.fsync(f.fileno())
+        from sky_claw.local.runtime_vault.trusted_namespace import (
+            _check_object_exists_no_reparse,
+            _kernel32,
+            _safe_close_handle,
+            create_secured_file_from_birth,
+            verify_secured_file_by_handle,
+        )
 
-        os.replace(temp_path, dest)
+        if not _check_object_exists_no_reparse(parent):
+            raise TrustedRegistryError(f"El directorio padre para TGR no existe o no es confiable: '{parent}'")
 
-        # Reabrir y revalidar post-reemplazo
-        reloaded_bytes = dest.read_bytes()
-        if reloaded_bytes != canonical_bytes:
-            raise TrustedRegistryError(f"Revalidación post-reemplazo falló: digest o bytes no coinciden en '{dest}'")
-        # Revalidar parseo
-        deserialize_trusted_golden_registry(reloaded_bytes)
+        canonical_bytes = serialize_trusted_golden_registry(registry)
+        temp_path = parent / f".tmp_{uuid.uuid4().hex}.trusted_goldens.json"
 
-    except Exception:
-        # Asegurar limpieza de temporales huérfanos
+        h_temp: int | None = None
         try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except OSError:
-            pass
-        raise
+            # 1. Crear temporal desde su nacimiento con Security Descriptor canónico
+            h_temp = create_secured_file_from_birth(temp_path, "trusted_goldens.json")
+
+            # Escribir bytes canónicos directamente al handle seguro
+            data_buf = (ctypes.c_char * len(canonical_bytes)).from_buffer_copy(canonical_bytes)
+            bytes_written = wintypes.DWORD(0)
+            if not _kernel32.WriteFile(
+                h_temp,
+                data_buf,
+                len(canonical_bytes),
+                ctypes.byref(bytes_written),
+                None,
+            ) or bytes_written.value != len(canonical_bytes):
+                err = ctypes.get_last_error()
+                raise TrustedRegistryError(f"WriteFile falló en archivo temporal '{temp_path}': código {err}")
+
+            if not _kernel32.FlushFileBuffers(h_temp):
+                err = ctypes.get_last_error()
+                raise TrustedRegistryError(f"FlushFileBuffers falló en '{temp_path}': código {err}")
+
+            _safe_close_handle(h_temp)
+            h_temp = None
+
+            # 2. Verificar temporal por handle antes de reemplazar
+            verify_secured_file_by_handle(temp_path)
+
+            # 3. Reemplazo atómico con os.replace
+            os.replace(temp_path, dest)
+
+            # 4. Reabrir destino por handle y verificar: no reparse, owner SYSTEM, group Administrators, protected DACL
+            verify_secured_file_by_handle(dest)
+
+            # 5. Revalidar bytes canónicos y esquema
+            reloaded_bytes = dest.read_bytes()
+            if reloaded_bytes != canonical_bytes:
+                raise TrustedRegistryError(f"Revalidación post-reemplazo falló: bytes no coinciden en '{dest}'")
+            deserialize_trusted_golden_registry(reloaded_bytes)
+
+        except Exception:
+            if h_temp is not None:
+                _safe_close_handle(h_temp)
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+            raise
+    else:
+        if not parent.exists():
+            raise TrustedRegistryError(f"El directorio padre para TGR no existe: '{parent}'")
+
+        canonical_bytes = serialize_trusted_golden_registry(registry)
+        temp_path = parent / f".tmp_{uuid.uuid4().hex}.trusted_goldens.json"
+
+        try:
+            with open(temp_path, "wb") as f:
+                f.write(canonical_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(temp_path, dest)
+
+            reloaded_bytes = dest.read_bytes()
+            if reloaded_bytes != canonical_bytes:
+                raise TrustedRegistryError(
+                    f"Revalidación post-reemplazo falló: digest o bytes no coinciden en '{dest}'"
+                )
+            deserialize_trusted_golden_registry(reloaded_bytes)
+
+        except Exception:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+            raise
 
 
 __all__ = [
