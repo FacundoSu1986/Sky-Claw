@@ -502,6 +502,22 @@ async def _esperar_salida_del_proceso_directo(proc: asyncio.subprocess.Process) 
     return proc.returncode
 
 
+def _liberar_pipes_del_hijo(proc: asyncio.subprocess.Process) -> None:
+    """Cierra el transporte del subproceso para liberar pipes retenidos.
+
+    ``asyncio.subprocess.Process`` no expone API pública para cerrar sus pipes:
+    el dueño de los handles es el transporte, y si un descendiente retiene la
+    punta de escritura, ``_try_finish`` nunca lo cierra solo (es el mismo motivo
+    por el que ``wait()`` esperaba el EOF). ``BaseSubprocessTransport.close()`` es
+    idempotente, no bloquea y sólo mata al hijo si TODAVÍA vive — acá ya terminó.
+    El acceso es defensivo porque ``_transport`` no es parte del contrato público.
+    """
+    transporte = getattr(proc, "_transport", None)
+    cerrar = getattr(transporte, "close", None)
+    if callable(cerrar):
+        cerrar()
+
+
 async def _reap_sin_cancelables(proc: asyncio.subprocess.Process) -> None:
     """``kill_and_reap`` blindado: completa el teardown aunque al caller lo cancelen."""
     limpieza = asyncio.ensure_future(kill_and_reap(proc))
@@ -581,6 +597,10 @@ async def run_brokered_process(
         if proc.returncode is None:
             with contextlib.suppress(asyncio.CancelledError):
                 await _reap_sin_cancelables(proc)
+        # Si el drenaje se canceló por gracia (o por teardown), el transporte
+        # puede quedar abierto con la punta retenida por un descendiente: se
+        # libera explícitamente en vez de esperar al GC con un ResourceWarning.
+        _liberar_pipes_del_hijo(proc)
 
 
 def _default_handlers() -> dict[str, VfsToolHandler]:

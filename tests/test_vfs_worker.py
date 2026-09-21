@@ -345,7 +345,9 @@ async def test_proceso_brokered_cancelado_mata_y_recolecta_el_proceso() -> None:
             await tarea
 
 
-async def test_proceso_brokered_no_espera_a_un_nieto_que_retiene_stdout(tmp_path: pathlib.Path) -> None:
+async def test_proceso_brokered_no_espera_a_un_nieto_que_retiene_stdout(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """El hijo directo termina: un nieto con el pipe heredado no extiende el job.
 
     El padre sale enseguida; el nieto hereda stdout y lo mantiene abierto 30 s.
@@ -367,6 +369,15 @@ async def test_proceso_brokered_no_espera_a_un_nieto_que_retiene_stdout(tmp_path
         executable=pathlib.Path(sys.executable),
         arguments=("-c", programa, str(pid_file)),
     )
+    creados: list[asyncio.subprocess.Process] = []
+    original = asyncio.create_subprocess_exec
+
+    async def capturando(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+        proc = await original(*args, **kwargs)  # type: ignore[arg-type]
+        creados.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capturando)
 
     inicio = time.monotonic()
     resultado = await run_brokered_process(spec, event_sink=sink)
@@ -377,6 +388,11 @@ async def test_proceso_brokered_no_espera_a_un_nieto_que_retiene_stdout(tmp_path
         assert resultado.exit_code == 7
         assert resultado.stdout_truncated is True, "drenaje cancelado por gracia ⇒ captura incompleta"
         assert resultado.stderr_truncated is False, "el stream liberado llega a EOF normal"
+
+        # La punta retenida no puede quedar como handle abierto: el transporte
+        # (dueño de los pipes) se libera explícitamente antes de volver.
+        transporte = getattr(creados[0], "_transport", None)
+        assert transporte is not None and transporte.is_closing(), "los pipes del hijo deben liberarse"
     finally:
         with contextlib.suppress(psutil.Error, TimeoutError):
             psutil.Process(_leer_pid_de_archivo(pid_file)).kill()
