@@ -29,6 +29,7 @@ from sky_claw.local.discovery.registry import (
     get_tool_spec,
 )
 from sky_claw.local.discovery.scanner import (
+    TOOL_VERSION_PROBE_TIMEOUT_SECONDS,
     EnvironmentScanner,
     detect_tool_version,
 )
@@ -146,6 +147,25 @@ async def test_xedit_cancelacion_propaga_correctamente() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_xedit_pe_runtime_error_inesperado_propaga() -> None:
+    """Finding C: Excepciones inesperadas (RuntimeError) no se capturan ni degradan a None."""
+    fake_exe = pathlib.Path("C:/Tools/xEdit/SSEEdit.exe")
+
+    with (
+        patch(
+            "sky_claw.local.discovery.scanner._read_pe_product_version",
+            side_effect=RuntimeError("Fallo inesperado de bajo nivel"),
+        ),
+        pytest.raises(RuntimeError, match="Fallo inesperado"),
+    ):
+        await detect_tool_version(
+            "xedit",
+            fake_exe,
+            probe_kind=VersionProbeKind.PE_PRODUCT_VERSION,
+        )
+
+
 # ==============================================================================
 # B. LOOT --version
 # ==============================================================================
@@ -166,7 +186,7 @@ async def test_loot_version_output_valido_retorna_version() -> None:
         )
 
         # Assert
-        mock_detect.assert_called_once_with(fake_exe)
+        mock_detect.assert_called_once_with(fake_exe, timeout=TOOL_VERSION_PROBE_TIMEOUT_SECONDS)
         assert version == "0.29.1"
 
 
@@ -190,11 +210,11 @@ async def test_loot_version_exit_no_cero_retorna_none() -> None:
 
 @pytest.mark.asyncio
 async def test_loot_version_timeout_retorna_none_sin_bloqueo() -> None:
-    """M3: Timeout o fallo de subproceso en LOOT retorna None y no propaga error."""
+    """M3: Timeout en detect_loot_version retorna None y no propaga error ni bloquea."""
     # Arrange
     fake_exe = pathlib.Path("C:/Tools/LOOT/LOOT.exe")
 
-    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(side_effect=TimeoutError("Timeout"))):
+    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=None)):
         # Act
         version = await detect_tool_version(
             "loot",
@@ -241,6 +261,57 @@ async def test_loot_version_cancelacion_propaga_correctamente() -> None:
             fake_exe,
             probe_kind=VersionProbeKind.LOOT_CLI,
         )
+
+
+@pytest.mark.asyncio
+async def test_loot_version_tupla_malformada_propaga_index_error() -> None:
+    """Finding C: Tupla de versión malformada de detect_loot_version propaga IndexError."""
+    fake_exe = pathlib.Path("C:/Tools/LOOT/LOOT.exe")
+
+    # detect_loot_version devuelve tupla con menos de 3 elementos
+    with (
+        patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=(0, 29))),
+        pytest.raises(IndexError),
+    ):
+        await detect_tool_version(
+            "loot",
+            fake_exe,
+            probe_kind=VersionProbeKind.LOOT_CLI,
+        )
+
+
+@pytest.mark.asyncio
+async def test_loot_version_runtime_error_inesperado_propaga() -> None:
+    """Finding C: RuntimeError inesperado en probe LOOT se propaga sin atraparse en Exception genérica."""
+    fake_exe = pathlib.Path("C:/Tools/LOOT/LOOT.exe")
+
+    with (
+        patch(
+            "sky_claw.local.loot.version.detect_loot_version",
+            AsyncMock(side_effect=RuntimeError("Error imprevisto en detector LOOT")),
+        ),
+        pytest.raises(RuntimeError, match="Error imprevisto"),
+    ):
+        await detect_tool_version(
+            "loot",
+            fake_exe,
+            probe_kind=VersionProbeKind.LOOT_CLI,
+        )
+
+
+@pytest.mark.asyncio
+async def test_loot_version_probe_usa_timeout_acotado_p3() -> None:
+    """Finding B: El probe de LOOT pasa el timeout acotado P3 (3.0s), menor que el deadline del scanner."""
+    fake_exe = pathlib.Path("C:/Tools/LOOT/LOOT.exe")
+
+    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=(0, 29, 0))) as mock_detect:
+        await detect_tool_version(
+            "loot",
+            fake_exe,
+            probe_kind=VersionProbeKind.LOOT_CLI,
+        )
+        mock_detect.assert_called_once_with(fake_exe, timeout=TOOL_VERSION_PROBE_TIMEOUT_SECONDS)
+        assert TOOL_VERSION_PROBE_TIMEOUT_SECONDS < 15.0
 
 
 # ==============================================================================
@@ -320,15 +391,17 @@ async def test_snapshot_version_desconocida_mantiene_toolinfo_usable(tmp_path: p
         snap = await scanner.scan()
 
     # Assert
-    # Ambas herramientas permanecen en tools, con versión vacía
+    # Ambas herramientas permanecen en tools, con versión vacía y readiness VERSION_UNKNOWN
     assert snap.has_tool("loot")
     assert snap.tools["loot"].version == ""
-    assert snap.tools["loot"].readiness == ToolReadiness.FOUND
+    assert snap.tools["loot"].readiness == ToolReadiness.VERSION_UNKNOWN
+    assert any("⚠️ LOOT encontrado; versión no determinada" in m for m in snap.health_messages)
     assert not any(m.technical_name.lower() == "loot" for m in snap.missing)
 
     assert snap.has_tool("xedit")
     assert snap.tools["xedit"].version == ""
-    assert snap.tools["xedit"].readiness == ToolReadiness.FOUND
+    assert snap.tools["xedit"].readiness == ToolReadiness.VERSION_UNKNOWN
+    assert any("⚠️ XEDIT encontrado; versión no determinada" in m for m in snap.health_messages)
     assert not any("sseedit" in m.technical_name.lower() for m in snap.missing)
 
     # Health general no se degrada a crítico por falta de versión
@@ -461,12 +534,85 @@ def test_distincion_estricta_unknown_vs_unsupported() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unsupported_solo_con_politica_explicita(tmp_path: pathlib.Path) -> None:
-    """VERSION_UNSUPPORTED solo se emite cuando check_tool_version_supported retorna False explícito."""
-    # Arrange
+async def test_m5_scanner_integracion_wrong_executable_con_version_desconocida(tmp_path: pathlib.Path) -> None:
+    """Finding A / D: Configured path a ejecutable incorrecto preserva WRONG_EXECUTABLE en scanner aun con versión desconocida."""
     skyrim_dir = tmp_path / "Skyrim"
     skyrim_dir.mkdir()
     (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    wrong_exe = tmp_path / "Notepad" / "notepad.exe"
+    wrong_exe.parent.mkdir()
+    wrong_exe.write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(wrong_exe)},
+    )
+
+    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=None)):
+        snap = await scanner.scan()
+
+    assert snap.has_tool("loot")
+    assert snap.tools["loot"].readiness == ToolReadiness.WRONG_EXECUTABLE
+    assert snap.tools["loot"].readiness != ToolReadiness.VERSION_UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_m6_scanner_integracion_moved_installation_con_version_desconocida(tmp_path: pathlib.Path) -> None:
+    """Finding A / C: Configured path ausente con descubrimiento alternativo preserva MOVED_INSTALLATION aun con versión desconocida."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    stale_exe = tmp_path / "NonExistent" / "LOOT.exe"
+    discovered_exe = skyrim_dir / "LOOT" / "LOOT.exe"
+    discovered_exe.parent.mkdir()
+    discovered_exe.write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(stale_exe)},
+    )
+
+    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=None)):
+        snap = await scanner.scan()
+
+    assert snap.has_tool("loot")
+    assert snap.tools["loot"].readiness == ToolReadiness.MOVED_INSTALLATION
+    assert snap.tools["loot"].readiness != ToolReadiness.VERSION_UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_scanner_integracion_invalid_path_con_version_desconocida(tmp_path: pathlib.Path) -> None:
+    """Finding A / E: Configured path que es directorio (no archivo) preserva INVALID_PATH aun con versión desconocida."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    dir_path = tmp_path / "LOOT_DIR"
+    dir_path.mkdir()
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(dir_path)},
+    )
+
+    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=None)):
+        snap = await scanner.scan()
+
+    assert snap.has_tool("loot")
+    assert snap.tools["loot"].readiness == ToolReadiness.INVALID_PATH
+    assert snap.tools["loot"].readiness != ToolReadiness.VERSION_UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_loot_probe_excede_presupuesto_scanner_completa_con_version_unknown(tmp_path: pathlib.Path) -> None:
+    """Finding B & F: Probe que excede timeout acotado P3 completa en scanner con VERSION_UNKNOWN sin degradar a crítico."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+    (skyrim_dir / "skse64_loader.exe").write_bytes(b"MZ")
+    (skyrim_dir / "skse64_1_6_1170.dll").write_bytes(b"MZ")
 
     loot_exe = tmp_path / "LOOT" / "LOOT.exe"
     loot_exe.parent.mkdir()
@@ -477,19 +623,56 @@ async def test_unsupported_solo_con_politica_explicita(tmp_path: pathlib.Path) -
         tool_paths={"loot": str(loot_exe)},
     )
 
-    # Mockeamos política explícita que rechaza la versión 0.28.0
-    with (
-        patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=(0, 28, 0))),
-        patch("sky_claw.local.discovery.scanner.check_tool_version_supported", return_value=False),
-    ):
-        # Act
+    # Simular que detect_loot_version expira su timeout (retorna None sin lanzar error)
+    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=None)):
         snap = await scanner.scan()
 
-    # Assert: Se detecta la versión y el readiness refleja VERSION_UNSUPPORTED
+    # Scanner completó exitosamente, LOOT sigue presente y funcional
+    assert snap.has_tool("loot")
+    assert snap.tools["loot"].version == ""
+    assert snap.tools["loot"].readiness == ToolReadiness.VERSION_UNKNOWN
+    assert snap.health_status != HealthStatus.CRITICAL
+    assert snap.health_status == HealthStatus.READY
+    assert any("⚠️ LOOT encontrado; versión no determinada" in m for m in snap.health_messages)
+
+
+@pytest.mark.asyncio
+async def test_scanner_no_produce_version_unsupported_sin_politica_real(tmp_path: pathlib.Path) -> None:
+    """Finding E & H: EnvironmentScanner en P3 no produce VERSION_UNSUPPORTED al no existir política productiva."""
+    skyrim_dir = tmp_path / "Skyrim"
+    skyrim_dir.mkdir()
+    (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    loot_exe = tmp_path / "LOOT" / "LOOT.exe"
+    loot_exe.parent.mkdir()
+    loot_exe.write_bytes(b"MZ")
+
+    xedit_exe = tmp_path / "xEdit" / "SSEEdit.exe"
+    xedit_exe.parent.mkdir()
+    xedit_exe.write_bytes(b"MZ")
+
+    scanner = EnvironmentScanner(
+        skyrim_path=skyrim_dir,
+        tool_paths={"loot": str(loot_exe), "xedit": str(xedit_exe)},
+    )
+
+    with (
+        patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=(0, 28, 0))),
+        patch("sky_claw.local.discovery.scanner._read_pe_product_version", return_value="4.1.5"),
+    ):
+        snap = await scanner.scan()
+
+    # Con versión detectada, readiness es FOUND y nunca VERSION_UNSUPPORTED
     assert snap.has_tool("loot")
     assert snap.tools["loot"].version == "0.28.0"
-    assert snap.tools["loot"].readiness == ToolReadiness.VERSION_UNSUPPORTED
-    assert any("la versión no está soportada" in m for m in snap.health_messages)
+    assert snap.tools["loot"].readiness == ToolReadiness.FOUND
+    assert snap.tools["loot"].readiness != ToolReadiness.VERSION_UNSUPPORTED
+
+    assert snap.has_tool("xedit")
+    assert snap.tools["xedit"].version == "4.1.5"
+    assert snap.tools["xedit"].readiness == ToolReadiness.FOUND
+    assert snap.tools["xedit"].readiness != ToolReadiness.VERSION_UNSUPPORTED
+    assert not any("la versión no está soportada" in m for m in snap.health_messages)
 
 
 # ==============================================================================

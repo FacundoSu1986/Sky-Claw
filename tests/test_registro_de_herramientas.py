@@ -591,7 +591,9 @@ async def test_scanner_configured_path_correcta_produce_tool_info_found(tmp_path
         skyrim_path=skyrim_dir,
         tool_paths={"loot": str(loot_exe)},
     )
-    snap = await scanner.scan()
+    # Este anchor P2 aísla resolución de paths del probe de versión introducido en P3.
+    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=(0, 29, 0))):
+        snap = await scanner.scan()
 
     assert snap.has_tool("loot")
     assert snap.tools["loot"].readiness == ToolReadiness.FOUND
@@ -614,7 +616,9 @@ async def test_scanner_configured_path_casing_distinto_produce_found(tmp_path: p
         skyrim_path=skyrim_dir,
         tool_paths={"loot": str(loot_exe)},
     )
-    snap = await scanner.scan()
+    # Este anchor P2 aísla resolución de paths del probe de versión introducido en P3.
+    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=(0, 29, 0))):
+        snap = await scanner.scan()
 
     assert snap.has_tool("loot")
     assert snap.tools["loot"].readiness == ToolReadiness.FOUND
@@ -665,7 +669,11 @@ async def test_scanner_configured_path_inexistente_con_autodiscovery_produce_mov
         tool_paths={"loot": str(stale_path)},
     )
 
-    with patch.object(EnvironmentScanner, "_find_tool", return_value=discovered_loot):
+    # Este anchor P2 aísla resolución de paths del probe de versión introducido en P3.
+    with (
+        patch.object(EnvironmentScanner, "_find_tool", return_value=discovered_loot),
+        patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=(0, 29, 0))),
+    ):
         snap = await scanner.scan()
 
     assert snap.has_tool("loot")
@@ -750,7 +758,11 @@ async def test_scanner_configured_path_notepad_con_autodiscovery_produce_tool_in
         tool_paths={"loot": str(notepad)},
     )
 
-    with patch.object(EnvironmentScanner, "_find_tool", return_value=real_loot):
+    # Este anchor P2 aísla resolución de paths del probe de versión introducido en P3.
+    with (
+        patch.object(EnvironmentScanner, "_find_tool", return_value=real_loot),
+        patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=(0, 29, 0))),
+    ):
         snap = await scanner.scan()
 
     assert snap.has_tool("loot")
@@ -779,7 +791,11 @@ async def test_scanner_sin_configured_path_con_autodiscovery_produce_found(tmp_p
             return real_loot
         return None
 
-    with patch.object(EnvironmentScanner, "_find_tool", side_effect=mock_find):
+    # Este anchor P2 aísla resolución de paths del probe de versión introducido en P3.
+    with (
+        patch.object(EnvironmentScanner, "_find_tool", side_effect=mock_find),
+        patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=(0, 29, 0))),
+    ):
         snap = await scanner.scan()
 
     assert snap.has_tool("loot")

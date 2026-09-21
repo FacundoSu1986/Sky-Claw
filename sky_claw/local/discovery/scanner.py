@@ -16,6 +16,7 @@ import asyncio
 import logging
 import pathlib
 import shutil
+from typing import Final
 
 from sky_claw.config import (
     AE_MIN_MINOR_VERSION,
@@ -237,53 +238,37 @@ def _read_pe_product_version(exe_path: pathlib.Path) -> str | None:
     return version
 
 
+TOOL_VERSION_PROBE_TIMEOUT_SECONDS: Final[float] = 3.0
+
+
 async def detect_tool_version(
     key: str,
     exe_path: pathlib.Path,
     *,
     probe_kind: VersionProbeKind | str = VersionProbeKind.NONE,
+    timeout: float = TOOL_VERSION_PROBE_TIMEOUT_SECONDS,
 ) -> str | None:
     """Detecta la versión de una herramienta externa según su probe_kind declarativo.
 
     Devuelve la versión formateada como string si se pudo detectar con éxito,
-    o None si la versión no es legible, no está soportado el probe o el comando falla.
-    Falla cerrado sin lanzar excepciones ordinarias (preservando asyncio.CancelledError).
+    o None si la versión no es legible, no está soportado el probe o la detección
+    falla/expira el timeout.
+    Preserva errores inesperados y asyncio.CancelledError sin capturar Exception genérica.
     """
     if probe_kind == VersionProbeKind.LOOT_CLI:
-        try:
-            from sky_claw.local.loot.version import detect_loot_version
+        from sky_claw.local.loot.version import detect_loot_version
 
-            parsed = await detect_loot_version(exe_path)
-            if parsed is not None:
-                return f"{parsed[0]}.{parsed[1]}.{parsed[2]}"
-            return None
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("Error detectando versión de LOOT (%s): %s", exe_path, exc)
-            return None
+        parsed = await detect_loot_version(exe_path, timeout=timeout)
+        if parsed is not None:
+            return f"{parsed[0]}.{parsed[1]}.{parsed[2]}"
+        return None
 
     if probe_kind == VersionProbeKind.PE_PRODUCT_VERSION:
-        try:
-            raw_ver = _read_pe_product_version(exe_path)
-            if raw_ver:
-                return raw_ver.strip()
-            return None
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("Error leyendo ProductVersion PE para %s (%s): %s", key, exe_path, exc)
-            return None
+        raw_ver = _read_pe_product_version(exe_path)
+        if raw_ver:
+            return raw_ver.strip()
+        return None
 
-    return None
-
-
-def check_tool_version_supported(key: str, version: str) -> bool | None:
-    """Verifica si la versión detectada de una herramienta está soportada por política explícita.
-
-    Devuelve True si está soportada, False si una política explícita la declara no soportada,
-    o None si no existe ninguna política explícita de incompatibilidad para la herramienta.
-    """
     return None
 
 
@@ -506,8 +491,8 @@ class EnvironmentScanner:
                     )
                     if ver:
                         tool_version = ver
-                        if check_tool_version_supported(key, ver) is False and readiness == ToolReadiness.FOUND:
-                            readiness = ToolReadiness.VERSION_UNSUPPORTED
+                    elif readiness == ToolReadiness.FOUND:
+                        readiness = ToolReadiness.VERSION_UNKNOWN
 
                 human_name = key.upper().replace("_", " ")
                 snap.tools[key] = ToolInfo(
