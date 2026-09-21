@@ -1067,6 +1067,8 @@ class TestRuntimeCloneSuiteCanonico:
             "protection",
             "quiescence",
             "target_dacl",
+            "trusted_namespace",
+            "trusted_registry",
             "verification",
         }
         assert discovered_modules == expected_modules
