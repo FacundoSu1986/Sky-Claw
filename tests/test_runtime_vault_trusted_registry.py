@@ -42,7 +42,6 @@ from sky_claw.local.runtime_vault.trusted_registry import (
     TrustedRegistryParseError,
     TrustedRegistrySchemaError,
     TrustedRegistryUnsupportedError,
-    _write_test_registry_portable_atomic,
     _write_trusted_registry_atomically_at,
     deserialize_trusted_golden_registry,
     load_trusted_golden_registry,
@@ -562,16 +561,51 @@ class TestTrustedGoldenRegistryAtomicStorage:
         assert not target_file.exists()
         assert len(list(tmp_path.iterdir())) == 0
 
-    def test_write_test_registry_portable_atomic_helper(self, tmp_path: pathlib.Path) -> None:
-        """P1: _write_test_registry_portable_atomic permite escribir registros de test sin afirmar autoridad productiva."""
+    def test_write_portable_registry_fixture_helper(self, tmp_path: pathlib.Path) -> None:
+        """P1: _write_portable_registry_fixture permite escribir registros en fixtures de test sin afirmar autoridad productiva."""
         target_file = tmp_path / "test_goldens.json"
         entry = _crear_entry_valida(canonical_root="C:/Games/Skyrim")
         reg = TrustedGoldenRegistry(entries=(entry,), schema_version="1.0")
 
-        _write_test_registry_portable_atomic(reg, target_file)
+        _write_portable_registry_fixture(reg, target_file)
         assert target_file.exists()
         cargado = load_trusted_golden_registry(target_file)
         assert cargado == reg
+
+
+def _write_portable_registry_fixture(
+    registry: TrustedGoldenRegistry,
+    target_path: pathlib.Path | str,
+) -> None:
+    """Helper local de test para fixtures portables; NO pertenece a código productivo."""
+    dest = pathlib.Path(target_path)
+    parent = dest.parent
+    if not parent.exists():
+        raise TrustedRegistryError(f"El directorio padre no existe: '{parent}'")
+
+    canonical_bytes = serialize_trusted_golden_registry(registry)
+    temp_path = parent / f".tmp_fixture_{dest.name}"
+
+    try:
+        with open(temp_path, "wb") as f:
+            f.write(canonical_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(temp_path, dest)
+
+        reloaded_bytes = dest.read_bytes()
+        if reloaded_bytes != canonical_bytes:
+            raise TrustedRegistryError(f"Revalidación post-reemplazo falló: digest o bytes no coinciden en '{dest}'")
+        deserialize_trusted_golden_registry(reloaded_bytes)
+
+    except Exception:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 # ============================================================================
@@ -624,3 +658,16 @@ class TestTgrAstIsolation:
                 f"Función sospechosa '{name}' en trusted_registry: los datos staged no se ingieren directamente."
             )
             assert "untrusted" not in name.lower()
+
+    def test_trusted_registry_has_no_portable_test_writer(self) -> None:
+        """P1: trusted_registry.py no contiene ningún writer portable ni helpers de test."""
+        import sky_claw.local.runtime_vault.trusted_registry as tgr_mod
+
+        src_path = pathlib.Path(tgr_mod.__file__)
+        tree = ast.parse(src_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                assert "portable" not in node.name.lower(), (
+                    f"trusted_registry.py define una función portable de test en código productivo: {node.name}"
+                )
+                assert "fixture" not in node.name.lower()

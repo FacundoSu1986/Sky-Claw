@@ -566,41 +566,6 @@ def _write_trusted_registry_atomically_at(
         raise
 
 
-def _write_test_registry_portable_atomic(
-    registry: TrustedGoldenRegistry,
-    target_path: pathlib.Path | str,
-) -> None:
-    """Helper privado exclusivo para tests portables; NO representa autoridad TGR productiva."""
-    dest = pathlib.Path(target_path)
-    parent = dest.parent
-    if not parent.exists():
-        raise TrustedRegistryError(f"El directorio padre no existe: '{parent}'")
-
-    canonical_bytes = serialize_trusted_golden_registry(registry)
-    temp_path = parent / f".tmp_{uuid.uuid4().hex}.test_goldens.json"
-
-    try:
-        with open(temp_path, "wb") as f:
-            f.write(canonical_bytes)
-            f.flush()
-            os.fsync(f.fileno())
-
-        os.replace(temp_path, dest)
-
-        reloaded_bytes = dest.read_bytes()
-        if reloaded_bytes != canonical_bytes:
-            raise TrustedRegistryError(f"Revalidación post-reemplazo falló: digest o bytes no coinciden en '{dest}'")
-        deserialize_trusted_golden_registry(reloaded_bytes)
-
-    except Exception:
-        try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except OSError:
-            pass
-        raise
-
-
 __all__ = [
     "MAX_UINT64",
     "MAX_UINT128",
