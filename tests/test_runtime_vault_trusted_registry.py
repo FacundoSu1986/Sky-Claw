@@ -561,52 +561,6 @@ class TestTrustedGoldenRegistryAtomicStorage:
         assert not target_file.exists()
         assert len(list(tmp_path.iterdir())) == 0
 
-    def test_write_portable_registry_fixture_helper(self, tmp_path: pathlib.Path) -> None:
-        """P1: _write_portable_registry_fixture permite escribir registros en fixtures de test sin afirmar autoridad productiva."""
-        target_file = tmp_path / "test_goldens.json"
-        entry = _crear_entry_valida(canonical_root="C:/Games/Skyrim")
-        reg = TrustedGoldenRegistry(entries=(entry,), schema_version="1.0")
-
-        _write_portable_registry_fixture(reg, target_file)
-        assert target_file.exists()
-        cargado = load_trusted_golden_registry(target_file)
-        assert cargado == reg
-
-
-def _write_portable_registry_fixture(
-    registry: TrustedGoldenRegistry,
-    target_path: pathlib.Path | str,
-) -> None:
-    """Helper local de test para fixtures portables; NO pertenece a código productivo."""
-    dest = pathlib.Path(target_path)
-    parent = dest.parent
-    if not parent.exists():
-        raise TrustedRegistryError(f"El directorio padre no existe: '{parent}'")
-
-    canonical_bytes = serialize_trusted_golden_registry(registry)
-    temp_path = parent / f".tmp_fixture_{dest.name}"
-
-    try:
-        with open(temp_path, "wb") as f:
-            f.write(canonical_bytes)
-            f.flush()
-            os.fsync(f.fileno())
-
-        os.replace(temp_path, dest)
-
-        reloaded_bytes = dest.read_bytes()
-        if reloaded_bytes != canonical_bytes:
-            raise TrustedRegistryError(f"Revalidación post-reemplazo falló: digest o bytes no coinciden en '{dest}'")
-        deserialize_trusted_golden_registry(reloaded_bytes)
-
-    except Exception:
-        try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except OSError:
-            pass
-        raise
-
 
 # ============================================================================
 # TGR-AST: Aislamiento y Separación de Autoridad (GP2-T44 Partial)
