@@ -1446,8 +1446,8 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/mo2/vfs_manifest.py": (61,),
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.
-        # P2: centralización de tool registry movió las líneas (467, 787 → 424, 800).
-        "sky_claw/local/discovery/scanner.py": (424, 800),
+        # P3: detección de versión de herramientas movió las líneas (424, 800 → 460, 858).
+        "sky_claw/local/discovery/scanner.py": (460, 858),
         # P2: centralización de tool registry movió la línea (1068 → 1057).
         # Es el mismo constructor de siempre: el sitio no cambió de concepto.
         "sky_claw/app/gui/controllers/ritual_runner.py": (1057,),
