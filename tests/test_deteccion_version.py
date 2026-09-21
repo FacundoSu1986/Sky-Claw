@@ -540,6 +540,10 @@ async def test_m5_scanner_integracion_wrong_executable_con_version_desconocida(t
     skyrim_dir.mkdir()
     (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
 
+    real_loot = skyrim_dir / "LOOT" / "LOOT.exe"
+    real_loot.parent.mkdir(parents=True, exist_ok=True)
+    real_loot.write_bytes(b"MZ")
+
     wrong_exe = tmp_path / "Notepad" / "notepad.exe"
     wrong_exe.parent.mkdir()
     wrong_exe.write_bytes(b"MZ")
@@ -549,10 +553,15 @@ async def test_m5_scanner_integracion_wrong_executable_con_version_desconocida(t
         tool_paths={"loot": str(wrong_exe)},
     )
 
-    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=None)):
+    with (
+        patch("sky_claw.local.discovery.scanner.COMMON_TOOL_ROOTS", ()),
+        patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=None)),
+    ):
         snap = await scanner.scan()
 
     assert snap.has_tool("loot")
+    assert snap.tools["loot"].exe_path == real_loot
+    assert snap.tools["loot"].exe_path != wrong_exe
     assert snap.tools["loot"].readiness == ToolReadiness.WRONG_EXECUTABLE
     assert snap.tools["loot"].readiness != ToolReadiness.VERSION_UNKNOWN
 
@@ -589,6 +598,10 @@ async def test_scanner_integracion_invalid_path_con_version_desconocida(tmp_path
     skyrim_dir.mkdir()
     (skyrim_dir / "SkyrimSE.exe").write_bytes(b"MZ")
 
+    real_loot = skyrim_dir / "LOOT" / "LOOT.exe"
+    real_loot.parent.mkdir(parents=True, exist_ok=True)
+    real_loot.write_bytes(b"MZ")
+
     dir_path = tmp_path / "LOOT_DIR"
     dir_path.mkdir()
 
@@ -597,10 +610,14 @@ async def test_scanner_integracion_invalid_path_con_version_desconocida(tmp_path
         tool_paths={"loot": str(dir_path)},
     )
 
-    with patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=None)):
+    with (
+        patch("sky_claw.local.discovery.scanner.COMMON_TOOL_ROOTS", ()),
+        patch("sky_claw.local.loot.version.detect_loot_version", AsyncMock(return_value=None)),
+    ):
         snap = await scanner.scan()
 
     assert snap.has_tool("loot")
+    assert snap.tools["loot"].exe_path == real_loot
     assert snap.tools["loot"].readiness == ToolReadiness.INVALID_PATH
     assert snap.tools["loot"].readiness != ToolReadiness.VERSION_UNKNOWN
 
