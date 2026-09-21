@@ -483,6 +483,61 @@ async def test_open_session_falla_con_la_causa_si_el_worker_muere_antes_de_tool_
         await broker.close()
 
 
+async def test_apertura_fallida_tras_el_manifiesto_no_deja_artefactos(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un fallo entre el manifiesto y el driver no puede dejar tracking ni manifiesto.
+
+    Sin driver no hay ``finally`` que limpie: esa ruta tiene que descartar el
+    archivo firmado y los registros por su cuenta (hallazgo de review).
+    """
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = await _broker(tmp_path)
+    bridge = await _BridgeFalso.conectar(broker)
+    try:
+        original = broker._escribir_manifiesto
+
+        async def fallar_despues_de_escribir(*args: object, **kwargs: object) -> pathlib.Path:
+            await original(*args, **kwargs)  # type: ignore[arg-type]
+            raise VfsBrokerError("fallo simulado post-manifiesto")
+
+        monkeypatch.setattr(broker, "_escribir_manifiesto", fallar_despues_de_escribir)
+        with pytest.raises(VfsBrokerError, match="post-manifiesto"):
+            await broker.open_session(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data)
+
+        assert not broker._instance_lock.locked()
+        assert job.job_id not in broker._pending
+        assert job.job_id not in broker._worker_exit
+        assert job.job_id not in broker._job_event_queues
+        assert not (broker._jobs_dir / f"{job.job_id}.json").exists()
+    finally:
+        await bridge.cerrar()
+        await broker.close()
+
+
+async def test_apertura_fallida_sin_bridge_libera_el_lock(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Falla antes de registrar nada: el lock de instancia no queda tomado."""
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = await _broker(tmp_path)
+
+    async def sin_bridge(*_args: object, **_kwargs: object) -> None:
+        raise VfsBrokerError("MO2 bridge no se conectó al broker")
+
+    monkeypatch.setattr(broker, "wait_until_ready", sin_bridge)
+    try:
+        with pytest.raises(VfsBrokerError, match="no se conectó"):
+            await broker.open_session(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data)
+
+        assert not broker._instance_lock.locked()
+        assert job.job_id not in broker._pending
+        assert job.job_id not in broker._worker_exit
+        assert not (broker._jobs_dir / f"{job.job_id}.json").exists()
+    finally:
+        await broker.close()
+
+
 async def test_open_session_falla_cerrado_si_el_worker_muere_sin_resultado(tmp_path: pathlib.Path) -> None:
     mo2, data, challenge, job = _entorno(tmp_path)
     broker = await _broker(tmp_path)

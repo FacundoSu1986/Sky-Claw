@@ -523,9 +523,12 @@ class VfsExecutionBroker:
                 raise
             return sesion
         except BaseException:
-            # Sin driver (fallo antes de crearlo) el lock no tiene dueño que lo
-            # libere; con driver, su finally es el único responsable.
+            # Sin driver (fallo antes de crearlo) no hay finally que limpie ni
+            # libere el lock: se descarta lo que se haya alcanzado a escribir o
+            # registrar y recién ahí se libera. Con driver, su finally es el
+            # único responsable.
             if not driver_creado:
+                await self._descartar_apertura_sin_driver(job.job_id)
                 self._instance_lock.release()
             raise
 
@@ -564,6 +567,24 @@ class VfsExecutionBroker:
                 await self._limpiar_registro(sesion.job_id, manifest_path, result_future, sesion)
             finally:
                 self._instance_lock.release()
+
+    async def _descartar_apertura_sin_driver(self, job_id: str) -> None:
+        """Limpia una apertura fallida ANTES de que exista driver o sesión.
+
+        Cuando el driver ya existe, su ``finally`` es el único dueño de la
+        limpieza; esta ruta cubre el hueco previo: si el fallo llega después de
+        escribir el manifiesto firmado (o de registrar futuros), nadie más lo
+        borraría y el artefacto quedaría en ``state_dir``. El path se
+        reconstruye —es determinista por job— en vez de depender de una variable
+        que puede no haberse asignado si el fallo vino del propio manifiesto.
+        """
+        self._pending.pop(job_id, None)
+        self._pending_context.pop(job_id, None)
+        self._worker_exit.pop(job_id, None)
+        self._termination_tasks.pop(job_id, None)
+        self._job_event_queues.pop(job_id, None)
+        self._session_drivers.pop(job_id, None)
+        await asyncio.to_thread((self._jobs_dir / f"{job_id}.json").unlink, missing_ok=True)
 
     async def _cancelar_job_de_sesion(self, job_id: str) -> None:
         """Cancelación pedida por una sesión: idempotente y tolerante a terminal.
