@@ -50,7 +50,7 @@ from sky_claw.local.thread_bridge import esperar_hilo_ininterrumpible as _espera
 from sky_claw.local.tools.skse_catalog import SkseRelease, SkseSource, resolve_skse_release
 
 if TYPE_CHECKING:
-    from sky_claw.app.scraper.nexus_downloader import NexusDownloader
+    from sky_claw.app.scraper.nexus_downloader import FileInfo, NexusDownloader
     from sky_claw.app.security.network_gateway import NetworkGateway
 
 logger = logging.getLogger(__name__)
@@ -264,9 +264,14 @@ _NGIO_RELEASES_URL = "https://api.github.com/repos/DwemerEngineer/No-Grass-In-Ob
 # "AE" y cada uno exige un build distinto, así que la edición no puede elegir payload.
 # Lo que queda acá es METADATA DE ADQUISICIÓN DIRECTA del payload legacy de silverlock
 # (URL/sha256/loader/steam_loader) y se selecciona por IDENTIDAD del release —mismo
-# `dll` y mismo nombre de artifact— en `_adquisicion_directa_para`, nunca por edición.
-# PR-3 reemplaza esta tabla por la adquisición Nexus de los releases que hoy no tienen
-# 7z directo.
+# `dll` y mismo nombre de artifact— en `_adquisicion_para`, nunca por edición.
+#
+# PR-3 agregó el segundo canal: los releases marcados NEXUS en el catálogo se compran
+# en el mod 30379 a través de `NexusDownloader` (la única spec por identidad se sigue
+# exigiendo; la selección del archivo vuelve a basarse en `name + mod_version +
+# is_primary`, no en un file_id fijado). Cuando cada release de SKSE que importa tenga
+# esa integración de Nexus, esta tabla podría retirarse — hoy es el único sitio que
+# provee los SHA-256 de los builds silverlock (1.5.97 / 1.9.32).
 #
 # GOG queda FUERA a propósito, y no es un pendiente: es una decisión de producto
 # (base de usuarios chica y catálogo de mods compatibles pobre). Silverlock publica
@@ -378,34 +383,65 @@ def _skse_cfg_field(cfg: dict[str, str | None], field: str) -> str:
     return value
 
 
-def _adquisicion_directa_para(release: SkseRelease) -> dict[str, str | None]:
-    """Payload de adquisición directa para *release*, o fail-closed.
+@dataclass(frozen=True, slots=True)
+class _SkseNexusAcquisition:
+    """Canal de adquisición Nexus para los builds SKSE64 de Steam.
 
-    Este es el ÚNICO punto que consulta ``SKSE_CONFIG`` para instalar: la
-    compatibilidad ya la decidió el catálogo (runtime → release), y acá sólo se
-    resuelve de dónde bajar ese build. La selección es por IDENTIDAD, no por
-    edición: el payload tiene que declarar el MISMO ``dll`` que el release Y servir
-    el MISMO archive. ``artifact_name`` es OBLIGATORIO para un release de
-    silverlock: sin él la identidad quedaría en "sólo DLL" y podría matchear un
-    build viejo de la misma familia (p. ej. el 2.2.6 de 1.6.1170). Si no hay
-    EXACTAMENTE una coincidencia, no se adivina: se corta antes del HITL, del
-    egress y de cualquier escritura.
+    Los releases Nexus del catálogo (1.6.1170→2.2.8, 1.7.99→2.3.0, 1.7.104→2.3.1) son
+    TODOS de la misma familia SKSE64 y viven en el mismo mod de Nexus — una sola spec,
+    no una tabla paralela por runtime. La identidad del archivo dentro del mod se
+    re-deriva en cada llamada desde la lista de la API por ``name + mod_version``
+    con desempate estricto por ``is_primary``: sin `file_id` hardcodeado (un upload
+    reemplazado cambiaría el id sin alterar su identidad semántica) y nunca por
+    timestamp/vigencia (eso volvería a ser "latest" con pasos extra).
+    """
 
-    Los releases de NEXUS no tienen URL estática verificada (``artifact_name``
-    es None en el catálogo): su adquisición es de PR-3, así que acá cortan con un
-    mensaje accionable —incluido el enlace a Nexus Mods 30379, que es donde vive
-    su build— en vez de caer a un payload viejo de silverlock.
+    nexus_id: int
+    display_name: str
+    loader_name: str
+    steam_loader_name: str | None
+
+
+#: Perfil verificado el 2026-09-21 contra la pestaña Files del mod: el archivo de la
+#: familia Steam tiene exactamente este nombre y el GOG — deliberadamente fuera de
+#: alcance — lleva otro ("...(SKSE64) GOG"). Los tres builds Nexus del catálogo
+#: (2.2.8/2.3.0/2.3.1) cuelgan todos de ahí.
+_SKSE_NEXUS = _SkseNexusAcquisition(
+    nexus_id=30379,
+    display_name="Skyrim Script Extender (SKSE64) Steam",
+    loader_name="skse64_loader.exe",
+    steam_loader_name="skse64_steam_loader.dll",
+)
+
+#: Formato MD5 hexadecimal (32 dígitos). Exigible para SKSE: lo que se baja va
+#: directo a EXE/DLL del juego y la validación de `NexusDownloader` NO puede ser
+#: opcional en este camino (si Nexus no publica hash, cortamos — no hay archive).
+_MD5_HEX_RE = re.compile(r"[0-9a-f]{32}", re.IGNORECASE)
+
+
+def _adquisicion_para(release: SkseRelease) -> dict[str, str | None] | _SkseNexusAcquisition:
+    """Resuelve la adquisición para *release*: payload legacy silverlock o canal Nexus.
+
+    La compatibilidad ya la decidió el catálogo (runtime → release); acá sólo se
+    resuelve de dónde bajar ese build, por IDENTIDAD y nunca por edición:
+
+    * SILVERLOCK → el payload legacy de ``SKSE_CONFIG`` que declare el MISMO ``dll``
+      Y el MISMO archive. ``artifact_name`` es OBLIGATORIO en este canal: sin él la
+      identidad quedaría en "sólo DLL" y podría matchear un build viejo de la misma
+      familia (p. ej. el 2.2.6 de 1.6.1170). Si no hay EXACTAMENTE una coincidencia
+      se corta antes del HITL, del egress y de cualquier escritura.
+    * NEXUS → la spec única del canal (mod 30379, familia Steam/64). Si el release
+      no pertenece a esa familia (p. ej. un futuro build LE publicado en Nexus) el
+      canal no le aplica y se corta cerrado.
     """
     if release.source is not SkseSource.SILVERLOCK:
-        raise ToolInstallError(
-            f"Sky-Claw reconoce que Skyrim {release.game_version} requiere SKSE "
-            f"{release.skse_version}, pero la adquisición automática desde Nexus todavía no "
-            "está habilitada por este installer.\n\n"
-            "Instalá manualmente el build correspondiente a tu runtime desde Nexus Mods — "
-            "Skyrim Script Extender (SKSE64), mod 30379:\n"
-            "https://www.nexusmods.com/skyrimspecialedition/mods/30379\n\n"
-            "No se descargó ni se modificó nada."
-        )
+        if not release.dll_name.startswith("skse64_"):
+            raise ToolInstallError(
+                f"El canal Nexus de Sky-Claw sólo cubre la familia SKSE64; el release para "
+                f"{release.game_version} ({release.dll_name}, vía {release.source.value}) no le "
+                "aplica. No se descargó ni se modificó nada."
+            )
+        return _SKSE_NEXUS
 
     if not release.artifact_name:
         raise ToolInstallError(
@@ -426,6 +462,65 @@ def _adquisicion_directa_para(release: SkseRelease) -> dict[str, str | None]:
             "coherentes con su identidad (dll/artifact). No se descargó ni se modificó nada."
         )
     return candidatos[0]
+
+
+def _seleccionar_archivo_nexus(files: list[dict[str, Any]], release: SkseRelease) -> dict[str, Any]:
+    """Elegir EL archivo Nexus del mod 30379 que implementa *release*.
+
+    Identidad: ``name`` exacto (familia HKSE64 Steam; el GOG tiene nombre distinto),
+    ``mod_version == release.skse_version`` y nunca DELETED. Duplicados legítimos
+    (re-subidas del autor con la misma versión) se desempatan ÚNICAMENTE por
+    ``is_primary == True`` en exactamente uno; cualquier otra ambigüedad corta
+    cerrado, sin orden por timestamp (sería "latest" disfrazado).
+    """
+    candidatos = [
+        f
+        for f in files
+        if f.get("name") == _SKSE_NEXUS.display_name
+        and str(f.get("mod_version") or "") == release.skse_version
+        and f.get("category_name") != "DELETED"
+    ]
+    if len(candidatos) == 1:
+        return candidatos[0]
+    if len(candidatos) > 1:
+        primarios = [f for f in candidatos if bool(f.get("is_primary"))]
+        if len(primarios) == 1:
+            return primarios[0]
+    raise ToolInstallError(
+        f"Nexus (mod {_SKSE_NEXUS.nexus_id}) no tiene un archivo ÚNICO que corresponda a "
+        f"SKSE {release.skse_version} para el runtime {release.game_version} "
+        f"(candidatos coherentes: {len(candidatos)}). No se descargó ni se modificó nada."
+    )
+
+
+def _validar_artifact_skse_nexus(file_info: FileInfo) -> None:
+    """Gates de integridad ANTES de bajar código binario directo al juego.
+
+    La validación de hash/tamaño de `NexusDownloader.download` es necesaria pero no
+    suficiente acá: si Nexus no entregó md5 el downloader continuaría con warning, y
+    ese camino CORE escribe EXE/DLL en la raíz del juego. Para SKSE el md5 y el tamaño
+    son OBLIGATORIOS y el tope es el mismo del canal silverlock (64 MiB, no 4 GiB).
+    """
+    md5 = (file_info.md5 or "").strip()
+    if not _MD5_HEX_RE.fullmatch(md5):
+        raise ToolInstallError(
+            f"Nexus no publicó un MD5 válido para el artifact SKSE ({md5!r}): code nativo "
+            "directo al juego exige hash verificable. No se descargó nada."
+        )
+    if file_info.size_bytes <= 0:
+        raise ToolInstallError(
+            "Nexus no informó el tamaño del artifact SKSE: sin límite comprobable no se descarga nada al juego."
+        )
+    if file_info.size_bytes > _SKSE_MAX_ARCHIVE_BYTES:
+        raise ToolInstallError(
+            f"El artifact SKSE ({file_info.size_bytes} bytes) supera el límite permitido "
+            f"({_SKSE_MAX_ARCHIVE_BYTES} bytes). No se descargó nada."
+        )
+    if not file_info.file_name.lower().endswith(".7z"):
+        raise ToolInstallError(
+            f"El artifact SKSE de Nexus no es un .7z ({file_info.file_name!r}): sin formato "
+            "verificable no se extrae. No se descargó nada."
+        )
 
 
 # Dependencias del precache de grass (SOP §2.8): NGIO-NG desde GitHub; Address
@@ -1225,12 +1320,17 @@ class ToolsInstaller:
         path_validator: PathValidator,
         lock_manager: DistributedLockManager,
         install_ttl: float = _INSTALL_TTL_SECONDS,
+        nexus_downloader_factory: Callable[[], NexusDownloader | None] | None = None,
     ) -> None:
         self._hitl = hitl
         self._gateway = gateway
         self._validator = path_validator
         self._lock_manager = lock_manager
         self._install_ttl = install_ttl
+        # Factory LAZY, no la instancia: la api key de Nexus puede configurarse después
+        # de construir el installer, y con la instancia congelada el autoinstall Nexus
+        # quedaría cortado hasta el próximo arranque. Se invoca por cada ensure_nexus.
+        self._nexus_downloader_factory = nexus_downloader_factory
 
     # ------------------------------------------------------------------
     # Public API
@@ -1634,15 +1734,39 @@ class ToolsInstaller:
                 )
 
             # 6) ADQUISICIÓN, todavía sin cruzar fronteras: si el release no tiene una
-            # adquisición directa cableada (los de NEXUS, hacia donde apuntan 1.6.1170,
-            # 1.7.99 y 1.7.104) o el overlay no tiene una coincidencia EXACTA de
-            # identidad, se corta acá — antes del HITL, de la red y de escribir. Sin
-            # este orden, el operador pagaría una aprobación y una descarga inútiles.
-            cfg = _adquisicion_directa_para(release)
+            # adquisición cableada —payload silverlock por identidad exacta o el canal
+            # Nexus único— o la configuración local lo impide (sin API key de Nexus),
+            # se corta acá: antes del HITL, de la red y de escribir. Sin este orden,
+            # el operador pagaría una aprobación y una descarga inútiles.
+            adq = _adquisicion_para(release)
 
-            url = _skse_cfg_field(cfg, "url")
-            loader_name = _skse_cfg_field(cfg, "loader")
-            dll_name = _skse_cfg_field(cfg, "dll")
+            adquisidor: NexusDownloader | None = None
+            if isinstance(adq, _SkseNexusAcquisition):
+                factory = self._nexus_downloader_factory
+                adquisidor = factory() if factory is not None else None
+                if adquisidor is None:
+                    raise ToolInstallError(
+                        f"Sky-Claw reconoce que Skyrim {release.game_version} requiere SKSE "
+                        f"{release.skse_version}, que sólo existe en Nexus Mods (mod "
+                        f"{adq.nexus_id}). Para habilitar la descarga automática configurá la "
+                        "API key de Nexus en Sky-Claw, o instalá el build correspondiente a mano "
+                        "desde https://www.nexusmods.com/skyrimspecialedition/mods/"
+                        f"{adq.nexus_id}. No se descargó ni se modificó nada."
+                    )
+                payload_cfg: dict[str, str | None] = {
+                    "loader": adq.loader_name,
+                    "dll": release.dll_name,
+                    "steam_loader": adq.steam_loader_name,
+                }
+                url = f"https://www.nexusmods.com/skyrimspecialedition/mods/{adq.nexus_id}"
+                fuente = "Nexus Mods (mod 30379)"
+            else:
+                payload_cfg = adq
+                url = _skse_cfg_field(adq, "url")
+                fuente = "skse.silverlock.org (sitio oficial)"
+
+            loader_name = _skse_cfg_field(payload_cfg, "loader")
+            dll_name = _skse_cfg_field(payload_cfg, "dll")
             loader_path = install_dir / loader_name
 
             # Solicitar aprobación HITL
@@ -1653,7 +1777,7 @@ class ToolsInstaller:
                 detail=(
                     f"URL: {url}\nLoader: {loader_name}\nDLL: {dll_name}\n"
                     f"Runtime: {release.game_version} → SKSE {release.skse_version}\n"
-                    "Source: skse.silverlock.org (sitio oficial)"
+                    f"Source: {fuente}"
                 ),
                 category="download",
             )
@@ -1672,19 +1796,50 @@ class ToolsInstaller:
                 tmp_path = pathlib.Path(tmpdir)
                 self._validator.validate(tmp_path)
 
-                archive_name = url.split("/")[-1]
-                archive_path = tmp_path / archive_name
-                self._validator.validate(archive_path)
-
-                # Descarga segura vía NetworkGateway con timeout
-                await self._download_skse_archive(session, cfg, archive_path)
-
-                # Extraer con protección zip-slip
                 extract_path = tmp_path / "extracted"
-                await _esperar_hilo_ininterrumpible(self._extract, archive_path, extract_path)
+
+                if isinstance(adq, _SkseNexusAcquisition):
+                    assert adquisidor is not None  # cortado más arriba
+                    # La identidad del archivo se re-deriva SIEMPRE desde la API en
+                    # esta corrida (no hay file_id hardcodeado): que el autor re-subiera
+                    # un build no nos hace descargar otra cosa sin darnos cuenta.
+                    try:
+                        files = await adquisidor.list_files(adq.nexus_id, session)
+                        seleccionado = _seleccionar_archivo_nexus(files, release)
+                        file_info = await adquisidor.get_file_info(adq.nexus_id, int(seleccionado["file_id"]), session)
+                    except ToolInstallError:
+                        raise
+                    except Exception as exc:
+                        raise ToolInstallError(
+                            f"No pude obtener la metadata de SKSE {release.skse_version} en "
+                            f"Nexus (mod {adq.nexus_id}): {exc}"
+                        ) from exc
+                    # Gates de integridad antes de bajar código nativo al juego: MD5
+                    # obligatorio y tamaño acotado (el downloader general llega a 4 GiB;
+                    # para SKSE sigue valiendo el tope de 64 MiB del canal silverlock).
+                    _validar_artifact_skse_nexus(file_info)
+                    archive_path = await adquisidor.download(file_info, session)
+                    try:
+                        await _esperar_hilo_ininterrumpible(self._extract, archive_path, extract_path)
+                    finally:
+                        # El archive está en staging del downloader y NECESITA limpieza
+                        # incluso si la extracción falla: si no, un .7z corrupto quedaría
+                        # como "descarga exitosa cacheada" para el próximo intento.
+                        with contextlib.suppress(OSError):
+                            archive_path.unlink(missing_ok=True)
+                else:
+                    archive_name = url.split("/")[-1]
+                    archive_path = tmp_path / archive_name
+                    self._validator.validate(archive_path)
+
+                    # Descarga segura vía NetworkGateway con timeout
+                    await self._download_skse_archive(session, adq, archive_path)
+
+                    # Extraer con protección zip-slip
+                    await _esperar_hilo_ininterrumpible(self._extract, archive_path, extract_path)
 
                 # Buscar loader excluyendo __MACOSX
-                skse_root = self._find_skse_root(extract_path, cfg)
+                skse_root = self._find_skse_root(extract_path, payload_cfg)
 
                 # SEGUNDO GATE, pegado a la primera escritura. El de arriba probó la
                 # compatibilidad al ARRANCAR la operación; desde entonces pasaron tres
@@ -1708,7 +1863,7 @@ class ToolsInstaller:
                 # Copiar archivos al directorio del juego. `_copy_skse_files` solo toca
                 # nombres presentes en el payload nuevo (loader/dll de esta edición +
                 # Data) — no depende de que los DLL huérfanos ya estén borrados.
-                await self._copy_skse_files(skse_root, install_dir, cfg)
+                await self._copy_skse_files(skse_root, install_dir, payload_cfg)
 
                 # LIMPIEZA DE DIRTY UPGRADES: recién acá, después de que la copia haya
                 # terminado sin excepción. Es el verdadero punto de no retorno: si se
@@ -1717,7 +1872,7 @@ class ToolsInstaller:
                 # nueva completa, sin rollback que lo recupere. Corriendo al final, un
                 # fallo de copia deja los DLL de otra edición intactos y el juego sigue
                 # arrancando con el SKSE que tenía antes.
-                await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
+                await self._cleanup_orphaned_skse_dlls(install_dir, payload_cfg)
 
             logger.info("SKSE %s instalado en %s", release.skse_version, loader_path)
             # Explícito, NO heredado del default del dataclass. Detrás de este return
