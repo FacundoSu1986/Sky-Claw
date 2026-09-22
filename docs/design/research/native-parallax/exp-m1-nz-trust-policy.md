@@ -103,6 +103,39 @@ mediana RAW) solo en filas nz~0.005. Ambas versiones usan solo datos de calibrac
 
 ## Raw results
 
+### Addendum — llenado de la banda r_p01∈(1.8, 5.4)
+
+64 corridas post-auditoría (mismas 4 superficies Stage A, `quant=none`, tags `A|surf|nz~t`
+reproducibles; pares (nz_target, σ/255) = (0.025,2),(0.05,4),(0.025,1),(0.05,2),(0.01,0.5),
+(0.025,0.5),(0.01,1),(0.005,0.5); los pares se eligieron por r estimado y el r real se
+registró por fila). RAW + SOFT k=1 fijo — sin re-selección de candidatos. Nota de método:
+incluye S09_bricks (ya consumida en held-out); al ser mapeo descriptivo con política fija,
+no hay fuga de selección — se documenta por transparencia.
+
+| r_p01 real | n combos | RAW: raw_rmse (med) | RAW: grad_rmse (range) | RAW max_grad | SOFT k=1: raw_rmse | SOFT grad | SOFT var_ratio | neg_frac |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ≈1.00 | 7 | 2.7 (0.7–200) | 133–3578 | hasta 1.8e7 | 0.10–0.21 | 8.1–16.6 | 0.911–0.915 | 0.05–0.07% |
+| ≈1.77 | 8 | 0.07 (0.035–0.33) | 3.3–58.0 | hasta 3.0e4 | 0.010–0.021 | 1.49–2.99 | 0.969–0.977 | ≤0.01% |
+| ≈3.96 | 4 | 0.058 | 5.76–5.81 | 246–299 | 0.025–0.030 | 5.06–5.11 | 0.998 | 0 |
+| ≈5.4 | 8 | 0.008–0.016 | 0.88–1.76 | 35–113 | 0.004–0.010 | 0.82–1.64 | 0.999–1.001 | 0 |
+| ≈12.5 | 4 | ~0.006 | ~0.82 | ~49 | ~0.0047 | ~0.81 | 1.000 | 0 |
+
+Lecturas:
+
+1. **La frontera de spikes RAW está en (1.8, 3.96), no en 5.4.** En r≈3.96 RAW ya es
+   domesticado (grad ≈5.8, max_grad ≈300, sin negativos); en 5.4 es casi limpio. El
+   "seguro desde 5.38" de Stage A era el borde *medido*, no la frontera.
+2. **SOFT k=1 es no-destructivo y monótono en TODA la banda**: var_ratio 0.911 (r≈1) →
+   0.973 (r≈1.8) → 0.998 (r≈4) → 1.000 (r≈5.4+); raw_rmse siempre < RAW. En r≈1 su
+   max_grad toca exactamente la cota teórica 1/(2λ) (255 con σ=0.5/255; 127.5 con σ=1/255)
+   — la contención está garantizada por construcción, no solo observada.
+3. **En r≈1 el daño viene de nz≈σ>0, no de nz≤0**: neg_frac de solo 0.06% con grad_rmse
+   ~10³. Refuerza el veredicto contra FLOOR_ZERO: ninguna política basada en nz≤0
+   detectaría este régimen; `r_p01` sí.
+4. **Refina la hipotética arquitectura §34** (ver Candidate policy): con SOFT como
+   política, el corte REJECT baja de ~2 a ~1 (en r≈1.8 SOFT ya produce geometría usable
+   con var 0.97), y el corte acept-with-regularización baja de ~6 a ~4.
+
 ### Selector mecánico (calibración 256², dos regímenes)
 
 ```
@@ -348,7 +381,9 @@ REVIEW, no salvage**. `abs(nz)` permanece prohibido (invariante M3/M5 en tests).
 - **H4 SURVIVED** — soft: sin picos por construcción (cota 1/(2λ)), transición monótona,
   σ-mis-est graceful; clamp frágil a 4×.
 - **H5 SURVIVED** — λ≥4σ aplasta (var 0.68→0.30; D: over-attenuation medible).
-- **H6 SURVIVED** — riesgo pre-reconstrucción separa: frontera medida 1.77 / 5.38.
+- **H6 SURVIVED, refinado** — riesgo pre-reconstrucción separa; tras el addendum la
+  frontera de spikes RAW vive en (1.8, 3.96) y la de calidad SOFT en (1, 4); el gap
+  quedó muestreado en r_p01 ≈ {1.0, 1.77, 3.96, 5.4, 12.5} (densidad finita pendiente).
 - **H7 SURVIVED con advertencias** — un único k generalizó a 5 superficies held-out
   (SOFT k=1 y CLAMP k=3/k=6); advertencias: el selector es sensible a la resolución del
   corpus (a 128² eligió CLAMP k=0.5) y CLAMP es no-monótono en k.
@@ -396,16 +431,22 @@ Respuestas explícitas a las diez preguntas adversariales, con evidencia:
 σ_eff  = ruido efectivo del canal de normal (conocido aquí; a estimar en el futuro)
 r_p01  = percentil_01(nz) / σ_eff
 
-r_p01 < 2            → REJECT (16/16 catastróficos en corpus; con políticas tampoco
-                                  hay geometría: var_ratio ≤ 0.1)
-2 ≤ r_p01 < 6        → REVIEW (banda de transición sin casos medidos; reconstrucción
-                                  regularizada sólo para preview)
-r_p01 ≥ 6            → SOFT_TIKHONOV λ = 1·σ_eff  (default detail-óptimo)
-                        FLOOR_CLAMP λ = (3..6)·σ_eff (alternativa si prima contención
-                                  de max_gradient/seam)
+r_p01 < 1            → REJECT (aun SOFT pierde ~9% de varianza y grad_rmse ≈8–17)
+1 ≤ r_p01 < 4        → REVIEW + SOFT λ=1·σ para preview (var 0.91→0.998; detalle
+                                  suavizado visible bajo r≈2; spikes RAW posibles <4)
+r_p01 ≥ 4            → SOFT_TIKHONOV λ = 1·σ_eff  (default detail-óptimo; limpio
+                                  desde r≈4: var ≥0.998)
+                      FLOOR_CLAMP λ = (3..6)·σ_eff (alternativa si prima contención
+                                  de max_gradient/seam en regímenes bajos)
 negative_nz_fraction > ~1% (o cluster detectado) → REVIEW/REJECT adicional
                                   (con Q8_XY es detector directo: los nz=0 son exactos)
 ```
+
+Cortes REFINADOS por el addendum (banda llena): antes del gap-fill los cortes tentativos
+eran {2, 6} sobre la frontera de **RAW** (1.77/5.38); con SOFT como política real, la
+frontera relevante es la de SOFT (REJECT <1, limpio ≥4). Sigue siendo CANDIDATE_POLICY:
+un solo par (surf×σ) por punto de la banda y 4 superficies; sin normales reales no hay
+constante final.
 
 Sin constantes en código: `lam`/`sigma` son parámetros obligatorios (M5); estos números
 viven SOLO en este documento como candidatos a validar con normales reales.
@@ -416,9 +457,11 @@ viven SOLO en este documento como candidatos a validar con normales reales.
    política depende de estimarlo (robusta a 0.5–2×, frágil a 4×).
 2. **Q8_XY/BC5**: el ruido de bloque no es gaussiano ni iid; la frontera medida con
    ruido gaussiano NO transfiere tal cual (Q8_XY ya desplazó todo).
-3. La **banda r_p01∈[1.8, 5.4]** no recibió casos: la frontera exacta está sin localizar.
-4. Distribuciones nz de normales authored reales (¿cuántas texturas de mod caen bajo
-   r_p01=6?) — desconocido; determina el REVIEW_RATE real del producto.
+3. La **banda r_p01∈(1.8, 5.4)** quedó muestreada en 5 puntos (addendum); la resolución
+   finita (un par surf×σ por punto, 4 superficies) deja la frontera exacta de spikes
+   RAW acotada a (1.8, 3.96) pero sin localizar dentro de ese intervalo.
+4. Distribuciones nz de normales authored reales (¿cuántas texturas caen en REVIEW
+   r_p01∈[1,4)?) — desconocido; determina el REVIEW_RATE real del producto.
 5. Selector sensible a resolución del corpus (128 vs 256) para CLAMP; no investigado.
 6. Clusters nz<0: sólo inyección sintética; detección de "cluster vs aislado" sin diseñar.
 
@@ -427,8 +470,12 @@ viven SOLO en este documento como candidatos a validar con normales reales.
 **EXP_M1_GO** — hay política claramente más estable que RAW (SOFT k=1: mejora RAW −45%
 en held-out sin perder detalle; ambas contienen el blast 10⁵× en el régimen duro), no
 depende de constante absoluta (λ=k·σ; M5/M7 en tests), conserva detalle (var 1.006),
-generalizó al held-out sintético, y sus límites están medidos y explícitos. Queda en
-`EXP_M1_GO_WAITING_REVIEW`. No se implementa nada productivo.
+generalizó al held-out sintético, y sus límites están medidos y explícitos. El addendum
+de llenado de banda REFUERZA el GO: SOFT k=1 resultó no-destructivo y monótono en toda
+la banda antes sin muestrear (var 0.911→1.000 con r creciente, rmse siempre < RAW), su
+contención coincide con la cota teórica 1/(2λ), y la frontera de spikes RAW quedó
+acotada a (1.8, 3.96). Queda en `EXP_M1_GO_WAITING_REVIEW`. No se implementa nada
+productivo.
 
 ## ONE next experiment
 
