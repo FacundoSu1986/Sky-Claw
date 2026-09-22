@@ -42,6 +42,7 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     IdempotencyMiddleware,
     LoopGuardrailMiddleware,
 )
+from sky_claw.local.tools.dyndolod_runner import DynDOLODSpawnStrategy
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.dyndolod_uia_ejecutor import EjecutorGatePorHelper
 from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
@@ -147,6 +148,9 @@ def build_orchestration_composition(
     # la ÚNICA fuente del `-o:` productivo del pipeline administrado. `None`
     # (tests/standalone) deja el runner NO CONFIGURADO, sin fallback legacy.
     dyndolod_workspace: WorkspaceResuelto | None = None,
+    # Seam PR-586B: el composition root puede inyectar una strategy brokered
+    # construida con la instancia MO2 explícita. ``None`` conserva standalone.
+    dyndolod_spawn_strategy: DynDOLODSpawnStrategy | None = None,
 ) -> OrchestrationComposition:
     """Construye el grafo completo de servicios, providers, middleware y dispatcher.
 
@@ -214,6 +218,7 @@ def build_orchestration_composition(
         stage9_coordination=stage9_coordination,
         workspace=dyndolod_workspace,
         readiness=dyndolod_readiness,
+        spawn_strategy=dyndolod_spawn_strategy,
     )
 
     xedit_service = XEditPipelineService(
