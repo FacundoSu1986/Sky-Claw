@@ -24,6 +24,8 @@ from sky_claw.local.runtime_vault.authorization_context import (
     AUTHORIZATION_ESTABLISHMENT_ORDER,
     AUTHORIZED_PLAN_FOUNDATION_STATUS,
     FOUNDATION_HEADER_KEYS,
+    PURE_INPUT_BINDING_VALIDATION,
+    AuthorizationCleanupError,
     AuthorizationContextModelError,
     AuthorizationSessionError,
     AuthorizedPlanFoundationHeader,
@@ -41,7 +43,11 @@ from sky_claw.local.runtime_vault.coordinator_identity import (
 )
 from sky_claw.local.runtime_vault.golden_mutation_lock import (
     GoldenLockBusyError,
+    GoldenLockIdentity,
+    GoldenLockModelError,
+    GoldenLockPhase,
     acquire_golden_mutation_lock,
+    derive_golden_lock_key,
 )
 from sky_claw.local.runtime_vault.models import TreeDigest
 from sky_claw.local.runtime_vault.operator_token import (
@@ -471,6 +477,47 @@ class TestEstablishmentOrchestration:
             "golden_mutation_lock",
         )
 
+    def test_pure_input_binding_validation_precede_sin_efectos_laterales(self) -> None:
+        # Finding AUTHORIZATION_ESTABLISHMENT_ORDER resuelto: la validación
+        # estructural pura (PURE_INPUT_BINDING_VALIDATION) precede a los cinco
+        # stages de autoridad; ante mismatch NO abre proceso, NO adquiere token,
+        # NO llama a la PPSC y NO toma el lock. Tampoco es un sexto stage/estado.
+        assert PURE_INPUT_BINDING_VALIDATION.startswith("pure_input_binding_validation")
+        assert "precedes AUTHORIZATION_ESTABLISHMENT_ORDER" in PURE_INPUT_BINDING_VALIDATION
+        side_effects: list[str] = []
+
+        class _SpyingProbe:
+            def probe(self, pid: int) -> ProcessIdentityProbe | None:
+                side_effects.append("identity_probe")
+                return None
+
+        class _SpyingPpsc:
+            def request_confirmation(self, payload: PrivilegedPlanConfirmation) -> PrivilegedPlanConfirmationResult:
+                side_effects.append("ppsc")
+                return PrivilegedPlanConfirmationResult.REJECTED
+
+        def spying_token_acquirer(pid: int) -> OperatorPrimaryToken:
+            side_effects.append("token")
+            raise PlanAuthorizationError("nunca debería invocarse")
+
+        def spying_lock_acquirer(vol: int, fid: int, op: str) -> object:
+            side_effects.append("lock")
+            raise PlanAuthorizationError("nunca debería invocarse")
+
+        for refusal_kwargs in (
+            {"volume_serial_number": 9_999_999_999},  # mismatch vía argumentos
+            {"ppsc_payload": _ppsc_payload(operation_id=_ALT_UUID)},  # mismatch vía payload
+        ):
+            with pytest.raises(PlanAuthorizationError):
+                self._establish(
+                    coordinator_probe_provider=_SpyingProbe(),
+                    token_acquirer=spying_token_acquirer,
+                    ppsc_provider=_SpyingPpsc(),
+                    lock_acquirer=spying_lock_acquirer,
+                    **refusal_kwargs,
+                )
+        assert side_effects == [], "mismatch de entrada: cero efectos privilegiados"
+
     def _establish(self, **overrides: Any) -> tuple[PrivilegedAuthorizationContext, PrivilegedBoundarySession]:
         kwargs: dict[str, Any] = {
             "launch_request": _launch_request(),
@@ -562,6 +609,75 @@ class TestEstablishmentOrchestration:
             )
         assert token_adapter.closed.count(303) == 1
         blocking_handle.release()
+
+    def test_contexto_falla_post_lock_libera_lock_y_token_exactamente_una_vez(self) -> None:
+        # Post-review P1 (resource ownership): lock adquirido → el binding del
+        # contexto falla (operation_id del lock no coincide) → lock.release() y
+        # token.close() EXACTAMENTE una vez cada uno.
+        releases: list[int] = []
+        token_adapter = _FakeTokenAdapter()
+
+        class _DuckLock:
+            def __init__(self) -> None:
+                self.closed = False
+                self.identity = GoldenLockIdentity(
+                    lock_key=derive_golden_lock_key(_VOLUME_SERIAL, _ROOT_FILE_ID),
+                    volume_serial_number=_VOLUME_SERIAL,
+                    root_file_id=_ROOT_FILE_ID,
+                    owner_pid=4242,
+                    owner_process_creation_time=133_456_789_012_345_678,
+                    session_id=1,
+                    operation_id=_ALT_UUID,  # mismatch deliberado: rompe el binding del contexto
+                    phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value,
+                    created_at=1_700_000_000,
+                )
+
+            def release(self) -> bool:
+                releases.append(1)
+                self.closed = True
+                return True
+
+        with pytest.raises(AuthorizationContextModelError):
+            self._establish(
+                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                lock_acquirer=lambda vol, fid, op: _DuckLock(),
+            )
+        assert releases == [1], "el lock adquirido se libera exactamente una vez pese al fallo del contexto"
+        assert token_adapter.closed.count(303) == 1, "el token adquirido se cierra exactamente una vez"
+
+    def test_release_de_lock_falla_token_igual_cierra_y_causalidad_tipada(self) -> None:
+        # Variante: lock.release() FALLA → el token igualmente debe cerrarse y
+        # la causalidad de ambos errores se conserva tipada (AuthorizationCleanupError).
+        release_exc = GoldenLockModelError("release simulado falló")
+        token_adapter = _FakeTokenAdapter()
+
+        class _FailingReleaseLock:
+            def __init__(self) -> None:
+                self.closed = False
+                self.identity = GoldenLockIdentity(
+                    lock_key=derive_golden_lock_key(_VOLUME_SERIAL, _ROOT_FILE_ID),
+                    volume_serial_number=_VOLUME_SERIAL,
+                    root_file_id=_ROOT_FILE_ID,
+                    owner_pid=4242,
+                    owner_process_creation_time=133_456_789_012_345_678,
+                    session_id=1,
+                    operation_id=_ALT_UUID,
+                    phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value,
+                    created_at=1_700_000_000,
+                )
+
+            def release(self) -> bool:
+                raise release_exc
+
+        with pytest.raises(AuthorizationCleanupError) as excinfo:
+            self._establish(
+                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                lock_acquirer=lambda vol, fid, op: _FailingReleaseLock(),
+            )
+        assert token_adapter.closed.count(303) == 1, "un fallo de cleanup del lock nunca impide cerrar el token"
+        assert excinfo.value.lock_cleanup_error is release_exc
+        assert excinfo.value.token_cleanup_error is None
+        assert isinstance(excinfo.value.__cause__, AuthorizationContextModelError), "el error original nunca se esconde"
 
     def test_auth_03_ppsc_payload_incoherente_con_lock_args_rechaza_antes_de_todo(self) -> None:
         token_adapter = _FakeTokenAdapter()

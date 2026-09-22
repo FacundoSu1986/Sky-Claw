@@ -101,6 +101,18 @@ HELPER_CLI_OPERATION_ID_FLAG = "--operation-id"
 HELPER_CLI_STAGING_DIGEST_FLAG = "--staging-digest"
 
 #: Conjunto CERRADO de flags que la CLI del helper acepta (ADR 0010 §12.1).
+#: La gramática es EXACTAMENTE estos dos flags, para siempre.
+#:
+#: Nota normativa (finding de review resuelto por contradicción con el ADR, no
+#: como feature): la identidad del coordinador NUNCA cruza la frontera como
+#: argumentos CLI. No existirán ``--coordinator-pid`` ni
+#: ``--coordinator-creation-time``: los pares pid/creation-time que viajan en
+#: ``PrivilegedHelperLaunchRequest`` son sólo una expectativa local; la
+#: ejecución productiva futura debe obtener la identidad desde evidencia de
+#: operación ligada al ``staging_digest`` y REVALIDARLA mediante PID +
+#: ProcessCreationTime + imagen empaquetada (componente C,
+#: ``coordinator_identity``). Jamás se confía en datos staged sin verificar el
+#: digest y el binding correspondiente.
 HELPER_CLI_ALLOWED_FLAGS: frozenset[str] = frozenset(
     {
         HELPER_CLI_OPERATION_ID_FLAG,

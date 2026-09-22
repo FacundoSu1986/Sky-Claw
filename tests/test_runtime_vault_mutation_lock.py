@@ -27,6 +27,7 @@ from sky_claw.local.runtime_vault.golden_mutation_lock import (
     GOLDEN_LOCK_FLAGS,
     GOLDEN_LOCK_NAME_PREFIX,
     GOLDEN_LOCK_SHARE_MODE,
+    GoldenLockAcquisitionCleanupError,
     GoldenLockBusyError,
     GoldenLockError,
     GoldenLockIdentity,
@@ -75,6 +76,9 @@ class _FakeLockKernel:
         self._next_handle = 10
         self.fail_flush = False
         self.fail_write = False
+        # Inyección causal por intento (1-based) para orquestaciones multi-flush.
+        self.flush_attempts = 0
+        self.fail_flush_on_attempts: set[int] = set()
 
     def open_lock_file(self, path: Any) -> int:
         path_str = str(path)
@@ -102,7 +106,8 @@ class _FakeLockKernel:
         self.write_calls.append((path_str, payload))
 
     def flush_lock(self, handle: int) -> None:
-        if self.fail_flush:
+        self.flush_attempts += 1
+        if self.fail_flush or self.flush_attempts in self.fail_flush_on_attempts:
             raise GoldenLockIoError("flush simulado falló", win32_error=1)
         self.flush_calls.append(self.open_handles[handle])
 
@@ -489,6 +494,39 @@ class TestAcquireRelease:
         assert handle.closed
 
 
+class TestFlushFailureCleanup:
+    """Post-review P1/P2: fallo de flush post-escritura durante ADQUISICIÓN."""
+
+    _LOCKS_DIR = pathlib.PurePath("/tmp/fake-locks")
+
+    def test_flush_falla_cleanup_released_y_la_siguiente_adquisicion_continua(self) -> None:
+        kernel = _FakeLockKernel()
+        kernel.fail_flush_on_attempts = {1}  # falla el flush de la metadata fresca; el cleanup no
+        with pytest.raises(GoldenLockAcquisitionCleanupError) as excinfo:
+            _acquire_golden_mutation_lock_at(
+                self._LOCKS_DIR, _VOLUME_SERIAL, _ROOT_FILE_ID, _VALID_OP_ID, kernel=kernel
+            )
+        assert excinfo.value.cleanup_succeeded is True
+        assert len(kernel.close_calls) == 1, "El handle exclusivo se cierra exactamente una vez (jamás borrado)"
+        # El estado residual quedó RELEASED: la siguiente adquisición puede continuar.
+        handle = _acquire_golden_mutation_lock_at(
+            self._LOCKS_DIR, _VOLUME_SERIAL, _ROOT_FILE_ID, _VALID_OP_ID, kernel=kernel
+        )
+        handle.release()
+        assert len(kernel.close_calls) == 2
+
+    def test_flush_falla_y_cleanup_falla_estado_ambiguo_tipado_nunca_success(self) -> None:
+        kernel = _FakeLockKernel()
+        kernel.fail_flush_on_attempts = {1, 2}  # fresh + cleanup flushes fallan
+        with pytest.raises(GoldenLockAcquisitionCleanupError) as excinfo:
+            _acquire_golden_mutation_lock_at(
+                self._LOCKS_DIR, _VOLUME_SERIAL, _ROOT_FILE_ID, _VALID_OP_ID, kernel=kernel
+            )
+        assert excinfo.value.cleanup_succeeded is False, "Nunca se afirma que el lock quedó liberado"
+        assert excinfo.value.win32_error == 1
+        assert len(kernel.close_calls) == 1
+
+
 # ============================================================================
 # Mutantes M-L1/M-L2/M-L3: anclas AST/estructurales y GP2-T40 (parcial)
 # ============================================================================
@@ -544,14 +582,20 @@ class TestWin32CausalGoldenLock:
         handle = _acquire_golden_mutation_lock_at(locks_dir, _VOLUME_SERIAL, _ROOT_FILE_ID, _VALID_OP_ID)
         identity = handle.identity
         try:
+            # Segunda adquisición mientras el owner EXCLUSIVO (dwShareMode=0) vive:
+            # busy tipado con el código causal exacto de Windows.
             with pytest.raises(GoldenLockBusyError) as excinfo:
                 _acquire_golden_mutation_lock_at(locks_dir, _VOLUME_SERIAL, _ROOT_FILE_ID, _VALID_OP_ID)
-            assert excinfo.value.win32_error == 32
-            on_disk = json.loads((locks_dir / f"{identity.lock_key}.lock").read_bytes())
-            assert on_disk["phase"] == "authorization_boundary"
-            assert on_disk["owner_pid"] == __import__("os").getpid()
+            assert excinfo.value.win32_error == 32  # ERROR_SHARING_VIOLATION
+            # Mientras el lock está tomado NO se lee el archivo por pathname
+            # (sería PermissionError: justamente lo que dwShareMode=0 garantiza).
+            # La evidencia vive en handle.identity, propiedad del owner.
+            assert identity.phase == "authorization_boundary"
+            assert identity.owner_pid == __import__("os").getpid()
+            assert identity.lock_key.startswith("skyclaw_golden_lock_")
         finally:
             handle.release()
+        # Sólo DESPUÉS del release se lee por pathname: fase residual RELEASED.
         assert json.loads((locks_dir / f"{identity.lock_key}.lock").read_bytes())["phase"] == "released"
 
     def test_release_reabre_lock_residual(self, tmp_path: pathlib.Path) -> None:
@@ -564,3 +608,27 @@ class TestWin32CausalGoldenLock:
         second_identity = second_handle.identity
         assert second_identity.lock_key == first_identity.lock_key
         second_handle.release()
+
+    def test_reaperturas_seriadas_nunca_concatenan_json(self, tmp_path: pathlib.Path) -> None:
+        # Post-review P1 (file pointer): acquire -> release -> acquire -> release
+        # -> acquire. Cada reapertura de un lock RELEASED debe parsear EXACTAMENTE
+        # UNA metadata válida — jamás <JSON viejo><JSON nuevo> concatenado.
+        import json as _json
+
+        locks_dir = tmp_path / "locks"
+        locks_dir.mkdir()
+        lock_file: pathlib.Path | None = None
+        for _cycle in range(3):
+            handle = _acquire_golden_mutation_lock_at(locks_dir, _VOLUME_SERIAL, _ROOT_FILE_ID, _VALID_OP_ID)
+            try:
+                assert handle.identity.phase == "authorization_boundary"
+                lock_file = locks_dir / f"{handle.identity.lock_key}.lock"
+            finally:
+                handle.release()
+            raw = lock_file.read_bytes()
+            decoder = _json.JSONDecoder()
+            parsed, end_index = decoder.raw_decode(raw.decode("utf-8"))
+            assert raw.decode("utf-8")[end_index:].strip() == "", (
+                f"Reapertura {_cycle}: el lock contiene contenido colgado tras el JSON (concatenación detectada)"
+            )
+            assert parsed["phase"] == "released"

@@ -87,6 +87,19 @@ class GoldenLockOwnershipError(GoldenLockError):
     """Uso del lock después de su liberación o acuñación fuera del path de adquisición."""
 
 
+class GoldenLockAcquisitionCleanupError(GoldenLockIoError):
+    """La adquisición falló tras haber escrito metadata fresca (carried cleanup explícito).
+
+    ``cleanup_succeeded`` es True sólo si el cleanup a metadata RELEASED +
+    flush tuvo éxito (estado residual liberado, reusable). False declara un
+    estado AMBIGUO fail-closed: jamás se afirma que el lock quedó liberado.
+    """
+
+    def __init__(self, *args: Any, win32_error: int | None = None, cleanup_succeeded: bool = False) -> None:
+        super().__init__(*args, win32_error=win32_error)
+        self.cleanup_succeeded = cleanup_succeeded
+
+
 # ============================================================================
 # Constantes Normativas (contrato CreateFileW, ancladas por tests)
 # ============================================================================
@@ -174,6 +187,13 @@ if sys.platform == "win32":
     _kernel32.WriteFile.restype = _wt.BOOL
     _kernel32.SetEndOfFile.argtypes = [_wt.HANDLE]
     _kernel32.SetEndOfFile.restype = _wt.BOOL
+    _kernel32.SetFilePointerEx.argtypes = [
+        _wt.HANDLE,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        _wt.DWORD,
+    ]
+    _kernel32.SetFilePointerEx.restype = _wt.BOOL
     _kernel32.FlushFileBuffers.argtypes = [_wt.HANDLE]
     _kernel32.FlushFileBuffers.restype = _wt.BOOL
     _kernel32.OpenProcess.argtypes = [_wt.DWORD, _wt.BOOL, _wt.DWORD]
@@ -507,6 +527,14 @@ class _Win32GoldenLockKernel:
             raise GoldenLockIoError(f"GetFileInformationByHandleEx falló sobre el lock: código {err}", win32_error=err)
         return int(info.ReparseTag)
 
+    def _seek_lock_begin(self, handle: int) -> None:
+        # Cada operación es independiente de la posición heredada del handle:
+        # el puntero SIEMPRE se fija en 0 antes de ReadFile/WriteFile (post-review P1:
+        # re-apertura de un lock RELEASED jamás concatena <JSON viejo><JSON nuevo>).
+        if not _kernel32.SetFilePointerEx(handle, 0, None, 0):  # 0 = FILE_BEGIN
+            err = ctypes.get_last_error()
+            raise GoldenLockIoError(f"SetFilePointerEx(FILE_BEGIN) falló sobre el lock: código {err}", win32_error=err)
+
     def read_lock_bytes(self, handle: int) -> bytes:
         size = ctypes.c_longlong(0)
         if not _kernel32.GetFileSizeEx(handle, ctypes.byref(size)):
@@ -519,6 +547,7 @@ class _Win32GoldenLockKernel:
                 f"El lock file excede la cota de metadata ({size.value} bytes > {_MAX_METADATA_BYTES})",
                 win32_error=None,
             )
+        self._seek_lock_begin(handle)  # ANTES de ReadFile: posición 0 garantizada
         buffer = (ctypes.c_ubyte * size.value)()
         read = _wt.DWORD(0)
         if not _kernel32.ReadFile(handle, buffer, size.value, ctypes.byref(read), None):
@@ -531,6 +560,7 @@ class _Win32GoldenLockKernel:
     def write_lock_bytes(self, handle: int, payload: bytes) -> None:
         if not payload or len(payload) > _MAX_METADATA_BYTES:
             raise GoldenLockIoError("payload de metadata fuera de la cota normativa")
+        self._seek_lock_begin(handle)  # ANTES de WriteFile: posición 0 garantizada
         buffer = (ctypes.c_ubyte * len(payload)).from_buffer_copy(payload)
         written = _wt.DWORD(0)
         if not _kernel32.WriteFile(handle, buffer, len(payload), ctypes.byref(written), None):
@@ -807,8 +837,38 @@ def _acquire_lock_core(
             phase=identity.phase,
             created_at=identity.created_at,
         )
-        kernel.write_lock_bytes(handle, serialize_golden_lock_metadata(fresh_metadata))
-        kernel.flush_lock(handle)
+        try:
+            kernel.write_lock_bytes(handle, serialize_golden_lock_metadata(fresh_metadata))
+            kernel.flush_lock(handle)
+        except GoldenLockIoError as io_exc:
+            # Post-escritura: quedaría metadata NO-RELEASED perteneciente a ESTE
+            # proceso sin kernel handle (self-DoS). El handle exclusivo TODAVÍA
+            # está abierto (lo cierra el finally): cleanup explícito a RELEASED
+            # + flush. Si el cleanup también falla, el estado queda AMBIGUO y se
+            # reporta tipado fail-closed; NUNCA se convierte en success y el
+            # lock file JAMÁS se borra (§19.1).
+            cleanup_ok = False
+            try:
+                residual_metadata = GoldenLockMetadata(
+                    lock_key=identity.lock_key,
+                    owner_pid=identity.owner_pid,
+                    owner_process_creation_time=identity.owner_process_creation_time,
+                    session_id=identity.session_id,
+                    operation_id=identity.operation_id,
+                    phase=GoldenLockPhase.RELEASED.value,
+                    created_at=identity.created_at,
+                )
+                kernel.write_lock_bytes(handle, serialize_golden_lock_metadata(residual_metadata))
+                kernel.flush_lock(handle)
+                cleanup_ok = True
+            except GoldenLockIoError:
+                cleanup_ok = False
+            raise GoldenLockAcquisitionCleanupError(
+                f"Adquisición del lock falló tras escribir metadata fresca (cleanup a RELEASED "
+                f"{'OK: lock residual liberado' if cleanup_ok else 'FALLÓ: estado ambiguo, fail-closed'})",
+                win32_error=io_exc.win32_error,
+                cleanup_succeeded=cleanup_ok,
+            ) from io_exc
 
         lock_handle = GoldenMutationLockHandle(handle, identity, kernel, _proof=_MINT_PROOF)
         success = True
@@ -884,6 +944,7 @@ __all__ = [
     "GOLDEN_LOCK_FLAGS",
     "GOLDEN_LOCK_NAME_PREFIX",
     "GOLDEN_LOCK_SHARE_MODE",
+    "GoldenLockAcquisitionCleanupError",
     "GoldenLockBusyError",
     "GoldenLockError",
     "GoldenLockIdentity",

@@ -85,6 +85,26 @@ class AuthorizationSessionError(AuthorizationContextError):
     """Uso de la sesión de frontera después de su cierre."""
 
 
+class AuthorizationCleanupError(AuthorizationContextError):
+    """El establecimiento falló Y el cleanup de recursos también falló (causalidad explícita).
+
+    Nunca esconde el error original: ``__cause__`` conserva el fallo de
+    establecimiento y los atributos conservan los fallos de cleanup. Si ambos
+    cleanups tuvieron éxito, esta excepción NO se levanta (se re-lanza el error
+    de establecimiento original tal cual).
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        lock_cleanup_error: BaseException | None = None,
+        token_cleanup_error: BaseException | None = None,
+    ) -> None:
+        super().__init__(*args)
+        self.lock_cleanup_error = lock_cleanup_error
+        self.token_cleanup_error = token_cleanup_error
+
+
 # ============================================================================
 # Contexto Inmutable de Autorización (evidencia, NO handles)
 # ============================================================================
@@ -241,12 +261,25 @@ TokenAcquirerFn = Callable[[int], OperatorPrimaryToken]
 LockAcquirerFn = Callable[[int, int, str], GoldenMutationLockHandle]
 
 #: Orden normativo verificado por tests (PPSC antes del lock, ADR 0010 §12.2 pasos 4 y 6).
+#: Representa los cinco stages de autoridad/recursos; NO es una FSM y no tiene
+#: un sexto stage.
 AUTHORIZATION_ESTABLISHMENT_ORDER: tuple[str, ...] = (
     "coordinator_identity_binding",
     "operator_token_strategy",
     "operator_token_acquisition",
     "ppsc_confirmation",
     "golden_mutation_lock",
+)
+
+#: Validación estructural pura que ANTECEDE a ``AUTHORIZATION_ESTABLISHMENT_ORDER``.
+#: Comprueba únicamente los campos del request/payload y su igualdad cruzada
+#: (volumen, root_file_id, operation_id): es fail-fast y SIN EFECTOS LATERALES
+#: — ante un mismatch no abre proceso, no adquiere token, no llama a la PPSC y
+#: no toma el GoldenMutationLock. No es un sexto stage de autoridad: es un gate
+#: de coherencia de entrada puro.
+PURE_INPUT_BINDING_VALIDATION: str = (
+    "pure_input_binding_validation (precedes AUTHORIZATION_ESTABLISHMENT_ORDER; "
+    "side-effect-free: no process open, no token, no PPSC, no lock)"
 )
 
 
@@ -313,8 +346,15 @@ def establish_privileged_authorization(
             "no está disponible -> REFUSE_TO_PLAN (antes de mutar, sin lock, sin MUTATING(1))"
         )
 
-    # Paso 3: adquisición del token primario del operador.
+    # Paso 3-5: adquisición del token primario del operador, PPSC y lock.
+    # Ownership explícito: ante CUALQUIER excepción previa al retorno exitoso,
+    # el lock adquirido se libera exactamente una vez y el token adquirido se
+    # cierra exactamente una vez (lock.release() primero, token.close() después;
+    # un fallo de cleanup del lock NUNCA impide cerrar el token). Si el cleanup
+    # también falla, la causalidad de ambos errores se conserva tipada
+    # (AuthorizationCleanupError con __cause__ = fallo de establecimiento).
     token: OperatorPrimaryToken | None = None
+    lock: GoldenMutationLockHandle | None = None
     try:
         if strategy is OperatorTokenStrategy.SAME_ACCOUNT_EXTRACTION:
             acquirer = _default_token_acquirer if token_acquirer is None else token_acquirer
@@ -344,9 +384,27 @@ def establish_privileged_authorization(
             lock_identity=lock.identity,
         )
         return context, PrivilegedBoundarySession(operator_token=token, lock=lock)
-    except BaseException:
-        if token is not None:
-            token.close()
+    except BaseException as establishment_error:
+        lock_cleanup_error: BaseException | None = None
+        token_cleanup_error: BaseException | None = None
+        if lock is not None and not lock.closed:
+            try:
+                lock.release()
+            except Exception as release_exception:  # noqa: BLE001 (cleanup nunca puede abortar el del token)
+                lock_cleanup_error = release_exception
+        if token is not None and not token.closed:
+            try:
+                token.close()
+            except Exception as close_exception:  # noqa: BLE001 (cleanup nunca debe tragar errores silenciosamente)
+                token_cleanup_error = close_exception
+        if lock_cleanup_error is not None or token_cleanup_error is not None:
+            raise AuthorizationCleanupError(
+                "El establecimiento de la frontera falló Y el cleanup de recursos también falló "
+                f"(lock_cleanup={'falló' if lock_cleanup_error is not None else 'ok'}, "
+                f"token_cleanup={'falló' if token_cleanup_error is not None else 'ok'})",
+                lock_cleanup_error=lock_cleanup_error,
+                token_cleanup_error=token_cleanup_error,
+            ) from establishment_error
         raise
 
 
@@ -462,6 +520,8 @@ def build_foundation_header_from_context(context: PrivilegedAuthorizationContext
 
 __all__ = [
     "AUTHORIZATION_ESTABLISHMENT_ORDER",
+    "AuthorizationCleanupError",
+    "PURE_INPUT_BINDING_VALIDATION",
     "AUTHORIZED_PLAN_FOUNDATION_STATUS",
     "FOUNDATION_HEADER_KEYS",
     "AuthorizationContextError",

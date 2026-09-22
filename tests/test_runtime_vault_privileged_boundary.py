@@ -84,6 +84,21 @@ class TestPb01HelperCliGrammar:
     def test_conjunto_de_flags_es_exactamente_dos(self) -> None:
         assert frozenset({"--operation-id", "--staging-digest"}) == HELPER_CLI_ALLOWED_FLAGS
 
+    def test_ancla_adr_12_1_identidad_del_coordinador_nunca_cruza_por_cli(self) -> None:
+        # Ancla normativa (finding de review RECHAZADO por contradicción con
+        # ADR 0010 §12.1): jamás existirán --coordinator-pid ni
+        # --coordinator-creation-time. La identidad del coordinador se revalida
+        # en el componente C (coordinator_identity) con PID + ProcessCreationTime
+        # + imagen empaquetada a partir de evidencia ligada al staging_digest;
+        # nunca se confía en datos staged sin verificar digest/binding.
+        for forbidden_flag in ("--coordinator-pid", "--coordinator-creation-time"):
+            with pytest.raises(HelperArgumentError):
+                validate_helper_cli_arguments(
+                    ["--operation-id", _VALID_UUID, "--staging-digest", _VALID_DIGEST, forbidden_flag, "4242"]
+                )
+        assert "--coordinator-pid" not in HELPER_CLI_ALLOWED_FLAGS
+        assert "--coordinator-creation-time" not in HELPER_CLI_ALLOWED_FLAGS
+
     @pytest.mark.parametrize("flag", [*_FORBIDDEN_PATH_FLAGS, *_FORBIDDEN_EXEC_FLAGS])
     def test_pb_02_flag_prohibido_rechazado(self, flag: str) -> None:
         with pytest.raises(HelperArgumentError):
@@ -363,16 +378,22 @@ class TestLauncherOrchestrationConSeams:
 
         request = _make_request()
         with launch_privileged_helper(request, image_resolver=lambda: str(image), shell_runner=runner) as helper:
-            assert helper.operation_id_str == _VALID_UUID
+            assert str(helper.operation_id) == _VALID_UUID
         assert recorded["lp_file"] == str(image)
         assert recorded["lp_parameters"] == (f"--operation-id {_VALID_UUID} --staging-digest {_VALID_DIGEST}")
         assert recorded["lp_directory"] is None
 
-    def test_pb_06_uac_cancel_propagado_tipado(self) -> None:
+    def test_pb_06_uac_cancel_propagado_tipado(self, tmp_path: pathlib.Path) -> None:
+        # La imagen se valida ANTES de invocar al runner: una ruta inexistente
+        # fallaría en validación, no en elevación. Se crea una imagen de helper
+        # desechable real (nombre pineado) bajo tmp_path y el RECHAZO UAC lo
+        # produce el runner en sí.
+        image = tmp_path / PACKAGED_HELPER_IMAGE_NAME
+        image.write_bytes(b"MZ")
+
         def runner(*, lp_file: str, lp_parameters: str, lp_directory: str | None) -> int:
             raise ElevationRejectedError("cancelado")
 
-        image = pathlib.Path(f"C:\\{PACKAGED_HELPER_IMAGE_NAME}")
         with pytest.raises(ElevationRejectedError):
             launch_privileged_helper(_make_request(), image_resolver=lambda: str(image), shell_runner=runner)
 
