@@ -43,6 +43,7 @@ from sky_claw.local.runtime_vault.operator_token import (
     OpenCoordinatorTokenError,
     OperatorIdentityEvidenceError,
     OperatorPrimaryToken,
+    OperatorTokenAcquisitionError,
     OperatorTokenOwnershipError,
     OperatorTokenStrategy,
     OperatorTokenTypeError,
@@ -111,11 +112,19 @@ class _FakeOperatorTokenAdapter:
         self.closed.append(handle)
 
 
+def _coordinator_identity(pid: int = 4242) -> CoordinatorProcessIdentity:
+    return CoordinatorProcessIdentity(
+        pid=pid,
+        creation_time=133_456_789_012_345_678,
+        image_path="C:\\Program Files\\Sky-Claw\\sky-claw.exe",
+    )
+
+
 def _acquire_with_fake(**scripting: Any) -> tuple[OperatorPrimaryToken, _FakeOperatorTokenAdapter]:
     adapter = _FakeOperatorTokenAdapter()
     for key, value in scripting.items():
         setattr(adapter, key, value)
-    token = acquire_operator_primary_token_from_coordinator(4242, adapter=adapter)
+    token = acquire_operator_primary_token_from_coordinator(_coordinator_identity(4242), adapter=adapter)
     return token, adapter
 
 
@@ -125,6 +134,11 @@ def _acquire_with_fake(**scripting: Any) -> tuple[OperatorPrimaryToken, _FakeOpe
 
 
 class TestOts01FlujoFeliz:
+    def test_ots01_pid_aislado_rechazado_exige_identidad_completa(self) -> None:
+        with pytest.raises(OperatorTokenAcquisitionError) as exc_info:
+            acquire_operator_primary_token_from_coordinator(4242)  # type: ignore[arg-type]
+        assert "PID solo != identidad" in str(exc_info.value)
+
     def test_operador_token_evidence_y_raii(self) -> None:
         token, adapter = _acquire_with_fake()
         evidence = token.evidence
@@ -190,7 +204,7 @@ class TestOts02Duplicado:
         adapter = _FakeOperatorTokenAdapter()
         adapter.fail_duplicate = True
         with pytest.raises(TokenDuplicationError):
-            acquire_operator_primary_token_from_coordinator(4242, adapter=adapter)
+            acquire_operator_primary_token_from_coordinator(_coordinator_identity(4242), adapter=adapter)
         # process + token fuente cerrados; sin handle duplicado que limpiar.
         assert sorted(adapter.closed) == sorted(_FAKE_HANDLES[:2])
 
@@ -205,7 +219,7 @@ class TestOts03TokenNoPrimario:
         adapter = _FakeOperatorTokenAdapter()
         adapter.token_type_result = 2  # TokenImpersonation
         with pytest.raises(OperatorTokenTypeError):
-            acquire_operator_primary_token_from_coordinator(4242, adapter=adapter)
+            acquire_operator_primary_token_from_coordinator(_coordinator_identity(4242), adapter=adapter)
         # Los tres handles abiertos hasta el fallo quedan cerrados, exactamente una vez.
         assert sorted(adapter.closed) == sorted(_FAKE_HANDLES)
 
@@ -213,7 +227,7 @@ class TestOts03TokenNoPrimario:
         adapter = _FakeOperatorTokenAdapter()
         adapter.token_type_result = 99
         with pytest.raises(OperatorTokenTypeError):
-            acquire_operator_primary_token_from_coordinator(4242, adapter=adapter)
+            acquire_operator_primary_token_from_coordinator(_coordinator_identity(4242), adapter=adapter)
         assert sorted(adapter.closed) == sorted(_FAKE_HANDLES)
 
 
@@ -227,7 +241,7 @@ class TestOts04FallasApertura:
         adapter = _FakeOperatorTokenAdapter()
         adapter.fail_open_process = True
         with pytest.raises(OpenCoordinatorProcessError):
-            acquire_operator_primary_token_from_coordinator(4242, adapter=adapter)
+            acquire_operator_primary_token_from_coordinator(_coordinator_identity(4242), adapter=adapter)
         assert adapter.closed == []
         assert isinstance(OpenCoordinatorProcessError("x"), PlanAuthorizationError)
 
@@ -235,14 +249,14 @@ class TestOts04FallasApertura:
         adapter = _FakeOperatorTokenAdapter()
         adapter.fail_open_token = True
         with pytest.raises(OpenCoordinatorTokenError):
-            acquire_operator_primary_token_from_coordinator(4242, adapter=adapter)
+            acquire_operator_primary_token_from_coordinator(_coordinator_identity(4242), adapter=adapter)
         assert adapter.closed == [_FAKE_HANDLES[0]]
 
     def test_sid_ilegible_rechaza_y_cierra_todo(self) -> None:
         adapter = _FakeOperatorTokenAdapter()
         adapter.fail_user_sid = True
         with pytest.raises(OperatorIdentityEvidenceError):
-            acquire_operator_primary_token_from_coordinator(4242, adapter=adapter)
+            acquire_operator_primary_token_from_coordinator(_coordinator_identity(4242), adapter=adapter)
         assert sorted(adapter.closed) == sorted(_FAKE_HANDLES)
 
 
@@ -543,10 +557,19 @@ class TestWin32CausalOperatorToken:
         import ctypes
         import ctypes.wintypes  # noqa: F401
 
+        from sky_claw.local.runtime_vault.coordinator_identity import Win32CoordinatorIdentityProbe
+
         advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-        token = acquire_operator_primary_token_from_coordinator(os.getpid())
+        probe = Win32CoordinatorIdentityProbe().probe(os.getpid())
+        assert probe.creation_time is not None and probe.image_path is not None
+        identity = CoordinatorProcessIdentity(
+            pid=os.getpid(),
+            creation_time=probe.creation_time,
+            image_path=probe.image_path,
+        )
+        token = acquire_operator_primary_token_from_coordinator(identity)
         evidence = token.evidence
         assert evidence.operator_sid.startswith("S-1-")
         assert evidence.token_type == "primary"

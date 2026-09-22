@@ -429,15 +429,18 @@ class OperatorPrimaryToken:
 
 
 def acquire_operator_primary_token_from_coordinator(
-    coordinator: CoordinatorProcessIdentity | int,
+    coordinator: CoordinatorProcessIdentity,
     *,
     adapter: OperatorTokenAdapter | None = None,
 ) -> OperatorPrimaryToken:
     """Extrae el token primario del operador desde el coordinador ligado (path 1).
 
     Defensa atada al handle (anti-TOCTOU, P1):
-    Si se suministra una identidad de coordinador (``CoordinatorProcessIdentity``),
-    el adapter abre el proceso una sola vez y, SOBRE ESE MISMO HANDLE, verifica
+    Exige la identidad completa del coordinador (``CoordinatorProcessIdentity``:
+    PID + ProcessCreationTime + imagen). Un PID aislado (int) es rechazado
+    incondicionalmente (``PID alone != identity``).
+
+    El adapter abre el proceso una sola vez y, SOBRE ESE MISMO HANDLE, verifica
     que ``creation_time`` e ``image_path`` coincidan exactamente antes de invocar
     ``OpenProcessToken``. Un PID reciclado tras el probe del paso 1 es detectado
     inmediatamente sobre el handle atado y aborta con ``CoordinatorIdentityBindingError``
@@ -455,20 +458,21 @@ def acquire_operator_primary_token_from_coordinator(
 
     Cualquier fallo cierra TODOS los handles abiertos exactamente una vez.
     """
+    if not isinstance(coordinator, CoordinatorProcessIdentity):
+        raise OperatorTokenAcquisitionError(
+            f"coordinator debe ser CoordinatorProcessIdentity normativo (PID solo != identidad); "
+            f"observado {type(coordinator).__name__}"
+        )
+
     if adapter is None:
         _ensure_windows()
         native_adapter: OperatorTokenAdapter = _Win32OperatorTokenAdapter()
     else:
         native_adapter = adapter
 
-    expected_creation_time: int | None = None
-    expected_image_path: str | None = None
-    if isinstance(coordinator, CoordinatorProcessIdentity):
-        coordinator_pid = coordinator.pid
-        expected_creation_time = coordinator.creation_time
-        expected_image_path = coordinator.image_path
-    else:
-        coordinator_pid = coordinator
+    coordinator_pid = coordinator.pid
+    expected_creation_time = coordinator.creation_time
+    expected_image_path = coordinator.image_path
 
     if (
         isinstance(coordinator_pid, bool)
@@ -489,27 +493,25 @@ def acquire_operator_primary_token_from_coordinator(
     duplicated_handle = 0
     success = False
     try:
-        if expected_creation_time is not None:
-            observed_creation = native_adapter.read_process_creation_time(process_handle)
-            if observed_creation is None:
-                raise CoordinatorIdentityBindingError(
-                    f"No se pudo leer el ProcessCreationTime sobre el process handle del coordinador (pid={coordinator_pid}): legibilidad obligatoria"
-                )
-            if observed_creation != expected_creation_time:
-                raise CoordinatorIdentityBindingError(
-                    f"ProcessCreationTime sobre el process handle abierto ({observed_creation}) no coincide con el coordinador original ({expected_creation_time}): posible reuso de PID (TOCTOU mitigado)"
-                )
+        observed_creation = native_adapter.read_process_creation_time(process_handle)
+        if observed_creation is None:
+            raise CoordinatorIdentityBindingError(
+                f"No se pudo leer el ProcessCreationTime sobre el process handle del coordinador (pid={coordinator_pid}): legibilidad obligatoria"
+            )
+        if observed_creation != expected_creation_time:
+            raise CoordinatorIdentityBindingError(
+                f"ProcessCreationTime sobre el process handle abierto ({observed_creation}) no coincide con el coordinador original ({expected_creation_time}): posible reuso de PID (TOCTOU mitigado)"
+            )
 
-        if expected_image_path is not None:
-            observed_image = native_adapter.read_process_image_path(process_handle)
-            if observed_image is None:
-                raise CoordinatorIdentityBindingError(
-                    f"No se pudo leer la imagen sobre el process handle del coordinador (pid={coordinator_pid}): legibilidad obligatoria"
-                )
-            if _normalize_image_for_compare(observed_image) != _normalize_image_for_compare(expected_image_path):
-                raise CoordinatorIdentityBindingError(
-                    f"La imagen sobre el process handle abierto ('{observed_image}') no coincide con la esperada ('{expected_image_path}')"
-                )
+        observed_image = native_adapter.read_process_image_path(process_handle)
+        if observed_image is None:
+            raise CoordinatorIdentityBindingError(
+                f"No se pudo leer la imagen sobre el process handle del coordinador (pid={coordinator_pid}): legibilidad obligatoria"
+            )
+        if _normalize_image_for_compare(observed_image) != _normalize_image_for_compare(expected_image_path):
+            raise CoordinatorIdentityBindingError(
+                f"La imagen sobre el process handle abierto ('{observed_image}') no coincide con la esperada ('{expected_image_path}')"
+            )
 
         token_handle = native_adapter.open_process_token(process_handle, TOKEN_DUPLICATE)
         duplicated_handle = native_adapter.duplicate_token_ex_primary(token_handle, OPERATOR_TOKEN_REQUIRED_RIGHTS)

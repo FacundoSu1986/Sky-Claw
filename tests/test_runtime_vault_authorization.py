@@ -96,7 +96,7 @@ def _expected_coordinator() -> CoordinatorProcessIdentity:
     )
 
 
-def _probe_provider(image_path: str = "C:\\Program Files\\Sky-Claw\\sky-claw.exe"):
+def _probe_provider(image_path: str = "C:\\Program Files\\Sky-Claw\\sky-claw.exe") -> Any:
     class _Provider:
         def probe(self, pid: int) -> ProcessIdentityProbe:
             return ProcessIdentityProbe(
@@ -123,7 +123,7 @@ def _ppsc_payload(**overrides: Any) -> PrivilegedPlanConfirmation:
     return PrivilegedPlanConfirmation(**kwargs)
 
 
-def _ppsc_provider(result: PrivilegedPlanConfirmationResult = PrivilegedPlanConfirmationResult.CONFIRMED):
+def _ppsc_provider(result: PrivilegedPlanConfirmationResult = PrivilegedPlanConfirmationResult.CONFIRMED) -> Any:
     class _Provider:
         def __init__(self) -> None:
             self.calls: list[PrivilegedPlanConfirmation] = []
@@ -222,12 +222,12 @@ def _fake_programdata() -> pathlib.PureWindowsPath:
 
 def _make_token_via_fake_adapter() -> tuple[OperatorPrimaryToken, _FakeTokenAdapter]:
     adapter = _FakeTokenAdapter()
-    token = acquire_operator_primary_token_from_coordinator(4242, adapter=adapter)
+    token = acquire_operator_primary_token_from_coordinator(_expected_coordinator(), adapter=adapter)
     return token, adapter
 
 
-def _fake_lock_acquirer(kernel: _FakeLockKernel):
-    def _acquire(volume_serial_number: int, root_file_id: int, operation_id: str):
+def _fake_lock_acquirer(kernel: _FakeLockKernel) -> Any:
+    def _acquire(volume_serial_number: int, root_file_id: int, operation_id: str) -> Any:
         return acquire_golden_mutation_lock(
             volume_serial_number,
             root_file_id,
@@ -502,7 +502,7 @@ class TestEstablishmentOrchestration:
                 side_effects.append("ppsc")
                 return PrivilegedPlanConfirmationResult.REJECTED
 
-        def spying_token_acquirer(pid: int) -> OperatorPrimaryToken:
+        def spying_token_acquirer(coord: CoordinatorProcessIdentity) -> OperatorPrimaryToken:
             side_effects.append("token")
             raise PlanAuthorizationError("nunca debería invocarse")
 
@@ -543,16 +543,16 @@ class TestEstablishmentOrchestration:
         token_adapter = _FakeTokenAdapter()
         kernel = _FakeLockKernel()
 
-        def token_acquirer(pid: int) -> OperatorPrimaryToken:
+        def token_acquirer(coord: CoordinatorProcessIdentity) -> OperatorPrimaryToken:
             order.append("token")
-            return acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter)
+            return acquire_operator_primary_token_from_coordinator(coord, adapter=token_adapter)
 
         class _OrderedPpsc:
             def request_confirmation(self, payload: PrivilegedPlanConfirmation) -> PrivilegedPlanConfirmationResult:
                 order.append("ppsc")
                 return PrivilegedPlanConfirmationResult.CONFIRMED
 
-        def lock_acquirer(vol: int, fid: int, op: str):
+        def lock_acquirer(vol: int, fid: int, op: str) -> Any:
             order.append("lock")
             return acquire_golden_mutation_lock(vol, fid, op, kernel=kernel, programdata_resolver=_fake_programdata)
 
@@ -572,7 +572,7 @@ class TestEstablishmentOrchestration:
         provider = _ppsc_provider()
         kernel = _FakeLockKernel()
 
-        def failing_acquirer(pid: int) -> OperatorPrimaryToken:
+        def failing_acquirer(coord: CoordinatorProcessIdentity) -> OperatorPrimaryToken:
             raise OpenCoordinatorProcessError("denegado")
 
         with pytest.raises(OpenCoordinatorProcessError):
@@ -590,7 +590,9 @@ class TestEstablishmentOrchestration:
 
         with pytest.raises(PlanAuthorizationError):
             self._establish(
-                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
                 ppsc_provider=_ppsc_provider(PrivilegedPlanConfirmationResult.REJECTED),
                 lock_acquirer=_fake_lock_acquirer(kernel),
             )
@@ -610,7 +612,9 @@ class TestEstablishmentOrchestration:
         )
         with pytest.raises(GoldenLockBusyError):
             self._establish(
-                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
                 lock_acquirer=_fake_lock_acquirer(kernel),
             )
         assert token_adapter.closed.count(303) == 1
@@ -645,7 +649,9 @@ class TestEstablishmentOrchestration:
 
         with pytest.raises(AuthorizationContextModelError):
             self._establish(
-                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
                 lock_acquirer=lambda vol, fid, op: _DuckLock(),
             )
         assert releases == [1], "el lock adquirido se libera exactamente una vez pese al fallo del contexto"
@@ -677,7 +683,9 @@ class TestEstablishmentOrchestration:
 
         with pytest.raises(AuthorizationCleanupError) as excinfo:
             self._establish(
-                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
                 lock_acquirer=lambda vol, fid, op: _FailingReleaseLock(),
             )
         assert token_adapter.closed.count(303) == 1, "un fallo de cleanup del lock nunca impide cerrar el token"
@@ -690,7 +698,9 @@ class TestEstablishmentOrchestration:
         kernel = _FakeLockKernel()
         with pytest.raises(PlanAuthorizationError):
             self._establish(
-                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
                 ppsc_payload=_ppsc_payload(volume_serial_number=0xDEADBEEF),
                 lock_acquirer=_fake_lock_acquirer(kernel),
             )
@@ -781,7 +791,9 @@ class TestEstablishmentOrchestration:
         kernel = _FakeLockKernel()
         with pytest.raises(PlanAuthorizationError):
             self._establish(
-                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
                 ppsc_payload=_ppsc_payload(operation_id=_ALT_UUID),
                 lock_acquirer=_fake_lock_acquirer(kernel),
             )
@@ -794,7 +806,9 @@ class TestEstablishmentOrchestration:
         with pytest.raises(CoordinatorIdentityBindingError):
             self._establish(
                 coordinator_probe_provider=_probe_provider(image_path="C:\\Windows\\System32\\cmd.exe"),
-                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
                 ppsc_provider=provider,
                 lock_acquirer=_fake_lock_acquirer(kernel),
             )
@@ -808,7 +822,9 @@ class TestEstablishmentOrchestration:
         with pytest.raises(PlanAuthorizationError):
             self._establish(
                 elevation_case=OtsElevationCase.CROSS_ACCOUNT,
-                token_acquirer=lambda pid: acquire_operator_primary_token_from_coordinator(pid, adapter=token_adapter),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
                 lock_acquirer=_fake_lock_acquirer(kernel),
             )
         assert token_adapter.closed == [] and kernel.busy_paths == set()

@@ -257,7 +257,7 @@ class PrivilegedBoundarySession:
 # Establecimiento de la Frontera (orquestación fail-closed)
 # ============================================================================
 
-TokenAcquirerFn = Callable[[CoordinatorProcessIdentity], OperatorPrimaryToken] | Callable[[int], OperatorPrimaryToken]
+TokenAcquirerFn = Callable[[CoordinatorProcessIdentity], OperatorPrimaryToken]
 LockAcquirerFn = Callable[[int, int, str], GoldenMutationLockHandle]
 
 #: Orden normativo verificado por tests (PPSC antes del lock, ADR 0010 §12.2 pasos 4 y 6).
@@ -283,7 +283,7 @@ PURE_INPUT_BINDING_VALIDATION: str = (
 )
 
 
-def _default_token_acquirer(coordinator: CoordinatorProcessIdentity | int) -> OperatorPrimaryToken:
+def _default_token_acquirer(coordinator: CoordinatorProcessIdentity) -> OperatorPrimaryToken:
     return acquire_operator_primary_token_from_coordinator(coordinator)
 
 
@@ -365,13 +365,8 @@ def establish_privileged_authorization(
     lock: GoldenMutationLockHandle | None = None
     try:
         if strategy is OperatorTokenStrategy.SAME_ACCOUNT_EXTRACTION:
-            if token_acquirer is None:
-                token = _default_token_acquirer(bound_identity)
-            else:
-                try:
-                    token = token_acquirer(bound_identity)  # type: ignore[arg-type]
-                except TypeError:
-                    token = token_acquirer(bound_identity.pid)  # type: ignore[arg-type]
+            acquirer = _default_token_acquirer if token_acquirer is None else token_acquirer
+            token = acquirer(bound_identity)
         else:  # SERVICE_WTS_PROVIDER (hook v2; no existe implementación en este slice)
             if service_token_provider is None:
                 raise PlanAuthorizationError(
