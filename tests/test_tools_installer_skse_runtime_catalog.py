@@ -37,7 +37,7 @@ from sky_claw.local.tools_installer import (
     InstallVerification,
     ToolInstallError,
     ToolsInstaller,
-    _adquisicion_directa_para,
+    _adquisicion_para,
 )
 
 #: Releases del catálogo por fuente, para parametrizar por PROPIEDAD y no por caso:
@@ -138,20 +138,19 @@ class TestCompatibilidadPorRuntime:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("release", _RELEASES_NEXUS, ids=_id)
-    async def test_nexus_pendiente_falla_cerrado_antes_de_fronteras(
+    async def test_nexus_sin_api_key_falla_cerrado_antes_de_fronteras(
         self,
         installer: ToolsInstaller,
         tmp_path: pathlib.Path,
         monkeypatch: pytest.MonkeyPatch,
         release: SkseRelease,
     ) -> None:
-        """Caso A/E/F: reconoce el release del catálogo y NO descarga un build viejo.
+        """Sin API key de Nexus: Sky-Claw corta ANTES del HITL y del egress, con mensaje accionable.
 
-        1.6.1170 es el caso más filoso: `SKSE_CONFIG["AE"]` todavía tiene la URL de
-        2.2.6, y el catálogo manda 2.2.8 por Nexus. La mutación "NEXUS → cae a la URL
-        de 2.2.6" tiene que morir acá: el mensaje nombra el pin del catálogo, no
-        ofrece ningún `/beta/`, y el gateway no se toca. También cubre que el HITL no
-        se pide antes de saber que la adquisición existe.
+        Con API key configurada estos mismos pasos descargan del mod 30379 (`SKSE_PR-3`
+        cubre el camino feliz en `TestAdquisicionNexusSkse`). Sin ella no hay adquisición
+        posible: el único camino lícito es el mensaje manual —y aun ahí no se ofrece el
+        payload viejo (2.2.6), ni se pide HITL, ni se escribe.
         """
         install_dir = _skyrim_limpio(tmp_path)
         antes = set(install_dir.iterdir())
@@ -459,25 +458,49 @@ class TestCompatibilidadPorRuntime:
 
 
 class TestAdquisicionDirectaPorIdentidad:
-    """`SKSE_CONFIG` es metadata de adquisición: se elige por identidad, nunca por edición."""
+    """`SKSE_CONFIG` es metadata de adquisición silverlock: se elige por identidad, nunca por edición."""
 
     def test_silverlock_resuelve_por_identidad_exacta(self) -> None:
         """Cada release con payload directo encuentra SU fila (dll + artifact)."""
         for release in _RELEASES_SILVERLOCK:
-            cfg = _adquisicion_directa_para(release)
+            cfg = _adquisicion_para(release)
+            assert isinstance(cfg, dict)
             assert cfg["dll"] == release.dll_name
             assert cfg["url"].rsplit("/", 1)[-1] == release.artifact_name
             assert cfg["url"].startswith("https://skse.silverlock.org/beta/")
 
-    def test_nexus_corta_con_el_pin_del_catalogo(self) -> None:
-        """Ningún release Nexus resuelve a un payload legacy (2.2.6 incluido)."""
+    def test_nexus_resuelve_a_la_spec_del_canal_sin_payload_legacy(self) -> None:
+        """Ningún release Nexus cae al overlay silverlock (incluido el 2.2.6).
+
+        Vuelven a la única spec del canal: mod 30379, familia `SKSE64 Steam`. Cualquier
+        desvío hacia la tabla legacy (o su URL) es la mutación que este test existe
+        para matar.
+        """
         for release in _RELEASES_NEXUS:
-            with pytest.raises(ToolInstallError) as exc_info:
-                _adquisicion_directa_para(release)
-            mensaje = str(exc_info.value)
-            assert release.game_version in mensaje
-            assert release.skse_version in mensaje
-            assert "/beta/" not in mensaje
+            adq = _adquisicion_para(release)
+            assert isinstance(adq, tools_installer._SkseNexusAcquisition), (
+                "Nexus debe devolver la spec del canal, jamás una fila de SKSE_CONFIG"
+            )
+            assert adq.nexus_id == 30379
+            assert adq.display_name == "Skyrim Script Extender (SKSE64) Steam"
+            assert adq.loader_name == "skse64_loader.exe"
+
+    def test_nexus_con_familia_extrana_falla_cerrado(self) -> None:
+        """Si el catálogo declarara un release Nexus fuera de la familia SKSE64, corta.
+
+        El canal único no cubre un LE hipotético publicado en Nexus; la política é
+        resultado real y no hace fallback ni adivina.
+        """
+        hipotetico = SkseRelease(
+            game_version="1.9.32",
+            skse_version="9.9.9",
+            dll_name="skse_1_9_32.dll",
+            source=SkseSource.NEXUS,
+            artifact_name=None,
+        )
+
+        with pytest.raises(ToolInstallError, match="sólo cubre la familia SKSE64"):
+            _adquisicion_para(hipotetico)
 
     def test_dll_inexistente_en_la_tabla_falla_cerrado(self) -> None:
         """Un release cuyo DLL no está en SKSE_CONFIG no se adivina por edición."""
@@ -490,7 +513,7 @@ class TestAdquisicionDirectaPorIdentidad:
         )
 
         with pytest.raises(ToolInstallError, match="adquisición directa única"):
-            _adquisicion_directa_para(huerfano)
+            _adquisicion_para(huerfano)
 
     def test_silverlock_sin_artifact_name_falla_cerrado(self) -> None:
         """SILVERLOCK exige `artifact_name`: la identidad es DLL + archive, nunca sólo DLL.
@@ -508,7 +531,7 @@ class TestAdquisicionDirectaPorIdentidad:
         )
 
         with pytest.raises(ToolInstallError, match="artifact_name"):
-            _adquisicion_directa_para(sin_artifact)
+            _adquisicion_para(sin_artifact)
 
     def test_artifact_incoherente_falla_cerrado(self) -> None:
         """Mismo DLL pero archive distinto: la identidad no coincide y no se adivina."""
@@ -521,7 +544,7 @@ class TestAdquisicionDirectaPorIdentidad:
         )
 
         with pytest.raises(ToolInstallError, match="adquisición directa única"):
-            _adquisicion_directa_para(incoherente)
+            _adquisicion_para(incoherente)
 
     def test_dos_payloads_coherentes_falla_cerrado(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Si la tabla declara DOS payloads para la misma identidad, no se elige el primero.
@@ -533,16 +556,17 @@ class TestAdquisicionDirectaPorIdentidad:
         release = next(r for r in _RELEASES_SILVERLOCK if r.game_version == "1.5.97")
 
         with pytest.raises(ToolInstallError, match="2 payload"):
-            _adquisicion_directa_para(release)
+            _adquisicion_para(release)
 
     def test_ensure_skse_no_elige_compatibilidad_desde_skse_config(self) -> None:
         """Ancla de mutación: `ensure_skse` no puede leer `SKSE_CONFIG` para decidir.
 
-        El defecto que PR-2 cierra es exactamente `SKSE_CONFIG[edicion]` como fuente de
-        compatibilidad. La adquisición —que sí vive en `SKSE_CONFIG`— se resuelve en
-        `_adquisicion_directa_para(release)`, por identidad, y sólo DESPUÉS de que el
-        catálogo eligió el build. Si `ensure_skse` vuelve a mirar la tabla por su
-        cuenta, la puerta lateral edition-first está de vuelta y este test la nombra.
+        El defecto que PR-2 cerró es exactamente `SKSE_CONFIG[edicion]` como fuente de
+        compatibilidad. La adquisición —que sí vive en `SKSE_CONFIG` para los releases
+        silverlock— se resuelve en `_adquisicion_para(release)`, por identidad, y sólo
+        DESPUÉS de que el catálogo eligió el build. Si `ensure_skse` vuelve a mirar la
+        tabla por su cuenta, la puerta lateral edition-first está de vuelta y este test
+        la nombra.
         """
         import ast  # noqa: PLC0415 — solo lo usa esta ancla
 
@@ -556,5 +580,437 @@ class TestAdquisicionDirectaPorIdentidad:
 
         assert not usos, (
             "ensure_skse volvió a leer SKSE_CONFIG directamente: la adquisición tiene que pasar por "
-            f"_adquisicion_directa_para (líneas {usos})"
+            f"_adquisicion_para (líneas {usos})"
         )
+
+
+_MD5_OK = "0" * 32
+
+
+class _DownloaderMock:
+    """NexusDownloader mockeable: registra el ORDEN de las llamadas públicas.
+
+    Nada de esto toca la red ni el staging real del downloader: los métodos son
+    ``AsyncMock`` con efectos locales, y ``download`` devuelve el archive que se le
+    decidió (un `.7z` de juguete que el flujo limpia con ``unlink(missing_ok=True)``).
+    """
+
+    def __init__(self) -> None:
+        self.eventos: list[str] = []
+        self.files: list[dict] = []
+        self.info = None
+        self.archive: pathlib.Path | None = None
+        self.list_files = AsyncMock(side_effect=self._list_files)
+        self.get_file_info = AsyncMock(side_effect=self._get_file_info)
+        self.download = AsyncMock(side_effect=self._download)
+
+    async def _list_files(self, *_args: object, **_kwargs: object) -> list[dict]:
+        self.eventos.append("list_files")
+        return self.files
+
+    async def _get_file_info(self, *_args: object, **_kwargs: object):
+        self.eventos.append("get_file_info")
+        return self.info
+
+    async def _download(self, *_args: object, **_kwargs: object):
+        self.eventos.append("download")
+        return self.archive
+
+
+def _info_nexus(release: SkseRelease, *, md5: str | None = _MD5_OK, size_bytes: int = 930 * 1024, nombre: str = "f.7z"):
+    from sky_claw.app.scraper.nexus_downloader import FileInfo
+
+    return FileInfo(
+        nexus_id=30379,
+        file_id=795992,
+        file_name=nombre,
+        size_bytes=size_bytes,
+        md5=md5 or "",
+        download_url="",
+    )
+
+
+def _entrada_nexus(
+    release: SkseRelease,
+    *,
+    primary: bool = False,
+    deleted: bool = False,
+    nombre: str = "Skyrim Script Extender (SKSE64) Steam",
+) -> dict:
+    return {
+        "file_id": 790000,
+        "name": nombre,
+        "mod_version": release.skse_version,
+        "category_name": "DELETED" if deleted else "MAIN",
+        "is_primary": primary,
+    }
+
+
+@pytest.fixture
+def installer_con_nexus(tmp_path: pathlib.Path) -> tuple[ToolsInstaller, _DownloaderMock]:
+    """Installer con la `nexus_downloader_factory` inyectada y un downloader mockeado.
+
+    Es el hermano del fixture `installer` de más arriba; la diferencia es sólo el
+    constructor y su factory lazy (la misma firma nueva del PR-3).
+    """
+    lock_manager = MagicMock()
+    lock_manager.acquire_lock = AsyncMock(return_value=MagicMock(resource_id="tools-install:test"))
+    lock_manager.release_lock = AsyncMock(return_value=True)
+    lock_manager.renew_lock = AsyncMock(return_value=True)
+
+    downloader = _DownloaderMock()
+    return ToolsInstaller(
+        hitl=HITLGuard(notify_fn=None, timeout=5),
+        gateway=NetworkGateway(EgressPolicy(block_private_ips=False)),
+        path_validator=PathValidator(roots=[tmp_path, pathlib.Path(tempfile.gettempdir()) / "sky_claw"]),
+        lock_manager=lock_manager,
+        install_ttl=60.0,
+        nexus_downloader_factory=lambda: downloader,
+    ), downloader
+
+
+class TestAdquisicionNexusSkse:
+    """Flujo Nexus de PR-3: orden, identidad del archivo y gates de integridad."""
+
+    # -- Camino feliz ---------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("release", _RELEASES_NEXUS, ids=_id)
+    async def test_nexus_descarga_instala_y_reporta_version_del_catalogo(
+        self,
+        installer_con_nexus: tuple[ToolsInstaller, _DownloaderMock],
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        release: SkseRelease,
+    ) -> None:
+        """1.6.1170/1.7.99/1.7.104 → 2.2.8/2.3.0/2.3.1 por Nexus: happy path completo.
+
+        Toda la cadena es real salvo el egress del downloader (que es lo único que se
+        mockea). El archive se limpia siempre y el resultado reporta la versión del
+        catálogo, no el nombre del archivo subido.
+        """
+        installer, downloader = installer_con_nexus
+        install_dir = _skyrim_limpio(tmp_path)
+
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: _edicion_de(release))
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: release.game_version)
+
+        downloader.files = [_entrada_nexus(release, primary=True)]
+        downloader.info = _info_nexus(release, nombre=f"SKSE-{release.skse_version}-steam.7z")
+        archive = tmp_path / "staging-dl" / f"SKSE-{release.skse_version}.7z"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_bytes(b"7z-magic")
+        downloader.archive = archive
+
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        def _extract(_archive: pathlib.Path, destino: pathlib.Path) -> None:
+            destino.mkdir(parents=True, exist_ok=True)
+            (destino / "skse64_loader.exe").write_bytes(b"MZ")
+            (destino / release.dll_name).write_bytes(b"MZ")
+
+        installer._extract = _extract  # type: ignore[method-assign]
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        res = await installer.ensure_skse(install_dir, session)
+
+        assert res.already_existed is False
+        assert res.tool_name == "SKSE"
+        assert res.exe_path == install_dir / "skse64_loader.exe"
+        assert res.version == release.skse_version, "la versión sale del catálogo, no del archivo"
+        assert res.verification is InstallVerification.VERIFIED
+        assert (install_dir / "skse64_loader.exe").exists()
+        assert (install_dir / release.dll_name).exists(), "el payload del release se copió al directorio del juego"
+        assert not archive.exists(), "el archive del downloader se limpia siempre"
+
+    @pytest.mark.asyncio
+    async def test_orden_operaciones_nexus(
+        self,
+        installer_con_nexus: tuple[ToolsInstaller, _DownloaderMock],
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Orden ASSERTED: approval → list_files → get_file_info → download → extract.
+
+        Este orden es parte del contrato: el HITL ANTES del egress, y el egress antes
+        de escribir el juego. Cualquier reorganización que descargue antes de la
+        aprobación, o que escriba el juego antes de validar, cambia esta lista y el
+        test lo nombra entera.
+        """
+        installer, downloader = installer_con_nexus
+        install_dir = _skyrim_limpio(tmp_path)
+
+        release = next(r for r in _RELEASES_NEXUS if r.game_version == "1.7.104")
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: release.game_version)
+
+        downloader.files = [_entrada_nexus(release, primary=True)]
+        downloader.info = _info_nexus(release, nombre="s.7z")
+        archivo = tmp_path / "staging-dl" / "s.7z"
+        archivo.parent.mkdir(parents=True, exist_ok=True)
+        archivo.write_bytes(b"7z")
+        downloader.archive = archivo
+
+        eventos: list[str] = downloader.eventos
+
+        async def _aprobacion(**_kwargs):
+            eventos.append("approval")
+            return Decision.APPROVED
+
+        installer._hitl.request_approval = AsyncMock(side_effect=_aprobacion)  # type: ignore[method-assign]
+
+        def _extract(_a: pathlib.Path, destino: pathlib.Path) -> None:
+            eventos.append("extract")
+            destino.mkdir(parents=True, exist_ok=True)
+            (destino / "skse64_loader.exe").write_bytes(b"M")
+            (destino / release.dll_name).write_bytes(b"M")
+
+        installer._extract = _extract  # type: ignore[method-assign]
+
+        async def _copy(*_args: object, **_kwargs: object) -> None:
+            eventos.append("copy")
+
+        async def _cleanup(*_args: object, **_kwargs: object) -> None:
+            eventos.append("cleanup")
+
+        installer._copy_skse_files = _copy  # type: ignore[method-assign]
+        installer._cleanup_orphaned_skse_dlls = _cleanup  # type: ignore[method-assign]
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        await installer.ensure_skse(install_dir, session)
+
+        assert eventos == [
+            "approval",
+            "list_files",
+            "get_file_info",
+            "download",
+            "extract",
+            "copy",
+            "cleanup",
+        ]
+
+    # -- Selección del archivo -----------------------------------------
+
+    def test_seleccion_nexus_unica(self) -> None:
+        """Un solo candidato: directo, sin gates extra."""
+        from sky_claw.local.tools_installer import _seleccionar_archivo_nexus
+
+        release = next(r for r in _RELEASES_NEXUS if r.game_version == "1.7.104")
+        entrada = _entrada_nexus(release, primary=True)
+
+        elegido = _seleccionar_archivo_nexus([entrada], release)
+        assert elegido is entrada
+
+    def test_seleccion_nexus_duplicado_con_un_primario_gana_al_primario(self) -> None:
+        """Re-subidas del mismo build: sólo `is_primary` desempata, no timestamp."""
+        from sky_claw.local.tools_installer import _seleccionar_archivo_nexus
+
+        release = next(r for r in _RELEASES_NEXUS if r.game_version == "1.7.104")
+        viejo = dict(_entrada_nexus(release, primary=False), file_id=1)
+        primario = dict(_entrada_nexus(release, primary=True), file_id=2)
+
+        elegido = _seleccionar_archivo_nexus([viejo, primario], release)
+        assert elegido["file_id"] == 2
+
+    def test_seleccion_nexus_duplicado_sin_primario_falla_cerrado(self) -> None:
+        """Duplicados sin señal inequívoca de primario: fail-closed."""
+        from sky_claw.local.tools_installer import _seleccionar_archivo_nexus
+
+        release = next(r for r in _RELEASES_NEXUS if r.game_version == "1.7.104")
+        a = _entrada_nexus(release, primary=False)
+        b = _entrada_nexus(release, primary=False)
+
+        with pytest.raises(ToolInstallError, match="archivo ÚNICO"):
+            _seleccionar_archivo_nexus([a, b], release)
+
+    def test_seleccion_nexus_no_matchea_otra_version_del_mismo_canal(self) -> None:
+        """El 2.2.6 sigue disponible en Nexus pero no es match del 2.2.8 del catálogo."""
+        from sky_claw.local.tools_installer import _seleccionar_archivo_nexus
+
+        release = next(r for r in _RELEASES_NEXUS if r.game_version == "1.6.1170")
+        viejo = {
+            "file_id": 470991,
+            "name": "Skyrim Script Extender (SKSE64) Steam",
+            "mod_version": "2.2.6",
+            "category_name": "OLD_VERSION",
+            "is_primary": False,
+        }
+
+        with pytest.raises(ToolInstallError, match="archivo ÚNICO"):
+            _seleccionar_archivo_nexus([viejo], release)
+
+    def test_seleccion_nexus_no_matchea_gog_ni_deleted(self) -> None:
+        """El GOG (otra familia explícita) y los DELETED nunca se eligen."""
+        from sky_claw.local.tools_installer import _seleccionar_archivo_nexus
+
+        release = next(r for r in _RELEASES_NEXUS if r.game_version == "1.7.104")
+        files = [
+            _entrada_nexus(release, primary=True, nombre="Skyrim Script Extender (SKSE64) GOG"),
+            _entrada_nexus(release, primary=True, deleted=True),
+        ]
+
+        with pytest.raises(ToolInstallError, match="archivo ÚNICO"):
+            _seleccionar_archivo_nexus(files, release)
+
+    # -- Gates de integridad antes del download ---------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("md5", "size_bytes", "nombre", "motivo"),
+        [
+            (None, 100, "f.7z", "sin md5"),
+            ("", 100, "f.7z", "md5 vacío"),
+            ("zz-not-hex-zz", 100, "f.7z", "md5 no hexadecimal"),
+            (_MD5_OK, 0, "f.7z", "tamaño desconocido"),
+            (_MD5_OK, tools_installer._SKSE_MAX_ARCHIVE_BYTES + 1, "f.7z", "supera el cap"),
+            (_MD5_OK, 100, "f.zip", "formato no soportado por el extractor"),
+        ],
+    )
+    async def test_nexus_integridad_corta_antes_de_download(
+        self,
+        installer_con_nexus: tuple[ToolsInstaller, _DownloaderMock],
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        md5: str | None,
+        size_bytes: int,
+        nombre: str,
+        motivo: str,
+    ) -> None:
+        """El gate es PRE-download: sin ello, los límites silverlock se habrían perdido
+        en el camino Nexus (el downloader general admite hasta 4 GiB)."""
+        installer, downloader = installer_con_nexus
+        install_dir = _skyrim_limpio(tmp_path)
+        antes = set(install_dir.iterdir())
+
+        release = next(r for r in _RELEASES_NEXUS if r.game_version == "1.7.104")
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: release.game_version)
+
+        downloader.files = [_entrada_nexus(release, primary=True)]
+        downloader.info = _info_nexus(release, md5=md5, size_bytes=size_bytes, nombre=nombre)
+
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError):
+            await installer.ensure_skse(install_dir, session)
+
+        downloader.download.assert_not_awaited(), f"el gate de integridad corta antes: {motivo}"
+        assert set(install_dir.iterdir()) == antes
+
+    # -- TOCTOU y cleanup -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_nexus_toctou_aborta_si_el_runtime_cambia_durante_download(
+        self,
+        installer_con_nexus: tuple[ToolsInstaller, _DownloaderMock],
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """El segundo gate vuelve a leer el PE y lo compara contra release.game_version.
+
+        Si el runtime cambió durante la ventana de la descarga, se corta — el archive
+        Nexus ya descargado se descarta en `finally`, la copia nunca corre y el
+        directorio del juego queda intacto.
+        """
+        installer, downloader = installer_con_nexus
+        install_dir = _skyrim_limpio(tmp_path)
+        antes = set(install_dir.iterdir())
+
+        release = next(r for r in _RELEASES_NEXUS if r.game_version == "1.7.99")
+        siguiente = next(r for r in _RELEASES_NEXUS if r.game_version == "1.7.104")
+
+        version_viva = {"v": release.game_version}
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: version_viva["v"])
+
+        downloader.files = [_entrada_nexus(release, primary=True)]
+        downloader.info = _info_nexus(release, nombre="s.7z")
+        archivo = tmp_path / "staging-dl" / "s.7z"
+        archivo.parent.mkdir(parents=True, exist_ok=True)
+        archivo.write_bytes(b"7z")
+
+        async def _download_y_cambia(_info: object, _session: object) -> pathlib.Path:
+            downloader.eventos.append("download")
+            version_viva["v"] = siguiente.game_version
+            return archivo
+
+        downloader.download = AsyncMock(side_effect=_download_y_cambia)
+
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+        installer._find_skse_root = MagicMock(return_value=tmp_path / "r")  # type: ignore[method-assign]
+        installer._copy_skse_files = AsyncMock()  # type: ignore[method-assign]
+        installer._cleanup_orphaned_skse_dlls = AsyncMock()  # type: ignore[method-assign]
+        installer._extract = MagicMock(side_effect=lambda _a, d: d.mkdir(parents=True, exist_ok=True))  # type: ignore[method-assign]
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(ToolInstallError, match="1.7.104"):
+            await installer.ensure_skse(install_dir, session)
+
+        installer._copy_skse_files.assert_not_awaited()
+        installer._cleanup_orphaned_skse_dlls.assert_not_awaited()
+        assert set(install_dir.iterdir()) == antes
+        assert not archivo.exists(), "el archive descargado se limpia aunque el TOCTOU aborte"
+
+    @pytest.mark.asyncio
+    async def test_nexus_cleanup_del_archive_si_la_extraccion_falla(
+        self,
+        installer_con_nexus: tuple[ToolsInstaller, _DownloaderMock],
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Extracción corrupta: el archive no queda pseudo-cacheado para el próximo intento."""
+        installer, downloader = installer_con_nexus
+        install_dir = _skyrim_limpio(tmp_path)
+
+        release = next(r for r in _RELEASES_NEXUS if r.game_version == "1.7.104")
+        monkeypatch.setattr(tools_installer, "detect_skyrim_edition", lambda _exe: SkyrimEdition.AE)
+        monkeypatch.setattr(tools_installer, "read_skyrim_version", lambda _exe: release.game_version)
+
+        downloader.files = [_entrada_nexus(release, primary=True)]
+        downloader.info = _info_nexus(release, nombre="s.7z")
+        archivo = tmp_path / "staging-dl" / "s.7z"
+        archivo.parent.mkdir(parents=True, exist_ok=True)
+        archivo.write_bytes(b"7z")
+        downloader.archive = archivo
+
+        installer._hitl.request_approval = AsyncMock(return_value=Decision.APPROVED)  # type: ignore[method-assign]
+
+        def _falla(_a: pathlib.Path, _d: pathlib.Path) -> None:
+            raise RuntimeError("7z corrupto")
+
+        installer._extract = _falla  # type: ignore[method-assign]
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+
+        with pytest.raises(RuntimeError, match="corrupto"):
+            await installer.ensure_skse(install_dir, session)
+
+        assert not archivo.exists(), "la extracción fallida también limpia el archive"
+
+    # -- Wiring ------------------------------------------------------------
+
+    def test_app_context_inyecta_la_factory_del_downloader_nexus(self) -> None:
+        """Ancla del wiring productivo: el `ToolsInstaller` de `AppContext` debe nacer
+        con `nexus_downloader_factory=` para que el camino Nexus exista post-boot.
+
+        Esta prueba no arranca `AppContext` (rompería con symlinks/locks reales); lo que
+        ancla es la JUNTA — un constructor que no la pase rompe el autoinstall completo.
+        """
+        import ast  # noqa: PLC0415 — solo lo usa esta ancla
+
+        fuente = (pathlib.Path(__file__).parent.parent / "sky_claw" / "app_context.py").read_text(encoding="utf-8")
+        arbol = ast.parse(fuente)
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Call):
+                callee = getattr(nodo.func, "id", None) or getattr(nodo.func, "attr", "")
+                if callee == "ToolsInstaller":
+                    kwargs = {k.arg for k in nodo.keywords if isinstance(k, ast.keyword)}
+                    assert "nexus_downloader_factory" in kwargs, (
+                        "AppContext construye ToolsInstaller sin nexus_downloader_factory: "
+                        "el autoinstall Nexus quedaría siempre cortado aunque el PR-3 esté verde."
+                    )
+                    return
+        raise AssertionError("no encontré la construcción de `ToolsInstaller` en app_context.py")
