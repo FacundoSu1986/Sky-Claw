@@ -497,7 +497,7 @@ class TestAcquireRelease:
 class TestFlushFailureCleanup:
     """Post-review P1/P2: fallo de flush post-escritura durante ADQUISICIÓN."""
 
-    _LOCKS_DIR = pathlib.PurePath("/tmp/fake-locks")
+    _LOCKS_DIR = pathlib.PureWindowsPath("C:/fake-locks")
 
     def test_flush_falla_cleanup_released_y_la_siguiente_adquisicion_continua(self) -> None:
         kernel = _FakeLockKernel()
@@ -590,13 +590,13 @@ class TestWin32CausalGoldenLock:
             # Mientras el lock está tomado NO se lee el archivo por pathname
             # (sería PermissionError: justamente lo que dwShareMode=0 garantiza).
             # La evidencia vive en handle.identity, propiedad del owner.
-            assert identity.phase == "authorization_boundary"
+            assert identity.phase == "AUTHORIZATION_BOUNDARY"
             assert identity.owner_pid == __import__("os").getpid()
             assert identity.lock_key.startswith("skyclaw_golden_lock_")
         finally:
             handle.release()
         # Sólo DESPUÉS del release se lee por pathname: fase residual RELEASED.
-        assert json.loads((locks_dir / f"{identity.lock_key}.lock").read_bytes())["phase"] == "released"
+        assert json.loads((locks_dir / f"{identity.lock_key}.lock").read_bytes())["phase"] == "RELEASED"
 
     def test_release_reabre_lock_residual(self, tmp_path: pathlib.Path) -> None:
         locks_dir = tmp_path / "locks"
@@ -621,7 +621,7 @@ class TestWin32CausalGoldenLock:
         for _cycle in range(3):
             handle = _acquire_golden_mutation_lock_at(locks_dir, _VOLUME_SERIAL, _ROOT_FILE_ID, _VALID_OP_ID)
             try:
-                assert handle.identity.phase == "authorization_boundary"
+                assert handle.identity.phase == "AUTHORIZATION_BOUNDARY"
                 lock_file = locks_dir / f"{handle.identity.lock_key}.lock"
             finally:
                 handle.release()
@@ -631,4 +631,4 @@ class TestWin32CausalGoldenLock:
             assert raw.decode("utf-8")[end_index:].strip() == "", (
                 f"Reapertura {_cycle}: el lock contiene contenido colgado tras el JSON (concatenación detectada)"
             )
-            assert parsed["phase"] == "released"
+            assert parsed["phase"] == "RELEASED"
