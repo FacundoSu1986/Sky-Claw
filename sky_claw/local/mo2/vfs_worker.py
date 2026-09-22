@@ -477,10 +477,10 @@ async def _session_tool_handler(
         VfsProcessSpec(executable=executable, arguments=argv, cwd=cwd),
         event_sink=event_sink,
     )
-    # ``success`` es sólo el estado interno del handler: el daemon todavía debe
-    # cruzar el exit code con log/artefacto. La captura truncada es evidencia
-    # incompleta y por eso nunca se presenta como éxito interno.
-    proceso_ok = outcome.exit_code == 0 and not (outcome.stdout_truncated or outcome.stderr_truncated)
+    # Este ``success`` no es el veredicto final del ritual: expresa únicamente
+    # que el proceso GUI devolvió 0. La captura truncada es diagnóstico y viaja
+    # en ``tool_result``; el daemon sigue cruzando exit code con log y artefacto.
+    proceso_ok = outcome.exit_code == 0
     return VfsToolExecution(
         success=proceso_ok,
         message="" if outcome.exit_code == 0 else f"{manifest.job.tool_id} terminó con código {outcome.exit_code}",

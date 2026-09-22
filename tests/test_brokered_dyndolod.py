@@ -14,7 +14,11 @@ from sky_claw.local.mo2.brokered_dyndolod import (
 )
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
 from sky_claw.local.mo2.vfs_contracts import VfsJob, VfsProtocolError
-from sky_claw.local.mo2.vfs_worker import _validate_session_launch
+from sky_claw.local.mo2.vfs_worker import (
+    VfsProcessOutcome,
+    _session_tool_handler,
+    _validate_session_launch,
+)
 from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODProcess,
     DynDOLODRunner,
@@ -247,6 +251,36 @@ def test_payload_brokered_es_cerrado_y_no_acepta_exec_arbitrario(tmp_path: pathl
         **common,
     )
     assert literal.payload["argv"] == ["-sse", "literal;not-a-shell-command"]
+
+
+@pytest.mark.asyncio
+async def test_captura_truncada_es_warning_y_no_fallo_de_herramienta(monkeypatch) -> None:
+    manifest = MagicMock()
+    manifest.job.tool_id = "texgen"
+    sink = MagicMock()
+    monkeypatch.setattr(
+        "sky_claw.local.mo2.vfs_worker._validate_session_launch",
+        lambda _manifest: (pathlib.Path("/tmp/TexGenx64.exe"), (), pathlib.Path("/tmp")),
+    )
+    monkeypatch.setattr(
+        "sky_claw.local.mo2.vfs_worker.run_brokered_process",
+        lambda *_args, **_kwargs: asyncio.sleep(
+            0,
+            result=VfsProcessOutcome(
+                exit_code=0,
+                stdout="bounded",
+                stderr="",
+                duration_seconds=1.0,
+                stdout_truncated=True,
+                stderr_truncated=False,
+            ),
+        ),
+    )
+
+    result = await _session_tool_handler(manifest, sink)
+
+    assert result.success is True
+    assert result.tool_result == {"stdout_truncated": True, "stderr_truncated": False}
 
 
 def test_worker_rechaza_p_plugins_de_otro_perfil(tmp_path: pathlib.Path) -> None:
