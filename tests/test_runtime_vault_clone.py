@@ -1053,17 +1053,25 @@ class TestRuntimeCloneSuiteCanonico:
         py_files = list(pkg_dir.glob("*.py"))
         discovered_modules = {p.stem for p in py_files}
 
-        # Ancla de igualdad exacta para evitar hermanos no cableados
+        # Ancla de igualdad exacta para evitar hermanos no cableados.
+        # GP2-S3b-1 añade deliberadamente los 6 módulos de la frontera de
+        # autorización privilegiada (todos cableados vía __init__.__all__).
         expected_modules = {
             "__init__",
+            "authorization_context",
             "clone",
+            "coordinator_identity",
             "golden",
+            "golden_mutation_lock",
             "golden_protection_plan",
             "inventory",
             "locking",
             "models",
             "node_evidence",
+            "operator_token",
             "planning_orchestrator",
+            "ppsc",
+            "privileged_boundary",
             "protection",
             "quiescence",
             "target_dacl",
