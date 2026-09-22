@@ -68,11 +68,25 @@ class _FakeOperatorTokenAdapter:
         self.fail_duplicate = False
         self.fail_user_sid = False
         self.token_type_result = 1  # TokenPrimary
+        self.creation_time_result: int | None = 133_456_789_012_345_678
+        self.image_path_result: str | None = "C:\\Program Files\\Sky-Claw\\sky-claw.exe"
+        self.fail_creation_time = False
+        self.fail_image_path = False
 
     def open_process(self, desired_access: int, pid: int) -> int:
         if self.fail_open_process:
             raise OpenCoordinatorProcessError("proceso no abrible")
         return _FAKE_HANDLES[0]
+
+    def read_process_creation_time(self, process_handle: int) -> int | None:
+        if self.fail_creation_time:
+            return None
+        return self.creation_time_result
+
+    def read_process_image_path(self, process_handle: int) -> str | None:
+        if self.fail_image_path:
+            return None
+        return self.image_path_result
 
     def open_process_token(self, process_handle: int, desired_access: int) -> int:
         if self.fail_open_token:
@@ -230,6 +244,64 @@ class TestOts04FallasApertura:
         with pytest.raises(OperatorIdentityEvidenceError):
             acquire_operator_primary_token_from_coordinator(4242, adapter=adapter)
         assert sorted(adapter.closed) == sorted(_FAKE_HANDLES)
+
+
+# ============================================================================
+# OTS-TOCTOU: Verificación atada al mismo handle (P1 anti-PID-reuse)
+# ============================================================================
+
+
+class TestOtsToctouHandleBinding:
+    """P1: Verificación de creation-time e imagen atada al MISMO handle del token."""
+
+    def _expected_identity(self) -> CoordinatorProcessIdentity:
+        return CoordinatorProcessIdentity(
+            pid=4242,
+            creation_time=133_456_789_012_345_678,
+            image_path="C:\\Program Files\\Sky-Claw\\sky-claw.exe",
+        )
+
+    def test_toctou_coordinator_identity_feliz(self) -> None:
+        adapter = _FakeOperatorTokenAdapter()
+        identity = self._expected_identity()
+        token = acquire_operator_primary_token_from_coordinator(identity, adapter=adapter)
+        assert token.closed is False
+        assert sorted(adapter.closed) == sorted(_FAKE_HANDLES[:2])
+        token.close()
+
+    def test_toctou_creation_time_mismatch_rechaza_y_cierra_process(self) -> None:
+        adapter = _FakeOperatorTokenAdapter()
+        adapter.creation_time_result = 999_999_999_999
+        identity = self._expected_identity()
+        with pytest.raises(CoordinatorIdentityBindingError) as exc_info:
+            acquire_operator_primary_token_from_coordinator(identity, adapter=adapter)
+        assert "ProcessCreationTime sobre el process handle abierto" in str(exc_info.value)
+        assert adapter.closed == [_FAKE_HANDLES[0]]
+
+    def test_toctou_image_mismatch_rechaza_y_cierra_process(self) -> None:
+        adapter = _FakeOperatorTokenAdapter()
+        adapter.image_path_result = "C:\\evil\\malware.exe"
+        identity = self._expected_identity()
+        with pytest.raises(CoordinatorIdentityBindingError) as exc_info:
+            acquire_operator_primary_token_from_coordinator(identity, adapter=adapter)
+        assert "La imagen sobre el process handle abierto" in str(exc_info.value)
+        assert adapter.closed == [_FAKE_HANDLES[0]]
+
+    def test_toctou_creation_time_ilegible_rechaza(self) -> None:
+        adapter = _FakeOperatorTokenAdapter()
+        adapter.fail_creation_time = True
+        identity = self._expected_identity()
+        with pytest.raises(CoordinatorIdentityBindingError):
+            acquire_operator_primary_token_from_coordinator(identity, adapter=adapter)
+        assert adapter.closed == [_FAKE_HANDLES[0]]
+
+    def test_toctou_image_ilegible_rechaza(self) -> None:
+        adapter = _FakeOperatorTokenAdapter()
+        adapter.fail_image_path = True
+        identity = self._expected_identity()
+        with pytest.raises(CoordinatorIdentityBindingError):
+            acquire_operator_primary_token_from_coordinator(identity, adapter=adapter)
+        assert adapter.closed == [_FAKE_HANDLES[0]]
 
 
 # ============================================================================
@@ -454,8 +526,8 @@ class TestOtsStrategy:
     def test_ancla_sin_parametros_de_bypass(self) -> None:
         params = inspect.signature(acquire_operator_primary_token_from_coordinator).parameters
         assert "case" not in params and "bypass" not in params
-        # La adquisición v1 no expone canal WTS: se resuelve solo para el coordinador.
-        assert set(params) == {"coordinator_pid", "adapter"}
+        # La adquisición v1 no expone canal WTS: se resuelve solo para el coordinador (identidad o pid).
+        assert set(params) == {"coordinator", "adapter"}
 
 
 # ============================================================================

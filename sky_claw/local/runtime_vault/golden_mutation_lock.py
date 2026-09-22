@@ -137,6 +137,10 @@ _ERROR_LOCK_VIOLATION = 33
 _ERROR_ACCESS_DENIED = 5
 _ERROR_INVALID_PARAMETER = 87
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_SYNCHRONIZE = 0x00100000
+_WAIT_OBJECT_0 = 0x00000000
+_WAIT_TIMEOUT = 0x00000102
+_WAIT_FAILED = 0xFFFFFFFF
 
 if sys.platform == "win32":
     from ctypes import wintypes as _wt
@@ -212,6 +216,8 @@ if sys.platform == "win32":
     _kernel32.GetCurrentProcess.restype = ctypes.c_void_p
     _kernel32.ProcessIdToSessionId.argtypes = [_wt.DWORD, ctypes.POINTER(_wt.DWORD)]
     _kernel32.ProcessIdToSessionId.restype = _wt.BOOL
+    _kernel32.WaitForSingleObject.argtypes = [_wt.HANDLE, _wt.DWORD]
+    _kernel32.WaitForSingleObject.restype = _wt.DWORD
 
 
 def _ensure_windows() -> None:
@@ -578,8 +584,8 @@ class _Win32GoldenLockKernel:
             raise GoldenLockIoError(f"FlushFileBuffers falló sobre el lock: código {err}", win32_error=err)
 
     def is_owner_alive(self, owner_pid: int, owner_creation_time: int) -> bool | None:
-        """True: proceso vivo con creation-time coincidente; False: muerto/PID reusado; None: indeterminable."""
-        handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, owner_pid)
+        """True: proceso vivo con creation-time coincidente; False: muerto/PID reusado/terminado; None: indeterminable."""
+        handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION | _SYNCHRONIZE, False, owner_pid)
         if _is_invalid_handle(handle):
             err = ctypes.get_last_error()
             if err == _ERROR_INVALID_PARAMETER:
@@ -598,7 +604,17 @@ class _Win32GoldenLockKernel:
                 ctypes.byref(dummy_user),
             ):
                 return None
-            return _filetime_to_uint64(creation) == owner_creation_time
+            if _filetime_to_uint64(creation) != owner_creation_time:
+                return False  # PID reusado: el dueño original murió
+
+            # Win32 Synchronization: el kernel process object queda signaled (WAIT_OBJECT_0)
+            # cuando el proceso termina, incluso si otros handles siguen abiertos (zombie process).
+            wait_result = _kernel32.WaitForSingleObject(handle, 0)
+            if wait_result == _WAIT_OBJECT_0:
+                return False  # Proceso terminado (objeto zombie en kernel): lock huérfano
+            if wait_result == _WAIT_TIMEOUT:
+                return True  # Proceso activo / no signaled: dueño vivo
+            return None  # WAIT_FAILED u otro error: indeterminable, fail-closed por ambigüedad
         finally:
             _kernel32.CloseHandle(handle)
 

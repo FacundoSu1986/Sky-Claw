@@ -76,6 +76,7 @@ class _FakeLockKernel:
         self._next_handle = 10
         self.fail_flush = False
         self.fail_write = False
+        self.owner_terminated = False
         # Inyección causal por intento (1-based) para orquestaciones multi-flush.
         self.flush_attempts = 0
         self.fail_flush_on_attempts: set[int] = set()
@@ -112,7 +113,11 @@ class _FakeLockKernel:
         self.flush_calls.append(self.open_handles[handle])
 
     def is_owner_alive(self, owner_pid: int, owner_process_creation_time: int) -> bool | None:
-        return self.owner_alive
+        if self.owner_alive is False or self.owner_terminated:
+            return False
+        if self.owner_alive is None:
+            return None
+        return True
 
     def current_process_identity(self) -> tuple[int, int, int]:
         return self.identity
@@ -322,6 +327,13 @@ class TestPreexistingClassification:
             classify_preexisting_lock(self._existing(), owner_alive=False) is PreexistingLockDisposition.ORPHANED_LOCK
         )
 
+    def test_lock_06_zombie_owner_terminado_es_orfanado(self) -> None:
+        # P2: Proceso zombie en el kernel (creation_time coincide pero WaitForSingleObject
+        # retorna WAIT_OBJECT_0 -> is_owner_alive es False) debe clasificarse como ORPHANED_LOCK.
+        assert (
+            classify_preexisting_lock(self._existing(), owner_alive=False) is PreexistingLockDisposition.ORPHANED_LOCK
+        )
+
     def test_residual_released_nunca_busy(self) -> None:
         assert classify_preexisting_lock(self._existing(GoldenLockPhase.RELEASED.value), owner_alive=None) is (
             PreexistingLockDisposition.RESIDUAL_RELEASED
@@ -385,6 +397,36 @@ class TestAcquireRelease:
                 programdata_resolver=lambda: pathlib.PureWindowsPath("C:/ProgramData"),
             )
         # El lock huérfano nunca se roba ni reabre tras el fallo tipado.
+        assert kernel.busy_paths == set()
+        assert len(kernel.close_calls) == 1
+
+    def test_lock_06_zombie_process_adquisicion_detecta_orfanado(self) -> None:
+        # P2: Proceso zombie cuyo handle de archivo se cerró al morir, pero su objeto
+        # kernel proceso sigue existiendo por un handle externo (AV, WerFault).
+        # El nuevo mutador lo detecta vía kernel.is_owner_alive == False -> GoldenLockOrphanedError.
+        kernel = _FakeLockKernel()
+        path = derive_golden_lock_path(
+            _VOLUME_SERIAL, _ROOT_FILE_ID, programdata_resolver=lambda: pathlib.PureWindowsPath("C:/ProgramData")
+        )
+        stale = GoldenLockMetadata(
+            lock_key=derive_golden_lock_key(_VOLUME_SERIAL, _ROOT_FILE_ID),
+            owner_pid=888,
+            owner_process_creation_time=1,
+            session_id=9,
+            operation_id="11111111-2222-3333-4444-555555555555",
+            phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value,
+            created_at=1_758_400_000,
+        )
+        kernel.files[str(path)] = serialize_golden_lock_metadata(stale)
+        kernel.owner_terminated = True  # Señalizado: proceso terminado (zombie)
+        with pytest.raises(GoldenLockError):
+            acquire_golden_mutation_lock(
+                _VOLUME_SERIAL,
+                _ROOT_FILE_ID,
+                _VALID_OP_ID,
+                kernel=kernel,
+                programdata_resolver=lambda: pathlib.PureWindowsPath("C:/ProgramData"),
+            )
         assert kernel.busy_paths == set()
         assert len(kernel.close_calls) == 1
 

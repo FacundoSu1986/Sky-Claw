@@ -172,6 +172,8 @@ if sys.platform == "win32":
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     _kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32.GetSystemDirectoryW.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    _kernel32.GetSystemDirectoryW.restype = wintypes.UINT
 
 
 def _ensure_windows() -> None:
@@ -179,6 +181,22 @@ def _ensure_windows() -> None:
         raise PrivilegedBoundaryUnsupportedError(
             "La frontera de elevación privilegiada solo está soportada en Windows (ShellExecuteExW/runas)"
         )
+
+
+def _get_trusted_system_directory() -> str:
+    """Obtiene el directorio de sistema Windows (p. ej. C:\\Windows\\System32) vía Win32 API.
+
+    No confía en variables de entorno como os.environ["SystemRoot"], las cuales
+    un proceso no elevado no confiable (Actor D) podría alterar antes de la elevación.
+    """
+    _ensure_windows()
+    capacity = 260
+    buffer = ctypes.create_unicode_buffer(capacity)
+    length = _kernel32.GetSystemDirectoryW(buffer, capacity)
+    if length == 0 or length > capacity:
+        err = ctypes.get_last_error()
+        raise ElevationLaunchError(f"GetSystemDirectoryW falló al resolver directorio seguro: código {err}")
+    return str(buffer.value)
 
 
 def _is_invalid_handle(handle: Any) -> bool:
@@ -572,9 +590,10 @@ def launch_privileged_helper(
     if not isinstance(image_path, pathlib.Path):
         raise HelperImageValidationError("El resolver de imagen no produjo una ruta validable")
 
+    trusted_directory = _get_trusted_system_directory()
     parameters = build_helper_arguments(request)
     runner = _shell_execute_runas if shell_runner is None else shell_runner
-    h_process = runner(lp_file=str(image_path), lp_parameters=parameters, lp_directory=None)
+    h_process = runner(lp_file=str(image_path), lp_parameters=parameters, lp_directory=trusted_directory)
 
     return ElevatedHelperProcessHandle(
         h_process,

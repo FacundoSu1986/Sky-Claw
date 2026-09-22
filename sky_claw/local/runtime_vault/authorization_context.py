@@ -257,7 +257,7 @@ class PrivilegedBoundarySession:
 # Establecimiento de la Frontera (orquestación fail-closed)
 # ============================================================================
 
-TokenAcquirerFn = Callable[[int], OperatorPrimaryToken]
+TokenAcquirerFn = Callable[[CoordinatorProcessIdentity], OperatorPrimaryToken] | Callable[[int], OperatorPrimaryToken]
 LockAcquirerFn = Callable[[int, int, str], GoldenMutationLockHandle]
 
 #: Orden normativo verificado por tests (PPSC antes del lock, ADR 0010 §12.2 pasos 4 y 6).
@@ -273,18 +273,18 @@ AUTHORIZATION_ESTABLISHMENT_ORDER: tuple[str, ...] = (
 
 #: Validación estructural pura que ANTECEDE a ``AUTHORIZATION_ESTABLISHMENT_ORDER``.
 #: Comprueba únicamente los campos del request/payload y su igualdad cruzada
-#: (volumen, root_file_id, operation_id): es fail-fast y SIN EFECTOS LATERALES
-#: — ante un mismatch no abre proceso, no adquiere token, no llama a la PPSC y
-#: no toma el GoldenMutationLock. No es un sexto stage de autoridad: es un gate
-#: de coherencia de entrada puro.
+#: (volumen, root_file_id, operation_id, coordinator_identity): es fail-fast y
+#: SIN EFECTOS LATERALES — ante un mismatch no abre proceso, no adquiere token,
+#: no llama a la PPSC y no toma el GoldenMutationLock. No es un sexto stage de
+#: autoridad: es un gate de coherencia de entrada puro.
 PURE_INPUT_BINDING_VALIDATION: str = (
     "pure_input_binding_validation (precedes AUTHORIZATION_ESTABLISHMENT_ORDER; "
     "side-effect-free: no process open, no token, no PPSC, no lock)"
 )
 
 
-def _default_token_acquirer(pid: int) -> OperatorPrimaryToken:
-    return acquire_operator_primary_token_from_coordinator(pid)
+def _default_token_acquirer(coordinator: CoordinatorProcessIdentity | int) -> OperatorPrimaryToken:
+    return acquire_operator_primary_token_from_coordinator(coordinator)
 
 
 def _default_lock_acquirer(volume_serial_number: int, root_file_id: int, operation_id: str) -> GoldenMutationLockHandle:
@@ -327,13 +327,21 @@ def establish_privileged_authorization(
         raise PlanAuthorizationError("ppsc_payload debe ser PrivilegedPlanConfirmation normativo")
 
     # Binding preventivo: el lock se adquiere sobre la MISMA identidad física
-    # que el operador confirmó vía PPSC (anti confused-deputy A/B).
+    # que el operador confirmó vía PPSC (anti confused-deputy A/B), y el launch
+    # request debe coincidir exactamente con el coordinador esperado (P1 cross-binding).
     if ppsc_payload.volume_serial_number != volume_serial_number or ppsc_payload.root_file_id != root_file_id:
         raise PlanAuthorizationError(
             "La identidad física del lock solicitado no coincide con el payload PPSC confirmado: REFUSE_TO_PLAN"
         )
     if ppsc_payload.operation_id != launch_request.operation_id_str:
         raise PlanAuthorizationError("operation_id del launch request no coincide con el payload PPSC: REFUSE_TO_PLAN")
+    if (
+        launch_request.coordinator_pid != expected_coordinator.pid
+        or launch_request.coordinator_creation_time != expected_coordinator.creation_time
+    ):
+        raise PlanAuthorizationError(
+            "coordinator_pid o coordinator_creation_time del launch_request no coinciden con expected_coordinator: REFUSE_TO_PLAN"
+        )
 
     # Paso 1: binding de identidad del coordinador (nunca PID aislado).
     bound_identity = require_bound_coordinator_identity(expected_coordinator, coordinator_probe_provider)
@@ -357,8 +365,13 @@ def establish_privileged_authorization(
     lock: GoldenMutationLockHandle | None = None
     try:
         if strategy is OperatorTokenStrategy.SAME_ACCOUNT_EXTRACTION:
-            acquirer = _default_token_acquirer if token_acquirer is None else token_acquirer
-            token = acquirer(bound_identity.pid)
+            if token_acquirer is None:
+                token = _default_token_acquirer(bound_identity)
+            else:
+                try:
+                    token = token_acquirer(bound_identity)  # type: ignore[arg-type]
+                except TypeError:
+                    token = token_acquirer(bound_identity.pid)  # type: ignore[arg-type]
         else:  # SERVICE_WTS_PROVIDER (hook v2; no existe implementación en este slice)
             if service_token_provider is None:
                 raise PlanAuthorizationError(
@@ -390,12 +403,12 @@ def establish_privileged_authorization(
         if lock is not None and not lock.closed:
             try:
                 lock.release()
-            except Exception as release_exception:  # noqa: BLE001 (cleanup nunca puede abortar el del token)
+            except BaseException as release_exception:  # noqa: BLE001 (cleanup nunca puede abortar el del token)
                 lock_cleanup_error = release_exception
         if token is not None and not token.closed:
             try:
                 token.close()
-            except Exception as close_exception:  # noqa: BLE001 (cleanup nunca debe tragar errores silenciosamente)
+            except BaseException as close_exception:  # noqa: BLE001 (cleanup nunca debe tragar errores silenciosamente)
                 token_cleanup_error = close_exception
         if lock_cleanup_error is not None or token_cleanup_error is not None:
             raise AuthorizationCleanupError(

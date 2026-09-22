@@ -36,6 +36,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
+from sky_claw.local.runtime_vault.coordinator_identity import (
+    CoordinatorIdentityBindingError,
+    CoordinatorProcessIdentity,
+    _normalize_image_for_compare,
+)
 from sky_claw.local.runtime_vault.models import RuntimeVaultError
 from sky_claw.local.runtime_vault.privileged_boundary import (
     PlanAuthorizationError,
@@ -104,11 +109,32 @@ _MAX_UINT32 = (1 << 32) - 1
 if sys.platform == "win32":
     from ctypes import wintypes
 
+    class _FileTime(ctypes.Structure):
+        _fields_ = [
+            ("dwLowDateTime", wintypes.DWORD),
+            ("dwHighDateTime", wintypes.DWORD),
+        ]
+
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     _kernel32.OpenProcess.restype = wintypes.HANDLE
     _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     _kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+    ]
+    _kernel32.GetProcessTimes.restype = wintypes.BOOL
+    _kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 
     _advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     _advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
@@ -187,6 +213,10 @@ class OperatorTokenEvidence:
 # ============================================================================
 
 
+def _filetime_to_uint64(file_time: Any) -> int:
+    return (int(file_time.dwHighDateTime) << 32) | int(file_time.dwLowDateTime)
+
+
 class OperatorTokenAdapter(Protocol):
     """Primitivas de kernel para la adquisición del token del operador.
 
@@ -196,6 +226,8 @@ class OperatorTokenAdapter(Protocol):
     """
 
     def open_process(self, desired_access: int, pid: int) -> int: ...
+    def read_process_creation_time(self, process_handle: int) -> int | None: ...
+    def read_process_image_path(self, process_handle: int) -> str | None: ...
     def open_process_token(self, process_handle: int, desired_access: int) -> int: ...
     def duplicate_token_ex_primary(self, source_handle: int, desired_access: int) -> int: ...
     def get_token_type(self, token_handle: int) -> int: ...
@@ -212,6 +244,32 @@ class _Win32OperatorTokenAdapter:
             err = ctypes.get_last_error()
             raise OpenCoordinatorProcessError(f"OpenProcess(coordinador pid={pid}) falló: código Win32 {err}")
         return int(handle)
+
+    def read_process_creation_time(self, process_handle: int) -> int | None:
+        creation = _FileTime()
+        dummy_exit = _FileTime()
+        dummy_kernel = _FileTime()
+        dummy_user = _FileTime()
+        ok = _kernel32.GetProcessTimes(
+            process_handle,
+            ctypes.byref(creation),
+            ctypes.byref(dummy_exit),
+            ctypes.byref(dummy_kernel),
+            ctypes.byref(dummy_user),
+        )
+        if not ok:
+            return None
+        creation_int = _filetime_to_uint64(creation)
+        return creation_int if creation_int > 0 else None
+
+    def read_process_image_path(self, process_handle: int) -> str | None:
+        capacity = 32768
+        buffer = ctypes.create_unicode_buffer(capacity)
+        size = wintypes.DWORD(capacity)
+        ok = _kernel32.QueryFullProcessImageNameW(process_handle, 0, buffer, ctypes.byref(size))
+        if not ok or size.value == 0:
+            return None
+        return str(buffer.value)
 
     def open_process_token(self, process_handle: int, desired_access: int) -> int:
         token = wintypes.HANDLE()
@@ -371,26 +429,29 @@ class OperatorPrimaryToken:
 
 
 def acquire_operator_primary_token_from_coordinator(
-    coordinator_pid: int,
+    coordinator: CoordinatorProcessIdentity | int,
     *,
     adapter: OperatorTokenAdapter | None = None,
 ) -> OperatorPrimaryToken:
     """Extrae el token primario del operador desde el coordinador ligado (path 1).
 
-    PRECONDICIÓN contractual: el ``coordinator_pid`` ya fue ligado por
-    :func:`coordinator_identity.require_bound_coordinator_identity`
-    (PID + ProcessCreationTime + imagen). Este módulo no re-verifica la
-    identidad (separación de responsabilidades): la sesión de autorización
-    encadena ambos pasos y nunca invoca esta función sin binding previo.
+    Defensa atada al handle (anti-TOCTOU, P1):
+    Si se suministra una identidad de coordinador (``CoordinatorProcessIdentity``),
+    el adapter abre el proceso una sola vez y, SOBRE ESE MISMO HANDLE, verifica
+    que ``creation_time`` e ``image_path`` coincidan exactamente antes de invocar
+    ``OpenProcessToken``. Un PID reciclado tras el probe del paso 1 es detectado
+    inmediatamente sobre el handle atado y aborta con ``CoordinatorIdentityBindingError``
+    fail-closed (cero tokens mintados).
 
     Secuencia (least privilege, sin privilegios de token):
     1. ``OpenProcess(PROCESS_QUERY_INFORMATION, coordinator_pid)``.
-    2. ``OpenProcessToken(handle, TOKEN_DUPLICATE)``.
-    3. ``DuplicateTokenEx(TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY,
+    2. Verificación sobre el mismo handle: ``GetProcessTimes`` + ``QueryFullProcessImageNameW``.
+    3. ``OpenProcessToken(handle, TOKEN_DUPLICATE)``.
+    4. ``DuplicateTokenEx(TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY,
        SecurityImpersonation, TokenPrimary)``.
-    4. Verificación estructural: ``GetTokenInformation(TokenType) == TokenPrimary``
+    5. Verificación estructural: ``GetTokenInformation(TokenType) == TokenPrimary``
        (un impersonation token final -> fail-closed, handles cerrados).
-    5. Evidencia de identidad: ``GetTokenInformation(TokenUser) -> String SID``.
+    6. Evidencia de identidad: ``GetTokenInformation(TokenUser) -> String SID``.
 
     Cualquier fallo cierra TODOS los handles abiertos exactamente una vez.
     """
@@ -399,6 +460,15 @@ def acquire_operator_primary_token_from_coordinator(
         native_adapter: OperatorTokenAdapter = _Win32OperatorTokenAdapter()
     else:
         native_adapter = adapter
+
+    expected_creation_time: int | None = None
+    expected_image_path: str | None = None
+    if isinstance(coordinator, CoordinatorProcessIdentity):
+        coordinator_pid = coordinator.pid
+        expected_creation_time = coordinator.creation_time
+        expected_image_path = coordinator.image_path
+    else:
+        coordinator_pid = coordinator
 
     if (
         isinstance(coordinator_pid, bool)
@@ -419,6 +489,28 @@ def acquire_operator_primary_token_from_coordinator(
     duplicated_handle = 0
     success = False
     try:
+        if expected_creation_time is not None:
+            observed_creation = native_adapter.read_process_creation_time(process_handle)
+            if observed_creation is None:
+                raise CoordinatorIdentityBindingError(
+                    f"No se pudo leer el ProcessCreationTime sobre el process handle del coordinador (pid={coordinator_pid}): legibilidad obligatoria"
+                )
+            if observed_creation != expected_creation_time:
+                raise CoordinatorIdentityBindingError(
+                    f"ProcessCreationTime sobre el process handle abierto ({observed_creation}) no coincide con el coordinador original ({expected_creation_time}): posible reuso de PID (TOCTOU mitigado)"
+                )
+
+        if expected_image_path is not None:
+            observed_image = native_adapter.read_process_image_path(process_handle)
+            if observed_image is None:
+                raise CoordinatorIdentityBindingError(
+                    f"No se pudo leer la imagen sobre el process handle del coordinador (pid={coordinator_pid}): legibilidad obligatoria"
+                )
+            if _normalize_image_for_compare(observed_image) != _normalize_image_for_compare(expected_image_path):
+                raise CoordinatorIdentityBindingError(
+                    f"La imagen sobre el process handle abierto ('{observed_image}') no coincide con la esperada ('{expected_image_path}')"
+                )
+
         token_handle = native_adapter.open_process_token(process_handle, TOKEN_DUPLICATE)
         duplicated_handle = native_adapter.duplicate_token_ex_primary(token_handle, OPERATOR_TOKEN_REQUIRED_RIGHTS)
 

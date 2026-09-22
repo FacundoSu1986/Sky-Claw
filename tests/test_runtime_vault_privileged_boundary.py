@@ -381,7 +381,8 @@ class TestLauncherOrchestrationConSeams:
             assert str(helper.operation_id) == _VALID_UUID
         assert recorded["lp_file"] == str(image)
         assert recorded["lp_parameters"] == (f"--operation-id {_VALID_UUID} --staging-digest {_VALID_DIGEST}")
-        assert recorded["lp_directory"] is None
+        assert recorded["lp_directory"] is not None
+        assert recorded["lp_directory"].lower().endswith("system32")
 
     def test_pb_06_uac_cancel_propagado_tipado(self, tmp_path: pathlib.Path) -> None:
         # La imagen se valida ANTES de invocar al runner: una ruta inexistente

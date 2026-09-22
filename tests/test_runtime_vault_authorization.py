@@ -145,6 +145,12 @@ class _FakeTokenAdapter:
     def open_process(self, desired_access: int, pid: int) -> int:
         return 101
 
+    def read_process_creation_time(self, process_handle: int) -> int | None:
+        return 133_456_789_012_345_678
+
+    def read_process_image_path(self, process_handle: int) -> str | None:
+        return "C:\\Program Files\\Sky-Claw\\sky-claw.exe"
+
     def open_process_token(self, process_handle: int, desired_access: int) -> int:
         return 202
 
@@ -690,6 +696,85 @@ class TestEstablishmentOrchestration:
             )
         assert token_adapter.closed == []
         assert kernel.busy_paths == set()
+
+    def test_auth_03_coordinator_discrepante_request_vs_expected_rechaza_antes_de_todo(self) -> None:
+        # P1 cross-binding: launch_request.coordinator_pid/creation_time debe coincidir
+        # exactamente con expected_coordinator en PURE_INPUT_BINDING_VALIDATION sin efectos.
+        token_adapter = _FakeTokenAdapter()
+        kernel = _FakeLockKernel()
+        side_effects: list[str] = []
+
+        class _SpyingProbe:
+            def probe(self, pid: int) -> ProcessIdentityProbe | None:
+                side_effects.append("probe")
+                return None
+
+        # Discrepancia en PID
+        with pytest.raises(PlanAuthorizationError) as exc_info:
+            self._establish(
+                launch_request=_launch_request(coordinator_pid=9999),
+                expected_coordinator=_expected_coordinator(),
+                coordinator_probe_provider=_SpyingProbe(),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
+                lock_acquirer=_fake_lock_acquirer(kernel),
+            )
+        assert "coordinator_pid o coordinator_creation_time del launch_request no coinciden" in str(exc_info.value)
+        assert side_effects == [], "cero llamadas al probe ante mismatch de binding"
+        assert token_adapter.closed == [] and kernel.busy_paths == set()
+
+        # Discrepancia en CreationTime
+        with pytest.raises(PlanAuthorizationError) as exc_info2:
+            self._establish(
+                launch_request=_launch_request(coordinator_creation_time=999_999_999),
+                expected_coordinator=_expected_coordinator(),
+                coordinator_probe_provider=_SpyingProbe(),
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
+                lock_acquirer=_fake_lock_acquirer(kernel),
+            )
+        assert "coordinator_pid o coordinator_creation_time del launch_request no coinciden" in str(exc_info2.value)
+        assert side_effects == []
+
+    def test_cleanup_con_base_exception_sintetica(self) -> None:
+        # P3: Excepción derivada directamente de BaseException en lock.release()
+        # no debe saltarse token.close(), y se reporta en AuthorizationCleanupError.
+        class _SyntheticBaseException(BaseException):
+            pass
+
+        synth_exc = _SyntheticBaseException("interrupción sintética en cleanup")
+        token_adapter = _FakeTokenAdapter()
+
+        class _SyntheticFailingLock:
+            def __init__(self) -> None:
+                self.closed = False
+                self.identity = GoldenLockIdentity(
+                    lock_key=derive_golden_lock_key(_VOLUME_SERIAL, _ROOT_FILE_ID),
+                    volume_serial_number=_VOLUME_SERIAL,
+                    root_file_id=_ROOT_FILE_ID,
+                    owner_pid=4242,
+                    owner_process_creation_time=133_456_789_012_345_678,
+                    session_id=1,
+                    operation_id=_ALT_UUID,
+                    phase=GoldenLockPhase.AUTHORIZATION_BOUNDARY.value,
+                    created_at=1_700_000_000,
+                )
+
+            def release(self) -> bool:
+                raise synth_exc
+
+        with pytest.raises(AuthorizationCleanupError) as excinfo:
+            self._establish(
+                token_acquirer=lambda coord: acquire_operator_primary_token_from_coordinator(
+                    coord, adapter=token_adapter
+                ),
+                lock_acquirer=lambda vol, fid, op: _SyntheticFailingLock(),
+            )
+        assert token_adapter.closed.count(303) == 1, "token.close() debe llamarse aun con BaseException en el lock"
+        assert excinfo.value.lock_cleanup_error is synth_exc
+        assert isinstance(excinfo.value.__cause__, AuthorizationContextModelError)
 
     def test_operation_id_discrepante_request_vs_ppsc_rechaza_antes_de_todo(self) -> None:
         token_adapter = _FakeTokenAdapter()
