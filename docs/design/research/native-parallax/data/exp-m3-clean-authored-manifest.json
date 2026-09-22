@@ -1,0 +1,41 @@
+{
+  "dataset": "EXP-M3 clean authored corpus",
+  "cohort_a": {
+    "status": "DATA_INSUFFICIENT",
+    "assets": [],
+    "attempt_trail": [
+      {
+        "source": "ambientcg.com + CDNs (f003.backblazeb2.com, acg-media.struffelproductions.com, releases.pbr.one)",
+        "result": "BLOQUEADO por proxy del sandbox (curl 000)"
+      },
+      {
+        "source": "HuggingFace (MatSynth)",
+        "result": "BLOQUEADO (TLS EOF)"
+      },
+      {
+        "source": "Poly Haven (api.polyhaven.com, dl.polyhaven.org)",
+        "result": "BLOQUEADO"
+      },
+      {
+        "source": "Kimbatt/cc0-textures torrents oficiales cc0textures.com (piezas = hashes upstream)",
+        "result": "PIEZAS VERIFICABLES PERO payload 4K-12K; los mirrors accesibles son 2K-JPG \u2192 imposible el match byte-a-byte"
+      },
+      {
+        "source": "ShareTextures/ShareTextures.com (repo oficial GitHub)",
+        "result": "s\u00f3lo c\u00f3digo del sitio, sin assets"
+      },
+      {
+        "source": "mirrors EXP-M2 (Calinou/petroulacl/BastiaanOlij)",
+        "result": "MIRROR_ONLY \u2014 \u00a72/\u00a78 proh\u00edben usarlos como evidencia principal sin hash oficial upstream"
+      }
+    ],
+    "conclusion": "Sin fuente primaria alcanzable para binarios. \u00a78: no sustituir silenciosamente con mirrors; \u00a73: HARD STOP."
+  },
+  "cohort_b": {
+    "label": "EVALUATION_DIAGNOSTIC_ONLY",
+    "source_manifest": "exp-m2-authored-manifest.json",
+    "source_manifest_sha256": "4d00501949fc006d39a10ba148b269a35c080a92c9e367a4d5a2b7b029d941cb",
+    "provenance": "MIRROR_ONLY (expl\u00edcitamente NO evidencia principal; diagn\u00f3stico \u00fanicamente)",
+    "filter": "height_std >= 2/255 AND oracle_agreement_deg < {20,30,40} (sensibilidad)"
+  }
+}
