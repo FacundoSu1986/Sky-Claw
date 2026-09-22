@@ -215,6 +215,34 @@ cuantización XY reconstruida genera en masa nz=0 exactos → ``negative_nz_frac
 vuelve un detector directo (sin necesitar σ). Advertencia registrada para EXP-003
 (BC5 real será igual o peor por bloques).
 
+### Tabla mínima de datos reales (filas held-out reproducidas)
+
+Filas regeneradas con `execute_case` (256², seeds CRC32 deterministas) — **bit- idénticas**
+a las de Stage C comprometidas arriba; se muestran con todas las columnas contractuales.
+Casos individuales (no medianas): survivable S03/S09 nz~0.05 σ=2/255; duro S03 nz~0.005 σ=4/255.
+
+| case | sigma | quant | policy | lam | nz_min | nz_p01 | negative_nz_fraction | activation_fraction | rmse | raw_centered_rmse | gradient_rmse | normal_angle_mean | seam_gradient | max_gradient | variance_ratio | hf_energy_ratio | runtime_ms |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| C\|S03_sine_y\|nz0.05 | 0.00784 | Q8 | RAW | 0 | 0.0217 | 0.0414 | 0 | 0 | 0.00559 | 0.00951 | 0.953 | 2.04 | 1.68 | 46.1 | 1.039 | 6.7e+27 | 40.9 |
+| C\|S03_sine_y\|nz0.05 | 0.00784 | Q8 | SOFT_TIKHONOV | 0.00784 | 0.0217 | 0.0414 | 0 | 0 | 0.00520 | 0.00539 | 0.878 | 1.96 | 1.56 | 40.8 | 1.007 | 6.2e+27 | 22.7 |
+| C\|S03_sine_y\|nz0.05 | 0.00784 | Q8 | FLOOR_CLAMP | 0.0235 | 0.0217 | 0.0414 | 0 | 1.5e-05 | 0.00559 | 0.00951 | 0.953 | 2.04 | 1.68 | 42.5 | 1.039 | 6.7e+27 | 19.1 |
+| C\|S09_bricks\|nz0.05 | 0.00784 | Q8 | RAW | 0 | 0.0249 | 0.0417 | 0 | 0 | 0.00526 | 0.00922 | 0.949 | 2.03 | 1.63 | 40.2 | 1.038 | 5.9e+27 | 18.9 |
+| C\|S09_bricks\|nz0.05 | 0.00784 | Q8 | SOFT_TIKHONOV | 0.00784 | 0.0249 | 0.0417 | 0 | 0 | 0.00490 | 0.00507 | 0.874 | 1.96 | 1.52 | 36.6 | 1.006 | 5.5e+27 | 18.8 |
+| C\|S09_bricks\|nz0.05 | 0.00784 | Q8 | FLOOR_CLAMP | 0.0235 | 0.0249 | 0.0417 | 0 | 0 | 0.00526 | 0.00922 | 0.949 | 2.03 | 1.63 | 40.2 | 1.038 | 5.9e+27 | 20.7 |
+| C\|S03_sine_y\|nz0.005 | 0.0157 | Q8 | RAW | 0 | −0.0571 | −0.0300 | 0.3036 | 0 | 4.00 | 59.3 | 10905 | 86.9 | 5098 | 4.97e+06 | 218.9 | 2.2e+31 | 20.2 |
+| C\|S03_sine_y\|nz0.005 | 0.0157 | Q8 | SOFT_TIKHONOV | 0.0157 | −0.0571 | −0.0300 | 0.3036 | 0.662 | 1.55 | 3.73 | 89.3 | 56.0 | 16.2 | 31.9 | 0.00546 | 1.7e+30 | 20.2 |
+| C\|S03_sine_y\|nz0.005 | 0.0157 | Q8 | FLOOR_CLAMP | 0.0471 | −0.0571 | −0.0300 | 0.3036 | 0.978 | 0.485 | 3.38 | 80.2 | 6.28 | 3.28 | 21.3 | 0.0246 | 1.3e+26 | 20.2 |
+
+Notas honestas de esta tabla: (1) `rmse` es el **aligned** de NP-M0; `raw_centered_rmse`
+va siempre al lado (anti-trampa de alignment). (2) `hf_energy_ratio` es **no informativo
+en la superficie sweep** (band-limited: E_hf(gt)≈0 → dividir por ~0 produce ratios ~1e27);
+el companion robusto anti-aplanado aquí es `variance_ratio`/`gradient_energy_ratio`. Para
+superficies con HF real (S09 etc. del corpus NP-M0) el ratio sí está definido. (3)
+`runtime_ms` = decode+política+FFT completa del caso a 256²: el coste de la política es
+ruido frente al solver (coherente con Stage E a 1024²). (4) En survivable, r_p01 =
+0.0414/σ = **5.28** — justo al borde seguro medido (5.38); en duro r_p01 < 0 → REJECT
+profundo: la tabla es auto-consistente con la frontera de Stage A.
+
 ## nz/sigma analysis
 
 H1 se evalúa con las cuatro correlaciones de la sección Stage A: normalizar por σ sube
@@ -237,6 +265,27 @@ Conclusión: la política debe ser **relativa a σ**, no absoluta (refina el
 - **RAW**: sólo como baseline; en survivable es razonable pero SOFT k=1 lo mejora
   gratis; en duro es catastrófico.
 - **REJECT**: la única salida honesta en el régimen duro (ver Negative-nz y Worst).
+
+## Pareto analysis
+
+Ejes: x = error (raw_centered_rmse, grad_rmse), y = pérdida de detalle (desviación de
+variance_ratio respecto a 1).
+
+- **Survivable (held-out):** SOFT k=1 **domina a RAW** en ambos ejes (rmse 5.1e-3 vs
+  9.3e-3; var 1.006 vs 1.038 — RAW tiene MÁS error Y MÁS exceso de varianza). El win de
+  SOFT no es aplanando: reduce la energía espuria que el 1/nz amplifica.
+- **Duro (held-out):** la frontera pasa por **CLAMP k=3** (en el caso S03 de la tabla
+  §32: raw_centered 3.38 vs 3.73, var 0.0246 vs 0.0055 — conserva ~4.5× más varianza que
+  SOFT a error similar; mejor max_gradient 21 vs 32 y seam 3.3 vs 16.2). SOFT k=1 queda
+  detrás en contención aunque es más predecible en k.
+- **Ninguna política domina los dos regímenes** → la conclusión Pareto es el par
+  (SOFT k=1 default, CLAMP k∈[3,6] contención) más REJECT debajo de la frontera; un
+  "winner" único sería forzado (§28).
+- **Dispersión de best-k (§23):** SOFT k=1 estable (elegido en calibración, confirmado
+  en held-out y en las filas reproducidas; sin re-tuning por superficie). CLAMP
+  no-monótono con best-k entre 3 y 6 según superficie/régimen y sensibilidad a la
+  resolución del corpus (a 128² el selector eligió k=0.5) → dispersión alta, se
+  documenta como fragilidad y no se promueve valor único.
 
 ## Negative-nz behavior (Stage D; nz~0.01, sin ruido, nz invertido inyectado)
 
@@ -303,6 +352,41 @@ REVIEW, no salvage**. `abs(nz)` permanece prohibido (invariante M3/M5 en tests).
 - **H7 SURVIVED con advertencias** — un único k generalizó a 5 superficies held-out
   (SOFT k=1 y CLAMP k=3/k=6); advertencias: el selector es sensible a la resolución del
   corpus (a 128² eligió CLAMP k=0.5) y CLAMP es no-monótono en k.
+
+## Adversarial review
+
+Respuestas explícitas a las diez preguntas adversariales, con evidencia:
+
+1. **¿La ganadora simplemente aplana H?** No: SOFT k=1 var_ratio 1.006–1.007 en held-out
+   y filas reproducidas (tabla §32); el aplanado existe solo para k≥4 (H5) y quedó
+   excluido por M2 y por el guard del selector.
+2. **¿El alignment esconde bias?** No se reporta solo: `raw_centered_rmse`,
+   `gradient_rmse` y `variance_ratio` acompañan siempre; SOFT mejora también sin
+   alignment (raw_centered 0.0095→0.0054 en S03).
+3. **¿Depende de conocer σ exactamente?** No exactamente: robusta a 0.5×–2× (rmse
+   0.0051→0.0169, sin cliffs); a 4× degrada 14× pero sin explosión. CLAMP sí es frágil
+   a 4× (aplasta, var 0.54).
+4. **σ estimado 2× mal:** SOFT k=1 rmse 0.0169, var 0.921 — grácil, monótono.
+5. **σ estimado 0.5× mal:** SOFT k=1 rmse 0.0081, var 1.03 — ≈RAW, inofensivo (sub-
+   estimar deja la política casi apagada; no daña).
+6. **¿negative nz se oculta?** Imposible por diseño: `negative_nz_fraction` es columna
+   obligatoria en toda tabla; `abs(nz)` prohibido por test (M3); CLAMP pierde el signo
+   del píxel pero lo contabiliza en `activation_fraction`.
+7. **¿Un solo k funciona en held-out?** SOFT k=1: sí (mejora RAW en la mediana held-out
+   y en cada fila reproducida). CLAMP k=3: es ≈RAW en survivable y su óptimo se mueve
+   entre 3 y 6 → se reporta como familia, no como constante.
+8. **¿nz/σ predice el error?** Sí: Spearman −0.926/−0.933 normalizado vs −0.84/−0.89
+   crudo; casos con igual r colapsan a igual error (bins Stage A); la tabla §32 es
+   auto-consistente (r_p01=5.28 en el borde seguro; r_p01<0 en REJECT profundo).
+   Queda abierto p01 vs min (robustez vs correlación).
+9. **¿REJECT más honesto que salvage?** Sí en duro: incluso la mejor política deja
+   var_ratio ≤ 0.10 — la geometría no es recuperable; el cluster nz<0 coherente (Stage D)
+   refuerza: REJECT/REVIEW, no rescate (§44).
+10. **¿Alguna contradicción con NP-M0?** No: se REFINA. El `nz_floor=0.01` de NP-M0 era
+    implícitamente k·σ (≈2.6σ con σ=1/255) — correcto en su corpus, no transferible como
+    absoluto (M5/M7 lo bloquean). La inestabilidad nz≲σ se confirma y ahora tiene
+    explicación (Jacobiano) y frontera medida. Advertencia nueva, no contradicción:
+    Q8_XY_RECONSTRUCT_Z desplaza toda la frontera de riesgo.
 
 ## Candidate policy, if any
 
