@@ -40,7 +40,7 @@ El adaptador automatizado histórico concebido para invocar helpers internos (`M
 
 ---
 
-## 4. Contrato de Descubrimiento
+## 4. Contrato de Descubrimiento y Resultado
 
 El descubrimiento es determinista para un snapshot estable, no recursivo, side-effect-free respecto del filesystem y estrictamente acotado:
 
@@ -49,13 +49,16 @@ El descubrimiento es determinista para un snapshot estable, no recursivo, side-e
 2. Si `candidate` es un archivo regular (`is_file()`):
    - Se valida su contención física dentro de `mods_dir`.
    - Se colecta como candidato válido.
-3. Resultados posibles:
-   - 0 candidatos válidos → `ParallaxRAssistedStatus.MISSING`.
-   - 1 candidato válido → `ParallaxRAssistedStatus.READY` (o `INVALID_SELECTION` si se especificó una selección explícita divergente).
+3. Resultados posibles en `ParallaxRAssistedPreflight`:
+   - 0 candidatos válidos → `status = MISSING`, `success = False`, `message` no vacío.
+   - 1 candidato válido → `status = READY`, `success = True`, `message = ""` (o `INVALID_SELECTION`, `success = False` si se especificó una selección explícita divergente).
    - >1 candidatos válidos:
-     - Sin selección explícita → `ParallaxRAssistedStatus.AMBIGUOUS` (falla cerrado; no se aplica orden alfabético, fecha más reciente ni "primer hallazgo").
-     - Con selección explícita que coincide exactamente con uno de los candidatos descubiertos → `ParallaxRAssistedStatus.READY` para dicho candidato.
-     - Con selección explícita externa o no coincidente → `ParallaxRAssistedStatus.INVALID_SELECTION`.
+     - Sin selección explícita → `status = AMBIGUOUS`, `success = False`, `message` no vacío (falla cerrado; no se aplica orden alfabético, fecha más reciente ni "primer hallazgo").
+     - Con selección explícita que coincide exactamente con uno de los candidatos descubiertos → `status = READY`, `success = True`, `message = ""` para dicho candidato.
+     - Con selección explícita externa o no coincidente → `status = INVALID_SELECTION`, `success = False`, `message` no vacío.
+   - Mutación concurrente durante captura de evidencia → `status = EVIDENCE_UNSTABLE`, `success = False`, `message` no vacío.
+
+**Regla de resultado:** `success: bool` y `message: str` acompañan al enum `status`. `success == True` se cumple si y solo si `status == READY`, y en dicho caso `message == ""` canónicamente. `success == True` significa **exclusivamente** que el preflight tuvo éxito y se puede generar un handoff; **NO** significa que ParallaxR se haya ejecutado ni completado con éxito.
 
 ---
 
@@ -69,12 +72,21 @@ Para garantizar la seguridad y evitar escapes de ruta (symlinks maliciosos, repa
 
 ---
 
-## 6. Contrato de Fingerprint
+## 6. Contrato de Fingerprint Coherente (Anti-TOCTOU)
 
-Para el entrypoint oficial descubierto (`ParallaxR.BAT`):
-- Se calcula su tamaño en bytes (`size_bytes`), tiempo de modificación en nanosegundos (`mtime_ns`) y hash SHA-256 (`sha256`).
-- La lectura del archivo para hashing se efectúa en bloques acotados (64 KB) sin cargar el archivo completo innecesariamente en memoria.
-- **Semántica:** El hash SHA-256 constituye **evidencia local de identidad e inmutabilidad** entre preflight y ejecución. **NO** representa firma criptográfica de editor, verificación de autenticidad de upstream ni condición de "código confiable".
+Para evitar inconsistencias donde `size`/`mtime_ns` correspondan a un estado del archivo y `sha256` a otro:
+1. **Descriptor único por intento:** Se abre el archivo una sola vez (`handle = file_path.open("rb")`).
+2. **Snapshot antes y después:**
+   - Se ejecuta `before = os.fstat(handle.fileno())`.
+   - Se calcula el hash SHA-256 leyendo chunks de 64 KB desde el **mismo descriptor**.
+   - Se ejecuta `after = os.fstat(handle.fileno())`.
+   - Se valida estabilidad del descriptor: `st_dev`, `st_ino`, `st_size`, `st_mtime_ns`.
+3. **Validación de identidad de ruta:** Tras la lectura del descriptor, se comprueba `path.stat()` contra `after` para confirmar que la ruta no fue reemplazada por otro archivo durante la lectura.
+4. **Retry acotado:** Si se detecta mutación en cualquiera de los puntos, se reintenta hasta `_FINGERPRINT_MAX_ATTEMPTS = 2` veces.
+5. **Fail-closed:** Si tras agotar los intentos el archivo sigue cambiando, se eleva `ParallaxREvidenceUnstableError` y el preflight degrada a `status = EVIDENCE_UNSTABLE` con `success = False`.
+6. **Misma operación para entrypoints y marcadores:** Tanto `ParallaxR.BAT` como `ParallaxROutput.tmp` son capturados mediante la misma función interna `_fingerprint_file_consistently`.
+7. **Alcance de la garantía:** La captura garantiza coherencia fotográfica **durante** la operación de fingerprint. No constituye un lock persistente ni previene cambios posteriores al preflight. La revalidación de evidencia corresponderá a futuras fases en el borde de ejecución (PR-A1/A2).
+8. **Semántica:** El hash SHA-256 constituye **evidencia local de identidad e inmutabilidad** capturada durante el preflight. **NO** representa firma criptográfica de editor, verificación de autenticidad de upstream ni condición de "código confiable".
 
 ---
 
@@ -82,7 +94,7 @@ Para el entrypoint oficial descubierto (`ParallaxR.BAT`):
 
 ParallaxR deposita un marcador `ParallaxROutput.tmp` en la carpeta de salida generada.
 - Sky-Claw realiza una inspección **read-only** de los directorios hijos directos de `mods_dir` buscando `child / "ParallaxROutput.tmp"`.
-- Se extrae metainformación inmutable (`path`, `size_bytes`, `mtime_ns`, `sha256`).
+- Se extrae metainformación inmutable (`path`, `size_bytes`, `mtime_ns`, `sha256`) mediante captura coherente.
 - **Invariantes:**
   - La presencia de marcadores **NO** altera el estado `READY` de la instalación.
   - La presencia de marcadores **NO** implica que el output esté activo/habilitado en el perfil actual de MO2.
@@ -94,8 +106,9 @@ ParallaxR deposita un marcador `ParallaxROutput.tmp` en la carpeta de salida gen
 ## 8. Handoff Manual (`ParallaxRManualHandoff`)
 
 Función de transformación pura `prepare_parallaxr_manual_handoff(preflight)`:
-- Requiere estrictamente `preflight.status == ParallaxRAssistedStatus.READY`.
-- Falla cerrado ante cualquier otro estado (`MISSING`, `AMBIGUOUS`, `INVALID_SELECTION`).
+- Requiere estrictamente `preflight.status == ParallaxRAssistedStatus.READY` y `preflight.success is True`.
+- Falla cerrado ante cualquier otro estado (`MISSING`, `AMBIGUOUS`, `INVALID_SELECTION`, `EVIDENCE_UNSTABLE`).
+- No vuelve a abrir el archivo ni a calcular hashes; traslada fielmente la evidencia capturada por el preflight.
 - Estructura inmutable resultante:
   - `mode`: `"manual_official_entrypoint"`
   - `entrypoint`: `Path` al `ParallaxR.BAT` validado.
@@ -106,6 +119,8 @@ Función de transformación pura `prepare_parallaxr_manual_handoff(preflight)`:
   - `direct_helper_invocation`: `False`
   - `sky_claw_launches_process`: `False`
   - `instruction`: `"Ejecutá el entrypoint oficial de ParallaxR desde MO2."`
+  - `success`: `True`
+  - `message`: `""`
 
 ---
 
