@@ -147,9 +147,14 @@ Clasificación (§54), evaluada UNA vez sin retuning (§32):
 - **CLAMP λ=1·σ_eff: PARTIALLY_TRANSFERRED (no-harm, no-help).** med rmse −3.4%,
   var 0.376 (≈RAW): el clamp sólo toca la cola y en authored la cola nz no es el
   problema.
-- **Bandas sintéticas {2,6} (y {1,4}): DOES_NOT_TRANSFER.** Con σ_eff=nz_p01 el
-  ratio r_p01 ≡ 1 para todos los assets (degenerado): el eje de riesgo nz/σ no
-  discrimina nada en authored porque nz nunca es el cuello de botella.
+- **Bandas sintéticas {2,6} (y {1,4}): NOT_EVALUABLE con el proxy candidato — no
+  refutadas.** Con σ_eff=nz_p01 el cociente r_p01 = nz_p01/σ_eff ≡ 1 **por
+  construcción** (el denominador es la misma señal que el numerador): la prueba es
+  circular y no puede ni confirmar ni refutar las bandas. Lo que sí queda medido es
+  que el eje nz/σ es irrelevante para el fallo authored dominante (nz_p01∈[0.19,1.00]
+  en TODOS los assets, buenos y malos por igual). Probar las bandas de verdad exige
+  un denominador INDEPENDIENTE de nz (residuo de proyección/curl/cuantización) o
+  abandonar la forma nz/σ y llamarlo risk_score.
 - **M2-F sweep k (sólo calibración, referencia):** CLAMP k=0.5 med rmse 0.0408 /
   var 0.905 (leve mejora); SOFT monótonamente aplasta con k. Ninguna k rescata a los
   catastróficos: sus fallos no son de regularización.
@@ -162,8 +167,12 @@ ruido de canal sino incoherencia del dataset.
 
 ## Synthetic thresholds {2,6} transfer
 
-DOES_NOT_TRANSFER (degenerado; ver arriba). El régimen EXP-M1 (nz≈σ) simplemente no
-ocurre en normales authored 8-bit sanas.
+**NOT_EVALUABLE_WITH_CANDIDATE_PROXY** (corrección post-review: antes decía
+"DOES_NOT_TRANSFER", que sobreactúa). σ_eff=nz_p01 hace r_p01≡1 por definición:
+construcción circular ⇒ las bandas quedaron **sin probar**, ni a favor ni en contra.
+El régimen EXP-M1 (nz≈σ) de todos modos no aparece en normales authored 8-bit sanas
+(nz_p01 ≥ 0.19 en el corpus), por lo que no había contraste disponible con este
+dataset.
 
 ## Cluster analysis
 
@@ -260,7 +269,9 @@ contado como fallo del solver → gate + `skipped` (test M10) ✓.
 4. ¿Generaliza entre familias? No: signos inconsistentes cal→held.
 5. ¿Entre fuentes? No evaluable (fuente única) — limitación registrada.
 6. ¿SOFT k=1 transfiere? NO: aplasta (var 0.097).
-7. ¿Bandas {2,6}? No: degeneradas (r≡1).
+7. ¿Bandas {2,6}? **No evaluables** con el proxy candidato: σ_eff=nz_p01 ⇒ r≡1 por
+   construcción (circular). Quedan sin refutar; re-probarlas exige denominador
+   independiente de nz (projection/curl/quantization residual) o renombrar a risk_score.
 8. ¿Resolución? RAW estable 512↔1024; Planks012 mejora a 1024 (downsampling).
 9. ¿Cuánto error es inconsistencia del dataset? La mayoría: 10+ de 15 catastróficos
    por height plano/decorrelado/invertido, 3 por normal ruidosa (planks), 1 flat.
@@ -300,13 +311,59 @@ el "trust" aquí es riesgo de RECONSTRUCCIÓN, no de parallax perceptual.
 
 ## ONE next experiment
 
-**EXP-M3 — heights coherentes y medibles:** repetir M2-C/M2-D restringido a assets
-con `oracle_agreement < 30°` y height no-plano (corpus: MatSynth con height EXR/PNG de
-16-bit cuando el sandbox lo permita, o ambientCG re-descargado fuera del sandbox),
-para separar "el solver no puede" de "el dataset no dice la verdad". Si en ese subcorpus
-los proxies normal-only (curl_p95, projection_residual) siguen sin predecir el error
-DENTRO de la zona coherente, el NO_GO de normal-only trust queda demostrado con datos
-limpios. No iniciarlo desde esta rama.
+**EXP-M3 — ¿contaminación del dataset o límite fundamental del enfoque normal-only?**
+(rediseñado tras review adversarial; una sola pregunta, dos cohortes):
+
+- **Cohorte A — clean-by-provenance (evidencia fuerte):** assets donde la procedencia
+  documenta que normal y displacement describen la misma superficie (MatSynth con
+  height 16-bit, o ambientCG descargado de fuente primaria con upstream-identity
+  verificada por asset — no mirrors). Descarga primaria cuando la red lo permita;
+  manifest con licencia + hash + provenance por asset (corrige la limitación de los
+  mirrors de EXP-M2).
+- **Cohorte B — oracle-filtered diagnostic (etiquetada `EVALUATION_DIAGNOSTIC_ONLY`,
+  NUNCA production-selection):** subset con `oracle_agreement < X` y height no-plano.
+  Responde exclusivamente: "asumiendo que normal y height describen la misma
+  geometría, ¿aparece alguna señal normal-only útil?" — no puede usarse para decir
+  "nuestro predictor funciona en assets confiables" porque el filtro usa el height.
+
+Dos resultados válidos: **(A)** los proxies correlacionan en corpus limpio → EXP-M2
+estaba contaminado por mismatch artístico/dataset, se sigue investigando; **(B)** siguen
+sin predecir → evidencia fuerte para NO_GO de *normal-only automatic trust* y pivote a
+reconstrucción determinista + HITL (o normal+albedo después), sin exprimir más nz.
+**Prohibido** en M3: σ_eff = f(nz_p01) si luego se evalúa nz_p01/σ_eff (circularidad);
+el denominador debe salir de una señal independiente o se abandona la forma nz/σ.
+No iniciarlo desde esta rama.
+
+## Adenda de revisión adversarial (post-publicación)
+
+Cuatro señalamientos del review externo, verificados y cerrados:
+
+1. **Trazabilidad Git 7383d0c → e2a449b.** `git merge-base --is-ancestor 7383d0c
+   e2a449b` = cierto; el rango `7383d0c..e2a449b` contiene EXACTAMENTE un commit:
+   `e2a449b docs(parallax): exp-m1 gap-band fill r_p01 in (1.8,5.4)` — commit propio
+   del addendum de llenado de banda de EXP-M1 (turno de continuación), que actualizó
+   #618 legítimamente tras el reporte donde su head era `7383d0c`. Sin commits
+   ajenos, sin rewrite, sin force-push. Adicionalmente se detectó y documentó: entre
+   sesiones el sandbox fue restaurado a un clone shallow @ `30439a1` (punto de
+   partida original), perdiendo objetos locales; se recuperaron las ramas desde
+   origin, se verificó byte-a-byte (25/25 archivos idénticos vía `git hash-object`
+   contra el árbol de `f692751`) y el estado dirty ajeno al spike (pyproject/vfs @
+   `30439a1`) quedó preservado en `stash@{0}` sin mezclarlo.
+2. **Conteos de tests corregidos.** `pytest --collect-only` objetivo:
+   NP-M0 (`test_native_parallax_math_spike.py`) = **24** nodos · EXP-M1 = **18** ·
+   EXP-M2 = **17** (17 funciones, sin parametrizaciones) → focal 59 ✓.
+   Suite completa: 7619 + 18 + 17 = **7654** ✓. Los números "NP-M0: 7/7" y
+   "EXP-M2: 34 tests nuevos" del informe/chat/PR-body anterior fueron errores de
+   transcripción; los resultados no cambian (mismas ejecuciones, misma aritmética).
+3. **Circularidad r = nz_p01/σ_eff con σ_eff=nz_p01.** Aceptada: las bandas {2,6}
+   quedaron NOT_EVALUABLE (no refutadas); la sección de transfer y la respuesta
+   adversarial #7 fueron reescritas. Regla registrada para EXP-M3: el denominador de
+   r debe provenir de una señal independiente de nz, o se abandona la forma nz/σ por
+   un risk_score sin esa geometría.
+4. **Procedencia del dataset (limitación reconocida).** El spot-check 7/34 + licencia
+   de plataforma prueban la licencia, no la identidad bit-a-bit upstream de los 34
+   assets servidos por mirrors. Suficiente para research exploratorio; EXP-M3 exige
+   fuente primaria/identity por asset (Cohorte A). No se re-ejecuta EXP-M2.
 
 ## Results table (por asset — RAW baseline 512²)
 
