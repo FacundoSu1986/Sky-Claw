@@ -80,6 +80,12 @@ async def kill_and_reap(
     """
     if proc is None:
         return
+    # Un proceso brokered ya está contenido por el worker/Job Object. La
+    # abstracción del backend entrega el cancel protocolario; nunca aplicar
+    # taskkill al PID del daemon sobre un proceso que vive en otro proceso.
+    if getattr(proc, "backend_managed", False) is True:
+        await proc.terminate()
+        return
     if sys.platform == "win32" and isinstance(getattr(proc, "pid", None), int):
         await asyncio.to_thread(_kill_tree_windows, proc.pid)
     with contextlib.suppress(ProcessLookupError):
