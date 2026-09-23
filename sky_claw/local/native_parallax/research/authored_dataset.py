@@ -183,10 +183,28 @@ def unit_length_residual(path: Path) -> NDArray[np.float64]:
 
 
 def decode_height_image(path: Path) -> NDArray[np.float64]:
-    """Height relativo 8-bit → float64 [0,1] (escala/offset ambiguos: los maneja el oráculo)."""
+    """Height/displacement relativo → float64 [0,1] (escala/offset ambiguos: los maneja el oráculo).
+
+    8-bit (L/P/RGB/RGBA) se normaliza por 255; 16-bit (I;16*) por 65535. Fix EXP-M3:
+    la versión previa asumía 8-bit y ``convert("L")`` sobre un PNG de 16 bits saturaba
+    a 255 (Poly Haven) o clipeaba (ambientCG), destruyendo el height — invisible con
+    el corpus JPG 8-bit de EXP-M2. El formato 16-bit es el preferido por el brief.
+    """
     with Image.open(path) as im:
+        mode = im.mode
+        if mode in ("I;16", "I;16B", "I;16L", "I;16N"):
+            gray16 = np.asarray(im, dtype=np.float64)
+            return np.asarray(gray16 / 65535.0, dtype=np.float64)
+        if mode == "I":
+            arr = np.asarray(im, dtype=np.float64)
+            peak = float(arr.max()) if arr.size else 0.0
+            if peak <= 255.0:
+                return np.asarray(arr / 255.0, dtype=np.float64)
+            if peak <= 65535.0:
+                return np.asarray(arr / 65535.0, dtype=np.float64)
+            raise DatasetInvalidError(f"{path}: height modo I con rango >16-bit no soportado")
         gray = np.asarray(im.convert("L"), dtype=np.float64)
-    return np.asarray(gray / 255.0, dtype=np.float64)
+        return np.asarray(gray / 255.0, dtype=np.float64)
 
 
 def resize_height(h: NDArray[np.float64], size: int) -> NDArray[np.float64]:

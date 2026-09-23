@@ -1,5 +1,6 @@
 """EXP-M3 — tests focales: hard-stop §3, provenance gate §9, anti-circularidad §15,
-regla pre-registrada §27, tasas §31, bootstrap determinista §29. Sin red ni corpus."""
+regla pre-registrada §27, tasas §31, bootstrap determinista §29, mapeo de decisión §29
+y Cohorte A (spec desde manifest + decisión). Sin red ni corpus."""
 
 from __future__ import annotations
 
@@ -9,8 +10,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from sky_claw.local.native_parallax.research.authored_dataset import AuthoredMaterial
 from sky_claw.local.native_parallax.research.run_exp_m3 import (
     CATASTROPHIC_RULE,
+    COHORT_A_DECISION_RULES,
     INDEPENDENT_SIGMA_CANDIDATES,
     NZ_FAMILY_PREFIXES,
     ORACLE_FILTER_DEGREES,
@@ -18,10 +21,15 @@ from sky_claw.local.native_parallax.research.run_exp_m3 import (
     DataInsufficientError,
     auc,
     check_cohort_a_sufficient,
+    cohort_b_features,
+    decide_exp_m3,
     is_catastrophic_m3,
     load_cohort_a,
+    material_features,
+    material_spec_from_entry,
     rates_sweep,
     spearman_ci,
+    trust_gate_passes,
 )
 
 # ---------------------------------------------------------------- §9 provenance gate
@@ -144,3 +152,286 @@ def test_auc_extremes() -> None:
 
 def test_oracle_filter_sensitivity_registered() -> None:
     assert ORACLE_FILTER_DEGREES == (20.0, 30.0, 40.0)
+
+
+# ---------------------------------------------------------------- §29 mapeo de decisión (A)
+
+
+def _summary(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "sufficient": True,
+        "raw": {"median_abs_corr": 0.8, "median_variance_ratio": 0.8},
+        "families": {"brick": {"n": 4, "median_abs_corr": 0.8, "median_variance_ratio": 0.8}},
+        "selected_proxy": None,
+        "calibration": None,
+        "heldout_trust": None,
+        "heldout_rates": [],
+        "heldout_family_directions": {},
+    }
+    base.update(overrides)
+    return base
+
+
+def _good_trust(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "selected_proxy": "nz_p01",
+        "calibration": {"n": 10, "spearman": -0.7, "orientation": -1.0},
+        "heldout_trust": {
+            "n": 12,
+            "spearman": 0.6,
+            "ci_low": 0.2,
+            "ci_high": 0.8,
+            "auc_catastrophic": 0.9,
+            "n_catastrophic": 3,
+        },
+        "heldout_rates": [{"auto_safe_coverage": 0.4, "catastrophic_false_safe_rate": 0.0}],
+        "heldout_family_directions": {
+            "tiles": {"n": 4, "spearman": 0.6},
+            "concrete": {"n": 4, "spearman": 0.7},
+        },
+    }
+    base.update(overrides)
+    return base
+
+
+def test_decision_rules_frozen() -> None:
+    assert COHORT_A_DECISION_RULES == {
+        "raw_min_median_abs_corr": 0.5,
+        "raw_min_median_variance_ratio": 0.5,
+        "raw_family_min_n": 3,
+        "trust_min_n_per_split": 5,
+        "trust_min_abs_spearman_heldout": 0.5,
+        "trust_min_auc_catastrophic_heldout": 0.75,
+        "trust_min_auto_coverage": 0.3,
+        "trust_max_catastrophic_false_safe": 0.0,
+        "trust_min_consistent_families": 2,
+    }
+
+
+def test_decision_data_insufficient_wins() -> None:
+    assert decide_exp_m3(_summary(sufficient=False)) == "EXP_M3_DATA_INSUFFICIENT"
+
+
+def test_decision_no_go_when_raw_broken_everywhere() -> None:
+    broken = {"median_abs_corr": 0.2, "median_variance_ratio": 0.2}
+    s = _summary(
+        raw=broken,
+        families={
+            "brick": {"n": 4, **broken},
+            "ground": {"n": 4, **broken},
+        },
+    )
+    assert decide_exp_m3(s) == "EXP_M3_NO_GO"
+
+
+def test_decision_conditional_when_only_some_family_viable() -> None:
+    s = _summary(
+        raw={"median_abs_corr": 0.3, "median_variance_ratio": 0.3},
+        families={
+            "brick": {"n": 4, "median_abs_corr": 0.9, "median_variance_ratio": 0.9},
+            "ground": {"n": 4, "median_abs_corr": 0.2, "median_variance_ratio": 0.2},
+        },
+    )
+    assert decide_exp_m3(s) == "EXP_M3_RECONSTRUCTION_CONDITIONAL"
+
+
+def test_decision_conditional_when_raw_ok_but_family_restricted() -> None:
+    s = _summary(
+        families={
+            "brick": {"n": 4, "median_abs_corr": 0.9, "median_variance_ratio": 0.9},
+            "ground": {"n": 4, "median_abs_corr": 0.3, "median_variance_ratio": 0.3},
+        },
+        **_good_trust(),
+    )
+    # el trust funciona, pero el dominio del solver está restringido: §32 → CONDITIONAL
+    assert decide_exp_m3(s) == "EXP_M3_RECONSTRUCTION_CONDITIONAL"
+
+
+def test_decision_trust_no_go_when_no_proxy_selectable() -> None:
+    assert decide_exp_m3(_summary()) == "EXP_M3_NORMAL_ONLY_TRUST_NO_GO"
+
+
+def test_trust_gate_requires_rates_and_stability() -> None:
+    assert trust_gate_passes(_summary(**_good_trust()))
+    bad_rate = _good_trust(heldout_rates=[{"auto_safe_coverage": 0.4, "catastrophic_false_safe_rate": 0.1}])
+    assert not trust_gate_passes(_summary(**bad_rate))
+    bad_families = _good_trust(
+        heldout_family_directions={"tiles": {"n": 4, "spearman": -0.6}, "concrete": {"n": 4, "spearman": 0.7}}
+    )
+    assert not trust_gate_passes(_summary(**bad_families))
+    weak_ci = _good_trust(
+        heldout_trust={
+            "n": 12,
+            "spearman": 0.3,
+            "ci_low": -0.2,
+            "ci_high": 0.6,
+            "auc_catastrophic": 0.9,
+            "n_catastrophic": 3,
+        }
+    )
+    assert not trust_gate_passes(_summary(**weak_ci))
+    small = _good_trust(
+        heldout_trust={
+            "n": 12,
+            "spearman": 0.6,
+            "ci_low": 0.2,
+            "ci_high": 0.8,
+            "auc_catastrophic": 0.9,
+            "n_catastrophic": 1,
+        }
+    )
+    assert not trust_gate_passes(_summary(**small))
+
+
+# ---------------------------------------------------------------- Cohort A: spec + features
+
+
+def _entry_dict(family: str = "brick", **overrides: object) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "asset_id": "polyhaven_x",
+        "family": family,
+        "provider": "polyhaven",
+        "official_source": "https://polyhaven.com/a/x",
+        "official_asset_page": "https://polyhaven.com/a/x",
+        "license": "CC0-1.0",
+        "license_reference": "https://polyhaven.com/license",
+        "normal_path": "n.png",
+        "height_path": "h.png",
+        "normal_sha256": "0" * 64,
+        "height_sha256": "1" * 64,
+        "normal_resolution": [1024, 1024],
+        "height_resolution": [1024, 1024],
+        "normal_convention": "OPENGL",
+        "height_semantics": "RELATIVE_GRAYSCALE_DISPLACEMENT",
+        "height_bit_depth": 8,
+        "provenance_status": "OFFICIAL_HASH_VERIFIED",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_material_spec_from_entry_maps_provider_to_source_and_mirror() -> None:
+    spec = material_spec_from_entry(_entry_dict())
+    assert spec.source == "polyhaven"
+    assert spec.mirror == "polyhaven"  # descarga directa: no hay mirror
+    assert spec.declared_convention == "OPENGL"
+
+
+def test_material_spec_from_entry_rejects_non_cc0_and_missing_fields() -> None:
+    from sky_claw.local.native_parallax.research.authored_dataset import DatasetInvalidError
+
+    with pytest.raises(DatasetInvalidError, match="CC0"):
+        material_spec_from_entry(_entry_dict(license="CC-BY-4.0"))
+    incomplete = _entry_dict()
+    del incomplete["height_path"]
+    with pytest.raises(DatasetInvalidError, match="height_path"):
+        material_spec_from_entry(incomplete)
+    unknown = _entry_dict(normal_convention="UNKNOWN")
+    with pytest.raises(DatasetInvalidError, match="UNKNOWN"):
+        material_spec_from_entry(unknown)
+
+
+def _write_normal_png(path: Path, normal: np.ndarray) -> None:
+    from PIL import Image
+
+    arr = np.rint((np.clip(normal, -1.0, 1.0) * 0.5 + 0.5) * 255.0).astype(np.uint8)
+    Image.fromarray(arr, mode="RGB").save(path)
+
+
+def test_cohort_a_loader_convierte_gl_a_la_convencion_del_solver(tmp_path: Path) -> None:
+    """§15: un archivo OPENGL (nor_gl/NormalGL) se flip-ea a DIRECTX al cargar.
+
+    Ancla sintética: h = sin(x)+sin(y); n_solver=normalize(-p,-q,1) reconstruye;
+    el archivo "GL" guardado con ny opuesto sólo reconstruye si el loader convierte.
+    """
+    import hashlib
+
+    from PIL import Image
+
+    from sky_claw.local.native_parallax.research.authored_dataset import load_asset
+    from sky_claw.local.native_parallax.research.normal_from_height import spectral_gradients
+    from sky_claw.local.native_parallax.research.run_exp_m2 import run_policy
+    from sky_claw.local.native_parallax.research.run_exp_m3 import (
+        SOLVER_NORMAL_CONVENTION,
+        evaluate_cohort_a,
+    )
+
+    size = 64
+    axis = np.linspace(0, 2 * np.pi, size, endpoint=False)
+    xx, yy = np.meshgrid(axis, axis)
+    height = 0.5 + 0.25 * np.sin(xx) + 0.25 * np.sin(yy)
+    p, q = spectral_gradients(height)
+    ones = np.ones_like(p)
+    n_solver = np.stack([-p, -q, ones], -1)
+    n_solver = n_solver / np.linalg.norm(n_solver, axis=-1, keepdims=True)
+    n_gl_file = np.stack([-p, q, ones], -1)  # convención GL: Y opuesta a la del solver
+    n_gl_file = n_gl_file / np.linalg.norm(n_gl_file, axis=-1, keepdims=True)
+
+    normal_path = tmp_path / "gl_normal.png"
+    height_path = tmp_path / "height.png"
+    _write_normal_png(normal_path, n_gl_file)
+    Image.fromarray(np.rint(height * 255.0).astype(np.uint8), mode="L").save(height_path)
+
+    def _digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    entry: dict[str, object] = {
+        "asset_id": "synthetic_gl",
+        "family": "brick",
+        "provider": "test",
+        "provenance_status": "PRIMARY_SOURCE_DOWNLOADED",
+        "license": "CC0-1.0",
+        "license_reference": "https://example.invalid/license",
+        "official_source": "https://example.invalid/a",
+        "official_asset_page": "https://example.invalid/a",
+        "normal_path": str(normal_path),
+        "height_path": str(height_path),
+        "normal_sha256": _digest(normal_path),
+        "height_sha256": _digest(height_path),
+        "normal_resolution": [size, size],
+        "height_resolution": [size, size],
+        "normal_convention": "OPENGL",
+        "height_semantics": "TEST",
+        "height_bit_depth": 8,
+    }
+    assert SOLVER_NORMAL_CONVENTION == "DIRECTX"
+    evaluated = evaluate_cohort_a([entry], resolution=size)
+    assert evaluated["dataset_invalid"] == []
+    row = evaluated["rows"][0]
+    assert row["tested_convention"] == "DIRECTX"
+    assert row["correlation"] > 0.8  # el loader convirtió GL → solver
+
+    # control: consumir el archivo GL as-is pierde la estructura (el defecto que el ancla ataja)
+    spec = material_spec_from_entry(entry)
+    mat_as_is = load_asset(spec, size, tested_convention="OPENGL")
+    raw = run_policy(mat_as_is, spec, "CALIBRATION", "RAW", 0.0, 0.0)
+    assert abs(raw["correlation"]) < 0.5
+
+
+def test_cohort_b_features_delegates_to_shared_implementation() -> None:
+    """Ancla anti-divergencia: B y A comparten material_features (§16/§17)."""
+    from sky_claw.local.native_parallax.research.authored_dataset import MaterialSpec
+
+    rng = np.random.default_rng(7)
+    normal = rng.normal(size=(64, 64, 3))
+    normal[..., 2] = np.abs(normal[..., 2]) + 0.5
+    normal = normal / np.linalg.norm(normal, axis=-1, keepdims=True)
+    height = np.clip(normal[..., 2], 0.0, 1.0)
+    spec = MaterialSpec(
+        asset_id="x",
+        family="brick",
+        source="s",
+        mirror="m",
+        license="CC0-1.0",
+        license_url="u",
+        source_url="u",
+        normal_path="n",
+        height_path="h",
+        normal_sha256="0" * 64,
+        height_sha256="1" * 64,
+        native_resolution=(64, 64),
+        declared_convention="OPENGL",
+        height_semantics="TEST",
+    )
+    mat = AuthoredMaterial(spec=spec, tested_convention="OPENGL", normal=normal, height=height)
+    assert cohort_b_features({"material": mat}) == material_features(mat)
