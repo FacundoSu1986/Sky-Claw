@@ -38,6 +38,11 @@ Mutaciones ancladas (deben salir ROJO si se reintroduce el defecto):
 * (FINDING A) detector F8 case-sensitive (``relative_to(install_root / "loot")``)
   → ``test_t6_guard_f8_*casing*`` rojos (cualquier casing del subárbol
   ``loot`` escapaba del guard en un host case-sensitive).
+
+Contratos adicionales (review FINDING B): T8 congela que
+``update_masterlist=True`` propaga broker→worker→``LOOTRunner.sort``
+(intención) y que ``--update-masterlist`` NUNCA viaja en el argv real
+(no-op documentado: el flag no existe en LOOT 0.29.x).
 """
 
 from __future__ import annotations
@@ -260,7 +265,13 @@ def _entorno_worker(tmp_path: pathlib.Path):
 
 
 def _manifest_loot_sort(
-    tmp_path: pathlib.Path, mo2: pathlib.Path, game_data: pathlib.Path, exe: pathlib.Path, *, game: str
+    tmp_path: pathlib.Path,
+    mo2: pathlib.Path,
+    game_data: pathlib.Path,
+    exe: pathlib.Path,
+    *,
+    game: str,
+    update_masterlist: bool = False,
 ):
     challenge = build_attestation_challenge(
         data_root=mo2,
@@ -274,7 +285,7 @@ def _manifest_loot_sort(
         payload={
             "loot_exe": str(exe),
             "game": game,
-            "update_masterlist": False,
+            "update_masterlist": update_masterlist,
         },
         timeout_seconds=10,
         expected_fingerprint=challenge.profile_fingerprint,
@@ -443,6 +454,78 @@ async def test_t5_update_masterlist_true_nunca_apearece_en_el_argv(tmp_path: pat
         "--auto-sort",
     ]
     assert "--update-masterlist" not in captured["args"]
+
+
+# ---------------------------------------------------------------------------
+# T8 — ``update_masterlist=True``: la intención propaga, el flag NO viaja
+# (review FINDING B). Dos contratos distintos congelados en el mismo vector.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_t8_update_masterlist_true_propaga_hasta_el_runner_y_no_viaja_al_argv(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Contrato 1 — **la intención atraviesa el worker**:
+    ``BrokeredLootRunner.sort(update_masterlist=True)`` → payload de
+    ``VfsJob`` → ``_loot_handler`` → ``LOOTRunner.sort(update_masterlist=True)``.
+
+    Contrato 2 — **el runner la trata como no-op documentado**: el flag
+    ``--update-masterlist`` NO existe en LOOT 0.29.x y **nunca** aparece en
+    el argv real de ``LOOT.exe``.
+
+    No se modifica comportamiento productivo: este test solo congela lo que
+    la cadena ya hace (si alguien "corrige" el no-op enviando el flag, el
+    sort completo se rompería en el parser de QCommandLineParser de LOOT).
+    """
+    # Contrato 1a: el broker lo pone en el payload del VfsJob.
+    bbase = tmp_path / "broker"
+    mo2b, datab, lootb = _entorno_broker(bbase)
+    broker = _Broker()
+    broker_runner = BrokeredLootRunner(
+        broker=broker,
+        instance_id="portable-main",
+        mo2_root=mo2b,
+        profile="Default",
+        game_data_dir=datab,
+        loot_exe=lootb,
+        timeout=120,
+        mutation_targets=lambda: (),
+    )
+    await broker_runner.sort(update_masterlist=True)
+    job, _ = broker.calls[0]
+    assert job.payload["update_masterlist"] is True
+
+    # Contrato 1b: el worker lo recibe del payload y lo pasa al runner.
+    wbase = tmp_path / "worker"
+    mo2, game_data, exe = _entorno_worker(wbase)
+    manifest = _manifest_loot_sort(
+        wbase,
+        mo2,
+        game_data,
+        exe,
+        game=DEFAULT_LOOT_INTERNAL_GAME_ID,
+        update_masterlist=True,
+    )
+    with patch("sky_claw.local.mo2.vfs_worker.LOOTRunner") as runner_cls:
+        instance = runner_cls.return_value
+        instance.sort = AsyncMock(return_value=LOOTResult())
+        await _loot_handler(manifest)
+    instance.sort.assert_awaited_once_with(update_masterlist=True)
+
+    # Contrato 2: el argv real de LOOT.exe NUNCA contiene el flag.
+    captured, fake_exec = _capturando_exec()
+    with (
+        patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", fake_exec),
+        patch("sky_claw.local.loot.cli.translate_path_if_wsl", side_effect=lambda x: str(x)),
+    ):
+        execution = await _loot_handler(manifest)
+
+    assert execution.success is True
+    argv = captured["args"]
+    assert "--update-masterlist" not in argv
+    assert argv[argv.index("--game") + 1] == LOOT_CLI_GAME_IDENTIFIERS[DEFAULT_LOOT_INTERNAL_GAME_ID]
+    assert "--auto-sort" in argv
 
 
 # ---------------------------------------------------------------------------
