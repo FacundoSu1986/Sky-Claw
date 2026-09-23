@@ -944,8 +944,8 @@ def _header(
     with ui.element("header").style(hdr):
         ui.html(
             '<div style="position:absolute; left:0; right:0; bottom:-1px; height:1px; background:linear-gradient(90deg,transparent,rgba(200,168,106,.45),transparent);"></div>'
-            f'<div style="flex-shrink:0;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:16px; letter-spacing:.1em; color:#f1e6cf; line-height:1.15; white-space:nowrap;">{_e(title)}</div>'
-            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#897f6a; margin-top:2px; white-space:nowrap;\">{_e(sub)}</div></div>"
+            f'<div style="min-width:0; flex-shrink:1; overflow:hidden;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:16px; letter-spacing:.1em; color:#f1e6cf; line-height:1.15; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{_e(title)}</div>'
+            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#897f6a; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;\">{_e(sub)}</div></div>"
         ).style(_FRAGMENTO)
         # Buscador real (A1): al presionar Enter dispara ``on_search`` — el
         # cableado en sky_claw_gui guarda el término y navega a "Mods", donde
