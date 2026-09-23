@@ -1,6 +1,7 @@
 # ADR 0010 — RV-GP2: Protect Golden / Golden Protection Apply
 
 **Fecha:** 2026-08-27
+**Enmienda de contrato GP2 P0.1 (2026-09-23):** Modelo híbrido de Golden Admission para #624; relación conceptual con el Steam-managed mirror de #494, sin atribuirle provenance. Alcance: design/contract only; no habilita implementación productiva.
 **Estado:** Propuesta (design-only; prohibida la implementación de código de producción en este PR).
 **Contexto de origen:** tarea RV-GP2 sobre `origin/main` `2ca4115b11740f0974c463a3d70db07aa068ca9c` (post-merge de PR #508, PR #509, PR #511 y PR #512).
 **Alcance:** Diseño arquitectónico exclusivo de la capability mutadora transaccional de protección del Golden Master (`protect_golden_master`), su helper de elevación con privilegio mínimo, verificación estricta de quiescencia (probe handle exclusivo) y mutación atada a handle (`SetSecurityInfo`), autoridad transaccional privilegiada continua durante todo el ciclo de vida del FSM, simetría rigurosa entre las dos superficies del repositorio (GUI `tool_dispatcher` y agente LLM `AsyncToolRegistry`), lock de mutación cross-process basado en kernel (`GoldenMutationLock`), store de operaciones independiente del perfil de usuario (`%ProgramData%`) con separación estricta staging vs autorización privilegiada, su journal transaccional con Write-Ahead Logging (WAL y `FlushFileBuffers`), su modelo de recuperación ante caídas (crash recovery) y su compatibilidad forward con GP3.
@@ -15,7 +16,7 @@ El Runtime Vault define hoy cuatro hitos normativos:
 | Capa | Estado | Qué afirma | Dónde vive |
 |---|---|---|---|
 | RV-1 | Merged | Identidad de runtime y de árbol: `(relpath, size, sha256)` por archivo + `TreeDigest(digest, files, bytes)` agregado | `sky_claw/local/runtime_vault/{models,verification,inventory}.py` |
-| RV-2 | Merged | Elevación de un candidato a Golden Master `VERIFIED` con evidencia independiente (`GoldenMasterDescriptor`, `reference_only`) | `sky_claw/local/runtime_vault/golden.py` |
+| RV-2 | Merged | Comparación de un candidato contra `expected_tree` + `expected_runtime` y emisión de `VERIFIED` sólo por igualdad completa; RV-2 verifica una expectativa, pero no autoriza su fuente ni prueba legitimidad/provenance del contenido (admission híbrida de TGR: §11.4) | `sky_claw/local/runtime_vault/golden.py` |
 | RV-3 | Merged | Creación y verificación de clon operativo independiente (`create_runtime_clone`, `PhysicalIndependenceResult`) | `sky_claw/local/runtime_vault/clone.py` |
 | RV-GP1 | Merged (PR #508) | Inspección read-only del estado de protección filesystem del Golden Master (`inspect_golden_protection`) | `sky_claw/local/runtime_vault/protection.py` (ADR 0009) |
 
@@ -442,15 +443,36 @@ En NTFS, un mismo archivo físico (identificado unívocamente por su tupla `(Vol
 PLAN_AUTHORIZATION_AUTHORITY = Elevated Helper Process ONLY
 UAC_IS_PLAN_AUTHORIZATION     = NO
 ARBITRARY_ROOT_FROM_STAGING_ACCEPTED = NO
+GP2_APPLY_WRITES_TGR           = NO
+
+GOLDEN_ADMISSION_SOURCES = {INDEPENDENT_PROVENANCE, OPERATOR_TOFU}
+STAGING_IS_AUTHORITY      = NO
+OBSERVATION_IS_AUTHORITY  = NO
+ADMISSION_IS_VERIFICATION = NO
+VERIFICATION_IS_CONTINUOUS_IMMUTABILITY = NO
+OPERATOR_TOFU_DOES_NOT_DETECT_PRE_EXISTING_COMPROMISE = TRUE
+TGR_SEMANTICS = LAST_EXPLICITLY_AUTHORIZED_AND_SUBSEQUENTLY_VERIFIED_SNAPSHOT
+TGR_ASSERTS_CURRENT_FILESYSTEM = NO
 ```
 
 El consentimiento UAC (`runas`) **únicamente eleva el helper**; **no autoriza el plan concreto**. La autorización de un plan GP2 v1 exige, sin excepción, los tres componentes normativos siguientes, todos verificados por el helper elevado antes de crear `authorized_plan.json`:
 
-1. **Trusted Golden Registry (TGR):** `%ProgramData%\Sky-Claw\runtime_vault\trusted_goldens.json` (ruta normativa, hardcodeada en el helper). El helper compara `canonical_root`, `VolumeSerialNumber`, `root_file_id` **y `tree_digest`** del plan contra una entrada registrada. Cada entrada del TGR incluye el `TreeDigest` de la **última verificación RV-2 aprobada** de ese Golden (`{canonical_root, VolumeSerialNumber, root_file_id, tree_digest, policy_version, registered_by, registered_at}`); el registro se actualiza (sólo por componente privilegiado/helper elevado) cuando una nueva verificación RV-2 aprueba un digest, mediante el flujo de refresco normativo de **§11.4** (operación privilegiada independiente de GP2 apply). Esto impide que Actor D modifique un Golden registrado pero `UNPROTECTED` antes del staging y consiga que el helper commute el contenido alterado: si `plan.TreeDigest != tgr_entry.tree_digest` -> `REFUSE_TO_PLAN`.
-2. **Privileged Plan-Specific Confirmation (PPSC):** diálogo privilegiado en el helper que muestra al operador —bajo UAC, con la sesión elevada— los valores exactos: `operation_id`, `canonical_root`, `VolumeSerialNumber`, `root_file_id`, `TreeDigest`, `node_count`, `policy_version`. La confirmación queda registrada en el journal de `AUTHORIZED_OPERATIONS`. No se introduce un segundo canal de intención (token, OTS handshake, etc.) en v1.
+1. **Trusted Golden Registry (TGR):** `%ProgramData%\Sky-Claw\runtime_vault\trusted_goldens.json` (ruta normativa, hardcodeada en el helper). El helper compara `canonical_root`, `VolumeSerialNumber`, `root_file_id` **y `tree_digest`** del plan contra una entrada registrada. Cada entrada del TGR incluye el `TreeDigest` del último snapshot expresamente autorizado y posteriormente RV-2 `VERIFIED` de ese Golden (`{canonical_root, VolumeSerialNumber, root_file_id, tree_digest, policy_version, registered_by, registered_at}`); el registro se actualiza (sólo por componente privilegiado/helper elevado) tras el flujo completo de autoridad/admission de §11.4 y una nueva verificación RV-2 aprobada, mediante el flujo de refresco normativo de **§11.4** (operación privilegiada independiente de GP2 apply). Esto impide que Actor D modifique un Golden registrado pero `UNPROTECTED` antes del staging y consiga que el helper commute el contenido alterado: si `plan.TreeDigest != tgr_entry.tree_digest` -> `REFUSE_TO_PLAN`.
+2. **Privileged Plan-Specific Confirmation (PPSC):** diálogo privilegiado en el helper que muestra al operador —bajo UAC, con la sesión elevada— los valores exactos: `operation_id`, `canonical_root`, `VolumeSerialNumber`, `root_file_id`, `TreeDigest`, `node_count`, `policy_version`. La confirmación queda registrada en el journal de `AUTHORIZED_OPERATIONS`. No se introduce un segundo canal de intención (token, OTS handshake, etc.) para GP2 apply en v1; Golden Admission es una operación separada (§11.4).
 3. **Protected Authorized Binding (PAB):** `authorized_plan.json` se crea **únicamente** en `%ProgramData%\Sky-Claw\runtime_vault\operations\<op_id>\authorized_plan.json`, directorio del que un proceso no elevado carece de `WRITE_DATA`/`WRITE_DAC`/`DELETE`. El binding es inmodificable para el Actor D. El `authorized_plan.json` es el **plan autoritativo completo** (bindings + tabla íntegra de nodos con `pre_sd_bytes_b64`/`pre_dacl_protected_flag`, §9.2.8), escrito y flusheado con verificación de éxito **antes del primer `MUTATING(K)`**; desde ese punto es la única fuente de recuperación (`RECOVERY_SOURCE = AUTHORIZED_OPERATIONS ONLY`, §12.2 paso 7).
 
-El helper debe **rechazar** la promoción del plan si cualquiera de los tres componentes falta o falla. **Queda prohibida** la frase o variante "diálogo privilegiado o token de intención ligado a la operación" u otras alternativas ambiguas: existe una sola autoridad normativa.
+El helper debe **rechazar** la promoción del plan GP2 si cualquiera de los tres componentes falta o falla. **Queda prohibida** la frase o variante "diálogo privilegiado o token de intención ligado a la operación" u otras alternativas ambiguas para el plan GP2: existe una sola autoridad normativa. El diálogo de Golden Admission no modifica ni amplía la PPSC de siete campos.
+
+El TGR sólo es escribible por el componente privilegiado; GP2 apply consume su binding y **nunca** actualiza `trusted_goldens.json`. El registro/refresco del TGR debe escoger explícitamente una de las dos fuentes cerradas indicadas arriba (§11.4), sin añadir estados al FSM GP2.
+
+`VerificationState.VERIFIED` significa únicamente que una ejecución RV-2 fresca comparó el árbol y runtime observados con una expectativa autorizada. No autentica por sí mismo la procedencia de esa expectativa, no demuestra que el contenido sea benigno y no afirma que el filesystem permanezca inmóvil después de la verificación. `UNKNOWN` sigue siendo distinto de `VERIFIED`.
+
+- **`INDEPENDENT_PROVENANCE`:** evidencia verificable e independiente del candidato que cubre el `TreeDigest` del scope completo, `expected_runtime`, cualquier `critical_expectations` declarada y el binding de la identidad física prevista. Evidencia parcial (por ejemplo, sólo archivos base del juego) no permite etiquetar como independientemente provenenciado el Golden completo.
+- **`OPERATOR_TOFU`:** el operador original admite explícitamente el snapshot exacto recién observado. Es una raíz de confianza humana para esa identidad, no una firma de publisher ni prueba de que todos sus archivos sean benignos. `OPERATOR_TOFU_DOES_NOT_DETECT_PRE_EXISTING_COMPROMISE` es normativo (§28).
+
+Un hash recién calculado nunca asciende por sí solo a Golden. La admisión explícita puede autorizar una expectativa TOFU; una segunda ejecución RV-2 debe verificarla desde cero antes del registro. La confirmación humana es **autorización**, no una medición de integridad.
+
+El TGR mantiene el schema de entrada existente en esta enmienda. Su `tree_digest` representa el último snapshot expresamente autorizado y luego verificado; no garantiza igualdad continua con el filesystem. GP2 vuelve a medir y compara contra el TGR; mismatch -> `REFUSE_TO_PLAN`. La separación y DACL del TGR (§11.3) no cambian.
 
 ### 11.1 El Problema de la Autorización y Defensa contra Confused Deputy
 Un hash SHA-256 garantiza **integridad de corrupción**, pero no **autorización**. Para impedir que un proceso no privilegiado (Actor D) manipule al helper para proteger un directorio arbitrario o un plan forjado:
@@ -516,19 +538,120 @@ LOCK_FILE_RIGHTS_FOR_AUTHENTICATED_USERS:
 - La lectura de la metadata del lock (`phase`, `owner_pid`, `owner_process_creation_time`, `operation_id`) durante el recovery la ejecuta el **Elevated Helper / Recovery participant** DESPUÉS de adquirir exitosamente el handle exclusivo (`dwShareMode = 0`, §19.1.1): ese actor la lee porque tiene acceso privilegiado, no porque el lock file sea legible por no elevados.
 - `UNPRIVILEGED_LOCK_FILE_READ = FORBIDDEN`. Razón (recomendación externa de conceder `FILE_GENERIC_READ` sobre `locks/*.lock` evaluada y **RECHAZADA como insegura**): un Actor D autorizado a lectura podría abrir el lock con `GENERIC_READ` y un share mode incompatible **antes** que el helper; la apertura del helper (`GENERIC_READ | GENERIC_WRITE`, `dwShareMode = 0`, §19.1.1) recibiría `ERROR_SHARING_VIOLATION` mientras el lector retenga el handle, produciendo un DoS de adquisición. `dwShareMode = 0` protege la exclusividad DESPUÉS de que el helper adquiere el lock; NO impide que un actor autorizado a lectura abra primero el archivo. Ancla: `GP2-T40` / `M-L1`.
 
-### 11.4 Refresco del TGR (flujo normativo de actualización del `tree_digest`)
+### 11.4 Golden Admission y refresco del TGR (contrato híbrido; REGISTER_OR_REFRESH_TRUSTED_GOLDEN)
 
-El binding `plan.TreeDigest == tgr_entry.tree_digest` (§11.0 punto 1) plantea un problema de ciclo de vida: cuando un Golden cambia **legítimamente** (nuevo build, mod verificado) su `TreeDigest` avanza, pero la verificación RV-2 que produce el digest nuevo corre bajo **token no elevado** y el TGR sólo es escribible por `Administrators`/`SYSTEM`. Sin un flujo de refresco, la entrada del TGR quedaría obsoleta y **toda** operación GP2 legítima posterior sería rechazada con `REFUSE_TO_PLAN`. El refresco se define como una operación privilegiada **independiente de GP2 apply**:
+Esta operación es independiente de GP2 apply. La autoridad del helper para escribir el TGR no convierte los bytes staged en expectativa. El helper sigue aceptando únicamente la CLI cerrada de §12.1; `canonical_root`, IDs físicos, digests, runtime, expectativas y evidencia staged son candidatos no confiables y se reconstruyen/revalidan internamente.
 
-1. **Separación de autoridad:** GP2 apply **nunca** escribe el TGR — sólo lo lee y hace `REFUSE_TO_PLAN` ante mismatch. El registro/refresco es una operación distinta (`op_kind = REGISTER_OR_REFRESH_TRUSTED_GOLDEN`), con su propio consentimiento privilegiado. Esto rompe el deadlock (un Golden actualizado nunca podría protegerse) sin diluir la defensa Confused Deputy.
-2. **Staging del pedido (no elevado):** el coordinador stagea en `UNTRUSTED_STAGING` un pedido de refresco con `canonical_root`, `(VolumeSerialNumber, root_file_id)`, el `tree_digest` nuevo y la evidencia RV-2 (`GoldenMasterVerificationResult`, `reference_only`). Estos bytes son UNTRUSTED (Actor D puede forjarlos); no se confía en ellos por sí mismos.
-3. **Revalidación y confirmación (elevado):** el helper elevado, tras UAC, **re-ejecuta RV-2 bajo el token del operador** sobre el `canonical_root` físico (no confía en el digest staged) y exige `state == VERIFIED`. Luego exhibe una **confirmación privilegiada** —equivalente a la PPSC— con `canonical_root`, `(VolumeSerialNumber, root_file_id)`, `tree_digest_anterior`, `tree_digest_nuevo`, `policy_version` y resumen de evidencia RV-2, y requiere consentimiento explícito del operador (el humano autoriza que el contenido nuevo es legítimo). Sólo entonces el helper escribe/actualiza la entrada del TGR de forma **atómica** (temporal + `os.replace` en el mismo directorio, DACL `Administrators`/`SYSTEM` únicamente), fijando `registered_by` y `registered_at`.
-4. **Primera registración:** una alta inicial (sin entrada previa) usa exactamente el mismo flujo; `ARBITRARY_ROOT_FROM_STAGING_ACCEPTED = NO` se mantiene porque el `canonical_root` lo confirma el operador bajo sesión elevada.
-5. **Anti-Confused-Deputy:** un proceso no elevado no puede refrescar el TGR (DACL de escritura exclusiva de `Administrators`/`SYSTEM`) ni saltarse la re-ejecución RV-2 ni la confirmación privilegiada. Un digest staged forjado es descartado por la revalidación RV-2 del paso 3.
+#### Fuentes cerradas de expectativa
 
-Oráculo: `GP2-T44` cubre (a) que GP2 apply nunca escribe el TGR; (b) que el refresco exige re-ejecución RV-2 `VERIFIED` + confirmación privilegiada antes de mutar la entrada; (c) que un pedido de refresco de un proceso no elevado sobre `trusted_goldens.json` recibe `ACCESS_DENIED` por DACL. El mutante `M-T2` (refresco que confía en el digest staged sin re-ejecutar RV-2) es detectado por `GP2-T44`.
+`GoldenAdmissionSource` es un concepto cerrado:
 
----
+```text
+INDEPENDENT_PROVENANCE
+OPERATOR_TOFU
+```
+
+- **`INDEPENDENT_PROVENANCE`:** un source/descriptor autenticado proporciona `expected_tree` y `expected_runtime` para la identidad física prevista. Para afirmar provenance independiente del Golden completo, la fuente debe cubrir todos los archivos incluidos en el `TreeDigest` (o un manifiesto completo equivalente), el runtime y las expectativas críticas declaradas. Un `GoldenMasterDescriptor` o `RuntimeCloneResult` sólo en memoria no es, por sí mismo, un receipt durable ni una nueva raíz de confianza. Un clone exacto hereda autoridad únicamente si su Golden fuente ya estaba independientemente autorizado y la cadena completa está verificable.
+- **`OPERATOR_TOFU`:** si no existe provenance independiente suficiente, el operador original admite explícitamente un snapshot exacto. Esto permite trust-on-first-use; **no** detecta una modificación maliciosa que ya existía antes de la primera observación (§28). Si esa limitación no es aceptable para una policy concreta, se rehúsa la operación hasta obtener una fuente independiente.
+
+Una evidencia que sólo cubre Skyrim base no cubre el Golden modded completo. La fuente final de autoridad del TreeDigest completo se etiqueta `OPERATOR_TOFU` salvo que un descriptor/provenance bundle cubra el tree entero. Provenance parcial puede registrarse como evidencia suplementaria, pero nunca eleva silenciosamente el tree compuesto a `INDEPENDENT_PROVENANCE`.
+
+#### Modelos de admission — independientes del FSM GP2
+
+El diseño futuro usa modelos específicos; no agrega `AUTHORIZED` ni otros estados al FSM de apply:
+
+```text
+GoldenAdmissionObservation   # OBSERVED; no expected_tree y no autoridad
+GoldenAdmissionExpectation   # ADMITTED; expected_tree + expected_runtime + source
+GoldenAdmissionReceipt      # inmutable, emitido por helper, operation-bound
+GoldenAdmissionState = {OBSERVED, ADMITTED, VERIFIED, REJECTED}
+```
+
+Para TOFU, `OBSERVED → ADMITTED → VERIFIED` es el lifecycle del admission workflow; provenance-backed comienza en `ADMITTED → VERIFIED`. Son estados de workflow, no transiciones del FSM GP2. `verify_golden_master(expected_tree=None, ...)` conserva su contrato `UNKNOWN`; no es la API de observación (en la implementación actual además no hace el inventario de árbol en esa rama). El futuro observer debe ejecutar un scan read-only y producir un resultado tipado `OBSERVED`, sin fabricarlo como `GoldenMasterVerificationResult.VERIFIED`.
+
+`GoldenAdmissionReceipt` es creado exclusivamente por el helper elevado y nunca se deserializa desde `UNTRUSTED_STAGING`. En provenance-backed se crea tras validar el source y admitir la expectativa, antes del fresh RV-2; la confirmación privilegiada final ocurre después de `VERIFIED` y queda ligada al mismo `operation_id` antes del TGR write. En TOFU se crea sólo después de que el operador confirma el snapshot `OBSERVED`. Su contrato cerrado incluye como mínimo:
+
+```text
+operation_id
+canonical_root
+VolumeSerialNumber
+root_file_id
+tree_digest
+expected_runtime
+policy_version
+admission_source
+operator_sid
+admitted_at
+critical_expectations_digest
+source_provenance_digest
+nonce
+```
+
+Bindings normativos del receipt:
+
+- `canonical_root`, `VolumeSerialNumber` y `root_file_id` salen de primitivas seguras/revalidadas; los valores staged sólo señalan un candidato. Se vuelven a comprobar en el rerun antes de aceptar su resultado. `tree_digest` y `expected_runtime` salen del source validado o, en TOFU, de la observación admitida y del receipt; un digest/runtime staged nunca se eleva a expectativa.
+- `policy_version` es la versión activa de la policy del helper; staging no puede elegirla ni sustituirla.
+- `operator_sid` se deriva de la evidencia `TokenUser` del `OperatorPrimaryToken` original, nunca de staging, environment ni la cuenta UAC tomada aisladamente. `admitted_at` lo genera el helper como timestamp UTC en la emisión del receipt. `nonce` CSPRNG se consume una sola vez y queda ligado a `operation_id`, physical identity, digest, runtime, policy y source.
+- `INDEPENDENT_PROVENANCE` exige `source_provenance_digest` que referencia el evidence bundle validado y ligado a la expectativa completa. En `OPERATOR_TOFU`, `source_provenance_digest = null` salvo digest suplementario claramente marcado como no autoritativo; TOFU no puede declararse provenance por rellenar ese campo.
+- `critical_expectations_digest` es el digest canónico de la lista confirmada, incluso cuando es la lista vacía (representada como `[]`, no omitida ni `null`). `critical_expectations=()` sigue siendo válido si el TreeDigest completo y `expected_runtime` están autorizados. Si no está vacía, la lista completa y su digest quedan ligados a la misma fuente que TreeDigest/runtime; las expectativas críticas son complementarias y nunca sustituyen al TreeDigest.
+- El receipt y el resultado de la operación se conservan en el registro protegido de esa operación, ligados por `operation_id`; son evidencia de admisión, no un TGR entry ni una transición del FSM GP2. La enmienda no cambia el schema JSON del TGR.
+
+La confirmación de Golden Admission es un DTO distinto de `PrivilegedPlanConfirmation` (los siete campos normativos de GP2 apply no se distorsionan). En TOFU confirma exactamente `operation_id`, root canónico y physical identity, `TreeDigest B` observado, runtime observado, `policy_version`, el digest anterior del TGR o `ABSENT`, `admission_source=OPERATOR_TOFU` y el digest/valor de `critical_expectations` (también si es `()`). Muestra literalmente `OPERATOR_TOFU DOES NOT DETECT PRE-EXISTING COMPROMISE`. Su consentimiento autoriza **ese snapshot exacto y sólo el commit si el rerun fresco de RV-2 lo verifica**; no transforma la observación en verificación. En provenance-backed, la confirmación plan-specific ocurre después de `VERIFIED` y muestra el source y su binding junto con old/absent → new.
+
+#### Flujos normativos
+
+**INDEPENDENT_PROVENANCE — alta inicial:**
+
+```text
+trusted source / verified provenance bundle provides expectation B
+→ validate source, full-tree coverage, runtime and physical-root binding
+→ ADMITTED expectation + helper-issued receipt B (operation-bound)
+→ fresh RV-2 under original operator token against receipt B
+→ require VERIFIED
+→ privileged plan-specific confirmation (old/absent → new)
+→ TGR B
+```
+
+**INDEPENDENT_PROVENANCE — refresh A→B:** igual, pero la confirmación muestra explícitamente `OLD TreeDigest A → NEW TreeDigest B`.
+
+**OPERATOR_TOFU — alta inicial:**
+
+```text
+UNTRUSTED CANDIDATE
+→ fresh read-only observation under original operator token
+→ OBSERVED B (full TreeDigest + runtime + physical identity)
+→ privileged confirmation: admit exactly B; conditional authorization to commit
+→ helper-issued ADMITTED EXPECTATION / one-use receipt B
+→ fresh RV-2 rerun from zero under original operator token
+→ re-read/re-hash tree and re-observe runtime; require B2 == B and runtime2 == admitted runtime
+→ VERIFIED
+→ TGR B
+```
+
+**OPERATOR_TOFU — refresh A→B:** misma secuencia, pero antes de emitir el receipt el diálogo muestra `OLD TreeDigest A → OBSERVED NEW TreeDigest B`, la identidad física/runtime/policy y la advertencia TOFU. La autorización es condicional al rerun; cualquier cambio/rechazo/fallo produce `REJECTED` y cero TGR writes.
+
+El segundo RV-2 pass no reutiliza `FileIdentity`, bytes, resultado ni digest del primer observation pass; vuelve a abrir/leer el tree y calcula `B2` desde cero. Sólo `B2 == receipt.tree_digest`, `runtime2 == receipt.expected_runtime` y el binding físico exacto producen `VERIFIED`. Si el operador rechaza, falta el receipt, hay mismatch o el child no puede probar su resultado, no se escribe el TGR. Ningún flujo usa el `GoldenMasterVerificationResult` staged como resultado autoritativo.
+
+#### Clasificación de amenazas Actor D para admission
+
+| Intento de Actor D | Tratamiento contractual / límite |
+|---|---|
+| Digest, resultado RV-2 `VERIFIED`, source, root, runtime, SID o timestamp falsificados en staging | Staging es sólo candidate input; el helper reconstruye authority y bindings. Digest/verdict staged nunca crea expectation ni receipt. |
+| Root arbitrario, reparse path o receipt aplicado a otro volumen/objeto | El helper resuelve un root seguro y liga canonical path + `VolumeSerialNumber` + `root_file_id`; el operador ve esa identidad; cualquier mismatch/replay -> `REJECTED`, cero TGR write. |
+| Mutación previa a la primera observación (`pre-admission`) | Provenance independiente válida debe causar RV-2 mismatch si el tree ya no coincide. TOFU no puede distinguir un compromiso que ya existía: se informa y se admite sólo con consentimiento explícito o se rechaza. |
+| Mutación después de `OBSERVED` y antes de la confirmación/receipt, o después de `ADMITTED` pero antes del fresh rerun | El rerun fresco vuelve a abrir y mide el tree; si detecta el cambio, no hay `VERIFIED` ni TGR write. No se afirma un snapshot atómico durante el intervalo. |
+| Mutación concurrente durante el fresh rerun | Si el scan detecta drift, se rechaza; el scan RV-1 vigente no promete atomicidad frente a todas las races (§28.9), por lo que no se afirma que toda mutation concurrente sea detectable. |
+| Mutación después de `VERIFIED`/rerun y antes o después del TGR commit (`post-rerun`) | No existe bloqueo de contenido ni snapshot atómico en P0.1. El TGR puede seguir describiendo B mientras el filesystem ya sea C; GP2 debe detectar el mismatch y `REFUSE_TO_PLAN`. No se llama C `VERIFIED`. |
+| Replay de un receipt válido en otra operación, root, digest, runtime o policy | `operation_id` + nonce one-use + bindings completos no coinciden -> reject. `operator_sid`/`admitted_at` staged no se aceptan. |
+| Runtime sustituto o runtime de otra fuente | `expected_runtime` queda bajo el mismo source/receipt que TreeDigest y se mide de nuevo en RV-2; mismatch -> reject, cero write. |
+
+El read-modify-write futuro del TGR deberá serializar actualizaciones concurrentes por un mecanismo aún no especificado en P0.1. Si se adopta un global TGR lock, sólo protege consistencia/serialización del registry; **no** congela el Golden ni cierra la ventana TOCTOU. `GoldenMutationLock` tampoco es una garantía de estabilidad de contenido frente a Actor D.
+
+#### Steam-managed mirror, base runtime y mods (relación conceptual con issue #494)
+
+La propuesta de #494 separa `Steam-managed install` (mutable/current source) de `Sky-Claw detached pinned runtime` (copia operacional versionada). Esa separación de lifecycle permite que Steam actualice su copia mientras un runtime detached permanece en la versión fijada; **no demuestra provenance criptográfica** del contenido por sí sola. La issue #494 está abierta y su fase de RIG/runtime-promotion aún debe validar comportamiento real. La presencia de `appmanifest_489830.acf` o una ruta dentro de Steam no es una autoridad criptográfica para el `TreeDigest`.
+
+Dirección arquitectónica: separar base game/runtime, MO2 mod overlay, generated outputs y manual modifications cuando la instalación lo permita. No se asume que toda instalación actual ya esté separada. Base game podría recibir provenance de una fuente verificada; mods podrían recibirla de manifests de descarga verificados; outputs de un pipeline podrían usar receipts de ese pipeline; cambios manuales pueden requerir `OPERATOR_TOFU`. La fuente independiente sólo autoriza el tree completo cuando cubre el tree completo; provenance del base runtime no autentica MO2 mods, SKSE plugins, generated assets ni archivos manuales.
 
 ## 12. Privileged Helper Boundary, Quiescence & Handle-Bound Mutation
 
@@ -774,7 +897,9 @@ Tras la restauración, el helper **re-lee** con `GetSecurityInfo(handle, OWNER |
 
 ### 12.3 Canal IPC de Post-Verificación (normativo, anti-suplantación del verificador)
 
-La decisión de `COMMITTED` depende del resultado (`HARDENED`/`VERIFIED`/NodeSet OK) que el verificador **no elevado** devuelve al helper elevado. Como esa decisión es crítica, el canal IPC y la autenticación del peer se especifican de forma **normativa** para impedir que un Actor D local suplante al verificador y responda un falso `HARDENED`/`VERIFIED` (lo que provocaría `COMMITTED` sobre un Golden no endurecido o alterado):
+La decisión de `COMMITTED` depende del resultado (`HARDENED`/`VERIFIED`/NodeSet OK) que el verificador **no elevado** devuelve al helper elevado. El mismo boundary privado se reutiliza, sin cambio de la CLI pública del helper, para las invocaciones read-only del admission del TGR (§11.4): una invocación `OBSERVE` produce sólo `OBSERVED`; una invocación `VERIFY` recibe la expectativa autorizada y debe volver a medir desde cero. Cada invocación tiene nonce/peer binding propio. El child nunca crea el receipt ni escribe el TGR.
+
+Como estas decisiones son críticas, el canal IPC y la autenticación del peer se especifican de forma **normativa** para impedir que un Actor D local suplante al verificador y responda un falso `HARDENED`/`VERIFIED` (lo que provocaría `COMMITTED` sobre un Golden no endurecido o alterado, o un TGR write sin rerun válido):
 
 1. **El helper LANZA al verificador como proceso hijo directo** bajo el **token efectivo NO elevado del operador** (obtenido según §13.4), con el path de imagen **fijo** del binario verificador empaquetado (mismo binario firmado que el helper), nunca una ruta recibida por parámetro. **API de lanzamiento según el privilegio del helper (normativo):** un helper **UAC-elevado interactivo** (Administrators, integridad alta) posee `SeImpersonatePrivilege` pero **no** `SeAssignPrimaryTokenPrivilege`, por lo que **debe** usar **`CreateProcessWithTokenW`** (que sólo exige `SeImpersonatePrivilege`); `CreateProcessAsUserW` fallaría con `ERROR_PRIVILEGE_NOT_HELD`. Un helper que corra como **SYSTEM/servicio** (con `SeAssignPrimaryTokenPrivilege`, ver §11.3) usa `CreateProcessAsUserW`. **Queda prohibido `CreateProcessW` sin token**: correría el verificador bajo el token ELEVADO del helper e invalidaría `assurance_scope == CURRENT_EFFECTIVE_UNELEVATED_TOKEN`. No existe un servicio verificador de larga vida al que "conectarse".
 2. **Canal, acoplado a la API de lanzamiento:**
@@ -782,8 +907,8 @@ La decisión de `COMMITTED` depende del resultado (`HARDENED`/`VERIFIED`/NodeSet
    - **Con `CreateProcessWithTokenW` (helper UAC-elevado):** esta API **no propaga la herencia de handles**, así que el pipe anónimo heredado no está disponible; se usa un **named pipe con nombre aleatorio por operación (CSPRNG) y DACL restrictiva** que admite exclusivamente a `SYSTEM`/`Administrators` y al SID del operador (el del token del hijo), y el helper valida al cliente con `GetNamedPipeClientProcessId` + la verificación de peer de abajo. Un nombre adivinable o una DACL permisiva quedan **prohibidos**.
    En ambos casos el resultado sólo se acepta por ese canal privado; no hay endpoint público que Actor D pueda usar.
 3. **Autenticación del peer (defensa en profundidad):** el helper conserva el `PID` y el `ProcessCreationTime` devueltos por `CreateProcess`, y antes de aceptar el resultado verifica que el extremo del pipe corresponde a ese hijo (imagen firmada esperada, `PID` + `ProcessCreationTime` estables — misma defensa PID-reuse que §19.1.5). Además el helper genera un **nonce por operación** (CSPRNG), lo pasa al hijo al lanzarlo y exige que el resultado lo devuelva; un payload sin el nonce vigente se descarta (anti-replay).
-4. **Fail-closed ante ausencia/ambigüedad:** si el hijo muere, el pipe cierra (EOF), el nonce no coincide, el `PID`/`ProcessCreationTime` no casan, o el resultado es ilegible -> el helper trata la post-verificación como **fallida** -> `ROLLBACK_REQUIRED`. **Nunca** se transiciona a `COMMITTED` con un resultado ausente, tardío o no autenticado.
-5. **Read-only:** el verificador sólo lee (GP1/RV-2/NodeSet) y devuelve un veredicto; no escribe el FSM, `AUTHORIZED_OPERATIONS`, `COMMITTED` ni `ARCHIVING_BACKUP` (§19.2). El helper retiene el `GoldenMutationLock` durante toda la post-verificación.
+4. **Fail-closed ante ausencia/ambigüedad:** si el hijo muere, el pipe cierra (EOF), el nonce no coincide, el `PID`/`ProcessCreationTime` no casan, o el resultado es ilegible -> en GP2 apply la post-verificación falla y el desenlace es `ROLLBACK_REQUIRED`; en admission TGR la operación termina `REJECTED` sin TGR write y sin transicionar el FSM GP2. Nunca se acepta un resultado ausente, tardío o no autenticado.
+5. **Read-only:** el verificador sólo lee (GP1/RV-2/NodeSet, o el observation pass del admission) y devuelve un resultado; no emite `GoldenAdmissionReceipt`, no escribe el TGR ni escribe el FSM, `AUTHORIZED_OPERATIONS`, `COMMITTED` o `ARCHIVING_BACKUP` (§19.2). El helper elevado conserva autoridad para validar/registrar la admisión; `GoldenMutationLock` no se presenta como un lock de contenido.
 
 Oráculo: `GP2-T46` verifica que (a) el helper sólo acepta el resultado por el **canal privado** del hijo que lanzó —pipe anónimo heredado con `CreateProcessAsUserW`, o named pipe de nombre aleatorio con DACL restrictiva con `CreateProcessWithTokenW` (punto 2)— con imagen esperada, `PID`+`ProcessCreationTime` y nonce vigente; (b) un proceso ajeno que intente entregar `HARDENED`/`VERIFIED` por cualquier otro canal (o con nonce inválido/reutilizado) es ignorado y **no** produce `COMMITTED`; (c) muerte del verificador o resultado ausente -> `ROLLBACK_REQUIRED`, nunca `COMMITTED`. El mutante `M-I1` (aceptar el veredicto sin autenticar el peer, o por un named pipe con DACL permisiva/nombre adivinable) es detectado por `GP2-T46`.
 
@@ -809,7 +934,7 @@ Oráculo: `GP2-T46` verifica que (a) el helper sólo acepta el resultado por el 
           SYSTEM/servicio (punto 2); si esa vía no está disponible -> REFUSE_TO_PLAN (fail-closed,
           antes de mutar). SeDebugPrivilege NO se habilita (considerado y rechazado, ver abajo).
      ```
-   - **Obtención del token del operador original (normativa):** la post-verificación (§12.3/§21/§22) y la re-ejecución RV-2 del refresco del TGR (§11.4) deben correr bajo el **token efectivo no elevado del operador interactivo original** (para que `state == HARDENED` valga bajo `CURRENT_EFFECTIVE_UNELEVATED_TOKEN`), que en `OTS_CROSS_ACCOUNT` **no** es la cuenta del diálogo UAC. Un proceso elevado sólo por UAC **no** posee ese token automáticamente. El diseño lo obtiene por una de dos vías:
+   - **Obtención del token del operador original (normativa):** la post-verificación (§12.3/§21/§22), el observation pass TOFU y el fresh RV-2 rerun del admission/refresco del TGR (§11.4) deben correr bajo el **token efectivo no elevado del operador interactivo original** (para que `state == HARDENED` valga bajo `CURRENT_EFFECTIVE_UNELEVATED_TOKEN`), que en `OTS_CROSS_ACCOUNT` **no** es la cuenta del diálogo UAC. Un proceso elevado sólo por UAC **no** posee ese token automáticamente. El diseño lo obtiene por una de dos vías:
      1. **El helper elevado EXTRAE el token del coordinador — SÓLO `OTS_SAME_ACCOUNT`:** el helper se eleva por UAC (`ShellExecuteExW` verbo `runas`, §13.1) a integridad **alta**; el coordinador corre a integridad **media**. **Fundamento técnico (evidencia primaria, §29):** el acceso se sostiene en el **DACL check** del objeto proceso — la DACL del SD por defecto de un proceso proviene del token del creador ("The ACLs in the default security descriptor for a process come from the primary or impersonation token of the creator"), que concede los derechos a la propia cuenta del operador — y en que `OpenProcess` evalúa el acceso contra esa DACL. La superioridad de integridad (alto > medio) **no es un sustituto del DACL check**: MIC es "in addition to discretionary access control" y se evalúa *antes* del DACL check, no en su lugar (doc. primaria MIC). Con la DACL garantizada por same-account, el **helper (misma cuenta, integridad alta)** abre el proceso **coordinador** —cuyo `PID` + `ProcessCreationTime` conoce por el contexto de la operación y **verifica** (imagen firmada esperada, misma defensa PID-reuse que §19.1.5)— con `PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE`, hace `OpenProcessToken` + `DuplicateTokenEx` para obtener el token del operador. **Contrato normativo del token generado (evidencia primaria, §29): `CreateProcessWithTokenW` exige un PRIMARY token** cuyo handle posea los derechos de acceso `TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY`; por tanto:
         ```text
         OPERATOR_VERIFIER_TOKEN_TYPE = TokenPrimary
@@ -1073,6 +1198,8 @@ Inmediatamente tras validar GP1:
    - `result.descriptor.tree_digest == baseline_tree` (garantía de que ningún byte de contenido ni tamaño fue alterado).
 3. Si el hash o estructura del árbol cambió, el helper transiciona a `ROLLBACK_REQUIRED` y registra una alerta crítica de integridad.
 
+`baseline_tree`/`baseline_runtime` aquí son expectativas ya autorizadas del plan de apply. §22 no crea expectativas nuevas desde la observación post-mutación y no es un oracle de alta/refresco TGR. El admission TOFU de §11.4 es una operación distinta: observation `OBSERVED`, receipt explícito y un RV-2 posterior desde cero. Un fallo de admission no transiciona el FSM GP2.
+
 ---
 
 ## 23. Node Set Exhaustiveness & Backup Identity Architecture
@@ -1192,7 +1319,7 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - **GP2-T41 (descriptor vivo validado antes del lock):** manifest con `pre_sd_bytes_b64`/`pre_sd_sha256` auto-consistentes pero que NO coinciden con el descriptor vivo de un nodo K>1 -> `REFUSE_TO_PLAN` en la fase de autorización (§12.2 paso 5, validación de descriptores vivos) con cero mutaciones; el `GoldenMutationLock` nunca se adquiere. Complementa a `M-B2`.
 - **GP2-T42 (parent WRITE_OWNER fail-closed):** parent con `CHANGE_OWNER` efectivo (con o sin Owner Rights ACE) -> `UnsafeParentError` -> `REFUSE_TO_APPLY`, cero mutaciones; GP2 nunca continúa basándose sólo en `owner_rights_ace_present`. Complementa a `M05`.
 - **GP2-T43 (descriptor estructuralmente inválido rechazado):** manifest con `pre_sd_bytes_b64` auto-consistente pero estructuralmente inválido (longitud menor a `SECURITY_DESCRIPTOR_MIN_LENGTH` o `IsValidSecurityDescriptor == False`) -> `REFUSE_TO_PLAN` en la fase de autorización, sin parsear con accessors nativos.
-- **GP2-T44 (refresco del TGR, §11.4):** (a) una operación GP2 apply nunca escribe `trusted_goldens.json` (ancla AST/comportamiento: apply sólo lee el TGR); (b) el flujo `REGISTER_OR_REFRESH_TRUSTED_GOLDEN` exige re-ejecución RV-2 con `state == VERIFIED` bajo el token del operador **más** confirmación privilegiada explícita antes de escribir la entrada, y actualiza `tree_digest` de forma atómica; (c) un proceso no elevado que intente escribir/refrescar `trusted_goldens.json` recibe `ACCESS_DENIED` por DACL. Un Golden actualizado legítimamente (nuevo `TreeDigest`) vuelve a ser protegible por GP2 sólo tras el refresco. Complementa a `M-T2`.
+- **GP2-T44 (Golden Admission y refresco del TGR, §11.4):** (a) GP2 apply nunca escribe `trusted_goldens.json`; (b) en `INDEPENDENT_PROVENANCE`, la expectativa completa (TreeDigest + runtime + physical binding; critical expectations si las hay) se valida desde provenance independiente, RV-2 se ejecuta bajo el token original y exige `VERIFIED` antes de la confirmación final y TGR update; (c) en `OPERATOR_TOFU`, first pass sólo produce `OBSERVED`, confirmación privilegiada admite exactamente B y crea receipt helper-issued, luego un **segundo RV-2 fresh desde cero** bajo el token original exige `B2 == admitted B` y runtime concordante antes del TGR update; (d) digest/RV-2 staged por sí solos nunca autorizan; (e) observation por sí sola nunca autoriza; (f) UI/receipt declara `OPERATOR_TOFU_DOES_NOT_DETECT_PRE_EXISTING_COMPROMISE`; (g) el TGR registra el último snapshot autorizado y re-verificado, no una afirmación de current filesystem; GP2 rechaza el tree vivo ante mismatch. En ambos modos el TGR write es atómico y un caller no elevado recibe `ACCESS_DENIED`. Complementa a `M-T2` y a RVO-01..RVO-12.
 - **GP2-T45 (probe con reintentos acotados, §4.1.3):** (a) un lector benigno (`GENERIC_READ`, filas H5/H6) que cierra su handle dentro de la ventana de reintentos permite completar el probe y proseguir; (b) una colisión persistente agota `MAX_PROBE_RETRIES` y termina en `REFUSE_TO_APPLY` (0 nodos) / `ROLLBACK_REQUIRED` (>0) con la lista de nodos bloqueantes en el reporte; (c) el número de intentos y el backoff están acotados (sin bucle infinito) y el desenlace terminal sigue siendo fail-closed. Complementa a `M-Q3`.
 - **GP2-T46 (IPC de post-verificación autenticado, §12.3):** (a) el helper sólo acepta el veredicto por el **canal privado** del hijo verificador que lanzó (pipe anónimo heredado con `CreateProcessAsUserW`, o named pipe aleatorio con DACL restrictiva con `CreateProcessWithTokenW`, según su privilegio), con imagen esperada, `PID`+`ProcessCreationTime` y nonce por operación vigente; incluye el caso de un helper UAC-elevado (sin `SeAssignPrimaryTokenPrivilege`) que **debe** usar `CreateProcessWithTokenW`; (b) un proceso ajeno que entregue `HARDENED`/`VERIFIED` por otro canal, o con nonce inválido/reutilizado, es ignorado y no produce `COMMITTED`; (c) muerte del verificador o resultado ausente/tardío -> `ROLLBACK_REQUIRED`, nunca `COMMITTED`. Complementa a `M-I1`.
 - **GP2-T47 (hardlink externo TOCTOU post-sellado, §12.2 paso 2 / §15):** un fixture crea un hardlink externo hacia un archivo del subárbol **después** del sellado y **antes** de `SetSecurityInfo`; el test exige que la revalidación viva de `NumberOfLinks == 1` sobre el handle de mutación lo detecte y termine en `REFUSE_TO_APPLY` (0 nodos) / `ROLLBACK_REQUIRED` (>0) **sin** modificar la ACL del archivo externo. Se distingue de `GP2-T38` (que crea el enlace antes de planificar). Complementa a `M-H2`.
@@ -1201,6 +1328,25 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - **GP2-T50 (ProgramData squatting, §11.3):** un usuario estándar precrea `%ProgramData%\Sky-Claw\runtime_vault\` (Caso B) con DACL propia y, en variante separada, precrea `trusted_goldens.json`; el bootstrap privilegiado debe: abrir sin seguir reparse, verificar tipo (`ReparseTag == 0`, sin `FILE_ATTRIBUTE_REPARSE_POINT`), leer owner+DACL, verificar owner permitido y normalizar de forma privilegiada o FAIL CLOSED; el TGR preexistente es **siempre** FAIL CLOSED; un trust root atacante **nunca** es confiado (el helper nunca compara planes contra un TGR plantado). Los ancestros (`Sky-Claw\`, `runtime_vault\`) se cubren en el mismo test. Complementa a `M-N1`.
 - **GP2-T51 (flush gate, §12.2 pasos 4/7, §19.2):** fault injection que fuerza `FlushFileBuffers == FALSE`: (a) en el flush de `MUTATING(K)` -> el contador de llamadas a `SetSecurityInfo` del nodo K es **0**, el FSM no avanza como durable y nunca `COMMITTED` (0 nodos -> rollback vacío `ROLLED_BACK`; >0 -> rollback real); (b) en el flush del archivo del FULL AUTHORIZED PLAN (`FlushFileBuffers(authorized_plan_file) == FALSE`) -> NO se emite `MUTATING(1)`, cero llamadas a `SetSecurityInfo`, cero nodos mutados, desenlace `ROLLED_BACK` vía rollback vacío (ruta C3); (c) en el flush de `MUTATED(K)` -> `ROLLBACK_REQUIRED` con restauración exacta desde `authorized_plan.json`; (d) en el flush de `ARCHIVING_BACKUP` -> cuenta como intento fallido dentro de `MAX_ARCHIVE_RETRIES` y, agotado, `ROLLBACK_REQUIRED`. Los tests deben fallar por la causa correcta (la ausencia de gate), no por errores colaterales. **No existe expectativa de `FlushFileBuffers` sobre directory handles** (no es primitiva documentada; §12.2 paso 7d). Complementa a `M-F2`.
 - **GP2-T52 (power loss con authoritative plan perdido, §12.2 paso 7d / §20 C4c):** (1) el `authorized_plan.json` FULL es válido (escrito, flusheado, digest revalidado); (2) existe evidencia durable de `MUTATING(K)` o de lock con `phase == APPLYING`; (3) se simula la pérdida/corrupción/no-discoverability de `authorized_plan.json`; (4) el recovery arranca. Exige: `state == INDETERMINATE`; staging read count as recovery source == 0 (el recovery no abre `candidate_manifest.json` como fuente de recuperación); rollback call count == 0; `COMMITTED` no emitido; evidencia preservada; intervención del operador requerida. Falla si el recovery interpreta `authorized_plan` ausente/corrupto como "operación nunca iniciada" o si intenta recuperar desde `candidate_manifest.json` (mutante `M-P2`).
+
+### Oráculos de contrato Golden Admission (diseño P0.1; no implementados por este ADR)
+
+Los siguientes RVO son requisitos para los slices de implementación posteriores; describen causas y desenlaces y **no** se consideran tests ejecutados por la enmienda documental:
+
+- **RVO-01:** staged digest no puede convertirse en `expected_tree` ni en source authority.
+- **RVO-02:** una observación B no puede auto-admitirse ni auto-producir `VERIFIED`.
+- **RVO-03:** initial registration requiere `INDEPENDENT_PROVENANCE` o confirmación `OPERATOR_TOFU` explícita.
+- **RVO-04:** refresh A→B requiere provenance para B o TOFU explícito para B; A/staging no bastan.
+- **RVO-05:** TOFU exige un segundo RV-2 fresh desde cero; no reutiliza la primera observación, sus `FileIdentity` ni su resultado.
+- **RVO-06:** modificación detectable entre admission y fresh rerun -> mismatch/`REJECTED`, cero TGR writes.
+- **RVO-07:** receipt exacto ligado a canonical root, `VolumeSerialNumber` y `root_file_id`; reuso en otro objeto físico se rechaza.
+- **RVO-08:** nonce/operation binding evita replay; receipt A no autoriza otra operación, digest, runtime, policy o root.
+- **RVO-09:** `expected_runtime` procede del mismo authority bundle/receipt que `expected_tree`; runtime staged o sustituido falla cerrado.
+- **RVO-10:** critical expectations, vacías o no, no sustituyen al full TreeDigest y su digest de lista queda ligado al mismo source.
+- **RVO-11:** GP2 apply no tiene writer path al TGR; el AST anchor existente sigue siendo parcial hasta un call-graph/runtime oracle completo.
+- **RVO-12:** el TGR se interpreta sólo como último snapshot explícitamente autorizado y después re-verificado; cambio posterior del filesystem causa mismatch/refusal en GP2, no se oculta como “current”.
+
+Una implementación no puede pasar estos oráculos sólo fabricando callbacks/mocks para claims de token/IPC o DACL: los claims Windows deben tener los causales de §12.3/GP2-T46 y los límites TOCTOU deben probarse o declararse conforme a §28.
 
 ---
 
@@ -1261,7 +1407,7 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 | **M-V1** | Validación del binding sólo contra bytes del manifest (sin comprobar el descriptor vivo); manifest auto-consistente forjado en nodo K>1 muta nodos previos | Test `GP2-T41` exige `REFUSE_TO_PLAN` en la fase de autorización, cero mutaciones |
 | **M-O1** | Helper continúa con parent `WRITE_OWNER` efectivo cuando `owner_rights_ace_present == True` (máscara desconocida) | Test `GP2-T42` exige `REFUSE_TO_APPLY` siempre con `CHANGE_OWNER` efectivo |
 | **M-S1** | Helper parsea `pre_sd_bytes_b64` con accessors nativos sin `IsValidSecurityDescriptor`/longitud mínima | Test `GP2-T43` exige `REFUSE_TO_PLAN` sin parsear descriptores inválidos |
-| **M-T2** | Refresco del TGR confía en el `tree_digest` staged (Actor D) sin re-ejecutar RV-2 bajo el token del operador, o GP2 apply escribe el TGR por su cuenta | Test `GP2-T44` exige re-ejecución RV-2 `VERIFIED` + confirmación privilegiada antes de mutar la entrada, y que apply nunca escriba `trusted_goldens.json` |
+| **M-T2** | El admission/refresco toma el digest o resultado RV-2 staged, o reutiliza la primera observación TOFU como la verificación; GP2 apply escribe el TGR | GP2-T44 + RVO-01/02/04/05 exigen authority source cerrada, observation no autoritativa, second fresh RV-2 para TOFU y cero TGR writes desde GP2 apply |
 | **M-Q3** | El probe aborta a `REFUSE_TO_APPLY` en la primera colisión `ERROR_SHARING_VIOLATION` (sin reintentos) por un lector benigno, o reintenta de forma no acotada | Test `GP2-T45` exige reintentos acotados con backoff y desenlace fail-closed sólo tras agotar `MAX_PROBE_RETRIES` |
 | **M-I1** | El helper acepta el veredicto de post-verificación sin autenticar al peer (canal nombrado con DACL permisiva/nombre adivinable, sin verificar imagen/PID/creation-time/nonce), o lanza el verificador con `CreateProcessW` bajo su propio token elevado, permitiendo a Actor D inyectar un falso `HARDENED`/`VERIFIED` o medir con el token equivocado | Test `GP2-T46` exige el canal privado acoplado a la API de lanzamiento (§12.3) + verificación de peer + nonce, y `ROLLBACK_REQUIRED` ante resultado no autenticado o ausente |
 | **M-H2** | El bucle de mutación no revalida `NumberOfLinks` sobre el handle vivo; un hardlink externo creado tras el sellado hace que `SetSecurityInfo` mute también la ACL del archivo externo (bypass de confinamiento) | Test `GP2-T47` crea el enlace externo post-sellado y exige `REFUSE_TO_APPLY`/`ROLLBACK_REQUIRED` sin tocar el archivo externo |
@@ -1301,6 +1447,12 @@ Si existe evidencia de operación iniciada: INDETERMINATE.
 Nunca: fallback a staging, reconstrucción inventada del PRE,
 silent COMMITTED (fila C4c de §20; GP2-T52 / M-P2).
 ```
+
+6. **TOFU no detecta compromiso preexistente (`OPERATOR_TOFU_DOES_NOT_DETECT_PRE_EXISTING_COMPROMISE = TRUE`):** si Actor D altera el Golden antes de la primera observación y el operador admite ese snapshot, Sky-Claw no puede distinguirlo de un cambio legítimo sin provenance independiente. La confirmación sólo autoriza la identidad exacta observada; no prueba benignidad, autoría Bethesda, ni legitimidad de 16.000 archivos. Si esa limitación no es aceptable, `OPERATOR_TOFU` debe rehusarse y se requiere una fuente independiente de cobertura completa.
+7. **El TGR no es una promesa de igualdad continua:** `tree_digest` representa el último snapshot explícitamente autorizado y luego verificado. El Golden puede cambiar tras el rerun o el commit. GP2 compara el tree vivo contra el TGR y hace `REFUSE_TO_PLAN` ante mismatch; §11.4 no usa el global TGR serialization lock como estabilidad del contenido.
+8. **Ventana RV-2 → TGR commit declarada:** esta enmienda no retiene handles exclusivos, no introduce VSS y no extiende `GoldenMutationLock` a enforcement contra Actor D. Una mutación después del último RV-2 puede dejar el TGR apuntando al snapshot B mientras el tree vivo ya es C; no se afirma que C sea B. La protección disponible es el mismatch en el siguiente GP2 apply. Garantizar mismos bytes continuamente hasta el commit requiere otra primitiva de stability/quiescence/snapshot, fuera de P0.1.
+9. **Consistencia de observation/scan:** `OBSERVED` denota el resultado completo de la implementación RV-1 vigente, no un snapshot transaccional del filesystem. RV-1 declara inspección best-effort ante races (incluido overwrite que restaura mtime dentro de la granularidad); P0.1 no fortalece esa garantía ni debe llamarla atomic snapshot.
+10. **Provenance por dominio de contenido:** la separación Steam-managed mirror / detached pinned runtime de #494 separa lifecycle, no es una firma de TreeDigest. Provenance del base game no se extiende automáticamente a MO2 mods, SKSE/plugins, generated assets o cambios manuales. Sólo un evidence bundle de cobertura completa puede marcar el Golden entero `INDEPENDENT_PROVENANCE`; en otro caso la opción es TOFU explícito o refusal.
 
 ---
 
