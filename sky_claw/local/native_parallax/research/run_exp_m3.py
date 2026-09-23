@@ -35,7 +35,13 @@ from sky_claw.local.native_parallax.research.trust_proxies import (
 
 COHORT_A_MIN_ASSETS = 15
 COHORT_A_MIN_FAMILIES = 3
-VALID_PROVENANCE = ("PRIMARY_VERIFIED", "OFFICIAL_HASH_VERIFIED")
+# §9 — estados admitidos para Cohort A. El schema previo usaba el ambiguo
+# PRIMARY_VERIFIED para "descargado del proveedor" y "hash oficial verificado" a la
+# vez; ahora se distinguen: PRIMARY_SOURCE_DOWNLOADED = bytes bajados del provider
+# oficial + SHA256 propio post-descarga; OFFICIAL_HASH_VERIFIED = además el upstream
+# publicó checksum y nuestros bytes coinciden. MIRROR_ONLY/MIRROR_HASH_VERIFIED/
+# UNKNOWN quedan fuera de Cohort A (evidencia principal).
+VALID_PROVENANCE = ("PRIMARY_SOURCE_DOWNLOADED", "OFFICIAL_HASH_VERIFIED")
 DIAGNOSTIC_LABEL = "EVALUATION_DIAGNOSTIC_ONLY"
 ORACLE_FILTER_DEGREES = (20.0, 30.0, 40.0)  # sensibilidad §12; 30° NO es normativo
 HEIGHT_FLAT_STD = 2.0 / 255.0  # pre-registrado: height con std < 2/255 es "plano"

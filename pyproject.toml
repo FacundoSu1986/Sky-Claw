@@ -90,6 +90,12 @@ dev = [
     "mypy>=1.10",
     "types-aiofiles",
     "google-genai>=1.0,<2",
+    # Research tests (tests/test_native_parallax_*.py, EXP-M0..M3) importan numpy y
+    # Pillow de forma directa y no estaban declarados en ningún extra: sin ellos la
+    # suite ni siquiera colecta esos nodos. Se registran acá (research es dev-only;
+    # ningún camino de producción importa sky_claw.local.native_parallax.research).
+    "numpy>=1.26,<3",
+    "pillow>=10,<12",
 ]
 
 [tool.pytest.ini_options]

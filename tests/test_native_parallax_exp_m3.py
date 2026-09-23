@@ -42,18 +42,21 @@ def test_provenance_gate_rejects_mirror_only(tmp_path: Path) -> None:
         "normal_sha256": "0" * 64,
         "height_sha256": "1" * 64,
         "license": "CC0-1.0",
-        "provenance_status": "PRIMARY_VERIFIED",
+        "provenance_status": "PRIMARY_SOURCE_DOWNLOADED",
     }
     entry_mirror = dict(entry_ok, asset_id="A2", provenance_status="MIRROR_ONLY")
+    entry_mirror_hash = dict(entry_ok, asset_id="A4", provenance_status="MIRROR_HASH_VERIFIED")
     entry_unverified = dict(entry_ok, asset_id="A3", provenance_status="UNVERIFIED")
-    usables, rejected = load_cohort_a(_m3_manifest(tmp_path, [entry_ok, entry_mirror, entry_unverified]))
+    usables, rejected = load_cohort_a(
+        _m3_manifest(tmp_path, [entry_ok, entry_mirror, entry_mirror_hash, entry_unverified])
+    )
     assert [e["asset_id"] for e in usables] == ["A1"]
-    assert {r["asset_id"] for r in rejected} == {"A2", "A3"}
-    assert VALID_PROVENANCE == ("PRIMARY_VERIFIED", "OFFICIAL_HASH_VERIFIED")
+    assert {r["asset_id"] for r in rejected} == {"A2", "A3", "A4"}
+    assert VALID_PROVENANCE == ("PRIMARY_SOURCE_DOWNLOADED", "OFFICIAL_HASH_VERIFIED")
 
 
 def test_provenance_gate_requires_core_fields(tmp_path: Path) -> None:
-    incomplete = {"asset_id": "B1", "provenance_status": "PRIMARY_VERIFIED"}  # sin hashes/licencia
+    incomplete = {"asset_id": "B1", "provenance_status": "PRIMARY_SOURCE_DOWNLOADED"}  # sin hashes/licencia
     usables, rejected = load_cohort_a(_m3_manifest(tmp_path, [incomplete]))
     assert usables == []
     assert "falta" in rejected[0]["reason"]
