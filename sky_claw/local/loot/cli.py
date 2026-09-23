@@ -8,6 +8,12 @@ TASK-011 enhancements:
 - WSL2 conditional path translation via :func:`translate_path_if_wsl`.
 - Full async subprocess with ``asyncio.wait_for`` timeout.
 - Zombie prevention after timeout, cancellation, or pipe failure: ``kill()`` + ``wait()``.
+
+PR-0 (contrato de identificador de juego): :attr:`LOOTConfig.game` guarda el
+**id interno de Sky-Claw** (dominio), no el string de CLI. La conversión al
+identificador exacto de ``LOOT.exe --game`` pasa por UNA sola frontera
+(:data:`LOOT_CLI_GAME_IDENTIFIERS` / :func:`to_loot_cli_game_id`), evaluada
+al construir el argv. Ver la evidencia upstream en el docstring de la frontera.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ import logging
 import pathlib
 from asyncio.exceptions import TimeoutError as AsyncTimeoutError
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from sky_claw.app.core.windows_interop import translate_path_if_wsl
 from sky_claw.local.loot.parser import LOOTOutputParser, LOOTResult
@@ -32,14 +38,76 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 60
 
+#: Id de juego interno por defecto del dominio Sky-Claw (Skyrim SE). El
+#: dominio usa ids internos; el string de CLI/UI vive solo en la frontera
+#: ``LOOT_CLI_GAME_IDENTIFIERS`` (no se propaga al resto del código).
+DEFAULT_LOOT_INTERNAL_GAME_ID: Final[str] = "SkyrimSE"
+
+#: Frontera ÚNICA de traducción: id interno de Sky-Claw → identificador exacto
+#: de ``LOOT.exe --game``.
+#:
+#: Evidencia contra ``loot/loot`` tag ``0.29.1`` (commit 77f3ba98):
+#:
+#: * ``src/gui/qt/main.cpp``: las opciones declaradas son ``--game``,
+#:   ``--game-path``, ``--loot-data-path`` y ``--auto-sort`` (más help/version).
+#:   ``--update-masterlist`` y ``--sort`` NO existen.
+#: * ``src/gui/state/game/game_id.cpp`` (``toString(GameId)``): el dialecto de
+#:   ``--game`` son los nombres de carpeta/display — ``"Skyrim Special
+#:   Edition"``, ``"Skyrim VR"``. ``"SkyrimSE"``/``"SkyrimVR"`` (dialecto
+#:   legacy ≤0.27) NO matchean ningún juego en 0.28+/0.29.x.
+#: * ``src/gui/state/loot_state.cpp`` (``setInitialGame``): un ``--game`` no
+#:   reconocido NO falla cerrado — ``getPreferredGameFolderName`` devuelve
+#:   ``nullopt`` y se cae a ``getFirstInstalledGameFolderName()``: LOOT
+#:   selecciona SILENCIOSAMENTE el primer juego instalado y ``--auto-sort``
+#:   ordena EL JUEGO EQUIVOCADO. Por eso un id sin traducción se rechaza aquí
+#:   (fail-closed) antes de armar el subprocess — nunca se delega en LOOT la
+#:   decisión de qué juego es.
+LOOT_CLI_GAME_IDENTIFIERS: Final[dict[str, str]] = {
+    "SkyrimSE": "Skyrim Special Edition",
+    "SkyrimVR": "Skyrim VR",
+}
+
+
+class LOOTGameIdError(ValueError):
+    """Id de juego interno sin traducción al dialecto CLI de LOOT (fail-closed).
+
+    Lanzar ``LOOT.exe --game <valor no reconocido>`` en 0.29.x no es un error:
+    LOOT cae al primer juego instalado (``setInitialGame``), así que un
+    desbalance del mapping silencioso es peor que un fallo explícito.
+    """
+
+
+def to_loot_cli_game_id(internal_game_id: str) -> str:
+    """Traduce un id interno de Sky-Claw al identificador CLI exacto de LOOT.
+
+    Única frontera entre el dominio (ids internos) y el dialecto de ``--game``
+    de LOOT.exe. Id desconocido → :class:`LOOTGameIdError` (fail-closed, sin
+    fallback ni normalización: upstream hace match de string exacto).
+    """
+    try:
+        return LOOT_CLI_GAME_IDENTIFIERS[internal_game_id]
+    except KeyError:
+        known = ", ".join(sorted(LOOT_CLI_GAME_IDENTIFIERS))
+        raise LOOTGameIdError(
+            f"El id de juego interno {internal_game_id!r} no tiene traducción al "
+            f"dialecto CLI de LOOT (ids conocidos: {known}). No se ejecuta con un "
+            "--game no reconocido: LOOT 0.29.x no falla cerrado y ordenaría el "
+            "primer juego instalado (loot/loot src/gui/state/loot_state.cpp, setInitialGame)."
+        ) from None
+
 
 @dataclass(frozen=True, slots=True)
 class LOOTConfig:
-    """Configuration for the LOOT CLI runner."""
+    """Configuration for the LOOT CLI runner.
+
+    ``game`` es el **id interno de Sky-Claw** (p. ej. ``"SkyrimSE"``), no el
+    string de CLI: :meth:`LOOTRunner.sort` lo traduce en la frontera única
+    :func:`to_loot_cli_game_id` al armar el argv.
+    """
 
     loot_exe: pathlib.Path
     game_path: pathlib.Path
-    game: str = "SkyrimSE"
+    game: str = DEFAULT_LOOT_INTERNAL_GAME_ID
     timeout: int = DEFAULT_TIMEOUT
 
 
@@ -137,13 +205,19 @@ class LOOTRunner:
         if not loot_path.exists():
             raise LOOTNotFoundError(f"LOOT executable not found at {loot_path}")
 
+        # Frontera única de traducción id interno → dialecto CLI de LOOT (PR-0).
+        # Fail-closed ANTES de crear el subprocess: un id sin traducción no se
+        # delega a LOOT (0.29.x caería al primer juego instalado y ordenaría
+        # el juego equivocado — ver LOOT_CLI_GAME_IDENTIFIERS).
+        game_cli_id = to_loot_cli_game_id(self._config.game)
+
         # TASK-011: Translate game_path to Windows format when under WSL2.
         game_path_win = await translate_path_if_wsl(game_path)
 
         args = [
             str(loot_path),
             "--game",
-            self._config.game,
+            game_cli_id,
             "--game-path",
             game_path_win,
             # Verificado en loot/loot `src/gui/qt/main.cpp`: las opciones

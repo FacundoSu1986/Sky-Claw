@@ -1436,8 +1436,11 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/app/agent/tools/external_tools.py": (220, 267),
         # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
         "sky_claw/local/fomod/plugin_state.py": (74,),
-        # BrokeredLootRunner: acepta mods_dir; líneas 61 y 233 son fallbacks legacy.
-        "sky_claw/local/mo2/brokered_loot.py": (61, 233),
+        # BrokeredLootRunner: acepta mods_dir; los dos sites son fallbacks
+        # legacy. PR-0 (contrato del id de juego + guard F8 de backend
+        # MO2-internal) movió las líneas (61, 233 → 97, 285) sin agregar
+        # nuevas construcciones de `<base>/mods`.
+        "sky_claw/local/mo2/brokered_loot.py": (97, 285),
         # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (127,),
         "sky_claw/local/mo2/vfs_attestation.py": (182, 243),

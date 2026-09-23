@@ -19,7 +19,14 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeAlias
 
 from sky_claw.app.security.path_validator import PathValidator
-from sky_claw.local.loot.cli import LOOTConfig, LOOTNotFoundError, LOOTRunner, LOOTTimeoutError
+from sky_claw.local.loot.cli import (
+    DEFAULT_LOOT_INTERNAL_GAME_ID,
+    LOOT_CLI_GAME_IDENTIFIERS,
+    LOOTConfig,
+    LOOTNotFoundError,
+    LOOTRunner,
+    LOOTTimeoutError,
+)
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, verify_vfs_attestation
 from sky_claw.local.mo2.vfs_contracts import (
     ALLOWED_VFS_SESSION_TOOL_IDS,
@@ -351,8 +358,14 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     loot_exe = pathlib.Path(_payload_string(payload, "loot_exe"))
     if not loot_exe.is_absolute():
         raise ValueError("payload.loot_exe debe ser una ruta absoluta")
-    game = payload.get("game", "SkyrimSE")
-    if not isinstance(game, str) or game not in {"SkyrimSE", "SkyrimVR"}:
+    # Allowlist con la MISMA fuente que el broker y el runner (PR-0): los ids
+    # INTERNOS del dominio. El string de CLI ("Skyrim Special Edition") no viaja
+    # por IPC y no se hardcodea en tres lugares: la traducción al dialecto de
+    # `--game` la hace una sola vez el runner (to_loot_cli_game_id). Si broker y
+    # worker divergieran de esta frontera, el test T3 (
+    # tests/test_loot_game_identifier_contract.py) la caza.
+    game = payload.get("game", DEFAULT_LOOT_INTERNAL_GAME_ID)
+    if not isinstance(game, str) or game not in LOOT_CLI_GAME_IDENTIFIERS:
         raise ValueError("payload.game no está permitido")
     update_masterlist = payload.get("update_masterlist", False)
     if type(update_masterlist) is not bool:
