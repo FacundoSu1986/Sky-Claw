@@ -453,6 +453,15 @@ if sys.platform == "win32":
     ]
     _advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
 
+    _advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.POINTER(wintypes.ULONG),
+    ]
+    _advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
+
     _kernel32.CreateNamedPipeW.argtypes = [
         wintypes.LPCWSTR,
         wintypes.DWORD,
@@ -632,6 +641,126 @@ def _validate_fresh_runtime_dict(d: Any, context: str) -> None:
     _validate_str_non_empty(d["game_version"], "game_version", context)
     _validate_str_non_empty(d["observed_exe_path"], "observed_exe_path", context)
     _validate_int_positive(d["observed_at_ns"], "observed_at_ns", context)
+
+
+def _build_critical_evidence_from_ipc(c: dict[str, Any]) -> CriticalFileEvidence:
+    """Construye un CriticalFileEvidence validando invariantes del DTO y mapeando a ProtocolAbuseError."""
+    if not isinstance(c, dict):
+        raise ProtocolAbuseError(
+            f"Carga IPC inválida para CriticalFileEvidence: se esperaba dict, obtenido {type(c).__name__}"
+        )
+    try:
+        raw_state = c.get("state")
+        if isinstance(raw_state, VerificationState):
+            st = raw_state
+        elif isinstance(raw_state, str):
+            st = VerificationState(raw_state)
+        else:
+            raise ValueError(f"state debe ser VerificationState o str, obtenido {type(raw_state).__name__}")
+
+        return CriticalFileEvidence(
+            rel_path=c["rel_path"],
+            state=st,
+            observed_digest=c.get("observed_digest"),
+            expected_digest=c.get("expected_digest"),
+            observed_size=c.get("observed_size"),
+            expected_size=c.get("expected_size"),
+            message=c.get("message", ""),
+        )
+    except Exception as exc:
+        raise ProtocolAbuseError(f"Carga IPC de CriticalFileEvidence inválida: {exc}") from exc
+
+
+def _build_physical_root_from_ipc(
+    data_or_root: Any,
+    volume_serial_number: Any = None,
+    root_file_id: Any = None,
+) -> PhysicalRootIdentity:
+    """Construye un PhysicalRootIdentity validando invariantes del DTO y mapeando a ProtocolAbuseError."""
+    try:
+        if isinstance(data_or_root, dict):
+            c_root = data_or_root.get("canonical_root")
+            v_serial = data_or_root.get("volume_serial_number")
+            r_id = data_or_root.get("root_file_id")
+        else:
+            c_root = data_or_root
+            v_serial = volume_serial_number
+            r_id = root_file_id
+
+        _validate_str_non_empty(c_root, "canonical_root", "PhysicalRootIdentity")
+        _validate_int_positive(v_serial, "volume_serial_number", "PhysicalRootIdentity")
+        _validate_int_positive(r_id, "root_file_id", "PhysicalRootIdentity")
+
+        return PhysicalRootIdentity(
+            canonical_root=cast(str, c_root),
+            volume_serial_number=cast(int, v_serial),
+            root_file_id=cast(int, r_id),
+        )
+    except Exception as exc:
+        raise ProtocolAbuseError(f"Carga IPC de PhysicalRootIdentity inválida: {exc}") from exc
+
+
+def _build_tree_digest_from_ipc(
+    data_or_digest: Any,
+    files: Any = None,
+    bytes_val: Any = None,
+) -> TreeDigest:
+    """Construye un TreeDigest validando invariantes del DTO y mapeando a ProtocolAbuseError."""
+    try:
+        if isinstance(data_or_digest, dict):
+            dig = data_or_digest.get("digest")
+            fls = data_or_digest.get("files")
+            bts = data_or_digest.get("bytes")
+        else:
+            dig = data_or_digest
+            fls = files
+            bts = bytes_val
+
+        _validate_sha256_hex(dig, "digest", "TreeDigest")
+        _validate_int_non_negative(fls, "files", "TreeDigest")
+        _validate_int_non_negative(bts, "bytes", "TreeDigest")
+
+        return TreeDigest(
+            digest=cast(str, dig),
+            files=cast(int, fls),
+            bytes=cast(int, bts),
+        )
+    except Exception as exc:
+        raise ProtocolAbuseError(f"Carga IPC de TreeDigest inválida: {exc}") from exc
+
+
+def _build_fresh_runtime_from_ipc(
+    data_or_game_key: Any,
+    game_version: Any = None,
+    observed_exe_path: Any = None,
+    observed_at_ns: Any = None,
+) -> FreshRuntimeObservation:
+    """Construye un FreshRuntimeObservation validando invariantes del DTO y mapeando a ProtocolAbuseError."""
+    try:
+        if isinstance(data_or_game_key, dict):
+            gk = data_or_game_key.get("game_key")
+            gv = data_or_game_key.get("game_version")
+            o_path = data_or_game_key.get("observed_exe_path")
+            o_ns = data_or_game_key.get("observed_at_ns")
+        else:
+            gk = data_or_game_key
+            gv = game_version
+            o_path = observed_exe_path
+            o_ns = observed_at_ns
+
+        _validate_str_non_empty(gk, "game_key", "FreshRuntimeObservation")
+        _validate_str_non_empty(gv, "game_version", "FreshRuntimeObservation")
+        _validate_str_non_empty(o_path, "observed_exe_path", "FreshRuntimeObservation")
+        _validate_int_positive(o_ns, "observed_at_ns", "FreshRuntimeObservation")
+
+        return FreshRuntimeObservation(
+            game_key=cast(str, gk),
+            game_version=cast(str, gv),
+            observed_exe_path=cast(str, o_path),
+            observed_at_ns=cast(int, o_ns),
+        )
+    except Exception as exc:
+        raise ProtocolAbuseError(f"Carga IPC de FreshRuntimeObservation inválida: {exc}") from exc
 
 
 def encode_length_prefixed_frame(payload: bytes) -> bytes:
@@ -1029,6 +1158,34 @@ def _build_named_pipe_security_descriptor(operator_sid: str) -> int:
     return int(p_sd.value or 0)
 
 
+def _security_descriptor_to_sddl(p_sd: int, security_information: int = 4) -> str:
+    """Convierte un Security Descriptor Win32 binario a representación textual SDDL.
+
+    Usa ConvertSecurityDescriptorToStringSecurityDescriptorW y libera la cadena resultante con LocalFree.
+    """
+    _ensure_windows()
+    if not p_sd:
+        raise ProtocolAbuseError("Puntero a Security Descriptor nulo o inválido")
+
+    p_sddl = wintypes.LPWSTR()
+    sddl_len = wintypes.ULONG(0)
+    res = _advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        wintypes.LPVOID(p_sd),
+        1,  # SDDL_REVISION_1
+        security_information,  # DACL_SECURITY_INFORMATION = 4
+        ctypes.byref(p_sddl),
+        ctypes.byref(sddl_len),
+    )
+    if not res or not p_sddl.value:
+        err = ctypes.get_last_error()
+        raise ProtocolAbuseError(f"ConvertSecurityDescriptorToStringSecurityDescriptorW falló: código Win32 {err}")
+
+    try:
+        return str(p_sddl.value)
+    finally:
+        _kernel32.LocalFree(p_sddl)
+
+
 def _read_process_creation_time(process_handle: int) -> int | None:
     creation = _FileTime()
     dummy_exit = _FileTime()
@@ -1400,11 +1557,7 @@ def run_verifier_child_worker(
 
             elif mode == VerifierMode.VERIFY:
                 # En VERIFY: revalida identidad física y compara bajo bound_physical_root (anti-TOCTOU)
-                expected_phys = PhysicalRootIdentity(
-                    canonical_root=req_data["expected_physical_root"]["canonical_root"],
-                    volume_serial_number=req_data["expected_physical_root"]["volume_serial_number"],
-                    root_file_id=req_data["expected_physical_root"]["root_file_id"],
-                )
+                expected_phys = _build_physical_root_from_ipc(req_data["expected_physical_root"])
                 with bound_physical_root(canonical_root, expected_phys) as phys_identity:
                     obs_runtime = observe_runtime_identity_from_root(
                         canonical_root, expected_game_key=expected_game_key
@@ -1412,11 +1565,7 @@ def run_verifier_child_worker(
                     files = inventory_tree(pathlib.Path(canonical_root))
                     observed_tree = tree_digest_from_files(files)
 
-                expected_tree = TreeDigest(
-                    digest=req_data["expected_tree"]["digest"],
-                    files=req_data["expected_tree"]["files"],
-                    bytes=req_data["expected_tree"]["bytes"],
-                )
+                expected_tree = _build_tree_digest_from_ipc(req_data["expected_tree"])
                 expected_runtime = RuntimeIdentity(
                     game_key=req_data["expected_runtime"]["game_key"],
                     game_version=req_data["expected_runtime"]["game_version"],
@@ -1831,6 +1980,21 @@ class OperatorVerifierBridge:
                         _validate_int_non_negative(c["expected_size"], "expected_size", ctx)
                     if not isinstance(c.get("message"), str):
                         raise ProtocolAbuseError(f"message debe ser str en {ctx}")
+
+                    if disposition == VerifierDisposition.OBSERVED.value:
+                        if st_str != VerificationState.UNKNOWN.value:
+                            raise ProtocolAbuseError(
+                                f"En modo OBSERVED las critical_evidences no pueden declarar autoridad "
+                                f"(state='{st_str}', requerido '{VerificationState.UNKNOWN.value}') en {ctx}"
+                            )
+                        if c.get("expected_digest") is not None:
+                            raise ProtocolAbuseError(
+                                f"En modo OBSERVED las critical_evidences no pueden declarar expected_digest en {ctx}"
+                            )
+                        if c.get("expected_size") is not None:
+                            raise ProtocolAbuseError(
+                                f"En modo OBSERVED las critical_evidences no pueden declarar expected_size en {ctx}"
+                            )
                 if not isinstance(resp_data.get("message"), str):
                     raise ProtocolAbuseError(f"message debe ser str en response {disposition}")
             else:
@@ -1906,36 +2070,17 @@ class OperatorVerifierBridge:
                 f"Modo OBSERVE no produjo disposition OBSERVED (disposition='{disposition}', message='{msg}')"
             )
 
-        phys_id = PhysicalRootIdentity(
-            canonical_root=resp["canonical_root"],
-            volume_serial_number=resp["volume_serial_number"],
-            root_file_id=resp["root_file_id"],
+        phys_id = _build_physical_root_from_ipc(
+            resp["canonical_root"],
+            resp["volume_serial_number"],
+            resp["root_file_id"],
         )
-        obs_tree = TreeDigest(
-            digest=resp["observed_tree"]["digest"],
-            files=resp["observed_tree"]["files"],
-            bytes=resp["observed_tree"]["bytes"],
-        )
-        obs_runtime_dto = FreshRuntimeObservation(
-            game_key=resp["observed_runtime"]["game_key"],
-            game_version=resp["observed_runtime"]["game_version"],
-            observed_exe_path=resp["observed_runtime"]["observed_exe_path"],
-            observed_at_ns=resp["observed_runtime"]["observed_at_ns"],
-        )
+        obs_tree = _build_tree_digest_from_ipc(resp["observed_tree"])
+        obs_runtime_dto = _build_fresh_runtime_from_ipc(resp["observed_runtime"])
 
         crit_evs: list[CriticalFileEvidence] = []
         for c in resp.get("critical_evidences", []):
-            crit_evs.append(
-                CriticalFileEvidence(
-                    rel_path=c["rel_path"],
-                    state=VerificationState(c["state"]),
-                    observed_digest=c.get("observed_digest"),
-                    expected_digest=c.get("expected_digest"),
-                    observed_size=c.get("observed_size"),
-                    expected_size=c.get("expected_size"),
-                    message=c.get("message", ""),
-                )
-            )
+            crit_evs.append(_build_critical_evidence_from_ipc(c))
 
         return OperatorVerifierObservationResult(
             disposition=VerifierDisposition.OBSERVED,
@@ -2037,23 +2182,14 @@ class OperatorVerifierBridge:
                 message=f"{resp.get('error_type', 'Error')}: {resp.get('message', '')}",
             )
 
-        phys_id = PhysicalRootIdentity(
-            canonical_root=resp["canonical_root"],
-            volume_serial_number=resp["volume_serial_number"],
-            root_file_id=resp["root_file_id"],
+        phys_id = _build_physical_root_from_ipc(
+            resp["canonical_root"],
+            resp["volume_serial_number"],
+            resp["root_file_id"],
         )
 
-        obs_tree = TreeDigest(
-            digest=resp["observed_tree"]["digest"],
-            files=resp["observed_tree"]["files"],
-            bytes=resp["observed_tree"]["bytes"],
-        )
-        obs_runtime_dto = FreshRuntimeObservation(
-            game_key=resp["observed_runtime"]["game_key"],
-            game_version=resp["observed_runtime"]["game_version"],
-            observed_exe_path=resp["observed_runtime"]["observed_exe_path"],
-            observed_at_ns=resp["observed_runtime"]["observed_at_ns"],
-        )
+        obs_tree = _build_tree_digest_from_ipc(resp["observed_tree"])
+        obs_runtime_dto = _build_fresh_runtime_from_ipc(resp["observed_runtime"])
         obs_runtime = obs_runtime_dto.runtime_identity
 
         tree_ver_state = VerificationState.VERIFIED if obs_tree == expected_tree else VerificationState.FAILED
@@ -2074,17 +2210,7 @@ class OperatorVerifierBridge:
 
         crit_evs: list[CriticalFileEvidence] = []
         for c in resp.get("critical_evidences", []):
-            crit_evs.append(
-                CriticalFileEvidence(
-                    rel_path=c["rel_path"],
-                    state=VerificationState(c["state"]),
-                    observed_digest=c.get("observed_digest"),
-                    expected_digest=c.get("expected_digest"),
-                    observed_size=c.get("observed_size"),
-                    expected_size=c.get("expected_size"),
-                    message=c.get("message", ""),
-                )
-            )
+            crit_evs.append(_build_critical_evidence_from_ipc(c))
 
         # El elevated helper deriva independientemente el veredicto VERIFIED final
         physical_match = (

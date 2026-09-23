@@ -62,8 +62,13 @@ from sky_claw.local.runtime_vault.operator_verifier_bridge import (
     VerifierImageNotProvisionedError,
     Win32CreateProcessWithTokenLauncher,
     _advapi32,
+    _build_critical_evidence_from_ipc,
+    _build_fresh_runtime_from_ipc,
     _build_named_pipe_security_descriptor,
+    _build_physical_root_from_ipc,
+    _build_tree_digest_from_ipc,
     _kernel32,
+    _security_descriptor_to_sddl,
     _TestOnlyVerifierLauncher,
     resolve_production_verifier_executable,
 )
@@ -1429,15 +1434,15 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         p_sd = _build_named_pipe_security_descriptor(fake_operator_sid)
         assert p_sd != 0
 
-        # 1 y 2. Verificar estructura SDDL normativa
-        sddl = f"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;{fake_operator_sid})"
-        assert sddl.startswith("D:P")
-        assert "(A;;GA;;;SY)" in sddl
-        assert "(A;;GA;;;BA)" in sddl
-        assert f"(A;;GRGW;;;{fake_operator_sid})" in sddl
-        assert ";;;WD" not in sddl
-        assert ";;;AU" not in sddl
-        assert ";;;BU" not in sddl
+        # 1 y 2. Verificar estructura SDDL real inspeccionando el Security Descriptor binario (p_sd)
+        real_sddl = _security_descriptor_to_sddl(p_sd)
+        assert real_sddl.startswith("D:P")
+        assert "(A;;GA;;;SY)" in real_sddl
+        assert "(A;;GA;;;BA)" in real_sddl
+        assert (f"(A;;GWGR;;;{fake_operator_sid})" in real_sddl) or (f"(A;;GRGW;;;{fake_operator_sid})" in real_sddl)
+        assert ";;;WD" not in real_sddl
+        assert ";;;AU" not in real_sddl
+        assert ";;;BU" not in real_sddl
 
         # 3. Denegación causal Win32 bajo token anónimo
         sa = _SECURITY_ATTRIBUTES()
@@ -1879,6 +1884,239 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
             bound_physical_root(root),
         ):
             pass
+
+    def test_s25_observe_response_forbids_authority(
+        self,
+        current_operator_token: Any,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """S25: En modo OBSERVED las critical_evidences no pueden declarar autoridad (OBSERVATION != AUTHORITY).
+
+        Cualquier intento de declarar state != UNKNOWN, expected_digest != None o expected_size != None
+        debe fallar con ProtocolAbuseError.
+        """
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "SkyrimSE.exe").write_bytes(b"exe")
+
+        def _make_tampered_worker_code(crit_evidence_dict: dict[str, Any]) -> str:
+            crit_repr = repr(crit_evidence_dict)
+            return (
+                "import ctypes, json, struct, sys\n"
+                "kernel32 = ctypes.windll.kernel32\n"
+                "h = kernel32.CreateFileW(r'{PIPE_NAME}', 0x80000000 | 0x40000000, 0, None, 3, 0, None)\n"
+                "hdr = ctypes.create_string_buffer(4)\n"
+                "read = ctypes.c_ulong(0)\n"
+                "kernel32.ReadFile(h, hdr, 4, ctypes.byref(read), None)\n"
+                "req_len = struct.unpack('>I', hdr.raw)[0]\n"
+                "req_buf = ctypes.create_string_buffer(req_len)\n"
+                "kernel32.ReadFile(h, req_buf, req_len, ctypes.byref(read), None)\n"
+                "req = json.loads(req_buf.raw[:read.value].decode('utf-8'))\n"
+                "resp = {\n"
+                "    'version': 1,\n"
+                "    'operation_id': req['operation_id'],\n"
+                "    'mode': 'OBSERVE',\n"
+                "    'nonce': req['nonce'],\n"
+                "    'disposition': 'OBSERVED',\n"
+                "    'canonical_root': req['canonical_root'],\n"
+                "    'volume_serial_number': 12345678,\n"
+                "    'root_file_id': 9876543210123456789,\n"
+                "    'observed_tree': {\n"
+                "        'digest': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',\n"
+                "        'files': 1,\n"
+                "        'bytes': 1024,\n"
+                "    },\n"
+                "    'observed_runtime': {\n"
+                "        'game_key': 'skyrimse',\n"
+                "        'game_version': '1.6.1170.0',\n"
+                "        'observed_exe_path': req['canonical_root'] + r'\\\\SkyrimSE.exe',\n"
+                "        'observed_at_ns': 1000000,\n"
+                "    },\n"
+                f"    'critical_evidences': [{crit_repr}],\n"
+                "    'message': '',\n"
+                "}\n"
+                "raw = json.dumps(resp).encode('utf-8')\n"
+                "frame = struct.pack('>I', len(raw)) + raw\n"
+                "written = ctypes.c_ulong(0)\n"
+                "kernel32.WriteFile(h, frame, len(frame), ctypes.byref(written), None)\n"
+                "kernel32.CloseHandle(h)\n"
+                "sys.exit(0)\n"
+            )
+
+        valid_sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+        # Sub-caso A: state == "verified" (debe ser "unknown" en modo OBSERVED)
+        bad_state = {
+            "rel_path": "SkyrimSE.exe",
+            "state": VerificationState.VERIFIED.value,
+            "observed_digest": valid_sha,
+            "expected_digest": None,
+            "observed_size": None,
+            "expected_size": None,
+            "message": "",
+        }
+        launcher_a = _TestOnlyVerifierLauncher(worker_code_override=_make_tampered_worker_code(bad_state))
+        bridge_a = OperatorVerifierBridge(launcher=launcher_a, timeout_seconds=5.0)
+        with pytest.raises(ProtocolAbuseError, match="no pueden declarar autoridad"):
+            bridge_a.invoke_observe(token=current_operator_token, root=root, operation_id="op-s25-a")
+
+        # Sub-caso B: expected_digest != None en modo OBSERVED
+        bad_expected_digest = {
+            "rel_path": "SkyrimSE.exe",
+            "state": VerificationState.UNKNOWN.value,
+            "observed_digest": valid_sha,
+            "expected_digest": valid_sha,
+            "observed_size": None,
+            "expected_size": None,
+            "message": "",
+        }
+        launcher_b = _TestOnlyVerifierLauncher(worker_code_override=_make_tampered_worker_code(bad_expected_digest))
+        bridge_b = OperatorVerifierBridge(launcher=launcher_b, timeout_seconds=5.0)
+        with pytest.raises(ProtocolAbuseError, match="no pueden declarar expected_digest"):
+            bridge_b.invoke_observe(token=current_operator_token, root=root, operation_id="op-s25-b")
+
+        # Sub-caso C: expected_size != None en modo OBSERVED
+        bad_expected_size = {
+            "rel_path": "SkyrimSE.exe",
+            "state": VerificationState.UNKNOWN.value,
+            "observed_digest": valid_sha,
+            "expected_digest": None,
+            "observed_size": 1024,
+            "expected_size": 1024,
+            "message": "",
+        }
+        launcher_c = _TestOnlyVerifierLauncher(worker_code_override=_make_tampered_worker_code(bad_expected_size))
+        bridge_c = OperatorVerifierBridge(launcher=launcher_c, timeout_seconds=5.0)
+        with pytest.raises(ProtocolAbuseError, match="no pueden declarar expected_size"):
+            bridge_c.invoke_observe(token=current_operator_token, root=root, operation_id="op-s25-c")
+
+    def test_s26_child_payload_dto_invariant_violation_raises_protocol_abuse(
+        self,
+        current_operator_token: Any,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """S26: Violaciones de invariantes de DTOs en respuestas del child no filtran excepciones heterogéneas.
+
+        Los constructores _build_*_from_ipc capturan y normalizan cualquier excepción interna a ProtocolAbuseError.
+        """
+
+        # 1. Pruebas directas de invariantes sobre builders IPC
+        # CriticalFileEvidence: state VERIFIED con mismatch de digests lanza ValueError -> ProtocolAbuseError
+        bad_crit = {
+            "rel_path": "SkyrimSE.exe",
+            "state": VerificationState.VERIFIED.value,
+            "observed_digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "expected_digest": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        }
+        with pytest.raises(ProtocolAbuseError, match="Carga IPC de CriticalFileEvidence inválida"):
+            _build_critical_evidence_from_ipc(bad_crit)
+
+        # CriticalFileEvidence: state inválido
+        with pytest.raises(ProtocolAbuseError, match="Carga IPC de CriticalFileEvidence inválida"):
+            _build_critical_evidence_from_ipc({"rel_path": "SkyrimSE.exe", "state": 12345})
+
+        # PhysicalRootIdentity: canonical_root no string
+        with pytest.raises(ProtocolAbuseError, match="Carga IPC de PhysicalRootIdentity inválida"):
+            _build_physical_root_from_ipc(12345, 100, 200)
+
+        # TreeDigest: files negativo
+        with pytest.raises(ProtocolAbuseError, match="Carga IPC de TreeDigest inválida"):
+            _build_tree_digest_from_ipc("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", -1, 100)
+
+        # FreshRuntimeObservation: observed_at_ns <= 0
+        with pytest.raises(ProtocolAbuseError, match="Carga IPC de FreshRuntimeObservation inválida"):
+            _build_fresh_runtime_from_ipc("skyrimse", "1.6", r"C:\SkyrimSE.exe", -10)
+
+        # 2. Prueba de integración IPC: el child devuelve una respuesta VERIFIED donde el helper
+        # procesa critical_evidences con invariante rota, disparando ProtocolAbuseError sin filtrar ValueError
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "SkyrimSE.exe").write_bytes(b"exe")
+
+        auth_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        diff_digest = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+
+        worker_code_broken_dto = (
+            "import ctypes, json, struct, sys\n"
+            "kernel32 = ctypes.windll.kernel32\n"
+            "h = kernel32.CreateFileW(r'{PIPE_NAME}', 0x80000000 | 0x40000000, 0, None, 3, 0, None)\n"
+            "hdr = ctypes.create_string_buffer(4)\n"
+            "read = ctypes.c_ulong(0)\n"
+            "kernel32.ReadFile(h, hdr, 4, ctypes.byref(read), None)\n"
+            "req_len = struct.unpack('>I', hdr.raw)[0]\n"
+            "req_buf = ctypes.create_string_buffer(req_len)\n"
+            "kernel32.ReadFile(h, req_buf, req_len, ctypes.byref(read), None)\n"
+            "req = json.loads(req_buf.raw[:read.value].decode('utf-8'))\n"
+            "resp = {\n"
+            "    'version': 1,\n"
+            "    'operation_id': req['operation_id'],\n"
+            "    'mode': 'VERIFY',\n"
+            "    'nonce': req['nonce'],\n"
+            "    'disposition': 'VERIFIED',\n"
+            "    'canonical_root': req['canonical_root'],\n"
+            "    'volume_serial_number': 12345678,\n"
+            "    'root_file_id': 9876543210123456789,\n"
+            "    'observed_tree': {\n"
+            "        'digest': '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',\n"
+            "        'files': 1,\n"
+            "        'bytes': 1024,\n"
+            "    },\n"
+            "    'observed_runtime': {\n"
+            "        'game_key': 'skyrimse',\n"
+            "        'game_version': '1.6.1170.0',\n"
+            "        'observed_exe_path': req['canonical_root'] + r'\\\\SkyrimSE.exe',\n"
+            "        'observed_at_ns': 1000000,\n"
+            "    },\n"
+            "    'critical_evidences': [{\n"
+            "        'rel_path': 'SkyrimSE.exe',\n"
+            "        'state': 'verified',\n"
+            f"        'observed_digest': '{diff_digest}',\n"
+            f"        'expected_digest': '{auth_digest}',\n"
+            "        'observed_size': 3,\n"
+            "        'expected_size': 3,\n"
+            "        'message': '',\n"
+            "    }],\n"
+            "    'message': '',\n"
+            "}\n"
+            "raw = json.dumps(resp).encode('utf-8')\n"
+            "frame = struct.pack('>I', len(raw)) + raw\n"
+            "written = ctypes.c_ulong(0)\n"
+            "kernel32.WriteFile(h, frame, len(frame), ctypes.byref(written), None)\n"
+            "kernel32.CloseHandle(h)\n"
+            "sys.exit(0)\n"
+        )
+        launcher = _TestOnlyVerifierLauncher(worker_code_override=worker_code_broken_dto)
+        bridge = OperatorVerifierBridge(launcher=launcher, timeout_seconds=5.0)
+
+        expected_phys = PhysicalRootIdentity(
+            canonical_root=os.path.abspath(os.fspath(root)),
+            volume_serial_number=12345678,
+            root_file_id=9876543210123456789,
+        )
+        expected_tree = TreeDigest(
+            digest="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            files=1,
+            bytes=1024,
+        )
+        expected_runtime = RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0")
+
+        with pytest.raises(ProtocolAbuseError, match="Carga IPC de CriticalFileEvidence inválida"):
+            bridge.invoke_verify(
+                token=current_operator_token,
+                root=root,
+                operation_id="op-s26",
+                expected_physical_root=expected_phys,
+                expected_tree=expected_tree,
+                expected_runtime=expected_runtime,
+                critical_expectations=[
+                    CriticalFileExpectation(
+                        rel_path="SkyrimSE.exe",
+                        expected_digest=auth_digest,
+                        expected_size=3,
+                    )
+                ],
+            )
 
 
 class TestPackagingAndAstGates:
