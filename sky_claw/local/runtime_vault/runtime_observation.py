@@ -18,6 +18,7 @@ Contrato normativo ADR 0010 §11.4:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import time
@@ -130,15 +131,27 @@ def observe_runtime_identity_from_root(
     # Escanear el root para detectar ejecutables de runtime (sin recursión profunda)
     found_candidates: list[pathlib.Path] = []
     try:
-        for entry in os.scandir(root_path):
-            name_lower = entry.name.lower()
-            if name_lower in _ALL_CANDIDATE_NAMES_LOWER:
-                if entry.is_symlink():
-                    raise RuntimeObservationError(
-                        f"El ejecutable de runtime '{entry.path}' es un enlace simbólico (symlink prohibido, fail-closed)"
-                    )
-                if entry.is_file(follow_symlinks=False):
-                    found_candidates.append(pathlib.Path(entry.path))
+        scan = os.scandir(root_path)
+        with scan if hasattr(scan, "__enter__") else contextlib.nullcontext(scan) as entries:
+            for entry in entries:
+                name_lower = entry.name.lower()
+                if name_lower in _ALL_CANDIDATE_NAMES_LOWER:
+                    if entry.is_symlink():
+                        raise RuntimeObservationError(
+                            f"El ejecutable de runtime '{entry.path}' es un enlace simbólico (symlink prohibido, fail-closed)"
+                        )
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                        st_attrs = getattr(st, "st_file_attributes", 0)
+                        if st_attrs & 0x00000400:  # FILE_ATTRIBUTE_REPARSE_POINT
+                            raise RuntimeObservationError(
+                                f"El ejecutable de runtime '{entry.path}' es un reparse point (prohibido, fail-closed)"
+                            )
+                    except OSError as st_exc:
+                        if isinstance(st_exc, RuntimeObservationError):
+                            raise
+                    if entry.is_file(follow_symlinks=False):
+                        found_candidates.append(pathlib.Path(entry.path))
     except OSError as exc:
         if isinstance(exc, RuntimeObservationError):
             raise

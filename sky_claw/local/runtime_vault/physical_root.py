@@ -88,6 +88,10 @@ _FILE_SHARE_DELETE = 4
 _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 
+_FILE_LIST_DIRECTORY = 0x0001
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
+
 _FILE_INFO_BY_HANDLE_CLASS_ATTRIBUTE_TAG = 9
 _FILE_INFO_BY_HANDLE_CLASS_STANDARD = 1
 _FILE_INFO_BY_HANDLE_CLASS_ID = 18
@@ -152,6 +156,9 @@ if sys.platform == "win32":
         wintypes.DWORD,
     ]
     _kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+
+    _kernel32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
+    _kernel32.GetFileAttributesW.restype = wintypes.DWORD
 
 
 def _ensure_windows() -> None:
@@ -248,6 +255,35 @@ def _inspect_physical_root_handle(handle: int, lexical_path: str) -> PhysicalRoo
     )
 
 
+def _validate_no_ancestor_reparse(lexical_path: str) -> None:
+    """Valida fail-closed que ningún ancestro del camino léxico sea un reparse point / junction / symlink.
+
+    Normativa ADR 0010 §11.0 / §11.4:
+    Previene que un atacante configure un junction/symlink en un directorio intermedio (p. ej. C:\\Games\\Skyrim
+    donde C:\\Games es un junction hacia otra ubicación) para escapar del root esperado.
+    """
+    _ensure_windows()
+    p = pathlib.Path(lexical_path)
+    for ancestor in p.parents:
+        ancestor_str = str(ancestor)
+        attrs = _kernel32.GetFileAttributesW(ancestor_str)
+        if attrs == _INVALID_FILE_ATTRIBUTES:
+            err = ctypes.get_last_error()
+            raise PhysicalRootError(f"GetFileAttributesW falló en el ancestro '{ancestor_str}': código Win32 {err}")
+        if ancestor == ancestor.parent:
+            # Raíz del volumen (ej. 'C:\\'): verificar si está montado como reparse point de volumen
+            if attrs & _FILE_ATTRIBUTE_REPARSE_POINT:
+                raise PhysicalRootReparseError(
+                    f"El volumen raíz '{ancestor_str}' presenta atributo de reparse point (0x{attrs:x}): prohibido (fail-closed)"
+                )
+        else:
+            if attrs & _FILE_ATTRIBUTE_REPARSE_POINT:
+                raise PhysicalRootReparseError(
+                    f"El ancestro '{ancestor_str}' presenta atributo de reparse point / junction (0x{attrs:x}): "
+                    "los junctions o symlinks en rutas intermedias quedan prohibidos (fail-closed)"
+                )
+
+
 def _open_physical_root(root: pathlib.Path | str) -> tuple[int, str]:
     """Abre de forma segura el directorio raíz sin seguir reparse points ni invocar Path.resolve()."""
     _ensure_windows()
@@ -268,6 +304,35 @@ def _open_physical_root(root: pathlib.Path | str) -> tuple[int, str]:
         raise PhysicalRootError(
             f"CreateFileW(OPEN_REPARSE_POINT) falló en '{lexical_path}': código Win32 {err} "
             "(directorio inexistente o sin permisos de lectura de atributos)"
+        )
+    return int(handle), lexical_path
+
+
+def _open_bound_physical_root(root: pathlib.Path | str) -> tuple[int, str]:
+    """Abre de forma segura el directorio raíz SIN conceder FILE_SHARE_DELETE y validando ancestros.
+
+    Al omitir FILE_SHARE_DELETE y solicitar FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
+    el kernel Win32 prohíbe incondicionalmente cualquier intento concurrente de renombrar
+    o eliminar el directorio raíz durante la medición (anti-TOCTOU, error Win32 32 ERROR_SHARING_VIOLATION).
+    """
+    _ensure_windows()
+    lexical_path = os.path.abspath(os.fspath(root))
+    _validate_no_ancestor_reparse(lexical_path)
+
+    handle = _kernel32.CreateFileW(
+        lexical_path,
+        _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _READ_CONTROL,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE,  # ¡NO _FILE_SHARE_DELETE!
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value or handle == 0:
+        err = ctypes.get_last_error()
+        raise PhysicalRootError(
+            f"CreateFileW(OPEN_BOUND_ROOT) falló en '{lexical_path}': código Win32 {err} "
+            "(directorio inexistente o sin permisos de listado/atributos)"
         )
     return int(handle), lexical_path
 
@@ -332,14 +397,15 @@ def bound_physical_root(
 ) -> Iterator[PhysicalRootIdentity]:
     """Abre y sostiene un handle sobre la raíz durante la medición, protegiendo contra TOCTOU.
 
-    1. Abre handle-first con OPEN_REPARSE_POINT (fallo cerrado si ReparseTag != 0).
-    2. Valida la identidad física inicial (y contra expected si se proveyó).
-    3. Sostiene el handle abierto durante el bloque para inhibir renombres/borrados de directorio.
-    4. Al salir, ejecuta un sandwich recheck:
+    1. Valida que ningún ancestro léxico sea un reparse point / junction.
+    2. Abre handle-first con OPEN_REPARSE_POINT SIN FILE_SHARE_DELETE (inhibe renombre/borrado en el SO).
+    3. Valida la identidad física inicial (y contra expected si se proveyó).
+    4. Sostiene el handle abierto durante el bloque para inhibir renombres/borrados de directorio.
+    5. Al salir, ejecuta un sandwich recheck:
        - Re-inspecciona el handle sostenido.
        - Abre un handle fresco sobre la ruta y verifica que la identidad física sea idéntica.
     """
-    handle, lexical_path = _open_physical_root(root)
+    handle, lexical_path = _open_bound_physical_root(root)
     try:
         initial_id = _inspect_physical_root_handle(handle, lexical_path)
         if expected is not None:

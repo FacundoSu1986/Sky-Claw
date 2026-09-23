@@ -35,10 +35,11 @@ import pathlib
 import secrets
 import sys
 import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 from sky_claw.local.runtime_vault.coordinator_identity import _normalize_image_for_compare
 from sky_claw.local.runtime_vault.inventory import inventory_tree
@@ -63,6 +64,7 @@ from sky_claw.local.runtime_vault.physical_root import (
 )
 from sky_claw.local.runtime_vault.privileged_boundary import PrivilegedBoundaryUnsupportedError
 from sky_claw.local.runtime_vault.runtime_observation import (
+    FreshRuntimeObservation,
     observe_runtime_identity_from_root,
 )
 from sky_claw.local.runtime_vault.verification import tree_digest_from_files
@@ -71,9 +73,18 @@ from sky_claw.local.runtime_vault.verification import tree_digest_from_files
 # Constantes Normativas de Protocolo e IPC
 # ============================================================================
 
-MAX_REQUEST_BYTES: int = 64 * 1024  # 64 KB
-MAX_RESPONSE_BYTES: int = 256 * 1024  # 256 KB
-DEFAULT_IPC_TIMEOUT_SECONDS: float = 10.0
+PROTOCOL_VERSION: Final[int] = 1
+
+MAX_REQUEST_BYTES: Final[int] = 64 * 1024  # 64 KB
+MAX_RESPONSE_BYTES: Final[int] = 256 * 1024  # 256 KB
+
+DEFAULT_CONNECT_TIMEOUT_SECONDS: Final[float] = 5.0
+DEFAULT_IPC_IO_TIMEOUT_SECONDS: Final[float] = 5.0
+# operation_timeout_seconds provisional fijado en 120s; cubre inventario, hashing y medición
+# de bibliotecas modded extensas en Skyrim. Pendiente de calibración final sobre RIG real.
+DEFAULT_OPERATION_TIMEOUT_SECONDS: Final[float] = 120.0
+DEFAULT_CHILD_GRACE_PERIOD_MS: Final[int] = 2000
+DEFAULT_IPC_TIMEOUT_SECONDS: Final[float] = 10.0
 
 _PIPE_ACCESS_DUPLEX = 0x00000003
 _FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
@@ -82,6 +93,7 @@ _FILE_FLAG_OVERLAPPED = 0x40000000
 _PIPE_TYPE_BYTE = 0x00000000
 _PIPE_READMODE_BYTE = 0x00000000
 _PIPE_WAIT = 0x00000000
+_PIPE_REJECT_REMOTE_CLIENTS = 0x00000008
 
 _ERROR_BROKEN_PIPE = 109
 _ERROR_PIPE_CONNECTED = 535
@@ -93,8 +105,140 @@ _GENERIC_READ = 0x80000000
 _GENERIC_WRITE = 0x40000000
 _OPEN_EXISTING = 3
 
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_SYNCHRONIZE = 0x00100000
+_STILL_ACTIVE = 259
+
 _CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _CREATE_NO_WINDOW = 0x08000000
+
+# ============================================================================
+# Esquemas Cerrados del Protocolo v1
+# ============================================================================
+
+_REQUEST_OBSERVE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "version",
+        "operation_id",
+        "mode",
+        "nonce",
+        "canonical_root",
+        "expected_game_key",
+    }
+)
+
+_REQUEST_VERIFY_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "version",
+        "operation_id",
+        "mode",
+        "nonce",
+        "canonical_root",
+        "expected_game_key",
+        "expected_physical_root",
+        "expected_tree",
+        "expected_runtime",
+        "critical_expectations",
+    }
+)
+
+_PHYSICAL_ROOT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "canonical_root",
+        "volume_serial_number",
+        "root_file_id",
+    }
+)
+
+_TREE_DIGEST_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "digest",
+        "files",
+        "bytes",
+    }
+)
+
+_RUNTIME_IDENTITY_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "game_key",
+        "game_version",
+    }
+)
+
+_FRESH_RUNTIME_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "game_key",
+        "game_version",
+        "observed_exe_path",
+        "observed_at_ns",
+    }
+)
+
+_CRITICAL_EXPECTATION_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "rel_path",
+        "expected_digest",
+        "expected_size",
+    }
+)
+
+_CRITICAL_EVIDENCE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "rel_path",
+        "state",
+        "observed_digest",
+        "expected_digest",
+        "observed_size",
+        "expected_size",
+        "message",
+    }
+)
+
+_RESPONSE_REJECTED_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "version",
+        "operation_id",
+        "mode",
+        "nonce",
+        "disposition",
+        "error_type",
+        "message",
+    }
+)
+
+_RESPONSE_OBSERVED_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "version",
+        "operation_id",
+        "mode",
+        "nonce",
+        "disposition",
+        "canonical_root",
+        "volume_serial_number",
+        "root_file_id",
+        "observed_tree",
+        "observed_runtime",
+        "critical_evidences",
+        "message",
+    }
+)
+
+_RESPONSE_VERIFIED_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "version",
+        "operation_id",
+        "mode",
+        "nonce",
+        "disposition",
+        "canonical_root",
+        "volume_serial_number",
+        "root_file_id",
+        "observed_tree",
+        "observed_runtime",
+        "critical_evidences",
+        "message",
+    }
+)
 
 # ============================================================================
 # Jerarquía de Excepciones
@@ -182,7 +326,7 @@ class OperatorVerifierObservationResult:
     nonce: str
     physical_root: PhysicalRootIdentity
     observed_tree: TreeDigest
-    observed_runtime: RuntimeIdentity
+    observed_runtime: FreshRuntimeObservation
     critical_evidences: tuple[CriticalFileEvidence, ...]
     message: str = ""
 
@@ -200,11 +344,25 @@ class OperatorVerifierVerificationResult:
     disposition: VerifierDisposition
     operation_id: str
     nonce: str
-    physical_root: PhysicalRootIdentity
+    physical_root: PhysicalRootIdentity | None
     tree_result: TreeVerificationResult
     runtime_result: RuntimeVerificationResult
-    critical_evidences: tuple[CriticalFileEvidence, ...]
+    observed_runtime: FreshRuntimeObservation | None = None
+    critical_evidences: tuple[CriticalFileEvidence, ...] = ()
     message: str = ""
+
+    def __post_init__(self) -> None:
+        if self.disposition is VerifierDisposition.VERIFIED:
+            if self.physical_root is None:
+                raise OperatorVerifierBridgeError("VERIFIED exige presencia de physical_root")
+            if self.observed_runtime is None:
+                raise OperatorVerifierBridgeError(
+                    "VERIFIED exige presencia de FreshRuntimeObservation en observed_runtime"
+                )
+            if self.runtime_result.observed != self.observed_runtime.runtime_identity:
+                raise OperatorVerifierBridgeError(
+                    "Invariante violada: runtime_result.observed no coincide con observed_runtime.runtime_identity"
+                )
 
     @property
     def success(self) -> bool:
@@ -327,6 +485,9 @@ if sys.platform == "win32":
     ]
     _kernel32.CreateEventW.restype = wintypes.HANDLE
 
+    _kernel32.ResetEvent.argtypes = [wintypes.HANDLE]
+    _kernel32.ResetEvent.restype = wintypes.BOOL
+
     _kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     _kernel32.WaitForSingleObject.restype = wintypes.DWORD
 
@@ -382,6 +543,15 @@ if sys.platform == "win32":
     ]
     _kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 
+    _kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _kernel32.TerminateProcess.restype = wintypes.BOOL
+
+    _kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    _kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+
+    _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+
 
 def _ensure_windows() -> None:
     if sys.platform != "win32":
@@ -389,8 +559,25 @@ def _ensure_windows() -> None:
 
 
 # ============================================================================
-# Utilidades de Protocolo Length-Prefixed
+# Utilidades de Protocolo y Validación de Esquemas Cerrados
 # ============================================================================
+
+
+def _validate_closed_keys(data: dict[str, Any], allowed_keys: frozenset[str], context: str) -> None:
+    """Valida que un diccionario cumpla estrictamente con un esquema cerrado.
+
+    Rechaza tanto claves faltantes como claves desconocidas adicionales (fail-closed).
+    """
+    actual = set(data.keys())
+    if actual != allowed_keys:
+        missing = allowed_keys - actual
+        unknown = actual - allowed_keys
+        details = []
+        if missing:
+            details.append(f"claves faltantes: {sorted(missing)}")
+        if unknown:
+            details.append(f"claves desconocidas: {sorted(unknown)}")
+        raise ProtocolAbuseError(f"Violación de esquema cerrado en {context}: {', '.join(details)}")
 
 
 def encode_length_prefixed_frame(payload: bytes) -> bytes:
@@ -406,28 +593,38 @@ def read_length_prefixed_frame(handle: int, max_bytes: int) -> bytes:
     """
     _ensure_windows()
 
-    # 1. Leer 4 bytes de encabezado
+    # 1. Leer exactamente 4 bytes de encabezado
     header_buf = (ctypes.c_ubyte * 4)()
-    read_bytes = wintypes.DWORD(0)
-    ok = _kernel32.ReadFile(
-        ctypes.c_void_p(handle),
-        ctypes.cast(header_buf, wintypes.LPVOID),
-        4,
-        ctypes.byref(read_bytes),
-        None,
-    )
-    if not ok:
-        err = ctypes.get_last_error()
-        if err == _ERROR_BROKEN_PIPE:
-            return b""
-        raise ChildExitedPrematurelyError(f"ReadFile(header) falló con código Win32 {err}")
-
-    if read_bytes.value == 0:
-        return b""
-    if read_bytes.value < 4:
-        raise ChildExitedPrematurelyError(
-            f"El peer cerró la conexión tras enviar sólo {read_bytes.value} bytes del encabezado"
+    header_read = 0
+    while header_read < 4:
+        read_bytes = wintypes.DWORD(0)
+        remaining = 4 - header_read
+        ptr = ctypes.cast(ctypes.addressof(header_buf) + header_read, wintypes.LPVOID)
+        ok = _kernel32.ReadFile(
+            ctypes.c_void_p(handle),
+            ptr,
+            remaining,
+            ctypes.byref(read_bytes),
+            None,
         )
+        if not ok:
+            err = ctypes.get_last_error()
+            if err in (_ERROR_BROKEN_PIPE, 232):
+                if header_read == 0:
+                    return b""
+                raise ChildExitedPrematurelyError(
+                    f"El peer cerró la conexión tras enviar sólo {header_read} bytes del encabezado"
+                )
+            raise ChildExitedPrematurelyError(f"ReadFile(header) falló con código Win32 {err}")
+
+        if read_bytes.value == 0:
+            if header_read == 0:
+                return b""
+            raise ChildExitedPrematurelyError(
+                f"El peer cerró la conexión tras enviar sólo {header_read} bytes del encabezado"
+            )
+
+        header_read += read_bytes.value
 
     length = int.from_bytes(bytes(header_buf), byteorder="big")
     if length > max_bytes:
@@ -516,6 +713,7 @@ def _write_all_overlapped(handle: int, data: bytes, timeout_seconds: float) -> N
         total_written = 0
         total_len = len(data)
         while total_written < total_len:
+            _kernel32.ResetEvent(ctypes.c_void_p(h_event))
             ov = _OVERLAPPED()
             ov.hEvent = h_event
             chunk_written = wintypes.DWORD(0)
@@ -575,17 +773,30 @@ def _write_all_overlapped(handle: int, data: bytes, timeout_seconds: float) -> N
         _kernel32.CloseHandle(ctypes.c_void_p(h_event))
 
 
-def _read_frame_overlapped(handle: int, max_bytes: int, timeout_seconds: float) -> bytes:
-    """Lee un frame de respuesta con prefijo uint32 y bounded timeout mediante I/O overlapped."""
+def _read_frame_overlapped(
+    handle: int,
+    max_bytes: int,
+    *,
+    io_timeout_seconds: float,
+    operation_deadline: float | None = None,
+) -> bytes:
+    """Lee un frame de respuesta con prefijo uint32 big-endian mediante I/O overlapped.
+
+    Aplica una disciplina de timeouts de dos niveles:
+    - operation_deadline: tiempo límite absoluto monotónico desde que el request fue
+      enviado hasta recibir la respuesta terminal (cubre scan, hash e inventario).
+    - io_timeout_seconds: tiempo máximo acotado para I/O chunks y transferencias activas.
+    """
     _ensure_windows()
     h_event = _kernel32.CreateEventW(None, True, False, None)
     if _is_invalid_handle(h_event):
         raise OperatorVerifierBridgeError("CreateEventW falló en lectura overlapped")
 
-    def _read_exact(count: int) -> bytes:
+    def _read_exact(count: int, *, is_initial_wait: bool = False) -> bytes:
         buf = (ctypes.c_ubyte * count)()
         total_read = 0
         while total_read < count:
+            _kernel32.ResetEvent(ctypes.c_void_p(h_event))
             ov = _OVERLAPPED()
             ov.hEvent = h_event
             chunk_read = wintypes.DWORD(0)
@@ -601,35 +812,80 @@ def _read_frame_overlapped(handle: int, max_bytes: int, timeout_seconds: float) 
             if not ok:
                 err = ctypes.get_last_error()
                 if err == _ERROR_IO_PENDING:
-                    wait_ms = int(timeout_seconds * 1000)
+                    now = time.monotonic()
+                    if is_initial_wait and total_read == 0 and operation_deadline is not None:
+                        time_left = operation_deadline - now
+                        if time_left <= 0:
+                            _cancel_and_drain_overlapped(handle, ov)
+                            raise OperatorVerifierTimeoutError(
+                                "La operación del verificador hijo excedió el tiempo límite (operation_timeout) y expiró tras 0s"
+                            )
+                        current_timeout = time_left
+                    else:
+                        current_timeout = io_timeout_seconds
+                        if operation_deadline is not None:
+                            rem = operation_deadline - now
+                            if rem <= 0:
+                                _cancel_and_drain_overlapped(handle, ov)
+                                raise OperatorVerifierTimeoutError(
+                                    "La operación del verificador hijo excedió el tiempo límite (operation_timeout) y expiró tras 0s"
+                                )
+                            current_timeout = min(current_timeout, rem)
+
+                    wait_ms = max(1, int(current_timeout * 1000))
                     wait_res = _kernel32.WaitForSingleObject(h_event, wait_ms)
                     if wait_res == _WAIT_TIMEOUT:
                         _cancel_and_drain_overlapped(handle, ov)
-                        raise OperatorVerifierTimeoutError(f"La lectura del pipe expiró tras {timeout_seconds}s")
+                        if operation_deadline is not None and (
+                            is_initial_wait or time.monotonic() >= (operation_deadline - 0.05)
+                        ):
+                            raise OperatorVerifierTimeoutError(
+                                f"La operación del verificador hijo excedió el tiempo límite (operation_timeout) y expiró tras {current_timeout:.1f}s"
+                            )
+                        raise OperatorVerifierTimeoutError(
+                            f"La lectura del pipe expiró tras {current_timeout:.1f}s (io_timeout)"
+                        )
                     elif wait_res != _WAIT_OBJECT_0:
                         _cancel_and_drain_overlapped(handle, ov)
                         raise OperatorVerifierBridgeError("Fallo en WaitForSingleObject de ReadFile")
-                    _kernel32.GetOverlappedResult(
+
+                    res_read = wintypes.DWORD(0)
+                    res_ok = _kernel32.GetOverlappedResult(
                         ctypes.c_void_p(handle),
                         ctypes.byref(ov),
-                        ctypes.byref(chunk_read),
+                        ctypes.byref(res_read),
                         False,
                     )
+                    if not res_ok:
+                        res_err = ctypes.get_last_error()
+                        if res_err in (_ERROR_BROKEN_PIPE, 232):
+                            if total_read == 0:
+                                return b""
+                            raise ChildExitedPrematurelyError(
+                                f"EOF inesperado a los {total_read}/{count} bytes del frame"
+                            )
+                        raise OperatorVerifierBridgeError(
+                            f"GetOverlappedResult(ReadFile) falló: código Win32 {res_err}"
+                        )
+                    chunk_read = res_read
                 elif err in (_ERROR_BROKEN_PIPE, 232):
                     if total_read == 0:
                         return b""
                     raise ChildExitedPrematurelyError(f"EOF inesperado a los {total_read}/{count} bytes del frame")
                 else:
                     raise OperatorVerifierBridgeError(f"ReadFile falló: código Win32 {err}")
+
             if chunk_read.value == 0:
                 if total_read == 0:
                     return b""
                 raise ChildExitedPrematurelyError(f"EOF inesperado a los {total_read}/{count} bytes")
+
             total_read += chunk_read.value
+
         return bytes(buf)
 
     try:
-        header = _read_exact(4)
+        header = _read_exact(4, is_initial_wait=True)
         if not header:
             return b""
         length = int.from_bytes(header, byteorder="big")
@@ -640,12 +896,54 @@ def _read_frame_overlapped(handle: int, max_bytes: int, timeout_seconds: float) 
             )
         if length == 0:
             raise ProtocolAbuseError("El mensaje anunciado tiene longitud cero")
-        payload = _read_exact(length)
+        payload = _read_exact(length, is_initial_wait=False)
         if len(payload) < length:
             raise ChildExitedPrematurelyError("EOF antes de completar el payload")
         return payload
     finally:
         _kernel32.CloseHandle(ctypes.c_void_p(h_event))
+
+
+def _reap_child_process(
+    child: ChildProcessEvidence,
+    *,
+    normal_exit: bool,
+    grace_period_ms: int = DEFAULT_CHILD_GRACE_PERIOD_MS,
+) -> None:
+    """Gestiona el ciclo de vida del proceso hijo verifier asegurando reap y terminación.
+
+    En salida normal (normal_exit=True):
+    - Espera hasta grace_period_ms a que el hijo concluya su proceso.
+    - Si no concluye dentro del grace period: termina forzosamente al hijo y
+      falla cerrado levantando ProtocolAbuseError (un verificador de un solo uso
+      no debe permanecer vivo tras emitir su respuesta terminal).
+
+    En salida anormal / fallo previo (normal_exit=False):
+    - Si el proceso sigue activo, lo termina inmediatamente con TerminateProcess
+      y drena con WaitForSingleObject para evitar procesos huérfanos o zombis.
+    """
+    _ensure_windows()
+    h_proc = ctypes.c_void_p(child.process_handle)
+    exit_code = wintypes.DWORD(0)
+
+    if normal_exit:
+        wait_res = _kernel32.WaitForSingleObject(h_proc, grace_period_ms)
+        if wait_res == _WAIT_OBJECT_0:
+            return
+        # El proceso no salió en el período de gracia tras enviar terminal response
+        _kernel32.TerminateProcess(h_proc, 1)
+        _kernel32.WaitForSingleObject(h_proc, 1000)
+        raise ProtocolAbuseError(
+            f"El verificador hijo (PID={child.pid}) continuó ejecutándose tras enviar "
+            "la respuesta terminal (violación de ciclo de vida, fail-closed)"
+        )
+    else:
+        # Salida anormal: verificar si sigue activo y terminarlo
+        if (
+            _kernel32.GetExitCodeProcess(h_proc, ctypes.byref(exit_code)) and exit_code.value == 259  # STILL_ACTIVE
+        ):
+            _kernel32.TerminateProcess(h_proc, 1)
+            _kernel32.WaitForSingleObject(h_proc, 1000)
 
 
 # ============================================================================
@@ -745,7 +1043,7 @@ class Win32CreateProcessWithTokenLauncher:
 
         ok = _advapi32.CreateProcessWithTokenW(
             ctypes.c_void_p(token.raw_handle),
-            0,  # LOGON_WITH_PROFILE = 0
+            0,  # dwLogonFlags = 0 (sin carga de perfil de red adicional, one-shot verifier)
             exe_str,
             cmd_buf,
             _CREATE_UNICODE_ENVIRONMENT | _CREATE_NO_WINDOW,
@@ -803,7 +1101,14 @@ def resolve_production_verifier_executable() -> pathlib.Path:
 
 
 class _TestOnlyVerifierLauncher:
-    """Seam de testing confinada a pruebas Win32 (no para producción)."""
+    """Seam de testing confinada a pruebas Win32 (no para producción).
+
+    Lanza un subproceso Python real desechable para que el helper interactúe
+    con un proceso Win32 genuino, permitiendo verificar ciclo de vida,
+    WaitForSingleObject y TerminateProcess sin comprometer el proceso de test.
+    """
+
+    _is_test_verifier_launcher: Final[bool] = True
 
     def __init__(
         self,
@@ -812,17 +1117,35 @@ class _TestOnlyVerifierLauncher:
         tamper_creation_time_delta: int = 0,
         tamper_image_path: str | None = None,
         tamper_response_nonce: str | None = None,
+        tamper_hang_after_response: bool = False,
+        worker_code_override: str | None = None,
     ) -> None:
         self.tamper_child_pid = tamper_child_pid
         self.tamper_creation_time_delta = tamper_creation_time_delta
         self.tamper_image_path = tamper_image_path
         self.tamper_response_nonce = tamper_response_nonce
+        self.tamper_hang_after_response = tamper_hang_after_response
+        self.worker_code_override = worker_code_override
+        self._spawned_procs: list[Any] = []
 
-    def _worker_fn(self, pipe_name: str) -> None:
-        run_verifier_child_worker(
-            pipe_name,
-            tamper_nonce=self.tamper_response_nonce,
-        )
+    def reap_proc(self) -> None:
+        """Drena y reapea los subprocesos de prueba para evitar ResourceWarning en Python."""
+        for p in list(self._spawned_procs):
+            try:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(timeout=2.0)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                if p.stdin:
+                    p.stdin.close()
+                if p.stdout:
+                    p.stdout.close()
+                if p.stderr:
+                    p.stderr.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def launch_child(
         self,
@@ -830,7 +1153,7 @@ class _TestOnlyVerifierLauncher:
         executable_path: pathlib.Path,
         cmdline: str,
     ) -> ChildProcessEvidence:
-        # Extraer pipe name del cmdline (p. ej. "--pipe-name \\.\pipe\...")
+        _ensure_windows()
         parts = cmdline.split()
         pipe_name = ""
         for i, part in enumerate(parts):
@@ -840,28 +1163,50 @@ class _TestOnlyVerifierLauncher:
         if not pipe_name:
             raise OperatorVerifierLaunchError("No se encontró --pipe-name en el cmdline de prueba")
 
-        # Lanzar worker en thread separado del proceso actual
-        t = threading.Thread(target=self._worker_fn, args=(pipe_name,), daemon=True)
-        t.start()
+        if self.worker_code_override is not None:
+            script = self.worker_code_override.replace("{PIPE_NAME}", pipe_name)
+        else:
+            script = (
+                "import os, sys\n"
+                "from unittest.mock import patch\n"
+                "from sky_claw.local.runtime_vault.operator_verifier_bridge import run_verifier_child_worker\n"
+                "test_ver = os.environ.get('_SKYCLAW_TEST_RUNTIME_VERSION', '1.6.1170.0')\n"
+                "with patch('sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version', return_value=test_ver):\n"
+                f"    run_verifier_child_worker({pipe_name!r}, tamper_nonce={self.tamper_response_nonce!r}, tamper_hang_after_response={self.tamper_hang_after_response!r})\n"
+            )
 
-        # En la seam de pruebas, el PID y creation time provienen del propio proceso de test
-        curr_pid = os.getpid() if self.tamper_child_pid is None else self.tamper_child_pid
+        import subprocess
 
-        # Abrir handle real del proceso propio para que la validación same-handle funcione
-        process_query_information = 0x0400
-        h_process = _kernel32.OpenProcess(process_query_information, False, os.getpid())
+        sys_exe = getattr(sys, "_base_executable", sys.executable)
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        proc = subprocess.Popen(
+            [sys_exe, "-c", script],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+        self._spawned_procs.append(proc)
+
+        pid = proc.pid
+        # SYNCHRONIZE (0x00100000) | PROCESS_TERMINATE (0x0001) | PROCESS_QUERY_INFORMATION (0x0400)
+        desired_access = 0x00100000 | 0x0001 | 0x0400
+        h_process = _kernel32.OpenProcess(desired_access, False, pid)
         if _is_invalid_handle(h_process):
-            raise OperatorVerifierLaunchError("OpenProcess sobre proceso propio falló en seam")
+            proc.kill()
+            raise OperatorVerifierLaunchError("OpenProcess sobre subproceso de prueba falló")
 
         real_creation = _read_process_creation_time(int(h_process)) or 100_000_000
         reported_creation = real_creation + self.tamper_creation_time_delta
 
         real_image = _read_process_image_path(int(h_process)) or str(executable_path)
         reported_image = self.tamper_image_path if self.tamper_image_path is not None else real_image
+        reported_pid = self.tamper_child_pid if self.tamper_child_pid is not None else pid
 
         return ChildProcessEvidence(
             process_handle=int(h_process),
-            pid=curr_pid,
+            pid=reported_pid,
             creation_time=reported_creation,
             image_path=reported_image,
         )
@@ -876,6 +1221,7 @@ def run_verifier_child_worker(
     pipe_name: str,
     *,
     tamper_nonce: str | None = None,
+    tamper_hang_after_response: bool = False,
 ) -> None:
     """Ejecuta el protocolo interno del verificador conectándose como cliente al pipe privado."""
     _ensure_windows()
@@ -903,17 +1249,42 @@ def run_verifier_child_worker(
         try:
             req_data = json.loads(req_bytes.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
+            # JSON malformado: fail-closed desconectando sin emitir respuesta ni fabricar nonces
             return
 
-        operation_id = req_data.get("operation_id", "")
-        mode = req_data.get("mode", "")
-        nonce = tamper_nonce if tamper_nonce is not None else req_data.get("nonce", "")
-        canonical_root = req_data.get("canonical_root", "")
-        expected_game_key = req_data.get("expected_game_key", "skyrimse")
+        if not isinstance(req_data, dict):
+            return
+
+        operation_id = req_data.get("operation_id")
+        nonce = tamper_nonce if tamper_nonce is not None else req_data.get("nonce")
+        mode = req_data.get("mode")
+
+        # Sin operation_id o nonce no es posible autenticar una respuesta: desconectar de inmediato
+        if not isinstance(operation_id, str) or not isinstance(nonce, str) or not isinstance(mode, str):
+            return
 
         resp_payload: dict[str, Any]
 
         try:
+            version = req_data.get("version")
+            if version != PROTOCOL_VERSION:
+                raise ProtocolAbuseError(f"Versión de protocolo no soportada: {version} (requerida {PROTOCOL_VERSION})")
+
+            if mode == VerifierMode.OBSERVE:
+                _validate_closed_keys(req_data, _REQUEST_OBSERVE_KEYS, "request OBSERVE")
+            elif mode == VerifierMode.VERIFY:
+                _validate_closed_keys(req_data, _REQUEST_VERIFY_KEYS, "request VERIFY")
+                _validate_closed_keys(req_data["expected_physical_root"], _PHYSICAL_ROOT_KEYS, "expected_physical_root")
+                _validate_closed_keys(req_data["expected_tree"], _TREE_DIGEST_KEYS, "expected_tree")
+                _validate_closed_keys(req_data["expected_runtime"], _RUNTIME_IDENTITY_KEYS, "expected_runtime")
+                for i, ce in enumerate(req_data.get("critical_expectations", [])):
+                    _validate_closed_keys(ce, _CRITICAL_EXPECTATION_KEYS, f"critical_expectations[{i}]")
+            else:
+                raise ProtocolAbuseError(f"Modo '{mode}' no reconocido")
+
+            canonical_root = req_data["canonical_root"]
+            expected_game_key = req_data["expected_game_key"]
+
             if mode == VerifierMode.OBSERVE:
                 # En OBSERVE: deriva identidad física y mide frescos bajo bound_physical_root (anti-TOCTOU)
                 with bound_physical_root(canonical_root) as phys_identity:
@@ -924,11 +1295,11 @@ def run_verifier_child_worker(
                     tree_digest = tree_digest_from_files(files)
 
                 resp_payload = {
-                    "version": 1,
+                    "version": PROTOCOL_VERSION,
                     "operation_id": operation_id,
                     "mode": mode,
                     "nonce": nonce,
-                    "disposition": VerifierDisposition.OBSERVED,
+                    "disposition": VerifierDisposition.OBSERVED.value,
                     "canonical_root": phys_identity.canonical_root,
                     "volume_serial_number": phys_identity.volume_serial_number,
                     "root_file_id": phys_identity.root_file_id,
@@ -940,6 +1311,8 @@ def run_verifier_child_worker(
                     "observed_runtime": {
                         "game_key": obs_runtime.game_key,
                         "game_version": obs_runtime.game_version,
+                        "observed_exe_path": obs_runtime.observed_exe_path,
+                        "observed_at_ns": obs_runtime.observed_at_ns,
                     },
                     "critical_evidences": [
                         {
@@ -1039,14 +1412,14 @@ def run_verifier_child_worker(
                     diffs.append("RuntimeIdentity mismatch")
 
                 if tree_match and runtime_match and critical_matches:
-                    disp = VerifierDisposition.VERIFIED
+                    disp = VerifierDisposition.VERIFIED.value
                     msg = ""
                 else:
-                    disp = VerifierDisposition.FAILED
+                    disp = VerifierDisposition.FAILED.value
                     msg = "; ".join(diffs)
 
                 resp_payload = {
-                    "version": 1,
+                    "version": PROTOCOL_VERSION,
                     "operation_id": operation_id,
                     "mode": mode,
                     "nonce": nonce,
@@ -1062,44 +1435,28 @@ def run_verifier_child_worker(
                     "observed_runtime": {
                         "game_key": obs_runtime.game_key,
                         "game_version": obs_runtime.game_version,
+                        "observed_exe_path": obs_runtime.observed_exe_path,
+                        "observed_at_ns": obs_runtime.observed_at_ns,
                     },
                     "critical_evidences": crit_evidences_list,
                     "message": msg,
                 }
-            else:
-                resp_payload = {
-                    "version": 1,
-                    "operation_id": operation_id,
-                    "mode": mode,
-                    "nonce": nonce,
-                    "disposition": VerifierDisposition.REJECTED,
-                    "canonical_root": canonical_root,
-                    "volume_serial_number": 0,
-                    "root_file_id": 0,
-                    "observed_tree": {"digest": "", "files": 0, "bytes": 0},
-                    "observed_runtime": {"game_key": "", "game_version": ""},
-                    "critical_evidences": [],
-                    "message": f"Modo '{mode}' no reconocido",
-                }
-        except Exception as exc:  # noqa: BLE001 — boundary del proceso worker: emite REJECTED
-            # Respuesta tipada REJECTED para evitar desconexión abrupta / ChildExitedPrematurelyError
+        except Exception as exc:  # noqa: BLE001 — boundary del worker emite REJECTED cerrado
             resp_payload = {
-                "version": 1,
+                "version": PROTOCOL_VERSION,
                 "operation_id": operation_id,
-                "mode": mode,
+                "mode": str(mode),
                 "nonce": nonce,
-                "disposition": VerifierDisposition.REJECTED,
-                "canonical_root": canonical_root,
-                "volume_serial_number": 0,
-                "root_file_id": 0,
-                "observed_tree": {"digest": "", "files": 0, "bytes": 0},
-                "observed_runtime": {"game_key": "", "game_version": ""},
-                "critical_evidences": [],
-                "message": f"{type(exc).__name__}: {exc}",
+                "disposition": VerifierDisposition.REJECTED.value,
+                "error_type": type(exc).__name__,
+                "message": str(exc),
             }
 
         frame = encode_length_prefixed_frame(json.dumps(resp_payload, ensure_ascii=False).encode("utf-8"))
         _write_all_sync(int(h_client), frame)
+
+        if tamper_hang_after_response:
+            time.sleep(10.0)
     finally:
         _kernel32.CloseHandle(ctypes.c_void_p(h_client))
 
@@ -1116,10 +1473,22 @@ class OperatorVerifierBridge:
         self,
         *,
         launcher: OperatorVerifierLauncher | None = None,
-        timeout_seconds: float = DEFAULT_IPC_TIMEOUT_SECONDS,
+        connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        io_timeout_seconds: float = DEFAULT_IPC_IO_TIMEOUT_SECONDS,
+        operation_timeout_seconds: float = DEFAULT_OPERATION_TIMEOUT_SECONDS,
+        timeout_seconds: float | None = None,
+        grace_period_ms: int = DEFAULT_CHILD_GRACE_PERIOD_MS,
     ) -> None:
         self._launcher = launcher or Win32CreateProcessWithTokenLauncher()
-        self._timeout_seconds = timeout_seconds
+        if timeout_seconds is not None:
+            self._connect_timeout_seconds = timeout_seconds
+            self._io_timeout_seconds = timeout_seconds
+            self._operation_timeout_seconds = timeout_seconds
+        else:
+            self._connect_timeout_seconds = connect_timeout_seconds
+            self._io_timeout_seconds = io_timeout_seconds
+            self._operation_timeout_seconds = operation_timeout_seconds
+        self._grace_period_ms = grace_period_ms
         self._consumed_nonces: set[str] = set()
         self._lock = threading.Lock()
 
@@ -1155,11 +1524,11 @@ class OperatorVerifierBridge:
         h_pipe = _kernel32.CreateNamedPipeW(
             pipe_name,
             _PIPE_ACCESS_DUPLEX | _FILE_FLAG_FIRST_PIPE_INSTANCE | _FILE_FLAG_OVERLAPPED,
-            _PIPE_TYPE_BYTE | _PIPE_WAIT,
+            _PIPE_TYPE_BYTE | _PIPE_READMODE_BYTE | _PIPE_WAIT | _PIPE_REJECT_REMOTE_CLIENTS,
             1,
             65536,
             65536,
-            int(self._timeout_seconds * 1000),
+            int(self._connect_timeout_seconds * 1000),
             ctypes.byref(sa),
         )
         if _is_invalid_handle(h_pipe):
@@ -1172,15 +1541,15 @@ class OperatorVerifierBridge:
 
         try:
             # 1. Resolver ejecutable y lanzar child
-            if isinstance(self._launcher, Win32CreateProcessWithTokenLauncher):
-                exe_path = resolve_production_verifier_executable()
-            else:
+            if getattr(self._launcher, "_is_test_verifier_launcher", False):
                 exe_path = pathlib.Path("C:\\Sky-Claw\\test_verifier.exe")
+            else:
+                exe_path = resolve_production_verifier_executable()
 
             cmdline = f'"{exe_path}" --pipe-name {pipe_name}'
             child_evidence = self._launcher.launch_child(token, exe_path, cmdline)
 
-            # 2. Conexión del pipe con timeout acotado
+            # 2. Conexión del pipe con connect_timeout_seconds
             ov = _OVERLAPPED()
             ov.hEvent = h_event
             connected = False
@@ -1196,14 +1565,14 @@ class OperatorVerifierBridge:
                         "El verificador hijo cerró el canal prematuramente antes de la conexión"
                     )
                 elif err == _ERROR_IO_PENDING:
-                    wait_ms = int(self._timeout_seconds * 1000)
+                    wait_ms = int(self._connect_timeout_seconds * 1000)
                     wait_res = _kernel32.WaitForSingleObject(h_event, wait_ms)
                     if wait_res == _WAIT_OBJECT_0:
                         connected = True
                     elif wait_res == _WAIT_TIMEOUT:
                         _cancel_and_drain_overlapped(h_pipe, ov)
                         raise OperatorVerifierTimeoutError(
-                            f"La conexión del verificador hijo expiró tras {self._timeout_seconds}s"
+                            f"La conexión del verificador hijo expiró tras {self._connect_timeout_seconds}s"
                         )
                     else:
                         _cancel_and_drain_overlapped(h_pipe, ov)
@@ -1215,38 +1584,71 @@ class OperatorVerifierBridge:
                 raise OperatorVerifierBridgeError("No se pudo conectar con el verificador hijo")
 
             # 3. Autenticación rigurosa del Peer
-            client_pid = wintypes.ULONG(0)
-            if not _kernel32.GetNamedPipeClientProcessId(ctypes.c_void_p(h_pipe), ctypes.byref(client_pid)):
+            client_pid_dw = wintypes.ULONG(0)
+            if not _kernel32.GetNamedPipeClientProcessId(ctypes.c_void_p(h_pipe), ctypes.byref(client_pid_dw)):
                 err = ctypes.get_last_error()
                 raise PeerAuthenticationError(f"GetNamedPipeClientProcessId falló: código Win32 {err}")
 
-            if client_pid.value != child_evidence.pid:
+            peer_pid = int(client_pid_dw.value)
+            if peer_pid != child_evidence.pid:
                 raise PeerAuthenticationError(
-                    f"Peer PID mismatch: conectado PID={client_pid.value}, esperado PID={child_evidence.pid}"
+                    f"Peer PID mismatch: conectado PID={peer_pid}, esperado PID={child_evidence.pid}"
                 )
 
-            # Same-handle check sobre el proceso hijo abierto
-            obs_creation = _read_process_creation_time(child_evidence.process_handle)
-            if obs_creation is None or obs_creation != child_evidence.creation_time:
+            # Abrir handle FRESCO e independiente sobre el peer identificado por el pipe (peer_pid)
+            h_peer = _kernel32.OpenProcess(
+                _PROCESS_QUERY_LIMITED_INFORMATION | _SYNCHRONIZE,
+                False,
+                peer_pid,
+            )
+            if _is_invalid_handle(h_peer):
+                err = ctypes.get_last_error()
                 raise PeerAuthenticationError(
-                    f"ProcessCreationTime mismatch ({obs_creation} vs {child_evidence.creation_time}): "
-                    "posible reciclaje de PID (TOCTOU mitigado)"
+                    f"OpenProcess sobre el peer conectado (PID={peer_pid}) falló: código Win32 {err}"
                 )
 
-            obs_image = _read_process_image_path(child_evidence.process_handle)
-            if obs_image is None or _normalize_image_for_compare(obs_image) != _normalize_image_for_compare(
-                child_evidence.image_path
-            ):
-                raise PeerAuthenticationError(
-                    f"Process image mismatch: observado '{obs_image}', esperado '{child_evidence.image_path}'"
-                )
+            try:
+                # Comprobar que el proceso cliente sigue activo (STILL_ACTIVE)
+                exit_code = wintypes.DWORD(0)
+                if not _kernel32.GetExitCodeProcess(ctypes.c_void_p(h_peer), ctypes.byref(exit_code)):
+                    err = ctypes.get_last_error()
+                    raise PeerAuthenticationError(
+                        f"GetExitCodeProcess sobre el peer conectado (PID={peer_pid}) falló: código Win32 {err}"
+                    )
+                if exit_code.value != _STILL_ACTIVE:
+                    raise PeerAuthenticationError(
+                        f"El peer conectado (PID={peer_pid}) ya no está activo (código {exit_code.value}, esperado STILL_ACTIVE)"
+                    )
 
-            # 4. Enviar request enmarcado
+                obs_creation = _read_process_creation_time(int(h_peer))
+                if obs_creation is None or obs_creation != child_evidence.creation_time:
+                    raise PeerAuthenticationError(
+                        f"ProcessCreationTime mismatch en peer conectado ({obs_creation} vs {child_evidence.creation_time}): "
+                        "posible reciclaje de PID (TOCTOU mitigado)"
+                    )
+
+                obs_image = _read_process_image_path(int(h_peer))
+                if obs_image is None or _normalize_image_for_compare(obs_image) != _normalize_image_for_compare(
+                    child_evidence.image_path
+                ):
+                    raise PeerAuthenticationError(
+                        f"Process image mismatch en peer conectado: observado '{obs_image}', esperado '{child_evidence.image_path}'"
+                    )
+            finally:
+                _kernel32.CloseHandle(ctypes.c_void_p(h_peer))
+
+            # 4. Enviar request enmarcado (io_timeout_seconds)
             req_frame = encode_length_prefixed_frame(json.dumps(request_dict, ensure_ascii=False).encode("utf-8"))
-            _write_all_overlapped(int(h_pipe), req_frame, self._timeout_seconds)
+            _write_all_overlapped(int(h_pipe), req_frame, self._io_timeout_seconds)
 
-            # 5. Leer respuesta terminal con timeout acotado
-            resp_bytes = _read_frame_overlapped(h_pipe, MAX_RESPONSE_BYTES, self._timeout_seconds)
+            # 5. Leer respuesta terminal bajo el deadline de operación monotónico
+            operation_deadline = time.monotonic() + self._operation_timeout_seconds
+            resp_bytes = _read_frame_overlapped(
+                h_pipe,
+                MAX_RESPONSE_BYTES,
+                io_timeout_seconds=self._io_timeout_seconds,
+                operation_deadline=operation_deadline,
+            )
             if not resp_bytes:
                 raise ChildExitedPrematurelyError(
                     "El verificador hijo cerró el canal prematuramente sin enviar respuesta terminal"
@@ -1273,8 +1675,8 @@ class OperatorVerifierBridge:
                 if not extra_ok:
                     err = ctypes.get_last_error()
                     if err == _ERROR_IO_PENDING:
-                        # Si queda pendiente lectura de trailing bytes, esperamos brevemente 50ms
-                        wait_res = _kernel32.WaitForSingleObject(extra_event, 50)
+                        wait_ms = min(50, max(1, int(self._io_timeout_seconds * 1000)))
+                        wait_res = _kernel32.WaitForSingleObject(extra_event, wait_ms)
                         if wait_res == _WAIT_OBJECT_0:
                             _kernel32.GetOverlappedResult(
                                 ctypes.c_void_p(h_pipe),
@@ -1291,7 +1693,7 @@ class OperatorVerifierBridge:
             finally:
                 _kernel32.CloseHandle(ctypes.c_void_p(extra_event))
 
-            # 7. Parsear JSON cerrado
+            # 7. Parsear JSON cerrado y validar esquema normativo
             try:
                 raw_json = json.loads(resp_bytes.decode("utf-8"))
             except Exception as exc:
@@ -1301,8 +1703,43 @@ class OperatorVerifierBridge:
                 raise ProtocolAbuseError("Respuesta debe ser un objeto JSON")
 
             resp_data: dict[str, Any] = cast(dict[str, Any], raw_json)
+
+            resp_version = resp_data.get("version")
+            if resp_version != PROTOCOL_VERSION:
+                raise ProtocolAbuseError(
+                    f"Versión de respuesta no soportada: {resp_version} (requerida {PROTOCOL_VERSION})"
+                )
+
+            disposition = resp_data.get("disposition")
+            if disposition == VerifierDisposition.REJECTED.value:
+                _validate_closed_keys(resp_data, _RESPONSE_REJECTED_KEYS, "response REJECTED")
+            elif disposition == VerifierDisposition.OBSERVED.value:
+                _validate_closed_keys(resp_data, _RESPONSE_OBSERVED_KEYS, "response OBSERVED")
+                _validate_closed_keys(resp_data["observed_tree"], _TREE_DIGEST_KEYS, "observed_tree")
+                _validate_closed_keys(resp_data["observed_runtime"], _FRESH_RUNTIME_KEYS, "observed_runtime")
+                for i, c in enumerate(resp_data.get("critical_evidences", [])):
+                    _validate_closed_keys(c, _CRITICAL_EVIDENCE_KEYS, f"critical_evidences[{i}]")
+            elif disposition in (VerifierDisposition.VERIFIED.value, VerifierDisposition.FAILED.value):
+                _validate_closed_keys(resp_data, _RESPONSE_VERIFIED_KEYS, f"response {disposition}")
+                _validate_closed_keys(resp_data["observed_tree"], _TREE_DIGEST_KEYS, "observed_tree")
+                _validate_closed_keys(resp_data["observed_runtime"], _FRESH_RUNTIME_KEYS, "observed_runtime")
+                for i, c in enumerate(resp_data.get("critical_evidences", [])):
+                    _validate_closed_keys(c, _CRITICAL_EVIDENCE_KEYS, f"critical_evidences[{i}]")
+            else:
+                raise ProtocolAbuseError(f"disposition desconocida en respuesta: {disposition}")
+
+            # Salida normal: esperar a que el hijo concluya dentro de la gracia
+            _reap_child_process(child_evidence, normal_exit=True, grace_period_ms=self._grace_period_ms)
+
             return resp_data
+        except Exception:
+            if child_evidence is not None:
+                _reap_child_process(child_evidence, normal_exit=False)
+            raise
         finally:
+            reap_fn = getattr(self._launcher, "reap_proc", None)
+            if callable(reap_fn):
+                reap_fn()
             if child_evidence and child_evidence.process_handle:
                 _kernel32.CloseHandle(ctypes.c_void_p(child_evidence.process_handle))
             if h_event:
@@ -1325,7 +1762,7 @@ class OperatorVerifierBridge:
         lexical_root = os.path.abspath(os.fspath(root))
 
         request_payload = {
-            "version": 1,
+            "version": PROTOCOL_VERSION,
             "operation_id": operation_id,
             "mode": VerifierMode.OBSERVE,
             "nonce": nonce,
@@ -1350,7 +1787,12 @@ class OperatorVerifierBridge:
             raise ProtocolAbuseError(f"mode mismatch: esperado OBSERVE, recibido {resp.get('mode')}")
 
         disposition = resp.get("disposition")
-        if disposition != VerifierDisposition.OBSERVED:
+        if disposition == VerifierDisposition.REJECTED.value:
+            err_type = resp.get("error_type", "REJECTED")
+            msg = resp.get("message", "")
+            raise OperatorVerifierBridgeError(f"Operación OBSERVE rechazada [REJECTED] ({err_type}): {msg}")
+
+        if disposition != VerifierDisposition.OBSERVED.value:
             msg = resp.get("message", "")
             raise OperatorVerifierBridgeError(
                 f"Modo OBSERVE no produjo disposition OBSERVED (disposition='{disposition}', message='{msg}')"
@@ -1366,9 +1808,11 @@ class OperatorVerifierBridge:
             files=resp["observed_tree"]["files"],
             bytes=resp["observed_tree"]["bytes"],
         )
-        obs_runtime = RuntimeIdentity(
+        obs_runtime_dto = FreshRuntimeObservation(
             game_key=resp["observed_runtime"]["game_key"],
             game_version=resp["observed_runtime"]["game_version"],
+            observed_exe_path=resp["observed_runtime"]["observed_exe_path"],
+            observed_at_ns=resp["observed_runtime"]["observed_at_ns"],
         )
 
         crit_evs: list[CriticalFileEvidence] = []
@@ -1391,7 +1835,7 @@ class OperatorVerifierBridge:
             nonce=nonce,
             physical_root=phys_id,
             observed_tree=obs_tree,
-            observed_runtime=obs_runtime,
+            observed_runtime=obs_runtime_dto,
             critical_evidences=tuple(crit_evs),
             message=resp.get("message", ""),
         )
@@ -1404,16 +1848,21 @@ class OperatorVerifierBridge:
         *,
         expected_physical_root: PhysicalRootIdentity,
         expected_tree: TreeDigest,
-        expected_runtime: RuntimeIdentity,
+        expected_runtime: RuntimeIdentity | FreshRuntimeObservation,
         critical_expectations: Sequence[CriticalFileExpectation] = (),
         expected_game_key: str = "skyrimse",
     ) -> OperatorVerifierVerificationResult:
         """Ejecuta una re-verificación fresca en modo VERIFY."""
         nonce = self._generate_nonce()
         lexical_root = os.path.abspath(os.fspath(root))
+        target_expected_runtime = (
+            expected_runtime.runtime_identity
+            if isinstance(expected_runtime, FreshRuntimeObservation)
+            else expected_runtime
+        )
 
         request_payload = {
-            "version": 1,
+            "version": PROTOCOL_VERSION,
             "operation_id": operation_id,
             "mode": VerifierMode.VERIFY,
             "nonce": nonce,
@@ -1430,8 +1879,8 @@ class OperatorVerifierBridge:
                 "bytes": expected_tree.bytes,
             },
             "expected_runtime": {
-                "game_key": expected_runtime.game_key,
-                "game_version": expected_runtime.game_version,
+                "game_key": target_expected_runtime.game_key,
+                "game_version": target_expected_runtime.game_version,
             },
             "critical_expectations": [
                 {
@@ -1458,29 +1907,26 @@ class OperatorVerifierBridge:
         if resp.get("mode") != VerifierMode.VERIFY:
             raise ProtocolAbuseError(f"mode mismatch: esperado VERIFY, recibido {resp.get('mode')}")
 
-        disposition = VerifierDisposition(resp["disposition"])
-        if disposition == VerifierDisposition.REJECTED:
+        child_disposition = VerifierDisposition(resp["disposition"])
+        if child_disposition == VerifierDisposition.REJECTED:
             return OperatorVerifierVerificationResult(
-                disposition=disposition,
+                disposition=child_disposition,
                 operation_id=operation_id,
                 nonce=nonce,
-                physical_root=PhysicalRootIdentity(
-                    canonical_root=resp.get("canonical_root", lexical_root),
-                    volume_serial_number=0,
-                    root_file_id=0,
-                ),
+                physical_root=None,
                 tree_result=TreeVerificationResult(
                     state=VerificationState.FAILED,
                     expected=expected_tree,
-                    message=resp.get("message", ""),
+                    message=f"{resp.get('error_type', 'Error')}: {resp.get('message', '')}",
                 ),
                 runtime_result=RuntimeVerificationResult(
                     state=VerificationState.FAILED,
-                    expected=expected_runtime,
-                    message=resp.get("message", ""),
+                    expected=target_expected_runtime,
+                    message=f"{resp.get('error_type', 'Error')}: {resp.get('message', '')}",
                 ),
+                observed_runtime=None,
                 critical_evidences=(),
-                message=resp.get("message", ""),
+                message=f"{resp.get('error_type', 'Error')}: {resp.get('message', '')}",
             )
 
         phys_id = PhysicalRootIdentity(
@@ -1494,10 +1940,13 @@ class OperatorVerifierBridge:
             files=resp["observed_tree"]["files"],
             bytes=resp["observed_tree"]["bytes"],
         )
-        obs_runtime = RuntimeIdentity(
+        obs_runtime_dto = FreshRuntimeObservation(
             game_key=resp["observed_runtime"]["game_key"],
             game_version=resp["observed_runtime"]["game_version"],
+            observed_exe_path=resp["observed_runtime"]["observed_exe_path"],
+            observed_at_ns=resp["observed_runtime"]["observed_at_ns"],
         )
+        obs_runtime = obs_runtime_dto.runtime_identity
 
         tree_ver_state = VerificationState.VERIFIED if obs_tree == expected_tree else VerificationState.FAILED
         tree_res = TreeVerificationResult(
@@ -1506,10 +1955,12 @@ class OperatorVerifierBridge:
             observed=obs_tree,
         )
 
-        runtime_ver_state = VerificationState.VERIFIED if obs_runtime == expected_runtime else VerificationState.FAILED
+        runtime_ver_state = (
+            VerificationState.VERIFIED if obs_runtime == target_expected_runtime else VerificationState.FAILED
+        )
         runtime_res = RuntimeVerificationResult(
             state=runtime_ver_state,
-            expected=expected_runtime,
+            expected=target_expected_runtime,
             observed=obs_runtime,
         )
 
@@ -1527,13 +1978,41 @@ class OperatorVerifierBridge:
                 )
             )
 
+        # El elevated helper deriva independientemente el veredicto VERIFIED final
+        physical_match = (
+            phys_id.canonical_root.lower() == expected_physical_root.canonical_root.lower()
+            and phys_id.volume_serial_number == expected_physical_root.volume_serial_number
+            and phys_id.root_file_id == expected_physical_root.root_file_id
+        )
+        tree_match = obs_tree == expected_tree
+        runtime_match = obs_runtime == target_expected_runtime
+        crit_by_path = {ev.rel_path.lower(): ev for ev in crit_evs}
+        critical_match = len(critical_expectations) == len(crit_evs) and all(
+            exp.rel_path.lower() in crit_by_path
+            and crit_by_path[exp.rel_path.lower()].state == VerificationState.VERIFIED
+            for exp in critical_expectations
+        )
+
+        helper_verified = physical_match and tree_match and runtime_match and critical_match
+
+        # Invariante: si el child reportó VERIFIED pero el helper determinó que no cumple, fail-closed
+        if child_disposition == VerifierDisposition.VERIFIED and not helper_verified:
+            raise ProtocolAbuseError(
+                f"Inconsistencia en verificador hijo: child reportó VERIFIED pero la verificación "
+                f"independiente del helper falló (physical={physical_match}, tree={tree_match}, "
+                f"runtime={runtime_match}, critical={critical_match})"
+            )
+
+        final_disposition = VerifierDisposition.VERIFIED if helper_verified else VerifierDisposition.FAILED
+
         return OperatorVerifierVerificationResult(
-            disposition=disposition,
+            disposition=final_disposition,
             operation_id=operation_id,
             nonce=nonce,
             physical_root=phys_id,
             tree_result=tree_res,
             runtime_result=runtime_res,
+            observed_runtime=obs_runtime_dto,
             critical_evidences=tuple(crit_evs),
             message=resp.get("message", ""),
         )
