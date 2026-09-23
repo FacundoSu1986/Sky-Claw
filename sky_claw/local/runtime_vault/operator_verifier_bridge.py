@@ -563,11 +563,15 @@ def _ensure_windows() -> None:
 # ============================================================================
 
 
-def _validate_closed_keys(data: dict[str, Any], allowed_keys: frozenset[str], context: str) -> None:
-    """Valida que un diccionario cumpla estrictamente con un esquema cerrado.
+def _validate_closed_keys(data: Any, allowed_keys: frozenset[str], context: str) -> None:
+    """Valida que un objeto sea un dict y cumpla estrictamente con un esquema cerrado.
 
-    Rechaza tanto claves faltantes como claves desconocidas adicionales (fail-closed).
+    Rechaza tipos no-dict, claves faltantes y claves desconocidas adicionales (fail-closed).
     """
+    if not isinstance(data, dict):
+        raise ProtocolAbuseError(
+            f"Violación de esquema cerrado en {context}: se esperaba un objeto dict, obtenido {type(data).__name__}"
+        )
     actual = set(data.keys())
     if actual != allowed_keys:
         missing = allowed_keys - actual
@@ -578,6 +582,56 @@ def _validate_closed_keys(data: dict[str, Any], allowed_keys: frozenset[str], co
         if unknown:
             details.append(f"claves desconocidas: {sorted(unknown)}")
         raise ProtocolAbuseError(f"Violación de esquema cerrado en {context}: {', '.join(details)}")
+
+
+def _validate_str_non_empty(val: Any, name: str, context: str) -> None:
+    if not isinstance(val, str) or not val.strip():
+        raise ProtocolAbuseError(f"Violación de tipo escalar en {context}: '{name}' debe ser un str no vacío")
+
+
+def _validate_int_positive(val: Any, name: str, context: str) -> None:
+    if not isinstance(val, int) or isinstance(val, bool) or val <= 0:
+        raise ProtocolAbuseError(f"Violación de tipo escalar en {context}: '{name}' debe ser un int positivo (> 0)")
+
+
+def _validate_int_non_negative(val: Any, name: str, context: str) -> None:
+    if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+        raise ProtocolAbuseError(f"Violación de tipo escalar en {context}: '{name}' debe ser un int no negativo (>= 0)")
+
+
+def _validate_sha256_hex(val: Any, name: str, context: str) -> None:
+    if not isinstance(val, str) or len(val) != 64 or not all(c in "0123456789abcdefABCDEF" for c in val):
+        raise ProtocolAbuseError(
+            f"Violación de tipo escalar en {context}: '{name}' debe ser un digest SHA-256 de 64 hex"
+        )
+
+
+def _validate_tree_digest_dict(d: Any, context: str) -> None:
+    _validate_closed_keys(d, _TREE_DIGEST_KEYS, context)
+    _validate_sha256_hex(d["digest"], "digest", context)
+    _validate_int_non_negative(d["files"], "files", context)
+    _validate_int_non_negative(d["bytes"], "bytes", context)
+
+
+def _validate_physical_root_dict(d: Any, context: str) -> None:
+    _validate_closed_keys(d, _PHYSICAL_ROOT_KEYS, context)
+    _validate_str_non_empty(d["canonical_root"], "canonical_root", context)
+    _validate_int_positive(d["volume_serial_number"], "volume_serial_number", context)
+    _validate_int_positive(d["root_file_id"], "root_file_id", context)
+
+
+def _validate_runtime_identity_dict(d: Any, context: str) -> None:
+    _validate_closed_keys(d, _RUNTIME_IDENTITY_KEYS, context)
+    _validate_str_non_empty(d["game_key"], "game_key", context)
+    _validate_str_non_empty(d["game_version"], "game_version", context)
+
+
+def _validate_fresh_runtime_dict(d: Any, context: str) -> None:
+    _validate_closed_keys(d, _FRESH_RUNTIME_KEYS, context)
+    _validate_str_non_empty(d["game_key"], "game_key", context)
+    _validate_str_non_empty(d["game_version"], "game_version", context)
+    _validate_str_non_empty(d["observed_exe_path"], "observed_exe_path", context)
+    _validate_int_positive(d["observed_at_ns"], "observed_at_ns", context)
 
 
 def encode_length_prefixed_frame(payload: bytes) -> bytes:
@@ -1272,13 +1326,27 @@ def run_verifier_child_worker(
 
             if mode == VerifierMode.OBSERVE:
                 _validate_closed_keys(req_data, _REQUEST_OBSERVE_KEYS, "request OBSERVE")
+                _validate_str_non_empty(req_data.get("canonical_root"), "canonical_root", "request OBSERVE")
+                _validate_str_non_empty(req_data.get("expected_game_key"), "expected_game_key", "request OBSERVE")
             elif mode == VerifierMode.VERIFY:
                 _validate_closed_keys(req_data, _REQUEST_VERIFY_KEYS, "request VERIFY")
-                _validate_closed_keys(req_data["expected_physical_root"], _PHYSICAL_ROOT_KEYS, "expected_physical_root")
-                _validate_closed_keys(req_data["expected_tree"], _TREE_DIGEST_KEYS, "expected_tree")
-                _validate_closed_keys(req_data["expected_runtime"], _RUNTIME_IDENTITY_KEYS, "expected_runtime")
-                for i, ce in enumerate(req_data.get("critical_expectations", [])):
-                    _validate_closed_keys(ce, _CRITICAL_EXPECTATION_KEYS, f"critical_expectations[{i}]")
+                _validate_str_non_empty(req_data.get("canonical_root"), "canonical_root", "request VERIFY")
+                _validate_str_non_empty(req_data.get("expected_game_key"), "expected_game_key", "request VERIFY")
+                _validate_physical_root_dict(req_data.get("expected_physical_root"), "expected_physical_root")
+                _validate_tree_digest_dict(req_data.get("expected_tree"), "expected_tree")
+                _validate_runtime_identity_dict(req_data.get("expected_runtime"), "expected_runtime")
+                crit_list = req_data.get("critical_expectations")
+                if not isinstance(crit_list, list):
+                    raise ProtocolAbuseError(
+                        "Violación de esquema cerrado en request VERIFY: critical_expectations debe ser una lista"
+                    )
+                for i, ce in enumerate(crit_list):
+                    ctx = f"critical_expectations[{i}]"
+                    _validate_closed_keys(ce, _CRITICAL_EXPECTATION_KEYS, ctx)
+                    _validate_str_non_empty(ce.get("rel_path"), "rel_path", ctx)
+                    _validate_sha256_hex(ce.get("expected_digest"), "expected_digest", ctx)
+                    if ce.get("expected_size") is not None:
+                        _validate_int_non_negative(ce.get("expected_size"), "expected_size", ctx)
             else:
                 raise ProtocolAbuseError(f"Modo '{mode}' no reconocido")
 
@@ -1705,26 +1773,66 @@ class OperatorVerifierBridge:
             resp_data: dict[str, Any] = cast(dict[str, Any], raw_json)
 
             resp_version = resp_data.get("version")
-            if resp_version != PROTOCOL_VERSION:
+            if not isinstance(resp_version, int) or isinstance(resp_version, bool) or resp_version != PROTOCOL_VERSION:
                 raise ProtocolAbuseError(
                     f"Versión de respuesta no soportada: {resp_version} (requerida {PROTOCOL_VERSION})"
                 )
 
             disposition = resp_data.get("disposition")
+            _validate_str_non_empty(resp_data.get("operation_id"), "operation_id", "response")
+            _validate_str_non_empty(resp_data.get("mode"), "mode", "response")
+            _validate_str_non_empty(resp_data.get("nonce"), "nonce", "response")
+
             if disposition == VerifierDisposition.REJECTED.value:
                 _validate_closed_keys(resp_data, _RESPONSE_REJECTED_KEYS, "response REJECTED")
-            elif disposition == VerifierDisposition.OBSERVED.value:
-                _validate_closed_keys(resp_data, _RESPONSE_OBSERVED_KEYS, "response OBSERVED")
-                _validate_closed_keys(resp_data["observed_tree"], _TREE_DIGEST_KEYS, "observed_tree")
-                _validate_closed_keys(resp_data["observed_runtime"], _FRESH_RUNTIME_KEYS, "observed_runtime")
-                for i, c in enumerate(resp_data.get("critical_evidences", [])):
-                    _validate_closed_keys(c, _CRITICAL_EVIDENCE_KEYS, f"critical_evidences[{i}]")
-            elif disposition in (VerifierDisposition.VERIFIED.value, VerifierDisposition.FAILED.value):
-                _validate_closed_keys(resp_data, _RESPONSE_VERIFIED_KEYS, f"response {disposition}")
-                _validate_closed_keys(resp_data["observed_tree"], _TREE_DIGEST_KEYS, "observed_tree")
-                _validate_closed_keys(resp_data["observed_runtime"], _FRESH_RUNTIME_KEYS, "observed_runtime")
-                for i, c in enumerate(resp_data.get("critical_evidences", [])):
-                    _validate_closed_keys(c, _CRITICAL_EVIDENCE_KEYS, f"critical_evidences[{i}]")
+                if not isinstance(resp_data.get("error_type"), str):
+                    raise ProtocolAbuseError("error_type debe ser str en response REJECTED")
+                if not isinstance(resp_data.get("message"), str):
+                    raise ProtocolAbuseError("message debe ser str en response REJECTED")
+            elif disposition in (
+                VerifierDisposition.OBSERVED.value,
+                VerifierDisposition.VERIFIED.value,
+                VerifierDisposition.FAILED.value,
+            ):
+                expected_keys = (
+                    _RESPONSE_OBSERVED_KEYS
+                    if disposition == VerifierDisposition.OBSERVED.value
+                    else _RESPONSE_VERIFIED_KEYS
+                )
+                _validate_closed_keys(resp_data, expected_keys, f"response {disposition}")
+                _validate_str_non_empty(resp_data.get("canonical_root"), "canonical_root", f"response {disposition}")
+                _validate_int_positive(
+                    resp_data.get("volume_serial_number"), "volume_serial_number", f"response {disposition}"
+                )
+                _validate_int_positive(resp_data.get("root_file_id"), "root_file_id", f"response {disposition}")
+                _validate_tree_digest_dict(resp_data.get("observed_tree"), f"response {disposition}.observed_tree")
+                _validate_fresh_runtime_dict(
+                    resp_data.get("observed_runtime"), f"response {disposition}.observed_runtime"
+                )
+                crit_evs_raw = resp_data.get("critical_evidences")
+                if not isinstance(crit_evs_raw, list):
+                    raise ProtocolAbuseError(
+                        f"Violación de esquema cerrado en response {disposition}: critical_evidences debe ser una lista"
+                    )
+                for i, c in enumerate(crit_evs_raw):
+                    ctx = f"response {disposition}.critical_evidences[{i}]"
+                    _validate_closed_keys(c, _CRITICAL_EVIDENCE_KEYS, ctx)
+                    _validate_str_non_empty(c.get("rel_path"), "rel_path", ctx)
+                    st_str = c.get("state")
+                    if not isinstance(st_str, str) or st_str not in {s.value for s in VerificationState}:
+                        raise ProtocolAbuseError(f"state inválido '{st_str}' en {ctx}")
+                    if c.get("observed_digest") is not None:
+                        _validate_sha256_hex(c["observed_digest"], "observed_digest", ctx)
+                    if c.get("expected_digest") is not None:
+                        _validate_sha256_hex(c["expected_digest"], "expected_digest", ctx)
+                    if c.get("observed_size") is not None:
+                        _validate_int_non_negative(c["observed_size"], "observed_size", ctx)
+                    if c.get("expected_size") is not None:
+                        _validate_int_non_negative(c["expected_size"], "expected_size", ctx)
+                    if not isinstance(c.get("message"), str):
+                        raise ProtocolAbuseError(f"message debe ser str en {ctx}")
+                if not isinstance(resp_data.get("message"), str):
+                    raise ProtocolAbuseError(f"message debe ser str en response {disposition}")
             else:
                 raise ProtocolAbuseError(f"disposition desconocida en respuesta: {disposition}")
 
@@ -1986,16 +2094,40 @@ class OperatorVerifierBridge:
         )
         tree_match = obs_tree == expected_tree
         runtime_match = obs_runtime == target_expected_runtime
-        crit_by_path = {ev.rel_path.lower(): ev for ev in crit_evs}
-        critical_match = len(critical_expectations) == len(crit_evs) and all(
-            exp.rel_path.lower() in crit_by_path
-            and crit_by_path[exp.rel_path.lower()].state == VerificationState.VERIFIED
-            for exp in critical_expectations
-        )
+
+        crit_by_path: dict[str, CriticalFileEvidence] = {}
+        crit_seen_paths: set[str] = set()
+        has_duplicates = False
+        for ev in crit_evs:
+            low_p = ev.rel_path.lower()
+            if low_p in crit_seen_paths:
+                has_duplicates = True
+            crit_seen_paths.add(low_p)
+            crit_by_path[low_p] = ev
+
+        auth_seen_paths = {exp.rel_path.lower() for exp in critical_expectations}
+        no_extras = crit_seen_paths == auth_seen_paths
+        no_duplicates = not has_duplicates and len(crit_evs) == len(critical_expectations)
+
+        def _is_crit_match(exp: CriticalFileExpectation) -> bool:
+            ev = crit_by_path.get(exp.rel_path.lower())
+            if ev is None:
+                return False
+            if ev.state is not VerificationState.VERIFIED:
+                return False
+            if ev.expected_digest is None or ev.expected_digest.lower() != exp.expected_digest.lower():
+                return False
+            if ev.observed_digest is None or ev.observed_digest.lower() != exp.expected_digest.lower():
+                return False
+            if exp.expected_size is not None:
+                return ev.expected_size == exp.expected_size and ev.observed_size == exp.expected_size
+            return True
+
+        critical_match = no_extras and no_duplicates and all(_is_crit_match(exp) for exp in critical_expectations)
 
         helper_verified = physical_match and tree_match and runtime_match and critical_match
 
-        # Invariante: si el child reportó VERIFIED pero el helper determinó que no cumple, fail-closed
+        # Invariante: discrepancia entre veredicto reportado por el child y verificación independiente del helper
         if child_disposition == VerifierDisposition.VERIFIED and not helper_verified:
             raise ProtocolAbuseError(
                 f"Inconsistencia en verificador hijo: child reportó VERIFIED pero la verificación "
@@ -2003,7 +2135,16 @@ class OperatorVerifierBridge:
                 f"runtime={runtime_match}, critical={critical_match})"
             )
 
-        final_disposition = VerifierDisposition.VERIFIED if helper_verified else VerifierDisposition.FAILED
+        if child_disposition == VerifierDisposition.FAILED and helper_verified:
+            raise ProtocolAbuseError(
+                "Inconsistencia en verificador hijo: child reportó FAILED pero la verificación "
+                "independiente del helper determinó cumplimiento completo (fail-closed, no promover FAILED a VERIFIED)"
+            )
+
+        if child_disposition == VerifierDisposition.VERIFIED and helper_verified:
+            final_disposition = VerifierDisposition.VERIFIED
+        else:
+            final_disposition = VerifierDisposition.FAILED
 
         return OperatorVerifierVerificationResult(
             disposition=final_disposition,

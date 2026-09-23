@@ -311,9 +311,18 @@ def _open_physical_root(root: pathlib.Path | str) -> tuple[int, str]:
 def _open_bound_physical_root(root: pathlib.Path | str) -> tuple[int, str]:
     """Abre de forma segura el directorio raíz SIN conceder FILE_SHARE_DELETE y validando ancestros.
 
-    Al omitir FILE_SHARE_DELETE y solicitar FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
-    el kernel Win32 prohíbe incondicionalmente cualquier intento concurrente de renombrar
-    o eliminar el directorio raíz durante la medición (anti-TOCTOU, error Win32 32 ERROR_SHARING_VIOLATION).
+    RUNTIME VAULT REQUIRES CANONICAL DOS ROOT PATH:
+    Los alias no canónicos (p. ej. nombres cortos 8.3) o rutas con redirección/symlinks
+    fallan cerrado por diseño (fail-closed).
+
+    Secuencia de enlace e inspección atómica Win32:
+    1. Pre-open ancestor check: valida que ningún ancestro sea reparse point / junction.
+    2. Open bound root: CreateFileW con FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
+       omitiendo FILE_SHARE_DELETE (inhibe renombre/borrado concurrente en el SO con ERROR_SHARING_VIOLATION).
+    3. Post-open ancestor check: re-valida ancestros tras abrir el handle para cerrar ventanas TOCTOU.
+    4. Handle final path: consulta GetFinalPathNameByHandleW directamente desde el kernel.
+    5. Lexical/final path binding: verifica que la ruta resuelta por el handle coincida
+       exactamente con la ruta léxica solicitada normalizada.
     """
     _ensure_windows()
     lexical_path = os.path.abspath(os.fspath(root))
@@ -334,6 +343,39 @@ def _open_bound_physical_root(root: pathlib.Path | str) -> tuple[int, str]:
             f"CreateFileW(OPEN_BOUND_ROOT) falló en '{lexical_path}': código Win32 {err} "
             "(directorio inexistente o sin permisos de listado/atributos)"
         )
+
+    try:
+        # 3. Post-open ancestor check
+        _validate_no_ancestor_reparse(lexical_path)
+
+        # 4. Handle final path
+        capacity = 32768
+        buf = ctypes.create_unicode_buffer(capacity)
+        chars = _kernel32.GetFinalPathNameByHandleW(
+            ctypes.c_void_p(handle),
+            buf,
+            capacity,
+            _VOLUME_NAME_DOS | _FILE_NAME_NORMALIZED,
+        )
+        if chars == 0 or chars >= capacity:
+            err = ctypes.get_last_error()
+            raise PhysicalRootError(f"GetFinalPathNameByHandleW falló en '{lexical_path}': código Win32 {err}")
+
+        canonical_from_handle = _normalize_dos_prefix(str(buf.value))
+
+        # 5. Lexical/final path binding
+        norm_requested = os.path.normcase(os.path.normpath(lexical_path)).rstrip("\\/")
+        norm_canonical = os.path.normcase(os.path.normpath(canonical_from_handle)).rstrip("\\/")
+        if norm_canonical != norm_requested:
+            raise PhysicalRootMismatchError(
+                f"Ruta canónica del handle ('{canonical_from_handle}') no coincide con la ruta léxica solicitada ('{lexical_path}'): "
+                "RUNTIME VAULT REQUIRES CANONICAL DOS ROOT PATH. Los alias no canónicos (p. ej. nombres 8.3) o "
+                "redirecciones TOCTOU quedan prohibidos (fail-closed)"
+            )
+    except Exception:
+        _kernel32.CloseHandle(ctypes.c_void_p(handle))
+        raise
+
     return int(handle), lexical_path
 
 
