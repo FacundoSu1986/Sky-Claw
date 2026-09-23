@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -243,8 +244,13 @@ def spearman_ci(x: list[float], y: list[float], *, n_boot: int = 1000, seed: int
 
 
 def auc(scores: list[float], labels: list[bool]) -> float:
-    pos = [s for s, lb in zip(scores, labels, strict=False) if lb]
-    neg = [s for s, lb in zip(scores, labels, strict=False) if not lb]
+    """F4: scores y labels son pares por contrato — un mismatch es un bug del caller,
+    no un AUC parcial silencioso. (Nota: zip NO es strict por defecto en 3.11 —
+    verificado; el strict aquí es decisión contractual, no del runtime.)"""
+    if len(scores) != len(labels):
+        raise ValueError(f"auc: scores/labels desalineados ({len(scores)} vs {len(labels)})")
+    pos = [s for s, lb in zip(scores, labels, strict=True) if lb]
+    neg = [s for s, lb in zip(scores, labels, strict=True) if not lb]
     if not pos or not neg:
         return float("nan")
     wins = sum((1 if p > n else 0.5 if p == n else 0) for p in pos for n in neg)
@@ -484,10 +490,14 @@ def trust_gate_passes(summary: dict[str, Any]) -> bool:
         return False
     if cal.get("n", 0) < rules["trust_min_n_per_split"] or held.get("n", 0) < rules["trust_min_n_per_split"]:
         return False
-    rho = float(held.get("spearman", float("nan")))
+    rho = float(held["spearman"])  # F5: claves contractuales — faltar es un bug, no un "no"
     if not np.isfinite(rho) or abs(rho) < rules["trust_min_abs_spearman_heldout"]:
         return False
-    if not (held.get("ci_low", 0.0) > 0.0 or held.get("ci_high", 0.0) < 0.0):
+    ci_low = float(held["ci_low"])
+    ci_high = float(held["ci_high"])
+    if not (np.isfinite(ci_low) and np.isfinite(ci_high)):
+        raise ValueError("trust_gate_passes: ci_low/ci_high NaN en held-out (bootstrap vacío)")
+    if not (ci_low > 0.0 or ci_high < 0.0):
         return False
     auc_value = float(held.get("auc_catastrophic", float("nan")))
     if not np.isfinite(auc_value) or auc_value < rules["trust_min_auc_catastrophic_heldout"]:
@@ -575,6 +585,24 @@ def evaluate_cohort_b(cohort: list[dict[str, Any]]) -> dict[str, Any]:
     return {"rows": rows, "features": feats_by_asset}
 
 
+def _json_safe(obj: Any) -> Any:
+    """Convierte recursivamente float no finitos a None.
+
+    Histórico de revisión: NaN/Inf en resultados (p.ej. auc_catastrophic en
+    subconjuntos sin clase positiva, o family_rho_range de una familia con
+    spearman constante) producía JSON inválido según RFC 8259. El
+    sanitizado vive en el límite de serialización: los dicts internos
+    conservan floats (proxy_selection filtra con np.isfinite).
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 def proxy_analysis(rows: list[dict[str, Any]], feats: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
     """§30/§29: Spearman+bootstrapCI vs rmse, AUC vs catastrófico, consistencia familiar."""
     from sky_claw.local.native_parallax.research.run_exp_m2 import spearman
@@ -599,7 +627,11 @@ def proxy_analysis(rows: list[dict[str, Any]], feats: dict[str, dict[str, float]
                 "proxy": name,
                 **ci,
                 "auc_catastrophic": auc(xs, cats) if any(cats) and not all(cats) else float("nan"),
-                "family_rho_range": [min(fam_rhos), max(fam_rhos)] if fam_rhos else None,
+                "family_rho_range": (
+                    [min(f for f in fam_rhos if np.isfinite(f)), max(f for f in fam_rhos if np.isfinite(f))]
+                    if any(np.isfinite(f) for f in fam_rhos)
+                    else None
+                ),
                 "n_families_tested": len(fam_rhos),
             }
         )
@@ -749,7 +781,7 @@ def main() -> None:
             band_test_independent_sigma(mid["rows"], ev_features(mid), s) for s in INDEPENDENT_SIGMA_CANDIDATES
         ]
         results["bands_independent_sigma"] = sigma_tests
-    (args.out / "exp_m3_results.json").write_text(json.dumps(results, indent=1))
+    (args.out / "exp_m3_results.json").write_text(json.dumps(_json_safe(results), indent=1, allow_nan=False))
     print(f"\nresultados -> {args.out / 'exp_m3_results.json'}")
 
 

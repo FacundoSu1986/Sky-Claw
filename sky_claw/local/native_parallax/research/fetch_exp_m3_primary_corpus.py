@@ -39,6 +39,8 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 
 from PIL import Image
 
@@ -125,6 +127,10 @@ REQUIRED_ENTRY_FIELDS = (
 )
 
 
+class CorpusAcquisitionError(RuntimeError):
+    """F2 — fallo de red/HTTP en adquisición: contexto preservado, sin URLs firmadas."""
+
+
 class CorpusValidationError(RuntimeError):
     """Asset inválido para Cohort A (provenance/par/hash/split) — §14/§27."""
 
@@ -145,11 +151,22 @@ def md5_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def host_of(url: str) -> str:
+    """F2: hostname sin query/path para mensajes de error sin credenciales."""
+    return urlsplit(url).netloc
+
+
 def _http_get(url: str, *, timeout: int = 120) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        payload: bytes = resp.read()
-        return payload
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload: bytes = resp.read()
+            return payload
+    except HTTPError as exc:
+        # F2: el status HTTP se preserva; la URL puede contener query firmada → no se loguea.
+        raise CorpusAcquisitionError(f"HTTP {exc.code} en descarga de {host_of(url)}") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise CorpusAcquisitionError(f"red falló ({type(exc).__name__}) en {host_of(url)}") from exc
 
 
 def _http_download(url: str, dest: Path, *, expected_size: int | None = None) -> None:
@@ -157,12 +174,19 @@ def _http_download(url: str, dest: Path, *, expected_size: int | None = None) ->
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=600) as resp, tmp.open("wb") as fh:
-        while True:
-            chunk = resp.read(1 << 20)
-            if not chunk:
-                break
-            fh.write(chunk)
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp, tmp.open("wb") as fh:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                fh.write(chunk)
+    except HTTPError as exc:
+        tmp.unlink(missing_ok=True)  # F2: .part nunca queda huérfano; dest previo intacto
+        raise CorpusAcquisitionError(f"HTTP {exc.code} descargando {dest.name}") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        tmp.unlink(missing_ok=True)
+        raise CorpusAcquisitionError(f"red falló ({type(exc).__name__}) descargando {dest.name}") from exc
     size = tmp.stat().st_size
     if expected_size is not None and size != expected_size:
         tmp.unlink(missing_ok=True)
@@ -400,8 +424,13 @@ def validate_entry(entry: dict[str, Any]) -> None:
     # utilizable, decidido ANTES de ver cualquier reconstrucción).
     if entry["normal_resolution"][0] != entry["normal_resolution"][1]:
         raise CorpusValidationError(f"{entry['asset_id']}: textura no cuadrada {entry['normal_resolution']}")
-    if entry["normal_convention"] not in ("OPENGL", "DIRECTX", "UNKNOWN"):
-        raise CorpusValidationError(f"{entry['asset_id']}: normal_convention inválida")
+    # F3: Cohort A exige convención DECLARADA (§19). UNKNOWN queda para metadata
+    # histórica (corpus M2), jamás entrada ejecutable; el límite más temprano es aquí.
+    if entry["normal_convention"] not in ("OPENGL", "DIRECTX"):
+        raise CorpusValidationError(
+            f"{entry['asset_id']}: normal_convention {entry['normal_convention']!r} — "
+            "Cohort A requiere OPENGL o DIRECTX declaradas"
+        )
 
 
 def verify_local_files(entry: dict[str, Any]) -> None:

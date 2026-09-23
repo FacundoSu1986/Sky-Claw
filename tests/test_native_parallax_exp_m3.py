@@ -5,7 +5,9 @@ y Cohorte A (spec desde manifest + decisión). Sin red ni corpus."""
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -17,8 +19,10 @@ from sky_claw.local.native_parallax.research.run_exp_m3 import (
     INDEPENDENT_SIGMA_CANDIDATES,
     NZ_FAMILY_PREFIXES,
     ORACLE_FILTER_DEGREES,
+    TRUST_PROXY_NAMES,
     VALID_PROVENANCE,
     DataInsufficientError,
+    _json_safe,
     auc,
     check_cohort_a_sufficient,
     cohort_b_features,
@@ -27,6 +31,7 @@ from sky_claw.local.native_parallax.research.run_exp_m3 import (
     load_cohort_a,
     material_features,
     material_spec_from_entry,
+    proxy_analysis,
     rates_sweep,
     spearman_ci,
     trust_gate_passes,
@@ -435,3 +440,104 @@ def test_cohort_b_features_delegates_to_shared_implementation() -> None:
     )
     mat = AuthoredMaterial(spec=spec, tested_convention="OPENGL", normal=normal, height=height)
     assert cohort_b_features({"material": mat}) == material_features(mat)
+
+
+# ---------------------------------------------------------------- F4: zip/length contract
+
+
+def test_f4_auc_mismatch_es_error_contractual() -> None:
+    with pytest.raises(ValueError, match="desalineados"):
+        auc([0.1, 0.2, 0.3], [True, False])  # 3 vs 2: bug del caller, no AUC parcial
+
+
+def test_f4_zip_no_es_strict_por_defecto_en_runtime() -> None:
+    # la afirmación factual del reviewer es FALSA en CPython 3.11; el strict que
+    # adoptamos es decisión contractual nuestra, no del runtime
+    assert list(zip([1, 2, 3], [1, 2])) == [(1, 1), (2, 2)]  # noqa: B905 — demostración del default
+
+
+# ---------------------------------------------------------------- F5: CIs contractuales
+
+
+def _gate_summary() -> dict[str, Any]:
+    return {
+        "selected_proxy": "nz_p01",
+        "calibration": {"n": 15, "proxy": "nz_p01", "spearman": 0.6, "orientation": -1.0},
+        "heldout_trust": {
+            "spearman": 0.7,
+            "ci_low": 0.3,
+            "ci_high": 0.9,
+            "n": 16.0,
+            "auc_catastrophic": 0.9,
+            "n_catastrophic": 4,
+        },
+        "heldout_family_directions": {
+            "a": {"n": 3, "spearman": 0.6},
+            "b": {"n": 3, "spearman": 0.7},
+        },
+        "heldout_rates": [{"auto_safe_coverage": 0.5, "catastrophic_false_safe_rate": 0.0}],
+    }
+
+
+def test_f5_missing_ci_low_falla_rapido() -> None:
+    s = _gate_summary()
+    del s["heldout_trust"]["ci_low"]
+    with pytest.raises(KeyError):
+        trust_gate_passes(s)
+
+
+def test_f5_missing_ci_high_falla_rapido() -> None:
+    s = _gate_summary()
+    del s["heldout_trust"]["ci_high"]
+    with pytest.raises(KeyError):
+        trust_gate_passes(s)
+
+
+def test_f5_nan_ci_falla_rapido() -> None:
+    s = _gate_summary()
+    s["heldout_trust"]["ci_low"] = float("nan")
+    with pytest.raises(ValueError, match="NaN"):
+        trust_gate_passes(s)
+
+
+def test_f5_intervalo_con_cero_no_pasa_el_gate() -> None:
+    s = _gate_summary()
+    s["heldout_trust"]["ci_low"] = -0.1  # cruza cero: sin evidencia de dirección
+    s["heldout_trust"]["ci_high"] = 0.9
+    assert trust_gate_passes(s) is False
+
+
+def test_f5_intervalo_estrictamente_positivo_puede_pasar() -> None:
+    assert trust_gate_passes(_gate_summary()) is True
+
+
+def test_f5_intervalo_estrictamente_negativo_puede_pasar() -> None:
+    s = _gate_summary()
+    s["heldout_trust"].update({"spearman": -0.7, "ci_low": -0.9, "ci_high": -0.3})
+    s["calibration"]["orientation"] = 1.0
+    s["heldout_family_directions"] = {
+        "a": {"n": 3, "spearman": 0.6},
+        "b": {"n": 3, "spearman": 0.7},
+    }  # direcciones de familia reportadas ya orientadas al riesgo
+    assert trust_gate_passes(s) is True
+
+
+# ---------------------------------------------------------------- §7 histórico: JSON sin NaN
+
+
+def test_historico_family_rho_range_sin_nan() -> None:
+    # familia con rmse constante → spearman NaN; el rango reportado no puede ser NaN
+    rows = [{"asset": f"c{i}", "family": "const", "aligned_rmse": 0.5, "catastrophic": False} for i in range(4)] + [
+        {"asset": f"v{i}", "family": "var", "aligned_rmse": 0.1 * i, "catastrophic": False} for i in range(4)
+    ]
+    feats = {r["asset"]: {name: float(i) for name in TRUST_PROXY_NAMES} for i, r in enumerate(rows)}
+    out = proxy_analysis(rows, feats)
+    for p in out:
+        rng = p["family_rho_range"]
+        assert rng is None or all(math.isfinite(v) for v in rng)
+    # Histórico: el sanitizado vive en el límite JSON (_json_safe), no en los
+    # dicts internos (proxy_selection filtra con np.isfinite sobre floats).
+    safe = _json_safe({"proxies": out})
+    assert json.dumps(safe, allow_nan=False)  # JSON estricto RFC 8259
+    # _json_safe no muta la entrada: los floats internos quedan intactos
+    assert all(isinstance(p["spearman"], float) for p in out)

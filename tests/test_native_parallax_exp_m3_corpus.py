@@ -7,15 +7,26 @@ presentes, hash mismatch, par mismatch, duplicados y split sin solapamiento.
 
 from __future__ import annotations
 
+import io
+import urllib.request
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 import numpy as np
 import pytest
 from PIL import Image
 
+from sky_claw.local.native_parallax.research.authored_dataset import (
+    DatasetInvalidError,
+    decode_height_image,
+)
 from sky_claw.local.native_parallax.research.fetch_exp_m3_primary_corpus import (
+    CorpusAcquisitionError,
     CorpusValidationError,
+    _http_download,
+    _http_get,
     build_manifest,
+    height_bit_depth,
     sha256_file,
     split_of_family,
     validate_entry,
@@ -186,3 +197,138 @@ def test_decode_height_8bit_sin_cambios(tmp_path: Path) -> None:
     decoded = decode_height_image(path)
     assert decoded.max() == pytest.approx(1.0)
     assert decoded.min() == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------- F1: height modo F
+
+
+def _save_f(path: Path, arr: np.ndarray) -> None:
+    Image.fromarray(arr.astype(np.float32), mode="F").save(path, format="TIFF")
+
+
+def test_f1_height_bit_depth_promete_y_decode_cumple(tmp_path: Path) -> None:
+    assert height_bit_depth("F") == 32
+    arr = np.linspace(0.2, 0.8, 64, dtype=np.float32).reshape(8, 8)
+    p = tmp_path / "h.tif"
+    _save_f(p, arr)
+    out = decode_height_image(p)
+    np.testing.assert_allclose(out, arr, rtol=1e-6)  # sin pasar por uint8
+
+
+def test_f1_float_fuera_de_rango_normaliza_lineal_documentada(tmp_path: Path) -> None:
+    arr = np.linspace(-3.0, 5.0, 64, dtype=np.float32).reshape(8, 8)
+    p = tmp_path / "h.tif"
+    _save_f(p, arr)
+    out = decode_height_image(p)
+    assert float(out.min()) >= 0.0 and float(out.max()) <= 1.0
+    np.testing.assert_allclose(float(out.min()), 0.0, atol=1e-6)
+    np.testing.assert_allclose(float(out.max()), 1.0, atol=1e-6)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_f1_float_nan_inf_fail_closed(tmp_path: Path, bad: float) -> None:
+    arr = np.full((8, 8), 0.5, dtype=np.float32)
+    arr[0, 0] = bad
+    p = tmp_path / "h.tif"
+    _save_f(p, arr)
+    with pytest.raises(DatasetInvalidError, match="NaN/Inf"):
+        decode_height_image(p)
+
+
+def test_f1_float_degenerado_fail_closed(tmp_path: Path) -> None:
+    p = tmp_path / "h.tif"
+    _save_f(p, np.full((8, 8), 7.0, dtype=np.float32))  # rango nulo fuera de [0,1]
+    with pytest.raises(DatasetInvalidError, match="degenerado"):
+        decode_height_image(p)
+
+
+# ---------------------------------------------------------------- F2: errores HTTP
+
+
+def _fake_urlopen(payload: bytes | Exception):
+    def fake(url: object, timeout: float | None = None) -> object:
+        if isinstance(payload, Exception):
+            raise payload
+        return io.BytesIO(payload)
+
+    return fake
+
+
+def test_f2_http_get_404_preserva_status_y_chaining(monkeypatch: pytest.MonkeyPatch) -> None:
+    err = HTTPError("https://host/x?sig=SECRETO", 404, "Not Found", None, io.BytesIO(b""))
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(err))
+    with pytest.raises(CorpusAcquisitionError, match="HTTP 404") as excinfo:
+        _http_get("https://host/x?sig=SECRETO")
+    assert isinstance(excinfo.value.__cause__, HTTPError)
+    assert "SECRETO" not in str(excinfo.value)  # sin query firmada en el mensaje
+
+
+def test_f2_http_get_urlerror_clasificado(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(URLError("conexion rechazada")))
+    with pytest.raises(CorpusAcquisitionError, match="URLError"):
+        _http_get("https://host/x")
+
+
+def test_f2_download_fallido_limpia_part_y_preserva_dest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dest = tmp_path / "asset.zip"
+    dest.write_bytes(b"ORIGINAL-VALIDO")
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(URLError("corte a mitad")))
+    with pytest.raises(CorpusAcquisitionError):
+        _http_download("https://host/a.zip", dest)
+    assert not (tmp_path / "asset.zip.part").exists()
+    assert dest.read_bytes() == b"ORIGINAL-VALIDO"
+
+
+def test_f2_download_size_mismatch_limpia_part(monkeypatch: pytest.MonkeyPatch) -> None:
+    dest = Path("/tmp") / "nunca-escrito.zip"
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(b"poquito"))
+    with pytest.raises(CorpusValidationError, match="tamaño"):
+        _http_download("https://host/a.zip", dest, expected_size=12345)
+    assert not dest.with_suffix(".zip.part").exists()
+
+
+# ---------------------------------------------------------------- F3: UNKNOWN en Cohort A
+
+
+def _valid_entry() -> dict[str, object]:
+    return {
+        "asset_id": "X1",
+        "family": "brick",
+        "provider": "p",
+        "official_asset_page": "https://p/x",
+        "official_download_url_or_identifier": "https://p/x.zip",
+        "official_source": "https://p/x",
+        "license": "CC0-1.0",
+        "license_reference": "https://p/license",
+        "normal_filename_original": "n_orig.png",
+        "height_filename_original": "h_orig.png",
+        "normal_path": "n.png",
+        "height_path": "h.png",
+        "normal_sha256": "0" * 64,
+        "height_sha256": "1" * 64,
+        "normal_size_bytes": 1,
+        "height_size_bytes": 1,
+        "normal_resolution": [1024, 1024],
+        "height_resolution": [1024, 1024],
+        "provenance_status": "PRIMARY_SOURCE_DOWNLOADED",
+        "normal_convention": "OPENGL",
+        "height_semantics": "RELATIVE_0_1",
+        "normal_format": "PNG",
+        "height_format": "PNG",
+        "height_bit_depth": 16,
+        "download_timestamp": "2026-09-23T00:00:00Z",
+    }
+
+
+def test_f3_validate_entry_rechaza_unknown_en_el_limite_mas_temprano() -> None:
+    entry = _valid_entry()
+    entry["normal_convention"] = "UNKNOWN"
+    with pytest.raises(CorpusValidationError, match="OPENGL o DIRECTX"):
+        validate_entry(entry)
+
+
+def test_f3_validate_entry_acepta_directx_y_opengl() -> None:
+    for conv in ("OPENGL", "DIRECTX"):
+        entry = _valid_entry()
+        entry["normal_convention"] = conv
+        validate_entry(entry)  # no raise

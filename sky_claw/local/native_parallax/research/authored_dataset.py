@@ -203,6 +203,20 @@ def decode_height_image(path: Path) -> NDArray[np.float64]:
             if peak <= 65535.0:
                 return np.asarray(arr / 65535.0, dtype=np.float64)
             raise DatasetInvalidError(f"{path}: height modo I con rango >16-bit no soportado")
+        if mode == "F":
+            # Contrato height float32 (find F1): sin convertir a "L" (truncaría a uint8).
+            arr = np.asarray(im, dtype=np.float64)
+            if not np.all(np.isfinite(arr)):
+                raise DatasetInvalidError(f"{path}: height modo F contiene NaN/Inf (fail-closed)")
+            lo, hi = float(arr.min()), float(arr.max())
+            if lo >= 0.0 and hi <= 1.0:
+                return np.asarray(arr, dtype=np.float64)
+            # Fuera de [0,1]: normalización lineal global min-max, DOCUMENTADA e
+            # invariante para la evaluación (el oráculo fitea afín global, §11/§38).
+            span = hi - lo
+            if span <= 0.0:
+                raise DatasetInvalidError(f"{path}: height modo F degenerado (rango nulo)")
+            return np.asarray((arr - lo) / span, dtype=np.float64)
         gray = np.asarray(im.convert("L"), dtype=np.float64)
         return np.asarray(gray / 255.0, dtype=np.float64)
 
