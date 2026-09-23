@@ -84,6 +84,39 @@ def test_tofu_requires_observation_confirmation_receipt_and_fresh_rerun() -> Non
     assert "cero TGR write" in contract
 
 
+def test_gui_and_llm_surfaces_share_one_admission_service_contract() -> None:
+    contract = section(
+        "### 11.4 Golden Admission",
+        "#### Fuentes cerradas de expectativa",
+    )
+    assert "SupervisorAgent` → `tool_dispatcher" in contract
+    assert "AsyncToolRegistry` → `LLMRouter" in contract
+    assert "ambas superficies deben invocar el mismo contrato de backend" in contract
+    assert "ninguna superficie implementa su propia variante" in contract
+    assert "no conecta GUI/LLM" in contract
+
+
+def test_rejected_is_terminal_and_preserves_tgr_before_replace() -> None:
+    rejection = section(
+        "#### Flujo terminal `REJECTED`",
+        "El segundo RV-2 pass",
+    )
+    assert "REJECTED (terminal, desde cualquier etapa anterior)" in rejection
+    assert "conservar TGR entry A o ABSENT sin modificar; cero TGR writes" in rejection
+    assert "sin transición del FSM GP2" in rejection
+    assert "resultado de commit como desconocido" in rejection
+
+
+def test_tgr_file_atomicity_does_not_claim_concurrent_rmw_serialization() -> None:
+    admission = section(
+        "### 11.4 Golden Admission",
+        "## 12. Privileged Helper Boundary",
+    )
+    assert "atómico **a nivel de archivo**" in admission
+    assert "stop condition de implementación" in admission
+    assert "**no** congela el Golden" in admission
+
+
 def test_receipt_fields_and_untrusted_staging_exclusions_are_explicit() -> None:
     contract = section(
         "### 11.4 Golden Admission",
@@ -116,10 +149,10 @@ def test_receipt_fields_and_untrusted_staging_exclusions_are_explicit() -> None:
 
 
 def test_tgr_and_tofu_claims_include_their_security_limits() -> None:
-    assert "OPERATOR_TOFU DOES NOT DETECT PRE-EXISTING COMPROMISE" in ADR
+    assert 'OPERATOR_TOFU_WARNING = "OPERATOR_TOFU DOES NOT DETECT PRE-EXISTING COMPROMISE"' in ADR
     assert "TGR_SEMANTICS = LAST_EXPLICITLY_AUTHORIZED_AND_SUBSEQUENTLY_VERIFIED_SNAPSHOT" in ADR
     assert "TGR_ASSERTS_CURRENT_FILESYSTEM = NO" in ADR
-    assert "ni snapshot atómico" in ADR
+    assert "No existe bloqueo de contenido ni snapshot atómico en P0.1." in ADR
     assert "REFUSE_TO_PLAN" in section(
         "## 28. Limitaciones de Seguridad Declaradas",
         "## 29. Referencias Primarias Microsoft",
@@ -133,6 +166,7 @@ def test_actor_d_mutations_and_all_future_rvo_oracles_are_classified() -> None:
     )
     for marker in (
         "pre-admission",
+        "Root arbitrario, reparse path",
         "después de `OBSERVED`",
         "después de `ADMITTED`",
         "durante el fresh rerun",
@@ -156,5 +190,5 @@ def test_steam_and_component_provenance_are_not_overclaimed() -> None:
     )
     assert "no demuestra provenance criptográfica" in context
     assert "No se asume que toda instalación actual ya esté separada" in context
-    assert "base runtime no autentica MO2 mods" in context
+    assert "provenance del base runtime no autentica MO2 mods" in context
     assert "appmanifest_489830.acf" in context

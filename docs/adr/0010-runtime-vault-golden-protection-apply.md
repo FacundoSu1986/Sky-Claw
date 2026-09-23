@@ -451,6 +451,7 @@ OBSERVATION_IS_AUTHORITY  = NO
 ADMISSION_IS_VERIFICATION = NO
 VERIFICATION_IS_CONTINUOUS_IMMUTABILITY = NO
 OPERATOR_TOFU_DOES_NOT_DETECT_PRE_EXISTING_COMPROMISE = TRUE
+OPERATOR_TOFU_WARNING = "OPERATOR_TOFU DOES NOT DETECT PRE-EXISTING COMPROMISE"
 TGR_SEMANTICS = LAST_EXPLICITLY_AUTHORIZED_AND_SUBSEQUENTLY_VERIFIED_SNAPSHOT
 TGR_ASSERTS_CURRENT_FILESYSTEM = NO
 ```
@@ -542,6 +543,8 @@ LOCK_FILE_RIGHTS_FOR_AUTHENTICATED_USERS:
 
 Esta operación es independiente de GP2 apply. La autoridad del helper para escribir el TGR no convierte los bytes staged en expectativa. El helper sigue aceptando únicamente la CLI cerrada de §12.1; `canonical_root`, IDs físicos, digests, runtime, expectativas y evidencia staged son candidatos no confiables y se reconstruyen/revalidan internamente.
 
+**Simetría de superficies (contrato, no wiring):** si Golden Admission se expone tanto por GUI (`SupervisorAgent` → `tool_dispatcher`) como por LLM (`AsyncToolRegistry` → `LLMRouter`), ambas superficies deben invocar el mismo contrato de backend `REGISTER_OR_REFRESH_TRUSTED_GOLDEN` y los mismos DTOs de este apartado. `operation_id`, selección/validación de source, captura del token original, confirmación privilegiada, binding del receipt y validación del resultado pertenecen a una única ruta de servicio/helper; ninguna superficie implementa su propia variante, crea receipts ni escribe el TGR. La sugerencia/intent del LLM es sólo una solicitud y no una fuente de authority ni confirmación. P0.1 fija esa simetría de contrato solamente: no conecta GUI/LLM ni cambia el wiring o la CLI pública.
+
 #### Fuentes cerradas de expectativa
 
 `GoldenAdmissionSource` es un concepto cerrado:
@@ -630,7 +633,21 @@ UNTRUSTED CANDIDATE
 
 **OPERATOR_TOFU — refresh A→B:** misma secuencia, pero antes de emitir el receipt el diálogo muestra `OLD TreeDigest A → OBSERVED NEW TreeDigest B`, la identidad física/runtime/policy y la advertencia TOFU. La autorización es condicional al rerun; cualquier cambio/rechazo/fallo produce `REJECTED` y cero TGR writes.
 
-El segundo RV-2 pass no reutiliza `FileIdentity`, bytes, resultado ni digest del primer observation pass; vuelve a abrir/leer el tree y calcula `B2` desde cero. Sólo `B2 == receipt.tree_digest`, `runtime2 == receipt.expected_runtime` y el binding físico exacto producen `VERIFIED`. Si el operador rechaza, falta el receipt, hay mismatch o el child no puede probar su resultado, no se escribe el TGR. Ningún flujo usa el `GoldenMasterVerificationResult` staged como resultado autoritativo.
+#### Flujo terminal `REJECTED`
+
+```text
+source incompleto/no autenticable, root/runtime/policy inválido o token original ausente
+OR observer/RV-2 falla, drift detectable, receipt/nonce/peer inválido o replay
+OR operador rechaza (incluida la confirmación final provenance-backed)
+→ GoldenAdmissionState = REJECTED (terminal, desde cualquier etapa anterior)
+→ consumir el nonce y, si ya fue emitido, invalidar el receipt de la operación
+→ conservar TGR entry A o ABSENT sin modificar; cero TGR writes
+→ sin transición del FSM GP2
+```
+
+`REJECTED` es el desenlace explícito para precondiciones, refusal y fallos de medición/autenticación. Ese “cero writes / TGR sin cambios” cubre fallos antes de iniciar el replace del registry. Si el resultado del replace fuera ambiguo, no se debe llamarlo `REJECTED` ni afirmar que A/ABSENT quedó intacto: se informa el resultado de commit como desconocido y se revalida el TGR protegido antes de permitir otra operación. Ese resultado de almacenamiento no agrega estados al FSM GP2 ni se resuelve desde staging.
+
+El segundo RV-2 pass no reutiliza `FileIdentity`, bytes, resultado ni digest del primer observation pass; vuelve a abrir/leer el tree y calcula `B2` desde cero. Sólo `B2 == receipt.tree_digest`, `runtime2 == receipt.expected_runtime` y el binding físico exacto producen `VERIFIED`. Ningún flujo usa el `GoldenMasterVerificationResult` staged como resultado autoritativo.
 
 #### Clasificación de amenazas Actor D para admission
 
@@ -645,7 +662,7 @@ El segundo RV-2 pass no reutiliza `FileIdentity`, bytes, resultado ni digest del
 | Replay de un receipt válido en otra operación, root, digest, runtime o policy | `operation_id` + nonce one-use + bindings completos no coinciden -> reject. `operator_sid`/`admitted_at` staged no se aceptan. |
 | Runtime sustituto o runtime de otra fuente | `expected_runtime` queda bajo el mismo source/receipt que TreeDigest y se mide de nuevo en RV-2; mismatch -> reject, cero write. |
 
-El read-modify-write futuro del TGR deberá serializar actualizaciones concurrentes por un mecanismo aún no especificado en P0.1. Si se adopta un global TGR lock, sólo protege consistencia/serialización del registry; **no** congela el Golden ni cierra la ventana TOCTOU. `GoldenMutationLock` tampoco es una garantía de estabilidad de contenido frente a Actor D.
+El replace futuro del archivo TGR debe ser atómico **a nivel de archivo** (sin JSON parcial), pero eso no serializa los ciclos read-modify-write y no evita lost updates. P0.1 no especifica el mecanismo de serialización concurrente; stop condition de implementación: no habilitar el TGR writer hasta especificar y probar un single-writer/mutex cross-process. Si se adopta un global TGR lock, sólo protege consistencia/serialización del registry; **no** congela el Golden ni cierra la ventana TOCTOU. `GoldenMutationLock` tampoco es una garantía de estabilidad de contenido frente a Actor D.
 
 #### Steam-managed mirror, base runtime y mods (relación conceptual con issue #494)
 
@@ -1319,7 +1336,7 @@ Para garantizar que los tests de integración en `%TEMP%` sean rigurosos, reprod
 - **GP2-T41 (descriptor vivo validado antes del lock):** manifest con `pre_sd_bytes_b64`/`pre_sd_sha256` auto-consistentes pero que NO coinciden con el descriptor vivo de un nodo K>1 -> `REFUSE_TO_PLAN` en la fase de autorización (§12.2 paso 5, validación de descriptores vivos) con cero mutaciones; el `GoldenMutationLock` nunca se adquiere. Complementa a `M-B2`.
 - **GP2-T42 (parent WRITE_OWNER fail-closed):** parent con `CHANGE_OWNER` efectivo (con o sin Owner Rights ACE) -> `UnsafeParentError` -> `REFUSE_TO_APPLY`, cero mutaciones; GP2 nunca continúa basándose sólo en `owner_rights_ace_present`. Complementa a `M05`.
 - **GP2-T43 (descriptor estructuralmente inválido rechazado):** manifest con `pre_sd_bytes_b64` auto-consistente pero estructuralmente inválido (longitud menor a `SECURITY_DESCRIPTOR_MIN_LENGTH` o `IsValidSecurityDescriptor == False`) -> `REFUSE_TO_PLAN` en la fase de autorización, sin parsear con accessors nativos.
-- **GP2-T44 (Golden Admission y refresco del TGR, §11.4):** (a) GP2 apply nunca escribe `trusted_goldens.json`; (b) en `INDEPENDENT_PROVENANCE`, la expectativa completa (TreeDigest + runtime + physical binding; critical expectations si las hay) se valida desde provenance independiente, RV-2 se ejecuta bajo el token original y exige `VERIFIED` antes de la confirmación final y TGR update; (c) en `OPERATOR_TOFU`, first pass sólo produce `OBSERVED`, confirmación privilegiada admite exactamente B y crea receipt helper-issued, luego un **segundo RV-2 fresh desde cero** bajo el token original exige `B2 == admitted B` y runtime concordante antes del TGR update; (d) digest/RV-2 staged por sí solos nunca autorizan; (e) observation por sí sola nunca autoriza; (f) UI/receipt declara `OPERATOR_TOFU_DOES_NOT_DETECT_PRE_EXISTING_COMPROMISE`; (g) el TGR registra el último snapshot autorizado y re-verificado, no una afirmación de current filesystem; GP2 rechaza el tree vivo ante mismatch. En ambos modos el TGR write es atómico y un caller no elevado recibe `ACCESS_DENIED`. Complementa a `M-T2` y a RVO-01..RVO-12.
+- **GP2-T44 (Golden Admission y refresco del TGR, §11.4):** (a) GP2 apply nunca escribe `trusted_goldens.json`; (b) en `INDEPENDENT_PROVENANCE`, la expectativa completa (TreeDigest + runtime + physical binding; critical expectations si las hay) se valida desde provenance independiente, RV-2 se ejecuta bajo el token original y exige `VERIFIED` antes de la confirmación final y TGR update; (c) en `OPERATOR_TOFU`, first pass sólo produce `OBSERVED`, confirmación privilegiada admite exactamente B y crea receipt helper-issued, luego un **segundo RV-2 fresh desde cero** bajo el token original exige `B2 == admitted B` y runtime concordante antes del TGR update; (d) digest/RV-2 staged por sí solos nunca autorizan; (e) observation por sí sola nunca autoriza; (f) UI/receipt declara `OPERATOR_TOFU_DOES_NOT_DETECT_PRE_EXISTING_COMPROMISE`; (g) el TGR registra el último snapshot autorizado y re-verificado, no una afirmación de current filesystem; GP2 rechaza el tree vivo ante mismatch; (h) si GUI y LLM exponen admission, ambos llaman al mismo backend/DTO y no duplican token/receipt logic. En ambos modos el replace del archivo TGR es atómico a nivel de archivo (sin JSON parcial) y un caller no elevado recibe `ACCESS_DENIED`; no afirma serialización lógica de RMW concurrentes. Un writer concurrente sigue bloqueado por el stop condition de §11.4 hasta tener un mecanismo cross-process probado. Complementa a `M-T2` y a RVO-01..RVO-12.
 - **GP2-T45 (probe con reintentos acotados, §4.1.3):** (a) un lector benigno (`GENERIC_READ`, filas H5/H6) que cierra su handle dentro de la ventana de reintentos permite completar el probe y proseguir; (b) una colisión persistente agota `MAX_PROBE_RETRIES` y termina en `REFUSE_TO_APPLY` (0 nodos) / `ROLLBACK_REQUIRED` (>0) con la lista de nodos bloqueantes en el reporte; (c) el número de intentos y el backoff están acotados (sin bucle infinito) y el desenlace terminal sigue siendo fail-closed. Complementa a `M-Q3`.
 - **GP2-T46 (IPC de post-verificación autenticado, §12.3):** (a) el helper sólo acepta el veredicto por el **canal privado** del hijo verificador que lanzó (pipe anónimo heredado con `CreateProcessAsUserW`, o named pipe aleatorio con DACL restrictiva con `CreateProcessWithTokenW`, según su privilegio), con imagen esperada, `PID`+`ProcessCreationTime` y nonce por operación vigente; incluye el caso de un helper UAC-elevado (sin `SeAssignPrimaryTokenPrivilege`) que **debe** usar `CreateProcessWithTokenW`; (b) un proceso ajeno que entregue `HARDENED`/`VERIFIED` por otro canal, o con nonce inválido/reutilizado, es ignorado y no produce `COMMITTED`; (c) muerte del verificador o resultado ausente/tardío -> `ROLLBACK_REQUIRED`, nunca `COMMITTED`. Complementa a `M-I1`.
 - **GP2-T47 (hardlink externo TOCTOU post-sellado, §12.2 paso 2 / §15):** un fixture crea un hardlink externo hacia un archivo del subárbol **después** del sellado y **antes** de `SetSecurityInfo`; el test exige que la revalidación viva de `NumberOfLinks == 1` sobre el handle de mutación lo detecte y termine en `REFUSE_TO_APPLY` (0 nodos) / `ROLLBACK_REQUIRED` (>0) **sin** modificar la ACL del archivo externo. Se distingue de `GP2-T38` (que crea el enlace antes de planificar). Complementa a `M-H2`.
