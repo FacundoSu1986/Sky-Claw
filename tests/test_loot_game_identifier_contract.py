@@ -683,7 +683,9 @@ def test_t6_guard_f8_casing_subarbol_rechaza_aunque_el_exe_no_se_llame_lootcli(
     ``LOOT.exe`` o ``tool.exe``), con cualquier casing del componente."""
     install = tmp_path / "ModOrganizer2"
     for subtree, nombre in (("LOOT", "LOOT.exe"), ("Loot", "tool.exe")):
-        (install / subtree).mkdir(parents=True)
+        # exist_ok: en un FS case-insensitive (NTFS) "LOOT" y "Loot" son el
+        # MISMO directorio; la segunda iteración no debe fallar (WinError 183).
+        (install / subtree).mkdir(parents=True, exist_ok=True)
         exe = install / subtree / nombre
         exe.write_bytes(b"loot-internal")
         assert _is_mo2_internal_loot(exe.resolve(), install.resolve()) is True, (subtree, nombre)
