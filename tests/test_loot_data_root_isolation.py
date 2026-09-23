@@ -26,20 +26,17 @@ nunca fallback silencioso a %LOCALAPPDATA%\\LOOT.
 
 from __future__ import annotations
 
-import os
 import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sky_claw.app.security.path_validator import PathViolationError
-from sky_claw.config import Config, SystemPaths
+from sky_claw.config import Config
 from sky_claw.local.loot.cli import (
     DEFAULT_LOOT_INTERNAL_GAME_ID,
-    LOOT_CLI_GAME_IDENTIFIERS,
     LOOTConfig,
     LOOTRunner,
-    to_loot_cli_game_id,
 )
 from sky_claw.local.loot.data_root import (
     DEFAULT_LOOT_DATA_BASE,
@@ -47,13 +44,11 @@ from sky_claw.local.loot.data_root import (
     get_default_loot_gui_data_path,
     resolve_loot_data_path,
 )
-from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner, build_vfs_loot_runner
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
 from sky_claw.local.mo2.vfs_worker import _loot_handler
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -152,9 +147,7 @@ async def test_t1_productivo_incluye_loot_data_path_explicito(tmp_path: pathlib.
     assert "loot_data_path" in job.payload
     assert pathlib.Path(job.payload["loot_data_path"]).is_absolute()
     # Debe estar bajo base Sky-Claw (propiedad)
-    assert pathlib.Path(job.payload["loot_data_path"]).resolve().is_relative_to(
-        base.resolve()
-    )
+    assert pathlib.Path(job.payload["loot_data_path"]).resolve().is_relative_to(base.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -194,9 +187,7 @@ async def test_t2_daemon_decide_una_vez_flujo_sin_divergencia(tmp_path: pathlib.
     job_payload_path = pathlib.Path(broker.calls[0][0].payload["loot_data_path"])
 
     # Worker recibe misma ruta
-    challenge = build_attestation_challenge(
-        data_root=mo2, profile="Default", physical_data_dir=data
-    )
+    challenge = build_attestation_challenge(data_root=mo2, profile="Default", physical_data_dir=data)
     job = VfsJob.create(
         instance_id="mo2-abc123",
         profile="Default",
@@ -260,9 +251,7 @@ async def test_t3_missing_loot_data_path_fail_closed(tmp_path: pathlib.Path) -> 
 @pytest.mark.asyncio
 async def test_t3_worker_rechaza_payload_sin_loot_data_path(tmp_path: pathlib.Path) -> None:
     mo2, data, loot, _base, _loot_data = _entorno(tmp_path)
-    challenge = build_attestation_challenge(
-        data_root=mo2, profile="Default", physical_data_dir=data
-    )
+    challenge = build_attestation_challenge(data_root=mo2, profile="Default", physical_data_dir=data)
     job = VfsJob.create(
         instance_id="mo2-abc123",
         profile="Default",
@@ -359,7 +348,7 @@ def test_t6_root_reutiliza_runtime_state_dir() -> None:
     # (si runtime_state_dir no está mockeado, debe ser igual)
     try:
         real_state = Config.DEFAULT_CONFIG_DIR / "state"
-        if DEFAULT_LOOT_DATA_BASE == real_state / "loot":
+        if real_state / "loot" == DEFAULT_LOOT_DATA_BASE:
             assert True
         else:
             # Si está mockeado, al menos verificar que es propiedad Sky-Claw
@@ -442,7 +431,6 @@ def test_t9_no_dentro_de_forbidden(tmp_path: pathlib.Path) -> None:
     mods = tmp_path / "MO2" / "mods"
     mods.mkdir(parents=True)
     data_root = tmp_path / "MO2"
-    base = tmp_path / "loot"
 
     # Dentro de game Data
     with pytest.raises(ValueError):
@@ -491,9 +479,7 @@ async def test_t10_argv_frozen_orden(tmp_path: pathlib.Path) -> None:
     game.mkdir()
     loot_data = tmp_path / "loot_data" / "mo2-abc" / "Default"
     loot_data.mkdir(parents=True)
-    config = LOOTConfig(
-        loot_exe=exe, game_path=game, game="SkyrimSE", loot_data_path=loot_data
-    )
+    config = LOOTConfig(loot_exe=exe, game_path=game, game="SkyrimSE", loot_data_path=loot_data)
     runner = LOOTRunner(config)
     captured, fake_exec = _capturando_exec()
     with (
@@ -598,9 +584,7 @@ def test_t13_build_vfs_resuelve_loot_data_path(tmp_path: pathlib.Path) -> None:
     )
     # Debe resolver automáticamente
     assert runner is not None
-    from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner as BR
-
-    assert isinstance(runner, BR)
+    assert isinstance(runner, BrokeredLootRunner)
     assert runner.loot_data_path is not None
     assert runner.loot_data_path.is_absolute()
     assert runner.loot_data_path.is_relative_to(base)
@@ -618,9 +602,7 @@ def test_t14_masterlist_behavior_documentado(tmp_path: pathlib.Path) -> None:
     Este test documenta el comportamiento sin implementar downloader (PR-3).
     """
     base = tmp_path / "loot"
-    loot_data = resolve_loot_data_path(
-        instance_id="mo2-abc", profile="Default", base_dir=base
-    )
+    loot_data = resolve_loot_data_path(instance_id="mo2-abc", profile="Default", base_dir=base)
     ensure_loot_data_path_exists(loot_data)
     # Root existe pero sin masterlist
     assert loot_data.exists()
@@ -667,9 +649,7 @@ def test_m3_igual_a_default_gui_loot(tmp_path: pathlib.Path) -> None:
     loot_dir.mkdir(parents=True)
     loot = loot_dir / "LOOT.exe"
     loot.write_bytes(b"loot")
-    challenge = build_attestation_challenge(
-        data_root=mo2, profile="Default", physical_data_dir=data
-    )
+    challenge = build_attestation_challenge(data_root=mo2, profile="Default", physical_data_dir=data)
     job = VfsJob.create(
         instance_id="mo2-abc",
         profile="Default",

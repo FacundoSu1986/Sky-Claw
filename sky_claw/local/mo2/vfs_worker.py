@@ -395,9 +395,7 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     if default_gui is not None:
         try:
             if resolved_loot_data == default_gui.resolve(strict=False):
-                raise ValueError(
-                    "payload.loot_data_path no puede ser el default GUI LOOT"
-                )
+                raise ValueError("payload.loot_data_path no puede ser el default GUI LOOT")
         except ValueError:
             raise
         except Exception:
@@ -443,8 +441,6 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             "missing_patches": [dict(item) for item in result.missing_patches],
         },
     )
-
-
 
 
 def _session_payload_path(payload: Mapping[str, JsonValue], field: str) -> pathlib.Path:

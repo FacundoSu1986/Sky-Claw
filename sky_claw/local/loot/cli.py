@@ -245,9 +245,7 @@ class LOOTRunner:
         loot_data_path_win: str | None = None
         if loot_data_path is not None:
             if not loot_data_path.is_absolute():
-                raise ValueError(
-                    f"loot_data_path must be absolute, got {loot_data_path}"
-                )
+                raise ValueError(f"loot_data_path must be absolute, got {loot_data_path}")
             loot_data_path_win = await translate_path_if_wsl(loot_data_path)
 
         args = [

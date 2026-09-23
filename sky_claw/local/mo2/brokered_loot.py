@@ -140,9 +140,7 @@ class BrokeredLootRunner:
         if loot_data_path is not None:
             p = pathlib.Path(loot_data_path)
             if not p.is_absolute():
-                raise ValueError(
-                    f"loot_data_path must be absolute, got {loot_data_path}"
-                )
+                raise ValueError(f"loot_data_path must be absolute, got {loot_data_path}")
             # No symlink escape si el repo tiene defensa (PathValidator)
             if p.is_symlink():
                 raise ValueError("loot_data_path must not be a symlink")
@@ -282,9 +280,7 @@ class BrokeredLootRunner:
         try:
             ensure_loot_data_path_exists(self._loot_data_path)
         except Exception as exc:
-            raise ValueError(
-                f"loot_data_path no se pudo asegurar en disco: {exc}"
-            ) from exc
+            raise ValueError(f"loot_data_path no se pudo asegurar en disco: {exc}") from exc
         challenge = await self._take_or_build_challenge()
         targets = await asyncio.to_thread(self.mutation_targets)
         job = VfsJob.create(
@@ -393,9 +389,7 @@ def build_vfs_loot_runner(
                     data_root=effective_data,
                 )
             except Exception as exc:
-                return VfsRequiredLootRunner(
-                    f"F8 guard / PR-1: no se pudo resolver loot_data_path: {exc}"
-                )
+                return VfsRequiredLootRunner(f"F8 guard / PR-1: no se pudo resolver loot_data_path: {exc}")
         return BrokeredLootRunner(
             broker=broker,
             instance_id=instance_id,

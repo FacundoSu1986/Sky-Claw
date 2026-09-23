@@ -1448,7 +1448,7 @@ class TestAnclaConstructoresManualesDeMods:
         # añadió dos sites que resuelven mods_dir para validar que el loot
         # data root no esté dentro de mods (392, 403) y movió el base default
         # (110 → 124) por import de data_root.
-        "sky_claw/local/mo2/brokered_loot.py": (124, 392, 403),
+        "sky_claw/local/mo2/brokered_loot.py": (124, 388, 397),
         # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (127,),
         "sky_claw/local/mo2/vfs_attestation.py": (182, 243),

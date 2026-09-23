@@ -137,13 +137,9 @@ def _validate_profile_for_loot_path(profile: str) -> str:
     if not safe.strip():
         raise PathViolationError("profile: must not be whitespace only")
     if safe.endswith(" ") or safe.endswith("."):
-        raise PathViolationError(
-            f"profile: trailing space/dot not allowed on Windows, got {safe!r}"
-        )
+        raise PathViolationError(f"profile: trailing space/dot not allowed on Windows, got {safe!r}")
     if _is_reserved_windows_name(safe):
-        raise PathViolationError(
-            f"profile: reserved Windows name not allowed, got {safe!r}"
-        )
+        raise PathViolationError(f"profile: reserved Windows name not allowed, got {safe!r}")
     return safe
 
 
@@ -200,13 +196,9 @@ def resolve_loot_data_path(
     # Validar componentes
     safe_instance = assert_safe_component(instance_id, field="instance_id")
     if _is_reserved_windows_name(safe_instance):
-        raise PathViolationError(
-            f"instance_id: reserved Windows name not allowed, got {safe_instance!r}"
-        )
+        raise PathViolationError(f"instance_id: reserved Windows name not allowed, got {safe_instance!r}")
     if safe_instance.endswith(" ") or safe_instance.endswith("."):
-        raise PathViolationError(
-            f"instance_id: trailing space/dot not allowed, got {safe_instance!r}"
-        )
+        raise PathViolationError(f"instance_id: trailing space/dot not allowed, got {safe_instance!r}")
     safe_profile = _validate_profile_for_loot_path(profile)
 
     base = base_dir or DEFAULT_LOOT_DATA_BASE
@@ -221,9 +213,7 @@ def resolve_loot_data_path(
     try:
         candidate.relative_to(base_path.resolve(strict=False))
     except ValueError as exc:
-        raise PathViolationError(
-            f"loot_data_path {candidate!r} escapes base {base_path!r}"
-        ) from exc
+        raise PathViolationError(f"loot_data_path {candidate!r} escapes base {base_path!r}") from exc
 
     # Invariantes de seguridad (sección 9 del brief)
     # - absoluto
@@ -236,17 +226,14 @@ def resolve_loot_data_path(
         try:
             # Comparación case-insensitive en Windows
             if os.name == "nt":
-                if candidate.resolve(strict=False).as_posix().casefold() == default_gui.resolve(
-                    strict=False
-                ).as_posix().casefold():
-                    raise ValueError(
-                        f"loot_data_path {candidate} must not be the default GUI LOOT path {default_gui}"
-                    )
+                if (
+                    candidate.resolve(strict=False).as_posix().casefold()
+                    == default_gui.resolve(strict=False).as_posix().casefold()
+                ):
+                    raise ValueError(f"loot_data_path {candidate} must not be the default GUI LOOT path {default_gui}")
             else:
                 if candidate.resolve(strict=False) == default_gui.resolve(strict=False):
-                    raise ValueError(
-                        f"loot_data_path {candidate} must not be the default GUI LOOT path {default_gui}"
-                    )
+                    raise ValueError(f"loot_data_path {candidate} must not be the default GUI LOOT path {default_gui}")
         except ValueError:
             raise
         except Exception:
@@ -259,16 +246,12 @@ def resolve_loot_data_path(
         try:
             # Si candidate está dentro de loot_dir o es igual
             if candidate == loot_dir or candidate.is_relative_to(loot_dir):
-                raise ValueError(
-                    f"loot_data_path {candidate} must not be inside LOOT install dir {loot_dir}"
-                )
+                raise ValueError(f"loot_data_path {candidate} must not be inside LOOT install dir {loot_dir}")
         except AttributeError:
             # Python <3.9 fallback
             try:
                 candidate.relative_to(loot_dir)
-                raise ValueError(
-                    f"loot_data_path {candidate} must not be inside LOOT install dir {loot_dir}"
-                ) from None
+                raise ValueError(f"loot_data_path {candidate} must not be inside LOOT install dir {loot_dir}") from None
             except ValueError:
                 if candidate == loot_dir:
                     raise ValueError(
@@ -282,15 +265,11 @@ def resolve_loot_data_path(
         for forbidden in (g_path, data_path):
             try:
                 if candidate == forbidden or candidate.is_relative_to(forbidden):
-                    raise ValueError(
-                        f"loot_data_path {candidate} must not be inside game path {forbidden}"
-                    )
+                    raise ValueError(f"loot_data_path {candidate} must not be inside game path {forbidden}")
             except AttributeError:
                 try:
                     candidate.relative_to(forbidden)
-                    raise ValueError(
-                        f"loot_data_path {candidate} must not be inside game path {forbidden}"
-                    ) from None
+                    raise ValueError(f"loot_data_path {candidate} must not be inside game path {forbidden}") from None
                 except ValueError:
                     if candidate == forbidden:
                         raise ValueError(
@@ -302,20 +281,14 @@ def resolve_loot_data_path(
         m_dir = pathlib.Path(mods_dir).resolve(strict=False)
         try:
             if candidate == m_dir or candidate.is_relative_to(m_dir):
-                raise ValueError(
-                    f"loot_data_path {candidate} must not be inside mods dir {m_dir}"
-                )
+                raise ValueError(f"loot_data_path {candidate} must not be inside mods dir {m_dir}")
         except AttributeError:
             try:
                 candidate.relative_to(m_dir)
-                raise ValueError(
-                    f"loot_data_path {candidate} must not be inside mods dir {m_dir}"
-                ) from None
+                raise ValueError(f"loot_data_path {candidate} must not be inside mods dir {m_dir}") from None
             except ValueError:
                 if candidate == m_dir:
-                    raise ValueError(
-                        f"loot_data_path {candidate} must not be inside mods dir {m_dir}"
-                    ) from None
+                    raise ValueError(f"loot_data_path {candidate} must not be inside mods dir {m_dir}") from None
 
     # - NO dentro del profile como reemplazo de plugins.txt
     #   data_root / profiles / <profile>
@@ -324,9 +297,7 @@ def resolve_loot_data_path(
         profile_dir = (d_root / "profiles" / safe_profile).resolve(strict=False)
         try:
             if candidate == profile_dir or candidate.is_relative_to(profile_dir):
-                raise ValueError(
-                    f"loot_data_path {candidate} must not be inside MO2 profile dir {profile_dir}"
-                )
+                raise ValueError(f"loot_data_path {candidate} must not be inside MO2 profile dir {profile_dir}")
         except AttributeError:
             try:
                 candidate.relative_to(profile_dir)

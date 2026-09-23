@@ -617,9 +617,7 @@ class LootSortingService:
                 ensure_loot_data_path_exists(loot_data_path)
             except Exception as exc:
                 if self._require_vfs:
-                    raise LOOTNotFoundError(
-                        f"F8 guard / PR-1: no se pudo resolver loot_data_path: {exc}"
-                    ) from exc
+                    raise LOOTNotFoundError(f"F8 guard / PR-1: no se pudo resolver loot_data_path: {exc}") from exc
                 loot_data_path = None
             runner = BrokeredLootRunner(
                 broker=self._vfs_broker,
