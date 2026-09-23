@@ -34,7 +34,10 @@ from sky_claw.local.runtime_vault.coordinator_identity import (
     CoordinatorProcessIdentity,
     Win32CoordinatorIdentityProbe,
 )
-from sky_claw.local.runtime_vault.models import CriticalFileExpectation
+from sky_claw.local.runtime_vault.models import (
+    CriticalFileExpectation,
+    VerificationState,
+)
 from sky_claw.local.runtime_vault.operator_token import (
     OperatorPrimaryToken,
     acquire_operator_primary_token_from_coordinator,
@@ -46,6 +49,7 @@ from sky_claw.local.runtime_vault.operator_verifier_bridge import (
     ChildProcessEvidence,
     NonceAuthenticationError,
     OperatorVerifierBridge,
+    OperatorVerifierBridgeError,
     OperatorVerifierLaunchError,
     OperatorVerifierTimeoutError,
     PeerAuthenticationError,
@@ -57,6 +61,15 @@ from sky_claw.local.runtime_vault.operator_verifier_bridge import (
     encode_length_prefixed_frame,
     read_length_prefixed_frame,
     resolve_production_verifier_executable,
+)
+from sky_claw.local.runtime_vault.physical_root import (
+    PhysicalRootIdentity,
+    PhysicalRootMismatchError,
+    bound_physical_root,
+)
+from sky_claw.local.runtime_vault.runtime_observation import (
+    RuntimeObservationError,
+    observe_runtime_identity_from_root,
 )
 
 _GENERIC_READ = 0x80000000
@@ -143,6 +156,11 @@ class TestWin32OperatorVerifierCausal:
             assert obs_res.observed_runtime.game_version == "1.6.1170.0"
             assert obs_res.observed_tree.files == 2
             assert obs_res.physical_root.canonical_root.lower() == str(root).lower()
+            # En OBSERVE: estado UNKNOWN y sin fabricar expectativas
+            assert len(obs_res.critical_evidences) == 1
+            assert obs_res.critical_evidences[0].state is VerificationState.UNKNOWN
+            assert obs_res.critical_evidences[0].expected_digest is None
+            assert obs_res.critical_evidences[0].expected_size is None
 
             # 2. VERIFY
             ver_res = bridge.invoke_verify(
@@ -162,6 +180,10 @@ class TestWin32OperatorVerifierCausal:
             )
             assert ver_res.disposition is VerifierDisposition.VERIFIED
             assert ver_res.success is True
+            assert len(ver_res.critical_evidences) == 1
+            assert ver_res.critical_evidences[0].state is VerificationState.VERIFIED
+            assert ver_res.critical_evidences[0].rel_path == "SkyrimSE.exe"
+            assert ver_res.critical_evidences[0].success is True
 
     def test_w03_foreign_client_rejected(self, current_operator_token: Any, tmp_path: pathlib.Path) -> None:
         """W03: Proceso ajeno con PID distinto al lanzado es rechazado por el helper."""
@@ -556,8 +578,8 @@ sys.exit(1)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 
-        # Crear SDDL que sólo permite a un SID inventado (no el usuario actual)
-        sddl = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;S-1-5-21-99999-99999-99999-9999)"
+        # Crear SDDL que sólo permite a un SID inventado (no el usuario actual ni administradores)
+        sddl = "D:P(A;;GA;;;S-1-5-21-99999-99999-99999-9999)"
         p_sd = ctypes.c_void_p()
         assert advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(p_sd), None)
 
@@ -641,6 +663,157 @@ sys.exit(1)
             assert ver.success is False
             assert "TreeDigest mismatch" in ver.message
 
+    def test_verify_critical_expectation_mismatch_fails_disposition(
+        self,
+        current_operator_token: Any,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """VERIFY con discrepancia de digest o tamaño en un archivo crítico produce disposition=FAILED y success=False."""
+        root = tmp_path / "game_root"
+        root.mkdir()
+        (root / "SkyrimSE.exe").write_bytes(b"version_1")
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=5.0)
+
+        with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
+            obs = bridge.invoke_observe(
+                token=current_operator_token,
+                root=root,
+                operation_id="op-crit-obs",
+                expected_game_key="skyrimse",
+            )
+            # Expectativa con digest corrupto
+            ver = bridge.invoke_verify(
+                token=current_operator_token,
+                root=root,
+                operation_id="op-crit-ver",
+                expected_physical_root=obs.physical_root,
+                expected_tree=obs.observed_tree,
+                expected_runtime=obs.observed_runtime,
+                critical_expectations=(
+                    CriticalFileExpectation(
+                        rel_path="SkyrimSE.exe",
+                        expected_digest="0" * 64,
+                        expected_size=len(b"version_1"),
+                    ),
+                ),
+            )
+            assert ver.disposition is VerifierDisposition.FAILED
+            assert ver.success is False
+            assert len(ver.critical_evidences) == 1
+            assert ver.critical_evidences[0].state is VerificationState.FAILED
+            assert "mismatch" in ver.message.lower()
+
+    def test_verify_critical_expectation_missing_file_fails_disposition(
+        self,
+        current_operator_token: Any,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """VERIFY con un archivo crítico ausente en el árbol produce disposition=FAILED y success=False."""
+        root = tmp_path / "game_root"
+        root.mkdir()
+        (root / "SkyrimSE.exe").write_bytes(b"version_1")
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=5.0)
+
+        with patch("sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version", return_value="1.6.1170.0"):
+            obs = bridge.invoke_observe(
+                token=current_operator_token,
+                root=root,
+                operation_id="op-missing-obs",
+                expected_game_key="skyrimse",
+            )
+            ver = bridge.invoke_verify(
+                token=current_operator_token,
+                root=root,
+                operation_id="op-missing-ver",
+                expected_physical_root=obs.physical_root,
+                expected_tree=obs.observed_tree,
+                expected_runtime=obs.observed_runtime,
+                critical_expectations=(
+                    CriticalFileExpectation(
+                        rel_path="Data/Skyrim.esm",
+                        expected_digest="a" * 64,
+                    ),
+                ),
+            )
+            assert ver.disposition is VerifierDisposition.FAILED
+            assert ver.success is False
+            assert len(ver.critical_evidences) == 1
+            assert ver.critical_evidences[0].state is VerificationState.FAILED
+            assert "missing" in ver.message.lower()
+
+    def test_worker_failure_returns_typed_rejected_response(
+        self,
+        current_operator_token: Any,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Un fallo en el worker (raíz inexistente) envía un frame REJECTED en lugar de abortar silenciosamente."""
+        nonexistent = tmp_path / "nonexistent_root"
+        bridge = OperatorVerifierBridge(launcher=_TestOnlyVerifierLauncher(), timeout_seconds=5.0)
+
+        with pytest.raises(OperatorVerifierBridgeError, match="REJECTED"):
+            bridge.invoke_observe(
+                token=current_operator_token,
+                root=nonexistent,
+                operation_id="op-fail-worker",
+                expected_game_key="skyrimse",
+            )
+
+    def test_observe_runtime_symlink_executable_rejected(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """observe_runtime_identity_from_root rechaza fail-closed ejecutables que sean symlinks."""
+        root = tmp_path / "symlink_game"
+        root.mkdir()
+        real_exe = tmp_path / "real_payload.exe"
+        real_exe.write_bytes(b"MZfake_exe_bytes")
+        symlink_exe = root / "SkyrimSE.exe"
+        try:
+            symlink_exe.symlink_to(real_exe)
+            with pytest.raises(RuntimeObservationError, match="enlace simbólico"):
+                observe_runtime_identity_from_root(root, expected_game_key="skyrimse")
+        except OSError:
+
+            class FakeEntry:
+                name = "SkyrimSE.exe"
+                path = str(symlink_exe)
+
+                def is_symlink(self) -> bool:
+                    return True
+
+                def is_file(self, *, follow_symlinks: bool = True) -> bool:
+                    return False
+
+            with (
+                patch("os.scandir", return_value=[FakeEntry()]),
+                pytest.raises(RuntimeObservationError, match="enlace simbólico"),
+            ):
+                observe_runtime_identity_from_root(root, expected_game_key="skyrimse")
+
+    def test_bound_physical_root_detects_toctou_mutation(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """bound_physical_root detecta si la raíz fue renombrada/sustituida entre entrada y salida."""
+        root = tmp_path / "game_root"
+        root.mkdir()
+
+        from sky_claw.local.runtime_vault.physical_root import derive_physical_root as real_derive
+
+        real_id = real_derive(root)
+        fake_tampered_id = PhysicalRootIdentity(
+            canonical_root=real_id.canonical_root,
+            volume_serial_number=real_id.volume_serial_number,
+            root_file_id=real_id.root_file_id + 9999,
+        )
+
+        with (
+            patch("sky_claw.local.runtime_vault.physical_root.derive_physical_root", return_value=fake_tampered_id),
+            pytest.raises(PhysicalRootMismatchError, match="TOCTOU detectado"),
+            bound_physical_root(root),
+        ):
+            pass
+
 
 class TestPackagingAndAstGates:
     """Verificación de aislamiento de seams y empaquetado de producción."""
@@ -659,13 +832,22 @@ class TestPackagingAndAstGates:
         for py_path in sky_claw_dir.rglob("*.py"):
             tree = ast.parse(py_path.read_text(encoding="utf-8"), filename=str(py_path))
             for node in ast.walk(tree):
-                if isinstance(node, ast.Name) and node.id == "_TestOnlyVerifierLauncher":
+                if isinstance(node, ast.ClassDef) and node.name == "_TestOnlyVerifierLauncher":
+                    if py_path.name != "operator_verifier_bridge.py":
+                        violaciones.append(f"{py_path.relative_to(repo_root)}:{node.lineno} (ClassDef)")
+                elif isinstance(node, ast.Name) and node.id == "_TestOnlyVerifierLauncher":
                     # Excepto la propia definición en operator_verifier_bridge.py
                     if py_path.name == "operator_verifier_bridge.py" and isinstance(
                         getattr(node, "ctx", None), ast.Store
                     ):
                         continue
-                    violaciones.append(f"{py_path.relative_to(repo_root)}:{getattr(node, 'lineno', 0)}")
+                    violaciones.append(f"{py_path.relative_to(repo_root)}:{getattr(node, 'lineno', 0)} (Name)")
+                elif isinstance(node, ast.Attribute) and node.attr == "_TestOnlyVerifierLauncher":
+                    violaciones.append(f"{py_path.relative_to(repo_root)}:{getattr(node, 'lineno', 0)} (Attribute)")
+                elif isinstance(node, ast.alias) and (
+                    node.name == "_TestOnlyVerifierLauncher" or node.asname == "_TestOnlyVerifierLauncher"
+                ):
+                    violaciones.append(f"{py_path.relative_to(repo_root)}:{getattr(node, 'lineno', 0)} (alias)")
 
         assert not violaciones, f"Producción referencia _TestOnlyVerifierLauncher: {violaciones}"
 

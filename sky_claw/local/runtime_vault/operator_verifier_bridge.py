@@ -59,8 +59,7 @@ from sky_claw.local.runtime_vault.operator_token import (
 )
 from sky_claw.local.runtime_vault.physical_root import (
     PhysicalRootIdentity,
-    derive_physical_root,
-    verify_physical_root,
+    bound_physical_root,
 )
 from sky_claw.local.runtime_vault.privileged_boundary import PrivilegedBoundaryUnsupportedError
 from sky_claw.local.runtime_vault.runtime_observation import (
@@ -352,6 +351,14 @@ if sys.platform == "win32":
     ]
     _kernel32.WriteFile.restype = wintypes.BOOL
 
+    _kernel32.GetOverlappedResult.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_OVERLAPPED),
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.BOOL,
+    ]
+    _kernel32.GetOverlappedResult.restype = wintypes.BOOL
+
     _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     _kernel32.CloseHandle.restype = wintypes.BOOL
 
@@ -460,6 +467,114 @@ def read_length_prefixed_frame(handle: int, max_bytes: int) -> bytes:
     return bytes(payload_buf)
 
 
+def _cancel_and_drain_overlapped(handle: int, ov: _OVERLAPPED) -> None:
+    """Cancela I/O pendiente y drena esperando su finalización real en el kernel.
+
+    Previene use-after-free (UAF) si el driver o subsistema I/O asíncrono
+    continúa escribiendo en el buffer o señalizando hEvent tras CancelIoEx.
+    """
+    _ensure_windows()
+    _kernel32.CancelIoEx(ctypes.c_void_p(handle), ctypes.byref(ov))
+    dummy_bytes = wintypes.DWORD(0)
+    # bWait=True fuerza a que GetOverlappedResult espere hasta que el I/O se cancele o complete
+    _kernel32.GetOverlappedResult(
+        ctypes.c_void_p(handle),
+        ctypes.byref(ov),
+        ctypes.byref(dummy_bytes),
+        True,
+    )
+
+
+def _write_all_sync(handle: int, data: bytes) -> None:
+    """Escribe data completamente en un handle sincrónico."""
+    total_written = 0
+    total_len = len(data)
+    while total_written < total_len:
+        written = wintypes.DWORD(0)
+        remaining = total_len - total_written
+        c_buf = (ctypes.c_ubyte * remaining).from_buffer_copy(data[total_written:])
+        ok = _kernel32.WriteFile(
+            ctypes.c_void_p(handle),
+            ctypes.cast(ctypes.addressof(c_buf), wintypes.LPCVOID),
+            remaining,
+            ctypes.byref(written),
+            None,
+        )
+        if not ok or written.value == 0:
+            break
+        total_written += written.value
+
+
+def _write_all_overlapped(handle: int, data: bytes, timeout_seconds: float) -> None:
+    """Escribe data completamente en un handle overlapped con timeout acotado y drenado ante cancelación."""
+    _ensure_windows()
+    h_event = _kernel32.CreateEventW(None, True, False, None)
+    if _is_invalid_handle(h_event):
+        raise OperatorVerifierBridgeError("CreateEventW falló en escritura overlapped")
+
+    try:
+        total_written = 0
+        total_len = len(data)
+        while total_written < total_len:
+            ov = _OVERLAPPED()
+            ov.hEvent = h_event
+            chunk_written = wintypes.DWORD(0)
+            remaining = total_len - total_written
+            chunk_bytes = data[total_written:]
+            c_buf = (ctypes.c_ubyte * remaining).from_buffer_copy(chunk_bytes)
+            ptr = ctypes.cast(ctypes.addressof(c_buf), wintypes.LPCVOID)
+
+            ok = _kernel32.WriteFile(
+                ctypes.c_void_p(handle),
+                ptr,
+                remaining,
+                ctypes.byref(chunk_written),
+                ctypes.byref(ov),
+            )
+            if not ok:
+                err = ctypes.get_last_error()
+                if err == _ERROR_IO_PENDING:
+                    wait_ms = int(timeout_seconds * 1000)
+                    wait_res = _kernel32.WaitForSingleObject(h_event, wait_ms)
+                    if wait_res == _WAIT_TIMEOUT:
+                        _cancel_and_drain_overlapped(handle, ov)
+                        raise OperatorVerifierTimeoutError(f"La escritura en el pipe expiró tras {timeout_seconds}s")
+                    elif wait_res != _WAIT_OBJECT_0:
+                        _cancel_and_drain_overlapped(handle, ov)
+                        raise OperatorVerifierBridgeError("Fallo en WaitForSingleObject de WriteFile")
+
+                    res_bytes = wintypes.DWORD(0)
+                    res_ok = _kernel32.GetOverlappedResult(
+                        ctypes.c_void_p(handle),
+                        ctypes.byref(ov),
+                        ctypes.byref(res_bytes),
+                        False,
+                    )
+                    if not res_ok:
+                        res_err = ctypes.get_last_error()
+                        if res_err in (_ERROR_BROKEN_PIPE, 232):
+                            raise ChildExitedPrematurelyError(
+                                "El verificador hijo cerró el canal durante la escritura del request"
+                            )
+                        raise OperatorVerifierBridgeError(
+                            f"GetOverlappedResult(WriteFile) falló: código Win32 {res_err}"
+                        )
+                    chunk_written = res_bytes
+                elif err in (_ERROR_BROKEN_PIPE, 232):
+                    raise ChildExitedPrematurelyError(
+                        "El verificador hijo cerró el canal antes de recibir el request completo"
+                    )
+                else:
+                    raise OperatorVerifierBridgeError(f"WriteFile falló: código Win32 {err}")
+
+            if chunk_written.value == 0:
+                raise ChildExitedPrematurelyError("WriteFile escribió 0 bytes inesperadamente")
+
+            total_written += chunk_written.value
+    finally:
+        _kernel32.CloseHandle(ctypes.c_void_p(h_event))
+
+
 def _read_frame_overlapped(handle: int, max_bytes: int, timeout_seconds: float) -> bytes:
     """Lee un frame de respuesta con prefijo uint32 y bounded timeout mediante I/O overlapped."""
     _ensure_windows()
@@ -489,10 +604,10 @@ def _read_frame_overlapped(handle: int, max_bytes: int, timeout_seconds: float) 
                     wait_ms = int(timeout_seconds * 1000)
                     wait_res = _kernel32.WaitForSingleObject(h_event, wait_ms)
                     if wait_res == _WAIT_TIMEOUT:
-                        _kernel32.CancelIoEx(ctypes.c_void_p(handle), ctypes.byref(ov))
+                        _cancel_and_drain_overlapped(handle, ov)
                         raise OperatorVerifierTimeoutError(f"La lectura del pipe expiró tras {timeout_seconds}s")
                     elif wait_res != _WAIT_OBJECT_0:
-                        _kernel32.CancelIoEx(ctypes.c_void_p(handle), ctypes.byref(ov))
+                        _cancel_and_drain_overlapped(handle, ov)
                         raise OperatorVerifierBridgeError("Fallo en WaitForSingleObject de ReadFile")
                     _kernel32.GetOverlappedResult(
                         ctypes.c_void_p(handle),
@@ -796,116 +911,195 @@ def run_verifier_child_worker(
         canonical_root = req_data.get("canonical_root", "")
         expected_game_key = req_data.get("expected_game_key", "skyrimse")
 
-        if mode == VerifierMode.OBSERVE:
-            # En OBSERVE: deriva identidad física y mide frescos
-            phys_identity = derive_physical_root(canonical_root)
-            obs_runtime = observe_runtime_identity_from_root(canonical_root, expected_game_key=expected_game_key)
-            files = inventory_tree(pathlib.Path(canonical_root))
-            tree_digest = tree_digest_from_files(files)
+        resp_payload: dict[str, Any]
 
-            resp_payload = {
-                "version": 1,
-                "operation_id": operation_id,
-                "mode": mode,
-                "nonce": nonce,
-                "disposition": VerifierDisposition.OBSERVED,
-                "canonical_root": phys_identity.canonical_root,
-                "volume_serial_number": phys_identity.volume_serial_number,
-                "root_file_id": phys_identity.root_file_id,
-                "observed_tree": {
-                    "digest": tree_digest.digest,
-                    "files": tree_digest.files,
-                    "bytes": tree_digest.bytes,
-                },
-                "observed_runtime": {
-                    "game_key": obs_runtime.game_key,
-                    "game_version": obs_runtime.game_version,
-                },
-                "critical_evidences": [
-                    {
-                        "rel_path": f.rel_path,
-                        "state": VerificationState.VERIFIED,
-                        "observed_digest": f.digest,
-                        "expected_digest": f.digest,
-                        "observed_size": f.size,
-                        "expected_size": f.size,
-                    }
-                    for f in files
-                    if f.rel_path.lower().endswith(".exe")
-                ],
-                "message": "",
-            }
+        try:
+            if mode == VerifierMode.OBSERVE:
+                # En OBSERVE: deriva identidad física y mide frescos bajo bound_physical_root (anti-TOCTOU)
+                with bound_physical_root(canonical_root) as phys_identity:
+                    obs_runtime = observe_runtime_identity_from_root(
+                        canonical_root, expected_game_key=expected_game_key
+                    )
+                    files = inventory_tree(pathlib.Path(canonical_root))
+                    tree_digest = tree_digest_from_files(files)
 
-        elif mode == VerifierMode.VERIFY:
-            # En VERIFY: revalida identidad física y compara
-            expected_phys = PhysicalRootIdentity(
-                canonical_root=req_data["expected_physical_root"]["canonical_root"],
-                volume_serial_number=req_data["expected_physical_root"]["volume_serial_number"],
-                root_file_id=req_data["expected_physical_root"]["root_file_id"],
-            )
-            phys_identity = verify_physical_root(canonical_root, expected_phys)
-            obs_runtime = observe_runtime_identity_from_root(canonical_root, expected_game_key=expected_game_key)
-            files = inventory_tree(pathlib.Path(canonical_root))
-            observed_tree = tree_digest_from_files(files)
+                resp_payload = {
+                    "version": 1,
+                    "operation_id": operation_id,
+                    "mode": mode,
+                    "nonce": nonce,
+                    "disposition": VerifierDisposition.OBSERVED,
+                    "canonical_root": phys_identity.canonical_root,
+                    "volume_serial_number": phys_identity.volume_serial_number,
+                    "root_file_id": phys_identity.root_file_id,
+                    "observed_tree": {
+                        "digest": tree_digest.digest,
+                        "files": tree_digest.files,
+                        "bytes": tree_digest.bytes,
+                    },
+                    "observed_runtime": {
+                        "game_key": obs_runtime.game_key,
+                        "game_version": obs_runtime.game_version,
+                    },
+                    "critical_evidences": [
+                        {
+                            "rel_path": f.rel_path,
+                            "state": VerificationState.UNKNOWN.value,
+                            "observed_digest": f.digest,
+                            "expected_digest": None,
+                            "observed_size": f.size,
+                            "expected_size": None,
+                            "message": "",
+                        }
+                        for f in files
+                        if f.rel_path.lower().endswith(".exe")
+                    ],
+                    "message": "",
+                }
 
-            expected_tree = TreeDigest(
-                digest=req_data["expected_tree"]["digest"],
-                files=req_data["expected_tree"]["files"],
-                bytes=req_data["expected_tree"]["bytes"],
-            )
-            expected_runtime = RuntimeIdentity(
-                game_key=req_data["expected_runtime"]["game_key"],
-                game_version=req_data["expected_runtime"]["game_version"],
-            )
+            elif mode == VerifierMode.VERIFY:
+                # En VERIFY: revalida identidad física y compara bajo bound_physical_root (anti-TOCTOU)
+                expected_phys = PhysicalRootIdentity(
+                    canonical_root=req_data["expected_physical_root"]["canonical_root"],
+                    volume_serial_number=req_data["expected_physical_root"]["volume_serial_number"],
+                    root_file_id=req_data["expected_physical_root"]["root_file_id"],
+                )
+                with bound_physical_root(canonical_root, expected_phys) as phys_identity:
+                    obs_runtime = observe_runtime_identity_from_root(
+                        canonical_root, expected_game_key=expected_game_key
+                    )
+                    files = inventory_tree(pathlib.Path(canonical_root))
+                    observed_tree = tree_digest_from_files(files)
 
-            tree_match = observed_tree == expected_tree
-            runtime_match = obs_runtime.runtime_identity == expected_runtime
+                expected_tree = TreeDigest(
+                    digest=req_data["expected_tree"]["digest"],
+                    files=req_data["expected_tree"]["files"],
+                    bytes=req_data["expected_tree"]["bytes"],
+                )
+                expected_runtime = RuntimeIdentity(
+                    game_key=req_data["expected_runtime"]["game_key"],
+                    game_version=req_data["expected_runtime"]["game_version"],
+                )
 
-            if tree_match and runtime_match:
-                disp = VerifierDisposition.VERIFIED
-                msg = ""
-            else:
-                disp = VerifierDisposition.FAILED
+                tree_match = observed_tree == expected_tree
+                runtime_match = obs_runtime.runtime_identity == expected_runtime
+
+                # Revalidación de critical_expectations
+                files_by_relpath = {f.rel_path: f for f in files}
+                crit_evidences_list: list[dict[str, Any]] = []
+                critical_matches = True
                 diffs: list[str] = []
+
+                for ce_dict in req_data.get("critical_expectations", []):
+                    rel_p = ce_dict["rel_path"]
+                    exp_dig = ce_dict["expected_digest"]
+                    exp_sz = ce_dict.get("expected_size")
+
+                    if rel_p in files_by_relpath:
+                        obs_f = files_by_relpath[rel_p]
+                        d_ok = obs_f.digest.lower() == exp_dig.lower()
+                        s_ok = exp_sz is None or obs_f.size == exp_sz
+                        if d_ok and s_ok:
+                            st = VerificationState.VERIFIED.value
+                            c_msg = ""
+                        else:
+                            st = VerificationState.FAILED.value
+                            c_msg = "Critical file digest or size mismatch"
+                            critical_matches = False
+                            diffs.append(f"CriticalFile '{rel_p}' mismatch")
+                        crit_evidences_list.append(
+                            {
+                                "rel_path": rel_p,
+                                "state": st,
+                                "observed_digest": obs_f.digest,
+                                "expected_digest": exp_dig,
+                                "observed_size": obs_f.size,
+                                "expected_size": exp_sz,
+                                "message": c_msg,
+                            }
+                        )
+                    else:
+                        critical_matches = False
+                        diffs.append(f"CriticalFile '{rel_p}' missing")
+                        crit_evidences_list.append(
+                            {
+                                "rel_path": rel_p,
+                                "state": VerificationState.FAILED.value,
+                                "observed_digest": None,
+                                "expected_digest": exp_dig,
+                                "observed_size": None,
+                                "expected_size": exp_sz,
+                                "message": f"Critical file '{rel_p}' ausente en el árbol observado",
+                            }
+                        )
+
                 if not tree_match:
                     diffs.append("TreeDigest mismatch")
                 if not runtime_match:
                     diffs.append("RuntimeIdentity mismatch")
-                msg = "; ".join(diffs)
 
+                if tree_match and runtime_match and critical_matches:
+                    disp = VerifierDisposition.VERIFIED
+                    msg = ""
+                else:
+                    disp = VerifierDisposition.FAILED
+                    msg = "; ".join(diffs)
+
+                resp_payload = {
+                    "version": 1,
+                    "operation_id": operation_id,
+                    "mode": mode,
+                    "nonce": nonce,
+                    "disposition": disp,
+                    "canonical_root": phys_identity.canonical_root,
+                    "volume_serial_number": phys_identity.volume_serial_number,
+                    "root_file_id": phys_identity.root_file_id,
+                    "observed_tree": {
+                        "digest": observed_tree.digest,
+                        "files": observed_tree.files,
+                        "bytes": observed_tree.bytes,
+                    },
+                    "observed_runtime": {
+                        "game_key": obs_runtime.game_key,
+                        "game_version": obs_runtime.game_version,
+                    },
+                    "critical_evidences": crit_evidences_list,
+                    "message": msg,
+                }
+            else:
+                resp_payload = {
+                    "version": 1,
+                    "operation_id": operation_id,
+                    "mode": mode,
+                    "nonce": nonce,
+                    "disposition": VerifierDisposition.REJECTED,
+                    "canonical_root": canonical_root,
+                    "volume_serial_number": 0,
+                    "root_file_id": 0,
+                    "observed_tree": {"digest": "", "files": 0, "bytes": 0},
+                    "observed_runtime": {"game_key": "", "game_version": ""},
+                    "critical_evidences": [],
+                    "message": f"Modo '{mode}' no reconocido",
+                }
+        except Exception as exc:  # noqa: BLE001 — boundary del proceso worker: emite REJECTED
+            # Respuesta tipada REJECTED para evitar desconexión abrupta / ChildExitedPrematurelyError
             resp_payload = {
                 "version": 1,
                 "operation_id": operation_id,
                 "mode": mode,
                 "nonce": nonce,
-                "disposition": disp,
-                "canonical_root": phys_identity.canonical_root,
-                "volume_serial_number": phys_identity.volume_serial_number,
-                "root_file_id": phys_identity.root_file_id,
-                "observed_tree": {
-                    "digest": observed_tree.digest,
-                    "files": observed_tree.files,
-                    "bytes": observed_tree.bytes,
-                },
-                "observed_runtime": {
-                    "game_key": obs_runtime.game_key,
-                    "game_version": obs_runtime.game_version,
-                },
+                "disposition": VerifierDisposition.REJECTED,
+                "canonical_root": canonical_root,
+                "volume_serial_number": 0,
+                "root_file_id": 0,
+                "observed_tree": {"digest": "", "files": 0, "bytes": 0},
+                "observed_runtime": {"game_key": "", "game_version": ""},
                 "critical_evidences": [],
-                "message": msg,
+                "message": f"{type(exc).__name__}: {exc}",
             }
-        else:
-            return
 
         frame = encode_length_prefixed_frame(json.dumps(resp_payload, ensure_ascii=False).encode("utf-8"))
-        written = wintypes.DWORD(0)
-        _kernel32.WriteFile(
-            ctypes.c_void_p(h_client),
-            frame,
-            len(frame),
-            ctypes.byref(written),
-            None,
-        )
+        _write_all_sync(int(h_client), frame)
     finally:
         _kernel32.CloseHandle(ctypes.c_void_p(h_client))
 
@@ -1007,12 +1201,12 @@ class OperatorVerifierBridge:
                     if wait_res == _WAIT_OBJECT_0:
                         connected = True
                     elif wait_res == _WAIT_TIMEOUT:
-                        _kernel32.CancelIoEx(ctypes.c_void_p(h_pipe), ctypes.byref(ov))
+                        _cancel_and_drain_overlapped(h_pipe, ov)
                         raise OperatorVerifierTimeoutError(
                             f"La conexión del verificador hijo expiró tras {self._timeout_seconds}s"
                         )
                     else:
-                        _kernel32.CancelIoEx(ctypes.c_void_p(h_pipe), ctypes.byref(ov))
+                        _cancel_and_drain_overlapped(h_pipe, ov)
                         raise OperatorVerifierBridgeError("Fallo en WaitForSingleObject de ConnectNamedPipe")
                 else:
                     raise OperatorVerifierBridgeError(f"ConnectNamedPipe falló: código Win32 {err}")
@@ -1049,16 +1243,7 @@ class OperatorVerifierBridge:
 
             # 4. Enviar request enmarcado
             req_frame = encode_length_prefixed_frame(json.dumps(request_dict, ensure_ascii=False).encode("utf-8"))
-            written = wintypes.DWORD(0)
-            if not _kernel32.WriteFile(
-                ctypes.c_void_p(h_pipe),
-                req_frame,
-                len(req_frame),
-                ctypes.byref(written),
-                None,
-            ):
-                err = ctypes.get_last_error()
-                raise OperatorVerifierBridgeError(f"WriteFile(request) falló: código Win32 {err}")
+            _write_all_overlapped(int(h_pipe), req_frame, self._timeout_seconds)
 
             # 5. Leer respuesta terminal con timeout acotado
             resp_bytes = _read_frame_overlapped(h_pipe, MAX_RESPONSE_BYTES, self._timeout_seconds)
@@ -1102,7 +1287,7 @@ class OperatorVerifierBridge:
                                     "Trailing bytes detectados tras el mensaje terminal del verificador"
                                 )
                         else:
-                            _kernel32.CancelIoEx(ctypes.c_void_p(h_pipe), ctypes.byref(extra_ov))
+                            _cancel_and_drain_overlapped(h_pipe, extra_ov)
             finally:
                 _kernel32.CloseHandle(ctypes.c_void_p(extra_event))
 
@@ -1166,8 +1351,9 @@ class OperatorVerifierBridge:
 
         disposition = resp.get("disposition")
         if disposition != VerifierDisposition.OBSERVED:
+            msg = resp.get("message", "")
             raise OperatorVerifierBridgeError(
-                f"Modo OBSERVE debe producir disposition OBSERVED; recibido '{disposition}'"
+                f"Modo OBSERVE no produjo disposition OBSERVED (disposition='{disposition}', message='{msg}')"
             )
 
         phys_id = PhysicalRootIdentity(
@@ -1195,6 +1381,7 @@ class OperatorVerifierBridge:
                     expected_digest=c.get("expected_digest"),
                     observed_size=c.get("observed_size"),
                     expected_size=c.get("expected_size"),
+                    message=c.get("message", ""),
                 )
             )
 
@@ -1272,6 +1459,30 @@ class OperatorVerifierBridge:
             raise ProtocolAbuseError(f"mode mismatch: esperado VERIFY, recibido {resp.get('mode')}")
 
         disposition = VerifierDisposition(resp["disposition"])
+        if disposition == VerifierDisposition.REJECTED:
+            return OperatorVerifierVerificationResult(
+                disposition=disposition,
+                operation_id=operation_id,
+                nonce=nonce,
+                physical_root=PhysicalRootIdentity(
+                    canonical_root=resp.get("canonical_root", lexical_root),
+                    volume_serial_number=0,
+                    root_file_id=0,
+                ),
+                tree_result=TreeVerificationResult(
+                    state=VerificationState.FAILED,
+                    expected=expected_tree,
+                    message=resp.get("message", ""),
+                ),
+                runtime_result=RuntimeVerificationResult(
+                    state=VerificationState.FAILED,
+                    expected=expected_runtime,
+                    message=resp.get("message", ""),
+                ),
+                critical_evidences=(),
+                message=resp.get("message", ""),
+            )
+
         phys_id = PhysicalRootIdentity(
             canonical_root=resp["canonical_root"],
             volume_serial_number=resp["volume_serial_number"],
@@ -1302,6 +1513,20 @@ class OperatorVerifierBridge:
             observed=obs_runtime,
         )
 
+        crit_evs: list[CriticalFileEvidence] = []
+        for c in resp.get("critical_evidences", []):
+            crit_evs.append(
+                CriticalFileEvidence(
+                    rel_path=c["rel_path"],
+                    state=VerificationState(c["state"]),
+                    observed_digest=c.get("observed_digest"),
+                    expected_digest=c.get("expected_digest"),
+                    observed_size=c.get("observed_size"),
+                    expected_size=c.get("expected_size"),
+                    message=c.get("message", ""),
+                )
+            )
+
         return OperatorVerifierVerificationResult(
             disposition=disposition,
             operation_id=operation_id,
@@ -1309,6 +1534,6 @@ class OperatorVerifierBridge:
             physical_root=phys_id,
             tree_result=tree_res,
             runtime_result=runtime_res,
-            critical_evidences=(),
+            critical_evidences=tuple(crit_evs),
             message=resp.get("message", ""),
         )

@@ -166,6 +166,7 @@ from sky_claw.local.runtime_vault.physical_root import (
     PhysicalRootIdentityUnavailableError,
     PhysicalRootMismatchError,
     PhysicalRootReparseError,
+    bound_physical_root,
     derive_physical_root,
     verify_physical_root,
 )
@@ -518,6 +519,7 @@ __all__ = [
     "apply_canonical_tgr_file_security",
     "apply_target_dacl_by_handle",
     "bootstrap_trusted_namespace",
+    "bound_physical_root",
     "build_foundation_header_from_context",
     "build_helper_arguments",
     "build_namespace_dacl_spec",

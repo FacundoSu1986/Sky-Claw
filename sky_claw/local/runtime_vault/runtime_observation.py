@@ -131,11 +131,17 @@ def observe_runtime_identity_from_root(
     found_candidates: list[pathlib.Path] = []
     try:
         for entry in os.scandir(root_path):
-            if entry.is_file():
-                name_lower = entry.name.lower()
-                if name_lower in _ALL_CANDIDATE_NAMES_LOWER:
+            name_lower = entry.name.lower()
+            if name_lower in _ALL_CANDIDATE_NAMES_LOWER:
+                if entry.is_symlink():
+                    raise RuntimeObservationError(
+                        f"El ejecutable de runtime '{entry.path}' es un enlace simbólico (symlink prohibido, fail-closed)"
+                    )
+                if entry.is_file(follow_symlinks=False):
                     found_candidates.append(pathlib.Path(entry.path))
     except OSError as exc:
+        if isinstance(exc, RuntimeObservationError):
+            raise
         raise RuntimeObservationError(f"No se pudo escanear el directorio '{root_path}': {exc}") from exc
 
     # Regla anti-ambigüedad: si hay más de un ejecutable conocido en la raíz -> fail-closed

@@ -20,10 +20,12 @@ Contrato normativo ADR 0010 §11.0 / §11.4:
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import os
 import pathlib
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from sky_claw.local.runtime_vault.models import RuntimeVaultError
@@ -284,20 +286,7 @@ def derive_physical_root(root: pathlib.Path | str) -> PhysicalRootIdentity:
         _kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
-def verify_physical_root(
-    root: pathlib.Path | str,
-    expected: PhysicalRootIdentity,
-) -> PhysicalRootIdentity:
-    """Abre la raíz de forma segura fresca y exige coincidencia exacta con la expectativa autorizada (para VERIFY).
-
-    Cualquier discrepancia en canonical_root, VolumeSerialNumber o root_file_id
-    produce :class:`PhysicalRootMismatchError` fail-closed.
-    """
-    if not isinstance(expected, PhysicalRootIdentity):
-        raise PhysicalRootMismatchError(f"expected debe ser PhysicalRootIdentity; observado {type(expected).__name__}")
-
-    derived = derive_physical_root(root)
-
+def _verify_identity_match(derived: PhysicalRootIdentity, expected: PhysicalRootIdentity) -> None:
     # 1. Comparación de canonical_root (case-insensitive en Windows)
     if derived.canonical_root.upper() != expected.canonical_root.upper():
         raise PhysicalRootMismatchError(
@@ -318,4 +307,56 @@ def verify_physical_root(
             f"esperado={expected.root_file_id}, observado={derived.root_file_id}"
         )
 
+
+def verify_physical_root(
+    root: pathlib.Path | str,
+    expected: PhysicalRootIdentity,
+) -> PhysicalRootIdentity:
+    """Abre la raíz de forma segura fresca y exige coincidencia exacta con la expectativa autorizada (para VERIFY).
+
+    Cualquier discrepancia en canonical_root, VolumeSerialNumber o root_file_id
+    produce :class:`PhysicalRootMismatchError` fail-closed.
+    """
+    if not isinstance(expected, PhysicalRootIdentity):
+        raise PhysicalRootMismatchError(f"expected debe ser PhysicalRootIdentity; observado {type(expected).__name__}")
+
+    derived = derive_physical_root(root)
+    _verify_identity_match(derived, expected)
     return derived
+
+
+@contextlib.contextmanager
+def bound_physical_root(
+    root: pathlib.Path | str,
+    expected: PhysicalRootIdentity | None = None,
+) -> Iterator[PhysicalRootIdentity]:
+    """Abre y sostiene un handle sobre la raíz durante la medición, protegiendo contra TOCTOU.
+
+    1. Abre handle-first con OPEN_REPARSE_POINT (fallo cerrado si ReparseTag != 0).
+    2. Valida la identidad física inicial (y contra expected si se proveyó).
+    3. Sostiene el handle abierto durante el bloque para inhibir renombres/borrados de directorio.
+    4. Al salir, ejecuta un sandwich recheck:
+       - Re-inspecciona el handle sostenido.
+       - Abre un handle fresco sobre la ruta y verifica que la identidad física sea idéntica.
+    """
+    handle, lexical_path = _open_physical_root(root)
+    try:
+        initial_id = _inspect_physical_root_handle(handle, lexical_path)
+        if expected is not None:
+            _verify_identity_match(initial_id, expected)
+
+        yield initial_id
+
+        # Sandwich recheck:
+        held_id = _inspect_physical_root_handle(handle, lexical_path)
+        if held_id != initial_id:
+            raise PhysicalRootMismatchError(
+                f"TOCTOU detectado: la raíz sostenida mutó durante la medición (inicial={initial_id}, final={held_id})"
+            )
+        fresh_id = derive_physical_root(root)
+        if fresh_id != initial_id:
+            raise PhysicalRootMismatchError(
+                f"TOCTOU detectado: la raíz viva fue sustituida durante la medición (inicial={initial_id}, fresco={fresh_id})"
+            )
+    finally:
+        _kernel32.CloseHandle(ctypes.c_void_p(handle))
