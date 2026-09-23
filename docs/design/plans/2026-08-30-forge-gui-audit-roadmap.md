@@ -126,7 +126,7 @@ Criterio de cierre:
 
 ### L1 — Fragmentos `ui.html` fuera del flex y colores de Quasar en capa
 
-**Estado:** **RESUELTO** en el PR de pulido visual del shell — dos mecanismos
+**Estado:** **RESUELTO** en #627 (pulido visual del shell) — dos mecanismos
 que rompían el render sin que ningún gate lo viera (el smoke visual los mostró):
 
 - **`ui.html` envuelve su contenido en un `<div>` de bloque.** Los fragmentos
@@ -157,7 +157,7 @@ el selector real de Quasar (`--truthy`, no `--active`).
 
 ### Responsive baseline
 
-**Estado:** parcial — el header ya no desborda en ventanas angostas (el HUD
+**Estado:** parcial (#627) — el header ya no desborda en ventanas angostas (el HUD
 GPU·CPU, redundante con la Vitalidad del sidebar, cede bajo 1240 px y el
 nombre/rol bajo 1080 px; verificado a 1280/1100/1024 px sin scroll horizontal).
 Stats, hero y grillas siguen pendientes según el criterio de abajo.
