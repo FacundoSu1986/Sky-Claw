@@ -90,6 +90,12 @@ dev = [
     "mypy>=1.10",
     "types-aiofiles",
     "google-genai>=1.0,<2",
+    # NP-M0 (research/native_parallax) importa numpy de forma directa y no estaba
+    # declarado en ningún extra: el gate mypy resolvía np como Any (no-any-return
+    # en synthetic_height._mesh) y la suite saltaba el spike vía importorskip.
+    # Research es dev-only; ningún camino de producción importa
+    # sky_claw.local.native_parallax.research.
+    "numpy>=1.26,<3",
 ]
 
 [tool.pytest.ini_options]
