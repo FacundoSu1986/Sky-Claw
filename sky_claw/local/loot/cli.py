@@ -103,6 +103,26 @@ class LOOTConfig:
     ``game`` es el **id interno de Sky-Claw** (p. ej. ``"SkyrimSE"``), no el
     string de CLI: :meth:`LOOTRunner.sort` lo traduce en la frontera única
     :func:`to_loot_cli_game_id` al armar el argv.
+
+    **Auditoría de validación (review FINDING C, PR-0):** ``game`` es dominio
+    interno y NO se valida en el constructor a propósito. Censo de los 4
+    constructores productivos (2026-09): ``system_tools``,
+    ``dispatcher_dependencies`` y ``loot_service`` usan el default interno
+    (no pasan ``game``); ``vfs_worker._loot_handler`` pasa el valor del
+    payload SOLO después de validarlo contra ``LOOT_CLI_GAME_IDENTIFIERS``
+    (fail-closed en la frontera IPC). Ningún caller productivo pasa strings
+    de CLI ni externos arbitrarios. El invariant de seguridad es **NUNCA UN
+    STRING NO RECONOCIDO LLEGA A LOOT.exe**, y se cumple en la frontera de
+    traducción: ``to_loot_cli_game_id`` lanza ``LOOTGameIdError`` ANTES de
+    crear el subprocess (LOOT 0.29.x NO fallaría cerrado: ordenaría el
+    primer juego instalado). Por eso no se añade ``__post_init__``: no
+    aportaría un invariant adicional (el config se puede construir con
+    strings ajenos sin riesgo — el riesgo se neutraliza en la traducción),
+    y un ``Literal["SkyrimSE", "SkyrimVR"]`` estático es FOLLOW-UP: churn
+    en los tests fail-closed que construyen el config a propósito con ids
+    inválidos (test_t2 de
+    ``tests/test_loot_game_identifier_contract.py``) y en el narrowing del
+    worker.
     """
 
     loot_exe: pathlib.Path
