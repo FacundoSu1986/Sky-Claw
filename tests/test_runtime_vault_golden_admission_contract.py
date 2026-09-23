@@ -148,6 +148,68 @@ def test_receipt_fields_and_untrusted_staging_exclusions_are_explicit() -> None:
     assert "source_provenance_digest = null" in contract
 
 
+def test_runtime_observation_requires_fresh_acquisition_not_input_reuse() -> None:
+    contract = section(
+        "#### Modelos de admission — independientes del FSM GP2",
+        "`GoldenAdmissionReceipt` es creado",
+    )
+    assert "sólo compara `observed_runtime` recibido como input" in contract
+    assert "`GoldenMasterCandidate` también puede transportar ese valor" in contract
+    assert "`FreshRuntimeObservation` read-only" in contract
+    assert "en cada** pass `OBSERVE` y `VERIFY`" in contract
+    assert "`expected_runtime` del receipt nunca se copia como `observed_runtime`" in contract
+    assert "Si no hay una fuente observada fresca" in contract
+
+    oracle = section(
+        "- **RVO-09:",
+        "- **RVO-10:",
+    )
+    assert "runtime de `GoldenMasterCandidate`" in oracle
+    assert "ausencia de observer falla cerrado" in oracle
+
+
+def test_critical_expectations_digest_has_exact_canonical_serialization() -> None:
+    bindings = section(
+        "Bindings normativos del receipt:",
+        "La confirmación de Golden Admission",
+    )
+    assert "`critical_expectations_digest` es `SHA-256`" in bindings
+    assert "`rel_path`, `expected_digest` y `expected_size`" in bindings
+    assert "paths normalizados duplicados" in bindings
+    assert "orden lexicográfico de los bytes UTF-8 de `rel_path`" in bindings
+    assert "`expected_digest` va en minúsculas" in bindings
+    assert "`expected_size` se serializa siempre (entero JSON no negativo, no boolean, o `null`)" in bindings
+    assert "`ensure_ascii=False`" in bindings
+    assert "campos de objeto ordenados lexicográficamente, separadores compactos" in bindings
+    assert "sin BOM ni newline final" in bindings
+    assert '`SHA-256(UTF-8("[]"))`' in bindings
+
+
+def test_receipt_is_auditable_to_the_exact_tgr_row() -> None:
+    contract = section(
+        "Bindings normativos del receipt:",
+        "La confirmación de Golden Admission",
+    )
+    assert "`registered_by = receipt.operator_sid`" in contract
+    assert "timestamp UTC ISO-8601 `Z` del registro" in contract
+    assert "único entre registros del mismo root físico" in contract
+    assert "entradas TGR exactas `before` (`ABSENT` o valor previo) y `after`" in contract
+    assert "cero o múltiples matches -> fail closed" in contract
+    assert "persiste y revalida este registro protegido" in contract
+    assert "Se conserva mientras la entrada `after` sea la actual" in contract
+    assert "La enmienda no cambia el schema JSON del TGR" in contract
+
+
+def test_independent_provenance_is_conditional_not_assumed_available() -> None:
+    sources = section(
+        "#### Fuentes cerradas de expectativa",
+        "#### Modelos de admission",
+    )
+    assert "no aprueba ningún source concreto" in sources
+    assert "no se puede emitir ese modo" in sources
+    assert "La fuente final de autoridad del TreeDigest completo se etiqueta `OPERATOR_TOFU`" in sources
+
+
 def test_tgr_and_tofu_claims_include_their_security_limits() -> None:
     assert 'OPERATOR_TOFU_WARNING = "OPERATOR_TOFU DOES NOT DETECT PRE-EXISTING COMPROMISE"' in ADR
     assert "TGR_SEMANTICS = LAST_EXPLICITLY_AUTHORIZED_AND_SUBSEQUENTLY_VERIFIED_SNAPSHOT" in ADR
