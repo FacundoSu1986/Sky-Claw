@@ -1312,3 +1312,221 @@ def test_rombo_d6_como_glifo_de_estado() -> None:
     # (5) El punto solo-rombo ya no debería presentar una clase radial por solo color.
     fila = _task_log_row_html({"action": "instalar", "mod_name": "X", "status": "ok", "created_at": ""})
     assert "border-radius:50%; background:" not in fila, "queda dot CSS redundante junto al rombo"
+
+
+# ── Fragmentos ui.html como ítems del flex (display:contents) ────────────────
+
+#: Funciones del shell que emiten un ``ui.html`` con VARIOS hijos de nivel
+#: superior pensados como ítems del flex/grid de su contenedor (ícono + etiqueta
+#: + contador del nav, índice + nombre + estado de la fila de mod…). ``ui.html``
+#: los envuelve en un ``<div>`` de bloque propio: sin ``display:contents`` en
+#: ese wrapper el flex no los alcanza y se apilan (ícono arriba, etiqueta abajo,
+#: ``flex:1`` sin efecto). Igualdad exacta: quitar el fragmento de un consumidor
+#: o sumar uno nuevo rompe el ancla hasta decidirlo acá.
+_CONSUMIDORES_FRAGMENTO = frozenset(
+    {
+        "_nav_item",
+        "_modo_local_panel",
+        "_header",
+        "_hero",
+        "_ritual_card",
+        "_orden_carga",
+        "_mod_row",
+        "_conflicts_screen",
+        "_resolved_section",
+        "_conflict_row",
+        "_ritual_feedback_panel",
+    }
+)
+
+
+def _funciones_con_fragmento() -> tuple[set[str], list[str]]:
+    """Censo AST de ``ui.html(...).style(...)`` en el shell.
+
+    Devuelve ``(funciones que pasan _FRAGMENTO, usos con un literal)``: el valor
+    vive en UNA constante para que el censo no dependa de la grafía — un
+    ``.style("display: contents")`` suelto quedaría fuera del ancla, así que se
+    reporta como violación.
+    """
+    consumidores: set[str] = set()
+    literales: list[str] = []
+
+    class _Buscador(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._pila: list[str] = []
+
+        def _con_pila(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            self._pila.append(node.name)
+            self.generic_visit(node)
+            self._pila.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._con_pila(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._con_pila(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "style"
+                and _es_llamada_ui(node.func.value, "html")
+                and node.args
+            ):
+                funcion = self._pila[-1] if self._pila else "<módulo>"
+                arg = node.args[0]
+                if isinstance(arg, ast.Name) and arg.id == "_FRAGMENTO":
+                    consumidores.add(funcion)
+                elif isinstance(arg, ast.Constant) and "contents" in str(arg.value):
+                    literales.append(funcion)
+            self.generic_visit(node)
+
+    _Buscador().visit(ast.parse(_FORGE))
+    return consumidores, literales
+
+
+def test_fragmentos_html_del_shell_participan_del_flex() -> None:
+    """Los fragmentos multi-hijo del shell viajan con ``display:contents``.
+
+    Propiedad del mecanismo, no del caso: un hijo de ``ui.html`` sólo es ítem del
+    flex/grid del contenedor si el wrapper que agrega NiceGUI no genera caja. El
+    defecto era de TODA la familia (nav, toggle del header, filas, cabeceras,
+    tarjetas, toast), no de un call-site: el censo la congela entera.
+    """
+    from sky_claw.app.gui.views.forge_dashboard import _FRAGMENTO
+
+    assert _FRAGMENTO == "display:contents"
+    consumidores, literales = _funciones_con_fragmento()
+    assert not literales, f"display:contents literal fuera de _FRAGMENTO en: {literales}"
+    assert consumidores == _CONSUMIDORES_FRAGMENTO, (
+        f"el censo de fragmentos cambió: extra={sorted(consumidores - _CONSUMIDORES_FRAGMENTO)}, "
+        f"faltante={sorted(_CONSUMIDORES_FRAGMENTO - consumidores)}"
+    )
+
+
+# ── Botones/toggles de Quasar: el color lo decide el tema (capas de NiceGUI 3) ──
+
+#: Token de color SIN clase en Quasar. NiceGUI 3 carga los ``!important`` de
+#: Quasar en la capa ``quasar_importants`` y, en la cascada, un ``!important``
+#: EN CAPA le gana a cualquier ``!important`` sin capa (todo styles.css): con el
+#: ``color="primary"`` por defecto de ``ui.button`` (y el ``toggle-color``
+#: primary de QBtnToggle) Quasar agrega ``.bg-primary``/``.text-white``/
+#: ``.text-primary`` y pisan la receta del tema sin que ningún gate lo vea — el
+#: CTA del wizard salía ocre plano y el selector de proveedor en ámbar.
+_TOKENS_BOTON = frozenset({"color=sc-tema", "text-color=sc-tema"})
+_TOKENS_TOGGLE = frozenset({"toggle-color=sc-tema", "toggle-text-color=sc-tema"})
+
+
+def _cadenas_quasar_del_paquete_gui() -> list[tuple[str, str, frozenset[str], frozenset[str]]]:
+    """Censo AST de TODO ``ui.button``/``ui.toggle`` del paquete GUI.
+
+    Para cada cadena MAXIMAL que arranca en uno de ellos devuelve
+    ``(ubicación, componente, tokens de .props(), clases literales)``. Una forma
+    que no encadena ``.props(...)`` (``b = ui.button(); b.props(...)``) aparece
+    sin tokens y el test la rechaza: fail-closed, no se interpreta.
+    """
+    cadenas: list[tuple[str, str, frozenset[str], frozenset[str]]] = []
+    for archivo in sorted(_GUI_DIR.rglob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        # Un eslabón es sub-expresión de otro cuando es el ``func.value`` de una
+        # llamada: sólo cuentan las cadenas que NADIE más extiende.
+        internos = {
+            id(nodo.func.value)
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute)
+        }
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call) or id(nodo) in internos:
+                continue
+            base, eslabones = _desarmar_cadena(nodo)
+            if not (isinstance(base, ast.Name) and base.id == "ui") or not eslabones:
+                continue
+            componente = eslabones[-1][0]
+            if componente not in ("button", "toggle"):
+                continue
+            tokens: set[str] = set()
+            clases: set[str] = set()
+            for attr, llamada in eslabones:
+                for arg in llamada.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        if attr == "props":
+                            tokens |= set(arg.value.split())
+                        elif attr == "classes":
+                            clases |= set(arg.value.split())
+            ubicacion = f"{archivo.relative_to(_GUI_DIR).as_posix()}:{nodo.lineno}"
+            cadenas.append((ubicacion, componente, frozenset(tokens), frozenset(clases)))
+    return cadenas
+
+
+def _llamadas_quasar_crudas() -> int:
+    total = 0
+    for archivo in _GUI_DIR.rglob("*.py"):
+        for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
+            if _es_llamada_ui(nodo, "button") or _es_llamada_ui(nodo, "toggle"):
+                total += 1
+    return total
+
+
+def test_botones_y_toggles_quasar_piden_el_color_del_tema() -> None:
+    """Todo ``ui.button``/``ui.toggle`` del paquete GUI pide ``sc-tema``.
+
+    Enumera la familia completa por AST (no los dos selectores de proveedor que
+    motivaron el fix): Cámara de Ajustes y wizard son gemelos, y el CTA del
+    wizard, su «Atrás» flat y los helpers ``create_cta_button``/acciones sufren
+    el mismo mecanismo aunque hoy no estén todos en el shell vivo.
+    """
+    cadenas = _cadenas_quasar_del_paquete_gui()
+    assert len(cadenas) == _llamadas_quasar_crudas(), "hay ui.button/ui.toggle fuera de una cadena analizable"
+    assert cadenas, "el censo quedó vacío: el parser dejó de ver los componentes"
+
+    faltantes = []
+    for ubicacion, componente, tokens, clases in cadenas:
+        requeridos = _TOKENS_TOGGLE if componente == "toggle" else _TOKENS_BOTON
+        if not requeridos <= tokens:
+            faltantes.append(f"{ubicacion} ({componente}): faltan {sorted(requeridos - tokens)}")
+        # Ningún color de paleta Quasar puede reaparecer por props.
+        colores = {t for t in tokens if t.split("=")[0] in ("color", "text-color", "toggle-color", "toggle-text-color")}
+        assert colores <= requeridos, f"{ubicacion}: color de Quasar en props {sorted(colores - requeridos)}"
+        if componente == "toggle":
+            assert "sc-toggle" in clases, f"{ubicacion}: el selector no usa la receta .sc-toggle"
+    assert not faltantes, "componentes Quasar sin el color del tema:\n" + "\n".join(faltantes)
+
+
+def test_receta_sc_toggle_no_pelea_con_importants_de_quasar() -> None:
+    """La receta ``.sc-toggle`` gana por ausencia de competencia, no a los golpes.
+
+    Sin ``!important``: con el token ``sc-tema`` no hay regla de Quasar que
+    compita y un ``!important`` sin capa igual perdería contra la capa
+    ``quasar_importants``. El estado elegido se lee de ``aria-pressed`` (lo que
+    QBtnToggle emite de verdad) y el switch de mods de ``--truthy``: los
+    selectores muertos que apuntaban a clases inexistentes no vuelven.
+    """
+    reglas = [_STYLES[m.end() : _STYLES.index("}", m.end())] for m in re.finditer(r"(?m)^\.sc-toggle[^{]*\{", _STYLES)]
+    assert reglas, "la receta .sc-toggle desapareció de styles.css"
+    assert all("!important" not in regla for regla in reglas), ".sc-toggle no debe pelear con !important"
+    assert '.sc-toggle .q-btn[aria-pressed="true"]' in _STYLES
+    assert ".sky-mod-toggle .q-toggle__inner--truthy" in _STYLES
+    # Sobre el CSS SIN comentarios: el comentario que documenta el retiro de un
+    # selector muerto no debe dispararlo.
+    sin_comentarios = re.sub(r"/\*.*?\*/", "", _STYLES, flags=re.DOTALL)
+    for muerto in (".q-btn--active", "q-toggle__inner--active"):
+        assert muerto not in sin_comentarios, f"selector de una clase que Quasar no emite: {muerto}"
+
+
+def test_shell_forge_ocupa_el_viewport_con_scroll_interno() -> None:
+    """El shell es una app de pantalla completa: alto fijo al viewport, scroll
+    dentro de ``.sc-scroll`` y sin el padding de ``.nicegui-content``.
+
+    Con ``min-height:100vh`` la página entera scrolleaba, el sidebar se estiraba
+    con el contenido y la Vitalidad del Sistema quedaba bajo el pliegue; el
+    padding de NiceGUI dejaba además un marco de 16px de piedra alrededor.
+    """
+    assert "height:100vh; width:100%; overflow:hidden;" in _FORGE
+    assert "min-height:100vh" not in _FORGE
+    assert '.classes("sc-shell")' in _FORGE
+    regla = _STYLES[_STYLES.index(".nicegui-content:has(.sc-shell) {") :]
+    regla = regla[: regla.index("}")]
+    assert "padding: 0 !important;" in regla
+    # Los títulos inline del shell no heredan la escala Material de Quasar
+    # (h2 con line-height de 60px inflaba la cabecera del Orden de Carga).
+    assert ".sc-shell :is(h1, h2, h3) { line-height: 1.25; }" in _STYLES

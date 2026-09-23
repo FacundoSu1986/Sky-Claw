@@ -219,8 +219,11 @@ class SetupWizardModal:
                                 ["anthropic", "deepseek", "openai", "ollama"],
                                 value="deepseek",
                             )
-                            .classes("w-full")
-                            .props("color=amber")
+                            .classes("w-full sc-toggle")
+                            # Mismo seam que la Cámara de Ajustes (receta .sc-toggle):
+                            # colores sin clase en Quasar para que su .bg-primary
+                            # !important (capa quasar_importants) no pise el oro.
+                            .props("unelevated toggle-color=sc-tema toggle-text-color=sc-tema")
                         )
 
                     # Nexus Key
@@ -273,7 +276,9 @@ class SetupWizardModal:
                             on_click=self._go_step1,
                         )
                         .classes("px-5 py-3 rounded-xl font-semibold")
-                        .props("ripple flat no-caps")
+                        # sc-tema también acá: con el primary por defecto el
+                        # .text-primary !important de Quasar pisaba el oro inline.
+                        .props("ripple flat no-caps color=sc-tema text-color=sc-tema")
                         # gold, not parchment-ink: the v4.0 wizard modal is dark,
                         # so #2c2016 would render the Back control near-invisible.
                         .style("color: var(--sky-gold); display: none;")
@@ -285,7 +290,11 @@ class SetupWizardModal:
                             on_click=self._go_step2,
                         )
                         .classes("sky-wizard-cta px-6 py-3 rounded-xl text-lg")
-                        .props("ripple no-caps")
+                        # color/text-color sin clase en Quasar: con el primary por
+                        # defecto, .bg-primary/.text-white (!important en la capa
+                        # quasar_importants de NiceGUI 3) pisaban el oro fundido de
+                        # .sky-wizard-cta y el CTA salía ocre plano.
+                        .props("ripple no-caps color=sc-tema text-color=sc-tema")
                     )
 
                     self._submit_btn = (
@@ -293,11 +302,15 @@ class SetupWizardModal:
                             on_click=self._on_submit,
                         )
                         .classes("sky-wizard-cta px-6 py-3 rounded-xl text-lg")
-                        .props("ripple no-caps")
+                        .props("ripple no-caps color=sc-tema text-color=sc-tema")
                         .style("display: none;")
                     )
                     with self._submit_btn:
-                        ui.html(f'<span style="margin-right:8px;">{_ICON_ROCKET}</span>')
+                        # display:contents: el wrapper <div> de ui.html dejaba el
+                        # cohete fuera de la alineación flex del contenido del botón.
+                        ui.html(f'<span style="display:inline-flex; margin-right:8px;">{_ICON_ROCKET}</span>').style(
+                            "display:contents"
+                        )
                         ui.label("Inicializar Sistema")
 
                 # Lore rotatorio (D2): cita al pie del modal, estilo pantalla de
