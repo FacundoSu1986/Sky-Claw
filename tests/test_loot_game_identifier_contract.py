@@ -35,6 +35,9 @@ Mutaciones ancladas (deben salir ROJO si se reintroduce el defecto):
   ancla rglob de ``test_contrato_argumentos_cli``).
 * M4: bypass del broker VFS con runner directo → el guard F8 de
   ``test_vfs_production_wiring`` (T7) lo caza.
+* (FINDING A) detector F8 case-sensitive (``relative_to(install_root / "loot")``)
+  → ``test_t6_guard_f8_*casing*`` rojos (cualquier casing del subárbol
+  ``loot`` escapaba del guard en un host case-sensitive).
 """
 
 from __future__ import annotations
@@ -57,6 +60,7 @@ from sky_claw.local.loot.parser import LOOTOutputParser, LOOTResult
 from sky_claw.local.mo2.brokered_loot import (
     BrokeredLootRunner,
     VfsRequiredLootRunner,
+    _is_mo2_internal_loot,
     build_vfs_loot_runner,
 )
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
@@ -564,6 +568,100 @@ def test_t6_standalone_junto_a_la_instalacion_de_mo2_sigue_valido(tmp_path: path
     )
 
     assert isinstance(runner, BrokeredLootRunner)
+
+
+# ---------------------------------------------------------------------------
+# T6c — guard F8: comparación LÓGICA case-insensitive (review FINDING A).
+# El target productivo es Windows: ``loot``/``Loot``/``LOOT``/``lOoT`` son el
+# MISMO subárbol. La comparación NO puede depender de la semántica
+# case-sensitive del filesystem host (la implementación anterior usaba
+# ``relative_to(install_root / "loot")``: un casing distinto escapaba del
+# guard). Aquí se congelan los cuatro casings canónicos + los casos límite.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("subtree", ["loot", "Loot", "LOOT", "lOoT"])
+def test_t6_guard_f8_cualquier_casing_del_subarbol_loot_rechaza(tmp_path: pathlib.Path, subtree: str) -> None:
+    """Cada casing del componente ``loot`` identifica el MISMO subárbol
+    interno de MO2 (semántica Windows), sin importar el host donde corra el
+    test (en POSIX ``Loot`` y ``loot`` son directorios distintos: la
+    comparación es del contrato lógico, no del disco)."""
+    install = tmp_path / "ModOrganizer2"
+    (install / subtree).mkdir(parents=True)
+    exe = install / subtree / "lootcli.exe"
+    exe.write_bytes(b"loot-internal")
+    assert _is_mo2_internal_loot(exe.resolve(), install.resolve()) is True
+
+
+def test_t6_guard_f8_casing_subarbol_rechaza_aunque_el_exe_no_se_llame_lootcli(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El subárbol interno se rechaza por SUBÁRBOL (aunque el exe se llame
+    ``LOOT.exe`` o ``tool.exe``), con cualquier casing del componente."""
+    install = tmp_path / "ModOrganizer2"
+    for subtree, nombre in (("LOOT", "LOOT.exe"), ("Loot", "tool.exe")):
+        (install / subtree).mkdir(parents=True)
+        exe = install / subtree / nombre
+        exe.write_bytes(b"loot-internal")
+        assert _is_mo2_internal_loot(exe.resolve(), install.resolve()) is True, (subtree, nombre)
+
+
+def test_t6_guard_f8_prefijo_con_casing_distinto_en_la_instalacion_rechaza(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Casos donde la raíz misma tiene distinto casing (``mOdOrGanizer2`` vs
+    ``ModOrganizer2``): la comparación componente a componente (casefold)
+    sigue reconociendo el subárbol interno — ``relative_to`` case-sensitive
+    lo escapaba."""
+    install = tmp_path / "ModOrganizer2"
+    install_casing = tmp_path / "mOdOrGanizer2"
+    (install_casing / "loot").mkdir(parents=True)
+    exe = install_casing / "loot" / "lootcli.exe"
+    exe.write_bytes(b"loot-internal")
+    assert _is_mo2_internal_loot(exe.resolve(), install.resolve()) is True
+
+
+def test_t6_guard_f8_casing_solo_el_componente_loot_no_el_nombre_del_exe(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Contraparte de falsos positivos: un exe en la RAÍZ de la instalación
+    (no en el subárbol) con cualquier casing sigue siendo standalone válido,
+    y un standalone fuera del árbol MO2 con subdirectorio llamado ``LOOT``
+    tampoco es el internal (el subárbol debe estar BAJO install_root)."""
+    install = tmp_path / "ModOrganizer2"
+    install.mkdir(parents=True)
+    for nombre in ("loot.exe", "Loot.exe", "LOOT.exe"):
+        exe = install / nombre
+        exe.write_bytes(b"loot-standalone")
+        assert _is_mo2_internal_loot(exe.resolve(), install.resolve()) is False, nombre
+    externo = tmp_path / "Tools" / "LOOT" / "LOOT.exe"
+    externo.parent.mkdir(parents=True)
+    externo.write_bytes(b"loot-standalone")
+    assert _is_mo2_internal_loot(externo.resolve(), install.resolve()) is False
+
+
+@pytest.mark.parametrize("subtree", ["loot", "Loot", "LOOT", "lOoT"])
+def test_t6_guard_f8_casing_via_constructor_rechaza(tmp_path: pathlib.Path, subtree: str) -> None:
+    """A través del guard real (constructor de ``BrokeredLootRunner``):
+    ``<instancia>\\<cualquier casing de loot>\\lootcli.exe`` lanza
+    ``ValueError`` F8 guard — no solo la función pura."""
+    install, data, game, _standalone, _cli, _gui = _entorno_mo2(tmp_path)
+    (install / subtree).mkdir(parents=True, exist_ok=True)  # "loot" ya existe
+    exe = install / subtree / "lootcli.exe"
+    exe.write_bytes(b"loot-internal")
+
+    with pytest.raises(ValueError, match="F8 guard"):
+        BrokeredLootRunner(
+            broker=object(),
+            instance_id="portable-main",
+            data_root=data,
+            install_root=install,
+            profile="Default",
+            game_data_dir=game / "Data",
+            loot_exe=exe,
+            timeout=120,
+            mutation_targets=lambda: (),
+        )
 
 
 # ---------------------------------------------------------------------------

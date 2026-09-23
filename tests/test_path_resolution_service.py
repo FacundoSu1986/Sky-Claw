@@ -1439,8 +1439,13 @@ class TestAnclaConstructoresManualesDeMods:
         # BrokeredLootRunner: acepta mods_dir; los dos sites son fallbacks
         # legacy. PR-0 (contrato del id de juego + guard F8 de backend
         # MO2-internal) movió las líneas (61, 233 → 97, 285) sin agregar
-        # nuevas construcciones de `<base>/mods`.
-        "sky_claw/local/mo2/brokered_loot.py": (97, 285),
+        # nuevas construcciones de `<base>/mods`. Review FINDING A (guard F8
+        # case-insensitive, comparación componente a componente) movió las
+        # líneas (97, 285 → 109, 297): el cuerpo de _is_mo2_internal_loot
+        # creció, mismo número y sites de construcciones; el comentario
+        # que justifica `zip(..., strict=False)` (ruff B905) sumó una
+        # línea más (109, 297 → 110, 298).
+        "sky_claw/local/mo2/brokered_loot.py": (110, 298),
         # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (127,),
         "sky_claw/local/mo2/vfs_attestation.py": (182, 243),

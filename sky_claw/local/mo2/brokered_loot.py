@@ -44,14 +44,27 @@ def _is_mo2_internal_loot(loot_exe: pathlib.Path, install_root: pathlib.Path) ->
     El standalone del operador queda afuera tanto en ``C:\\Tools\\LOOT``
     como colocado junto a la instalación de MO2 (``<instancia MO2>\\loot.exe``
     — raíz de la instalación, no el subárbol ``loot\\``).
+
+    **Case-insensitive por diseño (review FINDING A):** el target productivo
+    es Windows, donde ``loot``, ``Loot`` y ``LOOT`` son el MISMO directorio.
+    La comparación es del contrato lógico, no del filesystem host: se
+    comparan ``Path.parts`` relativos a ``install_root`` con ``casefold``
+    COMPONENTE POR COMPONENTE (tuplas puras). NO se hace ``lower()``/
+    ``casefold()`` de la ruta completa para luego crear un ``Path``: eso
+    mezclaría la comparación lógica con la resolución real del filesystem.
+    La resolución real (``resolve()``) ya la hizo el constructor antes de
+    llamar a esta función; aquí no se toca disco.
     """
     if loot_exe.name.casefold() in _MO2_INTERNAL_LOOT_NAMES:
         return True
-    try:
-        loot_exe.relative_to(install_root / "loot")
-    except ValueError:
+    exe_parts = loot_exe.parts
+    root_parts = install_root.parts
+    if len(exe_parts) <= len(root_parts):
         return False
-    return True
+    # strict=False a propósito: se empareja solo el prefijo install_root.
+    if any(a.casefold() != b.casefold() for a, b in zip(exe_parts, root_parts, strict=False)):
+        return False
+    return exe_parts[len(root_parts)].casefold() == "loot"
 
 
 class VfsBrokerProtocol(Protocol):
