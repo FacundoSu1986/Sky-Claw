@@ -318,7 +318,19 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # n
         """onerror handler: chmod read-only flag then retry the original operation."""
         try:
             os.chmod(path, stat.S_IWRITE)
-            func(path)
+            # func may be os.open (requires flags) when rmtree fails on PermissionError
+            # for a directory listing. Fall back to unlink/rmdir based on path type.
+            try:
+                func(path)
+            except TypeError:
+                # os.open case: try unlink, then rmdir
+                try:
+                    os.unlink(path)
+                except OSError:
+                    try:
+                        os.rmdir(path)
+                    except OSError:
+                        pass
         except OSError:
             pass  # best-effort — leave orphan rather than crash session teardown
 

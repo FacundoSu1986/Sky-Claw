@@ -351,7 +351,7 @@ def _payload_string(payload: Mapping[str, JsonValue], field_name: str) -> str:
 
 async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     payload = manifest.job.payload
-    allowed = {"loot_exe", "game", "update_masterlist"}
+    allowed = {"loot_exe", "game", "update_masterlist", "loot_data_path"}
     unexpected = set(payload) - allowed
     if unexpected:
         raise ValueError(f"payload de loot_sort contiene campos no permitidos: {sorted(unexpected)}")
@@ -370,7 +370,40 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     update_masterlist = payload.get("update_masterlist", False)
     if type(update_masterlist) is not bool:
         raise ValueError("payload.update_masterlist debe ser bool")
+    # PR-1: loot_data_path es obligatorio en productivo, absoluto, no symlink
+    # La decisión del PATH se toma en el daemon/control plane, NO dentro del
+    # worker mediante descubrimiento ambiental implícito. El worker recibe ruta
+    # explícita ya resuelta, la valida de nuevo y la pasa al runner.
+    loot_data_path_raw = payload.get("loot_data_path")
+    if loot_data_path_raw is None:
+        raise ValueError(
+            "payload.loot_data_path ausente — PR-1 fail-closed: el backend "
+            "productivo NUNCA ejecuta LOOT.exe sin --loot-data-path explícito"
+        )
+    if not isinstance(loot_data_path_raw, str) or not loot_data_path_raw:
+        raise ValueError("payload.loot_data_path debe ser un string no vacío")
+    loot_data_path = pathlib.Path(loot_data_path_raw)
+    if not loot_data_path.is_absolute():
+        raise ValueError("payload.loot_data_path debe ser una ruta absoluta")
+    if loot_data_path.is_symlink():
+        raise ValueError("payload.loot_data_path no puede ser un symlink")
+    # Validar que no sea el default GUI LOOT (%LOCALAPPDATA%\LOOT)
+    from sky_claw.local.loot.data_root import get_default_loot_gui_data_path
+
+    resolved_loot_data = loot_data_path.resolve(strict=False)
+    default_gui = get_default_loot_gui_data_path()
+    if default_gui is not None:
+        try:
+            if resolved_loot_data == default_gui.resolve(strict=False):
+                raise ValueError(
+                    "payload.loot_data_path no puede ser el default GUI LOOT"
+                )
+        except ValueError:
+            raise
+        except Exception:
+            pass
     game_path = manifest.virtual_data_dir.parent.resolve()
+    # El validator incluye también el loot_data_path base para permitirlo
     validator = PathValidator(
         roots=[
             loot_exe.parent.resolve(),
@@ -378,6 +411,8 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             manifest.data_root,
             manifest.mods_dir,
             manifest.install_root,
+            resolved_loot_data.parent.resolve(strict=False),
+            resolved_loot_data.resolve(strict=False),
         ]
     )
     runner = LOOTRunner(
@@ -386,6 +421,7 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             game_path=game_path,
             game=game,
             timeout=max(1, int(manifest.job.timeout_seconds)),
+            loot_data_path=resolved_loot_data,
         ),
         path_validator=validator,
     )
@@ -407,6 +443,8 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             "missing_patches": [dict(item) for item in result.missing_patches],
         },
     )
+
+
 
 
 def _session_payload_path(payload: Mapping[str, JsonValue], field: str) -> pathlib.Path:

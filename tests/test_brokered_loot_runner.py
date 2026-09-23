@@ -59,11 +59,13 @@ def _entorno(tmp_path: pathlib.Path):
     loot.write_bytes(b"loot")
     target = profile / "plugins.txt"
     target.write_text("*Update.esm\n*Skyrim.esm\n", encoding="utf-8")
-    return mo2, data, loot, target
+    loot_data = tmp_path / "loot_data" / "portable-main" / "Default"
+    loot_data.mkdir(parents=True)
+    return mo2, data, loot, target, loot_data
 
 
 async def test_runner_reutiliza_preview_y_envia_tool_id_allowlisted(tmp_path: pathlib.Path) -> None:
-    mo2, data, loot, target = _entorno(tmp_path)
+    mo2, data, loot, target, loot_data = _entorno(tmp_path)
     broker = _Broker()
     runner = BrokeredLootRunner(
         broker=broker,
@@ -74,6 +76,7 @@ async def test_runner_reutiliza_preview_y_envia_tool_id_allowlisted(tmp_path: pa
         loot_exe=loot,
         timeout=120,
         mutation_targets=lambda: (target,),
+        loot_data_path=loot_data,
     )
     challenge = await runner.prepare_attestation()
 
@@ -91,7 +94,7 @@ async def test_runner_reutiliza_preview_y_envia_tool_id_allowlisted(tmp_path: pa
 
 
 async def test_runner_sin_preview_construye_attestation_just_in_time(tmp_path: pathlib.Path) -> None:
-    mo2, data, loot, target = _entorno(tmp_path)
+    mo2, data, loot, target, loot_data = _entorno(tmp_path)
     broker = _Broker()
     runner = BrokeredLootRunner(
         broker=broker,
@@ -102,6 +105,7 @@ async def test_runner_sin_preview_construye_attestation_just_in_time(tmp_path: p
         loot_exe=loot,
         timeout=120,
         mutation_targets=lambda: (target,),
+        loot_data_path=loot_data,
     )
 
     result = await runner.sort(update_masterlist=True)
@@ -112,13 +116,16 @@ async def test_runner_sin_preview_construye_attestation_just_in_time(tmp_path: p
 
 
 async def test_for_profile_crea_runner_aislado_con_targets_del_perfil(tmp_path: pathlib.Path) -> None:
-    mo2, data, loot, _target = _entorno(tmp_path)
+    mo2, data, loot, _target, _loot_data = _entorno(tmp_path)
     alternate = mo2 / "profiles" / "Alternate"
     alternate.mkdir()
     (alternate / "modlist.txt").write_text("+CanaryMod\n", encoding="utf-8-sig")
     alternate_target = alternate / "plugins.txt"
     alternate_target.write_text("*Skyrim.esm\n", encoding="utf-8")
     broker = _Broker()
+    loot_data_base = tmp_path / "loot_data"
+    loot_data_default = loot_data_base / "portable-main" / "Default"
+    loot_data_default.mkdir(parents=True, exist_ok=True)
     base = BrokeredLootRunner(
         broker=broker,
         instance_id="portable-main",
@@ -128,6 +135,8 @@ async def test_for_profile_crea_runner_aislado_con_targets_del_perfil(tmp_path: 
         loot_exe=loot,
         timeout=120,
         mutation_targets=lambda: (),
+        loot_data_path=loot_data_default,
+        loot_data_base=loot_data_base,
     )
 
     runner = base.for_profile("Alternate")
@@ -145,7 +154,7 @@ async def test_previews_concurrentes_quedan_ligados_a_su_propia_ejecucion(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mo2, data, loot, target = _entorno(tmp_path)
+    mo2, data, loot, target, loot_data = _entorno(tmp_path)
     broker = _Broker()
     runner = BrokeredLootRunner(
         broker=broker,
@@ -156,6 +165,7 @@ async def test_previews_concurrentes_quedan_ligados_a_su_propia_ejecucion(
         loot_exe=loot,
         timeout=120,
         mutation_targets=lambda: (target,),
+        loot_data_path=loot_data,
     )
     challenges = iter(
         VfsAttestationChallenge(
