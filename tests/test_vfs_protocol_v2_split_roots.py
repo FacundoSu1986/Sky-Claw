@@ -419,6 +419,10 @@ async def test_brokered_loot_runner_con_raices_divididas(tmp_path: pathlib.Path)
                 }
             )
 
+    loot_data_base = tmp_path / "loot_base"
+    loot_data_base.mkdir(parents=True)
+    loot_data_path = loot_data_base / "portable-main" / "Default"
+    loot_data_path.mkdir(parents=True)
     runner = BrokeredLootRunner(
         broker=_MockBroker(),
         instance_id="portable-main",
@@ -430,6 +434,8 @@ async def test_brokered_loot_runner_con_raices_divididas(tmp_path: pathlib.Path)
         loot_exe=loot,
         timeout=60,
         mutation_targets=lambda: (target,),
+        loot_data_path=loot_data_path,
+        loot_data_base=loot_data_base,
     )
 
     challenge = await runner.prepare_attestation()

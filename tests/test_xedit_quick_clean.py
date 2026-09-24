@@ -144,7 +144,10 @@ async def test_runner_quick_auto_clean_builds_quickclean_command(
     assert "-quickclean" not in args
     # -D: apunta al directorio Data real (donde viven los masters oficiales).
     assert f"-D:{game / 'Data'}" in args
-    assert args[-1] == "Update.esm"
+    # Un único plugin posicional (regla SOP: un plugin por invocación de QAC).
+    # No se exige que sea el último argumento: -R:<log> (review PR #632) va al
+    # final y xEdit busca los switches en cualquier posición.
+    assert [a for a in args[1:] if not a.startswith("-")] == ["Update.esm"]
 
 
 @pytest.mark.asyncio

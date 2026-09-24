@@ -420,3 +420,37 @@ def test_anyio_piso_de_seguridad_declarado_y_bloqueado() -> None:
     assert len(paquetes_anyio) == 1, f"se esperaba 1 paquete anyio en uv.lock, hay {len(paquetes_anyio)}"
     version_uv = Version(paquetes_anyio[0]["version"])
     assert version_uv >= piso_minimo, f"uv.lock tiene anyio {version_uv} < {piso_minimo}"
+
+
+def test_pillow_es_dependencia_dev_declarada_para_research_parallax() -> None:
+    """Pillow tiene que estar declarado en ``[dev]`` para el research de native_parallax.
+
+    ``authored_dataset.py`` (EXP-M2+) importa ``PIL`` a nivel de módulo y su suite
+    también: sin la declaración, ``test_native_parallax_exp_m2.py`` ni siquiera
+    colecciona en un entorno donde Pillow no venga ya instalado. Espejo inverso
+    del ancla de ``pefile``: acá la dependencia es dev-only (ningún camino de
+    producción importa ``sky_claw.local.native_parallax.research``), así que NO
+    debe aparecer en runtime.
+
+    *Historia: el hueco quedó invisible porque la rama de #620 nunca corrió CI
+    (su base era una rama de feature, fuera del trigger ``pull_request``), y el
+    defecto se descubrió restackeando contra main.*
+    """
+    from packaging.version import Version
+
+    with (REPO_ROOT / "pyproject.toml").open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    dev = [Requirement(d) for d in pyproject["project"]["optional-dependencies"]["dev"]]
+    pillow = [d for d in dev if d.name == "pillow"]
+    assert len(pillow) == 1, f"se esperaba exactamente un pillow en [dev], hay {len(pillow)}"
+
+    # Compatible con pillow>=10,<12: cubre la línea 10.x/11.x y corta antes de 12.
+    assert pillow[0].specifier.contains(Version("10.0")), f"el rango de pillow no cubre 10.x: {pillow[0].specifier}"
+    assert pillow[0].specifier.contains(Version("11.9")), f"el rango de pillow no cubre 11.x: {pillow[0].specifier}"
+    assert not pillow[0].specifier.contains(Version("12.0")), (
+        f"el rango de pillow no corta en 12: {pillow[0].specifier}"
+    )
+
+    runtime = [Requirement(d).name for d in pyproject["project"]["dependencies"]]
+    assert "pillow" not in runtime, "pillow es dev-only (research): no debe estar en runtime"

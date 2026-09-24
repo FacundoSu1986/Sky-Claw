@@ -213,6 +213,18 @@
 > **No** cierra el volcado del log real completo contra la taxonomía, ni la
 > precedencia de presets, ni #528. **No** es una reverificación integral del resto
 > de la tabla.
+>
+> **Re-baseline parcial 2026-09-24 sobre `main` `b30421f` (#630):** cubre
+> exclusivamente la fila `T-24` y **corrige** la nota del 2026-08-30: el foco de los
+> inputs Quasar que se atribuía a #522 **nunca se veía**. La pisa del outline era
+> unlayered con `!important`, y el reset `outline:0!important` de Quasar entra en
+> `layer(quasar_importants)`; para `!important` una capa siempre le gana a lo
+> unlayered, así que el reset la tapaba en silencio y el ancla de entonces —que sólo
+> buscaba el string de la declaración— seguía en verde. #630 mueve la regla a
+> `@layer theme` (medido en Chromium: `outline: none` antes, `2px solid` después) y
+> la ancla contra el reset real del paquete nicegui instalado, enumerando todas las
+> hojas de estilo del GUI. `T-24` sigue **Parcial**: el inventario de labels y
+> formularios no entra. **No** es una reverificación integral del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
@@ -231,7 +243,7 @@ confirmarlo contra código y tests.
 | T-16c | Cerrado | #288, #306, #323 | — | tests de preflight por ritual |
 | T-22 | Parcial | #522 para `prefers-reduced-motion` | Revisar/cerrar el resto del contrato de transiciones | `test_gui_theme_contracts.py` y humano |
 | T-23 | Abierto | — | Virtualizar listas grandes de mods | humano |
-| T-24 | Parcial | #522 para foco visible de teclado | Inventario exhaustivo de labels y formularios accesibles | `test_gui_theme_contracts.py` y humano |
+| T-24 | Parcial | #522 para foco visible de teclado; #630 para el de los inputs Quasar (en #522 era una regla muerta) | Inventario exhaustivo de labels y formularios accesibles | `test_gui_theme_contracts.py` y humano |
 | T-25 | Parcial | — | Cerrar T-27 y después ejecutar la matriz E2E con Skyrim, MO2 y herramientas reales | `TECHNICAL_REVIEW_TASKS.md:247-249`; humano |
 | T-26 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_action_manifest` |
 | T-27 | Parcial | ADR 0005 para Synthesis y salida administrada de Pandora | Migrar Pandora, DynDOLOD y Wrye Bash al flujo aislado USVFS con diff/promoción | código, ADR 0005 y `test_pandora_service.py` |

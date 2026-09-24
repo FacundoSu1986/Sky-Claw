@@ -47,6 +47,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODExecutionError,
     DynDOLODPipelineResult,
     DynDOLODRunner,
+    DynDOLODSpawnStrategy,
     DynDOLODTimeoutError,
     ReadinessMode,
 )
@@ -217,6 +218,7 @@ class DynDOLODPipelineService:
     #: idioma que el `getattr(self, "_mo2_profile", None)` del gate de perfil.
     _workspace: WorkspaceResuelto | None = None
     _readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None
+    _spawn_strategy: DynDOLODSpawnStrategy | None = None
 
     def __init__(
         self,
@@ -231,6 +233,7 @@ class DynDOLODPipelineService:
         stage9_coordination: Stage9Coordination | None = None,
         workspace: WorkspaceResuelto | None = None,
         readiness: CapacidadDeReadinessUIA | ReadinessMode | None = None,
+        spawn_strategy: DynDOLODSpawnStrategy | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -268,6 +271,9 @@ class DynDOLODPipelineService:
         # (`tests/test_dyndolod_t5v21_wiring.py::test_censo_de_constructores_del_runner`)
         # exige que TODO constructor productivo del runner la cablee.
         self._readiness = readiness
+        # Seam explícito del backend: None conserva standalone histórico; una
+        # strategy inyectada no tiene fallback si su apertura brokered falla.
+        self._spawn_strategy = spawn_strategy
 
         # Lazy init — runner requiere env vars que pueden no existir aún.
         self._runner: DynDOLODRunner | None = None
@@ -369,6 +375,7 @@ class DynDOLODPipelineService:
         self._runner = DynDOLODRunner(
             config,
             readiness=self._readiness if self._readiness is not None else ReadinessMode.DISABLED_FOR_TEST,
+            spawn_strategy=self._spawn_strategy,
         )
         logger.info(
             "DynDOLODRunner inicializado: game=%s, dyndolod=%s",

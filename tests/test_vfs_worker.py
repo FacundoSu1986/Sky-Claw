@@ -518,11 +518,8 @@ async def test_dispatch_sin_interseccion_no_se_ve_afectado(tmp_path: pathlib.Pat
     assert llamado == ["plano"]
 
 
-def test_pr_586a_no_registra_tool_ids_de_sesion_productivos() -> None:
-    """Ancla del alcance: la primitive no migra ningún ritual.
-
-    El día que 586B agregue handlers de sesión productivos, este test se rompe
-    a propósito y obliga a decidir qué tool_ids entran a la allowlist.
-    """
-    assert _default_session_handlers() == {}
-    assert set(_default_handlers()) == ALLOWED_VFS_TOOL_IDS
+def test_pr_586b_registra_solo_los_dos_tool_ids_gui_cerrados() -> None:
+    """TexGen/DynDOLOD son handlers de sesión específicos, no exec genérico."""
+    assert set(_default_session_handlers()) == {"texgen", "dyndolod"}
+    assert set(_default_handlers()) == {"health", "loot_sort"}
+    assert {"health", "loot_sort", "texgen", "dyndolod"} == ALLOWED_VFS_TOOL_IDS
