@@ -1451,7 +1451,12 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/mo2/brokered_loot.py": (124, 388, 397),
         # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (127,),
-        "sky_claw/local/mo2/vfs_attestation.py": (182, 243),
+        # #633 (fingerprint v2: canonicalización semántica de plugins.txt,
+        # secciones con largo explícito y modelado de `primaryPlugins()` con
+        # Creation Club) movió las líneas (182, 243 → 421, 490) sin agregar ni
+        # quitar construcciones de `<base>/mods`: el cuerpo de
+        # _profile_fingerprint y sus helpers crecieron arriba de los dos sites.
+        "sky_claw/local/mo2/vfs_attestation.py": (421, 490),
         # VfsExecutionBroker: fallback legacy compartido por submit/open_session
         # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323 y sus
         # follow-ups de revisión a la ~339) y VfsWorkerManifest: única
