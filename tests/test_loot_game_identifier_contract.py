@@ -218,7 +218,9 @@ def _entorno_broker(tmp_path: pathlib.Path):
     loot = tmp_path / "LOOT" / "loot.exe"
     loot.parent.mkdir()
     loot.write_bytes(b"loot")
-    return mo2, data, loot
+    loot_data = tmp_path / "loot_data" / "portable-main" / "Default"
+    loot_data.mkdir(parents=True)
+    return mo2, data, loot, loot_data
 
 
 @pytest.mark.asyncio
@@ -226,7 +228,7 @@ async def test_t3_broker_envia_el_id_interno_de_la_misma_frontera(tmp_path: path
     """El payload viaja con el id INTERNO del dominio (nunca el string de
     CLI): si el broker inventara un valor ajeno al mapping, el worker lo
     rechazaría y el sort moriría sin señal de por qué."""
-    mo2, data, loot = _entorno_broker(tmp_path)
+    mo2, data, loot, loot_data = _entorno_broker(tmp_path)
     broker = _Broker()
     runner = BrokeredLootRunner(
         broker=broker,
@@ -237,6 +239,7 @@ async def test_t3_broker_envia_el_id_interno_de_la_misma_frontera(tmp_path: path
         loot_exe=loot,
         timeout=120,
         mutation_targets=lambda: (),
+        loot_data_path=loot_data,
     )
 
     await runner.sort(update_masterlist=False)
@@ -261,7 +264,9 @@ def _entorno_worker(tmp_path: pathlib.Path):
     exe = tmp_path / "LOOT" / "LOOT.exe"
     exe.parent.mkdir()
     exe.write_bytes(b"loot")
-    return mo2, game_data, exe
+    loot_data = tmp_path / "loot_data" / "portable-main" / "Default"
+    loot_data.mkdir(parents=True)
+    return mo2, game_data, exe, loot_data
 
 
 def _manifest_loot_sort(
@@ -272,12 +277,17 @@ def _manifest_loot_sort(
     *,
     game: str,
     update_masterlist: bool = False,
+    loot_data_path: pathlib.Path | None = None,
 ):
     challenge = build_attestation_challenge(
         data_root=mo2,
         profile="Default",
         physical_data_dir=game_data,
     )
+    # PR-1: loot_data_path explícito
+    if loot_data_path is None:
+        loot_data_path = tmp_path / "loot_data" / "portable-main" / "Default"
+        loot_data_path.mkdir(parents=True, exist_ok=True)
     job = VfsJob.create(
         instance_id="portable-main",
         profile="Default",
@@ -286,6 +296,7 @@ def _manifest_loot_sort(
             "loot_exe": str(exe),
             "game": game,
             "update_masterlist": update_masterlist,
+            "loot_data_path": str(loot_data_path),
         },
         timeout_seconds=10,
         expected_fingerprint=challenge.profile_fingerprint,
@@ -307,8 +318,8 @@ async def test_t3_worker_traduce_con_la_misma_frontera(tmp_path: pathlib.Path, i
     """End-to-end worker→runner: para CADA id del mapping compartido, el
     argv final lleva el identificador CLI exacto. Si broker y worker
     divergieran de la frontera, este test lo caza en el argv real."""
-    mo2, game_data, exe = _entorno_worker(tmp_path)
-    manifest = _manifest_loot_sort(tmp_path, mo2, game_data, exe, game=internal_id)
+    mo2, game_data, exe, loot_data = _entorno_worker(tmp_path)
+    manifest = _manifest_loot_sort(tmp_path, mo2, game_data, exe, game=internal_id, loot_data_path=loot_data)
     captured, fake_exec = _capturando_exec()
 
     with (
@@ -335,8 +346,8 @@ async def test_t3_worker_rechaza_ids_fuera_de_la_frontera(tmp_path: pathlib.Path
     del payload (fail-closed), incluso si LOOT 0.29.x los aceptaría
     ("Skyrim", "Fallout4"): el dominio Sky-Claw es SE/VR y la frontera es
     la única lista que puede crecer (con test actualizado a propósito)."""
-    mo2, game_data, exe = _entorno_worker(tmp_path)
-    manifest = _manifest_loot_sort(tmp_path, mo2, game_data, exe, game=juego_ajeno)  # type: ignore[arg-type]
+    mo2, game_data, exe, loot_data = _entorno_worker(tmp_path)
+    manifest = _manifest_loot_sort(tmp_path, mo2, game_data, exe, game=juego_ajeno, loot_data_path=loot_data)  # type: ignore[arg-type]
 
     with (
         patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec") as exec_spy,
@@ -350,7 +361,7 @@ async def test_t3_worker_rechaza_ids_fuera_de_la_frontera(tmp_path: pathlib.Path
 async def test_t3_worker_sin_game_usa_el_default_compartido(tmp_path: pathlib.Path) -> None:
     """Payload sin campo ``game`` → el default es el MISMO id interno que
     envía el broker (no dos defaults independientes que puedan divergir)."""
-    mo2, game_data, exe = _entorno_worker(tmp_path)
+    mo2, game_data, exe, loot_data = _entorno_worker(tmp_path)
     challenge = build_attestation_challenge(
         data_root=mo2,
         profile="Default",
@@ -360,7 +371,7 @@ async def test_t3_worker_sin_game_usa_el_default_compartido(tmp_path: pathlib.Pa
         instance_id="portable-main",
         profile="Default",
         tool_id="loot_sort",
-        payload={"loot_exe": str(exe), "update_masterlist": False},
+        payload={"loot_exe": str(exe), "update_masterlist": False, "loot_data_path": str(loot_data)},
         timeout_seconds=10,
         expected_fingerprint=challenge.profile_fingerprint,
         mutation_targets=(),
@@ -480,7 +491,7 @@ async def test_t8_update_masterlist_true_propaga_hasta_el_runner_y_no_viaja_al_a
     """
     # Contrato 1a: el broker lo pone en el payload del VfsJob.
     bbase = tmp_path / "broker"
-    mo2b, datab, lootb = _entorno_broker(bbase)
+    mo2b, datab, lootb, loot_datab = _entorno_broker(bbase)
     broker = _Broker()
     broker_runner = BrokeredLootRunner(
         broker=broker,
@@ -491,6 +502,7 @@ async def test_t8_update_masterlist_true_propaga_hasta_el_runner_y_no_viaja_al_a
         loot_exe=lootb,
         timeout=120,
         mutation_targets=lambda: (),
+        loot_data_path=loot_datab,
     )
     await broker_runner.sort(update_masterlist=True)
     job, _ = broker.calls[0]
@@ -498,7 +510,7 @@ async def test_t8_update_masterlist_true_propaga_hasta_el_runner_y_no_viaja_al_a
 
     # Contrato 1b: el worker lo recibe del payload y lo pasa al runner.
     wbase = tmp_path / "worker"
-    mo2, game_data, exe = _entorno_worker(wbase)
+    mo2, game_data, exe, loot_data = _entorno_worker(wbase)
     manifest = _manifest_loot_sort(
         wbase,
         mo2,
@@ -506,6 +518,7 @@ async def test_t8_update_masterlist_true_propaga_hasta_el_runner_y_no_viaja_al_a
         exe,
         game=DEFAULT_LOOT_INTERNAL_GAME_ID,
         update_masterlist=True,
+        loot_data_path=loot_data,
     )
     with patch("sky_claw.local.mo2.vfs_worker.LOOTRunner") as runner_cls:
         instance = runner_cls.return_value

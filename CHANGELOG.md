@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **GUI — pulido visual del shell Forja del Dovahkiin.** El sidebar, el toggle
+  «Confirmar», las filas del Orden de Carga, las tarjetas de ritual y las
+  filas de Disputas se renderizaban desarmados (ícono arriba, etiqueta abajo)
+  porque `ui.html` envuelve su contenido en un `<div>` que queda fuera del flex;
+  ahora esos fragmentos usan `display:contents`. El CTA del wizard y los
+  selectores de proveedor IA recuperan el oro del tema (los `!important` de
+  Quasar viven en una capa CSS que vence a los del tema). El shell pasa a alto
+  fijo con scroll interno (Vitalidad del Sistema siempre visible), el chat del
+  Asistente es legible sobre el pergamino, la grilla de rituales queda 4+3, el
+  hero gana filigrana SVG en sus esquinas y el header no desborda en ventanas
+  angostas. Anclas nuevas en `tests/test_gui_theme_contracts.py`.
 - **xEdit headless: el borde con SSEEdit no funcionaba en un rig real.**
   `run_script` y el comando de escritura no pasaban `-autoexit` (xEdit quedaba
   abierto hasta el timeout), apuntaban `-D:` a la raíz del juego en vez de a

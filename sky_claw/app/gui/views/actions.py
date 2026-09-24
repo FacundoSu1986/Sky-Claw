@@ -103,7 +103,9 @@ def build_actions_panel(
                 f"{_RUNE_PREPARE}  PREPARAR JUEGO",
             )
             .classes("sky-action-master-btn")
-            .props("unelevated no-caps")
+            # sc-tema: sin clase en Quasar, así .bg-primary !important (capa
+            # quasar_importants de NiceGUI 3) no pisa la receta del tema.
+            .props("unelevated no-caps color=sc-tema text-color=sc-tema")
         )
         if on_prepare_game:
             btn.on("click", lambda: create_tracked_task(on_prepare_game(), name="gui-prepare-game"))
@@ -152,7 +154,11 @@ def _build_single_action(
         with ui.row().classes("sky-action-footer items-center justify-between"):
             if is_available:
                 ui.badge("Disponible", color="positive").props("outline")
-                btn = ui.button("Ejecutar").classes("sky-action-btn").props("unelevated dense no-caps")
+                btn = (
+                    ui.button("Ejecutar")
+                    .classes("sky-action-btn")
+                    .props("unelevated dense no-caps color=sc-tema text-color=sc-tema")
+                )
                 if on_action:
                     btn.on("click", lambda k=key: create_tracked_task(on_action(k), name=f"gui-action-{k}"))
             else:
@@ -160,7 +166,7 @@ def _build_single_action(
                 btn = (
                     ui.button("Instalar")
                     .classes("sky-action-btn sky-action-btn--install")
-                    .props("unelevated dense no-caps")
+                    .props("unelevated dense no-caps color=sc-tema text-color=sc-tema")
                 )
                 if on_install_tool:
                     btn.on("click", lambda k=key: create_tracked_task(on_install_tool(k), name=f"gui-install-{k}"))

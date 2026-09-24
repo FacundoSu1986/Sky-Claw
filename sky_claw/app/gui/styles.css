@@ -81,11 +81,31 @@ body {
     background: transparent !important;
 }
 
+/* El shell Forge es una app a pantalla completa (height:100vh, scroll interno
+   en .sc-scroll). NiceGUI envuelve la página en .nicegui-content con
+   padding:1rem y gap: sin esta pisa quedaba un marco de 16px de piedra
+   alrededor del shell y el alto total excedía el viewport (doble scroll).
+   Regla INCONDICIONAL a propósito: styles.css lo inyecta gui_helpers._load_css()
+   y la GUI NiceGUI es de una sola página (@ui.page("/")), así que .nicegui-content
+   siempre es el contenedor del shell. Se evita el selector de padre :has()
+   —sin soporte en Safari <15.4 / Firefox <121— que degradaba resucitando el
+   marco de 16px; el wizard es un overlay position:fixed, ajeno a este padding. */
+.nicegui-content {
+    padding: 0 !important;
+    gap: 0 !important;
+}
+
 /* Encabezados → tipografía display medieval */
 h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     font-family: var(--sky-font-display);
     letter-spacing: 0.03em;
 }
+
+/* Quasar da a h1–h3 la escala tipográfica de Material (h2: line-height 3.75rem
+   = 60px). Los títulos del shell fijan su font-size inline pero no su
+   line-height, así que heredaban esa caja: "ORDEN DE CARGA" (15px) medía 60px
+   de alto e inflaba su cabecera. Acotado al shell para no tocar el wizard. */
+.sc-shell :is(h1, h2, h3) { line-height: 1.25; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
    2. SHELL — MURO DE PIEDRA TALLADA
@@ -129,7 +149,42 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
     3. SHELL FORJA — el sidebar vive en inline styles del Forge (forge_dashboard.py)
+    Los inline no pueden expresar :hover: estas clases marcadoras sólo aportan el
+    estado de puntero (transiciones iniciadas por el usuario, sin keyframes).
     ═══════════════════════════════════════════════════════════════════════════════════ */
+
+/* Ítem de navegación inactivo (el activo trae su fondo inline). */
+.sc-nav { background: transparent; transition: background 0.25s ease; }
+.sc-nav:hover { background: rgba(200, 168, 106, 0.07); }
+
+/* Fila del Orden de Carga. */
+.sc-row { transition: background 0.2s ease; }
+.sc-row:hover { background: rgba(200, 168, 106, 0.06); }
+
+/* Tarjeta de ritual: el borde inline es el del estado; el hover lo ilumina. */
+.sc-card { transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease; }
+.sc-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(200, 168, 106, 0.42) !important;
+    box-shadow: 0 20px 36px -18px rgba(0, 0, 0, 0.85), 0 0 18px -6px rgba(200, 168, 106, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Header en ventanas angostas: título + buscador + clúster derecho no entran
+   por debajo de ~1240px y el avatar quedaba recortado. El HUD GPU·CPU es
+   redundante con la Vitalidad del sidebar (siempre visible desde que el shell
+   es de alto fijo), así que es lo primero que cede; después el nombre/rol
+   (el avatar con iniciales queda). */
+@media (max-width: 1240px) {
+    .sc-hud { display: none !important; }
+}
+@media (max-width: 1080px) {
+    .sc-identity-text { display: none; }
+}
+
+/* Input del Asistente sobre pergamino: el placeholder de Quasar es un gris
+   pensado para fondo blanco y sobre el lavado del pergamino se perdía. */
+.sc-chat-input .q-field__native::placeholder { color: rgba(74, 56, 30, 0.6) !important; font-style: italic; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
     4. HEADER — idem: el dintel del Forge ya está emitido por el shell
@@ -368,10 +423,20 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 .sky-mod-status-ok { color: var(--sky-green) !important; }
 .sky-mod-status-off { color: var(--sky-text-muted) !important; }
 
-/* Toggle de mod → riel de oro */
-.sky-mod-toggle .q-toggle__track { background: rgba(255, 255, 255, 0.10) !important; }
-.sky-mod-toggle .q-toggle__inner--active .q-toggle__track { background: var(--sky-glow) !important; }
-.sky-mod-toggle .q-toggle__inner--active .q-toggle__thumb { color: var(--sky-gold-bright) !important; }
+/* Toggle de mod → riel de oro. Quasar 2 marca el estado con
+   .q-toggle__inner--truthy / --falsy: la regla anterior apuntaba a un
+   "--active" que no existe y el switch encendido caía al primary apagado. */
+.sky-mod-toggle .q-toggle__track {
+    opacity: 1 !important;
+    background: rgba(255, 255, 255, 0.10) !important;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+.sky-mod-toggle .q-toggle__inner--truthy .q-toggle__track { background: rgba(200, 168, 106, 0.42) !important; }
+.sky-mod-toggle .q-toggle__inner--truthy .q-toggle__thumb::after {
+    background: linear-gradient(180deg, #f3dca0, var(--sky-gold)) !important;
+    box-shadow: 0 0 8px var(--sky-glow) !important;
+}
+.sky-mod-toggle .q-toggle__inner--falsy .q-toggle__thumb::after { background: #6b6151 !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
    9. PANEL AVANZADO + REGISTRO
@@ -478,14 +543,29 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 }
 .sky-wizard-modal .q-field__native::placeholder { color: rgba(219, 196, 161, 0.4) !important; }
 
-/* Toggle de proveedor IA → grupo de chips de oro */
-.sky-wizard-modal .q-btn-toggle {
-    border: 1px solid rgba(200, 168, 106, 0.26) !important; border-radius: 6px !important; overflow: hidden;
+/* Toggle de proveedor IA → grupo de chips de oro. Receta ÚNICA .sc-toggle para
+   los dos selectores gemelos (wizard y Cámara de Ajustes): antes ambos pedían
+   color=amber de Quasar (ámbar saturado ajeno a la paleta) y la regla del
+   wizard apuntaba a un .q-btn--active que QBtnToggle no emite — Quasar marca
+   la opción elegida con aria-pressed="true", que es el selector real.
+   Sin !important A PROPÓSITO: NiceGUI 3 carga los !important de Quasar en la
+   capa quasar_importants y en la cascada un !important EN CAPA le gana a
+   cualquier !important sin capa (este archivo entero lo es). La receta no pelea
+   esa pulseada: los dos call-sites piden toggle-color/toggle-text-color con
+   un nombre que no tiene clase en Quasar (sc-tema), así ninguna regla
+   !important compite y las reglas normales sin capa de acá ganan solas. */
+.sc-toggle.q-btn-toggle {
+    border: 1px solid rgba(200, 168, 106, 0.3); border-radius: 6px; overflow: hidden;
+    background: rgba(0, 0, 0, 0.32); box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45);
 }
-.sky-wizard-modal .q-btn-toggle .q-btn { font-family: var(--sky-font-display); letter-spacing: 0.04em; color: #c2b48f; }
-.sky-wizard-modal .q-btn-toggle .q-btn--active {
-    background: linear-gradient(180deg, #f3dca0, var(--sky-gold) 60%, var(--sky-gold-deep)) !important;
-    color: #1c130a !important; box-shadow: 0 0 14px var(--sky-glow);
+.sc-toggle .q-btn {
+    font-family: var(--sky-font-display); font-size: 12px; letter-spacing: 0.08em;
+    color: #c2b48f; background: transparent;
+}
+.sc-toggle .q-btn + .q-btn { border-left: 1px solid rgba(200, 168, 106, 0.16); }
+.sc-toggle .q-btn[aria-pressed="true"] {
+    background: linear-gradient(180deg, #f3dca0, var(--sky-gold) 60%, var(--sky-gold-deep));
+    color: #1c130a; box-shadow: 0 0 14px var(--sky-glow);
 }
 
 /* CTA del asistente */
@@ -540,16 +620,31 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     outline-offset: 2px;
 }
 
-/* Quasar resetea el outline de sus inputs de base con !important
-   (quasar.important.prod.css: `.q-field__native,.q-field__input{outline:0!important}`)
-   y los ui.input borderless del shell (búsqueda del header, chat) no tienen
-   borde de foco propio: sin esta pisa, Tab en ellos era invisible. La regla es
-   unlayered con !important y mayor especificidad — gana al reset en ambas
-   dimensiones de la cascada. */
-.q-field__native:focus-visible,
-.q-field__input:focus-visible {
-    outline: 2px solid var(--sky-gold-bright) !important;
-    outline-offset: 2px !important;
+/* Quasar resetea el outline de sus inputs con !important desde una CAPA:
+   `quasar.important.prod.css` trae `.q-field__native,.q-field__input{outline:0!important}`
+   y el template lo importa en `layer(quasar_importants)`. styles.css, en cambio,
+   se inyecta UNLAYERED (`ui.add_css` → `addStyle` → `<style>` plano). Y acá está
+   la trampa de la cascada: para declaraciones !important, una capa SIEMPRE le
+   gana a lo unlayered (y la especificidad no entra: el orden de capas se resuelve
+   antes). Una pisa unlayered con !important —lo que había antes— era letra muerta;
+   el reset ganaba y Tab en los ui.input borderless del shell (búsqueda del header,
+   chat) no mostraba foco (WCAG 2.4.7).
+
+   La única forma de ganarle es declarar la regla en una capa MÁS TEMPRANA: para
+   !important el orden se invierte y gana la capa declarada primero. NiceGUI
+   declara `@layer theme, base, quasar, nicegui, components, utilities, overrides,
+   quasar_importants;`, así que `@layer theme` —la primera— le gana a
+   `quasar_importants`. El !important sigue siendo necesario dentro de la capa:
+   una declaración normal jamás vence a un !important, esté en la capa que esté.
+   (Verificado en Chromium real; ancla: test_gui_theme_contracts.py cruza este
+   archivo con el reset !important real del paquete nicegui instalado y exige que
+   esta regla viva en @layer theme.) */
+@layer theme {
+    .q-field__native:focus-visible,
+    .q-field__input:focus-visible {
+        outline: 2px solid var(--sky-gold-bright) !important;
+        outline-offset: 2px !important;
+    }
 }
 
 /* Respeta "reducir movimiento" del SO con una política DIRIGIDA a lo decorativo:
