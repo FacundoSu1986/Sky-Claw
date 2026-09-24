@@ -51,6 +51,7 @@ from sky_claw.local.loot.cli import (
     LOOTPreconditionError,
     LOOTRunner,
     LOOTTimeoutError,
+    LOOTWorkerProtocolError,
 )
 from sky_claw.local.loot.data_root import (
     ensure_loot_data_path_exists,
@@ -303,15 +304,18 @@ def _detalle_de_timeout(exc: LOOTTimeoutError) -> str:
     """Diagnóstico de TIMEOUT sin afirmar una causa que no se observó (PR-2).
 
     Enumera los caminos de loot/loot 0.29.1 que dejan ``--auto-sort`` sin salir
-    solo; con la evidencia disponible no se distinguen entre sí.
+    solo y que los settings gestionados NO neutralizan; con la evidencia
+    disponible no se distinguen entre sí. "First-Time Tips" (``lastVersion``),
+    el modal de NO_CHANGE y el mensaje del update check ya no figuran: se
+    siembran antes de cada corrida (``headless_settings``).
     """
     return (
         f"LOOT no terminó dentro de {exc.timeout}s y fue detenido. La evidencia disponible no "
-        "distingue la causa: un diálogo modal (primer arranque del data root — 'First-Time "
-        "Tips', main_window.cpp:366-368 —, fallo de sort main_window.cpp:1585, load order "
+        "distingue la causa: un diálogo modal (fallo de sort main_window.cpp:1585, load order "
         "ambiguo main_window.cpp:1655/2357, error al actualizar masterlist/prelude "
-        "main_window.cpp:1291-1292), mensajes de error que cancelan el auto-cierre "
-        "(main_window.cpp:2835-2845/2878-2880) o un sort más lento que el timeout."
+        "main_window.cpp:1291-1292), mensajes de error (p. ej. de plugins) que cancelan el "
+        "auto-sort o el auto-cierre (main_window.cpp:2835-2845/2878-2880) o un sort más lento "
+        "que el timeout."
     )
 
 
@@ -1031,6 +1035,16 @@ class LootSortingService:
             logger.error("LOOT sort failed: %s", exc)
             return _respuesta_de_fallo(
                 LootSortFailureReason.PRECONDITION_FAILED,
+                str(exc),
+                rolled_back=tx.rollback_completed,
+            )
+        except LOOTWorkerProtocolError as exc:
+            # Resultado del worker fuera de contrato: ningún campo es evidencia
+            # (ni el success ni el kind). El snapshot ya se restauró en __aexit__.
+            await self._mark_journal_rolled_back(journal_tx_id)
+            logger.error("LOOT sort failed (protocolo del worker): %s", exc)
+            return _respuesta_de_fallo(
+                LootSortFailureReason.PROTOCOL_ERROR,
                 str(exc),
                 rolled_back=tx.rollback_completed,
             )

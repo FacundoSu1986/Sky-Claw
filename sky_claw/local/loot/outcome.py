@@ -26,9 +26,18 @@ lectura de libloadorder 18.8.1 (backend de libloot 0.29.4, que es el que usa LOO
 0.29.1; SkyrimSE es ``LoadOrderMethod::Asterisk``, ``src/game_settings.rs:193-197``):
 
 * ``src/load_order/mutable.rs:328-332``: decodifica Windows-1252 SIN manejo de
-  BOM y separa con ``str::lines()`` (``\\n`` o ``\\r\\n``). Por eso se compara en
-  bytes (Windows-1252 es biyectivo) y un BOM NO se ignora: libloadorder lo leería
-  como parte del primer nombre — no es demostrablemente irrelevante.
+  BOM y separa con ``str::lines()``. El decoder (``encoding_rs::WINDOWS_1252``,
+  ``decode_without_bom_handling_and_without_replacement``) es TOTAL e INYECTIVO:
+  los 256 bytes mapean a code points distintos (los 5 "sin uso" van a controles
+  C1, comentario de ``mutable.rs:326-327``) y ``\\n``/``\\r``/``#``/``*`` son ASCII
+  que sólo se mapean a sí mismos. Por eso comparar bytes ⇔ comparar el texto que
+  lee libloadorder, también con nombres UTF-8 o emoji (mojibake determinista,
+  nunca error): se compara en bytes y un BOM NO se ignora — libloadorder lo
+  leería como parte del primer nombre.
+* ``str::lines()`` es ``split_inclusive('\\n')`` + ``LinesMap`` (Rust 1.82,
+  ``library/core/src/str/mod.rs``; libloadorder 18.8.1 exige
+  ``rust-version = "1.82"``): quita ``\\n`` y, SÓLO si lo había, un ``\\r``. Una
+  última línea sin ``\\n`` conserva su ``\\r`` final.
 * ``src/load_order/asterisk_based.rs:314-322`` y ``mutable.rs:335-341``: se
   descartan las líneas vacías y las que empiezan con ``#``; un ``*`` inicial
   marca el plugin como activo. La activación SE PRESERVA: quitarla escondería un
@@ -50,9 +59,12 @@ A     testigo fresco, observable, semántica distinta      CHANGED (éxito)
 B     testigo fresco, observable, semántica igual         NO_CHANGE (éxito)
 ====  ==================================================  ===========================
 
-TIMEOUT y PRECONDITION_FAILED no pasan por el clasificador: se deciden por
-excepción antes de que exista un resultado de proceso (ver ``loot_service``).
-``LOOTResult.sorted_plugins`` NO participa: con LOOT GUI real llega vacío.
+TIMEOUT, PRECONDITION_FAILED y PROTOCOL_ERROR no pasan por el clasificador:
+se deciden por excepción antes de que exista un resultado de proceso confiable
+(ver ``loot_service``). PROTOCOL_ERROR es el resultado del worker USVFS que
+viola el contrato cerrado de transporte (``LOOTWorkerProtocolError``): ningún
+campo suyo se usa como evidencia. ``LOOTResult.sorted_plugins`` NO participa:
+con LOOT GUI real llega vacío.
 """
 
 from __future__ import annotations
@@ -82,6 +94,7 @@ class LootSortFailureReason(enum.StrEnum):
     TIMEOUT = "timeout"
     EXECUTION_NOT_ATTRIBUTABLE = "execution_not_attributable"
     STATE_UNOBSERVABLE = "state_unobservable"
+    PROTOCOL_ERROR = "protocol_error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,11 +141,15 @@ def parse_load_order_bytes(data: bytes) -> tuple[LoadOrderEntry, ...]:
     """Entradas semánticas de un ``plugins.txt``/``loadorder.txt`` (ver docstring).
 
     Ignora sólo lo que libloadorder ignora: fin de línea ``\\r\\n`` vs ``\\n``,
-    líneas vacías y comentarios ``#``. Conserva el ``*`` como activación.
+    líneas vacías y comentarios ``#``. Conserva el ``*`` como activación y el
+    ``\\r`` final de una última línea sin ``\\n`` (semántica exacta de
+    ``str::lines()``).
     """
     entries: list[LoadOrderEntry] = []
-    for raw in data.split(b"\n"):
-        line = raw[:-1] if raw.endswith(b"\r") else raw
+    piezas = data.split(b"\n")
+    for indice, raw in enumerate(piezas):
+        terminada = indice < len(piezas) - 1
+        line = raw[:-1] if terminada and raw.endswith(b"\r") else raw
         if not line or line.startswith(b"#"):
             continue
         if line.startswith(b"*"):

@@ -7,15 +7,17 @@ import contextvars
 import logging
 import pathlib
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 from sky_claw.local.loot.cli import (
     DEFAULT_LOOT_INTERNAL_GAME_ID,
     LOOT_FAILURE_KIND_PRECONDITION,
     LOOT_FAILURE_KIND_TIMEOUT,
+    LOOT_FAILURE_KINDS,
     LOOTNotFoundError,
     LOOTPreconditionError,
     LOOTTimeoutError,
+    LOOTWorkerProtocolError,
 )
 from sky_claw.local.loot.data_root import (
     DEFAULT_LOOT_DATA_BASE,
@@ -336,7 +338,7 @@ class BrokeredLootRunner:
         tool = result.tool_result
         failure_kind = tool.get("loot_failure_kind")
         if failure_kind is not None:
-            return _typed_worker_failure(result, failure_kind, timeout=self._timeout)
+            _typed_worker_failure(result, failure_kind, timeout=self._timeout)
         sorted_plugins = _string_list(tool.get("sorted_plugins"))
         warnings = _string_list(tool.get("warnings"))
         errors = _string_list(tool.get("errors"))
@@ -437,40 +439,52 @@ def build_vfs_loot_runner(
         return VfsRequiredLootRunner(str(exc))
 
 
-def _typed_worker_failure(result: VfsJobResult, failure_kind: JsonValue, *, timeout: int) -> LOOTResult:
+def _typed_worker_failure(result: VfsJobResult, failure_kind: JsonValue, *, timeout: int) -> NoReturn:
     """PR-2: re-lanza la excepción de ``LOOTRunner`` que el worker tipó.
 
-    Un ``loot_failure_kind`` desconocido o acompañado de ``success=True`` es un
-    resultado inconsistente: se devuelve como fallo de proceso, nunca se ignora.
+    El worker emite ``loot_failure_kind`` SÓLO con ``success=False`` y un valor
+    de ``LOOT_FAILURE_KINDS`` (``vfs_worker._loot_failure_execution``, que
+    valida ambos). Cualquier otra combinación — ``success=True`` con kind, o un
+    kind desconocido — es un resultado contradictorio: ni el kind ni el
+    ``success`` son confiables, así que no se re-tipa a timeout/precondición ni
+    se degrada a un fallo de proceso genérico: :class:`LOOTWorkerProtocolError`.
+
+    Raises:
+        LOOTTimeoutError / LOOTPreconditionError: el fallo tipado del worker.
+        LOOTWorkerProtocolError: el resultado viola el contrato de transporte.
     """
     if not result.success:
         if failure_kind == LOOT_FAILURE_KIND_TIMEOUT:
             raise LOOTTimeoutError(timeout)
         if failure_kind == LOOT_FAILURE_KIND_PRECONDITION:
             raise LOOTPreconditionError(result.message or "Precondición headless de LOOT fallida en el worker.")
-    detalle = f"Resultado del worker inconsistente: loot_failure_kind={failure_kind!r} con success={result.success!r}."
-    return LOOTResult(
-        return_code=-1,
-        errors=[detalle],
-        raw_stdout=result.stdout,
-        raw_stderr=result.stderr,
+    raise LOOTWorkerProtocolError(
+        f"Resultado del worker LOOT contradictorio: loot_failure_kind={failure_kind!r} con "
+        f"success={result.success!r}. El contrato sólo admite un kind de {sorted(LOOT_FAILURE_KINDS)} "
+        "con success=False; ningún campo de este resultado es confiable."
     )
 
 
 def _execution_witness(value: JsonValue | None) -> LootExecutionWitness | None:
-    """PR-2: valida el testigo con schema CERRADO; ausente o inválido → ``None``.
+    """PR-2: valida el testigo con schema CERRADO; ausente → ``None``.
 
-    ``None`` nunca es atribuible (el servicio falla con
-    EXECUTION_NOT_ATTRIBUTABLE), así que un payload arbitrario jamás se
-    convierte en evidencia: no hay "testigo parcial".
+    ``None`` (ausente) nunca es atribuible: el servicio falla con
+    EXECUTION_NOT_ATTRIBUTABLE. Un testigo PRESENTE que no cumple el schema v1
+    no es "falta de evidencia" sino un mensaje fuera de contrato: no se
+    convierte en evidencia ni se degrada a "sin testigo" (el diagnóstico de
+    no-atribuible apuntaría al mutex) — :class:`LOOTWorkerProtocolError`.
+
+    Raises:
+        LOOTWorkerProtocolError: ``execution_witness`` presente e inválido.
     """
     if value is None:
         return None
     try:
         return LootExecutionWitness.from_payload(value)
     except LootExecutionWitnessPayloadError as exc:
-        logger.warning("execution_witness inválido en el resultado del worker LOOT: %s", exc)
-        return None
+        raise LOOTWorkerProtocolError(
+            f"execution_witness fuera del schema cerrado v1 en el resultado del worker LOOT: {exc}"
+        ) from exc
 
 
 def _string_list(value: object) -> list[str]:

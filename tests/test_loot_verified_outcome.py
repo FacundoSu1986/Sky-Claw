@@ -33,6 +33,7 @@ import pytest
 import sky_claw.local.loot.execution_witness as witness_module
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.local.loot.binary_version import LootBinaryVersionError, read_loot_binary_version
 from sky_claw.local.loot.cli import (
     LOOT_FAILURE_KINDS,
     LOOTConfig,
@@ -40,6 +41,7 @@ from sky_claw.local.loot.cli import (
     LOOTPreconditionError,
     LOOTRunner,
     LOOTTimeoutError,
+    LOOTWorkerProtocolError,
 )
 from sky_claw.local.loot.execution_witness import (
     LOOT_DEBUG_LOG_FILENAME,
@@ -49,11 +51,15 @@ from sky_claw.local.loot.execution_witness import (
     arm_execution_witness,
 )
 from sky_claw.local.loot.headless_settings import (
+    LOOT_LAST_VERSION_KEY,
     LOOT_NO_SORTING_CHANGES_DIALOG_KEY,
+    LOOT_UPDATE_CHECK_KEY,
     MANAGED_LOOT_HEADLESS_SETTINGS,
+    MANAGED_LOOT_SETTINGS_KEYS,
     LootHeadlessSettingsAction,
     LootHeadlessSettingsError,
     ensure_loot_headless_settings,
+    managed_loot_settings,
 )
 from sky_claw.local.loot.outcome import (
     LootSortFailureReason,
@@ -66,6 +72,7 @@ from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
 from sky_claw.local.tools import loot_service as loot_service_module
 from sky_claw.local.tools.loot_service import LootSortingService
+from tests._loot_pe import escribir_loot_exe, pe_con_version
 from tests._loot_witness import TESTIGO_FRESCO, TESTIGO_INTACTO
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
@@ -73,6 +80,12 @@ PAQUETE = RAIZ / "sky_claw"
 
 _PLUGINS_ORIGINAL = b"# MO2 generated\n*Skyrim.esm\n*Mod A.esp\nMod B.esp\n"
 _LOADORDER_ORIGINAL = b"Skyrim.esm\nMod A.esp\nMod B.esp\n"
+
+#: Versión del LOOT.exe falso por defecto (``tests/_loot_pe.py``).
+_VERSION = "0.29.1"
+
+#: Contenido EXACTO de un data root nuevo para un LOOT.exe 0.29.1.
+_GESTIONADO = 'useNoSortingChangesDialog = false\nenableLootUpdateCheck = false\nlastVersion = "0.29.1"\n'
 
 
 # =============================================================================
@@ -257,6 +270,7 @@ def test_valores_enumerables_congelados() -> None:
         "timeout",
         "execution_not_attributable",
         "state_unobservable",
+        "protocol_error",
     }
     assert {s.value for s in LootExecutionWitnessState} == {
         "fresh",
@@ -302,6 +316,7 @@ def test_semantica_ignora_solo_crlf_vacias_y_comentarios() -> None:
         (b"\xef\xbb\xbf*Skyrim.esm\nMod A.esp\n", "BOM: libloadorder lo lee como parte del nombre"),
         (b"*skyrim.esm\nMod A.esp\n", "mayúsculas: sin case-folding (conservador)"),
         (b"*Skyrim.esm \nMod A.esp\n", "espacio final: libloadorder no hace trim"),
+        (b"*Skyrim.esm\nMod A.esp\r", "CR final sin LF: str::lines() lo conserva (LinesMap, Rust 1.82)"),
     ],
 )
 def test_semantica_preserva_lo_que_libloadorder_preserva(variante: bytes, descripcion: str) -> None:
@@ -689,11 +704,9 @@ async def test_t17_fail_revierte_la_transaccion(
 # =============================================================================
 
 
-def _loot_exe(tmp_path: pathlib.Path) -> pathlib.Path:
-    exe = tmp_path / "LOOT" / "LOOT.exe"
-    exe.parent.mkdir(parents=True, exist_ok=True)
-    exe.write_bytes(b"loot")
-    return exe
+def _loot_exe(tmp_path: pathlib.Path, version: tuple[int, int, int] = (0, 29, 1)) -> pathlib.Path:
+    """PE con ``VERSIONINFO`` real: sin versión atestiguable el runner no lanza LOOT."""
+    return escribir_loot_exe(tmp_path / "LOOT" / "LOOT.exe", version)
 
 
 def _proceso_fake(comportamiento: Any, *, returncode: int = 0, stdout: bytes = b"") -> Any:
@@ -767,7 +780,7 @@ async def test_runner_crea_el_data_root_si_falta_antes_de_armar(tmp_path: pathli
     ):
         resultado = await runner.sort()
     assert resultado.execution_witness == TESTIGO_FRESCO
-    assert (root / "settings.toml").read_bytes() == b"useNoSortingChangesDialog = false\n"
+    assert (root / "settings.toml").read_text(encoding="utf-8") == _GESTIONADO
 
 
 async def test_runner_segunda_instancia_deja_sentinel_intacto(tmp_path: pathlib.Path) -> None:
@@ -836,7 +849,7 @@ async def test_runner_sin_poder_armar_el_testigo_no_lanza_loot(tmp_path: pathlib
     root.mkdir()
     # Settings ya gestionado (UNCHANGED, sin escritura): el único os.replace de la
     # preparación es el del sentinel.
-    ensure_loot_headless_settings(root)
+    ensure_loot_headless_settings(root, loot_version=_VERSION)
     runner = LOOTRunner(LOOTConfig(loot_exe=_loot_exe(tmp_path), game_path=tmp_path, loot_data_path=root))
     fake_exec = AsyncMock()
     with (
@@ -1169,10 +1182,8 @@ class _BrokerConResultado:
         ({"execution_witness": {"schema": 1, "state": "fresh"}}, TESTIGO_FRESCO),
         ({"execution_witness": {"schema": 1, "state": "sentinel_intact"}}, TESTIGO_INTACTO),
         ({}, None),
-        ({"execution_witness": {"schema": 1, "state": "fresh", "forged": True}}, None),
-        ({"execution_witness": "fresh"}, None),
     ],
-    ids=["fresco", "intacto", "ausente", "campo_extra", "no_objeto"],
+    ids=["fresco", "intacto", "ausente"],
 )
 async def test_broker_valida_el_testigo_con_schema_cerrado(
     tmp_path: pathlib.Path, tool_result: dict[str, Any], esperado: LootExecutionWitness | None
@@ -1180,6 +1191,19 @@ async def test_broker_valida_el_testigo_con_schema_cerrado(
     runner = _runner_brokered(tmp_path, _BrokerConResultado(tool_result=tool_result))
     resultado = await runner.sort()
     assert resultado.execution_witness == esperado
+
+
+@pytest.mark.parametrize(
+    "testigo",
+    [{"schema": 1, "state": "fresh", "forged": True}, "fresh", {"schema": 2, "state": "fresh"}],
+    ids=["campo_extra", "no_objeto", "schema_futuro"],
+)
+async def test_broker_testigo_presente_e_invalido_es_error_de_protocolo(tmp_path: pathlib.Path, testigo: Any) -> None:
+    """Un testigo PRESENTE fuera del schema v1 no es "falta de evidencia" (cuyo
+    diagnóstico apuntaría al mutex): es un mensaje fuera de contrato."""
+    runner = _runner_brokered(tmp_path, _BrokerConResultado(tool_result={"execution_witness": testigo}))
+    with pytest.raises(LOOTWorkerProtocolError, match="schema cerrado v1"):
+        await runner.sort()
 
 
 async def test_broker_relanza_timeout_y_precondicion_tipados(tmp_path: pathlib.Path) -> None:
@@ -1197,14 +1221,18 @@ async def test_broker_relanza_timeout_y_precondicion_tipados(tmp_path: pathlib.P
 
 @pytest.mark.parametrize(
     ("success", "kind"),
-    [(False, "desconocido"), (True, "timeout")],
-    ids=["kind_desconocido", "kind_con_success_true"],
+    [(False, "desconocido"), (False, 7), (True, "timeout"), (True, "precondition")],
+    ids=["kind_desconocido", "kind_no_string", "timeout_con_success_true", "precondition_con_success_true"],
 )
-async def test_broker_kind_inconsistente_es_fallo_de_proceso(tmp_path: pathlib.Path, success: bool, kind: str) -> None:
+async def test_broker_kind_inconsistente_es_error_de_protocolo(
+    tmp_path: pathlib.Path, success: bool, kind: Any
+) -> None:
+    """Finding de review (#634): ``success=True`` + ``loot_failure_kind`` NO se
+    re-tipa a timeout/precondición (sería creerle al kind de un mensaje
+    contradictorio) ni se degrada a PROCESS_ERROR genérico: error de protocolo."""
     runner = _runner_brokered(tmp_path, _BrokerConResultado(success=success, tool_result={"loot_failure_kind": kind}))
-    resultado = await runner.sort()
-    assert resultado.success is False
-    assert "inconsistente" in resultado.errors[0]
+    with pytest.raises(LOOTWorkerProtocolError, match="contradictorio"):
+        await runner.sort()
 
 
 async def test_broker_traduce_su_timeout_a_loot_timeout(tmp_path: pathlib.Path) -> None:
@@ -1251,9 +1279,10 @@ def test_toda_salida_de_sort_load_order_lleva_outcome() -> None:
         (LOOTTimeoutError(120), "timeout"),
         (LOOTNotFoundError("sin LOOT"), "precondition_failed"),
         (LOOTPreconditionError("testigo"), "precondition_failed"),
+        (LOOTWorkerProtocolError("kind con success=True"), "protocol_error"),
         (RuntimeError("kaput"), "process_error"),
     ],
-    ids=["timeout", "not_found", "precondition", "inesperado"],
+    ids=["timeout", "not_found", "precondition", "protocolo", "inesperado"],
 )
 async def test_salidas_por_excepcion_llevan_outcome_y_razon(
     lock_manager,  # noqa: ANN001
@@ -1372,10 +1401,15 @@ async def test_agente_recibe_la_razon_tipada_del_fail(lock_manager, snapshot_man
 
 
 # =============================================================================
-# S1-S6 — política de settings headless (evidencia: loot_settings.h:127,
-# loot_settings.cpp:845-846/968, main_window.cpp:1600-1613)
+# S1-S6 — política de settings headless (evidencia: loot_settings.h:126-131,
+# loot_settings.cpp:843-854, main_window.cpp:366-368/405-416/1600-1613)
 # =============================================================================
 
+#: Adversarial a propósito: LOOT NO escribe ``useNoSortingChangesDialog`` dentro
+#: de ``[[games]]`` (``LootSettings::save``, loot_settings.cpp:1004-1034, sólo
+#: gameId/name/folder/master/minimumHeaderVersion/masterlistSource/path/
+#: local_path/hiddenMessages). La clave homónima está para probar que la
+#: gestionada es SÓLO la top-level, nunca para afirmar que LOOT la genera.
 _SETTINGS_LOOT = (
     "enableDebugLogging = false\n"
     "updateMasterlist = true\n"
@@ -1397,20 +1431,20 @@ _SETTINGS_LOOT = (
 )
 
 
-def test_s1_root_nuevo_recibe_el_setting_exacto(tmp_path: pathlib.Path) -> None:
-    assert ensure_loot_headless_settings(tmp_path) is LootHeadlessSettingsAction.CREATED
-    assert (tmp_path / "settings.toml").read_bytes() == b"useNoSortingChangesDialog = false\n"
+def test_s1_root_nuevo_recibe_los_settings_exactos(tmp_path: pathlib.Path) -> None:
+    assert ensure_loot_headless_settings(tmp_path, loot_version=_VERSION) is LootHeadlessSettingsAction.CREATED
+    assert (tmp_path / "settings.toml").read_text(encoding="utf-8") == _GESTIONADO
 
 
 def test_s2_idempotente_no_reescribe(tmp_path: pathlib.Path) -> None:
-    ensure_loot_headless_settings(tmp_path)
+    ensure_loot_headless_settings(tmp_path, loot_version=_VERSION)
     settings = tmp_path / "settings.toml"
     # 2 s exactos: representable sin redondeo en NTFS (100 ns) y FAT (2 s).
     marca = 2_000_000_000
     os.utime(settings, ns=(marca, marca))
-    assert ensure_loot_headless_settings(tmp_path) is LootHeadlessSettingsAction.UNCHANGED
+    assert ensure_loot_headless_settings(tmp_path, loot_version=_VERSION) is LootHeadlessSettingsAction.UNCHANGED
     assert settings.stat().st_mtime_ns == marca
-    assert settings.read_bytes() == b"useNoSortingChangesDialog = false\n"
+    assert settings.read_text(encoding="utf-8") == _GESTIONADO
 
 
 def test_s3_s6_claves_ajenas_y_masterlist_sobreviven_byte_a_byte(tmp_path: pathlib.Path) -> None:
@@ -1418,43 +1452,54 @@ def test_s3_s6_claves_ajenas_y_masterlist_sobreviven_byte_a_byte(tmp_path: pathl
     settings.write_text(_SETTINGS_LOOT, encoding="utf-8")
     antes = tomllib.loads(_SETTINGS_LOOT)
 
-    assert ensure_loot_headless_settings(tmp_path) is LootHeadlessSettingsAction.UPDATED
+    assert ensure_loot_headless_settings(tmp_path, loot_version=_VERSION) is LootHeadlessSettingsAction.UPDATED
 
     texto = settings.read_text(encoding="utf-8")
-    esperado = _SETTINGS_LOOT.replace(
+    esperado = _SETTINGS_LOOT.replace("enableLootUpdateCheck = true\n", "enableLootUpdateCheck = false\n", 1).replace(
         "useNoSortingChangesDialog = true\ngame", "useNoSortingChangesDialog = false\ngame", 1
     )
-    assert texto == esperado  # sólo cambió el valor de la clave top-level
+    assert texto == esperado  # sólo cambiaron los valores de las claves top-level gestionadas
     despues = tomllib.loads(texto)
     assert despues["useNoSortingChangesDialog"] is False
+    assert despues["enableLootUpdateCheck"] is False
+    assert despues["lastVersion"] == _VERSION  # ya coincidía: su línea no se tocó
     # S6: masterlist/prelude/updateMasterlist intactos (incluida la clave homónima
     # DENTRO de [[games]], que no es la gestionada).
-    for clave in ("updateMasterlist", "preludeSource", "lastVersion", "filters", "games"):
+    for clave in ("updateMasterlist", "preludeSource", "filters", "games"):
         assert despues[clave] == antes[clave], clave
 
 
 def test_s3_clave_ausente_se_antepone_sin_tocar_el_resto(tmp_path: pathlib.Path) -> None:
     settings = tmp_path / "settings.toml"
-    original = _SETTINGS_LOOT.replace("useNoSortingChangesDialog = true\ngame", "game", 1)
+    original = _SETTINGS_LOOT.replace("useNoSortingChangesDialog = true\ngame", "game", 1).replace(
+        "enableLootUpdateCheck = true", "enableLootUpdateCheck = false", 1
+    )
     settings.write_text(original, encoding="utf-8")
-    assert ensure_loot_headless_settings(tmp_path) is LootHeadlessSettingsAction.UPDATED
+    assert ensure_loot_headless_settings(tmp_path, loot_version=_VERSION) is LootHeadlessSettingsAction.UPDATED
     assert settings.read_text(encoding="utf-8") == "useNoSortingChangesDialog = false\n" + original
 
 
 def test_s3_clave_ausente_en_archivo_crlf_respeta_el_salto(tmp_path: pathlib.Path) -> None:
     settings = tmp_path / "settings.toml"
     settings.write_bytes(b'game = "x"\r\n[filters]\r\nhideCRCs = true\r\n')
-    ensure_loot_headless_settings(tmp_path)
+    ensure_loot_headless_settings(tmp_path, loot_version=_VERSION)
     assert settings.read_bytes() == (
-        b'useNoSortingChangesDialog = false\r\ngame = "x"\r\n[filters]\r\nhideCRCs = true\r\n'
+        b"useNoSortingChangesDialog = false\r\nenableLootUpdateCheck = false\r\n"
+        b'lastVersion = "0.29.1"\r\ngame = "x"\r\n[filters]\r\nhideCRCs = true\r\n'
     )
 
 
 def test_s3_bom_y_crlf_se_preservan(tmp_path: pathlib.Path) -> None:
     settings = tmp_path / "settings.toml"
-    settings.write_bytes(b'\xef\xbb\xbfgame = "x"\r\nuseNoSortingChangesDialog = true # nota\r\n')
-    ensure_loot_headless_settings(tmp_path)
-    assert settings.read_bytes() == b'\xef\xbb\xbfgame = "x"\r\nuseNoSortingChangesDialog = false # nota\r\n'
+    settings.write_bytes(
+        b'\xef\xbb\xbfgame = "x"\r\nuseNoSortingChangesDialog = true # nota\r\n'
+        b"enableLootUpdateCheck = false\r\nlastVersion = '0.29.1'\r\n"
+    )
+    ensure_loot_headless_settings(tmp_path, loot_version=_VERSION)
+    assert settings.read_bytes() == (
+        b'\xef\xbb\xbfgame = "x"\r\nuseNoSortingChangesDialog = false # nota\r\n'
+        b"enableLootUpdateCheck = false\r\nlastVersion = '0.29.1'\r\n"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1464,29 +1509,51 @@ def test_s3_bom_y_crlf_se_preservan(tmp_path: pathlib.Path) -> None:
         b"\xff\xfe no utf-8",
         b'useNoSortingChangesDialog = "false"\n',
         b"useNoSortingChangesDialog.x = 1\n",
+        b"enableLootUpdateCheck = 0\n",
+        b"lastVersion = 1\n",
+        b'lastVersion = """0.29.0"""\n',
     ],
-    ids=["toml_invalido", "no_utf8", "tipo_string", "tabla_dotted"],
+    ids=[
+        "toml_invalido",
+        "no_utf8",
+        "tipo_string",
+        "tabla_dotted",
+        "entero_no_es_false",
+        "version_no_string",
+        "multilinea",
+    ],
 )
 def test_s4_settings_no_gestionable_falla_cerrado_sin_pisar(tmp_path: pathlib.Path, contenido: bytes) -> None:
     settings = tmp_path / "settings.toml"
     settings.write_bytes(contenido)
     with pytest.raises(LootHeadlessSettingsError):
-        ensure_loot_headless_settings(tmp_path)
+        ensure_loot_headless_settings(tmp_path, loot_version=_VERSION)
     assert settings.read_bytes() == contenido
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-def test_s5_clave_y_valor_exactos_congelados_contra_upstream() -> None:
-    """loot_settings.cpp:845-846 lee EXACTAMENTE esta clave top-level con
-    ``value_or(true)``: cualquier otra grafía o tipo deja el modal activo."""
+def test_s5_claves_y_valores_exactos_congelados_contra_upstream() -> None:
+    """loot_settings.cpp:843-846/854 lee EXACTAMENTE estas claves top-level con
+    ``value_or``: cualquier otra grafía o tipo deja el default (modal activo,
+    update check activo, lastVersion vacío → First-Time Tips)."""
     assert LOOT_NO_SORTING_CHANGES_DIALOG_KEY == "useNoSortingChangesDialog"
-    assert dict(MANAGED_LOOT_HEADLESS_SETTINGS) == {"useNoSortingChangesDialog": False}
+    assert LOOT_UPDATE_CHECK_KEY == "enableLootUpdateCheck"
+    assert LOOT_LAST_VERSION_KEY == "lastVersion"
+    assert dict(MANAGED_LOOT_HEADLESS_SETTINGS) == {"useNoSortingChangesDialog": False, "enableLootUpdateCheck": False}
+    assert (
+        frozenset({"useNoSortingChangesDialog", "enableLootUpdateCheck", "lastVersion"}) == MANAGED_LOOT_SETTINGS_KEYS
+    )
+    assert managed_loot_settings("0.29.2") == {
+        "useNoSortingChangesDialog": False,
+        "enableLootUpdateCheck": False,
+        "lastVersion": "0.29.2",
+    }
 
 
 def test_s5_contenido_generado_parsea_al_valor_gestionado(tmp_path: pathlib.Path) -> None:
-    ensure_loot_headless_settings(tmp_path)
+    ensure_loot_headless_settings(tmp_path, loot_version=_VERSION)
     datos = tomllib.loads((tmp_path / "settings.toml").read_text(encoding="utf-8"))
-    assert datos == dict(MANAGED_LOOT_HEADLESS_SETTINGS)
+    assert datos == managed_loot_settings(_VERSION)
 
 
 # =============================================================================
@@ -1509,3 +1576,462 @@ def test_armado_reemplaza_log_previo_por_sentinel_con_nonce_unico(tmp_path: path
 def test_testigo_es_inmutable() -> None:
     with pytest.raises(dataclasses.FrozenInstanceError):
         TESTIGO_FRESCO.state = LootExecutionWitnessState.ABSENT  # type: ignore[misc]
+
+
+# =============================================================================
+# H1-H6 — hardening post-review de #634
+# =============================================================================
+# H1: versión REAL del binario (VERSIONINFO) · H2: "First-Time Tips" (lastVersion)
+# y update check · H3: finding [[games]] · H4: resultado de worker contradictorio
+# · H5: finding de encoding · H6: diagnóstico de TIMEOUT.
+
+
+def _first_time_tips_se_mostraria(settings_toml: bytes, version_del_binario: str) -> bool:
+    """Réplica LITERAL del predicado de loot/loot 0.29.1 ``main_window.cpp:366``
+    (0.29.2: l.391): ``getLastVersion() != getLootVersion()``, con el default
+    vacío de ``loot_settings.h:131`` y el ``value_or`` de ``loot_settings.cpp:854``
+    (un valor que no es string cae al default)."""
+    valor = tomllib.loads(settings_toml.decode("utf-8")).get("lastVersion", "")
+    return (valor if isinstance(valor, str) else "") != version_del_binario
+
+
+def _loot_que_lee_sus_settings(capturas: dict[str, bytes]) -> Any:
+    """LOOT fake que lee ``settings.toml`` MIENTRAS corre (como ``LootState::init``)."""
+
+    def comportamiento(argv: list[str]) -> None:
+        capturas["settings"] = (_data_root(argv) / "settings.toml").read_bytes()
+        _loot_que_supera_el_mutex(argv)
+
+    return comportamiento
+
+
+#: Forma de ``LootSettings::save`` (loot_settings.cpp:961-1063) serializada por
+#: toml++ (claves ordenadas, strings literales con comilla simple, rutas Windows
+#: sin escapar). Representativa, NO byte-exacta de un rig: el rig real lo confirma.
+_SETTINGS_ESCRITO_POR_LOOT = r"""enableDebugLogging = false
+enableLootUpdateCheck = false
+game = 'Skyrim Special Edition'
+language = 'en'
+lastGame = 'Skyrim Special Edition'
+lastVersion = '0.29.1'
+preludeSource = 'https://raw.githubusercontent.com/loot/prelude/v0.26/prelude.yaml'
+theme = 'default'
+updateMasterlist = true
+useNoSortingChangesDialog = false
+warnOnCaseSensitiveGamePaths = true
+
+[filters]
+hideBashTags = false
+hideCRCs = false
+hideNotes = false
+showOnlyPluginsWithoutLoadOrderMetadata = false
+
+[window]
+bottom = 900
+left = 100
+maximised = false
+right = 1500
+top = 100
+
+[[games]]
+folder = 'Skyrim Special Edition'
+gameId = 'SkyrimSE'
+hiddenMessages = []
+local_path = 'C:\Users\op\AppData\Local\Skyrim Special Edition'
+master = 'Skyrim.esm'
+masterlistSource = 'https://raw.githubusercontent.com/loot/skyrimse/v0.26/masterlist.yaml'
+minimumHeaderVersion = 1.7
+name = 'Skyrim Special Edition'
+path = 'C:\Games\Steam\steamapps\common\Skyrim Special Edition'
+
+[[languages]]
+locale = 'en'
+name = 'English'
+"""
+
+
+# --- H1: versión atestiguada desde el recurso VERSIONINFO --------------------
+
+
+@pytest.mark.parametrize("pe32plus", [True, False], ids=["pe32plus", "pe32"])
+@pytest.mark.parametrize(
+    ("version", "esperado"),
+    [((0, 29, 1), "0.29.1"), ((0, 29, 2), "0.29.2"), ((1, 0, 10), "1.0.10")],
+    ids=["0.29.1", "0.29.2", "1.0.10"],
+)
+def test_h1_version_atestiguada_es_la_de_getlootversion(
+    tmp_path: pathlib.Path, pe32plus: bool, version: tuple[int, int, int], esperado: str
+) -> None:
+    """``FILEVERSION a, b, c, 0`` → ``"a.b.c"`` (resource.rc + set_version_number.py)."""
+    exe = tmp_path / "LOOT.exe"
+    exe.write_bytes(pe_con_version((*version, 0), pe32plus=pe32plus))
+    assert read_loot_binary_version(exe) == esperado
+
+
+@pytest.mark.parametrize(
+    ("contenido", "motivo"),
+    [
+        (b"", "MZ"),
+        (b"loot", "MZ"),
+        (b"MZ" + b"\x00" * 126, "firma PE"),
+        (pe_con_version(tipo_recurso=3), "ausente"),
+        (pe_con_version(idiomas=2), "ambiguo"),
+        (pe_con_version(firma=0xDEADBEEF), "firma de VS_FIXEDFILEINFO"),
+        (pe_con_version(clave="VS_VERSION_INFX"), "VS_VERSION_INFO"),
+        (pe_con_version()[:0x230], "truncad"),
+        (pe_con_version((0, 29, 1, 0), (0, 29, 2, 0)), "PRODUCTVERSION"),
+        (pe_con_version((0, 29, 1, 7)), "esquema de release"),
+    ],
+    ids=[
+        "vacio",
+        "no_pe",
+        "mz_sin_pe",
+        "sin_rt_version",
+        "idiomas_ambiguos",
+        "firma_invalida",
+        "clave_invalida",
+        "truncado",
+        "file_distinta_de_product",
+        "build_no_cero",
+    ],
+)
+def test_h1_version_no_atestiguable_falla_cerrado(tmp_path: pathlib.Path, contenido: bytes, motivo: str) -> None:
+    exe = tmp_path / "LOOT.exe"
+    exe.write_bytes(contenido)
+    with pytest.raises(LootBinaryVersionError, match=motivo):
+        read_loot_binary_version(exe)
+
+
+def test_h1_binario_ausente_o_ilegible_falla_cerrado(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(LootBinaryVersionError, match="No se pudo leer"):
+        read_loot_binary_version(tmp_path / "no-existe.exe")
+    with pytest.raises(LootBinaryVersionError, match="No se pudo leer"):
+        read_loot_binary_version(tmp_path)  # un directorio no es un binario
+
+
+# --- H2: "First-Time Tips" (lastVersion) y update check ----------------------
+
+
+async def test_h2_root_nuevo_no_muestra_first_time_tips(tmp_path: pathlib.Path) -> None:
+    """Instalación limpia: data root vacío. Sin sembrar, el predicado upstream
+    muestra el modal (lastVersion vacío); con la preparación, al momento en que
+    LOOT lee sus settings NO hay modal de primer arranque, ni update check, ni
+    modal de NO_CHANGE."""
+    root = tmp_path / "loot_data"
+    root.mkdir()
+    assert _first_time_tips_se_mostraria(b"", "0.29.1")  # control: root nuevo sin sembrar
+    capturas: dict[str, bytes] = {}
+    resultado, _ = await _correr_runner(tmp_path, _loot_que_lee_sus_settings(capturas))
+    assert resultado.execution_witness == TESTIGO_FRESCO
+    assert not _first_time_tips_se_mostraria(capturas["settings"], "0.29.1")
+    datos = tomllib.loads(capturas["settings"].decode("utf-8"))
+    assert datos["enableLootUpdateCheck"] is False
+    assert datos["useNoSortingChangesDialog"] is False
+
+
+async def test_h2_actualizar_loot_no_vuelve_a_mostrar_first_time_tips(tmp_path: pathlib.Path) -> None:
+    """Upgrade 0.29.1 → 0.29.2 sobre un root que LOOT ya reescribió al cerrar
+    (``closeEvent``, main_window.cpp:1489-1490): lastVersion queda en '0.29.1' y
+    el binario nuevo mostraría el modal si no se re-siembra."""
+    root = tmp_path / "loot_data"
+    root.mkdir()
+    (root / "settings.toml").write_text(_SETTINGS_ESCRITO_POR_LOOT, encoding="utf-8")
+    assert _first_time_tips_se_mostraria(_SETTINGS_ESCRITO_POR_LOOT.encode(), "0.29.2")  # control
+    runner = LOOTRunner(LOOTConfig(loot_exe=_loot_exe(tmp_path, (0, 29, 2)), game_path=tmp_path, loot_data_path=root))
+    capturas: dict[str, bytes] = {}
+    _, fake_exec = _proceso_fake(_loot_que_lee_sus_settings(capturas))
+    with (
+        patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", fake_exec),
+        patch("sky_claw.local.loot.cli.translate_path_if_wsl", side_effect=lambda x: str(x)),
+    ):
+        await runner.sort()
+    assert not _first_time_tips_se_mostraria(capturas["settings"], "0.29.2")
+
+
+def test_h2_version_igual_es_idempotente_con_el_formato_de_loot(tmp_path: pathlib.Path) -> None:
+    """Tras la primera corrida LOOT reescribe el archivo (toml++: strings ``'...'``);
+    con las tres claves ya en su valor gestionado no se escribe NADA."""
+    settings = tmp_path / "settings.toml"
+    settings.write_text(_SETTINGS_ESCRITO_POR_LOOT, encoding="utf-8")
+    marca = 2_000_000_000
+    os.utime(settings, ns=(marca, marca))
+    assert ensure_loot_headless_settings(tmp_path, loot_version="0.29.1") is LootHeadlessSettingsAction.UNCHANGED
+    assert settings.read_text(encoding="utf-8") == _SETTINGS_ESCRITO_POR_LOOT
+    assert settings.stat().st_mtime_ns == marca
+
+
+def test_h2_version_distinta_actualiza_exactamente_esa_linea(tmp_path: pathlib.Path) -> None:
+    settings = tmp_path / "settings.toml"
+    settings.write_text(_SETTINGS_ESCRITO_POR_LOOT, encoding="utf-8")
+    assert ensure_loot_headless_settings(tmp_path, loot_version="0.29.2") is LootHeadlessSettingsAction.UPDATED
+    antes = _SETTINGS_ESCRITO_POR_LOOT.splitlines(keepends=True)
+    despues = settings.read_text(encoding="utf-8").splitlines(keepends=True)
+    assert len(despues) == len(antes)
+    distintas = [(a, d) for a, d in zip(antes, despues, strict=True) if a != d]
+    assert distintas == [("lastVersion = '0.29.1'\n", 'lastVersion = "0.29.2"\n')]
+
+
+def test_h2_toml_ajeno_se_preserva_byte_a_byte_salvo_las_claves_gestionadas(tmp_path: pathlib.Path) -> None:
+    """Las tres claves gestionadas con valores ajenos: cambian SÓLO sus líneas;
+    rutas Windows en strings literales, floats, tablas y arrays de tablas quedan
+    idénticos en bytes y en posición."""
+    original = (
+        _SETTINGS_ESCRITO_POR_LOOT.replace("enableLootUpdateCheck = false", "enableLootUpdateCheck = true", 1)
+        .replace("lastVersion = '0.29.1'", "lastVersion = '0.28.0' # la dejó el GUI", 1)
+        .replace("useNoSortingChangesDialog = false", "useNoSortingChangesDialog = true", 1)
+    )
+    settings = tmp_path / "settings.toml"
+    settings.write_text(original, encoding="utf-8")
+    assert ensure_loot_headless_settings(tmp_path, loot_version="0.29.1") is LootHeadlessSettingsAction.UPDATED
+    texto = settings.read_text(encoding="utf-8")
+    antes = original.splitlines(keepends=True)
+    despues = texto.splitlines(keepends=True)
+    assert len(despues) == len(antes)
+    distintas = {a: d for a, d in zip(antes, despues, strict=True) if a != d}
+    assert distintas == {
+        "enableLootUpdateCheck = true\n": "enableLootUpdateCheck = false\n",
+        "lastVersion = '0.28.0' # la dejó el GUI\n": 'lastVersion = "0.29.1" # la dejó el GUI\n',
+        "useNoSortingChangesDialog = true\n": "useNoSortingChangesDialog = false\n",
+    }
+    ajenas_antes = {k: v for k, v in tomllib.loads(original).items() if k not in MANAGED_LOOT_SETTINGS_KEYS}
+    ajenas_despues = {k: v for k, v in tomllib.loads(texto).items() if k not in MANAGED_LOOT_SETTINGS_KEYS}
+    assert ajenas_despues == ajenas_antes
+
+
+@pytest.mark.parametrize("version", ["0.29", "v0.29.1", "0.29.1.0", "00.29.1", "0.29.1 ", "\uff10.29.1"])
+def test_h2_version_mal_formada_falla_cerrado_sin_tocar_el_archivo(tmp_path: pathlib.Path, version: str) -> None:
+    settings = tmp_path / "settings.toml"
+    settings.write_text(_SETTINGS_ESCRITO_POR_LOOT, encoding="utf-8")
+    with pytest.raises(LootHeadlessSettingsError, match="mal formada"):
+        ensure_loot_headless_settings(tmp_path, loot_version=version)
+    assert settings.read_text(encoding="utf-8") == _SETTINGS_ESCRITO_POR_LOOT
+
+
+async def test_h2_version_no_atestiguable_no_lanza_loot_ni_escribe(tmp_path: pathlib.Path) -> None:
+    """Fail-closed: sin versión exacta no se siembra nada ni se arma el testigo."""
+    root = tmp_path / "loot_data"
+    root.mkdir()
+    exe = tmp_path / "LOOT" / "LOOT.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"no es un PE")
+    runner = LOOTRunner(LOOTConfig(loot_exe=exe, game_path=tmp_path, loot_data_path=root))
+    fake_exec = AsyncMock()
+    with (
+        patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", fake_exec),
+        patch("sky_claw.local.loot.cli.translate_path_if_wsl", side_effect=lambda x: str(x)),
+        pytest.raises(LOOTPreconditionError, match="First-Time Tips"),
+    ):
+        await runner.sort()
+    fake_exec.assert_not_awaited()
+    assert list(root.iterdir()) == []
+
+
+async def test_h2_servicio_con_runner_real_reporta_precondicion_y_no_toca_el_load_order(
+    lock_manager,  # noqa: ANN001
+    snapshot_manager,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    resolver, plugins, loadorder = _load_order(tmp_path)
+    exe = tmp_path / "LOOT" / "LOOT.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"no es un PE")
+    root = tmp_path / "loot_data"
+    runner = LOOTRunner(LOOTConfig(loot_exe=exe, game_path=tmp_path, loot_data_path=root))
+    fake_exec = AsyncMock()
+    with (
+        patch("sky_claw.local.loot.cli.asyncio.create_subprocess_exec", fake_exec),
+        patch("sky_claw.local.loot.cli.translate_path_if_wsl", side_effect=lambda x: str(x)),
+    ):
+        res = await _servicio(lock_manager, snapshot_manager, runner, resolver).sort_load_order()
+    fake_exec.assert_not_awaited()
+    assert (res["outcome"], res["failure_reason"]) == ("fail", "precondition_failed")
+    assert "First-Time Tips" in res["message"]
+    assert (plugins.read_bytes(), loadorder.read_bytes()) == (_PLUGINS_ORIGINAL, _LOADORDER_ORIGINAL)
+
+
+# --- H3: finding de review "clave dentro de [[games]]" ------------------------
+
+
+def test_h3_clave_solo_dentro_de_games_no_bloquea_ni_se_toca(tmp_path: pathlib.Path) -> None:
+    """Finding del revisor automático de #634 REFUTADO: con la clave SÓLO dentro
+    de ``[[games]]`` la edición NO falla — antepone la top-level y la de la tabla
+    viaja intacta dentro de ``games`` (la validación excluye sólo claves top-level)."""
+    original = (
+        "enableLootUpdateCheck = false\n"
+        "lastVersion = '0.29.1'\n"
+        "\n"
+        "[[games]]\n"
+        "name = 'Skyrim Special Edition'\n"
+        "useNoSortingChangesDialog = true\n"
+    )
+    settings = tmp_path / "settings.toml"
+    settings.write_text(original, encoding="utf-8")
+    assert ensure_loot_headless_settings(tmp_path, loot_version="0.29.1") is LootHeadlessSettingsAction.UPDATED
+    texto = settings.read_text(encoding="utf-8")
+    assert texto == "useNoSortingChangesDialog = false\n" + original
+    datos = tomllib.loads(texto)
+    assert datos["useNoSortingChangesDialog"] is False
+    assert datos["games"] == [{"name": "Skyrim Special Edition", "useNoSortingChangesDialog": True}]
+
+
+def test_h3_la_validacion_si_rechaza_un_cambio_dentro_de_games() -> None:
+    """Contracara: la exclusión es SÓLO top-level. Una edición que tocara la clave
+    homónima de ``[[games]]`` cambia el valor de ``games`` y se rechaza."""
+    from sky_claw.local.loot import headless_settings as hs
+
+    antes = tomllib.loads("[[games]]\nuseNoSortingChangesDialog = true\n")
+    manipulado = (
+        "useNoSortingChangesDialog = false\nenableLootUpdateCheck = false\n"
+        'lastVersion = "0.29.1"\n[[games]]\nuseNoSortingChangesDialog = false\n'
+    )
+    with pytest.raises(LootHeadlessSettingsError, match="sólo las claves gestionadas"):
+        hs._validar_edicion(manipulado, antes=antes, deseado=managed_loot_settings("0.29.1"))
+
+
+# --- H4: resultado de worker contradictorio → PROTOCOL_ERROR ------------------
+
+
+async def test_h4_error_de_protocolo_revierte_y_se_reporta_tipado(
+    lock_manager,  # noqa: ANN001
+    snapshot_manager,  # noqa: ANN001
+    journal,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """LOOT pudo haber mutado antes de que el worker respondiera algo fuera de
+    contrato: ningún campo es evidencia → FAIL/protocol_error y rollback."""
+    from sky_claw.app.db.journal import TransactionStatus
+
+    resolver, plugins, _ = _load_order(tmp_path)
+
+    async def sort(**_kwargs: object) -> LOOTResult:
+        plugins.write_bytes(b"*Skyrim.esm\nMod B.esp\n*Mod A.esp\n")
+        raise LOOTWorkerProtocolError("Resultado del worker LOOT contradictorio: ...")
+
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=sort)
+    res = await _servicio(lock_manager, snapshot_manager, runner, resolver, journal).sort_load_order()
+    assert (res["outcome"], res["success"], res["failure_reason"]) == ("fail", False, "protocol_error")
+    assert res["rolled_back"] is True
+    assert plugins.read_bytes() == _PLUGINS_ORIGINAL
+    assert (await _estado_ultima_tx(journal)).status == TransactionStatus.ROLLED_BACK
+
+
+async def test_h4_camino_brokered_completo_kind_con_success_true(
+    lock_manager,  # noqa: ANN001
+    snapshot_manager,  # noqa: ANN001
+    tmp_path: pathlib.Path,
+) -> None:
+    """Extremo a extremo por el runner productivo: el finding pedía que esto NO
+    terminara como PROCESS_ERROR genérico."""
+    resolver, _, _ = _load_order(tmp_path)
+    broker = _BrokerConResultado(success=True, tool_result={"loot_failure_kind": "timeout"})
+    runner = _runner_brokered(tmp_path, broker)
+    res = await _servicio(lock_manager, snapshot_manager, runner, resolver).sort_load_order()
+    assert (res["outcome"], res["failure_reason"]) == ("fail", "protocol_error")
+    assert "contradictorio" in res["message"]
+
+
+# --- H5: finding de encoding (Windows-1252) -----------------------------------
+
+#: Bytes que el ``cp1252`` de Python no mapea y WHATWG/encoding_rs mapea a C1.
+_SIN_MAPEO_EN_CP1252_DE_PYTHON = frozenset({0x81, 0x8D, 0x8F, 0x90, 0x9D})
+
+
+def _decodificar_como_libloadorder(data: bytes) -> str:
+    """``encoding_rs::WINDOWS_1252`` sin BOM ni reemplazo: total e inyectivo."""
+    return "".join(chr(b) if b in _SIN_MAPEO_EN_CP1252_DE_PYTHON else bytes([b]).decode("cp1252") for b in data)
+
+
+def _lineas_como_rust(texto: str) -> list[str]:
+    """``str::lines()`` = ``split_inclusive('\\n')`` + ``LinesMap`` (Rust 1.82)."""
+    lineas: list[str] = []
+    resto = texto
+    while resto:
+        corte = resto.find("\n")
+        pieza, resto = (resto, "") if corte < 0 else (resto[: corte + 1], resto[corte + 1 :])
+        if pieza.endswith("\n"):
+            pieza = pieza[:-1]
+            if pieza.endswith("\r"):
+                pieza = pieza[:-1]
+        lineas.append(pieza)
+    return lineas
+
+
+def _semantica_de_referencia(data: bytes) -> tuple[tuple[str, bool], ...]:
+    """Réplica TEXTUAL de libloadorder 18.8.1 (mutable.rs:328-332 +
+    asterisk_based.rs:314-322): decodificar, ``lines()``, descartar vacías y
+    ``#``, ``*`` = activo."""
+    entradas: list[tuple[str, bool]] = []
+    for linea in _lineas_como_rust(_decodificar_como_libloadorder(data)):
+        if not linea or linea.startswith("#"):
+            continue
+        entradas.append((linea[1:], True) if linea.startswith("*") else (linea, False))
+    return tuple(entradas)
+
+
+_CORPUS_ENCODING: tuple[bytes, ...] = (
+    b"*Skyrim.esm\nMod A.esp\n",
+    b"*Skyrim.esm\r\nMod A.esp\r\n",
+    b"*Skyrim.esm\nMod A.esp",
+    b"*Skyrim.esm\nMod A.esp\r",
+    b"\xef\xbb\xbf*Skyrim.esm\nMod A.esp\n",
+    "*Skyrim.esm\nCafé.esp\n".encode(),
+    "*Skyrim.esm\nCafé.esp\n".encode("cp1252"),
+    "*Skyrim.esm\n\U0001f600 Mod.esp\n".encode(),
+    "*Skyrim.esm\n*\U0001f600 Mod.esp\n".encode(),
+    "*Skyrim.esm\nМод.esp\n".encode(),
+    b"*Skyrim.esm\n\x81\x8d\x8f\x90\x9d.esp\n",
+    b"*Skyrim.esm\n\xc2\x81.esp\n",
+    b"# MO2\n*Skyrim.esm\n\nMod A.esp\n",
+    b"*Skyrim.esm\nmod a.esp\n",
+    b"*Skyrim.esm\n\r\nMod A.esp\n",
+    b"\r",
+    b"",
+)
+
+
+def test_h5_comparar_bytes_equivale_a_comparar_lo_que_lee_libloadorder() -> None:
+    """Finding de encoding (warning, no bug): para TODO par del corpus — UTF-8,
+    emoji, cirílico, cp1252, los 5 bytes "sin uso", BOM, CRLF, CR final — la
+    igualdad del parser por bytes coincide con la del texto que decodifica
+    libloadorder. Nunca "cambio" donde libloadorder ve igualdad ni al revés."""
+    for a, b in itertools.product(_CORPUS_ENCODING, repeat=2):
+        assert (parse_load_order_bytes(a) == parse_load_order_bytes(b)) == (
+            _semantica_de_referencia(a) == _semantica_de_referencia(b)
+        ), (a, b)
+    # Más fuerte que la igualdad por pares: decodificar cada nombre del parser por
+    # bytes da EXACTAMENTE la entrada que lee libloadorder.
+    for dato in _CORPUS_ENCODING:
+        decodificado = tuple((_decodificar_como_libloadorder(n), activo) for n, activo in parse_load_order_bytes(dato))
+        assert decodificado == _semantica_de_referencia(dato), dato
+
+
+def test_h5_nombres_fuera_de_windows_1252_sin_cambio_son_no_change() -> None:
+    utf8 = "*Skyrim.esm\n*\U0001f600 Mod.esp\nМод.esp\n".encode()
+    estado = ((str(pathlib.Path("plugins.txt")), parse_load_order_bytes(utf8)),)
+    veredicto = classify_loot_sort(
+        process_success=True, process_detail="", witness=TESTIGO_FRESCO, before=estado, after=estado
+    )
+    assert veredicto.outcome is LootSortOutcome.NO_CHANGE
+    reordenado = (
+        (
+            str(pathlib.Path("plugins.txt")),
+            parse_load_order_bytes("*Skyrim.esm\nМод.esp\n*\U0001f600 Mod.esp\n".encode()),
+        ),
+    )
+    veredicto = classify_loot_sort(
+        process_success=True, process_detail="", witness=TESTIGO_FRESCO, before=estado, after=reordenado
+    )
+    assert veredicto.outcome is LootSortOutcome.CHANGED
+
+
+# --- H6: el diagnóstico de TIMEOUT ya no culpa a lo que los settings neutralizan
+
+
+async def test_h6_timeout_ya_no_lista_first_time_tips(lock_manager, snapshot_manager, tmp_path) -> None:  # noqa: ANN001
+    resolver, _, _ = _load_order(tmp_path)
+    runner = MagicMock()
+    runner.sort = AsyncMock(side_effect=LOOTTimeoutError(120))
+    res = await _servicio(lock_manager, snapshot_manager, runner, resolver).sort_load_order()
+    assert "First-Time Tips" not in res["outcome_detail"]
+    assert "masterlist" in res["outcome_detail"]  # PR-3: sigue siendo una causa posible

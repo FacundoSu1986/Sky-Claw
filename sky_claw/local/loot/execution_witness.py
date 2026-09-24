@@ -6,8 +6,11 @@ segunda instancia sale 0 sin hacer nada cuando otra ya posee el mutex
 no-ejecución del NO_CHANGE legítimo, sin adivinar por mtime.
 
 Evidencia upstream — ``loot/loot`` tag ``0.29.1``, commit
-``77f3ba98966819fd6d92d97dcb2dbc4c1b9fb9b9`` (verificada línea por línea; NO se
-asume que 0.29.2+ sea idéntico):
+``77f3ba98966819fd6d92d97dcb2dbc4c1b9fb9b9`` (verificada línea por línea). En
+0.29.2 (``0402143e211ee20352c10965fa1a36df5edc63d5``) ``main.cpp``,
+``application_mutex.h``, ``loot_state.cpp``, ``loot_paths.cpp`` y
+``logging.cpp`` son idénticos byte a byte (diff auditado); no se asume nada de
+versiones posteriores:
 
 * ``src/gui/application_mutex.h:44,60,63-67``: ``ApplicationMutexGuard`` crea el
   mutex con nombre ``L"LOOT.Shell.Instance"`` (``CreateMutex(nullptr, FALSE,
@@ -55,13 +58,26 @@ Contrato (contenido controlado, no mtime):
 
 Atribución — qué prueba y qué NO: ``FRESH`` prueba que ALGÚN proceso LOOT
 lanzado con este ``--loot-data-path`` alcanzó el runtime entre ``arm`` y
-``observe``. Que ese proceso sea el NUESTRO descansa en la exclusividad del
-data root (PR-1: propiedad de Sky-Claw por instancia+perfil, nunca el default
-del GUI) y en que los lanzamientos se serializan bajo el lock
-``LOAD_ORDER_RESOURCE_ID`` — la MISMA precondición que ya sostiene el
-snapshot/rollback del servicio. ``FRESH`` tampoco prueba que el sort haya
-terminado bien: eso lo deciden el código de salida, el parser y el estado del
-load order observado (:mod:`sky_claw.local.loot.outcome`).
+``observe``. ``FRESH`` tampoco prueba que el sort haya terminado bien: eso lo
+deciden el código de salida, el parser y el estado del load order observado
+(:mod:`sky_claw.local.loot.outcome`).
+
+**Precondición de atribución (este módulo NO la puede verificar): el
+``--loot-data-path`` tiene que ser de uso EXCLUSIVO de una sola invocación de
+Sky-Claw a la vez.** Que el proceso que recreó el log sea el NUESTRO descansa en
+esa exclusividad, que hoy aportan dos piezas — la MISMA precondición que ya
+sostiene el snapshot/rollback del servicio:
+
+1. PR-1: el root es propiedad de Sky-Claw por instancia+perfil y nunca el
+   default del GUI del operador (:mod:`sky_claw.local.loot.data_root`).
+2. Los lanzamientos se serializan bajo el lock ``LOAD_ORDER_RESOURCE_ID``.
+
+Límite conocido, documentado y NO cerrado en PR-2: ``locks.db`` vive en
+``.skyclaw_backups/`` RELATIVO AL CWD del proceso (``sky_claw/app_context.py:75``,
+``_LOCK_STAGING_DIR``). Dos procesos Sky-Claw lanzados desde cwd distintos sobre
+la misma instancia+perfil comparten data root pero NO lock: el ``FRESH`` de uno
+puede ser el runtime del otro (atribución cruzada). Hasta cerrar ese follow-up,
+la atribución vale con UN solo proceso Sky-Claw por instancia MO2.
 
 Lo que este módulo deliberadamente NO hace: parsear mensajes humanos del log.
 ``"Sorting operation complete."`` se loguea INCONDICIONALMENTE al final de
@@ -120,6 +136,13 @@ class LootExecutionWitnessError(RuntimeError):
     ``LOOTDebugLog.txt`` abierto sin ``FILE_SHARE_DELETE`` (spdlog abre con
     ``_SH_DENYNO``) y el ``os.replace`` del sentinel falla. Lanzar igual sería
     correr una ejecución que no se podría atribuir.
+
+    Decisión deliberada (review PR-2): NO se reintenta con backoff ni se matan
+    procesos "huérfanos". Un LOOT vivo sobre este root puede ser legítimo (otra
+    corrida, el operador abriendo el GUI sobre el root de Sky-Claw); matarlo
+    sería destruir trabajo ajeno sin evidencia de quién es, y reintentar sólo
+    agranda la ventana en la que el mismo proceso puede tocar el load order. El
+    fallo tipado (``PRECONDITION_FAILED``) deja la decisión al operador.
     """
 
 

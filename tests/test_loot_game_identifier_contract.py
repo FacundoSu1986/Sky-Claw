@@ -72,6 +72,7 @@ from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
 from sky_claw.local.mo2.vfs_worker import _loot_handler
+from tests._loot_pe import escribir_loot_exe
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -261,9 +262,8 @@ def _entorno_worker(tmp_path: pathlib.Path):
     game_data.mkdir(parents=True)
     (profile / "modlist.txt").write_text("+CanaryMod\n", encoding="utf-8-sig")
     (mod / "canary.txt").write_bytes(b"canary")
-    exe = tmp_path / "LOOT" / "LOOT.exe"
-    exe.parent.mkdir()
-    exe.write_bytes(b"loot")
+    # PR-2 hardening: PE con VERSIONINFO — el runner atestigua la versión antes de lanzar.
+    exe = escribir_loot_exe(tmp_path / "LOOT" / "LOOT.exe")
     loot_data = tmp_path / "loot_data" / "portable-main" / "Default"
     loot_data.mkdir(parents=True)
     return mo2, game_data, exe, loot_data
