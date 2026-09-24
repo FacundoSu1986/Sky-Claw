@@ -182,6 +182,13 @@ LANZADORES_ESPERADOS = {
     # mientras este PR estaba abierto; detectado por el ancla al mergear, que
     # es exactamente el trabajo para el que existe.
     "sky_claw/local/tools_installer.py": 2,
+    # GP2-P1: operator_verifier_bridge contiene un único subprocess.Popen dentro de
+    # _TestOnlyVerifierLauncher. Ese spawn crea un child Python descartable
+    # utilizado exclusivamente por los oráculos Win32 del verifier bridge para
+    # probar IPC/lifecycle/peer auth. No construye argv para una herramienta de
+    # modding de terceros y la composición productiva permanece fail-closed
+    # mediante resolve_production_verifier_executable().
+    "sky_claw/local/runtime_vault/operator_verifier_bridge.py": 1,
     # Mixto: además del `create_subprocess_exec` legacy que SÍ es lanzador de
     # LOOT (con entrada propia en PROCEDENCIA_DE_FLAGS), este módulo tiene un
     # `subprocess.run(["taskkill", ...])` puramente infra — mismo módulo, dos
