@@ -392,6 +392,24 @@ class ConflictAnalyzer:
 
         raw_conflicts = parse_conflict_lines(result.raw_stdout)
 
+        # Exit 0 NO prueba que el script haya corrido: xEdit es un binario GUI y
+        # sin salida de protocolo (log -R: vacío, script que no compiló, corrida
+        # cortada) esto se leía como "0 conflictos". El SUMMARY lo emite
+        # Finalize: sin él, o con un conteo que no cierra, se falla cerrado —
+        # mismo contrato que xedit_readonly_tool y grass_analyzer.
+        summary = parse_summary_line(result.raw_stdout)
+        if "total_conflicts" not in summary:
+            raise RuntimeError(
+                f"Salida de {_SCRIPT_NAME} truncada: falta SUMMARY|total_conflicts "
+                "(el script no llegó a Finalize o xEdit no escribió su log)."
+            )
+        if summary["total_conflicts"] != len(raw_conflicts):
+            raise RuntimeError(
+                f"Salida de {_SCRIPT_NAME} inconsistente: SUMMARY declara "
+                f"total_conflicts={summary['total_conflicts']} pero se parsearon "
+                f"{len(raw_conflicts)} conflictos."
+            )
+
         # Classify severity.
         classified: list[RecordConflict] = []
         for rc in raw_conflicts:

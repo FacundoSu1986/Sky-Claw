@@ -257,7 +257,10 @@ PROCEDENCIA_DE_FLAGS = {
     ),
     "sky_claw/local/tools/synthesis_runner.py": "SIN VERIFICAR — Mutagen-Modding/Synthesis, proyecto Synthesis.Bethesda.CLI",
     "sky_claw/local/tools/vramr_service.py": "SIN VERIFICAR — VRAMr se distribuye como scripts PowerShell en Nexus",
-    "sky_claw/local/xedit/runner.py": "TES5Edit/TES5Edit — xEdit/xeInit.pas (-T:/-P:, game mode)",
+    "sky_claw/local/xedit/runner.py": (
+        "TES5Edit/TES5Edit — xEdit/xeInit.pas (-T:/-P:, game mode); tes5edit.github.io/docs "
+        "2-overview (-D: Data dir, -R: log filename) y 18-whatsnew 4.0.2 (-autoexit en modo Script)"
+    ),
 }
 
 

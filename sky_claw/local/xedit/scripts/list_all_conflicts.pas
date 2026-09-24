@@ -2,9 +2,11 @@
   list_all_conflicts.pas — xEdit Pascal script for record-level conflict detection.
 
   Iterates over all loaded plugins and reports every record that appears
-  in more than one plugin (i.e. is overridden).  Output is written to
-  stdout in a machine-parseable pipe-delimited format so that
-  ConflictAnalyzer can consume it.
+  in more than one plugin with real changes (ITM / benign override chains are
+  skipped via ConflictAllForMainRecord).  Output goes through AddMessage to
+  the xEdit log (-R:<file>; xEdit is a GUI binary and has no stdout) in a
+  machine-parseable pipe-delimited format so that ConflictAnalyzer can
+  consume it.
 
   Output format (one line per conflict):
     CONFLICT|<FormID>|<EditorID>|<RecordType>|<WinnerPlugin>|<LoserPlugin1>,<LoserPlugin2>
@@ -56,7 +58,7 @@ end;
   conflict_analyzer.py — anclado por tests/test_conflict_signatures_sync.py.
   Honestidad: sin subrecord SPIT no se emite nada (ausencia = "desconocido",
   no "flag apagado"). }
-procedure EmitSpellFlagState(rec: IInterface; formID: string);
+procedure EmitSpellFlagState(rec: IInterface; fid: string);
 var
   flagValue: string;
 begin
@@ -68,17 +70,17 @@ begin
     flagValue := '1'
   else
     flagValue := '0';
-  AddMessage('FLAG|' + formID + '|' + GetFileName(GetFile(rec)) + '|Manual Cost Calc|' + flagValue);
+  AddMessage('FLAG|' + fid + '|' + GetFileName(GetFile(rec)) + '|Manual Cost Calc|' + flagValue);
 end;
 
 { Emite el estado del flag para el master y cada override del SPEL. }
-procedure EmitSpellFlagStates(e: IInterface; formID: string);
+procedure EmitSpellFlagStates(e: IInterface; fid: string);
 var
   i: Integer;
 begin
-  EmitSpellFlagState(e, formID);
+  EmitSpellFlagState(e, fid);
   for i := 0 to OverrideCount(e) - 1 do
-    EmitSpellFlagState(OverrideByIndex(e, i), formID);
+    EmitSpellFlagState(OverrideByIndex(e, i), fid);
 end;
 
 function Initialize: Integer;
@@ -92,25 +94,34 @@ end;
 function Process(e: IInterface): Integer;
 var
   i: Integer;
-  sig, formID, editorID, winner, losers: string;
+  sig, fid, edid, winner: string;
   masterRec, overrideRec: IInterface;
-  overrideCount: Integer;
+  nOverrides: Integer;
   loserList: string;
 begin
   Result := 0;
 
-  { Only process records that have overrides. }
-  overrideCount := OverrideCount(e);
-  if overrideCount < 1 then
+  { Only process records that have overrides.
+    Los nombres de las locales NO pueden coincidir con funciones de xEdit
+    (FormID, EditorID, OverrideCount...): Pascal no distingue mayusculas y la
+    local oculta a la funcion (anclado por tests/test_xedit_headless_contract.py). }
+  nOverrides := OverrideCount(e);
+  if nOverrides < 1 then
     Exit;
 
   { We only want to process the master record, not overrides themselves. }
   if not IsMaster(e) then
     Exit;
 
+  { Descartar cadenas ITM / benignas (caNoConflict, caConflictBenign): no son
+    disputas entre mods. Mismo filtro que el script oficial de xEdit
+    "Detect conflict between elements.pas". }
+  if ConflictAllForMainRecord(e) < caOverride then
+    Exit;
+
   sig := Signature(e);
-  formID := IntToHex(FormID(e), 8);
-  editorID := EditorID(e);
+  fid := IntToHex(FormID(e), 8);
+  edid := EditorID(e);
 
   { The winning record is the last override in load order. }
   masterRec := e;
@@ -118,7 +129,7 @@ begin
   loserList := '';
 
   { Collect all losing plugins (everyone except the winner). }
-  for i := 0 to overrideCount - 1 do begin
+  for i := 0 to nOverrides - 1 do begin
     overrideRec := OverrideByIndex(e, i);
     if GetFileName(GetFile(overrideRec)) <> winner then begin
       if loserList <> '' then
@@ -139,11 +150,11 @@ begin
     Exit;
 
   { Output the conflict line. }
-  AddMessage('CONFLICT|' + formID + '|' + editorID + '|' + sig + '|' + winner + '|' + loserList);
+  AddMessage('CONFLICT|' + fid + '|' + edid + '|' + sig + '|' + winner + '|' + loserList);
 
   { T-19a: estado de flags criticos por version (solo firmas con flags). }
   if sig = 'SPEL' then
-    EmitSpellFlagStates(e, formID);
+    EmitSpellFlagStates(e, fid);
 
   Inc(totalConflicts);
   if IsCriticalType(sig) then
