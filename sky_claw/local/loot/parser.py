@@ -37,8 +37,8 @@ class LOOTResult:
     raw_stderr: str = ""
     #: PR-2: testigo de ejecución capturado por ``LOOTRunner`` alrededor del
     #: proceso y transportado como dato (worker → broker → servicio). ``None``
-    #: = sin testigo (runner sin ``--loot-data-path`` aislado o resultado sin
-    #: schema válido): el servicio NUNCA lo trata como atribuible.
+    #: = sin testigo (runner sin ``--loot-data-path`` aislado): el servicio NUNCA
+    #: lo trata como atribuible. Presente fuera de schema → PROTOCOL_ERROR.
     execution_witness: LootExecutionWitness | None = None
 
     @property

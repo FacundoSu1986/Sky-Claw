@@ -1406,7 +1406,7 @@ async def test_agente_recibe_la_razon_tipada_del_fail(lock_manager, snapshot_man
 # =============================================================================
 
 #: Adversarial a propósito: LOOT NO escribe ``useNoSortingChangesDialog`` dentro
-#: de ``[[games]]`` (``LootSettings::save``, loot_settings.cpp:1004-1034, sólo
+#: de ``[[games]]`` (``LootSettings::save``, loot_settings.cpp:1010-1044, sólo
 #: gameId/name/folder/master/minimumHeaderVersion/masterlistSource/path/
 #: local_path/hiddenMessages). La clave homónima está para probar que la
 #: gestionada es SÓLO la top-level, nunca para afirmar que LOOT la genera.

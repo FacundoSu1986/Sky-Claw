@@ -458,7 +458,7 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             kind=LOOT_FAILURE_KIND_TIMEOUT, message=str(exc), outputs=manifest.job.mutation_targets
         )
     except LOOTPreconditionError as exc:
-        # PR-2: settings headless o testigo no preparables → LOOT NO se lanzó.
+        # PR-2: versión no atestiguable, settings o testigo no preparables → LOOT NO se lanzó.
         return _loot_failure_execution(kind=LOOT_FAILURE_KIND_PRECONDITION, message=str(exc), outputs=())
     message = (
         "" if result.success else "; ".join(result.errors) or result.raw_stderr or result.raw_stdout or "LOOT falló"
