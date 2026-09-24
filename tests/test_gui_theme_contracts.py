@@ -1391,9 +1391,9 @@ def test_fragmentos_html_del_shell_participan_del_flex() -> None:
     Propiedad del mecanismo, no del caso: un hijo de ``ui.html`` sólo es ítem del
     flex/grid del contenedor si el wrapper que agrega NiceGUI no genera caja. El
     defecto era de TODA la familia (nav, toggle del header, filas, cabeceras,
-    tarjetas, toast), no de un call-site: el censo la congela entera.
+    tarjetas, toast), no de un call-site: el censo del shell la congela entera.
     """
-    from sky_claw.app.gui.views.forge_dashboard import _FRAGMENTO
+    from sky_claw.app.gui.gui_helpers import _FRAGMENTO
 
     assert _FRAGMENTO == "display:contents"
     consumidores, literales = _funciones_con_fragmento()
@@ -1401,6 +1401,45 @@ def test_fragmentos_html_del_shell_participan_del_flex() -> None:
     assert consumidores == _CONSUMIDORES_FRAGMENTO, (
         f"el censo de fragmentos cambió: extra={sorted(consumidores - _CONSUMIDORES_FRAGMENTO)}, "
         f"faltante={sorted(_CONSUMIDORES_FRAGMENTO - consumidores)}"
+    )
+
+
+#: El único sitio donde ``display:contents`` puede aparecer como literal: la
+#: definición de la constante en gui_helpers.py. Cualquier otro literal en el
+#: paquete GUI (shell, wizard o un módulo nuevo) es una duplicación que se salta
+#: la constante — y el mecanismo aplica a CUALQUIER ``ui.html`` multi-hijo dentro
+#: de un flex/grid, no sólo al shell (revisión qodo en #627).
+_DEFINICION_FRAGMENTO = '_FRAGMENTO = "display:contents"'
+
+
+def test_display_contents_solo_vive_en_la_constante_compartida() -> None:
+    """Ningún ``.py`` de la GUI usa el literal ``display:contents`` salvo la
+    definición de ``_FRAGMENTO`` en gui_helpers.py.
+
+    El ancla del shell (arriba) sólo mira forge_dashboard.py; un fragmento nuevo
+    en setup_wizard.py u otro módulo del paquete tendría el mismo bug de
+    apilamiento y ningún test lo veía. Este barre TODO el paquete: quien emita el
+    literal en vez de importar la constante rompe el test — que es lo que obliga a
+    mantener «una sola constante» real, no documentada.
+    """
+    patron = re.compile(r"display:\s*contents")
+    infractores: list[str] = []
+    definicion_hallada = False
+    for archivo in sorted(_GUI_DIR.rglob("*.py")):
+        for numero, linea in enumerate(archivo.read_text(encoding="utf-8").splitlines(), 1):
+            # ignora comentarios documentales que nombran el valor
+            linea_codigo = linea.split("#", 1)[0] if "#" in linea else linea
+            if not patron.search(linea_codigo):
+                continue
+            rel = archivo.relative_to(_GUI_DIR).as_posix()
+            if rel == "gui_helpers.py" and _DEFINICION_FRAGMENTO in linea_codigo:
+                definicion_hallada = True
+                continue
+            infractores.append(f"{rel}:{numero}")
+    assert definicion_hallada, "la definición de _FRAGMENTO desapareció de gui_helpers.py"
+    assert not infractores, (
+        "literal display:contents fuera de la constante _FRAGMENTO (importá _FRAGMENTO "
+        f"de gui_helpers en su lugar): {infractores}"
     )
 
 
@@ -1524,7 +1563,17 @@ def test_shell_forge_ocupa_el_viewport_con_scroll_interno() -> None:
     assert "height:100vh; width:100%; overflow:hidden;" in _FORGE
     assert "min-height:100vh" not in _FORGE
     assert '.classes("sc-shell")' in _FORGE
-    regla = _STYLES[_STYLES.index(".nicegui-content:has(.sc-shell) {") :]
+    # El reset del padding es INCONDICIONAL (regla plana .nicegui-content), no vía
+    # el selector de padre :has(.sc-shell): :has() no está en Safari <15.4 ni
+    # Firefox <121 y su ausencia resucitaba el marco de 16px. La GUI es de una
+    # sola página, así que .nicegui-content siempre es el contenedor del shell.
+    # Se evalúa sobre el CSS sin comentarios: el propio comentario que documenta
+    # el retiro nombra :has() y no debe disparar el ancla.
+    estilos_sin_comentarios = re.sub(r"/\*.*?\*/", "", _STYLES, flags=re.DOTALL)
+    assert ":has(" not in estilos_sin_comentarios, (
+        "el reset del shell no debe depender de :has() (falla en navegadores viejos)"
+    )
+    regla = _STYLES[_STYLES.index(".nicegui-content {") :]
     regla = regla[: regla.index("}")]
     assert "padding: 0 !important;" in regla
     # Los títulos inline del shell no heredan la escala Material de Quasar

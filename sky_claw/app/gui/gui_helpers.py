@@ -10,6 +10,17 @@ CSS_PATH = Path(__file__).parent / "styles.css"
 ASSETS_PATH = Path(__file__).parent / "assets"
 MAX_CHAT_MESSAGES = 500
 
+#: ``ui.html`` envuelve su contenido en un ``<div>`` de bloque propio. Un
+#: fragmento con VARIOS hijos de nivel superior pensados como ítems del flex/grid
+#: del contenedor (ícono + etiqueta + contador, índice + nombre + estado…) queda
+#: adentro de ese div: el flex no los alcanza y se apilan (ícono arriba, etiqueta
+#: abajo, ``flex:1`` sin efecto). Con ``display:contents`` el wrapper no genera
+#: caja y sus hijos pasan a ser ítems del flex/grid real. Vive acá —y no en un
+#: view— para que TODO el paquete GUI (shell Forge y wizard) comparta la MISMA
+#: constante: el ancla ``tests/test_gui_theme_contracts.py`` prohíbe el literal
+#: suelto en cualquier .py de la GUI, así el mecanismo no se duplica ni envejece.
+_FRAGMENTO = "display:contents"
+
 
 def _load_css() -> None:
     """Wire the Nordic theme (webfonts + stylesheet + UI-sound shim) once per client.

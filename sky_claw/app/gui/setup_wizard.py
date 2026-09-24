@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import keyring
 from nicegui import ui
 
-from .gui_helpers import _load_css
+from .gui_helpers import _FRAGMENTO, _load_css
 from .icons import _ICON_ROCKET, _icon_dragon_eye
 from .state import get_store
 
@@ -306,10 +306,12 @@ class SetupWizardModal:
                         .style("display: none;")
                     )
                     with self._submit_btn:
-                        # display:contents: el wrapper <div> de ui.html dejaba el
-                        # cohete fuera de la alineación flex del contenido del botón.
+                        # _FRAGMENTO (display:contents): el wrapper <div> de ui.html
+                        # dejaba el cohete fuera de la alineación flex del contenido
+                        # del botón. Misma constante compartida que el shell (no un
+                        # literal suelto: el ancla lo prohíbe en todo el paquete GUI).
                         ui.html(f'<span style="display:inline-flex; margin-right:8px;">{_ICON_ROCKET}</span>').style(
-                            "display:contents"
+                            _FRAGMENTO
                         )
                         ui.label("Inicializar Sistema")
 

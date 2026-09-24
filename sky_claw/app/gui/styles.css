@@ -85,8 +85,12 @@ body {
    en .sc-scroll). NiceGUI envuelve la página en .nicegui-content con
    padding:1rem y gap: sin esta pisa quedaba un marco de 16px de piedra
    alrededor del shell y el alto total excedía el viewport (doble scroll).
-   Acotado con :has() al contenedor que realmente aloja el shell. */
-.nicegui-content:has(.sc-shell) {
+   Regla INCONDICIONAL a propósito: styles.css lo inyecta gui_helpers._load_css()
+   y la GUI NiceGUI es de una sola página (@ui.page("/")), así que .nicegui-content
+   siempre es el contenedor del shell. Se evita el selector de padre :has()
+   —sin soporte en Safari <15.4 / Firefox <121— que degradaba resucitando el
+   marco de 16px; el wizard es un overlay position:fixed, ajeno a este padding. */
+.nicegui-content {
     padding: 0 !important;
     gap: 0 !important;
 }

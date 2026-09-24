@@ -31,6 +31,7 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     resolve_ritual_resume_action,
     resolve_visible_pending_hitl,
 )
+from sky_claw.app.gui.gui_helpers import _FRAGMENTO
 from sky_claw.app.gui.icons import (
     _ICON_LOCK,
     _ICON_SHIELD_CHECK,
@@ -68,16 +69,6 @@ RED = "#d8584e"
 RED_SOFT = "#e88a82"
 FROST = "#86b9d4"
 GREEN = "#5f9c6b"
-
-#: ``ui.html`` envuelve su contenido en un ``<div>`` de bloque propio. Un
-#: fragmento con VARIOS hijos de nivel superior pensados como ítems del flex
-#: del contenedor (ícono + etiqueta + contador de un botón, índice + nombre +
-#: estado de una fila) quedaba adentro de ese div: el flex no los alcanzaba y
-#: se apilaban (ícono arriba, etiqueta abajo, ``flex:1`` sin efecto). Con
-#: ``display:contents`` el wrapper no genera caja y sus hijos pasan a ser ítems
-#: del flex/grid real. El censo de consumidores está congelado en
-#: tests/test_gui_theme_contracts.py.
-_FRAGMENTO = "display:contents"
 
 # ── Reactive-store keys for live system data (written by the bootloader) ────────
 # Telemetry percentages (0-100) sampled by TelemetryDaemon → CoreEventBus →
