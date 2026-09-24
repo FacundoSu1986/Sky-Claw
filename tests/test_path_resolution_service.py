@@ -1450,8 +1450,10 @@ class TestAnclaConstructoresManualesDeMods:
         # (110 → 124) por import de data_root. PR-2 (resultado verificable:
         # imports de testigo/timeout tipado + helpers de transporte) movió las
         # líneas (124, 388, 397 → 136, 413, 422); mismos tres sites, ninguna
-        # construcción nueva de `<base>/mods`.
-        "sky_claw/local/mo2/brokered_loot.py": (136, 413, 422),
+        # construcción nueva de `<base>/mods`. El hardening de PR-2 (import de
+        # LOOT_FAILURE_KINDS y LOOTWorkerProtocolError) las corrió dos más
+        # (136, 413, 422 → 138, 415, 424); mismos tres sites.
+        "sky_claw/local/mo2/brokered_loot.py": (138, 415, 424),
         # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (127,),
         "sky_claw/local/mo2/vfs_attestation.py": (182, 243),
@@ -1474,8 +1476,10 @@ class TestAnclaConstructoresManualesDeMods:
         # ``mod_directory`` custom el valor declarado manda (get_mo2_mods_path*).
         # PR-1 añadió resolución de loot_data_path que usa mods_dir para validar.
         # PR-2 (helpers del veredicto verificable) movió la línea (497 → 576);
-        # mismo constructor del default de `_build_sources_resolver`.
-        "sky_claw/local/tools/loot_service.py": (576,),
+        # mismo constructor del default de `_build_sources_resolver`. El
+        # hardening de PR-2 (import de LOOTWorkerProtocolError + docstring del
+        # diagnóstico de timeout) la corrió (576 → 580); mismo constructor.
+        "sky_claw/local/tools/loot_service.py": (580,),
         "sky_claw/local/validators/vfs_health.py": (141,),
         # #585: el resolver del perfil pasó a leer plugins.txt + loadorder.txt
         # por separado y a fallar cerrado si la activación es ilegible; el
