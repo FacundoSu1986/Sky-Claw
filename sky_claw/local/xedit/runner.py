@@ -14,6 +14,7 @@ Phase 2 Extensions:
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import logging
 import pathlib
@@ -906,7 +907,10 @@ class XEditRunner:
         logger.info("Running xEdit QuickAutoClean: %s", " ".join(args))
 
         start_time = time.monotonic()
-        stdout_text, stderr_text, return_code = await self._execute_process(args)
+        # Mismo motivo que run_script: xEdit es GUI y stdout llega vacío; sin el
+        # log -R: el parser de errores nunca veía nada y el veredicto quedaba
+        # reducido al exit code (review PR #632).
+        stdout_text, stderr_text, return_code = await self._execute_headless(args)
         records, errors, warnings = self._parse_script_output(stdout_text, stderr_text)
 
         if return_code != 0:
@@ -1113,6 +1117,12 @@ class XEditRunner:
         # Construir flags según estrategia
         flags = ["-IKnowWhatImDoing"]  # Requerido para escritura
 
+        # Snapshot del plugin de salida ANTES de correr: un .esp de una corrida
+        # anterior no prueba que ESTA corrida haya guardado (el template de
+        # forward exige que el destino ya exista — review PR #632).
+        output_path = self._data_dir / patch_plan.output_plugin
+        firma_previa = await asyncio.to_thread(self._firma_de_archivo, output_path)
+
         # Ejecutar script dinámico
         result = await self.run_dynamic_script(
             script_content=script_content,
@@ -1130,11 +1140,19 @@ class XEditRunner:
         # Post-check de artefacto: exit 0 sin errores parseados no prueba que
         # xEdit haya guardado el plugin (mismo criterio que el gate de artefacto
         # de DynDOLOD/TexGen: binarios GUI sin stdout).
-        output_path = self._data_dir / patch_plan.output_plugin
-        if not await asyncio.to_thread(output_path.is_file):
+        firma_posterior = await asyncio.to_thread(self._firma_de_archivo, output_path)
+        if firma_posterior is None:
             error_msg = (
                 f"xEdit terminó sin errores pero el plugin de salida {patch_plan.output_plugin!r} "
                 f"no existe en {self._data_dir}; el parche no se guardó."
+            )
+            logger.error(error_msg)
+            raise XEditWriteError(error_msg, result=result)
+        if firma_posterior == firma_previa:
+            error_msg = (
+                f"xEdit terminó sin errores pero el plugin de salida {patch_plan.output_plugin!r} "
+                "no fue modificado por esta corrida (mismo mtime y tamaño que antes); "
+                "el parche no se guardó."
             )
             logger.error(error_msg)
             raise XEditWriteError(error_msg, result=result)
@@ -1383,12 +1401,39 @@ class XEditRunner:
         return self._merge_protocol_output(stdout_text, log_text), stderr_text, return_code
 
     @staticmethod
-    def _read_log(log_path: pathlib.Path) -> str:
-        """Lee el log de xEdit; ausente = cadena vacía (el caller decide si es fallo)."""
+    def _firma_de_archivo(path: pathlib.Path) -> tuple[int, int] | None:
+        """``(mtime_ns, tamaño)`` del archivo, o ``None`` si no existe."""
         try:
-            return log_path.read_bytes().decode("utf-8", errors="replace")
+            st = path.stat()
+        except FileNotFoundError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    @staticmethod
+    def _read_log(log_path: pathlib.Path) -> str:
+        """Lee el log de xEdit; ausente = cadena vacía (el caller decide si es fallo).
+
+        Encoding: se prueba UTF-8 estricto (con o sin BOM; el BOM se descarta
+        para no romper el ``startswith`` de los parsers). Si no es UTF-8 válido
+        se asume ANSI: ``TStrings.SaveToFile`` de Delphi sin encoding explícito
+        escribe en la página de códigos del sistema. En Windows se usa ``mbcs``
+        (la página ANSI activa, p. ej. cp1251 en un sistema ruso); fuera de
+        Windows, cp1252. SIN VERIFICAR en rig cuál usa SSEEdit de verdad.
+        """
+        try:
+            datos = log_path.read_bytes()
         except FileNotFoundError:
             return ""
+        try:
+            return datos.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            pass
+        try:
+            codecs.lookup("mbcs")
+            ansi = "mbcs"
+        except LookupError:
+            ansi = "cp1252"
+        return datos.decode(ansi, errors="replace")
 
     async def _execute_process(
         self,

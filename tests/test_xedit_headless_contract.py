@@ -103,14 +103,13 @@ def _metodos_que_lanzan_xedit() -> set[str]:
 # Familia de lanzadores headless (enumerada)
 # =============================================================================
 
-#: Lanzadores headless que leen el protocolo AddMessage desde el log ``-R:``.
-_LANZADORES_CON_LOG = {"run_script", "run_dynamic_script"}
+#: Lanzadores headless que leen su salida desde el log ``-R:``. QuickAutoClean
+#: entra también (review PR #632): con stdout vacío su parser de errores nunca
+#: veía nada y el veredicto quedaba reducido al exit code.
+_LANZADORES_CON_LOG = {"run_script", "run_dynamic_script", "quick_auto_clean"}
 
-#: Exención declarada: QuickAutoClean no emite protocolo AddMessage propio y su
-#: veredicto es el exit code + stdout (validado en rig). Sumarle el log completo
-#: de xEdit al parser de errores no anclado cambiaría su criterio de éxito sin
-#: evidencia de rig — queda fuera a propósito y se revisa en su propio PR.
-_LANZADORES_SIN_LOG = {"quick_auto_clean"}
+#: Hoy ningún lanzador headless queda fuera. Una exención nueva va acá con su motivo.
+_LANZADORES_SIN_LOG: set[str] = set()
 
 
 def test_la_familia_de_lanzadores_headless_esta_congelada() -> None:
@@ -125,7 +124,6 @@ async def _argv_de(
 ) -> tuple[list[str], XEditRunner]:
     runner, _ = _runner(tmp_path)
     capturado: dict[str, list[str]] = {}
-    # QuickAutoClean no pide -R: (exención declarada arriba): no hay log que escribir.
     log = "SUMMARY|total_conflicts=0|critical=0|minor=0\n" if nombre in _LANZADORES_CON_LOG else None
     monkeypatch.setattr(runner_mod, "run_capture", _fake_run_capture(capturado, log))
     if nombre == "run_script":
@@ -297,12 +295,131 @@ async def test_execute_patch_ok_si_el_plugin_de_salida_existe(
         requires_hitl=True,
         script_path=script,
     )
-    (game / "Data" / "SkyClaw_CriticalPatch.esp").write_bytes(b"TES4")
-    capturado: dict[str, list[str]] = {}
-    monkeypatch.setattr(runner_mod, "run_capture", _fake_run_capture(capturado, "Done\n"))
+    salida = game / "Data" / "SkyClaw_CriticalPatch.esp"
+
+    async def fake(args: list[str], timeout: float | None = None, cwd: str | None = None):
+        salida.write_bytes(b"TES4")  # xEdit guarda el plugin durante la corrida
+        return (b"", b"", 0)
+
+    monkeypatch.setattr(runner_mod, "run_capture", fake)
 
     result = await runner.execute_patch(plan)
     assert result.success is True
+
+
+def _plan_forward_sobre(output: str, script: pathlib.Path) -> PatchPlan:
+    return PatchPlan(
+        strategy_type=PatchStrategyType.EXECUTE_XEDIT_SCRIPT,
+        target_plugins=["A.esp"],
+        output_plugin=output,
+        form_ids=["00012345"],
+        estimated_records=1,
+        requires_hitl=True,
+        script_path=script,
+    )
+
+
+async def test_execute_patch_falla_si_el_plugin_previo_no_cambio(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un .esp de una corrida anterior no prueba que ESTA corrida haya guardado
+    (caso FORWARD_DECLARATION: el template exige que el destino ya exista)."""
+    runner, game = _runner(tmp_path)
+    script = tmp_path / "fix.pas"
+    script.write_text("unit fix; end.", encoding="utf-8")
+    (game / "Data" / "SkyClaw_CriticalPatch.esp").write_bytes(b"TES4-viejo")
+    capturado: dict[str, list[str]] = {}
+    monkeypatch.setattr(runner_mod, "run_capture", _fake_run_capture(capturado, "Done\n"))
+
+    with pytest.raises(XEditWriteError, match="no fue modificado"):
+        await runner.execute_patch(_plan_forward_sobre("SkyClaw_CriticalPatch.esp", script))
+
+
+async def test_execute_patch_ok_si_el_plugin_previo_fue_reescrito(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, game = _runner(tmp_path)
+    script = tmp_path / "fix.pas"
+    script.write_text("unit fix; end.", encoding="utf-8")
+    salida = game / "Data" / "SkyClaw_CriticalPatch.esp"
+    salida.write_bytes(b"TES4-viejo")
+    import os
+
+    os.utime(salida, ns=(1_000_000_000, 1_000_000_000))  # mtime viejo y determinista
+
+    async def fake(args: list[str], timeout: float | None = None, cwd: str | None = None):
+        salida.write_bytes(b"TES4-nuevo-con-overrides")
+        return (b"", b"", 0)
+
+    monkeypatch.setattr(runner_mod, "run_capture", fake)
+
+    result = await runner.execute_patch(_plan_forward_sobre("SkyClaw_CriticalPatch.esp", script))
+    assert result.success is True
+
+
+# =============================================================================
+# QuickAutoClean: los errores del log cuentan (stdout de xEdit está vacío)
+# =============================================================================
+
+
+async def test_quick_auto_clean_detecta_errores_del_log(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _ = _runner(tmp_path)
+    capturado: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        runner_mod, "run_capture", _fake_run_capture(capturado, "[00:05] Error: fallo al guardar Update.esm\n")
+    )
+    result = await runner.quick_auto_clean("Update.esm")
+    assert result.exit_code == 0
+    assert result.success is False
+    assert "fallo al guardar Update.esm" in result.errors
+
+
+# =============================================================================
+# Encoding del log: UTF-8 (con o sin BOM) y fallback ANSI
+# =============================================================================
+
+
+def test_read_log_utf8_con_bom_no_ensucia_la_primera_linea(tmp_path: pathlib.Path) -> None:
+    log = tmp_path / "x.log"
+    log.write_bytes("\ufeffCONFLICT|00012345|E|NPC_|Añadido.esp|Skyrim.esm\n".encode())
+    texto = XEditRunner._read_log(log)
+    assert texto.startswith("CONFLICT|"), "el BOM rompería el startswith de los parsers"
+    assert "Añadido.esp" in texto
+
+
+def test_read_log_ansi_cae_a_la_pagina_de_codigos(tmp_path: pathlib.Path) -> None:
+    """Delphi TStrings.SaveToFile sin encoding escribe en ANSI: 'ñ' es 0xF1, UTF-8 inválido."""
+    log = tmp_path / "x.log"
+    log.write_bytes("ELEMENT|00012345|Mod Español.esp|FULL - Name|Espada de la Montaña\n".encode("cp1252"))
+    texto = XEditRunner._read_log(log)
+    assert "Mod Español.esp" in texto
+    assert "Montaña" in texto
+    assert "\ufffd" not in texto
+
+
+def test_read_log_ausente_es_vacio(tmp_path: pathlib.Path) -> None:
+    assert XEditRunner._read_log(tmp_path / "no-existe.log") == ""
+
+
+# =============================================================================
+# Nombre de salida del merge estático == el del plan (hallazgo 4, review #632)
+# =============================================================================
+
+
+def test_nombre_de_salida_del_merge_estatico_coincide_con_el_plan() -> None:
+    from sky_claw.local.xedit.patch_orchestrator import CreateMergedPatch
+
+    fuente = (_SCRIPTS_DIR / "apply_leveled_list_merge.pas").read_text(encoding="utf-8")
+    m = re.search(r"DEFAULT_OUTPUT\s*=\s*'([^']+)'", fuente)
+    assert m is not None
+    fuente_py = inspect.getsource(CreateMergedPatch.create_plan)
+    m_py = re.search(r'output_plugin = "([^"]+)"', fuente_py)
+    assert m_py is not None
+    assert m.group(1) == m_py.group(1), (
+        "si CREATE_MERGED_PATCH se reactiva, el post-check buscaría un .esp que el script no escribe"
+    )
 
 
 # =============================================================================
