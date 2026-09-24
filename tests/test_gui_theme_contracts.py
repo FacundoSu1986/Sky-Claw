@@ -19,10 +19,29 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import nicegui
+
 _GUI_DIR = Path(__file__).resolve().parent.parent / "sky_claw" / "app" / "gui"
 _STYLES = (_GUI_DIR / "styles.css").read_text(encoding="utf-8")
 _FONTS = (_GUI_DIR / "assets" / "fonts" / "fonts.css").read_text(encoding="utf-8")
 _FORGE = (_GUI_DIR / "views" / "forge_dashboard.py").read_text(encoding="utf-8")
+# TODAS las hojas de estilo del GUI, por glob: todas entran UNLAYERED (styles.css
+# vía ``ui.add_css``, fonts.css vía ``<link>`` en ``gui_helpers``), así que todas
+# compiten igual contra el reset con capa de Quasar. Enumerar, no nombrar a mano:
+# una hoja nueva queda cubierta por el ancla de choques sin tocar el test.
+_HOJAS_DE_ESTILO = sorted(_GUI_DIR.rglob("*.css"))
+
+# Fuente REAL contra la que compite styles.css en la cascada: el reset con
+# !important de Quasar y la declaración de capas del template, leídos del paquete
+# nicegui INSTALADO (no de una copia congelada acá). styles.css se inyecta
+# unlayered vía ``ui.add_css`` (``addStyle`` → ``<style>`` plano); Quasar importa
+# ``quasar.important.prod.css`` dentro de ``layer(quasar_importants)``. Para
+# declaraciones !important, una capa SIEMPRE le gana a lo unlayered — de ahí el
+# bug de foco. Si nicegui reestructura sus capas, estas anclas obligan a
+# re-verificar el mecanismo en vez de seguir verdes sobre una premisa muerta.
+_NICEGUI_DIR = Path(nicegui.__file__).resolve().parent
+_QUASAR_IMPORTANT = (_NICEGUI_DIR / "static" / "quasar.important.prod.css").read_text(encoding="utf-8")
+_INDEX_HTML = (_NICEGUI_DIR / "templates" / "index.html").read_text(encoding="utf-8")
 
 
 def _funciones_que_usan_sc_scroll() -> set[str]:
@@ -108,20 +127,191 @@ def test_focus_visible_foca_sin_imponer_geometria_global() -> None:
     assert "border-radius" not in regla, "la regla global no puede imponer geometría"
 
 
-def test_focus_visible_pisa_el_reset_de_quasar_en_inputs() -> None:
-    """Quasar trae un reset con !important
-    (``.q-field__native,.q-field__input{outline:0!important}`` en
-    quasar.important.prod.css): sin la pisa, Tab en un ``ui.input`` borderless
-    del shell (búsqueda del header, chat) era invisible (revisión Codex #522).
+def _sin_comentarios(css: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+
+def _orden_de_capas() -> list[str]:
+    """El orden de capas declarado por el template de nicegui.
+
+    Para declaraciones !important el orden se INVIERTE: gana la capa declarada
+    ANTES. El fix de foco vive en ``@layer theme`` justamente porque ``theme`` se
+    declara antes que ``quasar_importants`` (donde entra el reset de Quasar).
     """
-    for clase in (".q-field__native", ".q-field__input"):
-        assert f"{clase}:focus-visible" in _STYLES
-    inicio = _STYLES.index(".q-field__native:focus-visible")
-    regla = _STYLES[inicio : _STYLES.index("}", inicio)]
-    # La pisa tiene que ser del outline y con !important en la MISMA declaración:
-    # basta que pierda el marcador para que vuelva a ganar el reset de Quasar.
-    assert "outline: 2px solid var(--sky-gold-bright) !important;" in regla, (
-        "la pisa debe ganar al reset !important de Quasar"
+    m = re.search(r"@layer\s+([A-Za-z0-9_,\s]*quasar_importants[A-Za-z0-9_,\s]*);", _INDEX_HTML)
+    assert m, "no está la declaración de orden de capas de nicegui: la premisa del contrato cambió"
+    return [c.strip() for c in m.group(1).split(",")]
+
+
+def _reset_important_de_quasar() -> dict[frozenset[str], set[str]]:
+    """Mapea, por CONJUNTO de clases .q-* requeridas en el selector, qué
+    propiedades resetea Quasar con !important.
+
+    La clave es un ``frozenset`` (no una clase suelta) para respetar los
+    modificadores: ``.q-field--square .q-field__control{border-radius:0!important}``
+    sólo choca con una regla nuestra que TAMBIÉN tenga ``q-field--square``. Sin
+    esto, el ancla marcaría como muerta la geometría del wizard, que está viva
+    porque sus campos no son ``--square``.
+    """
+    reset: dict[frozenset[str], set[str]] = {}
+    for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", _sin_comentarios(_QUASAR_IMPORTANT)):
+        props = {d.split(":", 1)[0].strip().lower() for d in m.group(2).split(";") if ":" in d and "!important" in d}
+        if not props:
+            continue
+        for parte in m.group(1).split(","):
+            clases = frozenset(re.findall(r"\.(q-[A-Za-z0-9_-]+)", parte))
+            if clases:
+                reset.setdefault(clases, set()).update(props)
+    return reset
+
+
+def _bloque_de_capa(nombre: str) -> str | None:
+    """Devuelve el contenido de ``@layer <nombre> { ... }`` en styles.css (con
+    conteo de llaves), o ``None`` si no existe."""
+    marcador = f"@layer {nombre} {{"
+    if marcador not in _STYLES:
+        return None
+    inicio = _STYLES.index(marcador)
+    profundidad = 0
+    for i in range(_STYLES.index("{", inicio), len(_STYLES)):
+        if _STYLES[i] == "{":
+            profundidad += 1
+        elif _STYLES[i] == "}":
+            profundidad -= 1
+            if profundidad == 0:
+                return _STYLES[inicio : i + 1]
+    return None
+
+
+def _pisas_important_unlayered_sobre_quasar(css: str) -> list[tuple[str, str, frozenset[str]]]:
+    """Declaraciones !important UNLAYERED de una hoja de estilo cuyo selector toca
+    una clase .q-*. Las de dentro de ``@layer {...}`` quedan EXCLUIDAS por
+    construcción: layered le gana a unlayered para !important, así que no compiten
+    en la dimensión peligrosa."""
+    css = _sin_comentarios(css)
+    # Quitar los bloques @layer completos (balanceando llaves).
+    limpio: list[str] = []
+    i = 0
+    while i < len(css):
+        if re.match(r"@layer\s+[A-Za-z0-9_-]+\s*\{", css[i:]):
+            j = i + css[i:].index("{")
+            profundidad = 0
+            while j < len(css):
+                if css[j] == "{":
+                    profundidad += 1
+                elif css[j] == "}":
+                    profundidad -= 1
+                    if profundidad == 0:
+                        j += 1
+                        break
+                j += 1
+            i = j
+            continue
+        limpio.append(css[i])
+        i += 1
+    css = "".join(limpio)
+
+    pisas: list[tuple[str, str, frozenset[str]]] = []
+    for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+        sel = m.group(1).strip()
+        clases = frozenset(re.findall(r"\.(q-[A-Za-z0-9_-]+)", sel))
+        if not clases:
+            continue
+        for d in m.group(2).split(";"):
+            d = d.strip()
+            if ":" in d and "!important" in d:
+                pisas.append((sel, d.split(":", 1)[0].strip().lower(), clases))
+    return pisas
+
+
+def test_reset_de_quasar_y_capas_son_la_premisa_del_foco() -> None:
+    """Premisa del contrato de foco, verificada contra el nicegui INSTALADO.
+
+    Tres cosas tienen que seguir siendo ciertas para que el fix ``@layer theme``
+    funcione; si una cae, el mecanismo cambió y hay que re-derivarlo:
+
+    1. Quasar borra el outline de sus inputs con !important
+       (``.q-field__native,.q-field__input{outline:0!important}``).
+    2. El template declara ``theme`` ANTES que ``quasar_importants`` (para
+       !important gana la capa más temprana).
+    3. El reset de Quasar entra en ``layer(quasar_importants)``.
+    """
+    reset = _reset_important_de_quasar()
+    assert "outline" in reset.get(frozenset({"q-field__native"}), set())
+    assert "outline" in reset.get(frozenset({"q-field__input"}), set())
+
+    capas = _orden_de_capas()
+    assert {"theme", "quasar_importants"} <= set(capas)
+    assert capas.index("theme") < capas.index("quasar_importants"), (
+        "theme dejó de declararse antes que quasar_importants: @layer theme ya no "
+        "le gana al reset de Quasar para !important"
+    )
+    assert 'quasar.important.prod.css") layer(quasar_importants)' in _INDEX_HTML
+
+
+def test_foco_de_inputs_gana_por_capa_theme_no_por_important_unlayered() -> None:
+    """El outline de foco de los inputs de Quasar SÓLO se gana declarándolo en una
+    capa más temprana que ``quasar_importants``.
+
+    La pisa unlayered con !important —lo que hacía antes styles.css— es letra
+    muerta: para declaraciones !important, CUALQUIER capa le gana a lo unlayered,
+    así que el reset ``outline:0!important`` de Quasar (en ``quasar_importants``)
+    tapaba la pisa y Tab en los ``ui.input`` borderless del shell (búsqueda del
+    header, chat) no mostraba foco (WCAG 2.4.7). Verificado en Chromium real:
+    unlayered !important → ``outline: none``; ``@layer theme`` !important →
+    ``outline: 2px solid``. El !important sigue siendo necesario dentro de la
+    capa: una declaración normal jamás vence a un !important, esté donde esté.
+
+    El ancla vieja sólo grepeaba el string de la declaración y pasaba sobre CSS
+    roto — no veía la cascada de capas.
+    """
+    bloque = _bloque_de_capa("theme")
+    assert bloque is not None, "el fix de foco debe vivir dentro de @layer theme { ... }"
+    for clase in (".q-field__native:focus-visible", ".q-field__input:focus-visible"):
+        assert clase in bloque, f"{clase} debe estar dentro de @layer theme"
+    assert re.search(r"outline:\s*2px solid var\(--sky-gold-bright\)\s*!important", bloque), (
+        "el outline dorado debe conservar !important dentro de la capa"
+    )
+    assert "outline-offset" in bloque
+
+
+def test_ninguna_pisa_important_unlayered_la_tapa_quasar_en_silencio() -> None:
+    """Ancla ENUMERANTE (no muestreo): recorre TODA declaración !important
+    UNLAYERED de styles.css cuyo selector toque una clase .q-* y la cruza con el
+    reset !important real de Quasar (leído del paquete nicegui). Un choque en la
+    misma clase+propiedad se pierde en silencio, porque para !important una capa
+    (``quasar_importants``) siempre le gana a lo unlayered — es exactamente el bug
+    del foco.
+
+    Qué rompe esto mañana: si alguien agrega otra pisa unlayered sobre una
+    propiedad que Quasar resetea (p. ej. ``.q-btn ... opacity !important``), este
+    test se pone rojo y lo obliga a decidir — mover la regla a ``@layer theme`` o
+    documentar por qué es una exención consciente. Las reglas dentro de ``@layer``
+    están exentas por construcción (layered gana a unlayered). El modelo de choque
+    respeta los modificadores de Quasar: su reset de ``border-radius`` exige
+    ``.q-field--square``, así que la geometría del wizard (sin esa clase) NO se
+    marca como muerta.
+
+    La familia son TODAS las hojas de estilo del GUI (``_HOJAS_DE_ESTILO``), no
+    sólo styles.css: fonts.css también entra unlayered, así que una pisa muerta
+    ahí se perdería igual. Un ancla que leyera sólo styles.css muestrearía 1 de 2.
+    """
+    nombres = {hoja.relative_to(_GUI_DIR).as_posix() for hoja in _HOJAS_DE_ESTILO}
+    # Anti-vacuidad: si el glob no encuentra nada (p. ej. se movió el directorio),
+    # el ancla pasaría en verde sin haber mirado una sola regla.
+    assert "styles.css" in nombres, f"el glob de hojas de estilo no encontró styles.css: {sorted(nombres)}"
+
+    reset = _reset_important_de_quasar()
+    ofensores = [
+        (hoja.relative_to(_GUI_DIR).as_posix(), sel, prop, tuple(sorted(requeridas)))
+        for hoja in _HOJAS_DE_ESTILO
+        for sel, prop, clases in _pisas_important_unlayered_sobre_quasar(hoja.read_text(encoding="utf-8"))
+        for requeridas, props in reset.items()
+        if requeridas <= clases and prop in props
+    ]
+    assert ofensores == [], (
+        "pisas !important unlayered que Quasar tapa en la cascada de capas "
+        f"(moverlas a @layer theme o documentar la exención): {ofensores}"
     )
 
 

@@ -620,16 +620,31 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     outline-offset: 2px;
 }
 
-/* Quasar resetea el outline de sus inputs de base con !important
-   (quasar.important.prod.css: `.q-field__native,.q-field__input{outline:0!important}`)
-   y los ui.input borderless del shell (búsqueda del header, chat) no tienen
-   borde de foco propio: sin esta pisa, Tab en ellos era invisible. La regla es
-   unlayered con !important y mayor especificidad — gana al reset en ambas
-   dimensiones de la cascada. */
-.q-field__native:focus-visible,
-.q-field__input:focus-visible {
-    outline: 2px solid var(--sky-gold-bright) !important;
-    outline-offset: 2px !important;
+/* Quasar resetea el outline de sus inputs con !important desde una CAPA:
+   `quasar.important.prod.css` trae `.q-field__native,.q-field__input{outline:0!important}`
+   y el template lo importa en `layer(quasar_importants)`. styles.css, en cambio,
+   se inyecta UNLAYERED (`ui.add_css` → `addStyle` → `<style>` plano). Y acá está
+   la trampa de la cascada: para declaraciones !important, una capa SIEMPRE le
+   gana a lo unlayered (y la especificidad no entra: el orden de capas se resuelve
+   antes). Una pisa unlayered con !important —lo que había antes— era letra muerta;
+   el reset ganaba y Tab en los ui.input borderless del shell (búsqueda del header,
+   chat) no mostraba foco (WCAG 2.4.7).
+
+   La única forma de ganarle es declarar la regla en una capa MÁS TEMPRANA: para
+   !important el orden se invierte y gana la capa declarada primero. NiceGUI
+   declara `@layer theme, base, quasar, nicegui, components, utilities, overrides,
+   quasar_importants;`, así que `@layer theme` —la primera— le gana a
+   `quasar_importants`. El !important sigue siendo necesario dentro de la capa:
+   una declaración normal jamás vence a un !important, esté en la capa que esté.
+   (Verificado en Chromium real; ancla: test_gui_theme_contracts.py cruza este
+   archivo con el reset !important real del paquete nicegui instalado y exige que
+   esta regla viva en @layer theme.) */
+@layer theme {
+    .q-field__native:focus-visible,
+    .q-field__input:focus-visible {
+        outline: 2px solid var(--sky-gold-bright) !important;
+        outline-offset: 2px !important;
+    }
 }
 
 /* Respeta "reducir movimiento" del SO con una política DIRIGIDA a lo decorativo:
