@@ -1056,6 +1056,7 @@ class TestRuntimeCloneSuiteCanonico:
         # Ancla de igualdad exacta para evitar hermanos no cableados.
         # GP2-S3b-1 añade deliberadamente los 6 módulos de la frontera de
         # autorización privilegiada (todos cableados vía __init__.__all__).
+        # GP2-P1 añade operator_verifier_bridge, physical_root y runtime_observation.
         expected_modules = {
             "__init__",
             "authorization_context",
@@ -1069,11 +1070,14 @@ class TestRuntimeCloneSuiteCanonico:
             "models",
             "node_evidence",
             "operator_token",
+            "operator_verifier_bridge",
+            "physical_root",
             "planning_orchestrator",
             "ppsc",
             "privileged_boundary",
             "protection",
             "quiescence",
+            "runtime_observation",
             "target_dacl",
             "trusted_namespace",
             "trusted_registry",
