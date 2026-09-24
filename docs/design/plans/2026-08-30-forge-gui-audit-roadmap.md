@@ -124,9 +124,43 @@ Criterio de cierre:
 - si las superficies legacy no tienen callers productivos tras la separación, eliminarlas en un PR de limpieza atómico;
 - agregar un ancla que impida reintroducir accidentalmente dos shells/paletas paralelos.
 
+### L1 — Fragmentos `ui.html` fuera del flex y colores de Quasar en capa
+
+**Estado:** **RESUELTO** en #627 (pulido visual del shell) — dos mecanismos
+que rompían el render sin que ningún gate lo viera (el smoke visual los mostró):
+
+- **`ui.html` envuelve su contenido en un `<div>` de bloque.** Los fragmentos
+  con varios hijos pensados como ítems del flex del contenedor (nav del
+  sidebar, toggle «Confirmar», cabecera y filas del Orden de Carga, tarjetas de
+  ritual, cabeceras y filas de Disputas, toast de feedback, panel de
+  integridad) quedaban fuera del flex: ícono arriba, etiqueta abajo, `flex:1`
+  sin efecto. Receta: `ui.html(...).style(_FRAGMENTO)` (`display:contents`).
+  Ancla: `test_fragmentos_html_del_shell_participan_del_flex` (censo congelado
+  por igualdad).
+- **NiceGUI 3 carga los `!important` de Quasar en la capa `quasar_importants`**,
+  y un `!important` en capa le gana a cualquier `!important` sin capa (todo
+  `styles.css`). Con el `color="primary"` por defecto, `.bg-primary`/
+  `.text-white` pisaban el oro: CTA del wizard ocre plano, selector de
+  proveedor en ámbar. Receta: todo `ui.button`/`ui.toggle` pide `sc-tema`
+  (color sin clase en Quasar) y la receta del tema gana sin pelear. Ancla:
+  `test_botones_y_toggles_quasar_piden_el_color_del_tema` (censo AST de todo el
+  paquete GUI). El mismo mecanismo anula hoy el foco visible de los
+  `ui.input` (`.q-field__native:focus-visible`): registrado para PR aparte.
+
+En el mismo PR: shell de alto fijo (sidebar y Vitalidad siempre visibles,
+scroll interno en `.sc-scroll`, sin el marco de 16px de `.nicegui-content`;
+ancla `test_shell_forge_ocupa_el_viewport_con_scroll_interno`), `line-height`
+de h1–h3 acotado al shell (la escala Material de Quasar daba 60px a un título
+de 15px), chat del Asistente legible sobre el pergamino, grilla de rituales
+4+3 en vez de 5+2, filigrana SVG en las esquinas del hero y switch de mods con
+el selector real de Quasar (`--truthy`, no `--active`).
+
 ### Responsive baseline
 
-**Estado:** pendiente.
+**Estado:** parcial (#627) — el header ya no desborda en ventanas angostas (el HUD
+GPU·CPU, redundante con la Vitalidad del sidebar, cede bajo 1240 px y el
+nombre/rol bajo 1080 px; verificado a 1280/1100/1024 px sin scroll horizontal).
+Stats, hero y grillas siguen pendientes según el criterio de abajo.
 
 Se verificaron recetas rígidas en el Forge, entre ellas una grilla de cuatro columnas y hero con tipografía de 52 px. No formular el problema como “el CSS no tiene media queries”: sí existen reglas responsive/de accesibilidad en el proyecto; la deuda es que estas superficies principales no tienen una adaptación de ventana pequeña demostrada.
 

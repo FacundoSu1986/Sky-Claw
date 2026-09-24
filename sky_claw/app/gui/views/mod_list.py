@@ -59,10 +59,15 @@ def build_mod_list(
 
     # ── Search Bar ────────────────────────────────────────────────────
     search_input = (
-        ui.input(placeholder="🔍 Buscar mod...", value=initial_query)
+        ui.input(placeholder="Buscar mod…", value=initial_query)
         .classes("sky-modlist-search w-full")
         .props("dense outlined dark")
     )
+    # Ícono de Quasar en el slot prepend en vez del emoji 🔍 del placeholder: el
+    # emoji se pinta con la pila de color del SO y rompe el tema (misma regla
+    # que el inventario de glifos del shell Forge).
+    with search_input.add_slot("prepend"):
+        ui.icon("search", size="1.1rem").style("color:#8a7f6a;")
 
     # ── Mod List Container ────────────────────────────────────────────
     mod_container = ui.element("div").classes("sky-modlist-container")
