@@ -247,6 +247,38 @@ def test_representaciones_equivalentes_comparten_fingerprint(
     assert base.profile_fingerprint == perfil.challenge().profile_fingerprint
 
 
+def test_el_case_del_nombre_no_cambia_el_fingerprint(tmp_path: pathlib.Path) -> None:
+    """En un filesystem case-insensitive `*RigCanaryMod.esp` y `*rigcanarymod.esp` son el mismo plugin.
+
+    El parser ya los trataba como el mismo para detectar duplicados; el payload
+    canónico guarda esa misma identidad, así que el digest no puede depender de
+    la grafía con la que el último escritor tocó el perfil.
+    """
+    perfil = _crear_perfil(tmp_path, plugins=_MO2_HEADER + b"*RigCanaryMod.esp\r\nRigDisabled.esp\r\n")
+    base = perfil.challenge()
+
+    perfil.escribir_plugins(_MO2_HEADER + b"*rigcanarymod.esp\r\nRigDisabled.esp\r\n")
+    perfil.verificar(base)
+
+    assert base.profile_fingerprint == perfil.challenge().profile_fingerprint
+
+
+def test_el_case_no_confunde_plugins_distintos(tmp_path: pathlib.Path) -> None:
+    """Normalizar la caja no puede fusionar dos plugins realmente distintos."""
+    primero = _crear_perfil(tmp_path / "a", plugins=_MO2_HEADER + b"*RigCanaryMod.esp\r\n")
+    segundo = _crear_perfil(tmp_path / "b", plugins=_MO2_HEADER + b"*OtroPlugin.esp\r\n")
+
+    assert primero.challenge().profile_fingerprint != segundo.challenge().profile_fingerprint
+
+
+def test_el_case_no_cambia_el_orden_semantico(tmp_path: pathlib.Path) -> None:
+    """Normalizar la caja no puede tapar un reordenamiento de habilitados."""
+    primero = _crear_perfil(tmp_path / "a", plugins=_MO2_HEADER + b"*A.esp\r\n*B.esp\r\n")
+    segundo = _crear_perfil(tmp_path / "b", plugins=_MO2_HEADER + b"*b.esp\r\n*a.esp\r\n")
+
+    assert primero.challenge().profile_fingerprint != segundo.challenge().profile_fingerprint
+
+
 def test_plugins_txt_ausente_vacio_o_solo_header_son_el_mismo_estado(tmp_path: pathlib.Path) -> None:
     """Sin plugins no oficiales habilitados el estado es el mismo, exista o no el archivo."""
     solo_header = _crear_perfil(tmp_path / "a", plugins=_MO2_HEADER)
@@ -297,7 +329,6 @@ _MUTACIONES = [
         _MO2_HEADER + b"*RigCanaryMod.esp\r\n*RigDisabled.esp\r\n",
         id="deshabilitado-pasa-a-habilitado",
     ),
-    pytest.param("case", _MO2_HEADER + b"*rigcanarymod.esp\r\nRigDisabled.esp\r\n", id="case-del-habilitado-cambia"),
     pytest.param(
         "orden",
         _MO2_HEADER + b"*B.esp\r\n*RigCanaryMod.esp\r\n",
@@ -428,6 +459,17 @@ def test_espacios_interiores_son_validos(tmp_path: pathlib.Path) -> None:
     assert perfil.challenge().profile_fingerprint != base.profile_fingerprint
 
 
+def test_case_no_ascii_es_el_mismo_plugin(tmp_path: pathlib.Path) -> None:
+    """La identidad case-insensitive también cubre las letras de la codepage."""
+    mayusculas = _crear_perfil(tmp_path / "a", plugins=_MO2_HEADER + b"*" + _ESPADA_CP1252 + b"\r\n")
+    minusculas = _crear_perfil(
+        tmp_path / "b",
+        plugins=_MO2_HEADER + b"*" + "espadaélfica.esp".encode("cp1252") + b"\r\n",
+    )
+
+    assert mayusculas.challenge().profile_fingerprint == minusculas.challenge().profile_fingerprint
+
+
 def test_duplicado_no_ascii_case_insensitive_falla_cerrado(tmp_path: pathlib.Path) -> None:
     """Para Windows `EspadaÉlfica.esp` y `espadaélfica.esp` son el mismo archivo."""
     perfil = _crear_perfil(tmp_path, plugins=_PLUGINS_BASE)
@@ -439,8 +481,8 @@ def test_duplicado_no_ascii_case_insensitive_falla_cerrado(tmp_path: pathlib.Pat
         perfil.challenge()
 
 
-def test_no_colapsa_pares_que_windows_no_considera_iguales(tmp_path: pathlib.Path) -> None:
-    """`Straße.esp` y `Strasse.esp` son archivos distintos: no se fabrica un duplicado."""
+def test_no_colapsa_pares_que_casefold_uniria(tmp_path: pathlib.Path) -> None:
+    """`casefold()` colapsaría `ß`→`ss`; `lower()` no, y no se inventa un duplicado."""
     perfil = _crear_perfil(
         tmp_path,
         plugins=_MO2_HEADER + b"*Stra\xdfe.esp\r\n*Strasse.esp\r\n",

@@ -53,7 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows (encoding `System`), así que los bytes no ASCII y los espacios interiores —p. ej.
   `Unofficial Skyrim Special Edition Patch.esp`— son válidos; solo falla cerrado lo indeterminable
   (control/NUL, metacaracteres, sin extensión de plugin, repetido case-insensitive), y
-  `modlist.txt`, `loadorder.txt` y los `settings.*` siguen crudos. El digest sube de dominio a `skyclaw-vfs-profile-v2` y las secciones
+  `modlist.txt`, `loadorder.txt` y los `settings.*` siguen crudos. La identidad que entra al
+  payload canónico es la clave normalizada case-insensitive, no la grafía del archivo: en un
+  filesystem case-insensitive `*X.esp` y `*x.esp` son el mismo plugin, y hashearlos distinto
+  volvía a atar el digest a una reescritura sin significado. El digest sube de dominio a `skyclaw-vfs-profile-v2` y las secciones
   llevan largo explícito (el esquema v1 permitía colisionar dos repartos de bytes distintos).
   Anclas: `tests/test_vfs_attestation_canonicalization.py`.
 

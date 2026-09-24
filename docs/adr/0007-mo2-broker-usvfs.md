@@ -99,7 +99,14 @@ Patch.esp`) y se rechaza solo lo que el parser no puede interpretar de forma
 determinista —caracteres de control (UTF-16 ⇒ NULs), metacaracteres de Windows,
 sin extension de plugin, repetido case-insensitive, o sin nombre. El cotejo
 case-insensitive usa `lower()` sobre `latin-1` y no `casefold()`, para no
-colapsar pares que Windows no considera iguales (`Straße.esp`/`Strasse.esp`).
+colapsar pares que Windows no considera iguales (`Straße.esp`/`Strasse.esp`). La **identidad** que entra al payload canonico es
+esa clave normalizada, no la grafia del archivo: en un filesystem
+case-insensitive `*RigCanary.esp` y `*rigcanary.esp` son el mismo plugin, y el
+digest no puede depender de como lo escribio el ultimo escritor. La garantia
+declarada de la clave es exacta para ASCII y para las paginas de codigo
+occidentales/cirilicas del bloque de letras (cp1252/cp1251) y determinista para
+cualquier otra entrada; no se afirma ser la tabla de mayusculas completa de
+Windows.
 Las secciones del digest llevan largo explicito para que el contenido de un
 archivo no pueda reencuadrar las demas secciones.
 

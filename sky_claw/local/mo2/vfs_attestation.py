@@ -201,17 +201,31 @@ def _iter_plugins_lines(data: bytes) -> Iterator[bytes]:
 
 
 def _case_insensitive_key(raw: bytes) -> str:
-    """Clave case-insensitive al estilo Windows para bytes sin codepage declarada.
+    """Identidad case-insensitive de un nombre de plugin (bytes sin codepage declarada).
 
-    ``plugins.txt`` se escribe con encoding ``System`` (la página de código de
-    la máquina), así que los nombres pueden traer bytes > 0x7E legítimos
+    ``plugins.txt`` se escribe con encoding ``System`` (la página de código de la
+    máquina), así que los nombres pueden traer bytes > 0x7E legítimos
     (``EspadaÉlfica.esp``) y no hay una decodificación UTF-8 que valga. `latin-1`
-    es una biyección sobre bytes —nunca falla ni pierde información— y en el
-    rango imprimible reproduce el pareo mayúscula/minúscula de las páginas de
-    código occidentales, que es lo que necesita el cotejo case-insensitive de
-    MO2/Windows. Se usa ``lower()`` y **no** ``casefold()``: `casefold` colapsa
-    pares que Windows NO considera iguales (``Straße.esp`` vs ``Strasse.esp``) y
-    fabricaría un "duplicado" que no existe.
+    es una biyección sobre bytes —nunca falla, nunca pierde información y es
+    determinista para cualquier entrada— y su bloque de letras pares coincide con
+    el de las páginas de código en juego:
+
+    * **cp1252 (y latin-1)**: exacto. ``0xC0-0xDE``/``0xE0-0xFE`` son las mismas
+      letras acentuadas y ``0x80-0x9F`` no tiene pares de caja en ninguna de las
+      dos, así que el pareo coincide con el del sistema.
+    * **cp1251 (cirílico)**: exacto en el bloque alfabético (``0xC0-0xDF`` ↔
+      ``0xE0-0xFF``); ``Ё``/``ё`` (``0xA8``/``0xB8``) quedan como bytes distintos,
+      igual que en un cotejo byte a byte — es la dirección conservadora: dos
+      grafías que Windows uniría se tratan como estados distintos, nunca al
+      revés.
+    * **otras páginas de código** (p. ej. cp1250, cp932): determinista y estable,
+      pero **no** se afirma equivalencia con la tabla de mayúsculas de Windows.
+      La garantía declarada es la de los casos probados, no una promesa general.
+
+    Se usa ``lower()`` y **no** ``casefold()``: `casefold` colapsa pares que
+    Windows no unifica (``Straße.esp`` vs ``Strasse.esp``) y fabricaría un
+    "duplicado" que no existe. Esta clave es también la **identidad** que entra
+    al payload canónico, para que el digest no dependa de la grafía.
     """
     return raw.decode("latin-1").lower()
 
@@ -298,11 +312,14 @@ def _canonical_plugins_state(data: bytes | None, *, always_active: frozenset[str
     * BOM, header y estilo de fin de línea son representación.
 
     Lo que **sí** es estado: qué plugins no primarios están habilitados y en qué
-    orden aparecen sus líneas. Un nombre repetido —case-insensitive, como el
-    matching de MO2/Windows— es ambiguo y el formato no lo admite: falla
-    cerrado. La forma devuelta no es un archivo: es un payload canónico con los
-    nombres (bytes tal como se leyeron) separados por ``NUL``; los nombres
-    validados nunca contienen ``NUL``.
+    orden aparecen sus líneas. La identidad de cada uno es su **clave
+    case-insensitive** (:func:`_case_insensitive_key`) y no la grafía del
+    archivo: en un filesystem case-insensitive dos grafías del mismo nombre son
+    el mismo plugin, así que hashearlas distinto volvería a atar el digest a una
+    reescritura sin significado. Un nombre repetido —bajo esa misma clave— es
+    ambiguo y el formato no lo admite: falla cerrado. La forma devuelta no es un
+    archivo: es un payload canónico con esas claves separadas por ``NUL``; los
+    nombres validados nunca contienen ``NUL``.
     """
     if data is None:
         # Ausente, vacío y "solo header" son el mismo estado para el lector de
@@ -329,7 +346,13 @@ def _canonical_plugins_state(data: bytes | None, *, always_active: frozenset[str
             raise VfsAttestationError(f"plugins.txt repite el plugin {name.decode('latin-1')!r}")
         seen.add(key)
         if starred and key not in always_active:
-            enabled.append(name)
+            # Se guarda la IDENTIDAD case-insensitive, no la grafía del archivo:
+            # en un filesystem case-insensitive `*RigCanary.esp` y
+            # `*rigcanary.esp` son el MISMO plugin, y el digest no puede depender
+            # de cómo lo escribió el último que tocó el perfil. `latin-1` es
+            # biyectiva con los bytes, así que la clave vuelve a bytes sin
+            # pérdida y sigue sin contener ``NUL`` (los rechaza el validador).
+            enabled.append(key.encode("latin-1"))
     return b"\x00".join(enabled)
 
 
