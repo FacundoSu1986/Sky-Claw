@@ -25,6 +25,11 @@ _GUI_DIR = Path(__file__).resolve().parent.parent / "sky_claw" / "app" / "gui"
 _STYLES = (_GUI_DIR / "styles.css").read_text(encoding="utf-8")
 _FONTS = (_GUI_DIR / "assets" / "fonts" / "fonts.css").read_text(encoding="utf-8")
 _FORGE = (_GUI_DIR / "views" / "forge_dashboard.py").read_text(encoding="utf-8")
+# TODAS las hojas de estilo del GUI, por glob: todas entran UNLAYERED (styles.css
+# vía ``ui.add_css``, fonts.css vía ``<link>`` en ``gui_helpers``), así que todas
+# compiten igual contra el reset con capa de Quasar. Enumerar, no nombrar a mano:
+# una hoja nueva queda cubierta por el ancla de choques sin tocar el test.
+_HOJAS_DE_ESTILO = sorted(_GUI_DIR.rglob("*.css"))
 
 # Fuente REAL contra la que compite styles.css en la cascada: el reset con
 # !important de Quasar y la declaración de capas del template, leídos del paquete
@@ -178,12 +183,12 @@ def _bloque_de_capa(nombre: str) -> str | None:
     return None
 
 
-def _pisas_important_unlayered_sobre_quasar() -> list[tuple[str, str, frozenset[str]]]:
-    """Declaraciones !important UNLAYERED de styles.css cuyo selector toca una
-    clase .q-*. Las de dentro de ``@layer {...}`` quedan EXCLUIDAS por
+def _pisas_important_unlayered_sobre_quasar(css: str) -> list[tuple[str, str, frozenset[str]]]:
+    """Declaraciones !important UNLAYERED de una hoja de estilo cuyo selector toca
+    una clase .q-*. Las de dentro de ``@layer {...}`` quedan EXCLUIDAS por
     construcción: layered le gana a unlayered para !important, así que no compiten
     en la dimensión peligrosa."""
-    css = _sin_comentarios(_STYLES)
+    css = _sin_comentarios(css)
     # Quitar los bloques @layer completos (balanceando llaves).
     limpio: list[str] = []
     i = 0
@@ -286,11 +291,21 @@ def test_ninguna_pisa_important_unlayered_la_tapa_quasar_en_silencio() -> None:
     respeta los modificadores de Quasar: su reset de ``border-radius`` exige
     ``.q-field--square``, así que la geometría del wizard (sin esa clase) NO se
     marca como muerta.
+
+    La familia son TODAS las hojas de estilo del GUI (``_HOJAS_DE_ESTILO``), no
+    sólo styles.css: fonts.css también entra unlayered, así que una pisa muerta
+    ahí se perdería igual. Un ancla que leyera sólo styles.css muestrearía 1 de 2.
     """
+    nombres = {hoja.relative_to(_GUI_DIR).as_posix() for hoja in _HOJAS_DE_ESTILO}
+    # Anti-vacuidad: si el glob no encuentra nada (p. ej. se movió el directorio),
+    # el ancla pasaría en verde sin haber mirado una sola regla.
+    assert "styles.css" in nombres, f"el glob de hojas de estilo no encontró styles.css: {sorted(nombres)}"
+
     reset = _reset_important_de_quasar()
     ofensores = [
-        (sel, prop, tuple(sorted(requeridas)))
-        for sel, prop, clases in _pisas_important_unlayered_sobre_quasar()
+        (hoja.relative_to(_GUI_DIR).as_posix(), sel, prop, tuple(sorted(requeridas)))
+        for hoja in _HOJAS_DE_ESTILO
+        for sel, prop, clases in _pisas_important_unlayered_sobre_quasar(hoja.read_text(encoding="utf-8"))
         for requeridas, props in reset.items()
         if requeridas <= clases and prop in props
     ]
