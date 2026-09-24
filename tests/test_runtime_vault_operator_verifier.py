@@ -48,7 +48,6 @@ from sky_claw.local.runtime_vault.operator_token import (
 )
 from sky_claw.local.runtime_vault.operator_verifier_bridge import (
     _PIPE_REJECT_REMOTE_CLIENTS,
-    _SECURITY_ATTRIBUTES,
     ChildExitedPrematurelyError,
     ChildProcessEvidence,
     NonceAuthenticationError,
@@ -61,15 +60,12 @@ from sky_claw.local.runtime_vault.operator_verifier_bridge import (
     VerifierDisposition,
     VerifierImageNotProvisionedError,
     Win32CreateProcessWithTokenLauncher,
-    _advapi32,
     _build_critical_evidence_from_ipc,
     _build_fresh_runtime_from_ipc,
     _build_named_pipe_security_descriptor,
     _build_physical_root_from_ipc,
     _build_tree_digest_from_ipc,
-    _kernel32,
     _security_descriptor_to_sddl,
-    _TestOnlyVerifierLauncher,
     resolve_production_verifier_executable,
 )
 from sky_claw.local.runtime_vault.physical_root import (
@@ -83,12 +79,22 @@ from sky_claw.local.runtime_vault.runtime_observation import (
     RuntimeObservationError,
     observe_runtime_identity_from_root,
 )
+from tests._verifier_test_launcher import _TestOnlyVerifierLauncher
 
 _GENERIC_READ = 0x80000000
 _GENERIC_WRITE = 0x40000000
 _OPEN_EXISTING = 3
 
+# Los bindings ctypes y las estructuras Win32 del módulo productivo sólo se
+# definen bajo Windows: importarlos a nivel de módulo abortaba la COLECCIÓN de
+# toda la suite en Linux (ImportError), no sólo la ejecución de estos tests.
 if sys.platform == "win32":
+    from sky_claw.local.runtime_vault.operator_verifier_bridge import (  # noqa: E402
+        _SECURITY_ATTRIBUTES,
+        _advapi32,
+        _kernel32,
+    )
+
     _advapi32.ImpersonateAnonymousToken.argtypes = [ctypes.c_void_p]
     _advapi32.ImpersonateAnonymousToken.restype = wintypes.BOOL
     _advapi32.RevertToSelf.argtypes = []
@@ -1533,7 +1539,7 @@ kernel32.CloseHandle(ctypes.c_void_p(h))
         root.mkdir()
 
         prod_launcher = Win32CreateProcessWithTokenLauncher()
-        assert not getattr(prod_launcher, "_is_test_verifier_launcher", False)
+        assert not isinstance(prod_launcher, _TestOnlyVerifierLauncher)
 
         bridge = OperatorVerifierBridge(launcher=prod_launcher)
         with pytest.raises(VerifierImageNotProvisionedError, match="UNRESOLVED"):
@@ -2128,7 +2134,13 @@ class TestPackagingAndAstGates:
             resolve_production_verifier_executable()
 
     def test_ast_gate_test_launcher_confinado_a_tests(self) -> None:
-        """Comprueba por AST que ningún módulo en sky_claw/ importe o instancie _TestOnlyVerifierLauncher."""
+        """Ningún módulo de `sky_claw/` define, importa ni referencia la seam.
+
+        Antes la clase VIVÍA en `operator_verifier_bridge.py` y el gate se
+        auto-eximía justamente de ese archivo — es decir, no verificaba el caso
+        que importa. Ahora la seam vive en `tests/_verifier_test_launcher.py` y
+        el gate no tiene excepciones.
+        """
         repo_root = pathlib.Path(__file__).resolve().parents[1]
         sky_claw_dir = repo_root / "sky_claw"
 
@@ -2137,14 +2149,8 @@ class TestPackagingAndAstGates:
             tree = ast.parse(py_path.read_text(encoding="utf-8"), filename=str(py_path))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef) and node.name == "_TestOnlyVerifierLauncher":
-                    if py_path.name != "operator_verifier_bridge.py":
-                        violaciones.append(f"{py_path.relative_to(repo_root)}:{node.lineno} (ClassDef)")
+                    violaciones.append(f"{py_path.relative_to(repo_root)}:{node.lineno} (ClassDef)")
                 elif isinstance(node, ast.Name) and node.id == "_TestOnlyVerifierLauncher":
-                    # Excepto la propia definición en operator_verifier_bridge.py
-                    if py_path.name == "operator_verifier_bridge.py" and isinstance(
-                        getattr(node, "ctx", None), ast.Store
-                    ):
-                        continue
                     violaciones.append(f"{py_path.relative_to(repo_root)}:{getattr(node, 'lineno', 0)} (Name)")
                 elif isinstance(node, ast.Attribute) and node.attr == "_TestOnlyVerifierLauncher":
                     violaciones.append(f"{py_path.relative_to(repo_root)}:{getattr(node, 'lineno', 0)} (Attribute)")
@@ -2154,6 +2160,30 @@ class TestPackagingAndAstGates:
                     violaciones.append(f"{py_path.relative_to(repo_root)}:{getattr(node, 'lineno', 0)} (alias)")
 
         assert not violaciones, f"Producción referencia _TestOnlyVerifierLauncher: {violaciones}"
+
+    def test_produccion_no_ramifica_por_tipo_de_launcher(self) -> None:
+        """El bridge no debe olfatear atributos del lanzador para elegir la imagen.
+
+        La rama `getattr(launcher, "_is_test_verifier_launcher", False)` metía
+        una decisión DE TEST en el camino productivo: bastaba con que un objeto
+        cualquiera expusiera ese atributo para saltear
+        `resolve_production_verifier_executable()` (fail-closed). La resolución
+        es ahora parte del Protocol del lanzador.
+        """
+        bridge_src = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "sky_claw"
+            / "local"
+            / "runtime_vault"
+            / "operator_verifier_bridge.py"
+        ).read_text(encoding="utf-8")
+        assert "_is_test_verifier_launcher" not in bridge_src
+        assert "test_verifier.exe" not in bridge_src
+
+    def test_launcher_productivo_resuelve_fail_closed(self) -> None:
+        """`Win32CreateProcessWithTokenLauncher.resolve_executable()` es fail-closed."""
+        with pytest.raises(VerifierImageNotProvisionedError, match="UNRESOLVED"):
+            Win32CreateProcessWithTokenLauncher().resolve_executable()
 
     def test_ast_gate_init_no_exporta_seam(self) -> None:
         """sky_claw.local.runtime_vault.__init__ no debe exportar _TestOnlyVerifierLauncher."""

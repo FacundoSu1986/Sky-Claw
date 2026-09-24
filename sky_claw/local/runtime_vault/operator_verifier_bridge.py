@@ -22,8 +22,10 @@ Arquitectura y contratos normativos (ADR 0010 §12.3, §13.4):
   * OBSERVE: deriva identidad física y mide árbol y runtime frescos; emite OBSERVED.
   * VERIFY: revalida identidad física contra expectativa autorizada y re-mide árbol y runtime
     frescos; emite VERIFIED sólo ante coincidencia total.
-- Confinamiento de seams: empaquetado productivo permanece UNRESOLVED (fail-closed);
-  la seam de testing ``_TestOnlyVerifierLauncher`` está confinada exclusivamente a tests.
+- Confinamiento de seams: el empaquetado productivo permanece UNRESOLVED (fail-closed) y
+  la seam de testing vive FUERA de este paquete, en ``tests/_verifier_test_launcher.py``.
+  Este módulo no importa ``subprocess`` ni ramifica por el tipo del lanzador: la imagen
+  del verificador la resuelve el propio lanzador vía ``OperatorVerifierLauncher.resolve_executable``.
 """
 
 from __future__ import annotations
@@ -1225,7 +1227,14 @@ def _read_process_image_path(process_handle: int) -> str | None:
 
 
 class OperatorVerifierLauncher(Protocol):
-    """Protocolo del componente encargado de lanzar el verificador child."""
+    """Protocolo del componente encargado de lanzar el verificador child.
+
+    ``resolve_executable`` es parte del contrato para que el bridge NUNCA
+    necesite inspeccionar el tipo concreto del lanzador: la resolución de la
+    imagen del verificador es responsabilidad del lanzador que la va a ejecutar.
+    """
+
+    def resolve_executable(self) -> pathlib.Path: ...
 
     def launch_child(
         self,
@@ -1237,6 +1246,10 @@ class OperatorVerifierLauncher(Protocol):
 
 class Win32CreateProcessWithTokenLauncher:
     """Lanzador productivo mediante CreateProcessWithTokenW."""
+
+    def resolve_executable(self) -> pathlib.Path:
+        """Resuelve la imagen productiva del verificador (fail-closed en GP2-P1)."""
+        return resolve_production_verifier_executable()
 
     def launch_child(
         self,
@@ -1309,118 +1322,6 @@ def resolve_production_verifier_executable() -> pathlib.Path:
         "El binario empaquetado del verificador aún no está provisionado (UNRESOLVED). "
         "La ruta de producción es fail-closed"
     )
-
-
-class _TestOnlyVerifierLauncher:
-    """Seam de testing confinada a pruebas Win32 (no para producción).
-
-    Lanza un subproceso Python real desechable para que el helper interactúe
-    con un proceso Win32 genuino, permitiendo verificar ciclo de vida,
-    WaitForSingleObject y TerminateProcess sin comprometer el proceso de test.
-    """
-
-    _is_test_verifier_launcher: Final[bool] = True
-
-    def __init__(
-        self,
-        *,
-        tamper_child_pid: int | None = None,
-        tamper_creation_time_delta: int = 0,
-        tamper_image_path: str | None = None,
-        tamper_response_nonce: str | None = None,
-        tamper_hang_after_response: bool = False,
-        worker_code_override: str | None = None,
-    ) -> None:
-        self.tamper_child_pid = tamper_child_pid
-        self.tamper_creation_time_delta = tamper_creation_time_delta
-        self.tamper_image_path = tamper_image_path
-        self.tamper_response_nonce = tamper_response_nonce
-        self.tamper_hang_after_response = tamper_hang_after_response
-        self.worker_code_override = worker_code_override
-        self._spawned_procs: list[Any] = []
-
-    def reap_proc(self) -> None:
-        """Drena y reapea los subprocesos de prueba para evitar ResourceWarning en Python."""
-        for p in list(self._spawned_procs):
-            try:
-                if p.poll() is None:
-                    p.kill()
-                    p.wait(timeout=2.0)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                if p.stdin:
-                    p.stdin.close()
-                if p.stdout:
-                    p.stdout.close()
-                if p.stderr:
-                    p.stderr.close()
-            except Exception:  # noqa: BLE001
-                pass
-
-    def launch_child(
-        self,
-        token: OperatorPrimaryToken,
-        executable_path: pathlib.Path,
-        cmdline: str,
-    ) -> ChildProcessEvidence:
-        _ensure_windows()
-        parts = cmdline.split()
-        pipe_name = ""
-        for i, part in enumerate(parts):
-            if part == "--pipe-name" and i + 1 < len(parts):
-                pipe_name = parts[i + 1]
-                break
-        if not pipe_name:
-            raise OperatorVerifierLaunchError("No se encontró --pipe-name en el cmdline de prueba")
-
-        if self.worker_code_override is not None:
-            script = self.worker_code_override.replace("{PIPE_NAME}", pipe_name)
-        else:
-            script = (
-                "import os, sys\n"
-                "from unittest.mock import patch\n"
-                "from sky_claw.local.runtime_vault.operator_verifier_bridge import run_verifier_child_worker\n"
-                "test_ver = os.environ.get('_SKYCLAW_TEST_RUNTIME_VERSION', '1.6.1170.0')\n"
-                "with patch('sky_claw.local.runtime_vault.runtime_observation.read_skyrim_version', return_value=test_ver):\n"
-                f"    run_verifier_child_worker({pipe_name!r}, tamper_nonce={self.tamper_response_nonce!r}, tamper_hang_after_response={self.tamper_hang_after_response!r})\n"
-            )
-
-        import subprocess
-
-        sys_exe = getattr(sys, "_base_executable", sys.executable)
-        env = os.environ.copy()
-        env["PYTHONPATH"] = os.pathsep.join(sys.path)
-        proc = subprocess.Popen(
-            [sys_exe, "-c", script],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-        )
-        self._spawned_procs.append(proc)
-
-        pid = proc.pid
-        # SYNCHRONIZE (0x00100000) | PROCESS_TERMINATE (0x0001) | PROCESS_QUERY_INFORMATION (0x0400)
-        desired_access = 0x00100000 | 0x0001 | 0x0400
-        h_process = _kernel32.OpenProcess(desired_access, False, pid)
-        if _is_invalid_handle(h_process):
-            proc.kill()
-            raise OperatorVerifierLaunchError("OpenProcess sobre subproceso de prueba falló")
-
-        real_creation = _read_process_creation_time(int(h_process)) or 100_000_000
-        reported_creation = real_creation + self.tamper_creation_time_delta
-
-        real_image = _read_process_image_path(int(h_process)) or str(executable_path)
-        reported_image = self.tamper_image_path if self.tamper_image_path is not None else real_image
-        reported_pid = self.tamper_child_pid if self.tamper_child_pid is not None else pid
-
-        return ChildProcessEvidence(
-            process_handle=int(h_process),
-            pid=reported_pid,
-            creation_time=reported_creation,
-            image_path=reported_image,
-        )
 
 
 # ============================================================================
@@ -1757,11 +1658,10 @@ class OperatorVerifierBridge:
         h_event = _kernel32.CreateEventW(None, True, False, None)
 
         try:
-            # 1. Resolver ejecutable y lanzar child
-            if getattr(self._launcher, "_is_test_verifier_launcher", False):
-                exe_path = pathlib.Path("C:\\Sky-Claw\\test_verifier.exe")
-            else:
-                exe_path = resolve_production_verifier_executable()
+            # 1. Resolver ejecutable y lanzar child.
+            # La resolución la provee el propio lanzador (contrato del Protocol):
+            # producción es fail-closed vía resolve_production_verifier_executable().
+            exe_path = self._launcher.resolve_executable()
 
             cmdline = f'"{exe_path}" --pipe-name {pipe_name}'
             child_evidence = self._launcher.launch_child(token, exe_path, cmdline)
