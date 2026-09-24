@@ -100,6 +100,10 @@ dev = [
     # windows-latest crashea mypy 2.3.1 al arranque con esos stubs. Un solo
     # 2.4.x para toda la matrix = mismo entorno y mismo análisis en ambos jobs.
     "numpy>=1.26,<2.5",
+    # EXP-M2+ research/native_parallax decodifica authored height/normal
+    # mediante Pillow. Research es dev-only; ningún camino de producción
+    # importa sky_claw.local.native_parallax.research.
+    "pillow>=10,<12",
 ]
 
 [tool.pytest.ini_options]
