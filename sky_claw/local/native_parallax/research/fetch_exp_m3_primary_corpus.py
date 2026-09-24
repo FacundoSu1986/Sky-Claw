@@ -144,7 +144,9 @@ def sha256_file(path: Path) -> str:
 
 
 def md5_file(path: Path) -> str:
-    h = hashlib.md5()  # noqa: S324 - md5 es el checksum publicado por Poly Haven
+    # md5 es el checksum publicado por Poly Haven: verificación de provenance,
+    # NO primitiva criptográfica — usedforsecurity=False lo declara explícito.
+    h = hashlib.md5(usedforsecurity=False)  # noqa: S324 - checksum de provenance, no criptografía
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
@@ -156,10 +158,33 @@ def host_of(url: str) -> str:
     return urlsplit(url).netloc
 
 
-def _http_get(url: str, *, timeout: int = 120) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+def _require_https_url(url: str) -> str:
+    """F-harden: sólo URLs HTTPS válidas llegan a urlopen (sin userinfo embebido).
+
+    Rechaza esquemas no-https, URLs inparseables, hostname ausente y
+    user:password@host antes de construir la Request. Los mensajes de error
+    usan hostname: nunca la query/path firmada completa.
+    """
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        raise CorpusValidationError("URL inparseable en adquisición de corpus") from exc
+    if parts.scheme != "https":
+        raise CorpusValidationError(
+            f"esquema no permitido ({parts.scheme or 'vacío'}): sólo https en adquisición de corpus"
+        )
+    if parts.hostname is None:
+        raise CorpusValidationError("URL sin hostname en adquisición de corpus")
+    if parts.username is not None or parts.password is not None:
+        raise CorpusValidationError(f"userinfo embebido no permitido en adquisición de {parts.hostname}")
+    return url
+
+
+def _http_get(url: str, *, timeout: int = 120) -> bytes:
+    safe_url = _require_https_url(url)
+    req = urllib.request.Request(safe_url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 - URL prevalidated as HTTPS by _require_https_url
             payload: bytes = resp.read()
             return payload
     except HTTPError as exc:
@@ -173,9 +198,10 @@ def _http_download(url: str, dest: Path, *, expected_size: int | None = None) ->
     """Descarga streaming con verificación de tamaño si el upstream lo publica."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    safe_url = _require_https_url(url)
+    req = urllib.request.Request(safe_url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=600) as resp, tmp.open("wb") as fh:
+        with urllib.request.urlopen(req, timeout=600) as resp, tmp.open("wb") as fh:  # nosec B310 - URL prevalidated as HTTPS by _require_https_url
             while True:
                 chunk = resp.read(1 << 20)
                 if not chunk:

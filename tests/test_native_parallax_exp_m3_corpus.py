@@ -27,6 +27,7 @@ from sky_claw.local.native_parallax.research.fetch_exp_m3_primary_corpus import 
     _http_get,
     build_manifest,
     height_bit_depth,
+    md5_file,
     sha256_file,
     split_of_family,
     validate_entry,
@@ -332,3 +333,62 @@ def test_f3_validate_entry_acepta_directx_y_opengl() -> None:
         entry = _valid_entry()
         entry["normal_convention"] = conv
         validate_entry(entry)  # no raise
+
+
+# ------------------------------------------ F6: harden de adquisición (SAST B310/B324)
+
+
+def test_f6_https_valida_llega_a_urlopen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La URL https válida atraviesa _require_https_url sin mutaciones."""
+    vistas: list[str] = []
+
+    def fake(url: object, timeout: float | None = None) -> object:
+        assert isinstance(url, urllib.request.Request)
+        vistas.append(str(url.full_url))
+        return io.BytesIO(b"payload")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    assert _http_get("https://polyhaven.com/a?sig=SECRETO") == b"payload"
+    assert vistas == ["https://polyhaven.com/a?sig=SECRETO"]
+
+
+@pytest.mark.parametrize(
+    "url_mala",
+    [
+        "http://host/a.zip",  # clear-text
+        "file:///etc/passwd",  # recurso local
+        "ftp://host/a.zip",  # ftp
+        "custom://host/a.zip",  # esquema desconocido
+        "https:///sin-host",  # sin hostname
+        "https://[invalid",  # inparseable
+        "https://user:pass@host/a.zip",  # userinfo embebido
+    ],
+)
+def test_f6_urls_invalidas_rechazadas_antes_de_urlopen(
+    url_mala: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def prohibido(url: object, timeout: float | None = None) -> object:
+        raise AssertionError("urlopen NO debe invocarse para URLs inválidas")
+
+    monkeypatch.setattr(urllib.request, "urlopen", prohibido)
+    with pytest.raises(CorpusValidationError):
+        _http_get(url_mala)
+    with pytest.raises(CorpusValidationError):
+        _http_download(url_mala, tmp_path / "a.zip")
+    assert not (tmp_path / "a.zip").exists()
+    assert not (tmp_path / "a.zip.part").exists()
+
+
+def test_f6_userinfo_embebido_nunca_en_el_mensaje() -> None:
+    """El mensaje de error nombra el host, jamás las credenciales embebidas."""
+    with pytest.raises(CorpusValidationError) as excinfo:
+        _http_get("https://user:secreto@host/a.zip")
+    assert "secreto" not in str(excinfo.value)
+    assert "host" in str(excinfo.value)
+
+
+def test_f6_md5_provenance_digest_conocido(tmp_path: Path) -> None:
+    """md5_file es transparente a usedforsecurity=False: digest estable para bytes conocidos."""
+    muestra = tmp_path / "muestra.bin"
+    muestra.write_bytes(b"skyclaw-exp-m3-provenance")
+    assert md5_file(muestra) == "b68aa2a85a1310fc338fbc564cf735cc"
