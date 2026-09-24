@@ -6,6 +6,10 @@ LOOT (GUI, verificado contra upstream ``loot/loot`` ``src/gui/qt/main.cpp`` +
 sin imprimir ninguna lista numerada por stdout/stderr. Una corrida real
 exitosa llega al parser con ``sorted_plugins == []``, y eso NO debe
 convertirse en fallo ni en rollback del sort válido.
+
+PR-2: el éxito exige además atribución (testigo de ejecución fresco). La matriz
+completa CHANGED / NO_CHANGE / FAIL vive en ``tests/test_loot_verified_outcome.py``;
+acá quedan los anclas históricos, con sus premisas corregidas contra 0.29.1.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
 from sky_claw.local.tools import loot_service as loot_service_module
 from sky_claw.local.tools.loot_service import LootSortingService
+from tests._loot_witness import TESTIGO_FRESCO
 
 if TYPE_CHECKING:
     import pathlib
@@ -105,10 +110,10 @@ async def test_sort_real_sin_lista_de_plugins_no_es_falso_fallo(
     orden_nuevo = "Skyrim.esm\nActualizado.esp\n"
 
     async def sort_real(**_kwargs: object) -> LOOTResult:
-        # LOOT reescribió el load order (libloot set_load_order → save()) y
-        # salió 0 sin imprimir nada.
+        # LOOT aplicó un orden distinto (apply → Game::setLoadOrder, game.cpp:788-791),
+        # salió 0 sin imprimir nada y recreó su log (testigo fresco).
         plugins.write_text(orden_nuevo, encoding="utf-8")
-        return LOOTResult(return_code=0, sorted_plugins=[], errors=[])
+        return LOOTResult(return_code=0, sorted_plugins=[], errors=[], execution_witness=TESTIGO_FRESCO)
 
     runner = MagicMock()
     runner.sort = AsyncMock(side_effect=sort_real)
@@ -117,6 +122,7 @@ async def test_sort_real_sin_lista_de_plugins_no_es_falso_fallo(
     result = await svc.sort_load_order()
 
     assert result["success"] is True
+    assert result["outcome"] == "changed"
     # Contrato canónico de tools: message vacío en éxito.
     assert result["message"] == ""
     assert result["rolled_back"] is False
@@ -124,16 +130,17 @@ async def test_sort_real_sin_lista_de_plugins_no_es_falso_fallo(
 
 
 @pytest.mark.asyncio
-async def test_rc0_sin_mutacion_no_se_reporta_como_exito(
+async def test_rc0_sin_testigo_no_se_reporta_como_exito(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     tmp_path: pathlib.Path,
 ) -> None:
-    """CASO mutex (loot/loot ``src/gui/qt/main.cpp``): con otra instancia de
-    LOOT ya abierta, el proceso nuevo sale 0 enfocando la ventana existente
-    SIN sortear. rc=0 sin mutación observable de los targets es incertidumbre:
-    se falla con mensaje accionable y el snapshot se restaura (no-op aquí,
-    pero el estado reportado es verdadero).
+    """CASO mutex (loot/loot 0.29.1 ``src/gui/qt/main.cpp:90-95``): con otra
+    instancia de LOOT ya abierta, el proceso nuevo sale 0 enfocando la ventana
+    existente SIN sortear. rc=0 sin testigo de ejecución fresco NO es atribuible:
+    FAIL tipado con diagnóstico ("posible" mutex, no afirmado) y el snapshot se
+    restaura (no-op aquí, pero el estado reportado es verdadero). Ya no se
+    discrimina por "ningún archivo cambió": eso también es el NO_CHANGE legítimo.
     """
     resolver, plugins = _preparar_load_order(tmp_path)
     runner = MagicMock()
@@ -143,28 +150,35 @@ async def test_rc0_sin_mutacion_no_se_reporta_como_exito(
     result = await svc.sort_load_order()
 
     assert result["success"] is False
+    assert result["outcome"] == "fail"
+    assert result["failure_reason"] == "execution_not_attributable"
     assert result["rolled_back"] is True
-    assert "ningún archivo del load order cambió" in result["message"]
+    assert "LOOT.Shell.Instance" in result["message"]
     assert plugins.read_text(encoding="utf-8") == _CONTENIDO_ORIGINAL
 
 
 @pytest.mark.asyncio
-async def test_no_op_idempotente_con_reescritura_es_exito(
+async def test_reescritura_identica_con_testigo_es_no_change(
     lock_manager: DistributedLockManager,
     snapshot_manager: FileSnapshotManager,
     tmp_path: pathlib.Path,
 ) -> None:
-    """CASO B (idempotencia): el orden ya era el correcto y LOOT igual reescribe
-    los archivos al aplicar (libloot ``set_load_order`` → ``save()``
-    incondicional). La reescritura ES la evidencia física: éxito sin rollback
-    aunque el contenido no cambie.
+    """CASO B (idempotencia), premisa corregida en PR-2.
+
+    La versión anterior afirmaba que LOOT "igual reescribe los archivos al
+    aplicar (``set_load_order`` → ``save()`` incondicional)" y usaba esa
+    reescritura como evidencia de éxito. Es FALSO para 0.29.1: sin cambio de
+    orden no hay apply (main_window.cpp:1596-1617,2870-2884). Lo que se conserva
+    es la propiedad útil: una reescritura byte-idéntica (p. ej. MO2 refrescando
+    el perfil) con testigo fresco es NO_CHANGE, éxito sin rollback — la
+    clasificación es semántica, no de mtime.
     """
     resolver, plugins = _preparar_load_order(tmp_path)
 
     async def sort_idempotente(**_kwargs: object) -> LOOTResult:
         for archivo in (plugins, plugins.with_name("loadorder.txt")):
             archivo.write_text(_CONTENIDO_ORIGINAL, encoding="utf-8")
-        return LOOTResult(return_code=0, sorted_plugins=[], errors=[])
+        return LOOTResult(return_code=0, sorted_plugins=[], errors=[], execution_witness=TESTIGO_FRESCO)
 
     runner = MagicMock()
     runner.sort = AsyncMock(side_effect=sort_idempotente)
@@ -173,6 +187,7 @@ async def test_no_op_idempotente_con_reescritura_es_exito(
     result = await svc.sort_load_order()
 
     assert result["success"] is True
+    assert result["outcome"] == "no_change"
     assert result["rolled_back"] is False
     assert plugins.read_text(encoding="utf-8") == _CONTENIDO_ORIGINAL
 
@@ -282,6 +297,9 @@ async def test_stat_ilegible_en_post_falla_cerrado(
         result = await svc.sort_load_order()
 
     assert result["success"] is False
+    # Inobservable domina a "no atribuible" (orden C → E → D/F): sin estado
+    # final no se puede distinguir un no-op de una mutación ajena.
+    assert result["failure_reason"] == "state_unobservable"
     assert "No se pudo inspeccionar el estado del load order" in result["message"]
     assert "tras la corrida" in result["message"]
 

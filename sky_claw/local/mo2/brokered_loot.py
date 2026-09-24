@@ -4,23 +4,35 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import pathlib
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from sky_claw.local.loot.cli import DEFAULT_LOOT_INTERNAL_GAME_ID, LOOTNotFoundError
+from sky_claw.local.loot.cli import (
+    DEFAULT_LOOT_INTERNAL_GAME_ID,
+    LOOT_FAILURE_KIND_PRECONDITION,
+    LOOT_FAILURE_KIND_TIMEOUT,
+    LOOTNotFoundError,
+    LOOTPreconditionError,
+    LOOTTimeoutError,
+)
 from sky_claw.local.loot.data_root import (
     DEFAULT_LOOT_DATA_BASE,
     ensure_loot_data_path_exists,
     resolve_loot_data_path,
 )
+from sky_claw.local.loot.execution_witness import LootExecutionWitness, LootExecutionWitnessPayloadError
 from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver
 from sky_claw.local.mo2.vfs_attestation import (
     VfsAttestationChallenge,
     build_attestation_challenge,
 )
-from sky_claw.local.mo2.vfs_contracts import VfsJob, VfsJobResult
+from sky_claw.local.mo2.vfs_broker import VfsJobTimeoutError
+from sky_claw.local.mo2.vfs_contracts import JsonValue, VfsJob, VfsJobResult
+
+logger = logging.getLogger(__name__)
 
 #: Nombres del CLI interno de MO2 (implementation detail privado, NO backend
 #: productivo — decisión PR-0). El binario canónico del internal LOOT de MO2
@@ -302,17 +314,29 @@ class BrokeredLootRunner:
             expected_fingerprint=challenge.profile_fingerprint,
             mutation_targets=targets,
         )
-        result = await self._broker.submit(
-            job,
-            challenge=challenge,
-            data_root=self._data_root,
-            mods_dir=self._mods_dir,
-            install_root=self._install_root,
-            virtual_data_dir=self._game_data_dir,
-            overwrite_mod=self._overwrite_mod,
-        )
+        try:
+            result = await self._broker.submit(
+                job,
+                challenge=challenge,
+                data_root=self._data_root,
+                mods_dir=self._mods_dir,
+                install_root=self._install_root,
+                virtual_data_dir=self._game_data_dir,
+                overwrite_mod=self._overwrite_mod,
+            )
+        except VfsJobTimeoutError as exc:
+            # PR-2: este proxy conserva el contrato de LOOTRunner.sort ("Raises
+            # LOOTTimeoutError"). El timeout del broker usa el MISMO valor que el
+            # del runner del worker pero arranca antes (incluye lanzamiento y
+            # attestation), así que en un cuelgue real es el que dispara primero;
+            # sin esta traducción el camino productivo reportaría un error
+            # genérico donde el directo reporta TIMEOUT.
+            raise LOOTTimeoutError(self._timeout) from exc
         self._last_result.set(result)
         tool = result.tool_result
+        failure_kind = tool.get("loot_failure_kind")
+        if failure_kind is not None:
+            return _typed_worker_failure(result, failure_kind, timeout=self._timeout)
         sorted_plugins = _string_list(tool.get("sorted_plugins"))
         warnings = _string_list(tool.get("warnings"))
         errors = _string_list(tool.get("errors"))
@@ -326,6 +350,7 @@ class BrokeredLootRunner:
             missing_patches=_missing_patches(tool.get("missing_patches")),
             raw_stdout=result.stdout,
             raw_stderr=result.stderr,
+            execution_witness=_execution_witness(tool.get("execution_witness")),
         )
 
 
@@ -410,6 +435,42 @@ def build_vfs_loot_runner(
         # anclado por _is_mo2_internal_loot) no se convierte en subprocess.
         # El mensaje del constructor ya lleva el prefijo "F8 guard:".
         return VfsRequiredLootRunner(str(exc))
+
+
+def _typed_worker_failure(result: VfsJobResult, failure_kind: JsonValue, *, timeout: int) -> LOOTResult:
+    """PR-2: re-lanza la excepción de ``LOOTRunner`` que el worker tipó.
+
+    Un ``loot_failure_kind`` desconocido o acompañado de ``success=True`` es un
+    resultado inconsistente: se devuelve como fallo de proceso, nunca se ignora.
+    """
+    if not result.success:
+        if failure_kind == LOOT_FAILURE_KIND_TIMEOUT:
+            raise LOOTTimeoutError(timeout)
+        if failure_kind == LOOT_FAILURE_KIND_PRECONDITION:
+            raise LOOTPreconditionError(result.message or "Precondición headless de LOOT fallida en el worker.")
+    detalle = f"Resultado del worker inconsistente: loot_failure_kind={failure_kind!r} con success={result.success!r}."
+    return LOOTResult(
+        return_code=-1,
+        errors=[detalle],
+        raw_stdout=result.stdout,
+        raw_stderr=result.stderr,
+    )
+
+
+def _execution_witness(value: JsonValue | None) -> LootExecutionWitness | None:
+    """PR-2: valida el testigo con schema CERRADO; ausente o inválido → ``None``.
+
+    ``None`` nunca es atribuible (el servicio falla con
+    EXECUTION_NOT_ATTRIBUTABLE), así que un payload arbitrario jamás se
+    convierte en evidencia: no hay "testigo parcial".
+    """
+    if value is None:
+        return None
+    try:
+        return LootExecutionWitness.from_payload(value)
+    except LootExecutionWitnessPayloadError as exc:
+        logger.warning("execution_witness inválido en el resultado del worker LOOT: %s", exc)
+        return None
 
 
 def _string_list(value: object) -> list[str]:

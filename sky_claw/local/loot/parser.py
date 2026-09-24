@@ -6,12 +6,22 @@ Golden Master hardening:
 - Strict plugin-line regex to avoid false positives.
 - ``success`` flag requires return_code == 0 AND no errors; ``sorted_plugins``
   is optional telemetry, NOT a success postcondition.
+
+PR-2: ``success`` es éxito de PROCESO/PARSER, no el veredicto del sort. Una
+segunda instancia bloqueada por el mutex ``LOOT.Shell.Instance`` sale 0 sin
+imprimir nada (loot/loot 0.29.1 ``src/gui/qt/main.cpp:90-95``) y el parser no
+puede distinguirla de un sort real: eso lo decide
+:func:`sky_claw.local.loot.outcome.classify_loot_sort` con el
+``execution_witness`` que ``LOOTRunner`` adjunta. El parser NO exige stdout no
+vacío: LOOT real completa ``--auto-sort`` con stdout/stderr vacíos.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+
+from sky_claw.local.loot.execution_witness import LootExecutionWitness
 
 
 @dataclass
@@ -25,6 +35,11 @@ class LOOTResult:
     missing_patches: list[dict[str, str]] = field(default_factory=list)
     raw_stdout: str = ""
     raw_stderr: str = ""
+    #: PR-2: testigo de ejecución capturado por ``LOOTRunner`` alrededor del
+    #: proceso y transportado como dato (worker → broker → servicio). ``None``
+    #: = sin testigo (runner sin ``--loot-data-path`` aislado o resultado sin
+    #: schema válido): el servicio NUNCA lo trata como atribuible.
+    execution_witness: LootExecutionWitness | None = None
 
     @property
     def success(self) -> bool:

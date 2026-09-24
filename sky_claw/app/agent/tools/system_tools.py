@@ -133,6 +133,13 @@ async def run_loot_sort(
             "warnings": res.get("warnings", []),
             "errors": res.get("errors", []),
         }
+        # PR-2: el veredicto verificado cruza también esta superficie (hermana de
+        # la GUI, que reenvía el dict del servicio tal cual). Sin esto el agente
+        # LLM no distinguiría CHANGED de NO_CHANGE ni vería la razón tipada de un
+        # FAIL. Ancla: tests/test_loot_verified_outcome.py.
+        for clave in ("outcome", "outcome_detail", "failure_reason"):
+            if clave in res:
+                out[clave] = res[clave]
         if not out["success"] and res.get("logs"):
             out["error"] = res["logs"]
         return json.dumps(out)
