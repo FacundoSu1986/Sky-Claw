@@ -14,11 +14,13 @@ Phase 2 Extensions:
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import logging
 import pathlib
 import re
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -50,6 +52,11 @@ _SAFE_FORM_ID = re.compile(r"^[0-9A-Fa-f]{6}:?[0-9A-Fa-f]{2}$")
 
 # Valid Skyrim record type signatures (exactly 4 uppercase ASCII chars/underscores)
 _SAFE_RECORD_TYPE = re.compile(r"^[A-Z_]{4}$")
+
+# Prefijo ``[HH:MM]``/``[HH:MM:SS]`` que xEdit antepone a líneas de su log.
+# Solo se quita delante de líneas de PROTOCOLO (``PALABRA|...``): los parsers
+# legacy de ``XEditOutputParser`` (``[00:01] Processing: ...``) lo esperan.
+_PROTOCOL_TIMESTAMP_RE = re.compile(r"^\[\d{1,2}:\d{2}(?::\d{2})?\]\s+(?=[A-Z][A-Z_]*\|)")
 
 # Allowlist of xEdit CLI flags that Sky-Claw may pass.
 _ALLOWED_XEDIT_FLAGS: frozenset[str] = frozenset(
@@ -233,16 +240,18 @@ end;
 
 function Process(e: IInterface): integer;
 var
-  formId: string;
+  fid: string;
   recordSig: string;
 begin
-  formId := FormID(e);
+  // 'fid', no 'formId': la local ocultaria a la funcion FormID (Pascal no
+  // distingue mayusculas). FormID devuelve un Cardinal: se compara en hex.
+  fid := IntToHex(FormID(e), 8);
   recordSig := Signature(e);
 
   // Check if this is one of the target FormIDs
-  if (formId = '{form_id}') or (Pos(formId, '{form_id}') > 0) then
+  if (fid = '{form_id}') or (Pos(fid, '{form_id}') > 0) then
   begin
-    AddMessage(Format('Processing record %s (%s)', [formId, recordSig]));
+    AddMessage(Format('Processing record %s (%s)', [fid, recordSig]));
     // Forward the record to target plugin
     // Implementation depends on specific requirements
     Inc(processedCount);
@@ -279,7 +288,8 @@ begin
   mergedPlugin := FileByName(outputPluginName);
   if not Assigned(mergedPlugin) then
   begin
-    mergedPlugin := AddNewFile(outputPluginName);
+    // AddNewFile no recibe nombre (abre un dialogo): AddNewFileName(nombre, esESL).
+    mergedPlugin := AddNewFileName(outputPluginName, False);
     if not Assigned(mergedPlugin) then
     begin
       AddMessage('ERROR: Failed to create output plugin: ' + outputPluginName);
@@ -316,12 +326,12 @@ end;
 function Process(e: IInterface): integer;
 var
   recordType: string;
-  formId: string;
+  fid: string;
   newRecord: IInterface;
 begin
   Result := 0;
   recordType := Signature(e);
-  formId := FormID(e);
+  fid := IntToHex(FormID(e), 8);
 
   // Skip records que viven en el propio plugin de salida (caso re-run).
   if SameText(GetFileName(GetFile(e)), outputPluginName) then
@@ -339,17 +349,19 @@ begin
     // Check if this record type is in our target list
     if Pos(recordType, '{record_types}') > 0 then
     begin
-      AddMessage(Format('Merging %s record: %s', [recordType, formId]));
+      AddMessage(Format('Merging %s record: %s', [recordType, fid]));
 
-      // Copy record to merged plugin
-      newRecord := wbCopyElementToRecord(e, mergedPlugin, False, True);
+      // Masters requeridos primero; wbCopyElementToFile copia el record como
+      // override (wbCopyElementToRecord copia un subelemento dentro de un record).
+      AddRequiredElementMasters(e, mergedPlugin, False);
+      newRecord := wbCopyElementToFile(e, mergedPlugin, False, True);
       if Assigned(newRecord) then
       begin
         Inc(processedCount);
       end
       else
       begin
-        AddMessage('WARNING: Failed to copy record: ' + formId);
+        AddMessage('WARNING: Failed to copy record: ' + fid);
       end;
     end;
   end;
@@ -394,7 +406,7 @@ begin
   outputPlugin := FileByName(outputName);
   if not Assigned(outputPlugin) then
   begin
-    outputPlugin := AddNewFile(outputName);
+    outputPlugin := AddNewFileName(outputName, False);
     if not Assigned(outputPlugin) then
     begin
       AddMessage('ERROR: Failed to create output plugin');
@@ -414,11 +426,11 @@ end;
 function Process(e: IInterface): integer;
 var
   recordSig: string;
-  formId: string;
+  fid: string;
   shouldProcess: Boolean;
 begin
   recordSig := Signature(e);
-  formId := FormID(e);
+  fid := IntToHex(FormID(e), 8);
   shouldProcess := False;
 
   // Check record signatures to process
@@ -438,7 +450,7 @@ begin
     except
       on E: Exception do
       begin
-        AddMessage(Format('ERROR processing record %s: %s', [formId, E.Message]));
+        AddMessage(Format('ERROR processing record %s: %s', [fid, E.Message]));
         Inc(errorCount);
       end;
     end;
@@ -501,7 +513,8 @@ end.
             raise XEditScriptError(f"Invalid FormID format: {form_id}")
 
         script = ScriptGenerator.TEMPLATE_FORWARD_RECORD.format(
-            form_id=ScriptGenerator._escape_pascal_string(form_id),
+            # El script compara contra IntToHex(FormID(e), 8): hex en mayúsculas, sin ':'.
+            form_id=ScriptGenerator._escape_pascal_string(clean_form_id.upper()),
             source_plugin=ScriptGenerator._escape_pascal_string(source),
             target_plugin=ScriptGenerator._escape_pascal_string(target),
         )
@@ -588,7 +601,9 @@ end.
                 if not _SAFE_FORM_ID.match(fid):
                     raise XEditScriptError(f"Invalid FormID format: {fid!r}. Must match {_SAFE_FORM_ID.pattern}")
                 escaped_fid = ScriptGenerator._escape_pascal_string(fid)
-                record_filter_lines.append(f"  if formId = '{escaped_fid}' then shouldProcess := True;")
+                record_filter_lines.append(
+                    f"  if fid = '{escaped_fid.replace(':', '').upper()}' then shouldProcess := True;"
+                )
 
         # Si no hay filtros específicos, procesar todo
         if not record_filter_lines:
@@ -806,8 +821,13 @@ class XEditRunner:
             str(self._xedit_path),
             "-SSE",
             "-autoload",
+            # Sin -autoexit xEdit deja la GUI abierta tras el script y el
+            # subproceso bloquea hasta el timeout (xEdit 4.0.2, "Auto Exit").
+            "-autoexit",
             f"-script:{script_name}",
-            f"-D:{self._game_path}",
+            # -D: es el directorio Data (donde viven los plugins), igual que
+            # quick_auto_clean / launch_interactive — no la raíz del juego.
+            f"-D:{self._data_dir}",
         ]
 
         # Append plugins to load.
@@ -816,7 +836,7 @@ class XEditRunner:
 
         logger.info("Running xEdit (read-only): %s", " ".join(args))
 
-        stdout_text, stderr_text, return_code = await self._execute_process(args, timeout=timeout)
+        stdout_text, stderr_text, return_code = await self._execute_headless(args, timeout=timeout)
 
         if return_code != 0:
             logger.error(
@@ -881,13 +901,16 @@ class XEditRunner:
             "-quickautoclean",
             "-autoexit",
             "-autoload",
-            f"-D:{self._game_path / 'Data'}",
+            f"-D:{self._data_dir}",
             plugin,
         ]
         logger.info("Running xEdit QuickAutoClean: %s", " ".join(args))
 
         start_time = time.monotonic()
-        stdout_text, stderr_text, return_code = await self._execute_process(args)
+        # Mismo motivo que run_script: xEdit es GUI y stdout llega vacío; sin el
+        # log -R: el parser de errores nunca veía nada y el veredicto quedaba
+        # reducido al exit code (review PR #632).
+        stdout_text, stderr_text, return_code = await self._execute_headless(args)
         records, errors, warnings = self._parse_script_output(stdout_text, stderr_text)
 
         if return_code != 0:
@@ -994,8 +1017,8 @@ class XEditRunner:
 
             logger.info("Running xEdit (dynamic script): %s", " ".join(cmd))
 
-            # Ejecutar
-            stdout_text, stderr_text, return_code = await self._execute_process(cmd)
+            # Ejecutar (el protocolo AddMessage se lee del log -R:, no de stdout)
+            stdout_text, stderr_text, return_code = await self._execute_headless(cmd)
 
             execution_time = time.monotonic() - start_time
 
@@ -1094,6 +1117,12 @@ class XEditRunner:
         # Construir flags según estrategia
         flags = ["-IKnowWhatImDoing"]  # Requerido para escritura
 
+        # Snapshot del plugin de salida ANTES de correr: un .esp de una corrida
+        # anterior no prueba que ESTA corrida haya guardado (el template de
+        # forward exige que el destino ya exista — review PR #632).
+        output_path = self._data_dir / patch_plan.output_plugin
+        firma_previa = await asyncio.to_thread(self._firma_de_archivo, output_path)
+
         # Ejecutar script dinámico
         result = await self.run_dynamic_script(
             script_content=script_content,
@@ -1105,6 +1134,26 @@ class XEditRunner:
         # Verificar resultado
         if not result.success:
             error_msg = f"Patch execution failed: {result.errors}"
+            logger.error(error_msg)
+            raise XEditWriteError(error_msg, result=result)
+
+        # Post-check de artefacto: exit 0 sin errores parseados no prueba que
+        # xEdit haya guardado el plugin (mismo criterio que el gate de artefacto
+        # de DynDOLOD/TexGen: binarios GUI sin stdout).
+        firma_posterior = await asyncio.to_thread(self._firma_de_archivo, output_path)
+        if firma_posterior is None:
+            error_msg = (
+                f"xEdit terminó sin errores pero el plugin de salida {patch_plan.output_plugin!r} "
+                f"no existe en {self._data_dir}; el parche no se guardó."
+            )
+            logger.error(error_msg)
+            raise XEditWriteError(error_msg, result=result)
+        if firma_posterior == firma_previa:
+            error_msg = (
+                f"xEdit terminó sin errores pero el plugin de salida {patch_plan.output_plugin!r} "
+                "no fue modificado por esta corrida (mismo mtime y tamaño que antes); "
+                "el parche no se guardó."
+            )
             logger.error(error_msg)
             raise XEditWriteError(error_msg, result=result)
 
@@ -1186,7 +1235,7 @@ class XEditRunner:
             str(self._xedit_path),
             "-SSE",
             "-autoload",
-            f"-D:{self._game_path / 'Data'}",
+            f"-D:{self._data_dir}",
         ]
         cmd.extend(plugins)
         return cmd
@@ -1211,8 +1260,10 @@ class XEditRunner:
             str(self._xedit_path),
             "-SSE",
             "-IKnowWhatImDoing",  # Requerido para operaciones de escritura
+            "-autoload",  # Sin él aparece el diálogo de selección de plugins
+            "-autoexit",  # Sin él la GUI queda abierta hasta el timeout
             f"-script:{script_path}",
-            f"-D:{self._game_path}",
+            f"-D:{self._data_dir}",  # Directorio Data, no la raíz del juego
         ]
 
         # Agregar flags adicionales (solo las permitidas)
@@ -1308,6 +1359,81 @@ class XEditRunner:
         )
 
         return records_processed, errors, warnings
+
+    @property
+    def _data_dir(self) -> pathlib.Path:
+        """Directorio ``Data`` del juego: lo que xEdit espera en ``-D:``."""
+        return self._game_path / "Data"
+
+    @staticmethod
+    def _merge_protocol_output(stdout_text: str, log_text: str) -> str:
+        """Devuelve el texto de protocolo a parsear.
+
+        xEdit es un binario GUI (PE Subsystem 2): ``AddMessage`` va a la
+        pestaña Messages y al log de ``-R:``, no a stdout. Si el log trae algo
+        es la fuente primaria (usar ambos duplicaría líneas si alguna build
+        también escribiera stdout); si no, se cae a stdout. A las líneas de
+        protocolo se les quita el prefijo ``[HH:MM]`` del log.
+        """
+        fuente = log_text if log_text.strip() else stdout_text
+        return "\n".join(_PROTOCOL_TIMESTAMP_RE.sub("", line.rstrip("\r")) for line in fuente.splitlines())
+
+    async def _execute_headless(
+        self,
+        args: list[str],
+        *,
+        timeout: int | None = None,
+    ) -> tuple[str, str, int]:
+        """Ejecuta xEdit con ``-R:<log>`` propio y devuelve el protocolo leído del log.
+
+        El log vive en ``output_dir`` con nombre único por corrida y se borra
+        tras leerlo (mismo criterio que el ``.pas`` temporal, U-12).
+        """
+        log_path = self._output_dir / f"xedit_run_{uuid.uuid4().hex}.log"
+        try:
+            stdout_text, stderr_text, return_code = await self._execute_process(
+                [*args, f"-R:{log_path}"], timeout=timeout
+            )
+            log_text = await asyncio.to_thread(self._read_log, log_path)
+        finally:
+            with contextlib.suppress(OSError):
+                log_path.unlink(missing_ok=True)
+        return self._merge_protocol_output(stdout_text, log_text), stderr_text, return_code
+
+    @staticmethod
+    def _firma_de_archivo(path: pathlib.Path) -> tuple[int, int] | None:
+        """``(mtime_ns, tamaño)`` del archivo, o ``None`` si no existe."""
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    @staticmethod
+    def _read_log(log_path: pathlib.Path) -> str:
+        """Lee el log de xEdit; ausente = cadena vacía (el caller decide si es fallo).
+
+        Encoding: se prueba UTF-8 estricto (con o sin BOM; el BOM se descarta
+        para no romper el ``startswith`` de los parsers). Si no es UTF-8 válido
+        se asume ANSI: ``TStrings.SaveToFile`` de Delphi sin encoding explícito
+        escribe en la página de códigos del sistema. En Windows se usa ``mbcs``
+        (la página ANSI activa, p. ej. cp1251 en un sistema ruso); fuera de
+        Windows, cp1252. SIN VERIFICAR en rig cuál usa SSEEdit de verdad.
+        """
+        try:
+            datos = log_path.read_bytes()
+        except FileNotFoundError:
+            return ""
+        try:
+            return datos.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            pass
+        try:
+            codecs.lookup("mbcs")
+            ansi = "mbcs"
+        except LookupError:
+            ansi = "cp1252"
+        return datos.decode(ansi, errors="replace")
 
     async def _execute_process(
         self,

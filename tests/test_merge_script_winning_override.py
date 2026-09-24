@@ -38,15 +38,17 @@ def _cuerpo_process(script: str) -> str:
 def _verificar_guard_de_ganador(script: str) -> None:
     """El guard debe estar DENTRO de Process y antes de la copia del record.
 
-    La copia puede ser directa (``wbCopyElementToRecord``, template) o vía
-    helper (``MergeRecord(e)``, script estático).
+    La copia puede ser directa (``wbCopyElementToFile``, template) o vía
+    helper (``MergeRecord(e)``, script estático). ``wbCopyElementToRecord`` era
+    la API equivocada (copia un subelemento dentro de un record) — ver
+    ``tests/test_xedit_headless_contract.py``.
     """
     assert "function WinnerExcludingOutput" in script
     cuerpo = _cuerpo_process(script)
     assert _SKIP_OUTPUT in cuerpo
     assert _GUARD_GANADOR in cuerpo
 
-    indices_copia = [cuerpo.find("MergeRecord(e)"), cuerpo.find("wbCopyElementToRecord")]
+    indices_copia = [cuerpo.find("MergeRecord(e)"), cuerpo.find("wbCopyElementToFile")]
     primera_copia = min(i for i in indices_copia if i != -1)
     assert cuerpo.index(_GUARD_GANADOR) < primera_copia
 
