@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **xEdit headless: el borde con SSEEdit no funcionaba en un rig real.**
+  `run_script` y el comando de escritura no pasaban `-autoexit` (xEdit quedaba
+  abierto hasta el timeout), apuntaban `-D:` a la raíz del juego en vez de a
+  `Data` y el de escritura no pasaba `-autoload`. El protocolo `AddMessage`
+  (`CONFLICT|`/`SUMMARY|`/`DUMP_*`) ahora se lee del log `-R:<archivo>` (xEdit
+  es un binario GUI sin stdout) y `ConflictAnalyzer.analyze` / el tool
+  read-only fallan cerrado sin `SUMMARY` consistente en vez de reportar
+  "0 conflictos". `execute_patch` verifica que el plugin de salida exista en
+  `Data` tras exit 0. Scripts Pascal: `AddNewFileName` en lugar de
+  `AddNewFile(nombre)`, `wbCopyElementToFile` + `AddRequiredElementMasters` en
+  lugar de `wbCopyElementToRecord`, sin locales que oculten funciones de xEdit
+  (`formID := FormID(e)`), el merge estático ya no toma el nombre de salida de
+  `ParamStr` y `list_all_conflicts.pas` descarta cadenas ITM/benignas
+  (`ConflictAllForMainRecord < caOverride`). Ancla:
+  `tests/test_xedit_headless_contract.py`. QuickAutoClean queda fuera (exención
+  declarada en el ancla). Pendiente: smoke en rig real con SSEEdit.
+
 ### Added
 - **`sky_claw/local/AGENTS.md` — SOP canónico del pipeline de modding de Skyrim para agentes IA** (orden cronológico de stages xEdit → CAO → BodySlide → Pandora → LOOT → Wrye Bash → Synthesis → No Grass In Objects → TexGen/DynDOLOD, reglas por tool, conflict resolution protocol, critical failure modes, code-editing rules para agentes). Cubre los tres subsistemas gobernados: `sky_claw/local/tools/`, `sky_claw/local/xedit/` y `sky_claw/app/orchestrator/tool_strategies/`. Acompañado de **`sky_claw/app/orchestrator/AGENTS.md`** (pointer que redirige a la SOP para que los agentes que editen el dispatcher la descubran). Referenciados desde el `AGENTS.md` raíz. *Audiencia: cualquier LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) que edite código del pipeline.*
 
