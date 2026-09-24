@@ -144,8 +144,11 @@ que rompían el render sin que ningún gate lo viera (el smoke visual los mostr�
   proveedor en ámbar. Receta: todo `ui.button`/`ui.toggle` pide `sc-tema`
   (color sin clase en Quasar) y la receta del tema gana sin pelear. Ancla:
   `test_botones_y_toggles_quasar_piden_el_color_del_tema` (censo AST de todo el
-  paquete GUI). El mismo mecanismo anula hoy el foco visible de los
-  `ui.input` (`.q-field__native:focus-visible`): registrado para PR aparte.
+  paquete GUI). El mismo mecanismo anulaba el foco visible de los
+  `ui.input` (`.q-field__native:focus-visible`); lo cierra #630 moviendo esa
+  pisa a `@layer theme` (la capa más temprana, que para `!important` le gana a
+  `quasar_importants`), con un ancla que cruza toda pisa `!important` sin capa
+  contra el reset real de Quasar del paquete nicegui instalado.
 
 En el mismo PR: shell de alto fijo (sidebar y Vitalidad siempre visibles,
 scroll interno en `.sc-scroll`, sin el marco de 16px de `.nicegui-content`;
