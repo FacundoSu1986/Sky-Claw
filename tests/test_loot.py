@@ -471,10 +471,13 @@ class TestLOOTRunner:
         ):
             await runner.sort(update_masterlist=True)
 
+        # PR-0: el config usa el id INTERNO por defecto ("SkyrimSE"); el argv
+        # lleva el identificador CLI exacto de LOOT 0.29.x ("Skyrim Special
+        # Edition") — la traducción vive en la frontera única de cli.py.
         assert captured["args"] == [
             str(config.loot_exe),
             "--game",
-            "SkyrimSE",
+            "Skyrim Special Edition",
             "--game-path",
             str(config.game_path),
             "--auto-sort",

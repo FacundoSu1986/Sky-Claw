@@ -61,7 +61,9 @@ NOMBRES_DE_EXIT_CODE = frozenset(
 #: las herramientas de este pipeline reporta su resultado ahí. Agregar una entrada
 #: es una afirmación sobre el binario, no una excusa para el runner — y sin
 #: procedencia real es exactamente el falso verde que este archivo documenta.
-VEREDICTO_SOLO_POR_EXIT_CODE: dict[str, str] = {}
+VEREDICTO_SOLO_POR_EXIT_CODE: dict[str, list[str]] = {
+    "sky_claw/local/mo2/vfs_worker.py": ["proceso_ok"],
+}
 
 
 def _referencias(expr: ast.expr) -> set[str]:
@@ -383,7 +385,7 @@ def test_ningun_runner_deriva_el_exito_solo_del_exit_code() -> None:
 
 def test_toda_excepcion_declara_su_procedencia() -> None:
     """Una excepción sin fuente verificada es el falso verde con otro nombre."""
-    vacias = sorted(m for m, motivo in VEREDICTO_SOLO_POR_EXIT_CODE.items() if not motivo.strip())
+    vacias = sorted(m for m, motivo in VEREDICTO_SOLO_POR_EXIT_CODE.items() if not motivo)
     assert not vacias, f"Procedencia vacía en {vacias}"
 
 

@@ -27,7 +27,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, Protocol
 
 from sky_claw.app.security.links import (
     exigir_contencion_fisica,
@@ -1005,6 +1005,119 @@ class ReadinessMode(enum.Enum):
     DISABLED_FOR_TEST = "disabled_for_test"
 
 
+class DynDOLODProcess(Protocol):
+    """Proceso mínimo que consume el lifecycle de DynDOLOD.
+
+    La identidad del proceso (PID/returncode) y el teardown son abstractos. El
+    runner no distingue si el PID nació en ``create_subprocess_exec`` o dentro
+    del worker USVFS; sólo ejecuta readiness, espera y deadline sobre este puerto.
+    ``stdout``/``stderr`` son opcionales: el backend brokered ya capturó esos
+    streams de forma bounded dentro del worker.
+    """
+
+    @property
+    def pid(self) -> int: ...
+
+    @property
+    def returncode(self) -> int | None: ...
+
+    @property
+    def stdout(self) -> Any | None: ...
+
+    @property
+    def stderr(self) -> Any | None: ...
+
+    def assign_job(self) -> int | None: ...
+
+    def kill(self) -> None: ...
+
+    async def wait(self) -> int: ...
+
+    async def terminate(self) -> None: ...
+
+    async def captured_output(self) -> tuple[str, str] | None: ...
+
+
+class DynDOLODSpawnStrategy(Protocol):
+    """Única frontera de spawn; el resto del runner es backend-agnóstico."""
+
+    async def spawn(
+        self,
+        *,
+        executable: pathlib.Path,
+        args: list[str],
+        tool_name: str,
+        cwd: pathlib.Path,
+        timeout: float,
+    ) -> DynDOLODProcess: ...
+
+
+class _StandaloneDynDOLODProcess:
+    """Adaptador del subprocess histórico al puerto de DynDOLODProcess."""
+
+    def __init__(self, process: asyncio.subprocess.Process) -> None:
+        self._process = process
+
+    @property
+    def backend_managed(self) -> bool:
+        return False
+
+    @property
+    def pid(self) -> int:
+        return self._process.pid
+
+    @property
+    def returncode(self) -> int | None:
+        return self._process.returncode
+
+    @property
+    def stdout(self) -> Any | None:
+        return self._process.stdout
+
+    @property
+    def stderr(self) -> Any | None:
+        return self._process.stderr
+
+    def assign_job(self) -> int | None:
+        return assign_kill_on_close_job(self.pid)
+
+    def kill(self) -> None:
+        self._process.kill()
+
+    async def wait(self) -> int:
+        return await self._process.wait()
+
+    async def terminate(self) -> None:
+        await kill_and_reap(self._process)
+
+    async def captured_output(self) -> tuple[str, str] | None:
+        return None
+
+
+class StandaloneDynDOLODSpawnStrategy:
+    """Backend local: conserva cwd, CREATE_NO_WINDOW y ``create_subprocess_exec``."""
+
+    async def spawn(
+        self,
+        *,
+        executable: pathlib.Path,
+        args: list[str],
+        tool_name: str,
+        cwd: pathlib.Path,
+        timeout: float,
+    ) -> DynDOLODProcess:
+        del tool_name, timeout
+        kwargs: dict[str, Any] = {
+            "cwd": cwd,
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+        }
+        if sys.platform == "win32":
+            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        process = await asyncio.create_subprocess_exec(str(executable), *args, **kwargs)
+        return _StandaloneDynDOLODProcess(process)
+
+
 class DynDOLODRunner:
     """
     Runner asíncrono para TexGen y DynDOLOD con empaquetado automático para MO2.
@@ -1060,6 +1173,7 @@ class DynDOLODRunner:
         config: DynDOLODConfig,
         *,
         readiness: CapacidadDeReadinessUIA | ReadinessMode,
+        spawn_strategy: DynDOLODSpawnStrategy | None = None,
     ) -> None:
         """
         Inicializa el runner de DynDOLOD.
@@ -1085,12 +1199,17 @@ class DynDOLODRunner:
                 f"root o ReadinessMode.DISABLED_FOR_TEST (tests/rig); llegó {type(readiness).__name__}"
             )
         self._readiness = readiness
+        # La selección de backend ocurre una sola vez en el seam de composición.
+        # Un broker configurado no puede caer silenciosamente a este default:
+        # callers brokered inyectan su strategy explícita.
+        self._spawn_strategy = spawn_strategy or StandaloneDynDOLODSpawnStrategy()
         logger.info(
-            "DynDOLODRunner inicializado: dyndolod_exe=%s, texgen_exe=%s, timeout=%ds, readiness_uia=%s",
+            "DynDOLODRunner inicializado: dyndolod_exe=%s, texgen_exe=%s, timeout=%ds, readiness_uia=%s, spawn=%s",
             config.dyndolod_exe,
             config.texgen_exe or "N/A",
             config.timeout_seconds,
             "cableada" if isinstance(readiness, CapacidadDeReadinessUIA) else readiness.value,
+            type(self._spawn_strategy).__name__,
         )
 
     def _resultado_no_configurado(self, tool_name: str) -> ToolExecutionResult:
@@ -1402,11 +1521,8 @@ class DynDOLODRunner:
         effective_timeout = timeout if timeout is not None else self._config.timeout_seconds
         heartbeat_interval = self._config.heartbeat_interval
 
-        # Windows: CREATE_NO_WINDOW to avoid console popups.
+        # La strategy conserva el cwd y decide la plataforma de spawn.
         process_cwd = cwd if cwd is not None else pathlib.Path.cwd()
-        kwargs: dict[str, Any] = {"cwd": process_cwd}
-        if sys.platform == "win32":
-            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
         # La línea real, no la lista: es la evidencia que faltaba cuando el argv
         # llegaba mangled (ver _linea_de_comando).
@@ -1437,18 +1553,32 @@ class DynDOLODRunner:
         # hilo, como el resto de las sondas.
         await asyncio.to_thread(self._exigir_root_born_empty, tool_name)
 
+        # El reloj nace antes de pedir el backend: attestation, apertura de la
+        # sesión y spawn local consumen el mismo presupuesto que readiness/HITL.
         start_time = time.monotonic()
+        deadline = start_time + float(effective_timeout)
+
+        def remaining_budget() -> float:
+            return max(0.0, deadline - time.monotonic())
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                str(executable),
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **kwargs,
+            presupuesto_spawn = remaining_budget()
+            if presupuesto_spawn <= 0:
+                raise TimeoutError()
+            proc = await asyncio.wait_for(
+                self._spawn_strategy.spawn(
+                    executable=executable,
+                    args=args,
+                    tool_name=tool_name,
+                    cwd=process_cwd,
+                    timeout=float(presupuesto_spawn),
+                ),
+                timeout=presupuesto_spawn,
             )
         except FileNotFoundError:
             raise DynDOLODNotFoundError(executable) from None
+        except TimeoutError:
+            raise DynDOLODTimeoutError(effective_timeout, tool_name) from None
         except OSError as e:
             raise DynDOLODExecutionError(
                 f"Failed to start {tool_name}: {e}",
@@ -1456,28 +1586,29 @@ class DynDOLODRunner:
                 stderr=str(e),
             ) from e
 
-        # Un solo presupuesto whole-process desde que el subprocess YA existe.
-        # El readiness (gates + HITL + aviso) consume este mismo deadline;
-        # ``proc.wait()`` recibe únicamente el resto. No se reinicia el reloj.
-        deadline = time.monotonic() + float(effective_timeout)
-
-        def remaining_budget() -> float:
-            return max(0.0, deadline - time.monotonic())
+        # Un solo presupuesto whole-process desde antes del spawn. El readiness
+        # (gates + HITL + aviso) consume el resto; ``proc.wait()`` nunca reinicia
+        # el reloj.
 
         # U-07/U-02: meter el proceso (y sus descendientes) en un Job Object
         # kill-on-close. Cerrarlo (close_job, en TODA salida) aniquila cualquier
         # nieto que sobreviva —incluso reparentado tras la salida del padre—, el
         # hueco que kill_and_reap no cubre en la salida normal. No-op fuera de Windows.
-        job = assign_kill_on_close_job(proc.pid)
+        # Sólo el backend standalone reclama un Job Object en el daemon. En
+        # brokered, ``assign_job()`` devuelve None: el worker/bridge es dueño del
+        # Job Object que contiene el tool y sus descendientes.
+        job = proc.assign_job()
 
         stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
 
         async def _drain(
-            stream: asyncio.StreamReader,
+            stream: asyncio.StreamReader | None,
             target: list[bytes],
         ) -> None:
-            """Read stream until EOF, collecting chunks."""
+            """Drena standalone; brokered no abre un segundo stream IPC."""
+            if stream is None:
+                return
             while True:
                 chunk = await stream.read(4096)
                 if not chunk:
@@ -1624,6 +1755,11 @@ class DynDOLODRunner:
         duration = time.monotonic() - start_time
         stdout_text = b"".join(stdout_chunks).decode(errors="replace")
         stderr_text = b"".join(stderr_chunks).decode(errors="replace")
+        # El backend brokered entrega sólo la captura terminal bounded del
+        # worker; nunca se reconstruye streaming durante UIA/HITL.
+        terminal_output = await proc.captured_output()
+        if terminal_output is not None:
+            stdout_text, stderr_text = terminal_output
 
         logger.info(
             "%s finalizado: return_code=%d, duration=%.1fs",
@@ -1696,7 +1832,7 @@ class DynDOLODRunner:
         *,
         tool_name: str,
         executable: pathlib.Path,
-        proc: asyncio.subprocess.Process,
+        proc: DynDOLODProcess,
         politica: PoliticaDeReintento,
         timeout_segundos: float,
         intervalo_segundos: float,
@@ -1751,7 +1887,7 @@ class DynDOLODRunner:
         *,
         tool_name: str,
         executable: pathlib.Path,
-        proc: asyncio.subprocess.Process,
+        proc: DynDOLODProcess,
     ) -> None:
         """Initial gate → confirmación humana → final gate, sobre la MISMA instancia.
 
@@ -1847,7 +1983,7 @@ class DynDOLODRunner:
         *,
         tool_name: str,
         executable: pathlib.Path,
-        proc: asyncio.subprocess.Process,
+        proc: DynDOLODProcess,
         observed_output: str | None = None,
     ) -> ResultadoConfirmacion | None:
         """Espera la confirmación humana, en carrera con la muerte del proceso.
@@ -1919,7 +2055,7 @@ class DynDOLODRunner:
             return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
         return resultado
 
-    async def _vigilar_proceso(self, proc: asyncio.subprocess.Process) -> None:
+    async def _vigilar_proceso(self, proc: DynDOLODProcess) -> None:
         """Devuelve en cuanto el proceso muere, para cortar sin esperar el deadline."""
         capacidad = self._capacidad_de_readiness()
         while proc.returncode is None:

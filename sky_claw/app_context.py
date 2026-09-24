@@ -1660,6 +1660,11 @@ class AppContext:
                 gateway=self.network.gateway,
                 path_validator=validator,
                 lock_manager=tools_installer_lock_manager,
+                # Factory LAZY (no la instancia): la API key de Nexus puede configurarse
+                # o cambiar después del boot, y con una referencia congelada el
+                # autoinstall de SKSE vía Nexus quedaría cortado hasta el próximo
+                # arranque.
+                nexus_downloader_factory=lambda: self.network.downloader,
             )
 
             loot_exe = self._args.loot_exe
