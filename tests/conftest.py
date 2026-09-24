@@ -12,6 +12,7 @@ Current gate: 60% (raised from 55% on 2026-05-28, P0.4). Actual: ~65%.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
 import pathlib
@@ -316,11 +317,20 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # n
 
     def _force_remove(func: Callable[[str], None], path: str, _exc: object) -> None:
         """onerror handler: chmod read-only flag then retry the original operation."""
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(path, stat.S_IWRITE)
-            func(path)
-        except OSError:
-            pass  # best-effort — leave orphan rather than crash session teardown
+            # func may be os.open (requires flags) when rmtree fails on PermissionError
+            # for a directory listing. Fall back to unlink/rmdir based on path type.
+            try:
+                func(path)
+            except TypeError:
+                # os.open case: try unlink, then rmdir
+                with contextlib.suppress(OSError):
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        with contextlib.suppress(OSError):
+                            os.rmdir(path)
 
     shutil.rmtree(basetemp, onerror=_force_remove)
 

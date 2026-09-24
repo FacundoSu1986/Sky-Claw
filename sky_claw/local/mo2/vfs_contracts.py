@@ -18,7 +18,15 @@ from sky_claw.app.security.path_validator import PathViolationError, assert_safe
 
 VFS_PROTOCOL_VERSION = 1
 VFS_MANIFEST_PROTOCOL_VERSION = 2
-ALLOWED_VFS_TOOL_IDS = frozenset({"health", "loot_sort"})
+# Identificadores de herramienta cerrados. Añadir otro exige un handler
+# específico, una familia de ejecutable y pruebas adversariales: el broker no
+# es una puerta para ejecutar procesos arbitrarios.
+ALLOWED_VFS_TOOL_IDS = frozenset({"health", "loot_sort", "texgen", "dyndolod"})
+ALLOWED_VFS_SESSION_TOOL_IDS = frozenset({"texgen", "dyndolod"})
+VFS_TOOL_EXECUTABLE_NAMES = {
+    "texgen": "texgenx64.exe",
+    "dyndolod": "dyndolodx64.exe",
+}
 ALLOWED_ROLLBACK_STATES = frozenset({"not_started", "not_required", "pending", "completed", "failed"})
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -82,6 +90,38 @@ def _mapping(value: object, *, field: str) -> dict[str, JsonValue]:
     if not isinstance(parsed, dict):
         raise VfsProtocolError(f"{field} debe ser un objeto JSON")
     return parsed
+
+
+def _validate_session_tool_payload(tool_id: str, payload: dict[str, JsonValue]) -> None:
+    """Valida la forma común, cerrada y sin shell de un tool GUI brokered.
+
+    La comprobación de existencia, symlink y pertenencia a las raíces se repite
+    dentro del worker, después de leer el manifiesto firmado. Esta primera capa
+    evita que un payload mal formado cruce el IPC y, sobre todo, congela que los
+    handlers de sesión sólo aceptan ``executable``, ``argv`` y ``cwd``.
+    """
+    if tool_id not in ALLOWED_VFS_SESSION_TOOL_IDS:
+        return
+    expected_name = VFS_TOOL_EXECUTABLE_NAMES[tool_id]
+    allowed = {"executable", "argv", "cwd"}
+    if set(payload) != allowed:
+        raise VfsProtocolError(f"payload de {tool_id} debe contener exactamente {sorted(allowed)}")
+    executable = payload["executable"]
+    if not isinstance(executable, str) or not executable:
+        raise VfsProtocolError(f"payload.{tool_id}.executable debe ser string")
+    executable_path = pathlib.Path(executable)
+    if not executable_path.is_absolute():
+        raise VfsProtocolError("payload.executable debe ser una ruta absoluta")
+    if executable_path.name.casefold() != expected_name:
+        raise VfsProtocolError(f"payload.executable no corresponde a {tool_id}: se esperaba {expected_name}")
+    argv = payload["argv"]
+    if not isinstance(argv, list) or any(type(item) is not str for item in argv):
+        raise VfsProtocolError("payload.argv debe ser una lista de strings")
+    cwd = payload["cwd"]
+    if not isinstance(cwd, str) or not cwd:
+        raise VfsProtocolError("payload.cwd debe ser un string no vacío")
+    if not pathlib.Path(cwd).is_absolute():
+        raise VfsProtocolError("payload.cwd debe ser una ruta absoluta")
 
 
 def _absolute_paths(value: object, *, field: str) -> tuple[pathlib.Path, ...]:
@@ -175,13 +215,15 @@ class VfsJob:
         timeout = float(timeout_seconds)
         if not math.isfinite(timeout) or timeout <= 0 or timeout > 86_400:
             raise VfsProtocolError("timeout_seconds debe estar entre 0 y 86400")
+        parsed_payload = _mapping(payload, field="payload")
+        _validate_session_tool_payload(tool, parsed_payload)
         return cls(
             protocol_version=version,
             job_id=job,
             instance_id=instance,
             profile=profile_name,
             tool_id=tool,
-            payload=_mapping(payload, field="payload"),
+            payload=parsed_payload,
             timeout_seconds=timeout,
             expected_fingerprint=_require_fingerprint(expected_fingerprint),
             mutation_targets=_absolute_paths(mutation_targets, field="mutation_targets"),

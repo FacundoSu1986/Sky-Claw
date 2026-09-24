@@ -336,6 +336,10 @@ def _construir_raices_sandbox(
     las raíces no importa funcionalmente (el validador hace contención),
     pero se mantiene estable para que los logs y los tests sean
     determinísticos.
+
+    PR-1: incluye la base del LOOT data root propiedad de Sky-Claw
+    (``~/.sky_claw/state/loot``) para que el PathValidator permita el
+    ``--loot-data-path`` aislado.
     """
     roots: list[pathlib.Path] = [mo2_root, pathlib.Path(tempfile.gettempdir()) / "sky_claw"]
     if install_dir and install_dir not in roots:
@@ -348,6 +352,21 @@ def _construir_raices_sandbox(
     for cand in _mods_candidatos_para_sandbox(mo2_root):
         if cand not in roots:
             roots.append(cand)
+    # PR-1: LOOT data root propiedad de Sky-Claw
+    try:
+        loot_base = Config.DEFAULT_CONFIG_DIR / "state" / "loot"
+        if loot_base not in roots:
+            roots.append(loot_base)
+        # También incluir el config dir padre y runtime_state_dir para
+        # permitir cualquier subruta bajo ~/.sky_claw/state/loot/<instance>/<profile>
+        state_dir = Config.DEFAULT_CONFIG_DIR / "state"
+        if state_dir not in roots:
+            roots.append(state_dir)
+        cfg_dir = Config.DEFAULT_CONFIG_DIR
+        if cfg_dir not in roots:
+            roots.append(cfg_dir)
+    except Exception:
+        pass
     return roots
 
 
@@ -1660,6 +1679,11 @@ class AppContext:
                 gateway=self.network.gateway,
                 path_validator=validator,
                 lock_manager=tools_installer_lock_manager,
+                # Factory LAZY (no la instancia): la API key de Nexus puede configurarse
+                # o cambiar después del boot, y con una referencia congelada el
+                # autoinstall de SKSE vía Nexus quedaría cortado hasta el próximo
+                # arranque.
+                nexus_downloader_factory=lambda: self.network.downloader,
             )
 
             loot_exe = self._args.loot_exe
@@ -1724,6 +1748,26 @@ class AppContext:
             self.stage9_coordination = construir_coordinacion_de_etapa9(lifecycle=self.lifecycle.manager)
             self._push_startup_cleanup(self.stage9_coordination.close)
 
+            # PR-1: resolver LOOT data root propiedad de Sky-Claw (persistente por instancia+perfil)
+            loot_data_path_resolved: pathlib.Path | None = None
+            try:
+                from sky_claw.local.loot.data_root import ensure_loot_data_path_exists, resolve_loot_data_path
+
+                if broker is not None and configured_game is not None and loot_exe is not None:
+                    loot_data_path_resolved = resolve_loot_data_path(
+                        instance_id=instance_id,
+                        profile=active_profile,
+                        base_dir=None,
+                        game_path=configured_game,
+                        loot_exe=loot_exe,
+                        mods_dir=mo2.mods_dir,
+                        data_root=mo2.data_root,
+                    )
+                    ensure_loot_data_path_exists(loot_data_path_resolved)
+            except Exception as exc:
+                logger.warning("PR-1: no se pudo resolver loot_data_path: %s", exc)
+                loot_data_path_resolved = None
+
             vfs_loot_runner = build_vfs_loot_runner(
                 broker=broker,
                 instance_id=instance_id if broker is not None else None,
@@ -1733,6 +1777,7 @@ class AppContext:
                 game_path=configured_game,
                 loot_exe=loot_exe,
                 profile=active_profile,
+                loot_data_path=loot_data_path_resolved,
             )
             self.vfs_broker = broker
             self.vfs_instance_id = instance_id

@@ -19,10 +19,19 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeAlias
 
 from sky_claw.app.security.path_validator import PathValidator
-from sky_claw.local.loot.cli import LOOTConfig, LOOTNotFoundError, LOOTRunner, LOOTTimeoutError
+from sky_claw.local.loot.cli import (
+    DEFAULT_LOOT_INTERNAL_GAME_ID,
+    LOOT_CLI_GAME_IDENTIFIERS,
+    LOOTConfig,
+    LOOTNotFoundError,
+    LOOTRunner,
+    LOOTTimeoutError,
+)
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, verify_vfs_attestation
 from sky_claw.local.mo2.vfs_contracts import (
+    ALLOWED_VFS_SESSION_TOOL_IDS,
     VFS_PROTOCOL_VERSION,
+    VFS_TOOL_EXECUTABLE_NAMES,
     JsonValue,
     VfsJobResult,
     VfsSessionEvent,
@@ -342,20 +351,57 @@ def _payload_string(payload: Mapping[str, JsonValue], field_name: str) -> str:
 
 async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     payload = manifest.job.payload
-    allowed = {"loot_exe", "game", "update_masterlist"}
+    allowed = {"loot_exe", "game", "update_masterlist", "loot_data_path"}
     unexpected = set(payload) - allowed
     if unexpected:
         raise ValueError(f"payload de loot_sort contiene campos no permitidos: {sorted(unexpected)}")
     loot_exe = pathlib.Path(_payload_string(payload, "loot_exe"))
     if not loot_exe.is_absolute():
         raise ValueError("payload.loot_exe debe ser una ruta absoluta")
-    game = payload.get("game", "SkyrimSE")
-    if not isinstance(game, str) or game not in {"SkyrimSE", "SkyrimVR"}:
+    # Allowlist con la MISMA fuente que el broker y el runner (PR-0): los ids
+    # INTERNOS del dominio. El string de CLI ("Skyrim Special Edition") no viaja
+    # por IPC y no se hardcodea en tres lugares: la traducción al dialecto de
+    # `--game` la hace una sola vez el runner (to_loot_cli_game_id). Si broker y
+    # worker divergieran de esta frontera, el test T3 (
+    # tests/test_loot_game_identifier_contract.py) la caza.
+    game = payload.get("game", DEFAULT_LOOT_INTERNAL_GAME_ID)
+    if not isinstance(game, str) or game not in LOOT_CLI_GAME_IDENTIFIERS:
         raise ValueError("payload.game no está permitido")
     update_masterlist = payload.get("update_masterlist", False)
     if type(update_masterlist) is not bool:
         raise ValueError("payload.update_masterlist debe ser bool")
+    # PR-1: loot_data_path es obligatorio en productivo, absoluto, no symlink
+    # La decisión del PATH se toma en el daemon/control plane, NO dentro del
+    # worker mediante descubrimiento ambiental implícito. El worker recibe ruta
+    # explícita ya resuelta, la valida de nuevo y la pasa al runner.
+    loot_data_path_raw = payload.get("loot_data_path")
+    if loot_data_path_raw is None:
+        raise ValueError(
+            "payload.loot_data_path ausente — PR-1 fail-closed: el backend "
+            "productivo NUNCA ejecuta LOOT.exe sin --loot-data-path explícito"
+        )
+    if not isinstance(loot_data_path_raw, str) or not loot_data_path_raw:
+        raise ValueError("payload.loot_data_path debe ser un string no vacío")
+    loot_data_path = pathlib.Path(loot_data_path_raw)
+    if not loot_data_path.is_absolute():
+        raise ValueError("payload.loot_data_path debe ser una ruta absoluta")
+    if loot_data_path.is_symlink():
+        raise ValueError("payload.loot_data_path no puede ser un symlink")
+    # Validar que no sea el default GUI LOOT (%LOCALAPPDATA%\LOOT)
+    from sky_claw.local.loot.data_root import get_default_loot_gui_data_path
+
+    resolved_loot_data = loot_data_path.resolve(strict=False)
+    default_gui = get_default_loot_gui_data_path()
+    if default_gui is not None:
+        try:
+            if resolved_loot_data == default_gui.resolve(strict=False):
+                raise ValueError("payload.loot_data_path no puede ser el default GUI LOOT")
+        except ValueError:
+            raise
+        except Exception:
+            pass
     game_path = manifest.virtual_data_dir.parent.resolve()
+    # El validator incluye también el loot_data_path base para permitirlo
     validator = PathValidator(
         roots=[
             loot_exe.parent.resolve(),
@@ -363,6 +409,8 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             manifest.data_root,
             manifest.mods_dir,
             manifest.install_root,
+            resolved_loot_data.parent.resolve(strict=False),
+            resolved_loot_data.resolve(strict=False),
         ]
     )
     runner = LOOTRunner(
@@ -371,6 +419,7 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             game_path=game_path,
             game=game,
             timeout=max(1, int(manifest.job.timeout_seconds)),
+            loot_data_path=resolved_loot_data,
         ),
         path_validator=validator,
     )
@@ -392,6 +441,123 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             "missing_patches": [dict(item) for item in result.missing_patches],
         },
     )
+
+
+def _session_payload_path(payload: Mapping[str, JsonValue], field: str) -> pathlib.Path:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"payload.{field} debe ser un string no vacío")
+    path = pathlib.Path(value)
+    if not path.is_absolute():
+        raise ValueError(f"payload.{field} debe ser una ruta absoluta")
+    # Revisar el objeto textual antes de resolver evita que un symlink quede
+    # convertido en un archivo aparentemente normal y eluda la policy.
+    if path.is_symlink():
+        raise ValueError(f"payload.{field} no puede ser un symlink")
+    return path.resolve()
+
+
+def _session_argv(payload: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    raw = payload.get("argv")
+    if not isinstance(raw, list):
+        raise ValueError("payload.argv debe ser una lista de strings")
+    argv: list[str] = []
+    for item in raw:
+        if type(item) is not str:
+            raise ValueError("payload.argv debe ser una lista de strings")
+        argv.append(item)
+    # No se filtran metacaracteres: create_subprocess_exec recibe cada elemento
+    # separado y, por diseño, un carácter especial sigue siendo un argumento.
+    return tuple(argv)
+
+
+def _switch_path(argv: tuple[str, ...], prefix: str) -> pathlib.Path:
+    values = [item[len(prefix) :] for item in argv if item.casefold().startswith(prefix.casefold())]
+    if len(values) != 1 or not values[0]:
+        raise ValueError(f"argv debe contener exactamente un {prefix}...")
+    return pathlib.Path(values[0].rstrip("\\/")).resolve()
+
+
+def _validate_session_launch(manifest: VfsWorkerManifest) -> tuple[pathlib.Path, tuple[str, ...], pathlib.Path]:
+    """Revalida el contrato del GUI tool dentro del worker bajo USVFS."""
+    job = manifest.job
+    if job.tool_id not in ALLOWED_VFS_SESSION_TOOL_IDS:
+        raise ValueError(f"tool_id de sesión no permitido: {job.tool_id!r}")
+    payload = job.payload
+    executable = _session_payload_path(payload, "executable")
+    expected_name = VFS_TOOL_EXECUTABLE_NAMES[job.tool_id]
+    if executable.name.casefold() != expected_name:
+        raise ValueError(f"executable incompatible con {job.tool_id}: {executable.name}")
+    if executable.is_symlink() or not executable.is_file():
+        raise ValueError("el executable brokered debe ser un archivo real y no un symlink")
+    argv = _session_argv(payload)
+    game_modes = [item.casefold() for item in argv if item.casefold() in {"-sse", "-tes5vr"}]
+    if len(game_modes) != 1:
+        raise ValueError("argv debe declarar exactamente un game mode (-sse o -tes5vr)")
+    for prefix in ("-d:", "-m:", "-p:", "-t:", "-o:"):
+        _switch_path(argv, prefix)
+    data_arg = _switch_path(argv, "-d:")
+    if data_arg != manifest.virtual_data_dir.resolve():
+        raise ValueError("argv.-d no coincide con virtual_data_dir del job")
+    profile_plugins = (manifest.data_root / "profiles" / job.profile / "plugins.txt").resolve()
+    if _switch_path(argv, "-p:") != profile_plugins:
+        raise ValueError("argv.-p no corresponde al perfil del job")
+    ini_dir = _switch_path(argv, "-m:")
+    if not ini_dir.is_dir() or not (ini_dir / "Skyrim.ini").is_file():
+        raise ValueError("argv.-m debe apuntar a una carpeta con Skyrim.ini")
+    output_arg = _switch_path(argv, "-o:")
+    declared_outputs = tuple(path.resolve() for path in job.mutation_targets)
+    if len(declared_outputs) != 1 or output_arg != declared_outputs[0]:
+        raise ValueError("argv.-o no coincide con el output root declarado por el job")
+    cwd = _session_payload_path(payload, "cwd")
+    if cwd.is_symlink() or not cwd.is_dir():
+        raise ValueError("payload.cwd debe ser una carpeta real")
+    return executable, argv, cwd
+
+
+async def _session_tool_handler(
+    manifest: VfsWorkerManifest,
+    event_sink: VfsWorkerEventSink,
+) -> VfsToolExecution:
+    executable, argv, cwd = _validate_session_launch(manifest)
+    outcome = await run_brokered_process(
+        VfsProcessSpec(executable=executable, arguments=argv, cwd=cwd),
+        event_sink=event_sink,
+    )
+    # Este ``success`` no es el veredicto final del ritual: expresa únicamente
+    # que el proceso GUI devolvió 0. La captura truncada es diagnóstico y viaja
+    # en ``tool_result``; el daemon sigue cruzando exit code con log y artefacto.
+    proceso_ok = outcome.exit_code == 0
+    return VfsToolExecution(
+        success=proceso_ok,
+        message="" if outcome.exit_code == 0 else f"{manifest.job.tool_id} terminó con código {outcome.exit_code}",
+        exit_code=outcome.exit_code,
+        stdout=outcome.stdout,
+        stderr=outcome.stderr,
+        outputs=manifest.job.mutation_targets,
+        tool_result={
+            "stdout_truncated": outcome.stdout_truncated,
+            "stderr_truncated": outcome.stderr_truncated,
+        },
+    )
+
+
+async def _texgen_session_handler(
+    manifest: VfsWorkerManifest,
+    event_sink: VfsWorkerEventSink,
+) -> VfsToolExecution:
+    if manifest.job.tool_id != "texgen":
+        raise ValueError("handler TexGen recibió otro tool_id")
+    return await _session_tool_handler(manifest, event_sink)
+
+
+async def _dyndolod_session_handler(
+    manifest: VfsWorkerManifest,
+    event_sink: VfsWorkerEventSink,
+) -> VfsToolExecution:
+    if manifest.job.tool_id != "dyndolod":
+        raise ValueError("handler DynDOLOD recibió otro tool_id")
+    return await _session_tool_handler(manifest, event_sink)
 
 
 # ---------------------------------------------------------------------------
@@ -608,13 +774,11 @@ def _default_handlers() -> dict[str, VfsToolHandler]:
 
 
 def _default_session_handlers() -> dict[str, VfsSessionToolHandler]:
-    """Handlers de sesión productivos: VACÍO en PR-586A (ningún ritual migra).
-
-    Cuando un ritual migre entra acá Y en ``ALLOWED_VFS_TOOL_IDS``: el ancla
-    ``test_pr_586a_no_registra_tool_ids_de_sesion_productivos`` rompe a
-    propósito y obliga a decidir qué tool_ids entran.
-    """
-    return {}
+    """Handlers cerrados de las dos herramientas GUI migradas en PR-586B."""
+    return {
+        "texgen": _texgen_session_handler,
+        "dyndolod": _dyndolod_session_handler,
+    }
 
 
 def _grandchild_command(path: pathlib.Path, expected_sha256: str) -> list[str]:

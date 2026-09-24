@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **GUI — pulido visual del shell Forja del Dovahkiin.** El sidebar, el toggle
+  «Confirmar», las filas del Orden de Carga, las tarjetas de ritual y las
+  filas de Disputas se renderizaban desarmados (ícono arriba, etiqueta abajo)
+  porque `ui.html` envuelve su contenido en un `<div>` que queda fuera del flex;
+  ahora esos fragmentos usan `display:contents`. El CTA del wizard y los
+  selectores de proveedor IA recuperan el oro del tema (los `!important` de
+  Quasar viven en una capa CSS que vence a los del tema). El shell pasa a alto
+  fijo con scroll interno (Vitalidad del Sistema siempre visible), el chat del
+  Asistente es legible sobre el pergamino, la grilla de rituales queda 4+3, el
+  hero gana filigrana SVG en sus esquinas y el header no desborda en ventanas
+  angostas. Anclas nuevas en `tests/test_gui_theme_contracts.py`.
+
 ### Added
 - **`sky_claw/local/AGENTS.md` — SOP canónico del pipeline de modding de Skyrim para agentes IA** (orden cronológico de stages xEdit → CAO → BodySlide → Pandora → LOOT → Wrye Bash → Synthesis → No Grass In Objects → TexGen/DynDOLOD, reglas por tool, conflict resolution protocol, critical failure modes, code-editing rules para agentes). Cubre los tres subsistemas gobernados: `sky_claw/local/tools/`, `sky_claw/local/xedit/` y `sky_claw/app/orchestrator/tool_strategies/`. Acompañado de **`sky_claw/app/orchestrator/AGENTS.md`** (pointer que redirige a la SOP para que los agentes que editen el dispatcher la descubran). Referenciados desde el `AGENTS.md` raíz. *Audiencia: cualquier LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) que edite código del pipeline.*
 
