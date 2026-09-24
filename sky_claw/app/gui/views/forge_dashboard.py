@@ -31,6 +31,7 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     resolve_ritual_resume_action,
     resolve_visible_pending_hitl,
 )
+from sky_claw.app.gui.gui_helpers import _FRAGMENTO
 from sky_claw.app.gui.icons import (
     _ICON_LOCK,
     _ICON_SHIELD_CHECK,
@@ -223,7 +224,7 @@ def _identity_html(name: str, role: str) -> str:
     """
     return (
         '<div style="display:flex; align-items:center; gap:11px; padding-left:16px; border-left:1px solid rgba(200,168,106,.16);">'
-        '<div style="text-align:right;">'
+        '<div class="sc-identity-text" style="text-align:right; white-space:nowrap;">'
         f"<div style=\"font-family:'Cinzel',serif; font-size:13px; color:#e6dcc4; letter-spacing:.04em;\">{_e(name)}</div>"
         f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#8a7f6a;\">{_e(role)}</div></div>"
         "<div style=\"width:42px; height:42px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-family:'Cinzel',serif; font-weight:700; font-size:15px; color:#1a120c; background:radial-gradient(circle at 38% 32%, #f0d79a, #c8a86a 62%, #8a6c38); border:1.5px solid #f0d79a; box-shadow:0 0 16px rgba(200,168,106,.45);\">"
@@ -353,8 +354,12 @@ def render_forge_dashboard(
     storage = _safe(stats, "storage_used")
     connected = bool(get_store().get("is_agent_connected"))
 
+    # Shell de aplicación a pantalla completa: alto fijo al viewport y el scroll
+    # vive DENTRO del contenido (.sc-scroll). Con ``min-height`` la página entera
+    # scrolleaba y el sidebar se estiraba con el contenido, así que la Vitalidad
+    # del Sistema quedaba ~1000px debajo del pliegue en el Panel.
     root = (
-        "--sky-accent:#c8a86a; position:relative; display:flex; min-height:100vh; width:100%;"
+        "--sky-accent:#c8a86a; position:relative; display:flex; height:100vh; width:100%; overflow:hidden;"
         "font-family:'EB Garamond',Georgia,serif; color:#e8e2d4;"
         "background:radial-gradient(130% 62% at 50% -12%, rgba(64,156,131,.18), transparent 56%),"
         "linear-gradient(180deg, rgba(8,11,15,.93), rgba(7,9,12,.975)), url('/assets/stone_bg.png');"
@@ -366,7 +371,7 @@ def render_forge_dashboard(
     # callback lo cablea el page (sky_claw_gui) a run_ritual_resume — la GUI
     # expresa intención y nada más.
     _RITUAL_RESUME_CALLBACKS["resume"] = _cb(callbacks, "on_ritual_resume")
-    with ui.element("div").style(root):
+    with ui.element("div").classes("sc-shell").style(root):
         # Live heartbeat for the vitals bars + header HUD. Refresh ONLY those two
         # @ui.refreshable containers (never the whole page), so CPU/GPU/RAM pulse
         # while the chat input keeps its text. Created inside the page slot so it is
@@ -391,10 +396,14 @@ def render_forge_dashboard(
         _ritual_preflight_panel()
         _sidebar(active, conflicts, pending, active_section, callbacks, connected)
         with ui.element("div").style(
-            "position:relative; z-index:2; flex:1; min-width:0; display:flex; flex-direction:column;"
+            "position:relative; z-index:2; flex:1; min-width:0; min-height:0; display:flex; flex-direction:column;"
         ):
             _header(active_section, callbacks, identity, search_query)
-            with ui.element("div").classes("sc-scroll").style("flex:1; overflow-y:auto; padding:26px 30px 40px;"):
+            with (
+                ui.element("div")
+                .classes("sc-scroll")
+                .style("flex:1; min-height:0; overflow-y:auto; padding:28px 32px 44px;")
+            ):
                 if active_section in ("Dashboard", "Panel"):
                     _hero(active, conflicts, callbacks)
                     _stats(active, pending, conflicts, storage)
@@ -487,18 +496,34 @@ def _sidebar(
 
 
 def _nav_item(item: dict[str, str], is_active: bool, count: int | None, on_nav: Callable | None) -> None:
-    row_bg = "rgba(200,168,106,.1)" if is_active else "transparent"
+    # El fondo sólo va inline en el ítem activo: el inactivo lo deja a la clase
+    # ``sc-nav`` para que su :hover (styles.css) no quede pisado por un inline.
+    row_bg = (
+        "background:linear-gradient(90deg, rgba(200,168,106,.17), rgba(200,168,106,.04));"
+        " box-shadow:inset 0 0 0 1px rgba(200,168,106,.18);"
+        if is_active
+        else ""
+    )
     icon_color = ACCENT_BRIGHT if is_active else "#9a917d"
     label_color = "#f1e6cf" if is_active else "#c4bca8"
     marker = "1" if is_active else "0"
-    btn = ui.element("button").style(
-        f"position:relative; width:100%; display:flex; align-items:center; gap:13px; padding:11px 14px; margin-bottom:3px;"
-        f"border:none; border-radius:4px; cursor:pointer; text-align:left; background:{row_bg}; transition:background .25s;"
+    btn = (
+        ui.element("button")
+        .classes("sc-nav")
+        .style(
+            f"position:relative; width:100%; display:flex; align-items:center; gap:13px; padding:11px 14px; margin-bottom:3px;"
+            f"border:none; border-radius:4px; cursor:pointer; text-align:left; {row_bg}"
+        )
     )
     if on_nav:
         btn.on("click", lambda _=None, k=item["key"]: on_nav(k))
+    # Contador como pastilla: Conflictos lo pinta en carmesí (pide juicio);
+    # el resto en oro tenue. Un 0 no se muestra — el sidebar no grita "nada".
+    tone = RED_SOFT if item["key"] == "Conflicts" else "#c8b88f"
+    edge = "rgba(216,88,78,.45)" if item["key"] == "Conflicts" else "rgba(200,168,106,.28)"
     count_html = (
-        f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#9a917d; opacity:.85;\">{_e(count)}</span>"
+        f"<span style=\"flex-shrink:0; min-width:24px; padding:1px 7px; text-align:center; font-family:'Spline Sans Mono',monospace;"
+        f' font-size:10.5px; line-height:1.5; color:{tone}; border:1px solid {edge}; border-radius:99px; background:rgba(0,0,0,.28);">{_e(count)}</span>'
         if count
         else ""
     )
@@ -507,9 +532,9 @@ def _nav_item(item: dict[str, str], is_active: bool, count: int | None, on_nav: 
             f'<span style="position:absolute; left:0; top:18%; bottom:18%; width:2.5px; border-radius:2px;'
             f' background:linear-gradient(180deg,transparent,#ecd9a8,transparent); opacity:{marker}; box-shadow:0 0 10px rgba(200,168,106,.45);"></span>'
             f'<svg viewBox="0 0 24 24" fill="none" stroke="{icon_color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" width="18" height="18" style="flex-shrink:0;"><path d="{item["d"]}"></path></svg>'
-            f"<span style=\"flex:1; font-family:'Cinzel',serif; font-size:14px; font-weight:500; letter-spacing:.06em; color:{label_color};\">{_e(item['label'])}</span>"
+            f"<span style=\"flex:1; min-width:0; font-family:'Cinzel',serif; font-size:14px; font-weight:500; letter-spacing:.06em; color:{label_color};\">{_e(item['label'])}</span>"
             f"{count_html}"
-        )
+        ).style(_FRAGMENTO)
 
 
 def _vitals_html() -> str:
@@ -567,7 +592,7 @@ def _hud_html() -> str:
     gpu_hud = _fmt_pct(store.get(STORE_KEY_GPU))
     cpu_hud = _fmt_pct(store.get(STORE_KEY_CPU))
     return (
-        "<div style=\"display:flex; gap:14px; font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#857c69;\">"
+        '<div class="sc-hud" style="display:flex; gap:14px; white-space:nowrap; font-family:\'Spline Sans Mono\',monospace; font-size:10.5px; color:#857c69;">'
         f'<span>GPU <b style="color:#c8a86a;">{_e(gpu_hud)}</b></span><span>CPU <b style="color:#c8a86a;">{_e(cpu_hud)}</b></span></div>'
     )
 
@@ -678,7 +703,7 @@ def _modo_local_panel() -> None:
     btn.props(f'title="{_e(title)}"')
     btn.on("click", lambda _=None: (_toggle_auto_approve(), _modo_local_panel.refresh()))
     with btn:
-        ui.html(f"{icon}<span>{_e(label)}</span>")
+        ui.html(f'<span style="display:inline-flex;">{icon}</span><span>{_e(label)}</span>').style(_FRAGMENTO)
 
 
 # ── HITL APPROVAL MODAL + RITUAL FEEDBACK (store-driven overlays) ─────────────────
@@ -801,7 +826,7 @@ def _ritual_feedback_panel() -> None:
         ui.html(
             f'<span style="width:8px; height:8px; margin-top:5px; flex-shrink:0; border-radius:50%; background:{accent}; box-shadow:0 0 7px {accent};"></span>'
             f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.4;\">{_e(text)}</span>"
-        )
+        ).style(_FRAGMENTO)
         # F-001: la acción de Resume se deriva del dict ESTRUCTURAL del último
         # resultado — el panel no parsea el message ni decide por strings.
         # R-004/R-005: se resuelve por el seam de ownership — sólo la pestaña
@@ -910,9 +935,9 @@ def _header(
     with ui.element("header").style(hdr):
         ui.html(
             '<div style="position:absolute; left:0; right:0; bottom:-1px; height:1px; background:linear-gradient(90deg,transparent,rgba(200,168,106,.45),transparent);"></div>'
-            f'<div style="min-width:0; flex-shrink:1;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:16px; letter-spacing:.1em; color:#f1e6cf; line-height:1.15; white-space:nowrap;">{_e(title)}</div>'
-            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#897f6a; margin-top:2px;\">{_e(sub)}</div></div>"
-        )
+            f'<div style="min-width:0; flex-shrink:1; overflow:hidden;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:16px; letter-spacing:.1em; color:#f1e6cf; line-height:1.15; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{_e(title)}</div>'
+            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#897f6a; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;\">{_e(sub)}</div></div>"
+        ).style(_FRAGMENTO)
         # Buscador real (A1): al presionar Enter dispara ``on_search`` — el
         # cableado en sky_claw_gui guarda el término y navega a "Mods", donde
         # ``build_mod_list`` lo consume para pre-filtrar (reusa ``_filter_mods``).
@@ -1008,6 +1033,41 @@ def _integridad_html(conflicts: int) -> str:
     )
 
 
+#: Posición + espejo de cada esquina del marco del hero. Una sola filigrana
+#: dibujada para la esquina superior izquierda; las otras tres son la misma
+#: pieza reflejada, así el marco no puede quedar asimétrico por edición.
+_ESQUINAS_HERO: tuple[tuple[str, str], ...] = (
+    ("left:12px; top:12px;", "none"),
+    ("right:12px; top:12px;", "scaleX(-1)"),
+    ("left:12px; bottom:12px;", "scaleY(-1)"),
+    ("right:12px; bottom:12px;", "scale(-1,-1)"),
+)
+
+
+def _filigrana_esquina(pos: str, espejo: str) -> str:
+    """Esquina ornamental del marco del hero (SVG, sin raster ni emoji).
+
+    Doble filete en escuadra, diagonal con rombo engarzado y remates en los
+    extremos — el vocabulario del rombo de estado (◆) llevado al marco.
+    Decorativa: ``aria-hidden`` y sin animación (no entra a la política de
+    movimiento reducido).
+    """
+    return (
+        f'<svg aria-hidden="true" width="48" height="48" viewBox="0 0 48 48" fill="none" stroke="#c8a86a"'
+        f' stroke-linecap="round" style="position:absolute; {pos} transform:{espejo}; opacity:.85;'
+        ' filter:drop-shadow(0 0 4px rgba(200,168,106,.45)); pointer-events:none;">'
+        '<path d="M1.5 36 V1.5 H36" stroke-width="1.5"/>'
+        '<path d="M7.5 24 V7.5 H24" stroke-width="1" opacity=".55"/>'
+        '<path d="M1.5 1.5 L8 8" stroke-width="1.1" opacity=".7"/>'
+        '<path d="M11.5 7 L16 11.5 L11.5 16 L7 11.5 Z" fill="#c8a86a" stroke="none"/>'
+        '<path d="M24 7.5 q6 0 8 -4" stroke-width="1" opacity=".45"/>'
+        '<path d="M7.5 24 q0 6 -4 8" stroke-width="1" opacity=".45"/>'
+        '<circle cx="36" cy="1.5" r="1.7" fill="#ecd9a8" stroke="none"/>'
+        '<circle cx="1.5" cy="36" r="1.7" fill="#ecd9a8" stroke="none"/>'
+        "</svg>"
+    )
+
+
 def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
     sec = (
         "position:relative; overflow:hidden; border-radius:5px; min-height:354px; display:flex; align-items:flex-end;"
@@ -1030,18 +1090,7 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
                     (88, 26, 7.0, 4.1),
                 ]
             )
-            + "".join(
-                f'<span style="position:absolute; {pos} width:22px; height:22px; {brd} opacity:.7;"></span>'
-                for pos, brd in [
-                    ("left:14px; top:14px;", "border-top:1.5px solid #c8a86a; border-left:1.5px solid #c8a86a;"),
-                    ("right:14px; top:14px;", "border-top:1.5px solid #c8a86a; border-right:1.5px solid #c8a86a;"),
-                    ("left:14px; bottom:14px;", "border-bottom:1.5px solid #c8a86a; border-left:1.5px solid #c8a86a;"),
-                    (
-                        "right:14px; bottom:14px;",
-                        "border-bottom:1.5px solid #c8a86a; border-right:1.5px solid #c8a86a;",
-                    ),
-                ]
-            )
+            + "".join(_filigrana_esquina(pos, espejo) for pos, espejo in _ESQUINAS_HERO)
         )
         with ui.element("div").style("position:relative; z-index:2; max-width:680px;"):
             ui.html(
@@ -1052,7 +1101,7 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
                 f'<p style="margin:16px 0 26px; max-width:520px; font-family:\'EB Garamond\',serif; font-size:17px; line-height:1.55; color:#d8cfba;">Tu forja está despierta. <span style="color:#ecd9a8; font-weight:600;">{_e(active)} mods</span> montan guardia sobre Tamriel y el orden de carga aguarda tu palabra.</p>'
             )
             with ui.element("div").style("display:flex; flex-wrap:wrap; align-items:center; gap:18px;"):
-                ui.html(_integridad_html(conflicts))
+                ui.html(_integridad_html(conflicts)).style(_FRAGMENTO)
                 prepare = _cb(callbacks, "on_cta_primary")
                 btn = (
                     ui.element("button")
@@ -1091,6 +1140,7 @@ def _stats(active: int, pending: int, conflicts: int, storage: float) -> None:
             '<div style="position:relative; overflow:hidden; padding:20px; border-radius:4px;'
             " background:linear-gradient(162deg, rgba(26,32,40,.82), rgba(11,14,19,.9)); border:1px solid rgba(200,168,106,.2);"
             ' box-shadow:0 16px 34px -18px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.04);">'
+            f'<span style="position:absolute; left:16px; right:16px; top:0; height:1px; background:linear-gradient(90deg,transparent,{tone},transparent); opacity:.55;" aria-hidden="true"></span>'
             f'<div style="position:absolute; right:-14px; top:-18px; font-family:\'Noto Sans Runic\',serif; font-size:78px; color:{tone}; opacity:.08;" aria-hidden="true">{rune}</div>'
             '<div style="display:flex; align-items:center; gap:11px; margin-bottom:16px;">'
             f'<div style="width:42px; height:42px; flex-shrink:0; display:flex; align-items:center; justify-content:center; border-radius:7px; background:linear-gradient(140deg,#3a2c1c,#221913); border:1px solid {tone}; box-shadow:0 0 12px {tone}55;">'
@@ -1121,7 +1171,7 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
     on_ritual_run = _cb(callbacks, "on_ritual_run")
     on_ritual_install = _cb(callbacks, "on_ritual_install")
     with ui.element("div").style(
-        "display:grid; grid-template-columns:repeat(auto-fit,minmax(186px,1fr)); gap:14px; margin-bottom:30px;"
+        "display:grid; grid-template-columns:repeat(auto-fill,minmax(232px,1fr)); gap:16px; margin-bottom:32px;"
     ):
         for r in _RITUALS:
             _ritual_card(r, _ritual_status(snapshot, r["tool"]), on_ritual_run, on_ritual_install)
@@ -1197,19 +1247,22 @@ def _ritual_card(
         # un click que no lleva a ninguna parte.
         btn_style += " cursor:default;"
     card = (
-        f"position:relative; display:flex; flex-direction:column; gap:9px; padding:18px 16px; border-radius:4px;"
+        f"position:relative; display:flex; flex-direction:column; gap:9px; padding:18px 18px 16px; border-radius:5px;"
         f"background:linear-gradient(168deg, rgba(30,22,14,.9), rgba(14,10,7,.92)); border:1px solid {card_border};"
-        "box-shadow:0 14px 30px -16px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.04); transition:transform .25s, border-color .25s;"
+        "box-shadow:0 14px 30px -16px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.04);"
     )
-    with ui.element("div").style(card):
+    with ui.element("div").classes("sc-card").style(card):
         ui.html(
-            f'<div style="display:flex; align-items:center; justify-content:center; width:48px; height:48px; border-radius:50%; background:radial-gradient(circle at 50% 38%, #2c1f13, #0d0805); border:1.5px solid {tone}; box-shadow:inset 0 0 10px rgba(0,0,0,.7), 0 0 12px {tone}55; opacity:{deco_opacity};">'
+            '<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px;">'
+            f'<div style="display:flex; align-items:center; justify-content:center; width:48px; height:48px; flex-shrink:0; border-radius:50%; background:radial-gradient(circle at 50% 38%, #2c1f13, #0d0805); border:1.5px solid {tone}; box-shadow:inset 0 0 10px rgba(0,0,0,.7), 0 0 12px {tone}55; opacity:{deco_opacity};">'
             f'<span style="font-family:\'Noto Sans Runic\',serif; font-size:23px; color:{tone}; text-shadow:0 0 9px {tone}88;" aria-hidden="true">{r["rune"]}</span></div>'
-            f"<div style=\"font-family:'Cinzel',serif; font-weight:600; font-size:14.5px; letter-spacing:.03em; color:#ecdfc2; line-height:1.2;\">{_e(r['label'])}</div>"
+            f"<span style=\"margin-top:4px; padding:2px 8px; font-family:'Spline Sans Mono',monospace; font-size:10px; letter-spacing:.02em; color:#a89c80;"
+            f' border:1px solid rgba(200,168,106,.2); border-radius:99px; background:rgba(0,0,0,.25); white-space:nowrap;">{_e(r["tech"])}</span></div>'
+            f"<div style=\"margin-top:3px; font-family:'Cinzel',serif; font-weight:600; font-size:14.5px; letter-spacing:.03em; color:#ecdfc2; line-height:1.2;\">{_e(r['label'])}</div>"
             f"<div style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.42; color:#9b927e;\">{_e(r['desc'])}</div>"
             f'<div style="display:flex; align-items:center; gap:7px; padding-top:2px;"><span style="width:7px; height:7px; border-radius:50%; background:{status_dot}; box-shadow:0 0 6px {status_dot};"></span>'
             f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:12px; color:{status_color};\">{status_label}</span></div>"
-        )
+        ).style(_FRAGMENTO)
         b = ui.element("button").style(
             f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
             f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
@@ -1246,9 +1299,6 @@ def _ritual_card(
             )
         with b:
             ui.html(btn_label)
-        ui.html(
-            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#8a8270; text-align:right;\">{_e(r['tech'])}</div>"
-        )
 
 
 # ── ORDEN DE CARGA ─────────────────────────────────────────────────────────────
@@ -1267,7 +1317,7 @@ def _orden_carga(mods: list[dict[str, Any]], callbacks: dict[str, Callable]) -> 
                 "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.14em; color:#ecdfc2;\">ORDEN DE CARGA</h2>"
                 f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:#c8a86a; padding:2px 9px; border:1px solid #c8a86a; border-radius:99px; background:rgba(200,168,106,.15); box-shadow:0 0 10px rgba(200,168,106,.45);\">{_e(len(mods))}</span>"
                 '<span style="flex:1;"></span>'
-            )
+            ).style(_FRAGMENTO)
             view_all = _cb(callbacks, "on_view_all_mods")
             vb = ui.element("button").style(
                 "font-family:'Cinzel',serif; font-size:12px; letter-spacing:.08em; color:#ecd9a8; background:none; border:none; cursor:pointer; text-decoration:underline; text-underline-offset:3px;"
@@ -1304,8 +1354,12 @@ def _mod_row(idx: int, m: dict[str, Any], on_mod: Callable | None) -> None:
         if is_conflict
         else ""
     )
-    row = ui.element("div").style(
-        "display:flex; align-items:center; gap:13px; padding:11px 12px; border-radius:4px; border-bottom:1px solid rgba(200,168,106,.07); transition:background .2s; cursor:pointer;"
+    row = (
+        ui.element("div")
+        .classes("sc-row")
+        .style(
+            "display:flex; align-items:center; gap:13px; padding:11px 12px; border-radius:4px; border-bottom:1px solid rgba(200,168,106,.07); cursor:pointer;"
+        )
     )
     if on_mod:
         row.on("click", lambda _=None, n=name: on_mod(n))
@@ -1317,14 +1371,15 @@ def _mod_row(idx: int, m: dict[str, Any], on_mod: Callable | None) -> None:
             f"<span style=\"font-family:'Cinzel',serif; font-size:14px; color:{name_color}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;\">{_e(name)}</span>{conflict_badge}</div>"
             f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#9a917d; margin-top:2px;\">{_e(ver)} · {_e(size)}</div></div>"
             f"<span style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:{dot}; width:74px; text-align:right; flex-shrink:0;\">{status_label}</span>"
-        )
+        ).style(_FRAGMENTO)
 
 
 # ── ASISTENTE ARCANO ───────────────────────────────────────────────────────────
 def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks: dict[str, Callable]) -> None:
     sec = (
         "position:relative; border-radius:5px; overflow:hidden; display:flex; flex-direction:column;"
-        "background:#d8bf98 url('/assets/parchment.png') center/cover; border:2px solid #5c4a2a;"
+        "background:linear-gradient(180deg, rgba(244,232,206,.62), rgba(226,206,168,.5)), url('/assets/parchment.png') center/cover, #d8bf98;"
+        " border:2px solid #5c4a2a;"
         "box-shadow:0 20px 44px -20px rgba(0,0,0,.85), inset 0 0 60px rgba(70,48,20,.35);"
     )
     with ui.element("section").style(sec):
@@ -1365,10 +1420,12 @@ def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks
             on_send = _cb(callbacks, "on_send_message")
             chat_input = (
                 ui.input(placeholder="Habla, y escucharé…")
-                .props("dense borderless")
+                .classes("sc-chat-input")
+                .props('dense borderless input-style="color:#2c2016; font-family:EB Garamond,serif; font-size:14.5px"')
                 .style(
-                    "flex:1; padding:4px 13px; font-family:'EB Garamond',serif; font-size:14px; color:#2c2016;"
-                    "background:rgba(255,255,255,.32); border:1px solid rgba(92,74,42,.5); border-radius:5px;"
+                    "flex:1; padding:4px 13px;"
+                    "background:rgba(255,252,244,.58); border:1px solid rgba(92,74,42,.5); border-radius:5px;"
+                    "box-shadow:inset 0 1px 3px rgba(70,48,20,.25);"
                 )
             )
 
@@ -1407,11 +1464,17 @@ def _chat_bubble(text: str, is_user: bool) -> None:
     if is_user:
         wrap = "display:flex; justify-content:flex-end;"
         who, who_color, who_align = "TÚ", "#6b5536", "text-align:right;"
-        bubble = "background:rgba(92,74,42,.92); color:#f3ead4; border-radius:9px 9px 2px 9px;"
+        bubble = (
+            "background:linear-gradient(180deg, rgba(98,78,44,.96), rgba(74,58,32,.96)); color:#f6eedb;"
+            " border-radius:9px 9px 2px 9px; box-shadow:0 3px 8px -3px rgba(40,26,10,.55);"
+        )
     else:
         wrap = "display:flex; justify-content:flex-start;"
         who, who_color, who_align = "ASISTENTE", "#7a5f30", ""
-        bubble = "background:rgba(255,250,240,.5); color:#2c2016; border:1px solid rgba(92,74,42,.3); border-radius:9px 9px 9px 2px;"
+        bubble = (
+            "background:rgba(255,251,242,.78); color:#2c2016; border:1px solid rgba(92,74,42,.32);"
+            " border-radius:9px 9px 9px 2px; box-shadow:0 2px 6px -3px rgba(70,48,20,.4);"
+        )
     ui.html(
         f'<div style="{wrap}"><div style="max-width:82%;">'
         f"<div style=\"font-family:'Cinzel',serif; font-size:9.5px; letter-spacing:.12em; color:{who_color}; margin-bottom:4px; {who_align}\">{who}</div>"
@@ -1492,7 +1555,7 @@ def _conflicts_screen(
             "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">DISPUTAS EN LA FORJA</h2>"
             f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:12px; color:{RED_SOFT};\">◆ {len(conflicts)}</span>"
             '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span>'
-        )
+        ).style(_FRAGMENTO)
         on_scan = _cb(callbacks, "on_conflict_scan")
         if on_scan is not None:
             scan_btn = (
@@ -1542,7 +1605,7 @@ def _resolved_section(resolved: list[dict[str, Any]]) -> None:
             "<h3 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:14px; letter-spacing:.18em; color:#8fae86;\">RESUELTAS</h3>"
             f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:{GREEN};\">◆ {len(resolved)}</span>"
             '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(95,156,107,.35),transparent);"></span>'
-        )
+        ).style(_FRAGMENTO)
     with ui.element("div").style("display:flex; flex-direction:column; gap:7px;"):
         for c in resolved:
             ui.html(_resolved_row_html(c))
@@ -1585,7 +1648,7 @@ def _conflict_row(c: dict[str, Any], on_resolve: Callable | None) -> None:
             f"{_e(c.get('mod_b', '?'))}</div>"
             f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#8a7f6a; margin-top:2px;\">{_e(subtitle)}</div>"
             "</div>"
-        )
+        ).style(_FRAGMENTO)
         if on_resolve is not None:
             btn = (
                 ui.element("button")
@@ -1715,10 +1778,20 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
     # ── Proveedor IA + claves ──
     with ui.element("section").style(panel):
         ui.html(f'<span style="{_LBL}">PROVEEDOR DE IA</span>')
-        provider_toggle = ui.toggle(
-            ["anthropic", "deepseek", "openai", "ollama"],
-            value=str(settings.get("provider") or "deepseek"),
-        ).props("color=amber")
+        # Receta .sc-toggle (styles.css). toggle-color/toggle-text-color = sc-tema,
+        # un nombre SIN clase en Quasar: con el default (primary) la opción activa
+        # recibe .bg-primary/.text-white, que son !important en la capa
+        # quasar_importants de NiceGUI 3 y ningún !important sin capa del tema les
+        # puede ganar (ancla en tests/test_gui_theme_contracts.py).
+        provider_toggle = (
+            ui.toggle(
+                ["anthropic", "deepseek", "openai", "ollama"],
+                value=str(settings.get("provider") or "deepseek"),
+            )
+            .classes("sc-toggle")
+            .props("unelevated toggle-color=sc-tema toggle-text-color=sc-tema")
+            .style("align-self:flex-start;")
+        )
         for key, label, hint in _SETTINGS_SECRET_FIELDS:
             _text_field(key, label, hint=hint, password=True)
         # A diferencia de los secretos, el chat id se persiste tal cual (vaciar

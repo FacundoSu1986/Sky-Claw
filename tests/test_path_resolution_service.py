@@ -1436,8 +1436,19 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/app/agent/tools/external_tools.py": (220, 267),
         # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
         "sky_claw/local/fomod/plugin_state.py": (74,),
-        # BrokeredLootRunner: acepta mods_dir; líneas 61 y 233 son fallbacks legacy.
-        "sky_claw/local/mo2/brokered_loot.py": (61, 233),
+        # BrokeredLootRunner: acepta mods_dir; los dos sites son fallbacks
+        # legacy. PR-0 (contrato del id de juego + guard F8 de backend
+        # MO2-internal) movió las líneas (61, 233 → 97, 285) sin agregar
+        # nuevas construcciones de `<base>/mods`. Review FINDING A (guard F8
+        # case-insensitive, comparación componente a componente) movió las
+        # líneas (97, 285 → 109, 297): el cuerpo de _is_mo2_internal_loot
+        # creció, mismo número y sites de construcciones; el comentario
+        # que justifica `zip(..., strict=False)` (ruff B905) sumó una
+        # línea más (109, 297 → 110, 298). PR-1 (aislamiento LOOT data root)
+        # añadió dos sites que resuelven mods_dir para validar que el loot
+        # data root no esté dentro de mods (392, 403) y movió el base default
+        # (110 → 124) por import de data_root.
+        "sky_claw/local/mo2/brokered_loot.py": (124, 388, 397),
         # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (127,),
         "sky_claw/local/mo2/vfs_attestation.py": (182, 243),
@@ -1458,7 +1469,8 @@ class TestAnclaConstructoresManualesDeMods:
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
         # ``mod_directory`` custom el valor declarado manda (get_mo2_mods_path*).
-        "sky_claw/local/tools/loot_service.py": (493,),
+        # PR-1 añadió resolución de loot_data_path que usa mods_dir para validar
+        "sky_claw/local/tools/loot_service.py": (497,),
         "sky_claw/local/validators/vfs_health.py": (141,),
         # #585: el resolver del perfil pasó a leer plugins.txt + loadorder.txt
         # por separado y a fallar cerrado si la activación es ilegible; el
@@ -1471,7 +1483,8 @@ class TestAnclaConstructoresManualesDeMods:
         # Handoff reconciliation usa mo2.mods_dir directamente (Issue #557).
         # P2.3 fenced mueve la línea (autoridad temporal + veredicto tipado +
         # cleanup de cancelación).
-        "sky_claw/app_context.py": (1390,),
+        # PR-1 añadió loot_data_path en _construir_raices_sandbox y en start_full
+        "sky_claw/app_context.py": (1409,),
         # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None.
         # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA.
         "sky_claw/__main__.py": (271,),

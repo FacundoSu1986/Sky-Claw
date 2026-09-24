@@ -529,7 +529,7 @@ async def test_loot_construye_el_vector_verificado(tmp_path: pathlib.Path) -> No
     loot_exe.touch()
     juego = tmp_path / "Skyrim Special Edition"
     juego.mkdir()
-    runner = LOOTRunner(LOOTConfig(loot_exe=loot_exe, game_path=juego, game="Skyrim Special Edition"))
+    runner = LOOTRunner(LOOTConfig(loot_exe=loot_exe, game_path=juego, game="SkyrimSE"))
 
     capturado: dict[str, list[str]] = {}
 
@@ -568,7 +568,7 @@ async def test_loot_con_update_masterlist_no_agrega_el_flag_inexistente(tmp_path
     loot_exe.touch()
     juego = tmp_path / "Skyrim Special Edition"
     juego.mkdir()
-    runner = LOOTRunner(LOOTConfig(loot_exe=loot_exe, game_path=juego, game="Skyrim Special Edition"))
+    runner = LOOTRunner(LOOTConfig(loot_exe=loot_exe, game_path=juego, game="SkyrimSE"))
 
     capturado: dict[str, list[str]] = {}
 

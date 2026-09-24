@@ -41,6 +41,10 @@ from sky_claw.local.loot.cli import (
     LOOTRunner,
     LOOTTimeoutError,
 )
+from sky_claw.local.loot.data_root import (
+    ensure_loot_data_path_exists,
+    resolve_loot_data_path,
+)
 from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
 
@@ -599,6 +603,22 @@ class LootSortingService:
             from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner
 
             resolver = LoadOrderFileResolver(mo2_root=data_root, profile=profile)
+            # PR-1: resolver LOOT data root propiedad de Sky-Claw
+            try:
+                loot_data_path = resolve_loot_data_path(
+                    instance_id=self._vfs_instance_id,
+                    profile=profile,
+                    base_dir=None,
+                    game_path=game_path,
+                    loot_exe=loot_exe,
+                    mods_dir=mods_dir,
+                    data_root=data_root,
+                )
+                ensure_loot_data_path_exists(loot_data_path)
+            except Exception as exc:
+                if self._require_vfs:
+                    raise LOOTNotFoundError(f"F8 guard / PR-1: no se pudo resolver loot_data_path: {exc}") from exc
+                loot_data_path = None
             runner = BrokeredLootRunner(
                 broker=self._vfs_broker,
                 instance_id=self._vfs_instance_id,
@@ -610,6 +630,7 @@ class LootSortingService:
                 loot_exe=loot_exe,
                 timeout=self._timeout,
                 mutation_targets=lambda: tuple(resolver.resolve().files),
+                loot_data_path=loot_data_path,
             )
             self._brokered_runners[profile] = runner
             return runner
