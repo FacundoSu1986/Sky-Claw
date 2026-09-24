@@ -40,8 +40,9 @@ La auditoría también verificó que la infraestructura necesaria **ya existe** 
   `OperationJournal` guarda `ActionManifest` y `FlightReport` como `model_dump(mode="json")` en la
   columna `metadata`, discriminados por una clave `kind` centralizada en `journal_contracts.py`.
 - **Precedente de digest de perfil — pero NO un identificador de entorno reutilizable.**
-  `_profile_fingerprint` (`sky_claw/local/mo2/vfs_attestation.py:140-166`) hashea los cinco
-  archivos de estado del perfil (`vfs_attestation.py:13`), y por eso parece candidato obvio. **No
+  `_profile_fingerprint` (`sky_claw/local/mo2/vfs_attestation.py`) hashea los cinco
+  archivos de estado del perfil (`modlist.txt` y los `settings.*` en crudo;
+  `plugins.txt` por su estado semántico desde #633), y por eso parece candidato obvio. **No
   lo es**, por dos razones verificadas en su firma y su cuerpo: además del perfil incorpora
   `source_mod`, `relative_path` y `canary_sha256` al digest, así que **cambiar el archivo canario
   elegido cambia el identificador de un entorno idéntico**; y `build_attestation_challenge` aborta
