@@ -61,11 +61,16 @@ async def _ejecutar_conflictos(xedit_runner: Any, plugins: list[str]) -> dict[st
                 f"total_conflicts={summary['total_conflicts']} pero se parsearon "
                 f"{len(conflictos)} conflictos."
             )
-    else:
+    elif result.conflicts:
         # Compatibilidad con adapters heredados que ya entregan ``XEditResult``
         # preparseado y no conservan stdout. El runner productivo sí conserva
         # raw_stdout y por tanto siempre pasa por el protocolo estricto de arriba.
         conflictos = _conflictos_legacy(result)
+    else:
+        # Sin protocolo y sin conflictos preparseados no hay forma de distinguir
+        # "0 conflictos" de "xEdit no escribió nada" (binario GUI, log -R: vacío):
+        # falla cerrado, igual que ConflictAnalyzer.analyze.
+        raise RuntimeError(f"Salida de {script} vacía: falta SUMMARY|total_conflicts.")
 
     return {
         "success": True,

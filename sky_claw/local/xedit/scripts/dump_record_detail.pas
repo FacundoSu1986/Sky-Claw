@@ -55,7 +55,7 @@ end;
 { Emit the top-level elements of ONE record version. GetEditValue returns ''
   for containers; those are skipped — the advisor works on leaf-ish values
   and a bounded second level would balloon QUST dumps. }
-procedure EmitVersionElements(rec: IInterface; formID, plugin: string);
+procedure EmitVersionElements(rec: IInterface; fid, plugin: string);
 var
   i, emitted: Integer;
   el: IInterface;
@@ -64,21 +64,21 @@ begin
   emitted := 0;
   for i := 0 to ElementCount(rec) - 1 do begin
     if emitted >= MAX_ELEMENTS then begin
-      AddMessage('ELEMENT|' + formID + '|' + plugin + '|(truncated)|...');
+      AddMessage('ELEMENT|' + fid + '|' + plugin + '|(truncated)|...');
       Exit;
     end;
     el := ElementByIndex(rec, i);
     value := GetEditValue(el);
     if value = '' then
       Continue;
-    AddMessage('ELEMENT|' + formID + '|' + plugin + '|' +
+    AddMessage('ELEMENT|' + fid + '|' + plugin + '|' +
                SanitizeValue(Name(el)) + '|' + SanitizeValue(value));
     Inc(emitted);
   end;
 end;
 
 { Emit one VERSION line + its elements. }
-procedure EmitVersion(rec: IInterface; formID, winner: string);
+procedure EmitVersion(rec: IInterface; fid, winner: string);
 var
   plugin, isWinner: string;
 begin
@@ -87,8 +87,8 @@ begin
     isWinner := '1'
   else
     isWinner := '0';
-  AddMessage('VERSION|' + formID + '|' + plugin + '|' + isWinner);
-  EmitVersionElements(rec, formID, plugin);
+  AddMessage('VERSION|' + fid + '|' + plugin + '|' + isWinner);
+  EmitVersionElements(rec, fid, plugin);
 end;
 
 function Initialize: Integer;
@@ -100,7 +100,7 @@ end;
 function Process(e: IInterface): Integer;
 var
   i: Integer;
-  sig, formID, winner: string;
+  sig, fid, winner: string;
 begin
   Result := 0;
 
@@ -115,14 +115,16 @@ begin
   if not IsCriticalType(sig) then
     Exit;
 
-  formID := IntToHex(FormID(e), 8);
+  { 'fid', no 'formID': la local ocultaria a la funcion FormID (Pascal no
+    distingue mayusculas). }
+  fid := IntToHex(FormID(e), 8);
   winner := GetFileName(GetFile(WinningOverride(e)));
 
-  AddMessage('DUMP_BEGIN|' + formID + '|' + EditorID(e) + '|' + sig);
-  EmitVersion(e, formID, winner);
+  AddMessage('DUMP_BEGIN|' + fid + '|' + EditorID(e) + '|' + sig);
+  EmitVersion(e, fid, winner);
   for i := 0 to OverrideCount(e) - 1 do
-    EmitVersion(OverrideByIndex(e, i), formID, winner);
-  AddMessage('DUMP_END|' + formID);
+    EmitVersion(OverrideByIndex(e, i), fid, winner);
+  AddMessage('DUMP_END|' + fid);
 
   Inc(dumpedRecords);
 end;
