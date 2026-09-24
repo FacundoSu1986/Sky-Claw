@@ -634,6 +634,10 @@ class TestTgrAstIsolation:
             "write_trusted_goldens",
             "register_trusted_golden",
             "refresh_trusted_golden",
+            # GP2-P2: la transacción RMW y el write lock del TGR también son
+            # superficies de escritura/serialización del registry: jamás en apply.
+            "mutate_trusted_golden_registry",
+            "acquire_trusted_registry_write_lock",
         }
 
         for mod_path in apply_modules:

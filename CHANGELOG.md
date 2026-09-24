@@ -41,7 +41,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`SkyClaw_MergedPatch.esp`). Pendiente: smoke en rig real con SSEEdit.
 
 ### Added
-- **`sky_claw/local/AGENTS.md` — SOP canónico del pipeline de modding de Skyrim para agentes IA** (orden cronológico de stages xEdit → CAO → BodySlide → Pandora → LOOT → Wrye Bash → Synthesis → No Grass In Objects → TexGen/DynDOLOD, reglas por tool, conflict resolution protocol, critical failure modes, code-editing rules para agentes). Cubre los tres subsistemas gobernados: `sky_claw/local/tools/`, `sky_claw/local/xedit/` y `sky_claw/app/orchestrator/tool_strategies/`. Acompañado de **`sky_claw/app/orchestrator/AGENTS.md`** (pointer que redirige a la SOP para que los agentes que editen el dispatcher la descubran). Referenciados desde el `AGENTS.md` raíz. *Audiencia: cualquier LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) que edite código del pipeline.*
+- **Runtime Vault — global TGR serialization lock (GP2-P2).** Primitiva de
+  exclusión cross-process que serializa los ciclos `LOAD → MODIFY → WRITE` sobre
+  `trusted_goldens.json` y elimina el lost update entre writers privilegiados
+  (atomic replace solo NO serializa read-modify-write). `trusted_registry_lock.py`:
+  lock file abierto con `CreateFileW(dwShareMode=0, OPEN_ALWAYS)` en
+  `%ProgramData%\Sky-Claw\runtime_vault\locks\skyclaw_tgr_lock_<sha256>.lock`
+  (identidad derivada del registry path canónico — global al registry, no por
+  Golden; prefijo y semántica distintos de `GoldenMutationLock`), ownership =
+  vida del handle kernel (crash-safe: existencia del residual `*.lock` jamás
+  equivale a lock activo; sin metadata persistente; nunca se borra ⇒ sin
+  delete-race), reparse-check post-open, reentrancia con rechazo tipado, espera
+  acotada configurable (`timeout` finito, poll dormido, BUSY/TIMEOUT fail-closed).
+  API difícil de usar mal: `mutate_trusted_golden_registry(mutate)` (sin paths:
+  load y atomic write ocurren estructuralmente bajo el lock) +
+  `acquire_trusted_registry_write_lock()`. **Dos propiedades distintas:** el
+  reemplazo atómico del TGR (P1, `_write_trusted_registry_atomically_at`) y la
+  serialización global del TGR (esta primitiva) son invariantes separadas; este
+  lock protege el RMW del registry y **no** congela el contenido del Golden ni
+  cierra la ventana TOCTOU (`TGR_LOCK_PROTECTS_GOLDEN_CONTENT = NO`). Windows-only
+  productivo (fail-closed tipado en POSIX). Sin semántica P3 (admission/refresh).
+  Anclas: `tests/test_runtime_vault_trusted_registry_lock.py` (lost-update oracle
+  real cross-process, contención, crash release, exception release, mutation
+  anchor del orden acquire→load→modify→write→release).
 
 ### Security
 - **`anyio` 4.13.0 → 4.14.2 (CVE-2026-63374, CVE-2026-64847)** — avisos que
