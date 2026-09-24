@@ -9,6 +9,11 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from sky_claw.local.loot.cli import DEFAULT_LOOT_INTERNAL_GAME_ID, LOOTNotFoundError
+from sky_claw.local.loot.data_root import (
+    DEFAULT_LOOT_DATA_BASE,
+    ensure_loot_data_path_exists,
+    resolve_loot_data_path,
+)
 from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver
 from sky_claw.local.mo2.vfs_attestation import (
@@ -83,7 +88,14 @@ class VfsBrokerProtocol(Protocol):
 
 
 class BrokeredLootRunner:
-    """Implementa ``LOOTRunner.sort`` sin crear el subprocess en el daemon."""
+    """Implementa ``LOOTRunner.sort`` sin crear el subprocess en el daemon.
+
+    PR-1: ``loot_data_path`` es el LOOT DATA ROOT propiedad de Sky-Claw
+    (``--loot-data-path``). Ver ``sky_claw.local.loot.data_root`` para
+    contrato upstream 0.29.1 y decisión de lifetime (persistente por
+    instancia+perfil, no por operación). El daemon decide la ruta una sola
+    vez y el worker no la reinventa.
+    """
 
     def __init__(
         self,
@@ -100,6 +112,8 @@ class BrokeredLootRunner:
         timeout: int,
         mutation_targets: Callable[[], tuple[pathlib.Path, ...]],
         overwrite_mod: str | None = None,
+        loot_data_path: pathlib.Path | None = None,
+        loot_data_base: pathlib.Path | None = None,
     ) -> None:
         self._broker = broker
         self._instance_id = instance_id
@@ -116,6 +130,23 @@ class BrokeredLootRunner:
         self._timeout = timeout
         self._mutation_targets = mutation_targets
         self._overwrite_mod = overwrite_mod
+        # PR-1: data root de LOOT propiedad de Sky-Claw
+        self._loot_data_base = (
+            pathlib.Path(loot_data_base).resolve(strict=False)
+            if loot_data_base is not None
+            else DEFAULT_LOOT_DATA_BASE.resolve(strict=False)
+        )
+        self._loot_data_path: pathlib.Path | None
+        if loot_data_path is not None:
+            p = pathlib.Path(loot_data_path)
+            if not p.is_absolute():
+                raise ValueError(f"loot_data_path must be absolute, got {loot_data_path}")
+            # No symlink escape si el repo tiene defensa (PathValidator)
+            if p.is_symlink():
+                raise ValueError("loot_data_path must not be a symlink")
+            self._loot_data_path = p.resolve(strict=False)
+        else:
+            self._loot_data_path = None
         if _is_mo2_internal_loot(self._loot_exe, self._install_root):
             # Fail-closed: el backend productivo es el LOOT.exe standalone
             # oficial, nunca el loot\lootcli.exe interno de MO2 (ver
@@ -153,11 +184,41 @@ class BrokeredLootRunner:
     def mods_dir(self) -> pathlib.Path:
         return self._mods_dir
 
+    @property
+    def loot_data_path(self) -> pathlib.Path | None:
+        return self._loot_data_path
+
+    @property
+    def loot_data_base(self) -> pathlib.Path:
+        return self._loot_data_base
+
     def for_profile(self, profile: str) -> BrokeredLootRunner:
-        """Crea un runner aislado que resuelve targets del perfil solicitado."""
+        """Crea un runner aislado que resuelve targets del perfil solicitado.
+
+        PR-1: recalcula el LOOT data root para el nuevo perfil (aislamiento
+        por perfil), usando la misma base e instance_id. Si el runner
+        original no tenía loot_data_path (legacy/test), el nuevo tampoco
+        (fail-closed en sort seguirá aplicando).
+        """
         if profile == self._profile:
             return self
         resolver = LoadOrderFileResolver(mo2_root=self._data_root, profile=profile)
+        new_loot_data_path: pathlib.Path | None = None
+        if self._loot_data_path is not None:
+            try:
+                new_loot_data_path = resolve_loot_data_path(
+                    instance_id=self._instance_id,
+                    profile=profile,
+                    base_dir=self._loot_data_base,
+                    game_path=self._game_data_dir.parent,
+                    loot_exe=self._loot_exe,
+                    mods_dir=self._mods_dir,
+                    data_root=self._data_root,
+                )
+            except Exception:
+                # Si la resolución falla (perfil hostil), fail-closed en sort
+                # igualmente — no crear un path inventado
+                new_loot_data_path = None
         return BrokeredLootRunner(
             broker=self._broker,
             instance_id=self._instance_id,
@@ -170,6 +231,8 @@ class BrokeredLootRunner:
             timeout=self._timeout,
             mutation_targets=lambda: tuple(resolver.resolve().files),
             overwrite_mod=self._overwrite_mod,
+            loot_data_path=new_loot_data_path,
+            loot_data_base=self._loot_data_base,
         )
 
     def mutation_targets(self) -> tuple[pathlib.Path, ...]:
@@ -206,6 +269,18 @@ class BrokeredLootRunner:
         self._prepared.set(None)
 
     async def sort(self, *, update_masterlist: bool = False) -> LOOTResult:
+        # PR-1: fail-closed si falta loot_data_path en productivo
+        if self._loot_data_path is None:
+            raise ValueError(
+                "F8 guard / PR-1: loot_data_path ausente — el backend productivo "
+                "de Sky-Claw NUNCA ejecuta LOOT.exe sin --loot-data-path explícito."
+            )
+        # Asegurar que el root exista (padres). LOOT crea el root con
+        # create_directory, pero requiere padre existente.
+        try:
+            ensure_loot_data_path_exists(self._loot_data_path)
+        except Exception as exc:
+            raise ValueError(f"loot_data_path no se pudo asegurar en disco: {exc}") from exc
         challenge = await self._take_or_build_challenge()
         targets = await asyncio.to_thread(self.mutation_targets)
         job = VfsJob.create(
@@ -220,6 +295,8 @@ class BrokeredLootRunner:
                 # `--game` ocurre una sola vez, en el runner (PR-0).
                 "game": DEFAULT_LOOT_INTERNAL_GAME_ID,
                 "update_masterlist": update_masterlist,
+                # PR-1: data root propiedad de Sky-Claw, explícito, estable
+                "loot_data_path": str(self._loot_data_path),
             },
             timeout_seconds=float(self._timeout),
             expected_fingerprint=challenge.profile_fingerprint,
@@ -278,8 +355,15 @@ def build_vfs_loot_runner(
     loot_exe: pathlib.Path | None,
     profile: str,
     timeout: int = 120,
+    loot_data_path: pathlib.Path | None = None,
+    loot_data_base: pathlib.Path | None = None,
 ) -> BrokeredLootRunner | VfsRequiredLootRunner:
-    """Construye el runner productivo o un guard F8 sin fallback directo."""
+    """Construye el runner productivo o un guard F8 sin fallback directo.
+
+    PR-1: resuelve el LOOT data root propiedad de Sky-Claw si no se pasa
+    explícito. El root es persistente por instancia+perfil (no por operación)
+    para no romper bootstrap de masterlist/settings.
+    """
     if broker is None or instance_id is None:
         return VfsRequiredLootRunner(
             "F8 guard: LOOT requiere el VfsExecutionBroker de MO2/USVFS; no se creara un subprocess standalone."
@@ -291,6 +375,21 @@ def build_vfs_loot_runner(
         return VfsRequiredLootRunner("F8 guard: falta la ruta de datos de MO2 para ejecutar bajo USVFS.")
     resolver = LoadOrderFileResolver(mo2_root=effective_data, profile=profile)
     try:
+        # PR-1: resolver loot_data_path si no viene explícito
+        resolved_loot_data_path = loot_data_path
+        if resolved_loot_data_path is None:
+            try:
+                resolved_loot_data_path = resolve_loot_data_path(
+                    instance_id=instance_id,
+                    profile=profile,
+                    base_dir=loot_data_base,
+                    game_path=game_path,
+                    loot_exe=loot_exe,
+                    mods_dir=mods_dir or (effective_data / "mods"),
+                    data_root=effective_data,
+                )
+            except Exception as exc:
+                return VfsRequiredLootRunner(f"F8 guard / PR-1: no se pudo resolver loot_data_path: {exc}")
         return BrokeredLootRunner(
             broker=broker,
             instance_id=instance_id,
@@ -302,6 +401,8 @@ def build_vfs_loot_runner(
             loot_exe=loot_exe,
             timeout=timeout,
             mutation_targets=lambda: tuple(resolver.resolve().files),
+            loot_data_path=resolved_loot_data_path,
+            loot_data_base=loot_data_base,
         )
     except ValueError as exc:
         # F8: mismo patrón fail-closed que los otros guards del factory —

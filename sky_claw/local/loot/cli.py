@@ -129,6 +129,7 @@ class LOOTConfig:
     game_path: pathlib.Path
     game: str = DEFAULT_LOOT_INTERNAL_GAME_ID
     timeout: int = DEFAULT_TIMEOUT
+    loot_data_path: pathlib.Path | None = None
 
 
 class LOOTNotFoundError(FileNotFoundError):
@@ -234,17 +235,32 @@ class LOOTRunner:
         # TASK-011: Translate game_path to Windows format when under WSL2.
         game_path_win = await translate_path_if_wsl(game_path)
 
+        # PR-1: aislamiento del estado propio de LOOT mediante --loot-data-path.
+        # Ver sky_claw.local.loot.data_root para contrato upstream 0.29.1.
+        # El data root es propiedad de Sky-Claw, absoluto, estable, observable.
+        # Si está presente, debe ser absoluto; si no, el runner legacy no agrega
+        # flag (compat temporal). El productivo brokered fail-closed ANTES del
+        # subprocess si falta (ver BrokeredLootRunner.sort).
+        loot_data_path = self._config.loot_data_path
+        loot_data_path_win: str | None = None
+        if loot_data_path is not None:
+            if not loot_data_path.is_absolute():
+                raise ValueError(f"loot_data_path must be absolute, got {loot_data_path}")
+            loot_data_path_win = await translate_path_if_wsl(loot_data_path)
+
         args = [
             str(loot_path),
             "--game",
             game_cli_id,
             "--game-path",
             game_path_win,
-            # Verificado en loot/loot `src/gui/qt/main.cpp`: las opciones
-            # declaradas son --game, --game-path, --loot-data-path y --auto-sort.
-            # `--sort` no existe y QCommandLineParser rechaza opciones desconocidas.
-            "--auto-sort",
         ]
+        if loot_data_path_win is not None:
+            args.extend(["--loot-data-path", loot_data_path_win])
+        # Verificado en loot/loot `src/gui/qt/main.cpp`: las opciones
+        # declaradas son --game, --game-path, --loot-data-path y --auto-sort.
+        # `--sort` no existe y QCommandLineParser rechaza opciones desconocidas.
+        args.append("--auto-sort")
 
         if update_masterlist:
             logger.warning(
