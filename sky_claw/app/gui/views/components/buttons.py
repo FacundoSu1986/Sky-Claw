@@ -43,7 +43,11 @@ def create_cta_button(
             "rounded-lg cursor-pointer transition-all duration-200"
         )
 
-    button = ui.button().classes(button_classes).props("ripple")
+    # color/text-color = sc-tema (sin clase en Quasar): el primary por defecto de
+    # ui.button trae .bg-primary/.text-white !important en la capa
+    # quasar_importants de NiceGUI 3, que ningún !important sin capa del tema
+    # (.sky-btn-cta, .sky-btn-secondary) puede pisar.
+    button = ui.button().classes(button_classes).props("ripple color=sc-tema text-color=sc-tema")
     with button:
         if icon_svg:
             ui.html(f'<span class="mr-2">{icon_svg}</span>')
