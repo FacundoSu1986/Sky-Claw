@@ -90,6 +90,16 @@ dev = [
     "mypy>=1.10",
     "types-aiofiles",
     "google-genai>=1.0,<2",
+    # NP-M0 (research/native_parallax) importa numpy de forma directa y no estaba
+    # declarado en ningún extra: el gate mypy resolvía np como Any (no-any-return
+    # en synthetic_height._mesh) y la suite saltaba el spike vía importorskip.
+    # Research es dev-only; ningún camino de producción importa
+    # sky_claw.local.native_parallax.research.
+    # <2.5: la línea 2.5.x exige Python >=3.12, así que la matrix py3.11/py3.12
+    # resolvería versiones DISTINTAS (2.4.6 vs 2.5.3) y la pata py3.12 de
+    # windows-latest crashea mypy 2.3.1 al arranque con esos stubs. Un solo
+    # 2.4.x para toda la matrix = mismo entorno y mismo análisis en ambos jobs.
+    "numpy>=1.26,<2.5",
 ]
 
 [tool.pytest.ini_options]
