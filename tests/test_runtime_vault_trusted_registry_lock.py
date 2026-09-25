@@ -18,7 +18,6 @@ El lock NO congela el contenido del Golden: fuera de alcance por diseño (ADR 00
 
 from __future__ import annotations
 
-import hashlib
 import os
 import pathlib
 import subprocess
@@ -72,14 +71,18 @@ from sky_claw.local.runtime_vault.trusted_registry_lock import (
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def _entry(root: str, seed: str) -> TrustedGoldenEntry:
-    """Entry con identidad física ÚNICA por root (el TGR exige unicidad dual)."""
-    ident = hashlib.sha256(root.encode("utf-8")).digest()
-    digest = hashlib.sha256(f"{root}|{seed}".encode()).hexdigest()
+def _entry(root: str, tag: str) -> TrustedGoldenEntry:
+    """Entry con identidad física ÚNICA por root (el TGR exige unicidad dual).
+
+    Derivaciones planas (sin hashlib): los fixtures son fabricados y de baja
+    entropía — jamás material criptográfico real.
+    """
+    root_bytes = root.encode("utf-8")
+    digest = (f"{root}|{tag}".encode().hex() * 3)[:64]
     return TrustedGoldenEntry(
         canonical_root=root,
-        volume_serial_number=int.from_bytes(ident[:8], "big"),
-        root_file_id=int.from_bytes(ident[8:24], "big"),
+        volume_serial_number=int.from_bytes(root_bytes[-8:].ljust(8, b"\x00"), "big"),
+        root_file_id=int.from_bytes(root_bytes[:16].ljust(16, b"\x00"), "big"),
         tree_digest=TreeDigest(digest=digest, files=1, bytes=2),
         policy_version="gp2-v1",
         registered_by="S-1-5-18",
@@ -107,6 +110,10 @@ def _patch_writer_portable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sustituye el writer Win32 por uno portable para flujos RMW completos en POSIX."""
 
     def portable_write(reg: TrustedGoldenRegistry, p: Any) -> None:
+        # codeql[py/clear-text-storage-sensitive-information] -- FP: writer fake de
+        # tests; los bytes son un registry fabricado (SIDs/digests inventados) en el
+        # tmp_path de pytest; cero secretos reales. El writer productivo usa
+        # WriteFile nativo (trusted_registry.py), sink fuera de esta regla.
         pathlib.Path(p).write_bytes(serialize_trusted_golden_registry(reg))
 
     monkeypatch.setattr(tgr_lock_mod, "_write_trusted_registry_atomically_at", portable_write)
@@ -728,6 +735,7 @@ class TestTgrLockApiProductiva:
 # ============================================================================
 
 
+@pytest.mark.timeout(300)
 @pytest.mark.skipif(sys.platform != "win32", reason="Primitiva Win32 nativa (CreateFileW share=0)")
 class TestTgrLockWindowsReal:
     def _prepare(self, tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
