@@ -1070,12 +1070,18 @@ class TestRuntimeCloneSuiteCanonico:
         # autorización privilegiada (todos cableados vía __init__.__all__).
         # GP2-P1 añade operator_verifier_bridge, physical_root y runtime_observation.
         # GP2-P2 añade trusted_registry_lock (global TGR serialization lock).
+        # GP2-P3 agrega critical_expectations, golden_admission,
+        # golden_admission_store y golden_admission_service.
         expected_modules = {
             "__init__",
             "authorization_context",
             "clone",
             "coordinator_identity",
+            "critical_expectations",
             "golden",
+            "golden_admission",
+            "golden_admission_store",
+            "golden_admission_service",
             "golden_mutation_lock",
             "golden_protection_plan",
             "inventory",

@@ -24,7 +24,6 @@ import pathlib
 import re
 import string
 import sys
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -277,6 +276,69 @@ class TrustedGoldenRegistry:
 # ============================================================================
 
 
+def trusted_golden_entry_to_dict(entry: TrustedGoldenEntry) -> dict[str, Any]:
+    """Serializa una entrada TGR al mismo objeto JSON que usa el registro completo.
+
+    §11.4: el registro protegido de Golden Admission conserva las entradas
+    ``before``/``after`` exactas, así que la representación de una entrada
+    tiene que ser la MISMA que la del TGR — no una copia paralela.
+    """
+    return {
+        "VolumeSerialNumber": entry.volume_serial_number,
+        "canonical_root": entry.canonical_root,
+        "policy_version": entry.policy_version,
+        "registered_at": entry.registered_at,
+        "registered_by": entry.registered_by,
+        "root_file_id": entry.root_file_id,
+        "tree_digest": {
+            "bytes": entry.tree_digest.bytes,
+            "digest": entry.tree_digest.digest,
+            "files": entry.tree_digest.files,
+        },
+    }
+
+
+def trusted_golden_entry_from_dict(data: object) -> TrustedGoldenEntry:
+    """Deserializa y valida exhaustivamente una entrada TGR (Fail-Closed, esquema cerrado)."""
+    if not isinstance(data, dict):
+        raise TrustedRegistrySchemaError("Cada elemento de 'entries' debe ser un diccionario")
+
+    item_keys = set(data.keys())
+    if item_keys != _ENTRY_MANDATORY_KEYS:
+        unknown_item = item_keys - _ENTRY_MANDATORY_KEYS
+        missing_item = _ENTRY_MANDATORY_KEYS - item_keys
+        if unknown_item:
+            raise TrustedRegistrySchemaError(f"Clave desconocida en entrada: {unknown_item}")
+        if missing_item:
+            raise TrustedRegistrySchemaError(f"Clave obligatoria ausente en entrada: {missing_item}")
+
+    raw_td = data["tree_digest"]
+    if not isinstance(raw_td, dict):
+        raise TrustedRegistrySchemaError("El campo 'tree_digest' debe ser un diccionario")
+    td_keys = set(raw_td.keys())
+    if td_keys != _TREE_DIGEST_KEYS:
+        unknown_td = td_keys - _TREE_DIGEST_KEYS
+        missing_td = _TREE_DIGEST_KEYS - td_keys
+        if unknown_td:
+            raise TrustedRegistrySchemaError(f"Clave desconocida en tree_digest: {unknown_td}")
+        if missing_td:
+            raise TrustedRegistrySchemaError(f"Clave obligatoria ausente en tree_digest: {missing_td}")
+
+    return TrustedGoldenEntry(
+        canonical_root=data["canonical_root"],
+        volume_serial_number=data["VolumeSerialNumber"],
+        root_file_id=data["root_file_id"],
+        tree_digest=TreeDigest(
+            digest=str(raw_td["digest"]),
+            files=raw_td["files"],
+            bytes=raw_td["bytes"],
+        ),
+        policy_version=data["policy_version"],
+        registered_by=data["registered_by"],
+        registered_at=data["registered_at"],
+    )
+
+
 def serialize_trusted_golden_registry(registry: TrustedGoldenRegistry) -> bytes:
     """Serializa el registro a bytes canónicos UTF-8 de forma determinista y reproducible."""
     # Ordenamiento determinista: por canonical_root.upper(), VolumeSerialNumber, root_file_id
@@ -286,22 +348,7 @@ def serialize_trusted_golden_registry(registry: TrustedGoldenRegistry) -> bytes:
     )
 
     data: dict[str, Any] = {
-        "entries": [
-            {
-                "VolumeSerialNumber": e.volume_serial_number,
-                "canonical_root": e.canonical_root,
-                "policy_version": e.policy_version,
-                "registered_at": e.registered_at,
-                "registered_by": e.registered_by,
-                "root_file_id": e.root_file_id,
-                "tree_digest": {
-                    "bytes": e.tree_digest.bytes,
-                    "digest": e.tree_digest.digest,
-                    "files": e.tree_digest.files,
-                },
-            }
-            for e in sorted_entries
-        ],
+        "entries": [trusted_golden_entry_to_dict(e) for e in sorted_entries],
         "schema_version": registry.schema_version,
     }
 
@@ -353,47 +400,7 @@ def deserialize_trusted_golden_registry(raw: bytes | str) -> TrustedGoldenRegist
 
     entries: list[TrustedGoldenEntry] = []
     for item in raw_entries:
-        if not isinstance(item, dict):
-            raise TrustedRegistrySchemaError("Cada elemento de 'entries' debe ser un diccionario")
-
-        item_keys = set(item.keys())
-        if item_keys != _ENTRY_MANDATORY_KEYS:
-            unknown_item = item_keys - _ENTRY_MANDATORY_KEYS
-            missing_item = _ENTRY_MANDATORY_KEYS - item_keys
-            if unknown_item:
-                raise TrustedRegistrySchemaError(f"Clave desconocida en entrada: {unknown_item}")
-            if missing_item:
-                raise TrustedRegistrySchemaError(f"Clave obligatoria ausente en entrada: {missing_item}")
-
-        # Validar tree_digest
-        raw_td = item["tree_digest"]
-        if not isinstance(raw_td, dict):
-            raise TrustedRegistrySchemaError("El campo 'tree_digest' debe ser un diccionario")
-        td_keys = set(raw_td.keys())
-        if td_keys != _TREE_DIGEST_KEYS:
-            unknown_td = td_keys - _TREE_DIGEST_KEYS
-            missing_td = _TREE_DIGEST_KEYS - td_keys
-            if unknown_td:
-                raise TrustedRegistrySchemaError(f"Clave desconocida en tree_digest: {unknown_td}")
-            if missing_td:
-                raise TrustedRegistrySchemaError(f"Clave obligatoria ausente en tree_digest: {missing_td}")
-
-        tree_digest = TreeDigest(
-            digest=str(raw_td["digest"]),
-            files=raw_td["files"],
-            bytes=raw_td["bytes"],
-        )
-
-        entry = TrustedGoldenEntry(
-            canonical_root=item["canonical_root"],
-            volume_serial_number=item["VolumeSerialNumber"],
-            root_file_id=item["root_file_id"],
-            tree_digest=tree_digest,
-            policy_version=item["policy_version"],
-            registered_by=item["registered_by"],
-            registered_at=item["registered_at"],
-        )
-        entries.append(entry)
+        entries.append(trusted_golden_entry_from_dict(item))
 
     return TrustedGoldenRegistry(entries=tuple(entries), schema_version=schema_version)
 
@@ -486,24 +493,33 @@ def load_trusted_golden_registry(path: pathlib.Path | str) -> TrustedGoldenRegis
     return deserialize_trusted_golden_registry(raw_bytes)
 
 
+def _validar_esquema_tgr(raw: bytes) -> None:
+    """Callback de validación de bytes (contrato ``validate`` de la primitiva atómica).
+
+    Sólo valida: descarta el registro devuelto porque la primitiva espera un
+    callable que no devuelve nada.
+    """
+    deserialize_trusted_golden_registry(raw)
+
+
 def _write_trusted_registry_atomically_at(
     registry: TrustedGoldenRegistry,
     target_path: pathlib.Path | str,
 ) -> None:
     """Escribe de forma atómica el TGR en el mismo directorio protegido (ADR 0010 §11.3 / §11.4).
 
-    Garantías:
-    - Serializa bytes canónicos deterministas.
-    - Crea archivo temporal en el MISMO directorio protegido que el destino.
-    - En Windows: El archivo temporal nace con SECURITY_DESCRIPTOR canónico completo
-      (SYSTEM owner, Administrators group, canonical protected TGR DACL) vía CreateFileW(lpSecurityAttributes)
-      antes de contener ningún dato.
-    - Escribe mediante WriteFile nativo y sincroniza buffers con FlushFileBuffers.
-    - Verifica el temporal por handle antes de reemplazar.
-    - Reemplaza atómicamente con os.replace.
-    - Reabre el archivo final por handle y revalida: sin reparse points, owner SYSTEM,
-      group Administrators, DACL canónica protegida, coincidencia binaria de bytes y validez del esquema.
-    - Limpia el temporal ante cualquier fallo antes de replace sin alterar el archivo previo.
+    La secuencia completa (temporal nacido con SD canónico → WriteFile →
+    FlushFileBuffers → verificación por handle → os.replace → re-verificación →
+    relectura byte a byte + validación de esquema) vive en UNA sola primitiva:
+    ``trusted_namespace.write_secured_file_atomically_at``, compartida con el
+    registro de Golden Admission. Este wrapper sólo aporta lo propio del TGR:
+
+    - el guard de plataforma Windows (fail-closed sin tocar el disco),
+    - su tipo de error histórico (``TrustedRegistryError``),
+    - la validación de esquema vía ``deserialize_trusted_golden_registry``.
+
+    No re-implementa la secuencia: duplicarla es exactamente la forma en que
+    las garantías de un hermano quedan sin aplicar al otro.
     """
     dest = pathlib.Path(target_path)
     if sys.platform != "win32":
@@ -511,73 +527,17 @@ def _write_trusted_registry_atomically_at(
             "_write_trusted_registry_atomically_at solo está soportado en Windows con garantías Win32 de seguridad"
         )
 
-    import ctypes
-    from ctypes import wintypes
-
-    from sky_claw.local.runtime_vault.trusted_namespace import (
-        _check_object_exists_no_reparse,
-        _kernel32,
-        _safe_close_handle,
-        create_secured_file_from_birth,
-        verify_secured_file_by_handle,
-    )
-
-    parent = dest.parent
-    if not _check_object_exists_no_reparse(parent):
-        raise TrustedRegistryError(f"El directorio padre para TGR no existe o no es confiable: '{parent}'")
+    from sky_claw.local.runtime_vault.trusted_namespace import write_secured_file_atomically_at
 
     canonical_bytes = serialize_trusted_golden_registry(registry)
-    temp_path = parent / f".tmp_{uuid.uuid4().hex}.trusted_goldens.json"
-
-    h_temp: int | None = None
-    try:
-        # 1. Crear temporal desde su nacimiento con Security Descriptor canónico
-        h_temp = create_secured_file_from_birth(temp_path, "trusted_goldens.json")
-
-        # Escribir bytes canónicos directamente al handle seguro
-        data_buf = (ctypes.c_char * len(canonical_bytes)).from_buffer_copy(canonical_bytes)
-        bytes_written = wintypes.DWORD(0)
-        if not _kernel32.WriteFile(
-            h_temp,
-            data_buf,
-            len(canonical_bytes),
-            ctypes.byref(bytes_written),
-            None,
-        ) or bytes_written.value != len(canonical_bytes):
-            err = ctypes.get_last_error()
-            raise TrustedRegistryError(f"WriteFile falló en archivo temporal '{temp_path}': código {err}")
-
-        if not _kernel32.FlushFileBuffers(h_temp):
-            err = ctypes.get_last_error()
-            raise TrustedRegistryError(f"FlushFileBuffers falló en '{temp_path}': código {err}")
-
-        _safe_close_handle(h_temp)
-        h_temp = None
-
-        # 2. Verificar temporal por handle antes de reemplazar
-        verify_secured_file_by_handle(temp_path)
-
-        # 3. Reemplazo atómico con os.replace
-        os.replace(temp_path, dest)
-
-        # 4. Reabrir destino por handle y verificar: no reparse, owner SYSTEM, group Administrators, protected DACL
-        verify_secured_file_by_handle(dest)
-
-        # 5. Revalidar bytes canónicos y esquema
-        reloaded_bytes = dest.read_bytes()
-        if reloaded_bytes != canonical_bytes:
-            raise TrustedRegistryError(f"Revalidación post-reemplazo falló: bytes no coinciden en '{dest}'")
-        deserialize_trusted_golden_registry(reloaded_bytes)
-
-    except Exception:
-        if h_temp is not None:
-            _safe_close_handle(h_temp)
-        try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except OSError:
-            pass
-        raise
+    write_secured_file_atomically_at(
+        dest,
+        canonical_bytes,
+        "trusted_goldens.json",
+        validate=_validar_esquema_tgr,
+        error_factory=TrustedRegistryError,
+        parent_error_message=f"El directorio padre para TGR no existe o no es confiable: '{dest.parent}'",
+    )
 
 
 __all__ = [
@@ -596,5 +556,7 @@ __all__ = [
     "deserialize_trusted_golden_registry",
     "load_trusted_golden_registry",
     "serialize_trusted_golden_registry",
+    "trusted_golden_entry_from_dict",
+    "trusted_golden_entry_to_dict",
     "verify_trusted_golden_binding",
 ]
