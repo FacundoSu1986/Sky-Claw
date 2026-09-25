@@ -786,6 +786,26 @@ from sky_claw.local.runtime_vault.trusted_registry_lock import (
     _acquire_trusted_registry_write_lock_at,
     _mutate_trusted_registry_under_lock_at,
 )
+if sys.platform == "win32":
+    # Birth simulado (mismo fixture que TGR-12..15): el SD canónico exige Owner
+    # S-1-5-18 y falla cerrado (1307/1314) en runner no elevado. El sujeto del
+    # hijo es el LOCK share=0, no el birth del registry.
+    import sky_claw.local.runtime_vault.trusted_namespace as _tn
+
+    def _simulated_birth(path, object_name="trusted_goldens.json"):
+        h = _tn._kernel32.CreateFileW(
+            str(path),
+            _tn._GENERIC_READ | _tn._GENERIC_WRITE,
+            0,
+            None,
+            _tn._CREATE_NEW,
+            _tn._FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+        return int(h)
+
+    _tn.create_secured_file_from_birth = _simulated_birth
+    _tn.verify_secured_file_by_handle = lambda p: None
 MARKERS = pathlib.Path(__MARKERS__)
 REG = pathlib.Path(__REG__)
 LOCKS = pathlib.Path(__LOCKS__)
@@ -960,6 +980,42 @@ class TestChildScriptSources:
 @pytest.mark.timeout(300)
 @pytest.mark.skipif(sys.platform != "win32", reason="Primitiva Win32 nativa (CreateFileW share=0)")
 class TestTgrLockWindowsReal:
+    @pytest.fixture(autouse=True)
+    def _setup_simulated_elevated_storage(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Simula elevación (mismo fixture que TGR-12..15): el SD canónico del
+        birth exige Owner S-1-5-18 y falla cerrado (1307/1314) en runner no
+        elevado. El SUJETO de estos tests es el lock (share=0, sin privilegio);
+        el birth canónico del registry vive en test_tgr_unelevated...fails_closed
+        + TGR-12..15 sobre el writer real."""
+        from sky_claw.local.runtime_vault.trusted_namespace import (
+            _CREATE_NEW,
+            _FILE_ATTRIBUTE_NORMAL,
+            _GENERIC_READ,
+            _GENERIC_WRITE,
+            _kernel32,
+        )
+
+        def _simulated_birth(path: pathlib.Path | str, object_name: str = "trusted_goldens.json") -> int:
+            h = _kernel32.CreateFileW(
+                str(path),
+                _GENERIC_READ | _GENERIC_WRITE,
+                0,
+                None,
+                _CREATE_NEW,
+                _FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+            return int(h)
+
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace.create_secured_file_from_birth",
+            _simulated_birth,
+        )
+        monkeypatch.setattr(
+            "sky_claw.local.runtime_vault.trusted_namespace.verify_secured_file_by_handle",
+            lambda p: None,
+        )
+
     def _prepare(self, tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
         from sky_claw.local.runtime_vault.trusted_registry import _write_trusted_registry_atomically_at
 
