@@ -87,6 +87,11 @@ estados con un kernel fake (mismo patrón que ``GoldenLockKernel``).
 GP2 apply NUNCA escribe TGR: este módulo es la primitiva de serialización para
 el futuro flujo privilegiado de registro/refresco (P3). No decide admisión,
 digests, receipts ni semántica REGISTER_OR_REFRESH.
+
+Sincronicidad: la primitiva es SÍNCRONA y bloqueante por diseño (CreateFileW +
+poll dormido; sin wrappers async artificiales). En contextos asyncio (NiceGUI,
+agente LLM) invocarla vía ``asyncio.to_thread`` — AGENTS.md: jamás bloquear el
+event loop.
 """
 
 from __future__ import annotations
@@ -554,7 +559,21 @@ class TrustedRegistryWriteLockHandle:
         return self
 
     def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
-        self.release()
+        """Sale de la sección crítica liberando SIEMPRE el handle exactamente una vez.
+
+        Si el bloque terminó en excepción, un fallo de liberación JAMÁS la
+        reemplaza: la excepción original se preserva (se propagará tal cual) y
+        el fallo de ``CloseHandle`` queda adjunto como nota sobre ella. Sin
+        excepción original, el fallo tipado de liberación se propaga.
+        """
+        if exc_type is None:
+            self.release()
+            return
+        try:
+            self.release()
+        except Exception as close_err:  # noqa: BLE001 - en unwind la excepción original MANDA
+            if isinstance(exc_val, BaseException):
+                exc_val.add_note(f"TGR lock: la liberación falló durante el unwind: {close_err!r}")
 
 
 # ============================================================================
@@ -642,6 +661,9 @@ def acquire_trusted_registry_write_lock(
     (``TrustedRegistryLockOSError``) | REENTRANCY
     (``TrustedRegistryLockReentrancyError``) | UNSUPPORTED (POSIX,
     ``TrustedRegistryUnsupportedError``). BUSY jamás autoriza a escribir.
+
+    Síncrono y bloqueante por diseño: en asyncio usar ``asyncio.to_thread``
+    (AGENTS.md: jamás bloquear el event loop).
     """
     active_kernel: TrustedRegistryLockKernel
     if kernel is None:
@@ -764,6 +786,9 @@ def mutate_trusted_golden_registry(
     Falla tipada fail-closed: BUSY/TIMEOUT, SECURITY, OS, REENTRANCY,
     UNSUPPORTED. Un mutate que no devuelve ``TrustedGoldenRegistry`` se
     rechaza sin escribir. El registro previo NUNCA se altera ante fallo.
+
+    Síncrono y bloqueante por diseño: en asyncio usar ``asyncio.to_thread``
+    (AGENTS.md: jamás bloquear el event loop).
     """
     active_kernel: TrustedRegistryLockKernel
     if kernel is None:

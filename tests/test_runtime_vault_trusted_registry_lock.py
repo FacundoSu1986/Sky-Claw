@@ -457,6 +457,37 @@ class TestTgrLockCicloDeVida:
             self._acquire(kernel, tmp_path, timeout=0.0)
         kernel.fail_close = False
 
+    def test_exit_preserva_excepcion_original_si_close_falla(self, tmp_path: pathlib.Path) -> None:
+        """Unwind: el fallo de liberación JAMÁS reemplaza la excepción original del bloque."""
+        kernel = _FakeLockKernel()
+
+        class BoomError(RuntimeError):
+            """Excepción de dominio de prueba (N818)."""
+
+            def __init__(self, mensaje: str) -> None:
+                super().__init__(mensaje)
+                self.mensaje = mensaje
+
+            def __str__(self) -> str:
+                return self.mensaje
+
+        lock = self._acquire(kernel, tmp_path)
+        kernel.fail_close = True
+        with pytest.raises(BoomError, match="origen") as excinfo, lock:
+            raise BoomError("origen")
+        # La excepción original es LA que se ve; el close fallido quedó como nota:
+        notes = getattr(excinfo.value, "__notes__", [])
+        assert any("la liberación falló" in nota for nota in notes)
+        assert lock.closed is True
+
+    def test_exit_sin_excepcion_propaga_fallo_de_close(self, tmp_path: pathlib.Path) -> None:
+        """Sin excepción original, el fallo tipado de liberación SÍ se propaga."""
+        kernel = _FakeLockKernel()
+        lock = self._acquire(kernel, tmp_path)
+        kernel.fail_close = True
+        with pytest.raises(TrustedRegistryLockOSError), lock:
+            pass
+
     def test_crash_del_dueño_libera_exclusion_el_residual_persiste(self, tmp_path: pathlib.Path) -> None:
         """§14 (modelo): existencia del *.lock residual != LOCK ACTIVE; el kernel reaps al dueño."""
         kernel = _FakeLockKernel()
