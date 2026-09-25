@@ -775,7 +775,7 @@ class TestTgrLockApiProductiva:
 # fragilidad de imports ajenos al dominio.
 _CHILD_BOOTSTRAP = """\
 import pathlib, sys, time, types
-REPO = pathlib.Path("__REPO__")
+REPO = pathlib.Path(__REPO__)
 for _name in ("sky_claw", "sky_claw.local", "sky_claw.local.runtime_vault"):
     _stub = types.ModuleType(_name)
     _stub.__path__ = [str(REPO.joinpath(*_name.split(".")))]
@@ -786,9 +786,9 @@ from sky_claw.local.runtime_vault.trusted_registry_lock import (
     _acquire_trusted_registry_write_lock_at,
     _mutate_trusted_registry_under_lock_at,
 )
-MARKERS = pathlib.Path("__MARKERS__")
-REG = pathlib.Path("__REG__")
-LOCKS = pathlib.Path("__LOCKS__")
+MARKERS = pathlib.Path(__MARKERS__)
+REG = pathlib.Path(__REG__)
+LOCKS = pathlib.Path(__LOCKS__)
 """
 
 # Entry helper compartido por los hijos (identidad física única por root, sin
@@ -868,12 +868,17 @@ time.sleep(300)
 def _render_child_script(
     body: str, repo: pathlib.Path, markers: pathlib.Path, reg: pathlib.Path, locks: pathlib.Path
 ) -> str:
-    """Renderiza la fuente de un script hijo (placeholders literales, sin brace-escaping)."""
+    """Renderiza la fuente de un script hijo.
+
+    Los paths se embeben vía ``repr(str(...))``: literal Python escapado
+    correcto en CUALQUIER OS (en Windows, rutas sin escapar corrompen
+    literales: ``D:\\a`` → BEL, ``\\t`` → TAB).
+    """
     return (
-        _CHILD_BOOTSTRAP.replace("__REPO__", str(repo))
-        .replace("__MARKERS__", str(markers))
-        .replace("__REG__", str(reg))
-        .replace("__LOCKS__", str(locks))
+        _CHILD_BOOTSTRAP.replace("__REPO__", repr(str(repo)))
+        .replace("__MARKERS__", repr(str(markers)))
+        .replace("__REG__", repr(str(reg)))
+        .replace("__LOCKS__", repr(str(locks)))
         + _CHILD_ENTRY_HELPER
         + body
     )
@@ -907,13 +912,36 @@ class TestChildScriptSources:
             compile(src, name, "exec")
             assert "__REPO__" not in src and "__MARKERS__" not in src
 
+    def test_children_paths_windows_escapan_correctamente(self) -> None:
+        """Regresión: rutas Windows embebidas vía repr() — jamás literales sin escapar.
+
+        Un path ``D:\\a\\...\\test_...`` metido en un literal plano corrompe
+        ``\\a``/``\\t``; el render debe producir escapes válidos y el child debe
+        reconstruir EXACTAMENTE la ruta.
+        """
+        win_repo = pathlib.PureWindowsPath("D:/a/Sky-Claw/Sky-Claw")
+        win_markers = pathlib.PureWindowsPath("D:/a/_tmp/.pytest-tmp/test_tgrlock_x/markers")
+        scripts = _all_child_scripts(win_repo, win_markers, win_markers.parent / "r.json", win_markers.parent / "l")
+        for name, src in scripts.items():
+            compile(src, name, "exec")
+        # Ejecuta el bootstrap de writer_a en un subprocess: debe reconstruir REPO/MARKERS exactos.
+        full = scripts["writer_a.py"]
+        head = full.split("from sky_claw.local")[0]
+        markers_line = next(ln for ln in full.splitlines() if ln.startswith("MARKERS = "))
+        check = head + "\n" + markers_line + "\nprint(repr(str(REPO))); print(repr(str(MARKERS)))\n"
+        res = subprocess.run([sys.executable, "-c", check], capture_output=True, text=True, timeout=60)
+        assert res.returncode == 0, res.stderr
+        lines = res.stdout.splitlines()
+        assert lines[0] == repr(str(win_repo))
+        assert lines[1] == repr(str(win_markers))
+
     def test_child_bootstrap_importa_solo_runtime_vault(self) -> None:
         """El stub de paquete del hijo importa runtime_vault sin la capa app (mecanismo real)."""
         child_src = (
-            _CHILD_BOOTSTRAP.replace("__REPO__", str(_REPO_ROOT))
-            .replace("__MARKERS__", str(_REPO_ROOT))
-            .replace("__REG__", str(_REPO_ROOT))
-            .replace("__LOCKS__", str(_REPO_ROOT))
+            _CHILD_BOOTSTRAP.replace("__REPO__", repr(str(_REPO_ROOT)))
+            .replace("__MARKERS__", repr(str(_REPO_ROOT)))
+            .replace("__REG__", repr(str(_REPO_ROOT)))
+            .replace("__LOCKS__", repr(str(_REPO_ROOT)))
             + 'print("BOOTSTRAP_OK", TrustedGoldenRegistry(entries=(), schema_version="1.0").schema_version)\n'
         )
         env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
