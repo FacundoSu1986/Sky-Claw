@@ -39,8 +39,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el log se decodifica como UTF-8 con fallback ANSI (`mbcs`/cp1252) y el
   nombre de salida del merge estático se alinea con el plan
   (`SkyClaw_MergedPatch.esp`). Pendiente: smoke en rig real con SSEEdit.
+- **MO2/USVFS — fingerprint de perfil estable ante la reserialización de `plugins.txt` al lanzar
+  (#633).** El rig real de PR-586C falló cerrado porque `IOrganizer.startApplication` reescribe
+  `plugins.txt` (header, CRLF, encoding System, sin BOM, sin masters oficiales) entre el preview y
+  el worker: 141 B → 96 B con el estado del perfil intacto. `_profile_fingerprint` pasa a hashear
+  `plugins.txt` por su **estado semántico** (plugins habilitados no oficiales, en orden) en el
+  dialecto Creation/SSE probado en `CreationGamePlugins::readPluginList`/`writePluginList`, y solo
+  tolera lo demostrado como neutro: comentarios, líneas vacías, espacios, BOM, LF/CRLF/CR, líneas
+  deshabilitadas (el lector trata "deshabilitado" y "ausente" igual) y líneas de todo
+  `primaryPlugins()` —masters base **y** el contenido de Creation Club que el juego declara en
+  `Skyrim.ccc`—, que se fuerzan `ACTIVE` y el escritor omite (sin asumir por prefijo `cc`: un mod
+  `ccAlgo.esp` no declarado sigue siendo estado). Los nombres se validan como nombres de archivo de
+  Windows (encoding `System`), así que los bytes no ASCII y los espacios interiores —p. ej.
+  `Unofficial Skyrim Special Edition Patch.esp`— son válidos; solo falla cerrado lo indeterminable
+  (control/NUL, metacaracteres, sin extensión de plugin, repetido case-insensitive), y
+  `modlist.txt`, `loadorder.txt` y los `settings.*` siguen crudos. La identidad que entra al
+  payload canónico es la clave normalizada case-insensitive, no la grafía del archivo: en un
+  filesystem case-insensitive `*X.esp` y `*x.esp` son el mismo plugin, y hashearlos distinto
+  volvía a atar el digest a una reescritura sin significado. El digest sube de dominio a `skyclaw-vfs-profile-v2` y las secciones
+  llevan largo explícito (el esquema v1 permitía colisionar dos repartos de bytes distintos).
+  Anclas: `tests/test_vfs_attestation_canonicalization.py`.
 
 ### Added
+- **`sky_claw/local/AGENTS.md` — SOP canónico del pipeline de modding de Skyrim para agentes IA** (orden cronológico de stages xEdit → CAO → BodySlide → Pandora → LOOT → Wrye Bash → Synthesis → No Grass In Objects → TexGen/DynDOLOD, reglas por tool, conflict resolution protocol, critical failure modes, code-editing rules para agentes). Cubre los tres subsistemas gobernados: `sky_claw/local/tools/`, `sky_claw/local/xedit/` y `sky_claw/app/orchestrator/tool_strategies/`. Acompañado de **`sky_claw/app/orchestrator/AGENTS.md`** (pointer que redirige a la SOP para que los agentes que editen el dispatcher la descubran). Referenciados desde el `AGENTS.md` raíz. *Audiencia: cualquier LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) que edite código del pipeline.*
 - **Runtime Vault — global TGR serialization lock (GP2-P2).** Primitiva de
   exclusión cross-process que serializa los ciclos `LOAD → MODIFY → WRITE` sobre
   `trusted_goldens.json` y elimina el lost update entre writers privilegiados

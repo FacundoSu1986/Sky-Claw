@@ -69,6 +69,47 @@ sequenceDiagram
 - El broker valida que perfil, fingerprint, canary, prueba del nieto y outputs
   del resultado correspondan al `VfsJob` aprobado.
 
+### Fingerprint del perfil (v2, #633)
+
+El digest del estado del perfil se versiona como `skyclaw-vfs-profile-v2`. La v1
+hasheaba byte a byte los cinco archivos del perfil y por eso fallo cerrado en el
+rig real de PR-586C: MO2 reserializa `plugins.txt` durante `startApplication`
+(`CreationGamePlugins::writePluginList`: header, CRLF, encoding System, sin BOM,
+solo plugins no primarios) y el perfil paso de 141 B a 96 B sin cambiar que
+plugins carga el motor.
+
+v2 hashea `plugins.txt` por su **estado semantico** y tolera unicamente las
+transformaciones demostradas como neutras en el lector de MO2: comentarios,
+lineas vacias, espacios, BOM, LF/CRLF/CR, lineas sin estrella (para el lector
+"deshabilitado" y "ausente" son el mismo estado) y lineas de todo
+`primaryPlugins()` —los masters base mas el contenido de Creation Club que el
+juego declara en `Skyrim.ccc` (`GameSkyrimSE::CCPlugins()`)—, que el lector
+fuerza `ACTIVE` y el escritor omite. El conjunto primario se deriva del game
+root que cada lado ya recibe (`physical_data_dir` en el preview,
+`virtual_data_dir` en el worker; en produccion ambos son el mismo
+`<juego>/Data`). **No** se usa un prefijo `cc`: un mod `ccAlgo.esp` que el juego
+no declara sigue siendo estado. Sigue siendo estado el conjunto ordenado de
+plugins habilitados no primarios; `modlist.txt`, `loadorder.txt` y los
+`settings.*` siguen crudos.
+
+Los nombres son nombres de archivo de Windows escritos con encoding `System`, no
+texto ASCII: se aceptan los bytes imprimibles de cualquier pagina de codigo
+(espacios interiores incluidos, como `Unofficial Skyrim Special Edition
+Patch.esp`) y se rechaza solo lo que el parser no puede interpretar de forma
+determinista —caracteres de control (UTF-16 ⇒ NULs), metacaracteres de Windows,
+sin extension de plugin, repetido case-insensitive, o sin nombre. El cotejo
+case-insensitive usa `lower()` sobre `latin-1` y no `casefold()`, para no
+colapsar pares que Windows no considera iguales (`Straße.esp`/`Strasse.esp`). La **identidad** que entra al payload canonico es
+esa clave normalizada, no la grafia del archivo: en un filesystem
+case-insensitive `*RigCanary.esp` y `*rigcanary.esp` son el mismo plugin, y el
+digest no puede depender de como lo escribio el ultimo escritor. La garantia
+declarada de la clave es exacta para ASCII y para las paginas de codigo
+occidentales/cirilicas del bloque de letras (cp1252/cp1251) y determinista para
+cualquier otra entrada; no se afirma ser la tabla de mayusculas completa de
+Windows.
+Las secciones del digest llevan largo explicito para que el contenido de un
+archivo no pueda reencuadrar las demas secciones.
+
 ### HITL y rollback
 
 El preview solo calcula la attestation; no mantiene un worker vivo durante la

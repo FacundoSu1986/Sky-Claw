@@ -297,44 +297,6 @@ def crear_arbol_mo2(
     return mo2_root
 
 
-_CI_FAILED_NODEIDS: list[str] = []
-_FAILED_EXPRS: list[str] = []
-
-
-def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Emite cada fallo de test como anotación ::error:: de GitHub Actions.
-
-    Canal diagnóstico: los logs completos de jobs viven en Azure blob storage
-    (no descargables vía API en algunos entornos), pero las anotaciones de
-    check-runs SÍ viajan por api.github.com. Se escribe por fd 2 crudo
-    (os.write — el print() en hooks es tragado por la captura de pytest).
-    Formato mínimo ``::error::msg`` con mensaje percent-encoded. Sólo actúa
-    en CI, sin ruido local.
-    """
-    if report.failed:
-        nodeid = " ".join(report.nodeid.split())
-        _CI_FAILED_NODEIDS.append(nodeid)
-        expr = "no-longrepr"
-        with contextlib.suppress(Exception):
-            expr = " | ".join(report.longreprtext.strip().splitlines()[-3:])[:220]
-        _FAILED_EXPRS.append(f"{nodeid} >> {expr}")
-        if os.environ.get("GITHUB_ACTIONS"):
-            msg = f"CI-FAIL {nodeid[:100]} >> {expr}"
-            enc = msg.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A")
-            os.write(2, f"::error::{enc}\n".encode("utf-8", "replace"))
-            summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-            if summary_path:
-                with open(summary_path, "a", encoding="utf-8") as fh:
-                    fh.write(f"- FAILED `{report.nodeid}`\n\n```\n{expr}\n```\n")
-
-
-def pytest_collectreport(report: pytest.CollectReport) -> None:
-    """Lo mismo para errores de colección (nodeids de módulos con error de import)."""
-    if os.environ.get("GITHUB_ACTIONS") and report.failed:
-        nodeid = " ".join(report.nodeid.split())[:150]
-        print(f"::error::COLLECTION {nodeid}", flush=True)
-
-
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # noqa: ARG001
     """Remove .pytest-tmp after every session to prevent Windows ACL lock buildup.
 
@@ -374,29 +336,16 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # n
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    """Dump diagnóstico CI + fail fast when non-daemon threads survive the session.
+    """Fail fast when non-daemon threads survive the session.
 
-    El dump va por fd 2 CRUDO (os.write, fuera de toda captura de pytest) como
-    workflow-command ::error:: — lectura garantizada vía check-runs annotations
-    aunque el resto del canal se pierda. Incluye failed=N y el line-rate real de
-    coverage.xml (para distinguir fallos de test del gate --cov-fail-under).
+    Leaked aiosqlite worker threads (non-daemon) block interpreter exit, so a
+    single missed ``close()`` turns into a silent hang that burns the full CI
+    job timeout (20 min). ``os._exit(3)`` converts that hang into an immediate,
+    attributable failure. Runs after the terminal summary, controller only.
     """
-    if os.environ.get("GITHUB_ACTIONS"):
-        import xml.etree.ElementTree as ET
-
-        cov_rate = "no-xml"
-        with contextlib.suppress(Exception):
-            cov_rate = ET.parse("coverage.xml").getroot().attrib.get("line-rate", "?")
-        lines = [f"::error::CI-SUMMARY failed={len(_CI_FAILED_NODEIDS)} cov_line_rate={cov_rate}"]
-        lines.extend(f"::error::CI-EXPR {' '.join(e.split())[:200]}" for e in _FAILED_EXPRS[:8])
-        os.write(2, ("\n".join(lines) + "\n").encode("utf-8", "replace"))
-
     if hasattr(config, "workerinput"):
         return  # xdist worker — controller owns the verdict
 
-    # Fail-fast de hilos: aiosqlite worker threads (non-daemon) bloquean la salida
-    # del intérprete — un close() olvidado cuelga el job entero (timeout CI 20 min);
-    # os._exit(3) convierte el cuelgue en fallo atribuible.
     leaked = find_leaked_threads(grace_seconds=2.0)
     if leaked:
         names = ", ".join(f"{t.name!r} (ident={t.ident})" for t in leaked)

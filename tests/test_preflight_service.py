@@ -157,8 +157,9 @@ class TestBloqueoDeMutantes:
         from sky_claw.local.mo2.load_order import LoadOrderFileResolver
         from sky_claw.local.tools.loot_service import LootSortingService
 
-        # Targets observables: el gate físico del servicio exige evidencia de
-        # mutación para reportar éxito (review adversarial #495).
+        # Targets observables: sin ellos el servicio rechaza el sort antes de
+        # ejecutar (review adversarial #495); el éxito exige además el testigo
+        # de ejecución fresco (PR-2).
         load_order_dir = tmp_path / "load_order"
         load_order_dir.mkdir()
         plugins_txt = load_order_dir / "plugins.txt"
@@ -186,11 +187,13 @@ class TestBloqueoDeMutantes:
     @staticmethod
     def _runner_que_reescribe(runner: MagicMock, archivos: tuple[pathlib.Path, pathlib.Path]) -> None:
         from sky_claw.local.loot.parser import LOOTResult
+        from tests._loot_witness import TESTIGO_FRESCO
 
         async def sort_real(**_kwargs: object) -> LOOTResult:
             for archivo in archivos:
                 archivo.write_text("Skyrim.esm\n", encoding="utf-8")
-            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+            # PR-2: corrida atribuible (testigo fresco); mismo contenido → NO_CHANGE.
+            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"], execution_witness=TESTIGO_FRESCO)
 
         runner.sort = AsyncMock(side_effect=sort_real)
 

@@ -14,6 +14,16 @@ PR-0 (contrato de identificador de juego): :attr:`LOOTConfig.game` guarda el
 identificador exacto de ``LOOT.exe --game`` pasa por UNA sola frontera
 (:data:`LOOT_CLI_GAME_IDENTIFIERS` / :func:`to_loot_cli_game_id`), evaluada
 al construir el argv. Ver la evidencia upstream en el docstring de la frontera.
+
+PR-2 (resultado verificable): con el ``--loot-data-path`` aislado de PR-1,
+:meth:`LOOTRunner.sort` prepara la corrida headless ANTES del subprocess —
+atestigua la versión real del binario
+(:mod:`sky_claw.local.loot.binary_version`), fija las claves gestionadas del
+settings (:mod:`sky_claw.local.loot.headless_settings`, incluido
+``lastVersion`` para que no aparezca "First-Time Tips") y arma el testigo de
+ejecución (:mod:`sky_claw.local.loot.execution_witness`) — y lo observa en
+cuanto el proceso terminó. El testigo viaja en ``LOOTResult.execution_witness``;
+el veredicto CHANGED / NO_CHANGE / FAIL lo decide el servicio, no este runner.
 """
 
 from __future__ import annotations
@@ -22,10 +32,20 @@ import asyncio
 import logging
 import pathlib
 from asyncio.exceptions import TimeoutError as AsyncTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
 from sky_claw.app.core.windows_interop import translate_path_if_wsl
+from sky_claw.local.loot.binary_version import LootBinaryVersionError, read_loot_binary_version
+from sky_claw.local.loot.execution_witness import (
+    ArmedExecutionWitness,
+    LootExecutionWitnessError,
+    arm_execution_witness,
+)
+from sky_claw.local.loot.headless_settings import (
+    LootHeadlessSettingsError,
+    ensure_loot_headless_settings,
+)
 from sky_claw.local.loot.parser import LOOTOutputParser, LOOTResult
 from sky_claw.logging_config import subprocess_error_extra
 
@@ -144,6 +164,48 @@ class LOOTTimeoutError(RuntimeError):
         self.timeout = timeout
 
 
+#: PR-2: nombres tipados con los que el worker USVFS transporta las dos
+#: excepciones de ``LOOTRunner.sort`` que no producen ``LOOTResult``
+#: (``tool_result["loot_failure_kind"]``). ``BrokeredLootRunner`` re-lanza la
+#: MISMA excepción, así el servicio mapea una razón por concepto y no por camino
+#: (directo vs USVFS). Congelado por igualdad literal en
+#: ``tests/test_loot_verified_outcome.py``.
+LOOT_FAILURE_KIND_TIMEOUT: Final[str] = "timeout"
+LOOT_FAILURE_KIND_PRECONDITION: Final[str] = "precondition"
+LOOT_FAILURE_KINDS: Final[frozenset[str]] = frozenset({LOOT_FAILURE_KIND_TIMEOUT, LOOT_FAILURE_KIND_PRECONDITION})
+
+
+class LOOTPreconditionError(RuntimeError):
+    """PR-2: una precondición headless falló y LOOT NO se lanzó.
+
+    Cubre las tres preparaciones que ``LOOTRunner`` hace antes del subprocess
+    sobre el data root aislado: atestiguar la versión del binario
+    (:func:`~sky_claw.local.loot.binary_version.read_loot_binary_version`),
+    el settings gestionado
+    (:func:`~sky_claw.local.loot.headless_settings.ensure_loot_headless_settings`)
+    y el armado del testigo
+    (:func:`~sky_claw.local.loot.execution_witness.arm_execution_witness`).
+    Lanzar sin cualquiera de ellas correría una ejecución que se colgaría en
+    un modal o cuya salida 0 no sería atribuible. El worker la transporta como
+    ``loot_failure_kind="precondition"`` y ``BrokeredLootRunner`` la re-lanza,
+    así ambos caminos (directo y USVFS) producen la misma razón tipada.
+    """
+
+
+class LOOTWorkerProtocolError(RuntimeError):
+    """PR-2: el resultado del worker USVFS viola el contrato cerrado de transporte.
+
+    Casos: ``loot_failure_kind`` junto a ``success=True`` (contradicción: el
+    worker sólo lo emite con ``success=False``, ver
+    ``vfs_worker._loot_failure_execution``), un ``loot_failure_kind`` fuera de
+    :data:`LOOT_FAILURE_KINDS`, o un ``execution_witness`` presente que no
+    cumple el schema cerrado v1. Ningún campo de ese resultado es confiable,
+    así que no se re-tipa como timeout/precondición (sería creerle a un campo
+    de un mensaje contradictorio) ni se degrada a un fallo de proceso genérico:
+    el servicio lo reporta como ``PROTOCOL_ERROR`` y revierte el snapshot.
+    """
+
+
 async def _reap_process(proc: asyncio.subprocess.Process, *, timeout: float) -> bool:
     """Observa ``proc.wait()`` hasta terminal pese a cancelaciones repetidas.
 
@@ -210,11 +272,17 @@ class LOOTRunner:
                 masterlist que ya tenga localmente.
 
         Returns:
-            Parsed LOOT result with warnings, errors, and suggested order.
+            Parsed LOOT result with warnings, errors, suggested order and — PR-2,
+            only with an isolated ``loot_data_path`` — the ``execution_witness``
+            observed right after the process exited (``None`` otherwise).
 
         Raises:
             LOOTNotFoundError: If the LOOT executable does not exist.
             LOOTTimeoutError: If LOOT exceeds the configured timeout.
+            LOOTPreconditionError: PR-2 — with an isolated ``loot_data_path``,
+                the binary version could not be attested, or the managed
+                headless settings or the execution witness could not be
+                prepared; LOOT was NOT launched.
             RuntimeError: If LOOT fails for other reasons.
         """
         loot_path = self._config.loot_exe
@@ -268,6 +336,26 @@ class LOOTRunner:
                 "flag válido de LOOT (verificado contra src/gui/qt/main.cpp) y "
                 "MasterlistDownloader no está cableado a este runner; se ordena sin refrescar."
             )
+
+        # PR-2: preparación headless SOLO sobre el data root aislado propiedad de
+        # Sky-Claw (PR-1). Sin él (runner legacy) no se toca el root del GUI del
+        # operador y el resultado sale sin testigo → el servicio nunca lo atribuye.
+        armed_witness: ArmedExecutionWitness | None = None
+        if loot_data_path is not None:
+            try:
+                # Primero la lectura pura: sin versión atestiguada no se escribe
+                # nada (lastVersion = getLootVersion() del binario que se lanza).
+                loot_version = read_loot_binary_version(loot_path)
+                # LOOT crearía el root (createLootDataPath, un nivel), pero el
+                # settings gestionado y el sentinel se escriben ANTES del spawn.
+                loot_data_path.mkdir(parents=True, exist_ok=True)
+                settings_action = ensure_loot_headless_settings(loot_data_path, loot_version=loot_version)
+                # Lo último antes del spawn: la ventana de atribución es
+                # arm → create_subprocess_exec → communicate → observe.
+                armed_witness = arm_execution_witness(loot_data_path)
+            except (OSError, LootBinaryVersionError, LootHeadlessSettingsError, LootExecutionWitnessError) as exc:
+                raise LOOTPreconditionError(str(exc)) from exc
+            logger.info("LOOT headless settings: %s (LOOT %s, %s)", settings_action.value, loot_version, loot_data_path)
 
         logger.info("Running LOOT: %s", " ".join(args))
 
@@ -325,6 +413,9 @@ class LOOTRunner:
                         )
 
         assert proc is not None
+        # PR-2: observar el testigo en cuanto el proceso terminó y fue reapeado,
+        # antes de cualquier otra cosa (ver execution_witness: sólo FRESH atribuye).
+        witness = armed_witness.observe() if armed_witness is not None else None
 
         stdout_text = stdout.decode("utf-8", errors="replace")
         stderr_text = stderr.decode("utf-8", errors="replace")
@@ -343,8 +434,9 @@ class LOOTRunner:
                 ),
             )
 
-        return LOOTOutputParser.parse(
+        parsed = LOOTOutputParser.parse(
             stdout=stdout_text,
             stderr=stderr_text,
             return_code=proc.returncode or 0,
         )
+        return replace(parsed, execution_witness=witness)

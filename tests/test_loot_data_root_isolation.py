@@ -49,6 +49,7 @@ from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
 from sky_claw.local.mo2.vfs_worker import _loot_handler
+from tests._loot_pe import escribir_loot_exe
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -111,9 +112,8 @@ def _entorno(tmp_path: pathlib.Path):
     (profile / "modlist.txt").write_text("+CanaryMod\n", encoding="utf-8-sig")
     (mod / "canary.txt").write_bytes(b"canary")
     (profile / "plugins.txt").write_text("*Skyrim.esm\n", encoding="utf-8")
-    loot = tmp_path / "LOOT" / "LOOT.exe"
-    loot.parent.mkdir(parents=True)
-    loot.write_bytes(b"loot")
+    # PR-2 hardening: PE con VERSIONINFO — el runner atestigua la versión antes de lanzar.
+    loot = escribir_loot_exe(tmp_path / "LOOT" / "LOOT.exe")
     loot_data_base = tmp_path / "state" / "loot"
     loot_data_base.mkdir(parents=True)
     loot_data = loot_data_base / "mo2-abc123" / "Default"
@@ -285,8 +285,7 @@ async def test_t3_worker_rechaza_payload_sin_loot_data_path(tmp_path: pathlib.Pa
 
 @pytest.mark.asyncio
 async def test_t4_pr0_intacto_con_loot_data_path(tmp_path: pathlib.Path) -> None:
-    exe = tmp_path / "LOOT.exe"
-    exe.touch()
+    exe = escribir_loot_exe(tmp_path / "LOOT.exe")
     game = tmp_path / "Skyrim"
     game.mkdir()
     loot_data = tmp_path / "loot_data" / "mo2-abc" / "Default"
@@ -473,8 +472,7 @@ def test_t9_no_dentro_de_forbidden(tmp_path: pathlib.Path) -> None:
 
 @pytest.mark.asyncio
 async def test_t10_argv_frozen_orden(tmp_path: pathlib.Path) -> None:
-    exe = tmp_path / "LOOT.exe"
-    exe.touch()
+    exe = escribir_loot_exe(tmp_path / "LOOT.exe")
     game = tmp_path / "Skyrim"
     game.mkdir()
     loot_data = tmp_path / "loot_data" / "mo2-abc" / "Default"

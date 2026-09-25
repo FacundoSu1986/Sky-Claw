@@ -341,9 +341,10 @@ juego, rutas y perfiles de MO2 y versión por herramienta.
 
 El conjunto de mods habilitados y su orden se derivan de los cinco archivos de estado del perfil
 (`modlist.txt`, `plugins.txt`, `loadorder.txt`, `settings.ini`, `settings.txt`), hasheados por la
-capa de casos sobre un **manifiesto canónico**.
+capa de casos sobre un **manifiesto canónico** (la attestation de #633 hace eso
+mismo, con `plugins.txt` por estado semántico en vez de bytes).
 
-**No se reutiliza `_profile_fingerprint`** (`sky_claw/local/mo2/vfs_attestation.py:140-166`),
+**No se reutiliza `_profile_fingerprint`** (`sky_claw/local/mo2/vfs_attestation.py`),
 aunque hashee esos mismos cinco archivos. Su firma exige `source_mod`, `relative_path` y
 `canary_sha256`, y los mezcla en el digest: el valor queda atado al **archivo canario** que la
 attestation eligió. Eso rompe las dos propiedades que el `environment_id` necesita:
