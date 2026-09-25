@@ -577,14 +577,19 @@ def test_prepare_manual_handoff_no_re_hashea_ni_toca_filesystem(
 def _asegurar_sin_ejecucion(tree: ast.Module, source: str) -> None:
     """Análisis AST anti-ejecución sobre un árbol ya parseado.
 
-    Detecta imports de librerías de ejecución/red, llamadas prohibidas y —desde
-    el finding de CodeRabbit— alias indirectos de ``os.system``: la asignación
-    ``ejecutar = os.system`` no es un ``ast.Call`` y la llamada ``ejecutar(...)``
-    es un ``ast.Name`` ajeno al set prohibido, así que escapaba al guard. Se
-    resuelven también aliases del módulo (``import os as operating_system``) y
-    cadenas de alias (``y = x`` con ``x`` ya vinculado a una referencia
-    prohibida). No se prohíben indiscriminadamente los atributos de ``os``:
-    producción usa legítimamente ``os.fstat`` para fingerprinting.
+    Detecta imports de librerías de ejecución/red, llamadas prohibidas y
+    **cualquier referencia** a primitivas de lanzamiento de procesos del
+    módulo ``os`` (denylist explícita ``prohibited_os_execution_attrs``).
+    La regla es sobre nodos ``ast.Attribute`` cuyo objeto base sea un alias
+    conocido de ``os`` — sin depender de ``ast.Call`` — así que cubre por
+    igual la llamada directa (``os.startfile(...)``), la asignación
+    (``x = os.system``), la anotada (``x: Callable = os.system``), el walrus
+    (``(x := os.system)``), el argumento (``map(os.system, cmds)``) y
+    colecciones (``[os.system]``), incluidos aliases de módulo
+    (``import os as operating_system``). ``from os import <primitiva>``
+    (con o sin alias) se rechaza en el import. No se prohíben
+    indiscriminadamente los atributos de ``os``: producción usa
+    legítimamente ``os.fstat`` para fingerprinting.
     """
     # Prohibición de módulos completos de subprocesos / ejecución / red
     prohibited_modules = {
@@ -608,16 +613,39 @@ def _asegurar_sin_ejecucion(tree: ast.Module, source: str) -> None:
         "assign_kill_on_close_job",
         "system",
     }
+    # Primitivas de lanzamiento de procesos de os (existen en Python 3.11/3.12;
+    # ``startfile`` es win32-only pero se inspecciona fuente cross-platform)
+    prohibited_os_execution_attrs = frozenset(
+        {
+            "system",
+            "popen",
+            "startfile",
+            "fork",
+            "forkpty",
+            "execl",
+            "execle",
+            "execlp",
+            "execlpe",
+            "execv",
+            "execve",
+            "execvp",
+            "execvpe",
+            "spawnl",
+            "spawnle",
+            "spawnlp",
+            "spawnlpe",
+            "spawnv",
+            "spawnve",
+            "spawnvp",
+            "spawnvpe",
+            "posix_spawn",
+            "posix_spawnp",
+        }
+    )
 
     # Registro de módulos importados y sus alias
     module_aliases: dict[str, str] = {}
-    # Nombre local -> referencia prohibida resuelta (p.ej. "os.system")
-    forbidden_bindings: dict[str, str] = {}
-    calls: list[ast.Call] = []
 
-    # Pasada 1: imports, asignaciones-alias y recolección de llamadas.
-    # Las llamadas se verifican en la pasada 2 para que el guard vea primero
-    # todas las asignaciones, sin depender del orden de ast.walk.
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -629,40 +657,24 @@ def _asegurar_sin_ejecucion(tree: ast.Module, source: str) -> None:
                 root_pkg = node.module.split(".")[0]
                 assert root_pkg not in prohibited_modules, f"ImportFrom prohibido: {node.module}"
             for alias in node.names:
+                if node.module is not None and node.module.split(".")[0] == "os":
+                    assert alias.name not in prohibited_os_execution_attrs, f"Import prohibido desde os: {alias.name}"
                 assert alias.name not in prohibited_call_names, f"Import de función prohibida: {alias.name}"
-        elif isinstance(node, ast.Assign):
-            resuelta: str | None = None
-            value = node.value
-            if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
-                owner = module_aliases.get(value.value.id)
-                if owner is not None and f"{owner}.{value.attr}" == "os.system":
-                    resuelta = "os.system"
-            elif isinstance(value, ast.Name):
-                resuelta = forbidden_bindings.get(value.id)
-            if resuelta is not None:
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        forbidden_bindings[target.id] = resuelta
+        # Regla general: TODA referencia Attribute sobre un alias de os con
+        # primitiva de ejecución se rechaza, sin importar el contexto AST
+        # (llamada, asignación, annassign, walrus, argumento, colección).
+        elif isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name):
+                owner = module_aliases.get(node.value.id)
+                if owner == "os" and node.attr in prohibited_os_execution_attrs:
+                    raise AssertionError(f"Uso prohibido de primitiva de ejecución de os: os.{node.attr}")
         elif isinstance(node, ast.Call):
-            calls.append(node)
-
-    # Pasada 2: inspección de llamadas (calificadas como os.system(...) o directas)
-    for node in calls:
-        if isinstance(node.func, ast.Attribute):
-            attr_name = node.func.attr
-            assert attr_name not in prohibited_call_names, f"Llamada a método prohibido: {attr_name}"
-            if isinstance(node.func.value, ast.Name):
-                target_var = node.func.value.id
-                # Verificar si la llamada proviene de un alias de os (e.g. os.system)
-                if module_aliases.get(target_var) == "os" and attr_name == "system":
-                    raise AssertionError("Llamada prohibida detectada: os.system")
-        elif isinstance(node.func, ast.Name):
-            func_name = node.func.id
-            assert func_name not in prohibited_call_names, f"Llamada a función prohibida: {func_name}"
-            if func_name in forbidden_bindings:
-                raise AssertionError(
-                    f"Llamada prohibida vía alias indirecto: {func_name} -> {forbidden_bindings[func_name]}"
-                )
+            if isinstance(node.func, ast.Attribute):
+                attr_name = node.func.attr
+                assert attr_name not in prohibited_call_names, f"Llamada a método prohibido: {attr_name}"
+            elif isinstance(node.func, ast.Name):
+                func_name = node.func.id
+                assert func_name not in prohibited_call_names, f"Llamada a función prohibida: {func_name}"
 
 
 def test_invariante_anti_ejecucion_y_helpers_prohibidos() -> None:
@@ -702,7 +714,7 @@ def _analiza_snippet(snippet: str) -> None:
 
 def test_guard_rechaza_alias_indirecto_de_os_system() -> None:
     """Antes del fix, 'ejecutar = os.system; ejecutar(...)' escapaba al guard AST."""
-    with pytest.raises(AssertionError, match="alias indirecto"):
+    with pytest.raises(AssertionError, match="Uso prohibido de primitiva de ejecución de os"):
         _analiza_snippet(
             "import os\n\n\ndef _mutante() -> None:\n    ejecutar = os.system\n    ejecutar('echo hueco')\n"
         )
@@ -710,7 +722,7 @@ def test_guard_rechaza_alias_indirecto_de_os_system() -> None:
 
 def test_guard_rechaza_alias_de_modulo_os() -> None:
     """El hueco también existe vía alias de módulo: import os as operating_system."""
-    with pytest.raises(AssertionError, match="alias indirecto"):
+    with pytest.raises(AssertionError, match="Uso prohibido de primitiva de ejecución de os"):
         _analiza_snippet(
             "import os as operating_system\n"
             "\n"
@@ -723,7 +735,7 @@ def test_guard_rechaza_alias_de_modulo_os() -> None:
 
 def test_guard_rechaza_cadena_de_alias() -> None:
     """Reenlazar un alias ya prohibido (y = ejecutar) tampoco escapa."""
-    with pytest.raises(AssertionError, match="alias indirecto"):
+    with pytest.raises(AssertionError, match="Uso prohibido de primitiva de ejecución de os"):
         _analiza_snippet(
             "import os\n"
             "\n"
@@ -745,6 +757,67 @@ def test_guard_permite_os_fstat_y_atributos_legitimos() -> None:
 def test_guard_permite_alias_inofensivo_de_atributo_os() -> None:
     """Alias de atributos de os no prohibidos (getenv) sigue permitido."""
     _analiza_snippet("import os\n\n\ndef _legitimo() -> str | None:\n    leer = os.getenv\n    return leer('PATH')\n")
+
+
+# ------------------------------------- round 2 (CodeRabbit): primitivas de os, cualquier forma AST
+
+
+@pytest.mark.parametrize("attr", ["startfile", "popen", "execv", "spawnl", "posix_spawn"])
+def test_guard_rechaza_llamada_directa_de_cada_primitiva_os(attr: str) -> None:
+    """A/B + variantes: os.startfile/os.popen/os.execv/os.spawnl/os.posix_spawn(...) directo."""
+    with pytest.raises(AssertionError, match="Uso prohibido de primitiva de ejecución de os"):
+        _analiza_snippet(f"import os\n\n\ndef _mutante() -> None:\n    os.{attr}('x')\n")
+
+
+def test_guard_rechaza_annassign_os_system() -> None:
+    """C: asignación anotada x: Callable = os.system tampoco escapa."""
+    with pytest.raises(AssertionError, match="Uso prohibido de primitiva de ejecución de os"):
+        _analiza_snippet(
+            "from typing import Callable\n"
+            "import os\n"
+            "\n"
+            "\n"
+            "def _mutante() -> None:\n"
+            "    ejecutar: Callable[[str], int] = os.system\n"
+            "    ejecutar('x')\n"
+        )
+
+
+def test_guard_rechaza_walrus_os_system() -> None:
+    """D: (x := os.system) es un NamedExpr cuyo value es el Attribute prohibido."""
+    with pytest.raises(AssertionError, match="Uso prohibido de primitiva de ejecución de os"):
+        _analiza_snippet("import os\n\n\ndef _mutante() -> None:\n    (ejecutar := os.system)\n")
+
+
+def test_guard_rechaza_os_system_como_argumento_de_map() -> None:
+    """E: map(os.system, cmds) — la primitiva es argumento, no Call.func."""
+    with pytest.raises(AssertionError, match="Uso prohibido de primitiva de ejecución de os"):
+        _analiza_snippet("import os\n\n\ndef _mutante(cmds: list[str]) -> None:\n    list(map(os.system, cmds))\n")
+
+
+def test_guard_rechaza_os_system_en_coleccion() -> None:
+    """Colecciones: [os.system] contiene el Attribute prohibido igual."""
+    with pytest.raises(AssertionError, match="Uso prohibido de primitiva de ejecución de os"):
+        _analiza_snippet("import os\n\n\nfuncs = [os.system]\n")
+
+
+def test_guard_rechaza_alias_de_modulo_os_execv() -> None:
+    """F variante: import os as operating_system; x = operating_system.execv."""
+    with pytest.raises(AssertionError, match="Uso prohibido de primitiva de ejecución de os"):
+        _analiza_snippet("import os as operating_system\n\n\ndef _mutante() -> None:\n    x = operating_system.execv\n")
+
+
+def test_guard_rechaza_from_os_import_system_con_alias() -> None:
+    """G: from os import system as ejecutar — binding bare de primitiva."""
+    with pytest.raises(AssertionError, match="Import prohibido desde os"):
+        _analiza_snippet("from os import system as ejecutar\n")
+
+
+@pytest.mark.parametrize("attr", ["startfile", "execv", "posix_spawn"])
+def test_guard_rechaza_from_os_import_primitivas(attr: str) -> None:
+    """from os import <primitiva> se rechaza en el import, con o sin alias."""
+    with pytest.raises(AssertionError, match="Import prohibido desde os"):
+        _analiza_snippet(f"from os import {attr}\n")
 
 
 # =============================================================================
