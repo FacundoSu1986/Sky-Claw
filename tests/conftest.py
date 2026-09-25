@@ -297,6 +297,18 @@ def crear_arbol_mo2(
     return mo2_root
 
 
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Emite cada fallo de test como anotación ::error:: de GitHub Actions.
+
+    Canal diagnóstico: los logs completos de jobs viven en Azure blob storage
+    (no descargables vía API en algunos entornos), pero las anotaciones de
+    check-runs SÍ viajan por api.github.com. Sólo actúa en CI, sin ruido local.
+    """
+    if os.environ.get("GITHUB_ACTIONS") and report.failed:
+        nodeid = " ".join(report.nodeid.split())[:180]
+        print(f"::error title=pytest failed::{nodeid}", flush=True)
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # noqa: ARG001
     """Remove .pytest-tmp after every session to prevent Windows ACL lock buildup.
 

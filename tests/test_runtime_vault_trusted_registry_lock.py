@@ -982,6 +982,8 @@ class TestTgrLockWindowsReal:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
             cwd=str(_REPO_ROOT),
         )
