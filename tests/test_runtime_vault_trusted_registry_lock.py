@@ -22,7 +22,6 @@ import os
 import pathlib
 import subprocess
 import sys
-import textwrap
 import threading
 import time
 from typing import Any
@@ -734,6 +733,166 @@ class TestTgrLockApiProductiva:
 # TGRLOCK-10..13: Windows REAL (procesos reales, CreateFileW real)
 # ============================================================================
 
+# Bootstrap de procesos hijos: instala stubs de paquete con __path__ para
+# importar SÓLO runtime_vault (models/trusted_registry/trusted_registry_lock) sin
+# pagar la importación completa de la capa app (aiohttp/nicegui/...). El proceso
+# hijo de los oráculos sólo necesita la primitiva: arranque ~2 s y cero
+# fragilidad de imports ajenos al dominio.
+_CHILD_BOOTSTRAP = """\
+import pathlib, sys, time, types
+REPO = pathlib.Path("__REPO__")
+for _name in ("sky_claw", "sky_claw.local", "sky_claw.local.runtime_vault"):
+    _stub = types.ModuleType(_name)
+    _stub.__path__ = [str(REPO.joinpath(*_name.split(".")))]
+    sys.modules[_name] = _stub
+from sky_claw.local.runtime_vault.models import TreeDigest
+from sky_claw.local.runtime_vault.trusted_registry import TrustedGoldenEntry, TrustedGoldenRegistry
+from sky_claw.local.runtime_vault.trusted_registry_lock import (
+    _acquire_trusted_registry_write_lock_at,
+    _mutate_trusted_registry_under_lock_at,
+)
+MARKERS = pathlib.Path("__MARKERS__")
+REG = pathlib.Path("__REG__")
+LOCKS = pathlib.Path("__LOCKS__")
+"""
+
+# Entry helper compartido por los hijos (identidad física única por root, sin
+# hashlib — fixtures fabricados de baja entropía, nunca material criptográfico).
+_CHILD_ENTRY_HELPER = """\
+def entry(root, tag):
+    root_bytes = root.encode("utf-8")
+    digest = (f"{root}|{tag}".encode().hex() * 3)[:64]
+    return TrustedGoldenEntry(
+        canonical_root=root,
+        volume_serial_number=int.from_bytes(root_bytes[-8:].ljust(8, b"\\x00"), "big"),
+        root_file_id=int.from_bytes(root_bytes[:16].ljust(16, b"\\x00"), "big"),
+        tree_digest=TreeDigest(digest=digest, files=1, bytes=2),
+        policy_version="gp2-v1",
+        registered_by="S-1-5-18",
+        registered_at="2026-01-01T00:00:00Z",
+    )
+"""
+
+_CHILD_WRITER_A_BODY = """\
+def mutate_a(current):
+    (MARKERS / "a_in_cs").write_text("1")
+    deadline = time.monotonic() + 60
+    while not (MARKERS / "b_attempted").exists():
+        if time.monotonic() > deadline:
+            raise SystemExit(3)
+        time.sleep(0.01)
+    time.sleep(1.0)
+    return TrustedGoldenRegistry(
+        entries=tuple(current.entries) + (entry("C:\\\\GoldenA", "a"),),
+        schema_version="1.0",
+    )
+
+_mutate_trusted_registry_under_lock_at(LOCKS, REG, mutate_a, timeout=60)
+"""
+
+_CHILD_WRITER_B_BODY = """\
+def mutate_b(current):
+    roots = {e.canonical_root.upper() for e in current.entries}
+    if "C:\\\\GOLDENA" not in roots:
+        raise SystemExit(42)
+    (MARKERS / "b_saw_a").write_text("1")
+    return TrustedGoldenRegistry(
+        entries=tuple(current.entries) + (entry("C:\\\\GoldenB", "b"),),
+        schema_version="1.0",
+    )
+
+deadline = time.monotonic() + 60
+while not (MARKERS / "a_in_cs").exists():
+    if time.monotonic() > deadline:
+        raise SystemExit(4)
+    time.sleep(0.01)
+(MARKERS / "b_attempted").write_text("1")
+_mutate_trusted_registry_under_lock_at(LOCKS, REG, mutate_b, timeout=60)
+"""
+
+_CHILD_HOLDER_BODY = """\
+def mutate_hold(current):
+    (MARKERS / "a_holding").write_text("1")
+    deadline = time.monotonic() + 60
+    while not (MARKERS / "a_release").exists():
+        if time.monotonic() > deadline:
+            raise SystemExit(5)
+        time.sleep(0.01)
+    return current
+
+_mutate_trusted_registry_under_lock_at(LOCKS, REG, mutate_hold, timeout=60)
+"""
+
+_CHILD_CRASHHOLDER_BODY = """\
+lock = _acquire_trusted_registry_write_lock_at(LOCKS, REG, timeout=10)
+(MARKERS / "child_acquired").write_text("1")
+time.sleep(300)
+"""
+
+
+def _render_child_script(
+    body: str, repo: pathlib.Path, markers: pathlib.Path, reg: pathlib.Path, locks: pathlib.Path
+) -> str:
+    """Renderiza la fuente de un script hijo (placeholders literales, sin brace-escaping)."""
+    return (
+        _CHILD_BOOTSTRAP.replace("__REPO__", str(repo))
+        .replace("__MARKERS__", str(markers))
+        .replace("__REG__", str(reg))
+        .replace("__LOCKS__", str(locks))
+        + _CHILD_ENTRY_HELPER
+        + body
+    )
+
+
+def _all_child_scripts(
+    repo: pathlib.Path, markers: pathlib.Path, reg: pathlib.Path, locks: pathlib.Path
+) -> dict[str, str]:
+    base = dict(repo=repo, markers=markers, reg=reg, locks=locks)
+    return {
+        "writer_a.py": _render_child_script(_CHILD_WRITER_A_BODY, **base),
+        "writer_b.py": _render_child_script(_CHILD_WRITER_B_BODY, **base),
+        "holder.py": _render_child_script(_CHILD_HOLDER_BODY, **base),
+        "crashholder.py": _render_child_script(_CHILD_CRASHHOLDER_BODY, **base),
+    }
+
+
+class TestChildScriptSources:
+    """Anclas portables de los scripts hijos (corrían ANTES sólo en Windows)."""
+
+    def test_children_compilan(self) -> None:
+        """Cada script hijo renderiza a sintaxis Python válida (caza regresiones de quoting)."""
+        scripts = _all_child_scripts(
+            pathlib.Path("X:/repo"),
+            pathlib.Path("X:/tmp/markers"),
+            pathlib.Path("X:/tmp/trusted_goldens.json"),
+            pathlib.Path("X:/tmp/locks"),
+        )
+        assert set(scripts) == {"writer_a.py", "writer_b.py", "holder.py", "crashholder.py"}
+        for name, src in scripts.items():
+            compile(src, name, "exec")
+            assert "__REPO__" not in src and "__MARKERS__" not in src
+
+    def test_child_bootstrap_importa_solo_runtime_vault(self) -> None:
+        """El stub de paquete del hijo importa runtime_vault sin la capa app (mecanismo real)."""
+        child_src = (
+            _CHILD_BOOTSTRAP.replace("__REPO__", str(_REPO_ROOT))
+            .replace("__MARKERS__", str(_REPO_ROOT))
+            .replace("__REG__", str(_REPO_ROOT))
+            .replace("__LOCKS__", str(_REPO_ROOT))
+            + 'print("BOOTSTRAP_OK", TrustedGoldenRegistry(entries=(), schema_version="1.0").schema_version)\n'
+        )
+        env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+        res = subprocess.run(
+            [sys.executable, "-c", child_src],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+            cwd=str(_REPO_ROOT),
+        )
+        assert res.returncode == 0, res.stderr
+        assert "BOOTSTRAP_OK 1.0" in res.stdout
+
 
 @pytest.mark.timeout(300)
 @pytest.mark.skipif(sys.platform != "win32", reason="Primitiva Win32 nativa (CreateFileW share=0)")
@@ -749,18 +908,22 @@ class TestTgrLockWindowsReal:
         _write_trusted_registry_atomically_at(TrustedGoldenRegistry(entries=(), schema_version="1.0"), reg_path)
         return locks, markers, reg_path
 
-    def _spawn(self, script_path: pathlib.Path, timeout: int = 90) -> subprocess.CompletedProcess[str]:
-        env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
-        return subprocess.run(
+    def _start_child(
+        self, tmp_path: pathlib.Path, name: str, markers: pathlib.Path, reg: pathlib.Path, locks: pathlib.Path
+    ) -> subprocess.Popen[str]:
+        src = _all_child_scripts(_REPO_ROOT, markers, reg, locks)[name]
+        script_path = tmp_path / name
+        script_path.write_text(src, encoding="utf-8")
+        return subprocess.Popen(
             [sys.executable, str(script_path)],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            env=env,
+            env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
             cwd=str(_REPO_ROOT),
         )
 
-    def _wait_marker(self, markers: pathlib.Path, name: str, timeout: float = 30.0) -> None:
+    def _wait_marker(self, markers: pathlib.Path, name: str, timeout: float = 90.0) -> None:
         deadline = time.monotonic() + timeout
         while not (markers / name).exists():
             if time.monotonic() > deadline:
@@ -776,121 +939,11 @@ class TestTgrLockWindowsReal:
         si no, exit 42 = lost update), agrega B, escribe R+A+B. Final contiene A y B.
         """
         locks, markers, reg_path = self._prepare(tmp_path)
-
-        writer_a = tmp_path / "writer_a.py"
-        writer_a.write_text(
-            textwrap.dedent(
-                f"""
-                import pathlib, sys, time
-                sys.path.insert(0, r"{_REPO_ROOT}")
-                from sky_claw.local.runtime_vault.models import TreeDigest
-                from sky_claw.local.runtime_vault.trusted_registry import TrustedGoldenEntry, TrustedGoldenRegistry
-                from sky_claw.local.runtime_vault.trusted_registry_lock import _mutate_trusted_registry_under_lock_at
-
-                MARKERS = pathlib.Path(r"{markers}")
-                REG = pathlib.Path(r"{reg_path}")
-                LOCKS = pathlib.Path(r"{locks}")
-
-                def entry(root, ch):
-                    import hashlib
-                    ident = hashlib.sha256(root.encode("utf-8")).digest()
-                    return TrustedGoldenEntry(
-                        canonical_root=root,
-                        volume_serial_number=int.from_bytes(ident[:8], "big"),
-                        root_file_id=int.from_bytes(ident[8:24], "big"),
-                        tree_digest=TreeDigest(digest=hashlib.sha256((root + ch).encode()).hexdigest(), files=1, bytes=2),
-                        policy_version="gp2-v1",
-                        registered_by="S-1-5-18",
-                        registered_at="2026-01-01T00:00:00Z",
-                    )
-
-                def mutate_a(current):
-                    (MARKERS / "a_in_cs").write_text("1")
-                    deadline = time.monotonic() + 60
-                    while not (MARKERS / "b_attempted").exists():
-                        if time.monotonic() > deadline:
-                            raise SystemExit(3)
-                        time.sleep(0.01)
-                    time.sleep(1.0)
-                    return TrustedGoldenRegistry(
-                        entries=tuple(current.entries) + (entry("C:\\\\GoldenA", "a"),),
-                        schema_version="1.0",
-                    )
-
-                _mutate_trusted_registry_under_lock_at(LOCKS, REG, mutate_a, timeout=60)
-                """
-            ),
-            encoding="utf-8",
-        )
-
-        writer_b = tmp_path / "writer_b.py"
-        writer_b.write_text(
-            textwrap.dedent(
-                f"""
-                import pathlib, sys, time
-                sys.path.insert(0, r"{_REPO_ROOT}")
-                from sky_claw.local.runtime_vault.models import TreeDigest
-                from sky_claw.local.runtime_vault.trusted_registry import TrustedGoldenEntry, TrustedGoldenRegistry
-                from sky_claw.local.runtime_vault.trusted_registry_lock import _mutate_trusted_registry_under_lock_at
-
-                MARKERS = pathlib.Path(r"{markers}")
-                REG = pathlib.Path(r"{reg_path}")
-                LOCKS = pathlib.Path(r"{locks}")
-
-                def entry(root, ch):
-                    import hashlib
-                    ident = hashlib.sha256(root.encode("utf-8")).digest()
-                    return TrustedGoldenEntry(
-                        canonical_root=root,
-                        volume_serial_number=int.from_bytes(ident[:8], "big"),
-                        root_file_id=int.from_bytes(ident[8:24], "big"),
-                        tree_digest=TreeDigest(digest=hashlib.sha256((root + ch).encode()).hexdigest(), files=1, bytes=2),
-                        policy_version="gp2-v1",
-                        registered_by="S-1-5-18",
-                        registered_at="2026-01-01T00:00:00Z",
-                    )
-
-                def mutate_b(current):
-                    roots = {{e.canonical_root.upper() for e in current.entries}}
-                    if "C:\\\\GOLDENA" not in roots:
-                        raise SystemExit(42)
-                    (MARKERS / "b_saw_a").write_text("1")
-                    return TrustedGoldenRegistry(
-                        entries=tuple(current.entries) + (entry("C:\\\\GoldenB", "b"),),
-                        schema_version="1.0",
-                    )
-
-                deadline = time.monotonic() + 60
-                while not (MARKERS / "a_in_cs").exists():
-                    if time.monotonic() > deadline:
-                        raise SystemExit(4)
-                    time.sleep(0.01)
-                (MARKERS / "b_attempted").write_text("1")
-                _mutate_trusted_registry_under_lock_at(LOCKS, REG, mutate_b, timeout=60)
-                """
-            ),
-            encoding="utf-8",
-        )
-
-        proc_a = subprocess.Popen(
-            [sys.executable, str(writer_a)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
-            cwd=str(_REPO_ROOT),
-        )
+        proc_a = self._start_child(tmp_path, "writer_a.py", markers, reg_path, locks)
         self._wait_marker(markers, "a_in_cs")
-        proc_b = subprocess.Popen(
-            [sys.executable, str(writer_b)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
-            cwd=str(_REPO_ROOT),
-        )
-        out_a, err_a = proc_a.communicate(timeout=90)
-        out_b, err_b = proc_b.communicate(timeout=90)
+        proc_b = self._start_child(tmp_path, "writer_b.py", markers, reg_path, locks)
+        out_a, err_a = proc_a.communicate(timeout=240)
+        out_b, err_b = proc_b.communicate(timeout=240)
         assert proc_a.returncode == 0, f"A falló: {err_a}"
         assert proc_b.returncode == 0, f"B falló (42 = LOST UPDATE): rc={proc_b.returncode}\n{err_b}"
         assert (markers / "b_saw_a").exists()
@@ -901,42 +954,7 @@ class TestTgrLockWindowsReal:
     def test_tgrlock_11_contencion_real_segundo_writer_no_entra(self, tmp_path: pathlib.Path) -> None:
         """TGRLOCK-11 / §25: con A reteniendo el lock, B NO entra a la sección crítica."""
         locks, markers, reg_path = self._prepare(tmp_path)
-
-        holder = tmp_path / "holder.py"
-        holder.write_text(
-            textwrap.dedent(
-                f"""
-                import pathlib, sys, time
-                sys.path.insert(0, r"{_REPO_ROOT}")
-                from sky_claw.local.runtime_vault.trusted_registry_lock import _mutate_trusted_registry_under_lock_at
-
-                MARKERS = pathlib.Path(r"{markers}")
-                REG = pathlib.Path(r"{reg_path}")
-                LOCKS = pathlib.Path(r"{locks}")
-
-                def mutate_hold(current):
-                    (MARKERS / "a_holding").write_text("1")
-                    deadline = time.monotonic() + 60
-                    while not (MARKERS / "a_release").exists():
-                        if time.monotonic() > deadline:
-                            raise SystemExit(5)
-                        time.sleep(0.01)
-                    return current
-
-                _mutate_trusted_registry_under_lock_at(LOCKS, REG, mutate_hold, timeout=60)
-                """
-            ),
-            encoding="utf-8",
-        )
-
-        proc = subprocess.Popen(
-            [sys.executable, str(holder)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
-            cwd=str(_REPO_ROOT),
-        )
+        proc = self._start_child(tmp_path, "holder.py", markers, reg_path, locks)
         try:
             self._wait_marker(markers, "a_holding")
             # B (este proceso) intenta adquirir mientras A sostiene: BUSY acotado.
@@ -944,7 +962,7 @@ class TestTgrLockWindowsReal:
                 _acquire_trusted_registry_write_lock_at(locks, reg_path, timeout=0.3)
         finally:
             (markers / "a_release").write_text("1")
-            _, err = proc.communicate(timeout=90)
+            _, err = proc.communicate(timeout=240)
         assert proc.returncode == 0, err
 
         # Tras el release de A, este proceso adquiere sin limpieza manual (§26):
@@ -954,35 +972,7 @@ class TestTgrLockWindowsReal:
     def test_tgrlock_12_crash_release_real(self, tmp_path: pathlib.Path) -> None:
         """TGRLOCK-12 / §28: el dueño muere => el kernel libera; el residual NO bloquea."""
         locks, markers, reg_path = self._prepare(tmp_path)
-
-        crashholder = tmp_path / "crashholder.py"
-        crashholder.write_text(
-            textwrap.dedent(
-                f"""
-                import pathlib, sys, time
-                sys.path.insert(0, r"{_REPO_ROOT}")
-                from sky_claw.local.runtime_vault.trusted_registry_lock import _acquire_trusted_registry_write_lock_at
-
-                MARKERS = pathlib.Path(r"{markers}")
-                REG = pathlib.Path(r"{reg_path}")
-                LOCKS = pathlib.Path(r"{locks}")
-
-                lock = _acquire_trusted_registry_write_lock_at(LOCKS, REG, timeout=10)
-                (MARKERS / "child_acquired").write_text("1")
-                time.sleep(300)
-                """
-            ),
-            encoding="utf-8",
-        )
-
-        proc = subprocess.Popen(
-            [sys.executable, str(crashholder)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "PYTHONPATH": str(_REPO_ROOT)},
-            cwd=str(_REPO_ROOT),
-        )
+        proc = self._start_child(tmp_path, "crashholder.py", markers, reg_path, locks)
         self._wait_marker(markers, "child_acquired")
         proc.kill()
         proc.wait(timeout=30)
@@ -1030,7 +1020,14 @@ class TestTgrLockWindowsReal:
         locks, _markers, reg_path = self._prepare(tmp_path)
 
         class BoomError(RuntimeError):
-            pass
+            """Excepción de dominio de prueba (N818)."""
+
+            def __init__(self, mensaje: str) -> None:
+                super().__init__(mensaje)
+                self.mensaje = mensaje
+
+            def __str__(self) -> str:
+                return self.mensaje
 
         def boom(_current: TrustedGoldenRegistry) -> TrustedGoldenRegistry:
             raise BoomError("origen")
