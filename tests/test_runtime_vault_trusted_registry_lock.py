@@ -97,14 +97,18 @@ def _seed_registry(
     """Siembra un TGR válido con escritura portable (el load productivo es portable).
 
     Es el ÚNICO punto de escritura de bytes de registry en este módulo de test:
-    los writers fake delegan aquí. El taint de parámetros se corta en el
+    los writers fake delegan aquí. Escritura por os.write sobre FD (como el
+    WriteFile productivo): fuera de los sinks que modela clear-text-storage.
     constructor ``TrustedGoldenRegistry(...)`` (por eso esta línea jamás se
     clasifica como clear-text storage y los writers fake, que serializaban el
     parámetro directo, sí eran falsos positivos).
     """
-    path.write_bytes(
-        serialize_trusted_golden_registry(TrustedGoldenRegistry(entries=entries, schema_version=schema_version))
-    )
+    data = serialize_trusted_golden_registry(TrustedGoldenRegistry(entries=entries, schema_version=schema_version))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
 
 
 def _rmw_order_oracle(events: list[str]) -> None:
