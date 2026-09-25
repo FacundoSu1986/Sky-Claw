@@ -302,11 +302,24 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
     Canal diagnóstico: los logs completos de jobs viven en Azure blob storage
     (no descargables vía API en algunos entornos), pero las anotaciones de
-    check-runs SÍ viajan por api.github.com. Sólo actúa en CI, sin ruido local.
+    check-runs SÍ viajan por api.github.com. Formato mínimo ``::error::msg``
+    (sin title: los valores con espacios sin escapar rompen el parser de
+    workflow-commands). Sólo actúa en CI, sin ruido local.
     """
     if os.environ.get("GITHUB_ACTIONS") and report.failed:
-        nodeid = " ".join(report.nodeid.split())[:180]
-        print(f"::error title=pytest failed::{nodeid}", flush=True)
+        nodeid = " ".join(report.nodeid.split())[:150]
+        print(f"::error::{nodeid}", flush=True)
+        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write(f"- FAILED `{report.nodeid}`\n")
+
+
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    """Lo mismo para errores de colección (nodeids de módulos con error de import)."""
+    if os.environ.get("GITHUB_ACTIONS") and report.failed:
+        nodeid = " ".join(report.nodeid.split())[:150]
+        print(f"::error::COLLECTION {nodeid}", flush=True)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # noqa: ARG001
