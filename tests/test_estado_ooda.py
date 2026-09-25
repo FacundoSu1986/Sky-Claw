@@ -93,6 +93,14 @@ _ITEMS = frozenset(
         # externos se reconcilia al arrancar desde el registro durable, con el
         # legacy en su propio productor recovery-only.
         "Recovery de arranque de los ACTIVE_TARGET externos (PR-2 P2.3)",
+        # PR #637: la deuda NO se cierra, se declara. `quick_auto_clean` reporta
+        # `manual_pending` cuando Dawnguard entra en `cleaned`, pero ninguna
+        # superficie bloquea el master hasta que el operador confirme la limpieza
+        # y el handoff no sobrevive un reinicio. Anclas hermanas:
+        # `test_xedit_quick_clean.py` (contraste con el texto del SOP) y
+        # `test_quick_auto_clean_strategy.py` (pass-through del campo en el camino
+        # de la estrategia).
+        "Deuda manual de Dawnguard en QuickAutoClean (SOP `local/AGENTS.md` §2.1)",
     }
 )
 
