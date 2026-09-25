@@ -116,8 +116,8 @@ class _LockManagerObservador(DistributedLockManager):
             await asyncio.wait_for(self._esperar_release.wait(), timeout=30)
         return await super().acquire_lock(resource_id=resource_id, agent_id=agent_id, ttl=ttl)
 
-    async def release_lock(self, resource_id: str, agent_id: str) -> bool:  # type: ignore[override]
-        resultado = await super().release_lock(resource_id=resource_id, agent_id=agent_id)
+    async def release_lock(self, resource_id: str, agent_id: str, *, acquired_at: float | None = None) -> bool:  # type: ignore[override]
+        resultado = await super().release_lock(resource_id=resource_id, agent_id=agent_id, acquired_at=acquired_at)
         if resource_id == "dyndolod-pipeline":
             self._eventos["liberado"].set()
         return resultado

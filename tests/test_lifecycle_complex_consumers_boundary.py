@@ -652,9 +652,9 @@ async def test_dlm_metodos_migrados_funcionan_con_lifecycle(tmp_path: Path) -> N
     assert leido.agent_id == "agente-func"
     assert leido.acquired_at == info.acquired_at
 
-    assert await dm.renew_lock("recurso-func", "agente-func") is True
-    assert await dm.renew_lock("recurso-func", "otro-agente") is False  # no es dueño
-    assert await dm.renew_lock("inexistente", "agente-func") is False
+    assert await dm.renew_lock("recurso-func", "agente-func", acquired_at=info.acquired_at) is True
+    assert await dm.renew_lock("recurso-func", "otro-agente", acquired_at=info.acquired_at) is False  # no es dueño
+    assert await dm.renew_lock("inexistente", "agente-func", acquired_at=info.acquired_at) is False
 
     assert await dm.cleanup_expired() == 0  # nada expirado
 
@@ -804,7 +804,9 @@ async def test_dlm_renew_no_resucita_lease_vencida_durante_la_espera(
     t_holder = asyncio.create_task(holder())
     await lock_retenido.wait()
 
-    t_ren = asyncio.create_task(dm.renew_lock("ts-ren", "agente", ttl=50.0))  # reloj pre-espera: 100
+    t_ren = asyncio.create_task(
+        dm.renew_lock("ts-ren", "agente", ttl=50.0, acquired_at=0.0)
+    )  # reloj pre-espera: 100; fila insertada con acquired_at=0.0
     await _esperar_admitido(lifecycle)
     clock["now"] = 200.0  # la lease expiró (150) durante la espera
     liberar.set()
@@ -978,7 +980,7 @@ async def test_dlm_renew_no_devuelve_true_si_expira_durante_commit(
     dm, lifecycle = await _dlm_inicializado(tmp_path)
     conn = await lifecycle.get_connection(tmp_path / "locks.db")
 
-    await dm.acquire_lock("c7-ren", "agente-a", ttl=600.0)  # lease vigente (reloj real)
+    info = await dm.acquire_lock("c7-ren", "agente-a", ttl=600.0)  # lease vigente (reloj real)
 
     clock = {"now": 100.0}
     monkeypatch.setattr(locks_mod, "time", _RelojFalso(clock))
@@ -994,7 +996,9 @@ async def test_dlm_renew_no_devuelve_true_si_expira_durante_commit(
     conn.commit = commit_patch  # type: ignore[method-assign]
 
     try:
-        t_ren = asyncio.create_task(dm.renew_lock("c7-ren", "agente-a", ttl=50.0))  # new_expires=150
+        t_ren = asyncio.create_task(
+            dm.renew_lock("c7-ren", "agente-a", ttl=50.0, acquired_at=info.acquired_at)
+        )  # new_expires=150
         await asyncio.wait_for(commit_empezado.wait(), DEADLINE)  # UPDATE hecho; commit retenido
         clock["now"] = 200.0  # el commit "tarda" más que el TTL renovado
         liberar_commit.set()

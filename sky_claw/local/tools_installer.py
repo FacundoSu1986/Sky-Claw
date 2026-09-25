@@ -157,12 +157,12 @@ async def _bajo_lock_de_instalacion(
         yield
         return
 
-    await lock_manager.acquire_lock(resource_id, _INSTALL_AGENT_ID, ttl=ttl)
+    lease = await lock_manager.acquire_lock(resource_id, _INSTALL_AGENT_ID, ttl=ttl)
     token = _cadena_de_locks.set(_cadena_de_locks.get() | {resource_id})
     heartbeat: asyncio.Task[None] | None = None
     if getattr(lock_manager, "renew_lock", None) is not None:
         heartbeat = asyncio.create_task(
-            _mantener_lock_vivo(lock_manager, resource_id, ttl),
+            _mantener_lock_vivo(lock_manager, resource_id, ttl, acquired_at=lease.acquired_at),
             name=f"tools-installer-heartbeat-{resource_id}",
         )
     try:
@@ -189,7 +189,13 @@ async def _bajo_lock_de_instalacion(
             # El release también es cancelable (await + commit): una segunda
             # cancelación durante este await dejaría el lock retenido hasta TTL.
             # Shield posterga la cancelación hasta que el release terminó.
-            await asyncio.shield(lock_manager.release_lock(resource_id, _INSTALL_AGENT_ID))
+            await asyncio.shield(
+                lock_manager.release_lock(
+                    resource_id,
+                    _INSTALL_AGENT_ID,
+                    acquired_at=lease.acquired_at,
+                )
+            )
         except Exception as exc:  # noqa: BLE001 — nunca enmascarar el error original
             logger.error("Fallo al liberar el lock de instalación '%s': %s", resource_id, exc)
 
@@ -208,6 +214,8 @@ async def _mantener_lock_vivo(
     lock_manager: DistributedLockManager,
     resource_id: str,
     ttl: float,
+    *,
+    acquired_at: float,
 ) -> None:
     """Renueva el lease del lock de instalación mientras la zona crítica corre.
 
@@ -233,7 +241,7 @@ async def _mantener_lock_vivo(
             if renew_fn is None:
                 return
             try:
-                renovado = await renew_fn(resource_id, _INSTALL_AGENT_ID, ttl=ttl)
+                renovado = await renew_fn(resource_id, _INSTALL_AGENT_ID, ttl=ttl, acquired_at=acquired_at)
             except TypeError:
                 # renew_lock presente pero no awaitable (MagicMock de tests).
                 return

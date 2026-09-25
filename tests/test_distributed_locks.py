@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from sky_claw.app.db.locks import (
+    _RELEASE_SQL,
+    _RENEW_SQL,
     DEFAULT_LOCK_TTL_SECONDS,
     DistributedLockManager,
     LockAcquisitionError,
@@ -81,15 +83,34 @@ async def test_acquire_and_release_lock(lock_manager: DistributedLockManager) ->
     assert lock.remaining_ttl > 0
     assert not lock.is_expired
 
-    released = await lock_manager.release_lock("resource_a", "agent_1")
+    released = await lock_manager.release_lock("resource_a", "agent_1", acquired_at=lock.acquired_at)
     assert released is True
 
 
 @pytest.mark.asyncio
 async def test_release_nonexistent_lock(lock_manager: DistributedLockManager) -> None:
     """Releasing a lock that doesn't exist returns False."""
-    released = await lock_manager.release_lock("nonexistent", "agent_1")
+    released = await lock_manager.release_lock("nonexistent", "agent_1", acquired_at=0.0)
     assert released is False
+
+
+def test_renew_y_release_sql_exigen_el_token_acquired_at() -> None:
+    """Propiedad del mecanismo: renew/release matchean acquired_at, no solo agent_id."""
+    assert "acquired_at" in _RENEW_SQL
+    assert "acquired_at" in _RELEASE_SQL
+
+
+@pytest.mark.asyncio
+async def test_release_sin_token_no_borra_la_fila_viva(
+    lock_manager: DistributedLockManager,
+) -> None:
+    """Omitir acquired_at es no-op: un caller viejo no puede borrar la lease de un hermano."""
+    lock = await lock_manager.acquire_lock("res-token", "agent_1")
+    assert await lock_manager.release_lock("res-token", "agent_1") is False
+    vigente = await lock_manager.get_lock_info("res-token")
+    assert vigente is not None
+    assert vigente.acquired_at == lock.acquired_at
+    assert await lock_manager.release_lock("res-token", "agent_1", acquired_at=lock.acquired_at) is True
 
 
 @pytest.mark.asyncio
@@ -694,6 +715,59 @@ async def test_rollback_parcial_reporta_incompleto_y_lista_el_fallo(
     assert await lock_manager.get_lock_info("parcial.esp") is None
 
 
+@pytest.mark.asyncio
+async def test_cancelacion_durante_rollback_no_marca_rollback_completed(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """CancelledError a mitad del restore no puede dejar rollback_completed=True.
+
+    ``except Exception`` no captura CancelledError: el loop abortaba antes de
+    asignar rollback_failures, el flag quedaba True y el consumidor marcaba
+    la TX rolled_back con archivos todavía mutados.
+    """
+    uno = tmp_path / "uno.esp"
+    dos = tmp_path / "dos.esp"
+    uno.write_text("orig-1")
+    dos.write_text("orig-2")
+    await snapshot_manager.initialize()
+
+    original_restore = snapshot_manager.restore_snapshot
+    vistos = {"n": 0}
+
+    async def _restore_cancela_el_segundo(snapshot_path: object, original_path: object, **kwargs: object) -> bool:
+        vistos["n"] += 1
+        if vistos["n"] == 2:
+            raise asyncio.CancelledError
+        return await original_restore(snapshot_path, original_path, **kwargs)  # type: ignore[arg-type]
+
+    snapshot_manager.restore_snapshot = _restore_cancela_el_segundo  # type: ignore[assignment]
+
+    captured: dict[str, SnapshotTransactionLock] = {}
+    with pytest.raises(asyncio.CancelledError):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="cancel-rb.esp",
+            agent_id="agent",
+            target_files=[uno, dos],
+        ) as lock:
+            captured["lock"] = lock
+            uno.write_text("mutado-1")
+            dos.write_text("mutado-2")
+            raise RuntimeError("boom")
+
+    lock = captured["lock"]
+    assert lock.rollback_attempted is True
+    assert lock.rollback_completed is False
+    assert str(uno) in lock.rollback_failures
+    # Reverse order: dos se restauró; uno quedó mutado al cancelar su restore.
+    assert dos.read_text() == "orig-2"
+    assert uno.read_text() == "mutado-1"
+    assert await lock_manager.get_lock_info("cancel-rb.esp") is None
+
+
 # =============================================================================
 # Concurrency test
 # =============================================================================
@@ -781,11 +855,11 @@ def test_lock_info_remaining_ttl_positive_when_active() -> None:
 @pytest.mark.asyncio
 async def test_renew_lock_extends_live_lease(lock_manager: DistributedLockManager) -> None:
     """renew_lock extiende expires_at de un lease vivo del mismo agente."""
-    await lock_manager.acquire_lock("res-renew", "agent-1", ttl=2.0)
+    lock = await lock_manager.acquire_lock("res-renew", "agent-1", ttl=2.0)
     before = await lock_manager.get_lock_info("res-renew")
     assert before is not None
 
-    renewed = await lock_manager.renew_lock("res-renew", "agent-1", ttl=10.0)
+    renewed = await lock_manager.renew_lock("res-renew", "agent-1", ttl=10.0, acquired_at=lock.acquired_at)
 
     assert renewed is True
     after = await lock_manager.get_lock_info("res-renew")
@@ -798,10 +872,10 @@ async def test_renew_lock_returns_false_for_expired_lease(
     lock_manager: DistributedLockManager,
 ) -> None:
     """Un lease ya expirado no puede renovarse — el holder perdió la exclusividad."""
-    await lock_manager.acquire_lock("res-expired", "agent-1", ttl=0.05)
+    lock = await lock_manager.acquire_lock("res-expired", "agent-1", ttl=0.05)
     await asyncio.sleep(0.15)
 
-    assert await lock_manager.renew_lock("res-expired", "agent-1") is False
+    assert await lock_manager.renew_lock("res-expired", "agent-1", acquired_at=lock.acquired_at) is False
 
 
 @pytest.mark.asyncio
@@ -809,9 +883,9 @@ async def test_renew_lock_returns_false_for_other_agent(
     lock_manager: DistributedLockManager,
 ) -> None:
     """Solo el agente dueño del lease puede renovarlo."""
-    await lock_manager.acquire_lock("res-owned", "agent-1", ttl=5.0)
+    lock = await lock_manager.acquire_lock("res-owned", "agent-1", ttl=5.0)
 
-    assert await lock_manager.renew_lock("res-owned", "agent-2") is False
+    assert await lock_manager.renew_lock("res-owned", "agent-2", acquired_at=lock.acquired_at) is False
 
 
 @pytest.mark.asyncio
@@ -827,7 +901,7 @@ async def test_renew_lock_swallows_unexpected_sqlite_error(
     heartbeat sin marcar lease_lost. Acá se ejercita el layer de renew_lock
     directamente (el test del heartbeat parchea renew_lock entero).
     """
-    await lock_manager.acquire_lock("res-dberr", "agent-1", ttl=5.0)
+    lock = await lock_manager.acquire_lock("res-dberr", "agent-1", ttl=5.0)
 
     class _BoomConn:
         def execute(self, *args: object, **kwargs: object) -> object:
@@ -837,7 +911,7 @@ async def test_renew_lock_swallows_unexpected_sqlite_error(
     # execute() tira un sqlite3.Error que el catch viejo no cubría.
     monkeypatch.setattr(lock_manager, "_ensure_conn", lambda: _BoomConn())
 
-    assert await lock_manager.renew_lock("res-dberr", "agent-1") is False
+    assert await lock_manager.renew_lock("res-dberr", "agent-1", acquired_at=lock.acquired_at) is False
 
 
 # =============================================================================
@@ -887,9 +961,21 @@ class _InMemoryHeartbeatLockManager:
         self._locks[resource_id] = info
         return info
 
-    async def renew_lock(self, resource_id: str, agent_id: str, ttl: float) -> bool:
+    async def renew_lock(
+        self,
+        resource_id: str,
+        agent_id: str,
+        ttl: float,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
         current = self._locks.get(resource_id)
-        if current is None or current.agent_id != agent_id or self._clock() >= current.expires_at:
+        if (
+            current is None
+            or current.agent_id != agent_id
+            or current.acquired_at != acquired_at
+            or self._clock() >= current.expires_at
+        ):
             return False
 
         now = self._clock()
@@ -901,9 +987,15 @@ class _InMemoryHeartbeatLockManager:
         )
         return True
 
-    async def release_lock(self, resource_id: str, agent_id: str) -> bool:
+    async def release_lock(
+        self,
+        resource_id: str,
+        agent_id: str,
+        *,
+        acquired_at: float | None = None,
+    ) -> bool:
         current = self._locks.get(resource_id)
-        if current is None or current.agent_id != agent_id:
+        if current is None or current.agent_id != agent_id or current.acquired_at != acquired_at:
             return False
         del self._locks[resource_id]
         return True
@@ -917,16 +1009,16 @@ async def test_in_memory_heartbeat_manager_enumera_expiracion_y_ownership() -> N
 
     holder = await manager.acquire_lock("res-hb", "holder", ttl=10.0)
     assert holder.agent_id == "holder"
-    assert await manager.renew_lock("res-hb", "holder", ttl=10.0) is True
-    assert await manager.renew_lock("res-hb", "intruder", ttl=10.0) is False
-    assert await manager.release_lock("res-hb", "intruder") is False
+    assert await manager.renew_lock("res-hb", "holder", ttl=10.0, acquired_at=holder.acquired_at) is True
+    assert await manager.renew_lock("res-hb", "intruder", ttl=10.0, acquired_at=holder.acquired_at) is False
+    assert await manager.release_lock("res-hb", "intruder", acquired_at=holder.acquired_at) is False
 
     reloj[0] = holder.expires_at
-    assert await manager.renew_lock("res-hb", "holder", ttl=10.0) is False
+    assert await manager.renew_lock("res-hb", "holder", ttl=10.0, acquired_at=holder.acquired_at) is False
 
     intruder = await manager.acquire_lock("res-hb", "intruder", ttl=10.0)
     assert intruder.agent_id == "intruder"
-    assert await manager.release_lock("res-hb", "intruder") is True
+    assert await manager.release_lock("res-hb", "intruder", acquired_at=intruder.acquired_at) is True
 
 
 @pytest.mark.asyncio
@@ -1290,6 +1382,54 @@ async def test_assert_owned_detects_same_agent_id_reacquisition(
             await ctx.assert_owned()  # mismo agent_id, lease distinto → levanta
 
     assert captured["ctx"].lease_lost is True
+
+
+@pytest.mark.asyncio
+async def test_el_holder_viejo_no_renueva_ni_borra_la_lease_readquirida(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A expira, B readquiere con el mismo agent_id, A sale → B conserva la lease.
+
+    Ancla de familia de ``test_cada_adquisicion_tiene_una_identidad_de_owner_distinta``
+    sobre SnapshotTransactionLock: ``_RENEW_SQL``/``_RELEASE_SQL`` no pueden
+    matchear solo resource_id+agent_id.
+    """
+    fake_now = [1_000_000.0]
+    monkeypatch.setattr("sky_claw.app.db.locks.time.time", lambda: fake_now[0])
+
+    target = tmp_path / "plugin.esp"
+    target.write_text("orig")
+    await snapshot_manager.initialize()
+
+    a_ctx = SnapshotTransactionLock(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        resource_id="res-hermano",
+        agent_id="xedit-service",
+        target_files=[target],
+        ttl=0.2,
+        auto_renew=False,
+    )
+    a = await a_ctx.__aenter__()
+    assert a.lock_info is not None
+    token_a = a.lock_info.acquired_at
+
+    fake_now[0] = 1_000_000.3  # lease de A vencida
+    b_info = await lock_manager.acquire_lock("res-hermano", "xedit-service", ttl=5.0)
+    assert b_info.acquired_at != token_a
+
+    assert await lock_manager.renew_lock("res-hermano", "xedit-service", ttl=5.0, acquired_at=token_a) is False
+
+    await a_ctx.__aexit__(None, None, None)
+
+    vigente = await lock_manager.get_lock_info("res-hermano")
+    assert vigente is not None
+    assert vigente.acquired_at == b_info.acquired_at
+
+    assert await lock_manager.release_lock("res-hermano", "xedit-service", acquired_at=b_info.acquired_at) is True
 
 
 @pytest.mark.asyncio

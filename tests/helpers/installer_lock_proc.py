@@ -82,10 +82,9 @@ async def _rol_a_async(
     # original (y `suppress(LockReleaseError)` no lo cubre).
     resource_id = _install_lock_resource_id(install_dir)
     await dlm.initialize()
-    adquirido = False
+    lease = None
     try:
-        await dlm.acquire_lock(resource_id, "tools-installer", ttl=600.0)
-        adquirido = True
+        lease = await dlm.acquire_lock(resource_id, "tools-installer", ttl=600.0)
         # A tiene el lock: avisa al orquestador.
         (sentinel_dir / "a_listo").write_text("1", encoding="utf-8")
         # Espera a que el orquestador libere a B para intentar el acquire.
@@ -112,11 +111,11 @@ async def _rol_a_async(
         # LockReleaseError que `suppress` se tragaba, y A salia con rc=0 sin
         # escribir sentinel — el orquestador se quedaba esperando `a_listo`
         # hasta el timeout de 30 s sin ninguna causa declarada.
-        if adquirido:
+        if lease is not None:
             # release_lock lanza LockReleaseError (no LockAcquisitionError) si el
             # DELETE de la fila falla o no la encuentra — espejo de locks.py:421.
             with contextlib.suppress(LockReleaseError):
-                await dlm.release_lock(resource_id, "tools-installer")
+                await dlm.release_lock(resource_id, "tools-installer", acquired_at=lease.acquired_at)
         await dlm.close()
 
 

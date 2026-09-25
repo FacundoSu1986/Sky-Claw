@@ -424,7 +424,7 @@ async def _bajo_el_lock_del_ritual(
         return
 
     try:
-        await lock_manager.acquire_lock(resource_id, _RECONCILE_AGENT_ID, ttl=_RECONCILE_TTL_SECONDS)
+        lease = await lock_manager.acquire_lock(resource_id, _RECONCILE_AGENT_ID, ttl=_RECONCILE_TTL_SECONDS)
     except LockAcquisitionError:
         logger.info(
             "Reconciliación de '%s' salteada: no se pudo adquirir '%s' (ritual activo).",
@@ -437,7 +437,7 @@ async def _bajo_el_lock_del_ritual(
     try:
         await accion()
     finally:
-        await lock_manager.release_lock(resource_id, _RECONCILE_AGENT_ID)
+        await lock_manager.release_lock(resource_id, _RECONCILE_AGENT_ID, acquired_at=lease.acquired_at)
 
 
 async def _reconciliar_move_aside(destinos: Sequence[pathlib.Path], acc: _Acumulador) -> None:

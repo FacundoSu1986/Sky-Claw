@@ -10,6 +10,7 @@ mutable-ref plumbing.
 
 from __future__ import annotations
 
+import inspect
 import json
 import pathlib
 from collections.abc import AsyncIterator
@@ -98,6 +99,29 @@ def test_run_bodyslide_advertises_group_params(tmp_path: pathlib.Path) -> None:
     schema = reg.tools["run_bodyslide"].input_schema
     assert "group" in schema["properties"]
     assert "output_path" in schema["properties"]
+    assert "preset" in schema["properties"]
+    assert "build_morphs" in schema["properties"]
+
+
+def test_los_handlers_del_registry_aceptan_todos_los_campos_del_params_model(
+    tmp_path: pathlib.Path,
+) -> None:
+    """execute() despacha ``td.fn(**validated.model_dump())``. Si el lambda
+    no declara un campo del schema, toda invocación vía LLM revienta con
+    TypeError — el test que llama ``td.fn(...)`` directo no lo ve.
+    """
+    reg = _make_registry(tmp_path=tmp_path)
+    desalineados: list[tuple[str, set[str]]] = []
+    for name, td in reg.tools.items():
+        if td.params_model is None:
+            continue
+        parametros = inspect.signature(td.fn).parameters
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parametros.values()):
+            continue
+        faltantes = set(td.params_model.model_fields) - set(parametros)
+        if faltantes:
+            desalineados.append((name, faltantes))
+    assert desalineados == []
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +337,40 @@ async def test_run_bodyslide_tool_forwards_group_and_output(tmp_path: pathlib.Pa
     assert result["success"] is True
     # ``build_morphs=True`` por defecto también EN EL BORDE de la tool: es donde
     # el default importa, porque es el que usa el agente LLM cuando no lo pide.
+    injected.run_batch.assert_awaited_once_with("3BA", str(esperado), preset=None, build_morphs=True)
+
+
+@pytest.mark.asyncio
+async def test_run_bodyslide_execute_despacha_preset_y_morphs(tmp_path: pathlib.Path) -> None:
+    """reg.execute valida BodySlideBatchParams y pasa TODOS los campos al runner.
+
+    El lambda de 2 args reventaba con TypeError('preset') en la superficie LLM.
+    """
+    from sky_claw.local.tools.output_targets import bodyslide_output_target
+
+    game = tmp_path / "game"
+    injected = MagicMock(spec=BodySlideRunner)
+    injected.config = BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=game)
+    injected.run_batch = AsyncMock(return_value=_runner_result())
+    reg = _make_registry(
+        tmp_path=tmp_path,
+        bodyslide_runner=injected,
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+    )
+
+    transaction = MagicMock()
+    transaction.lease_lost = False
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=None)
+    with patch(
+        "sky_claw.app.db.locks.SnapshotTransactionLock",
+        return_value=transaction,
+    ):
+        result = json.loads(await reg.execute("run_bodyslide", {"group": "3BA"}))
+
+    esperado = bodyslide_output_target(game=game, group="3BA")
+    assert result["success"] is True
     injected.run_batch.assert_awaited_once_with("3BA", str(esperado), preset=None, build_morphs=True)
 
 

@@ -981,7 +981,7 @@ async def test_post_run_corre_dentro_del_lock_del_load_order(
     async def _spy(self: LootSortingService) -> None:
         try:
             info = await lock_manager.acquire_lock(LOAD_ORDER_RESOURCE_ID, agent_id="spy-post-run", ttl=1.0)
-            await lock_manager.release_lock(info.resource_id, info.agent_id)
+            await lock_manager.release_lock(info.resource_id, info.agent_id, acquired_at=info.acquired_at)
             lock_tomado_durante_post_run.append(False)  # se pudo tomar → estábamos FUERA
         except LockAcquisitionError:
             lock_tomado_durante_post_run.append(True)  # tomado → validamos ADENTRO

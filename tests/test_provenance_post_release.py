@@ -122,8 +122,8 @@ class _LockManagerObservador(DistributedLockManager):
     async def acquire_lock(self, resource_id: str, agent_id: str, ttl: int) -> LockInfo:  # type: ignore[override]
         return await super().acquire_lock(resource_id=resource_id, agent_id=agent_id, ttl=ttl)
 
-    async def release_lock(self, resource_id: str, agent_id: str) -> bool:  # type: ignore[override]
-        resultado = await super().release_lock(resource_id=resource_id, agent_id=agent_id)
+    async def release_lock(self, resource_id: str, agent_id: str, *, acquired_at: float | None = None) -> bool:  # type: ignore[override]
+        resultado = await super().release_lock(resource_id=resource_id, agent_id=agent_id, acquired_at=acquired_at)
         if resource_id == "dyndolod-pipeline":
             self._eventos.append(f"a-released#{next(self._contador)}")
             self._liberado_flag[0] = True
@@ -419,8 +419,8 @@ async def test_lease_lost_antes_de_certificar_no_firma_nada(
     ev_liberado = asyncio.Event()
 
     class _Mgr(DistributedLockManager):
-        async def release_lock(self, resource_id: str, agent_id: str) -> bool:  # type: ignore[override]
-            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id)
+        async def release_lock(self, resource_id: str, agent_id: str, *, acquired_at: float | None = None) -> bool:  # type: ignore[override]
+            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id, acquired_at=acquired_at)
             if resource_id == "dyndolod-pipeline":
                 ev_liberado.set()
             return ok
@@ -543,8 +543,8 @@ async def _corrida_con_fallo_en_ventana(
     ev_liberado = asyncio.Event()
 
     class _Mgr(DistributedLockManager):
-        async def release_lock(self, resource_id: str, agent_id: str) -> bool:  # type: ignore[override]
-            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id)
+        async def release_lock(self, resource_id: str, agent_id: str, *, acquired_at: float | None = None) -> bool:  # type: ignore[override]
+            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id, acquired_at=acquired_at)
             if resource_id == "dyndolod-pipeline":
                 ev_liberado.set()
             return ok
@@ -691,8 +691,8 @@ async def test_robo_de_fila_same_agent_id_bloquea_certificacion(
     ev_liberado = asyncio.Event()
 
     class _Mgr(DistributedLockManager):
-        async def release_lock(self, resource_id: str, agent_id: str) -> bool:  # type: ignore[override]
-            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id)
+        async def release_lock(self, resource_id: str, agent_id: str, *, acquired_at: float | None = None) -> bool:  # type: ignore[override]
+            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id, acquired_at=acquired_at)
             if resource_id == "dyndolod-pipeline":
                 ev_liberado.set()
             return ok
@@ -845,8 +845,8 @@ async def test_robo_durante_el_digest_es_cortado_por_el_segundo_fencing(
     ev_liberado = asyncio.Event()
 
     class _Mgr(DistributedLockManager):
-        async def release_lock(self, resource_id: str, agent_id: str) -> bool:  # type: ignore[override]
-            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id)
+        async def release_lock(self, resource_id: str, agent_id: str, *, acquired_at: float | None = None) -> bool:  # type: ignore[override]
+            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id, acquired_at=acquired_at)
             if resource_id == "dyndolod-pipeline":
                 ev_liberado.set()
             return ok
@@ -1012,8 +1012,8 @@ async def test_regeneracion_desde_indeterminate_certifica_y_supersede_bajo_lease
     ev_liberado = asyncio.Event()
 
     class _Mgr(DistributedLockManager):
-        async def release_lock(self, resource_id: str, agent_id: str) -> bool:  # type: ignore[override]
-            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id)
+        async def release_lock(self, resource_id: str, agent_id: str, *, acquired_at: float | None = None) -> bool:  # type: ignore[override]
+            ok = await super().release_lock(resource_id=resource_id, agent_id=agent_id, acquired_at=acquired_at)
             if resource_id == "dyndolod-pipeline":
                 ev_liberado.set()
             return ok

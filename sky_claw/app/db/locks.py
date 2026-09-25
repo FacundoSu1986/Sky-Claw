@@ -28,8 +28,14 @@ PREVENCIÓN:
     - If the database fails, the filesystem is never partially mutated:
       snapshot is created AFTER lock acquisition, rollback happens BEFORE
       lock release.
-    - ``asyncio.CancelledError`` is not caught by ``except Exception``,
-      ensuring the lock is always released in ``__aexit__`` via ``finally``.
+    - ``asyncio.CancelledError`` is not swallowed by ``except Exception``.
+      A cancel mid-rollback is recorded in ``rollback_failures`` (so
+      ``rollback_completed`` stays False) and re-raised; the lock is still
+      released in ``__aexit__`` via ``finally``.
+    - ``renew_lock`` / ``release_lock`` match the acquisition token
+      (``acquired_at``), not just ``agent_id``. Services share a constant
+      agent id; without the token a stalled holder can renew or delete a
+      sibling's reacquired lease.
 """
 
 from __future__ import annotations
@@ -151,12 +157,12 @@ WHERE resource_locks.expires_at < excluded.acquired_at
 _RENEW_SQL = """\
 UPDATE resource_locks
 SET expires_at = ?
-WHERE resource_id = ? AND agent_id = ? AND expires_at > ?
+WHERE resource_id = ? AND agent_id = ? AND acquired_at = ? AND expires_at > ?
 """
 
 _RELEASE_SQL = """\
 DELETE FROM resource_locks
-WHERE resource_id = ? AND agent_id = ?
+WHERE resource_id = ? AND agent_id = ? AND acquired_at = ?
 """
 
 _RELEASE_ANY_SQL = """\
@@ -454,6 +460,8 @@ class DistributedLockManager:
         self,
         resource_id: str,
         agent_id: str,
+        *,
+        acquired_at: float | None = None,
     ) -> bool:
         """Release a lock held by the given agent.
 
@@ -463,6 +471,12 @@ class DistributedLockManager:
             Resource to unlock.
         agent_id:
             Agent that holds the lock.
+        acquired_at:
+            Acquisition token from the :class:`LockInfo` returned by
+            :meth:`acquire_lock`. The DELETE matches this token, so a
+            stale holder cannot delete a sibling's reacquired lease
+            (services share a constant ``agent_id``). Omitting it is a
+            no-op — ``acquired_at = NULL`` never matches a live row.
 
         Returns
         -------
@@ -477,12 +491,13 @@ class DistributedLockManager:
             # del lifecycle se propaga (política PROPAGATE): `_safe_release` lo
             # absorbe loggeando y la lease expira por TTL. Legacy: commit manual
             # actual intacto.
+            params = (resource_id, agent_id, acquired_at)
             if self._lifecycle is not None:
                 async with (
                     self._lifecycle.transaction(self._db_path) as conn,
                     conn.execute(
                         _RELEASE_SQL,
-                        (resource_id, agent_id),
+                        params,
                     ) as cursor,
                 ):
                     deleted = cursor.rowcount > 0
@@ -491,7 +506,7 @@ class DistributedLockManager:
                 conn = self._ensure_conn()
                 async with conn.execute(
                     _RELEASE_SQL,
-                    (resource_id, agent_id),
+                    params,
                 ) as cursor:
                     deleted = cursor.rowcount > 0
                 await conn.commit()
@@ -522,18 +537,24 @@ class DistributedLockManager:
         resource_id: str,
         agent_id: str,
         ttl: float | None = None,
+        *,
+        acquired_at: float | None = None,
     ) -> bool:
         """Extend the lease of a lock still held by *agent_id*.
 
         Atomic single UPDATE: the ``AND expires_at > now`` clause guarantees an
         already-expired lease is never resurrected (another agent may have
-        legitimately reclaimed the resource in the meantime).
+        legitimately reclaimed the resource in the meantime). The
+        ``AND acquired_at = ?`` clause is the acquisition token: two
+        instances of the same service share a constant ``agent_id``, so
+        matching only the agent would renew a sibling's reacquired row.
 
         Returns
         -------
         bool
             ``True`` if the lease was extended; ``False`` if the lock no longer
-            belongs to *agent_id* or already expired (lease lost).
+            belongs to *agent_id*, the token does not match, or already expired
+            (lease lost).
         """
         self._ensure_conn()  # contrato: LockError si initialize() no corrió
         ttl_seconds = ttl if ttl is not None else self._default_ttl
@@ -549,7 +570,7 @@ class DistributedLockManager:
                     new_expires_at = now + ttl_seconds
                     async with conn.execute(
                         _RENEW_SQL,
-                        (new_expires_at, resource_id, agent_id, now),
+                        (new_expires_at, resource_id, agent_id, acquired_at, now),
                     ) as cursor:
                         renewed = cursor.rowcount > 0
                 # commit del wrapper ya terminó acá
@@ -570,7 +591,7 @@ class DistributedLockManager:
                 conn = self._ensure_conn()
                 async with conn.execute(
                     _RENEW_SQL,
-                    (now + ttl_seconds, resource_id, agent_id, now),
+                    (now + ttl_seconds, resource_id, agent_id, acquired_at, now),
                 ) as cursor:
                     renewed = cursor.rowcount > 0
                 await conn.commit()
@@ -915,6 +936,7 @@ class SnapshotTransactionLock:
                     self._resource_id,
                     self._agent_id,
                     ttl=ttl_seconds,
+                    acquired_at=self.lock_info.acquired_at,
                 )
             except Exception:
                 # renew_lock() catches the full sqlite3.Error family and
@@ -1019,29 +1041,51 @@ class SnapshotTransactionLock:
             },
         )
         failures: list[str] = []
-        for snap in reversed(self.snapshots):
-            try:
-                await self._snapshot_manager.restore_snapshot(
-                    snap.snapshot_path,
-                    pathlib.Path(snap.original_path),
-                    verify_checksum=False,
-                )
-                logger.info(
-                    "Rolled back file to snapshot",
-                    extra={
-                        "original_path": snap.original_path,
-                        "snapshot_id": snap.snapshot_id,
-                    },
-                )
-            except Exception as rollback_exc:
+        restored: set[str] = set()
+        try:
+            for snap in reversed(self.snapshots):
+                try:
+                    await self._snapshot_manager.restore_snapshot(
+                        snap.snapshot_path,
+                        pathlib.Path(snap.original_path),
+                        verify_checksum=False,
+                    )
+                except Exception as rollback_exc:
+                    logger.critical(
+                        "ROLLBACK FAILED for %s: %s — manual recovery required",
+                        snap.original_path,
+                        rollback_exc,
+                        exc_info=True,
+                    )
+                    failures.append(snap.original_path)
+                else:
+                    restored.add(snap.original_path)
+                    logger.info(
+                        "Rolled back file to snapshot",
+                        extra={
+                            "original_path": snap.original_path,
+                            "snapshot_id": snap.snapshot_id,
+                        },
+                    )
+        finally:
+            # CancelledError / BaseException abortan el loop ANTES de asignar
+            # failures. Sin este finally, rollback_failures queda [] y
+            # rollback_completed miente (True) con archivos todavía mutados —
+            # el consumidor marca la TX rolled_back y la recuperación manual
+            # nunca se dispara.
+            interrumpidos = [
+                snap.original_path
+                for snap in reversed(self.snapshots)
+                if snap.original_path not in restored and snap.original_path not in failures
+            ]
+            if interrumpidos:
                 logger.critical(
-                    "ROLLBACK FAILED for %s: %s — manual recovery required",
-                    snap.original_path,
-                    rollback_exc,
-                    exc_info=True,
+                    "ROLLBACK INTERRUMPIDO — %d archivo(s) no restaurados: %s",
+                    len(interrumpidos),
+                    interrumpidos,
                 )
-                failures.append(snap.original_path)
-        self.rollback_failures = failures
+                failures.extend(interrumpidos)
+            self.rollback_failures = failures
 
         # A forced (dry-run) rollback that could not restore a file means we may
         # have left it mutated while the caller believes the preview was
@@ -1054,9 +1098,11 @@ class SnapshotTransactionLock:
     async def _safe_release(self) -> None:
         """Release lock, swallowing errors to avoid masking the original exception."""
         try:
+            token = None if self.lock_info is None else self.lock_info.acquired_at
             await self._lock_manager.release_lock(
                 resource_id=self._resource_id,
                 agent_id=self._agent_id,
+                acquired_at=token,
             )
         except Exception as release_exc:
             logger.error(

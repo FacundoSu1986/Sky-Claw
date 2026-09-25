@@ -88,6 +88,20 @@ _OFFICIAL_DIRTY_MASTERS: tuple[str, ...] = (
     "Dragonborn.esm",
 )
 
+#: SOP (local/AGENTS.md directiva #6, regla 8, §2.1): Dawnguard.esm exige DOS
+#: pasadas automáticas de QAC. Una sola pasada es un defecto. La limpieza
+#: manual de CELL 00016BCF / 0001FA4C / 0006C3B6 queda como paso de operador
+#: (no es automatizable con ``-quickautoclean`` headless).
+_DAWNGUARD_MASTER = "Dawnguard.esm"
+PASADAS_QAC_DAWNGUARD = 2
+
+
+def pasadas_qac_para(master: str) -> int:
+    """Cuántas invocaciones de QuickAutoClean corren para *master*."""
+    if master.casefold() == _DAWNGUARD_MASTER.casefold():
+        return PASADAS_QAC_DAWNGUARD
+    return 1
+
 
 class _ActionManifestError(Exception):
     """Interno (T-26): la emisión del manifiesto de vuelo falló. Se lanza DENTRO
@@ -722,7 +736,8 @@ class XEditPipelineService:
         Corre ``-quickclean`` sobre los masters oficiales presentes en el directorio
         ``Data`` del juego (Update/Dawnguard/HearthFires/Dragonborn) en secuencia,
         bajo un único :class:`SnapshotTransactionLock`: snapshotea los masters para
-        rollback automático y serializa contra otras corridas. Si una limpieza
+        rollback automático y serializa contra otras corridas. Dawnguard.esm corre
+        **dos** pasadas (SOP directiva #6); el resto, una. Si una limpieza
         falla, intenta restaurar todos los masters y reporta el resultado real.
 
         Nunca propaga: los modos de fallo conocidos (paths faltantes, contención de
@@ -807,10 +822,15 @@ class XEditPipelineService:
                     summary=f"Limpiar {len(targets)} master(s) oficial(es) sucio(s) con SSEEdit QuickAutoClean.",
                 )
                 for path in targets:
-                    result = await runner.quick_auto_clean(path.name)
-                    if not result.success:
-                        # Lanzar DENTRO del context activa el rollback automático.
-                        raise PatchingError(f"QuickAutoClean falló para {path.name} (exit {result.exit_code}).")
+                    total_pasadas = pasadas_qac_para(path.name)
+                    for n_pasada in range(total_pasadas):
+                        result = await runner.quick_auto_clean(path.name)
+                        if not result.success:
+                            # Lanzar DENTRO del context activa el rollback automático.
+                            raise PatchingError(
+                                f"QuickAutoClean falló para {path.name} "
+                                f"(pasada {n_pasada + 1}/{total_pasadas}, exit {result.exit_code})."
+                            )
                     cleaned.append(path.name)
             # Éxito: cerrar la caja negra (best-effort — la limpieza ya ocurrió).
             # El commit y el informe van SEPARADOS: si el commit falla, el
