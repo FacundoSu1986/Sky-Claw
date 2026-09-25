@@ -297,6 +297,9 @@ def crear_arbol_mo2(
     return mo2_root
 
 
+_CI_FAILED_NODEIDS: list[str] = []
+
+
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     """Emite cada fallo de test como anotación ::error:: de GitHub Actions.
 
@@ -306,13 +309,15 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     (sin title: los valores con espacios sin escapar rompen el parser de
     workflow-commands). Sólo actúa en CI, sin ruido local.
     """
-    if os.environ.get("GITHUB_ACTIONS") and report.failed:
-        nodeid = " ".join(report.nodeid.split())[:150]
-        print(f"::error::{nodeid}", flush=True)
-        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-        if summary_path:
-            with open(summary_path, "a", encoding="utf-8") as fh:
-                fh.write(f"- FAILED `{report.nodeid}`\n")
+    if report.failed:
+        _CI_FAILED_NODEIDS.append(report.nodeid)
+        if os.environ.get("GITHUB_ACTIONS"):
+            nodeid = " ".join(report.nodeid.split())[:150]
+            print(f"::error::{nodeid}", flush=True)
+            summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+            if summary_path:
+                with open(summary_path, "a", encoding="utf-8") as fh:
+                    fh.write(f"- FAILED `{report.nodeid}`\n")
 
 
 def pytest_collectreport(report: pytest.CollectReport) -> None:
@@ -361,16 +366,29 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:  # n
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    """Fail fast when non-daemon threads survive the session.
+    """Dump diagnóstico CI + fail fast when non-daemon threads survive the session.
 
-    Leaked aiosqlite worker threads (non-daemon) block interpreter exit, so a
-    single missed ``close()`` turns into a silent hang that burns the full CI
-    job timeout (20 min). ``os._exit(3)`` converts that hang into an immediate,
-    attributable failure. Runs after the terminal summary, controller only.
+    El dump va por fd 2 CRUDO (os.write, fuera de toda captura de pytest) como
+    workflow-command ::error:: — lectura garantizada vía check-runs annotations
+    aunque el resto del canal se pierda. Incluye failed=N y el line-rate real de
+    coverage.xml (para distinguir fallos de test del gate --cov-fail-under).
     """
+    if os.environ.get("GITHUB_ACTIONS"):
+        import xml.etree.ElementTree as ET
+
+        cov_rate = "no-xml"
+        with contextlib.suppress(Exception):
+            cov_rate = ET.parse("coverage.xml").getroot().attrib.get("line-rate", "?")
+        lines = [f"::error::CI-SUMMARY failed={len(_CI_FAILED_NODEIDS)} cov_line_rate={cov_rate}"]
+        lines.extend(f"::error::CI-FAIL {' '.join(nid.split())[:120]}" for nid in _CI_FAILED_NODEIDS[:8])
+        os.write(2, ("\n".join(lines) + "\n").encode("utf-8", "replace"))
+
     if hasattr(config, "workerinput"):
         return  # xdist worker — controller owns the verdict
 
+    # Fail-fast de hilos: aiosqlite worker threads (non-daemon) bloquean la salida
+    # del intérprete — un close() olvidado cuelga el job entero (timeout CI 20 min);
+    # os._exit(3) convierte el cuelgue en fallo atribuible.
     leaked = find_leaked_threads(grace_seconds=2.0)
     if leaked:
         names = ", ".join(f"{t.name!r} (ident={t.ident})" for t in leaked)
