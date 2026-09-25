@@ -1061,10 +1061,19 @@ class TestTgrLockWindowsReal:
         """
         locks, markers, reg_path = self._prepare(tmp_path)
         proc_a = self._start_child(tmp_path, "writer_a.py", markers, reg_path, locks)
-        self._wait_marker(markers, "a_in_cs")
-        proc_b = self._start_child(tmp_path, "writer_b.py", markers, reg_path, locks)
-        out_a, err_a = proc_a.communicate(timeout=240)
-        out_b, err_b = proc_b.communicate(timeout=240)
+        proc_b: subprocess.Popen[str] | None = None
+        try:
+            self._wait_marker(markers, "a_in_cs")
+            proc_b = self._start_child(tmp_path, "writer_b.py", markers, reg_path, locks)
+            out_a, err_a = proc_a.communicate(timeout=240)
+        finally:
+            for proc in (proc_a, proc_b):
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
+                    proc.communicate(timeout=30)
+        assert proc_a.returncode == 0, f"A falló: {err_a}"
+        assert proc_b is not None
+        out_b, err_b = proc_b.communicate(timeout=5)
         assert proc_a.returncode == 0, f"A falló: {err_a}"
         assert proc_b.returncode == 0, f"B falló (42 = LOST UPDATE): rc={proc_b.returncode}\n{err_b}"
         assert (markers / "b_saw_a").exists()
@@ -1096,7 +1105,9 @@ class TestTgrLockWindowsReal:
         proc = self._start_child(tmp_path, "crashholder.py", markers, reg_path, locks)
         self._wait_marker(markers, "child_acquired")
         proc.kill()
-        proc.wait(timeout=30)
+        # communicate() tras kill: drena y CIERRA los PIPEs (wait() los deja
+        # abiertos => ResourceWarning al GC => error con filterwarnings).
+        proc.communicate(timeout=30)
 
         lock_path = _derive_trusted_registry_lock_path_at(locks, reg_path)
         assert pathlib.Path(lock_path).exists(), "el residual debe persistir (jamás se borra)"
@@ -1115,14 +1126,21 @@ class TestTgrLockWindowsReal:
         lock2.release()
 
     def test_tgrlock_13_identidad_errónea_de_lock(self, tmp_path: pathlib.Path) -> None:
-        """TGRLOCK-13 / §8/§29: grafías equivalentes del MISMO registry colisionan en el lock."""
+        """TGRLOCK-13 / §8/§29: grafías equivalentes del MISMO registry colisionan en el lock.
+
+        La prueba de colisión de identidad es el RECHAZO de reentrancia: la
+        grafía ``inner\\..`` deriva la MISMA lock key (el guard intra-hilo la
+        detecta antes que el kernel). El Busy cross-process de la misma
+        identidad lo prueba TGRLOCK-11 con dueño real. Un registry distinto
+        jamás comparte lock (sin lock-key ambiguity).
+        """
         locks, _markers, _reg = self._prepare(tmp_path)
         sub = tmp_path / "sub"
         sub.mkdir()
         reg = sub / "trusted_goldens.json"
         lock = _acquire_trusted_registry_write_lock_at(locks, reg, timeout=5.0)
         alias = sub / "inner" / ".." / "trusted_goldens.json"
-        with pytest.raises(TrustedRegistryLockBusyError):
+        with pytest.raises(TrustedRegistryLockReentrancyError):
             _acquire_trusted_registry_write_lock_at(locks, alias, timeout=0.0)
         # Un registry DISTINTO no comparte lock (sin lock-key ambiguity):
         other = _acquire_trusted_registry_write_lock_at(locks, sub / "other.json", timeout=0.0)
