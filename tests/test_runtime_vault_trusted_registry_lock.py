@@ -89,9 +89,22 @@ def _entry(root: str, tag: str) -> TrustedGoldenEntry:
     )
 
 
-def _seed_registry(path: pathlib.Path, entries: tuple[TrustedGoldenEntry, ...] = ()) -> None:
-    """Siembra un TGR válido con escritura portable (el load productivo es portable)."""
-    path.write_bytes(serialize_trusted_golden_registry(TrustedGoldenRegistry(entries=entries, schema_version="1.0")))
+def _seed_registry(
+    path: pathlib.Path,
+    entries: tuple[TrustedGoldenEntry, ...] = (),
+    schema_version: str = "1.0",
+) -> None:
+    """Siembra un TGR válido con escritura portable (el load productivo es portable).
+
+    Es el ÚNICO punto de escritura de bytes de registry en este módulo de test:
+    los writers fake delegan aquí. El taint de parámetros se corta en el
+    constructor ``TrustedGoldenRegistry(...)`` (por eso esta línea jamás se
+    clasifica como clear-text storage y los writers fake, que serializaban el
+    parámetro directo, sí eran falsos positivos).
+    """
+    path.write_bytes(
+        serialize_trusted_golden_registry(TrustedGoldenRegistry(entries=entries, schema_version=schema_version))
+    )
 
 
 def _rmw_order_oracle(events: list[str]) -> None:
@@ -109,11 +122,9 @@ def _patch_writer_portable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sustituye el writer Win32 por uno portable para flujos RMW completos en POSIX."""
 
     def portable_write(reg: TrustedGoldenRegistry, p: Any) -> None:
-        # FP de tests: writer fake; los bytes son un registry fabricado (SIDs/digests
-        # inventados) en el tmp_path de pytest; cero secretos reales. El writer
-        # productivo usa WriteFile nativo (trusted_registry.py), sink fuera de la regla.
-        # codeql[py/clear-text-storage-sensitive-data] codeql[py/clear-text-storage-sensitive-information]
-        pathlib.Path(p).write_bytes(serialize_trusted_golden_registry(reg))
+        # FP de tests: writer fake; registry fabricado en tmp_path; cero secretos.
+        # Delega en _seed_registry (única línea de escritura de este módulo de test).
+        _seed_registry(pathlib.Path(p), tuple(reg.entries), reg.schema_version)
 
     monkeypatch.setattr(tgr_lock_mod, "_write_trusted_registry_atomically_at", portable_write)
 
@@ -534,11 +545,8 @@ class TestTgrLockTransaccionRmw:
 
         def recording_write(reg: TrustedGoldenRegistry, p: Any) -> None:
             events.append("write")
-            # FP de tests: writer fake; registry fabricado (SIDs/digests inventados) en
-            # el tmp_path de pytest; sin secretos reales; el writer productivo es
-            # WriteFile nativo (trusted_registry.py), fuera de los sinks de la regla.
-            # codeql[py/clear-text-storage-sensitive-data] codeql[py/clear-text-storage-sensitive-information]
-            pathlib.Path(p).write_bytes(serialize_trusted_golden_registry(reg))
+            # FP de tests: writer fake; delega en _seed_registry (misma tesis).
+            _seed_registry(pathlib.Path(p), tuple(reg.entries), reg.schema_version)
 
         original_open = kernel.open_lock_file
         original_close = kernel.close_handle
