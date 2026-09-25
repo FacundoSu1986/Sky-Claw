@@ -509,7 +509,13 @@ class TestLockingAndConcurrency:
             assert True
 
     def test_l6_ningun_otro_mutador_runtime_evita_lock(self) -> None:
-        """L6: create_runtime_clone es el único mutador de Runtime Vault activo."""
+        """L6: los mutadores de Runtime Vault son EXACTAMENTE los autorizados.
+
+        - RV-3: ``create_runtime_clone`` (usa destination_lock).
+        - GP2-P2: la transacción RMW del TGR (BAJO global TGR serialization
+          lock; su único writer es ``_write_trusted_registry_atomically_at``).
+        Cualquier otro mutador emergente rompe el ancla hasta ser autorizado.
+        """
         import sky_claw.local.runtime_vault as pkg
 
         pkg_dir = pathlib.Path(pkg.__file__).parent
@@ -522,7 +528,13 @@ class TestLockingAndConcurrency:
                 if isinstance(node, ast.FunctionDef) and ("clone" in node.name or "mutate" in node.name):
                     mutating_functions.append(f"{py_path.stem}.{node.name}")
 
-        assert mutating_functions == ["clone.create_runtime_clone"]
+        expected_mutators = [
+            "clone.create_runtime_clone",
+            "trusted_registry_lock._mutate_trusted_registry_core",
+            "trusted_registry_lock._mutate_trusted_registry_under_lock_at",
+            "trusted_registry_lock.mutate_trusted_golden_registry",
+        ]
+        assert sorted(mutating_functions) == expected_mutators
 
 
 class TestRuntimeCloneSuiteCanonico:
@@ -1053,20 +1065,36 @@ class TestRuntimeCloneSuiteCanonico:
         py_files = list(pkg_dir.glob("*.py"))
         discovered_modules = {p.stem for p in py_files}
 
-        # Ancla de igualdad exacta para evitar hermanos no cableados
+        # Ancla de igualdad exacta para evitar hermanos no cableados.
+        # GP2-S3b-1 añade deliberadamente los 6 módulos de la frontera de
+        # autorización privilegiada (todos cableados vía __init__.__all__).
+        # GP2-P1 añade operator_verifier_bridge, physical_root y runtime_observation.
+        # GP2-P2 añade trusted_registry_lock (global TGR serialization lock).
         expected_modules = {
             "__init__",
+            "authorization_context",
             "clone",
+            "coordinator_identity",
             "golden",
+            "golden_mutation_lock",
             "golden_protection_plan",
             "inventory",
             "locking",
             "models",
             "node_evidence",
+            "operator_token",
+            "operator_verifier_bridge",
+            "physical_root",
             "planning_orchestrator",
+            "ppsc",
+            "privileged_boundary",
             "protection",
             "quiescence",
+            "runtime_observation",
             "target_dacl",
+            "trusted_namespace",
+            "trusted_registry",
+            "trusted_registry_lock",
             "verification",
         }
         assert discovered_modules == expected_modules

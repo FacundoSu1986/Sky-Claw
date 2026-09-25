@@ -128,9 +128,9 @@ class TestCableadoPerezoso:
         game = tmp_path / "Skyrim"
         game.mkdir()
         (tmp_path / "snapshots").mkdir()
-        # Targets observables + runner que reescribe: el gate físico del
-        # servicio exige evidencia de mutación para reportar éxito (review
-        # adversarial #495 — sin targets el sort se rechaza fail-closed).
+        # Targets observables + runner atribuible: sin targets el sort se
+        # rechaza fail-closed (review adversarial #495) y el éxito exige el
+        # testigo de ejecución fresco (PR-2).
         load_order_dir = tmp_path / "load_order"
         load_order_dir.mkdir()
         plugins_txt = load_order_dir / "plugins.txt"
@@ -145,10 +145,12 @@ class TestCableadoPerezoso:
         resolver.detect_mo2_path = MagicMock(return_value=None)
         resolver.get_loot_exe = MagicMock(return_value=None)
 
+        from tests._loot_witness import TESTIGO_FRESCO
+
         async def sort_real(**_kwargs: object) -> LOOTResult:
             for archivo in (plugins_txt, loadorder_txt):
                 archivo.write_text("Skyrim.esm\n", encoding="utf-8")
-            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"], execution_witness=TESTIGO_FRESCO)
 
         runner = MagicMock()
         runner.sort = AsyncMock(side_effect=sort_real)

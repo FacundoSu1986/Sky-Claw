@@ -33,7 +33,10 @@ _TOKENS_DE_ESCRITURA = (
     "SetNativeValue",
     "ElementAssign",
     "wbCopyElementToRecord",
-    "AddNewFile",
+    "wbCopyElementToFile",
+    "AddRequiredElementMasters",
+    "AddMasterIfMissing",
+    "AddNewFile",  # cubre también AddNewFileName (substring)
     "AddElement",
     "RemoveElement",
     "RemoveNode",

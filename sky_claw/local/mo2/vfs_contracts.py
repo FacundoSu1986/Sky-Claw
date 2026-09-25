@@ -18,7 +18,15 @@ from sky_claw.app.security.path_validator import PathViolationError, assert_safe
 
 VFS_PROTOCOL_VERSION = 1
 VFS_MANIFEST_PROTOCOL_VERSION = 2
-ALLOWED_VFS_TOOL_IDS = frozenset({"health", "loot_sort"})
+# Identificadores de herramienta cerrados. Añadir otro exige un handler
+# específico, una familia de ejecutable y pruebas adversariales: el broker no
+# es una puerta para ejecutar procesos arbitrarios.
+ALLOWED_VFS_TOOL_IDS = frozenset({"health", "loot_sort", "texgen", "dyndolod"})
+ALLOWED_VFS_SESSION_TOOL_IDS = frozenset({"texgen", "dyndolod"})
+VFS_TOOL_EXECUTABLE_NAMES = {
+    "texgen": "texgenx64.exe",
+    "dyndolod": "dyndolodx64.exe",
+}
 ALLOWED_ROLLBACK_STATES = frozenset({"not_started", "not_required", "pending", "completed", "failed"})
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -82,6 +90,38 @@ def _mapping(value: object, *, field: str) -> dict[str, JsonValue]:
     if not isinstance(parsed, dict):
         raise VfsProtocolError(f"{field} debe ser un objeto JSON")
     return parsed
+
+
+def _validate_session_tool_payload(tool_id: str, payload: dict[str, JsonValue]) -> None:
+    """Valida la forma común, cerrada y sin shell de un tool GUI brokered.
+
+    La comprobación de existencia, symlink y pertenencia a las raíces se repite
+    dentro del worker, después de leer el manifiesto firmado. Esta primera capa
+    evita que un payload mal formado cruce el IPC y, sobre todo, congela que los
+    handlers de sesión sólo aceptan ``executable``, ``argv`` y ``cwd``.
+    """
+    if tool_id not in ALLOWED_VFS_SESSION_TOOL_IDS:
+        return
+    expected_name = VFS_TOOL_EXECUTABLE_NAMES[tool_id]
+    allowed = {"executable", "argv", "cwd"}
+    if set(payload) != allowed:
+        raise VfsProtocolError(f"payload de {tool_id} debe contener exactamente {sorted(allowed)}")
+    executable = payload["executable"]
+    if not isinstance(executable, str) or not executable:
+        raise VfsProtocolError(f"payload.{tool_id}.executable debe ser string")
+    executable_path = pathlib.Path(executable)
+    if not executable_path.is_absolute():
+        raise VfsProtocolError("payload.executable debe ser una ruta absoluta")
+    if executable_path.name.casefold() != expected_name:
+        raise VfsProtocolError(f"payload.executable no corresponde a {tool_id}: se esperaba {expected_name}")
+    argv = payload["argv"]
+    if not isinstance(argv, list) or any(type(item) is not str for item in argv):
+        raise VfsProtocolError("payload.argv debe ser una lista de strings")
+    cwd = payload["cwd"]
+    if not isinstance(cwd, str) or not cwd:
+        raise VfsProtocolError("payload.cwd debe ser un string no vacío")
+    if not pathlib.Path(cwd).is_absolute():
+        raise VfsProtocolError("payload.cwd debe ser una ruta absoluta")
 
 
 def _absolute_paths(value: object, *, field: str) -> tuple[pathlib.Path, ...]:
@@ -175,13 +215,15 @@ class VfsJob:
         timeout = float(timeout_seconds)
         if not math.isfinite(timeout) or timeout <= 0 or timeout > 86_400:
             raise VfsProtocolError("timeout_seconds debe estar entre 0 y 86400")
+        parsed_payload = _mapping(payload, field="payload")
+        _validate_session_tool_payload(tool, parsed_payload)
         return cls(
             protocol_version=version,
             job_id=job,
             instance_id=instance,
             profile=profile_name,
             tool_id=tool,
-            payload=_mapping(payload, field="payload"),
+            payload=parsed_payload,
             timeout_seconds=timeout,
             expected_fingerprint=_require_fingerprint(expected_fingerprint),
             mutation_targets=_absolute_paths(mutation_targets, field="mutation_targets"),
@@ -264,3 +306,137 @@ class VfsJobResult:
             "attestation": self.attestation,
             "tool_result": self.tool_result,
         }
+
+
+# ---------------------------------------------------------------------------
+# Eventos mid-job de sesión (PR-586A)
+# ---------------------------------------------------------------------------
+#
+# Un job de sesión NO es request→result terminal: el daemon necesita el PID del
+# tool mientras sigue vivo (gate UIA + HITL de #590) y su código de salida antes
+# de que el worker cierre su canal. Estos dos eventos viajan por el canal
+# autenticado del worker (``type == "event"``) y son un contrato CERRADO: el
+# conjunto permitido se congela por test y cualquier campo de más, de menos o de
+# tipo distinto falla cerrado. El worker es el único emisor legítimo; el broker
+# valida el detalle exacto antes de enrutar por ``job_id``.
+
+VFS_SESSION_TOOL_STARTED = "tool_started"
+VFS_SESSION_TOOL_EXIT = "tool_exit"
+
+#: Eventos mid-job admitidos. Ampliarlo exige actualizar el ancla de enumeración
+#: (``tests/test_vfs_execution_contracts.py``) y decidir el emisor/receptor.
+ALLOWED_VFS_SESSION_EVENTS = frozenset({VFS_SESSION_TOOL_STARTED, VFS_SESSION_TOOL_EXIT})
+
+#: Rango de un PID de Windows (DWORD). El piso excluye 0 y negativos.
+_MAX_TOOL_PID = 0xFFFFFFFF
+
+#: Windows entrega el exit code como DWORD sin signo; POSIX como ``-señal``.
+_MIN_EXIT_CODE = -(2**31)
+_MAX_EXIT_CODE = 2**32 - 1
+
+_MENSAJE_PID = "tool_pid debe ser un entero positivo dentro del rango de un PID de Windows"
+_MENSAJE_EXIT_CODE = "exit_code debe ser un entero dentro del rango de un código de salida (DWORD / señal POSIX)"
+
+
+class VfsSessionEventError(VfsProtocolError):
+    """Un evento mid-job no cumple el contrato cerrado de sesión."""
+
+
+def _require_job_id(value: object) -> str:
+    try:
+        return _safe_component(value, field="job_id")
+    except VfsProtocolError as exc:
+        raise VfsSessionEventError(str(exc)) from exc
+
+
+def _require_tool_pid(value: object) -> int:
+    if type(value) is not int or not 0 < value <= _MAX_TOOL_PID:
+        raise VfsSessionEventError(_MENSAJE_PID)
+    return value
+
+
+def _require_exit_code(value: object) -> int:
+    if type(value) is not int or not _MIN_EXIT_CODE <= value <= _MAX_EXIT_CODE:
+        raise VfsSessionEventError(_MENSAJE_EXIT_CODE)
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class VfsToolStartedEvent:
+    """El worker spawneó el tool: su PID ya existe y es estable para la sesión."""
+
+    job_id: str
+    tool_pid: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "job_id", _require_job_id(self.job_id))
+        object.__setattr__(self, "tool_pid", _require_tool_pid(self.tool_pid))
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {
+            "protocol_version": VFS_PROTOCOL_VERSION,
+            "type": "event",
+            "event": VFS_SESSION_TOOL_STARTED,
+            "job_id": self.job_id,
+            "tool_pid": self.tool_pid,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VfsToolExitEvent:
+    """El tool terminó; ``exit_code`` es el del proceso, no el del worker."""
+
+    job_id: str
+    exit_code: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "job_id", _require_job_id(self.job_id))
+        object.__setattr__(self, "exit_code", _require_exit_code(self.exit_code))
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {
+            "protocol_version": VFS_PROTOCOL_VERSION,
+            "type": "event",
+            "event": VFS_SESSION_TOOL_EXIT,
+            "job_id": self.job_id,
+            "exit_code": self.exit_code,
+        }
+
+
+VfsSessionEvent: TypeAlias = VfsToolStartedEvent | VfsToolExitEvent
+
+#: Claves EXACTAS por evento. Cualquier clave de más es un schema desconocido.
+_SESSION_EVENT_KEYS: dict[str, frozenset[str]] = {
+    VFS_SESSION_TOOL_STARTED: frozenset({"protocol_version", "type", "event", "job_id", "tool_pid"}),
+    VFS_SESSION_TOOL_EXIT: frozenset({"protocol_version", "type", "event", "job_id", "exit_code"}),
+}
+
+
+def parse_worker_event(raw: object) -> VfsSessionEvent:
+    """Valida estrictamente un frame ``event`` del worker y lo tipa.
+
+    Cada violación —versión, tipo de mensaje, nombre de evento, campos de más o
+    de menos, tipos de campo— se convierte en :class:`VfsSessionEventError`, que
+    el broker trata como violación de protocolo y falla cerrado.
+    """
+    try:
+        if not isinstance(raw, Mapping):
+            raise VfsProtocolError("el evento debe ser un objeto JSON")
+        _require_protocol_version(raw.get("protocol_version"))
+        if raw.get("type") != "event":
+            raise VfsProtocolError(f"tipo de mensaje no permitido para un evento: {raw.get('type')!r}")
+        nombre = raw.get("event")
+        if not isinstance(nombre, str) or nombre not in ALLOWED_VFS_SESSION_EVENTS:
+            raise VfsProtocolError(f"evento de sesión no permitido: {nombre!r}")
+        claves = _SESSION_EVENT_KEYS[nombre]
+        if set(raw) != claves:
+            inesperadas = sorted(set(raw) - claves)
+            faltantes = sorted(claves - set(raw))
+            raise VfsProtocolError(f"campos inválidos en {nombre}: inesperados={inesperadas} faltantes={faltantes}")
+        if nombre == VFS_SESSION_TOOL_STARTED:
+            return VfsToolStartedEvent(job_id=raw["job_id"], tool_pid=raw["tool_pid"])
+        return VfsToolExitEvent(job_id=raw["job_id"], exit_code=raw["exit_code"])
+    except VfsSessionEventError:
+        raise
+    except VfsProtocolError as exc:
+        raise VfsSessionEventError(str(exc)) from exc

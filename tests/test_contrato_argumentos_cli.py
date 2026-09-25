@@ -163,7 +163,12 @@ LANZADORES_ESPERADOS = {
     "sky_claw/app/agent/executor.py": 1,
     "sky_claw/app/core/vfs_orchestrator.py": 1,
     "sky_claw/app/security/file_permissions.py": 7,
-    "sky_claw/local/mo2/vfs_worker.py": 1,
+    # PR-586A: `run_grandchild_probe` (probe nieto de la attestation) + la
+    # primitive de sesión `run_brokered_process`, que spawnea el proceso que un
+    # handler ALLOWLISTED declara en el payload firmado (no flags propios de
+    # ninguna herramienta acá: el argv lo construye el daemon y este módulo solo
+    # lo ejecuta). Infra, no lanzador de terceros.
+    "sky_claw/local/mo2/vfs_worker.py": 2,
     "sky_claw/local/tools/_process.py": 3,
     # T5-v2.1: el ejecutor del gate UIA lanza el HELPER de observación (mismo
     # intérprete, módulo propio) para poder matar y reapear una llamada COM
@@ -177,6 +182,13 @@ LANZADORES_ESPERADOS = {
     # mientras este PR estaba abierto; detectado por el ancla al mergear, que
     # es exactamente el trabajo para el que existe.
     "sky_claw/local/tools_installer.py": 2,
+    # GP2-P1: operator_verifier_bridge contiene un único subprocess.Popen dentro de
+    # _TestOnlyVerifierLauncher. Ese spawn crea un child Python descartable
+    # utilizado exclusivamente por los oráculos Win32 del verifier bridge para
+    # probar IPC/lifecycle/peer auth. No construye argv para una herramienta de
+    # modding de terceros y la composición productiva permanece fail-closed
+    # mediante resolve_production_verifier_executable().
+    "sky_claw/local/runtime_vault/operator_verifier_bridge.py": 1,
     # Mixto: además del `create_subprocess_exec` legacy que SÍ es lanzador de
     # LOOT (con entrada propia en PROCEDENCIA_DE_FLAGS), este módulo tiene un
     # `subprocess.run(["taskkill", ...])` puramente infra — mismo módulo, dos
@@ -245,7 +257,10 @@ PROCEDENCIA_DE_FLAGS = {
     ),
     "sky_claw/local/tools/synthesis_runner.py": "SIN VERIFICAR — Mutagen-Modding/Synthesis, proyecto Synthesis.Bethesda.CLI",
     "sky_claw/local/tools/vramr_service.py": "SIN VERIFICAR — VRAMr se distribuye como scripts PowerShell en Nexus",
-    "sky_claw/local/xedit/runner.py": "TES5Edit/TES5Edit — xEdit/xeInit.pas (-T:/-P:, game mode)",
+    "sky_claw/local/xedit/runner.py": (
+        "TES5Edit/TES5Edit — xEdit/xeInit.pas (-T:/-P:, game mode); tes5edit.github.io/docs "
+        "2-overview (-D: Data dir, -R: log filename) y 18-whatsnew 4.0.2 (-autoexit en modo Script)"
+    ),
 }
 
 
@@ -517,7 +532,7 @@ async def test_loot_construye_el_vector_verificado(tmp_path: pathlib.Path) -> No
     loot_exe.touch()
     juego = tmp_path / "Skyrim Special Edition"
     juego.mkdir()
-    runner = LOOTRunner(LOOTConfig(loot_exe=loot_exe, game_path=juego, game="Skyrim Special Edition"))
+    runner = LOOTRunner(LOOTConfig(loot_exe=loot_exe, game_path=juego, game="SkyrimSE"))
 
     capturado: dict[str, list[str]] = {}
 
@@ -556,7 +571,7 @@ async def test_loot_con_update_masterlist_no_agrega_el_flag_inexistente(tmp_path
     loot_exe.touch()
     juego = tmp_path / "Skyrim Special Edition"
     juego.mkdir()
-    runner = LOOTRunner(LOOTConfig(loot_exe=loot_exe, game_path=juego, game="Skyrim Special Edition"))
+    runner = LOOTRunner(LOOTConfig(loot_exe=loot_exe, game_path=juego, game="SkyrimSE"))
 
     capturado: dict[str, list[str]] = {}
 

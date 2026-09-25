@@ -44,13 +44,13 @@ from sky_claw.local.discovery.scanner import (
     detect_skyrim_edition,
     find_skse_installation,
     read_skyrim_version,
-    skse_dll_game_version,
     skyrim_version_matches,
 )
 from sky_claw.local.thread_bridge import esperar_hilo_ininterrumpible as _esperar_hilo_ininterrumpible
+from sky_claw.local.tools.skse_catalog import SkseRelease, SkseSource, resolve_skse_release
 
 if TYPE_CHECKING:
-    from sky_claw.app.scraper.nexus_downloader import NexusDownloader
+    from sky_claw.app.scraper.nexus_downloader import FileInfo, NexusDownloader
     from sky_claw.app.security.network_gateway import NetworkGateway
 
 logger = logging.getLogger(__name__)
@@ -258,23 +258,36 @@ _NGIO_RELEASES_URL = "https://api.github.com/repos/DwemerEngineer/No-Grass-In-Ob
 # Configuración de SKSE
 # ---------------------------------------------------------------------------
 #
+# DESDE PR-2 ESTA TABLA YA NO ES EL CATÁLOGO DE COMPATIBILIDAD. La compatibilidad de
+# SKSE se decide por el runtime EXACTO del ejecutable, en
+# `sky_claw/local/tools/skse_catalog.py`: `1.6.1170`, `1.7.99` y `1.7.104` son todos
+# "AE" y cada uno exige un build distinto, así que la edición no puede elegir payload.
+# Lo que queda acá es METADATA DE ADQUISICIÓN DIRECTA del payload legacy de silverlock
+# (URL/sha256/loader/steam_loader) y se selecciona por IDENTIDAD del release —mismo
+# `dll` y mismo nombre de artifact— en `_adquisicion_para`, nunca por edición.
+#
+# PR-3 agregó el segundo canal: los releases marcados NEXUS en el catálogo se compran
+# en el mod 30379 a través de `NexusDownloader` (la única spec por identidad se sigue
+# exigiendo; la selección del archivo vuelve a basarse en `name + mod_version +
+# is_primary`, no en un file_id fijado). Cuando cada release de SKSE que importa tenga
+# esa integración de Nexus, esta tabla podría retirarse — hoy es el único sitio que
+# provee los SHA-256 de los builds silverlock (1.5.97 / 1.9.32).
+#
 # GOG queda FUERA a propósito, y no es un pendiente: es una decisión de producto
 # (base de usuarios chica y catálogo de mods compatibles pobre). Silverlock publica
 # un archive aparte para GOG (`skse64_*_gog.7z`), así que soportarlo sería agregar su
-# entrada acá y pasarle el `store` del snapshot a la selección de payload — no está
-# hecho porque no se quiere, no porque falte.
+# entrada al catálogo — no está hecho porque no se quiere, no porque falte.
 #
-# El recorte es fail-closed sin costo: el gate de versión exacta de `ensure_skse` corre
-# ANTES del HITL y de la descarga, y GOG AE (1.6.1179) no matchea el 1.6.1170 del
-# payload de Steam, así que un usuario de GOG recibe el error sin que se le pida
-# aprobación, sin egress y sin que se escriba nada en el directorio del juego. El
-# mensaje lo manda a https://skse.silverlock.org/, que es donde está su build.
+# El recorte es fail-closed sin costo: el runtime de GOG AE (1.6.1179) no está en el
+# catálogo, así que `resolve_skse_release` devuelve None y `ensure_skse` corta ANTES
+# del HITL, de la descarga y de cualquier escritura. El mensaje manda a
+# https://skse.silverlock.org/, que es donde está su build.
 #
-# Esa garantía vale ahora en las DOS ramas del gate. Antes dependía de que la versión
-# se pudiera leer: con `read_skyrim_version` devolviendo "" (sin `pefile`, PE que no
-# parsea, PE sin recurso de versión) el mismatch no se evaluaba, la edición la decidía
-# una heurística de tamaño, y al usuario de GOG se le pedía aprobación y se le bajaba
-# el payload de Steam. La rama ilegible también corta.
+# La fila "AE" (`skse64_2_02_06.7z`) es metadata histórica: el catálogo manda 1.6.1170
+# a 2.2.8 vía Nexus, así que NINGÚN release resuelve hoy a esa URL y no hay fallback
+# silencioso a 2.2.6. Si alguien reintrodujera la selección por edición, rompe el ancla
+# `test_ensure_skse_no_elige_compatibilidad_desde_skse_config` (tests/
+# test_tools_installer_skse_runtime_catalog.py) y los tests de adquisición por runtime.
 
 # `steam_loader` NO declara "este build lo trae": es el NOMBRE del componente para esa
 # familia, y lo usan dos consumidores distintos. `_cleanup_orphaned_skse_dlls` lo
@@ -329,10 +342,9 @@ _T = TypeVar("_T")
 #: sin habilitar un sumidero de disco. Mismo criterio que ``_SKSE_MAX_ARCHIVE_BYTES``.
 _GITHUB_ASSET_MAX_BYTES = 512 * 1024 * 1024
 
-# El decodificador de versión de los DLL de SKSE vive en `discovery.scanner` porque el
-# scanner necesita la MISMA regla para decidir si la instalación en disco sirve. Se
-# importa en vez de duplicarse: dos copias divergen en cuanto alguien agregue un payload.
-_skse_dll_game_version = skse_dll_game_version
+# La regla de comparación de versiones vive en `discovery.scanner` —el mismo módulo
+# que decide si una instalación en disco sirve— y se importa para la revalidación
+# pegada a la copia: dos copias divergen en cuanto alguien toque una.
 _game_version_matches = skyrim_version_matches
 
 
@@ -369,6 +381,146 @@ def _skse_cfg_field(cfg: dict[str, str | None], field: str) -> str:
     if not value:
         raise ToolInstallError(f"Payload de SKSE mal configurado: falta el campo obligatorio '{field}' en SKSE_CONFIG.")
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class _SkseNexusAcquisition:
+    """Canal de adquisición Nexus para los builds SKSE64 de Steam.
+
+    Los releases Nexus del catálogo (1.6.1170→2.2.8, 1.7.99→2.3.0, 1.7.104→2.3.1) son
+    TODOS de la misma familia SKSE64 y viven en el mismo mod de Nexus — una sola spec,
+    no una tabla paralela por runtime. La identidad del archivo dentro del mod se
+    re-deriva en cada llamada desde la lista de la API por ``name + mod_version``
+    con desempate estricto por ``is_primary``: sin `file_id` hardcodeado (un upload
+    reemplazado cambiaría el id sin alterar su identidad semántica) y nunca por
+    timestamp/vigencia (eso volvería a ser "latest" con pasos extra).
+    """
+
+    nexus_id: int
+    display_name: str
+    loader_name: str
+    steam_loader_name: str | None
+
+
+#: Perfil verificado el 2026-09-21 contra la pestaña Files del mod: el archivo de la
+#: familia Steam tiene exactamente este nombre y el GOG — deliberadamente fuera de
+#: alcance — lleva otro ("...(SKSE64) GOG"). Los tres builds Nexus del catálogo
+#: (2.2.8/2.3.0/2.3.1) cuelgan todos de ahí.
+_SKSE_NEXUS = _SkseNexusAcquisition(
+    nexus_id=30379,
+    display_name="Skyrim Script Extender (SKSE64) Steam",
+    loader_name="skse64_loader.exe",
+    steam_loader_name="skse64_steam_loader.dll",
+)
+
+#: Formato MD5 hexadecimal (32 dígitos). Exigible para SKSE: lo que se baja va
+#: directo a EXE/DLL del juego y la validación de `NexusDownloader` NO puede ser
+#: opcional en este camino (si Nexus no publica hash, cortamos — no hay archive).
+_MD5_HEX_RE = re.compile(r"[0-9a-f]{32}", re.IGNORECASE)
+
+
+def _adquisicion_para(release: SkseRelease) -> dict[str, str | None] | _SkseNexusAcquisition:
+    """Resuelve la adquisición para *release*: payload legacy silverlock o canal Nexus.
+
+    La compatibilidad ya la decidió el catálogo (runtime → release); acá sólo se
+    resuelve de dónde bajar ese build, por IDENTIDAD y nunca por edición:
+
+    * SILVERLOCK → el payload legacy de ``SKSE_CONFIG`` que declare el MISMO ``dll``
+      Y el MISMO archive. ``artifact_name`` es OBLIGATORIO en este canal: sin él la
+      identidad quedaría en "sólo DLL" y podría matchear un build viejo de la misma
+      familia (p. ej. el 2.2.6 de 1.6.1170). Si no hay EXACTAMENTE una coincidencia
+      se corta antes del HITL, del egress y de cualquier escritura.
+    * NEXUS → la spec única del canal (mod 30379, familia Steam/64). Si el release
+      no pertenece a esa familia (p. ej. un futuro build LE publicado en Nexus) el
+      canal no le aplica y se corta cerrado.
+    """
+    if release.source is not SkseSource.SILVERLOCK:
+        if not release.dll_name.startswith("skse64_"):
+            raise ToolInstallError(
+                f"El canal Nexus de Sky-Claw sólo cubre la familia SKSE64; el release para "
+                f"{release.game_version} ({release.dll_name}, vía {release.source.value}) no le "
+                "aplica. No se descargó ni se modificó nada."
+            )
+        return _SKSE_NEXUS
+
+    if not release.artifact_name:
+        raise ToolInstallError(
+            f"Release SILVERLOCK sin artifact_name verificado (SKSE {release.skse_version}, "
+            f"runtime {release.game_version}): la identidad del payload exige dll + archive, "
+            "así que no se selecciona por nombre de DLL. No se descargó ni se modificó nada."
+        )
+
+    candidatos = [
+        cfg
+        for cfg in SKSE_CONFIG.values()
+        if cfg.get("dll") == release.dll_name and (cfg.get("url") or "").rsplit("/", 1)[-1] == release.artifact_name
+    ]
+    if len(candidatos) != 1:
+        raise ToolInstallError(
+            f"No hay una adquisición directa única para SKSE {release.skse_version} "
+            f"(runtime {release.game_version}): SKSE_CONFIG declara {len(candidatos)} payload(s) "
+            "coherentes con su identidad (dll/artifact). No se descargó ni se modificó nada."
+        )
+    return candidatos[0]
+
+
+def _seleccionar_archivo_nexus(files: list[dict[str, Any]], release: SkseRelease) -> dict[str, Any]:
+    """Elegir EL archivo Nexus del mod 30379 que implementa *release*.
+
+    Identidad: ``name`` exacto (familia HKSE64 Steam; el GOG tiene nombre distinto),
+    ``mod_version == release.skse_version`` y nunca DELETED. Duplicados legítimos
+    (re-subidas del autor con la misma versión) se desempatan ÚNICAMENTE por
+    ``is_primary == True`` en exactamente uno; cualquier otra ambigüedad corta
+    cerrado, sin orden por timestamp (sería "latest" disfrazado).
+    """
+    candidatos = [
+        f
+        for f in files
+        if f.get("name") == _SKSE_NEXUS.display_name
+        and str(f.get("mod_version") or "") == release.skse_version
+        and f.get("category_name") != "DELETED"
+    ]
+    if len(candidatos) == 1:
+        return candidatos[0]
+    if len(candidatos) > 1:
+        primarios = [f for f in candidatos if bool(f.get("is_primary"))]
+        if len(primarios) == 1:
+            return primarios[0]
+    raise ToolInstallError(
+        f"Nexus (mod {_SKSE_NEXUS.nexus_id}) no tiene un archivo ÚNICO que corresponda a "
+        f"SKSE {release.skse_version} para el runtime {release.game_version} "
+        f"(candidatos coherentes: {len(candidatos)}). No se descargó ni se modificó nada."
+    )
+
+
+def _validar_artifact_skse_nexus(file_info: FileInfo) -> None:
+    """Gates de integridad ANTES de bajar código binario directo al juego.
+
+    La validación de hash/tamaño de `NexusDownloader.download` es necesaria pero no
+    suficiente acá: si Nexus no entregó md5 el downloader continuaría con warning, y
+    ese camino CORE escribe EXE/DLL en la raíz del juego. Para SKSE el md5 y el tamaño
+    son OBLIGATORIOS y el tope es el mismo del canal silverlock (64 MiB, no 4 GiB).
+    """
+    md5 = (file_info.md5 or "").strip()
+    if not _MD5_HEX_RE.fullmatch(md5):
+        raise ToolInstallError(
+            f"Nexus no publicó un MD5 válido para el artifact SKSE ({md5!r}): code nativo "
+            "directo al juego exige hash verificable. No se descargó nada."
+        )
+    if file_info.size_bytes <= 0:
+        raise ToolInstallError(
+            "Nexus no informó el tamaño del artifact SKSE: sin límite comprobable no se descarga nada al juego."
+        )
+    if file_info.size_bytes > _SKSE_MAX_ARCHIVE_BYTES:
+        raise ToolInstallError(
+            f"El artifact SKSE ({file_info.size_bytes} bytes) supera el límite permitido "
+            f"({_SKSE_MAX_ARCHIVE_BYTES} bytes). No se descargó nada."
+        )
+    if not file_info.file_name.lower().endswith(".7z"):
+        raise ToolInstallError(
+            f"El artifact SKSE de Nexus no es un .7z ({file_info.file_name!r}): sin formato "
+            "verificable no se extrae. No se descargó nada."
+        )
 
 
 # Dependencias del precache de grass (SOP §2.8): NGIO-NG desde GitHub; Address
@@ -1168,12 +1320,17 @@ class ToolsInstaller:
         path_validator: PathValidator,
         lock_manager: DistributedLockManager,
         install_ttl: float = _INSTALL_TTL_SECONDS,
+        nexus_downloader_factory: Callable[[], NexusDownloader | None] | None = None,
     ) -> None:
         self._hitl = hitl
         self._gateway = gateway
         self._validator = path_validator
         self._lock_manager = lock_manager
         self._install_ttl = install_ttl
+        # Factory LAZY, no la instancia: la api key de Nexus puede configurarse después
+        # de construir el installer, y con la instancia congelada el autoinstall Nexus
+        # quedaría cortado hasta el próximo arranque. Se invoca por cada ensure_nexus.
+        self._nexus_downloader_factory = nexus_downloader_factory
 
     # ------------------------------------------------------------------
     # Public API
@@ -1420,14 +1577,19 @@ class ToolsInstaller:
         Args:
             install_dir: Directorio raíz del juego Skyrim (donde reside SkyrimSE.exe).
             session: Sesión HTTP activa.
-            edition: Override opcional de la edición de Skyrim. Si es None, se deriva
-                de la versión del PE del ejecutable del juego.
+            edition: Hint LEGACY de clasificación. NO selecciona el release y, cuando
+                hay ejecutable, tampoco la familia: la clasificación real del PE manda
+                (un ``SkyrimVR.exe`` corta por veto de producto, y la idempotencia
+                busca la familia real del ejecutable, no la pedida). Se conserva por
+                compatibilidad de firma; sin runtime legible la operación corta
+                cerrada de todos modos.
 
         Returns:
-            :class:`InstallResult` con la ruta a ``skse64_loader.exe``.
+            :class:`InstallResult` con la ruta al loader de SKSE.
 
         Raises:
-            ToolInstallError: Si la instalación falla o la edición no está soportada (ej. MS Store).
+            ToolInstallError: Si la instalación falla, el runtime no tiene release
+                conocido o la adquisición del release no está habilitada.
         """
         self._validator.validate(install_dir)
         # Lock cross-process keyed por game_dir (8º mutador de T-31). Cubre el
@@ -1437,165 +1599,185 @@ class ToolsInstaller:
             _install_lock_resource_id(install_dir),
             ttl=self._install_ttl,
         ):
-            # Determinar edición. La autoridad es la versión del PE del juego, NO qué DLL
-            # de SKSE ya está en disco: si SKSE ya estuviera instalado saldríamos por el
-            # early-return de idempotencia de más abajo, así que en el único caso donde
-            # esto corre —máquina limpia— no hay DLL que mirar. Defaultear a AE ahí le
-            # instala `skse64_1_6_1170.dll` a un runtime 1.5.97 y SKSE no carga.
-            #
-            # Quién nombra la EDICIÓN y quién prueba la VERSIÓN son cosas distintas: el
-            # caller puede traer la edición, pero la compatibilidad la decide el build
-            # del ejecutable que haya en disco. Por eso los dos caminos terminan
-            # llenando `detected_version` y `hay_ejecutable`.
+            # 1) RUNTIME PRIMERO. Quién nombra la EDICIÓN y quién prueba la VERSIÓN
+            # son cosas distintas: la compatibilidad de SKSE es del BUILD exacto del
+            # ejecutable, no de la edición — `1.6.1170`, `1.7.99` y `1.7.104` son
+            # todos "AE" y cada uno exige un build distinto. Los dos caminos llenan
+            # `detected_version` y `hay_ejecutable`; la edición —SIEMPRE la del
+            # ejecutable real cuando existe— queda para los mensajes, el veto de
+            # producto y la FAMILIA de loader que el scanner espera, nunca para
+            # elegir el build.
             detected_version = ""
             if edition is None:
                 edition, detected_version = await self._detect_skyrim_edition_from_exe(install_dir)
                 # `_detect_skyrim_edition_from_exe` levanta si no encuentra ninguno.
                 hay_ejecutable = True
             else:
-                # Con `edition` explícita no se EXIGE un .exe en disco (staging, tests,
-                # instalación en curso), pero si lo hay, su versión manda igual: la
-                # compatibilidad de SKSE es del BUILD, y quién nombró la edición no
-                # cambia qué runtime va a cargar el DLL. Sin esto, el gate quedaba
-                # atado al camino de autodetección y cualquier caller que resolviera
-                # la edición por su cuenta —config, snapshot, un consumidor futuro—
-                # se saltaba la prueba de compatibilidad entera.
-                hay_ejecutable, detected_version = await self._leer_version_del_ejecutable(install_dir)
+                # El hint del caller NO es autoridad de familia cuando hay un
+                # ejecutable: la clasificación REAL del PE manda. Un `SkyrimVR.exe`
+                # cuya versión "parezca" soportada tiene que cortar por veto (abajo)
+                # en vez de resolver catálogo y bajar SKSE64 al directorio de un VR;
+                # y la idempotencia tiene que buscar la familia REAL — un
+                # `edition=LE` sobre un Skyrim SE con el SKSE correcto ya puesto no
+                # puede "no encontrarlo" y reinstalar encima. Sin ejecutable no hay
+                # runtime, así que el flujo corta cerrado más abajo.
+                exe = self._encontrar_ejecutable(install_dir)
+                hay_ejecutable = exe is not None
+                if exe is not None:
+                    detected_version = await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
+                    edition = await self._leer_pe_tolerando_ilegible(
+                        detect_skyrim_edition, exe, ilegible=SkyrimEdition.UNKNOWN
+                    )
 
-            ed_key = self._edition_to_config_key(edition)
-            cfg = SKSE_CONFIG.get(ed_key)
-
-            if cfg is None:
-                raise ToolInstallError(f"Edición {ed_key} no compatible (probablemente MS Store, que no soporta SKSE).")
-
-            # Idempotencia: verificar si ya está instalado correctamente
-            loader_name = _skse_cfg_field(cfg, "loader")
-            dll_name = _skse_cfg_field(cfg, "dll")
-
-            # Gate de versión exacta: SKSE está pinneado al BUILD exacto del juego, no
-            # solo a su edición — dos AE distintos (1.6.640 vs 1.6.1170) comparten
-            # edición pero el DLL de uno no carga sobre el otro. Corre ANTES del HITL,
-            # del egress y de cualquier escritura en el directorio del juego: la
-            # propiedad es "autoinstalar exige PODER PROBAR la compatibilidad", no
-            # "exige no haberla desmentido".
-            #
-            # De ahí que la versión ILEGIBLE también corte. Degradarse ahí "a edición
-            # sola" era fail-open: `read_skyrim_version` devuelve "" en tres casos
-            # reales (sin `pefile`, PE que no parsea, PE sin recurso de versión) y en
-            # esa MISMA rama la edición no sale del PE sino de una heurística de TAMAÑO
-            # de archivo (`scanner._detect_skyrim_version`: >60 MB ⇒ AE). O sea que lo
-            # que se instalaba era el payload de un build adivinado sobre un runtime
-            # desconocido — incluido el AE de GOG (1.6.1179), que el gate de mismatch
-            # solo ataja cuando la versión se pudo leer.
-            #
-            # La condición es "hay un runtime en disco que no pude probar", NO "la
-            # edición vino por autodetección": atarla al origen de la edición dejaba el
-            # gate ciego para cualquier caller que la resolviera por su cuenta, que es
-            # la misma clase de defecto —un camino cubierto y su gemelo intacto— que
-            # este gate existe para cerrar.
-            expected_version = _skse_dll_game_version(dll_name)
-            loader_path = install_dir / loader_name
-            dll_path = install_dir / dll_name
-            ya_instalado = loader_path.exists() and dll_path.exists()
-
-            # PRESENCIA, no compatibilidad. `ya_instalado` mira el par EXACTO que este
-            # payload instalaría, y ese nombre sale de la edición — que en la rama del
-            # PE ilegible no sale del PE sino de una heurística de TAMAÑO. Con el
-            # runtime ilegible y la heurística diciendo AE, una instalación SE buena
-            # (`skse64_1_5_97.dll`) no matchea el DLL AE buscado y el contrato viejo la
-            # reportaba AUSENTE: `ToolInstallError` mandando a instalar a mano algo que
-            # ya estaba. Ese es el falso negativo que queda de #490.
-            #
-            # Se pregunta por la presencia con la MISMA detección que usa el scanner
-            # (loader + algún DLL de runtime, excluyendo el steam loader, que no
-            # codifica versión de juego), importada en vez de duplicada por el mismo
-            # motivo que el decodificador de versión: dos globs divergen.
-            #
-            # Tres recortes, y cada uno cierra un falso positivo distinto:
-            #
-            # * `not detected_version` — si la versión se pudo LEER no hay nada que no
-            #   se haya podido probar, y el gate de mismatch de abajo conserva su
-            #   precedencia. La incertidumbre es un estado para lo que no se pudo
-            #   probar, nunca un lugar donde esconder lo que se probó y salió mal.
-            # * `hay_ejecutable` — sin runtime en disco estamos en staging con edición
-            #   explícita, un camino que el contrato de #490 permite instalar y que
-            #   este fix no toca.
-            # * `edition=UNKNOWN` — la edición adivinada es justamente lo que no se
-            #   puede creer acá; dejarla recortar qué loaders cuentan reintroduce el
-            #   mismo falso negativo un nivel más abajo.
-            #
-            # Lo que NO se hace es "loader + cualquier DLL ⇒ éxito": eso cambia este
-            # falso negativo por el falso positivo opuesto —runtime desconocido + DLL
-            # stale reportados como compatibles—. Se reporta PRESENCIA, y el estado
-            # dice que compatibilidad no hay ninguna probada.
-            presente_sin_verificar = (
-                hay_ejecutable
-                and not detected_version
-                and not ya_instalado
-                and find_skse_installation(install_dir, edition=SkyrimEdition.UNKNOWN, game_version="") is not None
-            )
-
-            # El corte por versión ilegible NO se le aplica a una instalación que ya
-            # está: ese camino no descarga ni escribe nada, así que negarle el no-op a
-            # una máquina cuyo PE no se puede leer rompe una instalación buena sin
-            # ganar ninguna garantía. Es la misma política que el hermano de detección
-            # ya documenta (`scanner.find_skse_installation`: versión vacía degrada a
-            # "loader + algún DLL de runtime", no falla cerrado), y acá vale por la
-            # misma razón: lo que exige prueba es MUTAR, no reportar.
-            if hay_ejecutable and not detected_version and not ya_instalado and not presente_sin_verificar:
+            # 2) VETO DE PRODUCTO POR EDICIÓN (VR / MS Store). Es lo único que la
+            # edición sigue decidiendo, y es un "no": se evalúa sobre la clasificación
+            # REAL del PE — nunca sobre el hint del caller — y `UNKNOWN` no sale de
+            # `SkyrimSE.exe`/`Skyrim.exe` (esos nombres resuelven siempre a SE/AE/LE),
+            # así que acá caen `SkyrimVR.exe` y cualquier binario exótico. Sin
+            # ejecutable no aplica: ese camino corta en el paso 3.
+            if edition is SkyrimEdition.UNKNOWN:
                 raise ToolInstallError(
-                    f"No pude leer la versión exacta de tu Skyrim {ed_key} en {install_dir} "
-                    "(¿falta `pefile`, o el ejecutable no expone su recurso de versión?). "
-                    "SKSE está pinneado a la versión EXACTA del ejecutable, así que sin poder "
-                    "probar la compatibilidad no se instala nada: elegir el payload por edición "
-                    "sola escribe un DLL que puede no cargar. Instalá manualmente el build "
-                    "correspondiente desde https://skse.silverlock.org/."
-                )
-            if detected_version and not _game_version_matches(detected_version, expected_version):
-                raise ToolInstallError(
-                    f"Tu Skyrim {ed_key} está en la versión {detected_version}, pero el único "
-                    f"SKSE {ed_key} soportado acá es para {expected_version} (SKSE está pinneado "
-                    "a la versión EXACTA del ejecutable, no solo a la edición). Instalá "
-                    "manualmente el build correspondiente desde https://skse.silverlock.org/."
+                    f"La edición {edition.value} no es compatible con SKSE (MS Store y VR quedan "
+                    "fuera del autoinstalador). No se descargó ni se modificó nada."
                 )
 
-            if ya_instalado or presente_sin_verificar:
-                # Verificado SOLO con una lectura del ejecutable detrás. Pasado el gate
-                # de mismatch, `detected_version` no vacía significa que el runtime en
-                # disco targetea el mismo build que `dll_name`, y `ya_instalado` dice
-                # que ese DLL exacto está puesto: ahí sí hay prueba. Con la versión
-                # ilegible no la hay ni aunque el DLL se llame como corresponde — el
-                # nombre del archivo no es evidencia del runtime que lo va a cargar.
-                verification = (
-                    InstallVerification.VERIFIED
-                    if detected_version and ya_instalado
-                    else InstallVerification.PRESENT_BUT_UNVERIFIED
+            # 3) SIN RUNTIME LEGIBLE NO HAY RELEASE QUE ELEGIR: fail-closed ANTES del
+            # HITL, del egress y de cualquier escritura. Degradar "a edición sola" era
+            # fail-open: `read_skyrim_version` devuelve "" en tres casos reales (sin
+            # `pefile`, PE que no parsea, PE sin recurso de versión) y en esa MISMA
+            # rama la edición no sale del PE sino de una heurística de TAMAÑO de
+            # archivo (`scanner._detect_skyrim_version`: >60 MB ⇒ AE), así que se
+            # instalaba el payload de un build adivinado sobre un runtime desconocido.
+            #
+            # PRESENCIA != COMPATIBILIDAD: si hay ejecutable y una instalación física
+            # reconocible (loader + algún DLL de runtime — la MISMA detección del
+            # scanner, importada y no duplicada), se reporta PRESENT_BUT_UNVERIFIED sin
+            # tocar nada. Ese camino no descarga ni escribe, así que negarle el no-op a
+            # una máquina cuyo PE no se puede leer rompería una instalación que
+            # funciona sin ganar ninguna garantía (misma política que
+            # `scanner.find_skse_installation`, que ante versión vacía degrada a
+            # presencia). Sin instalación, o sin ejecutable, el error es accionable
+            # ANTES de cualquier frontera.
+            #
+            # El staging con `edition` explícita y sin ejecutable quedó ELIMINADO
+            # (PR-2): sin runtime exacto no hay SkseRelease posible, y la arquitectura
+            # runtime-first no puede volver a edition-first por una puerta lateral. El
+            # único caller productivo (GUI → `run_ritual_install`) pasa la carpeta del
+            # snapshot del scanner y no usaba ese camino.
+            if not detected_version:
+                if hay_ejecutable:
+                    loader_presente = find_skse_installation(
+                        install_dir, edition=SkyrimEdition.UNKNOWN, game_version=""
+                    )
+                    if loader_presente is not None:
+                        logger.info("SKSE presente sin verificar en %s", loader_presente)
+                        return InstallResult(
+                            tool_name="SKSE",
+                            exe_path=loader_presente,
+                            version="existing",
+                            already_existed=True,
+                            verification=InstallVerification.PRESENT_BUT_UNVERIFIED,
+                        )
+                    raise ToolInstallError(
+                        f"No pude leer la versión exacta de tu Skyrim en {install_dir} "
+                        "(¿falta `pefile`, o el ejecutable no expone su recurso de versión?). "
+                        "SKSE está pinneado a la versión EXACTA del ejecutable, así que sin poder "
+                        "probar la compatibilidad no se instala nada: elegir el build por edición "
+                        "sola escribe un DLL que puede no cargar. Instalá manualmente el build "
+                        "correspondiente desde https://skse.silverlock.org/."
+                    )
+                raise ToolInstallError(
+                    f"No encontré el ejecutable de Skyrim en {install_dir}: sin el runtime exacto "
+                    "no puedo elegir un release de SKSE (la compatibilidad se decide por el build "
+                    "del ejecutable, no por la edición). No se descargó ni se modificó nada. "
+                    "Revisá skyrim_path o instalá el build correspondiente a mano desde "
+                    "https://skse.silverlock.org/."
                 )
-                # El loader REAL, no el de la edición adivinada: en el camino sin
-                # verificar son distintos justamente porque la edición no es confiable.
-                loader_en_disco = (
-                    loader_path
-                    if ya_instalado
-                    else (find_skse_installation(install_dir, edition=SkyrimEdition.UNKNOWN) or loader_path)
+
+            # 4) CATÁLOGO: runtime exacto → release exacto. Un runtime que el catálogo
+            # no conoce NO cae al "último conocido", a la edición ni al payload AE:
+            # SKSE está pinneado al build del ejecutable y un DLL de otro runtime no
+            # carga. Corre antes del HITL, del egress y de cualquier escritura.
+            release = resolve_skse_release(detected_version)
+            if release is None:
+                raise ToolInstallError(
+                    f"Sky-Claw no tiene un release de SKSE conocido para el runtime "
+                    f"{detected_version} de tu Skyrim: SKSE está pinneado al build EXACTO del "
+                    "ejecutable, así que no se instala el build de otro runtime ni se adivina "
+                    "'el más nuevo'. No se descargó ni se modificó nada. Si existe un build para "
+                    "tu versión, se puede instalar a mano desde https://skse.silverlock.org/."
                 )
-                logger.info("SKSE ya instalado en %s (%s)", loader_en_disco, verification.value)
+
+            # 5) IDEMPOTENCIA: la autoridad es la MISMA detección que usa el scanner
+            # (`find_skse_installation`) — loader del juego + algún DLL de runtime que
+            # corresponda al runtime REAL detectado. Reemplaza al par loader+DLL del
+            # payload por edición, que daba un mismatch espurio: con Skyrim 1.7.104 y
+            # SKSE 2.3.1 instalado a mano (`skse64_1_7_104.dll`), el contrato viejo
+            # buscaba el 1.6.1170 de `SKSE_CONFIG["AE"]`, no lo encontraba y mandaba a
+            # instalar algo que ya estaba. El build concreto (p. ej. 2.2.6 vs 2.2.8)
+            # no cambia el desenlace: el nombre del DLL codifica el RUNTIME, no el
+            # build de SKSE.
+            loader_existente = find_skse_installation(install_dir, edition=edition, game_version=detected_version)
+            if loader_existente is not None:
+                logger.info(
+                    "SKSE ya instalado en %s (runtime %s → SKSE %s)",
+                    loader_existente,
+                    detected_version,
+                    release.skse_version,
+                )
                 return InstallResult(
                     tool_name="SKSE",
-                    exe_path=loader_en_disco,
+                    exe_path=loader_existente,
                     version="existing",
                     already_existed=True,
-                    verification=verification,
+                    verification=InstallVerification.VERIFIED,
                 )
 
-            url = _skse_cfg_field(cfg, "url")
+            # 6) ADQUISICIÓN, todavía sin cruzar fronteras: si el release no tiene una
+            # adquisición cableada —payload silverlock por identidad exacta o el canal
+            # Nexus único— o la configuración local lo impide (sin API key de Nexus),
+            # se corta acá: antes del HITL, de la red y de escribir. Sin este orden,
+            # el operador pagaría una aprobación y una descarga inútiles.
+            adq = _adquisicion_para(release)
+
+            adquisidor: NexusDownloader | None = None
+            if isinstance(adq, _SkseNexusAcquisition):
+                factory = self._nexus_downloader_factory
+                adquisidor = factory() if factory is not None else None
+                if adquisidor is None:
+                    raise ToolInstallError(
+                        f"Sky-Claw reconoce que Skyrim {release.game_version} requiere SKSE "
+                        f"{release.skse_version}, que sólo existe en Nexus Mods (mod "
+                        f"{adq.nexus_id}). Para habilitar la descarga automática configurá la "
+                        "API key de Nexus en Sky-Claw, o instalá el build correspondiente a mano "
+                        "desde https://www.nexusmods.com/skyrimspecialedition/mods/"
+                        f"{adq.nexus_id}. No se descargó ni se modificó nada."
+                    )
+                payload_cfg: dict[str, str | None] = {
+                    "loader": adq.loader_name,
+                    "dll": release.dll_name,
+                    "steam_loader": adq.steam_loader_name,
+                }
+                url = f"https://www.nexusmods.com/skyrimspecialedition/mods/{adq.nexus_id}"
+                fuente = "Nexus Mods (mod 30379)"
+            else:
+                payload_cfg = adq
+                url = _skse_cfg_field(adq, "url")
+                fuente = "skse.silverlock.org (sitio oficial)"
+
+            loader_name = _skse_cfg_field(payload_cfg, "loader")
+            dll_name = _skse_cfg_field(payload_cfg, "dll")
+            loader_path = install_dir / loader_name
 
             # Solicitar aprobación HITL
             decision = await self._hitl.request_approval(
                 request_id=new_hitl_request_id("skse-install"),
-                reason=f"Install SKSE for Skyrim {ed_key}?",
+                reason=f"Install SKSE {release.skse_version} for Skyrim {detected_version}?",
                 url=url,
                 detail=(
-                    f"URL: {url}\nLoader: {loader_name}\nDLL: {dll_name}\nSource: skse.silverlock.org (sitio oficial)"
+                    f"URL: {url}\nLoader: {loader_name}\nDLL: {dll_name}\n"
+                    f"Runtime: {release.game_version} → SKSE {release.skse_version}\n"
+                    f"Source: {fuente}"
                 ),
                 category="download",
             )
@@ -1614,19 +1796,50 @@ class ToolsInstaller:
                 tmp_path = pathlib.Path(tmpdir)
                 self._validator.validate(tmp_path)
 
-                archive_name = url.split("/")[-1]
-                archive_path = tmp_path / archive_name
-                self._validator.validate(archive_path)
-
-                # Descarga segura vía NetworkGateway con timeout
-                await self._download_skse_archive(session, cfg, archive_path)
-
-                # Extraer con protección zip-slip
                 extract_path = tmp_path / "extracted"
-                await _esperar_hilo_ininterrumpible(self._extract, archive_path, extract_path)
+
+                if isinstance(adq, _SkseNexusAcquisition):
+                    assert adquisidor is not None  # cortado más arriba
+                    # La identidad del archivo se re-deriva SIEMPRE desde la API en
+                    # esta corrida (no hay file_id hardcodeado): que el autor re-subiera
+                    # un build no nos hace descargar otra cosa sin darnos cuenta.
+                    try:
+                        files = await adquisidor.list_files(adq.nexus_id, session)
+                        seleccionado = _seleccionar_archivo_nexus(files, release)
+                        file_info = await adquisidor.get_file_info(adq.nexus_id, int(seleccionado["file_id"]), session)
+                    except ToolInstallError:
+                        raise
+                    except Exception as exc:
+                        raise ToolInstallError(
+                            f"No pude obtener la metadata de SKSE {release.skse_version} en "
+                            f"Nexus (mod {adq.nexus_id}): {exc}"
+                        ) from exc
+                    # Gates de integridad antes de bajar código nativo al juego: MD5
+                    # obligatorio y tamaño acotado (el downloader general llega a 4 GiB;
+                    # para SKSE sigue valiendo el tope de 64 MiB del canal silverlock).
+                    _validar_artifact_skse_nexus(file_info)
+                    archive_path = await adquisidor.download(file_info, session)
+                    try:
+                        await _esperar_hilo_ininterrumpible(self._extract, archive_path, extract_path)
+                    finally:
+                        # El archive está en staging del downloader y NECESITA limpieza
+                        # incluso si la extracción falla: si no, un .7z corrupto quedaría
+                        # como "descarga exitosa cacheada" para el próximo intento.
+                        with contextlib.suppress(OSError):
+                            archive_path.unlink(missing_ok=True)
+                else:
+                    archive_name = url.split("/")[-1]
+                    archive_path = tmp_path / archive_name
+                    self._validator.validate(archive_path)
+
+                    # Descarga segura vía NetworkGateway con timeout
+                    await self._download_skse_archive(session, adq, archive_path)
+
+                    # Extraer con protección zip-slip
+                    await _esperar_hilo_ininterrumpible(self._extract, archive_path, extract_path)
 
                 # Buscar loader excluyendo __MACOSX
-                skse_root = self._find_skse_root(extract_path, cfg)
+                skse_root = self._find_skse_root(extract_path, payload_cfg)
 
                 # SEGUNDO GATE, pegado a la primera escritura. El de arriba probó la
                 # compatibilidad al ARRANCAR la operación; desde entonces pasaron tres
@@ -1640,17 +1853,17 @@ class ToolsInstaller:
                 # ventana queda sin cubrir. Y va antes de `_copy_skse_files` porque esa
                 # es la primera mutación del directorio del juego — todo lo anterior
                 # (sandbox, archive, extracción) vive en staging temporal.
-                await self._revalidar_runtime_antes_de_mutar(
-                    install_dir,
-                    ed_key,
-                    expected_version,
-                    habia_ejecutable=hay_ejecutable,
-                )
+                #
+                # Compara contra `release.game_version` (el runtime que el payload
+                # descargado targetea), no contra la edición ni contra el cfg de
+                # adquisición: la edición no identifica un build y el cfg, a esta
+                # altura, sólo aporta de dónde bajar el archive.
+                await self._revalidar_runtime_antes_de_mutar(install_dir, release.game_version)
 
                 # Copiar archivos al directorio del juego. `_copy_skse_files` solo toca
                 # nombres presentes en el payload nuevo (loader/dll de esta edición +
                 # Data) — no depende de que los DLL huérfanos ya estén borrados.
-                await self._copy_skse_files(skse_root, install_dir, cfg)
+                await self._copy_skse_files(skse_root, install_dir, payload_cfg)
 
                 # LIMPIEZA DE DIRTY UPGRADES: recién acá, después de que la copia haya
                 # terminado sin excepción. Es el verdadero punto de no retorno: si se
@@ -1659,38 +1872,34 @@ class ToolsInstaller:
                 # nueva completa, sin rollback que lo recupere. Corriendo al final, un
                 # fallo de copia deja los DLL de otra edición intactos y el juego sigue
                 # arrancando con el SKSE que tenía antes.
-                await self._cleanup_orphaned_skse_dlls(install_dir, cfg)
+                await self._cleanup_orphaned_skse_dlls(install_dir, payload_cfg)
 
-            logger.info("SKSE %s instalado en %s", ed_key, loader_path)
-            # Explícito, NO heredado del default del dataclass. El veredicto describe
-            # el RESULTADO en disco, no el camino que se recorrió para llegar: sin
-            # esto, una instalación fresca de staging (sin ejecutable, edición
-            # explícita) salía `VERIFIED` y la llamada idempotente siguiente —mismos
-            # archivos, misma ausencia de runtime— salía `PRESENT_BUT_UNVERIFIED`. Un
-            # campo de verificación no puede depender de quién hizo la copia.
+            logger.info("SKSE %s instalado en %s", release.skse_version, loader_path)
+            # Explícito, NO heredado del default del dataclass. Detrás de este return
+            # está la cadena entera: runtime legible que resolvió a un release del
+            # catálogo, fuente de adquisición con identidad coherente, y la
+            # revalidación pegada a la copia, que acaba de releer el PE del disco
+            # contra `release.game_version`. Sin esa cadena este camino no existe (no
+            # hay instalación sin runtime), así que `VERIFIED` está probado, no
+            # heredado.
             #
-            # Con ejecutable, lo que hay detrás es la cadena entera: gate de versión
-            # ilegible, gate de mismatch y la revalidación pegada a la copia, que
-            # acaba de releer el PE del disco. Sin ejecutable no hay prueba posible y
-            # la revalidación se salta a propósito, así que decir `VERIFIED` ahí sería
-            # el `UNKNOWN == COMPATIBLE` que este contrato existe para prohibir.
+            # `version` sale del CATÁLOGO (`release.skse_version`), no del stem de la
+            # URL del payload: es la identidad semántica del build ("2.0.20") y ningún
+            # caller dependía del formato viejo (la GUI usa `exe_path`, `verification`
+            # y `already_existed`; el único consumidor de `version` es la superficie
+            # del agente LLM, donde SKSE no está).
             return InstallResult(
                 tool_name="SKSE",
                 exe_path=loader_path,
-                version=pathlib.Path(url).stem,
+                version=release.skse_version,
                 already_existed=False,
-                verification=(
-                    InstallVerification.VERIFIED if hay_ejecutable else InstallVerification.PRESENT_BUT_UNVERIFIED
-                ),
+                verification=InstallVerification.VERIFIED,
             )
 
     async def _revalidar_runtime_antes_de_mutar(
         self,
         game_dir: pathlib.Path,
-        ed_key: str,
-        expected_version: str,
-        *,
-        habia_ejecutable: bool,
+        game_version: str,
     ) -> None:
         """Vuelve a probar la compatibilidad contra el ejecutable REAL, justo antes de escribir.
 
@@ -1698,60 +1907,72 @@ class ToolsInstaller:
         detectada al arrancar, ni la edición, ni el nombre del DLL elegido sirven acá
         — todos son de antes de la ventana, y la ventana es justamente el problema.
 
-        ``habia_ejecutable`` es lo único que se hereda, y no es una versión sino un
-        hecho sobre la precondición: distingue "el juego se desinstaló o se movió a
-        mitad de la operación" (había uno, ya no) de "esta instalación nunca tuvo un
-        .exe acá", que es el camino legítimo de staging con ``edition`` explícita y
-        que el contrato existente permite.
+        ``game_version`` es el runtime que el payload descargado targetea
+        (``SkseRelease.game_version``): el ÚNICO valor de compatibilidad que este
+        gate conoce, elegido por el catálogo al arrancar — nunca por edición ni por
+        el cfg de adquisición.
 
         Falla cerrado en las tres formas de no poder probar: sin ejecutable, sin
-        versión legible, o versión que no matchea el payload que se bajó.
+        versión legible, o versión que no matchea el payload que se bajó. La rama
+        "nunca hubo ejecutable" (staging con ``edition`` explícita) ya no existe:
+        sin runtime no se elige release y el flujo no llega hasta acá, así que un
+        ejecutable ausente AHORA es siempre un cambio de estado (el juego se
+        desinstaló o se movió durante la operación).
         """
         hay_ejecutable, version_actual = await self._leer_version_del_ejecutable(game_dir)
 
         if not hay_ejecutable:
-            if not habia_ejecutable:
-                # Nunca hubo ejecutable: staging con edición explícita. Nada cambió
-                # bajo nuestros pies, así que no hay TOCTOU que atajar.
-                return
             raise ToolInstallError(
-                f"El payload de SKSE {ed_key} ya se descargó, pero ya no encuentro el ejecutable "
-                f"de Skyrim en {game_dir}: desapareció mientras se preparaba la instalación "
-                "(¿se desinstaló o se movió el juego?). No se copió nada."
+                f"El payload de SKSE para el runtime {game_version} ya se descargó, pero ya no "
+                f"encuentro el ejecutable de Skyrim en {game_dir}: desapareció mientras se "
+                "preparaba la instalación (¿se desinstaló o se movió el juego?). No se copió nada."
             )
 
         if not version_actual:
             raise ToolInstallError(
-                f"La compatibilidad de tu Skyrim {ed_key} en {game_dir} dejó de poder verificarse "
+                f"La compatibilidad de tu Skyrim en {game_dir} dejó de poder verificarse "
                 "mientras se preparaba la instalación: el ejecutable está pero ya no expone su "
                 "versión (¿una actualización en curso?). No se copió nada; reintentá cuando el "
                 "juego esté en reposo."
             )
 
-        if not _game_version_matches(version_actual, expected_version):
+        if not _game_version_matches(version_actual, game_version):
             raise ToolInstallError(
-                f"Tu Skyrim {ed_key} cambió de versión mientras se preparaba la instalación: "
-                f"ahora está en {version_actual} y el payload que se descargó es para "
-                f"{expected_version}. Copiarlo dejaría un SKSE que no carga, así que no se copió "
-                "nada. Volvé a intentarlo para que se elija el build correspondiente a "
-                f"{version_actual}."
+                f"Tu Skyrim cambió de versión mientras se preparaba la instalación: ahora está "
+                f"en {version_actual} y el payload que se descargó es para {game_version}. "
+                "Copiarlo dejaría un SKSE que no carga, así que no se copió nada. Volvé a "
+                f"intentarlo para que se elija el build correspondiente a {version_actual}."
             )
 
     async def _leer_version_del_ejecutable(self, game_dir: pathlib.Path) -> tuple[bool, str]:
         """``(¿hay ejecutable de Skyrim?, versión exacta o "")`` sin exigir que exista.
 
-        Hermano de :meth:`_detect_skyrim_edition_from_exe` para el camino en que el
-        caller ya trae la edición: ahí no hace falta deducirla, pero sí hace falta
-        saber si hay un runtime real cuya compatibilidad se pueda probar. Los dos
-        desenlaces que devuelve ``""`` son distintos y por eso se devuelve también el
-        booleano: "no hay Skyrim acá" es legítimo (staging), "hay uno y no pude leerle
-        la versión" es lo que tiene que fallar cerrado.
+        Hermano de :meth:`_detect_skyrim_edition_from_exe` para quien sólo necesita
+        saber si hay un runtime real cuya compatibilidad se pueda probar (la
+        relectura del segundo gate, por ejemplo). Los dos desenlaces que devuelve
+        ``""`` son distintos y por eso se devuelve también el booleano: "no hay
+        Skyrim acá" (sin runtime exacto no se elige release, y el caller corta
+        cerrado) y "hay uno y no pude leerle la versión" (presencia sin verificar o
+        corte accionable).
+        """
+        exe = self._encontrar_ejecutable(game_dir)
+        if exe is None:
+            return False, ""
+        return True, await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
+
+    def _encontrar_ejecutable(self, game_dir: pathlib.Path) -> pathlib.Path | None:
+        """Primer ejecutable de Skyrim presente en *game_dir*, en el orden canónico.
+
+        Un solo lugar para el orden (``_SKYRIM_EXE_NAMES``): antes lo repetían —y
+        podían hacerlo divergir— la autodetección y la lectura de versión. Importa
+        cuando conviven varios (un dir con ``SkyrimSE.exe`` y ``SkyrimVR.exe``):
+        gana el SE, igual que antes.
         """
         for exe_name in _SKYRIM_EXE_NAMES:
             exe = game_dir / exe_name
             if exe.is_file():
-                return True, await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
-        return False, ""
+                return exe
+        return None
 
     async def _leer_pe_tolerando_ilegible(
         self,
@@ -1801,45 +2022,26 @@ class ToolsInstaller:
     async def _detect_skyrim_edition_from_exe(self, game_dir: pathlib.Path) -> tuple[SkyrimEdition, str]:
         """Deriva edición y versión exacta leyendo el PE del ejecutable en *game_dir*.
 
-        Devuelve ambos: SKSE está pinneado a la versión EXACTA del juego, no solo
-        a su edición, así que el caller necesita la versión para el gate de
-        compatibilidad además de la edición para elegir el payload.
+        Devuelve ambos: la compatibilidad de SKSE la decide el runtime EXACTO, así
+        que el caller necesita la versión para resolver el release del catálogo. La
+        edición queda para los mensajes, para el veto de producto (VR/MS Store/
+        desconocido) y para elegir la FAMILIA de loader que el scanner espera.
         """
-        for exe_name in _SKYRIM_EXE_NAMES:
-            exe = game_dir / exe_name
-            if exe.is_file():
-                # Las dos lecturas van por el mismo traductor que la relectura del
-                # segundo gate: un PE que explota acá tiene que dar el mismo
-                # `ToolInstallError` accionable, no una excepción cruda por venir del
-                # camino de autodetección. Edición ilegible -> UNKNOWN, que
-                # `_edition_to_config_key` ya corta con su propio mensaje.
-                edition = await self._leer_pe_tolerando_ilegible(
-                    detect_skyrim_edition, exe, ilegible=SkyrimEdition.UNKNOWN
-                )
-                version = await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
-                return edition, version
-
-        raise ToolInstallError(
-            f"No encontré el ejecutable de Skyrim en {game_dir}: no puedo determinar "
-            "la edición para elegir el SKSE correcto. Revisá skyrim_path."
-        )
-
-    def _edition_to_config_key(self, edition: SkyrimEdition) -> str:
-        """Convierte el enum SkyrimEdition a una clave del diccionario SKSE_CONFIG."""
-        if edition == SkyrimEdition.UNKNOWN:
-            raise ToolInstallError("La edición UNKNOWN no es compatible con SKSE.")
-        mapping = {
-            SkyrimEdition.AE: "AE",
-            SkyrimEdition.SE: "SE",
-            SkyrimEdition.LE: "LE",
-        }
-        # Fail-closed: una edición nueva en el enum (p. ej. VR) sin entrada acá debe
-        # cortar, no caer a "AE". Defaultear silenciosamente elige el payload de otra
-        # edición y escribe un DLL incompatible en el directorio del juego.
-        key = mapping.get(edition)
-        if key is None:
-            raise ToolInstallError(f"La edición {edition.value} no tiene payload de SKSE configurado en SKSE_CONFIG.")
-        return key
+        exe = self._encontrar_ejecutable(game_dir)
+        if exe is None:
+            raise ToolInstallError(
+                f"No encontré el ejecutable de Skyrim en {game_dir}: la compatibilidad de SKSE se "
+                "decide por el runtime exacto del ejecutable, así que sin él no hay release que "
+                "elegir. Revisá skyrim_path."
+            )
+        # Las dos lecturas van por el mismo traductor que la relectura del segundo
+        # gate: un PE que explota acá tiene que dar el mismo `ToolInstallError`
+        # accionable, no una excepción cruda por venir del camino de autodetección.
+        # Edición ilegible -> UNKNOWN, que el veto de producto de `ensure_skse` corta
+        # con su propio mensaje.
+        edition = await self._leer_pe_tolerando_ilegible(detect_skyrim_edition, exe, ilegible=SkyrimEdition.UNKNOWN)
+        version = await self._leer_pe_tolerando_ilegible(read_skyrim_version, exe, ilegible="")
+        return edition, version
 
     async def _cleanup_orphaned_skse_dlls(
         self,

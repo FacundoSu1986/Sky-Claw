@@ -24,6 +24,7 @@ from sky_claw.local.loot.cli import (
 from sky_claw.local.loot.masterlist import MasterlistDownloader
 from sky_claw.local.loot.parser import LOOTOutputParser, LOOTResult
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
+from tests._loot_witness import TESTIGO_FRESCO
 
 if TYPE_CHECKING:
     import pathlib
@@ -471,10 +472,13 @@ class TestLOOTRunner:
         ):
             await runner.sort(update_masterlist=True)
 
+        # PR-0: el config usa el id INTERNO por defecto ("SkyrimSE"); el argv
+        # lleva el identificador CLI exacto de LOOT 0.29.x ("Skyrim Special
+        # Edition") — la traducción vive en la frontera única de cli.py.
         assert captured["args"] == [
             str(config.loot_exe),
             "--game",
-            "SkyrimSE",
+            "Skyrim Special Edition",
             "--game-path",
             str(config.game_path),
             "--auto-sort",
@@ -704,8 +708,8 @@ class TestRunLootSortLock:
 
     def _localappdata_con_load_order(self, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> pathlib.Path:
         """Crea el layout LOCALAPPDATA real y lo inyecta: el resolver por defecto
-        del servicio necesita targets observables (el gate físico exige
-        evidencia de mutación, review adversarial #495)."""
+        del servicio necesita targets observables para snapshotear y comparar
+        el estado semántico antes/después (review adversarial #495, PR-2)."""
         la = tmp_path / "localappdata"
         game_dir = la / "Skyrim Special Edition"
         game_dir.mkdir(parents=True)
@@ -716,12 +720,16 @@ class TestRunLootSortLock:
         return plugins
 
     def _runner_que_escribe(self, plugins: pathlib.Path) -> MagicMock:
-        """Runner fiel a LOOT real: reescribe los archivos del load order."""
+        """Runner fiel a LOOT real atribuible (PR-2: testigo de ejecución fresco).
+
+        Reescribe el mismo contenido: el servicio lo clasifica NO_CHANGE (la
+        comparación es semántica, no de mtime) y la atribución la da el testigo.
+        """
 
         async def sort_real(**kw: object) -> LOOTResult:  # noqa: ANN003
             for archivo in (plugins, plugins.with_name("loadorder.txt")):
                 archivo.write_text("Skyrim.esm\n", encoding="utf-8")
-            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+            return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"], execution_witness=TESTIGO_FRESCO)
 
         runner = MagicMock()
         runner.sort = AsyncMock(side_effect=sort_real)
@@ -757,7 +765,7 @@ class TestRunLootSortLock:
             async def sort_real(**kw: object) -> LOOTResult:  # noqa: ANN003
                 for archivo in (plugins, plugins.with_name("loadorder.txt")):
                     archivo.write_text("Skyrim.esm\n", encoding="utf-8")
-                return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"])
+                return LOOTResult(return_code=0, sorted_plugins=["Skyrim.esm"], execution_witness=TESTIGO_FRESCO)
 
             profiled = MagicMock()
             profiled.sort = AsyncMock(side_effect=sort_real)

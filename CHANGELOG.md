@@ -7,8 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **GUI — pulido visual del shell Forja del Dovahkiin.** El sidebar, el toggle
+  «Confirmar», las filas del Orden de Carga, las tarjetas de ritual y las
+  filas de Disputas se renderizaban desarmados (ícono arriba, etiqueta abajo)
+  porque `ui.html` envuelve su contenido en un `<div>` que queda fuera del flex;
+  ahora esos fragmentos usan `display:contents`. El CTA del wizard y los
+  selectores de proveedor IA recuperan el oro del tema (los `!important` de
+  Quasar viven en una capa CSS que vence a los del tema). El shell pasa a alto
+  fijo con scroll interno (Vitalidad del Sistema siempre visible), el chat del
+  Asistente es legible sobre el pergamino, la grilla de rituales queda 4+3, el
+  hero gana filigrana SVG en sus esquinas y el header no desborda en ventanas
+  angostas. Anclas nuevas en `tests/test_gui_theme_contracts.py`.
+- **xEdit headless: el borde con SSEEdit no funcionaba en un rig real.**
+  `run_script` y el comando de escritura no pasaban `-autoexit` (xEdit quedaba
+  abierto hasta el timeout), apuntaban `-D:` a la raíz del juego en vez de a
+  `Data` y el de escritura no pasaba `-autoload`. El protocolo `AddMessage`
+  (`CONFLICT|`/`SUMMARY|`/`DUMP_*`) ahora se lee del log `-R:<archivo>` (xEdit
+  es un binario GUI sin stdout) y `ConflictAnalyzer.analyze` / el tool
+  read-only fallan cerrado sin `SUMMARY` consistente en vez de reportar
+  "0 conflictos". `execute_patch` verifica que el plugin de salida exista en
+  `Data` tras exit 0. Scripts Pascal: `AddNewFileName` en lugar de
+  `AddNewFile(nombre)`, `wbCopyElementToFile` + `AddRequiredElementMasters` en
+  lugar de `wbCopyElementToRecord`, sin locales que oculten funciones de xEdit
+  (`formID := FormID(e)`), el merge estático ya no toma el nombre de salida de
+  `ParamStr` y `list_all_conflicts.pas` descarta cadenas ITM/benignas
+  (`ConflictAllForMainRecord < caOverride`). Ancla:
+  `tests/test_xedit_headless_contract.py`. Tras la review: QuickAutoClean también
+  lee el log `-R:` (su parser de errores veía un stdout vacío), el post-check
+  exige que el plugin haya cambiado (`mtime_ns`, tamaño) y no solo que exista,
+  el log se decodifica como UTF-8 con fallback ANSI (`mbcs`/cp1252) y el
+  nombre de salida del merge estático se alinea con el plan
+  (`SkyClaw_MergedPatch.esp`). Pendiente: smoke en rig real con SSEEdit.
+- **MO2/USVFS — fingerprint de perfil estable ante la reserialización de `plugins.txt` al lanzar
+  (#633).** El rig real de PR-586C falló cerrado porque `IOrganizer.startApplication` reescribe
+  `plugins.txt` (header, CRLF, encoding System, sin BOM, sin masters oficiales) entre el preview y
+  el worker: 141 B → 96 B con el estado del perfil intacto. `_profile_fingerprint` pasa a hashear
+  `plugins.txt` por su **estado semántico** (plugins habilitados no oficiales, en orden) en el
+  dialecto Creation/SSE probado en `CreationGamePlugins::readPluginList`/`writePluginList`, y solo
+  tolera lo demostrado como neutro: comentarios, líneas vacías, espacios, BOM, LF/CRLF/CR, líneas
+  deshabilitadas (el lector trata "deshabilitado" y "ausente" igual) y líneas de todo
+  `primaryPlugins()` —masters base **y** el contenido de Creation Club que el juego declara en
+  `Skyrim.ccc`—, que se fuerzan `ACTIVE` y el escritor omite (sin asumir por prefijo `cc`: un mod
+  `ccAlgo.esp` no declarado sigue siendo estado). Los nombres se validan como nombres de archivo de
+  Windows (encoding `System`), así que los bytes no ASCII y los espacios interiores —p. ej.
+  `Unofficial Skyrim Special Edition Patch.esp`— son válidos; solo falla cerrado lo indeterminable
+  (control/NUL, metacaracteres, sin extensión de plugin, repetido case-insensitive), y
+  `modlist.txt`, `loadorder.txt` y los `settings.*` siguen crudos. La identidad que entra al
+  payload canónico es la clave normalizada case-insensitive, no la grafía del archivo: en un
+  filesystem case-insensitive `*X.esp` y `*x.esp` son el mismo plugin, y hashearlos distinto
+  volvía a atar el digest a una reescritura sin significado. El digest sube de dominio a `skyclaw-vfs-profile-v2` y las secciones
+  llevan largo explícito (el esquema v1 permitía colisionar dos repartos de bytes distintos).
+  Anclas: `tests/test_vfs_attestation_canonicalization.py`.
+
 ### Added
 - **`sky_claw/local/AGENTS.md` — SOP canónico del pipeline de modding de Skyrim para agentes IA** (orden cronológico de stages xEdit → CAO → BodySlide → Pandora → LOOT → Wrye Bash → Synthesis → No Grass In Objects → TexGen/DynDOLOD, reglas por tool, conflict resolution protocol, critical failure modes, code-editing rules para agentes). Cubre los tres subsistemas gobernados: `sky_claw/local/tools/`, `sky_claw/local/xedit/` y `sky_claw/app/orchestrator/tool_strategies/`. Acompañado de **`sky_claw/app/orchestrator/AGENTS.md`** (pointer que redirige a la SOP para que los agentes que editen el dispatcher la descubran). Referenciados desde el `AGENTS.md` raíz. *Audiencia: cualquier LLM agent (Claude Code, Cursor, Aider, Gemini, Codex) que edite código del pipeline.*
+- **Runtime Vault — global TGR serialization lock (GP2-P2).** Primitiva de
+  exclusión cross-process que serializa los ciclos `LOAD → MODIFY → WRITE` sobre
+  `trusted_goldens.json` y elimina el lost update entre writers privilegiados
+  (atomic replace solo NO serializa read-modify-write). `trusted_registry_lock.py`:
+  lock file abierto con `CreateFileW(dwShareMode=0, OPEN_ALWAYS)` en
+  `%ProgramData%\Sky-Claw\runtime_vault\locks\skyclaw_tgr_lock_<sha256>.lock`
+  (identidad derivada del registry path canónico — global al registry, no por
+  Golden; prefijo y semántica distintos de `GoldenMutationLock`), ownership =
+  vida del handle kernel (crash-safe: existencia del residual `*.lock` jamás
+  equivale a lock activo; sin metadata persistente; nunca se borra ⇒ sin
+  delete-race), reparse-check post-open, reentrancia con rechazo tipado, espera
+  acotada configurable (`timeout` finito, poll dormido, BUSY/TIMEOUT fail-closed).
+  API difícil de usar mal: `mutate_trusted_golden_registry(mutate)` (sin paths:
+  load y atomic write ocurren estructuralmente bajo el lock) +
+  `acquire_trusted_registry_write_lock()`. **Dos propiedades distintas:** el
+  reemplazo atómico del TGR (P1, `_write_trusted_registry_atomically_at`) y la
+  serialización global del TGR (esta primitiva) son invariantes separadas; este
+  lock protege el RMW del registry y **no** congela el contenido del Golden ni
+  cierra la ventana TOCTOU (`TGR_LOCK_PROTECTS_GOLDEN_CONTENT = NO`). Windows-only
+  productivo (fail-closed tipado en POSIX). Sin semántica P3 (admission/refresh).
+  Anclas: `tests/test_runtime_vault_trusted_registry_lock.py` (lost-update oracle
+  real cross-process, contención, crash release, exception release, mutation
+  anchor del orden acquire→load→modify→write→release).
 
 ### Security
 - **`anyio` 4.13.0 → 4.14.2 (CVE-2026-63374, CVE-2026-64847)** — avisos que

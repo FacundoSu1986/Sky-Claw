@@ -213,6 +213,18 @@
 > **No** cierra el volcado del log real completo contra la taxonomía, ni la
 > precedencia de presets, ni #528. **No** es una reverificación integral del resto
 > de la tabla.
+>
+> **Re-baseline parcial 2026-09-24 sobre `main` `b30421f` (#630):** cubre
+> exclusivamente la fila `T-24` y **corrige** la nota del 2026-08-30: el foco de los
+> inputs Quasar que se atribuía a #522 **nunca se veía**. La pisa del outline era
+> unlayered con `!important`, y el reset `outline:0!important` de Quasar entra en
+> `layer(quasar_importants)`; para `!important` una capa siempre le gana a lo
+> unlayered, así que el reset la tapaba en silencio y el ancla de entonces —que sólo
+> buscaba el string de la declaración— seguía en verde. #630 mueve la regla a
+> `@layer theme` (medido en Chromium: `outline: none` antes, `2px solid` después) y
+> la ancla contra el reset real del paquete nicegui instalado, enumerando todas las
+> hojas de estilo del GUI. `T-24` sigue **Parcial**: el inventario de labels y
+> formularios no entra. **No** es una reverificación integral del resto de la tabla.
 
 La narrativa fechada, las refutaciones y la secuencia completa de decisiones se
 preservan en el [historial OODA de julio de
@@ -231,7 +243,7 @@ confirmarlo contra código y tests.
 | T-16c | Cerrado | #288, #306, #323 | — | tests de preflight por ritual |
 | T-22 | Parcial | #522 para `prefers-reduced-motion` | Revisar/cerrar el resto del contrato de transiciones | `test_gui_theme_contracts.py` y humano |
 | T-23 | Abierto | — | Virtualizar listas grandes de mods | humano |
-| T-24 | Parcial | #522 para foco visible de teclado | Inventario exhaustivo de labels y formularios accesibles | `test_gui_theme_contracts.py` y humano |
+| T-24 | Parcial | #522 para foco visible de teclado; #630 para el de los inputs Quasar (en #522 era una regla muerta) | Inventario exhaustivo de labels y formularios accesibles | `test_gui_theme_contracts.py` y humano |
 | T-25 | Parcial | — | Cerrar T-27 y después ejecutar la matriz E2E con Skyrim, MO2 y herramientas reales | `TECHNICAL_REVIEW_TASKS.md:247-249`; humano |
 | T-26 | Cerrado | #309, #318 y cierres posteriores | — | productores de `persist_action_manifest` |
 | T-27 | Parcial | ADR 0005 para Synthesis y salida administrada de Pandora | Migrar Pandora, DynDOLOD y Wrye Bash al flujo aislado USVFS con diff/promoción | código, ADR 0005 y `test_pandora_service.py` |
@@ -266,7 +278,7 @@ confirmarlo contra código y tests.
 | Medición de árboles | Cerrado | #416 | — | `test_borrado_recursivo.py` |
 | Fugas de lifecycle en tests | Cerrado | #408, #409 y #415 | — | `test_atribucion_de_warnings.py`, `test_project_config.py` |
 | Contrato de argumentos CLI | Parcial | LOOT (×2), BodySlide, Pandora, Wrye Bash, DynDOLOD, xEdit | Verificar contra fuente Synthesis, MO2 y VRAMr; re-verificar Pandora contra el binario 4.3.1-beta pinneado (el README de `main` puede no describirlo) | `test_contrato_argumentos_cli.py` |
-| Contrato de veredicto de éxito | Parcial | Veredicto por `Engine.log` de Pandora; cruce con errores parseados en el call site de xEdit; ancla que enumera | Verificar contra rig real qué severidad usa Pandora para la reversión de un nodo inválido — ver nota abajo | `test_contrato_veredicto_de_exito.py` (inventario congelado en vacío), `test_pandora_runner.py`, `test_xedit_service.py` |
+| Contrato de veredicto de éxito | Parcial | Veredicto por `Engine.log` de Pandora; cruce con errores parseados en el call site de xEdit; ancla que enumera. **LOOT (PR-2):** `CHANGED`/`NO_CHANGE`/`FAIL` tipado — rc 0 sólo es éxito con testigo de ejecución fresco (`LOOTDebugLog.txt` recreado por `LootState`, loot/loot 0.29.1 `loot_state.cpp:105-106`) y estado del load order observable; CHANGED vs NO_CHANGE por comparación semántica (libloadorder 18.8.1, incluida la semántica exacta de `str::lines()`), no por mtime. Settings gestionados en el data root aislado: `useNoSortingChangesDialog = false`, `enableLootUpdateCheck = false` (un release nuevo o un error de red agregan un mensaje de error que cancela el auto-sort, `main_window.cpp:2830-2846/3062-3102`) y `lastVersion` = versión atestiguada del `VERSIONINFO` de `LOOT.exe` (sin ella, "First-Time Tips" `main_window.cpp:366-368` bloquea todo root nuevo y toda corrida tras actualizar LOOT); versión no atestiguable → `PRECONDITION_FAILED` sin lanzar. Resultado del worker USVFS fuera de contrato → `PROTOCOL_ERROR` | Pandora: verificar contra rig real qué severidad usa para la reversión de un nodo inválido — ver nota abajo. **LOOT: rig real R1–R5 pendiente** (CHANGED, NO_CHANGE, GUI ya abierta/mutex, fallo de sort, timeout/modal) más R0: root nuevo sin "First-Time Tips" y `lastVersion` = versión del binario. **Precondición de atribución:** el `--loot-data-path` debe ser de uso exclusivo de una invocación; `locks.db` relativo al cwd (`app_context.py:75`) no excluye a dos procesos Sky-Claw lanzados desde cwd distintos — hasta cerrarlo, un solo proceso por instancia MO2. `updateMasterlist` (red antes de cada sort; su fallo abre un modal) queda para PR-3 | `test_contrato_veredicto_de_exito.py` (inventario congelado en vacío), `test_pandora_runner.py`, `test_xedit_service.py`, `test_loot_verified_outcome.py` |
 | Etapa 6 (Wrye Bash) sin build headless | Abierto | — | Decidir entre etapa asistida o retirarla del dispatcher | `test_contrato_argumentos_cli.py`; humano; auditoría 2026-08-04 |
 | Orden de masters sin validar | Cerrado | `master_order.py`, cableado en Wrye Bash / Synthesis / DynDOLOD | — | `test_master_order.py` (ancla de cableado); auditoría 2026-08-04 (V-7) |
 | Segundo parser TES4 sin gate | Cerrado | `test_tes4_parser_invariant.py` | — | auditoría 2026-08-04 |
