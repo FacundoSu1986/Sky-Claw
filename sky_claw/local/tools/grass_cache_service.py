@@ -131,7 +131,9 @@ async def reconcile_orphan_precache_flag(
     # instancia arrancó un precache entre el chequeo de arriba y este punto,
     # acquire_lock falla (el ritual ya lo posee) y NO tocamos su flag legítimo.
     try:
-        await lock_manager.acquire_lock(GRASS_CACHE_RESOURCE_ID, _RECONCILE_AGENT_ID, ttl=_RECONCILE_TTL_SECONDS)
+        lease = await lock_manager.acquire_lock(
+            GRASS_CACHE_RESOURCE_ID, _RECONCILE_AGENT_ID, ttl=_RECONCILE_TTL_SECONDS
+        )
     except LockAcquisitionError:
         logger.info(
             "No se pudo adquirir '%s' para reconciliar (ritual activo); no se toca el flag.",
@@ -163,7 +165,7 @@ async def reconcile_orphan_precache_flag(
         return removed
     finally:
         try:
-            await lock_manager.release_lock(GRASS_CACHE_RESOURCE_ID, _RECONCILE_AGENT_ID)
+            await lock_manager.release_lock(GRASS_CACHE_RESOURCE_ID, _RECONCILE_AGENT_ID, acquired_at=lease.acquired_at)
         except LockReleaseError:
             logger.warning(
                 "Fallo al liberar '%s' tras reconciliar (el TTL lo recupera).",
