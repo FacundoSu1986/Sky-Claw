@@ -1447,8 +1447,13 @@ class TestAnclaConstructoresManualesDeMods:
         # línea más (109, 297 → 110, 298). PR-1 (aislamiento LOOT data root)
         # añadió dos sites que resuelven mods_dir para validar que el loot
         # data root no esté dentro de mods (392, 403) y movió el base default
-        # (110 → 124) por import de data_root.
-        "sky_claw/local/mo2/brokered_loot.py": (124, 388, 397),
+        # (110 → 124) por import de data_root. PR-2 (resultado verificable:
+        # imports de testigo/timeout tipado + helpers de transporte) movió las
+        # líneas (124, 388, 397 → 136, 413, 422); mismos tres sites, ninguna
+        # construcción nueva de `<base>/mods`. El hardening de PR-2 (import de
+        # LOOT_FAILURE_KINDS y LOOTWorkerProtocolError) las corrió dos más
+        # (136, 413, 422 → 138, 415, 424); mismos tres sites.
+        "sky_claw/local/mo2/brokered_loot.py": (138, 415, 424),
         # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
         "sky_claw/local/mo2/vfs.py": (127,),
         # #633 (fingerprint v2: canonicalización semántica de plugins.txt por su
@@ -1475,8 +1480,12 @@ class TestAnclaConstructoresManualesDeMods:
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
         # ``mod_directory`` custom el valor declarado manda (get_mo2_mods_path*).
-        # PR-1 añadió resolución de loot_data_path que usa mods_dir para validar
-        "sky_claw/local/tools/loot_service.py": (497,),
+        # PR-1 añadió resolución de loot_data_path que usa mods_dir para validar.
+        # PR-2 (helpers del veredicto verificable) movió la línea (497 → 576);
+        # mismo constructor del default de `_build_sources_resolver`. El
+        # hardening de PR-2 (import de LOOTWorkerProtocolError + docstring del
+        # diagnóstico de timeout) la corrió (576 → 580); mismo constructor.
+        "sky_claw/local/tools/loot_service.py": (580,),
         "sky_claw/local/validators/vfs_health.py": (141,),
         # #585: el resolver del perfil pasó a leer plugins.txt + loadorder.txt
         # por separado y a fallar cerrado si la activación es ilegible; el

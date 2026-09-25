@@ -1,11 +1,12 @@
 """LootSortingService — LOOT load-order sorting under the distributed lock.
 
-Audit #190 fast-follow. LOOT ``--sort`` rewrites the shared load order
-(``plugins.txt`` / ``loadorder.txt``), exactly the serializable state the other
-mutating runners (xEdit, Synthesis, DynDOLOD) already guard with
-:class:`SnapshotTransactionLock`. The real-execution path previously called the
-deprecated, lock-free ``ModdingToolsAgent.run_loot``; this service closes that
-gap so a real sort serializes against:
+Audit #190 fast-follow. LOOT ``--auto-sort`` may rewrite the shared load order
+(``plugins.txt`` / ``loadorder.txt`` — only when the sorted order differs, see
+PR-2 below), exactly the serializable state the other mutating runners (xEdit,
+Synthesis, DynDOLOD) already guard with :class:`SnapshotTransactionLock`. The
+real-execution path previously called the deprecated, lock-free
+``ModdingToolsAgent.run_loot``; this service closes that gap so a real sort
+serializes against:
 
 * another concurrent LOOT sort, and
 * the dry-run preview chain (which snapshots and force-reverts the same load
@@ -16,10 +17,19 @@ gap so a real sort serializes against:
 existentes en LOCALAPPDATA (LOOT corre fuera del VFS con ``--game-path``), el
 profile de MO2 y un override explícito. Un sort que lanza (timeout) o sale con
 error restaura el snapshot; si no se encuentra ningún candidato (entorno no
-configurado), el sort se rechaza tras la corrida: sin targets observables no
-hay evidencia para atribuir ni verificar el éxito (fail-closed — review
+configurado), el sort se rechaza ANTES de ejecutar LOOT: sin targets observables
+no hay evidencia para atribuir ni verificar el éxito (fail-closed — review
 adversarial #495; el "serialización-sola con warning" previo al T-06 reportaba
 éxito sin haber podido observar nada).
+
+**Resultado verificable (PR-2):** el veredicto es CHANGED / NO_CHANGE / FAIL
+(:mod:`sky_claw.local.loot.outcome`), nunca "rc 0 ⇒ éxito" ni "ningún archivo
+cambió ⇒ fallo". El gate previo mezclaba dos estados: el NO_CHANGE legítimo
+(LOOT 0.29.1 no reescribe nada si el orden no cambia) y la segunda instancia
+bloqueada por el mutex ``LOOT.Shell.Instance`` (sale 0 sin ordenar). Ahora los
+separa el testigo de ejecución que ``LOOTRunner`` captura alrededor del proceso
+(:mod:`sky_claw.local.loot.execution_witness`) más la comparación SEMÁNTICA del
+load order leída antes y después dentro del mismo lock.
 """
 
 from __future__ import annotations
@@ -38,12 +48,23 @@ from sky_claw.app.db.locks import (
 from sky_claw.local.loot.cli import (
     LOOTConfig,
     LOOTNotFoundError,
+    LOOTPreconditionError,
     LOOTRunner,
     LOOTTimeoutError,
+    LOOTWorkerProtocolError,
 )
 from sky_claw.local.loot.data_root import (
     ensure_loot_data_path_exists,
     resolve_loot_data_path,
+)
+from sky_claw.local.loot.outcome import (
+    LoadOrderSemanticState,
+    LoadOrderUnobservableError,
+    LootSortFailureReason,
+    LootSortOutcome,
+    LootSortVerdict,
+    classify_loot_sort,
+    read_load_order_semantics,
 )
 from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
@@ -190,14 +211,21 @@ def _capturar_estado_de_un_archivo(path: pathlib.Path) -> _EstadoDeArchivo:
 def _capturar_estado_de_archivos(
     paths: list[pathlib.Path],
 ) -> dict[pathlib.Path, _EstadoDeArchivo]:
-    """Evidencia pre-sort de cada target, para la atribución post-sort.
+    """Telemetría física pre-sort (mtime/size) de cada target — NO clasifica.
 
-    LOOT real reescribe plugins.txt/loadorder.txt al aplicar (libloot
-    ``set_load_order`` → ``save()`` incondicional, más el backup del GUI),
-    incluso cuando el orden no cambia. Una corrida que salió 0 SIN tocar
-    ninguno de los targets no aplicó el sort (p. ej. otra instancia de LOOT
-    ya abierta se quedó con el mutex de aplicación — loot/loot
-    ``src/gui/qt/main.cpp`` sale 0 enfocando la ventana existente).
+    PR-2 corrigió la premisa previa ("LOOT reescribe plugins.txt/loadorder.txt
+    incluso cuando el orden no cambia"), que es FALSA para loot/loot 0.29.1:
+    ``SetLoadOrder`` sólo se alcanza por ``actionApplySort``, que
+    ``handlePluginsAutoSorted`` dispara sólo si ``handlePluginsSorted`` entró en
+    ``enterSortingState()`` porque ``hasLoadOrderChanged`` fue verdadero
+    (``src/gui/qt/main_window.cpp:124-137,1040-1051,1596-1617,2870-2884``;
+    backup + ``SetLoadOrder`` en ``src/gui/state/game/game.cpp:788-791``). En el
+    NO_CHANGE legítimo ningún target cambia, así que "ningún archivo cambió" NO
+    prueba no-ejecución. La atribución la da el testigo de ejecución
+    (:mod:`sky_claw.local.loot.execution_witness`) y CHANGED vs NO_CHANGE lo
+    decide la comparación SEMÁNTICA (:mod:`sky_claw.local.loot.outcome`). Esta
+    captura queda como observabilidad (``stat`` ilegible ⇒ inobservable) y como
+    dato ``load_order_rewritten`` para el rig y el diagnóstico.
     """
     return {path: _capturar_estado_de_un_archivo(path) for path in paths}
 
@@ -226,14 +254,69 @@ def _evaluar_evidencia(
 class _LootSortFailedError(Exception):
     """Interno: un sort que no puede confirmarse como exitoso debe lanzar
     DENTRO del lock para que ``SnapshotTransactionLock.__aexit__`` restaure el
-    load order; el resultado original viaja en la excepción para armar la
-    respuesta al caller. ``detail`` (opcional) reemplaza la inferencia de
-    ``message`` cuando la causa no está en ``errors``/stderr/stdout."""
+    load order; el resultado original y el veredicto FAIL (con su razón
+    tipada) viajan en la excepción para armar la respuesta al caller."""
 
-    def __init__(self, result: LOOTResult, detail: str | None = None) -> None:
-        super().__init__(detail or f"LOOT sort failed with return code {result.return_code}")
+    def __init__(self, result: LOOTResult, verdict: LootSortVerdict) -> None:
+        if verdict.outcome is not LootSortOutcome.FAIL:
+            raise ValueError("_LootSortFailedError exige un veredicto FAIL")
+        super().__init__(verdict.detail)
         self.result = result
-        self.detail = detail
+        self.verdict = verdict
+
+
+def _mensaje_de_fallo_de_proceso(result: LOOTResult) -> str:
+    """Diagnóstico mínimo accionable de un fallo: errores, stderr, stdout o rc.
+
+    El ``strip`` evita que un stderr/stdout solo-whitespace cuente como mensaje
+    visualmente vacío (review adversarial #495); LOOT GUI no imprime por consola
+    (upstream main.cpp), así que el exit code es el último recurso.
+    """
+    return (
+        "; ".join(str(e) for e in result.errors)
+        or result.raw_stderr.strip()
+        or result.raw_stdout.strip()
+        or f"LOOT sort failed with exit code {result.return_code}."
+    )
+
+
+def _respuesta_de_fallo(reason: LootSortFailureReason, message: str, **extra: Any) -> dict[str, Any]:
+    """Respuesta FAIL de las rutas sin resultado de proceso (PR-2).
+
+    Única fábrica de esas respuestas: garantiza ``outcome``/``failure_reason``
+    en TODAS (``test_toda_salida_de_sort_load_order_lleva_outcome`` lo ancla
+    por AST: ningún ``return`` de ``sort_load_order`` puede armar su dict a mano).
+    """
+    response: dict[str, Any] = {
+        "status": "error",
+        "success": False,
+        "message": message,
+        "logs": message,
+        "outcome": LootSortOutcome.FAIL.value,
+        "failure_reason": reason.value,
+        "outcome_detail": message,
+    }
+    response.update(extra)
+    return response
+
+
+def _detalle_de_timeout(exc: LOOTTimeoutError) -> str:
+    """Diagnóstico de TIMEOUT sin afirmar una causa que no se observó (PR-2).
+
+    Enumera los caminos de loot/loot 0.29.1 que dejan ``--auto-sort`` sin salir
+    solo y que los settings gestionados NO neutralizan; con la evidencia
+    disponible no se distinguen entre sí. "First-Time Tips" (``lastVersion``),
+    el modal de NO_CHANGE y el mensaje del update check ya no figuran: se
+    siembran antes de cada corrida (``headless_settings``).
+    """
+    return (
+        f"LOOT no terminó dentro de {exc.timeout}s y fue detenido. La evidencia disponible no "
+        "distingue la causa: un diálogo modal (fallo de sort main_window.cpp:1585, load order "
+        "ambiguo main_window.cpp:1655/2357, error al actualizar masterlist/prelude "
+        "main_window.cpp:1291-1292), mensajes de error (p. ej. de plugins) que cancelan el "
+        "auto-sort o el auto-cierre (main_window.cpp:2835-2845/2878-2880) o un sort más lento "
+        "que el timeout."
+    )
 
 
 class _ActionManifestError(Exception):
@@ -717,6 +800,18 @@ class LootSortingService:
         Un preflight en ROJO (T-15: p.ej. symlinks + LOOT <0.29, el escenario
         de LOOT ciego ante el VFS) bloquea el sort salvo ``override_preflight``
         explícito (flujo HITL); el reporte viaja en la respuesta.
+
+        PR-2 — contrato de resultado verificable. TODA respuesta lleva
+        ``outcome`` (``"changed"`` | ``"no_change"`` | ``"fail"``); FAIL además
+        ``failure_reason`` tipado (:class:`LootSortFailureReason`). Compatibilidad:
+        CHANGED y NO_CHANGE → ``success=True``/``status="success"``/``message=""``
+        (canon del repo: message vacío en éxito; el texto humano va en
+        ``outcome_detail``); FAIL → ``success=False``/``status="error"``. El
+        veredicto lo decide :func:`classify_loot_sort` con el testigo de
+        ejecución que transporta el runner y el estado semántico del load order
+        leído ANTES y DESPUÉS dentro del MISMO lock. Un código 0 sin testigo
+        fresco NUNCA es éxito (mutex ``LOOT.Shell.Instance``); un NO_CHANGE con
+        testigo fresco NUNCA es fallo ni dispara rollback.
         """
         if update_masterlist is None:
             update_masterlist = bool(getattr(params, "update_masterlist", True))
@@ -734,30 +829,31 @@ class LootSortingService:
                     c.summary for c in preflight_report.checks if c.status.value == "red"
                 )
                 logger.warning("%s", detail)
-                return {
-                    "status": "error",
-                    "success": False,
-                    "message": detail,
-                    "logs": detail,
-                    "preflight": preflight_report.to_dict(),
-                }
+                return _respuesta_de_fallo(
+                    LootSortFailureReason.PRECONDITION_FAILED,
+                    detail,
+                    preflight=preflight_report.to_dict(),
+                )
 
         try:
             profile = str(getattr(params, "profile_name", "Default"))
             runner = self._ensure_loot_runner(profile)
         except LOOTNotFoundError as exc:
             logger.error("LOOT runner unavailable: %s", exc)
-            return {"status": "error", "success": False, "message": str(exc), "logs": str(exc)}
+            return _respuesta_de_fallo(LootSortFailureReason.PRECONDITION_FAILED, str(exc))
 
         # T-06: snapshotear lo que LOOT realmente puede reescribir. Sin
-        # candidatos (entorno no configurado) el sort se rechaza tras la
-        # corrida: sin targets observables no hay evidencia para atribuir el
-        # éxito (fail-closed — review adversarial #495).
+        # candidatos (entorno no configurado) el sort se rechaza ANTES de
+        # ejecutar: sin targets observables no hay evidencia para atribuir ni
+        # verificar (fail-closed — review adversarial #495).
         load_order = await self._resolve_load_order_for_runner(runner)
         target_files = list(load_order.files)
         rolled_back = False
         # T-21: se llena solo en el path de éxito (el validador es post-vuelo).
         post_run_payload: dict[str, Any] | None = None
+        # PR-2: veredicto verificado + telemetría física (no clasificadora).
+        verdict: LootSortVerdict | None = None
+        load_order_rewritten: bool | None = None
 
         # Referencia al lock fuera del with: rolled_back se deriva del resultado
         # REAL del rollback (tx.rollback_completed) — un restore fallido en la
@@ -789,41 +885,46 @@ class LootSortingService:
                 # snapshots si no hay targets; baseline inverificable si es
                 # ilegible) y un rollback que no restaura nada.
                 if not target_files:
-                    # El mutex early-exit de main.cpp también sale 0 sin sortear
-                    # en este entorno, pero eso ya no importa: sin targets
-                    # observables el sort NI SE EJECUTA.
                     raise _LootSortFailedError(
                         LOOTResult(return_code=-1, errors=[]),
-                        detail=(
+                        LootSortVerdict.fail(
+                            LootSortFailureReason.PRECONDITION_FAILED,
                             "No hay archivos de load order observables (plugins.txt/"
                             "loadorder.txt) para snapshotear, verificar ni atribuir el "
                             "sort: LOOT no se ejecutó. Configurá LOCALAPPDATA/MO2 (o el "
                             "override) para que el servicio pueda proteger y validar los "
-                            "targets."
+                            "targets.",
                         ),
                     )
+                # Telemetría física (mtime/size) + primer gate de observabilidad.
                 estado_pre_sort = _capturar_estado_de_archivos(target_files)
                 pre_ilegible = next(
                     (path for path, estado in estado_pre_sort.items() if estado.tipo == "ilegible"),
                     None,
                 )
-                if pre_ilegible is not None:
+                # PR-2: estado SEMÁNTICO antes, DENTRO del lock (mismo dominio de
+                # serialización que el después: nada ajeno se atribuye al sort).
+                semantica_antes: LoadOrderSemanticState | None = None
+                if pre_ilegible is None:
+                    try:
+                        semantica_antes = read_load_order_semantics(target_files)
+                    except LoadOrderUnobservableError as exc:
+                        pre_ilegible = exc.path
+                if pre_ilegible is not None or semantica_antes is None:
                     # Sin baseline verificable no hay evidencia con qué comparar:
                     # abortar ANTES de mutar (el post solo puede detectarse después).
                     raise _LootSortFailedError(
                         LOOTResult(return_code=-1, errors=[]),
-                        detail=(
+                        LootSortVerdict.fail(
+                            LootSortFailureReason.STATE_UNOBSERVABLE,
                             f"No se pudo establecer la evidencia base del load order "
                             f"({pre_ilegible}) antes de correr LOOT: sin baseline "
-                            "verificable, el sort no se ejecutó."
+                            "verificable, el sort no se ejecutó.",
                         ),
                     )
-                # T-28: el "antes" se lee DENTRO del lock, en el mismo dominio
-                # de serialización que el "después" y la evidencia física — una
-                # lectura pre-lock podría atribuir a este sort un cambio que
-                # otro Ritual hizo antes de que adquiriéramos (review
-                # adversarial #495). Best-effort: si no se puede leer, el
-                # informe no lleva diff.
+                # T-28: el "antes" del informe se lee DENTRO del lock, en el mismo
+                # dominio de serialización que el "después" (review adversarial
+                # #495). Best-effort: si no se puede leer, el informe no lleva diff.
                 before_order = _read_plugin_order(_primary_load_order_file(target_files))
                 # T-26 (ADR 0002): emitir la "caja negra de vuelo" ANTES de
                 # mutar. Si el journal está cableado y la emisión falla, el sort
@@ -831,44 +932,39 @@ class LootSortingService:
                 if self._journal is not None:
                     journal_tx_id = await self._emit_action_manifest(tx, target_files, loot_version)
                 result = await runner.sort(update_masterlist=update_masterlist)
-                if not result.success:
+                # PR-2: estado final, TODAVÍA dentro del lock. La telemetría física
+                # ya no clasifica (en 0.29.1 un NO_CHANGE legítimo no reescribe
+                # nada, ver _capturar_estado_de_archivos): sólo aporta
+                # observabilidad (stat ilegible ⇒ inobservable) y el dato
+                # `load_order_rewritten` para el rig/diagnóstico.
+                load_order_rewritten, post_ilegible = _evaluar_evidencia(estado_pre_sort, target_files)
+                semantica_despues: LoadOrderSemanticState | None = None
+                if post_ilegible is None:
+                    try:
+                        semantica_despues = read_load_order_semantics(target_files)
+                    except LoadOrderUnobservableError as exc:
+                        post_ilegible = exc.path
+                if post_ilegible is not None:
+                    load_order_rewritten = None
+                    logger.warning("Estado del load order inobservable tras la corrida de LOOT: %s", post_ilegible)
+                verdict = classify_loot_sort(
+                    process_success=result.success,
+                    process_detail=_mensaje_de_fallo_de_proceso(result),
+                    witness=result.execution_witness,
+                    before=semantica_antes,
+                    after=semantica_despues,
+                )
+                if verdict.outcome is LootSortOutcome.FAIL:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
-                    raise _LootSortFailedError(result)
-                cambiaron, ilegible = _evaluar_evidencia(estado_pre_sort, target_files)
-                if ilegible is not None:
-                    # Estado final inobservable (el previo ya se validó antes de
-                    # mutar): no se deduce mutación (ni su ausencia) de un stat
-                    # fallido — fail-closed + rollback.
-                    raise _LootSortFailedError(
-                        result,
-                        detail=(
-                            f"No se pudo inspeccionar el estado del load order "
-                            f"({ilegible}) tras la corrida: sin evidencia verificable "
-                            "no se puede confirmar que LOOT aplicó el orden."
-                        ),
-                    )
-                if not cambiaron:
-                    # rc=0 sin mutación observable: LOOT no aplicó. Caso real
-                    # (main.cpp): con otra instancia ya abierta, el proceso sale
-                    # 0 enfocando la ventana existente SIN sortear. Incertidumbre
-                    # → fallo (nunca éxito ciego): el snapshot se restaura (no-op
-                    # si nada cambió) y el caller recibe un mensaje accionable.
-                    raise _LootSortFailedError(
-                        result,
-                        detail=(
-                            "LOOT salió con código 0 pero ningún archivo del load order "
-                            "cambió durante la corrida: el sort no aplicó (¿otra instancia "
-                            "de LOOT ya abierta se quedó con el mutex?) o los archivos "
-                            "resueltos no cubren los que LOOT reescribió."
-                        ),
-                    )
+                    raise _LootSortFailedError(result, verdict)
                 # T-28: el "después" real se lee del archivo que LOOT reescribió,
                 # DENTRO del lock (atribuible a esta corrida). `result.sorted_plugins`
                 # es telemetría opcional: con LOOT real llega vacía (la GUI no
                 # imprime la lista — upstream main.cpp) y usarla como "después"
                 # haría que el informe omita el diff aunque el orden haya cambiado.
                 # Misma fuente que `before_order` (loadorder.txt primero), así el
-                # diff compara archivo contra archivo.
+                # diff compara archivo contra archivo. En NO_CHANGE no hay diff y no
+                # se inventa (from_orders + `diff.changed` en _emit_flight_report).
                 after_order = _read_plugin_order(_primary_load_order_file(target_files))
                 # T-21: validar DENTRO del lock — con el lock liberado, otro
                 # Ritual concurrente podría mutar el load order antes de la
@@ -877,10 +973,11 @@ class LootSortingService:
                 # puede disparar el rollback de un sort exitoso.
                 post_run_payload = await self._run_post_run_validation()
             if journal_tx_id is not None and self._journal is not None:
-                # El sort ya terminó y el lock se liberó; un fallo de commit del
-                # journal es de estado (el manifiesto ya quedó persistido), no
-                # debe romper el contrato "siempre devolver dict" (review
-                # Copilot PR #243). Best-effort: se loguea con traceback.
+                # CHANGED y NO_CHANGE son transacciones EXITOSAS (PR-2): ambas se
+                # commitean. El sort ya terminó y el lock se liberó; un fallo de
+                # commit del journal es de estado (el manifiesto ya quedó
+                # persistido), no debe romper el contrato "siempre devolver dict"
+                # (review Copilot PR #243). Best-effort: se loguea con traceback.
                 try:
                     await self._journal.commit_transaction(journal_tx_id)
                     journal_committed = True
@@ -902,39 +999,55 @@ class LootSortingService:
         except LockAcquisitionError as exc:
             logger.warning("Lock contention on '%s': %s", self.RESOURCE_ID, exc)
             detail = f"Could not acquire load-order lock '{self.RESOURCE_ID}': {exc}"
-            return {"status": "error", "success": False, "message": detail, "logs": detail}
+            return _respuesta_de_fallo(LootSortFailureReason.PRECONDITION_FAILED, detail)
         except _ActionManifestError as exc:
             await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("No se pudo emitir el ActionManifest; sort abortado: %s", exc)
             detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
-            return {
-                "status": "error",
-                "success": False,
-                "message": detail,
-                "logs": detail,
-                "rolled_back": tx.rollback_completed,
-            }
+            return _respuesta_de_fallo(
+                LootSortFailureReason.PRECONDITION_FAILED,
+                detail,
+                rolled_back=tx.rollback_completed,
+            )
         except _LootSortFailedError as exc:
             await self._mark_journal_rolled_back(journal_tx_id)
             result = exc.result
+            verdict = exc.verdict
             rolled_back = tx.rollback_completed
-            if exc.detail is not None:
-                # rc=0 sin mutación observable: el resultado de PROCESO es
-                # "exitoso" pero el contrato lo rechaza. Degradar a fallo con el
+            if verdict.failure_reason is not LootSortFailureReason.PROCESS_ERROR:
+                # Rechazo del CONTRATO (precondición, inobservable, no atribuible):
+                # el resultado de PROCESO puede ser "exitoso" (rc=0). Se agrega el
                 # detalle como error para que status/success/message/errors de la
-                # respuesta no mientan (el return_code queda en 0: es la verdad
-                # del proceso, el detalle explica el rechazo).
-                result = replace(result, errors=[*result.errors, exc.detail])
-        except (LOOTNotFoundError, LOOTTimeoutError) as exc:
+                # respuesta no mientan (el return_code queda en su valor real: es
+                # la verdad del proceso; el detalle explica el rechazo).
+                result = replace(result, errors=[*result.errors, verdict.detail])
+        except LOOTTimeoutError as exc:
             await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("LOOT sort failed: %s", exc)
-            return {
-                "status": "error",
-                "success": False,
-                "message": str(exc),
-                "logs": str(exc),
-                "rolled_back": tx.rollback_completed,
-            }
+            return _respuesta_de_fallo(
+                LootSortFailureReason.TIMEOUT,
+                str(exc),
+                outcome_detail=_detalle_de_timeout(exc),
+                rolled_back=tx.rollback_completed,
+            )
+        except (LOOTNotFoundError, LOOTPreconditionError) as exc:
+            await self._mark_journal_rolled_back(journal_tx_id)
+            logger.error("LOOT sort failed: %s", exc)
+            return _respuesta_de_fallo(
+                LootSortFailureReason.PRECONDITION_FAILED,
+                str(exc),
+                rolled_back=tx.rollback_completed,
+            )
+        except LOOTWorkerProtocolError as exc:
+            # Resultado del worker fuera de contrato: ningún campo es evidencia
+            # (ni el success ni el kind). El snapshot ya se restauró en __aexit__.
+            await self._mark_journal_rolled_back(journal_tx_id)
+            logger.error("LOOT sort failed (protocolo del worker): %s", exc)
+            return _respuesta_de_fallo(
+                LootSortFailureReason.PROTOCOL_ERROR,
+                str(exc),
+                rolled_back=tx.rollback_completed,
+            )
         except asyncio.CancelledError:
             # La cancelación propaga; el snapshot ya se restauró en __aexit__.
             # Cerrar la TX del journal es best-effort (no debe tragar la cancelación).
@@ -952,46 +1065,48 @@ class LootSortingService:
             if not journal_committed:
                 await self._mark_journal_rolled_back(journal_tx_id)
             logger.error("Error inesperado en el sort de LOOT: %s", exc, exc_info=True)
-            return {
-                "status": "error",
-                "success": False,
-                "message": f"Error inesperado durante el sort: {exc}",
-                "logs": str(exc),
-                "rolled_back": tx.rollback_completed,
-            }
+            detail = f"Error inesperado durante el sort: {exc}"
+            return _respuesta_de_fallo(
+                LootSortFailureReason.PROCESS_ERROR,
+                detail,
+                logs=str(exc),
+                rolled_back=tx.rollback_completed,
+            )
 
+        # Invariante: toda ruta que llega acá produjo un veredicto (éxito dentro
+        # del lock o _LootSortFailedError). Nunca se infiere éxito por omisión.
+        assert verdict is not None
         # Contrato compartido (deuda #5): ``message`` canónico junto a los campos
         # estructurados; en éxito queda vacío (el consumidor arma su copy). En
         # fallo, incluir raw_stderr: LOOT puede salir non-zero con el error solo
         # en stderr no estructurado (errors=[] del parser) — review Codex #222.
         # Si nada de eso existe (LOOT GUI no imprime por consola — upstream
         # main.cpp), el mensaje mínimo accionable es el exit code: nunca dejar
-        # success=False con message vacío cuando la causa es identificable. El
-        # strip evita que un stderr/stdout solo-whitespace cuente como mensaje
-        # visualmente vacío (review adversarial #495).
-        stderr_text = result.raw_stderr.strip()
-        stdout_text = result.raw_stdout.strip()
-        message = (
-            ""
-            if result.success
-            else (
-                "; ".join(str(e) for e in result.errors)
-                or stderr_text
-                or stdout_text
-                or f"LOOT sort failed with exit code {result.return_code}."
-            )
-        )
+        # success=False con message vacío cuando la causa es identificable.
+        success = verdict.success
+        message = "" if success else _mensaje_de_fallo_de_proceso(result)
+        witness = result.execution_witness
         response: dict[str, Any] = {
-            "status": "success" if result.success else "error",
-            "success": result.success,
+            "status": "success" if success else "error",
+            "success": success,
             "message": message,
+            "outcome": verdict.outcome.value,
+            "outcome_detail": verdict.detail,
             "return_code": result.return_code,
             "sorted_plugins": result.sorted_plugins,
             "warnings": result.warnings,
             "errors": result.errors,
             "logs": result.raw_stdout or "",
             "rolled_back": rolled_back,
+            # PR-2: evidencia observable para el rig real (R1-R5), no clasificadora
+            # por sí sola: estado del testigo y telemetría física de reescritura.
+            "verification": {
+                "execution_witness": witness.state.value if witness is not None else None,
+                "load_order_rewritten": load_order_rewritten,
+            },
         }
+        if verdict.failure_reason is not None:
+            response["failure_reason"] = verdict.failure_reason.value
         # Superficie de los warnings del preflight (T-30·3): un preflight no-verde
         # que NO bloquea (amarillo, p.ej. overwrite sucio) igual debe llegar al
         # operador. Sin esto solo se loguearía y el agente/GUI vería un success

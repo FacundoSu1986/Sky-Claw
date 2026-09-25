@@ -22,8 +22,12 @@ from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.loot.cli import (
     DEFAULT_LOOT_INTERNAL_GAME_ID,
     LOOT_CLI_GAME_IDENTIFIERS,
+    LOOT_FAILURE_KIND_PRECONDITION,
+    LOOT_FAILURE_KIND_TIMEOUT,
+    LOOT_FAILURE_KINDS,
     LOOTConfig,
     LOOTNotFoundError,
+    LOOTPreconditionError,
     LOOTRunner,
     LOOTTimeoutError,
 )
@@ -349,6 +353,26 @@ def _payload_string(payload: Mapping[str, JsonValue], field_name: str) -> str:
     return value
 
 
+def _loot_failure_execution(
+    *,
+    kind: str,
+    message: str,
+    outputs: tuple[pathlib.Path, ...],
+) -> VfsToolExecution:
+    """PR-2: fallo tipado de LOOT sin ``LOOTResult`` (ver ``LOOT_FAILURE_KINDS``)."""
+    if kind not in LOOT_FAILURE_KINDS:
+        raise ValueError(f"loot_failure_kind no permitido: {kind!r}")
+    return VfsToolExecution(
+        success=False,
+        message=message,
+        exit_code=None,
+        stdout="",
+        stderr=message,
+        outputs=outputs,
+        tool_result={"loot_failure_kind": kind},
+    )
+
+
 async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     payload = manifest.job.payload
     allowed = {"loot_exe", "game", "update_masterlist", "loot_data_path"}
@@ -423,10 +447,33 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
         ),
         path_validator=validator,
     )
-    result = await runner.sort(update_masterlist=update_masterlist)
+    try:
+        result = await runner.sort(update_masterlist=update_masterlist)
+    except LOOTTimeoutError as exc:
+        # PR-2: tipado explícito en vez de caer al `_failure` genérico: el daemon
+        # re-lanza LOOTTimeoutError y el servicio reporta TIMEOUT igual que en
+        # el camino directo. LOOT ya fue matado y reapeado por el runner, pero
+        # pudo haber mutado antes de colgarse → los targets siguen declarados.
+        return _loot_failure_execution(
+            kind=LOOT_FAILURE_KIND_TIMEOUT, message=str(exc), outputs=manifest.job.mutation_targets
+        )
+    except LOOTPreconditionError as exc:
+        # PR-2: versión no atestiguable, settings o testigo no preparables → LOOT NO se lanzó.
+        return _loot_failure_execution(kind=LOOT_FAILURE_KIND_PRECONDITION, message=str(exc), outputs=())
     message = (
         "" if result.success else "; ".join(result.errors) or result.raw_stderr or result.raw_stdout or "LOOT falló"
     )
+    tool_result: dict[str, JsonValue] = {
+        "sorted_plugins": list(result.sorted_plugins),
+        "warnings": list(result.warnings),
+        "errors": list(result.errors),
+        "missing_patches": [dict(item) for item in result.missing_patches],
+    }
+    if result.execution_witness is not None:
+        # PR-2: el testigo cruza la frontera como DATO con schema cerrado v1
+        # (LootExecutionWitness.to_payload); el daemon lo valida con
+        # from_payload y NO lo vuelve a inferir. Una sola fuente de verdad.
+        tool_result["execution_witness"] = dict(result.execution_witness.to_payload())
     return VfsToolExecution(
         success=result.success,
         message=message,
@@ -434,12 +481,7 @@ async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
         stdout=result.raw_stdout,
         stderr=result.raw_stderr,
         outputs=manifest.job.mutation_targets,
-        tool_result={
-            "sorted_plugins": list(result.sorted_plugins),
-            "warnings": list(result.warnings),
-            "errors": list(result.errors),
-            "missing_patches": [dict(item) for item in result.missing_patches],
-        },
+        tool_result=tool_result,
     )
 
 
