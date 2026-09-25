@@ -103,6 +103,16 @@ def pasadas_qac_para(master: str) -> int:
     return 1
 
 
+#: Celdas que el SOP exige limpiar A MANO después de las dos pasadas de QAC
+#: (``local/AGENTS.md`` §2.1, anomalía Dawnguard + tabla de troubleshooting):
+#: ``-quickautoclean -autoexit`` no las resuelve, así que son deuda operativa
+#: que el resultado de ``quick_auto_clean`` debe declarar (campo
+#: ``manual_pending``) en vez de reportar el master como limpio. El ancla
+#: ``test_las_celdas_manuales_de_dawnguard_coinciden_con_el_sop`` compara este
+#: tuple contra el SOP: editar uno sin el otro rompe el test.
+CELDAS_MANUALES_DAWNGUARD: tuple[str, ...] = ("00016BCF", "0001FA4C", "0006C3B6")
+
+
 class _ActionManifestError(Exception):
     """Interno (T-26): la emisión del manifiesto de vuelo falló. Se lanza DENTRO
     del lock (antes de mutar) para que el Ritual NO proceda sin manifiesto — la
@@ -915,10 +925,32 @@ class XEditPipelineService:
             return _attach_preflight(error, preflight_report)
 
         logger.info("QuickAutoClean exitoso: %s", cleaned)
-        return _attach_preflight(
-            {"status": "success", "success": True, "message": "", "cleaned": cleaned},
-            preflight_report,
-        )
+        exito: dict[str, Any] = {
+            "status": "success",
+            "success": True,
+            "message": "",
+            "cleaned": cleaned,
+        }
+        if any(nombre.casefold() == _DAWNGUARD_MASTER.casefold() for nombre in cleaned):
+            # SOP §2.1 (anomalía Dawnguard): las dos pasadas automáticas NO cierran
+            # el master — falta la limpieza MANUAL de tres celdas. Sin este campo
+            # el operador veía success=True + cleaned=['Dawnguard.esm'] y daba el
+            # master por limpio: la deuda quedaba invisible. ``message`` debe ir
+            # vacío en éxito (contrato), así que la deuda va como campo
+            # estructurado y además en ``logs``.
+            exito["manual_pending"] = [
+                {
+                    "master": _DAWNGUARD_MASTER,
+                    "accion": "Limpieza manual de celdas (SOP local/AGENTS.md §2.1)",
+                    "cells": list(CELDAS_MANUALES_DAWNGUARD),
+                }
+            ]
+            exito["logs"] = (
+                f"{_DAWNGUARD_MASTER}: {PASADAS_QAC_DAWNGUARD} pasadas automáticas completadas. "
+                "Queda PENDIENTE la limpieza MANUAL de las celdas "
+                f"{', '.join(CELDAS_MANUALES_DAWNGUARD)} (SOP local/AGENTS.md §2.1)."
+            )
+        return _attach_preflight(exito, preflight_report)
 
     # ------------------------------------------------------------------
     # Dry-run / preview (plan-only)

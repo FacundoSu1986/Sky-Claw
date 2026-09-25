@@ -10,6 +10,7 @@ mutable-ref plumbing.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 import pathlib
@@ -122,6 +123,229 @@ def test_los_handlers_del_registry_aceptan_todos_los_campos_del_params_model(
         if faltantes:
             desalineados.append((name, faltantes))
     assert desalineados == []
+
+
+# ---------------------------------------------------------------------------
+# Reenvío real de los parámetros aceptados (hermano del test de arriba)
+# ---------------------------------------------------------------------------
+
+#: Lambdas de registro que declaran un parámetro del schema y no lo reenvían al
+#: servicio, por nombre de tool -> parámetros ignorados. **Vacío a propósito**:
+#: agregar una entrada acá es la decisión explícita que el ancla exige antes de
+#: aceptar que un campo que el LLM puede mandar se descarte en silencio.
+LAMBDAS_QUE_IGNORAN_UN_PARAMETRO: dict[str, set[str]] = {}
+
+#: TODAS las tools que el registro del agente cablea con ``fn=lambda``, congeladas
+#: por igualdad literal. Es el censo completo (hoy ninguna registra con una función
+#: con nombre), no una muestra: agregar una tool al registro rompe el ancla hasta
+#: que alguien confirme que su lambda reenvía lo que declara.
+TOOLS_CON_LAMBDA_EN_EL_REGISTRY: set[str] = {
+    "analyze_esp_conflicts",
+    "check_load_order",
+    "close_game",
+    "detect_conflicts",
+    "download_mod",
+    "generate_bashed_patch",
+    "install_mod",
+    "install_mod_from_archive",
+    "launch_game",
+    "preview_mod_installer",
+    "resolve_fomod",
+    "run_bodyslide",
+    "run_loot_sort",
+    "run_pandora",
+    "run_xedit_script",
+    "search_mod",
+    "search_nexus",
+    "setup_tools",
+    "toggle_mod",
+    "uninstall_mod",
+}
+
+_RAIZ_DEL_REPO = pathlib.Path(__file__).resolve().parent.parent
+_MODULO_DEL_REGISTRY = _RAIZ_DEL_REPO / "sky_claw" / "app" / "agent" / "tools" / "__init__.py"
+
+
+def _parametros_aceptados_y_no_reenviados() -> tuple[dict[str, set[str]], set[str], set[str]]:
+    """Enumera por AST los lambdas de ``ToolDescriptor`` que ignoran un parámetro.
+
+    Returns
+    -------
+    tuple
+        ``(ignorados, escaneados, sin_lambda)``: por tool, los parámetros
+        declarados en su lambda que no se referencian en el cuerpo; el conjunto de
+        tools cuyo ``fn`` es un lambda; y las tools que registran ``fn`` con otra
+        forma (función con nombre, bound method…), fuera del alcance del escaneo.
+    """
+    arbol = ast.parse(_MODULO_DEL_REGISTRY.read_text(encoding="utf-8"))
+    ignorados: dict[str, set[str]] = {}
+    escaneados: set[str] = set()
+    sin_lambda: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        if not (isinstance(nodo.func, ast.Name) and nodo.func.id == "ToolDescriptor"):
+            continue
+        claves = {kw.arg: kw.value for kw in nodo.keywords if kw.arg is not None}
+        nombre = claves.get("name")
+        fn = claves.get("fn")
+        if not (isinstance(nombre, ast.Constant) and isinstance(nombre.value, str)):
+            continue
+        if not isinstance(fn, ast.Lambda):
+            sin_lambda.add(nombre.value)
+            continue
+        escaneados.add(nombre.value)
+        declarados = {argumento.arg for argumento in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs)}
+        usados = {
+            referencia.id
+            for referencia in ast.walk(fn.body)
+            if isinstance(referencia, ast.Name) and isinstance(referencia.ctx, ast.Load)
+        }
+        faltantes = declarados - usados
+        if faltantes:
+            ignorados[nombre.value] = faltantes
+    return ignorados, escaneados, sin_lambda
+
+
+def test_ningun_lambda_de_registro_acepta_un_parametro_que_no_reenvia() -> None:
+    """Ancla AST (enumera, no muestrea): el test de arriba prueba que el lambda
+    *acepta* los campos del ``params_model``, no que los *reenvíe* — un lambda
+    que los declare y los ignore en el cuerpo pasa igual, y el LLM ve el valor
+    descartado sin error (el defecto del lambda de 2 args de ``run_bodyslide``,
+    que reventaba con TypeError, era la versión ruidosa de esta misma clase).
+    Acá se recorren TODOS los registros del módulo, no sólo el hermano conocido:
+    el censo de tools con lambda se congela por igualdad, y una tool registrada de
+    otra forma falla en vez de quedar fuera del escaneo en silencio.
+    """
+    ignorados, escaneados, sin_lambda = _parametros_aceptados_y_no_reenviados()
+    assert sin_lambda == set(), (
+        "estas tools registran su `fn` con algo que no es un lambda, así que este ancla no "
+        f"puede probar el reenvío de sus parámetros: {sorted(sin_lambda)}. Extendé "
+        "_parametros_aceptados_y_no_reenviados() para analizar esa forma (o registralas con lambda)."
+    )
+    assert escaneados == TOOLS_CON_LAMBDA_EN_EL_REGISTRY
+    assert ignorados == LAMBDAS_QUE_IGNORAN_UN_PARAMETRO
+
+
+#: Path relativo -> nombre de las tools que ese módulo registra constructor a
+#: constructor con ``ToolDescriptor``. Congelado por igualdad literal: es el censo
+#: de superficies de registro de TODO ``sky_claw/``, no la del módulo que hoy
+#: conocemos. Si aparece un segundo registro (p.ej. un registro propio del camino
+#: GUI, como sospechaba la revisión del PR #637), el ancla rompe acá antes de que
+#: el hermano quede desincronizado — el patrón dominante del repo (AGENTS.md,
+#: "La regla que más se viola").
+SUPERFICIES_DE_REGISTRO: dict[str, set[str]] = {
+    "sky_claw/app/agent/tools/__init__.py": TOOLS_CON_LAMBDA_EN_EL_REGISTRY,
+}
+
+
+def _censo_de_registros() -> dict[str, set[str]]:
+    """Enumera por AST cada ``ToolDescriptor(name=...)`` de ``sky_claw/``.
+
+    Returns
+    -------
+    dict
+        Path relativo a la raíz del repo -> nombres registrados en ese módulo.
+    """
+    censo: dict[str, set[str]] = {}
+    for archivo in sorted((_RAIZ_DEL_REPO / "sky_claw").rglob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call):
+                continue
+            es_descriptor = (isinstance(nodo.func, ast.Name) and nodo.func.id == "ToolDescriptor") or (
+                isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "ToolDescriptor"
+            )
+            if not es_descriptor:
+                continue
+            nombre = next((kw.value for kw in nodo.keywords if kw.arg == "name"), None)
+            if not (isinstance(nombre, ast.Constant) and isinstance(nombre.value, str)):
+                # Un registro cuyo ``name`` no es un literal no puede contrastarse
+                # contra el censo: se declara con el nombre del módulo para que el
+                # assert de igualdad lo muestre en vez de ignorarlo.
+                censo.setdefault(archivo.relative_to(_RAIZ_DEL_REPO).as_posix(), set()).add("<name no literal>")
+                continue
+            relativo = archivo.relative_to(_RAIZ_DEL_REPO).as_posix()
+            censo.setdefault(relativo, set()).add(nombre.value)
+    return censo
+
+
+def test_toda_tool_se_registra_en_una_sola_superficie() -> None:
+    """Las tools que el LLM puede invocar se cablean en un único módulo.
+
+    El fix de BodySlide que motivó esta ancla aterrizó en
+    ``AsyncToolRegistry._register_builtins`` y la revisión preguntó por su hermano
+    (un registro paralelo del camino GUI/Telegram que conservara el lambda viejo).
+    La respuesta es un censo, no una inspección manual de hoy: cualquier segundo
+    registro rompe este test y obliga a cablear las dos superficies a la vez.
+    """
+    assert _censo_de_registros() == SUPERFICIES_DE_REGISTRO
+
+
+#: Superficies de EJECUCIÓN de BodySlide, por path relativo a la raíz del repo.
+#: Congeladas por igualdad literal. El censo de registros de arriba contesta
+#: "¿hay un segundo registro?"; éstas contestan el resto de la sospecha del PR #637
+#: ("¿el camino GUI conserva su propio runner y sus propios defaults?"): hoy el
+#: runner se importa e instancia en un módulo y se ejecuta en otro, y ningún camino
+#: paralelo lo hace por su cuenta — el dispatcher de orquestación despacha
+#: *estrategias* por nombre y ninguna construye un ``BodySlideRunner``. Un servicio
+#: o estrategia que se cablee su propio runner rompe el ancla hasta que se decida
+#: explícitamente. El censo de IMPORTACIONES va por el path del módulo
+#: (``bodyslide_runner``) y no por el nombre de la clase, así que un alias
+#: (``... import BodySlideRunner as R``) tampoco lo esquiva.
+MODULOS_QUE_IMPORTAN_BODYSLIDE_RUNNER: set[str] = {"sky_claw/app/agent/tools/__init__.py"}
+MODULOS_QUE_INSTANCIAN_BODYSLIDE_RUNNER: set[str] = {"sky_claw/app/agent/tools/__init__.py"}
+MODULOS_QUE_EJECUTAN_BODYSLIDE: set[str] = {"sky_claw/app/agent/tools/system_tools.py"}
+
+
+def _censo_de_ejecucion_de_bodyslide() -> tuple[set[str], set[str], set[str]]:
+    """Enumera por AST quién importa, construye y ejecuta el runner de BodySlide.
+
+    Returns
+    -------
+    tuple
+        ``(importan, instancian, ejecutan)``: paths relativos que importan del
+        módulo ``bodyslide_runner``, que llaman ``BodySlideRunner(...)`` y que
+        llaman ``.run_batch(...)``.
+    """
+    importan: set[str] = set()
+    instancian: set[str] = set()
+    ejecutan: set[str] = set()
+    for archivo in sorted((_RAIZ_DEL_REPO / "sky_claw").rglob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        relativo = archivo.relative_to(_RAIZ_DEL_REPO).as_posix()
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, (ast.Import, ast.ImportFrom)):
+                modulo = getattr(nodo, "module", None) or ""
+                nombres = [alias.name for alias in nodo.names]
+                if modulo.endswith("bodyslide_runner") or any(n.endswith("bodyslide_runner") for n in nombres):
+                    importan.add(relativo)
+                continue
+            if not isinstance(nodo, ast.Call):
+                continue
+            if isinstance(nodo.func, ast.Name) and nodo.func.id == "BodySlideRunner":
+                instancian.add(relativo)
+            elif isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "run_batch":
+                ejecutan.add(relativo)
+    return importan, instancian, ejecutan
+
+
+def test_bodyslide_se_ejecuta_desde_una_sola_superficie() -> None:
+    """Ancla AST (enumera, no muestrea): la tool es el único camino a BodySlide.
+
+    El lambda de 2 args que reventaba sólo importa si TODA corrida pasa por la tool
+    cableada arriba: si un segundo camino (GUI, servicio, ritual) instanciara su
+    runner con sus propios defaults, el ``TypeError`` se habría arreglado en un
+    hermano y el otro seguiría sirviendo defaults silenciosos — la clase de defecto
+    dominante del repo (AGENTS.md). El runner viaja como dependencia o se resuelve
+    desde ``local_cfg``, así que el censo de importaciones, construcciones y
+    ejecuciones se congela: agregar una superficie nueva rompe el test —con el
+    censo real en el mensaje— en vez de esquivarlo.
+    """
+    importan, instancian, ejecutan = _censo_de_ejecucion_de_bodyslide()
+    assert importan == MODULOS_QUE_IMPORTAN_BODYSLIDE_RUNNER, f"importadores actuales: {sorted(importan)}"
+    assert instancian == MODULOS_QUE_INSTANCIAN_BODYSLIDE_RUNNER, f"constructores actuales: {sorted(instancian)}"
+    assert ejecutan == MODULOS_QUE_EJECUTAN_BODYSLIDE, f"ejecutores actuales: {sorted(ejecutan)}"
 
 
 # ---------------------------------------------------------------------------
@@ -367,11 +591,16 @@ async def test_run_bodyslide_execute_despacha_preset_y_morphs(tmp_path: pathlib.
         "sky_claw.app.db.locks.SnapshotTransactionLock",
         return_value=transaction,
     ):
-        result = json.loads(await reg.execute("run_bodyslide", {"group": "3BA"}))
+        result = json.loads(
+            await reg.execute("run_bodyslide", {"group": "3BA", "preset": "Zeroed Sliders", "build_morphs": False})
+        )
 
     esperado = bodyslide_output_target(game=game, group="3BA")
     assert result["success"] is True
-    injected.run_batch.assert_awaited_once_with("3BA", str(esperado), preset=None, build_morphs=True)
+    # Valores NO default a propósito: probar que el campo llega al runner es lo
+    # único que distingue "el lambda acepta el parámetro" de "el lambda lo
+    # reenvía" — con los defaults, un lambda que los ignore produce el mismo await.
+    injected.run_batch.assert_awaited_once_with("3BA", str(esperado), preset="Zeroed Sliders", build_morphs=False)
 
 
 @pytest.mark.asyncio

@@ -6,11 +6,14 @@ exponential backoff, rollback-on-failure, and lock release safety.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
+import logging
 import sqlite3
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -103,14 +106,80 @@ def test_renew_y_release_sql_exigen_el_token_acquired_at() -> None:
 @pytest.mark.asyncio
 async def test_release_sin_token_no_borra_la_fila_viva(
     lock_manager: DistributedLockManager,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Omitir acquired_at es no-op: un caller viejo no puede borrar la lease de un hermano."""
+    """Omitir acquired_at es no-op, PERO deja traza: un caller viejo no puede
+    borrar la lease de un hermano, y el olvido no puede degradar en silencio a
+    contención espuria hasta el TTL (fail-safe, no fail-silent)."""
     lock = await lock_manager.acquire_lock("res-token", "agent_1")
-    assert await lock_manager.release_lock("res-token", "agent_1") is False
+    with caplog.at_level(logging.WARNING, logger="sky_claw.app.db.locks"):
+        assert await lock_manager.release_lock("res-token", "agent_1") is False
+    assert any("sin acquired_at" in registro.getMessage() for registro in caplog.records), (
+        "release_lock sin token debe loggear un warning, no fallar en silencio"
+    )
     vigente = await lock_manager.get_lock_info("res-token")
     assert vigente is not None
     assert vigente.acquired_at == lock.acquired_at
     assert await lock_manager.release_lock("res-token", "agent_1", acquired_at=lock.acquired_at) is True
+
+
+#: Call sites de ``release_lock`` que pueden omitir ``acquired_at``, por path
+#: relativo a la raíz del repo -> líneas. **Vacío a propósito**: agregar una
+#: entrada acá es la decisión explícita que el ancla de abajo exige antes de
+#: aceptar un release que no libera (contención espuria hasta el TTL).
+CALL_SITES_DE_RELEASE_SIN_TOKEN: dict[str, set[int]] = {}
+
+#: Call sites que SÍ pasan ``acquired_at``, por path relativo a la raíz del repo.
+#: Congelado por igualdad literal: es el censo de mutadores que participan del
+#: protocolo, así el ancla no se vuelve ciega (un ``git mv``, un rename del método
+#: o un archivo nuevo fuera del rglob no pueden dejar el escaneo viendo de menos).
+CALL_SITES_DE_RELEASE_CON_TOKEN: set[str] = {
+    "sky_claw/app/db/locks.py",
+    "sky_claw/local/tools/grass_cache_service.py",
+    "sky_claw/local/tools/rollback_reconciler.py",
+    "sky_claw/local/tools_installer.py",
+}
+
+_RAIZ_DEL_REPO = Path(__file__).resolve().parent.parent
+
+
+def _call_sites_de_release_lock() -> tuple[dict[str, set[int]], set[str]]:
+    """Enumera por AST los ``*.release_lock(...)`` de ``sky_claw/``.
+
+    Returns
+    -------
+    tuple
+        ``(sin_token, con_token)``: los call sites que omiten ``acquired_at``
+        (path relativo -> líneas) y los archivos que sí lo pasan.
+    """
+    sin_token: dict[str, set[int]] = {}
+    con_token: set[str] = set()
+    for archivo in sorted((_RAIZ_DEL_REPO / "sky_claw").rglob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        relativo = archivo.relative_to(_RAIZ_DEL_REPO).as_posix()
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call):
+                continue
+            if not (isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "release_lock"):
+                continue
+            if any(kw.arg == "acquired_at" for kw in nodo.keywords):
+                con_token.add(relativo)
+            else:
+                sin_token.setdefault(relativo, set()).add(nodo.lineno)
+    return sin_token, con_token
+
+
+def test_todos_los_call_sites_de_release_lock_pasan_el_token() -> None:
+    """Ancla AST (enumera, no muestrea): el token de adquisición sólo protege si
+    TODOS los mutadores lo pasan. Un call site nuevo que llame
+    ``release_lock(resource, agent)`` compila, no falla, no borra la fila y deja
+    el recurso tomado hasta el TTL — el defecto es invisible salvo por este censo.
+    Las dos listas se congelan: los que lo pasan (para detectar que el escaneo
+    siga viendo call sites reales) y los que no (vacío).
+    """
+    sin_token, con_token = _call_sites_de_release_lock()
+    assert con_token == CALL_SITES_DE_RELEASE_CON_TOKEN
+    assert sin_token == CALL_SITES_DE_RELEASE_SIN_TOKEN
 
 
 @pytest.mark.asyncio
@@ -766,6 +835,58 @@ async def test_cancelacion_durante_rollback_no_marca_rollback_completed(
     assert dos.read_text() == "orig-2"
     assert uno.read_text() == "mutado-1"
     assert await lock_manager.get_lock_info("cancel-rb.esp") is None
+
+
+# =============================================================================
+# Rollback: verificación de checksum (el snapshot corrupto no puede ganar)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_rollback_verifica_checksum_y_no_instala_un_snapshot_corrupto(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Un snapshot con bit-rot NO puede reinstalarse sobre el archivo mutado.
+
+    ``restore_snapshot`` verifica el checksum del sidecar ``.meta.json`` sólo
+    cuando ``verify_checksum=True``. El rollback lo pasaba en ``False``: un
+    snapshot truncado/corrupto se copiaba tal cual sobre el target, el lock
+    reportaba ``rollback_completed=True`` y el operador quedaba con un master
+    corrupto creyendo que la TX se revirtió (nadie disparaba la recuperación
+    manual). Fail-closed esperado: el archivo entra en ``rollback_failures`` y el
+    contenido corrupto no gana.
+    """
+    target = tmp_path / "corrupto.esp"
+    target.write_text("contenido sano", encoding="utf-8")
+
+    await snapshot_manager.initialize()
+
+    tx: SnapshotTransactionLock | None = None
+    with pytest.raises(RuntimeError, match="pipeline explotó"):
+        async with SnapshotTransactionLock(
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+            resource_id="corrupto.esp",
+            agent_id="xedit-agent",
+            target_files=[target],
+        ) as tx:
+            snapshot_path = Path(tx.snapshots[0].snapshot_path)
+            # Bit-rot / copia truncada: el contenido del snapshot deja de coincidir
+            # con el checksum que quedó registrado en el sidecar.
+            snapshot_path.write_text("contenido corrupto", encoding="utf-8")
+            target.write_text("mutado", encoding="utf-8")
+            raise RuntimeError("pipeline explotó")
+
+    assert tx is not None
+    assert tx.rollback_attempted is True
+    assert tx.rollback_completed is False
+    assert tx.rollback_failures == [str(target)]
+    # El restore abortó al verificar: restauró su backup (lo mutado) en vez de
+    # dejar el contenido corrupto, y NO puede reportar el original como restaurado.
+    assert target.read_text(encoding="utf-8") == "mutado"
+    assert await lock_manager.get_lock_info("corrupto.esp") is None
 
 
 # =============================================================================

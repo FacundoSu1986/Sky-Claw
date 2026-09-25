@@ -36,6 +36,35 @@ async def test_strategy_delegates_to_service() -> None:
     assert result["success"] is True
 
 
+@pytest.mark.asyncio
+async def test_strategy_reenvia_el_resultado_completo_del_servicio() -> None:
+    """Superficie hermana de la deuda manual de Dawnguard.
+
+    ``quick_auto_clean`` se alcanza por dos caminos: el servicio
+    ``XEditPipelineService`` (que ahora emite ``manual_pending``) y esta
+    estrategia del dispatcher de orquestación/GUI. Si la estrategia
+    reconstruyera el dict del servicio en vez de reenviarlo, proyectaría los
+    campos que conoce y ``manual_pending`` desaparecería justo en el camino
+    donde el operador lee el resumen — el patrón "arreglar un hermano y no al
+    otro" (AGENTS.md). El ancla es la identidad del objeto: un pass-through no
+    puede filtrar campos.
+    """
+    esperado: dict[str, object] = {
+        "status": "success",
+        "success": True,
+        "cleaned": ["Dawnguard.esm"],
+        "manual_pending": [{"master": "Dawnguard.esm", "cells": ["00016BCF", "0001FA4C", "0006C3B6"]}],
+        "logs": "Dawnguard.esm: quedan celdas para limpieza manual (SOP §2.1)",
+    }
+    svc = MagicMock()
+    svc.quick_auto_clean = AsyncMock(return_value=esperado)
+
+    result = await QuickAutoCleanStrategy(service=svc).execute({})
+
+    assert result is esperado
+    assert result["manual_pending"] == [{"master": "Dawnguard.esm", "cells": ["00016BCF", "0001FA4C", "0006C3B6"]}]
+
+
 # ── Aprobación HITL: payload sin parámetros (Codex #3) ───────────────────────────
 def test_validate_for_approval_accepts_empty_payload() -> None:
     QuickAutoCleanStrategy(service=MagicMock()).validate_for_approval({})  # no raise

@@ -476,7 +476,10 @@ class DistributedLockManager:
             :meth:`acquire_lock`. The DELETE matches this token, so a
             stale holder cannot delete a sibling's reacquired lease
             (services share a constant ``agent_id``). Omitting it is a
-            no-op — ``acquired_at = NULL`` never matches a live row.
+            no-op — ``acquired_at = NULL`` never matches a live row —
+            and logs a warning: no production caller may omit it, and a
+            silent no-op would leave the resource locked until the TTL
+            expires (a 10-minute spurious contention incident).
 
         Returns
         -------
@@ -484,6 +487,17 @@ class DistributedLockManager:
             ``True`` if the lock was found and deleted.
         """
         self._ensure_conn()  # contrato: LockError si initialize() no corrió
+        if acquired_at is None:
+            # Fail-safe, no fail-silent: la fila NO se borra (no podemos probar
+            # que la lease es nuestra), pero el error de programación deja traza
+            # acá. Sin este warning, un caller que olvide el token degrada en
+            # disponibilidad (contención espuria hasta el TTL) sin ninguna señal
+            # que lo explique. El conjunto de call sites está congelado por AST
+            # en test_distributed_locks.py.
+            logger.warning(
+                "release_lock sin acquired_at: no-op (falta el token de adquisición); la lease queda viva hasta el TTL",
+                extra={"resource_id": resource_id, "agent_id": agent_id},
+            )
         try:
             # PR-1b2a (fix #473): con lifecycle, ``transaction()`` es owner del
             # commit/rollback/cancelación (la cancelación entre DELETE y commit
@@ -1045,10 +1059,21 @@ class SnapshotTransactionLock:
         try:
             for snap in reversed(self.snapshots):
                 try:
+                    # verify_checksum=True: el rollback es la última barrera
+                    # contra un master oficial corrupto. Sin la verificación, un
+                    # snapshot con bit-rot (o una copia truncada) se reinstalaba
+                    # sobre el archivo mutado, el lock reportaba
+                    # rollback_completed=True y el operador quedaba con un master
+                    # corrupto creyendo que la TX se revirtió. Con verificación, el
+                    # mismatch de checksum sale por el `except` de abajo: el
+                    # archivo queda en rollback_failures (fail-closed, recuperación
+                    # manual) en vez de dar por buena una restauración corrupta.
+                    # Snapshots sin sidecar .meta.json (pre-SSP-001) no tienen
+                    # checksum esperado → la verificación se omite sola.
                     await self._snapshot_manager.restore_snapshot(
                         snap.snapshot_path,
                         pathlib.Path(snap.original_path),
-                        verify_checksum=False,
+                        verify_checksum=True,
                     )
                 except Exception as rollback_exc:
                     logger.critical(
