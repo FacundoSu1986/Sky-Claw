@@ -1066,15 +1066,17 @@ class TestTgrLockWindowsReal:
             self._wait_marker(markers, "a_in_cs")
             proc_b = self._start_child(tmp_path, "writer_b.py", markers, reg_path, locks)
             out_a, err_a = proc_a.communicate(timeout=240)
+            out_b, err_b = proc_b.communicate(timeout=240)
         finally:
+            # Red de seguridad: jamás dejar procesos/PIPEs vivos si un wait falla
+            # antes (ResourceWarning => error con filterwarnings). NUNCA matar
+            # procesos que completaron su ciclo: sólo los aún vivos.
             for proc in (proc_a, proc_b):
                 if proc is not None and proc.poll() is None:
                     proc.kill()
                     proc.communicate(timeout=30)
         assert proc_a.returncode == 0, f"A falló: {err_a}"
-        assert proc_b is not None
-        out_b, err_b = proc_b.communicate(timeout=5)
-        assert proc_a.returncode == 0, f"A falló: {err_a}"
+        assert proc_b is not None, "el oráculo exige DOS procesos reales"
         assert proc_b.returncode == 0, f"B falló (42 = LOST UPDATE): rc={proc_b.returncode}\n{err_b}"
         assert (markers / "b_saw_a").exists()
 
