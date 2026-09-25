@@ -574,12 +574,18 @@ def test_prepare_manual_handoff_no_re_hashea_ni_toca_filesystem(
 # =============================================================================
 
 
-def test_invariante_anti_ejecucion_y_helpers_prohibidos() -> None:
-    """Verifica que parallaxr_assisted.py no importe librerías de ejecución, no llame funciones prohibidas y no mencione helpers internos."""
-    module_path = Path(__file__).resolve().parent.parent / "sky_claw" / "local" / "tools" / "parallaxr_assisted.py"
-    source = module_path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(module_path))
+def _asegurar_sin_ejecucion(tree: ast.Module, source: str) -> None:
+    """Análisis AST anti-ejecución sobre un árbol ya parseado.
 
+    Detecta imports de librerías de ejecución/red, llamadas prohibidas y —desde
+    el finding de CodeRabbit— alias indirectos de ``os.system``: la asignación
+    ``ejecutar = os.system`` no es un ``ast.Call`` y la llamada ``ejecutar(...)``
+    es un ``ast.Name`` ajeno al set prohibido, así que escapaba al guard. Se
+    resuelven también aliases del módulo (``import os as operating_system``) y
+    cadenas de alias (``y = x`` con ``x`` ya vinculado a una referencia
+    prohibida). No se prohíben indiscriminadamente los atributos de ``os``:
+    producción usa legítimamente ``os.fstat`` para fingerprinting.
+    """
     # Prohibición de módulos completos de subprocesos / ejecución / red
     prohibited_modules = {
         "subprocess",
@@ -605,7 +611,13 @@ def test_invariante_anti_ejecucion_y_helpers_prohibidos() -> None:
 
     # Registro de módulos importados y sus alias
     module_aliases: dict[str, str] = {}
+    # Nombre local -> referencia prohibida resuelta (p.ej. "os.system")
+    forbidden_bindings: dict[str, str] = {}
+    calls: list[ast.Call] = []
 
+    # Pasada 1: imports, asignaciones-alias y recolección de llamadas.
+    # Las llamadas se verifican en la pasada 2 para que el guard vea primero
+    # todas las asignaciones, sin depender del orden de ast.walk.
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -618,20 +630,48 @@ def test_invariante_anti_ejecucion_y_helpers_prohibidos() -> None:
                 assert root_pkg not in prohibited_modules, f"ImportFrom prohibido: {node.module}"
             for alias in node.names:
                 assert alias.name not in prohibited_call_names, f"Import de función prohibida: {alias.name}"
-
-        # Inspección de llamadas ast.Call (calificadas como os.system(...) o directas)
+        elif isinstance(node, ast.Assign):
+            resuelta: str | None = None
+            value = node.value
+            if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                owner = module_aliases.get(value.value.id)
+                if owner is not None and f"{owner}.{value.attr}" == "os.system":
+                    resuelta = "os.system"
+            elif isinstance(value, ast.Name):
+                resuelta = forbidden_bindings.get(value.id)
+            if resuelta is not None:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        forbidden_bindings[target.id] = resuelta
         elif isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Attribute):
-                attr_name = node.func.attr
-                assert attr_name not in prohibited_call_names, f"Llamada a método prohibido: {attr_name}"
-                if isinstance(node.func.value, ast.Name):
-                    target_var = node.func.value.id
-                    # Verificar si la llamada proviene de un alias de os (e.g. os.system)
-                    if module_aliases.get(target_var) == "os" and attr_name == "system":
-                        pytest.fail("Llamada prohibida detectada: os.system")
-            elif isinstance(node.func, ast.Name):
-                func_name = node.func.id
-                assert func_name not in prohibited_call_names, f"Llamada a función prohibida: {func_name}"
+            calls.append(node)
+
+    # Pasada 2: inspección de llamadas (calificadas como os.system(...) o directas)
+    for node in calls:
+        if isinstance(node.func, ast.Attribute):
+            attr_name = node.func.attr
+            assert attr_name not in prohibited_call_names, f"Llamada a método prohibido: {attr_name}"
+            if isinstance(node.func.value, ast.Name):
+                target_var = node.func.value.id
+                # Verificar si la llamada proviene de un alias de os (e.g. os.system)
+                if module_aliases.get(target_var) == "os" and attr_name == "system":
+                    raise AssertionError("Llamada prohibida detectada: os.system")
+        elif isinstance(node.func, ast.Name):
+            func_name = node.func.id
+            assert func_name not in prohibited_call_names, f"Llamada a función prohibida: {func_name}"
+            if func_name in forbidden_bindings:
+                raise AssertionError(
+                    f"Llamada prohibida vía alias indirecto: {func_name} -> {forbidden_bindings[func_name]}"
+                )
+
+
+def test_invariante_anti_ejecucion_y_helpers_prohibidos() -> None:
+    """Verifica que parallaxr_assisted.py no importe librerías de ejecución, no llame funciones prohibidas y no mencione helpers internos."""
+    module_path = Path(__file__).resolve().parent.parent / "sky_claw" / "local" / "tools" / "parallaxr_assisted.py"
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(module_path))
+
+    _asegurar_sin_ejecucion(tree, source)
 
     # Prohibición textual de helpers internos de ParallaxR
     forbidden_helper_names = {
@@ -649,6 +689,62 @@ def test_invariante_anti_ejecucion_y_helpers_prohibidos() -> None:
 
     # ParallaxR.BAT debe ser el único entrypoint externo mencionado
     assert "ParallaxR.BAT" in source
+
+
+# =============================================================================
+# 6.b ADVERSARIAL: alias indirecto de os.system (finding CodeRabbit)
+# =============================================================================
+
+
+def _analiza_snippet(snippet: str) -> None:
+    _asegurar_sin_ejecucion(ast.parse(snippet), snippet)
+
+
+def test_guard_rechaza_alias_indirecto_de_os_system() -> None:
+    """Antes del fix, 'ejecutar = os.system; ejecutar(...)' escapaba al guard AST."""
+    with pytest.raises(AssertionError, match="alias indirecto"):
+        _analiza_snippet(
+            "import os\n\n\ndef _mutante() -> None:\n    ejecutar = os.system\n    ejecutar('echo hueco')\n"
+        )
+
+
+def test_guard_rechaza_alias_de_modulo_os() -> None:
+    """El hueco también existe vía alias de módulo: import os as operating_system."""
+    with pytest.raises(AssertionError, match="alias indirecto"):
+        _analiza_snippet(
+            "import os as operating_system\n"
+            "\n"
+            "\n"
+            "def _mutante() -> None:\n"
+            "    ejecutar = operating_system.system\n"
+            "    ejecutar('echo hueco')\n"
+        )
+
+
+def test_guard_rechaza_cadena_de_alias() -> None:
+    """Reenlazar un alias ya prohibido (y = ejecutar) tampoco escapa."""
+    with pytest.raises(AssertionError, match="alias indirecto"):
+        _analiza_snippet(
+            "import os\n"
+            "\n"
+            "\n"
+            "def _mutante() -> None:\n"
+            "    ejecutar = os.system\n"
+            "    reejecutar = ejecutar\n"
+            "    reejecutar('echo hueco')\n"
+        )
+
+
+def test_guard_permite_os_fstat_y_atributos_legitimos() -> None:
+    """No se prohíben indiscriminadamente los atributos de os: producción usa fstat."""
+    _analiza_snippet(
+        "import os\n\n\ndef _legitimo(fd: int) -> int:\n    stat = os.fstat(fd)\n    return stat.st_size\n"
+    )
+
+
+def test_guard_permite_alias_inofensivo_de_atributo_os() -> None:
+    """Alias de atributos de os no prohibidos (getenv) sigue permitido."""
+    _analiza_snippet("import os\n\n\ndef _legitimo() -> str | None:\n    leer = os.getenv\n    return leer('PATH')\n")
 
 
 # =============================================================================
