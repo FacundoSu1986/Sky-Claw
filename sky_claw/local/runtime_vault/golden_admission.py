@@ -115,6 +115,7 @@ __all__ = [
     "GOLDEN_ADMISSION_CONFIRMATION_FIELDS",
     "GOLDEN_ADMISSION_RECEIPT_FIELDS",
     "OPERATOR_TOFU_WARNING",
+    "GoldenAdmissionClaimAlreadyExistsError",
     "GoldenAdmissionCommitError",
     "GoldenAdmissionConcurrentChangeError",
     "GoldenAdmissionConfirmation",
@@ -174,6 +175,16 @@ class GoldenAdmissionSourceUnavailableError(GoldenAdmissionError):
 
 class GoldenAdmissionStoreError(GoldenAdmissionError):
     """No se pudo persistir o revalidar el registro protegido de operación."""
+
+
+class GoldenAdmissionClaimAlreadyExistsError(GoldenAdmissionStoreError):
+    """El ``operation_id`` ya tiene claim: pertenece a OTRA operación (one-use).
+
+    El perdedor de la carrera por el claim NO es dueño del registro: no debe
+    leerlo ni escribir en él — ni observaciones, ni resultado terminal (§11.4).
+    Se distingue tipadamente de los demás fallos del store para que el servicio
+    pueda responder ``con_registro=False`` sin inspeccionar el texto del error.
+    """
 
 
 class GoldenAdmissionConcurrentChangeError(GoldenAdmissionError):

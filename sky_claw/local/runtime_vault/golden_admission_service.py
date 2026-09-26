@@ -9,6 +9,14 @@ Garantías que este módulo concentra (ninguna superficie reimplementa una):
 - la expectativa nunca viene de staging: la fuente se valida, la expectativa se
   admite y el receipt lo emite este servicio (helper-issued, one-use, atado a
   ``operation_id``);
+- ``INDEPENDENT_PROVENANCE`` exige un provider de provenance explícito: los
+  ``expected_tree``/``expected_runtime``/``source_reference`` de la solicitud son
+  candidatos del caller y **nunca** autoridad. Sin provider cableado la operación
+  termina ``SOURCE_UNAVAILABLE`` (``REJECTED``, cero TGR writes) antes de
+  cualquier efecto secundario; la expectativa ``ADMITTED`` se construye sólo con
+  lo que devuelve el provider;
+- el claim del ``operation_id`` es one-use y pertenece a UNA sola solicitud: el
+  perdedor de la carrera nunca escribe (ni lee) el registro del ganador;
 - la observación fresca y el RV-2 fresco pasan por el mismo bridge bajo el
   token original del operador; el runtime se re-adquiere en cada pass y jamás se
   copia de ``expected_runtime``;
@@ -38,6 +46,7 @@ import logging
 import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from sky_claw.local.runtime_vault.critical_expectations import (
     CriticalExpectationsDigestError,
@@ -45,6 +54,7 @@ from sky_claw.local.runtime_vault.critical_expectations import (
 )
 from sky_claw.local.runtime_vault.golden_admission import (
     ACTIVE_HELPER_POLICY_VERSION,
+    GoldenAdmissionClaimAlreadyExistsError,
     GoldenAdmissionConfirmation,
     GoldenAdmissionConfirmationProvider,
     GoldenAdmissionConfirmationReceipt,
@@ -57,6 +67,8 @@ from sky_claw.local.runtime_vault.golden_admission import (
     GoldenAdmissionRejectionReason,
     GoldenAdmissionRequestError,
     GoldenAdmissionSource,
+    GoldenAdmissionSourceError,
+    GoldenAdmissionSourceUnavailableError,
     GoldenAdmissionState,
     GoldenAdmissionStoreError,
     issue_golden_admission_receipt,
@@ -121,6 +133,33 @@ class GoldenAdmissionServiceError(RuntimeVaultError):
 
 class GoldenAdmissionCommitOutcomeUnknownError(GoldenAdmissionServiceError):
     """El resultado del replace del TGR es ambiguo: nunca es ``REJECTED``."""
+
+
+# ============================================================================
+# Contrato de entrada / salida
+# ============================================================================
+
+
+class IndependentProvenanceProvider(Protocol):
+    """Puerto del verificador de ``INDEPENDENT_PROVENANCE`` (§11.4).
+
+    No existe provider productivo ni default. El servicio NO construye la
+    expectativa desde ``request.expected_*``: los campos de la solicitud son
+    candidatos del caller y sólo el provider, que valida el bundle
+    independiente, puede devolver la expectativa ``ADMITTED``. Sin provider
+    cableado la operación termina ``SOURCE_UNAVAILABLE`` fail-closed, sin
+    efectos secundarios y con cero TGR writes.
+
+    Contrato del retorno: exactamente un ``GoldenAdmissionExpectation`` en
+    estado ``ADMITTED``, con ``source=INDEPENDENT_PROVENANCE``, un
+    ``source_provenance_digest`` no nulo y las mismas ``critical_expectations``
+    declaradas en la solicitud (son la cobertura que el operador confirma). Un
+    fallo se comunica con ``GoldenAdmissionSourceUnavailableError`` (fuente no
+    disponible) o ``GoldenAdmissionSourceError``/``GoldenAdmissionModelError``
+    (fuente inválida).
+    """
+
+    def admit(self, request: RegisterOrRefreshTrustedGoldenRequest) -> GoldenAdmissionExpectation: ...
 
 
 # ============================================================================
@@ -269,6 +308,18 @@ class _FalloDeFlujoError(Exception):
         super().__init__(message)
         self.reason = reason
         self.mensaje = message
+
+
+class _ClaimAjenoError(_FalloDeFlujoError):
+    """El ``operation_id`` ya pertenece a OTRA operación (claim one-use).
+
+    Se distingue de ``_FalloDeFlujoError`` porque el desenlace debe ser
+    ``REJECTED`` con ``con_registro=False``: el perdedor de la carrera no es
+    dueño del registro y no debe leerlo ni escribir en él (ni observaciones ni
+    resultado terminal). Colapsarlo en el handler genérico haría que
+    ``_rechazado(..., con_registro=True)`` anexara un ``REJECTED`` sobre el
+    registro del ganador.
+    """
 
 
 class _CommitDesconocidoError(Exception):
@@ -440,6 +491,7 @@ class GoldenAdmissionService:
         bridge: OperatorVerifierBridge,
         confirmation: GoldenAdmissionConfirmationProvider | None,
         token_provider: Callable[[], OperatorPrimaryToken],
+        provenance_provider: IndependentProvenanceProvider | None = None,
         programdata_resolver: Callable[[], object] | None = None,
         clock: Callable[[], str] | None = None,
         game_key: str = _GAME_KEY_DEFECTO,
@@ -448,9 +500,14 @@ class GoldenAdmissionService:
             raise GoldenAdmissionServiceError("token_provider debe ser callable")
         if bridge is None:
             raise GoldenAdmissionServiceError("bridge es obligatorio: no existe observe/verify sin él")
+        if provenance_provider is not None and not callable(getattr(provenance_provider, "admit", None)):
+            raise GoldenAdmissionServiceError(
+                "provenance_provider debe exponer admit(request) o ser None (fail-closed)"
+            )
         self._bridge = bridge
         self._confirmation = confirmation
         self._token_provider = token_provider
+        self._provenance_provider = provenance_provider
         self._programdata_resolver = programdata_resolver
         self._reloj = clock or _ahora_utc
         self._game_key = game_key
@@ -484,6 +541,9 @@ class GoldenAdmissionService:
             return self._ejecutar(request)
         except _CommitDesconocidoError as desconocido:
             return self._resultado_desconocido(_id_de_la_solicitud(request), desconocido.motivo)
+        except _ClaimAjenoError as ajeno:
+            # El registro pertenece a otra solicitud: REJECTED sin tocarlo.
+            return self._rechazado(request, ajeno.reason, ajeno.mensaje, con_registro=False)
         except _FalloDeFlujoError as fallo:
             return self._rechazado(request, fallo.reason, fallo.mensaje, con_registro=True)
         except GoldenAdmissionRequestError as exc:
@@ -632,9 +692,10 @@ class GoldenAdmissionService:
                 observations=observaciones_iniciales,
                 programdata_resolver=self._programdata_resolver,
             )
+        except GoldenAdmissionClaimAlreadyExistsError as exc:
+            # Carrera perdida por el claim one-use: el registro es del ganador.
+            raise _ClaimAjenoError(GoldenAdmissionRejectionReason.REQUEST_INVALID, str(exc)) from exc
         except GoldenAdmissionStoreError as exc:
-            if "one-use" in str(exc):
-                raise _FalloDeFlujoError(GoldenAdmissionRejectionReason.REQUEST_INVALID, str(exc)) from exc
             raise _FalloDeFlujoError(
                 GoldenAdmissionRejectionReason.AUDIT_RECORD_FAILED,
                 f"No se pudo crear el registro de operación: {exc}",
@@ -780,32 +841,75 @@ class GoldenAdmissionService:
             ) from exc
 
     def _admitir_provenance(self, request: RegisterOrRefreshTrustedGoldenRequest) -> GoldenAdmissionExpectation:
+        """Admite la expectativa SÓLO desde el provider de provenance (§11.4).
+
+        ``expected_tree``/``expected_runtime``/``source_reference`` son candidatos
+        del caller: se pasan al provider, nunca se promueven a autoridad. Sin
+        provider cableado el desenlace es ``SOURCE_UNAVAILABLE`` fail-closed.
+        """
+        provider = self._provenance_provider
+        if provider is None:
+            raise _FalloDeFlujoError(
+                GoldenAdmissionRejectionReason.SOURCE_UNAVAILABLE,
+                "INDEPENDENT_PROVENANCE sin verificador de provenance cableado: fail-closed "
+                "(cero efectos secundarios, cero TGR writes)",
+            )
         if request.source_reference is None:
             raise _FalloDeFlujoError(
                 GoldenAdmissionRejectionReason.SOURCE_UNAVAILABLE,
                 "Sin source_reference no hay fuente independiente disponible",
             )
-        arbol_esperado = request.expected_tree
-        runtime_esperado = request.expected_runtime
-        if arbol_esperado is None or runtime_esperado is None:
+        try:
+            admitida = provider.admit(request)
+        except GoldenAdmissionSourceUnavailableError as exc:
             raise _FalloDeFlujoError(
                 GoldenAdmissionRejectionReason.SOURCE_UNAVAILABLE,
-                "INDEPENDENT_PROVENANCE exige expected_tree y expected_runtime admitidos",
-            )
-        try:
-            return GoldenAdmissionExpectation(
-                state=GoldenAdmissionState.ADMITTED,
-                source=GoldenAdmissionSource.INDEPENDENT_PROVENANCE,
-                expected_tree=arbol_esperado,
-                expected_runtime=runtime_esperado,
-                critical_expectations=request.critical_expectations,
-                source_provenance_digest=request.source_reference.digest,
-            )
-        except GoldenAdmissionModelError as exc:
+                f"Fuente independiente no disponible: {exc}",
+            ) from exc
+        except (GoldenAdmissionSourceError, GoldenAdmissionModelError) as exc:
             raise _FalloDeFlujoError(
                 GoldenAdmissionRejectionReason.SOURCE_INVALID,
                 f"Fuente independiente inválida: {exc}",
             ) from exc
+        except Exception as exc:  # noqa: BLE001 — un provider que no cumple su contrato no autoriza
+            raise _FalloDeFlujoError(
+                GoldenAdmissionRejectionReason.SOURCE_INVALID,
+                f"El verificador de provenance no produjo una fuente válida: {exc}",
+            ) from exc
+        return self._validar_expectativa_admitida(admitida, request)
+
+    def _validar_expectativa_admitida(
+        self,
+        admitida: object,
+        request: RegisterOrRefreshTrustedGoldenRequest,
+    ) -> GoldenAdmissionExpectation:
+        """Verifica el contrato del retorno del provider: fail-closed si no lo cumple."""
+        if not isinstance(admitida, GoldenAdmissionExpectation):
+            raise _FalloDeFlujoError(
+                GoldenAdmissionRejectionReason.SOURCE_INVALID,
+                "El verificador de provenance no devolvió un GoldenAdmissionExpectation",
+            )
+        if admitida.state is not GoldenAdmissionState.ADMITTED:
+            raise _FalloDeFlujoError(
+                GoldenAdmissionRejectionReason.SOURCE_INVALID,
+                f"La expectativa admitida no está ADMITTED: {admitida.state}",
+            )
+        if admitida.source is not GoldenAdmissionSource.INDEPENDENT_PROVENANCE:
+            raise _FalloDeFlujoError(
+                GoldenAdmissionRejectionReason.SOURCE_INVALID,
+                f"La fuente admitida no es INDEPENDENT_PROVENANCE: {admitida.source}",
+            )
+        if not admitida.source_provenance_digest:
+            raise _FalloDeFlujoError(
+                GoldenAdmissionRejectionReason.SOURCE_INVALID,
+                "La fuente admitida no aporta source_provenance_digest",
+            )
+        if admitida.critical_expectations != request.critical_expectations:
+            raise _FalloDeFlujoError(
+                GoldenAdmissionRejectionReason.SOURCE_INVALID,
+                "La fuente admitida no cubre exactamente las critical_expectations declaradas",
+            )
+        return admitida
 
     def _confirmar(self, payload: GoldenAdmissionConfirmation) -> GoldenAdmissionConfirmationReceipt:
         try:

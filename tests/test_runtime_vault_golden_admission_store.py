@@ -21,6 +21,7 @@ import pytest
 
 from sky_claw.local.runtime_vault.critical_expectations import critical_expectations_digest
 from sky_claw.local.runtime_vault.golden_admission import (
+    GoldenAdmissionClaimAlreadyExistsError,
     GoldenAdmissionModelError,
     GoldenAdmissionOutcome,
     GoldenAdmissionReceipt,
@@ -490,12 +491,14 @@ class TestPersistenciaProtegida:
             critical_expectations=_expectativas(),
             programdata_resolver=self.resolver,
         )
-        with pytest.raises(GoldenAdmissionStoreError, match="one-use"):
+        with pytest.raises(GoldenAdmissionClaimAlreadyExistsError, match="one-use") as excinfo:
             create_admission_record(
                 receipt=_receipt(),
                 critical_expectations=_expectativas(),
                 programdata_resolver=self.resolver,
             )
+        # Tipo propio: el servicio decide el desenlace sin mirar el texto del error.
+        assert isinstance(excinfo.value, GoldenAdmissionStoreError)
 
     def test_observacion_se_persiste_y_vuelve_igual(self) -> None:
         create_admission_record(

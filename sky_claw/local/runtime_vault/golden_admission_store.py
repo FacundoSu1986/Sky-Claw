@@ -35,6 +35,7 @@ from typing import Any
 
 from sky_claw.local.runtime_vault.critical_expectations import critical_expectations_digest
 from sky_claw.local.runtime_vault.golden_admission import (
+    GoldenAdmissionClaimAlreadyExistsError,
     GoldenAdmissionError,
     GoldenAdmissionOutcome,
     GoldenAdmissionReceipt,
@@ -738,9 +739,12 @@ def create_admission_record(
 
     La creación del directorio ES la claim one-use de la operación: un replay
     del mismo ``operation_id`` choca con ``CREATE_NEW`` y queda ``REJECTED``
-    sin tocar el registro existente ni el TGR. ``observations`` permite
-    sembrar el registro con la evidencia del pass ``OBSERVE`` que precede a la
-    emisión del receipt en el flujo TOFU.
+    sin tocar el registro existente ni el TGR. Ese choque se tipa como
+    ``GoldenAdmissionClaimAlreadyExistsError`` (subtipo de
+    ``GoldenAdmissionStoreError``) porque el registro pertenece al ganador: el
+    perdedor no debe leerlo ni escribir en él. ``observations`` permite sembrar
+    el registro con la evidencia del pass ``OBSERVE`` que precede a la emisión
+    del receipt en el flujo TOFU.
     """
     _ensure_windows()
     from sky_claw.local.runtime_vault.trusted_namespace import (
@@ -760,7 +764,7 @@ def create_admission_record(
     try:
         create_secure_directory_exclusive(record_dir, "operations")
     except NamespaceAlreadyExistsError as exc:
-        raise GoldenAdmissionStoreError(
+        raise GoldenAdmissionClaimAlreadyExistsError(
             f"La operación '{receipt.operation_id}' ya tiene registro: el claim es one-use"
         ) from exc
     except GoldenAdmissionStoreError:

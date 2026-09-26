@@ -89,18 +89,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Servicio backend que registra (ABSENT → B) o refresca (A → B) una entrada del
   Trusted Golden Registry, fail-closed, sin agregar estados al FSM de GP2 apply y
   sin escribir el TGR desde el path de apply. Fuentes cerradas del axioma de
-  autoridad única (§11.0): `INDEPENDENT_PROVENANCE` (seam testeable, fail-closed
-  ante ausencia) y `OPERATOR_TOFU` (fuente de producción). Un solo commit
+  autoridad única (§11.0): `INDEPENDENT_PROVENANCE` (exige un provider de
+  provenance explícito; sin provider cableado la operación termina
+  `SOURCE_UNAVAILABLE`, `REJECTED` y con cero TGR writes) y `OPERATOR_TOFU`
+  (fuente de producción). La expectativa admitida sale del provider, nunca de
+  `request.expected_tree`/`expected_runtime`/`source_reference`, que son
+  candidatos del caller. Un solo commit
   estructural: `mutate_trusted_golden_registry` (lock cross-process de P2) →
   `LOAD` → `mutate(current)` → replace atómico, con la distinción tipada
   `REJECTED` (no hubo replace: fallo previo → `TGR_CONCURRENT_CHANGE` /
   `STORE_FAILED` / `AUDIT_RECORD_FAILED` / `UNEXPECTED_FAILURE`) vs
   `COMMIT_OUTCOME_UNKNOWN` (el replace pudo ocurrir sin resultado legible →
   revalidación del TGR contra `before`/`after` exactos; nunca se reporta
-  `REJECTED` ni se afirma que la fila previa quedó intacta). TOFU sigue el orden
+  `REJECTED` ni se afirma que la fila previa quedó intacta). El claim del
+  `operation_id` es one-use y su colisión se tipa
+  (`GoldenAdmissionClaimAlreadyExistsError`), de modo que el perdedor de la
+  carrera responde `REJECTED` sin `record_path` y nunca lee ni escribe el
+  registro del ganador. TOFU sigue el orden
   de §11.4: `OBSERVE` (sólo `OBSERVED`) → confirmación privilegiada
   (`TOFU_PRE_RERUN`, con la advertencia
-  `OPERATOR_TOFU_DOES_NOT_DETECT_PRE_EXISTING_COMPROMISE`) → receipt one-use
+  `OPERATOR_TOFU DOES NOT DETECT PRE-EXISTING COMPROMISE`) → receipt one-use
   emitido por el helper → RV-2 fresco desde cero bajo el token original →
   `VERIFIED` → write TGR, con la confirmación de provenance
   (`PROVENANCE_POST_VERIFIED`) también antes del commit. Registro de auditoría
