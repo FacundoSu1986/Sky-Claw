@@ -224,6 +224,13 @@ class HandoffState(StrEnum):
     ``run_texgen=False`` sólo ``AWAITING_DEPLOYMENT`` es resumible;
     ``INDETERMINATE`` y ``SUPERSEDING`` fallan cerrado. ``SUPERSEDED`` y
     ``COMPLETED`` son historia terminal de auditoría.
+
+    ``AWAITING_DEPLOYMENT`` (PR-586D) es "artifact certificado, esperando la
+    acción humana de handoff": materializarlo en el ``Data`` físico (backend
+    standalone) o habilitar el mod en el perfil MO2 (backend brokered). La
+    acción concreta viaja en la descripción de la transacción y en el payload
+    (``handoff_action``); el estado durable NO cambia de significado: lo que se
+    certificó sigue siendo la identidad del artifact y el perfil dueño.
     """
 
     AWAITING_DEPLOYMENT = "awaiting_deployment"

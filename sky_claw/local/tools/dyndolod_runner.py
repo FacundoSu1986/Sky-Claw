@@ -36,6 +36,7 @@ from sky_claw.app.security.links import (
     rmtree_link_aware,
 )
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
+from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_uia_gate import (
     CapacidadDeReadinessUIA,
     OperatorConfigurationReadyRequest,
@@ -56,6 +57,11 @@ from sky_claw.local.tools.output_targets import (
     DynDOLODOutputLayout,
     HerramientaDynDOLOD,
     derivar_layout_de_dyndolod,
+)
+from sky_claw.local.tools.texgen_handoff import (
+    HandoffPendingAction,
+    TexGenHandoffRequest,
+    TexGenHandoffResult,
 )
 
 # Import directo del MÓDULO y no del paquete `validators`: el gate sólo depende de
@@ -886,11 +892,19 @@ class DynDOLODPipelineResult:
         dyndolod_mod_path: Path al mod empaquetado de DynDOLOD.
         errors: Lista de errores acumulados del pipeline.
         needs_deployment: el corte NO fue un fallo de herramienta — TexGen corrió,
-            su mod se empaquetó y lo único que falta es que el operador lo
-            materialice en el ``Data`` físico. Distingue "esto se rompió" de
-            "esto está listo y espera un despliegue", que es la diferencia entre
-            un rojo terminal y uno con continuación. El servicio la usa para
-            decidir qué move-aside PRESERVA (review de #493, finding F1).
+            su mod se empaquetó y lo único que falta es una acción humana de
+            HANDOFF que completa la entrega del artifact según el backend:
+            materializarlo en el ``Data`` físico (standalone) o habilitar el mod
+            en el perfil MO2 (brokered). Distingue "esto se rompió" de "esto
+            está listo y espera al operador", que es la diferencia entre un rojo
+            terminal y uno con continuación. El servicio la usa para decidir qué
+            move-aside PRESERVA (review de #493, finding F1) y qué handoff
+            durable certifica.
+        handoff_action: CUÁL es la acción humana pendiente cuando
+            ``needs_deployment`` es True. Es la semántica que el flag solo ya no
+            alcanza a nombrar (physical_deployment vs profile_enablement); con
+            ``None`` el flag conserva su significado histórico o no hay corte
+            accionable.
         texgen_packaging_attempted: sube ANTES de invocar el empaquetado de
             TexGen — la única mutación del artifact FINAL. Es la evidencia que
             el servicio usa para la matriz de fallos del supersede (clases A/B/C).
@@ -903,6 +917,7 @@ class DynDOLODPipelineResult:
     dyndolod_mod_path: pathlib.Path | None = None
     errors: list[str] = field(default_factory=list)
     needs_deployment: bool = False
+    handoff_action: HandoffPendingAction | None = None
     texgen_packaging_attempted: bool = False
 
 
@@ -928,6 +943,9 @@ class TexGenGateState(NamedTuple):
     handoff_verificado: bool
     data_dir: pathlib.Path | None
     texgen_mod_name: str
+    #: Causa honesta del bloqueo de handoff según el backend que la midió
+    #: (veredicto estructurado del gate). ``None`` conserva el mensaje genérico.
+    motivo_handoff: str | None = None
 
 
 def _check_texgen_success(state: TexGenGateState) -> str | None:
@@ -950,6 +968,8 @@ def _check_packaging_success(state: TexGenGateState) -> str | None:
 
 def _check_visibility_success(state: TexGenGateState) -> str | None:
     if not state.handoff_verificado:
+        if state.motivo_handoff is not None:
+            return state.motivo_handoff
         if state.data_dir is None:
             return "no hay Data configurado para verificar el handoff de TexGen"
         return f"la salida de TexGen no es visible en {state.data_dir}"
@@ -1039,7 +1059,22 @@ class DynDOLODProcess(Protocol):
 
 
 class DynDOLODSpawnStrategy(Protocol):
-    """Única frontera de spawn; el resto del runner es backend-agnóstico."""
+    """Única frontera de backend; el resto del runner es backend-agnóstico.
+
+    Dos capabilities, una por pregunta distinta:
+
+    * ``spawn`` — cómo nace el proceso (subprocess local vs sesión USVFS).
+    * ``verify_texgen_handoff`` — en qué namespace debe demostrarse la
+      visibilidad del TexGen Output antes de autorizar el spawn de DynDOLOD.
+      Standalone responde sobre el ``Data`` físico; brokered sobre el perfil
+      MO2 + USVFS. La invariante NO cambia — sin handoff demostrado no hay
+      spawn—; cambia el dominio donde la verdad existe.
+
+    Un objeto que implemente sólo ``spawn`` NO es una strategy admisible: el
+    runner exige la capability explícita en el gate y falla cerrado si no está
+    (ver :func:`DynDOLODRunner._verificar_handoff_de_texgen`). El runner jamás
+    pregunta ``isinstance`` ni adivina el backend.
+    """
 
     async def spawn(
         self,
@@ -1050,6 +1085,8 @@ class DynDOLODSpawnStrategy(Protocol):
         cwd: pathlib.Path,
         timeout: float,
     ) -> DynDOLODProcess: ...
+
+    async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult: ...
 
 
 class _StandaloneDynDOLODProcess:
@@ -1095,7 +1132,14 @@ class _StandaloneDynDOLODProcess:
 
 
 class StandaloneDynDOLODSpawnStrategy:
-    """Backend local: conserva cwd, CREATE_NO_WINDOW y ``create_subprocess_exec``."""
+    """Backend local: conserva cwd, CREATE_NO_WINDOW y ``create_subprocess_exec``.
+
+    Su gate de handoff es EL físico histórico: la primitive
+    ``verificar_visibilidad_de_texgen``, completa sobre el árbol y byte a byte
+    contra el ``-d:<Data>`` que DynDOLOD va a abrir. Se invoca como nombre de
+    módulo —no como referencia capturada— para que el monkeypatch de los tests
+    de provenance siga interceptándola.
+    """
 
     async def spawn(
         self,
@@ -1116,6 +1160,26 @@ class StandaloneDynDOLODSpawnStrategy:
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         process = await asyncio.create_subprocess_exec(str(executable), *args, **kwargs)
         return _StandaloneDynDOLODProcess(process)
+
+    async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
+        """Visibilidad física: TODO el staging idéntico bajo ``Data``, o bloqueo.
+
+        Cualquier fallo del validador —ausente, parcial, bytes distintos, árbol
+        ilegible— conserva la semántica histórica: es el corte "falta
+        materializar" que el operador completa desplegando el árbol de mods en
+        el ``Data`` físico (``docs/operations/deployment_standalone_usvfs.md``).
+        """
+        try:
+            await asyncio.to_thread(
+                verificar_visibilidad_de_texgen,
+                staging=request.staging,
+                data_dir=request.data_dir,
+            )
+        except TexGenVisibilityError as e:
+            return TexGenHandoffResult.bloqueado(str(e), pending_action="physical_deployment")
+        return TexGenHandoffResult.aprobado(
+            f"visibilidad física confirmada: la salida de TexGen es byte-exact en {request.data_dir}"
+        )
 
 
 class DynDOLODRunner:
@@ -2265,12 +2329,70 @@ class DynDOLODRunner:
                 output_path=mod_path,
             ) from e
 
+    async def _verificar_handoff_de_texgen(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
+        """Gate de handoff TexGen → DynDOLOD: autoridad del artifact + capability del backend.
+
+        Dos piezas, y cada una prueba una propiedad distinta (no se solapan):
+
+        1. **Autoridad del artifact** (backend-neutral, acá): si el caller aportó
+           la identidad durable (``request.authorized``), el árbol autorizado se
+           vuelve a digerir y se compara (digest/files/bytes). Cierra la ventana
+           entre la consulta de resume y el spawn: un artifact mutado después de
+           la identidad durable bloquea aunque la consulta previa haya coincidido.
+        2. **Visibilidad en el namespace del consumidor** (capability explícita
+           ``verify_texgen_handoff`` de la strategy): standalone responde sobre el
+           ``Data`` físico; brokered sobre el perfil MO2 + USVFS.
+
+        Fail-closed en cada capa. Un objeto que implementa ``spawn`` pero no la
+        capability de verificación NO obtiene un default permisivo: sin la
+        capability no hay forma de demostrar que DynDOLOD verá el TexGen Output
+        autorizado, y el gate bloquea. El runner jamás pregunta ``isinstance``
+        del backend: una sola llamada polimórfica.
+        """
+        if request.authorized is not None:
+            esperado = request.authorized
+            try:
+                observado = await asyncio.to_thread(digest_arbol, request.staging)
+            except OSError as e:
+                return TexGenHandoffResult.bloqueado(
+                    f"No se pudo identificar el artifact '{request.staging}' contra la identidad durable "
+                    f"autorizada: {e}. No se lanza DynDOLOD sobre bytes inverificables."
+                )
+            if (observado.digest, observado.files, observado.bytes) != (
+                esperado.digest,
+                esperado.files,
+                esperado.bytes,
+            ):
+                return TexGenHandoffResult.bloqueado(
+                    f"El artifact '{request.staging}' cambió después de su identidad durable "
+                    f"(autorizado: {esperado.files} archivo(s)/{esperado.bytes} byte(s)/{esperado.digest[:12]}; "
+                    f"observado: {observado.files} archivo(s)/{observado.bytes} byte(s)/{observado.digest[:12]}): "
+                    "no se lanza DynDOLOD sobre bytes que no se pueden atribuir."
+                )
+        verificar = getattr(self._spawn_strategy, "verify_texgen_handoff", None)
+        if not callable(verificar):
+            return TexGenHandoffResult.bloqueado(
+                f"el backend de spawn {type(self._spawn_strategy).__name__} no expone la capability "
+                "verify_texgen_handoff: sin ella no se puede demostrar que DynDOLOD verá el TexGen "
+                "Output autorizado"
+            )
+        resultado = await verificar(request)
+        if not isinstance(resultado, TexGenHandoffResult):
+            return TexGenHandoffResult.bloqueado(
+                f"verify_texgen_handoff devolvió {type(resultado).__name__} en vez de "
+                "TexGenHandoffResult: fuera de contrato, se bloquea cerrado"
+            )
+        return resultado
+
     async def run_full_pipeline(
         self,
         run_texgen: bool = True,
         preset: str = "Medium",
         texgen_args: list[str] | None = None,
         dyndolod_args: list[str] | None = None,
+        *,
+        expected_profile: str | None = None,
+        authorized_identity: TreeDigest | None = None,
     ) -> DynDOLODPipelineResult:
         """
         Ejecuta el pipeline completo: TexGen → Empaquetado → DynDOLOD → Empaquetado.
@@ -2278,13 +2400,16 @@ class DynDOLODRunner:
         Flujo:
         1. Ejecutar TexGen (si run_texgen=True)
         2. Empaquetar ``textures`` como "TexGen Output", preservando esa raíz
-        3. Verificar que esa salida sea VISIBLE bajo el ``-d:<Data>`` que DynDOLOD
-           va a abrir. Empaquetar en ``mods/`` no lo demuestra: Sky-Claw corre
-           standalone y no hereda la USVFS de MO2. Sin esa prueba, fail-closed —
-           DynDOLOD no se lanza.
+        3. Verificar el HANDOFF de esa salida bajo el namespace en el que
+           DynDOLOD la va a leer. Empaquetar en ``mods/`` no lo demuestra. El
+           dominio de la prueba lo elige el backend por su capability
+           ``verify_texgen_handoff``: standalone exige visibilidad byte-exact en
+           el ``-d:<Data>`` físico; brokered exige perfil MO2 correcto, mod
+           habilitado y efectivo, identidad del artifact y evidencia runtime
+           USVFS. Sin esa prueba, fail-closed — DynDOLOD no se lanza.
         4. Ejecutar DynDOLOD — SÓLO si la etapa TexGen de esta corrida quedó apta:
-           veredicto válido, output atribuible, packaging exitoso y visibilidad
-           demostrada. Cualquier fallo anterior corta ANTES del spawn.
+           veredicto válido, output atribuible, packaging exitoso y handoff
+           demostrado. Cualquier fallo anterior corta ANTES del spawn.
         5. Empaquetar DynDOLOD_Output como "DynDOLOD Output"
 
         Args:
@@ -2292,6 +2417,13 @@ class DynDOLODRunner:
             preset: Nivel de calidad para DynDOLOD (Low, Medium, High).
             texgen_args: Argumentos adicionales para TexGen.
             dyndolod_args: Argumentos adicionales para DynDOLOD.
+            expected_profile: perfil MO2 dueño del artifact (el que usará el
+                VfsJob de DynDOLOD). El gate brokered lo exige coincidente con
+                el perfil del backend; ``None`` es UNKNOWN y bloquea ahí.
+            authorized_identity: identidad durable (digest/files/bytes) del
+                artifact cuando existe un handoff que la certifica; el gate la
+                re-verifica cerca del spawn. ``None`` = sin autoridad durable
+                previa (primera corrida, camino legacy).
 
         Returns:
             DynDOLODPipelineResult con resultados completos.
@@ -2308,18 +2440,25 @@ class DynDOLODRunner:
         texgen_mod_path: pathlib.Path | None = None
         dyndolod_mod_path: pathlib.Path | None = None
         # C (review de #493): el gate de VISIBILIDAD. Mide exactamente eso —que la
-        # salida que ESTA corrida generó es visible en el `Data` físico que
-        # DynDOLOD va a abrir— y nada más. Arranca en True porque sin `run_texgen`
-        # no hay salida nueva cuya visibilidad afirmar: con la etapa apagada esa
-        # proposición no tiene sujeto. Bajarlo NO autoriza DynDOLOD por sí solo:
-        # el spawn lo decide el gate del paso 2, que además exige que la etapa
-        # TexGen de esta corrida haya quedado apta (ver `dyndolod_bloqueado_por`).
+        # salida que ESTA corrida generó es visible en el namespace que DynDOLOD
+        # va a abrir (``Data`` físico standalone, overlay MO2/USVFS brokered)— y
+        # nada más. Arranca en True porque sin `run_texgen` no hay salida nueva
+        # cuya visibilidad afirmar: con la etapa apagada esa proposición no tiene
+        # sujeto. Bajarlo NO autoriza DynDOLOD por sí solo: el spawn lo decide el
+        # gate del paso 2, que además exige que la etapa TexGen de esta corrida
+        # haya quedado apta (ver `dyndolod_bloqueado_por`).
         handoff_verificado = True
-        #: F1: sube SÓLO cuando el corte es "falta desplegar", nunca cuando algo
-        #: se rompió. Es la condición que autoriza al servicio a preservar el mod
-        #: de TexGen, así que un `True` de más equivale a dejar en disco una
-        #: mutación de una corrida fallida.
+        #: F1: sube SÓLO cuando el corte es "falta la acción humana de handoff",
+        #: nunca cuando algo se rompió. Es la condición que autoriza al servicio a
+        #: preservar el mod de TexGen, así que un `True` de más equivale a dejar en
+        #: disco una mutación de una corrida fallida.
         needs_deployment = False
+        #: CUÁL acción humana completa el handoff (physical_deployment /
+        #: profile_enablement). Lo decide el veredicto del gate; con needs=False
+        #: es irrelevante y viaja en None.
+        handoff_pending_action: HandoffPendingAction | None = None
+        #: Causa honesta del último bloqueo de handoff (para el gate del paso 2).
+        handoff_motivo: str | None = None
         # D2 (PR #493): sube ANTES de invocar el empaquetado de TexGen. Es la
         # evidencia que el servicio usa para distinguir la clase A del supersede
         # ("el artifact empaquetado nunca se tocó") de B/C ("el reemplazo
@@ -2362,23 +2501,22 @@ class DynDOLODRunner:
                     # salida de esta corrida ya en la mano y ANTES de gastar los
                     # 30+ min de DynDOLOD.
                     #
-                    # Sky-Claw corre standalone: no hereda la USVFS de MO2 y lanza
-                    # DynDOLOD contra el `-d:<Data>` FÍSICO, así que el mod que
-                    # acabamos de dejar en `<mo2>/mods` le es invisible salvo que
-                    # el operador haya materializado su árbol de mods. Sin este
-                    # gate, DynDOLOD generaba LODs contra texturas que nunca vio,
-                    # salía con código 0 y el pipeline reportaba verde.
+                    # El handoff se demuestra en el NAMESPACE DEL BACKEND que va a
+                    # consumir el artifact (capability `verify_texgen_handoff`):
+                    # standalone lanza DynDOLOD contra el `-d:<Data>` FÍSICO y
+                    # exige el árbol materializado byte a byte; brokered lo lanza
+                    # bajo la USVFS de MO2 y exige perfil correcto, mod habilitado
+                    # y efectivo, identidad del artifact y evidencia runtime USVFS.
+                    # Empaquetar en `<mo2>/mods` no lo demuestra en NINGUNO de los
+                    # dos dominios. Sin esa prueba, fail-closed: DynDOLOD generaba
+                    # LODs contra texturas que nunca vio, salía con código 0 y el
+                    # pipeline reportaba verde.
                     #
                     # Cuelga de `texgen_mod_path`, o sea de la cadena completa
                     # (corrida → veredicto → empaquetado → visibilidad): si el
                     # empaquetado ya falló, el pipeline sale rojo por su cuenta y
                     # esa consecuencia transaccional está decidida aparte (review
                     # Qodo #471). Este gate agrega UN corte nuevo, no reabre ése.
-                    #
-                    # `to_thread`: el gate recorre el árbol y, cuando la identidad
-                    # física no alcanza, hashea archivos de decenas de MB. En el
-                    # hilo del event loop eso congela la UI de NiceGUI — misma
-                    # frontera que `_post_check` y `_empaquetar_sincrono`.
                     if texgen_mod_path is not None:
                         data_dir = self._config.data_dir
                         if data_dir is None:
@@ -2388,30 +2526,43 @@ class DynDOLODRunner:
                                 "de TexGen sea visible para DynDOLOD."
                             )
                         else:
-                            try:
-                                await asyncio.to_thread(
-                                    verificar_visibilidad_de_texgen,
+                            veredicto_handoff = await self._verificar_handoff_de_texgen(
+                                TexGenHandoffRequest(
+                                    mod_name=self.TEXGEN_MOD_NAME,
                                     staging=texgen_result.output_path,
                                     data_dir=data_dir,
+                                    expected_profile=expected_profile,
+                                    # Primera corrida: la autoridad es el staging
+                                    # born-empty de ESTA corrida; no hay handoff
+                                    # durable previo que consulte.
+                                    authorized=None,
                                 )
-                            except TexGenVisibilityError as e:
+                            )
+                            if not veredicto_handoff.verified:
                                 handoff_verificado = False
+                                handoff_motivo = veredicto_handoff.reason
                                 # F1 (review de #493): acá —y sólo acá— el rojo NO
                                 # es un fallo de herramienta. TexGen corrió, su
                                 # veredicto pasó y su mod quedó empaquetado y
-                                # validado en `mods/`; lo único que falta es un
-                                # despliegue que Sky-Claw deliberadamente no hace.
-                                # Marcarlo es lo que le permite al servicio
-                                # PRESERVAR ese mod en vez de revertirlo: sin esta
-                                # distinción, el rollback borraba exactamente el
-                                # artefacto que el mensaje de error manda
-                                # materializar, y el reintento regeneraba lo mismo
-                                # para volver a fallar.
-                                needs_deployment = True
-                                errors.append(str(e))
+                                # validado en `mods/`; lo único que falta es la
+                                # ACCIÓN HUMANA de handoff que el backend declara
+                                # (materializar el árbol en el Data físico /
+                                # habilitar el mod en el perfil MO2 — Sky-Claw no
+                                # edita modlist.txt). Marcarla es lo que le permite
+                                # al servicio PRESERVAR ese mod en vez de revertirlo:
+                                # sin esta distinción, el rollback borraba exactamente
+                                # el artefacto que el mensaje de error manda entregar,
+                                # y el reintento regeneraba lo mismo para volver a
+                                # fallar. Un bloqueo duro (drift, identidad dudosa,
+                                # bridge caído) viene sin acción pendiente y NO se
+                                # preserva como "listo para entregar".
+                                if veredicto_handoff.pending_action is not None:
+                                    needs_deployment = True
+                                    handoff_pending_action = veredicto_handoff.pending_action
+                                errors.append(veredicto_handoff.reason)
                                 logger.error(
-                                    "TexGen no es visible para DynDOLOD: %s",
-                                    e,
+                                    "El handoff de TexGen no está demostrado para DynDOLOD: %s",
+                                    veredicto_handoff.reason,
                                     extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
                                 )
                 elif not texgen_result.success:
@@ -2476,19 +2627,29 @@ class DynDOLODRunner:
                         "cual verificar que sea visible para DynDOLOD."
                     )
                 else:
-                    try:
-                        await asyncio.to_thread(
-                            verificar_visibilidad_de_texgen,
+                    veredicto_handoff = await self._verificar_handoff_de_texgen(
+                        TexGenHandoffRequest(
+                            mod_name=self.TEXGEN_MOD_NAME,
                             staging=staging_preservado,
                             data_dir=data_dir,
+                            expected_profile=expected_profile,
+                            # Resume: la identidad durable del handoff (si el
+                            # servicio la aporta) es la autoridad, y el gate la
+                            # re-verifica acá para cerrar la ventana TOCTOU entre
+                            # la consulta de resume y el spawn.
+                            authorized=authorized_identity,
                         )
-                    except TexGenVisibilityError as e:
+                    )
+                    if not veredicto_handoff.verified:
                         handoff_verificado = False
-                        needs_deployment = True
-                        errors.append(str(e))
+                        handoff_motivo = veredicto_handoff.reason
+                        if veredicto_handoff.pending_action is not None:
+                            needs_deployment = True
+                            handoff_pending_action = veredicto_handoff.pending_action
+                        errors.append(veredicto_handoff.reason)
                         logger.error(
-                            "El TexGen Output empaquetado no es visible para DynDOLOD: %s",
-                            e,
+                            "El handoff del TexGen Output empaquetado no está demostrado para DynDOLOD: %s",
+                            veredicto_handoff.reason,
                             extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
                         )
 
@@ -2513,6 +2674,7 @@ class DynDOLODRunner:
                 handoff_verificado=handoff_verificado,
                 data_dir=self._config.data_dir,
                 texgen_mod_name=self.TEXGEN_MOD_NAME,
+                motivo_handoff=handoff_motivo,
             )
             dyndolod_bloqueado_por = evaluar_gate_texgen(gate_state)
         elif not handoff_verificado:
@@ -2521,7 +2683,7 @@ class DynDOLODRunner:
                     f"no hay Data configurado para verificar el '{self.TEXGEN_MOD_NAME}' preservado"
                 )
             else:
-                dyndolod_bloqueado_por = (
+                dyndolod_bloqueado_por = handoff_motivo or (
                     f"el '{self.TEXGEN_MOD_NAME}' preservado no es visible en {self._config.data_dir}"
                 )
 
@@ -2642,12 +2804,15 @@ class DynDOLODRunner:
             dyndolod_mod_path=dyndolod_mod_path,
             errors=errors,
             # `and not success` es defensa en profundidad, no adorno: "hay algo que
-            # desplegar" y "el pipeline salió bien" son mutuamente excluyentes por
+            # entregar" y "el pipeline salió bien" son mutuamente excluyentes por
             # construcción —el gate que lo prende también baja `handoff_verificado`
             # y sin él `dyndolod_result` queda en None—, pero el servicio PRESERVA
             # una mutación cuando lee este flag, y un futuro camino que lo prendiera
             # sobre una corrida exitosa dejaría un move-aside sin confirmar.
             needs_deployment=needs_deployment and not success,
+            # La acción pendiente sólo significa algo junto al flag: con éxito no
+            # hay espera humana, y viajar con valor sería una mentira empaquetada.
+            handoff_action=handoff_pending_action if not success else None,
             texgen_packaging_attempted=texgen_packaging_attempted,
         )
 

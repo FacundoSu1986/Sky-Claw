@@ -58,6 +58,7 @@ from sky_claw.local.tools.dyndolod_workspace import (
     WorkspaceResuelto,
 )
 from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
+from sky_claw.local.tools.texgen_handoff import HandoffPendingAction
 from sky_claw.logging_config import correlacion_de_transaccion
 
 if TYPE_CHECKING:
@@ -126,9 +127,19 @@ class _CertificacionPreservadaError(Exception):
     esos viajan por DynDOLODExecutionError como fallo recuperable sin clave
     needs_deployment (F-02, round-2 review)."""
 
-    def __init__(self, mensaje: str, handoff_id: int | None) -> None:
+    def __init__(
+        self,
+        mensaje: str,
+        handoff_id: int | None,
+        handoff_action: HandoffPendingAction | None = None,
+    ) -> None:
         super().__init__(mensaje)
         self.handoff_id = handoff_id
+        #: Acción humana que completa el handoff (PR-586D): "materializar en el
+        #: Data físico" vs "habilitar el mod en el perfil MO2". El handler
+        #: externo la publica en el payload para que la GUI no lea ``needs_deployment``
+        #: como sinónimo de una sola acción.
+        self.handoff_action = handoff_action
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1679,11 +1690,33 @@ class DynDOLODPipelineService:
                 # cuando la corrida termina fallando por otra razón.
                 mutation_started = True
                 with correlacion_de_transaccion(tx_id):
+                    # El gate de handoff (PR-586D) recibe la autoridad durable
+                    # cuando la hay: el perfil dueño (identity del owner) y la
+                    # identidad (digest/files/bytes) del handoff resumido. El
+                    # runner la re-verifica cerca del spawn —la consulta de
+                    # `_consultar_resume` corre ANTES del lock y no sostiene el
+                    # lease durante el digest— cerrando la ventana TOCTOU entre
+                    # aprobación y uso. ``None`` = primera corrida / legacy: la
+                    # identidad se apoya en el staging born-empty de esta corrida.
+                    authorized_identity = (
+                        TreeDigest(
+                            handoff_resume.expected_digest,
+                            handoff_resume.expected_files,
+                            handoff_resume.expected_bytes,
+                        )
+                        if handoff_resume is not None
+                        and handoff_resume.expected_digest is not None
+                        and handoff_resume.expected_files is not None
+                        and handoff_resume.expected_bytes is not None
+                        else None
+                    )
                     result = await runner.run_full_pipeline(
                         run_texgen=run_texgen,
                         preset=preset,
                         texgen_args=texgen_args,
                         dyndolod_args=dyndolod_args,
+                        expected_profile=self._mo2_profile,
+                        authorized_identity=authorized_identity,
                     )
 
                     # Validar salida de DynDOLOD si fue exitoso
@@ -1828,7 +1861,13 @@ class DynDOLODPipelineService:
                             handoff_preservacion = await self._journal.crear_handoff_de_deployment(
                                 tx_id,
                                 descripcion=(
-                                    "TexGen generado y empaquetado; esperando deployment en el Data "
+                                    # PR-586D: la acción pendiente se nombra, y el
+                                    # literal del mod sale de la constante canónica
+                                    # (ancla F-007: el literal vive sólo ahí).
+                                    "TexGen generado y empaquetado; esperando deployment del perfil: "
+                                    f"habilitar '{runner.TEXGEN_MOD_NAME}' en MO2 (DynDOLOD pendiente)"
+                                    if result.handoff_action == "profile_enablement"
+                                    else "TexGen generado y empaquetado; esperando deployment en el Data "
                                     "(DynDOLOD pendiente)"
                                 ),
                                 registro=registro,
@@ -1873,6 +1912,7 @@ class DynDOLODPipelineService:
                             raise _CertificacionPreservadaError(
                                 f"DynDOLOD pipeline failed: {'; '.join(result.errors) if result.errors else 'Unknown error'}",
                                 handoff_id=handoff_preservacion,
+                                handoff_action=result.handoff_action,
                             ) from None
                         # F-02: certificación fallida ⇒ needs_deployment NO es
                         # accionable. Se re-lanza el error de dominio original
@@ -1919,6 +1959,7 @@ class DynDOLODPipelineService:
                         raise _CertificacionPreservadaError(
                             f"DynDOLOD pipeline failed: {base_msg}",
                             handoff_id=None,
+                            handoff_action=result.handoff_action,
                         ) from None
                     errors_str = "; ".join(result.errors) if result.errors else "Unknown error"
                     raise DynDOLODExecutionError(f"DynDOLOD pipeline failed: {errors_str}")
@@ -2138,6 +2179,12 @@ class DynDOLODPipelineService:
                 "needs_deployment": True,
                 "dyndolod_started": False,
             }
+            # PR-586D: `needs_deployment` generalizado = "falta la acción humana
+            # de handoff"; la acción CONCRETA viaja aparte para que la GUI no
+            # traduzca el flag a "materializá en Data físico" cuando lo que falta
+            # es habilitar el mod en el perfil MO2.
+            if pres.handoff_action is not None:
+                payload["handoff_action"] = pres.handoff_action
             mod_texgen_resp = mods_path / runner.TEXGEN_MOD_NAME
             if mod_texgen_resp.is_dir():
                 payload["texgen_mod_path"] = str(mod_texgen_resp)
@@ -2217,6 +2264,8 @@ class DynDOLODPipelineService:
             if needs_deployment:
                 payload["needs_deployment"] = True
                 payload["dyndolod_started"] = False
+                if result.handoff_action is not None:
+                    payload["handoff_action"] = result.handoff_action
                 # D2 (F-D6): el path viaja en AMBAS formas — con y sin
                 # create_snapshot, con y sin move-aside del mod — siempre que el
                 # artifact empaquetado exista.

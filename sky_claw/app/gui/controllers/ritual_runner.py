@@ -906,9 +906,11 @@ async def run_ritual_resume(
     Es la MISMA implementación que :func:`run_ritual` —mismo single-flight,
     mismo HITL gate del dispatcher, mismo feedback— con UN payload explícito:
     ``{"run_texgen": False}``. La GUI expresa la intención "Continuar DynDOLOD
-    después de materializar el artifact"; la validación durable del handoff
-    sigue siendo propiedad exclusiva de ``DynDOLODPipelineService.execute``
-    (acá no se consulta ni se duplica estado durable).
+    después de completar la acción de handoff" (materializar el artifact en el
+    Data físico o habilitar el mod en el perfil MO2, según el backend); la
+    validación durable del handoff sigue siendo propiedad exclusiva de
+    ``DynDOLODPipelineService.execute`` (acá no se consulta ni se duplica
+    estado durable).
 
     El botón normal "Generar" NO pasa por acá: ``run_texgen=True`` sigue siendo
     la vía de regeneración/supersede y conserva su payload vacío histórico.
@@ -930,14 +932,32 @@ def resume_action_from_result(tool_key: str, result: dict[str, Any]) -> dict[str
     del ``message``) produce la acción. El dict devuelto es lo único que el
     panel necesita para renderizar el botón; el payload es lo único que
     :func:`run_ritual_resume` necesita para despachar.
+
+    PR-586D: ``needs_deployment`` generalizó su semántica a "falta la acción
+    humana de handoff". La acción CONCRETA llega estructurada en
+    ``handoff_action`` (materializar en el Data físico / habilitar el mod en el
+    perfil MO2) y se refleja en el detalle del CTA — el flag solo ya no puede
+    decirle al operador QUÉ hacer.
     """
     if tool_key != "dyndolod" or result.get("needs_deployment") is not True:
         return None
     detail = result.get("texgen_mod_path")
+    accion_pendiente = result.get("handoff_action")
+    texto_accion = (
+        {
+            "physical_deployment": "Pendiente: materializar el árbol en el Data físico",
+            "profile_enablement": "Pendiente: habilitar el mod en MO2 (perfil activo)",
+        }.get(accion_pendiente)
+        if isinstance(accion_pendiente, str)
+        else None
+    )
+    texto = texto_accion or ""
+    if detail:
+        texto = f"{texto_accion} — {detail}" if texto_accion else str(detail)
     return {
         "tool_key": "dyndolod",
         "label": "Continuar DynDOLOD",
-        "detail": str(detail) if detail else "",
+        "detail": texto,
         "payload": {"run_texgen": False},
     }
 

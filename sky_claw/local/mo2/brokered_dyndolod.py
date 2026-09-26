@@ -6,27 +6,55 @@ conserva su lifecycle habitual: PID, readiness UIA/HITL, deadline y resultado.
 
 El worker no recibe un command string ni reconstruye switches. La lista argv que
 llega acá es exactamente la que ``DynDOLODRunner._build_xedit_args`` ya produjo.
+
+La MISMA strategy responde la pregunta de handoff antes del spawn de DynDOLOD:
+en el backend brokered la verdad vive en el perfil MO2 + USVFS, no en el
+``Data`` físico. El gate (:meth:`BrokeredDynDOLODSpawnStrategy.verify_texgen_handoff`)
+demuestra, fail-closed, que DynDOLOD verá exactamente el TexGen Output
+autorizado: perfil idéntico al del ``VfsJob``, mod real y habilitado, identidad
+del artifact, efectividad byte-exact sobre el overlay completo Y evidencia
+runtime de que el mapping USVFS se aplica. Un canary NO reemplaza el recorrido
+estructural ni al revés: cada pieza prueba una propiedad distinta (ver
+``sky_claw/local/mo2/mod_effectivity.py``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import logging
 import pathlib
+import stat
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Protocol
 
+from sky_claw.app.security.links import link_kind_and_identity_or_raise
+from sky_claw.local.mo2.mod_effectivity import ModEffectivityError, verificar_artifact_efectivo
 from sky_claw.local.mo2.vfs_attestation import (
     VfsAttestationChallenge,
+    VfsAttestationError,
     build_attestation_challenge,
+    build_attestation_challenge_for_source,
+    read_enabled_mods,
 )
 from sky_claw.local.mo2.vfs_contracts import (
     VFS_TOOL_EXECUTABLE_NAMES,
     VfsJob,
+    VfsJobResult,
 )
 from sky_claw.local.mo2.vfs_session import VfsProcessSession
+from sky_claw.local.tools.artifact_digest import digest_arbol
+from sky_claw.local.tools.texgen_handoff import TexGenHandoffRequest, TexGenHandoffResult
 
 if TYPE_CHECKING:
     from sky_claw.local.tools.dyndolod_runner import DynDOLODProcess
+
+logger = logging.getLogger("SkyClaw.BrokeredDynDOLOD")
+
+#: Timeout del probe ``health`` de handoff. Es una atestación + un hash de un
+#: archivo: segundos, no la ventana de UIA de una herramienta. El job completo
+#: muere con este techo aunque el bridge se cuelgue.
+_PROBE_HANDOFF_TIMEOUT_SECONDS = 120.0
 
 
 class BrokeredDynDOLODProtocol(Protocol):
@@ -41,6 +69,18 @@ class BrokeredDynDOLODProtocol(Protocol):
         virtual_data_dir: pathlib.Path,
         overwrite_mod: str | None = None,
     ) -> VfsProcessSession: ...
+
+    async def submit(
+        self,
+        job: VfsJob,
+        *,
+        challenge: VfsAttestationChallenge,
+        data_root: pathlib.Path | None = None,
+        mods_dir: pathlib.Path | None = None,
+        install_root: pathlib.Path | None = None,
+        virtual_data_dir: pathlib.Path,
+        overwrite_mod: str | None = None,
+    ) -> VfsJobResult: ...
 
 
 class BrokeredDynDOLODProcess:
@@ -101,6 +141,72 @@ class BrokeredDynDOLODProcess:
             result = await self._session.result()
             self._output = (result.stdout, result.stderr)
         return self._output
+
+
+def _sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _veredicto_de_evidencia_runtime(
+    resultado: VfsJobResult,
+    *,
+    challenge: VfsAttestationChallenge,
+    request: TexGenHandoffRequest,
+) -> TexGenHandoffResult:
+    """Traduce el probe ``health`` a veredicto de visibilidad USVFS (fail-closed).
+
+    El worker corre el MISMO contrato de attestation que una herramienta real:
+    ``verify_vfs_attestation`` (fingerprint del perfil + hash del canary visible
+    en el ``virtual_data_dir``) y el probe del proceso nieto. Un campo faltante,
+    extraño o distinto de lo esperado es UNKNOWN ⇒ bloqueo; jamás "probablemente
+    anduvo".
+    """
+    if not resultado.success:
+        return TexGenHandoffResult.bloqueado(
+            "la evidencia runtime USVFS no se pudo obtener (el probe health falló "
+            f"bajo el perfil '{challenge.profile}'): {resultado.message or 'sin detalle'}. "
+            "Sin evidencia runtime no se afirma la visibilidad."
+        )
+    atestacion = resultado.attestation
+    if not isinstance(atestacion, Mapping):
+        return TexGenHandoffResult.bloqueado(
+            "el probe health volvió sin atestación estructurada: la visibilidad USVFS es indeterminada"
+        )
+    if atestacion.get("profile") != challenge.profile or atestacion.get("source_mod") != request.mod_name:
+        return TexGenHandoffResult.bloqueado(
+            "la atestación runtime corresponde a otro perfil/mod que el pedido "
+            f"(perfil={atestacion.get('profile')!r}, source_mod={atestacion.get('source_mod')!r}): "
+            "evidencia fuera de contrato"
+        )
+    if atestacion.get("relative_path") != challenge.relative_path.as_posix():
+        return TexGenHandoffResult.bloqueado(
+            f"la atestación runtime observó otro canary que el pedido "
+            f"({atestacion.get('relative_path')!r}): evidencia fuera de contrato"
+        )
+    if atestacion.get("profile_fingerprint") != challenge.profile_fingerprint:
+        return TexGenHandoffResult.bloqueado(
+            "el fingerprint del perfil cambió entre la construcción del challenge y el probe runtime "
+            "(drift de perfil): la evidencia no corresponde al estado bajo el que se lanzaría DynDOLOD"
+        )
+    if atestacion.get("visible_sha256") != challenge.sha256:
+        return TexGenHandoffResult.bloqueado(
+            f"el canario '{challenge.relative_path.as_posix()}' no tiene los bytes autorizados bajo "
+            "USVFS: la vista virtual no entrega el contenido del artifact"
+        )
+    if atestacion.get("grandchild_sha256") != challenge.sha256:
+        return TexGenHandoffResult.bloqueado(
+            "el proceso nieto bajo USVFS no leyó los bytes autorizados del canario: el mapping no se "
+            "aplica como se esperaba"
+        )
+    return TexGenHandoffResult.aprobado(
+        f"visibilidad MO2/USVFS demostrada: '{request.mod_name}' habilitado y efectivo en el perfil "
+        f"'{challenge.profile}' ({request.staging.name}/ completo contra el overlay) y canary "
+        f"{challenge.relative_path.as_posix()} atestiguado por worker + nieto"
+    )
 
 
 class BrokeredDynDOLODSpawnStrategy:
@@ -178,6 +284,206 @@ class BrokeredDynDOLODSpawnStrategy:
             virtual_data_dir=self._virtual_data_dir,
         )
         return BrokeredDynDOLODProcess(session)
+
+    async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
+        """Gate MO2/USVFS del handoff TexGen → DynDOLOD. Fail-closed, completo.
+
+        La pregunta es la misma del gate físico —*¿DynDOLOD verá exactamente el
+        TexGen Output autorizado?*— pero la respuesta vive en otro dominio:
+        DynDOLOD brokered lee a través del overlay del perfil bajo USVFS, no del
+        ``Data`` físico del host. El gate demuestra, en orden:
+
+        1. **Identidad de perfil**: el perfil del request —el dueño del
+           artifact— es exactamente el que usará el ``VfsJob`` de DynDOLOD.
+        2. **Namespace coherente**: el ``Data`` del request es el
+           ``virtual_data_dir`` de este backend (el ``-d:`` que el worker
+           revalida).
+        3. **Artifact real**: ``mods/<mod>/<textures>`` existe como directorio
+           propio (no symlink/junction) y sus bytes son los del árbol autorizado.
+        4. **Habilitado** en ese perfil (``+TexGen Output``). Deshabilitado es el
+           corte de PRIMERA ejecución: acción humana ``profile_enablement`` —
+           Sky-Claw NO edita ``modlist.txt``.
+        5. **Efectivo**: cada archivo gana el overlay byte-exact (sin mod de
+           mayor prioridad ni ``overwrite`` incompatible) — la parte que ningún
+           canary puede probar.
+        6. **Evidencia runtime USVFS**: un probe ``health`` (tool allowlisted,
+           read-only) atestigua worker + nieto sobre un canary DEL PROPIO MOD,
+           con fingerprint del perfil fresco. Es la parte que ningún análisis
+           host-side puede probar.
+
+        Cualquier paso indeterminado bloquea. Un canary no es un tree digest:
+        (3)+(5) prueban el artifact completo; (6) prueba que el mapping se
+        aplica realmente.
+        """
+        try:
+            return await self._verificar_handoff_mo2(request)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(
+                "Gate brokered de TexGen: fallo inesperado (%r) — se bloquea cerrado",
+                e,
+                extra={"operation_type": "dyndolod_texgen_handoff_brokered_inesperado"},
+            )
+            return TexGenHandoffResult.bloqueado(
+                f"no se pudo demostrar la visibilidad MO2/USVFS del '{request.mod_name}' "
+                f"(fallo inesperado: {e!r}): se bloquea cerrado"
+            )
+
+    async def _verificar_handoff_mo2(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
+        # --- 1. perfil dueño == perfil del VfsJob que lanzará DynDOLOD (B4) ---
+        if request.expected_profile is None:
+            return TexGenHandoffResult.bloqueado(
+                "el perfil dueño del TexGen Output es desconocido (UNKNOWN): sin identidad de dueño "
+                "no se puede demostrar bajo qué perfil debe verse el artifact"
+            )
+        if request.expected_profile != self._profile:
+            return TexGenHandoffResult.bloqueado(
+                f"el artifact fue autorizado bajo el perfil '{request.expected_profile}' pero "
+                f"DynDOLOD se lanzaría bajo '{self._profile}': el handoff no cruza perfiles"
+            )
+
+        # --- 2. namespace coherente: el Data del request es el -d: del job ---
+        data_del_request = request.data_dir.resolve()
+        if data_del_request != self._virtual_data_dir:
+            return TexGenHandoffResult.bloqueado(
+                f"el Data contra el que se pide verificar ({data_del_request}) no es el namespace "
+                f"virtual de este backend ({self._virtual_data_dir}): la prueba se haría en el "
+                "dominio equivocado"
+            )
+
+        # --- 3. artifact real bajo mods_dir, sin symlinks/junctions ---
+        mod_dir = self._mods_dir / request.mod_name
+        artifact_root = mod_dir / request.staging.name
+        for etiqueta, ruta in (("mod", mod_dir), ("artifact", artifact_root)):
+            tipo, identidad = link_kind_and_identity_or_raise(ruta)
+            if identidad is None or tipo is not None or not stat.S_ISDIR(identidad.st_mode):
+                return TexGenHandoffResult.bloqueado(
+                    f"el {etiqueta} '{ruta}' no existe como directorio propio bajo el overlay "
+                    "(ausente o es un enlace): no hay árbol cuya visibilidad se pueda demostrar"
+                )
+
+        # --- 3b. identidad: el árbol del mod porta EXACTAMENTE los bytes autorizados (B5) ---
+        try:
+            staging_resuelto = request.staging.resolve()
+        except OSError as e:
+            return TexGenHandoffResult.bloqueado(f"no se pudo resolver el staging autorizado '{request.staging}': {e}")
+        if staging_resuelto != artifact_root.resolve():
+            try:
+                dig_authorized = await asyncio.to_thread(digest_arbol, request.staging)
+                dig_mod = await asyncio.to_thread(digest_arbol, artifact_root)
+            except OSError as e:
+                return TexGenHandoffResult.bloqueado(
+                    f"no se pudo identificar el artifact '{artifact_root}' contra el staging autorizado: {e}"
+                )
+            if (dig_mod.digest, dig_mod.files, dig_mod.bytes) != (
+                dig_authorized.digest,
+                dig_authorized.files,
+                dig_authorized.bytes,
+            ):
+                return TexGenHandoffResult.bloqueado(
+                    f"el artifact empaquetado '{artifact_root}' no coincide con el staging autorizado "
+                    f"({dig_authorized.files} archivo(s)/{dig_authorized.bytes} byte(s) autorizados vs "
+                    f"{dig_mod.files} archivo(s)/{dig_mod.bytes} byte(s) empaquetados): no se lanza "
+                    "DynDOLOD sobre bytes que no se pueden atribuir"
+                )
+
+        # --- 4. habilitado en el perfil (B3). Deshabilitado = primera ejecución. ---
+        try:
+            habilitados = await asyncio.to_thread(
+                read_enabled_mods,
+                self._data_root / "profiles" / self._profile / "modlist.txt",
+            )
+        except VfsAttestationError as e:
+            return TexGenHandoffResult.bloqueado(
+                f"no se pudo leer el estado del perfil '{self._profile}' (UNKNOWN): {e}"
+            )
+        if habilitados.count(request.mod_name) > 1:
+            return TexGenHandoffResult.bloqueado(
+                f"el modlist del perfil '{self._profile}' repite '{request.mod_name}': la prioridad efectiva es ambigua"
+            )
+        if request.mod_name not in habilitados:
+            return TexGenHandoffResult.bloqueado(
+                f"'{request.mod_name}' existe pero NO está habilitado en el perfil '{self._profile}' "
+                f"(falta la línea '+{request.mod_name}' en modlist.txt). Habilitalo en Mod Organizer 2 "
+                "y reanudá: Sky-Claw no edita modlist.txt. Sin esa línea el mod no entra al overlay "
+                "USVFS y DynDOLOD no vería sus texturas.",
+                pending_action="profile_enablement",
+            )
+
+        # --- 5. efectividad byte-exact sobre el overlay COMPLETO del artifact (B9/B10) ---
+        try:
+            await asyncio.to_thread(
+                verificar_artifact_efectivo,
+                artifact_root=artifact_root,
+                mod_name=request.mod_name,
+                mods_dir=self._mods_dir,
+                data_root=self._data_root,
+                enabled=habilitados,
+            )
+        except ModEffectivityError as e:
+            return TexGenHandoffResult.bloqueado(str(e))
+
+        # --- 6. canary DEL PROPIO artifact + probe runtime USVFS (B6/B7/B8/B11) ---
+        try:
+            challenge = await asyncio.to_thread(
+                build_attestation_challenge_for_source,
+                source_mod=request.mod_name,
+                data_root=self._data_root,
+                mods_dir=self._mods_dir,
+                profile=self._profile,
+                physical_data_dir=self._physical_data_dir,
+            )
+        except VfsAttestationError as e:
+            return TexGenHandoffResult.bloqueado(
+                f"no hay canary USVFS elegible dentro de '{request.mod_name}' para probar el mapping "
+                f"(UNKNOWN): {e}. Sin evidencia runtime no se afirma la visibilidad."
+            )
+        # El canary se elige del mod empaquetado; esta comprobación lo ANCLA al
+        # staging autorizado: un canario conveniente que no pertenezca al
+        # artifact no prueba nada sobre él.
+        try:
+            partes = challenge.relative_path.parts
+            if not partes or partes[0] != request.staging.name:
+                raise ValueError(f"relative_path {challenge.relative_path} fuera del staging {request.staging.name}")
+            rel_sobre_staging = pathlib.Path(*partes[1:])
+            sha_staging = await asyncio.to_thread(_sha256_file, request.staging / rel_sobre_staging)
+        except (OSError, ValueError) as e:
+            return TexGenHandoffResult.bloqueado(
+                f"el canario elegido '{challenge.relative_path.as_posix()}' no pertenece al árbol autorizado: {e}"
+            )
+        if sha_staging != challenge.sha256:
+            return TexGenHandoffResult.bloqueado(
+                f"el canario elegido '{challenge.relative_path.as_posix()}' no tiene los bytes del "
+                "staging autorizado: la evidencia runtime no atestiguaría el artifact correcto"
+            )
+
+        job = VfsJob.create(
+            instance_id=self._instance_id,
+            profile=self._profile,
+            tool_id="health",
+            payload={},
+            timeout_seconds=_PROBE_HANDOFF_TIMEOUT_SECONDS,
+            expected_fingerprint=challenge.profile_fingerprint,
+            mutation_targets=(),
+        )
+        try:
+            resultado = await self._broker.submit(
+                job,
+                challenge=challenge,
+                data_root=self._data_root,
+                mods_dir=self._mods_dir,
+                install_root=self._install_root,
+                virtual_data_dir=self._virtual_data_dir,
+            )
+        except Exception as e:
+            # Puente caído, job timeout, worker desconectado: sin respuesta no
+            # hay evidencia, y sin evidencia no hay spawn (B11).
+            return TexGenHandoffResult.bloqueado(
+                f"el bridge MO2/USVFS no pudo atestiguar la visibilidad del '{request.mod_name}' "
+                f"({e!r}): se bloquea cerrado"
+            )
+        return _veredicto_de_evidencia_runtime(resultado, challenge=challenge, request=request)
 
     @staticmethod
     def _validate_executable(tool_id: str, executable: pathlib.Path) -> pathlib.Path:
