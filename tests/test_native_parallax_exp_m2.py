@@ -206,6 +206,21 @@ def test_m8_affine_scale_invariant() -> None:
     assert fit_neg["affine_scale"] < 0.0
 
 
+def test_m8_fit_global_scale_degenerate_constant_field_is_nan_free() -> None:
+    # EXP-M4 regresión: rec constante (o h constante) → corrcoef era 0/0=NaN con
+    # RuntimeWarning (error bajo filterwarnings del repo). Signo indefinido → +1.0 neutro.
+    h = _periodic_height(64)
+    fit = OracleOnly.fit_global_scale(h, np.full_like(h, 3.0))  # rec constante
+    assert fit["affine_scale"] == 0.0
+    assert fit["oracle_best_sign"] == 1.0
+    fit2 = OracleOnly.fit_global_scale(np.full_like(h, 3.0), h)  # oráculo constante
+    assert fit2["affine_scale"] == 0.0
+    assert fit2["oracle_best_sign"] == 1.0
+    fit3 = OracleOnly.fit_global_scale(np.full_like(h, 3.0), np.full_like(h, -2.0))
+    assert fit3["affine_scale"] == 0.0
+    assert fit3["oracle_best_sign"] == 1.0
+
+
 # ---------------------------------------------------------------- M9: sólo fitting global
 
 
