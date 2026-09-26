@@ -513,6 +513,12 @@ def test_run_exp_m4_end_to_end_synthetic_calibration(tmp_path: Path, capsys: pyt
         str(corpus),
         "--out",
         str(out),
+        # resolución nativa del corpus sintético: mismo código (loader, resize 1:1,
+        # solver, oráculo) sin el upsample 8× a 512 — el E2E costaba ~90 s y, sobre un
+        # job de CI Windows/py3.11 que en main ya duraba 19m40s contra un cap de 20m,
+        # lo tiraba por timeout (hallazgo del run 36208651859).
+        "--resolution",
+        "64",
         "--phase",
         "calibration",
     ]
@@ -599,6 +605,8 @@ def test_run_exp_m4_full_phase_decision_vocabulary(tmp_path: Path) -> None:
         str(corpus),
         "--out",
         str(out),
+        "--resolution",
+        "64",
         "--phase",
         "full",
         "--frozen-ack",
