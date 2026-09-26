@@ -9,6 +9,8 @@ rollback), serialización ante lock tomado y manejo de fallos.
 from __future__ import annotations
 
 import logging
+import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,8 +19,12 @@ import pytest
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.xedit_service import (
+    _OFFICIAL_DIRTY_MASTERS,
+    CELDAS_MANUALES_DAWNGUARD,
+    PASADAS_QAC_DAWNGUARD,
     XEDIT_CLEAN_RESOURCE_ID,
     XEditPipelineService,
+    pasadas_qac_para,
 )
 from sky_claw.local.validators.preflight import (
     PreflightCheck,
@@ -33,6 +39,10 @@ from sky_claw.local.xedit.runner import (
 
 if TYPE_CHECKING:
     import pathlib
+
+
+#: Raíz del repo: los anclas de abajo contrastan el código contra el SOP real.
+_RAIZ_DEL_REPO = Path(__file__).resolve().parent.parent
 
 
 # =============================================================================
@@ -236,7 +246,15 @@ async def test_cleans_existing_official_masters_sequentially(
 
     assert result["success"] is True
     assert set(result["cleaned"]) == {"Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"}
-    assert runner.quick_auto_clean.await_count == 4
+    # SOP: Dawnguard corre DOS pasadas; el resto, una. Enumerar la secuencia
+    # (no solo el count) para que un reorder o un skip de Dawnguard rompa el ancla.
+    assert [c.args[0] for c in runner.quick_auto_clean.await_args_list] == [
+        "Update.esm",
+        "Dawnguard.esm",
+        "Dawnguard.esm",
+        "HearthFires.esm",
+        "Dragonborn.esm",
+    ]
 
 
 @pytest.mark.asyncio
@@ -350,6 +368,107 @@ async def test_missing_game_path_returns_error_without_locking(
     assert result["success"] is False
     runner.quick_auto_clean.assert_not_awaited()
     assert await lock_manager.get_lock_info(XEDIT_CLEAN_RESOURCE_ID) is None
+
+
+def test_pasadas_qac_congela_el_special_case_de_dawnguard() -> None:
+    """SOP regla 8: Dawnguard tiene dos pasadas; ningún otro master oficial sucio."""
+    assert PASADAS_QAC_DAWNGUARD == 2
+    assert pasadas_qac_para("Dawnguard.esm") == 2
+    assert pasadas_qac_para("dawnguard.esm") == 2
+    otros = [m for m in _OFFICIAL_DIRTY_MASTERS if m.casefold() != "dawnguard.esm"]
+    assert otros, "el censo de masters oficiales no puede quedar vacío"
+    assert {pasadas_qac_para(m) for m in otros} == {1}
+
+
+@pytest.mark.asyncio
+async def test_segunda_pasada_de_dawnguard_fallida_aborta(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """Si la segunda pasada de Dawnguard falla, no se reporta success ni se sigue."""
+    game = _game_with_masters(tmp_path, ("Dawnguard.esm", "HearthFires.esm"))
+    llamadas: list[str] = []
+
+    async def on_clean(plugin: str) -> ScriptExecutionResult:
+        llamadas.append(plugin)
+        if plugin == "Dawnguard.esm" and llamadas.count("Dawnguard.esm") == 2:
+            return ScriptExecutionResult(success=False, exit_code=2, stdout="", stderr="boom", records_processed=0)
+        return _ok_result()
+
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(side_effect=on_clean)
+    svc = _make_service(lock_manager, snapshot_manager, game, runner)
+
+    result = await svc.quick_auto_clean()
+
+    assert result["success"] is False
+    assert llamadas == ["Dawnguard.esm", "Dawnguard.esm"]
+    runner.quick_auto_clean.assert_awaited()
+
+
+# =============================================================================
+# Deuda manual del SOP §2.1: las dos pasadas automáticas NO cierran Dawnguard
+# =============================================================================
+
+
+def test_las_celdas_manuales_de_dawnguard_coinciden_con_el_sop() -> None:
+    """El resultado cita celdas del SOP: si la constante y el SOP divergen, el
+    operador limpia a mano celdas que no son las pendientes."""
+    sop = (_RAIZ_DEL_REPO / "sky_claw" / "local" / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert set(re.findall(r"CELL ([0-9A-Fa-f]{8})", sop)) == set(CELDAS_MANUALES_DAWNGUARD)
+    assert [linea for linea in sop.splitlines() if "Dawnguard" in linea and "TWICE" in linea], (
+        "el SOP debe declarar las DOS pasadas automáticas de Dawnguard (la deuda manual las sigue)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exito_de_dawnguard_declara_la_deuda_manual_del_sop(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """Dos pasadas automáticas NO cierran Dawnguard.
+
+    Antes el resultado era ``success=True`` + ``cleaned=['Dawnguard.esm']`` y el
+    operador daba el master por limpio mientras las tres celdas del SOP seguían
+    sucias. El contrato exige ``message`` vacío en éxito, así que la deuda viaja
+    como campo estructurado (y además en ``logs``, que es lo que lee un humano).
+    """
+    game = _game_with_masters(tmp_path, ("Dawnguard.esm",))
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(return_value=_ok_result())
+    svc = _make_service(lock_manager, snapshot_manager, game, runner)
+
+    result = await svc.quick_auto_clean()
+
+    assert result["success"] is True
+    assert result["message"] == ""
+    assert result["cleaned"] == ["Dawnguard.esm"]
+    assert result["manual_pending"] == [
+        {
+            "master": "Dawnguard.esm",
+            "accion": "Limpieza manual de celdas (SOP local/AGENTS.md §2.1)",
+            "cells": list(CELDAS_MANUALES_DAWNGUARD),
+        }
+    ]
+    for celda in CELDAS_MANUALES_DAWNGUARD:
+        assert celda in result["logs"]
+
+
+@pytest.mark.asyncio
+async def test_exito_sin_dawnguard_no_declara_deuda_manual(
+    lock_manager: DistributedLockManager, snapshot_manager: FileSnapshotManager, tmp_path: pathlib.Path
+) -> None:
+    """La deuda manual es específica de Dawnguard: declararla para un master que
+    se cierra en una pasada convertiría el aviso en ruido permanente."""
+    game = _game_with_masters(tmp_path, ("Update.esm", "HearthFires.esm"))
+    runner = MagicMock()
+    runner.quick_auto_clean = AsyncMock(return_value=_ok_result())
+    svc = _make_service(lock_manager, snapshot_manager, game, runner)
+
+    result = await svc.quick_auto_clean()
+
+    assert result["success"] is True
+    assert "manual_pending" not in result
+    assert "logs" not in result
 
 
 # =============================================================================

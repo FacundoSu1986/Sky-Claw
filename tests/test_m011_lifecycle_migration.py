@@ -33,7 +33,7 @@ async def test_locks_uses_lifecycle_connection_and_does_not_close_it(tmp_path):
         # Lock roundtrip works on the lifecycle-managed connection.
         info = await lock_mgr.acquire_lock("res.esp", "agent-a")
         assert info.agent_id == "agent-a"
-        assert await lock_mgr.release_lock("res.esp", "agent-a") is True
+        assert await lock_mgr.release_lock("res.esp", "agent-a", acquired_at=info.acquired_at) is True
 
         # close() must NOT close the lifecycle-owned connection.
         await lock_mgr.close()

@@ -578,10 +578,12 @@ class AsyncToolRegistry:
             # Codex #213 P1: serialize on the shared bodyslide-meshes lock (like
             # run_loot_sort / run_pandora) so the agent path participates in the
             # cross-process lock instead of building meshes unsynchronized.
-            fn=lambda group="CBBE", output_path="meshes": run_bodyslide_batch(
+            fn=lambda group="CBBE", output_path="meshes", preset=None, build_morphs=True: run_bodyslide_batch(
                 self._resolve_bodyslide_runner(),
                 group,
                 output_path,
+                preset,
+                build_morphs,
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
             ),

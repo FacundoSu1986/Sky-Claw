@@ -3,6 +3,10 @@
 The shared dispatcher HITL gate owns operator approval (cleaning rewrites the
 official master plugins in place → destructive). This strategy delegates to the
 lock-protected ``XEditPipelineService.quick_auto_clean``; it takes no payload.
+
+SOP regla 8 (``sky_claw/local/AGENTS.md``): el special case de Dawnguard
+(dos pasadas de QAC) vive en ``pasadas_qac_para`` / el loop del servicio —
+esta strategy no reimplementa el loop ni lo puede "simplificar".
 """
 
 from __future__ import annotations
