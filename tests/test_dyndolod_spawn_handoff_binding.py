@@ -474,6 +474,42 @@ async def test_pass_luego_romper_el_mapping_usvfs_bloquea_al_abrir_la_sesion(tmp
 
 
 @pytest.mark.asyncio
+async def test_standalone_liga_el_perfil_como_metadata_sin_depender_de_el(tmp_path: pathlib.Path) -> None:
+    """Standalone NO valida ``expected_profile``: es metadata del approval.
+
+    Decisión de dominio, no un olvido: el backend físico no tiene noción de
+    perfil MO2 — DynDOLOD standalone lee el ``Data`` físico sin importar qué
+    perfil esté activo, así que el gate responde lo único que su dominio
+    puede afirmar (identidad + visibilidad física) y el perfil viaja ligado
+    como metadata. Un perfil "erróneo" acá no es detectable ni tiene efecto:
+    inventar una validación acoplaría el dominio físico al perfil MO2.
+    """
+    from sky_claw.local.tools.dyndolod_runner import StandaloneDynDOLODSpawnStrategy
+
+    staging = tmp_path / "staging" / "textures"
+    staging.mkdir(parents=True)
+    (staging / "a.dds").write_bytes(_BYTES_A)
+    data_dir = tmp_path / "Data"
+    (data_dir / "textures").mkdir(parents=True)
+    (data_dir / "textures" / "a.dds").write_bytes(_BYTES_A)
+
+    estrategia = StandaloneDynDOLODSpawnStrategy()
+    resultado = await estrategia.verify_texgen_handoff(
+        TexGenHandoffRequest(
+            mod_name=_MOD,
+            staging=staging,
+            data_dir=data_dir,
+            expected_profile="Perfil-Que-Sea",
+        )
+    )
+
+    assert resultado.verified is True, resultado.reason
+    assert resultado.approval is not None
+    assert resultado.approval.profile == "Perfil-Que-Sea"
+    assert resultado.approval.profile_fingerprint is None, "standalone no modela fingerprint de perfil"
+
+
+@pytest.mark.asyncio
 async def test_standalone_revalida_identidad_y_visibilidad_en_el_spawn(tmp_path: pathlib.Path) -> None:
     """El backend standalone también liga el approval y lo revalida (fail-closed).
 
