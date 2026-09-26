@@ -210,7 +210,14 @@ class OracleOnly:
         b_c = b - b.mean()
         denom = float(np.dot(b_c, b_c))
         scale = float(np.dot(a_c, b_c) / denom) if denom > 0 else 0.0
-        best_sign = 1.0 if np.corrcoef(a, b)[0, 1] >= 0 else -1.0
+        # Guard de campo degenerado (EXP-M4): corrcoef sobre un campo constante es 0/0=NaN
+        # (RuntimeWarning→error bajo filterwarnings del repo). El signo es indefinido cuando
+        # cualquiera de los dos campos no varía; +1.0 neutro (la escala ya colapsa a 0).
+        # Rama inalcanzable con corpus real (M2/M3): ningún height/normal es constante.
+        if denom > 0 and float(np.dot(a_c, a_c)) > 0:
+            best_sign = 1.0 if np.corrcoef(a, b)[0, 1] >= 0 else -1.0
+        else:
+            best_sign = 1.0
         return {"affine_scale": scale, "oracle_best_sign": best_sign}
 
     @staticmethod
