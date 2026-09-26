@@ -56,7 +56,7 @@ from sky_claw.local.native_parallax.research.solver_coherence import (
 from sky_claw.local.native_parallax.research.trust_proxies import OracleOnly
 
 DEFAULT_MANIFEST = (
-    Path(__file__).resolve().parents[3]
+    Path(__file__).resolve().parents[4]
     / "docs"
     / "design"
     / "research"
@@ -271,7 +271,20 @@ def main() -> None:
     if args.phase == "calibration":
         prepared = [e for e in prepared if split_of(str(e["family"])) == "CALIBRATION"]
     if not prepared:
-        print(json.dumps({"decision": "EXP_M4_DATA_INSUFFICIENT", "exclusions": exclusions}, indent=2))
+        # §3 del preregistro: corpus no adquirible → EXP_M4_DATA_INSUFFICIENT, jamás inventar.
+        data_required = {
+            "experiment": "EXP-M4",
+            "phase": args.phase,
+            "state": "EXP_M4_DATA_REQUIRED",
+            "decision": "EXP_M4_DATA_INSUFFICIENT",
+            "environment": environment_block(args.m3_manifest, args.resolution, args.phase, args.frozen_ack),
+            "exclusions": exclusions,
+        }
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with args.out.open("w") as fh:
+            json.dump(data_required, fh, indent=1, allow_nan=False)
+        print(json.dumps({"decision": "EXP_M4_DATA_INSUFFICIENT", "n_exclusions": len(exclusions)}, indent=2))
+        print(f"JSON → {args.out}")
         sys.exit(2)
 
     native_resolutions = {(int(e["normal_resolution"][0]), int(e["normal_resolution"][1])) for e in prepared}

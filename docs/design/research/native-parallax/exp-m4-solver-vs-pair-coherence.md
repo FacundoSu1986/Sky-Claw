@@ -111,7 +111,15 @@ precedencia 1→4 (total, sin solapamiento).
 |---|-----------|------------|
 | G0 | Gate de corpus | usables ≥ 15 y familias ≥ 3 y todas las exclusiones son §7 |
 | C1 | SELF-good | `med RMSE_SELF ≤ 0.10` **y** `med |corr_SELF| ≥ 0.95` **y** `med var_SELF ≥ 0.85` |
-| C2 | AUTH-worse | `med DELTA_RMSE ≥ 0.02` **y** `med DELTA_RMSE ≥ med RMSE_SELF` **y** `Δmed|corr| ≥ 0.10` **y** held-out consistente (`med DELTA_RMSE_heldout > 0` **y** `Δmed|corr|_heldout > 0`) |
+| C2 | AUTH-worse | `med DELTA_RMSE ≥ 0.02` **y** `med DELTA_RMSE ≥ med RMSE_SELF` **y** `Δmed|corr| ≥ 0.10` **y** held-out consistente (`med DELTA_RMSE_heldout ≥ 0.02` **y** `Δmed|corr|_heldout > 0`) |
+
+> **Enmienda pre-resultados (§24-D del brief, ANTES de adquirir/correr el corpus):** el guard
+> held-out de `DELTA_RMSE` era puramente direccional (`> 0`); la batería sintética mostró que
+> eso permitiría C2 con un efecto held-out trivialmente pequeño (p.ej. delta held-out 0.01 <
+> piso Q8). Se eleva a la MISMA barra de magnitud de C2 (`≥ 0.02`). El check de correlación
+> held-out queda direccional: la barra de magnitud de corr ya está en el cohort completo
+> (`Δmed|corr| ≥ 0.10`), y en n=16 una segunda barra de magnitud añadiría ruido de mediana
+> sin información nueva. Ningún resultado del corpus fue visto antes de esta enmienda.
 
 **Decisiones (exactamente una):**
 
@@ -189,7 +197,8 @@ Obligatorias (todas con tests automatizados en `tests/test_native_parallax_exp_m
 - **Nyquist-edge:** modo exactamente Nyquist en un eje → se pierde (gradiente anulado);
   el test LO DOCUMENTA como pérdida esperada (no como bug).
 - **No finito / shape equivocada:** NaN/Inf en H o N → error claro (fail-fast); shapes no
-  cuadradas pares soportadas; impares → error explícito (mismo contrato M0).
+  cuadradas pares soportadas (las impares fluyen por el mismo contrato M0 — sin bin de
+  Nyquist autoparejado; corrección pre-resultados: `freq_axes` no rechaza impares).
 - **Determinismo:** dos corridas idénticas → bit a bit idéntico (sin RNG en el camino
   primario; el bootstrap usa seed preregistrada 20260925).
 - **Reglas de decisión:** tabla de verdad completa de C1/C2→decisión (4+ casos unitarios).
@@ -237,7 +246,79 @@ no se afirma "el proveedor miente").
 
 ## 14. Resultados
 
-_(POST-corrida — se llena en un commit posterior al preregistro; nada de esto existe aún.)_
+### 14.1 Estado de esta sesión: `EXP_M4_DATA_REQUIRED` → decisión `EXP_M4_DATA_INSUFFICIENT`
+
+El corpus Cohort A NO está en el repo (por diseño: sólo agregados pequeños en `data/`) y
+**no es adquirible desde el sandbox de esta sesión**: el egress tiene allowlist —
+`api.polyhaven.com`, `dl.polyhaven.org`, `polyhaven.com`, `ambientcg.com` mueren en el
+handshake TLS (EOF) mientras `github.com` responde 200 (no es una caída general); los
+releases del repo no contienen el corpus (verificado con `gh release list` + assets).
+Re-adquirir del proveedor y "esperar" que los SHA256 coincidan era el plan §3; sin red a
+los proveedores, no hay corpus. **No se inventó ningún resultado**: la decisión registrada
+es `EXP_M4_DATA_INSUFFICIENT` (G0), con el artefacto honesto del runner en
+`data/exp-m4-data-required.json` (31 exclusiones objetivas `file_missing`, una por asset;
+manifest SHA256 `b0f5a4c6…` = el hash LF documentado en EXP-M3 — cadena de provenance
+intacta).
+
+### 14.2 Lo que SÍ se ejecutó y verificó (pre-corpus, sin tocar Cohort A)
+
+- Batería sintética §9 completa (25 tests): plano exacto, seno float ~1e-12/Q8 acotado
+  relativo a amplitud, multifreq, empinado corr ≥ 0.99, DC invariante, escala/signo
+  (RMSE post-afín escala con el oráculo; |corr| invariante), Nyquist perdido
+  (documentado), no-finito fail-fast, shapes, determinismo bit a bit, FD diagnóstico.
+- **Hallazgo 1 (CLASE B, commit `648b373`):** `OracleOnly.fit_global_scale` producía
+  NaN+RuntimeWarning sobre campos constantes (rama inalcanzable en corpus real; camino
+  no-degenerado intacto — repro antes/después en el mensaje del commit).
+- **Hallazgo 2 (enmienda §24-D):** el guard held-out de C2 era puramente direccional y
+  admitía efectos triviales; elevado a la misma barra de magnitud (≥ 0.02) ANTES de ver
+  cualquier dato del corpus.
+- **Hallazgo 3 (control positivo E2E):** un par sintético coherente declarado con la
+  convención equivocada (OPENGL sobre una normal ya en forma solver) es decoherizado por
+  el flip-Y del loader — el E2E lo cazó; el test declara la convención real del par.
+- **Dato de implementación (no del corpus):** el resize+renorm inyecta decoherencia
+  delta ≈ 0.017 con upsample 8× en pink noise — comparable a `T_DELTA_RMSE`. El corpus
+  real sólo reescala 2× (1024→512) y la secundaria nativa sin resize está preregistrada
+  para separar ese confundo (§4.1).
+- E2E del runner completo sobre corpus sintético: calibración (PENDING_FREEZE, filas por
+  split correctas), full con frozen-ack, vocabulario de decisión anclado por test.
+
+### 14.3 Reproducción en la estación del operador (donde SÍ existe el corpus)
+
+Precedente M3: la corrida Cohort A de M3 se ejecutó en la estación local del operador
+(Windows, `C:\SkyClawResearch\NativeParallax\EXP-M3`). M4 usa el MISMO corpus, sin
+re-descarga (los SHA256 del manifest validan los bytes ya presentes):
+
+```bat
+:: 1) tests focales (deben estar verdes ANTES de tocar el corpus real)
+pytest tests/test_native_parallax_exp_m4.py --continue-on-collection-errors -q
+
+:: 2) calibración = smoke de implementación (SIN decisión, NO retunear umbrales)
+python -m sky_claw.local.native_parallax.research.run_exp_m4 ^
+    --corpus-root C:\SkyClawResearch\NativeParallax\EXP-M3 ^
+    --phase calibration --out data\exp-m4-calibration.json
+
+:: 3) commit de freeze: SOLO este doc marcando "calibración OK" (cero umbrales) → SHA
+:: 4) full (calibration + heldout + decisión + bootstrap + secundarias)
+python -m sky_claw.local.native_parallax.research.run_exp_m4 ^
+    --corpus-root C:\SkyClawResearch\NativeParallax\EXP-M3 ^
+    --phase full --frozen-ack freeze-<sha-del-paso-3> ^
+    --out data\exp-m4-results.json
+
+:: 5) llenar §14.4 con los números + push del PR (jamás retunear tras ver resultados)
+```
+
+### 14.4 Números de Cohort A
+
+_(vacío a propósito — sin corpus no hay números; este subsection sólo se llena con la
+corrida real del operador, en un commit posterior que referencie `exp-m4-results.json`.)_
+
+### 14.5 Declaración de integridad
+
+No existe ningún número de Cohort A producido por esta sesión. Todo resultado citado en
+este doc proviene de (a) publicaciones M0–M3 ya en el repo, o (b) corpus sintéticos
+etiquetados como tales. Los umbrales §6 se congelaron en el commit de preregistro
+(`9661a92`) y su única modificación posterior (§24-D, barra held-out de C2) está
+documentada arriba y precede a cualquier contacto con datos reales.
 
 ## 15. Exploratorio post-corrida
 
