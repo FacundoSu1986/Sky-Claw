@@ -25,7 +25,8 @@ import logging
 import os
 import pathlib
 import sys
-from collections.abc import Sequence
+import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,6 +65,10 @@ class PreexistingTrustedRegistryError(TrustedNamespaceError):
 
 class AncestorProvisioningError(TrustedNamespaceError):
     """Fallo en la validación o creación de un ancestro: detiene el aprovisionamiento de descendientes."""
+
+
+class NamespaceAlreadyExistsError(TrustedNamespaceError):
+    """La creación exclusive (single-winner) encontró el objeto ya presente: no se reemplaza ni se normaliza."""
 
 
 # ============================================================================
@@ -407,6 +412,20 @@ class TrustedNamespaceResult:
 # ============================================================================
 
 
+def _canonical_file_readable_by_aces() -> list[NamespaceAceSpec]:
+    """ACEs canónicas de un archivo plano protegido: Admins/SYSTEM full, AU read-only."""
+    return [
+        NamespaceAceSpec(BUILTIN_ADMINISTRATORS_SID, _FILE_ALL_ACCESS, 0x00, "Administrators"),
+        NamespaceAceSpec(LOCAL_SYSTEM_SID, _FILE_ALL_ACCESS, 0x00, "LocalSystem"),
+        NamespaceAceSpec(
+            AUTHENTICATED_USERS_SID,
+            _FILE_GENERIC_READ,  # 0x00120089
+            0x00,
+            "Authenticated Users (Read Only)",
+        ),
+    ]
+
+
 def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
     """Construye la especificación canónica inmutable de DACL para un objeto según ADR 0010 §11.3.
 
@@ -417,7 +436,8 @@ def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
     - staging/ (padre): AU = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_ADD_SUBDIRECTORY (0x00000025).
       CREATOR OWNER heredable: 0x001301FF (OI|CI|IO).
       AU heredable a operaciones ajenas: FILE_GENERIC_READ (0x00120089, OI|CI|IO).
-    - trusted_goldens.json: AU = FILE_GENERIC_READ (0x00120089).
+    - trusted_goldens.json y golden_admission_record.json:
+      AU = FILE_GENERIC_READ (0x00120089).
     """
     aces: list[NamespaceAceSpec] = []
 
@@ -512,16 +532,14 @@ def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
         # trusted_goldens.json:
         # Admins y SYSTEM: FILE_ALL_ACCESS
         # Authenticated Users: FILE_GENERIC_READ (0x00120089), flags 0x00
-        aces = [
-            NamespaceAceSpec(BUILTIN_ADMINISTRATORS_SID, _FILE_ALL_ACCESS, 0x00, "Administrators"),
-            NamespaceAceSpec(LOCAL_SYSTEM_SID, _FILE_ALL_ACCESS, 0x00, "LocalSystem"),
-            NamespaceAceSpec(
-                AUTHENTICATED_USERS_SID,
-                _FILE_GENERIC_READ,  # 0x00120089
-                0x00,
-                "Authenticated Users (Read Only)",
-            ),
-        ]
+        aces = _canonical_file_readable_by_aces()
+    elif object_name == "golden_admission_record.json":
+        # Registro protegido de operación de Golden Admission (§11.4): mismo
+        # contrato de archivo que trusted_goldens.json — legible por AU, de
+        # escritura sólo para Admins/SYSTEM — pero como objeto independiente
+        # para que una futura modificación de la DACL del TGR no cambie en
+        # silencio la del registro de auditoría (ni al revés).
+        aces = _canonical_file_readable_by_aces()
     else:
         raise TrustedNamespaceError(f"Nombre de objeto desconocido para especificación de DACL: '{object_name}'")
 
@@ -941,8 +959,178 @@ def create_secured_file_from_birth(
         return int(h)
 
 
+def create_secure_directory_exclusive(dir_path: pathlib.Path | str, object_name: str) -> None:
+    """Crea un directorio del namespace con SD canónico y semántica single-winner (CREATE_NEW).
+
+    ADR 0010 §11.4: el directorio ``operations/<operation_id>/`` es la claim
+    one-use de una operación de Golden Admission. Dos llamadas concurrentes (o
+    un replay del mismo ``operation_id``) no pueden ambos "ganar": el árbitro
+    es ``CreateDirectoryW``, que falla con ERROR_ALREADY_EXISTS (80/183) cuando
+    el directorio ya existe — la pre-chequeo por pathname es sólo para un
+    mensaje más claro, nunca es la garantía.
+
+    A diferencia de ``_provision_or_normalize_directory`` esta primitiva NUNCA
+    normaliza un directorio ajeno preexistente: si la ruta ya existe, falla
+    cerrado sin tocar su DACL.
+
+    Tras ganar la creación endurece y verifica el directorio por handle con la
+    misma ruta canónica (Case B) que usa el bootstrap, de modo que la DACL
+    canónica y la verificación post-creación viven en UN solo lugar.
+    """
+    _ensure_windows()
+    target = pathlib.Path(dir_path)
+    dir_str = str(target)
+
+    # Ancestors-first: el padre DEBE existir ya; nunca creación implícita.
+    parent_str = str(target.parent)
+    h_parent = _open_handle_no_reparse(
+        parent_str,
+        desired_access=_READ_CONTROL | _FILE_READ_ATTRIBUTES,
+        creation_disposition=_OPEN_EXISTING,
+    )
+    if _is_invalid_handle(h_parent):
+        parent_err = ctypes.get_last_error()
+        raise AncestorProvisioningError(
+            f"El directorio padre '{parent_str}' no existe o no es accesible (código Win32 {parent_err}). "
+            "El provisioning exige orden ancestors-first; nunca se crean ancestros implícitamente."
+        )
+    _safe_close_handle(h_parent)
+
+    if _check_object_exists_no_reparse(dir_str):
+        raise NamespaceAlreadyExistsError(
+            f"El directorio '{dir_str}' ya existe: la creación exclusive es single-winner y no reemplaza"
+        )
+
+    with _build_canonical_security_descriptor(object_name) as sd_ctx:
+        sa = _SecurityAttributes()
+        sa.nLength = ctypes.sizeof(sa)
+        sa.lpSecurityDescriptor = sd_ctx.p_sd
+        sa.bInheritHandle = False
+
+        if not _kernel32.CreateDirectoryW(dir_str, ctypes.byref(sa)):
+            err = ctypes.get_last_error()
+            if err in (80, 183):  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
+                raise NamespaceAlreadyExistsError(f"Colisión de creación exclusive en '{dir_str}': código Win32 {err}")
+            raise TrustedNamespaceError(f"CreateDirectoryW falló al crear '{dir_str}': código {err}")
+
+    # Ganamos el CREATE_NEW: endurecer (owner SYSTEM + DACL protegida) y
+    # verificar por handle con la única ruta canónica de normalización.
+    _provision_or_normalize_directory(target, object_name)
+
+
+def _verificador_de_archivo_protegido(object_name: str) -> Callable[[pathlib.Path], None]:
+    """Resuelve el verificador por handle de un contrato de archivo plano protegido.
+
+    Enumeración cerrada de los contratos: un ``object_name`` sin verificador
+    falla cerrado en lugar de escribirse sin comprobarse. Se resuelve en cada
+    llamada (no al importar) para que un stub de test que reemplace
+    ``verify_secured_file_by_handle`` siga teniendo efecto.
+    """
+    if object_name == "trusted_goldens.json":
+        return verify_secured_file_by_handle
+    if object_name == "golden_admission_record.json":
+        return verify_golden_admission_record_by_handle
+    raise TrustedNamespaceError(f"No existe verificador por handle para el objeto '{object_name}'")
+
+
+def write_secured_file_atomically_at(
+    dest: pathlib.Path | str,
+    payload: bytes,
+    object_name: str,
+    *,
+    validate: Callable[[bytes], None] | None = None,
+    error_factory: Callable[[str], BaseException] = TrustedNamespaceError,
+    parent_error_message: str | None = None,
+) -> None:
+    """Escribe ``payload`` en ``dest`` de forma atómica con SD canónico (§11.3 / §11.4).
+
+    ÚNICA primitiva de escritura atómica de archivos protegidos del paquete: el
+    TGR y el registro de Golden Admission delegan acá para que las garantías no
+    puedan divergir entre hermanos. Propiedades, en orden:
+
+    1. El padre debe existir y ser confiable (sin ``mkdir`` implícito).
+    2. El temporal nace en el MISMO directorio que el destino, con
+       ``CREATE_NEW`` y el SECURITY_DESCRIPTOR canónico de ``object_name``
+       (sin ventana create→harden).
+    3. ``WriteFile`` + ``FlushFileBuffers`` sobre ese handle.
+    4. Verificación por handle del temporal ANTES del reemplazo.
+    5. ``os.replace`` (atómico a nivel de archivo).
+    6. Re-verificación por handle del destino + relectura byte a byte +
+       ``validate`` opcional sobre los bytes releídos.
+    7. Ante cualquier fallo se cierra el handle y se borra el temporal; el
+       archivo previo queda intacto.
+
+    ``error_factory`` permite que cada caller conserve su tipo de error
+    histórico (p. ej. ``TrustedRegistryError``) sin duplicar la secuencia.
+    """
+    _ensure_windows()
+    dest_path = pathlib.Path(dest)
+    dest_str = str(dest_path)
+
+    parent = dest_path.parent
+    if not _check_object_exists_no_reparse(parent):
+        raise error_factory(parent_error_message or f"El directorio padre '{parent}' no existe o no es confiable")
+
+    temp_path = parent / f".tmp_{uuid.uuid4().hex}.{dest_path.name}"
+
+    h_temp: int | None = None
+    try:
+        # 1. Temporal nacido con SD canónico de object_name
+        h_temp = create_secured_file_from_birth(temp_path, object_name)
+
+        data_buf = (ctypes.c_char * len(payload)).from_buffer_copy(payload)
+        bytes_written = wintypes.DWORD(0)
+        if not _kernel32.WriteFile(
+            h_temp,
+            data_buf,
+            len(payload),
+            ctypes.byref(bytes_written),
+            None,
+        ) or bytes_written.value != len(payload):
+            err = ctypes.get_last_error()
+            raise error_factory(f"WriteFile falló en archivo temporal '{temp_path}': código {err}")
+
+        if not _kernel32.FlushFileBuffers(h_temp):
+            err = ctypes.get_last_error()
+            raise error_factory(f"FlushFileBuffers falló en '{temp_path}': código {err}")
+
+        _safe_close_handle(h_temp)
+        h_temp = None
+
+        # 4. Verificar temporal por handle antes de reemplazar
+        verificador = _verificador_de_archivo_protegido(object_name)
+        verificador(temp_path)
+
+        # 5. Reemplazo atómico
+        os.replace(temp_path, dest_path)
+
+        # 6. Re-verificar destino + relectura + validación del caller
+        verificador(dest_path)
+        reloaded = dest_path.read_bytes()
+        if reloaded != payload:
+            raise error_factory(f"Revalidación post-reemplazo falló: bytes no coinciden en '{dest_str}'")
+        if validate is not None:
+            validate(reloaded)
+
+    except BaseException:
+        if h_temp is not None:
+            _safe_close_handle(h_temp)
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def verify_secured_file_by_handle(path: pathlib.Path | str) -> None:
     """Verifica mediante handle sin seguir reparse points que un archivo cumpla el contrato canónico.
+
+    Contrato del archivo plano protegido ``trusted_goldens.json`` (§11.3).
+    La firma es de UN argumento por contrato: los tests que simulan elevación
+    reemplazan esta función por un stub de un parámetro, así que cualquier
+    variante con más argumentos debe nacer como función aparte
+    (``verify_golden_admission_record_by_handle``) y no como parámetro nuevo.
 
     Verificaciones atadas a handle:
     1. No es un directorio.
@@ -950,7 +1138,8 @@ def verify_secured_file_by_handle(path: pathlib.Path | str) -> None:
     3. Owner es LOCAL SYSTEM (S-1-5-18).
     4. Group es BUILTIN\\Administrators (S-1-5-32-544).
     5. Control Flags incluye SE_DACL_PROTECTED.
-    6. Verificación estructural exacta de la DACL contra build_namespace_dacl_spec("trusted_goldens.json"):
+    6. Verificación estructural exacta de la DACL contra
+       build_namespace_dacl_spec("trusted_goldens.json"):
        - Exactamente 3 ACEs (len == 3).
        - Tipo exacto ACCESS_ALLOWED (0x00) en todas las ACEs.
        - AceFlags == 0x00 en todas las ACEs para archivos planos.
@@ -962,6 +1151,22 @@ def verify_secured_file_by_handle(path: pathlib.Path | str) -> None:
        - Prohibido cualquier ACE adicional no canónico (incluso si otorga menos permisos).
     Cualquier discrepancia lanza TrustedNamespaceError (Fail-Closed).
     """
+    _verify_secured_file_contract(path, "trusted_goldens.json")
+
+
+def verify_golden_admission_record_by_handle(path: pathlib.Path | str) -> None:
+    """Verifica por handle el registro protegido de Golden Admission (§11.4).
+
+    Mismo contrato estructural que ``verify_secured_file_by_handle`` pero
+    anclado a ``build_namespace_dacl_spec("golden_admission_record.json")``:
+    si algún día la DACL de uno de los dos archivos cambia, el otro deja de
+    verificarse contra la spec equivocada y la escritura falla cerrado.
+    """
+    _verify_secured_file_contract(path, "golden_admission_record.json")
+
+
+def _verify_secured_file_contract(path: pathlib.Path | str, object_name: str) -> None:
+    """Verificación por handle de un archivo plano protegido contra su spec canónica."""
     _ensure_windows()
     target_str = str(path)
     h = _open_handle_no_reparse(
@@ -998,7 +1203,7 @@ def verify_secured_file_by_handle(path: pathlib.Path | str) -> None:
             raise TrustedNamespaceError(f"DACL en '{target_str}' no tiene flag SE_DACL_PROTECTED activo")
 
         # 6. Verificación estructural exacta de la DACL
-        spec = build_namespace_dacl_spec("trusted_goldens.json")
+        spec = build_namespace_dacl_spec(object_name)
         live_aces = _read_live_dacl_aces(h)
 
         if len(live_aces) != len(spec.aces):

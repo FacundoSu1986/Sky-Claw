@@ -85,6 +85,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Anclas: `tests/test_runtime_vault_trusted_registry_lock.py` (lost-update oracle
   real cross-process, contención, crash release, exception release, mutation
   anchor del orden acquire→load→modify→write→release).
+- **Runtime Vault — Golden Admission / `REGISTER_OR_REFRESH_TRUSTED_GOLDEN` (GP2-P3).**
+  Servicio backend que registra (ABSENT → B) o refresca (A → B) una entrada del
+  Trusted Golden Registry, fail-closed, sin agregar estados al FSM de GP2 apply y
+  sin escribir el TGR desde el path de apply. Fuentes cerradas del axioma de
+  autoridad única (§11.0): `INDEPENDENT_PROVENANCE` (exige un provider de
+  provenance explícito; sin provider cableado la operación termina
+  `SOURCE_UNAVAILABLE`, `REJECTED` y con cero TGR writes) y `OPERATOR_TOFU`
+  (fuente de producción). La expectativa admitida sale del provider, nunca de
+  `request.expected_tree`/`expected_runtime`/`source_reference`, que son
+  candidatos del caller. Un solo commit
+  estructural: `mutate_trusted_golden_registry` (lock cross-process de P2) →
+  `LOAD` → `mutate(current)` → replace atómico, con la distinción tipada
+  `REJECTED` (no hubo replace: fallo previo → `TGR_CONCURRENT_CHANGE` /
+  `STORE_FAILED` / `AUDIT_RECORD_FAILED` / `UNEXPECTED_FAILURE`) vs
+  `COMMIT_OUTCOME_UNKNOWN` (el replace pudo ocurrir sin resultado legible →
+  revalidación del TGR contra `before`/`after` exactos; nunca se reporta
+  `REJECTED` ni se afirma que la fila previa quedó intacta). El claim del
+  `operation_id` es one-use y su colisión se tipa
+  (`GoldenAdmissionClaimAlreadyExistsError`), de modo que el perdedor de la
+  carrera responde `REJECTED` sin `record_path` y nunca lee ni escribe el
+  registro del ganador. TOFU sigue el orden
+  de §11.4: `OBSERVE` (sólo `OBSERVED`) → confirmación privilegiada
+  (`TOFU_PRE_RERUN`, con la advertencia
+  `OPERATOR_TOFU DOES NOT DETECT PRE-EXISTING COMPROMISE`) → receipt one-use
+  emitido por el helper → RV-2 fresco desde cero bajo el token original →
+  `VERIFIED` → write TGR, con la confirmación de provenance
+  (`PROVENANCE_POST_VERIFIED`) también antes del commit. Registro de auditoría
+  protegido por `operation_id` (receipt inmutable, expectativas normalizadas,
+  observaciones por pass con `ESTADOS_ADMITIDOS_POR_PASS`, binding TGR
+  `before`/`after`) persistido y revalidado **antes** del replace; frontera de error
+  del store sellada con `GoldenAdmissionStoreError` para toda falla operativa; append
+  terminal de auditoría desacoplado del desenlace ya decidido (falla de auditoría
+  post-commit preserva `REGISTERED` o `COMMIT_OUTCOME_UNKNOWN` con warning; el servicio
+  nunca lanza excepciones operativas ordinarias); `registered_at`
+  UTC ISO-8601 `Z` con microsegundos, único por root físico (+1 µs acotado o
+  fail-closed). `critical_expectations` con serialización normativa exacta
+  (`SHA-256(UTF-8("[]"))` para la lista vacía). Anclas:
+  `tests/test_runtime_vault_critical_expectations.py`,
+  `tests/test_runtime_vault_golden_admission.py`,
+  `tests/test_runtime_vault_golden_admission_store.py`,
+  `tests/test_runtime_vault_golden_admission_service.py`. Sin wiring a
+  GUI/LLM y sin cambios a la CLI pública del helper (contrato §11.4).
 
 ### Security
 - **`anyio` 4.13.0 → 4.14.2 (CVE-2026-63374, CVE-2026-64847)** — avisos que
