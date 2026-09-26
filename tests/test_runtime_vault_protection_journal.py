@@ -463,3 +463,51 @@ class TestAmbiguedadPreservada:
         assert isinstance(journal, ProtectionJournal)
         with pytest.raises(Exception):  # noqa: B017,PT011 - frozen dataclass
             journal.transaction_state = ProtectionTransactionState.COMMITTED  # type: ignore[misc]
+
+
+# ============================================================================
+# Endurecimiento adversarial (revisión previa al merge)
+# ============================================================================
+
+
+class TestIdentidadFisicaUnicaPorRelpath:
+    """Un journal no puede re-apuntar un ``relative_path`` a otro inodo."""
+
+    def test_cambio_de_identidad_fisica_es_schema_invalido(self) -> None:
+        crudo = _bytes(
+            _header(),
+            _initial_state(),
+            _node_record(3),
+            _node_record(
+                4,
+                state=NodeWalState.MUTATED,
+                file_id=_ROOT_FILE_ID + 99,
+                pre_sd_sha256="f" * 64,
+            ),
+        )
+        resultado = parse_journal_bytes(crudo)
+        assert resultado.disposition is JournalLoadDisposition.SCHEMA_INVALID
+        assert resultado.journal is None
+        assert "cambió de identidad física" in resultado.detail
+
+    def test_misma_identidad_repetida_sigue_valida(self) -> None:
+        """Repetir la MISMA identidad no es un re-apuntado: el WAL sólo exige unicidad."""
+        crudo = _bytes(
+            _header(),
+            _initial_state(),
+            _node_record(3),
+            _node_record(4, state=NodeWalState.MUTATED),
+        )
+        journal = deserialize_journal_bytes(crudo)
+        assert journal.node_record("Data/Skyrim.esm").state is NodeWalState.MUTATED
+
+    def test_dos_relpaths_distintos_conviven(self) -> None:
+        crudo = _bytes(
+            _header(),
+            _initial_state(),
+            _node_record(3, relative_path="Data/Skyrim.esm"),
+            _node_record(4, relative_path="Data/quest.esp", file_id=_ROOT_FILE_ID + 2),
+        )
+        journal = deserialize_journal_bytes(crudo)
+        assert journal.node_state("Data/Skyrim.esm") is NodeWalState.MUTATING
+        assert journal.node_state("Data/quest.esp") is NodeWalState.MUTATING

@@ -678,11 +678,22 @@ def create_protection_journal(
             )
         if parsed.journal.authorized_plan_digest != plan.plan_digest:
             raise ProtectionJournalCreateError(f"El journal creado en '{path}' no liga contra el plan autoritativo")
-    except BaseException:
+    except BaseException as exc:
         if handle is not None:
             active_kernel.close(handle)
         with contextlib.suppress(OSError):
             active_kernel.remove(path)
+        if active_kernel.exists(path):
+            # Fallo de durabilidad AGRAVADO: el artefacto no pudo retirarse, así
+            # que queda en disco un journal cuya escritura nunca fue confirmada por
+            # ``FlushFileBuffers``. Se falla cerrado y EXPLÍCITO (nunca en silencio)
+            # para que el operador sepa que hay evidencia ambigua que retirar a
+            # mano; encadenar conserva la causa original (``DurableJournalFlushError``
+            # u otra) para no degradar el diagnóstico.
+            raise ProtectionJournalCreateError(
+                f"Fallo creando el journal '{path}' y el artefacto NO pudo retirarse: "
+                "queda evidencia ambigua en disco cuya durabilidad nunca se confirmó"
+            ) from exc
         raise
 
     return DurableProtectionJournal(
@@ -864,7 +875,15 @@ class DurableProtectionJournal:
         try:
             self._kernel.append(handle, payload)
             flushed = self._kernel.flush(handle)
-        except (ProtectionJournalStoreError, OSError):
+        except BaseException:
+            # CUALQUIER fallo — tipado o no — ocurre después de un ``append`` que
+            # puede haber aterrizado parcialmente: la evidencia durable es
+            # desconocida y el journal queda envenenado SIN excepciones. Capturar
+            # sólo ``ProtectionJournalStoreError``/``OSError`` dejaba fuera los
+            # errores no tipados de un backend inyectado (``RuntimeError``,
+            # ``ValueError``, ``ctypes.ArgumentError``…), y con ellos el handle
+            # seguía vivo y se podía acuñar un permiso de mutación sobre
+            # evidencia ambigua: exactamente lo que §20 C4b prohíbe.
             self._mark_durability_failure()
             raise
         if not flushed:
@@ -939,6 +958,17 @@ def open_protection_journal(
 
     records = _records_from_bytes(raw)
     handle = active_kernel.open_append(path)
+    # El puerto del kernel no expone lectura por handle: ``read_all(path)`` y
+    # ``open_append(path)`` son dos aperturas por ruta distintas. Se re-lee DESPUÉS
+    # de abrir el handle de anexado y se exige que los bytes sigan siendo los que
+    # se validaron y ligaron al plan, de modo que un swap de archivo entre la
+    # validación y el append falle cerrado en vez de anexar sobre un inodo distinto
+    # del que se comprobó.
+    if active_kernel.read_all(path) != raw:
+        active_kernel.close(handle)
+        raise ProtectionJournalPlanBindingError(
+            f"el journal '{path}' cambió entre la validación y la apertura para anexar: se rechaza"
+        )
     return DurableProtectionJournal(
         journal=journal,
         path=path,

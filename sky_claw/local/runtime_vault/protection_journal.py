@@ -640,8 +640,11 @@ def replay_journal_records(records: Sequence[JournalRecord]) -> ProtectionJourna
     """Reproduce los registros y devuelve el estado derivado, validando monotonía.
 
     Exige: primer registro ``journal_header`` con ``sequence == 1``, secuencia
-    estrictamente creciente de a 1, transiciones declaradas en las tablas cerradas
-    y sin regresiones por nodo.
+    estrictamente creciente de a 1, transiciones declaradas en las tablas cerradas,
+    sin regresiones por nodo y UNA sola identidad física por ``relative_path``
+    (``VolumeSerialNumber`` + ``FileId`` + ``pre_sd_sha256``): un journal no puede
+    re-apuntar un relpath a otro inodo, que es la misma regla con la que el WAL
+    rechaza ligarse por índice desnudo.
     """
     if not records:
         raise ProtectionJournalSchemaError("el journal no tiene registros")
@@ -655,6 +658,7 @@ def replay_journal_records(records: Sequence[JournalRecord]) -> ProtectionJourna
     transaction_declared = False
     node_records: list[JournalNodeRecord] = []
     node_states: dict[str, NodeWalState] = {}
+    node_identities: dict[str, tuple[int, int, str]] = {}
     expected_sequence = 2
 
     for record in records[1:]:
@@ -677,6 +681,18 @@ def replay_journal_records(records: Sequence[JournalRecord]) -> ProtectionJourna
         elif isinstance(record, JournalNodeRecord):
             current = node_states.get(record.relative_path)
             assert_node_transition(current, record.state, record.relative_path)
+            record_identity = (
+                record.volume_serial_number,
+                record.file_id,
+                record.pre_sd_sha256,
+            )
+            known_identity = node_identities.get(record.relative_path)
+            if known_identity is not None and known_identity != record_identity:
+                raise ProtectionJournalSchemaError(
+                    f"el nodo '{record.relative_path}' cambió de identidad física dentro del journal: "
+                    f"previo={known_identity}, observado={record_identity}"
+                )
+            node_identities[record.relative_path] = record_identity
             node_states[record.relative_path] = record.state
             node_records.append(record)
         else:  # pragma: no cover - el header sólo puede ser el primero

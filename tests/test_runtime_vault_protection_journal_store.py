@@ -124,9 +124,18 @@ class FakeKernel:
     Registra el orden de las operaciones para poder afirmar el ORDEN del WAL.
     """
 
-    def __init__(self, *, flush_ok: bool = True, append_falla: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        flush_ok: bool = True,
+        append_falla: bool = False,
+        append_no_tipado: bool = False,
+        remove_falla: bool = False,
+    ) -> None:
         self.flush_ok = flush_ok
         self.append_falla = append_falla
+        self.append_no_tipado = append_no_tipado
+        self.remove_falla = remove_falla
         self.eventos: list[str] = []
         self._handles: dict[int, pathlib.Path] = {}
         self._siguiente = 500
@@ -157,6 +166,13 @@ class FakeKernel:
     def append(self, handle: int, payload: bytes) -> None:
         if self.append_falla:
             raise ProtectionJournalStoreError("append simulado roto")
+        if self.append_no_tipado:
+            # Escritura PARCIAL que aterriza y luego un error NO tipado: la
+            # evidencia durable queda desconocida aunque la excepción no sea del
+            # store (§20 C4b). El WAL debe envenenarse igual.
+            with self._handles[handle].open("ab") as fh:
+                fh.write(payload[: len(payload) // 2])
+            raise RuntimeError("fallo no tipado del backend tras write parcial")
         with self._handles[handle].open("ab") as fh:
             fh.write(payload)
         self.eventos.append("append")
@@ -173,6 +189,8 @@ class FakeKernel:
         self.eventos.append("close")
 
     def remove(self, path: pathlib.PurePath) -> None:
+        if self.remove_falla:
+            raise OSError("no se pudo retirar el artefacto ambiguo")
         pathlib.Path(path).unlink(missing_ok=True)
 
 
@@ -713,3 +731,91 @@ def entorno_elevado(monkeypatch: pytest.MonkeyPatch) -> None:
         with pytest.raises(trusted_namespace.TrustedNamespaceError):
             trusted_namespace.write_secured_file_create_once_at(destino, b'{"kind":"otro"}', "protection_journal.json")
         assert destino.read_bytes() == b'{"kind":"journal_header"}'
+
+
+# ============================================================================
+# Endurecimiento adversarial (revisión previa al merge)
+# ============================================================================
+
+
+class TestEndurecimientoAdversarial:
+    """Regresiones de la revisión adversarial focalizada en crash windows."""
+
+    def test_error_no_tipado_tras_append_parcial_tambien_envenena(self, raiz: pathlib.Path) -> None:
+        """C4b: CUALQUIER fallo tras el append deja evidencia ambigua.
+
+        Un backend que lanza una excepción no tipada (``RuntimeError``) después de
+        haber hecho aterrizar media escritura NO puede dejar el handle vivo: sobre
+        esa evidencia no debe existir permiso de mutación.
+        """
+        kernel = FakeKernel()
+        journal = _journal(raiz, kernel)
+        kernel.append_no_tipado = True
+
+        with pytest.raises(RuntimeError):
+            journal.record_node_mutation_intent(journal.node_binding("Data/Skyrim.esm"))
+
+        assert journal.journal.transaction_state is ProtectionTransactionState.INDETERMINATE
+        assert journal.journal.node_state("Data/Skyrim.esm") is None
+        assert journal.is_closed is False  # el handle sigue, pero envenenado
+
+        # Ni recuperando el backend se puede emitir un permiso después.
+        kernel.append_no_tipado = False
+        with pytest.raises(DurableJournalFlushError):
+            journal.record_node_mutation_intent(journal.node_binding("Data/quest.esp"))
+        journal.close()
+
+    def test_error_no_tipado_nunca_emite_permiso(self, raiz: pathlib.Path) -> None:
+        """El disco queda estructuralmente roto: INDETERMINATE, nunca MUTATING."""
+        kernel = FakeKernel()
+        journal = _journal(raiz, kernel)
+        kernel.append_no_tipado = True
+        with pytest.raises(RuntimeError):
+            journal.record_node_mutation_intent(journal.node_binding("Data/Skyrim.esm"))
+        journal.close()
+
+        resultado = classify_protection_journal(_OPERATION_ID, programdata_resolver=_resolver(raiz), kernel=kernel)
+        assert resultado.classification is ProtectionJournalClassification.INDETERMINATE
+        assert resultado.journal is None
+
+    def test_flush_fallido_y_artefacto_irretirable_falla_cerrado_y_explicito(self, raiz: pathlib.Path) -> None:
+        """Create + flush no confirmado + unlink fallido = artefacto ambiguo.
+
+        Sin el endurecimiento el journal sobrevivía en disco y un proceso
+        posterior lo clasificaba VALID aunque ``FlushFileBuffers`` nunca hubiera
+        confirmado la creación. Ahora el fallo es explícito y conserva la causa.
+        """
+        kernel = FakeKernel(flush_ok=False, remove_falla=True)
+        with pytest.raises(ProtectionJournalCreateError) as cercano:
+            create_protection_journal(_plan_durable(raiz), programdata_resolver=_resolver(raiz), kernel=kernel)
+        assert isinstance(cercano.value.__cause__, DurableJournalFlushError)
+        assert "evidencia ambigua" in str(cercano.value)
+
+        ruta = derive_protection_journal_path(_OPERATION_ID, programdata_resolver=_resolver(raiz))
+        assert ruta.exists()
+        # El operador debe poder ver que el artefacto quedó ambiguo.
+        assert "NO pudo retirarse" in str(cercano.value)
+
+    def test_journal_reabierto_reverifica_que_el_archivo_no_cambio(self, raiz: pathlib.Path) -> None:
+        """``open_append`` y la validación leen por ruta: se re-verifica tras abrir."""
+        journal = _journal(raiz)
+        journal.record_node_mutation_intent(journal.node_binding("Data/Skyrim.esm"))
+        journal.close()
+
+        kernel = FakeKernel()
+        original = kernel.read_all
+        llamadas = {"n": 0}
+
+        def _read_con_swap(path: pathlib.PurePath) -> bytes:
+            # La 1ª lectura es la de validación (íntegra); la 2ª, posterior a
+            # ``open_append``, ve el archivo sustituido.
+            llamadas["n"] += 1
+            if llamadas["n"] >= 2:
+                return b'{"kind":"journal_header","sequence":1,"operation_id":"otro"}\n'
+            return original(path)
+
+        kernel.read_all = _read_con_swap  # type: ignore[method-assign]
+        with pytest.raises(ProtectionJournalPlanBindingError):
+            open_protection_journal(
+                _OPERATION_ID, _plan_durable(raiz), programdata_resolver=_resolver(raiz), kernel=kernel
+            )
