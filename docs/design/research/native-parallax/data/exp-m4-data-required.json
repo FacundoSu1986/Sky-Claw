@@ -1,0 +1,148 @@
+{
+ "experiment": "EXP-M4",
+ "phase": "calibration",
+ "state": "EXP_M4_DATA_REQUIRED",
+ "decision": "EXP_M4_DATA_INSUFFICIENT",
+ "environment": {
+  "git_sha": "d6e2b44c2cba293ff382de3e6adb16844e3d60d7",
+  "manifest_path": "/home/user/Sky-Claw-m4/docs/design/research/native-parallax/data/exp-m3-clean-authored-manifest.json",
+  "manifest_sha256": "b0f5a4c6604989269647973b6a6e6b899e859b436e7b42bede7e3297d10e6d6f",
+  "solver_module_sha256": "18ecf5d5e84c051eed897ffb14e67255415244a17fe2f817253958318d7d2404",
+  "resolution": 512,
+  "phase": "calibration",
+  "frozen_ack": null,
+  "bootstrap_seed": 20260925,
+  "timestamp_utc": "2026-09-26T00:52:15Z",
+  "python": "3.11.2",
+  "numpy": "2.4.6",
+  "pillow": "11.3.0",
+  "fft_backend": "numpy.fft",
+  "solver": "reconstruct_from_normal(normal, \"RAW\", 0.0, 0.0) \u2014 M2/M3 sin cambios"
+ },
+ "exclusions": [
+  {
+   "asset_id": "polyhaven_brick_4",
+   "reason": "file_missing: normal brick_4_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_brick_wall_005",
+   "reason": "file_missing: normal brick_wall_005_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_red_brick_03",
+   "reason": "file_missing: normal red_brick_03_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_castle_brick_07",
+   "reason": "file_missing: normal castle_brick_07_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_brown_planks_03",
+   "reason": "file_missing: normal brown_planks_03_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_brown_planks_05",
+   "reason": "file_missing: normal brown_planks_05_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_dark_wooden_planks",
+   "reason": "file_missing: normal dark_wooden_planks_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_weathered_planks",
+   "reason": "file_missing: normal weathered_planks_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_rock_face",
+   "reason": "file_missing: normal rock_face_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_gray_rocks",
+   "reason": "file_missing: normal gray_rocks_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_rocky_terrain",
+   "reason": "file_missing: normal rocky_terrain_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_cliff_side",
+   "reason": "file_missing: normal cliff_side_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_cobblestone_01",
+   "reason": "file_missing: normal cobblestone_01_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_cobblestone_03",
+   "reason": "file_missing: normal cobblestone_03_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_cobblestone_05",
+   "reason": "file_missing: normal cobblestone_05_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_brown_floor_tiles",
+   "reason": "file_missing: normal brown_floor_tiles_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_blue_floor_tiles_01",
+   "reason": "file_missing: normal blue_floor_tiles_01_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_brushed_concrete_03",
+   "reason": "file_missing: normal brushed_concrete_03_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_chipped_concrete",
+   "reason": "file_missing: normal chipped_concrete_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_square_brick_paving",
+   "reason": "file_missing: normal square_brick_paving_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_precast_stone_paving",
+   "reason": "file_missing: normal precast_stone_paving_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_dry_ground_01",
+   "reason": "file_missing: normal dry_ground_01_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "polyhaven_cracked_red_ground",
+   "reason": "file_missing: normal cracked_red_ground_nor_gl_1k.png"
+  },
+  {
+   "asset_id": "ambientcg_Bricks051",
+   "reason": "file_missing: normal Bricks051_1K-PNG_NormalGL.png"
+  },
+  {
+   "asset_id": "ambientcg_Planks021",
+   "reason": "file_missing: normal Planks021_1K-PNG_NormalGL.png"
+  },
+  {
+   "asset_id": "ambientcg_Rock023",
+   "reason": "file_missing: normal Rock023_1K-PNG_NormalGL.png"
+  },
+  {
+   "asset_id": "ambientcg_Tiles049",
+   "reason": "file_missing: normal Tiles049_1K-PNG_NormalGL.png"
+  },
+  {
+   "asset_id": "ambientcg_Tiles075",
+   "reason": "file_missing: normal Tiles075_1K-PNG_NormalGL.png"
+  },
+  {
+   "asset_id": "ambientcg_Concrete028",
+   "reason": "file_missing: normal Concrete028_1K-PNG_NormalGL.png"
+  },
+  {
+   "asset_id": "ambientcg_PavingStones131",
+   "reason": "file_missing: normal PavingStones131_1K-PNG_NormalGL.png"
+  },
+  {
+   "asset_id": "ambientcg_Ground054",
+   "reason": "file_missing: normal Ground054_1K-PNG_NormalGL.png"
+  }
+ ]
+}
