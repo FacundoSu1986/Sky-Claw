@@ -17,7 +17,9 @@ objetiva registrada; bajo el mínimo §3 → EXP_M4_DATA_INSUFFICIENT (jamás in
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import subprocess
 import sys
@@ -256,6 +258,11 @@ def group_diagnostics(rows: list[dict[str, Any]], key: str) -> list[dict[str, An
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            with contextlib.suppress(AttributeError, io.UnsupportedOperation, ValueError):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="EXP-M4 — solver ceiling vs pair coherence (research-only)")
     parser.add_argument("--m3-manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--corpus-root", type=Path, required=True)
@@ -281,10 +288,10 @@ def main() -> None:
             "exclusions": exclusions,
         }
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        with args.out.open("w") as fh:
+        with args.out.open("w", encoding="utf-8") as fh:
             json.dump(data_required, fh, indent=1, allow_nan=False)
         print(json.dumps({"decision": "EXP_M4_DATA_INSUFFICIENT", "n_exclusions": len(exclusions)}, indent=2))
-        print(f"JSON → {args.out}")
+        print(f"JSON -> {args.out}")
         sys.exit(2)
 
     native_resolutions = {(int(e["normal_resolution"][0]), int(e["normal_resolution"][1])) for e in prepared}
@@ -301,7 +308,7 @@ def main() -> None:
         print(
             f"[{len(rows)}/{len(prepared)}] {rows[-1]['asset']}: self={rows[-1]['self_rmse']:.4f} "
             f"auth={rows[-1]['auth_rmse']:.4f} delta={rows[-1]['delta_rmse']:+.4f} "
-            f"coh={rows[-1]['coherence_agreement_deg']:.1f}°",
+            f"coh={rows[-1]['coherence_agreement_deg']:.1f} deg",
             flush=True,
         )
 
@@ -371,15 +378,15 @@ def main() -> None:
     report["summary"]["provider_diagnostics"] = group_diagnostics(rows, "provider")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("w") as fh:
+    with args.out.open("w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=1, allow_nan=False)
-    print(f"\nJSON → {args.out}")
+    print(f"\nJSON -> {args.out}")
     if args.phase == "full":
         print(f"DECISION: {report['summary']['decision']}")
         print(f"  full:    {full_stats}")
         print(f"  heldout: {held_stats}")
     else:
-        print("calibración OK (smoke-test de implementación; decisión PENDING_FREEZE)")
+        print("calibracion OK (smoke-test de implementacion; decision PENDING_FREEZE)")
 
 
 if __name__ == "__main__":

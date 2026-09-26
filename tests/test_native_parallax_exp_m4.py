@@ -628,3 +628,37 @@ def test_run_exp_m4_full_phase_decision_vocabulary(tmp_path: Path) -> None:
         <= report["summary"]["bootstrap"]["delta_rmse_full"]["point"]
     )
     assert report["dataset"]["split_counts"] == {"CALIBRATION": 10, "HELD_OUT": 5}
+
+
+def test_run_exp_m4_stdout_encoding_safety(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifica que run_exp_m4 maneje consolas con encoding limitado (ej. cp1252) sin crash."""
+    import io
+    import sys
+
+    from sky_claw.local.native_parallax.research import run_exp_m4
+
+    corpus = tmp_path / "corpus"
+    manifest = _synthetic_corpus(corpus)
+    out = tmp_path / "cal.json"
+
+    fake_stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_exp_m4",
+            "--m3-manifest",
+            str(manifest),
+            "--corpus-root",
+            str(corpus),
+            "--out",
+            str(out),
+            "--resolution",
+            "64",
+            "--phase",
+            "calibration",
+        ],
+    )
+    run_exp_m4.main()
+    assert out.exists()
