@@ -528,6 +528,28 @@ def _construir_challenge(
     )
 
 
+def _raices_del_overlay(
+    *,
+    mo2_root: pathlib.Path | None,
+    data_root: pathlib.Path | None,
+    mods_dir: pathlib.Path | None,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Resolución ÚNICA de ``(data_resolved, mods_resolved)`` del overlay MO2.
+
+    ``<data_root>/mods`` es el mismo concepto "directorio de mods de la
+    instancia activa" que ``get_mo2_mods_path()`` centraliza en el resolver
+    (ver el ancla de constructores manuales de
+    ``tests/test_path_resolution_service.py``): este helper existe para que
+    ningún builder de challenge lo reconstruya a mano.
+    """
+    root = data_root or mo2_root
+    if root is None:
+        raise VfsAttestationError("se requiere data_root o mo2_root")
+    data_resolved = root.resolve()
+    mods_resolved = mods_dir.resolve() if mods_dir is not None else (data_resolved / "mods")
+    return data_resolved, mods_resolved
+
+
 def build_attestation_challenge(
     *,
     mo2_root: pathlib.Path | None = None,
@@ -544,11 +566,7 @@ def build_attestation_challenge(
     el mismo ``<juego>/Data`` (USVFS expone la misma ruta que lee el preview).
     """
     profile_name = _validated_profile(profile)
-    root = data_root or mo2_root
-    if root is None:
-        raise VfsAttestationError("se requiere data_root o mo2_root")
-    data_resolved = root.resolve()
-    mods_resolved = mods_dir.resolve() if mods_dir is not None else (data_resolved / "mods")
+    data_resolved, mods_resolved = _raices_del_overlay(mo2_root=mo2_root, data_root=data_root, mods_dir=mods_dir)
     data = physical_data_dir.resolve()
     return _construir_challenge(
         data_resolved=data_resolved,
@@ -585,11 +603,7 @@ def build_attestation_challenge_for_source(
     """
     safe_mod = _validated_profile(source_mod)
     profile_name = _validated_profile(profile)
-    root = data_root or mo2_root
-    if root is None:
-        raise VfsAttestationError("se requiere data_root o mo2_root")
-    data_resolved = root.resolve()
-    mods_resolved = mods_dir.resolve() if mods_dir is not None else (data_resolved / "mods")
+    data_resolved, mods_resolved = _raices_del_overlay(mo2_root=mo2_root, data_root=data_root, mods_dir=mods_dir)
     data = physical_data_dir.resolve()
     return _construir_challenge(
         data_resolved=data_resolved,
@@ -621,11 +635,7 @@ def verify_vfs_attestation(
     profile_name = _validated_profile(profile)
     if profile_name != challenge.profile:
         raise VfsAttestationError(f"perfil incorrecto: worker={profile_name!r}, challenge={challenge.profile!r}")
-    root = data_root or mo2_root
-    if root is None:
-        raise VfsAttestationError("se requiere data_root o mo2_root")
-    data_resolved = root.resolve()
-    mods_resolved = mods_dir.resolve() if mods_dir is not None else (data_resolved / "mods")
+    data_resolved, mods_resolved = _raices_del_overlay(mo2_root=mo2_root, data_root=data_root, mods_dir=mods_dir)
     relative = pathlib.Path(*challenge.relative_path.parts)
     source = mods_resolved / _validated_profile(challenge.source_mod) / relative
     current_source_sha = _sha256_file(source)

@@ -46,7 +46,11 @@ from sky_claw.local.tools.dyndolod_runner import (
     StandaloneDynDOLODSpawnStrategy,
     ToolExecutionResult,
 )
-from sky_claw.local.tools.texgen_handoff import TexGenHandoffRequest, TexGenHandoffResult
+from sky_claw.local.tools.texgen_handoff import (
+    TexGenHandoffApproval,
+    TexGenHandoffRequest,
+    TexGenHandoffResult,
+)
 
 # =============================================================================
 # Escenario MO2 mínimo (perfil + mods + overwrite + Data físico/virtual)
@@ -237,6 +241,17 @@ def _request(esc: _Escenario, **cambios: Any) -> TexGenHandoffRequest:
     return TexGenHandoffRequest(**base)
 
 
+def _aprobacion_de_prueba() -> TexGenHandoffApproval:
+    """Approval mínimo para veredictos mockeados que nunca llegan al spawn."""
+    return TexGenHandoffApproval(
+        mod_name=_MOD,
+        artifact_root=pathlib.Path("mods") / _MOD / "textures",
+        artifact=TreeDigest(digest="0" * 64, files=1, bytes=1),
+        data_dir=pathlib.Path("Data"),
+        profile=_PERFIL,
+    )
+
+
 # =============================================================================
 # Standalone: la primitive física NO se degrada (S1–S4)
 # =============================================================================
@@ -332,7 +347,7 @@ async def test_b1_handoff_verificado_cuando_todo_coincide(tmp_path: pathlib.Path
 @pytest.mark.asyncio
 async def test_b1_el_spawn_de_dyndolod_se_abre_con_gate_verificado() -> None:
     """El gate verificado AUTORIZA el spawn — sin ejecutar DynDOLOD real."""
-    estrategia = _EstrategiaConGate(TexGenHandoffResult.aprobado("ok"))
+    estrategia = _EstrategiaConGate(TexGenHandoffResult.aprobado("ok", approval=_aprobacion_de_prueba()))
     result = await _correr_pipeline_con_gate(estrategia, verdict_ok=True)
 
     assert result.success is True
@@ -645,7 +660,7 @@ async def test_r2_resume_mismo_perfil_y_artifact_reevalua_el_gate(tmp_path: path
     assert resultado.verified is True, resultado.reason
 
     # y el runner re-verifica la autoridad durable ANTES de consultar al backend
-    estrategia = _EstrategiaConGate(TexGenHandoffResult.aprobado("ok"))
+    estrategia = _EstrategiaConGate(TexGenHandoffResult.aprobado("ok", approval=_aprobacion_de_prueba()))
     config = MagicMock()
     config.data_dir = esc.virtual_data
     runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST, spawn_strategy=estrategia)
@@ -683,7 +698,9 @@ async def test_r6_artifact_mutado_tras_identidad_durable_bloquea_sin_alcanzar_el
     identidad = digest_arbol(esc.artifact_root)
     (esc.artifact_root / "a.dds").write_bytes(b"BYTE-MUTADO")
 
-    estrategia = _EstrategiaConGate(TexGenHandoffResult.aprobado("nunca debe llegar acá"))
+    estrategia = _EstrategiaConGate(
+        TexGenHandoffResult.aprobado("nunca debe llegar acá", approval=_aprobacion_de_prueba())
+    )
     config = MagicMock()
     config.data_dir = esc.virtual_data
     runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST, spawn_strategy=estrategia)
@@ -910,7 +927,7 @@ def test_efectividad_falla_si_el_mod_no_esta_habilitado(tmp_path: pathlib.Path) 
 @pytest.mark.asyncio
 async def test_autoridad_durable_con_digest_distinto_bloquea_sin_llegar_al_backend(tmp_path: pathlib.Path) -> None:
     esc = _escenario(tmp_path)
-    estrategia = _EstrategiaConGate(TexGenHandoffResult.aprobado("no debe llegar"))
+    estrategia = _EstrategiaConGate(TexGenHandoffResult.aprobado("no debe llegar", approval=_aprobacion_de_prueba()))
     config = MagicMock()
     config.data_dir = esc.virtual_data
     runner = DynDOLODRunner(config, readiness=ReadinessMode.DISABLED_FOR_TEST, spawn_strategy=estrategia)

@@ -1461,8 +1461,14 @@ class TestAnclaConstructoresManualesDeMods:
         # `primaryPlugins()` con Creation Club) movió las líneas
         # (182, 243 → 444, 513) sin agregar ni quitar construcciones de
         # `<base>/mods`: el cuerpo de _profile_fingerprint y sus helpers crecieron
-        # arriba de los dos sites.
-        "sky_claw/local/mo2/vfs_attestation.py": (444, 513),
+        # arriba de los dos sites. PR-586D (gate mode-aware TexGen→DynDOLOD)
+        # sumó un tercer builder (build_attestation_challenge_for_source) que
+        # duplicaba la misma resolución de mods_dir, y la revisión adversarial
+        # exigió centralizarla ANTES de tocar este inventario: los tres sites
+        # (los dos builders + verify_vfs_attestation) colapsaron en el helper
+        # único `_raices_del_overlay` — la única construcción de `<base>/mods`
+        # del módulo, que es el concepto "directorio de mods de la instancia".
+        "sky_claw/local/mo2/vfs_attestation.py": (549,),
         # VfsExecutionBroker: fallback legacy compartido por submit/open_session
         # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323 y sus
         # follow-ups de revisión a la ~339) y VfsWorkerManifest: única
@@ -1475,7 +1481,9 @@ class TestAnclaConstructoresManualesDeMods:
         "sky_claw/local/discovery/scanner.py": (460, 858),
         # P2: centralización de tool registry movió la línea (1068 → 1057).
         # Es el mismo constructor de siempre: el sitio no cambió de concepto.
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1057,),
+        # PR-586D (CTA de resume con handoff_action) la movió (1057 → 1077);
+        # mismo constructor del default `<raíz>/mods`.
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1077,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con

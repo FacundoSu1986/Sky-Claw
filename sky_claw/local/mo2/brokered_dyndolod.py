@@ -16,6 +16,16 @@ del artifact, efectividad byte-exact sobre el overlay completo Y evidencia
 runtime de que el mapping USVFS se aplica. Un canary NO reemplaza el recorrido
 estructural ni al revés: cada pieza prueba una propiedad distinta (ver
 ``sky_claw/local/mo2/mod_effectivity.py``).
+
+**Binding gate→spawn (anti-TOCTOU):** cuando el gate aprueba, el veredicto
+porta un ``TexGenHandoffApproval`` con el ESTADO exacto aprobado (perfil +
+fingerprint, identidad del artifact, mod fuente, identidad del canary), y
+:meth:`BrokeredDynDOLODSpawnStrategy.spawn` lo REVALIDA completo en su boundary
+antes de abrir la sesión — el estado puede cambiar entre la prueba y el spawn,
+y un challenge reconstruido a ciegas certificaría el estado nuevo, no el
+aprobado. La revalidación vuelve a atestiguar el mapping runtime porque la
+sesión se abre con el challenge revalidado y el worker corre
+``verify_vfs_attestation`` + probe del nieto antes de despachar la herramienta.
 """
 
 from __future__ import annotations
@@ -44,7 +54,12 @@ from sky_claw.local.mo2.vfs_contracts import (
 )
 from sky_claw.local.mo2.vfs_session import VfsProcessSession
 from sky_claw.local.tools.artifact_digest import digest_arbol
-from sky_claw.local.tools.texgen_handoff import TexGenHandoffRequest, TexGenHandoffResult
+from sky_claw.local.tools.texgen_handoff import (
+    HandoffDriftError,
+    TexGenHandoffApproval,
+    TexGenHandoffRequest,
+    TexGenHandoffResult,
+)
 
 if TYPE_CHECKING:
     from sky_claw.local.tools.dyndolod_runner import DynDOLODProcess
@@ -156,6 +171,7 @@ def _veredicto_de_evidencia_runtime(
     *,
     challenge: VfsAttestationChallenge,
     request: TexGenHandoffRequest,
+    approval: TexGenHandoffApproval,
 ) -> TexGenHandoffResult:
     """Traduce el probe ``health`` a veredicto de visibilidad USVFS (fail-closed).
 
@@ -205,7 +221,8 @@ def _veredicto_de_evidencia_runtime(
     return TexGenHandoffResult.aprobado(
         f"visibilidad MO2/USVFS demostrada: '{request.mod_name}' habilitado y efectivo en el perfil "
         f"'{challenge.profile}' ({request.staging.name}/ completo contra el overlay) y canary "
-        f"{challenge.relative_path.as_posix()} atestiguado por worker + nieto"
+        f"{challenge.relative_path.as_posix()} atestiguado por worker + nieto",
+        approval=approval,
     )
 
 
@@ -243,25 +260,39 @@ class BrokeredDynDOLODSpawnStrategy:
         tool_name: str,
         cwd: pathlib.Path,
         timeout: float,
+        handoff: TexGenHandoffApproval | None = None,
     ) -> DynDOLODProcess:
         tool_id = {"TexGen": "texgen", "DynDOLOD": "dyndolod"}.get(tool_name)
         if tool_id is None:
             raise ValueError(f"herramienta no permitida para VFS: {tool_name!r}")
+        if handoff is not None and tool_id != "dyndolod":
+            raise ValueError(
+                f"el approval del handoff TexGen solo es válido para el spawn de DynDOLOD: llegó para {tool_name!r}"
+            )
         validated_executable = self._validate_executable(tool_id, executable)
         resolved_cwd = self._validate_cwd(cwd)
         output_root = self._output_roots.get(tool_id)
         if output_root is None:
             raise ValueError(f"falta output root brokered para {tool_id}")
 
-        # Se construye SIEMPRE por spawn: TexGen y DynDOLOD nunca comparten un
-        # challenge, incluso si el perfil no cambió entre ambas etapas.
-        challenge = await asyncio.to_thread(
-            build_attestation_challenge,
-            data_root=self._data_root,
-            mods_dir=self._mods_dir,
-            profile=self._profile,
-            physical_data_dir=self._physical_data_dir,
-        )
+        if handoff is not None:
+            # Binding gate→spawn (anti-TOCTOU): el estado aprobado se revalida
+            # COMPLETO, fail-closed, en el boundary del spawn. El challenge que
+            # abre la sesión es el REVALIDADO — idéntico al aprobado en cada
+            # campo ligado — y el worker lo vuelve a atestiguar dentro del VFS
+            # (verify_vfs_attestation + probe del nieto) antes de despachar.
+            challenge = await self._revalidar_aprobacion(handoff)
+        else:
+            # Camino legacy sin artifact gateado ("DynDOLOD solo"): no hay
+            # estado aprobado que revalidar. Se construye SIEMPRE por spawn:
+            # TexGen y DynDOLOD nunca comparten un challenge.
+            challenge = await asyncio.to_thread(
+                build_attestation_challenge,
+                data_root=self._data_root,
+                mods_dir=self._mods_dir,
+                profile=self._profile,
+                physical_data_dir=self._physical_data_dir,
+            )
         job = VfsJob.create(
             instance_id=self._instance_id,
             profile=self._profile,
@@ -284,6 +315,139 @@ class BrokeredDynDOLODSpawnStrategy:
             virtual_data_dir=self._virtual_data_dir,
         )
         return BrokeredDynDOLODProcess(session)
+
+    async def _revalidar_aprobacion(self, handoff: TexGenHandoffApproval) -> VfsAttestationChallenge:
+        """Revalida el approval en el boundary del spawn y devuelve el challenge.
+
+        El gate aprobó un ESTADO; el spawn ocurre después, y en el medio el
+        perfil o el artifact pueden haber cambiado. Reconstruir un challenge a
+        ciegas certificaría el estado NUEVO (hasta con un canary de otro mod).
+        Por eso se re-verifica, en orden y fail-closed, todo lo que el token
+        ligó:
+
+        1. **perfil esperado** idéntico al del ``VfsJob`` de DynDOLOD;
+        2. **namespace** (el ``Data`` del approval es el ``-d:`` de este backend);
+        3. **artifact real** bajo ``mods_dir`` (sin symlinks/junctions);
+        4. **identidad del árbol completo** (digest/files/bytes) — cubre también
+           los archivos NO-canary que el recorrido del gate ya validó;
+        5. **enablement** (``+TexGen Output`` habilitado una sola vez);
+        6. **efectividad byte-exact** sobre el overlay completo (un override
+           incompatible nuevo no cambia el fingerprint del perfil);
+        7. **fingerprint del perfil + identidad del canary** contra un challenge
+           reconstruido desde el estado actual.
+
+        Cualquier divergencia o estado indeterminado lanza
+        :class:`HandoffDriftError` — el proceso no nace.
+        """
+        # --- 1. perfil esperado (B4) ---
+        if handoff.profile is None or handoff.profile != self._profile:
+            raise HandoffDriftError(
+                f"el perfil aprobado ({handoff.profile!r}) no es el perfil del job ({self._profile!r}): "
+                "el handoff no cruza perfiles"
+            )
+        # --- 2. namespace coherente ---
+        if handoff.data_dir.resolve() != self._virtual_data_dir:
+            raise HandoffDriftError(
+                f"el Data bajo el que se aprobó el handoff ({handoff.data_dir}) no es el namespace "
+                f"virtual de este backend ({self._virtual_data_dir})"
+            )
+        # --- 3. artifact real bajo mods_dir, sin symlinks/junctions ---
+        mod_dir = self._mods_dir / handoff.mod_name
+        artifact_root = handoff.artifact_root
+        try:
+            raiz_esperada = (mod_dir / artifact_root.name).resolve()
+        except OSError as e:
+            raise HandoffDriftError(f"no se pudo resolver el artifact aprobado '{artifact_root}': {e}") from e
+        if artifact_root.resolve() != raiz_esperada:
+            raise HandoffDriftError(
+                f"el artifact aprobado '{artifact_root}' no vive bajo '{mod_dir}': token incoherente"
+            )
+        for etiqueta, ruta in (("mod", mod_dir), ("artifact", artifact_root)):
+            tipo, identidad = link_kind_and_identity_or_raise(ruta)
+            if identidad is None or tipo is not None or not stat.S_ISDIR(identidad.st_mode):
+                raise HandoffDriftError(
+                    f"el {etiqueta} '{ruta}' ya no es un directorio propio bajo el overlay "
+                    "(ausente o es un enlace): el estado aprobado no se sostiene"
+                )
+        # --- 4. identidad del árbol COMPLETO (archivos canary y no-canary) ---
+        try:
+            observado = await asyncio.to_thread(digest_arbol, artifact_root)
+        except OSError as e:
+            raise HandoffDriftError(
+                f"no se pudo re-identificar el artifact '{artifact_root}' en el boundary del spawn: {e}"
+            ) from e
+        if (observado.digest, observado.files, observado.bytes) != (
+            handoff.artifact.digest,
+            handoff.artifact.files,
+            handoff.artifact.bytes,
+        ):
+            raise HandoffDriftError(
+                f"el artifact '{artifact_root}' cambió después de la aprobación del handoff "
+                f"(aprobado: {handoff.artifact.files} archivo(s)/{handoff.artifact.bytes} byte(s)/"
+                f"{handoff.artifact.digest[:12]}; actual: {observado.files} archivo(s)/"
+                f"{observado.bytes} byte(s)/{observado.digest[:12]}): no se lanza DynDOLOD sobre "
+                "bytes que no se aprobaron"
+            )
+        # --- 5. habilitado en el perfil (B3) ---
+        try:
+            habilitados = await asyncio.to_thread(
+                read_enabled_mods,
+                self._data_root / "profiles" / self._profile / "modlist.txt",
+            )
+        except VfsAttestationError as e:
+            raise HandoffDriftError(
+                f"no se pudo releer el estado del perfil '{self._profile}' en el boundary del spawn (UNKNOWN): {e}"
+            ) from e
+        if habilitados.count(handoff.mod_name) != 1:
+            raise HandoffDriftError(
+                f"'{handoff.mod_name}' ya no está habilitado exactamente una vez en el perfil "
+                f"'{self._profile}' (aparece {habilitados.count(handoff.mod_name)}): el overlay ya no "
+                "entrega el artifact aprobado"
+            )
+        # --- 6. efectividad byte-exact sobre el overlay COMPLETO (B9/B10) ---
+        try:
+            await asyncio.to_thread(
+                verificar_artifact_efectivo,
+                artifact_root=artifact_root,
+                mod_name=handoff.mod_name,
+                mods_dir=self._mods_dir,
+                data_root=self._data_root,
+                enabled=habilitados,
+            )
+        except ModEffectivityError as e:
+            raise HandoffDriftError(f"la efectividad aprobada ya no se sostiene en el boundary del spawn: {e}") from e
+        # --- 7. fingerprint del perfil + identidad del canary (B6/B7/B8) ---
+        if handoff.profile_fingerprint is None or handoff.canary_relative_path is None or handoff.canary_sha256 is None:
+            raise HandoffDriftError(
+                "el approval brokered llegó sin fingerprint/canary ligados: contrato roto, se bloquea"
+            )
+        try:
+            fresh = await asyncio.to_thread(
+                build_attestation_challenge_for_source,
+                source_mod=handoff.mod_name,
+                data_root=self._data_root,
+                mods_dir=self._mods_dir,
+                profile=self._profile,
+                physical_data_dir=self._physical_data_dir,
+            )
+        except VfsAttestationError as e:
+            raise HandoffDriftError(
+                f"el canary aprobado ya no es elegible en el boundary del spawn (UNKNOWN): {e}"
+            ) from e
+        if (
+            fresh.relative_path != handoff.canary_relative_path
+            or fresh.sha256 != handoff.canary_sha256
+            or fresh.profile_fingerprint != handoff.profile_fingerprint
+        ):
+            raise HandoffDriftError(
+                "el estado del perfil o el canary aprobado cambió entre el gate y el spawn "
+                f"(canary aprobado {handoff.canary_relative_path.as_posix()}/{handoff.canary_sha256[:12]} "
+                f"fingerprint {handoff.profile_fingerprint[:12]}; actual "
+                f"{fresh.relative_path.as_posix()}/{fresh.sha256[:12]} fingerprint "
+                f"{fresh.profile_fingerprint[:12]}): la evidencia ya no corresponde al estado bajo "
+                "el que se lanzaría DynDOLOD"
+            )
+        return fresh
 
     async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
         """Gate MO2/USVFS del handoff TexGen → DynDOLOD. Fail-closed, completo.
@@ -364,17 +528,21 @@ class BrokeredDynDOLODSpawnStrategy:
                 )
 
         # --- 3b. identidad: el árbol del mod porta EXACTAMENTE los bytes autorizados (B5) ---
+        # El digest del mod se computa SIEMPRE: además de la comparación contra
+        # el staging, es la identidad que el approval liga al spawn (anti-TOCTOU).
         try:
             staging_resuelto = request.staging.resolve()
+            dig_mod = await asyncio.to_thread(digest_arbol, artifact_root)
         except OSError as e:
-            return TexGenHandoffResult.bloqueado(f"no se pudo resolver el staging autorizado '{request.staging}': {e}")
+            return TexGenHandoffResult.bloqueado(
+                f"no se pudo identificar el artifact '{artifact_root}' contra el staging autorizado: {e}"
+            )
         if staging_resuelto != artifact_root.resolve():
             try:
                 dig_authorized = await asyncio.to_thread(digest_arbol, request.staging)
-                dig_mod = await asyncio.to_thread(digest_arbol, artifact_root)
             except OSError as e:
                 return TexGenHandoffResult.bloqueado(
-                    f"no se pudo identificar el artifact '{artifact_root}' contra el staging autorizado: {e}"
+                    f"no se pudo identificar el staging autorizado '{request.staging}': {e}"
                 )
             if (dig_mod.digest, dig_mod.files, dig_mod.bytes) != (
                 dig_authorized.digest,
@@ -483,7 +651,20 @@ class BrokeredDynDOLODSpawnStrategy:
                 f"el bridge MO2/USVFS no pudo atestiguar la visibilidad del '{request.mod_name}' "
                 f"({e!r}): se bloquea cerrado"
             )
-        return _veredicto_de_evidencia_runtime(resultado, challenge=challenge, request=request)
+        # El approval liga el ESTADO aprobado al spawn (anti-TOCTOU): perfil +
+        # fingerprint, identidad del artifact, mod fuente y canary. `spawn` lo
+        # revalida completo en su boundary antes de abrir la sesión.
+        approval = TexGenHandoffApproval(
+            mod_name=request.mod_name,
+            artifact_root=artifact_root,
+            artifact=dig_mod,
+            data_dir=self._virtual_data_dir,
+            profile=self._profile,
+            profile_fingerprint=challenge.profile_fingerprint,
+            canary_relative_path=challenge.relative_path,
+            canary_sha256=challenge.sha256,
+        )
+        return _veredicto_de_evidencia_runtime(resultado, challenge=challenge, request=request, approval=approval)
 
     @staticmethod
     def _validate_executable(tool_id: str, executable: pathlib.Path) -> pathlib.Path:

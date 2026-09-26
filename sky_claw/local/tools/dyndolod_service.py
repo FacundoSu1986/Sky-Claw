@@ -142,6 +142,18 @@ class _CertificacionPreservadaError(Exception):
         self.handoff_action = handoff_action
 
 
+def _accion_humana_pendiente(handoff_action: HandoffPendingAction | None) -> str:
+    """Frase humana de la acción pendiente del handoff (misma semántica que la GUI).
+
+    El log NO puede decir siempre "materializar en el Data": con
+    ``profile_enablement`` lo que falta es habilitar el mod en MO2. Misma
+    taxonomía que ``ritual_runner.resume_action_from_result`` y el payload.
+    """
+    if handoff_action == "profile_enablement":
+        return "habilitar el mod en MO2 (perfil activo)"
+    return "materializar el árbol en el Data físico"
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _ResumeBloqueado:
     """Resume rechazado por el estado durable del handoff (D2).
@@ -1013,6 +1025,7 @@ class DynDOLODPipelineService:
         objetivo: pathlib.Path,
         *,
         tx_id: int | None,
+        handoff_action: HandoffPendingAction | None = None,
     ) -> pathlib.Path | None:
         """Confirma el move-aside de ``objetivo`` para que sobreviva al fallo (F1).
 
@@ -1037,8 +1050,9 @@ class DynDOLODPipelineService:
                 # sobreviva una CancelledError DURANTE el discard best-effort.
                 logger.warning(
                     "DynDOLOD (stage 9): se PRESERVA '%s' pese al fallo — es la salida de TexGen "
-                    "que el operador tiene que materializar en el Data para poder continuar.",
+                    "de esta corrida; pendiente: %s para poder continuar.",
                     objetivo,
+                    _accion_humana_pendiente(handoff_action),
                     extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                 )
                 await rollback.commit()
@@ -1785,6 +1799,7 @@ class DynDOLODPipelineService:
                                 dir_rollbacks,
                                 objetivo_preservacion,
                                 tx_id=tx_id,
+                                handoff_action=result.handoff_action,
                             )
                         except asyncio.CancelledError:
                             # #592.1 (ventana de cancelación): `commit()` SELLA el
@@ -1901,12 +1916,12 @@ class DynDOLODPipelineService:
                             rolled_back = False
                             logger.warning(
                                 "DynDOLOD (stage 9): '%s' queda PRESERVADA a propósito y CERTIFICADA "
-                                "bajo lease — TX %d COMMITTED con handoff %d AWAITING_DEPLOYMENT. Es el "
-                                "artifact que el operador tiene que materializar en el Data para poder "
-                                "continuar.",
+                                "bajo lease — TX %d COMMITTED con handoff %d AWAITING_DEPLOYMENT. "
+                                "Pendiente: %s para poder continuar.",
                                 mod_texgen_cert,
                                 tx_id,
                                 handoff_preservacion,
+                                _accion_humana_pendiente(result.handoff_action),
                                 extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
                             )
                             raise _CertificacionPreservadaError(
@@ -1945,6 +1960,7 @@ class DynDOLODPipelineService:
                             raise _CertificacionPreservadaError(
                                 f"DynDOLOD pipeline failed: {base_msg}",
                                 handoff_id=activo_cons.handoff_id,
+                                handoff_action=result.handoff_action,
                             ) from None
                         # Legacy pre-#493 (T-F1-resume-stale): sin handoff previo
                         # no hay nada que certificar ni conservar — needs=True es

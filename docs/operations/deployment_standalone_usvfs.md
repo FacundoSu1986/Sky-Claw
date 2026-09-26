@@ -108,9 +108,19 @@ del backend que va a consumir el artifact:
   prioridad ni `overwrite` entregando bytes distintos) y una **evidencia
   runtime USVFS** (probe `health` atestiguado por worker + nieto sobre un
   canary del propio mod) (`sky_claw/local/mo2/brokered_dyndolod.py`,
-  `sky_claw/local/mo2/mod_effectivity.py`). Un canary prueba que el mapping se
-  aplica; el recorrido completo prueba que las 1.448 rutas están libres de
-  conflictos. Ninguna de las dos evidencias reemplaza a la otra.
+  `sky_claw/local/mo2/mod_effectivity.py`). El reparto de la evidencia es
+  exactamente éste: los **1.448 archivos** del artifact se prueban con
+  **identidad + efectividad exhaustivas host-side** (recorrido completo, byte a
+  byte, contra el overlay), y la **prueba runtime USVFS** cubre **canary(s)
+  representativos** del propio mod — un archivo representativo no certifica
+  1.448 rutas, y el recorrido host-side no prueba que el mapping se aplique.
+  Ninguna de las dos evidencias reemplaza a la otra.
+
+  Y el pase del gate queda **ligado al spawn** (cierre de la ventana TOCTOU):
+  el estado exacto aprobado —perfil + fingerprint, identidad del artifact,
+  enablement, efectividad y canary— se revalida completo en el boundary del
+  spawn de DynDOLOD; si algo cambió entre la prueba y el spawn, DynDOLOD no
+  arranca.
 
 En los dos modos, si el gate no puede demostrarlo, **DynDOLOD no se lanza** y
 la etapa sale en rojo antes de gastar los 30+ minutos. Acá el criterio NO es el

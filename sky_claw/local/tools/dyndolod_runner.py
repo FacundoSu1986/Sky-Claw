@@ -59,7 +59,9 @@ from sky_claw.local.tools.output_targets import (
     derivar_layout_de_dyndolod,
 )
 from sky_claw.local.tools.texgen_handoff import (
+    HandoffDriftError,
     HandoffPendingAction,
+    TexGenHandoffApproval,
     TexGenHandoffRequest,
     TexGenHandoffResult,
 )
@@ -1070,6 +1072,15 @@ class DynDOLODSpawnStrategy(Protocol):
       MO2 + USVFS. La invariante NO cambia — sin handoff demostrado no hay
       spawn—; cambia el dominio donde la verdad existe.
 
+    **Binding gate→spawn (anti-TOCTOU):** cuando el gate aprobó, ``spawn``
+    recibe por parámetro explícito el ``TexGenHandoffApproval`` —el estado
+    exacto aprobado— y DEBE revalidarlo completo, fail-closed
+    (``HandoffDriftError``), antes de abrir el proceso: el estado puede haber
+    cambiado entre la prueba y el spawn, y un challenge reconstruido en el
+    spawn certificaría el estado NUEVO, no el aprobado. ``handoff=None`` es
+    exclusivamente el camino legacy sin artifact gateado ("DynDOLOD solo"):
+    no hay estado aprobado que revalidar.
+
     Un objeto que implemente sólo ``spawn`` NO es una strategy admisible: el
     runner exige la capability explícita en el gate y falla cerrado si no está
     (ver :func:`DynDOLODRunner._verificar_handoff_de_texgen`). El runner jamás
@@ -1084,6 +1095,7 @@ class DynDOLODSpawnStrategy(Protocol):
         tool_name: str,
         cwd: pathlib.Path,
         timeout: float,
+        handoff: TexGenHandoffApproval | None = None,
     ) -> DynDOLODProcess: ...
 
     async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult: ...
@@ -1149,8 +1161,15 @@ class StandaloneDynDOLODSpawnStrategy:
         tool_name: str,
         cwd: pathlib.Path,
         timeout: float,
+        handoff: TexGenHandoffApproval | None = None,
     ) -> DynDOLODProcess:
         del tool_name, timeout
+        if handoff is not None:
+            # Revalidación del approval en el BOUNDARY del spawn (anti-TOCTOU):
+            # el estado pudo cambiar entre la prueba de visibilidad y acá.
+            # Fail-closed: identidad del árbol autorizado + visibilidad byte-exact
+            # completa, ambas contra el estado ACTUAL.
+            await self._revalidar_handoff(handoff)
         kwargs: dict[str, Any] = {
             "cwd": cwd,
             "stdout": asyncio.subprocess.PIPE,
@@ -1160,6 +1179,37 @@ class StandaloneDynDOLODSpawnStrategy:
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         process = await asyncio.create_subprocess_exec(str(executable), *args, **kwargs)
         return _StandaloneDynDOLODProcess(process)
+
+    @staticmethod
+    async def _revalidar_handoff(handoff: TexGenHandoffApproval) -> None:
+        try:
+            observado = await asyncio.to_thread(digest_arbol, handoff.artifact_root)
+        except OSError as e:
+            raise HandoffDriftError(
+                f"no se pudo re-identificar el artifact '{handoff.artifact_root}' en el boundary del "
+                f"spawn ({e}): el estado aprobado es indeterminado, no se lanza DynDOLOD"
+            ) from e
+        if (observado.digest, observado.files, observado.bytes) != (
+            handoff.artifact.digest,
+            handoff.artifact.files,
+            handoff.artifact.bytes,
+        ):
+            raise HandoffDriftError(
+                f"el artifact '{handoff.artifact_root}' cambió después de la aprobación del handoff "
+                f"(aprobado: {handoff.artifact.files} archivo(s)/{handoff.artifact.bytes} byte(s); "
+                f"actual: {observado.files} archivo(s)/{observado.bytes} byte(s)): no se lanza "
+                "DynDOLOD sobre bytes que no se aprobaron"
+            )
+        try:
+            await asyncio.to_thread(
+                verificar_visibilidad_de_texgen,
+                staging=handoff.artifact_root,
+                data_dir=handoff.data_dir,
+            )
+        except TexGenVisibilityError as e:
+            raise HandoffDriftError(
+                f"la visibilidad física aprobada ya no se sostiene en el boundary del spawn: {e}"
+            ) from e
 
     async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
         """Visibilidad física: TODO el staging idéntico bajo ``Data``, o bloqueo.
@@ -1175,10 +1225,23 @@ class StandaloneDynDOLODSpawnStrategy:
                 staging=request.staging,
                 data_dir=request.data_dir,
             )
+            identidad = await asyncio.to_thread(digest_arbol, request.staging)
         except TexGenVisibilityError as e:
             return TexGenHandoffResult.bloqueado(str(e), pending_action="physical_deployment")
+        except OSError as e:
+            return TexGenHandoffResult.bloqueado(
+                f"No se pudo identificar el artifact '{request.staging}' para ligarlo al spawn: {e}. "
+                "No se lanza DynDOLOD sobre bytes inverificables."
+            )
         return TexGenHandoffResult.aprobado(
-            f"visibilidad física confirmada: la salida de TexGen es byte-exact en {request.data_dir}"
+            f"visibilidad física confirmada: la salida de TexGen es byte-exact en {request.data_dir}",
+            approval=TexGenHandoffApproval(
+                mod_name=request.mod_name,
+                artifact_root=request.staging,
+                artifact=identidad,
+                data_dir=request.data_dir,
+                profile=request.expected_profile,
+            ),
         )
 
 
@@ -1439,6 +1502,8 @@ class DynDOLODRunner:
         self,
         preset: str = "Medium",
         extra_args: list[str] | None = None,
+        *,
+        handoff: TexGenHandoffApproval | None = None,
     ) -> ToolExecutionResult:
         """
         Ejecuta DynDOLOD (etapa 9, asistida).
@@ -1454,6 +1519,9 @@ class DynDOLODRunner:
                 (viaja por eventos, journal y preview). NO va en el argv: el
                 preset lo elige el humano en el asistente GUI.
             extra_args: Argumentos adicionales de línea de comandos.
+            handoff: el ``TexGenHandoffApproval`` que el gate aprobó, threadado
+                hasta el spawn para su revalidación en el boundary (anti-TOCTOU).
+                ``None`` es exclusivamente el camino legacy sin artifact gateado.
 
         Returns:
             ToolExecutionResult con el resultado de la ejecución.
@@ -1484,6 +1552,7 @@ class DynDOLODRunner:
                 args=args,
                 tool_name="DynDOLOD",
                 cwd=execution_cwd,
+                handoff=handoff,
             )
         except DynDOLODExecutionError:
             raise
@@ -1556,6 +1625,7 @@ class DynDOLODRunner:
         tool_name: str,
         timeout: int | None = None,
         cwd: pathlib.Path | None = None,
+        handoff: TexGenHandoffApproval | None = None,
     ) -> tuple[str, str, int, float]:
         """
         Ejecuta un proceso con manejo de heartbeat para procesos largos.
@@ -1636,11 +1706,21 @@ class DynDOLODRunner:
                     tool_name=tool_name,
                     cwd=process_cwd,
                     timeout=float(presupuesto_spawn),
+                    handoff=handoff,
                 ),
                 timeout=presupuesto_spawn,
             )
         except FileNotFoundError:
             raise DynDOLODNotFoundError(executable) from None
+        except HandoffDriftError as e:
+            # El binding gate→spawn revalidó el estado aprobado y divergió: el
+            # proceso NO nace. Se traduce a la familia que `run_full_pipeline`
+            # reporta como corrida fallida, conservando la razón del corte.
+            raise DynDOLODExecutionError(
+                f"El spawn de {tool_name} fue bloqueado en la revalidación del handoff: {e}",
+                return_code=None,
+                stderr=str(e),
+            ) from e
         except TimeoutError:
             raise DynDOLODTimeoutError(effective_timeout, tool_name) from None
         except OSError as e:
@@ -2457,6 +2537,11 @@ class DynDOLODRunner:
         #: profile_enablement). Lo decide el veredicto del gate; con needs=False
         #: es irrelevante y viaja en None.
         handoff_pending_action: HandoffPendingAction | None = None
+        #: Estado EXACTO aprobado por el gate (binding anti-TOCTOU). Se threada
+        #: hasta ``spawn``, que lo revalida en su boundary antes de abrir el
+        #: proceso: la ventana entre la prueba y el spawn no puede autorizar un
+        #: estado que nadie aprobó. ``None`` = gate no corrió (legacy).
+        handoff_para_spawn: TexGenHandoffApproval | None = None
         #: Causa honesta del último bloqueo de handoff (para el gate del paso 2).
         handoff_motivo: str | None = None
         # D2 (PR #493): sube ANTES de invocar el empaquetado de TexGen. Es la
@@ -2538,6 +2623,10 @@ class DynDOLODRunner:
                                     authorized=None,
                                 )
                             )
+                            # verified ⟺ approval presente (invariante del tipo):
+                            # el estado aprobado viaja al spawn aunque el corte
+                            # posterior lo pueda volver irrelevante.
+                            handoff_para_spawn = veredicto_handoff.approval
                             if not veredicto_handoff.verified:
                                 handoff_verificado = False
                                 handoff_motivo = veredicto_handoff.reason
@@ -2640,6 +2729,7 @@ class DynDOLODRunner:
                             authorized=authorized_identity,
                         )
                     )
+                    handoff_para_spawn = veredicto_handoff.approval
                     if not veredicto_handoff.verified:
                         handoff_verificado = False
                         handoff_motivo = veredicto_handoff.reason
@@ -2701,6 +2791,7 @@ class DynDOLODRunner:
                 dyndolod_result = await self.run_dyndolod(
                     preset=preset,
                     extra_args=dyndolod_args,
+                    handoff=handoff_para_spawn,
                 )
 
                 if dyndolod_result.success and dyndolod_result.output_path:
