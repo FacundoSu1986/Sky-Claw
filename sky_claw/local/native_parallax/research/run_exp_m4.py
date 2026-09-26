@@ -123,10 +123,16 @@ def prepare_entries(manifest_path: Path, corpus_root: Path) -> tuple[list[dict[s
             ("normal", normal_path, str(entry["normal_sha256"])),
             ("height", height_path, str(entry["height_sha256"])),
         ):
-            if not path.is_file():
-                exclusions.append({"asset_id": asset_id, "reason": f"file_missing: {label} {path.name}"})
+            try:
+                if not path.is_file():
+                    exclusions.append({"asset_id": asset_id, "reason": f"file_missing: {label} {path.name}"})
+                    break
+                actual = sha256_file(path)
+            except OSError:
+                # Archivo presente pero ilegible (p.ej. PermissionError / error de I/O):
+                # exclusión objetiva determinista (§7 del preregistro); NO abortar la corrida.
+                exclusions.append({"asset_id": asset_id, "reason": f"file_unreadable: {label} {path.name}"})
                 break
-            actual = sha256_file(path)
             if actual != expected_sha:
                 exclusions.append({"asset_id": asset_id, "reason": f"sha256_mismatch: {label} {path.name}"})
                 break

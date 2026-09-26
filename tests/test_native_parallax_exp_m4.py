@@ -393,6 +393,41 @@ def test_prepare_entries_registers_objective_exclusions(tmp_path: Path) -> None:
     assert len(prepared) == 13
 
 
+@pytest.mark.parametrize(
+    "io_error",
+    [PermissionError(13, "Permission denied"), OSError(5, "Input/output error")],
+)
+def test_prepare_entries_treats_unreadable_file_as_objective_exclusion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, io_error: OSError
+) -> None:
+    import sky_claw.local.native_parallax.research.run_exp_m4 as m4
+
+    entries = [
+        *[_corpus_entry(f"brick_{i:02d}", "brick", "CALIBRATION") for i in range(5)],
+        *[_corpus_entry(f"stone_{i:02d}", "stone", "HELD_OUT") for i in range(5)],
+        *[_corpus_entry(f"rock_{i:02d}", "rock", "CALIBRATION") for i in range(5)],
+    ]
+    corpus_root = tmp_path / "corpus"
+    manifest = _write_corpus(corpus_root, entries)
+
+    # Archivo PRESENTE pero ilegible: sha256_file levanta OSError/PermissionError al abrirlo.
+    # Contrato §7: exclusión objetiva determinista `file_unreadable`, NO abortar la corrida.
+    real_sha256_file = m4.sha256_file
+
+    def fake_sha256_file(path: Path) -> str:
+        if path.name == "rock_03_disp.png":
+            raise io_error
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(m4, "sha256_file", fake_sha256_file)
+
+    prepared, exclusions = prepare_entries(manifest, corpus_root)
+    reasons = {e["asset_id"]: e["reason"] for e in exclusions}
+    assert reasons.get("rock_03") == "file_unreadable: height rock_03_disp.png"
+    assert "rock_03" not in {p["asset_id"] for p in prepared}
+    assert len(prepared) == 14
+
+
 def test_prepare_entries_hard_stops_on_split_mismatch(tmp_path: Path) -> None:
     entries = [
         *[_corpus_entry(f"brick_{i:02d}", "brick", "CALIBRATION") for i in range(5)],
