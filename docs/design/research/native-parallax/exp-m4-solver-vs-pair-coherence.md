@@ -307,6 +307,23 @@ python -m sky_claw.local.native_parallax.research.run_exp_m4 ^
 :: 5) llenar §14.4 con los números + push del PR (jamás retunear tras ver resultados)
 ```
 
+### 14.3.1 Estado de calibración y Freeze (CALIBRATION_OK)
+
+- **Estado:** CALIBRATION_OK
+- **Fecha/Hora:** 2026-09-26 20:16 UTC (17:16 ART)
+- **Git SHA de calibración:** `43e6e4f1cb094b48ff86d417943e7d15c420ae71`
+- **Manifest SHA256:** `c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde`
+- **Assets evaluados:** 15/15 assets de calibración procesados (split HELD_OUT = 0)
+- **Exclusiones:** 0 exclusiones esperadas (0 sha mismatch, 0 file missing, 0 NaN/Inf)
+- **Confirmación explícita:**
+  - metrics frozen
+  - thresholds frozen
+  - preprocessing frozen
+  - exclusions frozen
+  - transforms frozen
+
+Los datos heldout NO han sido procesados ni observados en esta fase.
+
 ### 14.4 Números de Cohort A
 
 _(vacío a propósito — sin corpus no hay números; este subsection sólo se llena con la
