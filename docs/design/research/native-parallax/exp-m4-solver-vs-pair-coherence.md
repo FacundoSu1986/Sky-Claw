@@ -324,20 +324,97 @@ python -m sky_claw.local.native_parallax.research.run_exp_m4 ^
 
 Los datos heldout NO han sido procesados ni observados en esta fase.
 
-### 14.4 Números de Cohort A
+### 14.4 Números de Cohort A (Corrida Real del Operador)
 
-_(vacío a propósito — sin corpus no hay números; este subsection sólo se llena con la
-corrida real del operador, en un commit posterior que referencie `exp-m4-results.json`.)_
+Resultados confirmatorios obtenidos a partir del corpus local `C:\SkyClawResearch\NativeParallax\EXP-M3` (manifest SHA256 `c9c1665942281966ddeb4f4ff05ed9e2be302d80155cfa8bfc1e487c2bfbecde`), ejecutados con freeze previo `--frozen-ack freeze-fe54e9a9e189adc575a222a537a87b04d83d2915` y guardados en `data/exp-m4-results.json`.
+
+#### 14.4.1 Resumen primario
+
+| Métrica | Full (n=31) | Held-Out (n=16) | Calibration (n=15) | Umbral Preregistrado |
+| :--- | :--- | :--- | :--- | :--- |
+| **SELF RMSE (mediana)** | **0.0037** | **0.0026** | 0.0057 | $\le 0.05$ (C1) |
+| **AUTH RMSE (mediana)** | **0.0392** | **0.0386** | 0.0550 | — |
+| **DELTA_RMSE (mediana)** | **+0.0353** | **+0.0338** | +0.0363 | $\ge 0.02$ (C2) |
+| **SELF \|corr\| (mediana)** | **0.9992** | **0.9996** | 0.9972 | $\ge 0.90$ (C1) |
+| **AUTH \|corr\| (mediana)** | **0.8392** | **0.8744** | 0.7716 | — |
+| **DELTA_CORR (mediana)** | **0.1600** | **0.1253** | 0.2257 | $\ge 0.05$ (C2) |
+| **SELF Variance Ratio** | **0.9983** | **0.9993** | 0.9945 | $[0.80, 1.25]$ (C1) |
+| **AUTH Variance Ratio** | **0.7043** | **0.7647** | 0.5953 | — |
+
+- **Bootstrap 95% CI DELTA_RMSE (Full):** `[0.0275, 0.0511]` (point estimate = 0.0353)
+- **Bootstrap 95% CI DELTA_RMSE (Held-Out):** `[0.0194, 0.0556]` (point estimate = 0.0338)
+
+#### 14.4.2 Veredicto de reglas y decisión confirmatoria
+
+- **Regla C1 (SELF ceiling / solver capability):** `TRUE`
+  - `rmse_self_median` full = 0.0037 $\le 0.05$
+  - `abs_corr_self_median` full = 0.9992 $\ge 0.90$
+  - `var_self_median` full = 0.9983 $\in [0.80, 1.25]$
+  - `rmse_self_median` held-out = 0.0026 $\le 0.05$
+- **Regla C2 (AUTH pair decoherence / degradation):** `TRUE`
+  - `delta_rmse_median` full = +0.0353 $\ge 0.02$
+  - `delta_corr` full = 0.1600 $\ge 0.05$
+  - `delta_rmse_median` held-out = +0.0338 $\ge 0.02$
+- **Decisión del runner (§8):**
+  $$\mathbf{EXP\_M4\_PAIR\_MODEL\_MISMATCH\_DOMINANT}$$
+
+#### 14.4.3 Secundarios y diagnósticos de control
+
+- **Secundaria §4.1 (Resolución nativa 1024² sin resize, n=31):**
+  - SELF RMSE mediana: 0.0069 | AUTH RMSE mediana: 0.0389
+  - DELTA_RMSE mediana: **+0.0263** ($\ge 0.02$)
+  - SELF \|corr\|: 0.9944 | AUTH \|corr\|: 0.8625 | SELF Var: 0.9888 | AUTH Var: 0.7440
+  - *Interpretación:* aun eliminando cualquier decoherencia introducida por el resize bilinear 1024→512, la brecha DELTA_RMSE supera con holgura el umbral preregistrado (+0.0263 vs 0.02). El resize añade apenas ~0.009 de delta y no explica la divergencia.
+- **Secundaria §4.2 (SELF-float continuo sin cuantización 8-bit, 512²):**
+  - RMSE mediana: $1.54 \times 10^{-5}$ ($0.000015$)
+  - \|corr\| mediana: $0.99999998$
+  - Variance ratio mediana: $0.99999997$
+  - *Interpretación:* el error intrínseco del solver FFT sobre pares matemáticamente continuos es virtualmente nulo ($\sim 10^{-5}$). La cuantización 8-bit añade $\sim 0.0037$ de RMSE, mientras que el error de los pares authored es un orden de magnitud mayor (0.0392). La cuantización no domina.
+- **Control §4.3 (FD-Q8 forward diferencias finitas centrales + Q8):**
+  - RMSE mediana: 0.0118 | \|corr\| mediana: 0.9925 | Variance ratio mediana: 0.9850
+  - *Interpretación:* la discretización central por diferencias finitas se recupera con fidelidad muy alta ($>0.99$ corr), demostrando que el solver espectral tolera bien operadores espaciales estándar.
+- **Diagnóstico de coherencia (§5):**
+  - Mediana de acuerdo angular normal↔height: **13.40°**
+  - Correlación de Spearman (acuerdo angular vs DELTA_RMSE): **+0.1504**
+
+#### 14.4.4 Diagnósticos por familia y proveedor (sugestivos, small-n)
+
+- **Por familia:**
+  - `brick` (n=5): SELF 0.0080 | AUTH 0.0386 | DELTA +0.0363 | AUTH corr 0.8139
+  - `concrete` (n=3): SELF 0.0044 | AUTH 0.0367 | DELTA +0.0323 | AUTH corr 0.8208
+  - `ground` (n=3): SELF 0.0013 | AUTH 0.0115 | DELTA +0.0102 | AUTH corr 0.9862
+  - `rock` (n=5): SELF 0.0008 | AUTH 0.0645 | DELTA +0.0601 | AUTH corr 0.8392
+  - `stone` (n=3): SELF 0.0028 | AUTH 0.0724 | DELTA +0.0713 | AUTH corr 0.8589
+  - `tiles` (n=4): SELF 0.0194 | AUTH 0.0514 | DELTA +0.0320 | AUTH corr 0.8704
+  - `tiles_paving` (n=3): SELF 0.0026 | AUTH 0.0392 | DELTA +0.0353 | AUTH corr 0.5475
+  - `wood_planks` (n=5): SELF 0.0180 | AUTH 0.0550 | DELTA +0.0275 | AUTH corr 0.6827
+  *(Las 8 familias exhiben DELTA_RMSE positivo; 7 de 8 superan el umbral 0.02).*
+- **Por proveedor:**
+  - `ambientcg` (n=8): SELF 0.0036 | AUTH 0.0273 | DELTA +0.0142 | AUTH corr 0.9539
+  - `polyhaven` (n=23): SELF 0.0044 | AUTH 0.0550 | DELTA +0.0370 | AUTH corr 0.7716
+  *(Ambos proveedores presentan techos SELF comparables $\sim 0.004$. AmbientCG muestra menor delta absoluto pero preserva la dirección AUTH > SELF).*
+
+#### 14.4.5 Revisión adversarial (Checklist §12)
+
+1. **SELF ceiling:** Confirmado ampliamente dentro del preregistro (RMSE 0.0037 $\ll$ 0.05). El solver reconstruye con fidelidad casi perfecta cuando el par proviene del mismo modelo diferencial.
+2. **Efecto resize:** Descartado como causa primaria. En resolución 1024² nativa, DELTA_RMSE = +0.0263 $\ge 0.02$.
+3. **Efecto cuantización Q8:** Descartado. En float continuo el RMSE es $1.5 \times 10^{-5}$; la cuantización a 8-bit añade apenas 0.0037, frente a 0.0392 de AUTH.
+4. **Discretización FD:** Descartada; FD-Q8 logra corr 0.9925 y RMSE 0.0118.
+5. **Sesgo de familia:** Las 8 familias tienen delta positivo; no hay una sola familia distorsionando la agregación.
+6. **Divergencia de proveedores:** Aunque Poly Haven presenta mayor delta (+0.0370) que ambientCG (+0.0142), en ambos proveedores SELF es de orden $10^{-3}$ y AUTH es significativamente más alto.
+7. **Replicación Held-Out:** Replicación nítida: Calibration DELTA = +0.0363 vs Held-Out DELTA = +0.0338. C2 se cumple independientemente en ambos splits.
+8. **Convención:** Verificado en runtime; todas las filas normalizadas a DIRECTX.
+9. **Bit-depth de height:** Altura authored leída preservando rango dinámico continuo float32 sin pérdida.
+10. **Lenguaje y causalidad:** No se afirma que las normales o alturas estén "mal hechas", sino estrictamente que **el par authored (normal↔height) no es coherente bajo el modelo gradiente-altura ensayado ($p=-n_x/n_z, q=-n_y/n_z$)**. El solver no es el cuello de botella.
 
 ### 14.5 Declaración de integridad
 
-No existe ningún número de Cohort A producido por esta sesión. Todo resultado citado en
-este doc proviene de (a) publicaciones M0–M3 ya en el repo, o (b) corpus sintéticos
-etiquetados como tales. Los umbrales §6 se congelaron en el commit de preregistro
-(`9661a92`) y su única modificación posterior (§24-D, barra held-out de C2) está
-documentada arriba y precede a cualquier contacto con datos reales.
+- **Calibración ejecutada:** 2026-09-26 20:16 UTC con commit `43e6e4f1` (15/15 assets, 0 exclusiones, `cal.json` generado).
+- **Freeze SHA:** `fe54e9a9e189adc575a222a537a87b04d83d2915`.
+- **Integridad de Held-Out:** La partición HELD_OUT (16 assets) NO fue leída ni procesada antes del commit de freeze `fe54e9a9`.
+- **Estabilidad de parámetros:** Ningún threshold, regla, fórmula, métrica ni exclusión fue modificado tras observar los datos reales de calibración o heldout.
+- **Re-ejecución científica requerida:** **NO**. Los resultados confirmatorios satisfacen todos los criterios de validez preregistrados.
 
 ## 15. Exploratorio post-corrida
 
-_(Vacío por diseño; cualquier idea posterior a los resultados vive aquí y NUNCA se
-presenta como preregistrada.)_
+_(Vacío por diseño; la decisión confirmatoria queda completamente contenida en §14 y el runner oficial)._
