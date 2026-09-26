@@ -144,6 +144,10 @@ _TRUNCATE_EXISTING = 5
 
 _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+# FILE_FLAG_WRITE_THROUGH: las escrituras no pasan por cache intermedia y NTFS
+# flushea los metadata changes resultantes de procesar la request (doc. primaria
+# CreateFileW, "Caching Behavior"). Contrato de durabilidad de ADR 0010 §12.2 7b.
+_FILE_FLAG_WRITE_THROUGH = 0x80000000
 
 _FILE_INFO_BY_HANDLE_CLASS_STANDARD = 1
 _FILE_INFO_BY_HANDLE_CLASS_ATTRIBUTE_TAG = 9
@@ -264,6 +268,16 @@ if sys.platform == "win32":
 
     _kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
     _kernel32.FlushFileBuffers.restype = wintypes.BOOL
+
+    # Publicación no-reemplazante (create-once): CreateHardLinkW falla de forma
+    # determinista con ERROR_ALREADY_EXISTS si el destino existe, y DeleteFileW
+    # retira el nombre temporal tras la publicación. ABI explícita: HANDLE no
+    # participa (sólo LPCWSTR), BOOL verificado con GetLastError.
+    _kernel32.CreateHardLinkW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPVOID]
+    _kernel32.CreateHardLinkW.restype = wintypes.BOOL
+
+    _kernel32.DeleteFileW.argtypes = [wintypes.LPCWSTR]
+    _kernel32.DeleteFileW.restype = wintypes.BOOL
 
     _advapi32.ConvertStringSidToSidW.argtypes = [
         wintypes.LPCWSTR,
@@ -426,6 +440,15 @@ def _canonical_file_readable_by_aces() -> list[NamespaceAceSpec]:
     ]
 
 
+#: Objetos de archivo plano que viven en ``operations/<operation_id>/``
+#: (AUTHORIZED_OPERATIONS). Comparten el contrato de archivo protegido
+#: (Admins/SYSTEM full, AU read-only) pero son objetos independientes para que
+#: un cambio futuro en la DACL de uno no arrastre en silencio la del otro.
+AUTHORIZED_PLAN_OBJECT = "authorized_plan.json"
+PROTECTION_JOURNAL_OBJECT = "protection_journal.json"
+_AUTHORIZED_OPERATIONS_FILE_OBJECTS = frozenset({AUTHORIZED_PLAN_OBJECT, PROTECTION_JOURNAL_OBJECT})
+
+
 def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
     """Construye la especificación canónica inmutable de DACL para un objeto según ADR 0010 §11.3.
 
@@ -532,6 +555,14 @@ def build_namespace_dacl_spec(object_name: str) -> NamespaceDaclSpec:
         # trusted_goldens.json:
         # Admins y SYSTEM: FILE_ALL_ACCESS
         # Authenticated Users: FILE_GENERIC_READ (0x00120089), flags 0x00
+        aces = _canonical_file_readable_by_aces()
+    elif object_name in _AUTHORIZED_OPERATIONS_FILE_OBJECTS:
+        # authorized_plan.json y protection_journal.json (§11.3, fila
+        # operations/<op_id>/ = AUTHORIZED_OPERATIONS):
+        # Admins y SYSTEM: FILE_ALL_ACCESS
+        # Authenticated Users: FILE_GENERIC_READ (0x00120089), flags 0x00
+        # Sin derecho de escritura ni borrado para no elevados: la autoridad de
+        # la transacción no es modificable por Actor D.
         aces = _canonical_file_readable_by_aces()
     elif object_name == "golden_admission_record.json":
         # Registro protegido de operación de Golden Admission (§11.4): mismo
@@ -912,6 +943,8 @@ def _check_object_exists_no_reparse(path: pathlib.Path | str) -> bool:
 def create_secured_file_from_birth(
     path: pathlib.Path | str,
     object_name: str = "trusted_goldens.json",
+    *,
+    extra_flags: int = 0,
 ) -> int:
     """Crea un archivo nuevo garantizando que nazca con su SECURITY_DESCRIPTOR canónico.
 
@@ -925,6 +958,9 @@ def create_secured_file_from_birth(
     - dwDesiredAccess incluye WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_READ | READ_CONTROL.
     - dwFlagsAndAttributes incluye FILE_FLAG_OPEN_REPARSE_POINT para evitar seguir reparse points.
     - Retorna el HANDLE Win32 abierto para escribir los datos iniciales y sincronizar.
+    - ``extra_flags`` permite al caller exigir flags adicionales de durabilidad
+      (p. ej. ``FILE_FLAG_WRITE_THROUGH``, ADR 0010 §12.2 7b) sin que los llamantes
+      existentes cambien de comportamiento: el default es 0.
     - Si falla la creación -> Fail-Closed incondicional (sin fallbacks).
     """
     _ensure_windows()
@@ -948,7 +984,7 @@ def create_secured_file_from_birth(
             0,  # Acceso exclusivo durante la creación y escritura inicial
             ctypes.byref(sa),
             _CREATE_NEW,
-            _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS,
+            _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT | _FILE_FLAG_BACKUP_SEMANTICS | extra_flags,
             None,
         )
         if _is_invalid_handle(h):
@@ -1030,7 +1066,25 @@ def _verificador_de_archivo_protegido(object_name: str) -> Callable[[pathlib.Pat
         return verify_secured_file_by_handle
     if object_name == "golden_admission_record.json":
         return verify_golden_admission_record_by_handle
+    if object_name in _AUTHORIZED_OPERATIONS_FILE_OBJECTS:
+        return _verify_authorized_operations_file_by_handle_factory(object_name)
     raise TrustedNamespaceError(f"No existe verificador por handle para el objeto '{object_name}'")
+
+
+def _verify_authorized_operations_file_by_handle_factory(object_name: str) -> Callable[[pathlib.Path], None]:
+    """Verificador por handle de un archivo de ``operations/<op_id>/`` (§11.3).
+
+    Mismo contrato estructural que ``trusted_goldens.json`` pero anclado a su
+    propia spec: ``authorized_plan.json`` y ``protection_journal.json`` se
+    verifican contra ``build_namespace_dacl_spec(<su object_name>)``, de modo que
+    un cambio futuro en la DACL de uno rompe su propia verificación en vez de
+    pasar contra la spec del hermano.
+    """
+
+    def _verify(path: pathlib.Path) -> None:
+        _verify_secured_file_contract(path, object_name)
+
+    return _verify
 
 
 def write_secured_file_atomically_at(
@@ -1115,6 +1169,135 @@ def write_secured_file_atomically_at(
     except BaseException:
         if h_temp is not None:
             _safe_close_handle(h_temp)
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def write_secured_file_create_once_at(
+    dest: pathlib.Path | str,
+    payload: bytes,
+    object_name: str,
+    *,
+    validate: Callable[[bytes], None] | None = None,
+    error_factory: Callable[[str], BaseException] = TrustedNamespaceError,
+    already_exists_error_factory: Callable[[str], BaseException] | None = None,
+    parent_error_message: str | None = None,
+) -> None:
+    """Escribe ``payload`` en ``dest`` UNA sola vez, sin sustituir authority previa.
+
+    Hermana no-reemplazante de :func:`write_secured_file_atomically_at`: comparte
+    con ella la secuencia de garantías (temporal nacido con SD canónico en el
+    mismo directorio, ``WriteFile``, ``FlushFileBuffers`` verificado, verificación
+    por handle, relectura byte a byte y ``validate``) y se diferencia en UN solo
+    punto: la publicación.
+
+    Donde la variante atómica usa ``os.replace`` (admitida para reescribir el
+    objeto PROPIO), esta variante publica con ``CreateHardLinkW`` +
+    ``DeleteFileW`` sobre el nombre temporal. ``CreateHardLinkW`` falla de forma
+    determinista con ``ERROR_ALREADY_EXISTS`` si ``dest`` ya existe, así que la
+    publicación es single-winner sin ventana ``check-then-write``: es el mismo
+    criterio con el que el repo fija los bindings one-use (``CREATE_NEW`` /
+    ``O_EXCL``), aplicado a un archivo. No existe fallback a ``os.replace``: un
+    fallback silencioso convertiría la política create-once en overwrite.
+
+    Política de limpieza: si algo falla después de publicar, el destino creado por
+    ESTA llamada se borra antes de propagar el error (nadie más pudo haberlo
+    creado: la publicación es no-reemplazante). Un crash entre la publicación y el
+    borrado del temporal deja un ``.tmp_<uuid>...`` inerte, nunca authority a
+    medias.
+
+    Usada por ``authorized_plan.json`` (§12.2 paso 7 / §23: nunca sobreescribir un
+    plan autoritativo existente) y por el journal transaccional.
+    """
+    _ensure_windows()
+    dest_path = pathlib.Path(dest)
+    dest_str = str(dest_path)
+
+    parent = dest_path.parent
+    if not _check_object_exists_no_reparse(parent):
+        raise error_factory(parent_error_message or f"El directorio padre '{parent}' no existe o no es confiable")
+
+    exists_factory = error_factory if already_exists_error_factory is None else already_exists_error_factory
+    if _check_object_exists_no_reparse(dest_str):
+        raise exists_factory(
+            f"El archivo '{dest_str}' ya existe: la política create-once prohíbe sustituir authority previa"
+        )
+
+    temp_path = parent / f".tmp_{uuid.uuid4().hex}.{dest_path.name}"
+
+    h_temp: int | None = None
+    published = False
+    try:
+        # 1-3. Temporal nacido con SD canónico + WriteFile + FlushFileBuffers (GATE).
+        # FILE_FLAG_WRITE_THROUGH: contrato de durabilidad de ADR 0010 §12.2 7b.
+        h_temp = create_secured_file_from_birth(temp_path, object_name, extra_flags=_FILE_FLAG_WRITE_THROUGH)
+
+        data_buf = (ctypes.c_char * len(payload)).from_buffer_copy(payload)
+        bytes_written = wintypes.DWORD(0)
+        if not _kernel32.WriteFile(
+            h_temp,
+            data_buf,
+            len(payload),
+            ctypes.byref(bytes_written),
+            None,
+        ) or bytes_written.value != len(payload):
+            err = ctypes.get_last_error()
+            raise error_factory(f"WriteFile falló en archivo temporal '{temp_path}': código {err}")
+
+        if not _kernel32.FlushFileBuffers(h_temp):
+            err = ctypes.get_last_error()
+            raise error_factory(
+                f"FlushFileBuffers falló en '{temp_path}': código {err} "
+                "(GATE de durabilidad: no se publica authority no durable)"
+            )
+
+        _safe_close_handle(h_temp)
+        h_temp = None
+
+        # 4. Verificar temporal por handle antes de publicar.
+        verificador = _verificador_de_archivo_protegido(object_name)
+        verificador(temp_path)
+
+        # 5. Publicación no-reemplazante (single-winner).
+        if not _kernel32.CreateHardLinkW(dest_str, str(temp_path), None):
+            err = ctypes.get_last_error()
+            if err in (80, 183):  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
+                raise exists_factory(f"Colisión de creación create-once en '{dest_str}': código Win32 {err}")
+            raise error_factory(
+                f"CreateHardLinkW falló al publicar '{dest_str}' (código {err}); "
+                "no se sustituye ni se reintenta con replace"
+            )
+        published = True
+
+        if not _kernel32.DeleteFileW(str(temp_path)):
+            # El contenido ya está publicado en dest; el temporal residual es
+            # inerte. Se falla cerrado igual: el estado en disco no es el esperado.
+            err = ctypes.get_last_error()
+            raise error_factory(f"DeleteFileW falló al retirar el temporal '{temp_path}': código {err}")
+
+        # 6. Re-verificar destino + relectura + validación del caller.
+        verificador(dest_path)
+        reloaded = dest_path.read_bytes()
+        if reloaded != payload:
+            raise error_factory(f"Revalidación post-publicación falló: bytes no coinciden en '{dest_str}'")
+        if validate is not None:
+            validate(reloaded)
+
+    except BaseException:
+        if h_temp is not None:
+            _safe_close_handle(h_temp)
+        if published:
+            # El destino lo creó ESTA llamada: se retira para no dejar authority
+            # que no superó su propia verificación.
+            try:
+                if dest_path.exists():
+                    dest_path.unlink()
+            except OSError:
+                pass
         try:
             if temp_path.exists():
                 temp_path.unlink()
@@ -1815,6 +1998,8 @@ from sky_claw.local.runtime_vault.trusted_registry import (  # noqa: E402
 
 __all__ = [
     "AUTHENTICATED_USERS_SID",
+    "AUTHORIZED_PLAN_OBJECT",
+    "PROTECTION_JOURNAL_OBJECT",
     "AncestorProvisioningError",
     "BUILTIN_ADMINISTRATORS_SID",
     "CANONICAL_NAMESPACE_OWNER",
@@ -1842,4 +2027,6 @@ __all__ = [
     "create_secured_file_from_birth",
     "inspect_namespace_object",
     "verify_secured_file_by_handle",
+    "write_secured_file_atomically_at",
+    "write_secured_file_create_once_at",
 ]

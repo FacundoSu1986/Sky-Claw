@@ -528,6 +528,10 @@ class TestLockingAndConcurrency:
                 if isinstance(node, ast.FunctionDef) and ("clone" in node.name or "mutate" in node.name):
                     mutating_functions.append(f"{py_path.stem}.{node.name}")
 
+        # GP2-S4A NO añade mutadores a este ancla: sus escritores del journal/WAL
+        # se nombran ``record_node_mutation_intent`` / ``record_node_mutation_completed``
+        # justamente para no colarse como "mutador" por nombre, y porque escriben
+        # SOLO ``protection_journal.json`` (nunca el Golden, nunca una ACL).
         expected_mutators = [
             "clone.create_runtime_clone",
             "trusted_registry_lock._mutate_trusted_registry_core",
@@ -1072,9 +1076,15 @@ class TestRuntimeCloneSuiteCanonico:
         # GP2-P2 añade trusted_registry_lock (global TGR serialization lock).
         # GP2-P3 agrega critical_expectations, golden_admission,
         # golden_admission_store y golden_admission_service.
+        # GP2-S4A agrega authorized_plan (modelo puro del plan autoritativo),
+        # authorized_plan_store (promoción durable create-once),
+        # protection_journal (FSM + WAL puro) y protection_journal_store
+        # (durabilidad Win32 del journal): todos cableados vía __init__.__all__.
         expected_modules = {
             "__init__",
             "authorization_context",
+            "authorized_plan",
+            "authorized_plan_store",
             "clone",
             "coordinator_identity",
             "critical_expectations",
@@ -1093,6 +1103,8 @@ class TestRuntimeCloneSuiteCanonico:
             "physical_root",
             "planning_orchestrator",
             "ppsc",
+            "protection_journal",
+            "protection_journal_store",
             "privileged_boundary",
             "protection",
             "quiescence",
