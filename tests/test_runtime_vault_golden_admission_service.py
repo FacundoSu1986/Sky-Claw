@@ -1278,6 +1278,164 @@ class TestFlujoCompletoWindows:
         assert resultado.success is True
         assert conteo["n"] == 1
 
+    def test_post_commit_audit_append_failure_preserves_registered_outcome(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-P3-AUDIT-1: una vez commiteado el TGR, un fallo del audit append NO convierte en REJECTED."""
+        from sky_claw.local.runtime_vault import golden_admission_service as modulo
+
+        real_append = modulo.append_result
+
+        def append_que_falla(operacion_id: str, resultado: Any, **kwargs: Any) -> Any:
+            if resultado.outcome is GoldenAdmissionOutcome.REGISTERED:
+                raise OSError("Disk I/O error simulado en audit append")
+            return real_append(operacion_id, resultado, **kwargs)
+
+        monkeypatch.setattr(modulo, "append_result", append_que_falla)
+
+        resultado = self.servicio(self.bridge(), self.confirmacion()).register_or_refresh_trusted_golden(
+            self.solicitud()
+        )
+
+        # Invariante central: TGR COMMITTED + audit failure = REGISTERED + audit warning
+        assert resultado.success is True
+        assert resultado.outcome is GoldenAdmissionOutcome.REGISTERED
+        assert resultado.reason is None
+        assert resultado.tgr_entry is not None
+        assert "No se pudo anexar el resultado terminal al registro de auditoría" in resultado.message
+        assert "cero TGR writes" not in resultado.message
+        # El TGR real en disco contiene la nueva entrada commiteada
+        assert load_trusted_golden_registry(self.ruta_tgr).entries == (resultado.tgr_entry,)
+
+    def test_commit_outcome_unknown_audit_append_failure_preserves_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-P3-AUDIT-4: si el commit es ambiguo y el append de auditoría falla, sigue COMMIT_OUTCOME_UNKNOWN."""
+        from sky_claw.local.runtime_vault import golden_admission_service as modulo
+        from sky_claw.local.runtime_vault import trusted_registry_lock as lock_mod
+
+        antes = self.bytes_tgr()
+
+        def write_que_lanza(registry: Any, path: Any) -> None:
+            raise OSError("release del lock interrumpido")
+
+        monkeypatch.setattr(lock_mod, "_write_trusted_registry_atomically_at", write_que_lanza)
+
+        def append_que_falla(operacion_id: str, resultado: Any, **kwargs: Any) -> Any:
+            if resultado.outcome is GoldenAdmissionOutcome.COMMIT_OUTCOME_UNKNOWN:
+                raise OSError("Disk I/O error en registro de outcome unknown")
+            return modulo.append_result(operacion_id, resultado, **kwargs)
+
+        monkeypatch.setattr(modulo, "append_result", append_que_falla)
+
+        resultado = self.servicio(self.bridge(), self.confirmacion()).register_or_refresh_trusted_golden(
+            self.solicitud()
+        )
+
+        assert resultado.success is False
+        assert resultado.outcome is GoldenAdmissionOutcome.COMMIT_OUTCOME_UNKNOWN
+        assert resultado.reason is None
+        assert "before" in resultado.message
+        assert "registro terminal: No se pudo anexar" in resultado.message
+        assert "cero TGR writes" not in resultado.message
+        assert self.bytes_tgr() == antes
+
+    def test_rechazado_audit_append_failure_preserves_rejected_and_never_throws(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M-P3-AUDIT-5: si la operación es REJECTED y el audit append falla, el desenlace sigue REJECTED y no lanza."""
+        from sky_claw.local.runtime_vault import golden_admission_service as modulo
+
+        def append_que_falla(operacion_id: str, resultado: Any, **kwargs: Any) -> Any:
+            if resultado.outcome is GoldenAdmissionOutcome.REJECTED:
+                raise OSError("Disk I/O error en registro de REJECTED")
+            return modulo.append_result(operacion_id, resultado, **kwargs)
+
+        monkeypatch.setattr(modulo, "append_result", append_que_falla)
+
+        bridge = self.bridge(arbol_en_verify=TreeDigest(digest=_SHA_OTRO, files=9, bytes=9))
+        resultado = self.servicio(bridge, self.confirmacion()).register_or_refresh_trusted_golden(self.solicitud())
+
+        assert resultado.success is False
+        assert resultado.outcome is GoldenAdmissionOutcome.REJECTED
+        assert resultado.reason is GoldenAdmissionRejectionReason.RV2_MISMATCH
+        assert "RV-2 no verificó el snapshot admitido" in resultado.message
+        assert resultado.record_path is None
+
+    @pytest.mark.parametrize(
+        ("fase_fallo", "desenlace_esperado", "success_esperado"),
+        [
+            ("pre_commit_audit_fail", GoldenAdmissionOutcome.REJECTED, False),
+            ("post_commit_audit_fail", GoldenAdmissionOutcome.REGISTERED, True),
+            ("rejected_audit_fail", GoldenAdmissionOutcome.REJECTED, False),
+            ("unknown_audit_fail", GoldenAdmissionOutcome.COMMIT_OUTCOME_UNKNOWN, False),
+        ],
+    )
+    def test_contrato_never_throws_ante_matriz_de_fallos_de_audit_store(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fase_fallo: str,
+        desenlace_esperado: GoldenAdmissionOutcome,
+        success_esperado: bool,
+    ) -> None:
+        """Contrato 'never throws': matriz de fallos de colaboradores del audit-store."""
+        from sky_claw.local.runtime_vault import golden_admission_service as modulo
+        from sky_claw.local.runtime_vault import trusted_registry_lock as lock_mod
+
+        if fase_fallo == "pre_commit_audit_fail":
+
+            def create_que_falla(*args: Any, **kwargs: Any) -> Any:
+                raise OSError("Fallo en create_admission_record")
+
+            monkeypatch.setattr(modulo, "create_admission_record", create_que_falla)
+            resultado = self.servicio(self.bridge(), self.confirmacion()).register_or_refresh_trusted_golden(
+                self.solicitud()
+            )
+        elif fase_fallo == "post_commit_audit_fail":
+            real_append = modulo.append_result
+
+            def append_post_commit(operacion_id: str, res: Any, **kwargs: Any) -> Any:
+                if res.outcome is GoldenAdmissionOutcome.REGISTERED:
+                    raise OSError("Fallo en append REGISTERED")
+                return real_append(operacion_id, res, **kwargs)
+
+            monkeypatch.setattr(modulo, "append_result", append_post_commit)
+            resultado = self.servicio(self.bridge(), self.confirmacion()).register_or_refresh_trusted_golden(
+                self.solicitud()
+            )
+        elif fase_fallo == "rejected_audit_fail":
+
+            def append_rejected(operacion_id: str, res: Any, **kwargs: Any) -> Any:
+                if res.outcome is GoldenAdmissionOutcome.REJECTED:
+                    raise OSError("Fallo en append REJECTED")
+                return modulo.append_result(operacion_id, res, **kwargs)
+
+            monkeypatch.setattr(modulo, "append_result", append_rejected)
+            bridge = self.bridge(arbol_en_verify=TreeDigest(digest=_SHA_OTRO, files=9, bytes=9))
+            resultado = self.servicio(bridge, self.confirmacion()).register_or_refresh_trusted_golden(self.solicitud())
+        elif fase_fallo == "unknown_audit_fail":
+
+            def write_ambiguo(registry: Any, path: Any) -> None:
+                raise OSError("Fallo ambiguo")
+
+            monkeypatch.setattr(lock_mod, "_write_trusted_registry_atomically_at", write_ambiguo)
+
+            def append_unknown(operacion_id: str, res: Any, **kwargs: Any) -> Any:
+                if res.outcome is GoldenAdmissionOutcome.COMMIT_OUTCOME_UNKNOWN:
+                    raise OSError("Fallo en append UNKNOWN")
+                return modulo.append_result(operacion_id, res, **kwargs)
+
+            monkeypatch.setattr(modulo, "append_result", append_unknown)
+            resultado = self.servicio(self.bridge(), self.confirmacion()).register_or_refresh_trusted_golden(
+                self.solicitud()
+            )
+        else:
+            pytest.fail(f"Fase desconocida: {fase_fallo}")
+
+        assert isinstance(resultado, RegisterOrRefreshTrustedGoldenResult)
+        assert resultado.outcome is desenlace_esperado
+        assert resultado.success is success_esperado
+
 
 # ============================================================================
 # Cableado del paquete: la familia GP2-P3 se enumera, no se muestrea

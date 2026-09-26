@@ -45,7 +45,12 @@ from sky_claw.local.runtime_vault.golden_admission import (
     GoldenAdmissionStoreError,
     validate_operation_id,
 )
-from sky_claw.local.runtime_vault.models import CriticalFileExpectation, RuntimeIdentity, TreeDigest
+from sky_claw.local.runtime_vault.models import (
+    CriticalFileExpectation,
+    RuntimeIdentity,
+    RuntimeVaultError,
+    TreeDigest,
+)
 from sky_claw.local.runtime_vault.physical_root import PhysicalRootIdentity
 from sky_claw.local.runtime_vault.runtime_observation import FreshRuntimeObservation
 from sky_claw.local.runtime_vault.trusted_registry import (
@@ -650,7 +655,7 @@ def deserialize_admission_record(raw: bytes | str) -> GoldenAdmissionRecord:
         )
     except GoldenAdmissionStoreError:
         raise
-    except GoldenAdmissionError as exc:
+    except (GoldenAdmissionError, RuntimeVaultError, ValueError, TypeError, KeyError) as exc:
         raise GoldenAdmissionStoreError(f"Registro inválido: {exc}") from exc
 
 
@@ -699,14 +704,19 @@ def _persist(record: GoldenAdmissionRecord, *, programdata_resolver: Callable[[]
 
     path = derive_admission_record_path(record.operation_id, programdata_resolver=programdata_resolver)
     payload = serialize_admission_record(record)
-    write_secured_file_atomically_at(
-        path,
-        payload,
-        GOLDEN_ADMISSION_RECORD_OBJECT,
-        validate=_revalidar_registro,
-        error_factory=GoldenAdmissionStoreError,
-        parent_error_message=f"El directorio de operación '{path.parent}' no existe o no es confiable",
-    )
+    try:
+        write_secured_file_atomically_at(
+            path,
+            payload,
+            GOLDEN_ADMISSION_RECORD_OBJECT,
+            validate=_revalidar_registro,
+            error_factory=GoldenAdmissionStoreError,
+            parent_error_message=f"El directorio de operación '{path.parent}' no existe o no es confiable",
+        )
+    except GoldenAdmissionStoreError:
+        raise
+    except Exception as exc:
+        raise GoldenAdmissionStoreError(f"No se pudo persistir el registro '{path}': {exc}") from exc
 
 
 def load_admission_record(
@@ -716,15 +726,22 @@ def load_admission_record(
 ) -> GoldenAdmissionRecord:
     """Lee y valida el registro desde disco (Fail-Closed)."""
     _ensure_windows()
-    path = derive_admission_record_path(operation_id, programdata_resolver=programdata_resolver)
     try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise GoldenAdmissionStoreError(f"No se pudo leer el registro de la operación '{path}': {exc}") from exc
-    record = deserialize_admission_record(raw)
-    if record.operation_id != validate_operation_id(operation_id):
-        raise GoldenAdmissionStoreError("El registro en disco pertenece a otra operación")
-    return record
+        path = derive_admission_record_path(operation_id, programdata_resolver=programdata_resolver)
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise GoldenAdmissionStoreError(f"No se pudo leer el registro de la operación '{path}': {exc}") from exc
+        record = deserialize_admission_record(raw)
+        if record.operation_id != validate_operation_id(operation_id):
+            raise GoldenAdmissionStoreError("El registro en disco pertenece a otra operación")
+        return record
+    except GoldenAdmissionStoreError:
+        raise
+    except Exception as exc:
+        raise GoldenAdmissionStoreError(
+            f"No se pudo cargar el registro de la operación '{operation_id}': {exc}"
+        ) from exc
 
 
 def create_admission_record(
@@ -752,28 +769,33 @@ def create_admission_record(
         create_secure_directory_exclusive,
     )
 
-    record = GoldenAdmissionRecord(
-        operation_id=receipt.operation_id,
-        receipt=receipt,
-        critical_expectations=tuple(critical_expectations),
-        source_reference=source_reference,
-        observations=tuple(observations),
-    )
-
-    record_dir = derive_admission_record_dir(receipt.operation_id, programdata_resolver=programdata_resolver)
     try:
-        create_secure_directory_exclusive(record_dir, "operations")
-    except NamespaceAlreadyExistsError as exc:
-        raise GoldenAdmissionClaimAlreadyExistsError(
-            f"La operación '{receipt.operation_id}' ya tiene registro: el claim es one-use"
-        ) from exc
+        record = GoldenAdmissionRecord(
+            operation_id=receipt.operation_id,
+            receipt=receipt,
+            critical_expectations=tuple(critical_expectations),
+            source_reference=source_reference,
+            observations=tuple(observations),
+        )
+
+        record_dir = derive_admission_record_dir(receipt.operation_id, programdata_resolver=programdata_resolver)
+        try:
+            create_secure_directory_exclusive(record_dir, "operations")
+        except NamespaceAlreadyExistsError as exc:
+            raise GoldenAdmissionClaimAlreadyExistsError(
+                f"La operación '{receipt.operation_id}' ya tiene registro: el claim es one-use"
+            ) from exc
+        except GoldenAdmissionStoreError:
+            raise
+        except Exception as exc:
+            raise GoldenAdmissionStoreError(f"No se pudo crear el directorio de operación: {exc}") from exc
+
+        _persist(record, programdata_resolver=programdata_resolver)
+        return record
     except GoldenAdmissionStoreError:
         raise
     except Exception as exc:
-        raise GoldenAdmissionStoreError(f"No se pudo crear el directorio de operación: {exc}") from exc
-
-    _persist(record, programdata_resolver=programdata_resolver)
-    return record
+        raise GoldenAdmissionStoreError(f"No se pudo crear el registro de admisión: {exc}") from exc
 
 
 def _mutar(
@@ -782,14 +804,19 @@ def _mutar(
     *,
     programdata_resolver: Callable[[], object] | None = None,
 ) -> GoldenAdmissionRecord:
-    actual = load_admission_record(operation_id, programdata_resolver=programdata_resolver)
-    nuevo = mutador(actual)
-    if not isinstance(nuevo, GoldenAdmissionRecord):
-        raise GoldenAdmissionStoreError("El mutador no devolvió un GoldenAdmissionRecord")
-    if nuevo.operation_id != actual.operation_id:
-        raise GoldenAdmissionStoreError("El mutador no puede cambiar el operation_id del registro")
-    _persist(nuevo, programdata_resolver=programdata_resolver)
-    return nuevo
+    try:
+        actual = load_admission_record(operation_id, programdata_resolver=programdata_resolver)
+        nuevo = mutador(actual)
+        if not isinstance(nuevo, GoldenAdmissionRecord):
+            raise GoldenAdmissionStoreError("El mutador no devolvió un GoldenAdmissionRecord")
+        if nuevo.operation_id != actual.operation_id:
+            raise GoldenAdmissionStoreError("El mutador no puede cambiar el operation_id del registro")
+        _persist(nuevo, programdata_resolver=programdata_resolver)
+        return nuevo
+    except GoldenAdmissionStoreError:
+        raise
+    except Exception as exc:
+        raise GoldenAdmissionStoreError(f"Fallo al mutar el registro de la operación '{operation_id}': {exc}") from exc
 
 
 def append_observation(
@@ -825,7 +852,12 @@ def bind_tgr_replacement(
     programdata_resolver: Callable[[], object] | None = None,
 ) -> GoldenAdmissionRecord:
     """Persiste ``before`` (``None`` = ``ABSENT``) y ``intended after`` ANTES del replace TGR."""
-    binding = GoldenAdmissionTgrBinding(before=before, after=after)
+    try:
+        binding = GoldenAdmissionTgrBinding(before=before, after=after)
+    except GoldenAdmissionStoreError:
+        raise
+    except Exception as exc:
+        raise GoldenAdmissionStoreError(f"Binding TGR inválido: {exc}") from exc
 
     def mutador(actual: GoldenAdmissionRecord) -> GoldenAdmissionRecord:
         if actual.tgr_binding is not None:
@@ -886,17 +918,24 @@ def revalidate_for_tgr_replace(
     el TGR". Cualquier divergencia — receipt, expectativas, binding o
     source reference — es ``GoldenAdmissionStoreError`` y corta el commit.
     """
-    disco = load_admission_record(operation_id, programdata_resolver=programdata_resolver)
-    if disco != expected:
-        diferencias = _diferencias(expected, disco)
+    try:
+        disco = load_admission_record(operation_id, programdata_resolver=programdata_resolver)
+        if disco != expected:
+            diferencias = _diferencias(expected, disco)
+            raise GoldenAdmissionStoreError(
+                f"El registro en disco divergió del esperado antes del replace TGR: {diferencias}"
+            )
+        if disco.tgr_binding is None:
+            raise GoldenAdmissionStoreError("El registro no tiene before/intended after: no se puede escribir el TGR")
+        if disco.critical_expectations_digest != expected.critical_expectations_digest:
+            raise GoldenAdmissionStoreError("El digest de critical_expectations divergió antes del replace TGR")
+        return disco
+    except GoldenAdmissionStoreError:
+        raise
+    except Exception as exc:
         raise GoldenAdmissionStoreError(
-            f"El registro en disco divergió del esperado antes del replace TGR: {diferencias}"
-        )
-    if disco.tgr_binding is None:
-        raise GoldenAdmissionStoreError("El registro no tiene before/intended after: no se puede escribir el TGR")
-    if disco.critical_expectations_digest != expected.critical_expectations_digest:
-        raise GoldenAdmissionStoreError("El digest de critical_expectations divergió antes del replace TGR")
-    return disco
+            f"Fallo al revalidar el registro para el replace TGR de '{operation_id}': {exc}"
+        ) from exc
 
 
 def _diferencias(esperado: GoldenAdmissionRecord, observado: GoldenAdmissionRecord) -> str:

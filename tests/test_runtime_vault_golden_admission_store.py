@@ -22,6 +22,7 @@ import pytest
 from sky_claw.local.runtime_vault.critical_expectations import critical_expectations_digest
 from sky_claw.local.runtime_vault.golden_admission import (
     GoldenAdmissionClaimAlreadyExistsError,
+    GoldenAdmissionError,
     GoldenAdmissionModelError,
     GoldenAdmissionOutcome,
     GoldenAdmissionReceipt,
@@ -39,6 +40,7 @@ from sky_claw.local.runtime_vault.golden_admission_store import (
     GoldenAdmissionResultRecord,
     GoldenAdmissionSourceReference,
     GoldenAdmissionTgrBinding,
+    _persist,
     append_observation,
     append_result,
     bind_tgr_replacement,
@@ -51,9 +53,10 @@ from sky_claw.local.runtime_vault.golden_admission_store import (
     serialize_admission_record,
 )
 from sky_claw.local.runtime_vault.models import CriticalFileExpectation, RuntimeIdentity, TreeDigest
-from sky_claw.local.runtime_vault.physical_root import PhysicalRootIdentity
-from sky_claw.local.runtime_vault.runtime_observation import FreshRuntimeObservation
-from sky_claw.local.runtime_vault.trusted_registry import TrustedGoldenEntry
+from sky_claw.local.runtime_vault.physical_root import PhysicalRootError, PhysicalRootIdentity
+from sky_claw.local.runtime_vault.runtime_observation import FreshRuntimeObservation, RuntimeObservationError
+from sky_claw.local.runtime_vault.trusted_namespace import TrustedNamespaceError
+from sky_claw.local.runtime_vault.trusted_registry import TrustedGoldenEntry, TrustedRegistrySchemaError
 
 _OPERATION_ID = validate_operation_id("11111111-2222-4333-8444-555555555555")
 _ROOT = "C:\\Games\\Skyrim Special Edition"
@@ -245,6 +248,36 @@ class TestEsquemaCerradoRegistro:
     def test_bytes_invalidos_utf8_es_rechazado(self) -> None:
         with pytest.raises(GoldenAdmissionStoreError, match="UTF-8"):
             deserialize_admission_record(b"\xff\xfe")
+
+    def test_deserialize_con_value_error_anidado_es_golden_admission_store_error(self) -> None:
+        raw_dict = json.loads(serialize_admission_record(_registro()))
+        raw_dict["receipt"]["critical_expectations_digest"] = "invalido"
+        with pytest.raises(GoldenAdmissionStoreError, match="Registro inválido") as excinfo:
+            deserialize_admission_record(json.dumps(raw_dict).encode("utf-8"))
+        assert isinstance(excinfo.value.__cause__, (ValueError, GoldenAdmissionError))
+
+    def test_deserialize_con_physical_root_error_es_golden_admission_store_error(self) -> None:
+        raw_dict = json.loads(serialize_admission_record(_registro(observations=(_observacion(),))))
+        raw_dict["observations"][0]["physical_root"]["volume_serial_number"] = -1
+        with pytest.raises(GoldenAdmissionStoreError, match="Registro inválido") as excinfo:
+            deserialize_admission_record(json.dumps(raw_dict).encode("utf-8"))
+        assert isinstance(excinfo.value.__cause__, PhysicalRootError)
+
+    def test_deserialize_con_runtime_observation_error_es_golden_admission_store_error(self) -> None:
+        raw_dict = json.loads(serialize_admission_record(_registro(observations=(_observacion(),))))
+        raw_dict["observations"][0]["observed_runtime"]["observed_at_ns"] = -10
+        with pytest.raises(GoldenAdmissionStoreError, match="Registro inválido") as excinfo:
+            deserialize_admission_record(json.dumps(raw_dict).encode("utf-8"))
+        assert isinstance(excinfo.value.__cause__, RuntimeObservationError)
+
+    def test_deserialize_con_tgr_schema_error_anidado_es_golden_admission_store_error(self) -> None:
+        raw_dict = json.loads(
+            serialize_admission_record(_registro(tgr_binding=GoldenAdmissionTgrBinding(before=None, after=_entry())))
+        )
+        raw_dict["tgr_binding"]["after"]["canonical_root"] = "ruta\\relativa"
+        with pytest.raises(GoldenAdmissionStoreError, match="Registro inválido") as excinfo:
+            deserialize_admission_record(json.dumps(raw_dict).encode("utf-8"))
+        assert isinstance(excinfo.value.__cause__, TrustedRegistrySchemaError)
 
 
 def _observation_dict() -> dict[str, Any]:
@@ -605,6 +638,54 @@ class TestPersistenciaProtegida:
                 critical_expectations=_expectativas(),
                 programdata_resolver=lambda: tmp_sin_ancestros(self.resolver()),
             )
+
+    def test_persist_normaliza_trusted_namespace_error_a_store_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from sky_claw.local.runtime_vault import trusted_namespace
+
+        def _failing_write(*args: Any, **kwargs: Any) -> None:
+            raise TrustedNamespaceError("Simulated DACL corruption")
+
+        monkeypatch.setattr(trusted_namespace, "write_secured_file_atomically_at", _failing_write)
+        rec = _registro()
+        with pytest.raises(GoldenAdmissionStoreError, match="No se pudo persistir") as excinfo:
+            _persist(rec, programdata_resolver=self.resolver)
+        assert isinstance(excinfo.value.__cause__, TrustedNamespaceError)
+
+    def test_persist_normaliza_os_error_a_store_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from sky_claw.local.runtime_vault import trusted_namespace
+
+        def _failing_write(*args: Any, **kwargs: Any) -> None:
+            raise OSError("Simulated disk I/O failure")
+
+        monkeypatch.setattr(trusted_namespace, "write_secured_file_atomically_at", _failing_write)
+        rec = _registro()
+        with pytest.raises(GoldenAdmissionStoreError, match="No se pudo persistir") as excinfo:
+            _persist(rec, programdata_resolver=self.resolver)
+        assert isinstance(excinfo.value.__cause__, OSError)
+
+    def test_load_con_operation_id_invalido_es_store_error(self) -> None:
+        with pytest.raises(GoldenAdmissionStoreError, match="No se pudo cargar el registro"):
+            load_admission_record("not-a-valid-uuid", programdata_resolver=self.resolver)
+
+    def test_revalidate_normaliza_error_de_lectura_a_store_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        create_admission_record(
+            receipt=_receipt(),
+            critical_expectations=_expectativas(),
+            programdata_resolver=self.resolver,
+        )
+        registrado = bind_tgr_replacement(
+            _OPERATION_ID, before=None, after=_entry(), programdata_resolver=self.resolver
+        )
+
+        def _failing_read(*args: Any, **kwargs: Any) -> Any:
+            raise OSError("Simulated disk read error")
+
+        monkeypatch.setattr(pathlib.Path, "read_bytes", _failing_read)
+        with pytest.raises(
+            GoldenAdmissionStoreError, match="No se pudo leer el registro|Fallo al revalidar"
+        ) as excinfo:
+            revalidate_for_tgr_replace(_OPERATION_ID, expected=registrado, programdata_resolver=self.resolver)
+        assert isinstance(excinfo.value.__cause__, OSError)
 
 
 def tmp_sin_ancestros(base: Any) -> pathlib.Path:

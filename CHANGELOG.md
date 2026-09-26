@@ -114,7 +114,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`PROVENANCE_POST_VERIFIED`) también antes del commit. Registro de auditoría
   protegido por `operation_id` (receipt inmutable, expectativas normalizadas,
   observaciones por pass con `ESTADOS_ADMITIDOS_POR_PASS`, binding TGR
-  `before`/`after`) persistido y revalidado **antes** del replace; `registered_at`
+  `before`/`after`) persistido y revalidado **antes** del replace; frontera de error
+  del store sellada con `GoldenAdmissionStoreError` para toda falla operativa; append
+  terminal de auditoría desacoplado del desenlace ya decidido (falla de auditoría
+  post-commit preserva `REGISTERED` o `COMMIT_OUTCOME_UNKNOWN` con warning; el servicio
+  nunca lanza excepciones operativas ordinarias); `registered_at`
   UTC ISO-8601 `Z` con microsegundos, único por root físico (+1 µs acotado o
   fail-closed). `critical_expectations` con serialización normativa exacta
   (`SHA-256(UTF-8("[]"))` para la lista vacía). Anclas:

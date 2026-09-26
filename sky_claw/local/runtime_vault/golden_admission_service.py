@@ -1151,7 +1151,7 @@ class GoldenAdmissionService:
             return
         try:
             self._anexar_observacion(operacion_id, registro)
-        except _FalloDeFlujoError:
+        except Exception:  # noqa: BLE001 — la evidencia del pass fallido es best-effort y no decide nada
             # El desenlace sigue siendo RV2_MISMATCH con el TGR intacto: la
             # evidencia del pass fallido es best-effort y no decide nada.
             logger.error("No se pudo registrar la evidencia del RV-2 fallido de %s", operacion_id)
@@ -1165,7 +1165,7 @@ class GoldenAdmissionService:
         """
         try:
             append_result(operacion_id, resultado, programdata_resolver=self._programdata_resolver)
-        except GoldenAdmissionStoreError as exc:
+        except Exception as exc:  # noqa: BLE001 — el desenlace ya está decidido; la auditoría terminal es secundaria
             logger.error("No se pudo anexar el resultado %s al registro %s: %s", resultado.outcome, operacion_id, exc)
             return f"No se pudo anexar el resultado terminal al registro de auditoría: {exc}"
         return None
@@ -1212,9 +1212,14 @@ class GoldenAdmissionService:
                     ),
                     programdata_resolver=self._programdata_resolver,
                 )
-            except GoldenAdmissionStoreError:
+            except Exception as exc:  # noqa: BLE001 — fallo secundario; el desenlace ya es REJECTED
                 # No se puede anexar: el desenlace sigue siendo REJECTED y el
                 # TGR sigue intacto; el registro queda sin resultado terminal.
+                logger.warning(
+                    "No se pudo anexar el resultado REJECTED al registro %s: %s",
+                    operacion_id,
+                    exc,
+                )
                 record_path = None
         return RegisterOrRefreshTrustedGoldenResult(
             success=False,
