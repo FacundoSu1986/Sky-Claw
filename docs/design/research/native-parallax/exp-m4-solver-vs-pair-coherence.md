@@ -332,29 +332,31 @@ Resultados confirmatorios obtenidos a partir del corpus local `C:\SkyClawResearc
 
 | Métrica | Full (n=31) | Held-Out (n=16) | Calibration (n=15) | Umbral Preregistrado |
 | :--- | :--- | :--- | :--- | :--- |
-| **SELF RMSE (mediana)** | **0.0037** | **0.0026** | 0.0057 | $\le 0.05$ (C1) |
+| **SELF RMSE (mediana)** | **0.0037** | **0.0026** | 0.0057 | $\le 0.10$ (C1) |
 | **AUTH RMSE (mediana)** | **0.0392** | **0.0386** | 0.0550 | — |
 | **DELTA_RMSE (mediana)** | **+0.0353** | **+0.0338** | +0.0363 | $\ge 0.02$ (C2) |
-| **SELF \|corr\| (mediana)** | **0.9992** | **0.9996** | 0.9972 | $\ge 0.90$ (C1) |
+| **SELF \|corr\| (mediana)** | **0.9992** | **0.9996** | 0.9972 | $\ge 0.95$ (C1) |
 | **AUTH \|corr\| (mediana)** | **0.8392** | **0.8744** | 0.7716 | — |
-| **DELTA_CORR (mediana)** | **0.1600** | **0.1253** | 0.2257 | $\ge 0.05$ (C2) |
-| **SELF Variance Ratio** | **0.9983** | **0.9993** | 0.9945 | $[0.80, 1.25]$ (C1) |
+| **DELTA_CORR (mediana)** | **0.1600** | **0.1253** | 0.2257 | $\ge 0.10$ (C2) |
+| **SELF Variance Ratio** | **0.9983** | **0.9993** | 0.9945 | $\ge 0.85$ (C1) |
 | **AUTH Variance Ratio** | **0.7043** | **0.7647** | 0.5953 | — |
 
 - **Bootstrap 95% CI DELTA_RMSE (Full):** `[0.0275, 0.0511]` (point estimate = 0.0353)
 - **Bootstrap 95% CI DELTA_RMSE (Held-Out):** `[0.0194, 0.0556]` (point estimate = 0.0338)
+  - *Nota sobre incertidumbre:* El extremo inferior del IC95 held-out (0.0194) roza el umbral 0.02 debido a la dispersión en n=16; la regla confirmatoria preregistrada opera sobre la estimación puntual de la mediana (0.0338 $\ge 0.02$) y satisface C2 plenamente sin requerir umbrales en los cuantiles bootstrap.
 
 #### 14.4.2 Veredicto de reglas y decisión confirmatoria
 
 - **Regla C1 (SELF ceiling / solver capability):** `TRUE`
-  - `rmse_self_median` full = 0.0037 $\le 0.05$
-  - `abs_corr_self_median` full = 0.9992 $\ge 0.90$
-  - `var_self_median` full = 0.9983 $\in [0.80, 1.25]$
-  - `rmse_self_median` held-out = 0.0026 $\le 0.05$
+  - `full.rmse_self_median` (0.0037) $\le 0.10$
+  - `full.abs_corr_self_median` (0.9992) $\ge 0.95$
+  - `full.var_self_median` (0.9983) $\ge 0.85$
 - **Regla C2 (AUTH pair decoherence / degradation):** `TRUE`
-  - `delta_rmse_median` full = +0.0353 $\ge 0.02$
-  - `delta_corr` full = 0.1600 $\ge 0.05$
-  - `delta_rmse_median` held-out = +0.0338 $\ge 0.02$
+  - `full.delta_rmse_median` (0.0353) $\ge 0.02$
+  - `full.delta_rmse_median` (0.0353) $\ge$ `full.rmse_self_median` (0.0037) *(dominancia de incoherencia sobre techo)*
+  - `full.abs_corr_self_median` - `full.abs_corr_auth_median` (0.1600) $\ge 0.10$
+  - `heldout.delta_rmse_median` (0.0338) $\ge 0.02$
+  - `heldout.abs_corr_self_median` - `heldout.abs_corr_auth_median` (0.1253) $> 0$
 - **Decisión del runner (§8):**
   $$\mathbf{EXP\_M4\_PAIR\_MODEL\_MISMATCH\_DOMINANT}$$
 
@@ -396,7 +398,7 @@ Resultados confirmatorios obtenidos a partir del corpus local `C:\SkyClawResearc
 
 #### 14.4.5 Revisión adversarial (Checklist §12)
 
-1. **SELF ceiling:** Confirmado ampliamente dentro del preregistro (RMSE 0.0037 $\ll$ 0.05). El solver reconstruye con fidelidad casi perfecta cuando el par proviene del mismo modelo diferencial.
+1. **SELF ceiling:** Confirmado ampliamente dentro del preregistro (RMSE 0.0037 $\ll$ 0.10, corr 0.9992 $\gg$ 0.95, var 0.9983 $\gg$ 0.85). El solver reconstruye con fidelidad casi perfecta cuando el par proviene del mismo modelo diferencial.
 2. **Efecto resize:** Descartado como causa primaria. En resolución 1024² nativa, DELTA_RMSE = +0.0263 $\ge 0.02$.
 3. **Efecto cuantización Q8:** Descartado. En float continuo el RMSE es $1.5 \times 10^{-5}$; la cuantización a 8-bit añade apenas 0.0037, frente a 0.0392 de AUTH.
 4. **Discretización FD:** Descartada; FD-Q8 logra corr 0.9925 y RMSE 0.0118.
