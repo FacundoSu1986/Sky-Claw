@@ -26,6 +26,7 @@ import ctypes
 import datetime
 import pathlib
 import sys
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -228,8 +229,26 @@ class JournalDurabilityKernel(Protocol):
 
     def exists(self, path: pathlib.PurePath) -> bool: ...
 
-    def create(self, path: pathlib.PurePath) -> int:
-        """Crea ``CREATE_NEW`` con SD canónico + ``FILE_FLAG_WRITE_THROUGH``."""
+    def stage(self, dest: pathlib.PurePath) -> int:
+        """Crea un hermano provisional con SD canónica + ``FILE_FLAG_WRITE_THROUGH``.
+
+        El provisional NUNCA se crea en ``dest``: la ruta autoritativa no puede
+        existir antes de que el flush haya sido confirmado (ver :meth:`publish`).
+        """
+        ...
+
+    def publish(self, handle: int, dest: pathlib.PurePath) -> None:
+        """Publica el provisional en ``dest`` por create-once, single-winner.
+
+        Exige ``FlushFileBuffers == TRUE`` ANTES de hacer visible ``dest``: es la
+        invariante estructural ``visible at authoritative path`` ⟹
+        ``creation flush passed``. Sin fallback a sustitución: una colisión es
+        ``ProtectionJournalAlreadyExistsError``.
+        """
+        ...
+
+    def discard(self, handle: int) -> None:
+        """Retira el provisional asociado al handle. Nunca fue authority."""
         ...
 
     def open_append(self, path: pathlib.PurePath) -> int:
@@ -343,6 +362,16 @@ def _load_kernel32_apis() -> Any:
     # CloseHandle: (HANDLE) -> BOOL
     _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     _kernel32.CloseHandle.restype = ctypes.c_int
+
+    # CreateHardLinkW: (LPCWSTR lpFileName, LPCWSTR lpExistingFileName, LPSECURITY_ATTRIBUTES) -> BOOL
+    # Mismo ABI que en trusted_namespace: publicación no-reemplazante, single-winner,
+    # determinista con ERROR_ALREADY_EXISTS. Sin fallback a sustitución.
+    _kernel32.CreateHardLinkW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_void_p]
+    _kernel32.CreateHardLinkW.restype = ctypes.c_int
+
+    # DeleteFileW: (LPCWSTR) -> BOOL
+    _kernel32.DeleteFileW.argtypes = [ctypes.c_wchar_p]
+    _kernel32.DeleteFileW.restype = ctypes.c_int
     return _kernel32
 
 
@@ -358,24 +387,43 @@ def _safe_close_handle(kernel: Any, handle: int | None) -> None:
 
 
 class _Win32JournalKernel:
-    """Kernel real del journal. Sin fallbacks: toda falla es fail-closed."""
+    """Kernel real del journal. Sin fallbacks: toda falla es fail-closed.
+
+    La creación usa protocolo de PUBLICACIÓN (familia B): el contenido se escribe
+    en un hermano provisional y sólo se hace visible en la ruta autoritativa tras
+    confirmar ``FlushFileBuffers``. Por construcción, un journal visible en
+    ``protection_journal.json`` tuvo su flush de creación confirmado; si ese flush
+    falla, la ruta autoritativa sigue sin existir y ningún proceso posterior puede
+    clasificarla como ``VALID``.
+    """
+
+    def __init__(self) -> None:
+        self._provisionales: dict[int, pathlib.Path] = {}
 
     def exists(self, path: pathlib.PurePath) -> bool:
         return pathlib.Path(path).exists()
 
-    def create(self, path: pathlib.PurePath) -> int:
+    def stage(self, dest: pathlib.PurePath) -> int:
+        """Crea el hermano provisional (``CREATE_NEW``, SD canónica, write-through).
+
+        Nunca en ``dest``: mientras el provisional no se publique, la ruta
+        autoritativa no existe, así que un flush no confirmado no puede dejar
+        evidencia reutilizable.
+        """
         kernel = _load_kernel32_apis()
         from sky_claw.local.runtime_vault.trusted_namespace import (
             _build_canonical_security_descriptor,
         )
 
+        destino = pathlib.Path(dest)
+        provisional = destino.parent / f".tmp_journal_{uuid.uuid4().hex}.{destino.name}"
         with _build_canonical_security_descriptor(PROTECTION_JOURNAL_OBJECT_NAME) as sd_ctx:
             sa = _SecurityAttributes()
             sa.nLength = ctypes.sizeof(sa)
             sa.lpSecurityDescriptor = sd_ctx.p_sd
             sa.bInheritHandle = False
             handle = kernel.CreateFileW(
-                str(path),
+                str(provisional),
                 _GENERIC_WRITE,
                 _FILE_SHARE_READ,
                 ctypes.byref(sa),
@@ -386,12 +434,48 @@ class _Win32JournalKernel:
         raw = int(handle or 0)
         if _invalid_handle(raw):
             err = ctypes.get_last_error()
+            raise ProtectionJournalCreateError(
+                f"CreateFileW falló al preparar el journal provisional para '{dest}': código {err}"
+            )
+        self._provisionales[raw] = provisional
+        return raw
+
+    def publish(self, handle: int, dest: pathlib.PurePath) -> None:
+        """Hace visible ``dest`` sólo con ``FlushFileBuffers == TRUE`` confirmado.
+
+        El flush se ejecuta AQUÍ, sobre el handle del provisional, y su BOOL se
+        verifica antes de ``CreateHardLinkW``: la invariante es estructural, no una
+        convención del llamador.
+        """
+        kernel = _load_kernel32_apis()
+        provisional = self._provisionales.get(handle)
+        if provisional is None:
+            raise ProtectionJournalCreateError(
+                f"no hay provisional asociado al handle {handle}: no se puede publicar authority"
+            )
+        if not kernel.FlushFileBuffers(ctypes.c_void_p(handle)):
+            err = ctypes.get_last_error()
+            raise DurableJournalFlushError(
+                f"FlushFileBuffers no confirmó el journal provisional '{provisional}' antes de publicar "
+                f"'{dest}': código {err}. La ruta autoritativa NO se crea"
+            )
+        if not kernel.CreateHardLinkW(str(dest), str(provisional), None):
+            err = ctypes.get_last_error()
             if err in (_ERROR_FILE_EXISTS, _ERROR_ALREADY_EXISTS):
                 raise ProtectionJournalAlreadyExistsError(
-                    f"El journal de la operación ya existe en '{path}' (código Win32 {err}): nunca se sobreescribe"
+                    f"El journal de la operación ya existe en '{dest}' (código Win32 {err}): nunca se sobreescribe"
                 )
-            raise ProtectionJournalCreateError(f"CreateFileW falló al crear el journal '{path}': código {err}")
-        return raw
+            raise ProtectionJournalCreateError(
+                f"CreateHardLinkW falló al publicar el journal en '{dest}': código {err}"
+            )
+
+    def discard(self, handle: int) -> None:
+        """Retira el provisional. Nunca fue authority: no hay ruta autoritativa que limpiar."""
+        provisional = self._provisionales.pop(handle, None)
+        if provisional is None:
+            return
+        with contextlib.suppress(OSError):
+            pathlib.Path(provisional).unlink(missing_ok=True)
 
     def open_append(self, path: pathlib.PurePath) -> int:
         kernel = _load_kernel32_apis()
@@ -625,11 +709,24 @@ def create_protection_journal(
 ) -> DurableProtectionJournal:
     """Crea el journal autoritativo de una operación sobre un plan YA durable (§53).
 
-    Secuencia: crear el archivo protegido ``CREATE_NEW`` -> escribir el header
-    (que liga ``authorized_plan_digest`` e identidad física) -> asentar el estado
-    inicial ``APPLYING`` -> ``FlushFileBuffers`` -> RE-LEER y validar -> acuñar el
-    objeto. Cualquier falla posterior a la creación retira el archivo creado por
-    esta llamada: nunca queda autoridad a medias.
+    PROTOCOLO DE PUBLICACIÓN (familia B): la ruta autoritativa no existe hasta que
+    la durabilidad está confirmada.
+
+        1. ``stage``      -> hermano provisional con SD canónica + write-through
+                            (NUNCA en la ruta autoritativa)
+        2. ``append``     -> header (liga plan + identidad física) + estado inicial
+        3. ``publish``    -> ``FlushFileBuffers == TRUE`` verificado y SÓLO ENTONCES
+                            ``CreateHardLinkW`` (create-once, single-winner)
+        4. ``discard``    -> retira el nombre provisional
+        5. re-leer + validar el journal PUBLICADO y ligarlo al plan
+        6. ``open_append`` -> handle vivo de anexado
+
+    La invariante es estructural: ``visible at authoritative path`` implica
+    ``creation flush passed``. Si el flush falla, el paso 3 nunca publica, la ruta
+    autoritativa sigue sin existir y **ningún proceso posterior puede clasificar el
+    journal como ``VALID``** aunque el borrado del provisional también falle: el
+    provisional no es authority y nadie lo lee como journal. No hace falta borrar
+    nada en la ruta autoritativa porque nunca se escribió allí.
     """
     if not isinstance(durable_plan, DurableAuthorizedPlan):
         raise ProtectionJournalPlanBindingError(
@@ -660,16 +757,23 @@ def create_protection_journal(
     initial_state = JournalTransactionRecord(sequence=2, state=ProtectionTransactionState(INITIAL_TRANSACTION_STATE))
 
     handle: int | None = None
+    published = False
     try:
-        handle = active_kernel.create(path)
+        # 1-2. Provisional + contenido. La ruta autoritativa todavía NO existe.
+        handle = active_kernel.stage(path)
         active_kernel.append(handle, serialize_journal_record(header))
         active_kernel.append(handle, serialize_journal_record(initial_state))
-        if not active_kernel.flush(handle):
-            raise DurableJournalFlushError(
-                f"FlushFileBuffers no confirmó la creación del journal '{path}': no hay autoridad transaccional"
-            )
 
-        # Re-lectura y validación completas ANTES de acuñar el objeto (§27).
+        # 3. GATE de durabilidad + publicación atómica create-once.
+        active_kernel.publish(handle, path)
+        published = True
+
+        # 4. El nombre provisional deja de existir; el contenido quedó en `path`.
+        active_kernel.discard(handle)
+        active_kernel.close(handle)
+        handle = None
+
+        # 5. Re-lectura y validación completas del journal PUBLICADO (§27).
         raw = active_kernel.read_all(path)
         parsed = parse_journal_bytes(raw)
         if not parsed.is_valid or parsed.journal is None:
@@ -678,29 +782,29 @@ def create_protection_journal(
             )
         if parsed.journal.authorized_plan_digest != plan.plan_digest:
             raise ProtectionJournalCreateError(f"El journal creado en '{path}' no liga contra el plan autoritativo")
-    except BaseException as exc:
+    except BaseException:
+        # `discard` sólo retira el provisional. Si la publicación no llegó a
+        # ocurrir, la ruta autoritativa nunca existió: no hay authority a medias
+        # que limpiar ni evidencia ambigua que un restart pueda malinterpretar.
         if handle is not None:
+            with contextlib.suppress(Exception):
+                active_kernel.discard(handle)
             active_kernel.close(handle)
-        with contextlib.suppress(OSError):
-            active_kernel.remove(path)
-        if active_kernel.exists(path):
-            # Fallo de durabilidad AGRAVADO: el artefacto no pudo retirarse, así
-            # que queda en disco un journal cuya escritura nunca fue confirmada por
-            # ``FlushFileBuffers``. Se falla cerrado y EXPLÍCITO (nunca en silencio)
-            # para que el operador sepa que hay evidencia ambigua que retirar a
-            # mano; encadenar conserva la causa original (``DurableJournalFlushError``
-            # u otra) para no degradar el diagnóstico.
-            raise ProtectionJournalCreateError(
-                f"Fallo creando el journal '{path}' y el artefacto NO pudo retirarse: "
-                "queda evidencia ambigua en disco cuya durabilidad nunca se confirmó"
-            ) from exc
+        if published:
+            # El journal SÍ quedó publicado (y por tanto SÍ flushed): la limpieza
+            # es oportunista. Si no se puede retirar, el artefacto sigue siendo
+            # un journal válido y durable, no evidencia ambigua.
+            with contextlib.suppress(Exception):
+                active_kernel.remove(path)
         raise
 
+    # 6. Handle vivo de anexado sobre el journal ya publicado y validado.
+    append_handle = active_kernel.open_append(path)
     return DurableProtectionJournal(
         journal=parsed.journal,
         path=path,
         kernel=active_kernel,
-        handle=handle,
+        handle=append_handle,
         plan=plan,
         records=(header, initial_state),
     )

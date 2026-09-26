@@ -19,7 +19,9 @@ import base64
 import hashlib
 import json
 import pathlib
+import shutil
 import sys
+import uuid
 from typing import Any
 
 import pytest
@@ -131,28 +133,55 @@ class FakeKernel:
         append_falla: bool = False,
         append_no_tipado: bool = False,
         remove_falla: bool = False,
+        discard_falla: bool = False,
     ) -> None:
         self.flush_ok = flush_ok
         self.append_falla = append_falla
         self.append_no_tipado = append_no_tipado
         self.remove_falla = remove_falla
+        self.discard_falla = discard_falla
         self.eventos: list[str] = []
         self._handles: dict[int, pathlib.Path] = {}
+        self._provisionales: dict[int, pathlib.Path] = {}
         self._siguiente = 500
 
     def exists(self, path: pathlib.PurePath) -> bool:
         return pathlib.Path(path).exists()
 
-    def create(self, path: pathlib.PurePath) -> int:
-        destino = pathlib.Path(path)
+    def stage(self, dest: pathlib.PurePath) -> int:
+        """Hermano provisional: NUNCA en la ruta autoritativa."""
+        destino = pathlib.Path(dest)
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        provisional = destino.parent / f".tmp_journal_{uuid.uuid4().hex}.{destino.name}"
+        provisional.touch()
+        self._siguiente += 1
+        self._handles[self._siguiente] = provisional
+        self._provisionales[self._siguiente] = provisional
+        self.eventos.append("stage")
+        return self._siguiente
+
+    def publish(self, handle: int, dest: pathlib.PurePath) -> None:
+        """GATE de durabilidad y publicación create-once sobre el provisional."""
+        destino = pathlib.Path(dest)
         if destino.exists():
             raise ProtectionJournalAlreadyExistsError(f"ya existe: '{destino}'")
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        destino.touch()
-        self._siguiente += 1
-        self._handles[self._siguiente] = destino
-        self.eventos.append("create")
-        return self._siguiente
+        if not self.flush_ok:
+            self.eventos.append("flush")
+            raise DurableJournalFlushError("flush no confirmado: no se publica")
+        self.eventos.append("flush")
+        provisional = self._provisionales[handle]
+        shutil.copyfile(provisional, destino)  # equivalente al hard link: mismo contenido
+        self.eventos.append("publish")
+
+    def discard(self, handle: int) -> None:
+        provisional = self._provisionales.pop(handle, None)
+        if provisional is None:
+            return
+        if self.discard_falla:
+            self.eventos.append("discard-FALLIDO")
+            raise OSError("no se pudo retirar el provisional")
+        pathlib.Path(provisional).unlink(missing_ok=True)
+        self.eventos.append("discard")
 
     def open_append(self, path: pathlib.PurePath) -> int:
         destino = pathlib.Path(path)
@@ -190,7 +219,7 @@ class FakeKernel:
 
     def remove(self, path: pathlib.PurePath) -> None:
         if self.remove_falla:
-            raise OSError("no se pudo retirar el artefacto ambiguo")
+            raise OSError("no se pudo retirar el journal publicado")
         pathlib.Path(path).unlink(missing_ok=True)
 
 
@@ -778,23 +807,116 @@ class TestEndurecimientoAdversarial:
         assert resultado.classification is ProtectionJournalClassification.INDETERMINATE
         assert resultado.journal is None
 
-    def test_flush_fallido_y_artefacto_irretirable_falla_cerrado_y_explicito(self, raiz: pathlib.Path) -> None:
-        """Create + flush no confirmado + unlink fallido = artefacto ambiguo.
+    # -- BLOCKER: la ruta autoritativa no existe sin flush confirmado ----------
 
-        Sin el endurecimiento el journal sobrevivía en disco y un proceso
-        posterior lo clasificaba VALID aunque ``FlushFileBuffers`` nunca hubiera
-        confirmado la creación. Ahora el fallo es explícito y conserva la causa.
-        """
-        kernel = FakeKernel(flush_ok=False, remove_falla=True)
-        with pytest.raises(ProtectionJournalCreateError) as cercano:
+    def test_flush_fallido_no_publica_nada_en_la_ruta_autoritativa(self, raiz: pathlib.Path) -> None:
+        """Protocolo de publicación: sin flush confirmado no hay ruta autoritativa."""
+        kernel = FakeKernel(flush_ok=False)
+        with pytest.raises(DurableJournalFlushError):
             create_protection_journal(_plan_durable(raiz), programdata_resolver=_resolver(raiz), kernel=kernel)
-        assert isinstance(cercano.value.__cause__, DurableJournalFlushError)
-        assert "evidencia ambigua" in str(cercano.value)
 
         ruta = derive_protection_journal_path(_OPERATION_ID, programdata_resolver=_resolver(raiz))
+        assert not ruta.exists()
+        assert "publish" not in kernel.eventos
+        assert kernel.eventos[:4] == ["stage", "append", "append", "flush"]
+
+    def test_publicacion_solo_despues_del_flush_confirmado(self, raiz: pathlib.Path) -> None:
+        """ORDEN estructural: stage -> append -> flush -> publish -> discard."""
+        kernel = FakeKernel()
+        _journal(raiz, kernel)
+        assert kernel.eventos == ["stage", "append", "append", "flush", "publish", "discard", "close", "open"]
+        ruta = derive_protection_journal_path(_OPERATION_ID, programdata_resolver=_resolver(raiz))
         assert ruta.exists()
-        # El operador debe poder ver que el artefacto quedó ambiguo.
-        assert "NO pudo retirarse" in str(cercano.value)
+
+    def test_provisional_nunca_es_la_ruta_autoritativa(self, raiz: pathlib.Path) -> None:
+        """El contenido se escribe en un hermano, jamás en ``protection_journal.json``."""
+        kernel = FakeKernel()
+        _journal(raiz, kernel)
+        ruta = derive_protection_journal_path(_OPERATION_ID, programdata_resolver=_resolver(raiz))
+        residuales = [p for p in ruta.parent.iterdir() if p.name.startswith(".tmp_journal_")]
+        assert residuales == []  # el provisional se retira tras publicar
+
+    # -- PoC DE RESTART (el blocker real) -------------------------------------
+
+    def test_restart_tras_flush_fallido_nunca_clasifica_valid(self, raiz: pathlib.Path) -> None:
+        """PoC de restart: flush inicial FALSE + borrado irrealizable + muerte.
+
+        Proceso A: el flush de creación falla y ni siquiera el provisional puede
+        retirarse (el peor caso). Muere.
+        Proceso B: kernel NUEVO y completamente funcional — ``FlushFileBuffers``
+        vuelve a trabajar tras el reinicio.
+
+        El journal NO debe poder clasificarse ni aceptarse como ``VALID``: la
+        primera mutación no puede autorizarse sobre una creación autoritativa cuya
+        durabilidad nunca fue confirmada.
+        """
+        kernel_a = FakeKernel(flush_ok=False, discard_falla=True, remove_falla=True)
+        with pytest.raises(DurableJournalFlushError):
+            create_protection_journal(_plan_durable(raiz), programdata_resolver=_resolver(raiz), kernel=kernel_a)
+
+        # --- reinicio: proceso B, backend sano ---
+        kernel_b = FakeKernel()  # flush_ok=True, discard/remove operativos
+        assert kernel_b.flush_ok is True
+
+        ruta = derive_protection_journal_path(_OPERATION_ID, programdata_resolver=_resolver(raiz))
+        assert not ruta.exists(), "la ruta autoritativa nunca debe existir sin flush confirmado"
+
+        resultado = classify_protection_journal(_OPERATION_ID, programdata_resolver=_resolver(raiz), kernel=kernel_b)
+        assert resultado.classification is ProtectionJournalClassification.ABSENT
+        assert resultado.classification is not ProtectionJournalClassification.VALID
+        assert resultado.journal is None
+
+        with pytest.raises(ProtectionJournalNotFoundError):
+            open_protection_journal(
+                _OPERATION_ID, _plan_durable(raiz), programdata_resolver=_resolver(raiz), kernel=kernel_b
+            )
+        with pytest.raises(ProtectionJournalNotFoundError):
+            load_protection_journal(_OPERATION_ID, programdata_resolver=_resolver(raiz), kernel=kernel_b)
+
+        # Oráculo B (§20): el plan es cargable, pero SIN journal NO se infiere
+        # ningún estado transaccional ni ninguna mutación.
+        plan_recargado, journal_recargado, clasificacion = reload_protection_journal_after_restart(
+            _OPERATION_ID,
+            programdata_resolver=_resolver(raiz),
+            kernel=kernel_b,
+            plan_loader=lambda _op: _plan_durable(raiz),
+        )
+        assert isinstance(plan_recargado, DurableAuthorizedPlan)
+        assert journal_recargado is None
+        assert clasificacion is ProtectionJournalClassification.ABSENT
+
+    def test_restart_tras_flush_fallido_no_hay_permiso_de_mutacion(self, raiz: pathlib.Path) -> None:
+        """Tras el restart, ``WalMutationPermit`` es inalcanzable para esa operación."""
+        kernel_a = FakeKernel(flush_ok=False, discard_falla=True)
+        with pytest.raises(DurableJournalFlushError):
+            create_protection_journal(_plan_durable(raiz), programdata_resolver=_resolver(raiz), kernel=kernel_a)
+
+        kernel_b = FakeKernel()
+        with pytest.raises(ProtectionJournalNotFoundError):
+            journal = open_protection_journal(
+                _OPERATION_ID, _plan_durable(raiz), programdata_resolver=_resolver(raiz), kernel=kernel_b
+            )
+            # Inalcanzable: sin journal no hay handle, y sin handle no hay permiso.
+            journal.record_node_mutation_intent(journal.node_binding("Data/Skyrim.esm"))
+
+    def test_restart_con_flush_sano_crea_journal_valido(self, raiz: pathlib.Path) -> None:
+        """Control del PoC: con flush sano desde el primer intento sí hay authority."""
+        kernel = FakeKernel()
+        journal = _journal(raiz, kernel)
+        permiso = journal.record_node_mutation_intent(journal.node_binding("Data/Skyrim.esm"))
+        assert isinstance(permiso, WalMutationPermit)
+        journal.close()
+
+        kernel_b = FakeKernel()
+        resultado = classify_protection_journal(_OPERATION_ID, programdata_resolver=_resolver(raiz), kernel=kernel_b)
+        assert resultado.classification is ProtectionJournalClassification.VALID
+
+    def test_colision_de_publicacion_es_replay_cerrado(self, raiz: pathlib.Path) -> None:
+        """Un segundo intento con el mismo ``operation_id`` falla cerrado."""
+        kernel = FakeKernel()
+        _journal(raiz, kernel)
+        with pytest.raises(ProtectionJournalAlreadyExistsError):
+            create_protection_journal(_plan_durable(raiz), programdata_resolver=_resolver(raiz), kernel=FakeKernel())
 
     def test_journal_reabierto_reverifica_que_el_archivo_no_cambio(self, raiz: pathlib.Path) -> None:
         """``open_append`` y la validación leen por ruta: se re-verifica tras abrir."""
