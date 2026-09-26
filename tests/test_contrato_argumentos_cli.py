@@ -194,6 +194,12 @@ LANZADORES_ESPERADOS = {
     # `subprocess.run(["taskkill", ...])` puramente infra — mismo módulo, dos
     # naturalezas distintas, un solo conteo agregado.
     "sky_claw/app/core/windows_interop.py": 3,
+    # EXP-M4 (research-only): un único `subprocess.run(["git", "rev-parse", "HEAD"])`
+    # para el bloque de reproducibilidad del reporte (SHA del head del worktree).
+    # Infra de metadatos del propio repo: argv fijo sin flags de ninguna
+    # herramienta de modding — no va en LANZADORES_DE_HERRAMIENTA ni en
+    # PROCEDENCIA_DE_FLAGS.
+    "sky_claw/local/native_parallax/research/run_exp_m4.py": 1,
     # Lanzadores de herramienta: cada uno debe tener entrada en PROCEDENCIA_DE_FLAGS.
     "sky_claw/local/loot/cli.py": 1,
     "sky_claw/local/loot/version.py": 1,
