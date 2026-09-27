@@ -441,6 +441,110 @@ def _bottom_up_node_sort_key(node: NodeSecurityBackup) -> tuple[int, str, str]:
     return (-depth, node.relative_path, node.node_kind.value)
 
 
+#: Claves del objeto raíz del candidate manifest (esquema CERRADO).
+#: Congeladas por igualdad literal: cualquier clave desconocida al deserializar
+#: es rechazada (fail-closed), nunca ignorada en silencio.
+MANIFEST_ROOT_KEYS: frozenset[str] = frozenset(
+    {
+        "TreeDigest",
+        "VolumeSerialNumber",
+        "canonical_root",
+        "initial_protection_state",
+        "node_count",
+        "nodes",
+        "operation_id",
+        "policy_version",
+        "root_file_id",
+        "state",
+    }
+)
+
+#: Claves exactas de un registro de nodo del candidate manifest. ES el ABI PRE
+#: de ADR 0010 §9.1/§9.2.8: el plan autoritativo durable (§12.2 paso 7) reutiliza
+#: este mismo conjunto, de modo que el respaldo PRE no puede divergir entre el
+#: candidato no confiable y la copia autoritativa.
+MANIFEST_NODE_KEYS: frozenset[str] = frozenset(
+    {
+        "FileId",
+        "VolumeSerialNumber",
+        "dacl_control_flags",
+        "group_sid",
+        "node_kind",
+        "owner_sid",
+        "pre_dacl_protected_flag",
+        "pre_sd_bytes_b64",
+        "pre_sd_length",
+        "pre_sd_sha256",
+        "relative_path",
+        "sddl_diagnostic",
+    }
+)
+
+#: Claves exactas del TreeDigest serializado.
+TREE_DIGEST_KEYS: frozenset[str] = frozenset({"bytes", "digest", "files"})
+
+
+def node_security_backup_to_dict(node: NodeSecurityBackup) -> dict[str, object]:
+    """Serialización canónica de UN nodo PRE (compartida por manifest y plan autorizado).
+
+    Vive acá, y no duplicada en el writer del plan autoritativo, para que el ABI
+    PRE del candidato y el de la copia durable no puedan divergir: si un campo se
+    agrega o se quita, ambos heredan el cambio y los esquemas cerrados de los dos
+    lados siguen coincidiendo por construcción.
+    """
+    if not isinstance(node, NodeSecurityBackup):
+        raise PlanCreationError("node debe ser NodeSecurityBackup")
+    return {
+        "FileId": node.file_id,
+        "VolumeSerialNumber": node.volume_serial_number,
+        "dacl_control_flags": node.dacl_control_flags,
+        "group_sid": node.group_sid,
+        "node_kind": node.node_kind.value,
+        "owner_sid": node.owner_sid,
+        "pre_dacl_protected_flag": node.pre_dacl_protected_flag,
+        "pre_sd_bytes_b64": node.pre_sd_bytes_b64,
+        "pre_sd_length": node.pre_sd_length,
+        "pre_sd_sha256": node.pre_sd_sha256,
+        "relative_path": node.relative_path,
+        "sddl_diagnostic": node.sddl_diagnostic,
+    }
+
+
+def node_security_backup_from_dict(raw: object) -> NodeSecurityBackup:
+    """Reconstruye UN nodo PRE desde su serialización canónica (esquema cerrado).
+
+    Acepta exactamente ``MANIFEST_NODE_KEYS``: una clave desconocida o ausente es
+    ``SecurityBackupIntegrityError``. La validación de integridad PRE
+    (``base64_decode`` existe, ``len == pre_sd_length``,
+    ``sha256(bytes) == pre_sd_sha256``, flag ``pre_dacl_protected_flag``
+    consistente con ``dacl_control_flags``) la ejecuta ``NodeSecurityBackup``:
+    no se duplica acá.
+    """
+    if not isinstance(raw, dict):
+        raise SecurityBackupIntegrityError("el registro de nodo debe ser un objeto JSON")
+    observed = set(raw.keys())
+    if observed != MANIFEST_NODE_KEYS:
+        missing = sorted(MANIFEST_NODE_KEYS - observed)
+        extra = sorted(observed - MANIFEST_NODE_KEYS)
+        raise SecurityBackupIntegrityError(
+            f"esquema de nodo no cerrado: claves ausentes={missing}, desconocidas={extra}"
+        )
+    return NodeSecurityBackup(
+        relative_path=raw["relative_path"],
+        node_kind=raw["node_kind"],
+        volume_serial_number=raw["VolumeSerialNumber"],
+        file_id=raw["FileId"],
+        pre_sd_bytes_b64=raw["pre_sd_bytes_b64"],
+        pre_sd_length=raw["pre_sd_length"],
+        pre_sd_sha256=raw["pre_sd_sha256"],
+        owner_sid=raw["owner_sid"],
+        group_sid=raw["group_sid"],
+        dacl_control_flags=raw["dacl_control_flags"],
+        pre_dacl_protected_flag=raw["pre_dacl_protected_flag"],
+        sddl_diagnostic=raw["sddl_diagnostic"],
+    )
+
+
 def _plan_to_manifest_dict(plan: GoldenProtectionPlan) -> dict[str, object]:
     return {
         "TreeDigest": {
@@ -452,28 +556,94 @@ def _plan_to_manifest_dict(plan: GoldenProtectionPlan) -> dict[str, object]:
         "canonical_root": plan.canonical_root,
         "initial_protection_state": plan.initial_protection_state.value,
         "node_count": plan.node_count,
-        "nodes": [
-            {
-                "FileId": node.file_id,
-                "VolumeSerialNumber": node.volume_serial_number,
-                "dacl_control_flags": node.dacl_control_flags,
-                "group_sid": node.group_sid,
-                "node_kind": node.node_kind.value,
-                "owner_sid": node.owner_sid,
-                "pre_dacl_protected_flag": node.pre_dacl_protected_flag,
-                "pre_sd_bytes_b64": node.pre_sd_bytes_b64,
-                "pre_sd_length": node.pre_sd_length,
-                "pre_sd_sha256": node.pre_sd_sha256,
-                "relative_path": node.relative_path,
-                "sddl_diagnostic": node.sddl_diagnostic,
-            }
-            for node in plan.nodes
-        ],
+        "nodes": [node_security_backup_to_dict(node) for node in plan.nodes],
         "operation_id": plan.operation_id,
         "policy_version": plan.policy_version,
         "root_file_id": plan.root_file_id,
         "state": plan.state.value,
     }
+
+
+def deserialize_candidate_manifest(raw: bytes | str) -> GoldenProtectionPlan:
+    """Reconstruye el candidate manifest sellado desde sus bytes canónicos.
+
+    Es la puerta de entrada UNICA del helper privilegiado al contenido de
+    ``UNTRUSTED_STAGING``: los bytes son de un actor no confiable, de modo que la
+    deserialización es de esquema cerrado y reconstruye el modelo tipado
+    (``GoldenProtectionPlan`` + ``NodeSecurityBackup``) con todas sus
+    validaciones, en lugar de exponer un ``dict`` opaco al caller.
+
+    No verifica el ``staging_digest``: ese binding lo exige el helper contra la
+    evidencia privilegiada (ADR 0010 §12.2 paso 2), no el parser.
+    """
+    if isinstance(raw, str):
+        raise PlanCreationError("el candidate manifest debe llegar como bytes canónicos")
+    if not isinstance(raw, bytes) or not raw:
+        raise PlanCreationError("el candidate manifest no puede estar vacío")
+    try:
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PlanCreationError(f"el candidate manifest no es JSON UTF-8 válido: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise PlanCreationError("el candidate manifest debe ser un objeto JSON")
+    observed = set(payload.keys())
+    if observed != MANIFEST_ROOT_KEYS:
+        missing = sorted(MANIFEST_ROOT_KEYS - observed)
+        extra = sorted(observed - MANIFEST_ROOT_KEYS)
+        raise PlanCreationError(f"esquema de manifest no cerrado: claves ausentes={missing}, desconocidas={extra}")
+
+    tree_raw = payload["TreeDigest"]
+    if not isinstance(tree_raw, dict) or set(tree_raw.keys()) != TREE_DIGEST_KEYS:
+        raise PlanCreationError("TreeDigest del manifest debe tener exactamente {bytes, digest, files}")
+    tree_digest = TreeDigest(
+        digest=tree_raw["digest"],
+        files=tree_raw["files"],
+        bytes=tree_raw["bytes"],
+    )
+
+    nodes_raw = payload["nodes"]
+    if not isinstance(nodes_raw, list) or not nodes_raw:
+        raise PlanCreationError("nodes del manifest debe ser una lista no vacía")
+    nodes = tuple(node_security_backup_from_dict(item) for item in nodes_raw)
+    if payload["node_count"] != len(nodes):
+        raise PlanCreationError(
+            f"node_count del manifest ({payload['node_count']}) no coincide con len(nodes) ({len(nodes)})"
+        )
+
+    try:
+        initial_state = GoldenProtectionState(payload["initial_protection_state"])
+    except ValueError as exc:
+        raise PlanCreationError(
+            f"initial_protection_state desconocido: '{payload['initial_protection_state']}'"
+        ) from exc
+    try:
+        plan_state = GoldenProtectionPlanState(payload["state"])
+    except ValueError as exc:
+        raise PlanCreationError(f"state desconocido: '{payload['state']}'") from exc
+
+    plan = GoldenProtectionPlan(
+        operation_id=payload["operation_id"],
+        canonical_root=payload["canonical_root"],
+        volume_serial_number=payload["VolumeSerialNumber"],
+        root_file_id=payload["root_file_id"],
+        tree_digest=tree_digest,
+        policy_version=payload["policy_version"],
+        initial_protection_state=initial_state,
+        nodes=nodes,
+        state=plan_state,
+    )
+    if _canonical_manifest_bytes(plan) != raw:
+        raise PlanCreationError("los bytes del manifest no son la serialización canónica del plan reconstruido")
+    return plan
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    seen: dict[str, object] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise PlanCreationError(f"clave JSON duplicada en el manifest: '{key}'")
+        seen[key] = value
+    return seen
 
 
 def _canonical_manifest_bytes(plan: GoldenProtectionPlan) -> bytes:
@@ -579,6 +749,9 @@ def _normalize_windows_root(value: str | os.PathLike[str]) -> str:
 
 
 __all__ = [
+    "MANIFEST_NODE_KEYS",
+    "MANIFEST_ROOT_KEYS",
+    "TREE_DIGEST_KEYS",
     "DuplicateFileIdError",
     "GoldenProtectionNodeKind",
     "GoldenProtectionPlan",
@@ -589,6 +762,9 @@ __all__ = [
     "PlanCreationError",
     "SealedGoldenProtectionPlan",
     "SecurityBackupIntegrityError",
+    "deserialize_candidate_manifest",
+    "node_security_backup_from_dict",
+    "node_security_backup_to_dict",
     "prepare_golden_protection_plan",
     "seal_golden_protection_plan",
 ]
