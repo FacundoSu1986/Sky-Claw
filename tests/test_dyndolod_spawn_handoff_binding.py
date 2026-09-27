@@ -178,8 +178,10 @@ class _BridgeFalso:
         self,
         *,
         despues_de_verificar: Callable[[], None] | None = None,
+        al_abrir: Callable[[], None] | None = None,
     ) -> None:
         self.despues_de_verificar = despues_de_verificar
+        self.al_abrir = al_abrir
         self.probes = 0
         self.sessions: list[Any] = []
         self.challenges: list[VfsAttestationChallenge] = []
@@ -212,9 +214,15 @@ class _BridgeFalso:
     async def open_session(self, job: VfsJob, **kwargs: Any) -> Any:
         challenge: VfsAttestationChallenge = kwargs["challenge"]
         self.challenges.append(challenge)
+        if self.al_abrir is not None:
+            # Simula el drift en la ventana revalidación→open_session: el
+            # estado cambió DESPUÉS de que `_revalidar_aprobacion` devolvió.
+            self.al_abrir()
         # El worker productivo atesta ANTES de despachar la herramienta
         # (execute_worker_manifest): el mapping runtime se re-prueba en el
-        # boundary del spawn, no sólo en el gate.
+        # boundary del spawn, no sólo en el gate. Y lo hace contra los valores
+        # del challenge = valores APROBADOS (fresh == approval en cada campo
+        # ligado): un estado nuevo NO se certifica, la apertura FALLA.
         verify_vfs_attestation(
             challenge=challenge,
             data_root=kwargs.get("data_root"),
@@ -471,6 +479,25 @@ async def test_pass_luego_romper_el_mapping_usvfs_bloquea_al_abrir_la_sesion(tmp
     with pytest.raises(VfsAttestationError):
         await _spawn(esc, bridge, tmp_path, approval)
     assert bridge.sessions == [], "sin atestación no hay sesión ni proceso"
+
+
+@pytest.mark.asyncio
+async def test_drift_entre_revalidacion_y_open_session_no_se_certifica(tmp_path: pathlib.Path) -> None:
+    """La ventana revalidación→open_session tampoco certifica estado nuevo.
+
+    Refuta el finding "TOCTOU residual": el challenge que abre la sesión no es
+    "lo que había ahora" — es `fresh`, que se comparó IGUAL al approval en
+    path+sha+fingerprint. El worker corre `verify_vfs_attestation` contra esos
+    valores APROBADOS; un perfil que muta EN esa ventana hace fallar la
+    apertura (fail-closed), no se atestigua el estado nuevo.
+    """
+    esc = _escenario(tmp_path)
+    bridge = _BridgeFalso(al_abrir=esc.deshabilitar_mod)
+    approval = await _gate_pasa(esc, bridge, tmp_path)
+
+    with pytest.raises(VfsAttestationError, match="fingerprint del perfil cambió"):
+        await _spawn(esc, bridge, tmp_path, approval)
+    assert bridge.sessions == [], "el estado nuevo jamás se certifica ni se despacha"
 
 
 @pytest.mark.asyncio

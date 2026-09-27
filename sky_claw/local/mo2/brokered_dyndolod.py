@@ -447,6 +447,14 @@ class BrokeredDynDOLODSpawnStrategy:
                 f"{fresh.profile_fingerprint[:12]}): la evidencia ya no corresponde al estado bajo "
                 "el que se lanzaría DynDOLOD"
             )
+        # El `fresh` devuelto es IGUAL al approval en cada campo ligado (la
+        # comparación estricta de arriba lo garantiza): la sesión se abre con
+        # los valores APROBADOS, no con "lo que había ahora". El worker entonces
+        # vuelve a correr `verify_vfs_attestation` + probe del nieto y compara
+        # el estado ACTUAL contra esos valores aprobados (fingerprint y hashes
+        # del canary recomputados): un drift en la ventana
+        # revalidación→open_session NO certifica el estado nuevo, FALLA la
+        # apertura de la sesión (fail-closed) y el proceso no nace.
         return fresh
 
     async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
@@ -483,10 +491,16 @@ class BrokeredDynDOLODSpawnStrategy:
             return await self._verificar_handoff_mo2(request)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- boundary del gate: bug interno ⇒ bloqueo, nunca spawn
+            # Deliberado y acotado: cada paso conocido ya devuelve `bloqueado`
+            # con su razón; esta frontera convierte lo DESCONOCIDO en bloqueo
+            # (fail-closed del gate: "cualquier paso indeterminado bloquea").
+            # Queda registrado con su repr para que la regresión sea auditable
+            # (y las suites del gate ejercitan cada modo de fallo conocido).
             logger.error(
                 "Gate brokered de TexGen: fallo inesperado (%r) — se bloquea cerrado",
                 e,
+                exc_info=True,
                 extra={"operation_type": "dyndolod_texgen_handoff_brokered_inesperado"},
             )
             return TexGenHandoffResult.bloqueado(
@@ -644,9 +658,11 @@ class BrokeredDynDOLODSpawnStrategy:
                 install_root=self._install_root,
                 virtual_data_dir=self._virtual_data_dir,
             )
-        except Exception as e:
-            # Puente caído, job timeout, worker desconectado: sin respuesta no
-            # hay evidencia, y sin evidencia no hay spawn (B11).
+        except Exception as e:  # noqa: BLE001 -- boundary de transporte B11: sin respuesta no hay evidencia
+            # Puente caído, job timeout, worker desconectado, error de
+            # transporte no enumerable: sin respuesta no hay evidencia, y sin
+            # evidencia no hay spawn (B11). Es el boundary del IPC, no un
+            # swallow genérico: CancelledError se propaga (no es Exception).
             return TexGenHandoffResult.bloqueado(
                 f"el bridge MO2/USVFS no pudo atestiguar la visibilidad del '{request.mod_name}' "
                 f"({e!r}): se bloquea cerrado"
